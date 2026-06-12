@@ -230,6 +230,13 @@ export class PtySession implements ISession {
 	private killed = false;
 
 	/**
+	 * Flag indicating whether the underlying PTY file descriptors have been
+	 * released via {@link closePty}. Guards against double-close and makes
+	 * teardown idempotent.
+	 */
+	private ptyClosed = false;
+
+	/**
 	 * Logger for this session
 	 */
 	private logger: ComponentLogger;
@@ -466,9 +473,56 @@ export class PtySession implements ISession {
 		this.killed = true;
 		this.ptyProcess.kill(signal);
 
+		// Release the underlying PTY master/slave file descriptors. `kill()` only
+		// signals the child shell — it does NOT close node-pty's master fd socket,
+		// which is the root cause of the /dev/ptmx + /dev/ttysNNN FD leak.
+		this.closePty();
+
 		// Clear all listeners to prevent memory leaks
 		this.dataListeners.clear();
 		this.exitListeners.clear();
+	}
+
+	/**
+	 * Release the underlying node-pty file descriptors (PTY master + slave).
+	 *
+	 * This is the missing piece that fixes the FD leak. node-pty's `kill(signal)`
+	 * only forwards a signal to the child shell process — it does NOT close the
+	 * master fd that node-pty opened on `/dev/ptmx` (and the associated
+	 * `/dev/ttysNNN` slave). On Unix, `node-pty`'s concrete `UnixTerminal` exposes
+	 * a `destroy()` method that closes its internal read-stream socket (and thus
+	 * the master fd) before SIGHUP-ing the shell. That method is intentionally
+	 * absent from the public `IPty` typings, so we feature-detect it at runtime.
+	 *
+	 * Idempotent and exception-safe: safe to call multiple times and after the
+	 * process has already exited. Any error (already-closed socket, missing
+	 * `destroy` on a future node-pty, Windows ConPTY) is swallowed — the worst
+	 * case is the pre-existing behaviour (no extra close), never a throw.
+	 *
+	 * @example
+	 * ```typescript
+	 * session.closePty(); // releases /dev/ptmx + /dev/ttysNNN FDs
+	 * ```
+	 */
+	closePty(): void {
+		if (this.ptyClosed) {
+			return; // Already released — idempotent no-op.
+		}
+		this.ptyClosed = true;
+
+		// node-pty's IPty typing omits `destroy()`, but UnixTerminal implements it
+		// and it is the only path that closes the master fd socket. Feature-detect.
+		const disposable = this.ptyProcess as unknown as { destroy?: () => void };
+		if (typeof disposable.destroy === 'function') {
+			try {
+				disposable.destroy();
+			} catch (err) {
+				this.logger.debug('Error destroying PTY (fd may already be closed)', {
+					name: this.name,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
 	}
 
 	/**
@@ -520,6 +574,12 @@ export class PtySession implements ISession {
 		} catch {
 			// ESRCH = process group already gone, which is fine
 		}
+
+		// Release the PTY master/slave FDs. Critical here: we SIGKILL the process
+		// directly via `process.kill`, bypassing node-pty's own exit handling, so
+		// node-pty never closes its master fd socket on its own — we must close it
+		// explicitly or the /dev/ptmx + /dev/ttysNNN FDs leak.
+		this.closePty();
 
 		// Clear all listeners to prevent memory leaks
 		this.dataListeners.clear();
@@ -597,8 +657,12 @@ export class PtySession implements ISession {
 				}
 			}
 
-			// Mark as killed after exit
+			// Mark as killed after exit, and release the PTY FDs. When the shell
+			// exits on its own (idle-exit / crash / dropout / natural EOF), node-pty
+			// emits onExit but the master fd socket can linger until GC — closing it
+			// here makes the FD release deterministic on every end path.
 			this.killed = true;
+			this.closePty();
 			this.dataListeners.clear();
 			this.exitListeners.clear();
 		});

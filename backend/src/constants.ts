@@ -200,6 +200,18 @@ export const PTY_CONSTANTS = {
 	MIN_MEANINGFUL_OUTPUT_BYTES: 8,
 	/** Minimum time (ms) an agent must remain in_progress before emitting busy/idle events */
 	MIN_BUSY_DURATION_MS: 10000,
+	/**
+	 * Cadence of the orphan-PTY reaper sweep (ms).
+	 *
+	 * The reaper walks the live sessionName→PtySession registry and tears down
+	 * any PTY whose owning session is no longer active (killed, exited, or whose
+	 * child shell has died) but which was never routed through centralized
+	 * teardown — a defensive backstop against `/dev/ptmx` + `/dev/ttysNNN` FD
+	 * accumulation (the 6-day backend that leaked 319 orphaned master FDs).
+	 * 5 minutes is frequent enough to bound leakage well under the open-file
+	 * ceiling yet cheap (an O(n) walk over a handful of sessions).
+	 */
+	ORPHAN_REAPER_INTERVAL_MS: 5 * 60 * 1000,
 } as const;
 
 // Session command timing delays (in milliseconds)

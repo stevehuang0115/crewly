@@ -18,9 +18,33 @@ import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
 import { PTY_CONSTANTS, CREWLY_CONSTANTS } from '../../../constants.js';
 import { PtyActivityTrackerService } from '../../agent/pty-activity-tracker.service.js';
 import { RuntimePidRegistry } from '../runtime-pid-registry.service.js';
+import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+
+/**
+ * Point-in-time PTY/FD health snapshot for observability.
+ *
+ * Surfaced so an operator (or a future health endpoint) can SEE PTY-FD
+ * accumulation early instead of discovering it only when `start-agent` fails
+ * with `posix_spawnp failed`. `liveSessions` ≫ `activeSessions` signals dead
+ * sessions lingering in the registry; `openFileCount` climbing across the
+ * backend lifetime signals the underlying FD leak directly.
+ */
+export interface PtyDiagnostics {
+	/** Total entries in the sessionName→PtySession registry. */
+	registrySize: number;
+	/** Registry entries whose PtySession is still alive (not killed/exited). */
+	activeSessions: number;
+	/** Registry entries whose PtySession reports killed (reaper candidates). */
+	deadSessions: number;
+	/**
+	 * Open file descriptors for THIS backend process via `lsof`, or null when
+	 * unavailable (lsof missing / non-POSIX). Cheap to read; bounded by timeout.
+	 */
+	openFileCount: number | null;
+}
 
 /**
  * PTY Session Backend implementation.
@@ -83,6 +107,13 @@ export class PtySessionBackend implements ISessionBackend {
 	private logger: ComponentLogger;
 
 	/**
+	 * Interval handle for the orphan-PTY reaper sweep. Started in the constructor,
+	 * cleared on destroy()/forceDestroyAll(). The sweep tears down any registry
+	 * PTY whose owning session is no longer active (defensive FD-leak backstop).
+	 */
+	private orphanReaperTimer: ReturnType<typeof setInterval> | null = null;
+
+	/**
 	 * Regex patterns for stripping ANSI escape codes from terminal output
 	 */
 	private static readonly ANSI_STRIP_PATTERNS = [
@@ -110,7 +141,84 @@ export class PtySessionBackend implements ISessionBackend {
 		} catch {
 			// Non-fatal: logging will be skipped if dir can't be created
 		}
+		this.startOrphanReaper();
 		this.logger.info('PTY session backend initialized');
+	}
+
+	/**
+	 * Start the periodic orphan-PTY reaper sweep.
+	 *
+	 * The interval cadence comes from PTY_CONSTANTS.ORPHAN_REAPER_INTERVAL_MS
+	 * (never hardcoded). The timer is `unref()`'d so it never keeps the Node
+	 * event loop alive on its own. Safe to call repeatedly (no-op if running).
+	 */
+	private startOrphanReaper(): void {
+		if (this.orphanReaperTimer) {
+			return;
+		}
+		this.orphanReaperTimer = setInterval(() => {
+			void this.reapOrphanPtys();
+		}, PTY_CONSTANTS.ORPHAN_REAPER_INTERVAL_MS);
+		// Don't let the reaper interval hold the process open during shutdown.
+		this.orphanReaperTimer.unref?.();
+	}
+
+	/**
+	 * Stop the periodic orphan-PTY reaper sweep (idempotent).
+	 */
+	private stopOrphanReaper(): void {
+		if (this.orphanReaperTimer) {
+			clearInterval(this.orphanReaperTimer);
+			this.orphanReaperTimer = null;
+		}
+	}
+
+	/**
+	 * Defensive backstop sweep: tear down any registry PTY whose owning session
+	 * is no longer active so its `/dev/ptmx` master + `/dev/ttysNNN` slave FDs are
+	 * released even if some end path forgot to route through teardownSession.
+	 *
+	 * A session is considered orphaned when its PtySession reports `isKilled()`
+	 * (the shell exited / crashed / was killed) yet it is still present in the
+	 * registry. Such an entry only lingers if normal teardown was skipped — the
+	 * exact failure mode that accumulated 319 orphaned master FDs over 6 days.
+	 * Active, living sessions are left untouched.
+	 *
+	 * @returns Promise resolving to the number of orphaned PTYs reaped.
+	 *
+	 * @example
+	 * ```typescript
+	 * const reaped = await backend.reapOrphanPtys();
+	 * ```
+	 */
+	async reapOrphanPtys(): Promise<number> {
+		// Snapshot names first — teardownSession mutates the registry mid-iteration.
+		const names = Array.from(this.sessions.keys());
+		const orphanNames = names.filter((name) => {
+			const session = this.sessions.get(name);
+			return session !== undefined && session.isKilled();
+		});
+
+		if (orphanNames.length === 0) {
+			return 0;
+		}
+
+		this.logger.warn('Orphan-PTY reaper found dead sessions still in registry', {
+			orphanCount: orphanNames.length,
+			orphanNames,
+		});
+
+		for (const name of orphanNames) {
+			// force:false — the shell is already dead, we only release the FDs.
+			await this.teardownSession(name, { force: false });
+		}
+
+		this.logger.warn('Orphan-PTY reaper finished', {
+			reaped: orphanNames.length,
+			remainingSessions: this.sessions.size,
+		});
+
+		return orphanNames.length;
 	}
 
 	/**
@@ -228,12 +336,55 @@ export class PtySessionBackend implements ISessionBackend {
 	 * ```
 	 */
 	async killSession(name: string): Promise<void> {
+		await this.teardownSession(name, { force: true });
+	}
+
+	/**
+	 * Centralized PTY teardown — the SINGLE path every session-end route funnels
+	 * through (explicit stop/terminate, idle-exit, dropout, crash, natural exit,
+	 * and the orphan reaper). Given a session name it:
+	 *   1. looks the PtySession up in the registry (the always-present reference
+	 *      that prevents the "orphan with no reference" leak),
+	 *   2. force-kills the child shell AND closes the node-pty master/slave FDs
+	 *      (via PtySession.forceKill → closePty, or closePty directly for an
+	 *      already-dead session),
+	 *   3. deletes it from every per-session Map (registry, buffers, byte
+	 *      counters, log streams),
+	 *   4. drops it from the cross-boot orphan PID registry.
+	 *
+	 * Idempotent and safe to call twice: a missing session simply cleans up any
+	 * residual per-session resources and returns. This is the function whose
+	 * absence caused 319 orphaned /dev/ptmx FDs to accumulate.
+	 *
+	 * @param name - Name of the session to tear down.
+	 * @param options - `force: true` escalates SIGTERM→SIGKILL (default true);
+	 *   `force: false` performs an FD-only close for a session already known dead.
+	 * @returns Promise that resolves when teardown + cleanup completes.
+	 *
+	 * @example
+	 * ```typescript
+	 * await backend.teardownSession('agent-leo'); // stop/terminate/idle-exit/crash
+	 * await backend.teardownSession('agent-leo'); // calling again is a safe no-op
+	 * ```
+	 */
+	private async teardownSession(
+		name: string,
+		options: { force?: boolean } = {},
+	): Promise<void> {
+		const force = options.force ?? true;
 		const session = this.sessions.get(name);
 		const terminalBuffer = this.terminalBuffers.get(name);
 
 		if (session) {
-			this.logger.info('Killing session with forceKill (SIGTERM → SIGKILL)', { name });
-			await session.forceKill();
+			if (force && !session.isKilled()) {
+				this.logger.info('Tearing down session with forceKill (SIGTERM → SIGKILL)', { name });
+				await session.forceKill();
+			} else {
+				// Session already dead (exit/crash) or non-force reaper sweep: we
+				// only need to release the lingering PTY master/slave FDs.
+				this.logger.info('Tearing down session — releasing PTY file descriptors', { name });
+				session.closePty();
+			}
 			this.sessions.delete(name);
 		}
 
@@ -429,6 +580,9 @@ export class PtySessionBackend implements ISessionBackend {
 			sessionCount: this.sessions.size,
 		});
 
+		// Stop the reaper first so it can't race with the teardown loop below.
+		this.stopOrphanReaper();
+
 		// Kill all sessions
 		const sessionNames = Array.from(this.sessions.keys());
 		for (const name of sessionNames) {
@@ -461,6 +615,9 @@ export class PtySessionBackend implements ISessionBackend {
 		}
 
 		this.logger.info('Force-destroying all PTY sessions', { sessionCount });
+
+		// Stop the reaper so it can't race with the clear() below.
+		this.stopOrphanReaper();
 
 		// Step 1: Collect all PIDs before sending any signals
 		const pids = this.getAllSessionPids();
@@ -500,7 +657,15 @@ export class PtySessionBackend implements ISessionBackend {
 			}
 		}
 
-		// Step 5: Clean up internal maps
+		// Step 5: Release every session's PTY master/slave FDs before dropping the
+		// references. SIGKILL above bypassed node-pty's own exit handling, so the
+		// master fd sockets would otherwise leak; closePty() is idempotent so the
+		// sessions whose SIGTERM in Step 2 already closed them are unaffected.
+		for (const session of this.sessions.values()) {
+			session.closePty();
+		}
+
+		// Clean up internal maps
 		for (const terminalBuffer of this.terminalBuffers.values()) {
 			terminalBuffer.dispose();
 		}
@@ -543,6 +708,65 @@ export class PtySessionBackend implements ISessionBackend {
 	 */
 	getSessionCount(): number {
 		return this.sessions.size;
+	}
+
+	/**
+	 * Read the open file descriptor count for THIS backend process.
+	 *
+	 * Uses `lsof -p <pid> | wc -l` on POSIX. Bounded by a short timeout and
+	 * exception-safe — returns null rather than throwing when lsof is missing or
+	 * the platform is unsupported, so callers can always include it in a
+	 * diagnostics payload without guarding.
+	 *
+	 * @returns The open-fd count, or null when it cannot be measured.
+	 */
+	private readOpenFileCount(): number | null {
+		if (process.platform !== 'linux' && process.platform !== 'darwin') {
+			return null;
+		}
+		try {
+			const out = execSync(`lsof -p ${process.pid} 2>/dev/null | wc -l`, {
+				encoding: 'utf8',
+				timeout: 1500,
+			});
+			const n = parseInt(out.trim(), 10);
+			return Number.isFinite(n) ? n : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * Produce a PTY/FD health snapshot for observability (registry occupancy +
+	 * process open-fd count). Intended for the diagnostics/health surface so PTY
+	 * file-descriptor accumulation is VISIBLE next time instead of only manifesting
+	 * as a `posix_spawnp failed` spawn error near the open-file ceiling.
+	 *
+	 * @returns A {@link PtyDiagnostics} snapshot.
+	 *
+	 * @example
+	 * ```typescript
+	 * const d = backend.getPtyDiagnostics();
+	 * logger.info('PTY health', d);
+	 * // { registrySize: 1, activeSessions: 1, deadSessions: 0, openFileCount: 142 }
+	 * ```
+	 */
+	getPtyDiagnostics(): PtyDiagnostics {
+		let activeSessions = 0;
+		let deadSessions = 0;
+		for (const session of this.sessions.values()) {
+			if (session.isKilled()) {
+				deadSessions++;
+			} else {
+				activeSessions++;
+			}
+		}
+		return {
+			registrySize: this.sessions.size,
+			activeSessions,
+			deadSessions,
+			openFileCount: this.readOpenFileCount(),
+		};
 	}
 
 	/**

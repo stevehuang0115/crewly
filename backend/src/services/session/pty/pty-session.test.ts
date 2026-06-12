@@ -429,6 +429,81 @@ describe('PtySession', () => {
 			expect(session.isKilled()).toBe(true);
 		});
 	});
+
+	describe('closePty — PTY file-descriptor release (FD-leak fix)', () => {
+		/**
+		 * Stub IPty that records calls to `destroy` (the node-pty Unix method that
+		 * closes the master fd socket). Injected via the spawn seam so no real PTY
+		 * is created and the FD-close path can be asserted directly.
+		 */
+		function makeDestroyTrackingPty(): {
+			ipty: pty.IPty;
+			killCalls: number;
+			destroyCalls: number;
+		} {
+			const state = { killCalls: 0, destroyCalls: 0 };
+			const ipty = {
+				pid: 99999,
+				cols: 80,
+				rows: 24,
+				process: 'stub',
+				handleFlowControl: false,
+				onData: () => ({ dispose: () => undefined }),
+				onExit: () => ({ dispose: () => undefined }),
+				on: () => undefined,
+				resize: () => undefined,
+				clear: () => undefined,
+				write: () => undefined,
+				kill: () => {
+					state.killCalls++;
+				},
+				destroy: () => {
+					state.destroyCalls++;
+				},
+				pause: () => undefined,
+				resume: () => undefined,
+			} as unknown as pty.IPty;
+			return {
+				ipty,
+				get killCalls() {
+					return state.killCalls;
+				},
+				get destroyCalls() {
+					return state.destroyCalls;
+				},
+			};
+		}
+
+		it('kill() releases the fd via node-pty destroy()', () => {
+			const tracker = makeDestroyTrackingPty();
+			const restore = _setPtySpawnImplForTesting(
+				(() => tracker.ipty) as unknown as Parameters<typeof _setPtySpawnImplForTesting>[0],
+			);
+			try {
+				session = new PtySession('fd-kill', TEST_CWD, createTestOptions());
+				session.kill();
+				expect(tracker.killCalls).toBeGreaterThanOrEqual(1);
+				expect(tracker.destroyCalls).toBe(1);
+			} finally {
+				restore();
+			}
+		});
+
+		it('closePty() is idempotent — destroy() called at most once', () => {
+			const tracker = makeDestroyTrackingPty();
+			const restore = _setPtySpawnImplForTesting(
+				(() => tracker.ipty) as unknown as Parameters<typeof _setPtySpawnImplForTesting>[0],
+			);
+			try {
+				session = new PtySession('fd-idem', TEST_CWD, createTestOptions());
+				session.closePty();
+				session.closePty();
+				expect(tracker.destroyCalls).toBe(1);
+			} finally {
+				restore();
+			}
+		});
+	});
 });
 
 describe('PtySession integration', () => {

@@ -3,6 +3,7 @@
  */
 
 import { PtySessionBackend } from './pty-session-backend.js';
+import type { PtySession } from './pty-session.js';
 import type { SessionOptions } from '../session-backend.interface.js';
 
 // Determine the shell to use based on platform
@@ -124,7 +125,12 @@ describe('PtySessionBackend', () => {
 		});
 
 		it('should call forceKill instead of kill when killing a session', async () => {
-			const session = await backend!.createSession('force-kill-test', createTestOptions());
+			// createSession returns the ISession view; cast to the concrete
+			// PtySession to spy on forceKill (not part of the ISession interface).
+			const session = (await backend!.createSession(
+				'force-kill-test',
+				createTestOptions(),
+			)) as PtySession;
 
 			// Spy on forceKill and kill methods on the session instance
 			const forceKillSpy = jest.spyOn(session, 'forceKill').mockResolvedValue(undefined);
@@ -562,6 +568,51 @@ describe('PtySessionBackend integration', () => {
 			await backend!.killSession('child-killed');
 
 			expect(backend!.isChildProcessAlive('child-killed')).toBe(false);
+		});
+	});
+
+	describe('orphan reaper + teardown (FD-leak backstop)', () => {
+		it('reapOrphanPtys leaves living sessions in the registry', async () => {
+			await backend!.createSession('reaper-live', createTestOptions());
+
+			const reaped = await backend!.reapOrphanPtys();
+
+			expect(reaped).toBe(0);
+			expect(backend!.sessionExists('reaper-live')).toBe(true);
+		});
+
+		it('reapOrphanPtys removes a killed-but-still-registered session', async () => {
+			await backend!.createSession('reaper-dead', createTestOptions());
+
+			// Force the session into the killed state while leaving it in the
+			// registry (the leak shape: dead session never torn down). Reaper must
+			// detect isKilled() and evict it.
+			const session = backend!.getSession('reaper-dead') as PtySession;
+			session.kill();
+			expect(backend!.sessionExists('reaper-dead')).toBe(true);
+
+			const reaped = await backend!.reapOrphanPtys();
+
+			expect(reaped).toBe(1);
+			expect(backend!.sessionExists('reaper-dead')).toBe(false);
+		});
+
+		it('killSession is idempotent', async () => {
+			await backend!.createSession('idem', createTestOptions());
+
+			await backend!.killSession('idem');
+			await expect(backend!.killSession('idem')).resolves.toBeUndefined();
+			expect(backend!.sessionExists('idem')).toBe(false);
+		});
+
+		it('getPtyDiagnostics reports registry occupancy', async () => {
+			await backend!.createSession('diag', createTestOptions());
+
+			const d = backend!.getPtyDiagnostics();
+
+			expect(d.registrySize).toBe(1);
+			expect(d.activeSessions).toBe(1);
+			expect(d.deadSessions).toBe(0);
 		});
 	});
 });
