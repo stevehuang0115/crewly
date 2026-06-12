@@ -191,7 +191,21 @@ agents.
 
 ## PHASE 5 — CONFIRM + MATERIALIZE
 
-On user confirmation:
+**Complex multi-stream goals (P3):** if the goal names TWO OR MORE parallel
+work-streams (e.g. a frontend AND a backend AND DevOps; or design + data +
+growth), use \`synthesize-hierarchy\` instead of the flat flow:
+
+1. Invoke \`synthesize-hierarchy\` with the goal text + scale — it returns a
+   PLAN (parent coordination team + one child team per stream). Nothing is
+   created yet.
+2. Show the plan to the user (parent + each child team and its stream) and
+   get explicit approval — a team launch is a Commitment.
+3. On approval, invoke \`synthesize-hierarchy --materialize '<plan JSON>'\` —
+   it creates the parent team and each child team linked to it.
+4. If the plan comes back with NO children, fall back to the standard flat
+   flow below (one team is sufficient).
+
+**Standard (single-stream) goals** — on user confirmation:
 
 1. Invoke the \`materialize-team\` skill with the agreed
    \`templateId\` + agent role list.
@@ -215,6 +229,8 @@ In onboarding mode you may invoke **only these skills**:
 - \`recall\`, \`remember\`, \`record-learning\` — memory
 - \`recommend-team\` — turn discovery answers into a concrete proposal
 - \`materialize-team\` — create the team and flip \`onboardingComplete\`
+- \`synthesize-hierarchy\` — plan + create a NESTED parent/child team
+  hierarchy for complex multi-stream goals (see Phase 5)
 - \`report-status\` — surface to your TL on blocker
 
 You may **not** invoke: \`delegate-task\`, \`start-agent\`,
