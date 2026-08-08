@@ -369,7 +369,13 @@ export async function agentResponse(
 
     const chatService = getChatService();
 
-    // Resolve conversation: use provided ID or get/create the current one
+    // Resolve conversation: use provided ID or get/create the current one.
+    //
+    // Whether the caller NAMED the conversation matters downstream: the
+    // fallback below picks the globally-current conversation, which is a fine
+    // default for storing a message but is NOT evidence that this message
+    // belongs to that thread (issue #731).
+    const conversationIdWasExplicit = Boolean(conversationId);
     let resolvedConversationId = conversationId;
     if (!resolvedConversationId) {
       const current = await chatService.getCurrentConversation();
@@ -429,15 +435,30 @@ export async function agentResponse(
       // within the cadence, the enforcer will nudge it with
       // [DELIVER_REQUIRED]. The service no-ops on non-slack conversations
       // and on non-delivery markers (e.g. [IN_PROGRESS]).
+      //
+      // Only when the caller NAMED the thread (issue #731): a cron-driven
+      // daily task reports completion with no conversationId, so the fallback
+      // above hands back whatever thread happens to be globally current —
+      // typically some long-resolved thread. Tracking that as a pending
+      // delivery made the watchdog demand a deliverable in an unrelated thread
+      // every single day, and because markPendingDelivery re-arms the reminder
+      // counter, the nudges never aged out.
       try {
-        const { OrcDeliveryEnforcerService } = await import(
-          '../../services/orc/orc-delivery-enforcer.service.js'
-        );
-        OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
-          conversationId: resolvedConversationId,
-          agentSender: senderName,
-          text: content,
-        });
+        if (conversationIdWasExplicit) {
+          const { OrcDeliveryEnforcerService } = await import(
+            '../../services/orc/orc-delivery-enforcer.service.js'
+          );
+          OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
+            conversationId: resolvedConversationId,
+            agentSender: senderName,
+            text: content,
+          });
+        } else {
+          logger.debug('Skipping delivery tracking — conversation was inferred, not named', {
+            senderName,
+            conversationId: resolvedConversationId,
+          });
+        }
       } catch (enforcerErr) {
         logger.warn('OrcDeliveryEnforcer.markPendingDelivery threw (swallowed)', {
           error: enforcerErr instanceof Error ? enforcerErr.message : String(enforcerErr),
