@@ -152,7 +152,19 @@ export async function materializeTeam(
 ): Promise<MaterializeResult> {
   const now = opts.now ?? defaultNow;
   const log = opts.log ?? noopLog;
-  const provisionTeam = opts.provisionTeam ?? defaultProvisionTeam;
+  // Bind the live provisioner to the SAME root the caller injected (issue
+  // #729). `teamsDir` is `<crewlyHome>/teams`, so its parent is the home the
+  // storage layer must use. Without this the live path went through
+  // `StorageService.getInstance()` with no argument — resolving the ambient
+  // CREWLY_HOME and ignoring the injected root entirely. A verification run
+  // that carefully pointed `teamsDir` at a scratch dir still persisted live
+  // teams into the developer's real `~/.crewly/teams`, which is how three stub
+  // teams leaked there. In production `dirname(teamsDir)` IS the real home, so
+  // the cached singleton is returned unchanged.
+  const provisionTeam =
+    opts.provisionTeam
+    ?? ((rec, name, owner, parent) =>
+      defaultProvisionTeam(rec, name, owner, parent, path.dirname(opts.teamsDir)));
   const createdAt = now().toISOString();
   const teamName = humanizeTemplateName(recommendation.templateId);
 
@@ -234,6 +246,10 @@ export async function materializeTeam(
  * @param recommendation - The confirmed recommendation (carries `templateId`).
  * @param teamName - Human-readable team name to assign.
  * @param ownerUserId - Owner principal, or undefined for OSS single-user mode.
+ * @param parentTeamId - Parent team id for a nested child team, else undefined.
+ * @param storageHome - Crewly home the team must be persisted under. Passed
+ *   explicitly (never re-resolved from the environment) so an injected root is
+ *   honoured by the live path too — see issue #729.
  * @returns The persisted team id + member count, or `null` when the template
  *          is not registered (caller falls back to a minimal stub).
  * @throws Propagates a tier-gating error from `createTeamFromTemplate` (the
@@ -244,6 +260,7 @@ async function defaultProvisionTeam(
   teamName: string,
   ownerUserId: string | undefined,
   parentTeamId: string | undefined,
+  storageHome: string,
 ): Promise<ProvisionedTeam | null> {
   const { TemplateService } = await import('../../template/template.service.js');
   const { StorageService } = await import('../../core/storage.service.js');
@@ -265,7 +282,9 @@ async function defaultProvisionTeam(
     result.team.parentTeamId = parentTeamId;
   }
 
-  await StorageService.getInstance().saveTeam(result.team);
+  // Explicit home — see the binding comment in materializeTeam. A bare
+  // getInstance() here would silently re-resolve the ambient CREWLY_HOME.
+  await StorageService.getInstance(storageHome).saveTeam(result.team);
 
   return { teamId: result.team.id, memberCount: result.memberCount };
 }
