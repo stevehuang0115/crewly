@@ -169,6 +169,34 @@ export function evaluateColdLaunch(args: {
     return { allowed: true, evidence: approving };
   }
 
+  // Distinguish "wrong wording" from "this channel records nothing" (issue
+  // #730). When the window holds ZERO owner messages, the owner is almost
+  // certainly talking on a surface that never persists `sender_type='user'`
+  // rows — a bare orchestrator session with no `[CHAT:…]` wrapper. There, no
+  // phrasing can ever satisfy the gate, and the generic "no such message
+  // found" text sends both orc and owner into a pointless retry loop hunting
+  // for the magic word.
+  //
+  // The lookup deliberately stays chat-only: the guard's whole value is that
+  // the orchestrator cannot forge the evidence, and a session transcript is
+  // something the orchestrator writes. Widening the search would hand it the
+  // forgery it was built to prevent (2026-06-02 incident) — so we fix the
+  // diagnosis, not the trust boundary.
+  if (recentOwnerMessages.length === 0) {
+    return {
+      allowed: false,
+      reason:
+        'Cold-launching a dormant team requires an explicit owner approval, and ' +
+        'NO owner chat messages at all were recorded in the lookback window. This ' +
+        'is a channel problem, not a wording problem: approval must be given on a ' +
+        'surface that records owner messages (Slack, or the Chat UI). Approving ' +
+        'from a raw orchestrator session cannot satisfy this gate no matter how ' +
+        'it is phrased — the guard reads the owner\'s real chat history precisely ' +
+        'so the orchestrator cannot fabricate it. Ask the owner to send the ' +
+        'approval (启动/批准/go ahead/do it/proceed/approved) in Slack or the Chat UI.',
+    };
+  }
+
   return {
     allowed: false,
     reason:

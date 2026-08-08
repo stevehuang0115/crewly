@@ -99,6 +99,30 @@ describe('evaluateColdLaunch', () => {
     const d = evaluateColdLaunch({ team: active, recentOwnerMessages: [] });
     expect(d.allowed).toBe(true);
   });
+
+  /**
+   * Issue #730 — an owner on a session that never persists chat messages
+   * cannot satisfy this gate with ANY wording. The old reason text blamed the
+   * phrasing, so orc and owner burned retry cycles hunting for a magic word.
+   */
+  describe('diagnosis when the channel records nothing (#730)', () => {
+    it('names the channel as the cause when zero owner messages were recorded', () => {
+      const d = evaluateColdLaunch({ team: dormant, recentOwnerMessages: [] });
+      expect(d.allowed).toBe(false);
+      expect(d.reason).toContain('channel problem, not a wording problem');
+      expect(d.reason).toMatch(/Slack.*Chat UI/s);
+    });
+
+    it('still blames wording when owner messages exist but none approve', () => {
+      const d = evaluateColdLaunch({
+        team: dormant,
+        recentOwnerMessages: ['要不要启动?', 'hold off for now'],
+      });
+      expect(d.allowed).toBe(false);
+      expect(d.reason).not.toContain('channel problem');
+      expect(d.reason).toContain('No such owner message was found');
+    });
+  });
 });
 
 describe('extractScheduleClaim', () => {
