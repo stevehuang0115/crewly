@@ -79,7 +79,10 @@ export const APPROVAL_REQUIRED_BASH_PATTERNS: Array<{ pattern: RegExp; label: st
 export function validateBashCommand(command: string): string | null {
   for (const pattern of BLOCKED_COMMAND_PATTERNS) {
     if (pattern.test(command)) {
-      return `Command blocked by security policy: matches forbidden pattern ${pattern}`;
+      // Phrased to signal the model this is a PERMANENT policy block, not a
+      // transient failure — otherwise it retries variations until the loop
+      // detector aborts the whole run.
+      return `Command permanently blocked by security policy (matched ${pattern}). This is NOT a transient error — do NOT retry this or a variation. Achieve the goal a different way (use a Crewly API/tool, or skip this step).`;
     }
   }
   return null;

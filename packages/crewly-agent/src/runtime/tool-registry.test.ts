@@ -2186,6 +2186,25 @@ describe('Tool Registry', () => {
       expect(validateFn('rm -rf ./dist')).toBeNull();
       expect(validateFn('rm -rf node_modules')).toBeNull();
     });
+
+    it('should signal the block is permanent so the model stops retrying', () => {
+      // A blocked command is a policy decision, not a transient failure. When
+      // the message read like a retryable error the model retried variations
+      // until the loop detector aborted the whole run, so the wording carries
+      // real behavioural weight and is worth pinning.
+      const reason = validateFn('kill -9 $$');
+
+      expect(reason).not.toBeNull();
+      expect(reason).toMatch(/permanently blocked/i);
+      expect(reason).toMatch(/NOT a transient error/i);
+      expect(reason).toMatch(/do NOT retry/i);
+    });
+
+    it('should still identify which pattern caused the block', () => {
+      // The matched pattern stays in the message: without it the model cannot
+      // tell which part of a compound command was rejected.
+      expect(validateFn('shutdown -h now')).toMatch(/shutdown/);
+    });
   });
 
   describe('bash_exec tool', () => {
