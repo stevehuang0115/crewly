@@ -256,9 +256,15 @@ export class ChatGateway {
         senderId: sessionId,
         content,
         metadata: {
-          source: 'in-process-runtime',
           sessionId,
           ...(metadata ?? {}),
+          // `source` is set LAST so a caller cannot clobber the audit
+          // discriminator. It is a closed enum (RECORD_TURN_SOURCES) owned by
+          // this path; when a caller spread an out-of-enum value over it, the
+          // write failed validation and the agent's reply was dropped after the
+          // work was already done. Callers may add metadata, not redefine
+          // where the turn came from.
+          source: 'in-process-runtime',
         },
       });
       const legacyMessage = v2MessageToLegacy(message);
