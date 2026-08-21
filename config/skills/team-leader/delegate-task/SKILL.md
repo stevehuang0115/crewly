@@ -42,11 +42,24 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 | `--task` / `-T` | `task` | Yes | Task description (or pipe via stdin) |
 | `--task-file` | — | No | Read task description from a file path |
 | `--priority` / `-P` | `priority` | No | Priority: `low`, `normal`, `high` (default: `normal`) |
-| `--context` / `-c` | `context` | No | Additional context for the worker |
+| `--context` / `-c` | `context` | No | Additional context for the worker. Scanned for the Request Contract alongside `--task` |
 | `--project` / `-p` | `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
 | `--team` / `-g` | `teamId` | No | Team ID for hierarchy validation |
 | `--tl-member` | `tlMemberId` | No | TL's member ID for hierarchy validation |
 | `--from` | `fromSession` | No | Delegating TL's session name (for monitoring) |
+
+## Request Contract check
+
+Before delegating, the skill scans the brief for Goal, Expected Outcome, and
+Eval Criteria markers, and emits a non-fatal warning on stderr naming any that
+are missing. Workers use that warning to decide whether to push back under the
+Brief Reception Protocol.
+
+`--task` and `--context` are scanned **together**, so the contract may live in
+either field or be split across both. A marker absent from both still warns.
+
+Recognised synonyms: `Objective` for Goal; `Acceptance Criteria` or
+`Evaluation Criteria` for Eval Criteria.
 
 ## Usage — CLI Flags (preferred)
 

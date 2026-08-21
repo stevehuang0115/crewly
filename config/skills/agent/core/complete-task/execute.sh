@@ -5,14 +5,26 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../../_common/lib.sh"
 
 INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"absoluteTaskPath\":\"/path/to/task\",\"sessionName\":\"dev-1\",\"summary\":\"Implemented feature X\",\"output\":{\"key\":\"value\"}}'"
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"workItemId\":\"wi-abc123\",\"sessionName\":\"dev-1\",\"summary\":\"Implemented feature X\",\"output\":{\"key\":\"value\"}}'"
 
+# `workItemId` is the V3 identifier and the ONLY input that drives the API
+# call (see the resolution block further down). `absoluteTaskPath` is the
+# legacy V1 input: still ACCEPTED so pre-existing callers keep working, but
+# it neither selects the WorkItem nor is required.
+#
+# It used to be `require_param`'d here, contradicting this skill's own
+# resolution logic: passing `workItemId` alone — the documented V3 flow —
+# returned `{"error":"Missing required parameter: absoluteTaskPath"}`, so
+# every agent completing a V3 WorkItem had to bypass the skill and curl
+# /api/task-pool/complete by hand. Same silent-friction class as the
+# create-task `{workItem: ...}` wrapper: the skill rejected a request that
+# was, by its own contract, correct.
+WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
 ABSOLUTE_TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // empty')
 SKIP_GATES=$(printf '%s' "$INPUT" | jq -r '.skipGates // empty')
 OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
-require_param "absoluteTaskPath" "$ABSOLUTE_TASK_PATH"
 require_param "sessionName" "$SESSION_NAME"
 require_param "summary" "$SUMMARY"
 
@@ -48,7 +60,7 @@ fi
 
 # #186: If the task file was already moved from in_progress/ to done/ by
 # report-status (via complete-by-session), succeed silently instead of failing.
-if echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_progress/'; then
+if [ -n "$ABSOLUTE_TASK_PATH" ] && echo "$ABSOLUTE_TASK_PATH" | grep -q '/in_progress/'; then
   DONE_PATH="${ABSOLUTE_TASK_PATH/\/in_progress\///done/}"
   if [ -f "$DONE_PATH" ] && [ ! -f "$ABSOLUTE_TASK_PATH" ]; then
     echo '{"success":true,"message":"Task already completed (moved to done by report-status)"}'
@@ -69,15 +81,20 @@ fi
 # The legacy `absoluteTaskPath` input is still accepted but no longer
 # drives the API call — it's only used for logging context. Callers
 # should switch to passing `workItemId`.
-WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
+#
+# WORK_ITEM_ID was read from the input up top alongside the other params,
+# so the identifier is known before any of the legacy path handling runs.
 if [ -z "$WORK_ITEM_ID" ]; then
   POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
   WORK_ITEM_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
 fi
 
+# Neither an explicit `workItemId` nor the pool lookup produced a target.
+# Fail loudly and name both accepted identifiers — exiting 0 here would let
+# a worker believe its task was closed while the pool still shows it
+# running, which is the silent no-op this skill must never perform.
 if [ -z "$WORK_ITEM_ID" ]; then
-  echo '{"error":"Could not resolve a running WorkItem for this session — pass `workItemId` explicitly."}' >&2
-  exit 1
+  error_exit "Could not resolve a WorkItem to complete: no 'workItemId' was passed and no running WorkItem is assigned to session '${SESSION_NAME}'. Pass 'workItemId' explicitly — find it with GET /api/task-pool/items?status=running&target=${SESSION_NAME}. Note: 'absoluteTaskPath' is a legacy input and does NOT identify a WorkItem."
 fi
 
 # Hygiene #4: emit canonical body shape `{agentId, result:{summary, ...output}}`
