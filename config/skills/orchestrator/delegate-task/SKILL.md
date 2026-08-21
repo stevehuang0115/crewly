@@ -41,7 +41,7 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--task` / `-T` | `task` | Yes | Task description (or pipe via stdin) |
 | `--task-file` | — | No | Read task description from a file path |
 | `--priority` / `-P` | `priority` | No | Priority: `low`, `normal`, `high` (default: `normal`) |
-| `--context` / `-c` | `context` | No | Additional context for the task |
+| `--context` / `-c` | `context` | No | Additional context for the task. Scanned for the Request Contract alongside `--task` |
 | `--project` / `-p` | `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
 | `--team` / `-g` | `teamId` | No | Team ID for cross-team validation |
 | `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
