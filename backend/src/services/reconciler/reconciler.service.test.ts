@@ -181,6 +181,46 @@ describe('ReconcilerService', () => {
       expect(result.staleItemsCleaned).toBeGreaterThan(0);
     });
 
+    it('counts a TTL-cancelled item in staleItemsCleaned but NOT a TTL auto-verified one', async () => {
+      // `staleItemsCleaned` must mean exactly one thing: work that was
+      // DISCARDED. The TTL rule produces two opposite outcomes —
+      // `running → cancelled` (discarded) and `done_by_worker → verified`
+      // (the 24h implicit-acceptance fallback, i.e. ACCEPTED). Summing the
+      // old combined `ttlExpiredCount` reported the accepted item to
+      // operators as thrown away.
+      const now = Date.now();
+      const accepted = makeWorkItem({
+        id: 'ttl-accepted',
+        status: 'done_by_worker',
+        createdAt: new Date(now - 25 * 3600000).toISOString(),
+      });
+      const discarded = makeWorkItem({
+        id: 'ttl-discarded',
+        status: 'running',
+        createdAt: new Date(now - 25 * 3600000).toISOString(),
+      });
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([accepted, discarded]),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+
+      // Exactly one cleaned item: the cancelled one. The auto-verified one
+      // is outside this metric.
+      expect(result.staleItemsCleaned).toBe(1);
+
+      // ...but it is NOT silently dropped — the acceptance is still in the
+      // audit trail with its true semantics.
+      const acceptedCorrection = result.corrections.find(
+        (c) => c.entityId === 'ttl-accepted' && c.newState === 'verified',
+      );
+      expect(acceptedCorrection).toBeDefined();
+      expect(result.corrections.find((c) => c.entityId === 'ttl-discarded' && c.newState === 'cancelled'))
+        .toBeDefined();
+    });
+
     it('should detect recoverable blocked WorkItems', async () => {
       const wi = makeWorkItem({
         status: 'blocked',

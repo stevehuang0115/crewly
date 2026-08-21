@@ -1138,7 +1138,9 @@ describe('runPruningPass', () => {
     ];
 
     const result = runPruningPass(workItems, 24 * 3600000, 60 * 60 * 1000);
-    expect(result.ttlExpiredCount).toBe(1);
+    // ttl-1 is `queued`, so its TTL target is `cancelled` — real cleanup.
+    expect(result.ttlCancelledCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.orphanCancelledCount).toBe(1);
     // stale-1 is stale (2h old), ttl-1 is also queued and old (25h) so it's also stale
     expect(result.staleQueuedCount).toBe(2);
@@ -1152,7 +1154,8 @@ describe('runPruningPass', () => {
     ];
 
     const result = runPruningPass(workItems);
-    expect(result.ttlExpiredCount).toBe(0);
+    expect(result.ttlCancelledCount).toBe(0);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.orphanCancelledCount).toBe(0);
     expect(result.cascadeCancelledCount).toBe(0);
     expect(result.staleQueuedCount).toBe(0);
@@ -1218,7 +1221,8 @@ describe('runPruningPass', () => {
     const result = runPruningPass(items);
     // Fresh items, so nothing is TTL-expired — every correction here comes
     // from orphan/cascade, and none of them may be an accomplishment.
-    expect(result.ttlExpiredCount).toBe(0);
+    expect(result.ttlCancelledCount).toBe(0);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.totalCorrections.length).toBeGreaterThan(0);
     for (const c of result.totalCorrections) {
       expect(c.newState).toBe('cancelled');
@@ -1240,8 +1244,10 @@ describe('runPruningPass', () => {
 
     const result = runPruningPass([parent, child]);
 
-    // Liveness: the TTL rule still acted on the parent.
-    expect(result.ttlExpiredCount).toBe(1);
+    // Liveness: the TTL rule still acted on the parent — as an ACCEPTANCE,
+    // which must never be reported under a cancellation counter.
+    expect(result.ttlAutoVerifiedCount).toBe(1);
+    expect(result.ttlCancelledCount).toBe(0);
     const parentCorrection = result.totalCorrections.find((c) => c.entityId === 'accepted-parent');
     expect(parentCorrection?.newState).toBe('verified');
     // Soundness: the child was NOT cascaded off it.
@@ -1262,9 +1268,49 @@ describe('runPruningPass', () => {
 
     const result = runPruningPass([parent, child]);
 
-    expect(result.ttlExpiredCount).toBe(1);
+    expect(result.ttlCancelledCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.cascadeCancelledCount).toBe(1);
     expect(result.totalCorrections.find((c) => c.entityId === 'doomed-child')?.newState)
+      .toBe('cancelled');
+  });
+
+  it('partitions TTL outcomes: a `done_by_worker → verified` item is NOT counted as a cancellation', () => {
+    // The two TTL outcomes are opposites: `running → cancelled` DISCARDS the
+    // work, `done_by_worker → verified` ACCEPTS it. The old single
+    // `ttlExpiredCount` (= expiredIds.length) reported both as one number,
+    // and the reconciler folded that into `ReconcileResult.staleItemsCleaned`
+    // — so accepted work was reported to operators as thrown away.
+    const now = Date.now();
+    const accepted = makeWorkItem({
+      id: 'ttl-accepted',
+      status: 'done_by_worker',
+      createdAt: new Date(now - 25 * 3600000).toISOString(),
+    });
+    const discarded = makeWorkItem({
+      id: 'ttl-discarded',
+      status: 'running',
+      createdAt: new Date(now - 25 * 3600000).toISOString(),
+    });
+
+    const result = runPruningPass([accepted, discarded]);
+
+    // Exactly one of each, in the counter that matches its semantics.
+    expect(result.ttlCancelledCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(1);
+    // Unrelated items, so no cascade noise inflating the cleanup total.
+    expect(result.orphanCancelledCount).toBe(0);
+    expect(result.cascadeCancelledCount).toBe(0);
+
+    // The counters must partition the TTL corrections exactly — nothing
+    // double-counted, nothing silently dropped.
+    const ttlCorrections = result.totalCorrections.filter(
+      (c) => c.entityId === 'ttl-accepted' || c.entityId === 'ttl-discarded',
+    );
+    expect(result.ttlCancelledCount + result.ttlAutoVerifiedCount).toBe(ttlCorrections.length);
+    expect(result.totalCorrections.find((c) => c.entityId === 'ttl-accepted')?.newState)
+      .toBe('verified');
+    expect(result.totalCorrections.find((c) => c.entityId === 'ttl-discarded')?.newState)
       .toBe('cancelled');
   });
 });

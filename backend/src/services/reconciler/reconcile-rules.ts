@@ -863,8 +863,33 @@ export function detectStaleQueuedWorkItems(
  * Result of a pruning pass, aggregating all pruning-related corrections.
  */
 export interface PruningResult {
-  /** WorkItems cancelled due to TTL expiry */
-  ttlExpiredCount: number;
+  /**
+   * WorkItems the TTL rule **cancelled** (`… → cancelled`) — genuine cleanup,
+   * the work is discarded.
+   *
+   * Replaces the former `ttlExpiredCount`, which was `expiredIds.length` and
+   * therefore lumped these together with the auto-ACCEPTED items below. The
+   * reconciler folded that combined number into
+   * `ReconcileResult.staleItemsCleaned`, so an operator reading
+   * `staleItemsCleaned = 10` concluded 10 items were thrown away when some of
+   * them had in fact been accepted. Two opposite outcomes must never share a
+   * counter; see {@link ttlAutoVerifiedCount}.
+   */
+  ttlCancelledCount: number;
+  /**
+   * WorkItems the TTL rule **auto-accepted** rather than discarded — today
+   * exclusively the `done_by_worker → verified` 24h implicit-acceptance
+   * fallback (see {@link pickTTLExpiryTarget}). Counted separately and
+   * deliberately EXCLUDED from `ReconcileResult.staleItemsCleaned`: this is
+   * work that passed, not work that was cleaned up.
+   *
+   * Defined as "TTL acted, but the target was not `cancelled`", so if the
+   * target-preference list ever yields a third acceptance-shaped terminal
+   * (`done` is listed but unreachable today — every status that permits
+   * `done` also permits the higher-priority `cancelled`) it lands here rather
+   * than being silently dropped from both counters.
+   */
+  ttlAutoVerifiedCount: number;
   /** WorkItems cancelled due to orphan cascade */
   orphanCancelledCount: number;
   /** WorkItems cancelled due to deep cascade */
@@ -892,7 +917,11 @@ export interface PruningResult {
  * @param allWorkItems - All WorkItems in the system
  * @param ttlMs - TTL threshold (default: 24h)
  * @param staleThresholdMs - Stale queue threshold (default: 1h)
- * @returns Aggregated pruning result
+ * @returns Aggregated pruning result. The TTL outcome is reported as two
+ *   separate counters — {@link PruningResult.ttlCancelledCount} (discarded)
+ *   and {@link PruningResult.ttlAutoVerifiedCount} (accepted) — because only
+ *   the former is "cleanup". Callers aggregating a cleaned-up total must sum
+ *   the cancel-shaped counters ONLY.
  */
 export function runPruningPass(
   allWorkItems: WorkItem[],
@@ -926,8 +955,17 @@ export function runPruningPass(
   // `orphans.orphanIds` is cancel-only by construction (see
   // {@link pickCascadeTarget}) but is filtered the same way so the invariant
   // is enforced here rather than assumed from a callee.
+  //
+  // The same split drives the two TTL counters: a `→ cancelled` correction is
+  // cleanup, anything else is an acceptance the caller must NOT report as
+  // "cleaned". `ttl.corrections` and `ttl.expiredIds` are pushed in lockstep,
+  // so these two counts partition the whole TTL outcome with nothing lost.
+  let ttlCancelledCount = 0;
   for (const c of ttl.corrections) {
-    if (c.newState === 'cancelled') cancelledIds.add(c.entityId);
+    if (c.newState === 'cancelled') {
+      cancelledIds.add(c.entityId);
+      ttlCancelledCount++;
+    }
   }
   for (const c of orphans.corrections) {
     if (c.newState === 'cancelled') cancelledIds.add(c.entityId);
@@ -940,7 +978,8 @@ export function runPruningPass(
   const stale = detectStaleQueuedWorkItems(allWorkItems, staleThresholdMs);
 
   return {
-    ttlExpiredCount: ttl.expiredIds.length,
+    ttlCancelledCount,
+    ttlAutoVerifiedCount: ttl.corrections.length - ttlCancelledCount,
     orphanCancelledCount: orphans.orphanIds.length,
     cascadeCancelledCount: cascade.cascadedIds.length,
     staleQueuedCount: stale.staleIds.length,
