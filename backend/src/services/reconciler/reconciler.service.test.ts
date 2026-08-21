@@ -7,7 +7,7 @@
 import { ReconcilerService } from './reconciler.service.js';
 import type { ReconcilerDataProvider } from './reconciler.service.js';
 import { createWorkItem, createRequest, createTaskClaim, isValidWorkItemTransition } from '../../types/v2/index.js';
-import type { WorkItem, Request, TaskClaim, ReconcileCorrection, WakeAction } from '../../types/v2/index.js';
+import type { WorkItem, WorkItemStatus, Request, TaskClaim, ReconcileCorrection, WakeAction } from '../../types/v2/index.js';
 import type { AgentHealth } from './reconcile-rules.js';
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,24 @@ jest.mock('../settings/index.js', () => ({
   getSettingsService: () => ({
     getSettings: mockGetSettings,
   }),
+}));
+
+// ---------------------------------------------------------------------------
+// Mock escalation router
+//
+// `enforceVerification` dynamically imports EscalationRouterService to escalate
+// overdue `done_by_worker` items. Stub it so the verification-enforcement
+// invariant is observable (and so the real singleton is never constructed).
+// ---------------------------------------------------------------------------
+
+const mockEscalateUnverified = jest.fn().mockResolvedValue(undefined);
+
+jest.mock('../v3/escalation-router.service.js', () => ({
+  EscalationRouterService: {
+    getInstance: () => ({
+      escalateUnverifiedWorkItem: mockEscalateUnverified,
+    }),
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -80,6 +98,7 @@ describe('ReconcilerService', () => {
     mockGetSettings.mockResolvedValue({
       general: { maxConcurrentAgents: 10 },
     });
+    mockEscalateUnverified.mockClear();
   });
 
   afterEach(() => {
@@ -546,17 +565,22 @@ describe('ReconcilerService', () => {
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockResolvedValue(pool),
         // Enforce the real state machine, exactly as TaskPoolService does.
-        applyCorrection: jest.fn(async (correction: any) => {
+        applyCorrection: jest.fn(async (correction: ReconcileCorrection) => {
           if (correction.entityType !== 'work_item') return;
           const item = byId.get(correction.entityId);
           if (!item) return;
-          if (!isValidWorkItemTransition(item.status, correction.newState)) {
+          // `ReconcileCorrection.newState` is typed `string`, not
+          // `WorkItemStatus` — a weak spot that lets an illegal status reach
+          // the pool untyped. Narrow explicitly here so this fake enforces
+          // the same contract TaskPoolService.transitionStatus does.
+          const next = correction.newState as WorkItemStatus;
+          if (!isValidWorkItemTransition(item.status, next)) {
             throw new Error(
               `Invalid status transition for WorkItem ${correction.entityId}: ` +
-              `${item.status} → ${correction.newState}`,
+              `${item.status} → ${next}`,
             );
           }
-          item.status = correction.newState;
+          item.status = next;
         }),
       });
       service = new ReconcilerService(provider);
@@ -576,6 +600,136 @@ describe('ReconcilerService', () => {
       expect(byId.get('wi-dbw')!.status).toBe('verified');
     });
 
+    // ---------------------------------------------------------------------
+    // The `runFull` step-3d invariant, asserted rather than commented.
+    //
+    // reconciler.service.ts orders `enforceVerification` BEFORE the pruning
+    // pass so unverified work gets a real verdict opportunity and is never
+    // silently auto-accepted. That ordering was load-bearing but untested:
+    // commit 469a3a21 let the pruning pass auto-`verified` a `done_by_worker`
+    // item via the shared TTL picker, which bypassed the guard entirely and
+    // no test noticed.
+    // ---------------------------------------------------------------------
+    describe('unverified work is never silently auto-accepted (runFull step 3d)', () => {
+      /** Reads a WorkItem's current status without a non-null assertion. */
+      function statusOf(byId: Map<string, WorkItem>, id: string): WorkItemStatus | undefined {
+        return byId.get(id)?.status;
+      }
+
+      /** Builds a provider that enforces the real WORK_ITEM_TRANSITIONS matrix. */
+      function strictProvider(pool: WorkItem[], byId: Map<string, WorkItem>): ReconcilerDataProvider {
+        return createMockProvider({
+          getActiveWorkItems: jest.fn().mockResolvedValue(pool),
+          applyCorrection: jest.fn(async (correction: ReconcileCorrection) => {
+            if (correction.entityType !== 'work_item') return;
+            const item = byId.get(correction.entityId);
+            if (!item) return;
+            const next = correction.newState as WorkItemStatus;
+            if (!isValidWorkItemTransition(item.status, next)) {
+              throw new Error(
+                `Invalid status transition for WorkItem ${correction.entityId}: ` +
+                `${item.status} → ${next}`,
+              );
+            }
+            item.status = next;
+          }),
+        });
+      }
+
+      it('REGRESSION: a ~1s-old done_by_worker child under a permanently-failed parent is not verified', async () => {
+        const parent = makeWorkItem({
+          id: 'parent-dead', status: 'failed', retryCount: 3, maxRetries: 3,
+        });
+        const child = makeWorkItem({
+          id: 'child-unreviewed',
+          status: 'done_by_worker',
+          parentWorkItemId: 'parent-dead',
+          createdAt: new Date(Date.now() - 1000).toISOString(),
+        });
+        const pool = [parent, child];
+        const byId = new Map(pool.map((wi) => [wi.id, wi]));
+
+        provider = strictProvider(pool, byId);
+        service = new ReconcilerService(provider);
+
+        const result = await service.runFull();
+
+        expect(result.errors).toEqual([]);
+        // The whole point: TL-unreviewed output must survive the pass intact.
+        expect(statusOf(byId, 'child-unreviewed')).toBe('done_by_worker');
+        expect(result.corrections.filter((c) => c.entityId === 'child-unreviewed'))
+          .toEqual([]);
+        expect(result.corrections.map((c) => c.newState)).not.toContain('verified');
+      });
+
+      it('escalates for a verdict BEFORE the pruning pass can touch the item', async () => {
+        // 3h old: past DEFAULT_VERIFY_ESCALATE_MS (2h) so the guard fires,
+        // but nowhere near the 24h TTL, so nothing may legitimately expire it.
+        const child = makeWorkItem({
+          id: 'wi-awaiting',
+          status: 'done_by_worker',
+          createdAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString(),
+        });
+        const pool = [child];
+        const byId = new Map(pool.map((wi) => [wi.id, wi]));
+
+        provider = strictProvider(pool, byId);
+        service = new ReconcilerService(provider);
+
+        const result = await service.runFull();
+
+        expect(result.errors).toEqual([]);
+        // Guard ran and asked for a real verdict...
+        expect(mockEscalateUnverified).toHaveBeenCalledTimes(1);
+        expect(mockEscalateUnverified.mock.calls[0][0]).toMatchObject({ id: 'wi-awaiting' });
+        // ...and the item is still awaiting one, not auto-accepted.
+        expect(statusOf(byId, 'wi-awaiting')).toBe('done_by_worker');
+        expect(provider.applyCorrection).not.toHaveBeenCalled();
+      });
+
+      it('the escalation guard runs before any correction is applied', async () => {
+        // Ordering is the invariant. Assert it on the call graph, not by
+        // reading the source.
+        const stale = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+        const pool = [
+          makeWorkItem({ id: 'wi-dbw', status: 'done_by_worker', createdAt: stale }),
+          makeWorkItem({ id: 'wi-running', status: 'running', createdAt: stale }),
+        ];
+        const byId = new Map(pool.map((wi) => [wi.id, wi]));
+
+        provider = strictProvider(pool, byId);
+        service = new ReconcilerService(provider);
+
+        await service.runFull();
+
+        expect(mockEscalateUnverified).toHaveBeenCalled();
+        const applyMock = provider.applyCorrection as jest.Mock;
+        expect(applyMock).toHaveBeenCalled();
+        expect(mockEscalateUnverified.mock.invocationCallOrder[0])
+          .toBeLessThan(applyMock.mock.invocationCallOrder[0]);
+      });
+
+      it('only the 24h TTL rule may produce a `verified` correction', async () => {
+        // Liveness half: TTL's implicit-acceptance fallback is intentional and
+        // must still work. Soundness half is the test above — a fresh item
+        // under a dead ancestor gets nothing.
+        const stale = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+        const pool = [makeWorkItem({ id: 'wi-ancient', status: 'done_by_worker', createdAt: stale })];
+        const byId = new Map(pool.map((wi) => [wi.id, wi]));
+
+        provider = strictProvider(pool, byId);
+        service = new ReconcilerService(provider);
+
+        const result = await service.runFull();
+
+        const verified = result.corrections.filter((c) => c.newState === 'verified');
+        expect(verified).toHaveLength(1);
+        expect(verified[0].entityId).toBe('wi-ancient');
+        expect(verified[0].reason).toContain('TTL');
+        expect(statusOf(byId, 'wi-ancient')).toBe('verified');
+      });
+    });
+
     it('stays error-free across repeated passes (the bug recurred every pass)', async () => {
       const staleAt = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
       const pool = [
@@ -589,16 +743,21 @@ describe('ReconcilerService', () => {
 
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockResolvedValue(pool),
-        applyCorrection: jest.fn(async (correction: any) => {
+        applyCorrection: jest.fn(async (correction: ReconcileCorrection) => {
           const item = byId.get(correction.entityId);
           if (!item) return;
-          if (!isValidWorkItemTransition(item.status, correction.newState)) {
+          // `ReconcileCorrection.newState` is typed `string`, not
+          // `WorkItemStatus` — a weak spot that lets an illegal status reach
+          // the pool untyped. Narrow explicitly here so this fake enforces
+          // the same contract TaskPoolService.transitionStatus does.
+          const next = correction.newState as WorkItemStatus;
+          if (!isValidWorkItemTransition(item.status, next)) {
             throw new Error(
               `Invalid status transition for WorkItem ${correction.entityId}: ` +
-              `${item.status} → ${correction.newState}`,
+              `${item.status} → ${next}`,
             );
           }
-          item.status = correction.newState;
+          item.status = next;
         }),
       });
       service = new ReconcilerService(provider);
@@ -625,16 +784,21 @@ describe('ReconcilerService', () => {
 
       provider = createMockProvider({
         getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
-        applyCorrection: jest.fn(async (correction: any) => {
+        applyCorrection: jest.fn(async (correction: ReconcileCorrection) => {
           const item = byId.get(correction.entityId);
           if (!item) return;
-          if (!isValidWorkItemTransition(item.status, correction.newState)) {
+          // `ReconcileCorrection.newState` is typed `string`, not
+          // `WorkItemStatus` — a weak spot that lets an illegal status reach
+          // the pool untyped. Narrow explicitly here so this fake enforces
+          // the same contract TaskPoolService.transitionStatus does.
+          const next = correction.newState as WorkItemStatus;
+          if (!isValidWorkItemTransition(item.status, next)) {
             throw new Error(
               `Invalid status transition for WorkItem ${correction.entityId}: ` +
-              `${item.status} → ${correction.newState}`,
+              `${item.status} → ${next}`,
             );
           }
-          item.status = correction.newState;
+          item.status = next;
         }),
       });
       service = new ReconcilerService(provider);

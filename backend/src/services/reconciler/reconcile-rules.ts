@@ -290,6 +290,74 @@ export function reconcileRequestStatus(
 }
 
 // ---------------------------------------------------------------------------
+// Cascade Target Picker (shared by the orphan + deep-cascade rules)
+// ---------------------------------------------------------------------------
+
+/**
+ * Preference order used when choosing a CASCADE target.
+ *
+ * Deliberately cancel-only. See {@link pickCascadeTarget} for why this list
+ * must never grow an "accomplishment" outcome such as `verified` or `done`.
+ */
+const CASCADE_TARGET_PREFERENCE: readonly WorkItemStatus[] = ['cancelled'] as const;
+
+/**
+ * Pick a state-machine-legal target for a WorkItem being cascade-cancelled
+ * because an ancestor died, or `null` when no legal target exists.
+ *
+ * Table-driven off {@link WORK_ITEM_TRANSITIONS} for the same reason the TTL
+ * picker is ({@link pickTTLExpiryTarget}): hardcoding `→ cancelled` per rule
+ * has already caused the same forever-throwing production loop twice, because
+ * a fix applied at one call site was never applied to its siblings. Adding a
+ * new {@link WorkItemStatus} can therefore only ever make cascade *skip* an
+ * item — inert — never emit an edge the state machine rejects on every pass.
+ *
+ * **Why this is NOT `pickTTLExpiryTarget`.** Commit 469a3a21 routed both
+ * cascade rules through the TTL picker to close the illegal-edge bug. That
+ * fixed the crash but imported a semantic that does not belong here. The TTL
+ * picker falls back to `verified` for `done_by_worker` on purpose: a TTL
+ * expiry means "24h elapsed with nobody objecting", and treating silence as
+ * implicit acceptance is a defensible reading of a 24h-old review request.
+ *
+ * Cascade has no time dimension whatsoever. It fires the instant a dead
+ * ancestor is reconciled. Borrowing the TTL fallback meant a child that
+ * entered `done_by_worker` one second ago was stamped `verified` — TL-
+ * unreviewed work auto-accepted with no age gate, no verdict, and no TL —
+ * precisely the invariant `ReconcilerService.runFull` orders
+ * {@link detectUnverifiedWorkItems} ahead of the pruning pass to protect.
+ * An unrelated ancestor failing is not evidence that a child's output is good.
+ *
+ * So cascade declines instead. `done_by_worker`, `rejected` and `failed` all
+ * return `null` and are left untouched, which is consistent with what the TTL
+ * rule already does for `rejected` / `failed`: no legal *cancel* edge means no
+ * correction, not a different correction. Those statuses own their own
+ * lifecycles (TL verdict, retry, escalation); a cascade sweep is not entitled
+ * to resolve them.
+ *
+ * @param current - Current WorkItem status
+ * @returns `'cancelled'` when that edge is legal from `current`, else `null`
+ *   (the caller must skip the item and emit no correction)
+ *
+ * @example
+ * ```typescript
+ * pickCascadeTarget('running');        // 'cancelled'
+ * pickCascadeTarget('done_by_worker'); // null → skip; never auto-accept
+ * pickCascadeTarget('rejected');       // null → skip
+ * ```
+ */
+export function pickCascadeTarget(current: WorkItemStatus): WorkItemStatus | null {
+  const legalTargets = WORK_ITEM_TRANSITIONS[current];
+  if (!legalTargets) return null;
+
+  for (const candidate of CASCADE_TARGET_PREFERENCE) {
+    if (TERMINAL_WORK_ITEM_STATUSES.has(candidate) && legalTargets.has(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Rule: Detect Orphan WorkItems
 // ---------------------------------------------------------------------------
 
@@ -343,14 +411,27 @@ export function detectOrphanWorkItems(
     if (!parent) continue;
 
     if (isParentPermanentlyTerminal(parent)) {
+      // `→ cancelled` is NOT legal from every non-terminal status
+      // (`rejected` / `failed` only permit `→ queued`; `done_by_worker`
+      // only `→ verified` / `→ rejected`). Hardcoding `cancelled` here
+      // reproduced Request 13548bd5's forever-throwing loop for orphaned
+      // children. Route through the CANCEL-ONLY picker — NOT the TTL one,
+      // which would auto-`verified` a `done_by_worker` child on the strength
+      // of an unrelated ancestor dying. See {@link pickCascadeTarget}.
+      const orphanTarget = pickCascadeTarget(wi.status);
+      if (orphanTarget === null) continue;
       corrections.push(createCorrection({
         entityType: 'work_item',
         entityId: wi.id,
         previousState: wi.status,
-        newState: 'cancelled',
+        newState: orphanTarget,
         reason: `Parent WorkItem ${parent.id} is ${parent.status} (permanent: retries ${parent.retryCount}/${parent.maxRetries})`,
-        evidence: `Cascade cancel: parent.status=${parent.status}, parent.retryCount=${parent.retryCount}/${parent.maxRetries}, child.status=${wi.status}`,
+        evidence: `Orphan ${orphanTarget}: parent.status=${parent.status}, parent.retryCount=${parent.retryCount}/${parent.maxRetries}, child.status=${wi.status}`,
       }));
+      // Only genuinely cancelled ids may enter `orphanIds`. The list seeds
+      // the deep-cascade set in `runPruningPass`, so pushing a
+      // non-`cancelled` outcome here would cascade-cancel the descendants of
+      // a parent that was never cancelled.
       orphanIds.push(wi.id);
     }
   }
@@ -388,6 +469,15 @@ const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
  * Pick a state-machine-legal terminal status for a TTL-expired WorkItem,
  * or `null` when no legal terminal target exists.
  *
+ * **Scope: the TTL rule only.** The `verified` fallback below encodes a TIME
+ * semantic — "24h elapsed with nobody objecting, treat silence as implicit
+ * acceptance" — which is only defensible because a TTL expiry *is* the passage
+ * of time. Rules with no time dimension must NOT borrow this picker; commit
+ * 469a3a21 briefly shared it with the orphan + deep-cascade rules and that
+ * silently auto-`verified` seconds-old `done_by_worker` children whenever an
+ * unrelated ancestor failed. Those rules use {@link pickCascadeTarget}, which
+ * is cancel-only. Read that JSDoc before wiring a third caller into this one.
+ *
  * This picker is TABLE-DRIVEN off {@link WORK_ITEM_TRANSITIONS} rather
  * than hardcoded per-status branches. That is deliberate: the hardcoded
  * form has now caused the same production incident twice, because a fix
@@ -411,24 +501,34 @@ const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
  *    same forever-throwing loop recurred for them (Request 13548bd5,
  *    surfaced by the 2026-08-20 Orca audit).
  *
- * The table-driven form closes the whole bug class: a status can only
- * receive a target the transition matrix actually permits, and a status
- * with no legal terminal target is skipped rather than corrected into an
- * exception. Adding a new {@link WorkItemStatus} can no longer silently
+ * The table-driven form closes this bug class **for the TTL rule**: a status
+ * can only receive a target the transition matrix actually permits, and a
+ * status with no legal terminal target is skipped rather than corrected into
+ * an exception. Adding a new {@link WorkItemStatus} can no longer silently
  * reintroduce this — worst case the new status is skipped by TTL, which
  * is inert, instead of throwing on every reconciler pass forever.
  *
- * `null` results (currently `rejected` and `failed`) are intentional and
- * safe, NOT a leak:
- * - `failed` has its own lifecycle — {@link detectRetryableFailedWorkItems}
- *   re-queues it while retries remain, and `V3DataService.onTaskFailed`
- *   escalates it to the orchestrator once the retry budget is spent.
- * - `rejected` has its own lifecycle — `EventToWorkItemBridge`'s
- *   `task:rejected` handler spawns either a retry WorkItem or a TL
- *   escalation WorkItem; the source WI is meant to stay `rejected` as an
- *   audit record.
- * Neither needs the TTL sweeper, and forcing a target on either produces
- * an illegal edge, not a cleanup.
+ * `null` results (currently `rejected` and `failed`) are intentional — the
+ * alternative is an illegal edge, not a cleanup. Both statuses have their own
+ * lifecycle, though NEITHER is fully covered today; see the caveats, which are
+ * tracked as follow-ups rather than silently assumed away:
+ *
+ * - `failed`: {@link detectRetryableFailedWorkItems} re-queues it while
+ *   retries remain, and `V3DataService.onTaskFailed` escalates it to the
+ *   orchestrator once the budget is spent. CAVEAT: that escalation only fires
+ *   for failures arriving via the `v3:task_failed` event. A WI that reaches
+ *   `failed` another way (direct `failItem`, the SLA `pickFailTarget`
+ *   `running → failed` path, reconciler-driven failures) with
+ *   `retryCount >= maxRetries` currently has no lifecycle at all.
+ * - `rejected`: `EventToWorkItemBridge`'s `task:rejected` handler spawns a
+ *   retry or TL-escalation WorkItem, and the source stays `rejected` as an
+ *   audit record. CAVEAT: `verifyItem` is the only publisher of
+ *   `task:rejected`, so rejections arriving via
+ *   `RequestSlaSubscriber.failOrphanRespondWi` produce no successor and
+ *   currently strand.
+ *
+ * Skipping them here is still correct: the TTL sweeper cannot legally act on
+ * either, so these gaps belong to the owning lifecycles, not to this rule.
  *
  * @param current - Current (non-terminal) WorkItem status
  * @returns A legal terminal status for TTL expiry, or `null` when the
@@ -662,14 +762,25 @@ export function cascadeCancelChildren(
       if (!wi.parentWorkItemId) continue;
 
       if (cancelledIds.has(wi.parentWorkItemId) || cascadedIds.includes(wi.parentWorkItemId)) {
+        // See the orphan rule above — `→ cancelled` is not legal from
+        // every non-terminal status. Skip children the state machine
+        // gives no legal cancel edge for instead of emitting a correction
+        // that throws on every pass. Cancel-only by construction: a dead
+        // ancestor is not a verdict on a `done_by_worker` child's output.
+        const cascadeTarget = pickCascadeTarget(wi.status);
+        if (cascadeTarget === null) continue;
         corrections.push(createCorrection({
           entityType: 'work_item',
           entityId: wi.id,
           previousState: wi.status,
-          newState: 'cancelled',
-          reason: `Cascade cancel: ancestor WorkItem was cancelled/failed`,
-          evidence: `parentWorkItemId=${wi.parentWorkItemId} is in cancelled set`,
+          newState: cascadeTarget,
+          reason: `Cascade ${cascadeTarget}: ancestor WorkItem was cancelled/failed`,
+          evidence: `parentWorkItemId=${wi.parentWorkItemId} is in cancelled set, child.status=${wi.status} → ${cascadeTarget}`,
         }));
+        // Only genuinely cancelled ids may enter `cascadedIds` — the loop
+        // below treats this list as the next generation of dead ancestors,
+        // so a non-`cancelled` entry would cancel grandchildren off a parent
+        // that is still very much alive.
         cascadedIds.push(wi.id);
         changed = true;
       }
@@ -805,9 +916,22 @@ export function runPruningPass(
       cancelledIds.add(wi.id);
     }
   }
-  // Include newly detected TTL + orphan IDs
-  for (const id of ttl.expiredIds) cancelledIds.add(id);
-  for (const id of orphans.orphanIds) cancelledIds.add(id);
+  // Include newly detected TTL + orphan IDs — but ONLY those whose correction
+  // is actually `→ cancelled`. `detectTTLExpiredWorkItems` also emits
+  // `done_by_worker → verified` (the 24h implicit-acceptance fallback), and a
+  // `verified` parent is NOT a dead ancestor: `isParentPermanentlyTerminal`
+  // above deliberately counts only `cancelled` / permanently-`failed`. Seeding
+  // the cascade set from the raw id list contradicted that definition and
+  // cancelled the descendants of a parent that had just been ACCEPTED.
+  // `orphans.orphanIds` is cancel-only by construction (see
+  // {@link pickCascadeTarget}) but is filtered the same way so the invariant
+  // is enforced here rather than assumed from a callee.
+  for (const c of ttl.corrections) {
+    if (c.newState === 'cancelled') cancelledIds.add(c.entityId);
+  }
+  for (const c of orphans.corrections) {
+    if (c.newState === 'cancelled') cancelledIds.add(c.entityId);
+  }
 
   // 4. Deep cascade cancel
   const cascade = cascadeCancelChildren(cancelledIds, allWorkItems);
