@@ -40,7 +40,13 @@ import {
   type WorkItem,
   type WorkItemStatus,
   WORK_ITEM_TRANSITIONS,
+  TERMINAL_WORK_ITEM_STATUSES,
+  SLA_TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
+import {
+  pickTTLExpiryTarget,
+  pickCascadeTarget,
+} from '../reconciler/reconcile-rules.js';
 import type { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { RequestService } from './request.service.js';
 
@@ -340,6 +346,67 @@ describe('pickFailTarget', () => {
       expect(allowed.has(to)).toBe(true);
     }
   });
+});
+
+/**
+ * Executable refutation of a claim that was load-bearing and untested.
+ *
+ * PR #733's description argued that `rejected` is "unreachable in production" —
+ * `verifyItem` has one production call site hardcoded to `'verified'`, there is
+ * no verify/reject route, and the TL `verify-output` skill never writes a
+ * verdict. All of that is true, and all of it is about `verifyItem`.
+ *
+ * `verifyItem` is not the only writer. {@link pickFailTarget} is the other one,
+ * and `RequestSlaSubscriber.failOrphanRespondWi` drives it via
+ * `taskPool.transitionStatus` directly — so `task:rejected` is never published
+ * and `EventToWorkItemBridge` never creates the successor WorkItem that the
+ * `verifyItem` route would have produced.
+ *
+ * A successor model built on "rejected cannot happen" would therefore be wrong
+ * in production and right in every test. These assertions exist so that stops
+ * being a prose argument in a merged PR body and becomes something CI can fail.
+ *
+ * Each `it` below is one link in the chain. They are deliberately *not* merged
+ * into a single test: when this breaks, the failing test name should say which
+ * link moved.
+ */
+describe('`rejected` reachability — the SLA escalation path (regression guard for PR #733)', () => {
+  it('link 1: the failOrphanRespondWi terminal guard does not stop a done_by_worker WI', () => {
+    // request-sla.subscriber.ts:~1508 short-circuits on SLA_TERMINAL_WORK_ITEM_STATUSES.
+    // done_by_worker is absent from that set, so the guard lets it through.
+    expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('done_by_worker')).toBe(false);
+  });
+
+  it('link 2: pickFailTarget turns that WI into `rejected`', () => {
+    expect(pickFailTarget('done_by_worker')).toBe('rejected');
+  });
+
+  it('link 3: done_by_worker → rejected is legal, so transitionStatus accepts the write', () => {
+    expect(WORK_ITEM_TRANSITIONS.done_by_worker.has('rejected')).toBe(true);
+  });
+
+  it('link 4: once `rejected`, the only outbound edge is `queued` — no terminal escape', () => {
+    // This is what makes it STRANDING rather than merely an unusual status:
+    // neither `rejected` nor `failed` can reach done/verified/cancelled, so
+    // nothing can close them out without first putting the work back in play.
+    expect([...WORK_ITEM_TRANSITIONS.rejected]).toEqual(['queued']);
+    expect([...WORK_ITEM_TRANSITIONS.failed]).toEqual(['queued']);
+    expect(TERMINAL_WORK_ITEM_STATUSES.has('rejected')).toBe(false);
+    expect(TERMINAL_WORK_ITEM_STATUSES.has('failed')).toBe(false);
+  });
+
+  it('link 5: and the reconciler correctly refuses to touch them, so nothing cleans up', () => {
+    // Post-#733 this is the CORRECT behaviour — emitting a correction here
+    // would be an illegal transition. It is asserted because it removes the
+    // only symptom this bug used to have: before #733 a >24h `rejected` WI
+    // threw `Invalid status transition` every 60s. The disease outlived the
+    // symptom, and the successor model is what actually treats it.
+    expect(pickTTLExpiryTarget('rejected')).toBeNull();
+    expect(pickTTLExpiryTarget('failed')).toBeNull();
+    expect(pickCascadeTarget('rejected')).toBeNull();
+    expect(pickCascadeTarget('failed')).toBeNull();
+  });
+
 });
 
 describe('closeRequestPath', () => {
