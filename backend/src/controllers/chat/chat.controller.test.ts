@@ -12,6 +12,15 @@ jest.mock('node-pty', () => ({
   spawn: jest.fn(),
 }));
 
+// Delivery enforcer is lazily imported by the agent-response handler; stub it
+// so the #731 tests can assert exactly when a thread gets tracked.
+const mockMarkPendingDelivery = jest.fn();
+jest.mock('../../services/orc/orc-delivery-enforcer.service.js', () => ({
+  OrcDeliveryEnforcerService: {
+    getInstance: () => ({ markPendingDelivery: mockMarkPendingDelivery }),
+  },
+}));
+
 // Phase 6c migration note — chat.controller still calls the legacy
 // ChatService façade (14 sites). The façade now delegates to chat-v2
 // under the hood, so existing fixtures continue to work without
@@ -639,6 +648,52 @@ describe('Chat Controller', () => {
 
       expect(response.status).toBe(400);
       expect(response.body.error).toBe('Message content is required');
+    });
+
+    /**
+     * Issue #731 — a cron-driven daily task reports completion with no
+     * conversationId, so the handler fell back to the globally-current
+     * conversation and tracked a delivery against whatever thread happened to
+     * be current: a long-resolved one. The watchdog then demanded a deliverable
+     * in that unrelated thread every single day.
+     */
+    describe('delivery tracking only for a named thread (#731)', () => {
+      beforeEach(() => {
+        mockMarkPendingDelivery.mockClear();
+      });
+
+      it('tracks the delivery when the agent names the conversation', async () => {
+        const conversation = await chatService.createNewConversation('Slack thread');
+
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({
+            content: '[DONE] Agent ella: research finished',
+            senderName: 'ella',
+            senderType: 'agent',
+            conversationId: conversation.id,
+          });
+
+        expect(response.status).toBe(201);
+        expect(mockMarkPendingDelivery).toHaveBeenCalledWith(
+          expect.objectContaining({ conversationId: conversation.id, agentSender: 'ella' }),
+        );
+      });
+
+      it('does NOT track when the conversation was inferred, not named', async () => {
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({
+            content: '[COMPLETED] Agent ella: daily tech briefing posted',
+            senderName: 'ella',
+            senderType: 'agent',
+          });
+
+        // Still accepted and routed to the orchestrator — only the delivery
+        // watchdog association is suppressed.
+        expect(response.status).toBe(201);
+        expect(mockMarkPendingDelivery).not.toHaveBeenCalled();
+      });
     });
 
     it('should return 400 for missing senderName', async () => {

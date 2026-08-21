@@ -34,17 +34,23 @@ import {
   type RuntimeType,
 } from '../../../constants.js';
 
+/** Handlers for one in-flight run, awaiting the child's reply. */
+interface PendingRun {
+  resolve: (result: AgentRunResult) => void;
+  reject: (error: Error) => void;
+}
+
 type ParentMessage =
   | { type: 'init'; config: CrewlyAgentConfig }
-  | { type: 'run'; message: string; conversationId?: string; metadata?: Record<string, string> }
+  | { type: 'run'; runId: string; message: string; conversationId?: string; metadata?: Record<string, string> }
   | { type: 'abort' }
   | { type: 'get-state' }
   | { type: 'shutdown' };
 
 type WorkerMessage =
   | { type: 'ready' }
-  | { type: 'result'; data: AgentRunResult }
-  | { type: 'error'; error: string; code?: string }
+  | { type: 'result'; runId?: string; data: AgentRunResult }
+  | { type: 'error'; runId?: string; error: string; code?: string }
   | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
   | { type: 'stream'; event: 'text'; data: { chunk: string } }
   | { type: 'stream'; event: 'toolStart'; data: { toolName: string; args: Record<string, unknown> } }
@@ -63,11 +69,26 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   private logBuffer: InProcessLogBuffer;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private stdoutBuffer = '';
-  private pendingRunResolve: ((result: AgentRunResult) => void) | null = null;
-  private pendingRunReject: ((error: Error) => void) | null = null;
+  /**
+   * In-flight runs keyed by correlation id, in dispatch order.
+   *
+   * A single resolve/reject pair used to live here instead. Delivery is
+   * fire-and-forget, so two messages dispatched milliseconds apart both wrote
+   * that pair: the first run's handlers were overwritten and its promise was
+   * orphaned forever, while the second promise got settled with the FIRST
+   * run's result. Observed live — a reply meant for one Slack thread was
+   * booked against another, the orphan later tripped the IPC deadline and
+   * recycled a perfectly healthy child, and the second message's real answer
+   * was swallowed by the `?.` on an already-cleared slot.
+   */
+  private readonly pendingRuns = new Map<string, PendingRun>();
+  /** Monotonic source for run correlation ids. */
+  private runCounter = 0;
   private pendingInitResolve: (() => void) | null = null;
   private pendingInitReject: ((error: Error) => void) | null = null;
   private storedConfig: CrewlyAgentConfig | null = null;
+  /** Guard against overlapping {@link recycleChild} calls. */
+  private recycling = false;
   /**
    * Bound signal forwarder so we can register it on parent SIGINT/
    * SIGTERM/SIGHUP and detach the same identity on shutdown. Null
@@ -148,32 +169,162 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
 
     this.logBuffer.append(session, 'info', `← Message received (${cleanMessage.length} chars): ${cleanMessage.substring(0, 150)}`);
 
+    // Backstop deadline on the child's IPC reply.
+    //
+    // This promise settles ONLY when the child writes `result` or `error` to
+    // stdout. A child that can no longer write — blocked event loop, broken
+    // pipe, SIGSTOP — leaves it pending forever, and because delivery is
+    // fire-and-forget the caller's .then/.catch never run either: no log, no
+    // status reset, no alert. That is exactly how the orchestrator went
+    // silently catatonic for 12 days. The child enforces its own (shorter) run
+    // budget, so reaching this deadline means the child itself is gone-but-
+    // breathing — hence the recycle.
+    const timeoutMs = this.resolveIpcTimeoutMs();
+    const runId = `run-${++this.runCounter}-${Date.now().toString(36)}`;
+
     return await new Promise<AgentRunResult>((resolve, reject) => {
-      this.pendingRunResolve = async (result) => {
-        this.pendingRunResolve = null;
-        this.pendingRunReject = null;
+      const timer = setTimeout(() => {
+        this.pendingRuns.delete(runId);
+        const message =
+          `Crewly Agent did not reply within ${timeoutMs}ms — the runtime process is `
+          + `alive but unresponsive. Recycling it.`;
+        this.logBuffer.append(session, 'error', message);
+        this.logger.error('Crewly Agent IPC timeout — recycling wedged runtime', {
+          sessionName: session,
+          runId,
+          timeoutMs,
+        });
+        // Respawn before rejecting so the session is usable again by the time
+        // the caller handles the failure.
+        void this.recycleChild();
+        reject(new Error(message));
+      }, timeoutMs);
 
-        const textPreview = result.text ? result.text.substring(0, 150) : '(no text)';
-        this.logBuffer.append(session, 'info', `→ Response (${result.steps} steps, ${result.toolCalls.length} tools): ${textPreview}`);
-        this.logBuffer.append(session, 'debug', `  Tokens: ${result.usage.input}in/${result.usage.output}out`);
-        this.recordTokenUsageIfEnabled(session, result).catch(() => {});
-        resolve(result);
-      };
+      this.pendingRuns.set(runId, {
+        resolve: (result) => {
+          clearTimeout(timer);
+          this.pendingRuns.delete(runId);
 
-      this.pendingRunReject = (error) => {
-        this.pendingRunResolve = null;
-        this.pendingRunReject = null;
-        this.logBuffer.append(session, 'error', `Agent error: ${error.message}`);
-        reject(error);
-      };
-
-      this.sendMessage({
-        type: 'run',
-        message: cleanMessage,
-        conversationId,
-        metadata,
+          const textPreview = result.text ? result.text.substring(0, 150) : '(no text)';
+          this.logBuffer.append(session, 'info', `→ Response (${result.steps} steps, ${result.toolCalls.length} tools): ${textPreview}`);
+          this.logBuffer.append(session, 'debug', `  Tokens: ${result.usage.input}in/${result.usage.output}out`);
+          this.recordTokenUsageIfEnabled(session, result).catch(() => {});
+          resolve(result);
+        },
+        reject: (error) => {
+          clearTimeout(timer);
+          this.pendingRuns.delete(runId);
+          this.logBuffer.append(session, 'error', `Agent error: ${error.message}`);
+          reject(error);
+        },
       });
+
+      try {
+        this.sendMessage({
+          type: 'run',
+          runId,
+          message: cleanMessage,
+          conversationId,
+          metadata,
+        });
+      } catch (sendError) {
+        // stdin already gone — fail now rather than idling until the deadline.
+        clearTimeout(timer);
+        this.pendingRuns.delete(runId);
+        reject(sendError instanceof Error ? sendError : new Error(String(sendError)));
+      }
     });
+  }
+
+  /**
+   * Settle the pending run a worker message belongs to.
+   *
+   * Correlates on `runId` when the child echoes one. Falls back to the OLDEST
+   * pending run when it does not — the child processes runs strictly serially
+   * (its own queue is FIFO), so the oldest outstanding request is the one being
+   * answered. The fallback keeps an older `crewly-agent` binary working.
+   *
+   * @param runId - Correlation id echoed by the child, if any
+   * @param settle - Applied to the matched run's handlers
+   * @returns True when a pending run was matched and settled
+   */
+  private settlePendingRun(
+    runId: string | undefined,
+    settle: (handlers: PendingRun) => void,
+  ): boolean {
+    let key = runId;
+    if (key === undefined || !this.pendingRuns.has(key)) {
+      // Map preserves insertion order — first key is the oldest run.
+      key = this.pendingRuns.keys().next().value;
+    }
+    if (key === undefined) return false;
+    const handlers = this.pendingRuns.get(key);
+    if (!handlers) return false;
+    settle(handlers);
+    return true;
+  }
+
+  /**
+   * Resolve how long the parent waits for the child's IPC reply.
+   *
+   * Deliberately the child's own run budget plus a grace window, so the child
+   * always gets to report its own timeout with proper context first; the parent
+   * timer only fires when the child has stopped reporting altogether.
+   *
+   * @returns Deadline in milliseconds
+   */
+  private resolveIpcTimeoutMs(): number {
+    const modelId = this.storedConfig?.model.modelId ?? '';
+    const childBudget =
+      CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS[modelId]
+      ?? CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS;
+    return childBudget + CREWLY_AGENT_DEFAULTS.IPC_RUN_TIMEOUT_GRACE_MS;
+  }
+
+  /**
+   * Replace a wedged child process with a fresh one.
+   *
+   * Without this, a single unresponsive child left the session permanently
+   * dead: `handleExit` nulls the child and clears `initialized`, and nothing
+   * ever spawned a replacement, so every later message failed the `isReady()`
+   * check for the lifetime of the backend process.
+   *
+   * Concurrent calls are collapsed — the delivery mutex serializes sends, but
+   * a process 'error' event can race the IPC deadline.
+   *
+   * @returns Resolves once the replacement is ready, or after logging a failure
+   */
+  private async recycleChild(): Promise<void> {
+    if (this.recycling) return;
+    const config = this.storedConfig;
+    const session = this.currentSessionName;
+    if (!config || !session) return;
+
+    this.recycling = true;
+    try {
+      const doomed = this.child;
+      // Drop the reference FIRST so the imminent 'exit' event is recognized as
+      // belonging to a superseded child and does not clobber the new one.
+      this.child = null;
+      this.ready = false;
+      this.stdoutBuffer = '';
+      if (doomed && !doomed.killed) {
+        try { doomed.kill('SIGKILL'); } catch { /* already gone */ }
+      }
+
+      await this.spawnAgentProcess(config);
+      this.initialized = true;
+      this.ready = true;
+      this.logBuffer.append(session, 'info', 'Crewly Agent runtime recycled after timeout');
+      this.logger.info('Crewly Agent runtime recycled', { sessionName: session });
+      this.startHeartbeat(session);
+    } catch (error) {
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logBuffer.append(session, 'error', `Runtime recycle failed: ${errMsg}`);
+      this.logger.error('Crewly Agent runtime recycle failed', { sessionName: session, error: errMsg });
+    } finally {
+      this.recycling = false;
+    }
   }
 
   isReady(): boolean {
@@ -220,10 +371,31 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     this.stdoutBuffer = '';
     this.pendingInitResolve = null;
     this.pendingInitReject = null;
-    this.pendingRunResolve = null;
-    this.pendingRunReject = null;
+    this.rejectAllPendingRuns(new Error('Crewly Agent runtime shut down'));
     this.currentSessionName = null;
     this.storedConfig = null;
+  }
+
+  /**
+   * Fail every in-flight run with the same cause.
+   *
+   * Used on teardown paths where the child is gone: leaving any pending run
+   * unsettled would strand its caller forever, which is precisely the silent
+   * hang this runtime has been hardened against.
+   *
+   * @param error - Cause reported to every waiting caller
+   */
+  private rejectAllPendingRuns(error: Error): void {
+    // Snapshot first — each reject() deletes its own entry from the map.
+    const handlers = [...this.pendingRuns.values()];
+    this.pendingRuns.clear();
+    for (const h of handlers) {
+      try {
+        h.reject(error);
+      } catch {
+        // A caller's rejection handler must not block the rest.
+      }
+    }
   }
 
   private async spawnAgentProcess(config: CrewlyAgentConfig): Promise<void> {
@@ -281,10 +453,15 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
 
     this.child.stdout.setEncoding('utf8');
     this.child.stderr.setEncoding('utf8');
-    this.child.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
-    this.child.stderr.on('data', (chunk: string) => this.handleStderr(chunk));
-    this.child.on('exit', (code, signal) => this.handleExit(code, signal));
-    this.child.on('error', (error) => this.handleProcessError(error));
+    // Bind handlers to THIS child instance. A recycled runtime has an old
+    // process whose 'exit' fires after the replacement is already installed;
+    // without the identity check in the handlers, that late event would tear
+    // down the healthy new child.
+    const spawned = this.child;
+    spawned.stdout.on('data', (chunk: string) => this.handleStdout(chunk));
+    spawned.stderr.on('data', (chunk: string) => this.handleStderr(chunk));
+    spawned.on('exit', (code, signal) => this.handleExit(spawned, code, signal));
+    spawned.on('error', (error) => this.handleProcessError(spawned, error));
 
     // Forward parent termination signals to the child so PM2 restarts /
     // SIGINT / SIGTERM don't leave the agent process orphaned and
@@ -494,18 +671,34 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
           this.pendingInitReject = null;
         }
         break;
-      case 'result':
-        this.pendingRunResolve?.(message.data);
+      case 'result': {
+        const matched = this.settlePendingRun(message.runId, (h) => h.resolve(message.data));
+        if (!matched && session) {
+          // A result nobody is waiting for. Previously `?.` swallowed this
+          // silently; say so, because it means an answer was computed and
+          // then thrown away.
+          this.logBuffer.append(
+            session,
+            'warn',
+            `Discarded a result with no matching pending run (runId=${message.runId ?? 'none'})`,
+          );
+          this.logger.warn('Crewly Agent result had no matching pending run', {
+            sessionName: session,
+            runId: message.runId ?? null,
+          });
+        }
         break;
+      }
       case 'error': {
         const error = new Error(message.error);
         if (this.pendingInitReject) {
           this.pendingInitReject(error);
           this.pendingInitResolve = null;
           this.pendingInitReject = null;
-        } else if (this.pendingRunReject) {
-          this.pendingRunReject(error);
-        } else if (session) {
+          break;
+        }
+        const matched = this.settlePendingRun(message.runId, (h) => h.reject(error));
+        if (!matched && session) {
           this.logBuffer.append(session, 'error', message.error);
         }
         break;
@@ -542,7 +735,24 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     }
   }
 
-  private handleExit(code: number | null, signal: NodeJS.Signals | null): void {
+  /**
+   * Handle child process exit.
+   *
+   * @param child - The process that exited; ignored when it is not the current
+   *   one (a superseded child from a recycle)
+   * @param code - Exit code, if any
+   * @param signal - Terminating signal, if any
+   */
+  private handleExit(
+    child: ChildProcessWithoutNullStreams,
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): void {
+    if (this.child !== child) {
+      // Superseded child finishing its death throes — its replacement owns the
+      // runtime state now.
+      return;
+    }
     // Clear initialized + detach signal handlers — the child is gone,
     // any tick-aligned work (heartbeat, signal forwarding) referring
     // to it would be writing to a corpse.
@@ -552,25 +762,29 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     this.detachSignalForwarders();
     const error = new Error(`Crewly Agent process exited (${code ?? 'null'}${signal ? `, ${signal}` : ''})`);
     if (this.pendingInitReject) this.pendingInitReject(error);
-    if (this.pendingRunReject) this.pendingRunReject(error);
     this.pendingInitResolve = null;
     this.pendingInitReject = null;
-    this.pendingRunResolve = null;
-    this.pendingRunReject = null;
+    // EVERY in-flight run dies with the process, not just the newest one.
+    this.rejectAllPendingRuns(error);
     if (this.currentSessionName) {
       this.logBuffer.append(this.currentSessionName, 'warn', error.message);
     }
     this.child = null;
   }
 
-  private handleProcessError(error: Error): void {
+  /**
+   * Handle a child process-level error (spawn failure, EPIPE, …).
+   *
+   * @param child - The process that errored; ignored when superseded
+   * @param error - The emitted error
+   */
+  private handleProcessError(child: ChildProcessWithoutNullStreams, error: Error): void {
+    if (this.child !== child) return;
     this.ready = false;
     if (this.pendingInitReject) this.pendingInitReject(error);
-    if (this.pendingRunReject) this.pendingRunReject(error);
     this.pendingInitResolve = null;
     this.pendingInitReject = null;
-    this.pendingRunResolve = null;
-    this.pendingRunReject = null;
+    this.rejectAllPendingRuns(error);
     if (this.currentSessionName) {
       this.logBuffer.append(this.currentSessionName, 'error', `Process error: ${error.message}`);
     }

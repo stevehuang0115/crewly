@@ -663,7 +663,12 @@ export async function mobilePair(_req: Request, res: Response, next: NextFunctio
     const token = client.getToken();
     const cloudUrl = client.getCloudUrl();
 
-    let cloud: { cloudUrl: string; accessToken: string; userId: string | null } | null = null;
+    let cloud: {
+      cloudUrl: string;
+      accessToken: string;
+      refreshToken: string | null;
+      userId: string | null;
+    } | null = null;
     if (token && cloudUrl) {
       // Best-effort sub extraction (the relay pairing code derives from it).
       let userId: string | null = null;
@@ -674,7 +679,7 @@ export async function mobilePair(_req: Request, res: Response, next: NextFunctio
       } catch {
         userId = null;
       }
-      cloud = { cloudUrl, accessToken: token, userId };
+      cloud = { cloudUrl, accessToken: token, refreshToken: client.getRefreshToken(), userId };
     }
 
     res.json({

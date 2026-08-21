@@ -357,11 +357,17 @@ export class AgentRegistrationService {
 					});
 					return;
 				}
+				// No metadata override here: processNotifyMessage already tags the
+				// turn `source: 'in-process-runtime'` — the canonical member of the
+				// closed RECORD_TURN_SOURCES enum for exactly this path. The old
+				// `'crewly-agent'` value was spread OVER that correct default and
+				// then failed enum validation, so every in-process reply to a web
+				// conversation was rejected with "unknown metadata.source" and
+				// silently dropped after the agent had already done the work.
 				return chatGateway.processNotifyMessage(
 					sessionName,
 					text,
 					conversationId,
-					{ source: 'crewly-agent' },
 				);
 			})
 			.then((chatMessage) => {

@@ -158,7 +158,10 @@ export class ToolCallLoopDetector {
       }
       if (this.consecutiveErrors >= this.errorThreshold) {
         this.loopDetected = true;
-        this.loopReason = `Tool "${toolName}" returned errors ${this.consecutiveErrors} consecutive times. Last result: ${String(result).slice(0, 200)}`;
+        // Serialize objects properly — `String(obj)` yields "[object Object]"
+        // and loses the actual error. Mirror isErrorResult()'s serialization.
+        const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+        this.loopReason = `Tool "${toolName}" returned errors ${this.consecutiveErrors} consecutive times. Last result: ${resultStr.slice(0, 200)}`;
         return true;
       }
     } else {
@@ -198,6 +201,40 @@ export class ToolCallLoopDetector {
  * const result = await runner.run('Check all team statuses');
  * ```
  */
+/**
+ * Thrown when a single agent run exceeds its wall-clock budget.
+ *
+ * Distinct class (rather than a message-sniffed "timeout" string) because
+ * {@link AgentRunnerService.isRecoverableError} treats anything mentioning
+ * "timeout" as retryable. A hard-budget expiry is deliberately NOT retryable:
+ * the budget covers the whole run including retries, so re-entering the retry
+ * loop would multiply the very stall the budget exists to bound.
+ *
+ * @example
+ * ```typescript
+ * try { await runner.run(msg); }
+ * catch (e) { if (e instanceof AgentRunTimeoutError) recycleAgent(); }
+ * ```
+ */
+export class AgentRunTimeoutError extends Error {
+  /** Wall-clock budget that was exceeded, in milliseconds. */
+  readonly timeoutMs: number;
+
+  /**
+   * @param timeoutMs - The budget that was exceeded, in milliseconds
+   * @param modelId - Model the run was using, for operator diagnosis
+   */
+  constructor(timeoutMs: number, modelId: string) {
+    super(
+      `Agent run exceeded its ${timeoutMs}ms wall-clock budget (model: ${modelId}) `
+      + `and was hard-aborted. The model connection stalled without delivering a `
+      + `response — see CREWLY_AGENT_MESSAGE_TIMEOUT_MS to tune the budget.`,
+    );
+    this.name = 'AgentRunTimeoutError';
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 /** Function type for generateText — used for dependency injection in tests */
 type GenerateTextFn = (opts: Record<string, unknown>) => Promise<Record<string, unknown>>;
 
@@ -824,17 +861,71 @@ export class AgentRunnerService {
       externalAbortSignal.addEventListener('abort', () => runAbort.abort(), { once: true });
     }
 
+    // Wall-clock budget for the ENTIRE run (all retries included).
+    //
+    // Without this, a model connection that opens but then goes silent — no
+    // bytes, no FIN, no error — hangs `await streamResult` forever: undici
+    // applies no idle deadline to a streaming body. That stalled promise wedges
+    // processQueue permanently (`this.processing` stays true), so every later
+    // message queues behind it and the agent goes silently catatonic: the
+    // process is alive and heartbeating, but no run ever completes and no error
+    // is ever raised. Bounding the run converts that invisible hang into a
+    // normal rejection the caller can log, surface, and recover from.
+    const timeoutMs = this.resolveRunTimeoutMs();
+    let hardTimer: ReturnType<typeof setTimeout> | undefined;
+    let softTimer: ReturnType<typeof setTimeout> | undefined;
+
     try {
       // If a test override is set, use generateText path (backward compatible)
-      if (this._generateTextFn) {
-        return await this.executeRunWithGenerateText(tools, runAbort.signal);
-      }
+      const runPromise = this._generateTextFn
+        ? this.executeRunWithGenerateText(tools, runAbort.signal)
+        // Production path: streamText for real-time feedback
+        : this.executeRunWithStreamText(tools, runAbort.signal);
 
-      // Production path: streamText for real-time feedback
-      return await this.executeRunWithStreamText(tools, runAbort.signal);
+      // The loser of the race stays pending. Attach a no-op catch so its
+      // eventual abort-rejection is never an unhandled rejection (which
+      // crashes the agent process under Node's default policy).
+      runPromise.catch(() => { /* settled by the race below */ });
+
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        softTimer = setTimeout(() => {
+          console.warn(
+            `[AgentRunner] Run exceeded soft warning threshold `
+            + `(${CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS}ms) — still waiting on the model.`,
+          );
+        }, CREWLY_AGENT_DEFAULTS.MESSAGE_SOFT_WARNING_MS);
+
+        hardTimer = setTimeout(() => {
+          // Abort first so the in-flight HTTP request and any tool work are
+          // torn down, then reject — a well-behaved provider unwinds on the
+          // signal, and a wedged one no longer holds the queue hostage.
+          runAbort.abort();
+          reject(new AgentRunTimeoutError(timeoutMs, this.config.model.modelId));
+        }, timeoutMs);
+      });
+
+      return await Promise.race([runPromise, timeoutPromise]);
     } finally {
+      if (hardTimer) clearTimeout(hardTimer);
+      if (softTimer) clearTimeout(softTimer);
       this.currentRunAbort = null;
     }
+  }
+
+  /**
+   * Resolve the wall-clock budget for one run.
+   *
+   * Per-model overrides win over the global default: reasoning models emit
+   * chain-of-thought tokens far slower than plain content, so a budget tuned
+   * for a chat model would kill them mid-thought.
+   *
+   * @returns Budget in milliseconds for the currently configured model
+   */
+  private resolveRunTimeoutMs(): number {
+    return (
+      CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS[this.config.model.modelId]
+      ?? CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS
+    );
   }
 
   /**
@@ -850,6 +941,9 @@ export class AgentRunnerService {
    */
   private isRecoverableError(error: unknown): boolean {
     if (!(error instanceof Error)) return false;
+    // Hard-budget expiry is terminal by construction: the budget spans the
+    // whole run, so retrying would just re-enter the stall it bounded.
+    if (error instanceof AgentRunTimeoutError) return false;
     const msg = error.message.toLowerCase();
     const statusMatch = msg.match(/\b(429|5\d{2})\b/);
     if (statusMatch) return true;

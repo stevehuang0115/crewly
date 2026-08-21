@@ -10,15 +10,19 @@ import type {
 
 type ParentMessage =
   | { type: 'init'; config: CrewlyAgentConfig }
-  | { type: 'run'; message: string; conversationId?: string; metadata?: Record<string, string> }
+  | { type: 'run'; runId?: string; message: string; conversationId?: string; metadata?: Record<string, string> }
   | { type: 'abort' }
   | { type: 'get-state' }
   | { type: 'shutdown' };
 
 type WorkerMessage =
   | { type: 'ready' }
-  | { type: 'result'; data: AgentRunResult }
-  | { type: 'error'; error: string; code?: string }
+  // `runId` is echoed straight back from the `run` that produced it so the
+  // parent can match a reply to its request. Without it the parent has to
+  // guess, and guessing wrong books one conversation's answer against
+  // another. Optional so an older parent that sends no id still works.
+  | { type: 'result'; runId?: string; data: AgentRunResult }
+  | { type: 'error'; runId?: string; error: string; code?: string }
   | { type: 'log'; level: 'debug' | 'info' | 'warn' | 'error'; message: string }
   | { type: 'stream'; event: 'text'; data: { chunk: string } }
   | { type: 'stream'; event: 'toolStart'; data: { toolName: string; args: Record<string, unknown> } }
@@ -71,9 +75,10 @@ async function handleMessage(message: ParentMessage): Promise<void> {
         runner = null;
       }
       break;
-    case 'run':
+    case 'run': {
+      const { runId } = message;
       if (!runner || !runner.isInitialized()) {
-        send({ type: 'error', error: 'Worker not initialized', code: 'NOT_INITIALIZED' });
+        send({ type: 'error', runId, error: 'Worker not initialized', code: 'NOT_INITIALIZED' });
         return;
       }
       currentAbort = new AbortController();
@@ -88,16 +93,18 @@ async function handleMessage(message: ParentMessage): Promise<void> {
           },
         );
         currentAbort = null;
-        send({ type: 'result', data: result });
+        send({ type: 'result', runId, data: result });
       } catch (error) {
         currentAbort = null;
         send({
           type: 'error',
+          runId,
           error: error instanceof Error ? error.message : String(error),
           code: 'RUN_FAILED',
         });
       }
       break;
+    }
     case 'abort':
       if (currentAbort) {
         currentAbort.abort();
@@ -145,6 +152,9 @@ rl.on('line', (line) => {
   handleMessage(message).catch((error) => {
     send({
       type: 'error',
+      // Carry the correlation id here too — an unhandled failure must settle
+      // the run it belongs to, not whichever run happens to be oldest.
+      runId: message.type === 'run' ? message.runId : undefined,
       error: error instanceof Error ? error.message : String(error),
       code: 'UNHANDLED',
     });

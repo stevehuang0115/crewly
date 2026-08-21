@@ -209,6 +209,96 @@ describe('WikiMigrateService.scan', () => {
     ).toBe(true);
   });
 
+  /**
+   * Issue #732 — memory-entry pages were proposed by scan but could never be
+   * APPLIED: `sourceFile` was built with the platform `path.join` (backslashes
+   * on Windows) and then re-parsed with a forward-slash-only regex, so every
+   * entry threw `memory_source_unparseable`. Scan-only coverage is what let
+   * this ship — these tests exercise the write path.
+   */
+  it('applies memory-entry pages instead of skipping them as unparseable', async () => {
+    await write(
+      '.crewly/agents/crewly-product-leo-xxx/memory.json',
+      JSON.stringify({
+        agentId: 'crewly-product-leo-xxx',
+        roleKnowledge: [
+          {
+            id: 'mem-1',
+            category: 'best-practice',
+            content: 'Atomic writes guard against state-corruption collapse.',
+            createdAt: '2026-05-04T00:00:00Z',
+          },
+        ],
+      }),
+      homeDir,
+    );
+
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok || !('applied' in out)) return;
+
+    const memoryPages = out.proposedPages.filter((p) => p.sourceType === 'memory-entry');
+    expect(memoryPages).toHaveLength(1);
+    expect(memoryPages[0].skipReason).toBeUndefined();
+    expect(out.applied).toBeGreaterThan(0);
+  });
+
+  it('re-reads memory sources from the injected homeDir, not the process home', async () => {
+    // Before the fix the re-read was hardcoded to os.homedir(), so an
+    // overridden `~` (tests, CREWLY_HOME installs) silently read the wrong
+    // tree — or nothing at all.
+    await write(
+      '.crewly/agents/agent-a/memory.json',
+      JSON.stringify({
+        roleKnowledge: [{ id: 'm-home', category: 'pattern', content: 'Scoped to injected home.' }],
+      }),
+      homeDir,
+    );
+
+    const out = await svc.apply({ projectRoot, homeDir });
+    expect(out.ok).toBe(true);
+    if (!out.ok || !('applied' in out)) return;
+
+    const page = out.proposedPages.find((p) => p.sourceId === 'm-home');
+    expect(page).toBeDefined();
+    const written = await fs.readFile(
+      path.join(page!.targetVaultPath, page!.targetRelativePath),
+      'utf8',
+    );
+    expect(written).toContain('Scoped to injected home.');
+  });
+
+  it('parses a Windows-style sourceFile recorded before the fix', async () => {
+    // Windows installs already persisted backslash paths; the parse must heal
+    // that existing backlog, not just avoid creating new ones.
+    await write(
+      '.crewly/agents/win-agent/memory.json',
+      JSON.stringify({
+        roleKnowledge: [{ id: 'm-win', category: 'pattern', content: 'Recorded on Windows.' }],
+      }),
+      homeDir,
+    );
+
+    const render = (
+      svc as unknown as {
+        renderForPage: (page: unknown, homeDir: string) => Promise<string>;
+      }
+    ).renderForPage.bind(svc);
+
+    const body = await render(
+      {
+        sourceType: 'memory-entry',
+        sourceFile: '~\\.crewly\\agents\\win-agent\\memory.json',
+        sourceId: 'm-win',
+        targetVaultPath: path.join(projectRoot, '.crewly', 'wiki'),
+        targetRelativePath: 'llm-curated/patterns/x.md',
+      },
+      homeDir,
+    );
+
+    expect(body).toContain('Recorded on Windows.');
+  });
+
   it('respects includeAgentMemory=false', async () => {
     await write(
       `.crewly/agents/x/memory.json`,

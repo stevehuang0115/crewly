@@ -11,6 +11,8 @@ import {
   reconcileRequestStatus,
   detectOrphanWorkItems,
   detectTTLExpiredWorkItems,
+  pickTTLExpiryTarget,
+  pickCascadeTarget,
   detectUnverifiedWorkItems,
   DEFAULT_VERIFY_ESCALATE_MS,
   VERIFY_ESCALATED_AT_KEY,
@@ -27,7 +29,11 @@ import {
 import type { AgentHealth } from './reconcile-rules.js';
 import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
 import type { WorkItem, WorkItemStatus, Request, TaskClaim } from '../../types/v2/index.js';
-import { WORK_ITEM_TRANSITIONS } from '../../types/v2/work-item.types.js';
+import {
+  WORK_ITEM_TRANSITIONS,
+  WORK_ITEM_STATUSES,
+  TERMINAL_WORK_ITEM_STATUSES,
+} from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -502,6 +508,441 @@ describe('detectTTLExpiredWorkItems', () => {
       expect(c.newState).toBe('cancelled');
     }
   });
+
+  // -------------------------------------------------------------------------
+  // Request 13548bd5 (2026-08-20 Orca audit) — the `done_by_worker` fix above
+  // was never applied to its siblings. `rejected` and `failed` are equally
+  // non-terminal, equally absent from TERMINAL_WORK_ITEM_STATUSES, and equally
+  // lack a `→ cancelled` edge — so the TTL rule emitted an illegal correction
+  // for them on EVERY pass, forever, exactly as it had for `done_by_worker`.
+  // -------------------------------------------------------------------------
+  describe('legal-target invariant (Request 13548bd5)', () => {
+    const staleAt = () => new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+
+    /**
+     * THE regression guard. Rather than enumerating the statuses that were
+     * broken when this was written, assert the INVARIANT over every status
+     * the type system knows about. A newly-added WorkItemStatus that has no
+     * legal terminal edge now fails this test at author time instead of
+     * throwing on every reconciler pass in production.
+     */
+    /**
+     * THE regression guard, in BOTH directions.
+     *
+     * An earlier version of this test only asserted that emitted corrections
+     * were legal. That is soundness alone — it passes just as happily if the
+     * picker returns null for everything, or if detectTTLExpiredWorkItems is
+     * gutted to return no corrections at all. A rule that does nothing is
+     * trivially never illegal.
+     *
+     * So the expectation is DERIVED from the transition table rather than
+     * hand-listed, and both halves are asserted: every status that HAS a
+     * legal terminal edge must emit exactly one correction (liveness), and
+     * every correction must be a legal terminal edge (soundness).
+     */
+    it('emits exactly the statuses with a legal terminal edge, and only legal edges', () => {
+      const emitted = new Map<WorkItemStatus, WorkItemStatus>();
+      const nonTerminal = WORK_ITEM_STATUSES.filter(
+        (st) => !TERMINAL_WORK_ITEM_STATUSES.has(st),
+      );
+      expect(nonTerminal.length).toBeGreaterThan(0);
+
+      for (const status of nonTerminal) {
+        const { corrections } = detectTTLExpiredWorkItems([
+          makeWorkItem({ status, createdAt: staleAt() }),
+        ]);
+        const hasTerminalEdge = [...WORK_ITEM_TRANSITIONS[status]]
+          .some((t) => TERMINAL_WORK_ITEM_STATUSES.has(t));
+
+        // Liveness — the rule must still DO something where it legally can.
+        expect(corrections).toHaveLength(hasTerminalEdge ? 1 : 0);
+        if (!hasTerminalEdge) continue;
+
+        // Soundness — what it does must be legal AND terminal.
+        const to = corrections[0].newState as WorkItemStatus;
+        expect(WORK_ITEM_TRANSITIONS[status].has(to)).toBe(true);
+        expect(TERMINAL_WORK_ITEM_STATUSES.has(to)).toBe(true);
+        emitted.set(status, to);
+      }
+
+      // Pin the exact shape so a silent widening or narrowing shows in the diff.
+      expect(Object.fromEntries(emitted)).toEqual({
+        queued: 'cancelled',
+        scheduled: 'cancelled',
+        proposed: 'cancelled',
+        accepted: 'cancelled',
+        running: 'cancelled',
+        blocked: 'cancelled',
+        escalated: 'cancelled',
+        done_by_worker: 'verified',
+      });
+      expect(emitted.has('rejected')).toBe(false);
+      expect(emitted.has('failed')).toBe(false);
+    });
+
+    it('skips TTL-expired `rejected` items instead of emitting `rejected → cancelled`', () => {
+      const stale = makeWorkItem({ status: 'rejected', createdAt: staleAt() });
+
+      const { corrections, expiredIds } = detectTTLExpiredWorkItems([stale]);
+
+      expect(corrections).toHaveLength(0);
+      expect(expiredIds).toHaveLength(0);
+    });
+
+    it('skips TTL-expired `failed` items instead of emitting `failed → cancelled`', () => {
+      const stale = makeWorkItem({ status: 'failed', createdAt: staleAt() });
+
+      const { corrections, expiredIds } = detectTTLExpiredWorkItems([stale]);
+
+      expect(corrections).toHaveLength(0);
+      expect(expiredIds).toHaveLength(0);
+    });
+
+    it('still sweeps healthy statuses when a skipped status is in the same batch', () => {
+      // Regression on the `continue` placement: a skipped item must not
+      // short-circuit the rest of the batch.
+      const items = [
+        makeWorkItem({ status: 'rejected', createdAt: staleAt() }),
+        makeWorkItem({ status: 'queued', createdAt: staleAt() }),
+        makeWorkItem({ status: 'failed', createdAt: staleAt() }),
+        makeWorkItem({ status: 'running', createdAt: staleAt() }),
+      ];
+
+      const { corrections, expiredIds } = detectTTLExpiredWorkItems(items);
+
+      expect(corrections).toHaveLength(2);
+      expect(expiredIds).toHaveLength(2);
+      expect(corrections.map((c) => c.previousState).sort())
+        .toEqual(['queued', 'running']);
+      for (const c of corrections) {
+        expect(c.newState).toBe('cancelled');
+      }
+    });
+  });
+
+  // Request 13548bd5 follow-through: the TTL rule was not the only site
+  // hardcoding `→ cancelled`. detectOrphanWorkItems and cascadeCancelChildren
+  // did too, reproducing the identical forever-throwing loop for orphaned
+  // children in `rejected` / `failed` / `done_by_worker`.
+  //
+  // The FIRST fix (469a3a21) routed both rules through `pickTTLExpiryTarget`.
+  // That stopped the throw but imported the TTL rule's time semantics, so a
+  // `done_by_worker` child was stamped `verified` the moment an unrelated
+  // ancestor died. These tests pin BOTH halves: the rule still fires where a
+  // cancel is legal (liveness), and it never emits a non-cancel outcome
+  // (soundness). A test that only checks "every emitted correction is legal"
+  // passes when the rule emits nothing at all — do not weaken these back to
+  // that shape.
+  describe('illegal-cancel guard in orphan + cascade rules', () => {
+    /** Non-terminal statuses that legally permit `→ cancelled`. */
+    const CANCELLABLE = WORK_ITEM_STATUSES.filter(
+      (st) => !TERMINAL_WORK_ITEM_STATUSES.has(st) && WORK_ITEM_TRANSITIONS[st].has('cancelled'),
+    );
+    /** Non-terminal statuses with NO `→ cancelled` edge — must be skipped. */
+    const NOT_CANCELLABLE = WORK_ITEM_STATUSES.filter(
+      (st) => !TERMINAL_WORK_ITEM_STATUSES.has(st) && !WORK_ITEM_TRANSITIONS[st].has('cancelled'),
+    );
+
+    /** Guards the table itself, so an empty sweep can never pass silently. */
+    it('the status table actually contains both cancellable and skippable statuses', () => {
+      expect(CANCELLABLE.length).toBeGreaterThan(0);
+      expect(NOT_CANCELLABLE.length).toBeGreaterThan(0);
+      // Pin today's shape so a transition-table edit surfaces here.
+      expect([...NOT_CANCELLABLE].sort()).toEqual(['done_by_worker', 'failed', 'rejected']);
+    });
+
+    const deadParent = () => makeWorkItem({
+      id: 'parent-dead', status: 'failed', retryCount: 3, maxRetries: 3,
+    });
+
+    it('detectOrphanWorkItems cancels every child whose status permits it (liveness)', () => {
+      const parent = deadParent();
+
+      for (const status of CANCELLABLE) {
+        const child = makeWorkItem({ status, parentWorkItemId: parent.id });
+        const map = new Map([[parent.id, parent], [child.id, child]]);
+        const { corrections, orphanIds } = detectOrphanWorkItems([child], map);
+
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0].previousState).toBe(status);
+        expect(corrections[0].newState).toBe('cancelled');
+        expect(orphanIds).toEqual([child.id]);
+      }
+    });
+
+    it('detectOrphanWorkItems emits nothing for a child with no legal cancel edge (soundness)', () => {
+      const parent = deadParent();
+
+      for (const status of NOT_CANCELLABLE) {
+        const child = makeWorkItem({ status, parentWorkItemId: parent.id });
+        const map = new Map([[parent.id, parent], [child.id, child]]);
+        const { corrections, orphanIds } = detectOrphanWorkItems([child], map);
+
+        expect(corrections).toEqual([]);
+        expect(orphanIds).toEqual([]);
+      }
+    });
+
+    it('detectOrphanWorkItems never emits an illegal transition for any non-terminal child', () => {
+      const nonTerminal = WORK_ITEM_STATUSES.filter(
+        (st) => !TERMINAL_WORK_ITEM_STATUSES.has(st),
+      );
+      const parent = deadParent();
+      let emitted = 0;
+
+      for (const status of nonTerminal) {
+        const child = makeWorkItem({ status, parentWorkItemId: parent.id });
+        const map = new Map([[parent.id, parent], [child.id, child]]);
+        const { corrections } = detectOrphanWorkItems([child], map);
+
+        for (const c of corrections) {
+          expect(WORK_ITEM_TRANSITIONS[status].has(c.newState as WorkItemStatus)).toBe(true);
+          emitted++;
+        }
+      }
+      // Liveness floor: without this the loop above is vacuously true.
+      expect(emitted).toBe(CANCELLABLE.length);
+    });
+
+    it('skips a rejected orphan rather than emitting rejected → cancelled', () => {
+      const parent = deadParent();
+      const child = makeWorkItem({ status: 'rejected', parentWorkItemId: parent.id });
+      const map = new Map([[parent.id, parent], [child.id, child]]);
+
+      const { corrections } = detectOrphanWorkItems([child], map);
+      expect(corrections).toHaveLength(0);
+    });
+
+    it('cascadeCancelChildren cancels every child whose status permits it (liveness)', () => {
+      for (const status of CANCELLABLE) {
+        const child = makeWorkItem({ status, parentWorkItemId: 'ancestor-1' });
+        const { corrections, cascadedIds } = cascadeCancelChildren(new Set(['ancestor-1']), [child]);
+
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0].previousState).toBe(status);
+        expect(corrections[0].newState).toBe('cancelled');
+        expect(cascadedIds).toEqual([child.id]);
+      }
+    });
+
+    it('cascadeCancelChildren emits nothing for a child with no legal cancel edge (soundness)', () => {
+      for (const status of NOT_CANCELLABLE) {
+        const child = makeWorkItem({ status, parentWorkItemId: 'ancestor-1' });
+        const { corrections, cascadedIds } = cascadeCancelChildren(new Set(['ancestor-1']), [child]);
+
+        expect(corrections).toEqual([]);
+        expect(cascadedIds).toEqual([]);
+      }
+    });
+
+    it('cascadeCancelChildren never emits an illegal transition for any non-terminal child', () => {
+      const nonTerminal = WORK_ITEM_STATUSES.filter(
+        (st) => !TERMINAL_WORK_ITEM_STATUSES.has(st),
+      );
+      let emitted = 0;
+
+      for (const status of nonTerminal) {
+        const child = makeWorkItem({ status, parentWorkItemId: 'ancestor-1' });
+        const { corrections } = cascadeCancelChildren(new Set(['ancestor-1']), [child]);
+
+        for (const c of corrections) {
+          expect(WORK_ITEM_TRANSITIONS[status].has(c.newState as WorkItemStatus)).toBe(true);
+          emitted++;
+        }
+      }
+      expect(emitted).toBe(CANCELLABLE.length);
+    });
+
+    it('still cascades a queued child (guard must not disable the rule)', () => {
+      const child = makeWorkItem({ status: 'queued', parentWorkItemId: 'ancestor-1' });
+      const { corrections } = cascadeCancelChildren(new Set(['ancestor-1']), [child]);
+
+      expect(corrections).toHaveLength(1);
+      expect(corrections[0].newState).toBe('cancelled');
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The defect this branch's second round exists to remove.
+  // -------------------------------------------------------------------------
+  describe('TTL time-semantics must not leak into orphan/cascade', () => {
+    /**
+     * `pickTTLExpiryTarget('done_by_worker') → 'verified'` is a deliberate
+     * TIME judgement: 24h with nobody objecting counts as implicit acceptance.
+     * Orphan and cascade have no time dimension — they fire the instant a dead
+     * ancestor is reconciled. Sharing the picker meant seconds-old, entirely
+     * unreviewed work was auto-accepted because something unrelated upstream
+     * failed.
+     */
+    it('a ~1s-old done_by_worker child under a permanently-failed parent produces NO correction', () => {
+      const parent = makeWorkItem({
+        id: 'parent-dead', status: 'failed', retryCount: 3, maxRetries: 3,
+      });
+      const child = makeWorkItem({
+        id: 'child-fresh',
+        status: 'done_by_worker',
+        parentWorkItemId: parent.id,
+        createdAt: new Date(Date.now() - 1000).toISOString(),
+      });
+      const map = new Map([[parent.id, parent], [child.id, child]]);
+
+      const { corrections, orphanIds } = detectOrphanWorkItems([child], map);
+
+      expect(corrections).toEqual([]);
+      expect(orphanIds).toEqual([]);
+      // The point of the regression: it must not be auto-accepted.
+      expect(corrections.map((c) => c.newState)).not.toContain('verified');
+    });
+
+    it('cascadeCancelChildren never auto-verifies a fresh done_by_worker descendant', () => {
+      const child = makeWorkItem({
+        id: 'child-fresh',
+        status: 'done_by_worker',
+        parentWorkItemId: 'ancestor-1',
+        createdAt: new Date(Date.now() - 1000).toISOString(),
+      });
+
+      const { corrections, cascadedIds } = cascadeCancelChildren(new Set(['ancestor-1']), [child]);
+
+      expect(corrections).toEqual([]);
+      expect(cascadedIds).toEqual([]);
+    });
+
+    it('a skipped done_by_worker child does not stop its cancellable sibling being cancelled', () => {
+      // Liveness guard on the `continue`: skipping one child must not abort
+      // the sweep for the rest of the generation.
+      const parent = makeWorkItem({
+        id: 'parent-dead', status: 'failed', retryCount: 3, maxRetries: 3,
+      });
+      const unreviewed = makeWorkItem({
+        id: 'child-dbw', status: 'done_by_worker', parentWorkItemId: parent.id,
+      });
+      const live = makeWorkItem({ id: 'child-running', status: 'running', parentWorkItemId: parent.id });
+      const map = new Map<string, WorkItem>([
+        [parent.id, parent], [unreviewed.id, unreviewed], [live.id, live],
+      ]);
+
+      const { corrections, orphanIds } = detectOrphanWorkItems([unreviewed, live], map);
+
+      expect(orphanIds).toEqual(['child-running']);
+      expect(corrections).toHaveLength(1);
+      expect(corrections[0].newState).toBe('cancelled');
+    });
+
+    it('a skipped done_by_worker child keeps its own descendants alive (no phantom ancestor)', () => {
+      // `cascadedIds` doubles as the next generation of dead ancestors. If a
+      // skipped child were pushed anyway, its grandchildren would be cancelled
+      // off a parent that was never cancelled.
+      const unreviewed = makeWorkItem({
+        id: 'child-dbw', status: 'done_by_worker', parentWorkItemId: 'ancestor-1',
+      });
+      const grandchild = makeWorkItem({
+        id: 'grandchild', status: 'running', parentWorkItemId: 'child-dbw',
+      });
+
+      const { corrections, cascadedIds } = cascadeCancelChildren(
+        new Set(['ancestor-1']),
+        [unreviewed, grandchild],
+      );
+
+      expect(cascadedIds).toEqual([]);
+      expect(corrections).toEqual([]);
+    });
+
+    it('cascade reason/evidence are DERIVED from the actual newState', () => {
+      // A `toContain(newState)` check is too weak to catch this: the old
+      // hardcoded "Cascade cancel: ancestor WorkItem was cancelled/failed"
+      // contains the substring "cancelled" by accident. Pin the derivation.
+      const child = makeWorkItem({ id: 'c1', status: 'running', parentWorkItemId: 'ancestor-1' });
+      const { corrections } = cascadeCancelChildren(new Set(['ancestor-1']), [child]);
+
+      const c = corrections[0];
+      expect(c.reason.startsWith(`Cascade ${c.newState}`)).toBe(true);
+      // Evidence must record the transition that was actually chosen.
+      expect(c.evidence).toContain(`${c.previousState} → ${c.newState}`);
+    });
+
+    it('orphan reason/evidence are DERIVED from the actual newState', () => {
+      const parent = makeWorkItem({
+        id: 'parent-dead', status: 'failed', retryCount: 3, maxRetries: 3,
+      });
+      const child = makeWorkItem({ id: 'c1', status: 'running', parentWorkItemId: parent.id });
+      const map = new Map([[parent.id, parent], [child.id, child]]);
+      const { corrections } = detectOrphanWorkItems([child], map);
+
+      const c = corrections[0];
+      expect(c.evidence.startsWith(`Orphan ${c.newState}`)).toBe(true);
+      expect(c.evidence).not.toContain('Cascade cancel');
+      // The reason still names the parent that caused it.
+      expect(c.reason).toContain(parent.id);
+    });
+  });
+
+  describe('pickCascadeTarget', () => {
+    it('returns `cancelled` or null for every status — never an accomplishment', () => {
+      for (const status of WORK_ITEM_STATUSES) {
+        const target = pickCascadeTarget(status);
+        expect(target === null || target === 'cancelled').toBe(true);
+        if (target === null) continue;
+        expect(WORK_ITEM_TRANSITIONS[status].has(target)).toBe(true);
+        expect(TERMINAL_WORK_ITEM_STATUSES.has(target)).toBe(true);
+      }
+    });
+
+    it('cancels the statuses a cascade legitimately owns (liveness)', () => {
+      expect(pickCascadeTarget('running')).toBe('cancelled');
+      expect(pickCascadeTarget('queued')).toBe('cancelled');
+      expect(pickCascadeTarget('blocked')).toBe('cancelled');
+      expect(pickCascadeTarget('escalated')).toBe('cancelled');
+    });
+
+    it('declines done_by_worker instead of auto-accepting it', () => {
+      expect(pickCascadeTarget('done_by_worker')).toBeNull();
+    });
+
+    it('declines rejected and failed, consistent with the TTL rule', () => {
+      expect(pickCascadeTarget('rejected')).toBeNull();
+      expect(pickCascadeTarget('failed')).toBeNull();
+    });
+
+    it('diverges from pickTTLExpiryTarget exactly where time semantics apply', () => {
+      // The whole reason the two pickers exist separately.
+      expect(pickTTLExpiryTarget('done_by_worker')).toBe('verified');
+      expect(pickCascadeTarget('done_by_worker')).toBeNull();
+      // Everywhere a cancel is legal they agree.
+      for (const status of WORK_ITEM_STATUSES) {
+        if (pickCascadeTarget(status) === 'cancelled') {
+          expect(pickTTLExpiryTarget(status)).toBe('cancelled');
+        }
+      }
+    });
+  });
+
+  describe('pickTTLExpiryTarget', () => {
+    it('returns a legal, strictly-terminal target or null for every status', () => {
+      for (const status of WORK_ITEM_STATUSES) {
+        const target = pickTTLExpiryTarget(status);
+        if (target === null) continue;
+        expect(WORK_ITEM_TRANSITIONS[status].has(target)).toBe(true);
+        expect(TERMINAL_WORK_ITEM_STATUSES.has(target)).toBe(true);
+      }
+    });
+
+    it('preserves the 2026-05-12 done_by_worker → verified behaviour', () => {
+      expect(pickTTLExpiryTarget('done_by_worker')).toBe('verified');
+    });
+
+    it('prefers `cancelled` over `done` for `running` (timeout is not completion)', () => {
+      // `running` permits both. A TTL sweep must never mark work as `done`.
+      expect(pickTTLExpiryTarget('running')).toBe('cancelled');
+    });
+
+    it('returns null for statuses whose only outbound edge is non-terminal', () => {
+      // `failed → queued` is the retry edge and is genuinely live; there is
+      // no terminal edge, so TTL must decline rather than invent one.
+      expect(pickTTLExpiryTarget('failed')).toBeNull();
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -697,7 +1138,9 @@ describe('runPruningPass', () => {
     ];
 
     const result = runPruningPass(workItems, 24 * 3600000, 60 * 60 * 1000);
-    expect(result.ttlExpiredCount).toBe(1);
+    // ttl-1 is `queued`, so its TTL target is `cancelled` — real cleanup.
+    expect(result.ttlCancelledCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.orphanCancelledCount).toBe(1);
     // stale-1 is stale (2h old), ttl-1 is also queued and old (25h) so it's also stale
     expect(result.staleQueuedCount).toBe(2);
@@ -711,7 +1154,8 @@ describe('runPruningPass', () => {
     ];
 
     const result = runPruningPass(workItems);
-    expect(result.ttlExpiredCount).toBe(0);
+    expect(result.ttlCancelledCount).toBe(0);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.orphanCancelledCount).toBe(0);
     expect(result.cascadeCancelledCount).toBe(0);
     expect(result.staleQueuedCount).toBe(0);
@@ -759,6 +1203,115 @@ describe('runPruningPass', () => {
 
     const result = runPruningPass([parent, child]);
     expect(result.orphanCancelledCount).toBe(1);
+  });
+
+  it('never emits a `verified` correction from the orphan or cascade rules', () => {
+    // `verified` may only ever originate from the TTL rule's 24h
+    // implicit-acceptance fallback. Anything else is unreviewed work being
+    // rubber-stamped. Pin it at the aggregate level so a future rule wired
+    // into the pruning pass cannot reintroduce it unnoticed.
+    const deadParent = makeWorkItem({
+      id: 'dead', status: 'failed', retryCount: 3, maxRetries: 3,
+    });
+    const items: WorkItem[] = [deadParent];
+    for (const status of WORK_ITEM_STATUSES) {
+      items.push(makeWorkItem({ id: `child-${status}`, status, parentWorkItemId: 'dead' }));
+    }
+
+    const result = runPruningPass(items);
+    // Fresh items, so nothing is TTL-expired — every correction here comes
+    // from orphan/cascade, and none of them may be an accomplishment.
+    expect(result.ttlCancelledCount).toBe(0);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
+    expect(result.totalCorrections.length).toBeGreaterThan(0);
+    for (const c of result.totalCorrections) {
+      expect(c.newState).toBe('cancelled');
+    }
+  });
+
+  it('a TTL auto-verified parent does not cascade-cancel its children', () => {
+    // `detectTTLExpiredWorkItems` emits `done_by_worker → verified` after 24h.
+    // Seeding the cascade set from the raw expired-id list treated that
+    // ACCEPTED parent as a dead ancestor and killed its live children —
+    // the same "cancelled off a parent that was never cancelled" defect.
+    const now = Date.now();
+    const parent = makeWorkItem({
+      id: 'accepted-parent',
+      status: 'done_by_worker',
+      createdAt: new Date(now - 25 * 3600000).toISOString(),
+    });
+    const child = makeWorkItem({ id: 'live-child', status: 'running', parentWorkItemId: 'accepted-parent' });
+
+    const result = runPruningPass([parent, child]);
+
+    // Liveness: the TTL rule still acted on the parent — as an ACCEPTANCE,
+    // which must never be reported under a cancellation counter.
+    expect(result.ttlAutoVerifiedCount).toBe(1);
+    expect(result.ttlCancelledCount).toBe(0);
+    const parentCorrection = result.totalCorrections.find((c) => c.entityId === 'accepted-parent');
+    expect(parentCorrection?.newState).toBe('verified');
+    // Soundness: the child was NOT cascaded off it.
+    expect(result.cascadeCancelledCount).toBe(0);
+    expect(result.totalCorrections.find((c) => c.entityId === 'live-child')).toBeUndefined();
+  });
+
+  it('a TTL-cancelled parent still cascade-cancels its children', () => {
+    // Companion to the test above: filtering the seed set must not disable
+    // the genuine TTL → cascade chain.
+    const now = Date.now();
+    const parent = makeWorkItem({
+      id: 'ttl-dead-parent',
+      status: 'running',
+      createdAt: new Date(now - 25 * 3600000).toISOString(),
+    });
+    const child = makeWorkItem({ id: 'doomed-child', status: 'running', parentWorkItemId: 'ttl-dead-parent' });
+
+    const result = runPruningPass([parent, child]);
+
+    expect(result.ttlCancelledCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
+    expect(result.cascadeCancelledCount).toBe(1);
+    expect(result.totalCorrections.find((c) => c.entityId === 'doomed-child')?.newState)
+      .toBe('cancelled');
+  });
+
+  it('partitions TTL outcomes: a `done_by_worker → verified` item is NOT counted as a cancellation', () => {
+    // The two TTL outcomes are opposites: `running → cancelled` DISCARDS the
+    // work, `done_by_worker → verified` ACCEPTS it. The old single
+    // `ttlExpiredCount` (= expiredIds.length) reported both as one number,
+    // and the reconciler folded that into `ReconcileResult.staleItemsCleaned`
+    // — so accepted work was reported to operators as thrown away.
+    const now = Date.now();
+    const accepted = makeWorkItem({
+      id: 'ttl-accepted',
+      status: 'done_by_worker',
+      createdAt: new Date(now - 25 * 3600000).toISOString(),
+    });
+    const discarded = makeWorkItem({
+      id: 'ttl-discarded',
+      status: 'running',
+      createdAt: new Date(now - 25 * 3600000).toISOString(),
+    });
+
+    const result = runPruningPass([accepted, discarded]);
+
+    // Exactly one of each, in the counter that matches its semantics.
+    expect(result.ttlCancelledCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(1);
+    // Unrelated items, so no cascade noise inflating the cleanup total.
+    expect(result.orphanCancelledCount).toBe(0);
+    expect(result.cascadeCancelledCount).toBe(0);
+
+    // The counters must partition the TTL corrections exactly — nothing
+    // double-counted, nothing silently dropped.
+    const ttlCorrections = result.totalCorrections.filter(
+      (c) => c.entityId === 'ttl-accepted' || c.entityId === 'ttl-discarded',
+    );
+    expect(result.ttlCancelledCount + result.ttlAutoVerifiedCount).toBe(ttlCorrections.length);
+    expect(result.totalCorrections.find((c) => c.entityId === 'ttl-accepted')?.newState)
+      .toBe('verified');
+    expect(result.totalCorrections.find((c) => c.entityId === 'ttl-discarded')?.newState)
+      .toBe('cancelled');
   });
 });
 

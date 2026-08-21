@@ -540,6 +540,15 @@ export const CREWLY_AGENT_DEFAULTS = {
   /** Soft warning threshold in milliseconds — logs a warning but does not kill the request.
    *  Override via CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS env var. */
   MESSAGE_SOFT_WARNING_MS: Number(process.env.CREWLY_AGENT_MESSAGE_SOFT_WARNING_MS) || 240_000,
+  /** Grace period added on top of the agent's own run budget before the PARENT
+   *  gives up waiting on the child's IPC reply.
+   *
+   *  The child enforces the run budget itself and reports a clean error, so in
+   *  normal operation the parent timer never fires. It exists for the case the
+   *  child can no longer report at all — blocked event loop, broken stdout pipe,
+   *  SIGSTOP. The grace keeps the parent from racing the child and mislabelling
+   *  a normal in-budget timeout as a wedged runtime. */
+  IPC_RUN_TIMEOUT_GRACE_MS: 30_000,
   /** Cooldown period in milliseconds after rate limit retries are exhausted */
   RATE_LIMIT_COOLDOWN_MS: 300_000,
   /** Maximum number of automatic retries for recoverable errors (429, 5xx, network) */

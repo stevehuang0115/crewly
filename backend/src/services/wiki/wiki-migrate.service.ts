@@ -694,7 +694,7 @@ export class WikiMigrateService {
         continue;
       }
       try {
-        const finalRel = await this.writePage(page);
+        const finalRel = await this.writePage(page, homeDir);
         manifest.entries.push({
           sourceId: page.sourceId,
           contentHash: page.contentHash,
@@ -1310,7 +1310,11 @@ export class WikiMigrateService {
           migratedIds.has(id) || migratedHashes.has(hash) ? 'already migrated' : undefined;
         out.push({
           sourceType: 'memory-entry',
-          sourceFile: path.join('~/.crewly/agents', agentEntry.name, 'memory.json'),
+          // `path.posix` deliberately, NOT `path.join`: this is a synthetic
+          // display/identity string (it is re-parsed below, never handed to
+          // fs.*). Platform `join` rewrites the separators to `\` on Windows,
+          // which the re-parse then fails to read back — see issue #732.
+          sourceFile: path.posix.join('~/.crewly/agents', agentEntry.name, 'memory.json'),
           sourceId: id,
           contentHash: hash,
           targetVaultPath: vaultPath,
@@ -1332,9 +1336,12 @@ export class WikiMigrateService {
    * Write the proposed page's body to disk under the target vault.
    * Returns the FINAL relativePath written (with a suffix if a collision
    * forced one).
+   *
+   * @param page - The proposed page to write
+   * @param homeDir - Resolved `~` for re-reading home-scoped sources
    */
-  private async writePage(page: WikiMigrateProposedPage): Promise<string> {
-    const body = await this.renderForPage(page);
+  private async writePage(page: WikiMigrateProposedPage, homeDir: string): Promise<string> {
+    const body = await this.renderForPage(page, homeDir);
 
     // Special case: log.md — APPEND rather than overwrite/collide. The
     // log is shared across all imports and the page emitter writes a
@@ -1382,7 +1389,7 @@ export class WikiMigrateService {
    * — re-derive from the source on apply. This avoids duplicating large
    * blobs in API responses.
    */
-  private async renderForPage(page: WikiMigrateProposedPage): Promise<string> {
+  private async renderForPage(page: WikiMigrateProposedPage, homeDir: string): Promise<string> {
     // For simplicity we re-read the source and re-render. The hash will
     // re-match because the rendering is deterministic.
     // TODO(perf): cache the rendered bodies on the page object if scans
@@ -1453,11 +1460,15 @@ export class WikiMigrateService {
       }
       case 'memory-entry': {
         // sourceId is the entry id; re-find by scanning agent dirs.
-        const homeAgentsRoot = page.sourceFile.replace(/~\/\.crewly\/agents\/.*$/, '');
-        const home = homeAgentsRoot.startsWith('~/')
-          ? path.join(os.homedir(), '.crewly', 'agents')
-          : path.join(os.homedir(), '.crewly', 'agents');
-        const m = page.sourceFile.match(/agents\/([^/]+)\//);
+        // Honors the caller's homeDir — the scan side reads agents from
+        // `<homeDir>/.crewly/agents`, so re-reading from the process homedir
+        // would look in a different tree whenever `~` is overridden.
+        const home = path.join(homeDir, '.crewly', 'agents');
+        // Separator-agnostic on purpose: new rows are written posix-style, but
+        // Windows installs already persisted `~\.crewly\agents\<name>\…` rows
+        // before #732 was fixed. Accepting both heals that existing backlog
+        // instead of leaving it permanently unmigratable.
+        const m = page.sourceFile.match(/agents[/\\]([^/\\]+)[/\\]/);
         if (!m) throw new Error('memory_source_unparseable');
         const agentName = m[1];
         const raw = await fs.readFile(

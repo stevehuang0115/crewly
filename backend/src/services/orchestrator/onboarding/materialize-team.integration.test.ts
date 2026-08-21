@@ -84,6 +84,33 @@ describe('materializeTeam — REAL provisioning (integration)', () => {
     expect(workers.some((w) => Array.isArray(w.skillOverrides) && w.skillOverrides.length > 0)).toBe(true);
   });
 
+  /**
+   * Issue #729 — three stub teams leaked into the developer's REAL
+   * `~/.crewly/teams` during a verification run. The live path called
+   * `StorageService.getInstance()` with no argument, so it resolved the ambient
+   * CREWLY_HOME and ignored the injected `teamsDir` completely: injection was a
+   * half-truth that only governed the fallback stub write.
+   */
+  it('persists the live team under the INJECTED root, not the ambient home', async () => {
+    const scratchHome = path.join(TMP_HOME, 'injected-root');
+
+    const result = await materializeTeam(softwareRec, {
+      teamsDir: path.join(scratchHome, 'teams'),
+      projectFlagPath: path.join(scratchHome, 'onboarding-complete.json'),
+    });
+    expect(result.provisioned).toBe(true);
+
+    // The team directory landed under the injected root.
+    const entries = await fs.readdir(path.join(scratchHome, 'teams'));
+    expect(entries).toContain(result.teamId);
+
+    // …and NOT under the ambient CREWLY_HOME the singleton would have picked.
+    const ambientTeams = await fs
+      .readdir(path.join(TMP_HOME, 'teams'))
+      .catch(() => [] as string[]);
+    expect(ambientTeams).not.toContain(result.teamId);
+  });
+
   it('flips the onboarding flag with the live team id', async () => {
     const flagPath = path.join(TMP_HOME, 'flag-2.json');
     const result = await materializeTeam(softwareRec, {

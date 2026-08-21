@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, vi, type Mocked, type MockInstance } from 'vitest';
-import { AgentRunnerService, ToolCallLoopDetector } from './agent-runner.service.js';
+import { describe, it, expect, beforeEach, afterEach, vi, type Mocked, type MockInstance } from 'vitest';
+import { AgentRunnerService, AgentRunTimeoutError, ToolCallLoopDetector } from './agent-runner.service.js';
 import { ModelManager } from './model-manager.js';
 import { CrewlyApiClient } from './api-client.js';
-import type { CrewlyAgentConfig, SecurityPolicy, AuditEntry } from './types.js';
+import { CREWLY_AGENT_DEFAULTS, type CrewlyAgentConfig, type SecurityPolicy, type AuditEntry } from './types.js';
 
 describe('AgentRunnerService', () => {
   let runner: AgentRunnerService;
@@ -2352,4 +2352,138 @@ describe('B4 — DeepSeek tool_choice passthrough regression', () => {
       expect(runner.getConversationCount()).toBe(1);
     });
   });
+
+});
+
+/**
+ * Wall-clock run budget — the 假死 (silent-catatonia) guard.
+ *
+ * Regression cover for the production incident where a stalled model
+ * connection hung `await streamResult` forever. `MESSAGE_TIMEOUT_MS` and
+ * `MODEL_TIMEOUT_MS` existed as documented constants but nothing ever read
+ * them, so the orchestrator went silent for 12 days without a single log
+ * line. These tests assert the budget is actually ENFORCED, not merely
+ * declared.
+ */
+describe('AgentRunnerService run wall-clock budget', () => {
+  let runner: AgentRunnerService;
+  let mockGenerateText: vi.Mock<any>;
+  let mockModelManager: any;
+  let mockApiClient: any;
+
+  const baseConfig: CrewlyAgentConfig = {
+    model: { provider: 'anthropic', modelId: 'claude-sonnet-4-20250514', temperature: 0.3, maxTokens: 8192 },
+    maxSteps: 10,
+    sessionName: 'budget-session',
+    apiBaseUrl: 'http://localhost:8787',
+    systemPrompt: 'You are a test agent.',
+    maxHistoryMessages: 20,
+    compactionThreshold: 0.8,
+  };
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+
+    mockGenerateText = vi.fn<any>();
+    mockModelManager = {
+      getModel: vi.fn<any>().mockResolvedValue({ provider: 'mock', modelId: 'test-model' }),
+      getAvailableProviders: vi.fn<any>(),
+      clearCache: vi.fn<any>(),
+      consumeDeepseekReasoning: vi.fn<any>().mockResolvedValue(null),
+    };
+    mockApiClient = { get: vi.fn<any>(), post: vi.fn<any>(), delete: vi.fn<any>() };
+
+    runner = new AgentRunnerService(baseConfig, mockModelManager, mockApiClient);
+    runner._generateTextFn = mockGenerateText;
+    await runner.initialize();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+    it('rejects with AgentRunTimeoutError when the model never responds', async () => {
+      // A model call that never settles — exactly the stalled-socket shape.
+      mockGenerateText.mockImplementation(() => new Promise(() => {}));
+
+      const runPromise = runner.run('will stall');
+      const assertion = expect(runPromise).rejects.toBeInstanceOf(AgentRunTimeoutError);
+
+      await vi.advanceTimersByTimeAsync(CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS + 1);
+
+      await assertion;
+    });
+
+    it('does not wedge the queue — later messages still process after a timeout', async () => {
+      // THE regression: a hung run left `processing` true forever, so every
+      // subsequent message queued behind it and the agent went catatonic.
+      mockGenerateText.mockImplementationOnce(() => new Promise(() => {}));
+
+      const stalled = runner.run('will stall');
+      const stalledAssertion = expect(stalled).rejects.toBeInstanceOf(AgentRunTimeoutError);
+      await vi.advanceTimersByTimeAsync(CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS + 1);
+      await stalledAssertion;
+
+      expect(runner.isProcessing()).toBe(false);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'recovered',
+        toolCalls: [],
+        steps: [],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+
+      await expect(runner.run('after the stall')).resolves.toMatchObject({ text: 'recovered' });
+    });
+
+    it('does not retry a budget expiry (it spans the retries already)', async () => {
+      mockGenerateText.mockImplementation(() => new Promise(() => {}));
+
+      const runPromise = runner.run('will stall');
+      const assertion = expect(runPromise).rejects.toBeInstanceOf(AgentRunTimeoutError);
+      await vi.advanceTimersByTimeAsync(CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS + 1);
+      await assertion;
+
+      // One attempt only — a retried timeout would multiply the stall.
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    });
+
+    it('honors the per-model budget override for reasoning models', async () => {
+      const reasoningRunner = new AgentRunnerService(
+        { ...baseConfig, model: { ...baseConfig.model, modelId: 'deepseek-reasoner' } },
+        mockModelManager,
+        mockApiClient,
+      );
+      reasoningRunner._generateTextFn = mockGenerateText;
+      await reasoningRunner.initialize();
+      mockGenerateText.mockImplementation(() => new Promise(() => {}));
+
+      const runPromise = reasoningRunner.run('slow chain-of-thought');
+      const settled = vi.fn();
+      runPromise.then(settled, settled);
+
+      // Still alive at the default budget — the override must win.
+      await vi.advanceTimersByTimeAsync(CREWLY_AGENT_DEFAULTS.MESSAGE_TIMEOUT_MS + 1);
+      expect(settled).not.toHaveBeenCalled();
+
+      const assertion = expect(runPromise).rejects.toBeInstanceOf(AgentRunTimeoutError);
+      await vi.advanceTimersByTimeAsync(
+        CREWLY_AGENT_DEFAULTS.MODEL_TIMEOUT_MS['deepseek-reasoner'],
+      );
+      await assertion;
+    });
+
+    it('leaves a run that completes in time untouched', async () => {
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'fast enough',
+        toolCalls: [],
+        steps: [],
+        usage: { inputTokens: 1, outputTokens: 1 },
+        finishReason: 'stop',
+      });
+
+      await expect(runner.run('quick')).resolves.toMatchObject({ text: 'fast enough' });
+    });
 });

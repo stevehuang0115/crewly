@@ -954,4 +954,13 @@ describe('CloudClientService', () => {
       expect(service.getRelayToken()).toBe('relay-original');
     });
   });
+
+  describe('getRefreshToken', () => {
+    it('returns the refresh token set via connectLocal and null after disconnect', async () => {
+      service.connectLocal(CLOUD_URL, TOKEN, 'pro' as any, 'rt-12345');
+      expect(service.getRefreshToken()).toBe('rt-12345');
+      await service.disconnect();
+      expect(service.getRefreshToken()).toBeNull();
+    });
+  });
 });

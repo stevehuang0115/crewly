@@ -642,6 +642,14 @@ export class CloudClientService {
   }
 
   /**
+   * Get the persisted refresh token (long-lived), or null when absent.
+   * Used by mobile-pair so the phone can auto-renew its adopted session.
+   */
+  getRefreshToken(): string | null {
+    return this.refreshToken;
+  }
+
+  /**
    * Register a callback to be invoked whenever the access token is refreshed.
    * Used by BrowserProxyService to update its relay auth token in real-time.
    *

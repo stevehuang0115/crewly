@@ -381,6 +381,32 @@ describe('ChatGateway', () => {
       // Should succeed (ChatService doesn't throw for unknown convIds)
       expect(message).not.toBeNull();
     });
+
+    /**
+     * `source` is a closed enum (RECORD_TURN_SOURCES) and the audit
+     * discriminator for the turn. A caller once spread `source:'crewly-agent'`
+     * over it; the write then failed enum validation and the agent's reply was
+     * dropped AFTER the model had already produced it — the user just saw
+     * silence. Callers may add metadata; they may not redefine provenance.
+     */
+    it('keeps the canonical source even when a caller tries to override it', async () => {
+      const gateway = new ChatGateway(io as unknown as SocketIOServer);
+      await gateway.initialize();
+
+      const conv = await chatService.createNewConversation();
+
+      const message = await gateway.processNotifyMessage(
+        'session-override',
+        'Reply that must not be dropped',
+        conv.id,
+        { source: 'crewly-agent', extra: 'kept' }
+      );
+
+      expect(message).not.toBeNull();
+      expect(message?.metadata?.source).toBe('in-process-runtime');
+      // Non-reserved caller metadata still flows through.
+      expect(message?.metadata?.extra).toBe('kept');
+    });
   });
 
   // ===========================================================================
