@@ -6,7 +6,7 @@
 
 import { ReconcilerService } from './reconciler.service.js';
 import type { ReconcilerDataProvider } from './reconciler.service.js';
-import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
+import { createWorkItem, createRequest, createTaskClaim, isValidWorkItemTransition } from '../../types/v2/index.js';
 import type { WorkItem, Request, TaskClaim, ReconcileCorrection, WakeAction } from '../../types/v2/index.js';
 import type { AgentHealth } from './reconcile-rules.js';
 
@@ -506,6 +506,149 @@ describe('ReconcilerService', () => {
       const result = await service.runFull();
       expect(result.errors.length).toBeGreaterThan(0);
       expect(result.errors[0]).toContain('Write failed');
+    });
+
+    // ---------------------------------------------------------------------
+    // Request 13548bd5 (2026-08-20) — full-loop-cycle guard.
+    //
+    // The unit tests in reconcile-rules.test.ts prove the TTL picker never
+    // NAMES an illegal target. This proves the assembled loop never ATTEMPTS
+    // one: the provider below enforces the real WORK_ITEM_TRANSITIONS matrix
+    // and throws the exact error string TaskPoolService.transitionStatus
+    // throws, so any illegal correction surfaces in `result.errors`.
+    //
+    // Before the fix, the `rejected` and `failed` items in this pool each
+    // produced `Invalid status transition ... → cancelled` on EVERY pass,
+    // forever.
+    // ---------------------------------------------------------------------
+    it('applies a full reconcile cycle with zero Invalid status transition errors', async () => {
+      const staleAt = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+      const pool = [
+        makeWorkItem({ id: 'wi-rejected', status: 'rejected', createdAt: staleAt }),
+        // Retry-EXHAUSTED: detectRetryableFailedWorkItems deliberately
+        // ignores it, so this item reaches the TTL rule — the exact case that
+        // used to throw on every pass and strand the item forever.
+        makeWorkItem({
+          id: 'wi-failed', status: 'failed', createdAt: staleAt,
+          retryCount: 3, maxRetries: 3,
+        }),
+        makeWorkItem({ id: 'wi-dbw', status: 'done_by_worker', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-queued', status: 'queued', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-running', status: 'running', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-blocked', status: 'blocked', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-escalated', status: 'escalated', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-proposed', status: 'proposed', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-accepted', status: 'accepted', createdAt: staleAt }),
+        makeWorkItem({ id: 'wi-scheduled', status: 'scheduled', createdAt: staleAt }),
+      ];
+      const byId = new Map(pool.map((wi) => [wi.id, wi]));
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue(pool),
+        // Enforce the real state machine, exactly as TaskPoolService does.
+        applyCorrection: jest.fn(async (correction: any) => {
+          if (correction.entityType !== 'work_item') return;
+          const item = byId.get(correction.entityId);
+          if (!item) return;
+          if (!isValidWorkItemTransition(item.status, correction.newState)) {
+            throw new Error(
+              `Invalid status transition for WorkItem ${correction.entityId}: ` +
+              `${item.status} → ${correction.newState}`,
+            );
+          }
+          item.status = correction.newState;
+        }),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+
+      expect(result.errors.filter((e) => e.includes('Invalid status transition')))
+        .toEqual([]);
+      expect(result.errors).toEqual([]);
+
+      // The two audit-record statuses are left untouched by the sweeper...
+      expect(byId.get('wi-rejected')!.status).toBe('rejected');
+      expect(byId.get('wi-failed')!.status).toBe('failed');
+      // (a retry-ELIGIBLE failed item is a different path — the retry rule
+      // legally requeues it; see the dedicated case below.)
+      // ...while the genuinely stale in-flight work is still cleaned up.
+      expect(byId.get('wi-dbw')!.status).toBe('verified');
+    });
+
+    it('stays error-free across repeated passes (the bug recurred every pass)', async () => {
+      const staleAt = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+      const pool = [
+        makeWorkItem({ id: 'wi-rejected', status: 'rejected', createdAt: staleAt }),
+        makeWorkItem({
+          id: 'wi-failed', status: 'failed', createdAt: staleAt,
+          retryCount: 3, maxRetries: 3,
+        }),
+      ];
+      const byId = new Map(pool.map((wi) => [wi.id, wi]));
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue(pool),
+        applyCorrection: jest.fn(async (correction: any) => {
+          const item = byId.get(correction.entityId);
+          if (!item) return;
+          if (!isValidWorkItemTransition(item.status, correction.newState)) {
+            throw new Error(
+              `Invalid status transition for WorkItem ${correction.entityId}: ` +
+              `${item.status} → ${correction.newState}`,
+            );
+          }
+          item.status = correction.newState;
+        }),
+      });
+      service = new ReconcilerService(provider);
+
+      for (let pass = 0; pass < 3; pass++) {
+        const result = await service.runFull();
+        expect(result.errors).toEqual([]);
+      }
+      // Nothing to correct: both are terminal-for-practical-purposes audit
+      // records with no legal terminal edge. Previously each pass produced
+      // one doomed correction per item — 6 thrown errors across 3 passes.
+      expect(provider.applyCorrection).not.toHaveBeenCalled();
+    });
+
+    it('still auto-retries a retry-ELIGIBLE failed item (legal failed → queued)', async () => {
+      // Guard against over-correcting the fix: skipping `failed` in the TTL
+      // rule must not disable the genuine retry path.
+      const staleAt = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+      const wi = makeWorkItem({
+        id: 'wi-retryable', status: 'failed', createdAt: staleAt,
+        retryCount: 0, maxRetries: 3,
+      });
+      const byId = new Map([[wi.id, wi]]);
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        applyCorrection: jest.fn(async (correction: any) => {
+          const item = byId.get(correction.entityId);
+          if (!item) return;
+          if (!isValidWorkItemTransition(item.status, correction.newState)) {
+            throw new Error(
+              `Invalid status transition for WorkItem ${correction.entityId}: ` +
+              `${item.status} → ${correction.newState}`,
+            );
+          }
+          item.status = correction.newState;
+        }),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+
+      expect(result.errors).toEqual([]);
+      expect(provider.applyCorrection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          entityId: 'wi-retryable',
+          previousState: 'failed',
+          newState: 'queued',
+        }),
+      );
     });
   });
 

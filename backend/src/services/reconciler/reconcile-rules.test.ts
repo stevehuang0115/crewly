@@ -11,6 +11,7 @@ import {
   reconcileRequestStatus,
   detectOrphanWorkItems,
   detectTTLExpiredWorkItems,
+  pickTTLExpiryTarget,
   detectUnverifiedWorkItems,
   DEFAULT_VERIFY_ESCALATE_MS,
   VERIFY_ESCALATED_AT_KEY,
@@ -27,7 +28,11 @@ import {
 import type { AgentHealth } from './reconcile-rules.js';
 import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
 import type { WorkItem, WorkItemStatus, Request, TaskClaim } from '../../types/v2/index.js';
-import { WORK_ITEM_TRANSITIONS } from '../../types/v2/work-item.types.js';
+import {
+  WORK_ITEM_TRANSITIONS,
+  WORK_ITEM_STATUSES,
+  TERMINAL_WORK_ITEM_STATUSES,
+} from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -501,6 +506,111 @@ describe('detectTTLExpiredWorkItems', () => {
     for (const c of corrections) {
       expect(c.newState).toBe('cancelled');
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // Request 13548bd5 (2026-08-20 Orca audit) — the `done_by_worker` fix above
+  // was never applied to its siblings. `rejected` and `failed` are equally
+  // non-terminal, equally absent from TERMINAL_WORK_ITEM_STATUSES, and equally
+  // lack a `→ cancelled` edge — so the TTL rule emitted an illegal correction
+  // for them on EVERY pass, forever, exactly as it had for `done_by_worker`.
+  // -------------------------------------------------------------------------
+  describe('legal-target invariant (Request 13548bd5)', () => {
+    const staleAt = () => new Date(Date.now() - 25 * 3600 * 1000).toISOString();
+
+    /**
+     * THE regression guard. Rather than enumerating the statuses that were
+     * broken when this was written, assert the INVARIANT over every status
+     * the type system knows about. A newly-added WorkItemStatus that has no
+     * legal terminal edge now fails this test at author time instead of
+     * throwing on every reconciler pass in production.
+     */
+    it('never emits an illegal transition for ANY non-terminal status', () => {
+      const nonTerminal = WORK_ITEM_STATUSES.filter(
+        (s) => !TERMINAL_WORK_ITEM_STATUSES.has(s),
+      );
+      // Guard the guard: if this ever hits zero the loop below is vacuous.
+      expect(nonTerminal.length).toBeGreaterThan(0);
+
+      for (const status of nonTerminal) {
+        const stale = makeWorkItem({ status, createdAt: staleAt() });
+        const { corrections } = detectTTLExpiredWorkItems([stale]);
+
+        // Either we skip the item entirely, or the correction we emit is a
+        // legal edge per the state machine. Never anything else.
+        for (const c of corrections) {
+          expect(WORK_ITEM_TRANSITIONS[status].has(c.newState as WorkItemStatus))
+            .toBe(true);
+          expect(TERMINAL_WORK_ITEM_STATUSES.has(c.newState as WorkItemStatus))
+            .toBe(true);
+        }
+      }
+    });
+
+    it('skips TTL-expired `rejected` items instead of emitting `rejected → cancelled`', () => {
+      const stale = makeWorkItem({ status: 'rejected', createdAt: staleAt() });
+
+      const { corrections, expiredIds } = detectTTLExpiredWorkItems([stale]);
+
+      expect(corrections).toHaveLength(0);
+      expect(expiredIds).toHaveLength(0);
+    });
+
+    it('skips TTL-expired `failed` items instead of emitting `failed → cancelled`', () => {
+      const stale = makeWorkItem({ status: 'failed', createdAt: staleAt() });
+
+      const { corrections, expiredIds } = detectTTLExpiredWorkItems([stale]);
+
+      expect(corrections).toHaveLength(0);
+      expect(expiredIds).toHaveLength(0);
+    });
+
+    it('still sweeps healthy statuses when a skipped status is in the same batch', () => {
+      // Regression on the `continue` placement: a skipped item must not
+      // short-circuit the rest of the batch.
+      const items = [
+        makeWorkItem({ status: 'rejected', createdAt: staleAt() }),
+        makeWorkItem({ status: 'queued', createdAt: staleAt() }),
+        makeWorkItem({ status: 'failed', createdAt: staleAt() }),
+        makeWorkItem({ status: 'running', createdAt: staleAt() }),
+      ];
+
+      const { corrections, expiredIds } = detectTTLExpiredWorkItems(items);
+
+      expect(corrections).toHaveLength(2);
+      expect(expiredIds).toHaveLength(2);
+      expect(corrections.map((c) => c.previousState).sort())
+        .toEqual(['queued', 'running']);
+      for (const c of corrections) {
+        expect(c.newState).toBe('cancelled');
+      }
+    });
+  });
+
+  describe('pickTTLExpiryTarget', () => {
+    it('returns a legal, strictly-terminal target or null for every status', () => {
+      for (const status of WORK_ITEM_STATUSES) {
+        const target = pickTTLExpiryTarget(status);
+        if (target === null) continue;
+        expect(WORK_ITEM_TRANSITIONS[status].has(target)).toBe(true);
+        expect(TERMINAL_WORK_ITEM_STATUSES.has(target)).toBe(true);
+      }
+    });
+
+    it('preserves the 2026-05-12 done_by_worker → verified behaviour', () => {
+      expect(pickTTLExpiryTarget('done_by_worker')).toBe('verified');
+    });
+
+    it('prefers `cancelled` over `done` for `running` (timeout is not completion)', () => {
+      // `running` permits both. A TTL sweep must never mark work as `done`.
+      expect(pickTTLExpiryTarget('running')).toBe('cancelled');
+    });
+
+    it('returns null for statuses whose only outbound edge is non-terminal', () => {
+      // `failed → queued` is the retry edge and is genuinely live; there is
+      // no terminal edge, so TTL must decline rather than invent one.
+      expect(pickTTLExpiryTarget('failed')).toBeNull();
+    });
   });
 });
 

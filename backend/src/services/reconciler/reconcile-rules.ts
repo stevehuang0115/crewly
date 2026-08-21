@@ -25,6 +25,7 @@ import {
   isGracePeriodExceeded,
   TERMINAL_WORK_ITEM_STATUSES,
   TERMINAL_REQUEST_STATUSES,
+  WORK_ITEM_TRANSITIONS,
   createCorrection,
   DEFAULT_GRACE_PERIOD_MS,
 } from '../../types/v2/index.js';
@@ -362,38 +363,94 @@ export function detectOrphanWorkItems(
 // ---------------------------------------------------------------------------
 
 /**
- * Pick the legal terminal status for a TTL-expired WorkItem.
+ * Preference order used when choosing a TTL-expiry target.
  *
- * The reconciler's TTL rule used to unconditionally issue
- * `→ cancelled` corrections. That works for `queued` / `running` /
- * `blocked` / etc. — they all permit `→ cancelled` per
- * `WORK_ITEM_TRANSITIONS`. But `done_by_worker` only permits
- * `→ verified` and `→ rejected` (the work IS done from the worker's
- * point of view; auto-cancelling would lose audit trail). Same for
- * `proposed` (auto-acceptance after timeout is the right semantic).
+ * The picker walks this list and returns the first entry that is BOTH
+ * strictly terminal (per {@link TERMINAL_WORK_ITEM_STATUSES}) and a legal
+ * outbound edge from the WorkItem's current status (per
+ * {@link WORK_ITEM_TRANSITIONS}).
  *
- * Mirrors the `pickResolveTarget` helper in `request-sla.subscriber.ts`,
- * which makes the identical choice for SLA-timeout-resolved WIs.
- *
- * Dogfood symptom 2026-05-12: 10 stale `done_by_worker` WIs sat in
- * pool for 86+ hours. The TTL rule fired every minute, every attempt
- * failed with `Invalid status transition for WorkItem ...:
- * done_by_worker → cancelled`, the log filled with ERROR noise and
- * the WIs never cleaned up. Fix routes through this picker so the
- * correction target matches what the state machine accepts.
- *
- * @param current - Current non-terminal WI status
- * @returns Legal terminal status for TTL expiry
+ * `cancelled` is first because a TTL expiry is an abandonment, not an
+ * accomplishment. `verified` follows so `done_by_worker` — which has no
+ * `→ cancelled` edge — auto-approves rather than stranding: 24h of
+ * nobody objecting is treated as implicit acceptance. `done` is last and
+ * in practice unreachable (every status that permits `→ done` also
+ * permits `→ cancelled`), but is listed so the table stays total if a
+ * future status permits `→ done` alone.
  */
-function pickTTLExpiryTarget(current: WorkItemStatus): WorkItemStatus {
-  // done_by_worker has no `→ cancelled` edge — auto-approve via
-  // `verified` instead. Treat 24h-of-no-objection as implicit
-  // acceptance. The worker reported done; nobody pushed back.
-  if (current === 'done_by_worker') return 'verified';
-  // running has both `→ done` and `→ cancelled` — prefer `cancelled`
-  // for TTL since `done` should only come from an explicit completion
-  // event, not a timeout.
-  return 'cancelled';
+const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
+  'cancelled',
+  'verified',
+  'done',
+] as const;
+
+/**
+ * Pick a state-machine-legal terminal status for a TTL-expired WorkItem,
+ * or `null` when no legal terminal target exists.
+ *
+ * This picker is TABLE-DRIVEN off {@link WORK_ITEM_TRANSITIONS} rather
+ * than hardcoded per-status branches. That is deliberate: the hardcoded
+ * form has now caused the same production incident twice, because a fix
+ * applied to one status was never applied to its siblings.
+ *
+ * History — read this before "simplifying" it back:
+ *
+ * 1. Original form issued an unconditional `→ cancelled` correction.
+ *    That is legal from `queued` / `scheduled` / `accepted` / `running` /
+ *    `blocked` / `escalated`, but NOT from `done_by_worker`, which only
+ *    permits `→ verified` / `→ rejected`.
+ * 2. Dogfood symptom 2026-05-12: 10 stale `done_by_worker` WIs sat in the
+ *    pool for 86+ hours. The TTL rule fired every minute, every attempt
+ *    threw `Invalid status transition for WorkItem ...: done_by_worker →
+ *    cancelled`, the log filled with ERROR noise, and the WIs were never
+ *    cleaned up. Fixed by special-casing `done_by_worker → verified`.
+ * 3. That fix was NOT applied to the siblings. `rejected` and `failed`
+ *    are also non-terminal, are also absent from
+ *    {@link TERMINAL_WORK_ITEM_STATUSES}, and also have no `→ cancelled`
+ *    edge — `failed → queued` is their only outbound edge. So the exact
+ *    same forever-throwing loop recurred for them (Request 13548bd5,
+ *    surfaced by the 2026-08-20 Orca audit).
+ *
+ * The table-driven form closes the whole bug class: a status can only
+ * receive a target the transition matrix actually permits, and a status
+ * with no legal terminal target is skipped rather than corrected into an
+ * exception. Adding a new {@link WorkItemStatus} can no longer silently
+ * reintroduce this — worst case the new status is skipped by TTL, which
+ * is inert, instead of throwing on every reconciler pass forever.
+ *
+ * `null` results (currently `rejected` and `failed`) are intentional and
+ * safe, NOT a leak:
+ * - `failed` has its own lifecycle — {@link detectRetryableFailedWorkItems}
+ *   re-queues it while retries remain, and `V3DataService.onTaskFailed`
+ *   escalates it to the orchestrator once the retry budget is spent.
+ * - `rejected` has its own lifecycle — `EventToWorkItemBridge`'s
+ *   `task:rejected` handler spawns either a retry WorkItem or a TL
+ *   escalation WorkItem; the source WI is meant to stay `rejected` as an
+ *   audit record.
+ * Neither needs the TTL sweeper, and forcing a target on either produces
+ * an illegal edge, not a cleanup.
+ *
+ * @param current - Current (non-terminal) WorkItem status
+ * @returns A legal terminal status for TTL expiry, or `null` when the
+ *   status has no legal terminal target and must be skipped
+ *
+ * @example
+ * ```typescript
+ * pickTTLExpiryTarget('running');        // 'cancelled'
+ * pickTTLExpiryTarget('done_by_worker'); // 'verified'
+ * pickTTLExpiryTarget('rejected');       // null  → skip, do not correct
+ * ```
+ */
+export function pickTTLExpiryTarget(current: WorkItemStatus): WorkItemStatus | null {
+  const legalTargets = WORK_ITEM_TRANSITIONS[current];
+  if (!legalTargets) return null;
+
+  for (const candidate of TTL_EXPIRY_TARGET_PREFERENCE) {
+    if (TERMINAL_WORK_ITEM_STATUSES.has(candidate) && legalTargets.has(candidate)) {
+      return candidate;
+    }
+  }
+  return null;
 }
 
 /**
@@ -403,6 +460,15 @@ function pickTTLExpiryTarget(current: WorkItemStatus): WorkItemStatus {
  * Picks a state-machine-legal terminal target for each expired WI via
  * {@link pickTTLExpiryTarget}, so the correction never fails with
  * `Invalid status transition`.
+ *
+ * Two categories are skipped without a correction:
+ * 1. Strictly terminal WIs ({@link TERMINAL_WORK_ITEM_STATUSES}) — already done.
+ * 2. WIs whose status has NO legal terminal target (picker returns `null`).
+ *    Emitting a correction for these is what produced the forever-throwing
+ *    reconciler loop in Request 13548bd5 — the correction was illegal, the
+ *    transition threw on every pass, and the item was never cleaned up.
+ *    Skipping is inert and correct: those statuses (`rejected`, `failed`)
+ *    own their own retry/escalation lifecycles. See {@link pickTTLExpiryTarget}.
  *
  * @param workItems - All non-terminal WorkItems to check
  * @param ttlMs - Maximum age before auto-cancel (default: 24h)
@@ -424,6 +490,9 @@ export function detectTTLExpiredWorkItems(
 
     if (age > ttlMs) {
       const target = pickTTLExpiryTarget(wi.status);
+      // No legal terminal edge from this status — skip rather than emit a
+      // correction the state machine will reject on every single pass.
+      if (target === null) continue;
       corrections.push(createCorrection({
         entityType: 'work_item',
         entityId: wi.id,
