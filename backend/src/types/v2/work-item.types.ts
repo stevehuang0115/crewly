@@ -158,6 +158,55 @@ export const TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> = new Set(
  * release based on the current WI state?", and use {@link TERMINAL_WORK_ITEM_STATUSES}
  * when answering "is the state machine done with this WI?".
  */
+/**
+ * Metadata key recording the last time a WorkItem was put back on the queue
+ * after a failure.
+ *
+ * Written by `TaskPoolService.requeueAfterFailure`. Read only through
+ * {@link getTtlAnchorAt} — call sites must not reach for it directly, so the
+ * "which timestamp does age mean?" decision stays in one place.
+ */
+export const LAST_REQUEUED_AT_METADATA_KEY = 'lastRequeuedAt';
+
+/**
+ * The timestamp that age-based expiry rules must measure from.
+ *
+ * `createdAt` answers "when was this work first asked for?" and is never
+ * mutated anywhere in the codebase — age metrics, ordering and postmortems all
+ * depend on that. It is therefore the wrong clock for a TTL, because a WorkItem
+ * that is legitimately retried is not stale merely because its *original*
+ * request is old.
+ *
+ * Using `createdAt` for TTL caused a live data-loss bug: a WorkItem that failed
+ * after the 24h TTL and was auto-retried by `detectRetryableFailedWorkItems`
+ * landed back in `queued` still carrying its original `createdAt`, so the very
+ * next reconciler pass (60s later) TTL-cancelled it. Every retry granted past
+ * the 24h mark was silently destroyed a minute after being granted.
+ *
+ * This function resolves the anchor instead: a requeued item's TTL window
+ * restarts from the requeue, while an item that has never been requeued keeps
+ * `createdAt` and behaves exactly as before.
+ *
+ * @param wi - The WorkItem whose age is being measured.
+ * @returns ISO-8601 timestamp to measure age from. Falls back to `createdAt`
+ *          when no requeue has happened, or when the stored value is not a
+ *          usable date (defensive: `metadata` is untyped and may be
+ *          round-tripped through storage by older writers).
+ *
+ * @example
+ * ```typescript
+ * const age = Date.now() - new Date(getTtlAnchorAt(wi)).getTime();
+ * ```
+ */
+export function getTtlAnchorAt(wi: Pick<WorkItem, 'createdAt' | 'metadata'>): string {
+  const raw = wi.metadata?.[LAST_REQUEUED_AT_METADATA_KEY];
+  if (typeof raw !== 'string') return wi.createdAt;
+  // Reject unparseable values rather than letting a NaN age silently disable
+  // (or instantly trip) the TTL rule for this item.
+  if (Number.isNaN(new Date(raw).getTime())) return wi.createdAt;
+  return raw;
+}
+
 export const SLA_TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> =
   new Set<WorkItemStatus>([
     'done',

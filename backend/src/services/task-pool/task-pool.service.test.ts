@@ -6,7 +6,10 @@
 
 import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
 import { PoolStorage } from './pool-storage.js';
-import { createWorkItem } from '../../types/v2/work-item.types.js';
+import {
+  createWorkItem,
+  LAST_REQUEUED_AT_METADATA_KEY,
+} from '../../types/v2/work-item.types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -1757,6 +1760,55 @@ describe('TaskPoolService', () => {
       // Oldest entries dropped — first kept is attempt 3.
       expect(history[0].reason).toBe('attempt 3');
       expect(history[9].reason).toBe('attempt 12');
+    });
+
+    it('stamps a TTL anchor so the granted retry gets a fresh expiry window', async () => {
+      // Without this, the reconciler's TTL rule keeps measuring from the
+      // original `createdAt` — so a WI whose work outlived the 24h TTL is
+      // cancelled on the next pass and the retry is destroyed on arrival.
+      // See getTtlAnchorAt in work-item.types.ts.
+      const before = Date.now();
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'agent crashed mid-task');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      const anchor = wi.metadata?.[LAST_REQUEUED_AT_METADATA_KEY];
+      expect(typeof anchor).toBe('string');
+      const anchorMs = new Date(anchor as string).getTime();
+      expect(Number.isNaN(anchorMs)).toBe(false);
+      expect(anchorMs).toBeGreaterThanOrEqual(before);
+      expect(anchorMs).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('leaves createdAt untouched — the anchor postpones TTL without rewriting history', async () => {
+      // `createdAt` feeds age metrics, ordering and postmortems. Overloading
+      // it to mean "time in current attempt" is how it silently breaks
+      // something nobody is looking at.
+      const wi = makeWorkItem({ target: 'agent-leo' });
+      await service.addToPool(wi);
+      const createdAtBefore = (await service.getAllItems()).find((x) => x.id === wi.id)!.createdAt;
+
+      await service.claimFromPool('agent-leo');
+      await service.failItem(wi.id, 'boom');
+      await service.requeueAfterFailure(wi.id, 'boom');
+
+      const after = (await service.getAllItems()).find((x) => x.id === wi.id)!;
+      expect(after.createdAt).toBe(createdAtBefore);
+    });
+
+    it('moves the anchor forward on each successive retry', async () => {
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'attempt 1');
+      const first = (await service.getAllItems()).find((x) => x.id === id)!
+        .metadata?.[LAST_REQUEUED_AT_METADATA_KEY] as string;
+
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'again');
+      await service.requeueAfterFailure(id, 'attempt 2');
+      const second = (await service.getAllItems()).find((x) => x.id === id)!
+        .metadata?.[LAST_REQUEUED_AT_METADATA_KEY] as string;
+
+      expect(new Date(second).getTime()).toBeGreaterThanOrEqual(new Date(first).getTime());
     });
 
     it('clears `error` field so a successful retry does not surface stale text', async () => {

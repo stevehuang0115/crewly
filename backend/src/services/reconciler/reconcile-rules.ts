@@ -28,6 +28,7 @@ import {
   WORK_ITEM_TRANSITIONS,
   createCorrection,
   DEFAULT_GRACE_PERIOD_MS,
+  getTtlAnchorAt,
 } from '../../types/v2/index.js';
 
 // ---------------------------------------------------------------------------
@@ -585,8 +586,12 @@ export function detectTTLExpiredWorkItems(
   for (const wi of workItems) {
     if (TERMINAL_WORK_ITEM_STATUSES.has(wi.status)) continue;
 
-    const createdAt = new Date(wi.createdAt).getTime();
-    const age = now - createdAt;
+    // Age is measured from the TTL anchor, not `createdAt`. For an item that
+    // has never been requeued these are the same value; for one that HAS been
+    // requeued after a failure, the retry gets a fresh TTL window instead of
+    // inheriting the original request's age. See {@link getTtlAnchorAt}.
+    const anchorAt = new Date(getTtlAnchorAt(wi)).getTime();
+    const age = now - anchorAt;
 
     if (age > ttlMs) {
       const target = pickTTLExpiryTarget(wi.status);
@@ -599,7 +604,9 @@ export function detectTTLExpiredWorkItems(
         previousState: wi.status,
         newState: target,
         reason: `WorkItem exceeded TTL of ${Math.round(ttlMs / 3600000)}h`,
-        evidence: `Created at ${wi.createdAt}, age=${Math.round(age / 3600000)}h`,
+        evidence:
+          `Created at ${wi.createdAt}, TTL measured from ${getTtlAnchorAt(wi)}, ` +
+          `age=${Math.round(age / 3600000)}h`,
       }));
       expiredIds.push(wi.id);
     }

@@ -19,7 +19,12 @@ import type {
   WorkItemType,
   WorkItemOwner,
 } from '../../types/v2/work-item.types.js';
-import { isWorkItem, isValidWorkItemTransition, isTransitionPermitted } from '../../types/v2/work-item.types.js';
+import {
+  isWorkItem,
+  isValidWorkItemTransition,
+  isTransitionPermitted,
+  LAST_REQUEUED_AT_METADATA_KEY,
+} from '../../types/v2/work-item.types.js';
 import {
   createTaskClaim,
   type TaskClaim,
@@ -1485,6 +1490,13 @@ export class TaskPoolService {
         lastFailureReason: reason,
         lastFailureAt: now,
         retryAttempt: wi.retryCount,
+        // TTL anchor (see getTtlAnchorAt). The age-based expiry rules must
+        // measure this retry's window from HERE, not from the original
+        // `createdAt` — otherwise a WorkItem that failed after the 24h TTL is
+        // TTL-cancelled on the next reconciler pass, silently destroying the
+        // retry we just granted. `createdAt` is deliberately left untouched so
+        // it keeps meaning "when this work was first asked for".
+        [LAST_REQUEUED_AT_METADATA_KEY]: now,
       };
       // Clear the error field so a successful retry doesn't surface a
       // stale error message; the metadata above keeps the history.

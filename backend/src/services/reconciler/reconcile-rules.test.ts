@@ -33,6 +33,7 @@ import {
   WORK_ITEM_TRANSITIONS,
   WORK_ITEM_STATUSES,
   TERMINAL_WORK_ITEM_STATUSES,
+  LAST_REQUEUED_AT_METADATA_KEY,
 } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -617,6 +618,82 @@ describe('detectTTLExpiredWorkItems', () => {
       for (const c of corrections) {
         expect(c.newState).toBe('cancelled');
       }
+    });
+
+    /**
+     * Data-loss regression: a granted retry must not be TTL-cancelled a
+     * minute after it is granted.
+     *
+     * Before the TTL anchor, age was measured from `createdAt`, which is
+     * never mutated — not by `requeueAfterFailure`, not by anything in the
+     * repo. So a WorkItem that ran for more than the 24h TTL, failed, and was
+     * legitimately auto-retried by `detectRetryableFailedWorkItems` landed
+     * back in `queued` still carrying its original `createdAt`. The very next
+     * reconciler pass (60s later) then saw a >24h-old `queued` item and
+     * cancelled it. The retry was destroyed before the agent could pick it up,
+     * and — because `→ cancelled` from `queued` is perfectly legal — it did so
+     * without a single error log.
+     *
+     * `maxRetries` was therefore unreachable for any WorkItem whose work
+     * outlived the TTL: every retry died on arrival.
+     */
+    describe('TTL anchor — a requeued item gets a fresh window (data-loss regression)', () => {
+      it('does NOT cancel a just-requeued item whose original createdAt is stale', () => {
+        const justRequeued = makeWorkItem({
+          status: 'queued',
+          createdAt: staleAt(), // first asked for 25h ago
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: new Date().toISOString() },
+        });
+
+        const { corrections, expiredIds } = detectTTLExpiredWorkItems([justRequeued]);
+
+        expect(corrections).toHaveLength(0);
+        expect(expiredIds).toHaveLength(0);
+      });
+
+      it('still cancels a requeued item once the NEW window itself expires', () => {
+        // Liveness: the anchor must postpone the TTL, never disable it.
+        // Without this half, "never cancel anything requeued" would pass.
+        const staleSinceRequeue = makeWorkItem({
+          status: 'queued',
+          createdAt: staleAt(),
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: staleAt() },
+        });
+
+        const { corrections, expiredIds } = detectTTLExpiredWorkItems([staleSinceRequeue]);
+
+        expect(expiredIds).toEqual([staleSinceRequeue.id]);
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0].newState).toBe('cancelled');
+      });
+
+      it('is inert for an item that has never been requeued', () => {
+        // The anchor must change nothing for the overwhelmingly common case.
+        const neverRequeued = makeWorkItem({ status: 'queued', createdAt: staleAt() });
+
+        const { corrections } = detectTTLExpiredWorkItems([neverRequeued]);
+
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0].previousState).toBe('queued');
+        expect(corrections[0].newState).toBe('cancelled');
+      });
+
+      it('reports which clock it actually measured, so the audit trail is not misleading', () => {
+        // The evidence string previously said only "Created at <createdAt>",
+        // which would now describe a different timestamp than the one the
+        // decision was made on.
+        const requeuedAt = staleAt();
+        const wi = makeWorkItem({
+          status: 'queued',
+          createdAt: new Date(Date.now() - 100 * 3600 * 1000).toISOString(),
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: requeuedAt },
+        });
+
+        const { corrections } = detectTTLExpiredWorkItems([wi]);
+
+        expect(corrections[0].evidence).toContain(requeuedAt);
+        expect(corrections[0].evidence).toContain('TTL measured from');
+      });
     });
   });
 
