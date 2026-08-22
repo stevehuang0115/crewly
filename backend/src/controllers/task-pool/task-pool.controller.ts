@@ -681,12 +681,15 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
 
     res.json({ success: true, message: `WorkItem ${workItemId} blocked` });
   } catch (error) {
-    const message = (error as Error).message;
-    if (message.includes('not found')) {
-      res.status(404).json({ success: false, error: message });
-    } else {
-      res.status(500).json({ success: false, error: message });
-    }
+    // Use the shared mapper rather than an inline not-found/500 split.
+    // `updateItemStatus` throws "Invalid status transition ..." when the item
+    // is not `running` (WORK_ITEM_TRANSITIONS allows `blocked` only from
+    // `running`). That is a CLIENT error — the caller asked for something the
+    // state machine forbids — and the inline catch reported it as a 500, so
+    // retry logic treated a permanent failure as transient and hammered it.
+    // handleServiceError maps `Invalid` to 409 Conflict, which is what a
+    // state-machine conflict is.
+    handleServiceError(res, error);
   }
 }
 
