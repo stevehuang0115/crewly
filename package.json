@@ -35,7 +35,7 @@
   "scripts": {
     "build": "npm run build:backend && npm run build:frontend && npm run build:cli",
     "build:server": "npm run build:backend && npm run build:cli",
-    "build:backend": "tsc -p backend/tsconfig.json",
+    "build:backend": "tsc -p backend/tsconfig.json && node dist/backend/backend/src/scripts/stamp-build.js",
     "build:frontend": "cd frontend && npm run build",
     "build:cli": "tsc -p cli/tsconfig.json",
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
