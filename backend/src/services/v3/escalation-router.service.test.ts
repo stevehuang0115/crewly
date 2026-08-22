@@ -240,6 +240,25 @@ describe('EscalationRouterService', () => {
       expect(written.summary).toContain('3 retries');
     });
 
+    // WI ece797e7 — the headline previously read `failed after
+    // ${wi.maxRetries} retries` regardless of how many attempts actually
+    // happened, while the DM body printed the truthful `Attempts: 0 / 3`
+    // two lines below. One escalation contradicted itself.
+    it('reports the ACTUAL attempt count, not maxRetries', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as {
+        atomicWriteJson: jest.Mock;
+      };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      await service.escalateFailedWorkItem(
+        makeFailedWI({ retryCount: 1, maxRetries: 3 }) as Parameters<typeof service.escalateFailedWorkItem>[0],
+        'timed out',
+      );
+
+      const [, written] = fileIo.atomicWriteJson.mock.calls[0];
+      expect(written.summary).toContain('1 of 3 retries');
+      expect(written.summary).not.toContain('after 3 retries');
+    });
+
     it('enqueues a structured message to ORC via MessageQueue', async () => {
       const service = EscalationRouterService.getInstance('/tmp/test');
       await service.escalateFailedWorkItem(makeFailedWI(), 'agent crashed');

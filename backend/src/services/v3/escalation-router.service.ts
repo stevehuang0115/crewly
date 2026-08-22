@@ -323,7 +323,7 @@ export class EscalationRouterService {
       status: 'pending',
       source: 'workitem_failed',
       target: 'orchestrator',
-      summary: `WorkItem "${wi.title}" failed after ${wi.maxRetries} retries`,
+      summary: `WorkItem "${wi.title}" failed after ${wi.retryCount} of ${wi.maxRetries} retries`,
       details: {
         workItemId: wi.id,
         title: wi.title,
@@ -380,7 +380,7 @@ export class EscalationRouterService {
     const safeError = sanitize(wi.error ?? reason, 2_000);
 
     const lines = [
-      `[ESCALATION] WorkItem failed after ${wi.maxRetries} retries — your decision needed.`,
+      `[ESCALATION] WorkItem failed after ${wi.retryCount} of ${wi.maxRetries} retries — your decision needed.`,
       '',
       `WorkItem: ${wi.id} "${safeTitle}"`,
       `Type:     ${wi.type}`,

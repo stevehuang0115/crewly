@@ -7,6 +7,7 @@
 
 import {
   detectStuckWorkItems,
+  detectRetryableFailedWorkItems,
   detectExpiredClaims,
   reconcileRequestStatus,
   detectOrphanWorkItems,
@@ -102,6 +103,39 @@ describe('detectStuckWorkItems', () => {
 
     const { stuckIds } = detectStuckWorkItems([wi], agentMap);
     expect(stuckIds).toContain(wi.id);
+  });
+
+  // WI ece797e7 — the two branches of this rule deliberately disagree, and
+  // that asymmetry is load-bearing enough to pin. The agent-dead branch
+  // respects the retry budget; the TIMEOUT branch does not, because
+  // `detectRetryableFailedWorkItems` is what retries a timed-out item.
+  // Routing timeouts to `blocked` instead would recover them through the
+  // agent-back-online rule and report "Agent is back online" for an agent
+  // that never left. What must NOT happen is escalating off the back of
+  // this `failed` — that gate lives in applyCorrection.
+  it('sets failed (not blocked) for a first-attempt timeout, and the retry rule then re-queues it', () => {
+    const oldStart = new Date(Date.now() - 700_000).toISOString();
+    const wi = makeWorkItem({
+      status: 'running',
+      type: 'project_task',
+      target: 'agent-alive',
+      startedAt: oldStart,
+      retryCount: 0,
+      maxRetries: 3,
+    });
+    const agentMap = makeAgentMap([['agent-alive', { status: 'active' }]]);
+
+    const { corrections } = detectStuckWorkItems([wi], agentMap);
+    expect(corrections).toHaveLength(1);
+    expect(corrections[0].newState).toBe('failed');
+
+    // The retry genuinely happens — this is why `failed` is the right
+    // target state and why escalating here would be a false alarm.
+    const failed = { ...wi, status: 'failed' as const };
+    const { corrections: retries } = detectRetryableFailedWorkItems([failed]);
+    expect(retries).toHaveLength(1);
+    expect(retries[0].newState).toBe('queued');
+    expect(retries[0].reason).toContain('attempt 1/3');
   });
 
   it('should detect timed-out WorkItems even with active agents', () => {
