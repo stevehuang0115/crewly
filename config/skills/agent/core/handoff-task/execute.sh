@@ -141,6 +141,13 @@ echo "Delivering handoff context to ${TO}..." >&2
 deliver_result=$(api_call POST "/terminal/${TO}/write" "$DELIVER_BODY" 2>/dev/null) || {
   # Retry with deliver endpoint (agent may need wake-up)
   DELIVER_BODY_V2=$(jq -n --arg message "$HANDOFF_MESSAGE" \
+    # waitTimeout 15000, matching delegate-task's initial attempt. Handoff
+    # targets a worker expected to be already running, so the same fail-fast
+    # budget applies.
+    #
+    # ORIGIN NOT ESTABLISHED (WI dae79289): no delivery constant carries this
+    # value, so there is nothing to mirror. Documented, deliberately not
+    # changed.
     '{message: $message, waitForReady: true, waitTimeout: 15000}')
   deliver_result=$(api_call POST "/terminal/${TO}/deliver" "$DELIVER_BODY_V2" 2>/dev/null) || {
     deliver_result='{"error":"delivery failed — target agent may be offline"}'
