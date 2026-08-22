@@ -49,6 +49,39 @@ Create a new task via the `/api/task-management/create` endpoint. This allows te
 | `--milestone` / `-m` | `milestone` | No | Milestone/sprint name (default: `delegated`) |
 | `--session` / `-s` | `sessionName` | No | Session to assign the task to (open if omitted) |
 | `--output-schema` | `outputSchema` | No | JSON object defining expected output schema |
+| `--owner` | `owner` | No | Responsible role: `orchestrator`, `team_lead`, `agent` (default), `system`. A role, not a session name — use `--session` for the session |
+| `--description` / `-d` | `description` | No | Short summary of the task |
+| `--brief` | `briefMarkdown` | No | Long-form brief in markdown. Inline text, or `@/path/to/file.md`. Max 16384 bytes |
+
+### Always attach a brief
+
+A task's title is not a contract. Every delegated task should carry **Goal**, **Expected Outcome**, and **Eval Criteria**
+— the receiving agent is expected to ask for them if they are missing, and a task without them tends to drift or come
+back unsatisfiable.
+
+Put them in `--brief`. Prefer the `@file` form: a real brief is usually too long, and too full of quotes and backticks,
+to survive being passed as a shell argument.
+
+```bash
+cat > /tmp/brief.md <<'EOF'
+## GOAL
+What the user ultimately wants.
+
+## EXPECTED OUTCOME
+What must be true when this is done.
+
+## EVAL CRITERIA
+1. Testable statement.
+2. Another one.
+EOF
+
+bash execute.sh --project-path /path/to/project --task "Implement login API" \
+  --description "Session-cookie auth for the web portal" \
+  --brief @/tmp/brief.md --session dev-max
+```
+
+An over-limit brief is **rejected, never truncated** — the error names the limit and your actual size, because what to
+cut is your call, not the tool's.
 
 ## Examples — CLI Flags (preferred)
 
