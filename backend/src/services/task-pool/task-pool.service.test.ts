@@ -912,6 +912,90 @@ describe('TaskPoolService', () => {
     });
 
     // -----------------------------------------------------------------
+    // WI 1bebd7ae — a terminal WorkItem must not keep an active claim.
+    //
+    // The SLA orphan-close path drives its own terminal transition because
+    // it can target cancelled/failed/rejected, which `failItem` cannot. It
+    // therefore has to release the claim itself. These tests pin the
+    // contract it depends on, against the real service.
+    // -----------------------------------------------------------------
+    describe('releaseClaim (WI 1bebd7ae)', () => {
+      it('leaves no active claim after the SLA orphan-close sequence', async () => {
+        // The exact sequence failOrphanRespondWi performs on a running WI:
+        // transition → releaseClaim → dispose.
+        const wi = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(wi);
+        const claimed = await service.claimFromPool('agent-leo');
+        expect(claimed).not.toBeNull();
+        expect(
+          await service.getClaimService().getActiveClaimByWorkItem(wi.id),
+        ).toBeDefined();
+
+        await service.transitionStatus(wi.id, 'failed', 'system');
+        await service.releaseClaim(wi.id, 'sla escalation timeout (from running)');
+
+        const after = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(after.status).toBe('failed');
+        expect(
+          await service.getClaimService().getActiveClaimByWorkItem(wi.id),
+        ).toBeUndefined();
+      });
+
+      it('stamps the end reason on the released claim for auditability', async () => {
+        const wi = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(wi);
+        const claimed = await service.claimFromPool('agent-leo');
+        const claimId = claimed!.claim.id;
+
+        await service.releaseClaim(wi.id, 'sla escalation timeout (from running)');
+
+        const claim = (await service.getClaimService().getClaimById(claimId))!;
+        expect(claim.status).toBe('released');
+        expect(claim.endReason).toBe('sla escalation timeout (from running)');
+        expect(claim.endedAt).toBeDefined();
+      });
+
+      it('unwedges the agent — a leaked claim hides all further work from them', async () => {
+        // This is what the leak actually costs, and the mechanism is worth
+        // stating exactly because it is quieter than a thrown error:
+        // `claimFromPool` checks `findActiveClaimByAgent` BEFORE it scans
+        // the pool, and short-circuits by returning the held claim with
+        // `alreadyHeld: true` (issue #513). So an agent holding a leaked
+        // claim is handed back the same TERMINAL WorkItem every time they
+        // poll, and never sees the queued work waiting for them. Nothing
+        // throws; it just silently looks like there is nothing new.
+        const stranded = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(stranded);
+        await service.claimFromPool('agent-leo');
+        await service.transitionStatus(stranded.id, 'failed', 'system');
+
+        const next = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(next);
+
+        const wedged = await service.claimFromPool('agent-leo');
+        expect(wedged).not.toBeNull();
+        expect(wedged!.alreadyHeld).toBe(true);
+        expect(wedged!.workItem.id).toBe(stranded.id);
+        expect(wedged!.workItem.status).toBe('failed');
+
+        // Releasing the terminal item's claim frees the agent to see it.
+        await service.releaseClaim(stranded.id, 'sla escalation timeout (from running)');
+        const recovered = await service.claimFromPool('agent-leo');
+        expect(recovered).not.toBeNull();
+        expect(recovered!.alreadyHeld).toBeFalsy();
+        expect(recovered!.workItem.id).toBe(next.id);
+      });
+
+      it('is a no-op when the item has no active claim', async () => {
+        const wi = makeWorkItem();
+        await service.addToPool(wi);
+        await expect(
+          service.releaseClaim(wi.id, 'nothing to release'),
+        ).resolves.toBeUndefined();
+      });
+    });
+
+    // -----------------------------------------------------------------
     // WI 25aadd30 — a release is an administrative event, not a failure.
     //
     // Before this fix `releaseBack` cleared `target` and incremented

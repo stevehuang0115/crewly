@@ -113,12 +113,20 @@ function buildFakeTaskPool(): {
   setStatus: (id: string, status: WorkItemStatus) => void;
   transitionCalls: Array<{ id: string; status: WorkItemStatus; actor: string }>;
   disposeCalls: Array<{ id: string; reason: string }>;
+  releaseCalls: Array<{ id: string; endReason: string }>;
 } {
   const stored = new Map<string, WorkItem>();
   const addCalls: WorkItem[] = [];
   const transitionCalls: Array<{ id: string; status: WorkItemStatus; actor: string }> = [];
   const disposeCalls: Array<{ id: string; reason: string }> = [];
+  const releaseCalls: Array<{ id: string; endReason: string }> = [];
   const taskPool = {
+    // The orphan-close path drives the terminal transition itself (it can
+    // target cancelled/failed/rejected, which `failItem` cannot), so it must
+    // release the claim explicitly or the claim leaks against a terminal WI.
+    releaseClaim: jest.fn(async (id: string, endReason: string) => {
+      releaseCalls.push({ id, endReason });
+    }),
     disposeFailedWorkItem: jest.fn(
       async (id: string, options: { reason: string }) => {
         disposeCalls.push({ id, reason: options.reason });
@@ -162,6 +170,7 @@ function buildFakeTaskPool(): {
     addCalls,
     transitionCalls,
     disposeCalls,
+    releaseCalls,
     setStatus: (id, status) => {
       const wi = stored.get(id);
       if (wi) wi.status = status;
@@ -811,7 +820,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       // No callback wired → no crash, escalateCalls empty.
       expect(escalateCalls).toHaveLength(0);
@@ -829,7 +838,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       const wiId = respondToUserWorkItemId(r.id);
       const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
@@ -862,7 +871,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       const wiId = respondToUserWorkItemId(r.id);
       const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
@@ -883,6 +892,111 @@ describe('RequestSlaSubscriber', () => {
      * canonical `WORK_ITEM_TRANSITIONS` matrix — so if the transition were
      * illegal, this test would throw rather than pass.
      */
+    // -----------------------------------------------------------------
+    // WI 1bebd7ae — the orphan-close path drives its own terminal
+    // transition, so it must release the active claim itself.
+    //
+    // It cannot delegate to `failItem`: that always transitions to
+    // `failed`, whereas this path targets `cancelled`, `failed` or
+    // `rejected` depending on the origin status. `disposeFailedWorkItem`
+    // (added by #740) does not help either — it owns disposition and
+    // touches no claims. So the claim was left `active` against a
+    // terminal WorkItem.
+    //
+    // The cost is not cosmetic: `ClaimService.createClaim` refuses a new
+    // claim while an agent holds an active one, so a leaked claim stops
+    // that agent taking ANY work until the lease/grace ladder revokes it.
+    // -----------------------------------------------------------------
+    describe('orphan close releases the active claim (WI 1bebd7ae)', () => {
+      it('releases the claim when the orphan WI is queued (→ cancelled)', async () => {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        jest.advanceTimersByTime(10_000);
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+        const wiId = respondToUserWorkItemId(r.id);
+        const released = pool.releaseCalls.filter((c) => c.id === wiId);
+        expect(released).toHaveLength(1);
+        expect(released[0].endReason).toContain('sla escalation timeout');
+        expect(released[0].endReason).toContain('queued');
+
+        const wi = await pool.taskPool.findWorkItem(wiId);
+        expect(wi?.status).toBe('cancelled');
+      });
+
+      it('releases the claim when the orphan WI is running (→ failed)', async () => {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        const wiId = respondToUserWorkItemId(r.id);
+        pool.setStatus(wiId, 'running');
+
+        jest.advanceTimersByTime(10_000);
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+        const released = pool.releaseCalls.filter((c) => c.id === wiId);
+        expect(released).toHaveLength(1);
+        expect(released[0].endReason).toContain('running');
+
+        const wi = await pool.taskPool.findWorkItem(wiId);
+        expect(wi?.status).toBe('failed');
+        // #740 disposition behaviour must be preserved, not traded away.
+        expect(pool.disposeCalls.filter((c) => c.id === wiId)).toHaveLength(1);
+      });
+
+      it('releases the claim after the transition but before disposition', async () => {
+        // Both halves of the ordering matter. Releasing only after the
+        // transition means a failed transition cannot free the claim on an
+        // item that is still running. Releasing before disposition means a
+        // requeued item never carries a stale active claim, which would make
+        // it unclaimable by anyone.
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        const calls: string[] = [];
+        const tp = pool.taskPool as unknown as {
+          releaseClaim: jest.Mock;
+          transitionStatus: jest.Mock;
+        };
+        tp.releaseClaim.mockImplementation(async () => {
+          calls.push('release');
+        });
+        const realTransition = tp.transitionStatus.getMockImplementation()!;
+        tp.transitionStatus.mockImplementation(async (...args: unknown[]) => {
+          calls.push('transition');
+          return realTransition(...args);
+        });
+
+        jest.advanceTimersByTime(10_000);
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+        expect(calls).toEqual(['transition', 'release']);
+      });
+
+      it('does not release a claim for an already-terminal WI', async () => {
+        // The early return still applies: nothing to close, nothing to release.
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        const wiId = respondToUserWorkItemId(r.id);
+        pool.setStatus(wiId, 'done');
+
+        jest.advanceTimersByTime(10_000);
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
+
+        expect(pool.releaseCalls.filter((c) => c.id === wiId)).toHaveLength(0);
+      });
+    });
+
     describe('EVAL 6 — the stranding condition, reproduced', () => {
       /** Arm a tracked Request whose WI has reached the given status. */
       async function escalateWith(status: WorkItemStatus): Promise<string> {
@@ -897,7 +1011,7 @@ describe('RequestSlaSubscriber', () => {
         pool.setStatus(wiId, status);
 
         jest.advanceTimersByTime(10_000);
-        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
         return wiId;
       }
 
@@ -979,7 +1093,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       const wiId = respondToUserWorkItemId(r.id);
       const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
@@ -1002,7 +1116,7 @@ describe('RequestSlaSubscriber', () => {
       pool.setStatus(wiId, 'running');
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
       expect(closeTransitions).toHaveLength(1);
@@ -1020,7 +1134,7 @@ describe('RequestSlaSubscriber', () => {
       pool.setStatus(wiId, 'cancelled');
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       // No additional transition recorded — already terminal.
       const closeTransitions = pool.transitionCalls.filter((c) => c.id === wiId);
@@ -1291,7 +1405,7 @@ describe('RequestSlaSubscriber', () => {
         // Nothing registered for this thread — fallback is a no-op.
         await sub.markResolvedByThread('5555555555.000000');
         jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
-        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
         expect(pool.transitionCalls).toHaveLength(0);
       });
@@ -1320,7 +1434,7 @@ describe('RequestSlaSubscriber', () => {
 
         await sub.markResolvedByThread('1772899923.865659');
         jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
-        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
         // No transitions: TERMINAL gate stops the cleanup.
         expect(pool.transitionCalls.filter((c) => c.id === 'wi-after-close')).toHaveLength(0);
@@ -1402,7 +1516,7 @@ describe('RequestSlaSubscriber', () => {
 
         // Advance past the 30s grace window — the deferred recheck fires.
         jest.advanceTimersByTime(31_000);
-        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
         // Recheck closes since no siblings linked.
         expect(svc.registry.get(r.id)?.status).toBe('done');
@@ -1444,7 +1558,7 @@ describe('RequestSlaSubscriber', () => {
         await svc.service.linkWorkItem(r.id, sibling.id);
 
         jest.advanceTimersByTime(31_000);
-        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+        for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
         // sibling-count gate suppresses close on the recheck pass.
         expect(svc.registry.get(r.id)?.status).toBe('running');
@@ -1534,7 +1648,7 @@ describe('RequestSlaSubscriber', () => {
       // Yield enough microtasks for handleRequestCreated to finish its
       // sync block (timer + tracking + index sets) and be parked on the
       // addToPool await.
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       // INVARIANT: tracking + index are populated even though the WI
       // hasn't been persisted yet.
@@ -1569,7 +1683,7 @@ describe('RequestSlaSubscriber', () => {
       bus.publish(buildEvent(r.id));
 
       // Drain into the addToPool-pending state.
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
       expect(sub.trackedCount).toBe(1);
 
       // Bridge fires the close while addToPool is still in flight.
@@ -1577,7 +1691,7 @@ describe('RequestSlaSubscriber', () => {
 
       // Drain microtasks: markResolved enters findWorkItemWithRetry and
       // is now awaiting the first 50ms tick.
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
       expect(pool.transitionCalls).toHaveLength(0); // not yet — WI absent
 
       // Release addToPool BEFORE the next retry tick fires. The next
@@ -1642,7 +1756,7 @@ describe('RequestSlaSubscriber', () => {
       expect(pool.transitionCalls).toHaveLength(0);
 
       jest.advanceTimersByTime(500);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       expect(pool.transitionCalls).toHaveLength(0);
       expect(sub.trackedCount).toBe(0);
@@ -1671,7 +1785,7 @@ describe('RequestSlaSubscriber', () => {
       const breachListener = jest.fn();
       bus.onInProcess('request:sla_breached', breachListener);
       jest.advanceTimersByTime(15_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
       expect(breachListener).not.toHaveBeenCalled();
       expect(escalateCalls).toHaveLength(0);
     });
@@ -2227,7 +2341,7 @@ describe('RequestSlaSubscriber', () => {
       await sub.flushPending();
 
       jest.advanceTimersByTime(10_000);
-      for (let i = 0; i < 5; i += 1) await Promise.resolve();
+      for (let i = 0; i < 12; i += 1) await Promise.resolve();
 
       // Slack DM callback is wired in this beforeEach but must NOT be
       // invoked for a chat-v2 source — chat-v2 has no DM-back analog yet.
