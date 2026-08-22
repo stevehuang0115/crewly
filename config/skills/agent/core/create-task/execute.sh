@@ -26,6 +26,7 @@ Options:
   --milestone    | -m   Milestone/sprint name (default: delegated)
   --session      | -s   Session to assign the task to (optional; if omitted, task is open)
   --output-schema       JSON string defining expected output schema (optional)
+  --owner               Responsible role: orchestrator, team_lead, agent, system (default: agent)
   --json         | -j   Raw JSON payload (same as legacy)
   --help         | -h   Show this help
 EOF_USAGE
@@ -38,6 +39,7 @@ PRIORITY=""
 MILESTONE=""
 SESSION_NAME=""
 OUTPUT_SCHEMA=""
+OWNER=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -69,6 +71,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --output-schema)
       OUTPUT_SCHEMA="$2"
+      shift 2
+      ;;
+    --owner)
+      OWNER="$2"
       shift 2
       ;;
     --json|-j)
@@ -111,52 +117,62 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$MILESTONE" ] && MILESTONE=$(printf '%s' "$INPUT" | jq -r '.milestone // empty')
   [ -z "$SESSION_NAME" ] && SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
   [ -z "$OUTPUT_SCHEMA" ] && OUTPUT_SCHEMA=$(printf '%s' "$INPUT" | jq -c '.outputSchema // empty')
+  [ -z "$OWNER" ] && OWNER=$(printf '%s' "$INPUT" | jq -r '.owner // empty')
 fi
 
 # Apply defaults
 PRIORITY="${PRIORITY:-medium}"
 MILESTONE="${MILESTONE:-delegated}"
+OWNER="${OWNER:-agent}"
 
 require_param "projectPath (--project-path)" "$PROJECT_PATH"
 require_param "task (--task)" "$TASK"
 
-# Build a V3 WorkItem for the task-pool.
-# `addToPool` accepts the WorkItem directly (id auto-generated server-side
-# when omitted). `priority` is mapped to V3's numeric priority scale where
-# critical=1, high=2, medium=3, low=4 — lower number = higher priority.
-case "$PRIORITY" in
-  critical) PRIORITY_NUM=1 ;;
-  high)     PRIORITY_NUM=2 ;;
-  medium)   PRIORITY_NUM=3 ;;
-  low)      PRIORITY_NUM=4 ;;
-  *)        PRIORITY_NUM=3 ;;
+# Validate `owner` against the WorkItemOwner enum the endpoint accepts.
+# This is the field, not the session name — `owner` answers "which role is
+# responsible for execution", and `target` answers "which session runs it".
+# Sending a session name here fails validation with
+# "owner must be one of: orchestrator, team_lead, agent, system".
+case "$OWNER" in
+  orchestrator|team_lead|agent|system) ;;
+  *) error_exit "owner must be one of: orchestrator, team_lead, agent, system (got: '$OWNER'). This is a role, not a session name — use --session/target for the session." ;;
 esac
 
-WI_ID="task-$(date +%s%N | cut -c1-13)-$$"
-
+# Build a minimal `CreateWorkItemInput` for `POST /task-pool/add`.
+#
+# The endpoint reads `req.body` DIRECTLY as the input — there is no
+# `{workItem: ...}` envelope. It accepts two shapes: this minimal input
+# (server fills id/status/createdAt/retryCount/...), or a legacy full
+# WorkItem carrying id AND status AND createdAt. We send the minimal shape,
+# matching `team-leader/delegate-task`.
+#
+# Deliberately NOT sent:
+#   - `id`     — this skill has no idempotency key worth preserving, so the
+#                server-generated uuid wins. (`CreateWorkItemInput.id` IS
+#                honoured when supplied; we simply have nothing stable to
+#                supply.)
+#   - `status` — derived server-side from dependsOn/scheduledAt.
+#   - top-level `priority` — NOT a WorkItem field; it is silently dropped by
+#                both body shapes. Priority travels in `metadata.priority`,
+#                which is what real pool items carry and what
+#                work-item-projection reads.
 WORK_ITEM=$(jq -n \
-  --arg id "$WI_ID" \
   --arg title "$TASK" \
   --arg target "$SESSION_NAME" \
-  --arg owner "${SESSION_NAME:-system}" \
+  --arg owner "$OWNER" \
   --arg projectPath "$PROJECT_PATH" \
   --arg milestone "$MILESTONE" \
-  --argjson priority "$PRIORITY_NUM" \
+  --arg priority "$PRIORITY" \
   '{
-    id: $id,
     title: $title,
     type: "delegate",
     owner: $owner,
-    priority: $priority,
-    status: "queued",
     target: (if $target == "" then null else $target end),
-    metadata: { projectPath: $projectPath, milestone: $milestone }
+    metadata: { projectPath: $projectPath, milestone: $milestone, priority: $priority }
   } | with_entries(select(.value != null))')
 
 if [ -n "$OUTPUT_SCHEMA" ] && [ "$OUTPUT_SCHEMA" != "" ]; then
   WORK_ITEM=$(printf '%s' "$WORK_ITEM" | jq --argjson schema "$OUTPUT_SCHEMA" '.metadata += {outputSchema: $schema}')
 fi
 
-BODY=$(jq -n --argjson workItem "$WORK_ITEM" '{workItem: $workItem}')
-
-api_call POST "/task-pool/add" "$BODY"
+api_call POST "/task-pool/add" "$WORK_ITEM"
