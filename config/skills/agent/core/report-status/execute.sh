@@ -235,17 +235,41 @@ api_call POST "/chat/agent-response" "$BODY"
 # `/task-management/complete{-by-session}` endpoints.
 #
 # Resolution order for which WorkItem to complete:
-#   1. `workItemId` in input (preferred — explicit reference)
-#   2. The agent's currently-running WI fetched from the pool
+#   1. `workItemId` in input — explicit, always wins. PASS THIS.
+#   2. Exactly one running WI for this session — inferred, and the resolved id
+#      is echoed so the caller can see what was closed.
+#   3. More than one running WI — REFUSED. The candidates are named and the
+#      caller must pass `workItemId`.
+#
+# Why (3) refuses instead of guessing: this block used to complete
+# `.data[0].id`, an arbitrary first running item. On 2026-08-21 that silently
+# closed WorkItem 7db3b00c — a queued piece of work nobody had started — while
+# the agent was reporting a DIFFERENT WI done. Nothing failed. The false
+# completion then spawned a verify WorkItem asking the orchestrator to verify a
+# delivery that had never happened, so one silent mis-close also consumed
+# downstream verification attention on fiction.
+#
+# Inferring from a single running claim is safe and stays. Inferring from
+# several is a coin flip on which real work gets destroyed.
 #
 # The legacy `taskPath` input is still accepted for backwards compatibility
 # but no longer drives the API call.
 if [ "$STATUS" = "done" ]; then
   TARGET_WI_ID="${WORK_ITEM_ID:-}"
+  WI_RESOLUTION="explicit"
+
   if [ -z "$TARGET_WI_ID" ]; then
-    # Fall back: query pool for this session's running WIs and complete the first match.
     POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
-    TARGET_WI_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
+    RUNNING_IDS=$(printf '%s' "$POOL_RESP" | jq -r '((.workItems // .data // []) | map(.id)) | .[]' 2>/dev/null || true)
+    RUNNING_COUNT=$(printf '%s' "$RUNNING_IDS" | grep -c . || true)
+
+    if [ "$RUNNING_COUNT" -gt 1 ]; then
+      CANDIDATES=$(printf '%s' "$RUNNING_IDS" | tr '\n' ' ')
+      error_exit "report-status refuses to guess which WorkItem to complete: ${RUNNING_COUNT} are running for ${SESSION_NAME} (${CANDIDATES}). Pass workItemId explicitly. Completing an arbitrary one silently closes work nobody did — and a false completion cascades into a verify WorkItem for a delivery that never happened."
+    fi
+
+    TARGET_WI_ID=$(printf '%s' "$RUNNING_IDS" | head -1)
+    WI_RESOLUTION="inferred"
   fi
 
   if [ -n "$TARGET_WI_ID" ]; then
@@ -258,7 +282,18 @@ if [ "$STATUS" = "done" ]; then
       --arg agentId "$SESSION_NAME" \
       --arg summary "$SUMMARY" \
       '{agentId: $agentId, result: {summary: $summary}}')
-    api_call POST "/task-pool/complete/${TARGET_WI_ID}" "$COMPLETE_BODY" || true
+    # No `|| true`. A swallowed failure here is the inverse of the bug above:
+    # report-status would announce success while the WorkItem stayed open, and
+    # that is equally invisible. Report what actually happened either way.
+    if COMPLETE_RESULT=$(api_call POST "/task-pool/complete/${TARGET_WI_ID}" "$COMPLETE_BODY" 2>&1); then
+      # Echo the resolved id even on the happy path. Silent-but-correct is how
+      # this class hides — the caller must be able to see WHICH item closed.
+      jq -n --arg id "$TARGET_WI_ID" --arg how "$WI_RESOLUTION" \
+        '{completedWorkItem: $id, resolvedBy: $how}' >&2
+    else
+      jq -n --arg id "$TARGET_WI_ID" --arg err "$COMPLETE_RESULT" \
+        '{warning: "status reported, but completing the WorkItem FAILED — it is still open", workItemId: $id, error: $err}' >&2
+    fi
   fi
 fi
 

@@ -203,7 +203,7 @@ fi
 
 TASK_MESSAGE="New task from Team Leader (priority: ${PRIORITY}):\n\n${TASK}"
 [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nContext: ${CONTEXT}"
-TASK_MESSAGE="${TASK_MESSAGE}\n\nWhen done, report back using: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"status\":\"done\",\"summary\":\"<brief summary>\"}'"
+TASK_MESSAGE="${TASK_MESSAGE}\n\nWhen done, report back with report-status, passing the workItemId from your [CREWLY-DISPATCH] notice: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"workItemId\":\"<your WorkItem id>\",\"status\":\"done\",\"summary\":\"<brief summary>\"}'"
 
 BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 15000}')
 api_call POST "/terminal/${TO}/deliver" "$BODY"

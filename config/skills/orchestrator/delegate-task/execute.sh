@@ -231,13 +231,13 @@ if [ "$USE_STRUCTURED" = "true" ] && [ -n "$TITLE" ]; then
 
   [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nAdditional context: ${CONTEXT}"
   [ -n "$DEADLINE_HINT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\n**Deadline hint**: ${DEADLINE_HINT}"
-  TASK_MESSAGE="${TASK_MESSAGE}\n\n---\nWhen done, report back using: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'"
+  TASK_MESSAGE="${TASK_MESSAGE}\n\n---\nWhen done, report back with report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"workItemId\":\"<your WorkItem id>\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'"
   TASK_MESSAGE="${TASK_MESSAGE}\n\nBefore reporting done, persist key findings using: bash ${CREWLY_ROOT}/config/skills/agent/core/remember/execute.sh '{\"agentId\":\"${TO}\",\"content\":\"<key findings>\",\"category\":\"pattern\",\"scope\":\"project\",\"projectPath\":\"${PROJECT_PATH}\"}'"
 else
   # Legacy free-text format (backwards compatible)
   TASK_MESSAGE="New task from orchestrator (priority: ${PRIORITY}):\n\n${TASK}"
   [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nContext: ${CONTEXT}"
-  TASK_MESSAGE="${TASK_MESSAGE}\n\nWhen done, report back using: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'"
+  TASK_MESSAGE="${TASK_MESSAGE}\n\nWhen done, report back with report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"workItemId\":\"<your WorkItem id>\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'"
   TASK_MESSAGE="${TASK_MESSAGE}\n\nBefore reporting done, persist key findings using: bash ${CREWLY_ROOT}/config/skills/agent/core/remember/execute.sh '{\"agentId\":\"${TO}\",\"content\":\"<key findings>\",\"category\":\"pattern\",\"scope\":\"project\",\"projectPath\":\"${PROJECT_PATH}\"}'"
 fi
 

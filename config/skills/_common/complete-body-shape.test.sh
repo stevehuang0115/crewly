@@ -132,6 +132,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type","application/json")
             self.end_headers()
+            # MULTI_RUNNING makes the pool report TWO running WorkItems, so the
+            # resolution in report-status becomes ambiguous and must refuse.
+            if os.path.exists(LOG + ".multi"):
+                self.wfile.write(b"{\"workItems\":[{\"id\":\"wi-stub-1\"},{\"id\":\"wi-stub-2\"}]}")
+                return
             # Top-level workItems shape — matches the jq fallback chain
             # in the skills (`.workItems[0].id // .data[0].id // empty`).
             self.wfile.write(b"{\"workItems\":[{\"id\":\"wi-stub-1\"}]}")
@@ -308,6 +313,48 @@ if grep -qF '"path": "/api/task-pool/complete/' "$LOG"; then
   FAIL=$((FAIL + 1)); echo "  ✗ completed the WorkItem anyway — rejection must happen BEFORE the POST"
 else
   PASS=$((PASS + 1)); echo "  ✓ no complete POST emitted — fails before mutating state"
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 6 — report-status WorkItem resolution (instance 11)
+#
+# report-status completed `.data[0].id` — an arbitrary first running WI. On
+# 2026-08-21 that silently closed WorkItem 7db3b00c, work nobody had started,
+# while the agent was reporting a DIFFERENT item done. Nothing failed, and the
+# false completion spawned a verify WI for a delivery that never happened.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 6: report-status resolution ---"
+
+# 6a — an explicit workItemId must win over anything the pool reports.
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/agent/core/report-status/execute.sh" \
+  --session quinn-res --status done --summary "Explicit workItemId resolution scenario" \
+  --project /tmp/proj-foo --work-item-id wi-explicit-9 >/dev/null 2>&1 || true
+if grep -qF '"path": "/api/task-pool/complete/wi-explicit-9"' "$LOG"; then
+  PASS=$((PASS + 1)); echo "  ✓ explicit workItemId is the one completed"
+else
+  ACTUAL=$(grep -oE '/api/task-pool/complete/[^"]*' "$LOG" | head -1)
+  FAIL=$((FAIL + 1)); echo "  ✗ expected wi-explicit-9 to be completed, got: ${ACTUAL:-none}"
+fi
+
+# 6b — the stub returns TWO running WIs, so inference is ambiguous. It must
+# REFUSE and complete nothing, naming the candidates.
+: > "$LOG"
+touch "${LOG}.multi"
+MULTI_OUT=$(bash "${REPO_ROOT}/config/skills/agent/core/report-status/execute.sh" \
+  --session quinn-res --status done --summary "Ambiguous resolution refusal scenario" \
+  --project /tmp/proj-foo 2>&1 || true)
+rm -f "${LOG}.multi"
+if grep -qF '"path": "/api/task-pool/complete/' "$LOG"; then
+  FAIL=$((FAIL + 1)); echo "  ✗ completed a WorkItem despite ambiguous resolution — this is the 7db3b00c bug"
+else
+  PASS=$((PASS + 1)); echo "  ✓ completes nothing when more than one WI is running"
+fi
+if printf '%s' "$MULTI_OUT" | grep -q "refuses to guess"; then
+  PASS=$((PASS + 1)); echo "  ✓ refusal explains why and tells the caller to pass workItemId"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ expected a refusal naming the ambiguity, got: ${MULTI_OUT}"
 fi
 
 echo ""
