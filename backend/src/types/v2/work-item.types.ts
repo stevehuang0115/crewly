@@ -251,10 +251,55 @@ export interface WorkItem {
    * TaskPoolService.blockItem (explicit worker block).
    */
   blockedReason?: string;
-  /** Number of retry attempts so far */
+  /**
+   * Number of FAILED attempts so far.
+   *
+   * SEMANTICS (deliberate, load-bearing): this counter means *failures
+   * only*. It is incremented by `requeueAfterFailure` — the path taken
+   * when work genuinely failed — and by nothing else. Consumers branch on
+   * `retryCount < maxRetries` to choose retry-in-place vs terminal-and-
+   * escalate, so anything that inflates it without a real failure takes
+   * live work terminal.
+   *
+   * In particular, an administrative release (lease expiry, claim revoke,
+   * reconciler requeue, an agent handing work back) is NOT a failure and
+   * MUST NOT touch this field — see {@link releaseCount}. Before
+   * 2026-08-21 `releaseBack` incremented it on every release, so an agent
+   * who simply went heads-down for longer than the lease accumulated
+   * retries it never earned and was driven to 3/3 with zero failures.
+   */
   retryCount: number;
   /** Maximum retries before permanent failure */
   maxRetries: number;
+  /**
+   * Number of administrative releases back to the pool (lease expiry,
+   * claim revoke, reconciler requeue, explicit hand-back).
+   *
+   * Purely diagnostic — deliberately kept SEPARATE from {@link retryCount}
+   * so release churn stays observable without being mistaken for failure.
+   * Nothing branches on this field; it exists so a release loop can be
+   * spotted without corrupting retry semantics.
+   *
+   * Optional for back-compat: items persisted before this field existed
+   * read as `undefined`, which callers treat as 0.
+   */
+  releaseCount?: number;
+  /**
+   * Provenance of {@link target} — how this item came to point at an agent.
+   *
+   * - `'assigned'` (or absent): a DELIBERATE assignment. A TL delegated the
+   *   work, or it was handed off explicitly. This survives a release: the
+   *   work still belongs to that agent.
+   * - `'claim'`: an incidental stamp. The item was a broadcast item with no
+   *   target, and `claimFromPool` / `claimSpecificItem` recorded whoever
+   *   picked it up. This must NOT survive a release — otherwise a single
+   *   claim would permanently bind broadcast work to one agent, and if that
+   *   agent died the item could only ever be re-claimed by a dead session.
+   *
+   * The distinction exists because "preserve the target on release" is
+   * correct for an assignment and actively harmful for a claim stamp.
+   */
+  targetSource?: 'assigned' | 'claim';
   /** Trigger ID that created or will wake this WorkItem */
   triggerId?: string;
   /** Link to ProjectTask (for durable project work) */

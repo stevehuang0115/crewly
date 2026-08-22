@@ -460,9 +460,14 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
 /**
  * Releases a claimed WorkItem back to the pool.
  *
+ * The item keeps its `target` by default — a release ends an attempt, it
+ * does not revoke an assignment. Pass `unassign: true` to also return the
+ * item to the unassigned pool, for the case where the caller genuinely
+ * means "someone else should take this".
+ *
  * Request body:
  * ```json
- * { "reason": "agent busy" }
+ * { "reason": "agent busy", "unassign": false }
  * ```
  *
  * @param req - Express request with workItemId param
@@ -471,7 +476,7 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
 export async function releaseItem(req: Request, res: Response): Promise<void> {
   try {
     const { workItemId } = req.params;
-    const { reason } = req.body as { reason?: string };
+    const { reason, unassign } = req.body as { reason?: string; unassign?: boolean };
 
     if (!workItemId) {
       res.status(400).json({ success: false, error: 'workItemId param is required' });
@@ -479,7 +484,9 @@ export async function releaseItem(req: Request, res: Response): Promise<void> {
     }
 
     const releaseReason = reason || 'released via API';
-    await getService().releaseBack(workItemId, releaseReason);
+    await getService().releaseBack(workItemId, releaseReason, {
+      unassign: unassign === true,
+    });
 
     res.json({ success: true, message: `WorkItem ${workItemId} released back to pool` });
   } catch (error) {

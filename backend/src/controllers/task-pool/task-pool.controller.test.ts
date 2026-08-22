@@ -267,10 +267,30 @@ describe('TaskPoolController', () => {
       const res = mockRes();
       await releaseItem(req, res);
 
-      expect(mockService.releaseBack).toHaveBeenCalledWith('wi-1', 'agent busy');
+      expect(mockService.releaseBack).toHaveBeenCalledWith('wi-1', 'agent busy', {
+        unassign: false,
+      });
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: 'WorkItem wi-1 released back to pool',
+      });
+    });
+
+    it('forwards an explicit unassign request', async () => {
+      // Un-assignment must be opt-in and explicit — never a silent side
+      // effect of releasing. See WI 25aadd30.
+      mockService.releaseBack.mockResolvedValue(undefined);
+
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { reason: 'agent declined', unassign: true },
+      });
+      const res = mockRes();
+
+      await releaseItem(req, res);
+
+      expect(mockService.releaseBack).toHaveBeenCalledWith('wi-1', 'agent declined', {
+        unassign: true,
       });
     });
 
@@ -284,7 +304,9 @@ describe('TaskPoolController', () => {
       const res = mockRes();
       await releaseItem(req, res);
 
-      expect(mockService.releaseBack).toHaveBeenCalledWith('wi-1', 'released via API');
+      expect(mockService.releaseBack).toHaveBeenCalledWith('wi-1', 'released via API', {
+        unassign: false,
+      });
     });
 
     it('returns 404 when item not found', async () => {
