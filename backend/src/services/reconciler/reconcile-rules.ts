@@ -28,7 +28,12 @@ import {
   WORK_ITEM_TRANSITIONS,
   createCorrection,
   DEFAULT_GRACE_PERIOD_MS,
+  getTtlAnchorAt,
 } from '../../types/v2/index.js';
+import {
+  DISPOSITION_REQUIRED_STATUSES,
+  isWorkItemDisposed,
+} from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Agent Health Types (abstraction over existing services)
@@ -585,8 +590,12 @@ export function detectTTLExpiredWorkItems(
   for (const wi of workItems) {
     if (TERMINAL_WORK_ITEM_STATUSES.has(wi.status)) continue;
 
-    const createdAt = new Date(wi.createdAt).getTime();
-    const age = now - createdAt;
+    // Age is measured from the TTL anchor, not `createdAt`. For an item that
+    // has never been requeued these are the same value; for one that HAS been
+    // requeued after a failure, the retry gets a fresh TTL window instead of
+    // inheriting the original request's age. See {@link getTtlAnchorAt}.
+    const anchorAt = new Date(getTtlAnchorAt(wi)).getTime();
+    const age = now - anchorAt;
 
     if (age > ttlMs) {
       const target = pickTTLExpiryTarget(wi.status);
@@ -599,7 +608,9 @@ export function detectTTLExpiredWorkItems(
         previousState: wi.status,
         newState: target,
         reason: `WorkItem exceeded TTL of ${Math.round(ttlMs / 3600000)}h`,
-        evidence: `Created at ${wi.createdAt}, age=${Math.round(age / 3600000)}h`,
+        evidence:
+          `Created at ${wi.createdAt}, TTL measured from ${getTtlAnchorAt(wi)}, ` +
+          `age=${Math.round(age / 3600000)}h`,
       }));
       expiredIds.push(wi.id);
     }
@@ -1345,6 +1356,89 @@ function countByStatus(statuses: string[]): Record<string, number> {
 // ---------------------------------------------------------------------------
 // Rule: Auto-Retry Failed WorkItems
 // ---------------------------------------------------------------------------
+
+/**
+ * Grace period before the safety net acts on an undisposed stranded item.
+ *
+ * The eager writers (the SLA subscriber, the bridge) dispose their own items
+ * within the same tick. This window lets them win the common case, so the
+ * reconciler only picks up the genuinely dropped ones — a writer that threw,
+ * a bridge whose source lookup came back empty, a retry id that collided with
+ * an already-terminal retry. Short enough that a real strand is caught within
+ * a couple of passes; long enough that the safety net is not racing the
+ * writers it exists to back up.
+ */
+export const DISPOSITION_GRACE_MS = 5 * 60 * 1000;
+
+/**
+ * Safety net: find `rejected`/`failed` WorkItems that nobody dealt with.
+ *
+ * This rule is the backstop, NOT the primary mechanism. The paths that park an
+ * item in a stranding status are each responsible for disposing of it eagerly
+ * (see `TaskPoolService.disposeFailedWorkItem`). This exists because some of
+ * them fail silently — the bridge creates no successor if its source lookup
+ * returns empty or its retry id collides with an already-terminal retry, and
+ * before this rule the resulting strand had no symptom at all: PR #733 correctly
+ * stopped the pruning rules from emitting illegal corrections for these
+ * statuses, which also removed the recurring error log that used to be the only
+ * way to notice.
+ *
+ * Deliberately returns items rather than corrections. A disposition is not a
+ * status change — the `terminal` outcome leaves the item exactly where it is
+ * and writes an audit record instead — so there is nothing for the correction
+ * pipeline to apply, and inventing a correction here would put an illegal edge
+ * back into a pipeline that was just cleaned of them. The caller performs the
+ * disposition through the funnel.
+ *
+ * Termination: every disposition either stamps the item (skipped forever after)
+ * or requeues it with `retryCount` bumped (bounded by `maxRetries`). The rule
+ * cannot re-fire indefinitely on the same item.
+ *
+ * @param workItems - The reconciler's WorkItem snapshot.
+ * @param graceMs   - Override for {@link DISPOSITION_GRACE_MS} (tests).
+ * @param now       - Injectable clock for deterministic tests.
+ * @returns The items needing disposition, oldest strand first.
+ *
+ * @example
+ * ```typescript
+ * const { items } = detectUndisposedStrandedWorkItems(workItems);
+ * for (const wi of items) await pool.disposeFailedWorkItem(wi.id, {...});
+ * ```
+ */
+export function detectUndisposedStrandedWorkItems(
+  workItems: WorkItem[],
+  graceMs: number = DISPOSITION_GRACE_MS,
+  now: number = Date.now(),
+): { items: WorkItem[] } {
+  const items: WorkItem[] = [];
+
+  for (const wi of workItems) {
+    if (!DISPOSITION_REQUIRED_STATUSES.has(wi.status)) continue;
+    // THE successor predicate: a local field read. The reverted 469a3a21 rule
+    // asked the same question by scanning other WorkItems and was wrong in
+    // both directions — see WorkItemDisposition's doc comment.
+    if (isWorkItemDisposed(wi)) continue;
+
+    // `completedAt` is set by transitionStatus for every stranding status, so
+    // it is when the item ENTERED the strand. Fall back to createdAt only if
+    // it is somehow absent.
+    const strandedSince = new Date(wi.completedAt ?? wi.createdAt).getTime();
+    if (Number.isNaN(strandedSince)) continue;
+    if (now - strandedSince < graceMs) continue;
+
+    items.push(wi);
+  }
+
+  // Oldest strand first: if a pass is interrupted, the longest-suffering items
+  // are the ones already dealt with.
+  items.sort(
+    (a, b) =>
+      new Date(a.completedAt ?? a.createdAt).getTime() -
+      new Date(b.completedAt ?? b.createdAt).getTime(),
+  );
+
+  return { items };
+}
 
 /**
  * Detects WorkItems in 'failed' status that still have remaining retries

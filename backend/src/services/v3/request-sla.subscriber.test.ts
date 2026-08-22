@@ -40,7 +40,13 @@ import {
   type WorkItem,
   type WorkItemStatus,
   WORK_ITEM_TRANSITIONS,
+  TERMINAL_WORK_ITEM_STATUSES,
+  SLA_TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
+import {
+  pickTTLExpiryTarget,
+  pickCascadeTarget,
+} from '../reconciler/reconcile-rules.js';
 import type { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { RequestService } from './request.service.js';
 
@@ -106,11 +112,19 @@ function buildFakeTaskPool(): {
   addCalls: WorkItem[];
   setStatus: (id: string, status: WorkItemStatus) => void;
   transitionCalls: Array<{ id: string; status: WorkItemStatus; actor: string }>;
+  disposeCalls: Array<{ id: string; reason: string }>;
 } {
   const stored = new Map<string, WorkItem>();
   const addCalls: WorkItem[] = [];
   const transitionCalls: Array<{ id: string; status: WorkItemStatus; actor: string }> = [];
+  const disposeCalls: Array<{ id: string; reason: string }> = [];
   const taskPool = {
+    disposeFailedWorkItem: jest.fn(
+      async (id: string, options: { reason: string }) => {
+        disposeCalls.push({ id, reason: options.reason });
+        return null;
+      },
+    ),
     addToPool: jest.fn(async (wi: WorkItem) => {
       // Real addToPool is idempotent; mimic by short-circuiting on duplicate id.
       if (stored.has(wi.id)) return;
@@ -147,6 +161,7 @@ function buildFakeTaskPool(): {
     taskPool,
     addCalls,
     transitionCalls,
+    disposeCalls,
     setStatus: (id, status) => {
       const wi = stored.get(id);
       if (wi) wi.status = status;
@@ -340,6 +355,67 @@ describe('pickFailTarget', () => {
       expect(allowed.has(to)).toBe(true);
     }
   });
+});
+
+/**
+ * Executable refutation of a claim that was load-bearing and untested.
+ *
+ * PR #733's description argued that `rejected` is "unreachable in production" —
+ * `verifyItem` has one production call site hardcoded to `'verified'`, there is
+ * no verify/reject route, and the TL `verify-output` skill never writes a
+ * verdict. All of that is true, and all of it is about `verifyItem`.
+ *
+ * `verifyItem` is not the only writer. {@link pickFailTarget} is the other one,
+ * and `RequestSlaSubscriber.failOrphanRespondWi` drives it via
+ * `taskPool.transitionStatus` directly — so `task:rejected` is never published
+ * and `EventToWorkItemBridge` never creates the successor WorkItem that the
+ * `verifyItem` route would have produced.
+ *
+ * A successor model built on "rejected cannot happen" would therefore be wrong
+ * in production and right in every test. These assertions exist so that stops
+ * being a prose argument in a merged PR body and becomes something CI can fail.
+ *
+ * Each `it` below is one link in the chain. They are deliberately *not* merged
+ * into a single test: when this breaks, the failing test name should say which
+ * link moved.
+ */
+describe('`rejected` reachability — the SLA escalation path (regression guard for PR #733)', () => {
+  it('link 1: the failOrphanRespondWi terminal guard does not stop a done_by_worker WI', () => {
+    // request-sla.subscriber.ts:~1508 short-circuits on SLA_TERMINAL_WORK_ITEM_STATUSES.
+    // done_by_worker is absent from that set, so the guard lets it through.
+    expect(SLA_TERMINAL_WORK_ITEM_STATUSES.has('done_by_worker')).toBe(false);
+  });
+
+  it('link 2: pickFailTarget turns that WI into `rejected`', () => {
+    expect(pickFailTarget('done_by_worker')).toBe('rejected');
+  });
+
+  it('link 3: done_by_worker → rejected is legal, so transitionStatus accepts the write', () => {
+    expect(WORK_ITEM_TRANSITIONS.done_by_worker.has('rejected')).toBe(true);
+  });
+
+  it('link 4: once `rejected`, the only outbound edge is `queued` — no terminal escape', () => {
+    // This is what makes it STRANDING rather than merely an unusual status:
+    // neither `rejected` nor `failed` can reach done/verified/cancelled, so
+    // nothing can close them out without first putting the work back in play.
+    expect([...WORK_ITEM_TRANSITIONS.rejected]).toEqual(['queued']);
+    expect([...WORK_ITEM_TRANSITIONS.failed]).toEqual(['queued']);
+    expect(TERMINAL_WORK_ITEM_STATUSES.has('rejected')).toBe(false);
+    expect(TERMINAL_WORK_ITEM_STATUSES.has('failed')).toBe(false);
+  });
+
+  it('link 5: and the reconciler correctly refuses to touch them, so nothing cleans up', () => {
+    // Post-#733 this is the CORRECT behaviour — emitting a correction here
+    // would be an illegal transition. It is asserted because it removes the
+    // only symptom this bug used to have: before #733 a >24h `rejected` WI
+    // threw `Invalid status transition` every 60s. The disease outlived the
+    // symptom, and the successor model is what actually treats it.
+    expect(pickTTLExpiryTarget('rejected')).toBeNull();
+    expect(pickTTLExpiryTarget('failed')).toBeNull();
+    expect(pickCascadeTarget('rejected')).toBeNull();
+    expect(pickCascadeTarget('failed')).toBeNull();
+  });
+
 });
 
 describe('closeRequestPath', () => {
@@ -793,6 +869,93 @@ describe('RequestSlaSubscriber', () => {
       expect(closeTransitions).toHaveLength(1);
       // queued WI → cancelled (legal); only running WIs go to failed.
       expect(closeTransitions[0].status).toBe('cancelled');
+    });
+
+    /**
+     * EVAL 6 — reproduce the STRANDING CONDITION itself.
+     *
+     * Not a reproduction of the 469a3a21 revert: that rule is gone and there is
+     * no live regression to re-run. What reproduces reliably is the underlying
+     * gap, and this is the path Victor named for it.
+     *
+     * Deterministic, no mocked internals: the subscriber's real 10-minute timer
+     * fires, `pickFailTarget` runs for real, and the fake pool enforces the
+     * canonical `WORK_ITEM_TRANSITIONS` matrix — so if the transition were
+     * illegal, this test would throw rather than pass.
+     */
+    describe('EVAL 6 — the stranding condition, reproduced', () => {
+      /** Arm a tracked Request whose WI has reached the given status. */
+      async function escalateWith(status: WorkItemStatus): Promise<string> {
+        const r = buildRequest();
+        svc.registry.set(r.id, r);
+        bus.publish(buildEvent(r.id));
+        await sub.flushPending();
+
+        const wiId = respondToUserWorkItemId(r.id);
+        // The tracker only clears on a VERIFIED_REPLY_REASON. An orc that
+        // reported done without one leaves the WI here when the timer fires.
+        pool.setStatus(wiId, status);
+
+        jest.advanceTimersByTime(10_000);
+        for (let i = 0; i < 5; i += 1) await Promise.resolve();
+        return wiId;
+      }
+
+      it('a done_by_worker WI is driven to `rejected` — the status #733 called unreachable', async () => {
+        const wiId = await escalateWith('done_by_worker');
+
+        const wi = await pool.taskPool.findWorkItem(wiId);
+        expect(wi?.status).toBe('rejected');
+      });
+
+      it('and no successor WorkItem is created, because the bridge never hears about it', async () => {
+        const before = pool.addCalls.length;
+        const wiId = await escalateWith('done_by_worker');
+
+        // This path writes via `transitionStatus` directly rather than
+        // `verifyItem`, so `task:rejected` is never published and
+        // `EventToWorkItemBridge` never builds the `${id}:retry:1` successor
+        // that the verifyItem route would have produced.
+        const newItems = pool.addCalls.slice(before);
+        expect(newItems.some((wi) => wi.id.startsWith(`${wiId}:retry:`))).toBe(false);
+      });
+
+      it('and the item it lands in cannot reach any terminal state — that is the strand', async () => {
+        await escalateWith('done_by_worker');
+
+        // The whole reason this is stranding rather than merely an unusual
+        // status: nothing can close it out without first putting the work back
+        // in play, and no rule does.
+        expect([...WORK_ITEM_TRANSITIONS.rejected]).toEqual(['queued']);
+        expect(TERMINAL_WORK_ITEM_STATUSES.has('rejected')).toBe(false);
+      });
+
+      it('THE FIX: the strand is handed to the disposition funnel', async () => {
+        const wiId = await escalateWith('done_by_worker');
+
+        expect(pool.disposeCalls).toHaveLength(1);
+        expect(pool.disposeCalls[0].id).toBe(wiId);
+        expect(pool.disposeCalls[0].reason).toContain('done_by_worker');
+      });
+
+      it('THE FIX: a running WI driven to `failed` is disposed too', async () => {
+        const wiId = await escalateWith('running');
+
+        const wi = await pool.taskPool.findWorkItem(wiId);
+        expect(wi?.status).toBe('failed');
+        expect(pool.disposeCalls.map((c) => c.id)).toEqual([wiId]);
+      });
+
+      it('but a `cancelled` close is NOT disposed — it is already strictly terminal', async () => {
+        // The common case: respond_to_user WIs are born `queued`, and
+        // pickFailTarget('queued') is 'cancelled'. Disposing that would be
+        // noise, and would imply a strand where there is none.
+        const wiId = await escalateWith('queued');
+
+        const wi = await pool.taskPool.findWorkItem(wiId);
+        expect(wi?.status).toBe('cancelled');
+        expect(pool.disposeCalls).toHaveLength(0);
+      });
     });
 
     it('still closes the orphan WI when the Slack DM callback throws', async () => {

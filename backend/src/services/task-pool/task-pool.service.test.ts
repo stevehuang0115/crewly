@@ -6,12 +6,23 @@
 
 import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
 import { PoolStorage } from './pool-storage.js';
-import { createWorkItem } from '../../types/v2/work-item.types.js';
+import {
+  createWorkItem,
+  LAST_REQUEUED_AT_METADATA_KEY,
+  getWorkItemDisposition,
+} from '../../types/v2/work-item.types.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 
 // Mock LoggerService
+const mockEscalateFailedWorkItem = jest.fn<Promise<string | null>, [unknown, string]>();
+jest.mock('../v3/escalation-router.service.js', () => ({
+  EscalationRouterService: {
+    getInstance: () => ({ escalateFailedWorkItem: mockEscalateFailedWorkItem }),
+  },
+}));
+
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
@@ -1759,6 +1770,55 @@ describe('TaskPoolService', () => {
       expect(history[9].reason).toBe('attempt 12');
     });
 
+    it('stamps a TTL anchor so the granted retry gets a fresh expiry window', async () => {
+      // Without this, the reconciler's TTL rule keeps measuring from the
+      // original `createdAt` — so a WI whose work outlived the 24h TTL is
+      // cancelled on the next pass and the retry is destroyed on arrival.
+      // See getTtlAnchorAt in work-item.types.ts.
+      const before = Date.now();
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'agent crashed mid-task');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      const anchor = wi.metadata?.[LAST_REQUEUED_AT_METADATA_KEY];
+      expect(typeof anchor).toBe('string');
+      const anchorMs = new Date(anchor as string).getTime();
+      expect(Number.isNaN(anchorMs)).toBe(false);
+      expect(anchorMs).toBeGreaterThanOrEqual(before);
+      expect(anchorMs).toBeLessThanOrEqual(Date.now());
+    });
+
+    it('leaves createdAt untouched — the anchor postpones TTL without rewriting history', async () => {
+      // `createdAt` feeds age metrics, ordering and postmortems. Overloading
+      // it to mean "time in current attempt" is how it silently breaks
+      // something nobody is looking at.
+      const wi = makeWorkItem({ target: 'agent-leo' });
+      await service.addToPool(wi);
+      const createdAtBefore = (await service.getAllItems()).find((x) => x.id === wi.id)!.createdAt;
+
+      await service.claimFromPool('agent-leo');
+      await service.failItem(wi.id, 'boom');
+      await service.requeueAfterFailure(wi.id, 'boom');
+
+      const after = (await service.getAllItems()).find((x) => x.id === wi.id)!;
+      expect(after.createdAt).toBe(createdAtBefore);
+    });
+
+    it('moves the anchor forward on each successive retry', async () => {
+      const id = await failOne('agent-leo');
+      await service.requeueAfterFailure(id, 'attempt 1');
+      const first = (await service.getAllItems()).find((x) => x.id === id)!
+        .metadata?.[LAST_REQUEUED_AT_METADATA_KEY] as string;
+
+      await service.claimFromPool('agent-leo');
+      await service.failItem(id, 'again');
+      await service.requeueAfterFailure(id, 'attempt 2');
+      const second = (await service.getAllItems()).find((x) => x.id === id)!
+        .metadata?.[LAST_REQUEUED_AT_METADATA_KEY] as string;
+
+      expect(new Date(second).getTime()).toBeGreaterThanOrEqual(new Date(first).getTime());
+    });
+
     it('clears `error` field so a successful retry does not surface stale text', async () => {
       const id = await failOne();
       await service.requeueAfterFailure(id, 'will retry');
@@ -1803,6 +1863,198 @@ describe('TaskPoolService', () => {
       expect(wi.status).toBe('queued');
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // disposeFailedWorkItem — the successor model funnel
+  // ---------------------------------------------------------------------------
+  describe('disposeFailedWorkItem', () => {
+    beforeEach(() => {
+      mockEscalateFailedWorkItem.mockClear();
+      mockEscalateFailedWorkItem.mockResolvedValue('esc-1');
+    });
+
+    /** Drive a WI to `failed` with a chosen amount of retry budget consumed. */
+    async function strandFailed(retriesUsed: number, maxRetries = 3): Promise<string> {
+      const wi = makeWorkItem({ target: 'agent-leo' });
+      wi.maxRetries = maxRetries;
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.failItem(wi.id, 'boom');
+      if (retriesUsed > 0) {
+        const found = (await service.getAllItems()).find((x) => x.id === wi.id)!;
+        found.retryCount = retriesUsed;
+      }
+      return wi.id;
+    }
+
+    it('retries in place while the budget lasts, and does NOT stamp', async () => {
+      const id = await strandFailed(0);
+
+      const disposition = await service.disposeFailedWorkItem(id, { reason: 'stranded' });
+
+      expect(disposition?.kind).toBe('retried_in_place');
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      expect(wi.status).toBe('queued');
+      expect(wi.retryCount).toBe(1);
+      // Not stamped on purpose: the item left the stranding statuses under its
+      // own power, and a stamp would describe a failure that is no longer the
+      // current one — which would make the safety net skip the NEXT strand.
+      expect(getWorkItemDisposition(wi)).toBeNull();
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('goes terminal once the budget is spent, escalating and stamping', async () => {
+      const id = await strandFailed(3, 3);
+
+      const disposition = await service.disposeFailedWorkItem(id, { reason: 'stranded' });
+
+      expect(disposition?.kind).toBe('terminal');
+      expect(disposition?.escalationId).toBe('esc-1');
+      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      // Deliberately still `failed`. Adding a `→ cancelled` edge so it could
+      // reach a strictly terminal status would re-open the illegal-correction
+      // surface PR #733 closed, and would turn a deliberate decision into a
+      // 24h auto-acceptance default. `failed` + an audit record IS the
+      // deliberate terminal state.
+      expect(wi.status).toBe('failed');
+      expect(getWorkItemDisposition(wi)?.kind).toBe('terminal');
+    });
+
+    it('records a real successor when the caller owns one', async () => {
+      const id = await strandFailed(0);
+
+      const disposition = await service.disposeFailedWorkItem(id, {
+        reason: 'bridge retry',
+        successorWorkItemId: `${id}:retry:1`,
+      });
+
+      expect(disposition?.kind).toBe('succeeded_by');
+      expect(disposition?.successorWorkItemId).toBe(`${id}:retry:1`);
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      // Source untouched — the successor carries the work now.
+      expect(wi.status).toBe('failed');
+      expect(wi.retryCount).toBe(0);
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('is idempotent — a second call returns the first disposition, no re-escalation', async () => {
+      const id = await strandFailed(3, 3);
+
+      const first = await service.disposeFailedWorkItem(id, { reason: 'stranded' });
+      const second = await service.disposeFailedWorkItem(id, { reason: 'stranded again' });
+
+      expect(second).toEqual(first);
+      // Re-entrancy is the termination argument: concurrent reconciler passes
+      // must converge rather than escalate twice.
+      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
+    });
+
+    it('terminates: repeated disposal walks the budget down, then stops retrying', async () => {
+      const id = await strandFailed(0, 2);
+
+      for (let i = 0; i < 2; i++) {
+        const d = await service.disposeFailedWorkItem(id, { reason: `pass ${i}` });
+        expect(d?.kind).toBe('retried_in_place');
+        await service.claimFromPool('agent-leo');
+        await service.failItem(id, 'boom again');
+      }
+
+      const final = await service.disposeFailedWorkItem(id, { reason: 'final' });
+      expect(final?.kind).toBe('terminal');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      expect(wi.retryCount).toBe(2);
+      expect(wi.maxRetries).toBe(2);
+    });
+
+    it('no-ops for a status that is not stranded', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi); // queued
+
+      expect(await service.disposeFailedWorkItem(wi.id, { reason: 'n/a' })).toBeNull();
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    /**
+     * Composition guard for #739 + the successor model.
+     *
+     * Neither PR proves this on its own: #739 proves a release moves
+     * `releaseCount`, and the funnel proves it branches on `retryCount`. What
+     * matters in production is the two together, because the funnel's
+     * `terminal` branch is destructive — it stops the work and escalates.
+     *
+     * Before #739 this was a live bug with a real incident behind it: four WIs
+     * were found at retryCount 3/3 having failed zero times, purely from lease
+     * lapses while their agents were heads-down. Run through this funnel, every
+     * one of them would have been read as "out of retries" and taken straight
+     * to terminal — live, healthy work stopped on the strength of churn.
+     */
+    it('churn does NOT consume the failure budget — a released-but-never-failed WI still retries', async () => {
+      const wi = makeWorkItem({ target: 'agent-leo' });
+      wi.maxRetries = 3;
+      await service.addToPool(wi);
+
+      // Three lease lapses, zero failures — the exact shape of the incident.
+      for (let i = 0; i < 3; i++) {
+        await service.claimFromPool('agent-leo');
+        await service.releaseBack(wi.id, 'lease lapsed');
+      }
+
+      const churned = (await service.getAllItems()).find((x) => x.id === wi.id)!;
+      expect(churned.retryCount).toBe(0);
+      expect(churned.releaseCount).toBe(3);
+
+      // Now it genuinely fails, once.
+      await service.claimFromPool('agent-leo');
+      await service.failItem(wi.id, 'first real failure');
+
+      const disposition = await service.disposeFailedWorkItem(wi.id, { reason: 'stranded' });
+
+      // Must retry. If churn were still charged to retryCount this would read
+      // 3/3 and come back `terminal`, stopping work that never failed.
+      expect(disposition?.kind).toBe('retried_in_place');
+      const after = (await service.getAllItems()).find((x) => x.id === wi.id)!;
+      expect(after.status).toBe('queued');
+      expect(after.retryCount).toBe(1);
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('no-ops for a missing WorkItem rather than throwing', async () => {
+      expect(await service.disposeFailedWorkItem('ghost', { reason: 'n/a' })).toBeNull();
+    });
+
+    it('still stamps when the escalation throws, recording the gap instead of hiding it', async () => {
+      mockEscalateFailedWorkItem.mockRejectedValueOnce(new Error('messaging down'));
+      const id = await strandFailed(3, 3);
+
+      const disposition = await service.disposeFailedWorkItem(id, { reason: 'stranded' });
+
+      // A messaging blip must not leave the item stranded a SECOND time.
+      expect(disposition?.kind).toBe('terminal');
+      expect(disposition?.escalationId).toBeUndefined();
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      expect(getWorkItemDisposition(wi)?.escalationId).toBeUndefined();
+    });
+
+    it('clears a stale disposition when the item goes back on the queue', async () => {
+      // A stamp describes how a PAST failure was dealt with. If it outlived the
+      // failure, the safety net would read it on the item's NEXT strand and skip
+      // an item that genuinely needs disposing.
+      const id = await strandFailed(3, 3);
+      await service.disposeFailedWorkItem(id, { reason: 'stranded' });
+      expect(
+        getWorkItemDisposition((await service.getAllItems()).find((x) => x.id === id)!),
+      ).not.toBeNull();
+
+      await service.requeueAfterFailure(id, 'operator retry');
+
+      const wi = (await service.getAllItems()).find((x) => x.id === id)!;
+      expect(getWorkItemDisposition(wi)).toBeNull();
+    });
+  });
+
 
   // -----------------------------------------------------------------------
   // getPoolStatus
