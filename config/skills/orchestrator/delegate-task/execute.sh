@@ -166,8 +166,17 @@ if [ "$TASK_TYPE" = "technical" ] && [ -n "$TEAM_ID" ]; then
 fi
 
 # Structured message parameters (for hierarchical teams)
-# Default INPUT to empty JSON if not set (when using --flag mode)
-INPUT="${INPUT:-{}}"
+# Default INPUT to empty JSON if not set (when using --flag mode).
+#
+# NOT `${INPUT:-{}}` — bash ends the expansion at the FIRST `}`, so that form
+# means "default to `{`" followed by a literal `}`. It is correct only when
+# INPUT is unset (yielding `{}`); when INPUT holds real JSON it appends a
+# stray `}` and every subsequent `jq` call dies with
+# "parse error: Unmatched '}'". That silently broke the entire JSON-input mode
+# of this skill while --flag mode kept working.
+if [ -z "${INPUT:-}" ]; then
+  INPUT='{}'
+fi
 TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
 PARENT_TASK_ID=$(printf '%s' "$INPUT" | jq -r '.parentTaskId // empty')
 EXPECTED_ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.expectedArtifacts // empty')
@@ -263,7 +272,7 @@ POOL_BODY=$(jq -n \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
   --arg requestId "${REQUEST_ID:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $requestId != "" then {requestId: $requestId} else {} end)')
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
 
 # Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch B):
 # Route is /api/task-pool/add (not /api/pool/add — that endpoint does not exist
