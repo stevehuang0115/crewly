@@ -1,11 +1,33 @@
 #!/bin/bash
 # Tests for TL delegate-task execute.sh
 # Covers: CREWLY_SESSION_NAME resolution, fromSession fallback,
-#         graceful monitoring skip, delegation success
+#         graceful monitoring skip, delegation success, and the Request
+#         Contract checker (which scans BOTH `task` and `context`).
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PASS=0
 FAIL=0
+
+# ---------------------------------------------------------------------------
+# Extract the REAL warn_missing_request_contract out of execute.sh.
+#
+# This file used to keep a hand-copied duplicate of that function inside the
+# mock, with a comment asking future editors to keep it "byte-equivalent".
+# It did not stay byte-equivalent, and worse, nothing could detect that:
+# changing the function in execute.sh left all 16 assertions green, because
+# they were exercising the copy. Pulling the function straight out of the
+# shipped script means production edits are felt here immediately, and makes
+# the mutation test in the commit message meaningful.
+# ---------------------------------------------------------------------------
+REAL_FN_FILE="$(mktemp)"
+export REAL_FN_FILE
+sed -n '/^warn_missing_request_contract() {$/,/^}$/p' "$SCRIPT_DIR/execute.sh" > "$REAL_FN_FILE"
+if ! grep -q 'Request Contract incomplete' "$REAL_FN_FILE"; then
+  echo "FATAL: could not extract warn_missing_request_contract() from execute.sh" >&2
+  exit 1
+fi
+# shellcheck source=/dev/null
+source "$REAL_FN_FILE"
 
 assert_succeeds() {
   local desc="$1"
@@ -74,27 +96,11 @@ shift
 # Load the real shared lib first
 source "${REAL_SKILL_DIR}/../_common/lib.sh"
 
-# Request Contract warning helper (mirror of the real script's
-# warn_missing_request_contract — must stay byte-equivalent so the test
-# exercises actual production logic, not a stub).
-warn_missing_request_contract() {
-  local task="$1"
-  local missing=()
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
-    missing+=("Goal")
-  fi
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
-    missing+=("Outcome")
-  fi
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
-    missing+=("Eval")
-  fi
-  if [ ${#missing[@]} -gt 0 ]; then
-    local list
-    list=$(IFS=, ; echo "${missing[*]}")
-    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. Workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
-  fi
-}
+# Load the REAL warn_missing_request_contract, extracted from execute.sh by
+# the harness above. Do NOT re-declare it here — a hand-copy silently
+# decouples these scenarios from the code that actually ships.
+# shellcheck source=/dev/null
+source "$REAL_FN_FILE"
 
 # Track API calls for verification
 API_CALLS_LOG=$(mktemp)
@@ -158,9 +164,14 @@ FROM_SESSION=$(echo "$INPUT" | jq -r '.fromSession // empty')
 require_param "to" "$TO"
 require_param "task" "$TASK"
 
-# Request Contract warning (P0-3): emit non-fatal warning when brief is
-# missing Goal / Expected Outcome / Eval markers. Mirror of the real script.
-warn_missing_request_contract "$TASK"
+# Request Contract warning (P0-3): emit the non-fatal warning when the brief
+# is missing Goal / Expected Outcome / Eval markers.
+#
+# Run the PRODUCTION call line verbatim, with this mock's $TASK / $CONTEXT
+# bound. Hardcoding the arguments here would let a regression at the real
+# call site — dropping $CONTEXT, say — slip past every scenario below, which
+# is exactly how the earlier hand-copied version of this mock went blind.
+eval "$(grep -E '^warn_missing_request_contract "' "${REAL_SKILL_DIR}/execute.sh")"
 
 # Validate hierarchy
 if [ -n "$TEAM_ID" ] && [ -n "$TL_MEMBER_ID" ]; then
@@ -510,7 +521,149 @@ else
   PASS=$((PASS + 1))
 fi
 
+# -----------------------------------------------------------------------
+# Scenario 15: Contract lives ENTIRELY in `context` — must NOT warn
+#
+# This is the reported bug. A delegator whose `task` is the one-line ask and
+# whose full Goal / Expected Outcome / Eval Criteria sit in `context` was
+# told the contract was "incomplete" even though every marker was present.
+# -----------------------------------------------------------------------
+echo "Scenario 15: full contract in context field only — no warning"
+CTX_FULL="**Goal:** Ship the importer. **Expected Outcome:** CSVs land in prod. **Eval Criteria:** all tests green."
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  "{\"to\":\"crewly-product-leo-dev\",\"task\":\"build the importer\",\"context\":\"$CTX_FULL\"}" 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete"; then
+  echo "  FAIL: contract present in context was still reported incomplete: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: contract in context suppresses the warning"
+  PASS=$((PASS + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 16: Contract SPLIT across task and context — must NOT warn
+# -----------------------------------------------------------------------
+echo "Scenario 16: contract split across task and context — no warning"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"**Goal:** ship the importer","context":"**Expected Outcome:** CSVs land in prod. **Eval Criteria:** all tests green."}' 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete"; then
+  echo "  FAIL: split contract was reported incomplete: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: split contract suppresses the warning"
+  PASS=$((PASS + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 17: Check is NOT weakened — a field absent from BOTH still warns
+# -----------------------------------------------------------------------
+echo "Scenario 17: field missing from both fields still warns (check not weakened)"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"**Goal:** ship it","context":"**Expected Outcome:** it ships."}' 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete" && \
+   echo "$RAW_OUTPUT" | grep -q "Eval"; then
+  echo "  PASS: still warns for the one marker absent from both fields"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected an Eval-missing warning, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 18: Nothing anywhere — all three still named
+# -----------------------------------------------------------------------
+echo "Scenario 18: empty contract in both fields names Goal+Outcome+Eval"
+RAW_OUTPUT=$(env CREWLY_SESSION_NAME="sam-tl" bash "$MOCK_SCRIPT" "$SKILL_DIR" \
+  '{"to":"crewly-product-leo-dev","task":"just do the thing","context":"here is some background prose"}' 2>&1)
+if echo "$RAW_OUTPUT" | grep -q "Request Contract incomplete" && \
+   echo "$RAW_OUTPUT" | grep -q "Goal" && \
+   echo "$RAW_OUTPUT" | grep -q "Outcome" && \
+   echo "$RAW_OUTPUT" | grep -q "Eval"; then
+  echo "  PASS: all three markers reported missing"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected all three named, got: $RAW_OUTPUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenarios 19-22: direct unit tests against the REAL extracted function.
+#
+# These call warn_missing_request_contract() itself (sourced from
+# execute.sh at the top of this file), so they pin the two-argument
+# signature and the scan surface with no mock in between.
+# -----------------------------------------------------------------------
+echo "Scenario 19: function scans arg 2 (context) for markers"
+FN_OUT=$(warn_missing_request_contract "bare ask" \
+  "Goal: x. Expected Outcome: y. Eval Criteria: z." 2>&1 || true)
+if [ -z "$FN_OUT" ]; then
+  echo "  PASS: no warning when all markers are in the context argument"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected silence, got: $FN_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Scenario 20: function still scans arg 1 (task) on its own"
+FN_OUT=$(warn_missing_request_contract \
+  "Goal: x. Expected Outcome: y. Eval Criteria: z." "" 2>&1 || true)
+if [ -z "$FN_OUT" ]; then
+  echo "  PASS: no warning when all markers are in the task argument"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected silence, got: $FN_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Scenario 21: function warns when a marker is in neither argument"
+FN_OUT=$(warn_missing_request_contract "Goal: x." "Expected Outcome: y." 2>&1 || true)
+if echo "$FN_OUT" | grep -q "Request Contract incomplete" && echo "$FN_OUT" | grep -q "Eval"; then
+  echo "  PASS: names Eval as missing from both arguments"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: expected Eval-missing warning, got: $FN_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+echo "Scenario 22: markers are not fabricated across the task/context seam"
+# "go" + "al: ..." must not join into "goal:" — the newline join prevents it.
+FN_OUT=$(warn_missing_request_contract "please go" \
+  "al: nothing here. Expected Outcome: y. Eval Criteria: z." 2>&1 || true)
+if echo "$FN_OUT" | grep -q "Goal"; then
+  echo "  PASS: seam does not fabricate a Goal marker"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: 'go'+'al:' across the seam was accepted as a Goal marker: $FN_OUT"
+  FAIL=$((FAIL + 1))
+fi
+
+# -----------------------------------------------------------------------
+# Scenario 23: source-level guard on the production call site.
+#
+# The unit tests above cannot see which arguments execute.sh actually
+# passes. This asserts the call site itself, so reverting it to the
+# task-only form fails here even though the function stays correct.
+# -----------------------------------------------------------------------
+echo "Scenario 23: execute.sh calls the checker with BOTH task and context"
+SRC=$(cat "$SKILL_DIR/execute.sh")
+if printf '%s' "$SRC" | grep -q -- 'warn_missing_request_contract "$TASK" "$CONTEXT"'; then
+  echo "  PASS: call site passes \$TASK and \$CONTEXT"
+  PASS=$((PASS + 1))
+else
+  echo "  FAIL: execute.sh does not call warn_missing_request_contract with both fields"
+  FAIL=$((FAIL + 1))
+fi
+
+if printf '%s' "$SRC" | grep -qE '^warn_missing_request_contract "\$TASK"$'; then
+  echo "  FAIL: execute.sh still has a task-only call to the contract checker"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: no task-only call to the contract checker remains"
+  PASS=$((PASS + 1))
+fi
+
 # Cleanup
+rm -f "$REAL_FN_FILE"
 rm -rf "$MOCK_DIR"
 
 echo ""

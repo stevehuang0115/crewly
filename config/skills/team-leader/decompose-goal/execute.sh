@@ -53,36 +53,31 @@ ${TASK_CRITERIA}"
 Parent objective: ${OBJECTIVE}
 Required role: ${TASK_ROLE}"
 
-  case "$TASK_PRIORITY" in
-    critical) PRIORITY_NUM=1 ;;
-    high)     PRIORITY_NUM=2 ;;
-    normal|medium) PRIORITY_NUM=3 ;;
-    low)      PRIORITY_NUM=4 ;;
-    *)        PRIORITY_NUM=3 ;;
-  esac
 
-  WI_ID="task-$(date +%s%N | cut -c1-13)-${i}-$$"
-
+  # Minimal CreateWorkItemInput — no client-side `id`/`status`.
+  #
+  # A body carrying `id` and `status` but no `createdAt` fails the endpoint's
+  # `isLegacyFullShape` check, so it silently takes the MINIMAL path and the
+  # server generates its own uuid anyway. The old client id was never
+  # referenced after creation, so there is nothing to preserve: commit to the
+  # minimal shape rather than sending two-thirds of the legacy one.
   WORK_ITEM=$(jq -n \
-    --arg id "$WI_ID" \
     --arg title "$TASK_TITLE" \
     --arg brief "$BRIEF" \
     --arg projectPath "$PROJECT_PATH" \
     --arg milestone "$MILESTONE" \
     --arg role "$TASK_ROLE" \
-    --argjson priority "$PRIORITY_NUM" \
+    --arg priority "$TASK_PRIORITY" \
     '{
-      id: $id,
       title: $title,
       type: "delegate",
       owner: "system",
-      priority: $priority,
-      status: "queued",
       briefMarkdown: $brief,
-      metadata: { projectPath: $projectPath, milestone: $milestone, requiredRole: $role }
+      metadata: { projectPath: $projectPath, milestone: $milestone, requiredRole: $role, priority: $priority }
     }')
 
-  CREATE_BODY=$(jq -n --argjson workItem "$WORK_ITEM" '{workItem: $workItem}')
+  # No envelope: addItem reads req.body directly as the CreateWorkItemInput.
+  CREATE_BODY="$WORK_ITEM"
   CREATE_RESULT=$(api_call POST "/task-pool/add" "$CREATE_BODY" 2>/dev/null || echo '{"error":"Failed to create WorkItem"}')
   CREATED_ID=$(echo "$CREATE_RESULT" | jq -r '.data.id // .workItem.id // empty' 2>/dev/null || true)
 

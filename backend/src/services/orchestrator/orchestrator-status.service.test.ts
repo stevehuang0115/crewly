@@ -17,6 +17,10 @@ const mockSessionState: { exists: boolean; backendAvailable: boolean; childProce
 // Track calls to updateAgentStatus for assertions
 const mockUpdateAgentStatus = jest.fn<() => Promise<void>>().mockResolvedValue(undefined);
 
+// Team members keyed by session name, used by findMemberBySessionName.
+// Drives the runtime-type half of the isAgentActive in-process fallback gate.
+const mockMembersBySession: Map<string, { runtimeType: string }> = new Map();
+
 // Mock storage service (using path without .js since moduleNameMapper strips it)
 jest.mock('../core/storage.service', () => ({
   StorageService: {
@@ -27,6 +31,10 @@ jest.mock('../core/storage.service', () => ({
           throw data;
         }
         return data;
+      },
+      findMemberBySessionName: async (sessionName: string) => {
+        const member = mockMembersBySession.get(sessionName);
+        return member ? { team: { id: 'team-1' }, member } : null;
       },
       updateAgentStatus: (...args: unknown[]) => mockUpdateAgentStatus(...(args as [])),
     }),
@@ -131,6 +139,7 @@ describe('OrchestratorStatusService', () => {
     mockSessionState.backendAvailable = true;
     mockSessionState.childProcessAlive = false;
     mockInProcessRegistryState.active = false;
+    mockMembersBySession.clear();
     mockUpdateAgentStatus.mockClear();
   });
 
@@ -140,6 +149,7 @@ describe('OrchestratorStatusService', () => {
     mockSessionState.backendAvailable = true;
     mockSessionState.childProcessAlive = false;
     mockInProcessRegistryState.active = false;
+    mockMembersBySession.clear();
     mockUpdateAgentStatus.mockClear();
   });
 
@@ -519,6 +529,80 @@ describe('OrchestratorStatusService', () => {
 
       const result = await isAgentActive('crewly-auditor');
       expect(result).toBe(false);
+    });
+
+    describe('in-process crewly-agent fallback', () => {
+      it('returns true for the orchestrator when it has no PTY session but a ready in-process runtime', async () => {
+        // crewly-orc lives in orchestrator.json, not in any team's members array
+        mockOrchestratorData.value = {
+          sessionName: 'crewly-orc',
+          agentStatus: 'active',
+          workingStatus: 'idle',
+          runtimeType: 'crewly-agent',
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        mockSessionState.exists = false; // no PTY session — in-process runtime
+        mockInProcessRegistryState.active = true;
+
+        const result = await isAgentActive('crewly-orc');
+        expect(result).toBe(true);
+      });
+
+      it('returns true for a team member configured as crewly-agent with a ready in-process runtime', async () => {
+        mockMembersBySession.set('crewly-product-quinn', { runtimeType: 'crewly-agent' });
+        mockSessionState.exists = false;
+        mockInProcessRegistryState.active = true;
+
+        const result = await isAgentActive('crewly-product-quinn');
+        expect(result).toBe(true);
+      });
+
+      it('does NOT widen the gate: a PTY-less claude-code agent stays inactive even if the registry reports active', async () => {
+        mockMembersBySession.set('crewly-product-leo', { runtimeType: 'claude-code' });
+        mockSessionState.exists = false;
+        mockInProcessRegistryState.active = true; // would pass if runtime type were ignored
+
+        const result = await isAgentActive('crewly-product-leo');
+        expect(result).toBe(false);
+      });
+
+      it('returns false for a crewly-agent member when the in-process registry has no ready runtime', async () => {
+        mockMembersBySession.set('crewly-product-quinn', { runtimeType: 'crewly-agent' });
+        mockSessionState.exists = false;
+        mockInProcessRegistryState.active = false;
+
+        const result = await isAgentActive('crewly-product-quinn');
+        expect(result).toBe(false);
+      });
+
+      it('returns false for an unknown session even when the registry reports active', async () => {
+        mockSessionState.exists = false;
+        mockInProcessRegistryState.active = true;
+        mockOrchestratorData.value = null;
+
+        const result = await isAgentActive('session-that-does-not-exist');
+        expect(result).toBe(false);
+      });
+
+      it('returns true for a crewly-agent runtime when the session backend is entirely unavailable', async () => {
+        mockMembersBySession.set('crewly-product-quinn', { runtimeType: 'crewly-agent' });
+        mockSessionState.backendAvailable = false;
+        mockInProcessRegistryState.active = true;
+
+        const result = await isAgentActive('crewly-product-quinn');
+        expect(result).toBe(true);
+      });
+
+      it('keeps the PTY path authoritative: a live PTY claude-code agent is active without any registry entry', async () => {
+        mockMembersBySession.set('crewly-product-leo', { runtimeType: 'claude-code' });
+        mockSessionState.exists = true;
+        mockSessionState.childProcessAlive = true;
+        mockInProcessRegistryState.active = false;
+
+        const result = await isAgentActive('crewly-product-leo');
+        expect(result).toBe(true);
+      });
     });
   });
 

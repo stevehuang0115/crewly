@@ -82,30 +82,49 @@ require_param "task (--task)" "$TASK"
 # entitled to push back per the Brief Reception Protocol when these are
 # absent. Spec: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md
 # §"Fix P0-3".
+#
+# Scans the WHOLE delegated brief, not just `--task`. The Request Contract
+# can legitimately live in `--task`, in `--context`, or be split across the
+# two, and delegators routinely put the long-form G/O/E in `--context` while
+# `--task` carries the one-line ask. Scanning only `--task` warned
+# "Request Contract incomplete" at briefs whose contract was fully present,
+# just in the other field. That false positive is corrosive: this warning is
+# the signal workers use to decide whether to push back under the Brief
+# Reception Protocol, so crying wolf trains them to ignore a real one.
+#
+# The check is NOT weakened — a marker genuinely absent from BOTH fields
+# still warns, and the missing-field list is still per-marker.
+#
+# $1 = task, $2 = context (either may be empty).
 warn_missing_request_contract() {
-  local task="$1"
+  # Join with a newline rather than concatenating: the patterns below anchor
+  # on `^`, which grep evaluates per line, and a seam newline also prevents a
+  # task ending in "go" plus a context starting "al:" from fabricating a
+  # spurious "goal:" match across the boundary.
+  local brief
+  brief="$(printf '%s\n%s' "${1:-}" "${2:-}")"
   local missing=()
   # Goal: the standalone word "Goal" (with optional ** markdown). Also
   # accept "Objective" as a synonym some upstream callers use.
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
+  if ! echo "$brief" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
     missing+=("Goal")
   fi
   # Outcome: "Outcome" or "Expected Outcome".
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
+  if ! echo "$brief" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
     missing+=("Outcome")
   fi
   # Eval: "Eval", "Eval Criteria", "Acceptance Criteria", "Evaluation Criteria".
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
+  if ! echo "$brief" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
     missing+=("Eval")
   fi
   if [ ${#missing[@]} -gt 0 ]; then
     local list
     list=$(IFS=, ; echo "${missing[*]}")
-    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. Workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
+    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Neither the task nor the context field carries them. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. Workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
   fi
 }
 
-warn_missing_request_contract "$TASK"
+warn_missing_request_contract "$TASK" "$CONTEXT"
 
 # Resolve Crewly root from this script path:
 # config/skills/team-leader/delegate-task/execute.sh -> project root
@@ -224,7 +243,7 @@ POOL_BODY=$(jq -n \
   --arg briefMarkdown "$TASK" \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end)')
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))}')
 
 POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
 POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)

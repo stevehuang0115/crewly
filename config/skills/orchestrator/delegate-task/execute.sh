@@ -95,26 +95,51 @@ require_param "task (--task)" "$TASK"
 # downstream are entitled to push back per the Brief Reception Protocol when
 # these are absent. Spec:
 # .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §"Fix P0-3".
+#
+# Scans the WHOLE delegated brief, not just `--task`. The Request Contract can
+# legitimately live in `--task`, in `--context`, or be split across the two,
+# and delegators routinely put the long-form G/O/E in `--context` while
+# `--task` carries the one-line ask. `--context` is delivered to the target
+# (see the TASK_MESSAGE assembly below), so a contract written there does
+# reach the recipient — it was simply not being looked at here. Scanning only
+# `--task` therefore warned "Request Contract incomplete" at briefs whose
+# contract was fully present, just in the other field.
+#
+# That false positive is corrosive rather than cosmetic: this warning is the
+# signal TLs and workers use to decide whether to push back under the Brief
+# Reception Protocol, so crying wolf trains them to ignore a real one.
+#
+# The check is NOT weakened — a marker genuinely absent from BOTH fields
+# still warns, and the missing-field list is still per-marker.
+#
+# Mirrors the same fix in config/skills/team-leader/delegate-task/execute.sh.
+#
+# $1 = task, $2 = context (either may be empty).
 warn_missing_request_contract() {
-  local task="$1"
+  # Join with a newline rather than concatenating: the patterns below anchor
+  # on `^`, which grep evaluates per line, and a seam newline also prevents a
+  # task ending in "go" plus a context starting "al:" from fabricating a
+  # spurious "goal:" match across the boundary.
+  local brief
+  brief="$(printf '%s\n%s' "${1:-}" "${2:-}")"
   local missing=()
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
+  if ! echo "$brief" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(goal|objective)(:|s?\b)'; then
     missing+=("Goal")
   fi
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
+  if ! echo "$brief" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(expected )?outcome(:|s?\b)'; then
     missing+=("Outcome")
   fi
-  if ! echo "$task" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
+  if ! echo "$brief" | grep -qiE '(^|[^a-zA-Z])(\*\*)?(eval|evaluation criteria|acceptance criteria)(:|s?\b)'; then
     missing+=("Eval")
   fi
   if [ ${#missing[@]} -gt 0 ]; then
     local list
     list=$(IFS=, ; echo "${missing[*]}")
-    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. TLs and workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
+    echo "{\"warning\":\"Request Contract incomplete: brief is missing markers for: ${list}. Neither the task nor the context field carries them. Per P0-3 spec, every delegated subtask MUST include Goal + Expected Outcome + Eval Criteria. TLs and workers may push back via the Brief Reception Protocol. Source: .crewly/specs/2026-05-03-agent-improvement-p0-execution.md §Fix P0-3.\"}" >&2
   fi
 }
 
-warn_missing_request_contract "$TASK"
+warn_missing_request_contract "$TASK" "$CONTEXT"
 
 # #180: Validate target agent belongs to the specified team
 if [ -n "$TEAM_ID" ] && [ "$FORCE_CROSS_TEAM" != "true" ]; then
@@ -141,8 +166,17 @@ if [ "$TASK_TYPE" = "technical" ] && [ -n "$TEAM_ID" ]; then
 fi
 
 # Structured message parameters (for hierarchical teams)
-# Default INPUT to empty JSON if not set (when using --flag mode)
-INPUT="${INPUT:-{}}"
+# Default INPUT to empty JSON if not set (when using --flag mode).
+#
+# NOT `${INPUT:-{}}` — bash ends the expansion at the FIRST `}`, so that form
+# means "default to `{`" followed by a literal `}`. It is correct only when
+# INPUT is unset (yielding `{}`); when INPUT holds real JSON it appends a
+# stray `}` and every subsequent `jq` call dies with
+# "parse error: Unmatched '}'". That silently broke the entire JSON-input mode
+# of this skill while --flag mode kept working.
+if [ -z "${INPUT:-}" ]; then
+  INPUT='{}'
+fi
 TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
 PARENT_TASK_ID=$(printf '%s' "$INPUT" | jq -r '.parentTaskId // empty')
 EXPECTED_ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.expectedArtifacts // empty')
@@ -238,7 +272,7 @@ POOL_BODY=$(jq -n \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
   --arg requestId "${REQUEST_ID:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $requestId != "" then {requestId: $requestId} else {} end)')
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
 
 # Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch B):
 # Route is /api/task-pool/add (not /api/pool/add — that endpoint does not exist

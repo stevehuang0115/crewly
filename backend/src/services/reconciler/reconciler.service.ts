@@ -229,7 +229,26 @@ export class ReconcilerService {
       // 4. Pruning pass (F4): TTL expiry + orphan cascade + deep cascade + stale queue detection
       const pruning = runPruningPass(workItems);
       result.corrections.push(...pruning.totalCorrections);
-      result.staleItemsCleaned += pruning.ttlExpiredCount + pruning.orphanCancelledCount + pruning.cascadeCancelledCount;
+      // `staleItemsCleaned` means "work that was DISCARDED", so only the
+      // cancel-shaped counters may be summed here. The TTL rule also emits
+      // `done_by_worker → verified` (24h implicit acceptance); that item was
+      // ACCEPTED, not cleaned up, and folding it in made the metric report
+      // two opposite outcomes as one number. See `PruningResult`.
+      result.staleItemsCleaned +=
+        pruning.ttlCancelledCount + pruning.orphanCancelledCount + pruning.cascadeCancelledCount;
+
+      // 4-bis. Auto-acceptance visibility: excluded from `staleItemsCleaned`
+      // above, so surface it explicitly rather than letting it vanish — a
+      // silent metric is worse than a wrong one. The per-item audit trail is
+      // already in `result.corrections` (newState `verified`); this log makes
+      // the aggregate visible to an operator watching the reconciler.
+      if (pruning.ttlAutoVerifiedCount > 0) {
+        LoggerService.getInstance()
+          .createComponentLogger('ReconcilerService')
+          .warn('WorkItems auto-accepted by the 24h TTL fallback (NOT counted as staleItemsCleaned)', {
+            ttlAutoVerifiedCount: pruning.ttlAutoVerifiedCount,
+          });
+      }
 
       // 4a. Stale-queued visibility (2026-05-16): the pruning rule no
       // longer auto-cancels these WIs (was destroying user work — Atlas

@@ -12,7 +12,7 @@ import { StorageService } from '../core/storage.service.js';
 import { CREWLY_CONSTANTS, WEB_CONSTANTS } from '../../../../config/index.js';
 import { getSessionBackendSync } from '../session/index.js';
 import { isInProcessRuntimeActive } from '../agent/crewly-agent/in-process-runtime-registry.js';
-import { RUNTIME_TYPES } from '../../constants.js';
+import { RUNTIME_TYPES, type RuntimeType } from '../../constants.js';
 
 /** Dashboard URL for user-facing messages */
 const DASHBOARD_URL = `http://localhost:${WEB_CONSTANTS.PORTS.FRONTEND}`;
@@ -216,23 +216,88 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
 }
 
 /**
- * Check if a specific agent is currently active by verifying its PTY session exists
- * and has a running child process.
+ * Resolve the configured runtime type for a session name.
+ *
+ * Looks the session up as a team member first, then falls back to the
+ * orchestrator record (the orchestrator lives in its own `orchestrator.json`
+ * and is not part of any team's `members` array).
+ *
+ * Only called on the in-process fallback path in {@link isAgentActive}, so
+ * the extra storage reads never touch the hot PTY path.
+ *
+ * @param sessionName - The session name to resolve a runtime type for
+ * @returns The configured runtime type, or `undefined` when the session is unknown
+ */
+async function resolveRuntimeTypeForSession(
+  sessionName: string,
+): Promise<RuntimeType | undefined> {
+  const storageService = StorageService.getInstance();
+
+  const found = await storageService.findMemberBySessionName(sessionName);
+  if (found?.member?.runtimeType) {
+    return found.member.runtimeType;
+  }
+
+  const orchestrator = await storageService.getOrchestratorStatus();
+  const orchestratorSession =
+    orchestrator?.sessionName || CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
+  if (orchestrator && orchestratorSession === sessionName) {
+    return orchestrator.runtimeType;
+  }
+
+  return undefined;
+}
+
+/**
+ * Check if a specific agent is currently active.
+ *
+ * Two liveness paths, checked in order:
+ * 1. **PTY path (unchanged)** — the agent's PTY session exists AND its child
+ *    process (the AI runtime) is alive. This is the ground truth for
+ *    `claude-code`, `gemini-cli` and `codex-cli` runtimes.
+ * 2. **In-process fallback** — in-process Crewly Agent runtimes have no PTY
+ *    session at all, so `sessionExists()` always returns `false` for them.
+ *    When the in-process registry reports a ready runtime for this session
+ *    AND the session's configured runtime type is `crewly-agent`, the agent
+ *    is alive. This mirrors the B0 hot-fix fallback in
+ *    {@link getOrchestratorStatus}.
+ *
+ * The fallback is deliberately narrow: it requires BOTH a ready registry
+ * entry and a `crewly-agent` runtime type. A PTY-less `claude-code` agent
+ * still reports inactive — widening the gate would let dead agents claim
+ * work from the task pool, which is worse than the bug this fixes.
+ *
+ * The registry probe runs before the storage lookup because it is a
+ * synchronous map hit; when it misses (the common case for a genuinely dead
+ * PTY agent) no storage I/O happens at all.
  *
  * @param sessionName - The agent's session name to check
- * @returns Promise resolving to true if the agent's session is alive
+ * @returns Promise resolving to true if the agent's runtime is alive
+ *
+ * @example
+ * ```typescript
+ * // crewly-orc runs in-process with no PTY session
+ * await isAgentActive('crewly-orc'); // true when its runtime is registered and ready
+ * ```
  */
 export async function isAgentActive(sessionName: string): Promise<boolean> {
   try {
     const sessionBackend = getSessionBackendSync();
-    if (!sessionBackend) {
+    if (sessionBackend && sessionBackend.sessionExists(sessionName)) {
+      // Session exists — check if child process (the AI runtime) is alive
+      if (sessionBackend.isChildProcessAlive?.(sessionName)) {
+        return true;
+      }
+    }
+
+    // Runtime-aware fallback: in-process Crewly Agent runtimes have no PTY
+    // session. Cheap synchronous registry probe first, storage lookup only
+    // if it hits.
+    if (!isInProcessRuntimeActive(sessionName)) {
       return false;
     }
-    if (!sessionBackend.sessionExists(sessionName)) {
-      return false;
-    }
-    // Session exists — check if child process (the AI runtime) is alive
-    return !!sessionBackend.isChildProcessAlive?.(sessionName);
+    const runtimeType = await resolveRuntimeTypeForSession(sessionName);
+    return runtimeType === RUNTIME_TYPES.CREWLY_AGENT;
   } catch {
     return false;
   }
