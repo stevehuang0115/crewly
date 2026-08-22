@@ -551,7 +551,11 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
-   * Re-queues a WorkItem (increments retryCount, sets status to 'queued').
+   * Re-queues a WorkItem (sets status to 'queued', keeps its `target`).
+   *
+   * Does NOT increment `retryCount`: a reconciler requeue is an
+   * administrative recovery, not a failure, and that counter means
+   * failures only. The release is recorded in `releaseCount` instead.
    *
    * @param workItemId - The WorkItem ID to re-queue
    */

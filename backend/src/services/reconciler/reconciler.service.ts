@@ -552,7 +552,10 @@ export class ReconcilerService {
 
         // blocked → queued (agent-back-online recovery) is special: it
         // needs the full lifecycle — release the dangling claim, clear
-        // startedAt, increment retryCount — which `releaseBack` owns.
+        // startedAt, record the release — which `releaseBack` owns.
+        // NOTE: this path deliberately does NOT charge a retry. An agent
+        // coming back online is a recovery, not a failure; `retryCount`
+        // means failures only. `releaseBack` records it in `releaseCount`.
         // The earlier code called `applyCorrection` (which flips status
         // to queued via updateItemStatus) AND `requeueWorkItem` (which
         // calls `releaseBack`, which expects status running|blocked).

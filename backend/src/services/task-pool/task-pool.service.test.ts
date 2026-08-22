@@ -893,7 +893,159 @@ describe('TaskPoolService', () => {
       const items = await service.getAvailableItems();
       expect(items).toHaveLength(1);
       expect(items[0].status).toBe('queued');
-      expect(items[0].retryCount).toBe(1);
+      // A release is not a failure: retryCount stays put, and the churn is
+      // recorded separately. (This assertion previously expected 1 — it
+      // encoded the bug fixed in WI 25aadd30.)
+      expect(items[0].retryCount).toBe(0);
+      expect(items[0].releaseCount).toBe(1);
+    });
+
+    // -----------------------------------------------------------------
+    // WI 25aadd30 — a release is an administrative event, not a failure.
+    //
+    // Before this fix `releaseBack` cleared `target` and incremented
+    // `retryCount` on every release of a running item. A lease timeout —
+    // an agent heads-down for longer than the lease — was therefore
+    // treated as both "this work no longer belongs to you" and "you
+    // failed once". Four live WorkItems reached retryCount 3/3 with zero
+    // actual failures, and their assigned workers could no longer be
+    // woken for their own work.
+    // -----------------------------------------------------------------
+    describe('release is not a failure (WI 25aadd30)', () => {
+      it('preserves target when a lease lapses and the claim is revoked', async () => {
+        const wi = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(wi);
+        const claimed = await service.claimFromPool('agent-leo');
+        expect(claimed).not.toBeNull();
+
+        // Lease lapses -> reconciler revokes the claim. This is the exact
+        // production path that orphaned the four WorkItems.
+        await service.revokeAndRelease(claimed!.claim.id, 'grace period exceeded');
+
+        const released = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(released.status).toBe('queued');
+        expect(released.target).toBe('agent-leo');
+        expect(released.retryCount).toBe(0);
+      });
+
+      it('does not charge a retry for repeated lease churn', async () => {
+        const wi = makeWorkItem({ target: 'agent-leo', maxRetries: 3 });
+        await service.addToPool(wi);
+
+        // Three consecutive claim/lapse cycles — the shape that drove live
+        // items to 3/3. retryCount must not move; releaseCount must.
+        for (let i = 0; i < 3; i++) {
+          const claimed = await service.claimFromPool('agent-leo');
+          expect(claimed).not.toBeNull();
+          await service.releaseBack(wi.id, `lease expired (cycle ${i})`);
+        }
+
+        const churned = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(churned.retryCount).toBe(0);
+        expect(churned.retryCount).toBeLessThan(churned.maxRetries);
+        expect(churned.releaseCount).toBe(3);
+        expect(churned.target).toBe('agent-leo');
+      });
+
+      it('keeps the assigned worker wakeable after a release (wake-gate predicate)', async () => {
+        // The wake gate (team.controller checkWakeGate, rule 2) admits a
+        // worker only when the pool holds a queued/blocked WI whose
+        // `target` equals their session. Clearing target on release made
+        // the assigned worker unwakeable for their own work, surfacing as
+        // `wake_gate_no_pool_work`. This asserts the exact predicate the
+        // gate evaluates.
+        const sessionName = 'crewly-product-leo-21a5477e';
+        const wi = makeWorkItem({ target: sessionName });
+        await service.addToPool(wi);
+        const claimed = await service.claimFromPool(sessionName);
+        await service.revokeAndRelease(claimed!.claim.id, 'lease expired');
+
+        const items = await service.getAllItems();
+        const wakeable = items.filter(
+          (w) =>
+            (w.status === 'queued' || w.status === 'blocked') &&
+            w.target === sessionName,
+        );
+        expect(wakeable).toHaveLength(1);
+        expect(wakeable[0].id).toBe(wi.id);
+      });
+
+      it('clears target ONLY when un-assignment is explicitly requested', async () => {
+        const wi = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+
+        await service.releaseBack(wi.id, 'agent declined', { unassign: true });
+
+        const released = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(released.target).toBeUndefined();
+        // Still not a failure, even when deliberately handed back.
+        expect(released.retryCount).toBe(0);
+        expect(released.releaseCount).toBe(1);
+      });
+
+      it('leaves the blocked -> queued unblock path intact', async () => {
+        const wi = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+        await service.updateItemStatus(wi.id, 'blocked');
+
+        await service.releaseBack(wi.id, 'agent back online');
+
+        const unblocked = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(unblocked.status).toBe('queued');
+        expect(unblocked.target).toBe('agent-leo');
+        expect(unblocked.startedAt).toBeUndefined();
+        expect(unblocked.retryCount).toBe(0);
+      });
+
+      it('drops an incidental claim stamp so broadcast work returns to the pool', async () => {
+        // A broadcast item (no target) gets `target` stamped by whoever
+        // claims it. That stamp is bookkeeping, not an assignment, so a
+        // release must return the item to the broadcast pool — otherwise
+        // one claim would bind unassigned work to a single agent forever,
+        // and a dead agent's stamp would make the item unclaimable.
+        const wi = makeWorkItem();
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+
+        const stamped = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(stamped.target).toBe('agent-leo');
+        expect(stamped.targetSource).toBe('claim');
+
+        await service.releaseBack(wi.id, 'lease expired');
+
+        const released = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(released.target).toBeUndefined();
+        expect(released.targetSource).toBeUndefined();
+        expect(released.retryCount).toBe(0);
+      });
+
+      it('keeps a deliberate assignment across a release, unlike a claim stamp', async () => {
+        // The contrast that the whole fix turns on: same release, two
+        // different provenances, two different outcomes.
+        const assigned = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(assigned);
+        await service.claimFromPool('agent-leo');
+        await service.releaseBack(assigned.id, 'lease expired');
+
+        const kept = (await service.getAllItems()).find((i) => i.id === assigned.id)!;
+        expect(kept.target).toBe('agent-leo');
+      });
+
+      it('still charges a retry on the genuine failure path', async () => {
+        // The counter must keep working where it MEANS something —
+        // otherwise this fix would just disable retry accounting.
+        const wi = makeWorkItem({ target: 'agent-leo' });
+        await service.addToPool(wi);
+        await service.claimFromPool('agent-leo');
+        await service.failItem(wi.id, 'boom');
+        await service.requeueAfterFailure(wi.id, 'transient error');
+
+        const requeued = (await service.getAllItems()).find((i) => i.id === wi.id)!;
+        expect(requeued.retryCount).toBe(1);
+        expect(requeued.target).toBe('agent-leo');
+      });
     });
 
     it('throws when item not found', async () => {
@@ -2239,7 +2391,7 @@ describe('TaskPoolService', () => {
       }
     });
 
-    it('releaseBack from running calls transitionStatus(running→queued, system) with retryCount bump', async () => {
+    it('releaseBack from running calls transitionStatus(running→queued, system) without a retryCount bump', async () => {
       const wi = makeWorkItem();
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
@@ -2252,7 +2404,9 @@ describe('TaskPoolService', () => {
         const items = await service.getAllItems();
         const released = items.find((i) => i.id === wi.id)!;
         expect(released.status).toBe('queued');
-        expect(released.retryCount).toBe(1);
+        // retryCount means failures only; a release bumps releaseCount.
+        expect(released.retryCount).toBe(0);
+        expect(released.releaseCount).toBe(1);
         expect(released.startedAt).toBeUndefined();
       } finally {
         restore();
