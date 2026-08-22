@@ -7,6 +7,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, jest } from '@jest/globals';
+import { EVENT_DELIVERY_CONSTANTS } from '../../constants.js';
 import { Request, Response } from 'express';
 import * as terminalController from './terminal.controller.js';
 
@@ -46,6 +47,14 @@ const mockLoggerError = (globalThis as any).__terminalControllerMockLogger?.erro
 
 // Mock the constants
 jest.mock('../../constants.js', () => ({
+	// WI dae79289: the controller reads TOTAL_DELIVERY_TIMEOUT as the
+	// waitForReady fallback, so the mock must carry it. Without this the
+	// constant is `undefined` here and the fallback path throws in tests
+	// while working fine in production — the worst kind of gap.
+	EVENT_DELIVERY_CONSTANTS: {
+		TOTAL_DELIVERY_TIMEOUT: 30000,
+		AGENT_READY_TIMEOUT: 120000,
+	},
 	TERMINAL_CONTROLLER_CONSTANTS: {
 		DEFAULT_CAPTURE_LINES: 50,
 		MAX_CAPTURE_LINES: 500,
@@ -1108,6 +1117,26 @@ describe('TerminalController', () => {
 				success: true,
 				verified: true,
 			});
+		});
+
+		it('falls back to TOTAL_DELIVERY_TIMEOUT when no waitTimeout is supplied', async () => {
+			// WI dae79289: this fallback used to be an inlined 30000 while an
+			// identically-valued EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT
+			// sat unused. Asserting against the CONSTANT (not the number) is
+			// the point — if someone retunes the constant, this test moves with
+			// it instead of pinning a stale literal.
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				body: { message: 'Hello', waitForReady: true },
+			};
+
+			await terminalController.deliverMessage.call(mockApiContext, mockReq as Request, mockRes as Response);
+
+			expect(mockApiContext.agentRegistrationService.waitForAgentReady).toHaveBeenCalledWith(
+				'test-session',
+				EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT,
+				undefined
+			);
 		});
 
 		it('should return 408 when agent not ready within timeout', async () => {

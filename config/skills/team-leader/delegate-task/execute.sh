@@ -227,6 +227,16 @@ fi
 # 1. Try normal delivery (waitForReady)
 # 2. If fails, try force delivery
 # 3. If still fails, auto-start the worker then retry
+# waitTimeout 15000: the INITIAL attempt against a worker expected to be
+# already running, so it fails fast and lets the fallback ladder below take
+# over. The retry after auto-start uses 30000 — see the note there; the two
+# values differ deliberately and must not be normalised to one number.
+#
+# ORIGIN NOT ESTABLISHED (WI dae79289): 15000 matches no delivery-related
+# constant. Seven constants share the value, none of them about terminal
+# delivery, so there is nothing here that this literal can honestly be said
+# to mirror. Left exactly as-is rather than attached to a plausible-looking
+# constant that does not actually govern it.
 BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 15000}')
 
 DELIVER_OK=true
@@ -259,6 +269,16 @@ if [ "$DELIVER_OK" = "false" ]; then
           echo '{"info":"Worker '"$TO"' start triggered — retrying delivery in 10s..."}' >&2
           sleep 10
           # Retry delivery after agent boots
+          # waitTimeout 30000, double the initial 15000 above. This retry
+          # follows an auto-start, so the worker is booting from cold and
+          # legitimately needs longer to reach a prompt than one that was
+          # expected to be up already. The asymmetry is the point: it is not
+          # drift between two copies of the same call.
+          #
+          # ORIGIN NOT ESTABLISHED (WI dae79289): the value coincides with
+          # EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT, but coincidence
+          # of value is not evidence of relationship — eleven constants share
+          # 30000. Not claimed as a mirror.
           RETRY_BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 30000}')
           api_call POST "/terminal/${TO}/deliver" "$RETRY_BODY" && STARTED=true || {
             # Final fallback: force deliver
