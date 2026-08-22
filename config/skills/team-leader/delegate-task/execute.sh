@@ -166,6 +166,63 @@ fi
 TASK_MESSAGE="New task from Team Leader (priority: ${PRIORITY}):\n\n**[REQUIRED] When done, you MUST:** (1) Output a text summary of your work, findings, and any issues. (2) Call report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed:\nbash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{\"sessionName\":\"${TO}\",\"workItemId\":\"<your WorkItem id>\",\"status\":\"done\",\"summary\":\"<brief summary>\",\"projectPath\":\"${PROJECT_PATH}\"}'\n\n---\n\n${TASK}"
 [ -n "$CONTEXT" ] && TASK_MESSAGE="${TASK_MESSAGE}\n\nContext: ${CONTEXT}"
 
+# V3-only producer (spec 2026-05-06-task-management-v1-deprecation.md):
+# We no longer write a `.crewly/tasks/delegated/*.md` file via the legacy
+# `/task-management/create` endpoint. Instead the long-form brief travels
+# on the WorkItem itself (`briefMarkdown` field) and the WI is the sole
+# durable record of this delegation.
+#
+# ORDERING (WI 65578471): the WorkItem is created BEFORE delivery is
+# attempted, and that order is load-bearing. Previously the pool-add ran
+# only after delivery succeeded, so a delivery failure exited the script
+# with NO RECORD ANYWHERE — not in the pool, not targeted, nothing for a
+# reconciler or a human to find. Every other orphan class in this system
+# at least left a WorkItem behind; this one left the intent with no system
+# of record at all.
+#
+# On a delivery failure the WI is deliberately left `queued` with its
+# `target` set, plus an explicit `[UNDELIVERED]` note (see below). That
+# state is chosen, not incidental:
+#   - `queued` + `target` is recoverable — the wake gate admits a worker
+#     for a queued WI targeting them, so the task can still be delivered.
+#   - `queued` is NOT `running`, so it never masquerades as in-flight work.
+#   - the note makes an undelivered item distinguishable from a normally
+#     queued one, so a silent nothing is not traded for a silent something.
+TASK_ID=""
+
+case "$PRIORITY" in
+  critical|urgent) WI_PRIORITY="critical" ;;
+  high)            WI_PRIORITY="high" ;;
+  low)             WI_PRIORITY="low" ;;
+  *)               WI_PRIORITY="medium" ;;
+esac
+
+WI_TITLE="$(echo "$TASK" | head -c 200)"
+
+POOL_BODY=$(jq -n \
+  --arg type "delegate" \
+  --arg owner "team_lead" \
+  --arg target "$TO" \
+  --arg title "$WI_TITLE" \
+  --arg description "$TASK_MESSAGE" \
+  --arg briefMarkdown "$TASK" \
+  --arg priority "$WI_PRIORITY" \
+  --arg projectPath "${PROJECT_PATH:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))}')
+
+POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
+POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
+TASK_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
+
+if [ "$POOL_OK" != "true" ]; then
+  # Unchanged from before the reorder: warn and still attempt delivery.
+  # Aborting here instead would be a behavioural change beyond this WI's
+  # scope, so it is deliberately NOT made. The residual gap (record
+  # creation fails, task delivered anyway) is reported, not silently
+  # fixed — it is the mirror of the bug fixed here and wants its own call.
+  echo "{\"warning\":\"Failed to create WorkItem in TaskPool — delivering anyway, so this task will have no durable record\",\"details\":$(echo "$POOL_RESULT" | jq -c . 2>/dev/null || echo '{}')}" >&2
+fi
+
 # Deliver the task message with fallback strategy:
 # 1. Try normal delivery (waitForReady)
 # 2. If fails, try force delivery
@@ -212,46 +269,27 @@ if [ "$DELIVER_OK" = "false" ]; then
     fi
 
     if [ "$STARTED" = "false" ]; then
-      echo '{"error":"Failed to deliver task to '"$TO"'. Worker is offline and could not be auto-started. Ensure the worker is a team member with a valid session.","to":"'"$TO"'","teamId":"'"$TEAM_ID"'"}'
+      # WI 65578471 — delivery failed, but the WorkItem already exists
+      # (created above, deliberately, before delivery was attempted). Mark
+      # it explicitly so an undelivered item is never mistaken for a
+      # normally queued one, then fail loudly. The WI stays `queued` with
+      # its `target`, which is the recoverable state: the worker can still
+      # be woken for it and re-delivery can be retried.
+      #
+      # Best-effort: a failure to annotate must not swallow the delivery
+      # error, which is the more important signal.
+      if [ -n "$TASK_ID" ]; then
+        NOTE_AUTHOR="${CREWLY_SESSION_NAME:-${FROM_SESSION:-team-leader}}"
+        NOTE_BODY=$(jq -n --arg author "$NOTE_AUTHOR" --arg note "[UNDELIVERED] Delivery to ${TO} failed — worker offline and could not be auto-started. WorkItem left queued and targeted for re-delivery." \
+          '{author: $author, note: $note}')
+        api_call POST "/task-pool/items/${TASK_ID}/notes" "$NOTE_BODY" >/dev/null 2>&1 || true
+      fi
+      echo '{"error":"Failed to deliver task to '"$TO"'. Worker is offline and could not be auto-started. Ensure the worker is a team member with a valid session.","to":"'"$TO"'","teamId":"'"$TEAM_ID"'","workItemId":"'"$TASK_ID"'","workItemState":"queued+targeted, marked [UNDELIVERED] — re-delivery can be retried"}'
       exit 1
     fi
   }
 fi
 
-# V3-only producer (spec 2026-05-06-task-management-v1-deprecation.md):
-# We no longer write a `.crewly/tasks/delegated/*.md` file via the legacy
-# `/task-management/create` endpoint. Instead the long-form brief travels
-# on the WorkItem itself (`briefMarkdown` field) and the WI is the sole
-# durable record of this delegation.
-TASK_ID=""
-
-case "$PRIORITY" in
-  critical|urgent) WI_PRIORITY="critical" ;;
-  high)            WI_PRIORITY="high" ;;
-  low)             WI_PRIORITY="low" ;;
-  *)               WI_PRIORITY="medium" ;;
-esac
-
-WI_TITLE="$(echo "$TASK" | head -c 200)"
-
-POOL_BODY=$(jq -n \
-  --arg type "delegate" \
-  --arg owner "team_lead" \
-  --arg target "$TO" \
-  --arg title "$WI_TITLE" \
-  --arg description "$TASK_MESSAGE" \
-  --arg briefMarkdown "$TASK" \
-  --arg priority "$WI_PRIORITY" \
-  --arg projectPath "${PROJECT_PATH:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))}')
-
-POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
-POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
-TASK_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
-
-if [ "$POOL_OK" != "true" ]; then
-  echo "{\"warning\":\"Failed to create WorkItem in TaskPool — task delivered to terminal but no durable record\",\"details\":$(echo "$POOL_RESULT" | jq -c . 2>/dev/null || echo '{}')}" >&2
-fi
 
 # Set up idle event subscription for TL monitoring
 MONITOR_IDLE=$(printf '%s' "$INPUT" | jq -r 'if .monitor.idleEvent == null then true else .monitor.idleEvent end')
