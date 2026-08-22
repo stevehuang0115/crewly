@@ -484,13 +484,37 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // reconciler-cancelled "agent inactive" WI silently flips to
         // failed and the user is never told. Escalate directly here so
         // the failure surfaces through the same EscalationRouter path
-        // an agent-reported terminal failure would take. By definition
-        // these are terminal (the reconciler only fails a WI after its
-        // retry/grace policies have run out), so we skip retry logic.
+        // an agent-reported terminal failure would take.
+        //
+        // The retry budget MUST be re-checked here. This code previously
+        // skipped that on the stated grounds that "the reconciler only
+        // fails a WI after its retry/grace policies have run out" — an
+        // invariant its own rules do not honour. `detectStuckWorkItems`
+        // has two branches: the agent-dead branch respects the budget
+        // (`retryCount < maxRetries ? 'blocked' : 'failed'`), but the
+        // TIMEOUT branch sets `failed` unconditionally. So a first-attempt
+        // timeout arrived here with retryCount=0 and escalated to the
+        // owner claiming its retries were spent, while
+        // `detectRetryableFailedWorkItems` re-queued the very same item as
+        // "attempt 1/3" on the next sweep. The owner was asked to decide
+        // about work that was already quietly retrying.
+        //
+        // Gating on the budget here rather than in the timeout branch is
+        // deliberate: `failed` + `detectRetryableFailedWorkItems` already
+        // produces the correct retry, whereas routing timeouts to
+        // `blocked` would recover them through the agent-back-online rule
+        // and report "Agent is back online" for an agent that never left.
         if (correction.newState === 'failed') {
           try {
             const failed = await pool.findWorkItem(correction.entityId);
-            if (failed) {
+            if (failed && failed.retryCount < failed.maxRetries) {
+              this.logger.info('Skipping escalation — retry budget remains', {
+                workItemId: correction.entityId,
+                retryCount: failed.retryCount,
+                maxRetries: failed.maxRetries,
+                reason: correction.reason,
+              });
+            } else if (failed) {
               const { EscalationRouterService } = await import('../v3/escalation-router.service.js');
               await EscalationRouterService.getInstance().escalateFailedWorkItem(
                 failed,

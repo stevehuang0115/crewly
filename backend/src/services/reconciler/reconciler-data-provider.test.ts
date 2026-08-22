@@ -650,6 +650,68 @@ describe('LiveReconcilerDataProvider', () => {
       );
     });
 
+    // WI ece797e7 — a reconciler-driven `failed` is not automatically
+    // terminal. `detectStuckWorkItems`' TIMEOUT branch sets `failed`
+    // unconditionally (unlike its agent-dead sibling, which respects the
+    // budget), so a first-attempt timeout reached this code with
+    // retryCount=0 and escalated claiming its retries were spent — while
+    // `detectRetryableFailedWorkItems` re-queued the same item as
+    // "attempt 1/3" on the next sweep.
+    it('does NOT escalate a reconciler-driven failure while retry budget remains', async () => {
+      const retryableWi: Partial<WorkItem> = {
+        id: 'wi-timeout-1',
+        title: 'Timed out on first attempt',
+        type: 'delegate',
+        status: 'failed',
+        retryCount: 0,
+        maxRetries: 3,
+      };
+      mockEscalationRouter.escalateFailedWorkItem.mockClear();
+      (TaskPoolService as unknown as { _mockInstance: { findWorkItem: jest.Mock } })._mockInstance.findWorkItem.mockResolvedValueOnce(retryableWi);
+
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-timeout-1',
+        previousState: 'running',
+        newState: 'failed',
+        reason: 'WorkItem (type=delegate) exceeded timeout of 14400000ms',
+        evidence: 'running for 5h (limit 4h)',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(mockEscalationRouter.escalateFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('DOES escalate once the retry budget is genuinely spent', async () => {
+      // The gate must not become "never escalate" — that would trade a
+      // false alarm for a silent failure, which is worse.
+      const spentWi: Partial<WorkItem> = {
+        id: 'wi-timeout-2',
+        title: 'Out of retries',
+        type: 'delegate',
+        status: 'failed',
+        retryCount: 3,
+        maxRetries: 3,
+      };
+      mockEscalationRouter.escalateFailedWorkItem.mockClear();
+      (TaskPoolService as unknown as { _mockInstance: { findWorkItem: jest.Mock } })._mockInstance.findWorkItem.mockResolvedValueOnce(spentWi);
+
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-timeout-2',
+        previousState: 'running',
+        newState: 'failed',
+        reason: 'WorkItem (type=delegate) exceeded timeout of 14400000ms',
+        evidence: 'running for 5h (limit 4h)',
+        correctedAt: new Date().toISOString(),
+      });
+
+      expect(mockEscalationRouter.escalateFailedWorkItem).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'wi-timeout-2' }),
+        expect.stringContaining('exceeded timeout'),
+      );
+    });
+
     it('does not escalate when work_item transitions to a non-failed state', async () => {
       // blocked / cancelled / queued corrections must NOT trip escalation;
       // they're not terminal failures and have their own surfacing paths.
