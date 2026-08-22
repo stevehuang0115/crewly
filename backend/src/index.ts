@@ -106,6 +106,7 @@ import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
 import { findPackageRoot } from './utils/package-root.js';
+import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
 import { LogRotationService } from './services/session/log-rotation.service.js';
@@ -3673,6 +3674,26 @@ const isMainModule = process.argv[1] && (
 if (isMainModule) {
 	const server = new CrewlyServer();
 	const logger = LoggerService.getInstance().createComponentLogger('CrewlyServer');
+
+	// Build provenance (WI 763c8e30). On 2026-08-21 this process was found
+	// serving a `dist/` built months earlier: five merged fixes were not
+	// executing and nothing said so, so every conclusion drawn from live
+	// behaviour that day was produced by stale code. Verify BEFORE any
+	// service starts, so a stale build is refused rather than half-run.
+	//
+	// A stale build throws here and stops startup — that is the point. Every
+	// other outcome (unstamped build, no repository, skip flag set) only
+	// warns, so this can never block a legitimate container deploy.
+	try {
+		assertBuildProvenance({
+			log: (message) => logger.info(message),
+			warn: (message) => logger.warn(message),
+		});
+	} catch (error) {
+		logger.error(error instanceof Error ? error.message : String(error));
+		process.exit(1);
+	}
+
 	server.start().catch((error) => {
 		logger.error('Failed to start Crewly server', { error: error instanceof Error ? error.message : String(error) });
 		process.exit(1);
