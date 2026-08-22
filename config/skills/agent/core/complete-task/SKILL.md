@@ -48,7 +48,7 @@ Mark a task as complete with a summary of the work done. If the task has an outp
 | `summary` | Yes | Summary of the work completed |
 | `absoluteTaskPath` | No | **Legacy (V1).** Still accepted so older callers keep working, but it does NOT identify a WorkItem |
 | `output` | No | Structured output object (required if task has an output schema) |
-| `skipGates` | No | Set to `true` to skip quality gate checks |
+| ~~`skipGates`~~ | **Rejected** | **Not supported.** This endpoint runs no quality gates, so there is nothing to skip. Passing it is a hard error. Use the `check-quality-gates` skill for gates. |
 
 ### Which WorkItem gets completed
 
