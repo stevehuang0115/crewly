@@ -270,11 +270,23 @@ if [ -z "$RESOLVED_SESSION" ]; then
 fi
 
 if [ "$MONITOR_IDLE" = "true" ] && [ -n "$RESOLVED_SESSION" ]; then
+  # ttlMinutes is deliberately OMITTED so the server default applies.
+  #
+  # This used to hardcode `ttlMinutes: 120`, silently capping every delegation
+  # subscription at 2h against a system default of 8h
+  # (EVENT_BUS_CONSTANTS.DEFAULT_SUBSCRIPTION_TTL_MINUTES = 480, applied by
+  # event-bus.service.ts via `input.ttlMinutes ?? DEFAULT`). A subscription
+  # that expires 6h early stops the TL ever being woken for a long-running
+  # delegation — the same failure shape as a lease lapsing under an agent that
+  # is simply heads-down.
+  #
+  # Omitting beats re-hardcoding 480: the constant stays the single source of
+  # truth and the skill cannot drift from it again.
   SUB_BODY=$(jq -n \
     --arg eventType "agent:idle" \
     --arg sessionName "$TO" \
     --arg subscriber "$RESOLVED_SESSION" \
-    '{eventType: $eventType, filter: {sessionName: $sessionName}, subscriberSession: $subscriber, oneShot: true, ttlMinutes: 120}')
+    '{eventType: $eventType, filter: {sessionName: $sessionName}, subscriberSession: $subscriber, oneShot: true}')
   SUB_RESULT=$(api_call POST "/events/subscribe" "$SUB_BODY" 2>/dev/null || true)
   SUB_ID=$(echo "$SUB_RESULT" | jq -r '.data.id // empty' 2>/dev/null || true)
   if [ -n "$SUB_ID" ]; then

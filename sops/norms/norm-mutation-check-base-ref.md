@@ -88,6 +88,39 @@ If your negative test *also* flips to red under revert, it was passing for the
 wrong reason — it depends on the fix rather than constraining it. Investigate
 before shipping.
 
+## The restore step has the same trap, mirrored
+
+Reverting is only half the cycle. Putting your fix *back* is where I fell in a
+second time, on 2026-08-21, hours after writing this norm:
+
+```bash
+git checkout origin/main -- <path>   # ✅ revert — correct, this is the rule above
+<run tests>                          # ✅ 3 failed, as expected
+git checkout HEAD -- <path>          # ❌ "restore" — SILENTLY DISCARDED the fix
+```
+
+`git checkout HEAD -- <path>` restores from HEAD. If your fix is **not yet
+committed**, HEAD is the pre-fix state, so that command deletes your work
+instead of restoring it. Same command, same conditional meaning, opposite
+direction — and again no error.
+
+**Back the file up before reverting, and restore from the backup:**
+
+```bash
+cp <path> /tmp/fix.bak                # ✅ survives either commit state
+git checkout <base-ref> -- <path>
+<run tests>
+cp /tmp/fix.bak <path>                # ✅ restores what you actually wrote
+```
+
+Use `git checkout HEAD -- <path>` to restore **only** when the fix is already
+committed. When in doubt, the backup works in both states, which is the whole
+point.
+
+What caught it was the test suite, not me: the run right after went from 21/21
+to 18/3. Re-running the full suite after a mutation check is what turns this
+from lost work into a five-minute detour.
+
 ## Applies to
 
 Any "prove the test catches it" check: mutation checks, revert-and-rerun,

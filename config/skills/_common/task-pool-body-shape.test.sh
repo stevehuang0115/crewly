@@ -34,6 +34,10 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 PASS=0
 FAIL=0
 
+# The exact key set `blockItem` destructures from req.body:
+#   const { agentId, reason } = req.body   — and agentId is HARD-REQUIRED (400)
+BLOCK_ALLOWED_KEYS='["agentId","reason"]'
+
 # The exact key set `claimItem` destructures from req.body:
 #   const { agentId, workItemId, filters } = req.body
 CLAIM_ALLOWED_KEYS='["agentId","filters","workItemId"]'
@@ -120,6 +124,20 @@ assert_claim_contract() {
     PASS=$((PASS + 1)); echo "  ✓ ${label}: no keys outside {agentId, workItemId, filters}"
   else
     FAIL=$((FAIL + 1)); echo "  ✗ ${label}: body carries keys the controller never reads: ${extra}"
+  fi
+}
+
+# Assert a captured /task-pool/block body matches what blockItem reads.
+assert_block_contract() {
+  local label="$1" body="$2"
+  assert_jq "${label}: agentId present (endpoint 400s without it)" '.agentId | type == "string" and length > 0' "$body"
+  assert_jq "${label}: reason is a non-empty string" '.reason | type == "string" and length > 0' "$body"
+  local extra
+  extra=$(printf '%s' "$body" | jq -c --argjson allowed "$BLOCK_ALLOWED_KEYS" '[keys[] | select(. as $k | $allowed | index($k) == null)]')
+  if [ "$extra" = "[]" ]; then
+    PASS=$((PASS + 1)); echo "  ✓ ${label}: no keys outside {agentId, reason}"
+  else
+    FAIL=$((FAIL + 1)); echo "  ✗ ${label}: keys silently discarded by blockItem: ${extra}"
   fi
 }
 
@@ -319,6 +337,29 @@ if [ -z "$BODY" ]; then
 else
   assert_add_contract "decompose-goal" "$BODY"
   assert_jq "decompose-goal: priority preserved in metadata.priority" '.metadata.priority != null' "$BODY"
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 9 — agent/core/block-task -> /task-pool/block/:id
+#
+# This callsite sent {reason, questions?, urgency?} and NO agentId, so every
+# call 400'd with "agentId is required" — the skill agents use to report being
+# blocked could not report anything. `questions`/`urgency` had no field on the
+# endpoint and were discarded; they are now folded into `reason`, which is read.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 9: agent/core/block-task -> /block ---"
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/agent/core/block-task/execute.sh" \
+  '{"workItemId":"wi-stub-1","sessionName":"quinn-blocker","reason":"missing creds","urgency":"high","questions":"who owns X?"}' \
+  >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/block/wi-stub-1")
+if [ -z "$BODY" ]; then
+  FAIL=$((FAIL + 1)); echo "  ✗ no /task-pool/block POST captured for block-task"
+else
+  assert_block_contract "block-task" "$BODY"
+  assert_jq "block-task: urgency folded into reason, not dropped" '.reason | test("urgency")' "$BODY"
+  assert_jq "block-task: questions folded into reason, not dropped" '.reason | test("who owns X")' "$BODY"
 fi
 
 echo ""
