@@ -63,6 +63,34 @@ if [ -n "$QUESTIONS" ]; then
 Open questions: ${QUESTIONS}"
 fi
 
+# Pre-check the status and explain, rather than letting the state machine
+# answer with a bare conflict.
+#
+# WORK_ITEM_TRANSITIONS (backend/src/types/v2/work-item.types.ts) allows
+# `blocked` ONLY from `running` — you can block work you have claimed, not work
+# you have merely been dispatched. That rule is deliberate and stays: `blocked`
+# has a single outbound edge (-> queued), so every consumer treats it as a
+# near-terminal parking state while the state machine does not. Widening the
+# ways IN would widen the surface for stranding.
+#
+# So the fix is the message, not the rule: name the current status and the
+# remedy skill, the same disposition as the skipGates rejection.
+CURRENT_STATUS=$(api_call GET "/task-pool/items/${WORK_ITEM_ID}" 2>/dev/null \
+  | jq -r '(.data // .) | .status // empty' 2>/dev/null || true)
+
+if [ -n "$CURRENT_STATUS" ] && [ "$CURRENT_STATUS" != "running" ]; then
+  case "$CURRENT_STATUS" in
+    queued|scheduled)
+      error_exit "WorkItem ${WORK_ITEM_ID} is '${CURRENT_STATUS}', not 'running' — only a claimed WorkItem can be blocked. Claim it first with the accept-task skill, then block it. If you cannot start it at all, cancel it instead (POST /task-pool/items/${WORK_ITEM_ID}/cancel)." ;;
+    blocked)
+      error_exit "WorkItem ${WORK_ITEM_ID} is already blocked. To add detail, append a note with the report-progress skill rather than blocking again." ;;
+    done|done_by_worker|verified|cancelled|failed|rejected)
+      error_exit "WorkItem ${WORK_ITEM_ID} is '${CURRENT_STATUS}' and cannot be blocked — it has already left the running state. If this is wrong, raise it with your team lead rather than forcing a transition." ;;
+    *)
+      error_exit "WorkItem ${WORK_ITEM_ID} is '${CURRENT_STATUS}', not 'running' — only a claimed (running) WorkItem can be blocked." ;;
+  esac
+fi
+
 BODY=$(jq -n \
   --arg agentId "$SESSION_NAME" \
   --arg reason "$REASON" \

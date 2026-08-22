@@ -176,6 +176,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self._json(b"{\"success\":true}")
     def do_GET(self):
         self._record(b"")
+        # block-task pre-checks item status before calling /block.
+        # NOTE: this block lives inside a bash single-quoted python3 -c
+        # argument, so it must contain NO apostrophe characters at all —
+        # a stray one silently terminates the bash string and the file
+        # then fails to parse many lines later.
+        # A marker file lets a scenario choose what status is reported; with
+        # no marker the status is absent and the pre-check is skipped, which
+        # keeps every pre-existing scenario behaving as before.
+        marker = LOG + ".status"
+        if self.path.startswith("/api/task-pool/items/") and os.path.exists(marker):
+            with open(marker) as f:
+                st = f.read().strip()
+            self._json(json.dumps({"success": True, "data": {"id": "wi-stub-1", "status": st}}).encode())
+            return
         self._json(b"{\"success\":true,\"data\":[],\"workItems\":[]}")
 
 httpd = http.server.HTTPServer(("127.0.0.1", PORT), Handler)
@@ -360,6 +374,41 @@ else
   assert_block_contract "block-task" "$BODY"
   assert_jq "block-task: urgency folded into reason, not dropped" '.reason | test("urgency")' "$BODY"
   assert_jq "block-task: questions folded into reason, not dropped" '.reason | test("who owns X")' "$BODY"
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 11 — block-task pre-checks status instead of letting the state
+# machine answer with a bare conflict.
+#
+# WORK_ITEM_TRANSITIONS allows `blocked` only from `running`. Blocking a queued
+# item previously surfaced as a raw HTTP 500 carrying a state-machine string —
+# a CLIENT error dressed as a server fault, which makes retry logic treat a
+# PERMANENT failure as transient.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 11: block-task status pre-check ---"
+: > "$LOG"
+echo "queued" > "${LOG}.status"
+PRECHECK_OUT=$(bash "${REPO_ROOT}/config/skills/agent/core/block-task/execute.sh" \
+  '{"workItemId":"wi-stub-1","sessionName":"quinn-blocker","reason":"missing creds"}' 2>&1 || true)
+rm -f "${LOG}.status"
+
+if printf '%s' "$PRECHECK_OUT" | grep -q "not 'running'"; then
+  PASS=$((PASS + 1)); echo "  ✓ refuses a queued item, naming its actual status"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ expected a status refusal, got: ${PRECHECK_OUT}"
+fi
+
+if printf '%s' "$PRECHECK_OUT" | grep -q "accept-task"; then
+  PASS=$((PASS + 1)); echo "  ✓ names the remedy skill rather than the state machine"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ refusal does not tell the caller how to proceed"
+fi
+
+if grep -qF '"path": "/api/task-pool/block/' "$LOG"; then
+  FAIL=$((FAIL + 1)); echo "  ✗ called /block anyway — the pre-check must short-circuit"
+else
+  PASS=$((PASS + 1)); echo "  ✓ no /block POST emitted"
 fi
 
 echo ""

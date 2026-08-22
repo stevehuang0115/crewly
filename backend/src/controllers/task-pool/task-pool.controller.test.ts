@@ -18,6 +18,7 @@ import {
   addItem,
   cancelQueuedItem,
   listAllItems,
+  blockItem,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
@@ -62,6 +63,7 @@ const mockService = {
   addToPool: jest.fn(),
   getAllItems: jest.fn().mockResolvedValue([]),
   cancelQueued: jest.fn(),
+  updateItemStatus: jest.fn(),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -1180,6 +1182,74 @@ describe('TaskPoolController', () => {
   // -------------------------------------------------------------------------
   // GET /api/task-pool/items — listAllItems (status/target filters, #679)
   // -------------------------------------------------------------------------
+
+  describe('blockItem status-code mapping', () => {
+    it('maps an invalid status transition to 409, not 500', async () => {
+      // WORK_ITEM_TRANSITIONS allows `blocked` only from `running`, so
+      // blocking a queued item throws. That is a CLIENT error — the caller
+      // asked for something the state machine forbids. Reporting it as a 500
+      // makes retry logic treat a PERMANENT failure as transient and hammer
+      // the endpoint.
+      mockService.updateItemStatus.mockRejectedValue(
+        new Error('Invalid status transition for WorkItem wi-1: queued → blocked'),
+      );
+
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'missing creds' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(409);
+      expect(res.status).not.toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          error: expect.stringContaining('queued → blocked'),
+        }),
+      );
+    });
+
+    it('still maps a missing WorkItem to 404', async () => {
+      mockService.updateItemStatus.mockRejectedValue(new Error('WorkItem wi-nope not found'));
+
+      const req = mockReq({
+        params: { workItemId: 'wi-nope' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'r' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+    });
+
+    it('still maps a genuine server fault to 500', async () => {
+      // The 409 mapping must not swallow real failures.
+      mockService.updateItemStatus.mockRejectedValue(new Error('ENOSPC: disk full'));
+
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'r' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+    });
+
+    it('still rejects a missing agentId with 400', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { reason: 'r' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.updateItemStatus).not.toHaveBeenCalled();
+    });
+  });
 
   describe('listAllItems (#679 status/target filters)', () => {
     const items = [
