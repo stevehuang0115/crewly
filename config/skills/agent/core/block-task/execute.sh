@@ -7,7 +7,12 @@
 # `/task-pool/block/:workItemId` is.
 #
 # Input shape:
-#   { "workItemId": "abc-123", "reason": "missing creds", "questions"?: "...", "urgency"?: "..." }
+#   { "workItemId": "abc-123", "sessionName": "dev-1", "reason": "missing creds",
+#     "questions"?: "...", "urgency"?: "..." }
+#
+# `sessionName` is REQUIRED (sent as `agentId`) — the endpoint 400s without it.
+# `questions`/`urgency` are folded into `reason`; the endpoint has no field for
+# them.
 #
 # Backwards-compat: if `absoluteTaskPath` is provided instead of
 # `workItemId`, we emit a warning and skip the call rather than fall back
@@ -35,12 +40,32 @@ fi
 require_param "workItemId" "$WORK_ITEM_ID"
 require_param "reason" "$REASON"
 
+SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // .agentId // empty')
+[ -z "$SESSION_NAME" ] && SESSION_NAME="${CREWLY_SESSION_NAME:-}"
+require_param "sessionName (or agentId, or CREWLY_SESSION_NAME)" "$SESSION_NAME"
+
+# `blockItem` destructures ONLY `{agentId, reason}` and hard-requires agentId
+# (400 "agentId is required"). This skill previously sent neither agentId nor a
+# readable home for `questions`/`urgency`, so EVERY call 400'd — the skill
+# agents use to report being blocked could not report anything.
+#
+# `questions` and `urgency` have no field on this endpoint. Rather than drop
+# caller-supplied content on the floor (the same silent-discard bug in a new
+# shape), they are folded into `reason`, which IS read and is forwarded to
+# TaskProjection.markBlocked. The information survives; only the structure is
+# lost, and the endpoint has nowhere to put the structure.
+if [ -n "$URGENCY" ]; then
+  REASON="[urgency: ${URGENCY}] ${REASON}"
+fi
+if [ -n "$QUESTIONS" ]; then
+  REASON="${REASON}
+
+Open questions: ${QUESTIONS}"
+fi
+
 BODY=$(jq -n \
+  --arg agentId "$SESSION_NAME" \
   --arg reason "$REASON" \
-  --arg questions "$QUESTIONS" \
-  --arg urgency "$URGENCY" \
-  '{reason: $reason} +
-   (if $questions != "" then {questions: $questions} else {} end) +
-   (if $urgency != "" then {urgency: $urgency} else {} end)')
+  '{agentId: $agentId, reason: $reason}')
 
 api_call POST "/task-pool/block/${WORK_ITEM_ID}" "$BODY"

@@ -47,6 +47,34 @@ assert_eq_json() {
   fi
 }
 
+# The exact key set `completeItem` destructures from req.body:
+#   const { agentId, tokenUsage, result } = req.body
+# (`workItemId` arrives as a PATH param, not in the body.)
+#
+# Added 2026-08-21 after `skipGates` shipped as a dead field: the skill parsed
+# it, put it on the wire, and nothing read it — POST /task-pool/complete runs no
+# quality gates at all. The per-field assertions below could not catch that,
+# because you cannot write an assertion for a field you do not know exists.
+# A key-SUBSET assertion catches the whole class instead of one field at a time.
+# Ported from the sibling task-pool-body-shape.test.sh, where the same shape
+# found three unknown instances on its first run.
+COMPLETE_ALLOWED_KEYS='["agentId","tokenUsage","result"]'
+
+# Assert a captured /task-pool/complete body carries only keys the endpoint reads.
+assert_complete_contract() {
+  local label="$1" body="$2"
+  local extra
+  extra=$(printf '%s' "$body" | jq -c --argjson allowed "$COMPLETE_ALLOWED_KEYS" '[keys[] | select(. as $k | $allowed | index($k) == null)]')
+  if [ "$extra" = "[]" ]; then
+    PASS=$((PASS + 1)); echo "  ✓ ${label}: every top-level key is read by completeItem"
+  else
+    FAIL=$((FAIL + 1))
+    echo "  ✗ ${label}: keys silently discarded by completeItem: ${extra}"
+    echo "    completeItem destructures only {agentId, tokenUsage, result}."
+    echo "    A key outside that set is accepted, dropped, and believed to have worked."
+  fi
+}
+
 assert_jq() {
   local test_name="$1" jq_filter="$2" body="$3"
   local result
@@ -155,6 +183,7 @@ if [ -z "$COMPLETE_LINE" ]; then
   echo "  ✗ no /task-pool/complete POST captured"
 else
   COMPLETE_BODY=$(printf '%s' "$COMPLETE_LINE" | jq -r '.body')
+  assert_complete_contract "report-status" "$COMPLETE_BODY"
   assert_jq "agentId is the session name" '.agentId == "quinn-test"' "$COMPLETE_BODY"
   assert_jq "result.summary is non-empty" '.result.summary | length > 0' "$COMPLETE_BODY"
   assert_jq "result.summary matches input" '.result.summary == "Report-status smoke summary"' "$COMPLETE_BODY"
@@ -181,6 +210,7 @@ if [ -z "$COMPLETE_LINE" ]; then
   echo "  ✗ no /task-pool/complete POST captured"
 else
   COMPLETE_BODY=$(printf '%s' "$COMPLETE_LINE" | jq -r '.body')
+  assert_complete_contract "complete-task" "$COMPLETE_BODY"
   assert_jq "agentId is the session name" '.agentId == "quinn-ct"' "$COMPLETE_BODY"
   assert_jq "result.summary matches" '.result.summary == "Complete-task smoke summary"' "$COMPLETE_BODY"
   assert_jq "result.prNumber merged into result (was top-level result before)" '.result.prNumber == 42' "$COMPLETE_BODY"
@@ -205,6 +235,7 @@ if [ -z "$COMPLETE_LINE" ]; then
   echo "  ✗ no /task-pool/complete POST captured"
 else
   COMPLETE_BODY=$(printf '%s' "$COMPLETE_LINE" | jq -r '.body')
+  assert_complete_contract "orc-complete-task" "$COMPLETE_BODY"
   assert_jq "agentId defaults to crewly-orc" '.agentId == "crewly-orc"' "$COMPLETE_BODY"
   assert_jq "result.summary matches" '.result.summary == "Orc complete-task smoke summary"' "$COMPLETE_BODY"
   assert_jq "no top-level summary leak" '.summary == null' "$COMPLETE_BODY"
@@ -223,6 +254,7 @@ if [ -z "$COMPLETE_LINE" ]; then
   echo "  ✗ no /task-pool/complete POST captured"
 else
   COMPLETE_BODY=$(printf '%s' "$COMPLETE_LINE" | jq -r '.body')
+  assert_complete_contract "scenario-4" "$COMPLETE_BODY"
   assert_jq "agentId overridden to caller value" '.agentId == "crewly-product-leo-21a5477e"' "$COMPLETE_BODY"
 fi
 
@@ -242,6 +274,40 @@ if [ "$EXIT" -ne 0 ] && printf '%s' "$OUTPUT" | grep -q "summary is required"; t
 else
   FAIL=$((FAIL + 1))
   echo "  ✗ should reject empty summary; exit=$EXIT, output=$OUTPUT"
+fi
+
+# ---------------------------------------------------------------------------
+# Scenario 5 — complete-task REJECTS skipGates loudly
+#
+# skipGates was accepted and silently discarded: the skill put it on the wire
+# and completeItem never read it, so a caller believed gates were skipped when
+# POST /task-pool/complete runs no gates at all. The disposition chosen was
+# reject-loudly rather than honour (incoherent — nothing to skip) or drop
+# silently (leaves the false belief intact). This locks that in.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 5: complete-task rejects skipGates ---"
+: > "$LOG"
+SKIPGATES_OUT=$(bash "${REPO_ROOT}/config/skills/agent/core/complete-task/execute.sh" \
+  '{"workItemId":"wi-stub-1","sessionName":"quinn-sg","summary":"s","skipGates":true}' 2>&1 || true)
+SKIPGATES_RC=$?
+
+if printf '%s' "$SKIPGATES_OUT" | grep -q "skipGates is not supported"; then
+  PASS=$((PASS + 1)); echo "  ✓ errors with an explanation naming the field"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ expected a skipGates rejection, got: ${SKIPGATES_OUT}"
+fi
+
+if printf '%s' "$SKIPGATES_OUT" | grep -q "check-quality-gates"; then
+  PASS=$((PASS + 1)); echo "  ✓ points the caller at where gates actually live"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ rejection does not say where to run gates instead"
+fi
+
+if grep -qF '"path": "/api/task-pool/complete/' "$LOG"; then
+  FAIL=$((FAIL + 1)); echo "  ✗ completed the WorkItem anyway — rejection must happen BEFORE the POST"
+else
+  PASS=$((PASS + 1)); echo "  ✓ no complete POST emitted — fails before mutating state"
 fi
 
 echo ""

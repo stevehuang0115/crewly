@@ -23,7 +23,23 @@ WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
 ABSOLUTE_TASK_PATH=$(printf '%s' "$INPUT" | jq -r '.absoluteTaskPath // empty')
 SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
 SUMMARY=$(printf '%s' "$INPUT" | jq -r '.summary // empty')
+# `skipGates` is REJECTED, not ignored.
+#
+# It was previously parsed here and forwarded in the request body. Nothing ever
+# read it: `completeItem` destructures only `{agentId, tokenUsage, result}`
+# (task-pool.controller.ts), and `POST /task-pool/complete/:id` runs no quality
+# gates at all — gates live behind `POST /quality-gates/check`, reached via the
+# `check-quality-gates` skill. So the field promised to skip something this
+# endpoint never runs.
+#
+# Accepting-and-ignoring is the worst of the three dispositions: the caller
+# believes gates were skipped, the belief is unfalsifiable, and nothing ever
+# fails. Honouring it is incoherent (there is nothing here to skip). So it
+# fails loudly instead. Safe to hard-error: no caller in the repo passes it.
 SKIP_GATES=$(printf '%s' "$INPUT" | jq -r '.skipGates // empty')
+if [ -n "$SKIP_GATES" ]; then
+  error_exit "skipGates is not supported by complete-task and never was — it was accepted and silently discarded. POST /task-pool/complete runs no quality gates, so there is nothing here to skip. Quality gates live behind the 'check-quality-gates' skill (POST /quality-gates/check); run or skip them there. Remove skipGates from this call."
+fi
 OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
 require_param "sessionName" "$SESSION_NAME"
 require_param "summary" "$SUMMARY"
@@ -116,7 +132,6 @@ fi
 BODY=$(jq -n \
   --arg agentId "$SESSION_NAME" \
   --arg summary "$SUMMARY" \
-  --arg skipGates "$SKIP_GATES" \
   --argjson output "${OUTPUT_JSON:-null}" \
   '{
     agentId: $agentId,
@@ -124,8 +139,7 @@ BODY=$(jq -n \
               + (if $output != null and ($output | type) == "object"
                  then $output
                  else {} end))
-  }
-   + (if $skipGates == "true" then {skipGates: true} else {} end)')
+  }')
 
 api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY"
 
