@@ -128,7 +128,7 @@ fi
 cat >> "$HANDOFF_MSG_FILE" << FOOTER_EOF
 
 ---
-When done, report back using: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{"sessionName":"${TO}","status":"done","summary":"<brief summary>","projectPath":"${PROJECT_PATH}"}'
+When done, report back with report-status, passing the workItemId from your [CREWLY-DISPATCH] notice (or from get-my-tasks) so the right WorkItem is closed: bash ${CREWLY_ROOT}/config/skills/agent/core/report-status/execute.sh '{"sessionName":"${TO}","workItemId":"<your WorkItem id>","status":"done","summary":"<brief summary>","projectPath":"${PROJECT_PATH}"}'
 FOOTER_EOF
 
 HANDOFF_MESSAGE=$(cat "$HANDOFF_MSG_FILE")

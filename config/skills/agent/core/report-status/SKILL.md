@@ -56,6 +56,32 @@ When `status` is `done` and a `taskPath` is provided, the task file is automatic
 | `--task-id` | `taskId` | No | Task ID (for structured StatusReport format) |
 | `--progress` | `progress` | No | Progress percentage 0-100 |
 | `--structured` | `structured` | No | Use structured StatusReport format |
+| `--work-item-id` / `--wi-id` | `workItemId` | **Pass this when `status=done`** | Which WorkItem to complete. See below — without it the skill infers, and refuses when the choice is ambiguous |
+
+## This skill COMPLETES a WorkItem, not just reports
+
+When `status=done`, this skill closes a WorkItem in the task pool as a side
+effect. That is a surprising amount of authority for something named
+`report-status`, and the name/behaviour mismatch is exactly why nobody
+anticipated it silently closing the wrong item. It is not renamed here only
+because too many callers reference it.
+
+**Pass `workItemId` whenever you report done.** Resolution order:
+
+1. **`workItemId` given** — that item is completed. Always prefer this.
+2. **Omitted, exactly one WorkItem running for your session** — that one is
+   completed, and the resolved id is echoed so you can see what closed.
+3. **Omitted, more than one running** — the skill **refuses** and names the
+   candidates. It will not guess.
+
+Case 3 exists because guessing destroyed real work: on 2026-08-21 the skill
+completed an arbitrary first running item, silently closing a queued WorkItem
+nobody had started while the agent was reporting a different one done. Nothing
+failed, and the false completion spawned a verify WorkItem for a delivery that
+had never happened.
+
+If the completion itself fails, the skill says so explicitly — a reported
+status never implies the WorkItem actually closed.
 
 ## Examples — CLI Flags (preferred)
 
