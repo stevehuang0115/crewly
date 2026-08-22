@@ -53,7 +53,7 @@ anything governance-related — delegating, escalating, deciding scope.
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `trigger` | No | Filter to norms relevant to a moment (e.g. `"before_commit"`, `"before_delegate"`). Omit to read all. |
+| `trigger` | No | Filter to norms relevant to a moment (e.g. `"before_commit"`, `"delegation"`). Matched against the norm's `trigger:` list as whole tokens, case-insensitively — `"lead"` does NOT match a norm tagged `inbound_lead`. Pass several comma-separated to mean "any of these". Omit to read all. |
 | `teamId` | No | Team to read. Defaults to the team resolved from your `sessionName`. |
 | `sessionName` | No | Your session name, used to resolve the team when `teamId` is omitted. |
 
