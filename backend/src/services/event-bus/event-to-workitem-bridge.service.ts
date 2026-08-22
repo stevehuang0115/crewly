@@ -478,6 +478,12 @@ export class EventToWorkItemBridge {
         retryCount: sourceWI.retryCount,
         cap,
       });
+      // The review WI is a real successor: a TL picks the work up from there.
+      await this.recordSuccessor(
+        sourceWI.id,
+        escalationId,
+        `retry cap ${cap} reached — escalated for review`,
+      );
       return;
     }
 
@@ -509,6 +515,48 @@ export class EventToWorkItemBridge {
       retryAttempt,
       cap,
     });
+    // Record on the SOURCE that this retry is its successor. The source stays
+    // in `rejected` — whose only outbound edge is `→ queued`, so it can never
+    // reach a terminal state — and without this stamp the only way to know it
+    // was dealt with is to scan for a child, which is exactly the inference
+    // that made the 469a3a21 rule wrong in both directions. It also converts
+    // every silent failure above (source lookup empty, addToPool no-op on an
+    // id collision) into a visibly UNDISPOSED source that the reconciler's
+    // safety net will pick up, instead of a strand nobody can see.
+    await this.recordSuccessor(sourceWI.id, retryId, `retry ${retryAttempt}/${cap}`);
+  };
+
+  /**
+   * Stamp a source WorkItem with the successor that now carries its work.
+   *
+   * The bridge never mutates status (see the class doc comment) and this keeps
+   * that invariant: `disposeFailedWorkItem` with a `successorWorkItemId`
+   * writes metadata only, no transition. Best-effort — the successor WI is
+   * already in the pool by this point, so failing to stamp must not undo real
+   * work. An unstamped source simply looks undisposed, and the reconciler's
+   * safety net will reconcile it.
+   *
+   * @param sourceWorkItemId - The `rejected` item being succeeded.
+   * @param successorId      - The WorkItem now carrying the work.
+   * @param reason           - Audit-trail justification.
+   */
+  private recordSuccessor = async (
+    sourceWorkItemId: string,
+    successorId: string,
+    reason: string,
+  ): Promise<void> => {
+    try {
+      await this.taskPool.disposeFailedWorkItem(sourceWorkItemId, {
+        reason,
+        successorWorkItemId: successorId,
+      });
+    } catch (err) {
+      this.logger.warn('Failed to stamp successor on source WorkItem (non-fatal)', {
+        sourceWorkItemId,
+        successorId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   };
 
   /**

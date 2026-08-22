@@ -1512,7 +1512,12 @@ export class RequestSlaSubscriber {
       // Same state-machine constraint as markResolved: `queued → failed`
       // is illegal per WORK_ITEM_TRANSITIONS. Route queued WIs to
       // `cancelled`; running WIs go to `failed` as before.
-      const target = pickFailTarget(wi.status);
+      // Capture BEFORE the transition: `transitionStatus` mutates the stored
+      // record in place, so reading `wi.status` afterwards yields the status we
+      // just wrote, not the one we came from. The audit reason and the log
+      // below both need the origin.
+      const fromStatus = wi.status;
+      const target = pickFailTarget(fromStatus);
       await this.taskPool.transitionStatus(
         workItemId,
         target,
@@ -1529,9 +1534,24 @@ export class RequestSlaSubscriber {
       this.logger.info('SLA escalation orphan WI auto-closed', {
         workItemId,
         requestId,
-        fromStatus: wi.status,
+        fromStatus,
         toStatus: target,
       });
+
+      // `cancelled` is strictly terminal and needs nothing further. `failed`
+      // and `rejected` do: their only outbound edge is `→ queued`, so without
+      // a disposition the item stops here permanently. This path writes them
+      // via `transitionStatus` directly rather than `failItem`/`verifyItem`,
+      // so neither the `task:failed` retry/escalate branch in
+      // `V3DataService.onTaskFailed` nor the `task:rejected` bridge successor
+      // ever fires for it — it was the reproducible stranding path. Route it
+      // through the funnel so the item is retried, succeeded, or deliberately
+      // closed with an audit record.
+      if (target === 'failed' || target === 'rejected') {
+        await this.taskPool.disposeFailedWorkItem(workItemId, {
+          reason: `SLA escalation timeout (from ${fromStatus})`,
+        });
+      }
     } catch (err) {
       this.logger.warn('SLA escalation orphan-fail threw', {
         workItemId,

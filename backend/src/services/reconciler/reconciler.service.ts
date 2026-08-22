@@ -35,6 +35,7 @@ import {
   reconcileRequestStatus,
   detectRecoverableWorkItems,
   detectRetryableFailedWorkItems,
+  detectUndisposedStrandedWorkItems,
   detectDependencyResolvedWorkItems,
   detectUnclaimedTasks,
   detectUnverifiedWorkItems,
@@ -225,6 +226,13 @@ export class ReconcilerService {
       // explicit verdict so unverified work is never silently auto-accepted by
       // the 24h TTL fallback (pickTTLExpiryTarget('done_by_worker') → verified).
       await this.enforceVerification(workItems);
+
+      // 3e. Successor model safety net: `rejected`/`failed` items that nobody
+      // disposed of. Runs BEFORE the pruning pass for the same reason
+      // enforceVerification does — the pruning rules deliberately skip these
+      // statuses (no legal terminal edge), so if this pass does not deal with
+      // them nothing downstream will, and the strand is silent.
+      await this.disposeStrandedWorkItems(workItems);
 
       // 4. Pruning pass (F4): TTL expiry + orphan cascade + deep cascade + stale queue detection
       const pruning = runPruningPass(workItems);
@@ -599,6 +607,54 @@ export class ReconcilerService {
    *
    * @param workItems - All active WorkItems for this pass.
    */
+  /**
+   * Dispose of `rejected`/`failed` WorkItems that no writer dealt with.
+   *
+   * The writers dispose their own items eagerly; this catches the ones that
+   * fell through — a writer that threw, a bridge successor that never
+   * materialised. Runs the same funnel the writers use, so the outcome and the
+   * audit record are identical regardless of who noticed.
+   *
+   * Non-fatal throughout: a stranded item is already the failure case, and
+   * throwing here would take down the rest of the reconcile pass with it.
+   *
+   * @param workItems - The pass's WorkItem snapshot.
+   */
+  private async disposeStrandedWorkItems(workItems: WorkItem[]): Promise<void> {
+    const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
+    try {
+      const { items } = detectUndisposedStrandedWorkItems(workItems);
+      if (items.length === 0) return;
+
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const pool = TaskPoolService.getInstance();
+
+      for (const wi of items) {
+        try {
+          const disposition = await pool.disposeFailedWorkItem(wi.id, {
+            reason:
+              `Stranded in '${wi.status}' with no successor ` +
+              `(retryCount=${wi.retryCount}/${wi.maxRetries})`,
+          });
+          log.warn('Disposed a stranded WorkItem the writers missed', {
+            workItemId: wi.id,
+            status: wi.status,
+            kind: disposition?.kind ?? 'none',
+          });
+        } catch (err) {
+          log.warn('Disposition of a stranded WorkItem failed (non-fatal)', {
+            workItemId: wi.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+    } catch (err) {
+      log.warn('disposeStrandedWorkItems pass failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
   private async enforceVerification(workItems: WorkItem[]): Promise<void> {
     const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
     try {

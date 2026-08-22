@@ -21,6 +21,8 @@ import {
   isWorkItem,
   validateCreateWorkItemInput,
   createWorkItem,
+  getTtlAnchorAt,
+  LAST_REQUEUED_AT_METADATA_KEY,
 } from './work-item.types.js';
 import type { CreateWorkItemInput, WorkItem } from './work-item.types.js';
 
@@ -521,6 +523,64 @@ describe('WorkItem Types', () => {
       const wi = createWorkItem({ ...input, dependsOn: [] });
       expect(wi.status).toBe('queued');
       expect(wi.dependsOn).toBeUndefined();
+    });
+  });
+
+  describe('getTtlAnchorAt', () => {
+    const base = { createdAt: '2026-01-01T00:00:00.000Z' };
+
+    it('falls back to createdAt when the item has never been requeued', () => {
+      expect(getTtlAnchorAt(base)).toBe(base.createdAt);
+      expect(getTtlAnchorAt({ ...base, metadata: {} })).toBe(base.createdAt);
+      expect(getTtlAnchorAt({ ...base, metadata: { other: 'x' } })).toBe(base.createdAt);
+    });
+
+    it('returns the requeue timestamp once one has been recorded', () => {
+      const requeuedAt = '2026-01-05T12:00:00.000Z';
+      expect(
+        getTtlAnchorAt({
+          ...base,
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: requeuedAt },
+        }),
+      ).toBe(requeuedAt);
+    });
+
+    it('never mutates or reinterprets createdAt itself', () => {
+      const wi = {
+        ...base,
+        metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: '2026-01-05T12:00:00.000Z' },
+      };
+      getTtlAnchorAt(wi);
+      expect(wi.createdAt).toBe('2026-01-01T00:00:00.000Z');
+    });
+
+    it('ignores a non-string metadata value rather than trusting it', () => {
+      // `metadata` is Record<string, unknown> and round-trips through storage,
+      // so a wrong-typed value is reachable without a type error at the writer.
+      for (const bad of [42, null, undefined, {}, ['2026-01-05T12:00:00.000Z']]) {
+        expect(
+          getTtlAnchorAt({ ...base, metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: bad } }),
+        ).toBe(base.createdAt);
+      }
+    });
+
+    it('ignores an unparseable date rather than producing a NaN age', () => {
+      // A NaN age would make `age > ttlMs` false forever, silently disabling
+      // TTL for this item — a quiet failure, which is the mode we are trying
+      // to get rid of. Fall back to a timestamp that definitely parses.
+      expect(
+        getTtlAnchorAt({ ...base, metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: 'not-a-date' } }),
+      ).toBe(base.createdAt);
+      expect(
+        Number.isNaN(
+          new Date(
+            getTtlAnchorAt({
+              ...base,
+              metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: 'not-a-date' },
+            }),
+          ).getTime(),
+        ),
+      ).toBe(false);
     });
   });
 });

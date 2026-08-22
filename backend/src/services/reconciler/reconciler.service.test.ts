@@ -9,6 +9,11 @@ import type { ReconcilerDataProvider } from './reconciler.service.js';
 import { createWorkItem, createRequest, createTaskClaim, isValidWorkItemTransition } from '../../types/v2/index.js';
 import type { WorkItem, WorkItemStatus, Request, TaskClaim, ReconcileCorrection, WakeAction } from '../../types/v2/index.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import {
+  WORK_ITEM_STATUSES,
+  WORK_ITEM_TRANSITIONS,
+  DISPOSITION_METADATA_KEY,
+} from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Mock settings service for maxConcurrentAgents tests
@@ -38,6 +43,19 @@ jest.mock('../v3/escalation-router.service.js', () => ({
   EscalationRouterService: {
     getInstance: () => ({
       escalateUnverifiedWorkItem: mockEscalateUnverified,
+    }),
+  },
+}));
+
+// `disposeStrandedWorkItems` dynamically imports TaskPoolService to run the
+// disposition funnel. Stub it so the safety net is observable without standing
+// up the real pool singleton.
+const mockDisposeFailedWorkItem = jest.fn().mockResolvedValue({ kind: 'terminal' });
+
+jest.mock('../task-pool/task-pool.service.js', () => ({
+  TaskPoolService: {
+    getInstance: () => ({
+      disposeFailedWorkItem: mockDisposeFailedWorkItem,
     }),
   },
 }));
@@ -99,6 +117,7 @@ describe('ReconcilerService', () => {
       general: { maxConcurrentAgents: 10 },
     });
     mockEscalateUnverified.mockClear();
+    mockDisposeFailedWorkItem.mockClear();
   });
 
   afterEach(() => {
@@ -1230,6 +1249,138 @@ describe('ReconcilerService', () => {
 
       // Must not throw.
       await expect(service.runFull()).resolves.toBeDefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // EVAL 5 — full-cycle invariant
+  // -----------------------------------------------------------------------
+  /**
+   * One complete `runFull` over a pool holding every `WorkItemStatus` must
+   * produce zero illegal transitions AND must not leave a strand behind.
+   *
+   * The per-rule invariant tests in `reconcile-rules.test.ts` already derive
+   * their expectations from `WORK_ITEM_TRANSITIONS` and assert liveness plus
+   * soundness. This is the cycle-level counterpart: rules that are individually
+   * sound can still combine badly — #733 found exactly that, where the TTL rule
+   * legitimately emitted `done_by_worker → verified` and the pruning pass then
+   * treated the just-ACCEPTED parent as a dead ancestor.
+   *
+   * Both halves are asserted deliberately. Soundness alone passes just as
+   * happily if every rule is gutted to do nothing, and "do nothing" is exactly
+   * the state the reverted 469a3a21 rule left the codebase in.
+   */
+  describe('EVAL 5 — one full cycle produces no illegal transition and no surviving strand', () => {
+    const HOUR = 3600 * 1000;
+
+    /** One WorkItem in each status, all old enough to be actionable. */
+    function seedEveryStatus(): WorkItem[] {
+      const old = new Date(Date.now() - 48 * HOUR).toISOString();
+      return WORK_ITEM_STATUSES.map((status) =>
+        makeWorkItem({
+          status,
+          target: undefined, // no agent → no stuck-rule corrections to reason about
+          createdAt: old,
+          completedAt: old,
+        }),
+      );
+    }
+
+    it('soundness: every applied correction is a legal edge for the status it came from', async () => {
+      const workItems = seedEveryStatus();
+      const byId = new Map(workItems.map((wi) => [wi.id, wi]));
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue(workItems),
+      });
+      service = new ReconcilerService(provider, {
+        fastLoopIntervalMs: 10_000,
+        fullLoopIntervalMs: 60_000,
+      });
+
+      const result = await service.runFull();
+
+      const workItemCorrections = result.corrections.filter(
+        (c) => c.entityType === 'work_item',
+      );
+      for (const c of workItemCorrections) {
+        const source = byId.get(c.entityId);
+        if (!source) continue;
+        expect(
+          WORK_ITEM_TRANSITIONS[source.status].has(c.newState as WorkItemStatus),
+        ).toBe(true);
+      }
+    });
+
+    it('liveness: the stranding statuses are handed to the funnel, and only those', async () => {
+      const workItems = seedEveryStatus();
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue(workItems),
+      });
+      service = new ReconcilerService(provider, {
+        fastLoopIntervalMs: 10_000,
+        fullLoopIntervalMs: 60_000,
+      });
+
+      await service.runFull();
+
+      const disposedIds = mockDisposeFailedWorkItem.mock.calls.map(
+        (call) => call[0] as string,
+      );
+      const expected = workItems
+        .filter((wi) => wi.status === 'rejected' || wi.status === 'failed')
+        .map((wi) => wi.id);
+
+      expect(disposedIds.sort()).toEqual(expected.sort());
+      // Non-empty, so "the rule did nothing" cannot pass this.
+      expect(disposedIds).toHaveLength(2);
+    });
+
+    it('a strand that is already disposed is left alone on subsequent cycles', async () => {
+      // Re-entrancy at cycle level: the funnel is idempotent, but the rule must
+      // not keep handing the same item back to it every 60s either.
+      const disposed = makeWorkItem({
+        status: 'rejected',
+        target: undefined,
+        completedAt: new Date(Date.now() - 48 * HOUR).toISOString(),
+        metadata: {
+          [DISPOSITION_METADATA_KEY]: {
+            kind: 'terminal',
+            at: new Date().toISOString(),
+            by: 'system',
+            reason: 'already handled',
+          },
+        },
+      });
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([disposed]),
+      });
+      service = new ReconcilerService(provider, {
+        fastLoopIntervalMs: 10_000,
+        fullLoopIntervalMs: 60_000,
+      });
+
+      await service.runFull();
+      await service.runFull();
+
+      expect(mockDisposeFailedWorkItem).not.toHaveBeenCalled();
+    });
+
+    it('a disposition failure does not abort the rest of the cycle', async () => {
+      mockDisposeFailedWorkItem.mockRejectedValueOnce(new Error('pool down'));
+      const workItems = seedEveryStatus();
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue(workItems),
+      });
+      service = new ReconcilerService(provider, {
+        fastLoopIntervalMs: 10_000,
+        fullLoopIntervalMs: 60_000,
+      });
+
+      const result = await service.runFull();
+
+      // Both strands still attempted; the throw is contained.
+      expect(mockDisposeFailedWorkItem).toHaveBeenCalledTimes(2);
+      expect(result).toBeDefined();
     });
   });
 });

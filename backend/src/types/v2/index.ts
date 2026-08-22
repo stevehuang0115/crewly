@@ -59,6 +59,8 @@ export {
   isWorkItem,
   validateCreateWorkItemInput,
   createWorkItem,
+  LAST_REQUEUED_AT_METADATA_KEY,
+  getTtlAnchorAt,
 } from './work-item.types.js';
 
 // Trigger types

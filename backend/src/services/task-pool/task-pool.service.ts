@@ -19,7 +19,16 @@ import type {
   WorkItemType,
   WorkItemOwner,
 } from '../../types/v2/work-item.types.js';
-import { isWorkItem, isValidWorkItemTransition, isTransitionPermitted } from '../../types/v2/work-item.types.js';
+import {
+  isWorkItem,
+  isValidWorkItemTransition,
+  isTransitionPermitted,
+  LAST_REQUEUED_AT_METADATA_KEY,
+  DISPOSITION_METADATA_KEY,
+  DISPOSITION_REQUIRED_STATUSES,
+  getWorkItemDisposition,
+} from '../../types/v2/work-item.types.js';
+import type { WorkItemDisposition } from '../../types/v2/work-item.types.js';
 import {
   createTaskClaim,
   type TaskClaim,
@@ -1485,7 +1494,20 @@ export class TaskPoolService {
         lastFailureReason: reason,
         lastFailureAt: now,
         retryAttempt: wi.retryCount,
+        // TTL anchor (see getTtlAnchorAt). The age-based expiry rules must
+        // measure this retry's window from HERE, not from the original
+        // `createdAt` — otherwise a WorkItem that failed after the 24h TTL is
+        // TTL-cancelled on the next reconciler pass, silently destroying the
+        // retry we just granted. `createdAt` is deliberately left untouched so
+        // it keeps meaning "when this work was first asked for".
+        [LAST_REQUEUED_AT_METADATA_KEY]: now,
       };
+      // A disposition describes how a PAST failure was dealt with. This item
+      // is back in play, so any existing stamp is history and must not be
+      // allowed to outlive the failure it described — otherwise the
+      // safety-net rule would read a stale stamp and skip the item the next
+      // time it strands. See DISPOSITION_METADATA_KEY.
+      delete wi.metadata[DISPOSITION_METADATA_KEY];
       // Clear the error field so a successful retry doesn't surface a
       // stale error message; the metadata above keeps the history.
       wi.error = undefined;
@@ -1498,6 +1520,187 @@ export class TaskPoolService {
       maxRetries: workItem.maxRetries,
       reason,
     });
+  }
+
+  /**
+   * Decide and record how a stranded WorkItem is dealt with — the single
+   * funnel every `rejected`/`failed` writer must route through.
+   *
+   * `rejected` and `failed` are the only two statuses that are neither
+   * terminal nor able to reach a terminal state: their sole outbound edge is
+   * `→ queued`. An item parked in either is finished as far as every consumer
+   * is concerned (see `SLA_TERMINAL_WORK_ITEM_STATUSES`) and unfinished as far
+   * as the state machine is concerned, and until this funnel existed nothing
+   * owned closing that gap. Items written there by a path that did not itself
+   * arrange a successor simply stopped, permanently and — since PR #733
+   * correctly stopped the pruning rules emitting illegal corrections for them
+   * — silently.
+   *
+   * Exactly one of three things happens, and the choice is recorded rather
+   * than left to be re-derived later by scanning other WorkItems:
+   *
+   * 1. **retried in place** — `failed` with retry budget left. The item goes
+   *    back on the queue via {@link requeueAfterFailure}, which bumps
+   *    `retryCount`. Deliberately NOT stamped: the item has left the stranding
+   *    statuses under its own power, and a stamp would be a claim about a
+   *    failure that is no longer the current one.
+   * 2. **succeeded by another item** — the caller already created a successor
+   *    (the `EventToWorkItemBridge` retry/escalation WorkItem). Stamped with
+   *    its id.
+   * 3. **terminal** — budget spent, or a status with no retry path. Stamped,
+   *    and escalated so a human or the orchestrator renders the verdict. This
+   *    is the "deliberate terminal state with an audit record" case: the item
+   *    stays in `rejected`/`failed` by design, because the alternative —
+   *    adding `→ cancelled` edges — would re-open the illegal-correction
+   *    surface #733 closed and turn a deliberate decision into a 24h default.
+   *
+   * Idempotent and re-entrant: an already-disposed item is returned unchanged,
+   * so concurrent reconciler passes converge and the safety-net rule cannot
+   * fire twice on the same strand. Terminating: the only branch that repeats
+   * is (1), and it bumps `retryCount`, so it can run at most `maxRetries`
+   * times before (3) becomes the only reachable outcome.
+   *
+   * @param workItemId - The stranded WorkItem.
+   * @param options    - `reason` is carried into the audit record and the
+   *                     escalation. `actor` defaults to `'system'`.
+   *                     `successorWorkItemId` selects outcome (2) when the
+   *                     caller owns a real successor.
+   * @returns The recorded disposition, or `null` when there was nothing to do
+   *          (item missing, or not in a stranding status).
+   *
+   * @example
+   * ```typescript
+   * await pool.disposeFailedWorkItem(wi.id, { reason: 'SLA escalation timeout' });
+   * ```
+   */
+  async disposeFailedWorkItem(
+    workItemId: string,
+    options: {
+      reason: string;
+      actor?: WorkItemOwner;
+      successorWorkItemId?: string;
+    },
+  ): Promise<WorkItemDisposition | null> {
+    const { reason, actor = 'system', successorWorkItemId } = options;
+    const workItem = await this.storage.findWorkItem(workItemId);
+    if (!workItem) return null;
+
+    // Only the stranding statuses need a disposition. Anything else is either
+    // still in play or already strictly terminal.
+    if (!DISPOSITION_REQUIRED_STATUSES.has(workItem.status)) return null;
+
+    // Idempotency: the stamp IS the key. Two passes converge here.
+    const existing = getWorkItemDisposition(workItem);
+    if (existing) return existing;
+
+    const now = new Date().toISOString();
+
+    // (2) The caller owns a real successor — record it and stop.
+    if (successorWorkItemId) {
+      return this.stampDisposition(workItemId, {
+        kind: 'succeeded_by',
+        at: now,
+        by: actor,
+        reason,
+        successorWorkItemId,
+      });
+    }
+
+    // (1) Retry in place. Only `failed` has a retry path — `rejected` reaches
+    // `queued` too, but re-running work a reviewer rejected without a fresh
+    // verdict would re-execute exactly what was turned down.
+    // `retryCount` is FAILURES ONLY — this branch is load-bearing on that
+    // semantic, not incidentally coupled to it. Reading a churn-inflated count
+    // here would send work that never failed straight to `terminal`.
+    //
+    // That is an invariant rather than an assumption as of #739: `releaseBack`
+    // used to bump `retryCount` on every lease lapse, so a worker who simply
+    // stopped heartbeating was charged a failure. Release churn now goes to
+    // {@link WorkItem.releaseCount}, which nothing branches on. Keep it that
+    // way — if a future change makes anything other than a failure move
+    // `retryCount`, this branch silently starts terminating live work, and a
+    // second counter here would hide that rather than surface it.
+    if (workItem.status === 'failed' && workItem.retryCount < workItem.maxRetries) {
+      await this.requeueAfterFailure(workItemId, reason);
+      this.logger.info('Stranded WorkItem retried in place', {
+        workItemId,
+        retryCount: workItem.retryCount + 1,
+        maxRetries: workItem.maxRetries,
+        reason,
+      });
+      // Not stamped — see the doc comment. The item is queued again, and the
+      // requeue itself is the audit record (metadata.failureHistory).
+      return {
+        kind: 'retried_in_place',
+        at: now,
+        by: actor,
+        reason,
+      };
+    }
+
+    // (3) Terminal. Escalate for the verdict, then stamp — in that order, so a
+    // failed escalation cannot leave a stamp claiming an escalation happened.
+    let escalationId: string | undefined;
+    try {
+      const { EscalationRouterService } = await import(
+        '../v3/escalation-router.service.js'
+      );
+      escalationId =
+        (await EscalationRouterService.getInstance().escalateFailedWorkItem(
+          workItem,
+          reason,
+        )) ?? undefined;
+    } catch (err) {
+      // Best-effort, matching every other escalation call site: a messaging
+      // blip must not leave the item stranded a second time. The stamp is
+      // still written, without an escalationId, so the gap is visible in the
+      // audit record rather than hidden by a retry loop.
+      this.logger.warn('escalateFailedWorkItem threw during disposition (non-fatal)', {
+        workItemId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+
+    return this.stampDisposition(workItemId, {
+      kind: 'terminal',
+      at: now,
+      by: actor,
+      reason,
+      escalationId,
+    });
+  }
+
+  /**
+   * Persist a disposition record onto a WorkItem's metadata.
+   *
+   * Writes metadata only — no status transition — so it is safe to call on an
+   * item whose status has no legal outbound edge, which is precisely the
+   * situation a `terminal` disposition describes.
+   *
+   * @param workItemId  - WorkItem to stamp.
+   * @param disposition - The record to write.
+   * @returns The disposition as written.
+   */
+  private async stampDisposition(
+    workItemId: string,
+    disposition: WorkItemDisposition,
+  ): Promise<WorkItemDisposition> {
+    const workItem = await this.storage.findWorkItem(workItemId);
+    if (workItem) {
+      workItem.metadata = {
+        ...(workItem.metadata ?? {}),
+        [DISPOSITION_METADATA_KEY]: disposition,
+      };
+      await this.storage.flush();
+    }
+    this.logger.info('WorkItem disposition recorded', {
+      workItemId,
+      kind: disposition.kind,
+      successorWorkItemId: disposition.successorWorkItemId,
+      escalationId: disposition.escalationId,
+      reason: disposition.reason,
+    });
+    return disposition;
   }
 
   // -----------------------------------------------------------------------

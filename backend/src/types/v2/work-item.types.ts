@@ -158,6 +158,162 @@ export const TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> = new Set(
  * release based on the current WI state?", and use {@link TERMINAL_WORK_ITEM_STATUSES}
  * when answering "is the state machine done with this WI?".
  */
+/**
+ * Metadata key recording the last time a WorkItem was put back on the queue
+ * after a failure.
+ *
+ * Written by `TaskPoolService.requeueAfterFailure`. Read only through
+ * {@link getTtlAnchorAt} — call sites must not reach for it directly, so the
+ * "which timestamp does age mean?" decision stays in one place.
+ */
+/**
+ * How a WorkItem that landed in `rejected`/`failed` was dealt with.
+ *
+ * - `retried_in_place`  the same WorkItem went back on the queue (`→ queued`)
+ *                       with `retryCount` bumped. The successor IS the item.
+ * - `succeeded_by`      a distinct WorkItem picked the work up (the
+ *                       `EventToWorkItemBridge` retry/escalation WI). The
+ *                       source stays where it is; `successorWorkItemId` names
+ *                       the item that carries the work now.
+ * - `terminal`          no successor, deliberately. The retry budget is spent
+ *                       or the status has no retry path, so the work stops
+ *                       here and an escalation carries the decision to a human
+ *                       or the orchestrator. `escalationId` names that record.
+ */
+export type WorkItemDispositionKind =
+  | 'retried_in_place'
+  | 'succeeded_by'
+  | 'terminal';
+
+/**
+ * The audit record proving a `rejected`/`failed` WorkItem was actually dealt
+ * with, rather than merely left in a status nothing acts on.
+ *
+ * This exists because the previous attempt at a successor model (reverted in
+ * `469a3a21`) tried to INFER whether a successor existed by scanning other
+ * WorkItems, and inference over a live filtered collection is wrong in both
+ * directions by construction:
+ *
+ *  - `getActiveWorkItems()` drops `done`/`cancelled`, so a successor that had
+ *    already completed was invisible → the rule concluded "no successor" and
+ *    re-dispatched the source → completed work ran a second time.
+ *  - `buildAutoWorkItem` sets `parentWorkItemId` on VERIFY WorkItems too, so an
+ *    unrelated verification child read as a successor → the rule skipped the
+ *    exact SLA case it was written to rescue.
+ *
+ * No refinement of that query fixes it, because the query is reconstructing
+ * information the writer already had and discarded. So the writer records it
+ * instead: whoever performs the disposition stamps it, in the same operation.
+ * The predicate then becomes a local field read with no collection to filter
+ * and no `parentWorkItemId` to misread.
+ */
+export interface WorkItemDisposition {
+  /** What was done. See {@link WorkItemDispositionKind}. */
+  kind: WorkItemDispositionKind;
+  /** ISO-8601 timestamp of the disposition. */
+  at: string;
+  /** Role that performed it. `'system'` for reconciler/subscriber paths. */
+  by: WorkItemOwner;
+  /** Human-readable justification, carried into the audit trail. */
+  reason: string;
+  /** Set when `kind === 'succeeded_by'`: the WorkItem now carrying the work. */
+  successorWorkItemId?: string;
+  /** Set when `kind === 'terminal'`: the PendingEscalation raised, if any. */
+  escalationId?: string;
+}
+
+/** Metadata key under which {@link WorkItemDisposition} is stored. */
+export const DISPOSITION_METADATA_KEY = 'disposition';
+
+/**
+ * Reads a WorkItem's disposition record, validating its shape.
+ *
+ * `metadata` is `Record<string, unknown>` and round-trips through storage, so
+ * the value is validated rather than cast. An unrecognised shape is treated as
+ * absent — the safety-net rule will then re-dispose the item, which is safe
+ * (dispositions are idempotent) whereas trusting a malformed record is not.
+ *
+ * @param wi - WorkItem (or any object carrying `metadata`) to read.
+ * @returns The disposition, or `null` if the item has not been disposed.
+ *
+ * @example
+ * ```typescript
+ * if (!isWorkItemDisposed(wi)) await pool.disposeFailedWorkItem(wi.id, {...});
+ * ```
+ */
+export function getWorkItemDisposition(
+  wi: Pick<WorkItem, 'metadata'>,
+): WorkItemDisposition | null {
+  const raw = wi.metadata?.[DISPOSITION_METADATA_KEY];
+  if (typeof raw !== 'object' || raw === null) return null;
+  const candidate = raw as Partial<WorkItemDisposition>;
+  const kindOk =
+    candidate.kind === 'retried_in_place' ||
+    candidate.kind === 'succeeded_by' ||
+    candidate.kind === 'terminal';
+  if (!kindOk) return null;
+  if (typeof candidate.at !== 'string' || typeof candidate.reason !== 'string') {
+    return null;
+  }
+  return candidate as WorkItemDisposition;
+}
+
+/**
+ * Whether a WorkItem has an explicit disposition record.
+ *
+ * This is THE successor predicate. It is a local field read by design — see
+ * {@link WorkItemDisposition} for why the scan-based version it replaces could
+ * not be made correct.
+ *
+ * @param wi - WorkItem to test.
+ * @returns True if the item has been dealt with and must not be re-dispatched.
+ */
+export function isWorkItemDisposed(wi: Pick<WorkItem, 'metadata'>): boolean {
+  return getWorkItemDisposition(wi) !== null;
+}
+
+
+export const LAST_REQUEUED_AT_METADATA_KEY = 'lastRequeuedAt';
+
+/**
+ * The timestamp that age-based expiry rules must measure from.
+ *
+ * `createdAt` answers "when was this work first asked for?" and is never
+ * mutated anywhere in the codebase — age metrics, ordering and postmortems all
+ * depend on that. It is therefore the wrong clock for a TTL, because a WorkItem
+ * that is legitimately retried is not stale merely because its *original*
+ * request is old.
+ *
+ * Using `createdAt` for TTL caused a live data-loss bug: a WorkItem that failed
+ * after the 24h TTL and was auto-retried by `detectRetryableFailedWorkItems`
+ * landed back in `queued` still carrying its original `createdAt`, so the very
+ * next reconciler pass (60s later) TTL-cancelled it. Every retry granted past
+ * the 24h mark was silently destroyed a minute after being granted.
+ *
+ * This function resolves the anchor instead: a requeued item's TTL window
+ * restarts from the requeue, while an item that has never been requeued keeps
+ * `createdAt` and behaves exactly as before.
+ *
+ * @param wi - The WorkItem whose age is being measured.
+ * @returns ISO-8601 timestamp to measure age from. Falls back to `createdAt`
+ *          when no requeue has happened, or when the stored value is not a
+ *          usable date (defensive: `metadata` is untyped and may be
+ *          round-tripped through storage by older writers).
+ *
+ * @example
+ * ```typescript
+ * const age = Date.now() - new Date(getTtlAnchorAt(wi)).getTime();
+ * ```
+ */
+export function getTtlAnchorAt(wi: Pick<WorkItem, 'createdAt' | 'metadata'>): string {
+  const raw = wi.metadata?.[LAST_REQUEUED_AT_METADATA_KEY];
+  if (typeof raw !== 'string') return wi.createdAt;
+  // Reject unparseable values rather than letting a NaN age silently disable
+  // (or instantly trip) the TTL rule for this item.
+  if (Number.isNaN(new Date(raw).getTime())) return wi.createdAt;
+  return raw;
+}
+
 export const SLA_TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> =
   new Set<WorkItemStatus>([
     'done',
@@ -405,6 +561,29 @@ export const WORK_ITEM_TRANSITIONS: Record<WorkItemStatus, ReadonlySet<WorkItemS
   failed:         new Set(['queued']),
   cancelled:      new Set<WorkItemStatus>(),
 };
+
+/**
+ * Statuses that require a disposition record before a WorkItem can be
+ * considered dealt with.
+ *
+ * These are exactly the statuses that are neither terminal
+ * ({@link TERMINAL_WORK_ITEM_STATUSES}) nor able to reach a terminal state —
+ * their only outbound edge is `→ queued`. That combination is what makes them
+ * strand: every consumer treats them as finished (see
+ * {@link SLA_TERMINAL_WORK_ITEM_STATUSES}) while the state machine does not.
+ *
+ * Derived rather than hand-listed so a future `WorkItemStatus` with the same
+ * shape is covered automatically instead of silently stranding.
+ */
+export const DISPOSITION_REQUIRED_STATUSES: ReadonlySet<WorkItemStatus> = new Set(
+  (Object.keys(WORK_ITEM_TRANSITIONS) as WorkItemStatus[]).filter((status) => {
+    if (TERMINAL_WORK_ITEM_STATUSES.has(status)) return false;
+    const outbound = WORK_ITEM_TRANSITIONS[status];
+    if (outbound.size === 0) return false;
+    // No outbound edge reaches a strictly terminal status.
+    return ![...outbound].some((next) => TERMINAL_WORK_ITEM_STATUSES.has(next));
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Role-Based Transition Permissions

@@ -23,6 +23,7 @@ import {
   selectBestAgent,
   computeAgentScore,
   runPruningPass,
+  detectUndisposedStrandedWorkItems,
   UNCLAIMED_THRESHOLD_MS,
   MAX_WAKE_ACTIONS_PER_PASS,
 } from './reconcile-rules.js';
@@ -33,6 +34,8 @@ import {
   WORK_ITEM_TRANSITIONS,
   WORK_ITEM_STATUSES,
   TERMINAL_WORK_ITEM_STATUSES,
+  LAST_REQUEUED_AT_METADATA_KEY,
+  DISPOSITION_METADATA_KEY,
 } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -617,6 +620,82 @@ describe('detectTTLExpiredWorkItems', () => {
       for (const c of corrections) {
         expect(c.newState).toBe('cancelled');
       }
+    });
+
+    /**
+     * Data-loss regression: a granted retry must not be TTL-cancelled a
+     * minute after it is granted.
+     *
+     * Before the TTL anchor, age was measured from `createdAt`, which is
+     * never mutated — not by `requeueAfterFailure`, not by anything in the
+     * repo. So a WorkItem that ran for more than the 24h TTL, failed, and was
+     * legitimately auto-retried by `detectRetryableFailedWorkItems` landed
+     * back in `queued` still carrying its original `createdAt`. The very next
+     * reconciler pass (60s later) then saw a >24h-old `queued` item and
+     * cancelled it. The retry was destroyed before the agent could pick it up,
+     * and — because `→ cancelled` from `queued` is perfectly legal — it did so
+     * without a single error log.
+     *
+     * `maxRetries` was therefore unreachable for any WorkItem whose work
+     * outlived the TTL: every retry died on arrival.
+     */
+    describe('TTL anchor — a requeued item gets a fresh window (data-loss regression)', () => {
+      it('does NOT cancel a just-requeued item whose original createdAt is stale', () => {
+        const justRequeued = makeWorkItem({
+          status: 'queued',
+          createdAt: staleAt(), // first asked for 25h ago
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: new Date().toISOString() },
+        });
+
+        const { corrections, expiredIds } = detectTTLExpiredWorkItems([justRequeued]);
+
+        expect(corrections).toHaveLength(0);
+        expect(expiredIds).toHaveLength(0);
+      });
+
+      it('still cancels a requeued item once the NEW window itself expires', () => {
+        // Liveness: the anchor must postpone the TTL, never disable it.
+        // Without this half, "never cancel anything requeued" would pass.
+        const staleSinceRequeue = makeWorkItem({
+          status: 'queued',
+          createdAt: staleAt(),
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: staleAt() },
+        });
+
+        const { corrections, expiredIds } = detectTTLExpiredWorkItems([staleSinceRequeue]);
+
+        expect(expiredIds).toEqual([staleSinceRequeue.id]);
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0].newState).toBe('cancelled');
+      });
+
+      it('is inert for an item that has never been requeued', () => {
+        // The anchor must change nothing for the overwhelmingly common case.
+        const neverRequeued = makeWorkItem({ status: 'queued', createdAt: staleAt() });
+
+        const { corrections } = detectTTLExpiredWorkItems([neverRequeued]);
+
+        expect(corrections).toHaveLength(1);
+        expect(corrections[0].previousState).toBe('queued');
+        expect(corrections[0].newState).toBe('cancelled');
+      });
+
+      it('reports which clock it actually measured, so the audit trail is not misleading', () => {
+        // The evidence string previously said only "Created at <createdAt>",
+        // which would now describe a different timestamp than the one the
+        // decision was made on.
+        const requeuedAt = staleAt();
+        const wi = makeWorkItem({
+          status: 'queued',
+          createdAt: new Date(Date.now() - 100 * 3600 * 1000).toISOString(),
+          metadata: { [LAST_REQUEUED_AT_METADATA_KEY]: requeuedAt },
+        });
+
+        const { corrections } = detectTTLExpiredWorkItems([wi]);
+
+        expect(corrections[0].evidence).toContain(requeuedAt);
+        expect(corrections[0].evidence).toContain('TTL measured from');
+      });
     });
   });
 
@@ -1924,5 +2003,151 @@ describe('detectUnverifiedWorkItems', () => {
     });
     const { unverifiedIds } = detectUnverifiedWorkItems([wi], NOW);
     expect(unverifiedIds).toContain(wi.id);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectUndisposedStrandedWorkItems — successor model safety net
+// ---------------------------------------------------------------------------
+describe('detectUndisposedStrandedWorkItems', () => {
+  const HOUR = 3600 * 1000;
+
+  /** A WI that entered a stranding status `hoursAgo` ago. */
+  function stranded(
+    status: 'rejected' | 'failed',
+    hoursAgo = 1,
+    overrides: Partial<WorkItem> = {},
+  ): WorkItem {
+    return makeWorkItem({
+      status,
+      completedAt: new Date(Date.now() - hoursAgo * HOUR).toISOString(),
+      ...overrides,
+    });
+  }
+
+  /** Build a well-formed disposition stamp. */
+  function stamp(
+    kind: 'succeeded_by' | 'terminal',
+    extra: Record<string, unknown> = {},
+  ): Record<string, unknown> {
+    return {
+      [DISPOSITION_METADATA_KEY]: {
+        kind,
+        at: new Date().toISOString(),
+        by: 'system',
+        reason: 'already handled',
+        ...extra,
+      },
+    };
+  }
+
+  it('flags an undisposed stranded item once the grace window has passed', () => {
+    const { items } = detectUndisposedStrandedWorkItems([stranded('rejected')]);
+    expect(items).toHaveLength(1);
+  });
+
+  it('covers both stranding statuses, and only those', () => {
+    // Derived from the transition table, so this really asserts that the set of
+    // "neither terminal nor able to reach terminal" statuses is exactly
+    // {rejected, failed} — a future status of that shape is covered for free
+    // instead of silently stranding.
+    const all = WORK_ITEM_STATUSES.map((status) =>
+      makeWorkItem({
+        status,
+        completedAt: new Date(Date.now() - HOUR).toISOString(),
+      }),
+    );
+    const { items } = detectUndisposedStrandedWorkItems(all);
+    expect(items.map((i) => i.status).sort()).toEqual(['failed', 'rejected']);
+  });
+
+  it('leaves an item alone inside the grace window so the eager writer wins', () => {
+    const fresh = makeWorkItem({
+      status: 'failed',
+      completedAt: new Date(Date.now() - 1000).toISOString(),
+    });
+    expect(detectUndisposedStrandedWorkItems([fresh]).items).toHaveLength(0);
+  });
+
+  it('returns the oldest strand first', () => {
+    const young = stranded('failed', 1);
+    const old = stranded('rejected', 10);
+    const { items } = detectUndisposedStrandedWorkItems([young, old]);
+    expect(items.map((i) => i.id)).toEqual([old.id, young.id]);
+  });
+
+  /**
+   * The two directions the reverted 469a3a21 rule got wrong.
+   *
+   * It answered "does a successor exist?" by scanning `getActiveWorkItems()`
+   * for a child. Both failures follow from the QUESTION, not the code, and no
+   * refinement of the query fixes either — which is why the predicate is now a
+   * local field read instead of a scan.
+   */
+  describe('successor predicate — correct in BOTH directions', () => {
+    it('direction 1: does NOT re-dispatch an item whose successor already finished', () => {
+      // The reverted rule looked for successors in getActiveWorkItems(), which
+      // drops `done`/`cancelled`. A successor that had already completed was
+      // invisible, so the rule concluded "no successor" and re-dispatched the
+      // source — executing completed work a second time.
+      const completedSuccessor = makeWorkItem({ status: 'done' });
+      const source = stranded(
+        'rejected',
+        10,
+        { metadata: stamp('succeeded_by', { successorWorkItemId: completedSuccessor.id }) },
+      );
+
+      const { items } = detectUndisposedStrandedWorkItems([source, completedSuccessor]);
+
+      // Read off the source itself, so the successor's status is irrelevant —
+      // there is no collection for a filter to hide it from.
+      expect(items).toHaveLength(0);
+    });
+
+    it('direction 2: DOES flag an item whose only child is an unrelated VERIFY WI', () => {
+      // `buildAutoWorkItem` sets `parentWorkItemId` on VERIFY WorkItems too, so
+      // the reverted rule read a verification child as a successor and skipped
+      // the exact SLA case it existed to rescue.
+      const source = stranded('rejected', 10);
+      const verifyChild = makeWorkItem({
+        id: `${source.id}:verify:${source.id}`,
+        status: 'queued',
+        parentWorkItemId: source.id,
+      });
+
+      const { items } = detectUndisposedStrandedWorkItems([source, verifyChild]);
+
+      // No stamp on the source → still stranded, regardless of who claims it as
+      // a parent. `parentWorkItemId` is never consulted.
+      expect(items.map((i) => i.id)).toEqual([source.id]);
+    });
+  });
+
+  it('skips an item already disposed, whatever the disposition was', () => {
+    for (const kind of ['succeeded_by', 'terminal'] as const) {
+      const disposed = stranded('failed', 10, { metadata: stamp(kind) });
+      expect(detectUndisposedStrandedWorkItems([disposed]).items).toHaveLength(0);
+    }
+  });
+
+  it('treats a malformed stamp as absent rather than trusting it', () => {
+    // `metadata` is Record<string, unknown> and round-trips through storage.
+    // Re-disposing is idempotent and safe; trusting a broken record is not.
+    const malformed: unknown[] = [{ kind: 'nonsense' }, { at: 'x' }, 'string', 42, null];
+    for (const bad of malformed) {
+      const wi = stranded('failed', 10, {
+        metadata: { [DISPOSITION_METADATA_KEY]: bad },
+      });
+      expect(detectUndisposedStrandedWorkItems([wi]).items).toHaveLength(1);
+    }
+  });
+
+  it('emits no status corrections at all — a disposition is not a transition', () => {
+    // The `terminal` outcome leaves the item exactly where it is. Returning a
+    // correction here would put an illegal edge back into the pipeline that
+    // #733 just cleaned of them, since neither stranding status has a legal
+    // terminal target.
+    const result = detectUndisposedStrandedWorkItems([stranded('rejected', 10)]);
+    expect(Object.keys(result)).toEqual(['items']);
   });
 });
