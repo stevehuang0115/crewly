@@ -105,7 +105,7 @@ The report is written to `reportFile` and follows the `[TL_REPORT]` tag conventi
 
 After generating the report, send it to the Orchestrator:
 ```bash
-bash {{SKILLS_PATH}}/agent/core/report-status/execute.sh '{"sessionName":"tl-session","status":"done","summary":"Objective complete: 4/5 tasks passed. Report at /tmp/tl-report-team-123.md"}'
+bash {{SKILLS_PATH}}/agent/core/report-status/execute.sh '{"sessionName":"tl-session","workItemId":"<your WorkItem id>","status":"done","summary":"Objective complete: 4/5 tasks passed. Report at /tmp/tl-report-team-123.md"}'
 ```
 
 ## Related Skills
