@@ -1064,15 +1064,32 @@ export class TaskPoolService {
   }
 
   /**
-   * Internal: release the active claim on a WorkItem (if any). Shared by
-   * `completeSimpleItem` and `submitForVerification` because both
+   * Release the active claim on a WorkItem, if it has one.
+   *
+   * Shared by `completeSimpleItem` and `submitForVerification` because both
    * represent the worker handing the item back to the system.
    *
+   * Also public for callers that must drive a terminal transition
+   * themselves rather than through {@link failItem}. The SLA orphan-close
+   * path is the live example: it targets `cancelled`, `failed` OR
+   * `rejected` depending on the origin status, so `failItem` — which always
+   * transitions to `failed` — cannot serve it. Such callers MUST call this,
+   * otherwise the claim stays `active` against a terminal WorkItem and
+   * quietly wedges the claiming agent. The mechanism is not an error, which
+   * is what makes it hard to spot: {@link claimFromPool} checks
+   * `findActiveClaimByAgent` BEFORE it scans the pool, and short-circuits by
+   * returning the held claim with `alreadyHeld: true` (issue #513). So the
+   * agent is handed the same terminal item on every poll and never sees the
+   * queued work waiting for them, until the lease/grace ladder revokes it.
+   *
+   * Idempotent: a no-op when no active claim exists.
+   *
    * @param workItemId - WorkItem whose claim should be released
-   * @param endReason - Reason recorded on the claim (`completed` /
-   *   `submitted_for_verification`) for auditability
+   * @param endReason - Reason recorded on the claim (`completed`,
+   *   `submitted_for_verification`, `sla escalation timeout ...`) for
+   *   auditability
    */
-  private async releaseClaim(workItemId: string, endReason: string): Promise<void> {
+  async releaseClaim(workItemId: string, endReason: string): Promise<void> {
     const claim = await this.storage.findActiveClaimByWorkItem(workItemId);
     if (!claim) return;
     await this.storage.updateClaim(claim.id, (c) => {
