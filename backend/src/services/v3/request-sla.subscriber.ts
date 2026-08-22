@@ -1518,6 +1518,7 @@ export class RequestSlaSubscriber {
       // below both need the origin.
       const fromStatus = wi.status;
       const target = pickFailTarget(fromStatus);
+
       await this.taskPool.transitionStatus(
         workItemId,
         target,
@@ -1531,6 +1532,28 @@ export class RequestSlaSubscriber {
         },
         target === 'cancelled' ? 'SLA escalation timeout' : undefined,
       );
+      // The item is terminal now, so its claim must not stay active.
+      //
+      // This path cannot delegate to `failItem` — the code that normally
+      // releases the claim — because `failItem` always transitions to
+      // `failed`, whereas `pickFailTarget` yields `cancelled`, `failed` OR
+      // `rejected` depending on the origin status. `disposeFailedWorkItem`
+      // does not cover it either: that owns disposition and touches no
+      // claims. So the release is made explicitly here.
+      //
+      // Ordering is deliberate on both sides:
+      //  - AFTER the transition, so the claim is released only once the item
+      //    actually reached a terminal state. Releasing first would, on a
+      //    failed transition, free the claim on an item that is still
+      //    `running` and still being worked — a worse outcome than the leak.
+      //  - BEFORE disposition, because the funnel may requeue the item; a
+      //    requeued item carrying an active claim cannot be claimed by
+      //    anyone, which is the very stranding this fix exists to prevent.
+      await this.taskPool.releaseClaim(
+        workItemId,
+        `sla escalation timeout (from ${fromStatus})`,
+      );
+
       this.logger.info('SLA escalation orphan WI auto-closed', {
         workItemId,
         requestId,
