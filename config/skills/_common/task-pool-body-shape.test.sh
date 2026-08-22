@@ -377,6 +377,60 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Scenario 10 — create-task carries a brief (instance 10)
+#
+# create-task previously sent only {title,type,owner,target,metadata}, so every
+# WorkItem filed through the documented skill was TITLE-ONLY — an agent could
+# not attach Goal + Expected Outcome + Eval Criteria at all. `description` and
+# `briefMarkdown` are both CreateWorkItemInput fields the endpoint reads.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 10: create-task carries description + briefMarkdown ---"
+: > "$LOG"
+BRIEF_FILE=$(mktemp)
+printf '## GOAL\nShip the thing.\n\n## EVAL CRITERIA\n1. It ships.\n' > "$BRIEF_FILE"
+bash "${REPO_ROOT}/config/skills/agent/core/create-task/execute.sh" \
+  --project-path /tmp/proj-foo --task "Briefed task" \
+  --description "A short summary" --brief "@${BRIEF_FILE}" >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -z "$BODY" ]; then
+  FAIL=$((FAIL + 1)); echo "  ✗ no /task-pool/add POST captured for briefed create-task"
+else
+  assert_add_contract "create-task(briefed)" "$BODY"
+  assert_jq "create-task: description forwarded" '.description == "A short summary"' "$BODY"
+  assert_jq "create-task: briefMarkdown forwarded from @file" '.briefMarkdown | test("EVAL CRITERIA")' "$BODY"
+fi
+rm -f "$BRIEF_FILE"
+
+# Omitting both must still produce a clean minimal WorkItem — no empty strings.
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/agent/core/create-task/execute.sh" \
+  --project-path /tmp/proj-foo --task "Unbriefed task" >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -n "$BODY" ]; then
+  assert_jq "create-task: omits description entirely when unset" 'has("description") == false' "$BODY"
+  assert_jq "create-task: omits briefMarkdown entirely when unset" 'has("briefMarkdown") == false' "$BODY"
+fi
+
+# Over-cap brief must fail IN THE SKILL, naming the limit — not reach the server.
+: > "$LOG"
+BIG_FILE=$(mktemp)
+python3 -c "import sys; sys.stdout.write('x' * 17000)" > "$BIG_FILE"
+BIG_OUT=$(bash "${REPO_ROOT}/config/skills/agent/core/create-task/execute.sh" \
+  --project-path /tmp/proj-foo --task "Oversized" --brief "@${BIG_FILE}" 2>&1 || true)
+if printf '%s' "$BIG_OUT" | grep -q "16384"; then
+  PASS=$((PASS + 1)); echo "  ✓ create-task: over-cap brief rejected naming the 16384-byte limit"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ create-task: expected a 16384-byte limit error, got: ${BIG_OUT}"
+fi
+if grep -qF '"path": "/api/task-pool/add"' "$LOG"; then
+  FAIL=$((FAIL + 1)); echo "  ✗ create-task: over-cap brief still hit the server — must fail before the POST"
+else
+  PASS=$((PASS + 1)); echo "  ✓ create-task: over-cap brief never reached the server"
+fi
+rm -f "$BIG_FILE"
+
+# ---------------------------------------------------------------------------
 # Scenario 11 — block-task pre-checks status instead of letting the state
 # machine answer with a bare conflict.
 #
