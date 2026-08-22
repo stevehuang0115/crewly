@@ -174,6 +174,23 @@ export interface ClaimResult {
  * }
  * ```
  */
+
+/**
+ * Options for {@link TaskPoolService.releaseBack}.
+ */
+export interface ReleaseBackOptions {
+  /**
+   * When true, clear the item's `target` as well, returning it to the
+   * unassigned pool.
+   *
+   * Defaults to false: a release ends an attempt, it does not revoke an
+   * assignment. This must be requested BY NAME so that un-assignment is
+   * always a deliberate act by a caller who means it, never a silent
+   * side effect of a lease expiring.
+   */
+  unassign?: boolean;
+}
+
 export class TaskPoolService {
   private static instance: TaskPoolService | null = null;
 
@@ -778,7 +795,12 @@ export class TaskPoolService {
         'system',
         (wi) => {
           if (!wi.target) {
+            // Broadcast claim: record that this target is an incidental
+            // claim stamp, not a deliberate assignment, so releaseBack
+            // returns the item to the broadcast pool instead of binding
+            // it to this agent forever.
             wi.target = agentId;
+            wi.targetSource = 'claim';
           }
           // else: target already === agentId per the filter; leave as-is.
         },
@@ -874,7 +896,10 @@ export class TaskPoolService {
         'system',
         (wi) => {
           if (!wi.target) {
+            // Broadcast claim — see claimFromPool: this is a claim stamp,
+            // not an assignment.
             wi.target = agentId;
+            wi.targetSource = 'claim';
           }
         },
       );
@@ -896,11 +921,59 @@ export class TaskPoolService {
    *
    * The item's status reverts to 'queued' and the claim is marked 'released'.
    *
+   * A release is an ADMINISTRATIVE event, not a failure. Two invariants
+   * follow, and both were violated before 2026-08-21:
+   *
+   * 1. **`target` is preserved.** A release says "this attempt ended", not
+   *    "this work no longer belongs to that agent". Clearing it silently
+   *    destroyed a deliberate assignment — and because the wake gate admits
+   *    a worker only when a queued/blocked WI carries `target === their
+   *    session`, it also made the assigned worker unwakeable for their own
+   *    work (`wake_gate_no_pool_work`). The sibling failure path,
+   *    {@link requeueAfterFailure}, already keeps `target` on the far
+   *    stronger grounds of an actual failure; there is no coherent reading
+   *    in which a lease lapse un-assigns work that a failure would not.
+   *    Genuine un-assignment is still possible, but it must be asked for by
+   *    name via `options.unassign` — never inferred from a lease expiring.
+   *
+   *    One carve-out, and it is not an exception to the rule so much as a
+   *    sharpening of it: `claimFromPool` stamps `target` on a *broadcast*
+   *    item to record who picked it up. That stamp is not an assignment,
+   *    and it is dropped on release (`targetSource === 'claim'`) so the
+   *    item returns to the broadcast pool. Preserving it would let one
+   *    claim permanently bind unassigned work to a single agent — and if
+   *    that agent died, only a dead session could ever re-claim it.
+   *
+   * 2. **`retryCount` is untouched.** That counter means failures only (see
+   *    {@link WorkItem.retryCount}); consumers branch on
+   *    `retryCount < maxRetries` to decide retry-in-place vs terminal-and-
+   *    escalate. Charging a retry for lease churn drove live work to 3/3
+   *    with zero failures. Release churn is counted separately in
+   *    {@link WorkItem.releaseCount}, which nothing branches on.
+   *
    * @param workItemId - ID of the work item to release
    * @param reason - Why the item is being released
-   * @throws Error if work item not found or not currently claimed
+   * @param options - Release options
+   * @param options.unassign - When true, ALSO clear `target`, returning the
+   *   item to the unassigned pool. Opt-in only, for the case where a caller
+   *   genuinely means "someone else should take this". Defaults to false.
+   * @throws Error if work item not found, or its status is not
+   *   'running' or 'blocked'
+   *
+   * @example
+   * ```typescript
+   * // Lease lapsed / claim revoked — the owner keeps the work.
+   * await pool.releaseBack(id, 'claim revoked: grace exceeded');
+   *
+   * // Deliberate hand-back — anyone may pick this up.
+   * await pool.releaseBack(id, 'agent declined', { unassign: true });
+   * ```
    */
-  async releaseBack(workItemId: string, reason: string): Promise<void> {
+  async releaseBack(
+    workItemId: string,
+    reason: string,
+    options: ReleaseBackOptions = {},
+  ): Promise<void> {
     const workItem = await this.storage.findWorkItem(workItemId);
     if (!workItem) {
       throw new Error(`WorkItem not found: ${workItemId}`);
@@ -925,15 +998,24 @@ export class TaskPoolService {
     // guarded transitionStatus helper. The state-machine entry for
     // `running → queued` is a TRANS-2 addition, gated to system/TL/orc;
     // `blocked → queued` was already TL/orc/system-gated by TRANS-1.
-    // Side-effect mutations (startedAt clear, target preservation when
-    // unblocking, retryCount bump) move into the atomic mutator.
-    const wasBlocked = workItem.status === 'blocked';
+    // Side-effect mutations (startedAt clear, opt-in target clear,
+    // releaseCount bump) move into the atomic mutator.
+    //
+    // `target` survives every release; only an explicit `unassign` clears
+    // it. `retryCount` is NOT touched here — a release is not a failure —
+    // and release churn is recorded in `releaseCount` instead.
+    const unassign = options.unassign === true;
     await this.transitionStatus(workItemId, 'queued', 'system', (wi) => {
       wi.startedAt = undefined;
-      if (!wasBlocked) {
+      // Drop the target only when the caller explicitly asked, or when the
+      // target was never an assignment in the first place — a broadcast
+      // item stamped by whoever happened to claim it belongs back in the
+      // broadcast pool, not bound to that agent.
+      if (unassign || wi.targetSource === 'claim') {
         wi.target = undefined;
+        wi.targetSource = undefined;
       }
-      wi.retryCount += 1;
+      wi.releaseCount = (wi.releaseCount ?? 0) + 1;
     });
 
     await this.storage.flush();
@@ -941,6 +1023,7 @@ export class TaskPoolService {
       workItemId,
       reason,
       claimId: claim?.id,
+      unassigned: unassign,
     });
   }
 
@@ -1679,6 +1762,9 @@ export class TaskPoolService {
     const handoffNote = `[HANDOFF] ${fromAgent} → ${newTarget}: ${reason || '(no reason)'}`;
     await this.storage.updateWorkItem(workItemId, (item) => {
       item.target = newTarget;
+      // An explicit handoff is a deliberate assignment: it must survive a
+      // later release.
+      item.targetSource = 'assigned';
       const existing = (item.metadata && typeof item.metadata === 'object' ? item.metadata : {}) as Record<
         string,
         unknown
