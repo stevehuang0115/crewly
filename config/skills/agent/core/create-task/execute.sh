@@ -27,6 +27,9 @@ Options:
   --session      | -s   Session to assign the task to (optional; if omitted, task is open)
   --output-schema       JSON string defining expected output schema (optional)
   --owner               Responsible role: orchestrator, team_lead, agent, system (default: agent)
+  --description  | -d   Short summary of the task (optional)
+  --brief               Long-form brief in markdown: inline text, or @/path/to/file.md
+                        Should carry Goal + Expected Outcome + Eval Criteria. Max 16384 bytes.
   --json         | -j   Raw JSON payload (same as legacy)
   --help         | -h   Show this help
 EOF_USAGE
@@ -40,6 +43,8 @@ MILESTONE=""
 SESSION_NAME=""
 OUTPUT_SCHEMA=""
 OWNER=""
+DESCRIPTION=""
+BRIEF=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -75,6 +80,14 @@ while [[ $# -gt 0 ]]; do
       ;;
     --owner)
       OWNER="$2"
+      shift 2
+      ;;
+    --description|-d)
+      DESCRIPTION="$2"
+      shift 2
+      ;;
+    --brief)
+      BRIEF="$2"
       shift 2
       ;;
     --json|-j)
@@ -118,6 +131,8 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$SESSION_NAME" ] && SESSION_NAME=$(printf '%s' "$INPUT" | jq -r '.sessionName // empty')
   [ -z "$OUTPUT_SCHEMA" ] && OUTPUT_SCHEMA=$(printf '%s' "$INPUT" | jq -c '.outputSchema // empty')
   [ -z "$OWNER" ] && OWNER=$(printf '%s' "$INPUT" | jq -r '.owner // empty')
+  [ -z "$DESCRIPTION" ] && DESCRIPTION=$(printf '%s' "$INPUT" | jq -r '.description // empty')
+  [ -z "$BRIEF" ] && BRIEF=$(printf '%s' "$INPUT" | jq -r '.briefMarkdown // .brief // empty')
 fi
 
 # Apply defaults
@@ -127,6 +142,27 @@ OWNER="${OWNER:-agent}"
 
 require_param "projectPath (--project-path)" "$PROJECT_PATH"
 require_param "task (--task)" "$TASK"
+
+# `--brief @/path/to/file.md` reads the brief from a file. A real brief is
+# usually too long and too full of quotes/backticks to pass safely as a shell
+# argument, so the file form is the one callers should reach for.
+if [ -n "$BRIEF" ] && [ "${BRIEF:0:1}" = "@" ]; then
+  BRIEF_PATH="${BRIEF:1}"
+  [ -f "$BRIEF_PATH" ] || error_exit "brief file not found: ${BRIEF_PATH}"
+  BRIEF="$(cat "$BRIEF_PATH")"
+fi
+
+# Enforce MAX_BRIEF_MARKDOWN_BYTES (16 * 1024) HERE rather than letting the
+# server reject it, so the caller gets the limit and their actual size instead
+# of a bare 400. Deliberately NOT truncated: silently shipping a half-brief is
+# the same class of bug this field was added to fix — trimming is the caller's
+# decision, not ours.
+if [ -n "$BRIEF" ]; then
+  BRIEF_BYTES=$(printf '%s' "$BRIEF" | wc -c | tr -d ' ')
+  if [ "$BRIEF_BYTES" -gt 16384 ]; then
+    error_exit "briefMarkdown is ${BRIEF_BYTES} bytes, over the 16384-byte limit (MAX_BRIEF_MARKDOWN_BYTES). Trim it, or attach the long form as a file and reference it from the brief. Not truncating automatically — what to cut is your call."
+  fi
+fi
 
 # Validate `owner` against the WorkItemOwner enum the endpoint accepts.
 # This is the field, not the session name — `owner` answers "which role is
@@ -152,6 +188,8 @@ esac
 #                honoured when supplied; we simply have nothing stable to
 #                supply.)
 #   - `status` — derived server-side from dependsOn/scheduledAt.
+#   - empty `description`/`briefMarkdown` — omitted rather than sent as "",
+#                so a task filed without a brief stays a clean minimal WorkItem
 #   - top-level `priority` — NOT a WorkItem field; it is silently dropped by
 #                both body shapes. Priority travels in `metadata.priority`,
 #                which is what real pool items carry and what
@@ -163,13 +201,18 @@ WORK_ITEM=$(jq -n \
   --arg projectPath "$PROJECT_PATH" \
   --arg milestone "$MILESTONE" \
   --arg priority "$PRIORITY" \
+  --arg description "$DESCRIPTION" \
+  --arg briefMarkdown "$BRIEF" \
   '{
     title: $title,
     type: "delegate",
     owner: $owner,
     target: (if $target == "" then null else $target end),
     metadata: { projectPath: $projectPath, milestone: $milestone, priority: $priority }
-  } | with_entries(select(.value != null))')
+  }
+  + (if $description != "" then {description: $description} else {} end)
+  + (if $briefMarkdown != "" then {briefMarkdown: $briefMarkdown} else {} end)
+  | with_entries(select(.value != null))')
 
 if [ -n "$OUTPUT_SCHEMA" ] && [ "$OUTPUT_SCHEMA" != "" ]; then
   WORK_ITEM=$(printf '%s' "$WORK_ITEM" | jq --argjson schema "$OUTPUT_SCHEMA" '.metadata += {outputSchema: $schema}')
