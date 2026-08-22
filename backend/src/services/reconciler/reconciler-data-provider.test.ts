@@ -162,13 +162,77 @@ const mockStorage = (StorageService as any)._mockStorage;
 const mockSuspend = (AgentSuspendService as any)._mockSuspend;
 const mockSubscriber = (WorkItemDispatchSubscriber as any)._mockSubscriber;
 
+/**
+ * Re-establish every mock's default implementation.
+ *
+ * Must be called from `beforeEach` AFTER `jest.clearAllMocks()`, which clears
+ * call records but leaves implementations in place. Without this, any test that
+ * overrides a mock silently changes the baseline for every test scheduled after
+ * it, and the suite's result becomes a function of execution order.
+ *
+ * Keep this in sync with the `jest.mock` factories above: a default added there
+ * and not mirrored here is a new order-dependence waiting to happen. The values
+ * below are intentionally identical to the factory ones so that the declared
+ * order and any randomised order start each test from the same place.
+ */
+function restoreMockDefaults(): void {
+  // Memory probes — these two were already reset per test; kept here so the
+  // whole baseline lives in one place.
+  mockTotalmem.mockReturnValue(16_000_000_000);
+  mockFreemem.mockReturnValue(8_000_000_000);
+
+  mockPool.getAllItems.mockResolvedValue([]);
+  mockPool.getAvailableItems.mockResolvedValue([]);
+  mockPool.getActiveClaims.mockResolvedValue([]);
+  mockPool.updateItemStatus.mockResolvedValue(undefined);
+  mockPool.markClaimExpiring.mockResolvedValue(undefined);
+  mockPool.releaseBack.mockResolvedValue(undefined);
+  mockPool.revokeAndRelease.mockResolvedValue(undefined);
+  mockPool.findWorkItem.mockResolvedValue(null);
+  mockPool.requeueAfterFailure.mockResolvedValue(undefined);
+
+  // The specific leak that produced the seed=1 failure.
+  mockStorage.getTeams.mockResolvedValue([]);
+  mockStorage.getOrchestratorStatus.mockResolvedValue(null);
+
+  mockSuspend.isSuspended.mockReturnValue(false);
+  mockSuspend.rehydrateAgent.mockResolvedValue(true);
+
+  mockSubscriber.redispatch.mockResolvedValue(true);
+
+  mockRequestService.listAll.mockResolvedValue([]);
+  mockRequestService.update.mockResolvedValue(undefined);
+
+  mockEscalationRouter.escalateFailedWorkItem.mockResolvedValue('esc-1');
+}
+
 describe('LiveReconcilerDataProvider', () => {
   let provider: LiveReconcilerDataProvider;
 
   beforeEach(() => {
+    // `jest.clearAllMocks()` clears calls and results but deliberately does NOT
+    // remove implementations installed by `mockResolvedValue` /
+    // `mockReturnValue`. The defaults in the `jest.mock` factories above are
+    // therefore one-time INITIALISATION, not a per-test baseline: the first
+    // test to override one changes it for every test that runs afterwards, so
+    // a test's outcome depends on the order it happens to run in.
+    //
+    // That was a real failure, not a hypothetical: under
+    // `--randomize --seed=1`, 'includes the orchestrator (virtual member)'
+    // ran before 'builds health map from teams' and left
+    // `getOrchestratorStatus` resolving to a live orc record, so the latter saw
+    // three agents instead of the two it set up. 87/87 in declared order,
+    // 86/87 under that seed.
+    //
+    // `jest.resetAllMocks()` is not the fix on its own: it strips the factory
+    // defaults too, so `getTeams()` would return bare `undefined` instead of
+    // `[]` and the suite would fail far more widely.
+    //
+    // So the baseline is re-established explicitly here, every test. The
+    // `mockTotalmem`/`mockFreemem` lines below were already doing exactly this
+    // — this just extends the same discipline to the rest of the mocks.
     jest.clearAllMocks();
-    mockTotalmem.mockReturnValue(16_000_000_000);
-    mockFreemem.mockReturnValue(8_000_000_000);
+    restoreMockDefaults();
     provider = new LiveReconcilerDataProvider();
   });
 
