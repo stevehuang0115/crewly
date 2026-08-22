@@ -11,7 +11,7 @@ import { Request, Response } from 'express';
 import { ApiResponse } from '../../types/index.js';
 import { getSessionBackendSync, getSessionBackend } from '../../services/session/index.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
-import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, RuntimeType, RUNTIME_TYPES } from '../../constants.js';
+import { TERMINAL_CONTROLLER_CONSTANTS, ORCHESTRATOR_SESSION_NAME, CREWLY_CONSTANTS, EVENT_DELIVERY_CONSTANTS, RuntimeType, RUNTIME_TYPES } from '../../constants.js';
 import {
 	validateTerminalInput,
 	sanitizeTerminalInput,
@@ -988,9 +988,25 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			return;
 		}
 
-		// Optionally wait for agent to be at prompt before delivering
+		// Optionally wait for agent to be at prompt before delivering.
+		//
+		// WI dae79289: this fallback was an inlined 30000 while an
+		// identically-valued EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT
+		// sat unused in constants.ts. Substituting it is behaviour-identical.
+		//
+		// Recorded because it is NOT obvious and nobody should have to
+		// re-derive it: this value is passed as the agent-READY timeout, and
+		// `waitForAgentReady` has its own dedicated default for that —
+		// EVENT_DELIVERY_CONSTANTS.AGENT_READY_TIMEOUT, which is 120000, not
+		// 30000. So this endpoint deliberately waits a quarter as long as the
+		// service would on its own. Whether that divergence is intentional
+		// fail-fast or accumulated drift is NOT established, so the value is
+		// left exactly as it was; only the magic number is removed.
 		if (waitForReady) {
-			const timeout = typeof waitTimeout === 'number' ? waitTimeout : 30000;
+			const timeout =
+				typeof waitTimeout === 'number'
+					? waitTimeout
+					: EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT;
 			const ready = await this.agentRegistrationService.waitForAgentReady(
 				sessionName,
 				timeout,
