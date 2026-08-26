@@ -52,6 +52,23 @@ const REDELIVER_COOLDOWN_MS = (() => {
 })();
 
 /**
+ * Minimum gap between re-attempting a wake the commitment-approval gate has
+ * already refused. That gate's answer is deterministic — a dormant team stays
+ * blocked until the OWNER says something — so retrying it on the ~10s fast
+ * loop cannot succeed sooner, it only produces one ERROR line per attempt.
+ * On 2026-08-22 a single WorkItem logged 8,220 of them in a day. The window is
+ * short enough that an approval is picked up promptly. Override with
+ * `CREWLY_RECONCILER_WAKE_BLOCKED_COOLDOWN_MS`.
+ */
+const WAKE_BLOCKED_COOLDOWN_MS = (() => {
+  const raw = Number(process.env['CREWLY_RECONCILER_WAKE_BLOCKED_COOLDOWN_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000; // 5 min
+})();
+
+/** Error code the team-member wake endpoint returns when the commitment-approval gate refuses. */
+const WAKE_BLOCKED_ERROR_CODE = 'commitment_requires_owner_approval';
+
+/**
  * Heuristic: detect "storage not yet hydrated" errors so the data
  * provider can demote them from `error` to `debug` log level.
  *
@@ -200,6 +217,15 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * {@link REDELIVER_COOLDOWN_MS}.
    */
   private readonly lastRedeliverAt = new Map<string, number>();
+
+  /**
+   * Per-agent cooldown on wakes the commitment-approval gate refused.
+   *
+   * Keyed by agent session because the gate decides per team, not per
+   * WorkItem — a second WI for the same dormant team would be refused for the
+   * same reason, so keying by WI would let one team spin once per queued item.
+   */
+  private readonly lastWakeBlockedAt = new Map<string, number>();
 
   constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ReconcilerDataProvider');
@@ -1273,6 +1299,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           body = { sessionName: agentSessionName, workItemId: action.workItemId };
         }
 
+        // Don't re-attempt a wake the approval gate just refused. Its verdict
+        // depends on owner messages, not on anything the reconciler can change
+        // by asking again 10 seconds later.
+        const blockedAt = this.lastWakeBlockedAt.get(agentSessionName);
+        if (blockedAt !== undefined && Date.now() - blockedAt < WAKE_BLOCKED_COOLDOWN_MS) {
+          this.logger.debug('Skipping wake — approval gate refused recently', {
+            agent: agentSessionName,
+            msSinceRefusal: Date.now() - blockedAt,
+          });
+          return false;
+        }
+
         const response = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1281,6 +1319,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
 
         if (!response.ok) {
           const errorText = await response.text();
+          if (errorText.includes(WAKE_BLOCKED_ERROR_CODE)) {
+            // Expected outcome, not a fault: the team is dormant and the owner
+            // has not approved a cold launch. Log once per cooldown at `warn`,
+            // not once per fast-loop tick at `error`.
+            this.lastWakeBlockedAt.set(agentSessionName, Date.now());
+            this.logger.warn('Wake refused by commitment-approval gate — backing off until the owner approves', {
+              agent: agentSessionName,
+              workItemId: action.workItemId,
+              cooldownMs: WAKE_BLOCKED_COOLDOWN_MS,
+            });
+            return false;
+          }
           this.logger.error('Start agent API failed', {
             agent: agentSessionName,
             status: response.status,
@@ -1289,6 +1339,10 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           return false;
         }
 
+        // A successful wake means the gate is no longer refusing this agent —
+        // drop the cooldown so a later refusal starts a fresh window instead of
+        // inheriting a stale timestamp.
+        this.lastWakeBlockedAt.delete(agentSessionName);
         this.logger.info('Start agent initiated via API', {
           agent: agentSessionName,
         });

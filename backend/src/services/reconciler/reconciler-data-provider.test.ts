@@ -1068,6 +1068,128 @@ describe('LiveReconcilerDataProvider', () => {
       globalThis.fetch = originalFetch;
     });
 
+    // The commitment-approval gate refuses a cold launch of a dormant team
+    // until the owner approves. That verdict does not change between fast-loop
+    // ticks, so re-POSTing every ~10s only produces ERROR lines — 8,220 of them
+    // for one WorkItem on 2026-08-22. Same shape as the #679 404 retry loop.
+    describe('commitment-approval refusal backoff', () => {
+      const blockedFetch = () => jest.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: async () => JSON.stringify({
+          success: false,
+          error: 'dormant team requires owner approval',
+          code: 'commitment_requires_owner_approval',
+        }),
+        json: async () => ({ success: false }),
+      });
+
+      const blockedAction = (workItemId: string): WakeAction => ({
+        workItemId,
+        agentSessionName: 'agent-dormant',
+        strategy: 'start',
+        score: 60,
+        scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      });
+
+      it('stops re-POSTing after the gate refuses', async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = blockedFetch();
+
+        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        // The fast loop keeps proposing the wake; the provider must absorb it.
+        for (let i = 0; i < 5; i++) {
+          expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        }
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        globalThis.fetch = originalFetch;
+      });
+
+      it('backs off per agent, not per WorkItem', async () => {
+        // The gate decides per team. Keying the cooldown by WorkItem would let
+        // a dormant team with several queued items spin once per item.
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = blockedFetch();
+
+        await provider.executeWakeAction(blockedAction('wi-1'));
+        await provider.executeWakeAction(blockedAction('wi-2'));
+        await provider.executeWakeAction(blockedAction('wi-3'));
+
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        globalThis.fetch = originalFetch;
+      });
+
+      it('does not back off other agents', async () => {
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = blockedFetch();
+
+        await provider.executeWakeAction(blockedAction('wi-1'));
+        await provider.executeWakeAction({
+          ...blockedAction('wi-2'),
+          agentSessionName: 'agent-other',
+        });
+
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+        globalThis.fetch = originalFetch;
+      });
+
+      it('still reports other failures as errors and keeps retrying them', async () => {
+        // A 500 is transient — backing off on it would hide a real outage and
+        // delay recovery once the endpoint comes back.
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = jest.fn().mockResolvedValue({
+          ok: false,
+          status: 500,
+          text: async () => 'upstream exploded',
+          json: async () => ({ success: false }),
+        });
+
+        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        expect(await provider.executeWakeAction(blockedAction('wi-1'))).toBe(false);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+
+        globalThis.fetch = originalFetch;
+      });
+
+      it('retries once the cooldown expires, and re-arms on a fresh refusal', async () => {
+        const originalFetch = globalThis.fetch;
+        const nowSpy = jest.spyOn(Date, 'now');
+        const t0 = 1_800_000_000_000;
+        nowSpy.mockReturnValue(t0);
+
+        globalThis.fetch = blockedFetch();
+        await provider.executeWakeAction(blockedAction('wi-1'));
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        // Still inside the window — suppressed.
+        nowSpy.mockReturnValue(t0 + 60_000);
+        await provider.executeWakeAction(blockedAction('wi-1'));
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        // Past the window — the owner may have approved by now, so we ask again.
+        nowSpy.mockReturnValue(t0 + 6 * 60_000);
+        globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+        expect(await provider.executeWakeAction(blockedAction('wi-2'))).toBe(true);
+
+        // The success cleared the entry, so a later refusal opens a fresh
+        // window instead of inheriting the stale timestamp.
+        globalThis.fetch = blockedFetch();
+        expect(await provider.executeWakeAction(blockedAction('wi-3'))).toBe(false);
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        await provider.executeWakeAction(blockedAction('wi-4'));
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        nowSpy.mockRestore();
+        globalThis.fetch = originalFetch;
+      });
+    });
+
     // #679 / #686: the orchestrator is a virtual member with undefined
     // teamId/memberId. The old fallback URL `/api/teams/members/start`
     // misrouted to `startTeam` → 404 "Team not found" (retried every ~10s),
