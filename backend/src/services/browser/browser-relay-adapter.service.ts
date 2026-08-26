@@ -171,6 +171,7 @@ export class BrowserRelayAdapter {
    * @param params - Tool parameters
    * @param timeoutMs - Command timeout in milliseconds
    * @param agentName - Optional agent name for display in Extension
+   * @param agentGoal - Optional agent goal/objective for display in Extension
    * @returns Response from the Chrome Extension
    * @throws Error if relay is not available or command times out
    */
@@ -179,6 +180,7 @@ export class BrowserRelayAdapter {
     params?: Record<string, unknown>,
     timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS,
     agentName?: string,
+    agentGoal?: string,
   ): Promise<BrowserCommandResponse> {
     if (!this.extensionDeviceId) {
       throw new Error('No Extension device ID set — cannot send via relay');
@@ -193,6 +195,9 @@ export class BrowserRelayAdapter {
     const command: BrowserCommand = { id, tool, params };
     if (agentName) {
       command.agentName = agentName;
+    }
+    if (agentGoal) {
+      command.agentGoal = agentGoal;
     }
 
     return new Promise<BrowserCommandResponse>((resolve, reject) => {

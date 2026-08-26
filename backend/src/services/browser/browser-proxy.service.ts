@@ -485,6 +485,8 @@ export class BrowserProxyService {
    * @param instance - Target instance name or ID (optional if only 1 connected)
    * @param timeoutMs - Command timeout in milliseconds
    * @param agentName - Agent name for extension banner display
+   * @param agentSession - Owning agent session (per-tab binding lookup)
+   * @param agentGoal - What the agent is trying to accomplish (banner display)
    * @returns Response from the Chrome Extension
    * @throws Error if no instances available, target not found, or timeout
    */
@@ -495,6 +497,7 @@ export class BrowserProxyService {
     timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS,
     agentName?: string,
     agentSession?: string,
+    agentGoal?: string,
   ): Promise<BrowserCommandResponse> {
     if (this.state !== 'connected' || !this.ws) {
       throw new Error('Browser proxy not connected to relay');
@@ -559,6 +562,7 @@ export class BrowserProxyService {
       tool,
       params: resolvedParams,
       agentName,
+      agentGoal,
     });
 
     return new Promise<BrowserCommandResponse>((resolve, reject) => {

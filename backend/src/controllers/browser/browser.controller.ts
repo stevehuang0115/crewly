@@ -12,6 +12,7 @@ import type { Request, Response } from 'express';
 import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
 
 /**
@@ -187,6 +188,45 @@ function extractAgentSession(req: Request): string | undefined {
 }
 
 /**
+ * Extract the agent's goal/objective from request headers or body.
+ *
+ * Shown as a secondary line in the extension takeover banner so the user
+ * knows *what* the agent is trying to accomplish, not just which tool ran.
+ *
+ * Resolution order ("both" model):
+ *   1. Explicit override — `X-Agent-Goal` header or `agentGoal` body field
+ *      (the remote-browser skill's `--goal`). Always wins; most accurate.
+ *   2. Auto — the title of the agent's currently-claimed work item, looked
+ *      up by `agentSession`. Lets the banner show intent with zero agent
+ *      effort. Best-effort: any miss/error yields `undefined` (banner falls
+ *      back to a generic title).
+ *
+ * @param req - Express request
+ * @returns Goal string or undefined when none can be determined
+ */
+async function extractAgentGoal(req: Request): Promise<string | undefined> {
+	const fromHeader = req.headers['x-agent-goal'];
+	if (typeof fromHeader === 'string' && fromHeader.length > 0) return fromHeader;
+	const fromBody = (req.body as { agentGoal?: unknown } | undefined)?.agentGoal;
+	if (typeof fromBody === 'string' && fromBody.length > 0) return fromBody;
+
+	// Auto-derive from the agent's active work item (no override supplied).
+	const agentSession = extractAgentSession(req);
+	if (!agentSession) return undefined;
+	try {
+		const pool = TaskPoolService.getInstance();
+		const claim = await pool.getClaimService().getActiveClaimByAgent(agentSession);
+		if (!claim) return undefined;
+		const workItem = await pool.findWorkItem(claim.workItemId);
+		const title = workItem?.title?.trim();
+		return title ? title : undefined;
+	} catch {
+		// Task pool unavailable / lookup failed — banner just omits the goal.
+		return undefined;
+	}
+}
+
+/**
  * Cross-agent ownership guard for the explicit `tabId` override path.
  *
  * Per spec §13.5: if a request supplies an explicit `tabId` that is bound
@@ -263,6 +303,7 @@ async function sendToolCommand(
 	const instance = resolveInstanceParam(req);
 	const agentName = extractAgentName(req);
 	const agentSession = extractAgentSession(req);
+	const agentGoal = await extractAgentGoal(req);
 
 	// Per-tab ownership: explicit `tabId` in body must belong to this agent.
 	// When the check passes and a tabId was present, fold it into params so
@@ -280,7 +321,7 @@ async function sendToolCommand(
 	// Path 1: If a specific instance is requested AND proxy is available, use proxy
 	if (instance && proxy.isAvailable()) {
 		try {
-			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession, agentGoal);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -294,8 +335,8 @@ async function sendToolCommand(
 	if (bridge.isConnected()) {
 		try {
 			const result = agentSession
-				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName)
-				: await bridge.sendCommand(tool, params, timeoutMs, agentName);
+				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName, agentGoal)
+				: await bridge.sendCommand(tool, params, timeoutMs, agentName, agentGoal);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -307,7 +348,7 @@ async function sendToolCommand(
 	// Path 3: Proxy relay (relay_to addressed messaging)
 	if (proxy.isAvailable()) {
 		try {
-			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession, agentGoal);
 			res.json(result);
 			return;
 		} catch (err) {

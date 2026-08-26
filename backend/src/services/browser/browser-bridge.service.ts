@@ -61,6 +61,8 @@ export interface BrowserCommand {
 	params?: Record<string, unknown>;
 	/** Name of the agent sending this command (displayed in extension banner) */
 	agentName?: string;
+	/** What the agent is trying to accomplish (displayed in extension banner) */
+	agentGoal?: string;
 }
 
 /** Response from Chrome Extension */
@@ -369,6 +371,7 @@ export class BrowserBridgeService {
 	 * @param params - Tool parameters
 	 * @param timeoutMs - Command timeout in milliseconds
 	 * @param agentName - Optional agent name to display in the extension banner
+	 * @param agentGoal - Optional agent goal/objective to display in the banner
 	 * @returns Response from the Chrome Extension
 	 * @throws Error if no client is connected or command times out
 	 */
@@ -376,7 +379,8 @@ export class BrowserBridgeService {
 		tool: string,
 		params?: Record<string, unknown>,
 		timeoutMs: number = BROWSER_BRIDGE_CONSTANTS.COMMAND_TIMEOUT_MS,
-		agentName?: string
+		agentName?: string,
+		agentGoal?: string
 	): Promise<BrowserCommandResponse> {
 		const client = this.getActiveClient();
 
@@ -400,13 +404,13 @@ export class BrowserBridgeService {
 			const proxy = BrowserProxyService.getInstance();
 			if (proxy.isAvailable()) {
 				this.logger.info('No direct WS client, routing via BrowserProxy', { tool });
-				return proxy.sendCommand(tool, params, undefined, timeoutMs, agentName);
+				return proxy.sendCommand(tool, params, undefined, timeoutMs, agentName, undefined, agentGoal);
 			}
 			const { BrowserRelayAdapter } = await import('./browser-relay-adapter.service.js');
 			const relayAdapter = BrowserRelayAdapter.getInstance();
 			if (relayAdapter.isAvailable()) {
 				this.logger.info('No direct WS client and no proxy, routing via legacy adapter', { tool });
-				return relayAdapter.sendViaRelay(tool, params, timeoutMs, agentName);
+				return relayAdapter.sendViaRelay(tool, params, timeoutMs, agentName, agentGoal);
 			}
 			throw new Error('No Chrome Extension connected (direct WS, BrowserProxy, or Cloud relay)');
 		}
@@ -415,6 +419,9 @@ export class BrowserBridgeService {
 		const command: BrowserCommand = { id, tool, params };
 		if (agentName) {
 			command.agentName = agentName;
+		}
+		if (agentGoal) {
+			command.agentGoal = agentGoal;
 		}
 
 		return new Promise<BrowserCommandResponse>((resolve, reject) => {
@@ -599,13 +606,15 @@ export class BrowserBridgeService {
 	 * @param params Tool params; if it contains `tabId` we treat as explicit override.
 	 * @param timeoutMs Optional command timeout.
 	 * @param agentName Optional agent name for the Extension banner.
+	 * @param agentGoal Optional agent goal/objective for the Extension banner.
 	 */
 	async sendCommandForAgent(
 		agentSession: string | undefined,
 		tool: string,
 		params?: Record<string, unknown>,
 		timeoutMs?: number,
-		agentName?: string
+		agentName?: string,
+		agentGoal?: string
 	): Promise<BrowserCommandResponse> {
 		// Path 1: explicit tabId override — pass through, log so it's auditable.
 		if (params && typeof (params as { tabId?: unknown }).tabId === 'number') {
@@ -614,12 +623,12 @@ export class BrowserBridgeService {
 				tabId: (params as { tabId?: number }).tabId,
 				tool,
 			});
-			return this.sendCommand(tool, params, timeoutMs, agentName);
+			return this.sendCommand(tool, params, timeoutMs, agentName, agentGoal);
 		}
 
 		// Path 4: no agent session — legacy active-tab path.
 		if (!agentSession) {
-			return this.sendCommand(tool, params, timeoutMs, agentName);
+			return this.sendCommand(tool, params, timeoutMs, agentName, agentGoal);
 		}
 
 		// Path 2 / 3: resolve binding, auto-bind on miss.
@@ -631,7 +640,7 @@ export class BrowserBridgeService {
 		binding.lastActivityAt = new Date();
 
 		const merged: Record<string, unknown> = { ...(params ?? {}), tabId: binding.tabId };
-		return this.sendCommand(tool, merged, timeoutMs, agentName);
+		return this.sendCommand(tool, merged, timeoutMs, agentName, agentGoal);
 	}
 
 	/**
