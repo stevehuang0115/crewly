@@ -207,7 +207,19 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
 
           const textPreview = result.text ? result.text.substring(0, 150) : '(no text)';
           this.logBuffer.append(session, 'info', `→ Response (${result.steps} steps, ${result.toolCalls.length} tools): ${textPreview}`);
-          this.logBuffer.append(session, 'debug', `  Tokens: ${result.usage.input}in/${result.usage.output}out`);
+          // Cache hits are reported alongside the raw counts: prompt caching
+          // was off for a long time and nothing surfaced it, because the only
+          // numbers ever logged were the ones that look identical either way.
+          // A run whose prefix is cached shows most of its input under `cached`;
+          // a persistent 0 there means caching silently stopped engaging.
+          const cached = result.usage.cachedInput ?? 0;
+          const promptTokens = result.usage.input + cached;
+          const hitRate = promptTokens > 0 ? Math.round((cached / promptTokens) * 100) : 0;
+          this.logBuffer.append(
+            session,
+            'debug',
+            `  Tokens: ${result.usage.input}in/${result.usage.output}out, ${cached} cached (${hitRate}% of prompt)`,
+          );
           this.recordTokenUsageIfEnabled(session, result).catch(() => {});
           resolve(result);
         },

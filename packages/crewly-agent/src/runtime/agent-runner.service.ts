@@ -306,6 +306,7 @@ export class AgentRunnerService {
         messages: [],
         systemPrompt: this.effectiveSystemPrompt,
         totalTokens: { input: 0, output: 0 },
+        lastContextTokens: 0,
         createdAt: new Date(),
         lastActivityAt: new Date(),
       };
@@ -699,11 +700,19 @@ export class AgentRunnerService {
    * @returns ContextBudgetStatus with usage stats and level
    */
   getContextBudget(): ContextBudgetStatus {
-    const totalTokensUsed = this.state.totalTokens.input + this.state.totalTokens.output;
+    const lifetimeTokensUsed = this.state.totalTokens.input + this.state.totalTokens.output;
+    // Occupancy, NOT lifetime spend. The prompt is re-sent in full on every
+    // request, so the lifetime sum counts the same history once per turn and
+    // sails past the window within a handful of messages — which used to pin
+    // `level` at 'critical' forever and run a compaction before every single
+    // message, doubling the model calls for the rest of the session.
+    const contextTokensUsed = this.state.lastContextTokens > 0
+      ? this.state.lastContextTokens
+      : this.estimateContextTokens();
     const contextWindowSize = MODEL_CONTEXT_WINDOWS[this.config.model.modelId]
       ?? MODEL_CONTEXT_WINDOWS.default;
     const usagePercent = contextWindowSize > 0
-      ? totalTokensUsed / contextWindowSize
+      ? contextTokensUsed / contextWindowSize
       : 0;
 
     const threshold = this.config.compactionThreshold;
@@ -719,7 +728,7 @@ export class AgentRunnerService {
       || usagePercent >= threshold;
 
     const pct = (usagePercent * 100).toFixed(1);
-    let summary = `${pct}% of context budget used (${totalTokensUsed.toLocaleString()}/${contextWindowSize.toLocaleString()} tokens, ${this.state.messages.length} messages)`;
+    let summary = `${pct}% of context budget used (${contextTokensUsed.toLocaleString()}/${contextWindowSize.toLocaleString()} tokens, ${this.state.messages.length} messages, ${lifetimeTokensUsed.toLocaleString()} billed this session)`;
     if (level === 'critical') {
       summary += ' — CRITICAL: compaction recommended immediately';
     } else if (level === 'warning') {
@@ -727,7 +736,8 @@ export class AgentRunnerService {
     }
 
     return {
-      totalTokensUsed,
+      contextTokensUsed,
+      lifetimeTokensUsed,
       contextWindowSize,
       usagePercent,
       level,
@@ -735,6 +745,91 @@ export class AgentRunnerService {
       compactionPending,
       summary,
     };
+  }
+
+  /**
+   * Provider-specific request options.
+   *
+   * Turns on Anthropic prompt caching. Every request re-sends the same
+   * prefix — the system prompt (tens of KB for an orchestrator) followed by
+   * the tool schemas — and that prefix is byte-stable for the life of the
+   * session, which is exactly the shape caching is for. Without this the
+   * whole prefix is billed at full rate on every single turn.
+   *
+   * The top-level `cacheControl` places the breakpoint at the last cacheable
+   * block, so tools + system + settled history are covered by one marker and
+   * only the newest turn is uncached.
+   *
+   * Anthropic-only by design: DeepSeek caches server-side with no opt-in, and
+   * the other providers ignore an option namespaced to a provider that is not
+   * theirs — but sending it only where it means something keeps the request
+   * honest.
+   *
+   * @returns Provider options for the current model, or undefined when the
+   *          provider needs none
+   */
+  private buildProviderOptions(): Record<string, Record<string, unknown>> | undefined {
+    if (this.config.model.provider !== 'anthropic') return undefined;
+    return { anthropic: { cacheControl: { type: 'ephemeral' } } };
+  }
+
+  /**
+   * Record how full the context is after a completed request.
+   *
+   * The prompt the provider just billed IS the context size — `input` covers
+   * the system prompt, the tool schemas and the retained history, and
+   * `cachedInput` covers the part of that same prompt served from cache
+   * (billed cheaper, but still occupying the window, so it must be added
+   * back). The reply is included because the next request carries it forward.
+   *
+   * Assigns rather than accumulates: this is a snapshot of the current turn,
+   * and compaction shrinks it back down on the next measurement.
+   *
+   * @param usage - Token counts reported by the provider for the request
+   */
+  private recordContextOccupancy(
+    usage: { input: number; output: number; cachedInput: number },
+  ): void {
+    this.state.lastContextTokens = usage.input + usage.cachedInput + usage.output;
+  }
+
+  /**
+   * Estimate context occupancy from the text we are about to send.
+   *
+   * Only used before the first response of a conversation, when no provider
+   * measurement exists yet. A rough number is fine there — one turn later it
+   * is replaced by the provider's own count — but it must not be wildly low,
+   * because a 40KB system prompt already fills a meaningful slice of a small
+   * window before any history exists.
+   *
+   * CJK and Latin text are counted separately: a single chars-per-token ratio
+   * misjudges a Chinese prompt by more than 2x in whichever direction it is
+   * tuned for. Tool schemas are not included — they are unavailable here and
+   * the estimate is superseded immediately.
+   *
+   * @returns Estimated tokens currently occupying the context window
+   */
+  private estimateContextTokens(): number {
+    let text = this.state.systemPrompt ?? '';
+    for (const m of this.state.messages) {
+      text += typeof m.content === 'string' ? m.content : JSON.stringify(m.content);
+    }
+    let cjk = 0;
+    for (const ch of text) {
+      const code = ch.codePointAt(0) ?? 0;
+      // CJK ideographs, kana, Hangul, and full-width forms.
+      if ((code >= 0x3040 && code <= 0x9fff)
+        || (code >= 0xac00 && code <= 0xd7af)
+        || (code >= 0xf900 && code <= 0xfaff)
+        || (code >= 0xff00 && code <= 0xffef)) {
+        cjk++;
+      }
+    }
+    const latin = [...text].length - cjk;
+    return Math.ceil(
+      latin / CREWLY_AGENT_DEFAULTS.CHARS_PER_TOKEN_LATIN
+      + cjk / CREWLY_AGENT_DEFAULTS.CHARS_PER_TOKEN_CJK,
+    );
   }
 
   /**
@@ -1049,6 +1144,7 @@ export class AgentRunnerService {
       model: this.model!,
       system: this.state.systemPrompt,
       messages: this.state.messages,
+      providerOptions: this.buildProviderOptions(),
       tools: tools as any,
       stopWhen: stepCountIs(this.config.maxSteps),
       temperature: this.config.model.temperature,
@@ -1161,9 +1257,11 @@ export class AgentRunnerService {
       const usage = {
         input: resultUsage?.inputTokens ?? 0,
         output: resultUsage?.outputTokens ?? 0,
+        cachedInput: resultUsage?.cachedInputTokens ?? 0,
       };
       this.state.totalTokens.input += usage.input;
       this.state.totalTokens.output += usage.output;
+      this.recordContextOccupancy(usage);
 
       // Check budget after token update
       const postBudget = this.getContextBudget();
@@ -1277,6 +1375,7 @@ export class AgentRunnerService {
       model: this.model,
       system: this.state.systemPrompt,
       messages: this.state.messages,
+      providerOptions: this.buildProviderOptions(),
       tools,
       stopWhen: stepCountIs(this.config.maxSteps),
       temperature: this.config.model.temperature,
@@ -1345,9 +1444,11 @@ export class AgentRunnerService {
     const usage = {
       input: result.usage?.inputTokens ?? 0,
       output: result.usage?.outputTokens ?? 0,
+      cachedInput: result.usage?.cachedInputTokens ?? 0,
     };
     this.state.totalTokens.input += usage.input;
     this.state.totalTokens.output += usage.output;
+    this.recordContextOccupancy(usage);
 
     // Check budget after token update and attach warning if approaching limits
     const postBudget = this.getContextBudget();
@@ -1492,6 +1593,7 @@ export class AgentRunnerService {
         model: this.model,
         system: this.state.systemPrompt,
         messages: this.state.messages,
+        providerOptions: this.buildProviderOptions(),
         tools: tools as any,
         stopWhen: stepCountIs(20), // Limited steps for follow-up
         temperature: this.config.model.temperature,
@@ -1503,7 +1605,7 @@ export class AgentRunnerService {
       const followUpResult = followUp as unknown as Record<string, unknown>;
       const steps = (followUpResult.steps as Array<Record<string, unknown>>) ?? [];
       const text = (followUpResult.text as string) ?? '';
-      const followUpUsage = followUpResult.usage as { inputTokens?: number; outputTokens?: number } | undefined;
+      const followUpUsage = followUpResult.usage as { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number } | undefined;
       const finishReason = (followUpResult.finishReason as string) ?? 'stop';
 
       const followUpToolCalls: ToolCallRecord[] = [];
@@ -1520,10 +1622,16 @@ export class AgentRunnerService {
         this.state.messages.push({ role: 'assistant', content: text });
       }
 
-      // Track follow-up token usage
+      // Track follow-up token usage. This is a later request in the same run,
+      // so its prompt is the most current picture of how full the context is.
       if (followUpUsage) {
         this.state.totalTokens.input += followUpUsage.inputTokens ?? 0;
         this.state.totalTokens.output += followUpUsage.outputTokens ?? 0;
+        this.recordContextOccupancy({
+          input: followUpUsage.inputTokens ?? 0,
+          output: followUpUsage.outputTokens ?? 0,
+          cachedInput: followUpUsage.cachedInputTokens ?? 0,
+        });
       }
 
       return {
@@ -1532,6 +1640,7 @@ export class AgentRunnerService {
         usage: {
           input: followUpUsage?.inputTokens ?? 0,
           output: followUpUsage?.outputTokens ?? 0,
+          cachedInput: followUpUsage?.cachedInputTokens ?? 0,
         },
         toolCalls: followUpToolCalls,
         finishReason,
@@ -1564,6 +1673,7 @@ export class AgentRunnerService {
         model: this.model,
         system: this.state.systemPrompt,
         messages: this.state.messages,
+        providerOptions: this.buildProviderOptions(),
         maxOutputTokens: resolveMaxOutputTokens(this.config.model),
         temperature: this.config.model.temperature,
       });
@@ -1578,6 +1688,11 @@ export class AgentRunnerService {
         if (fallbackUsage) {
           this.state.totalTokens.input += fallbackUsage.inputTokens ?? 0;
           this.state.totalTokens.output += fallbackUsage.outputTokens ?? 0;
+          this.recordContextOccupancy({
+            input: fallbackUsage.inputTokens ?? 0,
+            output: fallbackUsage.outputTokens ?? 0,
+            cachedInput: fallbackUsage.cachedInputTokens ?? 0,
+          });
         }
       }
 

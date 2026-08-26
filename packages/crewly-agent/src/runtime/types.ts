@@ -105,6 +105,20 @@ export interface ConversationState {
   systemPrompt: string;
   /** Cumulative token usage across all generateText calls */
   totalTokens: { input: number; output: number };
+  /**
+   * Tokens occupying the model's context as of the most recent request:
+   * the prompt that was actually sent (system + tools + retained history,
+   * cache hits included) plus the reply it produced, which the next request
+   * carries forward.
+   *
+   * This is a MEASUREMENT, not a running total — it is assigned, never
+   * accumulated. `totalTokens` answers "what has this session cost?";
+   * this answers "how full is the context?". Using the former for the
+   * latter conflates lifetime spend with occupancy and climbs past 100%
+   * of the window after a few turns, pinning the runner in permanent
+   * compaction. 0 until the first response lands.
+   */
+  lastContextTokens: number;
   /** Conversation creation time */
   createdAt: Date;
   /** Last activity timestamp */
@@ -156,8 +170,13 @@ export interface AgentRunResult {
   text: string;
   /** Number of steps taken in this run */
   steps: number;
-  /** Token usage for this run */
-  usage: { input: number; output: number };
+  /**
+   * Token usage for this run. `cachedInput` is the portion of `input` the
+   * provider served from its prompt cache — the number to watch when
+   * verifying caching actually engaged. It is 0 on providers that do not
+   * report cache hits.
+   */
+  usage: { input: number; output: number; cachedInput: number };
   /** Tool calls made during this run */
   toolCalls: ToolCallRecord[];
   /** Reason the generation finished */
@@ -322,8 +341,19 @@ export const WRITE_TOOLS: readonly string[] = [
  * Tracks token usage against the model's context window limit.
  */
 export interface ContextBudgetStatus {
-  /** Total tokens used so far (input + output) */
-  totalTokensUsed: number;
+  /**
+   * Tokens occupying the context window right now — measured from the last
+   * request, or estimated from the system prompt + history before the first
+   * one. This is the numerator of `usagePercent`.
+   */
+  contextTokensUsed: number;
+  /**
+   * Lifetime tokens billed for this session (input + output across every
+   * request). Reported for cost visibility only — it must never be compared
+   * against the context window, since re-sent history is counted once per
+   * request and the sum exceeds the window long before the context is full.
+   */
+  lifetimeTokensUsed: number;
   /** Estimated context window size for the current model */
   contextWindowSize: number;
   /** Usage as a fraction (0.0 - 1.0) */
@@ -343,7 +373,20 @@ export interface ContextBudgetStatus {
  * Used for budget tracking when the model doesn't report its own limit.
  */
 export const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
-  // Anthropic
+  // Anthropic — current generation. These were missing, so every model the
+  // fleet actually runs fell through to `default: 128_000` while its real
+  // window is 1M. An 8x under-estimate makes `compactionThreshold` fire
+  // roughly 8x too early, which is expensive: each premature compaction is a
+  // whole extra model call.
+  'claude-fable-5': 1_000_000,
+  'claude-opus-5': 1_000_000,
+  'claude-opus-4-8': 1_000_000,
+  'claude-opus-4-7': 1_000_000,
+  'claude-opus-4-6': 1_000_000,
+  'claude-sonnet-5': 1_000_000,
+  'claude-sonnet-4-6': 1_000_000,
+  'claude-haiku-4-5': 200_000,
+  // Anthropic — older dated snapshots, kept so pinned configs still resolve.
   'claude-opus-4-20250514': 200_000,
   'claude-sonnet-4-20250514': 200_000,
   'claude-haiku-4-20250506': 200_000,
@@ -493,6 +536,14 @@ export const CREWLY_AGENT_DEFAULTS = {
   MAX_HISTORY_MESSAGES: 100,
   /** Default compaction threshold (80% of context window) */
   COMPACTION_THRESHOLD: 0.8,
+  /**
+   * Characters per token, used ONLY to size the context before the first
+   * response gives us a real measurement. Latin text runs about 4 chars per
+   * token; CJK about 1.5, so the two are counted separately — a single ratio
+   * would misjudge a Chinese system prompt by more than 2x.
+   */
+  CHARS_PER_TOKEN_LATIN: 4,
+  CHARS_PER_TOKEN_CJK: 1.5,
   /** Default model configuration */
   DEFAULT_MODEL: {
     provider: 'google' as ModelProvider,

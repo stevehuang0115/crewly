@@ -93,7 +93,7 @@ describe('AgentRunnerService', () => {
 
       expect(result.text).toBe('Hello from agent');
       expect(result.steps).toBe(1);
-      expect(result.usage).toEqual({ input: 100, output: 50 });
+      expect(result.usage).toEqual({ input: 100, output: 50, cachedInput: 0 });
       expect(result.toolCalls).toEqual([]);
       expect(result.finishReason).toBe('stop');
     });
@@ -194,7 +194,7 @@ describe('AgentRunnerService', () => {
 
       const result = await runner.run('Test');
 
-      expect(result.usage).toEqual({ input: 0, output: 0 });
+      expect(result.usage).toEqual({ input: 0, output: 0, cachedInput: 0 });
     });
 
     it('should throw if not initialized', async () => {
@@ -614,18 +614,24 @@ describe('AgentRunnerService', () => {
   });
 
   describe('getContextBudget', () => {
-    it('should return normal level with zero usage', () => {
+    it('should return normal level before any request has been billed', () => {
       const budget = runner.getContextBudget();
 
-      expect(budget.totalTokensUsed).toBe(0);
-      expect(budget.usagePercent).toBe(0);
+      expect(budget.lifetimeTokensUsed).toBe(0);
+      // No provider measurement yet, so occupancy is estimated from the system
+      // prompt — small but non-zero, and it must not read as an empty context.
+      expect(budget.contextTokensUsed).toBeGreaterThan(0);
+      expect(budget.usagePercent).toBeLessThan(0.01);
       expect(budget.level).toBe('normal');
       expect(budget.messageCount).toBe(0);
       expect(budget.compactionPending).toBe(false);
       expect(budget.contextWindowSize).toBeGreaterThan(0);
     });
 
-    it('should track cumulative token usage', async () => {
+    it('separates context occupancy from lifetime spend', async () => {
+      // The two must diverge: history is re-sent every turn, so lifetime spend
+      // accumulates while occupancy only reflects the latest prompt. Conflating
+      // them drove `usagePercent` past 100% within a few turns.
       await runner.initialize();
       mockGenerateText.mockResolvedValueOnce({
         text: 'Response',
@@ -635,9 +641,41 @@ describe('AgentRunnerService', () => {
       });
       await runner.run('Hello');
 
+      expect(runner.getContextBudget().lifetimeTokensUsed).toBe(700);
+      expect(runner.getContextBudget().contextTokensUsed).toBe(700);
+
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Response 2',
+        steps: [],
+        usage: { inputTokens: 800, outputTokens: 100 },
+        finishReason: 'stop',
+      });
+      await runner.run('Hello again');
+
       const budget = runner.getContextBudget();
-      expect(budget.totalTokensUsed).toBe(700);
-      expect(budget.messageCount).toBe(2); // user + assistant
+      expect(budget.lifetimeTokensUsed).toBe(1600); // 700 + 900, still climbing
+      expect(budget.contextTokensUsed).toBe(900);   // just the latest prompt
+      expect(budget.messageCount).toBe(4);
+    });
+
+    it('counts cache hits as occupying the window even though they bill cheaper', async () => {
+      // Cached tokens are served at a discount but are still part of the
+      // prompt. Dropping them would make a well-cached session look almost
+      // empty and defeat compaction entirely.
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Response',
+        steps: [],
+        usage: { inputTokens: 300, outputTokens: 100, cachedInputTokens: 20_000 },
+        finishReason: 'stop',
+      });
+      await runner.run('Hello');
+
+      const budget = runner.getContextBudget();
+      expect(budget.contextTokensUsed).toBe(20_400);
+      // Billing is unaffected — lifetime counts only what the provider charged
+      // as fresh input plus output.
+      expect(budget.lifetimeTokensUsed).toBe(400);
     });
 
     it('should return warning level when approaching threshold', async () => {
@@ -657,11 +695,13 @@ describe('AgentRunnerService', () => {
       }
 
       const budget = runner.getContextBudget();
-      // 10 * 9000 = 90,000 tokens. Context window = 200,000 (anthropic claude-sonnet-4-20250514)
-      // 90000/200000 = 0.45, threshold = 0.8, warning at 0.68
-      // Actually need more tokens. Let me check: the model is claude-sonnet-4-20250514 = 200,000
-      // So we'd need 136,000+ for warning (0.68 * 200000)
-      expect(budget.totalTokensUsed).toBe(90000);
+      // 10 turns × 9,000 billed = 90,000 lifetime tokens, but each individual
+      // prompt was only 9,000 — well under the 200,000 window. The budget must
+      // read the second number: measuring lifetime spend against the window is
+      // what pinned long sessions at 'critical' forever.
+      expect(budget.lifetimeTokensUsed).toBe(90000);
+      expect(budget.contextTokensUsed).toBe(9000);
+      expect(budget.level).toBe('normal');
     });
 
     it('should return critical level when at or above compaction threshold', async () => {
@@ -687,6 +727,43 @@ describe('AgentRunnerService', () => {
       expect(budget.level).toBe('critical');
       expect(budget.compactionPending).toBe(true);
       expect(budget.summary).toContain('CRITICAL');
+    });
+
+    // Regression: a long session used to settle into a state where EVERY
+    // message ran a compaction before its own request, doubling the model calls
+    // for the rest of the session and never recovering — compaction shrank the
+    // history but nothing reset the counter it was judged against. Reproduced
+    // at an orchestrator's real scale: a ~20k-token prompt on DeepSeek's 64k
+    // window crossed the 0.8 threshold by the third message.
+    it('does not fall into a permanent compact-before-every-message loop', async () => {
+      const config = {
+        ...baseConfig,
+        model: { provider: 'deepseek' as const, modelId: 'deepseek-chat', temperature: 0.3, maxTokens: 8192 },
+        maxHistoryMessages: 100,
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+
+      mockGenerateText.mockResolvedValue({
+        text: 'ok',
+        steps: [],
+        usage: { inputTokens: 20_000, outputTokens: 300 },
+        finishReason: 'stop',
+      });
+
+      const TURNS = 12;
+      for (let i = 0; i < TURNS; i++) {
+        await r.run(`message ${i}`);
+      }
+
+      // One call per turn. A compaction would add a summarization call on top,
+      // so a count above TURNS means the loop is back.
+      expect(mockGenerateText).toHaveBeenCalledTimes(TURNS);
+      const budget = r.getContextBudget();
+      expect(budget.level).toBe('normal');
+      // The old formula reported ~380% here.
+      expect(budget.usagePercent).toBeLessThan(1);
     });
 
     it('should set compactionPending when message count exceeds max', async () => {
@@ -824,22 +901,15 @@ describe('AgentRunnerService', () => {
       // Each run uses 150 tokens. After 6 runs: 900 tokens.
       // Context window for claude-sonnet-4-20250514 = 200,000
       // Set threshold to 0.004 (0.4%) = 800 tokens
-      // Runs 0-3 won't trigger (0,150,300,450 < 800). Run 4+ will trigger.
-      // But compaction needs >= 10 messages, so runs 4-5 trigger budget-critical
-      // but compactHistory returns early (8 and 10 messages respectively).
-      // Actually run 5 has 10 messages so compaction runs.
-      // Let's use threshold 0.005 = 1000 tokens, so 6 runs of 150 = 900 < 1000.
-      // Then the 7th run triggers at 900 + check >= 1000? No, budget is checked
-      // before the run with existing tokens. After 6 runs = 900 tokens < 1000 = normal.
-      // After 7th run = 900 + 150 = 1050. But check is before run with 900 tokens.
-      // We need threshold to trigger BEFORE a run. So set threshold = 0.004 = 800.
-      // After 5 runs = 750 < 800 (normal). After 6th run's execution → 900.
-      // 7th run check: 900/200000 = 0.0045 >= 0.004 → critical → compaction triggers.
-      // At that point we have 12 messages (6 runs × 2), >= 10, so compaction runs.
+      // Compaction must stay reachable on token pressure alone, with a message
+      // count nowhere near `maxHistoryMessages`. Pressure now comes from one
+      // large prompt rather than from many small ones adding up: occupancy is
+      // measured per request, so a long-but-light session no longer reads as
+      // full. Threshold 0.004 of a 200,000 window = 800 tokens.
       const config = {
         ...baseConfig,
         maxHistoryMessages: 1000, // high message limit, won't trigger by count
-        compactionThreshold: 0.004, // triggers after ~6 runs of 150 tokens each
+        compactionThreshold: 0.004,
       };
       const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
       r._generateTextFn = mockGenerateText;
@@ -857,11 +927,22 @@ describe('AgentRunnerService', () => {
       }
 
       expect(r.getHistoryLength()).toBe(12);
-      // 900 / 200000 = 0.0045 >= 0.004 → critical
+      expect(r.getContextBudget().level).toBe('normal');
+
+      // A turn that actually fills the context — 950 tokens against an 800
+      // token threshold.
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'Big context turn',
+        steps: [],
+        usage: { inputTokens: 900, outputTokens: 50 },
+        finishReason: 'stop',
+      });
+      await r.run('Message with a large prompt');
+
       expect(r.getContextBudget().level).toBe('critical');
 
-      // Next run should trigger compaction due to token budget being critical
-      // AI summary call + actual run
+      // The next run sees a critical budget and compacts first:
+      // one summarization call, then the run itself.
       mockGenerateText.mockResolvedValueOnce({
         text: 'Compaction summary of state',
         steps: [],
@@ -878,9 +959,72 @@ describe('AgentRunnerService', () => {
       await r.run('Trigger compaction by budget');
 
       // Should have compacted: 1 summary + 10 recent + 1 user + 1 assistant
-      expect(r.getHistoryLength()).toBeLessThan(14);
+      expect(r.getHistoryLength()).toBeLessThan(16);
       const state = r.getState();
       expect(String(state.messages[0].content)).toContain('Compacted State');
+    });
+  });
+
+  // Prompt caching — the fixed prefix (system prompt + tool schemas) is
+  // byte-stable for the life of a session and was billed at full rate on every
+  // turn because no provider options were ever sent.
+  describe('prompt caching', () => {
+    const lastCallArgs = () =>
+      mockGenerateText.mock.calls[mockGenerateText.mock.calls.length - 1][0];
+
+    it('asks Anthropic to cache the request prefix', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok', steps: [], usage: { inputTokens: 10, outputTokens: 5 }, finishReason: 'stop',
+      });
+      await runner.run('Hello');
+
+      expect(lastCallArgs().providerOptions).toEqual({
+        anthropic: { cacheControl: { type: 'ephemeral' } },
+      });
+    });
+
+    it('sends no provider options for a non-Anthropic model', async () => {
+      // DeepSeek caches server-side with no opt-in and the others have no
+      // equivalent knob; an Anthropic-namespaced option there is just noise.
+      const config = {
+        ...baseConfig,
+        model: { provider: 'deepseek' as const, modelId: 'deepseek-chat', temperature: 0.3, maxTokens: 8192 },
+      };
+      const r = new AgentRunnerService(config, mockModelManager, mockApiClient);
+      r._generateTextFn = mockGenerateText;
+      await r.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok', steps: [], usage: { inputTokens: 10, outputTokens: 5 }, finishReason: 'stop',
+      });
+      await r.run('Hello');
+
+      expect(lastCallArgs().providerOptions).toBeUndefined();
+    });
+
+    it('reports cache hits on the run result so the hit rate is observable', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok',
+        steps: [],
+        usage: { inputTokens: 400, outputTokens: 60, cachedInputTokens: 18_000 },
+        finishReason: 'stop',
+      });
+
+      const result = await runner.run('Hello');
+
+      expect(result.usage).toEqual({ input: 400, output: 60, cachedInput: 18_000 });
+    });
+
+    it('reports zero cache hits when the provider omits the field', async () => {
+      await runner.initialize();
+      mockGenerateText.mockResolvedValueOnce({
+        text: 'ok', steps: [], usage: { inputTokens: 400, outputTokens: 60 }, finishReason: 'stop',
+      });
+
+      const result = await runner.run('Hello');
+
+      expect(result.usage.cachedInput).toBe(0);
     });
   });
 

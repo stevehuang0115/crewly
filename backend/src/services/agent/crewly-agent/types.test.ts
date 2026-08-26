@@ -446,7 +446,8 @@ describe('Crewly Agent Types', () => {
   describe('ContextBudgetStatus type', () => {
     it('should accept valid normal status', () => {
       const status: ContextBudgetStatus = {
-        totalTokensUsed: 5000,
+        contextTokensUsed: 5000,
+        lifetimeTokensUsed: 42000,
         contextWindowSize: 200000,
         usagePercent: 0.025,
         level: 'normal',
@@ -460,7 +461,8 @@ describe('Crewly Agent Types', () => {
 
     it('should accept valid critical status', () => {
       const status: ContextBudgetStatus = {
-        totalTokensUsed: 180000,
+        contextTokensUsed: 180000,
+        lifetimeTokensUsed: 1_400_000,
         contextWindowSize: 200000,
         usagePercent: 0.9,
         level: 'critical',
@@ -478,7 +480,7 @@ describe('Crewly Agent Types', () => {
       const result: AgentRunResult = {
         text: 'Done',
         steps: 1,
-        usage: { input: 100, output: 50 },
+        usage: { input: 100, output: 50, cachedInput: 0 },
         toolCalls: [],
         finishReason: 'stop',
         budgetWarning: 'WARNING: approaching compaction threshold',
@@ -490,7 +492,7 @@ describe('Crewly Agent Types', () => {
       const result: AgentRunResult = {
         text: 'Done',
         steps: 1,
-        usage: { input: 100, output: 50 },
+        usage: { input: 100, output: 50, cachedInput: 0 },
         toolCalls: [],
         finishReason: 'stop',
       };
@@ -502,7 +504,8 @@ describe('Crewly Agent Types', () => {
     it('should accept callbacks with onGetContextBudget', () => {
       const callbacks: ToolCallbacks = {
         onGetContextBudget: () => ({
-          totalTokensUsed: 0,
+          contextTokensUsed: 0,
+          lifetimeTokensUsed: 0,
           contextWindowSize: 200000,
           usagePercent: 0,
           level: 'normal',
