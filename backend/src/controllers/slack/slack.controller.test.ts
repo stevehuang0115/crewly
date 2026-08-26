@@ -19,6 +19,16 @@ jest.mock('../../services/chat-v2/chat-v2.singleton.js', () => ({
   })),
 }));
 
+// OrcDeliveryEnforcer is lazily imported by the shared post-send bookkeeping
+// helper. Stubbed at module scope so the ledger-clearing assertions don't
+// depend on the real singleton having been started by the server bootstrap.
+const mockMarkDelivered = jest.fn();
+jest.mock('../../services/orc/orc-delivery-enforcer.service.js', () => ({
+  OrcDeliveryEnforcerService: {
+    getInstance: jest.fn(() => ({ markDelivered: mockMarkDelivered })),
+  },
+}));
+
 // Jest globals are available automatically
 import request from 'supertest';
 import express, { Application, Request, Response, NextFunction } from 'express';
@@ -53,6 +63,8 @@ describe('Slack Controller', () => {
     delete process.env.SLACK_SIGNING_SECRET;
     delete process.env.SLACK_DEFAULT_CHANNEL;
     delete process.env.SLACK_ALLOWED_USERS;
+
+    mockMarkDelivered.mockClear();
   });
 
   afterEach(() => {
@@ -835,6 +847,90 @@ describe('Slack Controller', () => {
       const tsq = ThreadStatusQueueService.getInstance();
       const entry = tsq.get(`${channelId}:${threadTs}`);
       expect(entry?.status).toBe('replied_completed');
+    });
+  });
+
+  // The OrcDeliveryEnforcer ledger (2026-05-23 incident) is armed when a
+  // worker agent posts [DONE] into a Slack thread, and only a reply back to
+  // that thread should disarm it. `markDelivered` used to be called inline in
+  // /send only, so a deliverable handed over as an image or a file never
+  // cleared it: the watchdog kept nudging for something already delivered, and
+  // every nudge produced another copy of the same reply in the thread. It now
+  // lives in the bookkeeping helper all three endpoints share.
+  describe('OrcDeliveryEnforcer ledger — clear-on-reply parity', () => {
+    const connectedSlack = () => {
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      return slackService;
+    };
+
+    it('clears the ledger after a threaded /send', async () => {
+      const slackService = connectedSlack();
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1800.001');
+
+      await request(app).post('/api/slack/send').send({
+        channelId: 'C-LEDGER',
+        text: 'here is the deliverable',
+        threadTs: '1800.thread-1',
+      });
+
+      expect(mockMarkDelivered).toHaveBeenCalledTimes(1);
+      expect(mockMarkDelivered).toHaveBeenCalledWith({
+        channelId: 'C-LEDGER',
+        threadTs: '1800.thread-1',
+      });
+    });
+
+    it('clears the ledger after a threaded /upload-image', async () => {
+      const fs = await import('fs/promises');
+      const path = await import('path');
+      const os = await import('os');
+      const tmpFile = path.join(os.tmpdir(), 'test-upload-image-ledger.png');
+      await fs.writeFile(tmpFile, 'fake png');
+
+      const slackService = connectedSlack();
+      jest.spyOn(slackService, 'uploadImage').mockResolvedValue({ fileId: 'F-IMG' });
+
+      try {
+        await request(app).post('/api/slack/upload-image').send({
+          channelId: 'C-LEDGER-IMG',
+          filePath: tmpFile,
+          filename: 'chart.png',
+          threadTs: '1800.thread-2',
+        });
+      } finally {
+        await fs.unlink(tmpFile).catch(() => {});
+      }
+
+      expect(mockMarkDelivered).toHaveBeenCalledWith({
+        channelId: 'C-LEDGER-IMG',
+        threadTs: '1800.thread-2',
+      });
+    });
+
+    it('leaves the ledger armed when the Slack send failed', async () => {
+      const slackService = connectedSlack();
+      jest.spyOn(slackService, 'sendMessage').mockRejectedValue(new Error('slack 5xx'));
+
+      await request(app).post('/api/slack/send').send({
+        channelId: 'C-LEDGER',
+        text: 'never made it',
+        threadTs: '1800.thread-3',
+      });
+
+      expect(mockMarkDelivered).not.toHaveBeenCalled();
+    });
+
+    it('does not touch the ledger for a non-threaded /send', async () => {
+      const slackService = connectedSlack();
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1800.004');
+
+      await request(app).post('/api/slack/send').send({
+        channelId: 'C-LEDGER',
+        text: 'channel-level post',
+      });
+
+      expect(mockMarkDelivered).not.toHaveBeenCalled();
     });
   });
 

@@ -128,6 +128,16 @@ jest.mock('../observability/agent-behavior-log.singleton.js', () => ({
 	})),
 }));
 
+// OrcDeliveryEnforcer is lazily imported by the auto-route so it can clear the
+// pending-delivery ledger. Stubbed here to keep the tests off the real
+// singleton and to let them assert the clear actually happens.
+const mockMarkDelivered = jest.fn();
+jest.mock('../orc/orc-delivery-enforcer.service.js', () => ({
+	OrcDeliveryEnforcerService: {
+		getInstance: jest.fn(() => ({ markDelivered: mockMarkDelivered })),
+	},
+}));
+
 // chat-v2 singleton — mocked so tests don't open a real SQLite DB and
 // so we can assert the Phase 2 canonical dual-write path. Default mocks
 // return permissive values; per-test overrides exercise error paths.
@@ -3938,6 +3948,7 @@ describe('AgentRegistrationService', () => {
 			mockTsqMarkReplied.mockReset();
 			mockMarkResolvedByThread.mockReset().mockResolvedValue(undefined);
 			mockBehaviorLogRecord.mockReset();
+			mockMarkDelivered.mockReset();
 			mockChatV2EnsureChannel.mockReset().mockReturnValue({ id: 'C123' });
 			mockChatV2RecordTurn.mockReset().mockReturnValue({
 				message: { id: 'msg-1', content: 'hello' },
@@ -4090,6 +4101,59 @@ describe('AgentRegistrationService', () => {
 
 			// Downstream SLA cascade still ran — the audit failure is
 			// non-fatal and must not break the bookkeeping chain.
+			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
+		});
+
+		// The auto-route mirrored every /slack/send side-effect except the
+		// delivery ledger. Because only /slack/send cleared it, an agent that
+		// answered with plain text (no reply_slack tool call) left the entry
+		// armed — the enforcer then nudged again at 10 min and 30 min, and the
+		// agent posted the same answer each time. SlackService's dedup window
+		// is 30s, so nudges minutes apart each surfaced as a visible duplicate
+		// in the Slack thread.
+		it('clears the pending-delivery ledger after a successful auto-route', async () => {
+			invoke({ channelId: 'C-DELIVER', threadTs: '1700000000.000333' });
+			await flushAsync();
+
+			expect(mockMarkDelivered).toHaveBeenCalledTimes(1);
+			expect(mockMarkDelivered).toHaveBeenCalledWith({
+				channelId: 'C-DELIVER',
+				threadTs: '1700000000.000333',
+			});
+		});
+
+		it('does NOT clear the ledger when the Slack send failed', async () => {
+			// A reply that never reached Slack must leave the watchdog armed —
+			// clearing here would silence the one mechanism that notices the
+			// deliverable never landed.
+			mockSlackSendMessage.mockRejectedValueOnce(new Error('slack 5xx'));
+
+			invoke();
+			await flushAsync();
+
+			expect(mockMarkDelivered).not.toHaveBeenCalled();
+		});
+
+		it('skips the ledger clear for a non-threaded message', async () => {
+			// The ledger is keyed by channel+thread; a channel-level post is
+			// not an answer to any tracked thread.
+			(service as any).routeInProcessResponseToSlack('crewly-orc', 'hello', {
+				channelId: 'C-NOTHREAD',
+			});
+			await flushAsync();
+
+			expect(mockSlackSendMessage).toHaveBeenCalledTimes(1);
+			expect(mockMarkDelivered).not.toHaveBeenCalled();
+		});
+
+		it('swallows a markDelivered failure and still fires the SLA cascade', async () => {
+			mockMarkDelivered.mockImplementationOnce(() => {
+				throw new Error('enforcer exploded');
+			});
+
+			expect(() => invoke()).not.toThrow();
+			await flushAsync();
+
 			expect(mockMarkResolvedByThread).toHaveBeenCalledTimes(1);
 		});
 	});

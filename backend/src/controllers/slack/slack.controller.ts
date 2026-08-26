@@ -73,6 +73,12 @@ function handleSlackPlatformError(error: unknown, res: Response): boolean {
  *  3. Fire the V3 SLA `markResolvedByThread` cascade so the matching Request
  *     auto-closes on file-only replies (it already worked for text replies
  *     via the same hook).
+ *  5. Clear the OrcDeliveryEnforcer pending-delivery ledger for the thread.
+ *     Lives here rather than inline in `/send` so a deliverable handed over
+ *     as an image or a file counts as delivered too. Previously only text
+ *     replies cleared it, so an attachment reply left the watchdog armed and
+ *     it kept nudging the orchestrator to deliver what it had already
+ *     delivered — each nudge answered with another copy of the same reply.
  *  4. Append the reply to the slack-thread `.md` store (the file orc reads
  *     directly on session restart). The legacy `slack-orchestrator-bridge.
  *     sendSlackResponse` path already did this for its internal flow, but
@@ -206,6 +212,20 @@ async function recordSlackReplyBookkeeping(params: {
       }
     } catch {
       // Non-fatal — Slack delivery succeeded.
+    }
+  }
+
+  // 5. Clear the pending-delivery reminder the enforcer is holding for this
+  //    thread (2026-05-23 incident ledger). Any successful reply to the
+  //    thread counts — text, image, or file.
+  if (threadTs && channelId) {
+    try {
+      const { OrcDeliveryEnforcerService } = await import(
+        '../../services/orc/orc-delivery-enforcer.service.js'
+      );
+      OrcDeliveryEnforcerService.getInstance()?.markDelivered({ channelId, threadTs });
+    } catch {
+      // Non-fatal — enforcer not wired (e.g. headless mode).
     }
   }
 }
@@ -379,23 +399,6 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       text,
       threadTs,
     });
-
-    // 2026-05-23 incident fix: ORC successfully delivered to a slack
-    // thread — clear any pending-delivery reminder the enforcer was
-    // tracking for that thread. Best-effort; never blocks the response.
-    if (threadTs) {
-      try {
-        const { OrcDeliveryEnforcerService } = await import(
-          '../../services/orc/orc-delivery-enforcer.service.js'
-        );
-        OrcDeliveryEnforcerService.getInstance()?.markDelivered({
-          channelId,
-          threadTs,
-        });
-      } catch {
-        // ignore — enforcer not wired (e.g. headless mode) shouldn't block send
-      }
-    }
 
     // F14: record `agent.action` with actionType='send_slack' on
     // successful Slack send. Source `agent` from senderSessionName

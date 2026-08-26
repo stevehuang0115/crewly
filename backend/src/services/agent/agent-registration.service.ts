@@ -466,6 +466,33 @@ export class AgentRegistrationService {
 					textLength: cleanText.length,
 				});
 
+				// Mirror /slack/send bookkeeping #4 — clear the pending-delivery
+				// reminder OrcDeliveryEnforcer holds for this thread. This is the one
+				// side-effect the auto-route never mirrored, and the gap is
+				// user-visible: when the agent answers with plain text instead of
+				// calling the reply_slack tool, the reply reaches Slack but the
+				// ledger entry survives, so the enforcer nudges again at 10 min and
+				// again at 30 min — and the agent posts the same answer each time.
+				// SlackService's dedup window is 30s, far too short to absorb
+				// reminders spaced minutes apart, so every nudge lands in the thread
+				// as a visible duplicate.
+				if (slackContext.threadTs) {
+					try {
+						const { OrcDeliveryEnforcerService } = await import(
+							'../orc/orc-delivery-enforcer.service.js'
+						);
+						OrcDeliveryEnforcerService.getInstance()?.markDelivered({
+							channelId: slackContext.channelId,
+							threadTs: slackContext.threadTs,
+						});
+					} catch (err) {
+						this.logger.debug('Failed to clear pending delivery after auto-route (non-fatal)', {
+							sessionName,
+							error: err instanceof Error ? err.message : String(err),
+						});
+					}
+				}
+
 				// Mirror /slack/send bookkeeping #3 — record `agent.action`
 				// with actionType='send_slack' so the auditor view and any
 				// V3 downstream analysis see the auto-routed reply. Without
