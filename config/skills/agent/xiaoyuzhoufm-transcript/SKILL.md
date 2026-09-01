@@ -1,28 +1,36 @@
 ---
 name: xiaoyuzhoufm-transcript
-description: Extract and transcribe 小宇宙 (Xiaoyuzhou FM) podcast episodes. Downloads audio from episode URL and uses Gemini Audio API for transcription with speaker identification and timestamps.
+description: Extract and transcribe 小宇宙 (Xiaoyuzhou FM) podcast episodes. Resolves an episode URL to its audio, then transcribes with Whisper via the transcribe-audio skill — local whisper.cpp by default (free, offline), OpenAI Whisper API as fallback. Segment-level timestamps.
 category: content
 assignableRoles:
   - "*"
-version: "1.0.0"
+version: "2.0.0"
 tags:
   - podcast
   - transcript
   - audio
-  - gemini
+  - whisper
   - xiaoyuzhou
   - chinese
 ---
 
 # 小宇宙 Podcast Transcript
 
-Extract and transcribe podcast episodes from 小宇宙 (Xiaoyuzhou FM) using Gemini Audio API.
+Turn a 小宇宙 episode URL into a timestamped transcript.
 
 ## Pipeline
 
 ```
-Episode URL → Fetch HTML → Extract audio URL → Download m4a → Upload to Gemini → Transcribe → Output
+Episode URL → Fetch HTML → Extract audio URL → Download m4a
+                                                    ↓
+                                    transcribe-audio (Whisper) → Markdown + JSON
 ```
+
+This skill owns the 小宇宙 half — resolving an episode page to its audio and
+labelling the result. Transcription is delegated to the `transcribe-audio`
+skill, so there is one Whisper integration in the repo rather than two, and
+this skill inherits its engine selection, normalization and long-file handling
+for free.
 
 ## Usage
 
@@ -36,8 +44,12 @@ bash execute.sh '{"url":"https://www.xiaoyuzhoufm.com/episode/...","outputFile":
 # Transcribe a local audio file (skip download)
 bash execute.sh '{"audioFile":"/path/to/podcast.m4a"}'
 
-# Specify language hint
-bash execute.sh '{"url":"...","language":"Chinese"}'
+# Language hint (ISO-639-1) — helps on mixed Chinese/English episodes
+bash execute.sh '{"url":"...","language":"zh"}'
+
+# Force an engine
+bash execute.sh '{"url":"...","engine":"local"}'
+bash execute.sh '{"url":"...","engine":"openai"}'
 ```
 
 ## Parameters
@@ -47,7 +59,8 @@ bash execute.sh '{"url":"...","language":"Chinese"}'
 | `url` | Yes* | 小宇宙 episode URL |
 | `audioFile` | Yes* | Path to local audio file (alternative to url) |
 | `outputFile` | No | Save transcript as markdown to this path |
-| `language` | No | Language hint for Gemini (default: auto-detect) |
+| `language` | No | Language hint, ISO-639-1 (`zh`, `en`, `ja`…). Default: auto-detect |
+| `engine` | No | `auto` (default), `local`, or `openai` — passed to `transcribe-audio` |
 
 *Either `url` or `audioFile` is required.
 
@@ -58,28 +71,39 @@ bash execute.sh '{"url":"...","language":"Chinese"}'
   "success": true,
   "title": "Episode Title",
   "url": "https://www.xiaoyuzhoufm.com/episode/...",
-  "audioUrl": "https://media.xyzcdn.net/.../audio.m4a",
-  "model": "gemini-2.5-flash-preview-05-20",
-  "transcriptLength": 12345,
-  "transcript": "**Speaker 1:** [00:00:00] Welcome to the show..."
+  "audioUrl": "https://media.xyzcdn.net/...",
+  "engine": "whisper.cpp",
+  "language": "zh",
+  "duration": 4437,
+  "transcriptLength": 41234,
+  "transcript": "[00:00:00] ...\n[00:00:07] ..."
 }
 ```
 
 ## Transcript Format
 
-- Speaker turns identified with `**Speaker Name:** text`
-- Timestamps at segment/topic changes: `[HH:MM:SS]`
-- Preserves original language (Chinese/English/mixed)
+- One line per segment, prefixed `[HH:MM:SS]`
+- Original language preserved (Chinese / English / mixed)
 
 ## Prerequisites
 
-- `GEMINI_API_KEY` environment variable or configured in Settings > API Keys
-- `curl` and `jq` available in PATH
-- Internet access to xiaoyuzhoufm.com and Gemini API
+- `curl` and `jq` in PATH
+- Whatever `transcribe-audio` needs: `ffmpeg`, plus either a local whisper.cpp
+  install (`whisper-cli` + a `ggml-*` model) or `OPENAI_API_KEY` for the fallback
+- Internet access to xiaoyuzhoufm.com (and to the OpenAI API only if the local
+  engine is unavailable)
+
+**No Gemini key is required.** On the default local path the transcription runs
+entirely offline at zero per-use cost.
 
 ## Notes
 
-- Audio files are typically 30-90 minutes (20-80 MB)
-- Gemini processing takes 30-120 seconds depending on audio length
-- Maximum wait time: 5 minutes for Gemini processing
-- Temp files are auto-cleaned on exit
+- Episodes are typically 30–90 minutes (20–80 MB)
+- Local whisper.cpp roughly tracks real time on Apple Silicon; a 75-minute
+  episode takes on the order of ten minutes
+- Temp files (page HTML, downloaded audio) are auto-cleaned on exit — including
+  on interrupt, so a killed run leaves nothing behind and also keeps nothing
+  to resume from
+- **No speaker identification.** The previous Gemini-based version labelled
+  speaker turns; Whisper does not do diarization, so output is timestamped
+  segments only
