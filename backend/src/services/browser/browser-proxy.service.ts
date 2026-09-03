@@ -251,13 +251,6 @@ export class BrowserProxyService {
    * derived from the deviceId rather than a throwaway `Date.now()` value, so
    * the same backend presents a consistent identity across re-registers.
    *
-   * Also declares `purpose: 'browser-bridge'`. This half of the Crewly in
-   * Chrome bridge registers under role 'agent' — the same role the Pro-only
-   * portal and mobile pairing use — so the relay cannot tell them apart from
-   * the role alone. The flag lets it apply the browser-bridge plan policy,
-   * which is open to free plans. Older relays ignore the unknown field and
-   * fall back to matching the `backend-proxy-` pairing-code prefix.
-   *
    * @returns The register message object to send to the relay
    */
   private buildRegisterFrame(): Record<string, unknown> {
@@ -269,7 +262,6 @@ export class BrowserProxyService {
       role: 'agent',
       pairingCode,
       token: this.authToken,
-      purpose: 'browser-bridge',
       // OBSERVABILITY ONLY — never consulted for routing (the relay scopes by
       // userId). See DEVICE-OBSERVABILITY-NOT-ROUTING invariant.
       ...(this.deviceId ? { deviceId: this.deviceId } : {}),

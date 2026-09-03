@@ -164,21 +164,6 @@ describe('BrowserProxyService', () => {
       expect(sent.token).toBe('test-token');
     });
 
-    // Crewly in Chrome is free on every plan, but this half of the bridge
-    // registers as role 'agent' — the same role the Pro-only portal/mobile
-    // pairing uses. The relay applies the free browser-bridge plan policy
-    // only when the frame declares its purpose, so dropping this field
-    // silently locks free users out of the bridge (the extension half
-    // connects, the backend half is rejected, nothing works).
-    it('declares purpose browser-bridge so the relay applies the free plan policy', () => {
-      const proxy = BrowserProxyService.getInstance();
-      proxy.connect('test-token');
-      latestMockWs!._trigger('open');
-
-      const sent = JSON.parse(latestMockWs!.send.mock.calls[0][0] as string);
-      expect(sent.purpose).toBe('browser-bridge');
-    });
-
     // REGRESSION (2026-05-28 browser-relay fix): the register frame carries a
     // stable deviceId observability tag (resolved from DeviceIdentityService),
     // never a throwaway `pairingCode: backend-proxy-${Date.now()}`. The tag is
