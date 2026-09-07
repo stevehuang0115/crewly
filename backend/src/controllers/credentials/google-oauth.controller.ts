@@ -20,10 +20,9 @@ import type { Request, Response, NextFunction } from 'express';
 import { getCredentialStoreService } from '../../services/credential/credential-store.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import {
-  GOOGLE_OAUTH_CLIENT_ID,
-  GOOGLE_OAUTH_REDIRECT_URI,
+  CREWLY_GOOGLE_CLIENT_ID_ENV,
   GOOGLE_OAUTH_AUTH_BASE,
-  DEFAULT_GOOGLE_SCOPES,
+  resolveGoogleOAuthApp,
 } from '../../config/oauth.config.js';
 import { fetchGoogleAccountEmail } from '../../utils/google-userinfo.utils.js';
 
@@ -55,21 +54,25 @@ export async function startGoogleOAuth(
   _next: NextFunction,
 ): Promise<void> {
   try {
+    const app = resolveGoogleOAuthApp();
     const scopesOverride = (req.body?.scopes as string[] | undefined) ?? undefined;
     const scopes =
       scopesOverride && scopesOverride.length > 0
         ? scopesOverride
-        : DEFAULT_GOOGLE_SCOPES;
+        : app.defaultScopes;
 
-    // state payload tells the cloud function to render the manual/copy-paste
-    // page (instead of redirecting to a localhost URI, which this flow doesn't
-    // use).
-    const statePayload = { manual: true };
+    // `manual: true` is a Gemini-CLI-specific instruction: it tells THEIR
+    // cloud function to render the copy-paste page rather than redirect to a
+    // localhost URI. Crewly's own callback has no such mode — it receives the
+    // code directly — so the flag is omitted there rather than sent and
+    // ignored.
+    const statePayload =
+      app.provider === 'gemini-cli' ? { manual: true } : { provider: app.provider };
     const state = Buffer.from(JSON.stringify(statePayload)).toString('base64');
 
     const params = new URLSearchParams({
-      client_id: GOOGLE_OAUTH_CLIENT_ID,
-      redirect_uri: GOOGLE_OAUTH_REDIRECT_URI,
+      client_id: app.clientId,
+      redirect_uri: app.redirectUri,
       response_type: 'code',
       scope: scopes.join(' '),
       state,
@@ -137,6 +140,24 @@ export async function completeGoogleOAuth(
       return;
     }
 
+    const app = resolveGoogleOAuthApp();
+
+    // A credential records which app issued it, because that decides who can
+    // refresh it later. Only the borrowed Gemini CLI path has a helper today;
+    // refusing here is deliberate, so that switching an install to Crewly's
+    // own app fails at capture with a clear reason rather than storing a
+    // credential whose refresh would later post the wrong client_id to
+    // someone else's cloud function and fail with no obvious cause.
+    if (app.provider !== 'gemini-cli') {
+      res.status(501).json({
+        success: false,
+        error:
+          `Capturing credentials for the "${app.provider}" OAuth app is not implemented yet. ` +
+          `Unset ${CREWLY_GOOGLE_CLIENT_ID_ENV} to use the Gemini CLI Workspace flow.`,
+      });
+      return;
+    }
+
     const accountEmail = await fetchGoogleAccountEmail(accessToken);
     const scopes =
       typeof scope === 'string' ? scope.split(' ').filter(Boolean) : [];
@@ -153,7 +174,7 @@ export async function completeGoogleOAuth(
         expiresAt: expiryDate ?? Date.now() + DEFAULT_ACCESS_TOKEN_TTL_MS,
         scopes,
         accountEmail,
-        clientId: GOOGLE_OAUTH_CLIENT_ID,
+        clientId: app.clientId,
       },
     });
 

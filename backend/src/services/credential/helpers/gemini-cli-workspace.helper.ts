@@ -34,7 +34,7 @@ import { CredentialStoreService } from '../credential-store.service.js';
 import {
   GEMINI_CLI_CLOUD_FUNCTION_URL,
   GEMINI_CLI_REFRESH_PATH,
-  GOOGLE_OAUTH_CLIENT_ID,
+  GEMINI_CLI_OAUTH_APP,
 } from '../../../config/oauth.config.js';
 import {
   fetchGoogleAccountEmail,
@@ -142,7 +142,11 @@ export class GeminiCliWorkspaceHelper implements CredentialHelper {
     this.cloudFunctionUrl =
       config?.cloudFunctionUrl ?? GEMINI_CLI_CLOUD_FUNCTION_URL;
     this.refreshPath = config?.refreshPath ?? GEMINI_CLI_REFRESH_PATH;
-    this.clientId = config?.clientId ?? GOOGLE_OAUTH_CLIENT_ID;
+    // Pinned to the borrowed app, not the active one: tokens this helper
+    // refreshes were issued by Gemini CLI's client, and their cloud function
+    // only accepts that client_id. Pointing this at Crewly's app once the
+    // install switches over would break every credential captured earlier.
+    this.clientId = config?.clientId ?? GEMINI_CLI_OAUTH_APP.clientId;
     this.expiryBufferMs = config?.expiryBufferMs ?? DEFAULT_EXPIRY_BUFFER_MS;
     this.fetchFn =
       config?.fetch ??
