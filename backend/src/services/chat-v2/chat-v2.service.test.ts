@@ -1960,6 +1960,113 @@ describe('ChatV2Service', () => {
   // -------------------------------------------------------------------------
   // getRecentOwnerMessageContents (commitment-approval-guard read)
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Slack team channels — bridge-facing huddle helpers (2026-09-12)
+  // -------------------------------------------------------------------------
+
+  describe('huddle bridge helpers (Slack team channels)', () => {
+    function makeTeamHuddle() {
+      return service.createHuddle({
+        name: '#team-alpha',
+        memberSessions: ['sess-a', 'sess-b'],
+        principal: owner,
+      });
+    }
+
+    it('setHuddleMembers reconciles the roster and reports the diff', () => {
+      const huddle = makeTeamHuddle();
+      const diff = service.setHuddleMembers(huddle.id, ['sess-b', 'sess-c', ' sess-c ']);
+      expect(diff.added).toEqual(['sess-c']);
+      expect(diff.removed).toEqual(['sess-a']);
+      expect(service.queryHuddleMembersForDispatch(huddle.id).sort()).toEqual(['sess-b', 'sess-c']);
+    });
+
+    it('setHuddleMembers is a no-op on DMs and unknown ids', () => {
+      const dm = createSam();
+      expect(service.setHuddleMembers(dm.id, ['x'])).toEqual({ added: [], removed: [] });
+      expect(service.setHuddleMembers('ghost', ['x'])).toEqual({ added: [], removed: [] });
+    });
+
+    // The whole point of a team channel is that every member can answer.
+    // Before this, `resolveSender` only accepted the DM-bound agent, so a
+    // fanned-out huddle member's reply-channel call was refused with 403.
+    it('a huddle member may send as an agent; a non-member may not', () => {
+      const huddle = makeTeamHuddle();
+      const memberPrincipal: ChatPrincipal = { userId: 'someone-else', agentSession: 'sess-a', source: 'oss' };
+      const msg = service.sendMessage({
+        channelId: huddle.id,
+        principal: memberPrincipal,
+        content: 'on it',
+        attachments: [],
+      });
+      expect(msg.senderType).toBe('agent');
+      expect(msg.senderId).toBe('sess-a');
+
+      const stranger: ChatPrincipal = { userId: 'someone-else', agentSession: 'sess-zzz', source: 'oss' };
+      expect(() =>
+        service.sendMessage({ channelId: huddle.id, principal: stranger, content: 'hi', attachments: [] }),
+      ).toThrow(ChatError);
+    });
+
+    it('getChannelForBridge returns the DTO without a principal and null for unknown ids', () => {
+      const huddle = makeTeamHuddle();
+      const dto = service.getChannelForBridge(huddle.id);
+      expect(dto?.id).toBe(huddle.id);
+      expect(dto?.type).toBe('huddle');
+      expect(dto?.members?.map((m) => m.sessionName).sort()).toEqual(['sess-a', 'sess-b']);
+      expect(service.getChannelForBridge('ghost')).toBeNull();
+    });
+
+    it('archiveChannelForBridge archives once and is idempotent', () => {
+      const huddle = makeTeamHuddle();
+      expect(service.archiveChannelForBridge(huddle.id)).toBe(true);
+      expect(service.archiveChannelForBridge(huddle.id)).toBe(false);
+      expect(service.getChannelForBridge(huddle.id)?.archivedAt).not.toBeNull();
+      expect(service.archiveChannelForBridge('ghost')).toBe(false);
+    });
+
+    it('findSlackThreadRoot / findLatestSlackRoot recover roots by slackThreadTs', () => {
+      const huddle = makeTeamHuddle();
+      const root1 = service.recordTurn({
+        channelId: huddle.id,
+        senderType: 'user',
+        senderId: 'U1',
+        content: 'first',
+        metadata: { source: 'slack', slackChannelId: 'C1', slackThreadTs: '100.1' },
+      }).message;
+      const root2 = service.recordTurn({
+        channelId: huddle.id,
+        senderType: 'user',
+        senderId: 'U1',
+        content: 'second',
+        metadata: { source: 'slack', slackChannelId: 'C1', slackThreadTs: '200.2' },
+      }).message;
+      // A reply under root1 must not be mistaken for a root.
+      service.recordTurn({
+        channelId: huddle.id,
+        senderType: 'user',
+        senderId: 'U1',
+        content: 'reply',
+        threadId: root1.id,
+        metadata: { source: 'slack', slackChannelId: 'C1', slackThreadTs: '100.1' },
+      });
+      // A non-Slack root must not win "latest Slack root".
+      service.recordTurn({
+        channelId: huddle.id,
+        senderType: 'user',
+        senderId: 'U1',
+        content: 'web',
+        metadata: { source: 'web' },
+      });
+
+      expect(service.findSlackThreadRoot(huddle.id, '100.1')?.id).toBe(root1.id);
+      expect(service.findSlackThreadRoot(huddle.id, '999.9')).toBeNull();
+      expect(service.findLatestSlackRoot(huddle.id)?.id).toBe(root2.id);
+      expect(service.getMessageForBridge(root1.id)?.content).toBe('first');
+      expect(service.getMessageForBridge('ghost')).toBeNull();
+    });
+  });
+
   describe('getRecentOwnerMessageContents', () => {
     function seed(channelId: string, senderType: string, content: string, createdAt: number, seq: number): void {
       db.prepare(

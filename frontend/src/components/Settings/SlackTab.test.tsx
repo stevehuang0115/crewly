@@ -221,13 +221,15 @@ describe('SlackTab', () => {
         expect(screen.getByText('Refresh Status')).toBeInTheDocument();
       });
 
-      // Initial fetch
-      expect(mockFetch).toHaveBeenCalledTimes(1);
+      // Initial status fetch (the Team Channels card issues its own request,
+      // so count only the status calls).
+      const statusCalls = () => mockFetch.mock.calls.filter((c) => c[0] === '/api/slack/status').length;
+      expect(statusCalls()).toBe(1);
 
       fireEvent.click(screen.getByText('Refresh Status'));
 
       await waitFor(() => {
-        expect(mockFetch).toHaveBeenCalledTimes(2);
+        expect(statusCalls()).toBe(2);
       });
     });
 

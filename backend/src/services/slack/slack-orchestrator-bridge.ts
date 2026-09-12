@@ -45,6 +45,7 @@ import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTAN
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
+import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/request.types.js';
 
@@ -390,6 +391,24 @@ export class SlackOrchestratorBridge extends EventEmitter {
 
       // Override message text with enriched version for downstream processing
       message.text = enrichedText;
+
+      // Slack team channels: a channel mapped to a Crewly team goes to that
+      // team's huddle (every member sees it, @'d members must reply) and
+      // never to the orchestrator. Unmapped channels and DMs fall through
+      // to the existing routing below.
+      const teamChannels = getSlackTeamChannelService();
+      if (teamChannels && teamChannels.findBySlackChannelId(message.channelId)) {
+        const routed = await teamChannels.routeInbound(message);
+        if (routed) {
+          this.emit('message_handled', {
+            message,
+            response: '',
+            routedTo: 'team-channel',
+            teamId: routed.mapping.teamId,
+          });
+          return;
+        }
+      }
 
       // Auditor prefix routing — intercept "auditor ...", "/auditor ...", or "@auditor ..." messages
       const auditorMatch = enrichedText.match(/^[/@]?auditor[\s:]+(.+)/is);

@@ -149,12 +149,51 @@ export async function initializeSlackIfConfigured(
 
     await bridge.initialize();
 
+    await startSlackTeamChannels();
+
     logger.info('Successfully connected');
     return { attempted: true, success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
     logger.error('Failed to initialize', { error: errorMessage });
     return { attempted: true, success: false, error: errorMessage };
+  }
+}
+
+/**
+ * Wire and start the Slack team-channel service (one Slack channel + one
+ * chat-v2 huddle per team). Idempotent — safe to call from both the boot
+ * path and the `/connect` route. Never throws: team channels are an
+ * optional layer on top of the orchestrator bridge, so a failure here
+ * must not take the Slack connection down with it.
+ *
+ * Dependencies are imported lazily so this module stays cheap to load in
+ * unit tests that only exercise credential resolution.
+ */
+export async function startSlackTeamChannels(): Promise<void> {
+  try {
+    const [{ SlackTeamChannelService, getSlackTeamChannelService, setSlackTeamChannelService }, { getChatV2Service }, { getChatV2RealtimeDeps }, { StorageService }] =
+      await Promise.all([
+        import('./slack-team-channel.service.js'),
+        import('../chat-v2/chat-v2.singleton.js'),
+        import('../chat-v2/chat-v2.realtime-holder.js'),
+        import('../core/storage.service.js'),
+      ]);
+    let service = getSlackTeamChannelService();
+    if (!service) {
+      service = new SlackTeamChannelService({
+        slack: getSlackService(),
+        chat: getChatV2Service(),
+        storage: StorageService.getInstance(),
+        getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
+      });
+      setSlackTeamChannelService(service);
+    }
+    await service.start();
+  } catch (error) {
+    logger.warn('Slack team channels not started', {
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 

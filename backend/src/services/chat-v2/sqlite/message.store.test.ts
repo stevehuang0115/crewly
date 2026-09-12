@@ -405,4 +405,27 @@ describe('MessageStore', () => {
       expect(messages.countAll()).toBe(messages.count(channelId));
     });
   });
+
+  describe('Slack thread-root lookups (team channels)', () => {
+    function insert(chan: string, content: string, metadata?: Record<string, unknown>, threadId?: string) {
+      return messages.insert({ channelId: chan, senderType: 'user', senderId: 'U1', content, metadata, threadId }).row;
+    }
+
+    it('findThreadRootBySlackTs returns the root carrying that slackThreadTs, ignoring replies', () => {
+      const other = channels.create({ agentSession: 'sess-b', ownerUserId: 'user-a', name: 'Other', nowMs: 100 }).id;
+      const root = insert(channelId, 'root', { slackThreadTs: '100.1' });
+      insert(channelId, 'reply', { slackThreadTs: '100.1' }, root.id);
+      insert(other, 'other channel', { slackThreadTs: '100.1' });
+      expect(messages.findThreadRootBySlackTs(channelId, '100.1')?.id).toBe(root.id);
+      expect(messages.findThreadRootBySlackTs(channelId, '999.9')).toBeNull();
+    });
+
+    it('findLatestSlackRoot returns the newest Slack-origin root only', () => {
+      insert(channelId, 'first', { slackThreadTs: '100.1' });
+      const second = insert(channelId, 'second', { slackThreadTs: '200.1' });
+      insert(channelId, 'web message with no slack ts', { source: 'web' });
+      expect(messages.findLatestSlackRoot(channelId)?.id).toBe(second.id);
+      expect(messages.findLatestSlackRoot('chan-empty')).toBeNull();
+    });
+  });
 });

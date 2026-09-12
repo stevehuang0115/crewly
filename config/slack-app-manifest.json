@@ -21,7 +21,11 @@
         "im:history",
         "mpim:history",
         "users:read",
-        "reactions:write"
+        "reactions:write",
+        "channels:read",
+        "channels:manage",
+        "channels:join",
+        "chat:write.customize"
       ]
     }
   },

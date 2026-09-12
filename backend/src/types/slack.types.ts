@@ -159,6 +159,63 @@ export interface SlackOutgoingMessage {
   attachments?: SlackAttachment[];
   unfurlLinks?: boolean;
   unfurlMedia?: boolean;
+  /**
+   * Per-message display name (requires the `chat:write.customize` scope).
+   * Used by Slack team channels so each agent posts under its own name.
+   */
+  username?: string;
+  /** Per-message icon as a Slack emoji name, e.g. `:robot_face:`. */
+  iconEmoji?: string;
+  /** Per-message icon as an image URL. Ignored when `iconEmoji` is set. */
+  iconUrl?: string;
+  /**
+   * Skip the best-effort mirror of this reply into the `slack-<channel>-<ts>`
+   * chat-v2 channel. Set by callers that already persisted the message in
+   * chat-v2 under a different channel (team-channel outbound mirror), so the
+   * same reply is not stored twice.
+   */
+  skipChatV2Mirror?: boolean;
+}
+
+/**
+ * One Crewly team bound to one Slack channel (and the chat-v2 huddle that
+ * backs it). Persisted in `~/.crewly/slack-team-channels.json`.
+ */
+export interface SlackTeamChannelMapping {
+  /** Crewly team id */
+  teamId: string;
+  /** Slack channel id (C…) */
+  slackChannelId: string;
+  /** Slack channel name without the leading `#`, as last known */
+  slackChannelName: string;
+  /** chat-v2 huddle id that receives the channel's messages */
+  chatChannelId: string;
+  /** ISO timestamp the mapping was created */
+  createdAt: string;
+  /** True when Crewly created the Slack channel (vs. linked an existing one) */
+  autoCreated: boolean;
+}
+
+/**
+ * On-disk shape of the team-channel mapping store.
+ */
+export interface SlackTeamChannelsFile {
+  version: 1;
+  /** Create a Slack channel + huddle automatically for every new team */
+  autoCreate: boolean;
+  /** Optional prefix for auto-created channel names (e.g. `crew-`) */
+  channelPrefix: string;
+  mappings: SlackTeamChannelMapping[];
+}
+
+/**
+ * Minimal Slack channel descriptor returned by the conversations API helpers.
+ */
+export interface SlackChannelInfo {
+  id: string;
+  name: string;
+  isArchived: boolean;
+  isPrivate: boolean;
 }
 
 /**

@@ -139,6 +139,60 @@ describe('SlackService', () => {
       expect(mockRecordTurn).not.toHaveBeenCalled();
     });
 
+    it('passes per-message identity (username + icon) to chat.postMessage', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '1.2' });
+      (service as any).client = { chat: { postMessage } };
+
+      await service.sendMessage({
+        channelId: 'C1',
+        text: 'as sam',
+        username: 'Sam',
+        iconEmoji: ':computer:',
+      });
+      expect(postMessage).toHaveBeenCalledWith(
+        expect.objectContaining({ username: 'Sam', icon_emoji: ':computer:' }),
+      );
+      expect(postMessage.mock.calls[0][0]).not.toHaveProperty('icon_url');
+
+      await service.sendMessage({
+        channelId: 'C1',
+        text: 'as leo',
+        username: 'Leo',
+        iconUrl: 'https://x/leo.png',
+      });
+      expect(postMessage).toHaveBeenLastCalledWith(
+        expect.objectContaining({ username: 'Leo', icon_url: 'https://x/leo.png' }),
+      );
+    });
+
+    it('omits identity fields entirely when none are set (default bot identity)', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '1.2' });
+      (service as any).client = { chat: { postMessage } };
+      await service.sendMessage({ channelId: 'C1', text: 'plain' });
+      const args = postMessage.mock.calls[0][0];
+      expect(args).not.toHaveProperty('username');
+      expect(args).not.toHaveProperty('icon_emoji');
+      expect(args).not.toHaveProperty('icon_url');
+    });
+
+    it('skips the chat-v2 mirror when skipChatV2Mirror is set (caller already persisted)', async () => {
+      mockRecordTurn.mockClear();
+      const service = new SlackService();
+      (service as any).client = {
+        chat: { postMessage: jest.fn().mockResolvedValue({ ts: '111.222' }) },
+      };
+      await service.sendMessage({
+        channelId: 'C123',
+        text: 'team reply',
+        threadTs: '100.000',
+        skipChatV2Mirror: true,
+      });
+      await new Promise((r) => setImmediate(r));
+      expect(mockRecordTurn).not.toHaveBeenCalled();
+    });
+
     it('should throw when updateMessage called without initialization', async () => {
       const service = new SlackService();
 
@@ -161,6 +215,132 @@ describe('SlackService', () => {
       await expect(service.getUserInfo('U123')).rejects.toThrow(
         'Slack client not initialized'
       );
+    });
+  });
+
+  describe('conversations helpers (team channels)', () => {
+    function withClient(conversations: Record<string, jest.Mock>, auth?: Record<string, jest.Mock>) {
+      const service = new SlackService();
+      (service as any).client = {
+        chat: { postMessage: jest.fn() },
+        auth: auth ?? { test: jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT' }) },
+        conversations,
+      };
+      return service;
+    }
+
+    it('getBotUserId resolves via auth.test and caches the result', async () => {
+      const test = jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT' });
+      const service = withClient({}, { test });
+      expect(await service.getBotUserId()).toBe('UBOT');
+      expect(await service.getBotUserId()).toBe('UBOT');
+      expect(test).toHaveBeenCalledTimes(1);
+    });
+
+    it('getBotUserId returns null when not connected', async () => {
+      const service = new SlackService();
+      expect(await service.getBotUserId()).toBeNull();
+    });
+
+    it('createChannel returns the new channel', async () => {
+      const create = jest.fn().mockResolvedValue({
+        channel: { id: 'C9', name: 'team-alpha', is_archived: false, is_private: false },
+      });
+      const service = withClient({ create });
+      const ch = await service.createChannel('team-alpha');
+      expect(create).toHaveBeenCalledWith({ name: 'team-alpha', is_private: false });
+      expect(ch).toEqual({ id: 'C9', name: 'team-alpha', isArchived: false, isPrivate: false });
+    });
+
+    // A team re-created after a reinstall must link to the channel that is
+    // already there, not fail on Slack's name_taken.
+    it('createChannel falls back to the existing channel on name_taken and joins it', async () => {
+      const nameTaken = Object.assign(new Error('An API error occurred: name_taken'), {
+        data: { error: 'name_taken' },
+      });
+      const create = jest.fn().mockRejectedValue(nameTaken);
+      const list = jest.fn().mockResolvedValue({
+        channels: [
+          { id: 'C1', name: 'other' },
+          { id: 'C2', name: 'Team-Alpha', is_archived: false },
+        ],
+        response_metadata: { next_cursor: '' },
+      });
+      const join = jest.fn().mockResolvedValue({});
+      const service = withClient({ create, list, join });
+      const ch = await service.createChannel('team-alpha');
+      expect(ch.id).toBe('C2');
+      expect(join).toHaveBeenCalledWith({ channel: 'C2' });
+    });
+
+    it('createChannel rethrows other Slack errors', async () => {
+      const err = Object.assign(new Error('restricted_action'), { data: { error: 'restricted_action' } });
+      const service = withClient({ create: jest.fn().mockRejectedValue(err) });
+      await expect(service.createChannel('x')).rejects.toThrow('restricted_action');
+    });
+
+    it('findChannelByName pages through conversations.list', async () => {
+      const list = jest
+        .fn()
+        .mockResolvedValueOnce({
+          channels: [{ id: 'C1', name: 'a' }],
+          response_metadata: { next_cursor: 'p2' },
+        })
+        .mockResolvedValueOnce({
+          channels: [{ id: 'C2', name: 'wanted' }],
+          response_metadata: { next_cursor: '' },
+        });
+      const service = withClient({ list });
+      const ch = await service.findChannelByName('wanted');
+      expect(ch?.id).toBe('C2');
+      expect(list).toHaveBeenCalledTimes(2);
+      expect(list.mock.calls[1][0]).toEqual(expect.objectContaining({ cursor: 'p2' }));
+    });
+
+    it('findChannelByName returns null when absent', async () => {
+      const service = withClient({
+        list: jest.fn().mockResolvedValue({ channels: [{ id: 'C1', name: 'a' }] }),
+      });
+      expect(await service.findChannelByName('zzz')).toBeNull();
+    });
+
+    it('getChannelInfo maps channel_not_found to null', async () => {
+      const err = Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } });
+      const service = withClient({ info: jest.fn().mockRejectedValue(err) });
+      expect(await service.getChannelInfo('C404')).toBeNull();
+    });
+
+    it('archiveChannel treats already_archived as success', async () => {
+      const err = Object.assign(new Error('already_archived'), { data: { error: 'already_archived' } });
+      const service = withClient({ archive: jest.fn().mockRejectedValue(err) });
+      await expect(service.archiveChannel('C1')).resolves.toBeUndefined();
+    });
+
+    it('setChannelPurpose truncates to the Slack limit', async () => {
+      const setPurpose = jest.fn().mockResolvedValue({});
+      const service = withClient({ setPurpose });
+      await service.setChannelPurpose('C1', 'x'.repeat(300));
+      expect(setPurpose.mock.calls[0][0].purpose).toHaveLength(250);
+    });
+
+    it('inviteToChannel is a no-op for an empty list', async () => {
+      const invite = jest.fn();
+      const service = withClient({ invite });
+      await service.inviteToChannel('C1', []);
+      expect(invite).not.toHaveBeenCalled();
+      await service.inviteToChannel('C1', ['U1', 'U2']);
+      expect(invite).toHaveBeenCalledWith({ channel: 'C1', users: 'U1,U2' });
+    });
+
+    it('helpers throw when the client has no conversations API', async () => {
+      const service = new SlackService();
+      (service as any).client = { chat: { postMessage: jest.fn() } };
+      await expect(service.createChannel('x')).rejects.toThrow('no conversations API');
+    });
+
+    it('helpers throw when not initialised', async () => {
+      const service = new SlackService();
+      await expect(service.joinChannel('C1')).rejects.toThrow('Slack client not initialized');
     });
   });
 

@@ -11,7 +11,24 @@ import {
   getSlackConfig,
   initializeSlackIfConfigured,
   shutdownSlack,
+  startSlackTeamChannels,
 } from './slack-initializer.js';
+import { getSlackTeamChannelService, setSlackTeamChannelService } from './slack-team-channel.service.js';
+
+// startSlackTeamChannels pulls its collaborators lazily; give it fakes so
+// it never opens the chat database or reads real team storage.
+const mockChatOn = jest.fn();
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: () => ({ on: mockChatOn, off: jest.fn() }),
+}));
+const mockOnStorageEvent = jest.fn(() => () => undefined);
+jest.mock('../core/storage.service.js', () => ({
+  StorageService: { getInstance: () => ({ getTeams: async () => [], onStorageEvent: mockOnStorageEvent }) },
+}));
+jest.mock('../../utils/file-io.utils.js', () => ({
+  safeReadJson: async (_p: string, d: unknown) => d,
+  atomicWriteJson: async () => undefined,
+}));
 import { resetSlackService, getSlackService, SlackService } from './slack.service.js';
 import { resetSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
 import * as slackCredentials from './slack-credentials.service.js';
@@ -239,6 +256,32 @@ describe('Slack Initializer', () => {
       expect(typeof result.error).toBe('string');
       expect(result.error?.length).toBeGreaterThan(0);
       expect(result.error).toBe('Mock Slack connection error');
+    });
+  });
+
+  describe('startSlackTeamChannels', () => {
+    afterEach(() => {
+      getSlackTeamChannelService()?.stop();
+      setSlackTeamChannelService(null);
+    });
+
+    it('builds the singleton once and subscribes to team + chat events', async () => {
+      await startSlackTeamChannels();
+      const first = getSlackTeamChannelService();
+      expect(first).not.toBeNull();
+      expect(mockOnStorageEvent).toHaveBeenCalledTimes(1);
+      expect(mockChatOn).toHaveBeenCalledWith('chat_message', expect.any(Function));
+
+      await startSlackTeamChannels();
+      expect(getSlackTeamChannelService()).toBe(first);
+      expect(mockOnStorageEvent).toHaveBeenCalledTimes(1);
+    });
+
+    it('never throws — a failing start is logged, not propagated', async () => {
+      mockChatOn.mockImplementationOnce(() => {
+        throw new Error('chat db unavailable');
+      });
+      await expect(startSlackTeamChannels()).resolves.toBeUndefined();
     });
   });
 

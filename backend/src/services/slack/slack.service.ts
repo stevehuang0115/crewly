@@ -19,10 +19,11 @@ import type {
   SlackNotification,
   SlackBlock,
   SlackElement,
+  SlackChannelInfo,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
@@ -61,11 +62,27 @@ interface SlackApp {
  */
 interface SlackWebClient {
   auth: {
-    test: () => Promise<{ ok?: boolean; team?: string; user?: string }>;
+    test: () => Promise<{ ok?: boolean; team?: string; user?: string; user_id?: string }>;
   };
   chat: {
     postMessage: (args: PostMessageArgs) => Promise<{ ts?: string }>;
     update: (args: UpdateMessageArgs) => Promise<void>;
+  };
+  /**
+   * Conversations API subset used by Slack team channels. Optional on the
+   * interface so older test doubles that only stub `chat` keep compiling.
+   */
+  conversations?: {
+    create: (args: { name: string; is_private?: boolean }) => Promise<{ channel?: RawSlackChannel }>;
+    list: (args: { types?: string; limit?: number; cursor?: string; exclude_archived?: boolean }) => Promise<{
+      channels?: RawSlackChannel[];
+      response_metadata?: { next_cursor?: string };
+    }>;
+    info: (args: { channel: string }) => Promise<{ channel?: RawSlackChannel }>;
+    join: (args: { channel: string }) => Promise<{ channel?: RawSlackChannel }>;
+    invite: (args: { channel: string; users: string }) => Promise<unknown>;
+    archive: (args: { channel: string }) => Promise<unknown>;
+    setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
   };
   reactions: {
     add: (args: AddReactionArgs) => Promise<void>;
@@ -123,6 +140,20 @@ interface PostMessageArgs {
   attachments?: unknown[];
   unfurl_links?: boolean;
   unfurl_media?: boolean;
+  /** Per-message identity (`chat:write.customize`) — see SlackOutgoingMessage. */
+  username?: string;
+  icon_emoji?: string;
+  icon_url?: string;
+}
+
+/**
+ * Raw channel object as returned by the Slack conversations API.
+ */
+interface RawSlackChannel {
+  id?: string;
+  name?: string;
+  is_archived?: boolean;
+  is_private?: boolean;
 }
 
 interface UpdateMessageArgs {
@@ -209,6 +240,8 @@ export class SlackService extends EventEmitter {
   private app: SlackApp | null = null;
   private client: SlackWebClient | null = null;
   private config: SlackConfig | null = null;
+  /** Bot user id from `auth.test`, cached by getBotUserId(). */
+  private cachedBotUserId: string | null = null;
   private status: SlackServiceStatus = {
     connected: false,
     socketMode: false,
@@ -873,6 +906,14 @@ export class SlackService extends EventEmitter {
         attachments: message.attachments,
         unfurl_links: message.unfurlLinks,
         unfurl_media: message.unfurlMedia,
+        // Per-agent identity for team channels. Only sent when set so the
+        // orchestrator's plain posts keep the app's default bot identity.
+        ...(message.username ? { username: message.username } : {}),
+        ...(message.iconEmoji
+          ? { icon_emoji: message.iconEmoji }
+          : message.iconUrl
+            ? { icon_url: message.iconUrl }
+            : {}),
       });
 
       this.status.messagesSent++;
@@ -882,7 +923,7 @@ export class SlackService extends EventEmitter {
 
       // Mirror the outbound reply into chat-v2 so the Slack thread shows both
       // sides ("收和发") in the consolidated chat. Best-effort, thread-only.
-      if (message.threadTs) {
+      if (message.threadTs && !message.skipChatV2Mirror) {
         void this.recordOutboundToChatV2(message);
       }
 
@@ -1195,6 +1236,206 @@ export class SlackService extends EventEmitter {
    */
   getBotToken(): string | null {
     return this.config?.botToken || null;
+  }
+
+  /**
+   * Resolve the bot user's Slack id (`U…`) via `auth.test`, cached after the
+   * first call. Team-channel routing uses it to ignore `<@bot>` mentions in
+   * inbound text and to invite the bot into linked channels.
+   *
+   * @returns The bot user id, or null when not connected or the API omits it
+   */
+  async getBotUserId(): Promise<string | null> {
+    if (this.cachedBotUserId) return this.cachedBotUserId;
+    if (!this.client) return null;
+    try {
+      const res = await this.client.auth.test();
+      const id = res?.user_id ?? null;
+      if (id) this.cachedBotUserId = id;
+      return id;
+    } catch (error) {
+      this.logger.warn('auth.test failed while resolving bot user id', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Create a public Slack channel. When Slack reports `name_taken`, the
+   * existing channel of that name is looked up and returned instead, so a
+   * team whose channel already exists (e.g. after a re-install) links to
+   * it rather than failing.
+   *
+   * Requires the `channels:manage` scope (and `channels:read` for the
+   * name-taken fallback).
+   *
+   * @param name - Channel name without `#`, already sanitised by the caller
+   * @returns The created (or pre-existing) channel
+   * @throws Error when the client is not initialised or Slack refuses
+   */
+  async createChannel(name: string): Promise<SlackChannelInfo> {
+    const conversations = this.requireConversationsApi();
+    try {
+      const res = await conversations.create({ name, is_private: false });
+      const channel = SlackService.toChannelInfo(res.channel);
+      if (!channel) throw new Error('conversations.create returned no channel');
+      return channel;
+    } catch (error) {
+      if (SlackService.slackErrorCode(error) === 'name_taken') {
+        const existing = await this.findChannelByName(name);
+        if (existing) {
+          // The bot may not be in a channel it did not create; joining is
+          // idempotent and needed before it can post or read there.
+          await this.joinChannel(existing.id).catch(() => undefined);
+          return existing;
+        }
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Find a public or private channel by exact name (case-insensitive),
+   * paging through `conversations.list`.
+   *
+   * @param name - Channel name without `#`
+   * @returns The channel, or null when no channel has that name
+   */
+  async findChannelByName(name: string): Promise<SlackChannelInfo | null> {
+    const conversations = this.requireConversationsApi();
+    const wanted = name.toLowerCase();
+    let cursor: string | undefined;
+    // Bounded paging so a pathological workspace cannot spin forever.
+    for (let page = 0; page < 20; page++) {
+      const res = await conversations.list({
+        types: 'public_channel,private_channel',
+        limit: 200,
+        cursor,
+        exclude_archived: false,
+      });
+      for (const raw of res.channels ?? []) {
+        if ((raw.name ?? '').toLowerCase() === wanted) {
+          return SlackService.toChannelInfo(raw);
+        }
+      }
+      cursor = res.response_metadata?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return null;
+  }
+
+  /**
+   * Fetch a channel by id.
+   *
+   * @param channelId - Slack channel id
+   * @returns The channel, or null when Slack reports `channel_not_found`
+   */
+  async getChannelInfo(channelId: string): Promise<SlackChannelInfo | null> {
+    const conversations = this.requireConversationsApi();
+    try {
+      const res = await conversations.info({ channel: channelId });
+      return SlackService.toChannelInfo(res.channel);
+    } catch (error) {
+      if (SlackService.slackErrorCode(error) === 'channel_not_found') return null;
+      throw error;
+    }
+  }
+
+  /**
+   * Join a public channel as the bot (idempotent). Requires `channels:join`.
+   *
+   * @param channelId - Slack channel id
+   */
+  async joinChannel(channelId: string): Promise<void> {
+    const conversations = this.requireConversationsApi();
+    await conversations.join({ channel: channelId });
+  }
+
+  /**
+   * Invite users (or other bots) into a channel the bot is a member of.
+   *
+   * @param channelId - Slack channel id
+   * @param userIds - Slack user ids to invite
+   */
+  async inviteToChannel(channelId: string, userIds: string[]): Promise<void> {
+    if (userIds.length === 0) return;
+    const conversations = this.requireConversationsApi();
+    await conversations.invite({ channel: channelId, users: userIds.join(',') });
+  }
+
+  /**
+   * Set a channel's purpose line. Requires `channels:manage`.
+   *
+   * @param channelId - Slack channel id
+   * @param purpose - Purpose text (Slack caps it at 250 chars)
+   */
+  async setChannelPurpose(channelId: string, purpose: string): Promise<void> {
+    const conversations = this.requireConversationsApi();
+    await conversations.setPurpose({
+      channel: channelId,
+      purpose: purpose.slice(0, SLACK_TEAM_CHANNEL_CONSTANTS.MAX_PURPOSE_LENGTH),
+    });
+  }
+
+  /**
+   * Archive a channel. `already_archived` is treated as success so the
+   * team-deleted path is idempotent.
+   *
+   * @param channelId - Slack channel id
+   */
+  async archiveChannel(channelId: string): Promise<void> {
+    const conversations = this.requireConversationsApi();
+    try {
+      await conversations.archive({ channel: channelId });
+    } catch (error) {
+      const code = SlackService.slackErrorCode(error);
+      if (code === 'already_archived' || code === 'channel_not_found') return;
+      throw error;
+    }
+  }
+
+  /**
+   * The conversations API of the live client, or throw when Slack is not
+   * initialised. Centralised so every channel helper reports the same
+   * error text.
+   */
+  private requireConversationsApi(): NonNullable<SlackWebClient['conversations']> {
+    if (!this.client) {
+      throw new Error('Slack client not initialized');
+    }
+    if (!this.client.conversations) {
+      throw new Error('Slack client has no conversations API');
+    }
+    return this.client.conversations;
+  }
+
+  /**
+   * Extract Slack's machine-readable error code (`name_taken`,
+   * `channel_not_found`, …) from a thrown Web API error.
+   *
+   * @param error - The caught value
+   * @returns The code, or null when the error carries none
+   */
+  static slackErrorCode(error: unknown): string | null {
+    const data = (error as { data?: { error?: string } } | null)?.data;
+    return typeof data?.error === 'string' ? data.error : null;
+  }
+
+  /**
+   * Normalise a raw conversations-API channel object.
+   *
+   * @param raw - Slack's channel object
+   * @returns The trimmed descriptor, or null when the id is missing
+   */
+  private static toChannelInfo(raw: RawSlackChannel | undefined): SlackChannelInfo | null {
+    if (!raw?.id) return null;
+    return {
+      id: raw.id,
+      name: raw.name ?? '',
+      isArchived: raw.is_archived === true,
+      isPrivate: raw.is_private === true,
+    };
   }
 
   /**

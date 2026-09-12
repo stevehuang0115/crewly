@@ -570,6 +570,45 @@ export const SLACK_BRIDGE_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for Slack team channels — one Slack channel + one chat-v2 huddle
+ * per Crewly team, so the owner talks to a whole team (and to individual
+ * agents by `@name`) without going through the orchestrator.
+ */
+export const SLACK_TEAM_CHANNEL_CONSTANTS = {
+	/** Mapping store filename under CREWLY_HOME */
+	STORE_FILENAME: 'slack-team-channels.json',
+	/** Slack's hard limit on channel-name length */
+	MAX_CHANNEL_NAME_LENGTH: 80,
+	/** Slack's hard limit on channel purpose length */
+	MAX_PURPOSE_LENGTH: 250,
+	/** Max Levenshtein distance for a "did you mean @x?" suggestion */
+	MENTION_SUGGEST_MAX_DISTANCE: 2,
+	/** Max suggestions offered for one unknown @name */
+	MENTION_SUGGEST_MAX: 3,
+	/** Reaction added to a routed inbound message while the team works on it */
+	INBOUND_REACTION: 'eyes',
+	/** Fallback icon when a member has no avatar */
+	DEFAULT_ICON_EMOJI: ':robot_face:',
+	/** Per-role icon fallbacks (Slack emoji names) */
+	ROLE_ICON_EMOJI: {
+		'team-leader': ':crown:',
+		tpm: ':clipboard:',
+		developer: ':computer:',
+		'frontend-developer': ':art:',
+		'backend-developer': ':gear:',
+		'fullstack-dev': ':hammer_and_wrench:',
+		qa: ':mag:',
+		'qa-engineer': ':mag:',
+		designer: ':art:',
+		'product-manager': ':compass:',
+		architect: ':triangular_ruler:',
+		sales: ':handshake:',
+		support: ':telephone_receiver:',
+		marketing: ':mega:',
+	} as Record<string, string>,
+} as const;
+
+/**
  * Constants for cross-machine messaging via Slack.
  * Two Crewly instances communicate through a shared Slack channel.
  */

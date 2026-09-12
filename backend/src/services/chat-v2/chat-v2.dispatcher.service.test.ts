@@ -59,6 +59,39 @@ function makeSink(response: Awaited<ReturnType<AgentMessageSink['sendMessageToAg
 }
 
 describe('ChatV2DispatcherService', () => {
+  describe('defaultFormatPrompt — Slack team channel variant', () => {
+    it('names reply-channel with --thread when replyVia=reply-channel', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'sess-a',
+        senderId: 'U1',
+        content: '@sam look',
+        replyVia: 'reply-channel',
+        threadId: 'msg-root',
+      });
+      expect(prompt).toContain('`reply-channel`');
+      expect(prompt).toContain('--channel huddle-1');
+      expect(prompt).toContain('--thread msg-root');
+      expect(prompt).not.toContain('reply-chat');
+    });
+
+    it('omits --thread when no threadId and keeps the optional wording for non-mentioned members', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'sess-a',
+        senderId: 'U1',
+        content: 'fyi',
+        replyVia: 'reply-channel',
+        responseMode: 'optional',
+      });
+      expect(prompt).toContain('reply-channel');
+      expect(prompt).not.toContain('--thread');
+      expect(prompt).toContain('未被 @');
+    });
+  });
+
   describe('defaultFormatPrompt', () => {
     it('includes the [CHAT:<id>] tag, author, and reply instruction', () => {
       const prompt = defaultFormatPrompt({
@@ -553,6 +586,24 @@ describe('ChatV2DispatcherService', () => {
           ...overrides,
         };
       }
+
+      it('forwards threadId + replyVia into every member prompt', async () => {
+        const sink = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }) };
+        const svc = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b'],
+        });
+        const result = await svc.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ mentions: ['sess-b'] }),
+          { threadId: 'msg-root', replyVia: 'reply-channel' },
+        );
+        expect(result.strategy).toBe('huddle-broadcast');
+        for (const call of sink.sendMessageToAgent.mock.calls) {
+          expect(call[1]).toContain('--thread msg-root');
+          expect(call[1]).toContain('reply-channel');
+        }
+      });
 
       it('skips when no huddleMembersFor resolver is wired', async () => {
         const { sink, calls } = makeSink({ success: true });

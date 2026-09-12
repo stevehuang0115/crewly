@@ -15,6 +15,7 @@ import { Button } from '../UI/Button';
 import { Card } from '../UI/Card';
 import { Alert } from '../UI/Alert';
 import { FormInput, FormLabel } from '../UI/Form';
+import { SlackTeamChannels } from './SlackTeamChannels';
 
 /**
  * Slack connection status from the API
@@ -241,6 +242,9 @@ export const SlackTab: React.FC = () => {
             </div>
           </Card>
 
+          {/* Team channels — one Slack channel per Crewly team */}
+          <SlackTeamChannels />
+
           {/* Actions */}
           <div className="flex items-center gap-3">
             <Button variant="secondary" onClick={fetchStatus} icon={RefreshCw}>
@@ -286,6 +290,8 @@ export const SlackTab: React.FC = () => {
                   <li><code className="text-xs bg-background-dark px-1.5 py-0.5 rounded">files:read</code> - Receive images from Slack</li>
                   <li><code className="text-xs bg-background-dark px-1.5 py-0.5 rounded">files:write</code> - Upload images to Slack</li>
                   <li><code className="text-xs bg-background-dark px-1.5 py-0.5 rounded">reactions:write</code> - Typing/completion indicators (optional)</li>
+                  <li><code className="text-xs bg-background-dark px-1.5 py-0.5 rounded">channels:manage</code>, <code className="text-xs bg-background-dark px-1.5 py-0.5 rounded">channels:join</code> - Create and join team channels</li>
+                  <li><code className="text-xs bg-background-dark px-1.5 py-0.5 rounded">chat:write.customize</code> - Let each agent post under its own name and icon</li>
                 </ul>
                 <p className="text-xs text-amber-400/80 mt-1.5 ml-4">
                   Note: Adding <code className="text-xs bg-background-dark px-1 py-0.5 rounded">files:read</code> and <code className="text-xs bg-background-dark px-1 py-0.5 rounded">files:write</code> scopes requires reinstalling the app to your workspace.

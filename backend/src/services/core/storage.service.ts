@@ -26,7 +26,16 @@ import {
  * side systems without pulling StorageService into a cross-cutting tangle.
  */
 export type StorageEvent =
-  | { kind: 'team-saved'; team: Team }
+  | {
+      kind: 'team-saved';
+      team: Team;
+      /**
+       * True when this save created the team's config file (first save);
+       * false on updates. Lets subscribers react to "a new team exists"
+       * without treating every status write as a creation.
+       */
+      created: boolean;
+    }
   | { kind: 'team-deleted'; teamId: string };
 
 export type StorageListener = (event: StorageEvent) => Promise<void> | void;
@@ -582,7 +591,7 @@ export class StorageService {
 
         // Notify listeners (e.g. TeamTriggerReconciler). Fire-and-forget so
         // slow subscribers never block the save path.
-        this.emit({ kind: 'team-saved', team });
+        this.emit({ kind: 'team-saved', team, created: !isUpdate });
       } catch (error) {
         this.logger.error('Error saving team', {
           teamId: team.id,

@@ -29,6 +29,17 @@ jest.mock('../../services/orc/orc-delivery-enforcer.service.js', () => ({
   },
 }));
 
+// Slack team channels — routes read the singleton; tests swap in a fake.
+const mockTeamChannels: { current: null | Record<string, jest.Mock> } = { current: null };
+jest.mock('../../services/slack/slack-team-channel.service.js', () => ({
+  getSlackTeamChannelService: jest.fn(() => mockTeamChannels.current),
+}));
+// /connect starts team channels best-effort; keep it inert here.
+const mockStartTeamChannels = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../services/slack/slack-initializer.js', () => ({
+  startSlackTeamChannels: (...args: unknown[]) => mockStartTeamChannels(...args),
+}));
+
 // Jest globals are available automatically
 import request from 'supertest';
 import express, { Application, Request, Response, NextFunction } from 'express';
@@ -931,6 +942,93 @@ describe('Slack Controller', () => {
       });
 
       expect(mockMarkDelivered).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('team channels', () => {
+    afterEach(() => {
+      mockTeamChannels.current = null;
+    });
+
+    function installFake(overrides: Record<string, jest.Mock> = {}) {
+      mockTeamChannels.current = {
+        getSettings: jest.fn().mockResolvedValue({ autoCreate: true, channelPrefix: '' }),
+        updateSettings: jest.fn().mockImplementation(async (p: Record<string, unknown>) => ({
+          autoCreate: true,
+          channelPrefix: '',
+          ...p,
+        })),
+        listTeamsWithMappings: jest.fn().mockResolvedValue([
+          { teamId: 't1', teamName: 'Alpha', memberCount: 2, mapping: null },
+        ]),
+        getTeam: jest.fn().mockImplementation(async (id: string) =>
+          id === 't1' ? { id: 't1', name: 'Alpha', members: [] } : null,
+        ),
+        ensureTeamChannel: jest.fn().mockResolvedValue({
+          teamId: 't1',
+          slackChannelId: 'C1',
+          slackChannelName: 'alpha',
+          chatChannelId: 'huddle-1',
+          createdAt: 'now',
+          autoCreated: true,
+        }),
+        unlinkTeam: jest.fn().mockResolvedValue(true),
+        ...overrides,
+      };
+      return mockTeamChannels.current;
+    }
+
+    it('answers 503 on every route when Slack is not connected', async () => {
+      expect((await request(app).get('/api/slack/team-channels')).status).toBe(503);
+      expect((await request(app).post('/api/slack/team-channels').send({ teamId: 't1' })).status).toBe(503);
+      expect((await request(app).delete('/api/slack/team-channels/t1')).status).toBe(503);
+      expect((await request(app).put('/api/slack/team-channels/settings').send({})).status).toBe(503);
+    });
+
+    it('GET lists settings and teams with their mapping', async () => {
+      installFake();
+      const res = await request(app).get('/api/slack/team-channels');
+      expect(res.status).toBe(200);
+      expect(res.body.data.settings).toEqual({ autoCreate: true, channelPrefix: '' });
+      expect(res.body.data.teams[0]).toMatchObject({ teamId: 't1', mapping: null });
+    });
+
+    it('PUT settings validates types and forwards the patch', async () => {
+      const fake = installFake();
+      const bad = await request(app).put('/api/slack/team-channels/settings').send({ autoCreate: 'yes' });
+      expect(bad.status).toBe(400);
+      const ok = await request(app).put('/api/slack/team-channels/settings').send({ autoCreate: false, channelPrefix: 'crew-' });
+      expect(ok.status).toBe(200);
+      expect(fake.updateSettings).toHaveBeenCalledWith({ autoCreate: false, channelPrefix: 'crew-' });
+      expect(ok.body.data.channelPrefix).toBe('crew-');
+    });
+
+    it('POST creates the channel for a known team and 404s for an unknown one', async () => {
+      const fake = installFake();
+      const missing = await request(app).post('/api/slack/team-channels').send({});
+      expect(missing.status).toBe(400);
+      const unknown = await request(app).post('/api/slack/team-channels').send({ teamId: 'nope' });
+      expect(unknown.status).toBe(404);
+      const created = await request(app).post('/api/slack/team-channels').send({ teamId: 't1', slackChannelId: ' C9 ' });
+      expect(created.status).toBe(201);
+      expect(created.body.data.slackChannelId).toBe('C1');
+      expect(fake.ensureTeamChannel).toHaveBeenCalledWith(expect.objectContaining({ id: 't1' }), { slackChannelId: 'C9' });
+    });
+
+    it('POST surfaces a Slack failure as a 500 error body', async () => {
+      installFake({ ensureTeamChannel: jest.fn().mockRejectedValue(new Error('Slack is not connected')) });
+      const res = await request(app).post('/api/slack/team-channels').send({ teamId: 't1' });
+      expect(res.status).toBe(500);
+      expect(res.body.error).toContain('Slack is not connected');
+    });
+
+    it('DELETE unlinks, honours ?archive=true, and 404s when nothing was linked', async () => {
+      const fake = installFake();
+      const res = await request(app).delete('/api/slack/team-channels/t1?archive=true');
+      expect(res.status).toBe(200);
+      expect(fake.unlinkTeam).toHaveBeenCalledWith('t1', { archiveSlackChannel: true });
+      fake.unlinkTeam.mockResolvedValueOnce(false);
+      expect((await request(app).delete('/api/slack/team-channels/t1')).status).toBe(404);
     });
   });
 

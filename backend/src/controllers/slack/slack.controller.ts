@@ -13,6 +13,8 @@ import path from 'path';
 import { getSlackService } from '../../services/slack/slack.service.js';
 import { getSlackOrchestratorBridge } from '../../services/slack/slack-orchestrator-bridge.js';
 import { saveSlackCredentials, deleteSlackCredentials, hasSavedCredentials } from '../../services/slack/slack-credentials.service.js';
+import { getSlackTeamChannelService } from '../../services/slack/slack-team-channel.service.js';
+import { startSlackTeamChannels } from '../../services/slack/slack-initializer.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
@@ -324,6 +326,9 @@ router.post('/connect', async (req: Request, res: Response, next: NextFunction) 
     // Initialize bridge
     const bridge = getSlackOrchestratorBridge();
     await bridge.initialize();
+
+    // Team channels (one Slack channel per team). Best-effort; never fails connect.
+    await startSlackTeamChannels();
 
     // Persist credentials to disk so they survive server restarts
     await saveSlackCredentials(config);
@@ -762,6 +767,129 @@ router.get('/config', async (req: Request, res: Response, next: NextFunction) =>
         allowedUsers: process.env.SLACK_ALLOWED_USERS?.split(',').filter(Boolean).length || 0,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Team channels — one Slack channel + one chat-v2 huddle per Crewly team
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the team-channel service or answer 503 when Slack is not up.
+ *
+ * @param res - Response used for the 503
+ * @returns The service, or null after the response was sent
+ */
+function requireTeamChannels(res: Response) {
+  const service = getSlackTeamChannelService();
+  if (!service) {
+    res.status(503).json({
+      success: false,
+      error: 'Slack team channels are unavailable — connect Slack first',
+      code: 'SLACK_NOT_CONNECTED',
+    });
+    return null;
+  }
+  return service;
+}
+
+/**
+ * GET /api/slack/team-channels
+ *
+ * Settings plus every non-archived team with its mapping (or null).
+ */
+router.get('/team-channels', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireTeamChannels(res);
+    if (!service) return;
+    const [settings, teams] = await Promise.all([service.getSettings(), service.listTeamsWithMappings()]);
+    res.json({ success: true, data: { settings, teams } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/slack/team-channels/settings
+ *
+ * @body autoCreate - Create a channel automatically for every new team
+ * @body channelPrefix - Prefix for auto-created channel names
+ */
+router.put('/team-channels/settings', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireTeamChannels(res);
+    if (!service) return;
+    const { autoCreate, channelPrefix } = req.body ?? {};
+    if (autoCreate !== undefined && typeof autoCreate !== 'boolean') {
+      res.status(400).json({ success: false, error: 'autoCreate must be a boolean' });
+      return;
+    }
+    if (channelPrefix !== undefined && typeof channelPrefix !== 'string') {
+      res.status(400).json({ success: false, error: 'channelPrefix must be a string' });
+      return;
+    }
+    const settings = await service.updateSettings({ autoCreate, channelPrefix });
+    res.json({ success: true, data: settings });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/slack/team-channels
+ *
+ * Create (or link) the Slack channel for a team.
+ *
+ * @body teamId - Crewly team id (required)
+ * @body slackChannelId - Existing Slack channel to link instead of creating (optional)
+ */
+router.post('/team-channels', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireTeamChannels(res);
+    if (!service) return;
+    const { teamId, slackChannelId } = req.body ?? {};
+    if (typeof teamId !== 'string' || teamId.trim().length === 0) {
+      res.status(400).json({ success: false, error: 'teamId is required' });
+      return;
+    }
+    if (slackChannelId !== undefined && typeof slackChannelId !== 'string') {
+      res.status(400).json({ success: false, error: 'slackChannelId must be a string' });
+      return;
+    }
+    const team = await service.getTeam(teamId);
+    if (!team) {
+      res.status(404).json({ success: false, error: `Team not found: ${teamId}` });
+      return;
+    }
+    const mapping = await service.ensureTeamChannel(team, {
+      slackChannelId: slackChannelId?.trim() || undefined,
+    });
+    res.status(201).json({ success: true, data: mapping });
+  } catch (error) {
+    if (!handleSlackPlatformError(error, res)) {
+      next(error);
+    }
+  }
+});
+
+/**
+ * DELETE /api/slack/team-channels/:teamId
+ *
+ * Unlink a team. `?archive=true` also archives the Slack channel.
+ */
+router.delete('/team-channels/:teamId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireTeamChannels(res);
+    if (!service) return;
+    const archive = req.query.archive === 'true' || req.query.archive === '1';
+    const removed = await service.unlinkTeam(req.params.teamId, { archiveSlackChannel: archive });
+    if (!removed) {
+      res.status(404).json({ success: false, error: 'No Slack channel is linked to this team' });
+      return;
+    }
+    res.json({ success: true, data: { removed: true, archivedSlackChannel: archive } });
   } catch (error) {
     next(error);
   }

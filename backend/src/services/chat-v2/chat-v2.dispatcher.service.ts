@@ -173,6 +173,31 @@ export interface FormatPromptArgs {
    * where every recipient was explicitly addressed.
    */
   responseMode?: 'required' | 'optional';
+  /**
+   * Slack team channels — the chat-v2 thread the reply must land in
+   * (root message id). When set, the hint tells the agent to pass
+   * `--thread <id>` so the outbound mirror can post into the same Slack
+   * thread.
+   */
+  threadId?: string;
+  /**
+   * Which skill the hint names. `'reply-chat'` (default, legacy) posts via
+   * the orchestrator-side chat endpoint; `'reply-channel'` writes straight
+   * into the chat-v2 channel as the agent and supports `--thread`. Slack
+   * team channels use `'reply-channel'`.
+   */
+  replyVia?: 'reply-chat' | 'reply-channel';
+}
+
+/**
+ * Per-call routing options for {@link ChatV2DispatcherService.dispatchMessage}.
+ * Forwarded verbatim into {@link FormatPromptArgs}.
+ */
+export interface DispatchMessageOptions {
+  /** See {@link FormatPromptArgs.threadId}. */
+  threadId?: string;
+  /** See {@link FormatPromptArgs.replyVia}. */
+  replyVia?: 'reply-chat' | 'reply-channel';
 }
 
 // ---------------------------------------------------------------------------
@@ -189,16 +214,25 @@ export interface FormatPromptArgs {
  * instruction on how to reply.
  */
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
-  const { channelId, channelName, senderId, content, clientMessageId, responseMode } = args;
+  const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia } = args;
   const trimmed = content.trim();
   const idHint = clientMessageId ? ` [cmid:${clientMessageId}]` : '';
   // Default to "required" so DM and single-mention channel dispatches
   // preserve the legacy "must reply" semantic. Only huddles flip this
   // to "optional" for non-@'d members.
   const mode = responseMode ?? 'required';
-  const replyHint = mode === 'optional'
-    ? `回复本频道: 你在此 huddle 中收到此消息但未被 @ — 如有必要可用 \`reply-chat\` skill (conversationId="${channelId}") 回复，否则不回复也可以。`
-    : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
+  let replyHint: string;
+  if (replyVia === 'reply-channel') {
+    // Slack team channel: reply as yourself into the channel, in-thread.
+    const cmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
+    replyHint = mode === 'optional'
+      ? `回复本频道: 这是团队频道，你收到此消息但未被 @ — 如有必要用 \`reply-channel\` skill 回复（${cmd}），否则不回复也可以。`
+      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread。`;
+  } else {
+    replyHint = mode === 'optional'
+      ? `回复本频道: 你在此 huddle 中收到此消息但未被 @ — 如有必要可用 \`reply-chat\` skill (conversationId="${channelId}") 回复，否则不回复也可以。`
+      : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
+  }
   return [
     `[CHAT:${channelId}]${idHint} <${senderId}@${channelName}>`,
     ``,
@@ -259,6 +293,7 @@ export class ChatV2DispatcherService {
   async dispatchMessage(
     channel: ChatChannelDTO,
     message: ChatMessageDTO,
+    options: DispatchMessageOptions = {},
   ): Promise<DispatchMessageResult> {
     if (message.senderType !== 'user') {
       return {
@@ -273,7 +308,7 @@ export class ChatV2DispatcherService {
     }
 
     if (channel.type === 'huddle') {
-      return this.dispatchHuddleBroadcast(channel, message);
+      return this.dispatchHuddleBroadcast(channel, message, options);
     }
 
     // Default to the DM path for any other type (including legacy /
@@ -310,6 +345,7 @@ export class ChatV2DispatcherService {
   private async dispatchHuddleBroadcast(
     channel: ChatChannelDTO,
     message: ChatMessageDTO,
+    options: DispatchMessageOptions = {},
   ): Promise<DispatchMessageResult> {
     if (!this.huddleMembersFor) {
       this.logger.debug('chat-v2 huddle dispatch skipped — no roster lookup wired', {
@@ -353,6 +389,8 @@ export class ChatV2DispatcherService {
             ? (message.metadata.clientMessageId as string)
             : undefined,
         responseMode,
+        threadId: options.threadId,
+        replyVia: options.replyVia,
       });
 
       try {

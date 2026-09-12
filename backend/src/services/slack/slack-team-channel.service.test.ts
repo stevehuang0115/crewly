@@ -1,0 +1,666 @@
+/**
+ * Tests for SlackTeamChannelService.
+ *
+ * Uses in-memory fakes for Slack, chat-v2 and storage so each behaviour
+ * (create/link/unlink, lifecycle sync, inbound routing with threads and
+ * mentions, outbound identity) is asserted without a socket or a database.
+ *
+ * @module services/slack/slack-team-channel.service.test
+ */
+
+import { EventEmitter } from 'events';
+import * as os from 'os';
+import * as path from 'path';
+import { promises as fs } from 'fs';
+import {
+  SlackTeamChannelService,
+  slackChannelNameFor,
+  slackIdentityFor,
+  teamChannelMembers,
+  getSlackTeamChannelService,
+  setSlackTeamChannelService,
+  type TeamChannelChatApi,
+  type TeamChannelSlackApi,
+  type TeamChannelStorageApi,
+} from './slack-team-channel.service.js';
+import type { Team, TeamMember } from '../../types/index.js';
+import type { SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
+import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
+import type { StorageEvent } from '../core/storage.service.js';
+
+jest.mock('../core/logger.service.js', () => ({
+  LoggerService: {
+    getInstance: () => ({
+      createComponentLogger: () => ({
+        info: jest.fn(),
+        warn: jest.fn(),
+        debug: jest.fn(),
+        error: jest.fn(),
+      }),
+    }),
+  },
+}));
+
+// ---------------------------------------------------------------------------
+// Fakes
+// ---------------------------------------------------------------------------
+
+function member(name: string, role: TeamMember['role'], extra: Partial<TeamMember> = {}): TeamMember {
+  return {
+    id: `m-${name.toLowerCase()}`,
+    name,
+    sessionName: `crewly-alpha-${name.toLowerCase().replace(/\s+/g, '-')}`,
+    role,
+    systemPrompt: '',
+    agentStatus: 'active',
+    workingStatus: 'idle',
+    runtimeType: 'claude-code',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...extra,
+  } as TeamMember;
+}
+
+function team(overrides: Partial<Team> = {}): Team {
+  return {
+    id: 'team-alpha',
+    name: 'Alpha Team',
+    description: 'Ships the alpha',
+    members: [member('Sam', 'developer', { avatar: ':computer:' }), member('Leo', 'qa')],
+    projectIds: [],
+    createdAt: '2026-01-01T00:00:00.000Z',
+    updatedAt: '2026-01-01T00:00:00.000Z',
+    ...overrides,
+  } as Team;
+}
+
+class FakeSlack implements TeamChannelSlackApi {
+  connected = true;
+  created: string[] = [];
+  archived: string[] = [];
+  joined: string[] = [];
+  purposes: Array<{ id: string; purpose: string }> = [];
+  sent: SlackOutgoingMessage[] = [];
+  reactions: Array<{ channelId: string; ts: string; emoji: string }> = [];
+  channels = new Map<string, { id: string; name: string; isArchived: boolean; isPrivate: boolean }>();
+  private seq = 0;
+  private channelSeq = 0;
+
+  isConnected(): boolean {
+    return this.connected;
+  }
+  async createChannel(name: string) {
+    this.created.push(name);
+    const ch = { id: `C${++this.channelSeq}`, name, isArchived: false, isPrivate: false };
+    this.channels.set(ch.id, ch);
+    return ch;
+  }
+  async getChannelInfo(id: string) {
+    return this.channels.get(id) ?? null;
+  }
+  async joinChannel(id: string) {
+    this.joined.push(id);
+  }
+  async archiveChannel(id: string) {
+    this.archived.push(id);
+  }
+  async setChannelPurpose(id: string, purpose: string) {
+    this.purposes.push({ id, purpose });
+  }
+  async sendMessage(m: SlackOutgoingMessage) {
+    this.sent.push(m);
+    return `${++this.seq}.000`;
+  }
+  async addReaction(channelId: string, ts: string, emoji: string) {
+    this.reactions.push({ channelId, ts, emoji });
+  }
+}
+
+/** Minimal in-memory chat-v2 double with the exact methods the service uses. */
+class FakeChat extends EventEmitter {
+  channels = new Map<string, ChatChannelDTO>();
+  members = new Map<string, Set<string>>();
+  messages: ChatMessageDTO[] = [];
+  private seq = 0;
+
+  createHuddle(args: { name: string; purpose?: string; memberSessions: string[] }): ChatChannelDTO {
+    const id = `huddle-${++this.seq}`;
+    const dto: ChatChannelDTO = {
+      id,
+      agentSession: '',
+      name: args.name,
+      purpose: args.purpose,
+      createdAt: this.seq,
+      archivedAt: null,
+      lastMessageAt: null,
+      agentPresence: { status: 'online', lastSeenAt: null },
+      type: 'huddle',
+    };
+    this.channels.set(id, dto);
+    this.members.set(id, new Set(args.memberSessions));
+    return dto;
+  }
+  setHuddleMembers(id: string, sessions: string[]) {
+    const cur = this.members.get(id) ?? new Set<string>();
+    const wanted = new Set(sessions);
+    const added = [...wanted].filter((s) => !cur.has(s));
+    const removed = [...cur].filter((s) => !wanted.has(s));
+    this.members.set(id, wanted);
+    return { added, removed };
+  }
+  getChannelForBridge(id: string) {
+    const ch = this.channels.get(id);
+    return ch ? { ...ch, members: [...(this.members.get(id) ?? [])].map((s) => ({ sessionName: s, joinedAt: 1 })) } : null;
+  }
+  archiveChannelForBridge(id: string) {
+    const ch = this.channels.get(id);
+    if (!ch || ch.archivedAt) return false;
+    ch.archivedAt = Date.now();
+    return true;
+  }
+  recordTurn(input: {
+    channelId: string;
+    senderType: ChatMessageDTO['senderType'];
+    senderId: string;
+    content: string;
+    threadId?: string;
+    mentions?: string[];
+    metadata: Record<string, unknown>;
+  }) {
+    const dto: ChatMessageDTO = {
+      id: `msg-${++this.seq}`,
+      channelId: input.channelId,
+      seq: this.seq,
+      senderType: input.senderType,
+      senderId: input.senderId,
+      content: input.content,
+      contentType: 'markdown',
+      createdAt: this.seq,
+      attachments: [],
+      metadata: input.metadata,
+      mentions: input.mentions ?? [],
+      threadId: input.threadId,
+    };
+    this.messages.push(dto);
+    return { message: dto, deduped: false };
+  }
+  findSlackThreadRoot(channelId: string, ts: string) {
+    return (
+      [...this.messages]
+        .reverse()
+        .find((m) => m.channelId === channelId && !m.threadId && m.metadata?.slackThreadTs === ts) ?? null
+    );
+  }
+  findLatestSlackRoot(channelId: string) {
+    return (
+      [...this.messages]
+        .reverse()
+        .find((m) => m.channelId === channelId && !m.threadId && typeof m.metadata?.slackThreadTs === 'string') ??
+      null
+    );
+  }
+  getMessageForBridge(id: string) {
+    return this.messages.find((m) => m.id === id) ?? null;
+  }
+}
+
+class FakeStorage implements TeamChannelStorageApi {
+  teams: Team[] = [];
+  listeners: Array<(e: StorageEvent) => Promise<void> | void> = [];
+  async getTeams() {
+    return this.teams;
+  }
+  onStorageEvent(l: (e: StorageEvent) => Promise<void> | void) {
+    this.listeners.push(l);
+    return () => {
+      this.listeners = this.listeners.filter((x) => x !== l);
+    };
+  }
+  async emit(e: StorageEvent) {
+    for (const l of this.listeners) await l(e);
+  }
+}
+
+function inbound(overrides: Partial<SlackIncomingMessage> = {}): SlackIncomingMessage {
+  return {
+    id: '100.1',
+    type: 'message',
+    text: 'hello team',
+    userId: 'U1',
+    channelId: 'C1',
+    ts: '100.1',
+    teamId: 'T1',
+    eventTs: '100.1',
+    ...overrides,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+let tmpDir: string;
+let slack: FakeSlack;
+let chat: FakeChat;
+let storage: FakeStorage;
+let dispatcher: { dispatchMessage: jest.Mock } | null;
+let service: SlackTeamChannelService;
+
+function makeService() {
+  return new SlackTeamChannelService({
+    slack,
+    chat: chat as unknown as TeamChannelChatApi,
+    storage,
+    getDispatcher: () => dispatcher,
+    storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    now: () => new Date('2026-09-12T00:00:00.000Z'),
+  });
+}
+
+beforeEach(async () => {
+  tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-slack-team-'));
+  slack = new FakeSlack();
+  chat = new FakeChat();
+  storage = new FakeStorage();
+  storage.teams = [team()];
+  dispatcher = { dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true }) };
+  service = makeService();
+});
+
+afterEach(async () => {
+  service.stop();
+  setSlackTeamChannelService(null);
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// Pure helpers
+// ---------------------------------------------------------------------------
+
+describe('slackChannelNameFor', () => {
+  it('lower-cases, collapses punctuation and applies the prefix', () => {
+    expect(slackChannelNameFor('Growth Team!')).toBe('growth-team');
+    expect(slackChannelNameFor('Growth Team', 'crew-')).toBe('crew-growth-team');
+    expect(slackChannelNameFor('  A  ..  B ')).toBe('a-b');
+  });
+  it('keeps CJK letters and never returns empty', () => {
+    expect(slackChannelNameFor('增长 团队')).toBe('增长-团队');
+    expect(slackChannelNameFor('!!!')).toBe('team');
+  });
+  it('caps at 80 characters', () => {
+    expect(slackChannelNameFor('x'.repeat(100))).toHaveLength(80);
+  });
+});
+
+describe('teamChannelMembers', () => {
+  it('excludes the orchestrator and members without a session', () => {
+    const t = team({
+      members: [member('Sam', 'developer'), member('Orc', 'orchestrator'), member('Ghost', 'qa', { sessionName: '' })],
+    });
+    expect(teamChannelMembers(t).map((m) => m.name)).toEqual(['Sam']);
+  });
+});
+
+describe('slackIdentityFor', () => {
+  it('uses an emoji avatar', () => {
+    expect(slackIdentityFor(member('Sam', 'developer', { avatar: ':rocket:' }), 's')).toEqual({
+      username: 'Sam',
+      iconEmoji: ':rocket:',
+    });
+  });
+  it('uses a URL avatar', () => {
+    expect(slackIdentityFor(member('Sam', 'developer', { avatar: 'https://x/a.png' }), 's')).toEqual({
+      username: 'Sam',
+      iconUrl: 'https://x/a.png',
+    });
+  });
+  it('falls back to the role emoji, then the default', () => {
+    expect(slackIdentityFor(member('Leo', 'qa'), 's').iconEmoji).toBe(':mag:');
+    expect(slackIdentityFor(member('Zed', 'unknown-role' as TeamMember['role']), 's').iconEmoji).toBe(':robot_face:');
+    expect(slackIdentityFor(undefined, 'crewly-x-y')).toEqual({ username: 'crewly-x-y', iconEmoji: ':robot_face:' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Store + create/link/unlink
+// ---------------------------------------------------------------------------
+
+describe('ensureTeamChannel', () => {
+  it('creates a Slack channel, a huddle with the members, persists the mapping and posts a welcome', async () => {
+    const mapping = await service.ensureTeamChannel(team());
+
+    expect(slack.created).toEqual(['alpha-team']);
+    expect(slack.purposes[0]).toEqual({ id: 'C1', purpose: 'Ships the alpha' });
+    expect(mapping).toMatchObject({
+      teamId: 'team-alpha',
+      slackChannelId: 'C1',
+      slackChannelName: 'alpha-team',
+      chatChannelId: 'huddle-1',
+      autoCreated: true,
+      createdAt: '2026-09-12T00:00:00.000Z',
+    });
+    expect([...chat.members.get('huddle-1')!]).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    expect(chat.channels.get('huddle-1')?.name).toBe('#alpha-team');
+
+    const welcome = slack.sent[0];
+    expect(welcome.channelId).toBe('C1');
+    expect(welcome.text).toContain('Alpha Team');
+    expect(welcome.text).toContain('@Sam');
+    expect(welcome.skipChatV2Mirror).toBe(true);
+
+    const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf-8'));
+    expect(onDisk.mappings).toHaveLength(1);
+    expect(onDisk.version).toBe(1);
+  });
+
+  it('is idempotent and re-syncs the roster on a second call', async () => {
+    await service.ensureTeamChannel(team());
+    const again = await service.ensureTeamChannel(team({ members: [member('Sam', 'developer')] }));
+    expect(again.slackChannelId).toBe('C1');
+    expect(slack.created).toHaveLength(1);
+    expect([...chat.members.get('huddle-1')!]).toEqual(['crewly-alpha-sam']);
+  });
+
+  it('links an existing channel instead of creating when slackChannelId is given', async () => {
+    slack.channels.set('C77', { id: 'C77', name: 'ops', isArchived: false, isPrivate: false });
+    const mapping = await service.ensureTeamChannel(team(), { slackChannelId: 'C77' });
+    expect(slack.created).toEqual([]);
+    expect(slack.joined).toEqual(['C77']);
+    expect(mapping).toMatchObject({ slackChannelId: 'C77', slackChannelName: 'ops', autoCreated: false });
+  });
+
+  it('refuses to link an unknown or archived channel', async () => {
+    await expect(service.ensureTeamChannel(team(), { slackChannelId: 'C404' })).rejects.toThrow(/not found/);
+    slack.channels.set('C9', { id: 'C9', name: 'old', isArchived: true, isPrivate: false });
+    await expect(service.ensureTeamChannel(team(), { slackChannelId: 'C9' })).rejects.toThrow(/archived/);
+  });
+
+  it('throws when Slack is not connected', async () => {
+    slack.connected = false;
+    await expect(service.ensureTeamChannel(team())).rejects.toThrow('Slack is not connected');
+  });
+
+  it('applies the configured channel prefix', async () => {
+    await service.updateSettings({ channelPrefix: 'crew-' });
+    await service.ensureTeamChannel(team());
+    expect(slack.created).toEqual(['crew-alpha-team']);
+  });
+
+  it('serialises concurrent ensures for the same team into one channel', async () => {
+    const [a, b] = await Promise.all([service.ensureTeamChannel(team()), service.ensureTeamChannel(team())]);
+    expect(a.slackChannelId).toBe(b.slackChannelId);
+    expect(slack.created).toHaveLength(1);
+  });
+
+  it('survives a corrupt store file', async () => {
+    await fs.writeFile(path.join(tmpDir, 'slack-team-channels.json'), '{not json');
+    const fresh = makeService();
+    expect(await fresh.listMappings()).toEqual([]);
+    expect(await fresh.getSettings()).toEqual({ autoCreate: true, channelPrefix: '' });
+  });
+
+  it('reloads persisted mappings in a new instance', async () => {
+    await service.ensureTeamChannel(team());
+    const fresh = makeService();
+    const list = await fresh.listMappings();
+    expect(list[0].slackChannelId).toBe('C1');
+    expect(fresh.findBySlackChannelId('C1')?.teamId).toBe('team-alpha');
+    expect(fresh.findByChatChannelId('huddle-1')?.teamId).toBe('team-alpha');
+    expect(fresh.findByTeamId('nope')).toBeNull();
+  });
+});
+
+describe('listTeamsWithMappings / getTeam', () => {
+  it('lists non-archived teams with their mapping', async () => {
+    storage.teams = [team(), team({ id: 'team-b', name: 'B' }), team({ id: 'team-z', name: 'Z', archived: true })];
+    await service.ensureTeamChannel(team());
+    const rows = await service.listTeamsWithMappings();
+    expect(rows.map((r) => r.teamId)).toEqual(['team-alpha', 'team-b']);
+    expect(rows[0]).toMatchObject({ teamName: 'Alpha Team', memberCount: 2 });
+    expect(rows[0].mapping?.slackChannelId).toBe('C1');
+    expect(rows[1].mapping).toBeNull();
+    expect((await service.getTeam('team-b'))?.name).toBe('B');
+    expect(await service.getTeam('nope')).toBeNull();
+  });
+});
+
+describe('unlinkTeam', () => {
+  it('drops the mapping, archives the huddle, and archives Slack only when asked', async () => {
+    await service.ensureTeamChannel(team());
+    expect(await service.unlinkTeam('team-alpha')).toBe(true);
+    expect(chat.channels.get('huddle-1')?.archivedAt).not.toBeNull();
+    expect(slack.archived).toEqual([]);
+    expect(await service.listMappings()).toEqual([]);
+    expect(await service.unlinkTeam('team-alpha')).toBe(false);
+
+    await service.ensureTeamChannel(team());
+    await service.unlinkTeam('team-alpha', { archiveSlackChannel: true });
+    expect(slack.archived).toEqual(['C2']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Lifecycle
+// ---------------------------------------------------------------------------
+
+describe('team lifecycle sync', () => {
+  it('auto-creates when a NEW team is saved and Slack is connected', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    expect(slack.created).toEqual(['alpha-team']);
+  });
+
+  // Every status write is also a team-saved event. Pre-existing teams must
+  // not sprout Slack channels just because an agent went idle.
+  it('does NOT auto-create for an update of an unmapped, pre-existing team', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: false });
+    expect(slack.created).toEqual([]);
+    expect(await service.listMappings()).toEqual([]);
+  });
+
+  it('does nothing on a new team when autoCreate is off', async () => {
+    await service.start();
+    await service.updateSettings({ autoCreate: false });
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    expect(slack.created).toEqual([]);
+  });
+
+  it('does nothing when Slack is offline (no crash, no mapping)', async () => {
+    slack.connected = false;
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    expect(await service.listMappings()).toEqual([]);
+  });
+
+  it('syncs the roster on a later team-saved update', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    await storage.emit({
+      kind: 'team-saved',
+      team: team({ members: [member('Sam', 'developer'), member('Leo', 'qa'), member('Mia', 'designer')] }),
+      created: false,
+    });
+    expect([...chat.members.get('huddle-1')!]).toContain('crewly-alpha-mia');
+  });
+
+  it('archives both sides when the team is archived or deleted', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    await storage.emit({ kind: 'team-saved', team: team({ archived: true }), created: false });
+    expect(slack.archived).toEqual(['C1']);
+    expect(await service.listMappings()).toEqual([]);
+
+    await storage.emit({ kind: 'team-saved', team: team({ id: 'team-b', name: 'B' }), created: true });
+    await storage.emit({ kind: 'team-deleted', teamId: 'team-b' });
+    expect(slack.archived).toEqual(['C1', 'C2']);
+  });
+
+  it('stop() unsubscribes', async () => {
+    await service.start();
+    service.stop();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    expect(slack.created).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Inbound
+// ---------------------------------------------------------------------------
+
+describe('routeInbound', () => {
+  beforeEach(async () => {
+    await service.ensureTeamChannel(team());
+    slack.sent = [];
+  });
+
+  it('returns null for an unmapped channel', async () => {
+    expect(await service.routeInbound(inbound({ channelId: 'C-other' }))).toBeNull();
+  });
+
+  it('persists a root message into the huddle with Slack correlation and dispatches with reply-channel + thread', async () => {
+    const result = await service.routeInbound(inbound({ text: '@sam 看一下', userId: 'U1' }));
+    expect(result).not.toBeNull();
+    const msg = result!.message;
+    expect(msg.channelId).toBe('huddle-1');
+    expect(msg.senderType).toBe('user');
+    expect(msg.mentions).toEqual(['crewly-alpha-sam']);
+    expect(msg.threadId).toBeUndefined();
+    expect(msg.metadata).toMatchObject({ source: 'slack', slackChannelId: 'C1', slackThreadTs: '100.1', slackTs: '100.1' });
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'huddle-1', type: 'huddle' }),
+      expect.objectContaining({ id: msg.id }),
+      { threadId: msg.id, replyVia: 'reply-channel' },
+    );
+    expect(slack.reactions).toEqual([{ channelId: 'C1', ts: '100.1', emoji: 'eyes' }]);
+    expect(slack.sent).toEqual([]); // no hint: mention resolved
+  });
+
+  it('files a Slack thread reply under the matching chat-v2 root', async () => {
+    const root = await service.routeInbound(inbound({ ts: '100.1' }));
+    const reply = await service.routeInbound(inbound({ ts: '100.2', threadTs: '100.1', text: 'more' }));
+    expect(reply!.message.threadId).toBe(root!.message.id);
+    expect(dispatcher!.dispatchMessage).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.anything(),
+      { threadId: root!.message.id, replyVia: 'reply-channel' },
+    );
+  });
+
+  it('treats a reply to an unknown Slack thread as a new root keyed by that thread', async () => {
+    const reply = await service.routeInbound(inbound({ ts: '300.5', threadTs: '300.1', text: 'late' }));
+    expect(reply!.message.threadId).toBeUndefined();
+    expect(reply!.message.metadata?.slackThreadTs).toBe('300.1');
+  });
+
+  it('answers an unknown @name in-thread with suggestions but still dispatches to the team', async () => {
+    const result = await service.routeInbound(inbound({ text: '@lee 帮忙' }));
+    expect(result!.mentions).toEqual([]);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    const hint = slack.sent.find((m) => m.threadTs === '100.1');
+    expect(hint?.text).toContain('@lee');
+    expect(hint?.text).toContain('@Leo');
+    expect(hint?.text).toContain('@Sam');
+    expect(hint?.skipChatV2Mirror).toBe(true);
+  });
+
+  it('persists but reports no dispatch when no dispatcher is wired', async () => {
+    dispatcher = null;
+    const result = await service.routeInbound(inbound());
+    expect(result!.dispatch).toBeNull();
+    expect(chat.messages).toHaveLength(1);
+  });
+
+  it('drops a mapping whose huddle vanished', async () => {
+    chat.channels.delete('huddle-1');
+    expect(await service.routeInbound(inbound())).toBeNull();
+    expect(await service.listMappings()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Outbound
+// ---------------------------------------------------------------------------
+
+describe('mirrorOutbound', () => {
+  beforeEach(async () => {
+    await service.ensureTeamChannel(team());
+    await service.start();
+    slack.sent = [];
+  });
+
+  function agentMessage(overrides: Partial<ChatMessageDTO> = {}): ChatMessageDTO {
+    return {
+      id: 'reply-1',
+      channelId: 'huddle-1',
+      seq: 99,
+      senderType: 'agent',
+      senderId: 'crewly-alpha-sam',
+      content: 'done ✅',
+      contentType: 'markdown',
+      createdAt: 1,
+      attachments: [],
+      mentions: [],
+      metadata: { source: 'reply-tool' },
+      ...overrides,
+    };
+  }
+
+  it('posts an agent reply into the Slack thread of its chat-v2 thread root, as the agent', async () => {
+    const root = await service.routeInbound(inbound({ ts: '100.1', text: '@sam go' }));
+    slack.sent = [];
+    expect(await service.mirrorOutbound(agentMessage({ threadId: root!.message.id }))).toBe(true);
+    expect(slack.sent).toEqual([
+      expect.objectContaining({
+        channelId: 'C1',
+        threadTs: '100.1',
+        text: 'done ✅',
+        username: 'Sam',
+        iconEmoji: ':computer:',
+        skipChatV2Mirror: true,
+      }),
+    ]);
+  });
+
+  it('falls back to the latest Slack root when the reply has no thread', async () => {
+    await service.routeInbound(inbound({ ts: '100.1' }));
+    await service.routeInbound(inbound({ ts: '200.1' }));
+    slack.sent = [];
+    await service.mirrorOutbound(agentMessage({ senderId: 'crewly-alpha-leo' }));
+    expect(slack.sent[0]).toEqual(expect.objectContaining({ threadTs: '200.1', username: 'Leo', iconEmoji: ':mag:' }));
+  });
+
+  it('posts top-level when the huddle has never seen a Slack message', async () => {
+    await service.mirrorOutbound(agentMessage());
+    expect(slack.sent[0].threadTs).toBeUndefined();
+  });
+
+  it('ignores user messages, Slack-origin messages, unmapped channels, and offline Slack', async () => {
+    expect(await service.mirrorOutbound(agentMessage({ senderType: 'user' }))).toBe(false);
+    expect(await service.mirrorOutbound(agentMessage({ metadata: { source: 'slack' } }))).toBe(false);
+    expect(await service.mirrorOutbound(agentMessage({ channelId: 'huddle-zzz' }))).toBe(false);
+    slack.connected = false;
+    expect(await service.mirrorOutbound(agentMessage())).toBe(false);
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('is driven by the chat-v2 chat_message event once started', async () => {
+    chat.emit('chat_message', agentMessage());
+    await new Promise((r) => setImmediate(r));
+    expect(slack.sent).toHaveLength(1);
+  });
+
+  it('uses the session name when the sender is not a known member', async () => {
+    await service.mirrorOutbound(agentMessage({ senderId: 'crewly-alpha-ghost' }));
+    expect(slack.sent[0]).toEqual(expect.objectContaining({ username: 'crewly-alpha-ghost', iconEmoji: ':robot_face:' }));
+  });
+});
+
+describe('singleton accessors', () => {
+  it('returns null until set', () => {
+    expect(getSlackTeamChannelService()).toBeNull();
+    setSlackTeamChannelService(service);
+    expect(getSlackTeamChannelService()).toBe(service);
+  });
+});

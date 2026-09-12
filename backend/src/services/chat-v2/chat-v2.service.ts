@@ -673,6 +673,114 @@ export class ChatV2Service extends EventEmitter {
     return this.queryHuddleMembers(channelId).map((m) => m.sessionName);
   }
 
+  /**
+   * Replace a huddle's roster with exactly `memberSessions` (insert the
+   * missing ones, delete the rest). Used by Slack team channels to keep
+   * the huddle in step with the Crewly team's members. No-op on non-huddle
+   * channels.
+   *
+   * @param channelId - The huddle channel id
+   * @param memberSessions - The complete desired roster (deduped here)
+   * @returns Sessions added and removed, for logging
+   */
+  setHuddleMembers(
+    channelId: string,
+    memberSessions: string[],
+  ): { added: string[]; removed: string[] } {
+    const row = this.channels.getById(channelId);
+    if (!row || row.type !== 'huddle') return { added: [], removed: [] };
+    const wanted = new Set(memberSessions.map((s) => s.trim()).filter(Boolean));
+    const current = new Set(this.queryHuddleMembers(channelId).map((m) => m.sessionName));
+    const added = [...wanted].filter((s) => !current.has(s));
+    const removed = [...current].filter((s) => !wanted.has(s));
+    const nowMs = this.now();
+    const insert = this.db.prepare(
+      `INSERT OR IGNORE INTO chat_channel_members (channel_id, member_session, joined_at)
+       VALUES (?, ?, ?)`,
+    );
+    const del = this.db.prepare(
+      `DELETE FROM chat_channel_members WHERE channel_id = ? AND member_session = ?`,
+    );
+    const apply = this.db.transaction(() => {
+      for (const s of added) insert.run(channelId, s, nowMs);
+      for (const s of removed) del.run(channelId, s);
+    });
+    apply();
+    return { added, removed };
+  }
+
+  /**
+   * Server-internal channel lookup with no principal check — for bridges
+   * (Slack team channels) that hold a channel id they created themselves.
+   * Archived channels are returned too; the caller decides.
+   *
+   * @param channelId - The channel id
+   * @returns The DTO, or null when the id is unknown
+   */
+  getChannelForBridge(channelId: string): ChatChannelDTO | null {
+    const row = this.channels.getById(channelId);
+    return row ? this.toChannelDTO(row) : null;
+  }
+
+  /**
+   * Archive a channel server-side (no principal). Idempotent.
+   *
+   * @param channelId - The channel id
+   * @returns True when a row was archived by this call
+   */
+  archiveChannelForBridge(channelId: string): boolean {
+    const row = this.channels.getById(channelId);
+    if (!row || row.archived_at) return false;
+    return this.channels.archive(channelId, this.now());
+  }
+
+  /**
+   * Resolve the chat-v2 root message for a Slack thread. See
+   * {@link MessageStore.findThreadRootBySlackTs}.
+   *
+   * @param channelId - The huddle channel id
+   * @param slackThreadTs - Slack `thread_ts`
+   * @returns The root message DTO, or null
+   */
+  findSlackThreadRoot(channelId: string, slackThreadTs: string): ChatMessageDTO | null {
+    const row = this.messages.findThreadRootBySlackTs(channelId, slackThreadTs);
+    return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /**
+   * The latest Slack-origin thread root in a channel. See
+   * {@link MessageStore.findLatestSlackRoot}.
+   *
+   * @param channelId - The huddle channel id
+   * @returns The root message DTO, or null
+   */
+  findLatestSlackRoot(channelId: string): ChatMessageDTO | null {
+    const row = this.messages.findLatestSlackRoot(channelId);
+    return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /**
+   * Read a single message by id, server-side (no principal). Used by the
+   * outbound Slack mirror to recover a reply's thread root metadata.
+   *
+   * @param messageId - The message id
+   * @returns The DTO, or null
+   */
+  getMessageForBridge(messageId: string): ChatMessageDTO | null {
+    const row = this.messages.getById(messageId);
+    return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /** Internal: is `sessionName` on the huddle's roster? */
+  private isHuddleMember(channelId: string, sessionName: string): boolean {
+    const row = this.db
+      .prepare(
+        `SELECT 1 FROM chat_channel_members WHERE channel_id = ? AND member_session = ? LIMIT 1`,
+      )
+      .get(channelId, sessionName);
+    return row !== undefined;
+  }
+
   /** Internal: read members straight from the DB (no ownership check). */
   private queryHuddleMembers(channelId: string): ChatHuddleMember[] {
     const rows = this.db
@@ -1585,7 +1693,11 @@ export class ChatV2Service extends EventEmitter {
     const isBoundAgent =
       !!principal.agentSession && principal.agentSession === row.agent_session;
     const isSharedBridged = row.id.startsWith('slack-');
-    if (!isOwner && !isBoundAgent && !isSharedBridged) {
+    const isHuddleMember =
+      !!principal.agentSession &&
+      row.type === 'huddle' &&
+      this.isHuddleMember(row.id, principal.agentSession);
+    if (!isOwner && !isBoundAgent && !isSharedBridged && !isHuddleMember) {
       throw new ChatError(CHAT_ERROR_CODES.CHANNEL_NOT_FOUND, 404, 'Channel not found');
     }
     if (row.archived_at) {
@@ -1600,6 +1712,18 @@ export class ChatV2Service extends EventEmitter {
     principal: ChatPrincipal,
   ): { type: ChatSenderType; id: string } {
     if (principal.agentSession && principal.agentSession === channel.agent_session) {
+      return { type: 'agent', id: principal.agentSession };
+    }
+    // Huddle members reply as themselves. A huddle has no single bound
+    // agent (`agent_session` is empty), so membership in
+    // `chat_channel_members` is the write grant — otherwise every
+    // `reply-channel` from a fanned-out member would be refused and the
+    // huddle could only ever be read.
+    if (
+      principal.agentSession &&
+      channel.type === 'huddle' &&
+      this.isHuddleMember(channel.id, principal.agentSession)
+    ) {
       return { type: 'agent', id: principal.agentSession };
     }
     if (principal.userId === channel.owner_user_id) {

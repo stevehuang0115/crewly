@@ -15,7 +15,7 @@ print_usage() {
   cat <<'EOF_USAGE'
 Usage:
   # CLI flags (preferred)
-  bash execute.sh --channel <channelId> --content "reply text" [--cmid <clientMessageId>]
+  bash execute.sh --channel <channelId> --content "reply text" [--thread <messageId>] [--cmid <clientMessageId>]
 
   # Content from stdin
   echo "multi-line reply" | bash execute.sh --channel chan-1
@@ -27,6 +27,8 @@ Options:
   --channel   | -c   Target channel id (required)
   --content   | -m   Reply text (required unless piped via stdin)
   --content-file     Read reply text from a file path
+  --thread    | -t   Thread root message id — reply inside that thread
+                     (Slack team channels: keeps the reply in the same Slack thread)
   --cmid             Optional client-message-id for idempotency
   --json      | -j   Raw JSON payload
   --help      | -h   Show this help
@@ -37,6 +39,7 @@ INPUT_JSON=""
 CHANNEL_ID=""
 CONTENT=""
 CMID=""
+THREAD_ID=""
 
 # Detect legacy JSON argument as $1
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -60,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --cmid)
       CMID="$2"
+      shift 2
+      ;;
+    --thread|-t)
+      THREAD_ID="$2"
       shift 2
       ;;
     --json|-j)
@@ -95,6 +102,7 @@ except Exception as e:
     sys.exit(0)
 print('CHANNEL=' + str(d.get('channelId', '')))
 print('CMID=' + str(d.get('clientMessageId', '')))
+print('THREAD=' + str(d.get('threadId', '')))
 # content is multi-line safe — use base64
 import base64
 c = d.get('content', '')
@@ -109,6 +117,7 @@ PY
       case "$line" in
         CHANNEL=*) [ -z "$CHANNEL_ID" ] && CHANNEL_ID="${line#CHANNEL=}";;
         CMID=*) [ -z "$CMID" ] && CMID="${line#CMID=}";;
+        THREAD=*) [ -z "$THREAD_ID" ] && THREAD_ID="${line#THREAD=}";;
         CONTENT_B64=*) [ -z "$CONTENT" ] && CONTENT="$(echo "${line#CONTENT_B64=}" | base64 -d 2>/dev/null)";;
       esac
     done <<< "$EXTRACTED"
@@ -131,12 +140,15 @@ fi
 # Build JSON body. Export CONTENT/CMID so python can read them safely without
 # quoting the values through the shell (avoids escaping hell for multi-line
 # content with quotes, backslashes, backticks, etc.).
-BODY=$(CONTENT="$CONTENT" CMID="$CMID" python3 -c '
+BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" python3 -c '
 import os, json
 p = {"content": os.environ["CONTENT"], "contentType": "markdown"}
 cmid = os.environ.get("CMID", "")
 if cmid:
     p["clientMessageId"] = cmid
+thread = os.environ.get("THREAD_ID", "")
+if thread:
+    p["threadId"] = thread
 print(json.dumps(p))
 ')
 

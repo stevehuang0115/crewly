@@ -37,6 +37,15 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
   })),
 }));
 
+// Slack team channels — a mapped channel must bypass the orchestrator
+// entirely. Mutable fake so individual tests can install a mapping.
+const mockTeamChannels: {
+  current: null | { findBySlackChannelId: jest.Mock; routeInbound: jest.Mock };
+} = { current: null };
+jest.mock('./slack-team-channel.service.js', () => ({
+  getSlackTeamChannelService: jest.fn(() => mockTeamChannels.current),
+}));
+
 // Mock the slack image service
 jest.mock('./slack-image.service.js', () => ({
   getSlackImageService: jest.fn().mockReturnValue({
@@ -1016,6 +1025,87 @@ describe('SlackOrchestratorBridge', () => {
       // The offline message function should be accessible
       const offlineMsg = getOrchestratorOfflineMessage(true);
       expect(offlineMsg).toContain('offline');
+    });
+  });
+
+  describe('Slack team channel routing', () => {
+    afterEach(() => {
+      mockTeamChannels.current = null;
+    });
+
+    function startBridge(mockQueueService: any) {
+      const bridge = new SlackOrchestratorBridge();
+      bridge.setMessageQueueService(mockQueueService);
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'getConversationContext').mockReturnValue({
+        conversationId: 'conv-1',
+        channelId: 'C-TEAM',
+        userId: 'U123',
+      });
+      return { bridge, slackService };
+    }
+
+    it('routes a message in a mapped channel to the team huddle and never to the orchestrator', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      const routeInbound = jest.fn().mockResolvedValue({
+        mapping: { teamId: 'team-alpha', slackChannelId: 'C-TEAM' },
+        message: { id: 'm1' },
+        mentions: [],
+        dispatch: { strategy: 'huddle-broadcast', dispatched: true },
+      });
+      mockTeamChannels.current = {
+        findBySlackChannelId: jest.fn((id: string) => (id === 'C-TEAM' ? { teamId: 'team-alpha' } : null)),
+        routeInbound,
+      };
+      const mockQueueService = { enqueue: jest.fn().mockReturnValue({ id: 'q-1' }) };
+      const { bridge, slackService } = startBridge(mockQueueService);
+      await bridge.initialize();
+
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', {
+        text: '@sam please look',
+        channelId: 'C-TEAM',
+        userId: 'U123',
+        ts: '1700000000.000100',
+      });
+      const event = await handled;
+
+      expect(routeInbound).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'C-TEAM', text: '@sam please look' }));
+      expect(event.routedTo).toBe('team-channel');
+      expect(event.teamId).toBe('team-alpha');
+      expect(mockQueueService.enqueue).not.toHaveBeenCalled();
+    });
+
+    it('leaves unmapped channels on the orchestrator path', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      mockChatV2EnsureChannel.mockReturnValue({ id: 'conv-orc', agentSession: 'crewly-orc' });
+      mockChatV2RecordTurn.mockReturnValue({ message: { id: 'm-orc' }, deduped: false });
+      const routeInbound = jest.fn();
+      mockTeamChannels.current = { findBySlackChannelId: jest.fn(() => null), routeInbound };
+      // Resolve the orc reply immediately so the test does not sit on the
+      // bridge's response timeout.
+      const mockQueueService = {
+        enqueue: jest.fn((msg: any) => {
+          msg?.sourceMetadata?.slackResolve?.('orc reply');
+          return { id: 'q-1' };
+        }),
+      };
+      const { bridge, slackService } = startBridge(mockQueueService);
+      await bridge.initialize();
+
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', {
+        text: 'hello orc',
+        channelId: 'C-OTHER',
+        userId: 'U123',
+        ts: '1700000000.000200',
+      });
+      await handled;
+
+      expect(routeInbound).not.toHaveBeenCalled();
+      expect(mockQueueService.enqueue).toHaveBeenCalled();
     });
   });
 

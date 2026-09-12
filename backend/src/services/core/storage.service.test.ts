@@ -140,14 +140,22 @@ describe('StorageService', () => {
       mockFsPromises.writeFile.mockResolvedValue(undefined);
       mockFsPromises.readdir.mockResolvedValue([]);
 
-      const events: Array<{ kind: string; id?: string }> = [];
+      const events: Array<{ kind: string; id?: string; created?: boolean }> = [];
       storageService.onStorageEvent((ev) => {
-        if (ev.kind === 'team-saved') events.push({ kind: ev.kind, id: ev.team.id });
+        if (ev.kind === 'team-saved') events.push({ kind: ev.kind, id: ev.team.id, created: ev.created });
       });
 
+      // First save: the team's config.json does not exist yet → created:true.
+      mockFs.existsSync.mockImplementation((p: fs.PathLike) => !String(p).endsWith('config.json'));
+      await storageService.saveTeam(team);
+      // Second save: the file exists → an update, created:false.
+      mockFs.existsSync.mockReturnValue(true);
       await storageService.saveTeam(team);
 
-      expect(events).toEqual([{ kind: 'team-saved', id: 'emit-save' }]);
+      expect(events).toEqual([
+        { kind: 'team-saved', id: 'emit-save', created: true },
+        { kind: 'team-saved', id: 'emit-save', created: false },
+      ]);
     });
 
     test('emits a team-deleted event after deleteTeam', async () => {

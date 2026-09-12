@@ -36,8 +36,14 @@ user's chat UI sees it.
 bash config/skills/agent/core/reply-channel/execute.sh \
   --channel <channelId> \
   --content "your reply text" \
+  [--thread <messageId>] \
   [--cmid <clientMessageId>]
 ```
+
+`--thread` replies inside an existing thread. When the prompt you received
+came from a **Slack team channel** it names the thread id
+(`--thread <id>`); pass it through so your reply shows up in the same Slack
+thread, under your own name.
 
 Or with JSON:
 
