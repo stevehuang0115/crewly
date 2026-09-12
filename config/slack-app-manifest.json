@@ -25,7 +25,9 @@
         "channels:read",
         "channels:manage",
         "channels:join",
-        "chat:write.customize"
+        "chat:write.customize",
+        "chat:write.public",
+        "im:write"
       ]
     }
   },

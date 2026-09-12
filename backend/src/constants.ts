@@ -626,6 +626,14 @@ export const SLACK_AGENT_IDENTITY_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for agent-initiated Slack posts (the `slack-post` skill).
+ */
+export const SLACK_AGENT_POST_CONSTANTS = {
+	/** Max characters in one agent-initiated message */
+	MAX_TEXT_LENGTH: 12_000,
+} as const;
+
+/**
  * Constants for cross-machine messaging via Slack.
  * Two Crewly instances communicate through a shared Slack channel.
  */

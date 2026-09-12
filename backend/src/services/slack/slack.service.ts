@@ -83,6 +83,8 @@ interface SlackWebClient {
     invite: (args: { channel: string; users: string }) => Promise<unknown>;
     archive: (args: { channel: string }) => Promise<unknown>;
     setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
+    /** Open (or reuse) a DM channel. `token` posts as another bot user. */
+    open: (args: { users: string; token?: string }) => Promise<{ channel?: { id?: string } }>;
   };
   reactions: {
     add: (args: AddReactionArgs) => Promise<void>;
@@ -94,6 +96,14 @@ interface SlackWebClient {
         real_name?: string;
         profile?: { email?: string };
       };
+    }>;
+    /**
+     * Directory listing, used to turn an `@handle` into a user id. Optional
+     * on the interface so older test doubles that only stub `info` compile.
+     */
+    list?: (args: { limit?: number; cursor?: string }) => Promise<{
+      members?: RawSlackMember[];
+      response_metadata?: { next_cursor?: string };
     }>;
   };
   files: {
@@ -146,6 +156,18 @@ interface PostMessageArgs {
   icon_url?: string;
   /** Per-call token override (post as another bot user). */
   token?: string;
+}
+
+/**
+ * Raw member object as returned by `users.list`.
+ */
+interface RawSlackMember {
+  id?: string;
+  name?: string;
+  real_name?: string;
+  deleted?: boolean;
+  is_bot?: boolean;
+  profile?: { display_name?: string; real_name?: string };
 }
 
 /**
@@ -244,6 +266,8 @@ export class SlackService extends EventEmitter {
   private config: SlackConfig | null = null;
   /** Bot user id from `auth.test`, cached by getBotUserId(). */
   private cachedBotUserId: string | null = null;
+  /** Lower-cased handle/display name → Slack user id, filled by findUserByHandle(). */
+  private userHandleCache: Map<string, string> = new Map();
   private status: SlackServiceStatus = {
     connected: false,
     socketMode: false,
@@ -1404,6 +1428,71 @@ export class SlackService extends EventEmitter {
       if (code === 'already_archived' || code === 'channel_not_found') return;
       throw error;
     }
+  }
+
+  /**
+   * Open (or reuse) the DM channel with a person and return its id.
+   *
+   * Requires `im:write` on the token used. Pass `botToken` to open the DM as
+   * an agent's own bot user — that is a different conversation from the one
+   * the default Crewly bot has with the same person.
+   *
+   * @param userId - Slack user id of the person (`U…` / `W…`)
+   * @param botToken - Optional per-call token override
+   * @returns The DM channel id (`D…`)
+   * @throws Error when the client is not initialised or Slack refuses
+   */
+  async openDirectMessage(userId: string, botToken?: string): Promise<string> {
+    const conversations = this.requireConversationsApi();
+    const res = await conversations.open({
+      users: userId,
+      ...(botToken ? { token: botToken } : {}),
+    });
+    const id = res.channel?.id;
+    if (!id) throw new Error(`conversations.open returned no channel for ${userId}`);
+    return id;
+  }
+
+  /**
+   * Resolve an `@handle` (or display / real name) to a Slack user id by
+   * scanning the directory. Results are cached for the process lifetime —
+   * handles change rarely and the listing is expensive.
+   *
+   * Bots and deactivated accounts are skipped so `@sam` never resolves to a
+   * bot that happens to share the name.
+   *
+   * @param handle - Handle without `@`, case-insensitive
+   * @returns The user id, or null when nobody matches
+   * @throws Error when the client is not initialised or lacks `users:read`
+   */
+  async findUserByHandle(handle: string): Promise<string | null> {
+    const wanted = (handle ?? '').trim().replace(/^@/, '').toLowerCase();
+    if (!wanted) return null;
+    const cached = this.userHandleCache.get(wanted);
+    if (cached) return cached;
+    if (!this.client) throw new Error('Slack client not initialized');
+    const list = this.client.users.list;
+    if (!list) throw new Error('Slack client has no users.list API');
+
+    let cursor: string | undefined;
+    // Bounded paging: a very large workspace should fail loudly rather than
+    // spin through the whole directory on every miss.
+    for (let page = 0; page < 20; page++) {
+      const res = await list({ limit: 200, cursor });
+      for (const member of res.members ?? []) {
+        if (!member.id || member.deleted || member.is_bot) continue;
+        const names = [member.name, member.profile?.display_name, member.profile?.real_name, member.real_name]
+          .filter((n): n is string => !!n)
+          .map((n) => n.toLowerCase());
+        for (const n of names) {
+          if (!this.userHandleCache.has(n)) this.userHandleCache.set(n, member.id);
+        }
+        if (names.includes(wanted)) return member.id;
+      }
+      cursor = res.response_metadata?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return null;
   }
 
   /**

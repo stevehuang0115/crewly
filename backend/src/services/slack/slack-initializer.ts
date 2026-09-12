@@ -175,6 +175,7 @@ export async function startSlackTeamChannels(): Promise<void> {
     const [
       { SlackTeamChannelService, getSlackTeamChannelService, setSlackTeamChannelService },
       { SlackAgentIdentityService, getSlackAgentIdentityService, setSlackAgentIdentityService },
+      { SlackAgentPostService, getSlackAgentPostService, setSlackAgentPostService },
       { getChatV2Service },
       { getChatV2RealtimeDeps },
       { StorageService },
@@ -182,6 +183,7 @@ export async function startSlackTeamChannels(): Promise<void> {
     ] = await Promise.all([
       import('./slack-team-channel.service.js'),
       import('./slack-agent-identity.service.js'),
+      import('./slack-agent-post.service.js'),
       import('../chat-v2/chat-v2.singleton.js'),
       import('../chat-v2/chat-v2.realtime-holder.js'),
       import('../core/storage.service.js'),
@@ -193,6 +195,16 @@ export async function startSlackTeamChannels(): Promise<void> {
     if (!identities) {
       identities = new SlackAgentIdentityService({ cloud: CloudClientService.getInstance() });
       setSlackAgentIdentityService(identities);
+    }
+    // Agent-initiated posts (the `slack-post` skill).
+    if (!getSlackAgentPostService()) {
+      setSlackAgentPostService(
+        new SlackAgentPostService({
+          slack: getSlackService(),
+          storage: StorageService.getInstance(),
+          identities,
+        }),
+      );
     }
     let service = getSlackTeamChannelService();
     if (!service) {

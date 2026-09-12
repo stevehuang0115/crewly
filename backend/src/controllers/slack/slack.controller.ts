@@ -15,6 +15,7 @@ import { getSlackOrchestratorBridge } from '../../services/slack/slack-orchestra
 import { saveSlackCredentials, deleteSlackCredentials, hasSavedCredentials } from '../../services/slack/slack-credentials.service.js';
 import { getSlackTeamChannelService } from '../../services/slack/slack-team-channel.service.js';
 import { getSlackAgentIdentityService, SlackIdentityCloudError } from '../../services/slack/slack-agent-identity.service.js';
+import { getSlackAgentPostService, SlackAgentPostError } from '../../services/slack/slack-agent-post.service.js';
 import { startSlackTeamChannels } from '../../services/slack/slack-initializer.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
@@ -1042,6 +1043,69 @@ router.delete('/agent-identities/:agentSession', async (req: Request, res: Respo
     res.json({ success: true, data: { removed } });
   } catch (error) {
     sendIdentityError(error, res, next);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Agent-initiated posts — an agent starting a Slack conversation itself
+// ---------------------------------------------------------------------------
+
+/** HTTP status per post-failure reason. */
+const POST_ERROR_STATUS: Record<string, number> = {
+  validation: 400,
+  not_connected: 503,
+  target_not_found: 404,
+  slack_error: 502,
+};
+
+/**
+ * POST /api/slack/post
+ *
+ * Send a message to a Slack channel or DM as the calling agent. Used by the
+ * `slack-post` skill; the agent is taken from `X-Agent-Session`.
+ *
+ * @body target - `#channel`, `C…`/`D…` id, `@handle` or `U…` user id (required)
+ * @body text - Message text (required)
+ * @body threadTs - Reply inside an existing Slack thread (optional)
+ * @returns `{ success, data: { channelId, messageTs, kind, postedAs, identity } }`
+ */
+router.post('/post', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = getSlackAgentPostService();
+    if (!service) {
+      res.status(503).json({ success: false, error: 'Slack is not connected', code: 'SLACK_NOT_CONNECTED' });
+      return;
+    }
+    const header = req.headers['x-agent-session'] ?? req.headers['x-crewly-agent-session'];
+    const agentSession = typeof header === 'string' && header.length > 0 ? header : '';
+    if (!agentSession) {
+      res.status(400).json({
+        success: false,
+        error: 'X-Agent-Session header is required — the post is sent under that agent\'s identity',
+        code: 'agent_session_required',
+      });
+      return;
+    }
+    const { target, text, threadTs } = req.body ?? {};
+    const result = await service.post({
+      agentSession,
+      target: typeof target === 'string' ? target : '',
+      text: typeof text === 'string' ? text : '',
+      threadTs: typeof threadTs === 'string' && threadTs ? threadTs : undefined,
+    });
+    res.json({ success: true, data: result });
+  } catch (error) {
+    if (error instanceof SlackAgentPostError) {
+      res.status(POST_ERROR_STATUS[error.code] ?? 502).json({
+        success: false,
+        error: error.message,
+        code: error.code,
+      });
+      return;
+    }
+    if (!handleSlackPlatformError(error, res)) {
+      next(error);
+    }
   }
 });
 

@@ -47,6 +47,19 @@ jest.mock('../../services/slack/slack-agent-identity.service.js', () => {
     SlackIdentityCloudError,
   };
 });
+// Agent-initiated posts.
+const mockAgentPost: { current: null | { post: jest.Mock } } = { current: null };
+jest.mock('../../services/slack/slack-agent-post.service.js', () => {
+  class SlackAgentPostError extends Error {
+    constructor(public code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
+    getSlackAgentPostService: jest.fn(() => mockAgentPost.current),
+    SlackAgentPostError,
+  };
+});
 // /connect starts team channels best-effort; keep it inert here.
 const mockStartTeamChannels = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../services/slack/slack-initializer.js', () => ({
@@ -1120,6 +1133,67 @@ describe('Slack Controller', () => {
       expect(res.status).toBe(200);
       expect(fake.remove).toHaveBeenCalledWith('crewly-a-sam');
       expect((await request(app).delete('/api/slack/agent-identities/config-token')).body.data).toEqual({ removed: true });
+    });
+  });
+
+  describe('POST /api/slack/post', () => {
+    afterEach(() => {
+      mockAgentPost.current = null;
+    });
+
+    it('503s when Slack is not connected', async () => {
+      const res = await request(app).post('/api/slack/post').send({ target: '#x', text: 'y' });
+      expect(res.status).toBe(503);
+      expect(res.body.code).toBe('SLACK_NOT_CONNECTED');
+    });
+
+    it('400s without the agent header — the identity comes from it', async () => {
+      mockAgentPost.current = { post: jest.fn() };
+      const res = await request(app).post('/api/slack/post').send({ target: '#x', text: 'y' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('agent_session_required');
+      expect(mockAgentPost.current.post).not.toHaveBeenCalled();
+    });
+
+    it('forwards target, text and thread, and returns where it landed', async () => {
+      const post = jest.fn().mockResolvedValue({
+        channelId: 'C1',
+        messageTs: '1.2',
+        kind: 'channel',
+        postedAs: 'agent',
+        identity: 'Sam',
+      });
+      mockAgentPost.current = { post };
+      const res = await request(app)
+        .post('/api/slack/post')
+        .set('X-Agent-Session', 'crewly-a-sam')
+        .send({ target: '#general', text: 'hello', threadTs: '100.1' });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ channelId: 'C1', postedAs: 'agent' });
+      expect(post).toHaveBeenCalledWith({
+        agentSession: 'crewly-a-sam',
+        target: '#general',
+        text: 'hello',
+        threadTs: '100.1',
+      });
+    });
+
+    it('maps each failure reason to its status', async () => {
+      const { SlackAgentPostError } = jest.requireMock('../../services/slack/slack-agent-post.service.js');
+      const post = jest.fn();
+      mockAgentPost.current = { post };
+      const cases: Array<[string, number]> = [
+        ['validation', 400],
+        ['not_connected', 503],
+        ['target_not_found', 404],
+        ['slack_error', 502],
+      ];
+      for (const [code, status] of cases) {
+        post.mockRejectedValueOnce(new SlackAgentPostError(code, `failed: ${code}`));
+        const res = await request(app).post('/api/slack/post').set('X-Agent-Session', 'a').send({ target: '#x', text: 'y' });
+        expect(res.status).toBe(status);
+        expect(res.body).toEqual({ success: false, error: `failed: ${code}`, code });
+      }
     });
   });
 
