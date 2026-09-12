@@ -838,6 +838,30 @@ export class BrowserProxyService {
   }
 
   /**
+   * Lazily reach BrowserBridgeService, which owns the per-agent tab bindings.
+   *
+   * The bridge already reaches this proxy the same way (see its
+   * `resolveProxy`), so a static import in either direction would be a cycle.
+   * `require()` is fine here: both modules live in this directory, so the
+   * resolution is local and does not trip the dynamic-import + ESM treadmill.
+   *
+   * @returns The bridge singleton, or null when it cannot be loaded (tests
+   *   that stub the module, or an install that never started the bridge)
+   */
+  private resolveBridge(): {
+    handleTabInventory: (tabs: Array<{ tabId: number; crewlyOwned?: boolean }>) => { orphans: number[] };
+    handleTabRemoved: (tabId: number) => void;
+  } | null {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const mod = require('./browser-bridge.service.js');
+      return mod?.BrowserBridgeService?.getInstance?.() ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Handle browser_event (connected/disconnected/updated) from relay.
    *
    * On `connected`, propagates the optional `deviceFingerprint` from the
@@ -908,6 +932,43 @@ export class BrowserProxyService {
           existing.instanceName = instanceName;
           existing.lastSeenAt = now;
         }
+        break;
+      }
+
+      // The Extension pushes tabInventory / tabRemoved so the bridge can keep
+      // its per-agent tab bindings honest. On a direct LAN socket the bridge
+      // receives those frames itself; over the relay they arrive here, re-wrapped
+      // as browser_event, and this is the only path to the bridge. Until these
+      // cases existed the relay path silently never reconciled: a binding whose
+      // tab the user closed lived on until the next command failed against it.
+      case 'tab_inventory': {
+        const bridge = this.resolveBridge();
+        if (!bridge) break;
+        const rawTabs = Array.isArray(msg.tabs) ? (msg.tabs as unknown[]) : [];
+        const tabs = rawTabs.filter(
+          (t): t is { tabId: number; crewlyOwned?: boolean } =>
+            typeof t === 'object' && t !== null && typeof (t as { tabId?: unknown }).tabId === 'number',
+        );
+        const { orphans } = bridge.handleTabInventory(tabs);
+        // Same sweep the bridge performs on the direct path, addressed to the
+        // browser that reported the inventory. Best-effort: a failure only means
+        // the tab lingers, and the user can close it.
+        for (const tabId of orphans) {
+          this.sendCommand('unbindTab', { tabId }, instanceId).catch((err: unknown) => {
+            this.logger.warn('Failed to send orphan unbindTab via relay', {
+              instanceId,
+              tabId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        }
+        break;
+      }
+
+      case 'tab_removed': {
+        const bridge = this.resolveBridge();
+        if (!bridge) break;
+        if (typeof msg.tabId === 'number') bridge.handleTabRemoved(msg.tabId);
         break;
       }
     }

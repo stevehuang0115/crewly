@@ -286,6 +286,126 @@ describe('BrowserProxyService', () => {
       expect(proxy.getInstances().find((i) => i.instanceId === 'id-3')).toBeUndefined();
     });
 
+    // Tab pushes arrive over the relay re-wrapped as browser_event and must be
+    // handed to the bridge, which owns the per-agent tab bindings. Until these
+    // cases existed the relay path never reconciled: a binding whose tab the
+    // user closed lived on until the next command failed against it.
+    describe('browser_event tab_inventory / tab_removed → bridge', () => {
+      /** Register one browser instance so orphan unbindTab has an addressable target. */
+      function connectBrowserInstance(instanceId: string): void {
+        latestMockWs!._trigger(
+          'message',
+          JSON.stringify({
+            type: 'browser_event',
+            event: 'connected',
+            instanceId,
+            instanceName: `Browser ${instanceId}`,
+          }),
+        );
+      }
+
+      it('hands tab_inventory to the bridge and sweeps its orphans via unbindTab', async () => {
+        connectAndRegister();
+        connectBrowserInstance('inst-a');
+        const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+        const bridge = BrowserBridgeService.getInstance();
+        const inventorySpy = jest
+          .spyOn(bridge, 'handleTabInventory')
+          .mockReturnValue({ orphans: [9] });
+        latestMockWs!.send.mockClear();
+
+        latestMockWs!._trigger(
+          'message',
+          JSON.stringify({
+            type: 'browser_event',
+            event: 'tab_inventory',
+            instanceId: 'inst-a',
+            instanceName: 'Browser inst-a',
+            tabs: [
+              { tabId: 1, crewlyOwned: false },
+              { tabId: 9, crewlyOwned: true },
+            ],
+          }),
+        );
+
+        expect(inventorySpy).toHaveBeenCalledWith([
+          { tabId: 1, crewlyOwned: false },
+          { tabId: 9, crewlyOwned: true },
+        ]);
+        // The orphan the bridge reported is closed on the browser that owns it.
+        const frames = latestMockWs!.send.mock.calls.map((c) => JSON.parse(c[0] as string) as Record<string, unknown>);
+        const relayTo = frames.find((f) => f.type === 'relay_to');
+        expect(relayTo).toBeDefined();
+        const payload = JSON.parse(relayTo!.payload as string) as { tool: string; params: { tabId: number } };
+        expect(payload.tool).toBe('unbindTab');
+        expect(payload.params).toEqual({ tabId: 9 });
+      });
+
+      // The relay forwards verbatim; a row without a numeric tabId must not
+      // reach the bridge, whose inventory logic keys on it.
+      it('drops inventory rows without a numeric tabId before calling the bridge', async () => {
+        connectAndRegister();
+        connectBrowserInstance('inst-b');
+        const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+        const bridge = BrowserBridgeService.getInstance();
+        const inventorySpy = jest
+          .spyOn(bridge, 'handleTabInventory')
+          .mockReturnValue({ orphans: [] });
+
+        latestMockWs!._trigger(
+          'message',
+          JSON.stringify({
+            type: 'browser_event',
+            event: 'tab_inventory',
+            instanceId: 'inst-b',
+            instanceName: 'Browser inst-b',
+            tabs: [{ tabId: 'x' }, null, { tabId: 3 }],
+          }),
+        );
+
+        expect(inventorySpy).toHaveBeenCalledWith([{ tabId: 3 }]);
+      });
+
+      it('hands tab_removed to the bridge', async () => {
+        connectAndRegister();
+        const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+        const bridge = BrowserBridgeService.getInstance();
+        const removedSpy = jest.spyOn(bridge, 'handleTabRemoved').mockImplementation(() => undefined);
+
+        latestMockWs!._trigger(
+          'message',
+          JSON.stringify({
+            type: 'browser_event',
+            event: 'tab_removed',
+            instanceId: 'inst-a',
+            instanceName: 'Browser inst-a',
+            tabId: 42,
+          }),
+        );
+
+        expect(removedSpy).toHaveBeenCalledWith(42);
+      });
+
+      it('ignores tab_removed without a numeric tabId', async () => {
+        connectAndRegister();
+        const { BrowserBridgeService } = await import('./browser-bridge.service.js');
+        const bridge = BrowserBridgeService.getInstance();
+        const removedSpy = jest.spyOn(bridge, 'handleTabRemoved').mockImplementation(() => undefined);
+
+        latestMockWs!._trigger(
+          'message',
+          JSON.stringify({
+            type: 'browser_event',
+            event: 'tab_removed',
+            instanceId: 'inst-a',
+            instanceName: 'Browser inst-a',
+          }),
+        );
+
+        expect(removedSpy).not.toHaveBeenCalled();
+      });
+    });
+
     it('should handle relay message and resolve pending command', async () => {
       connectAndRegister();
       const proxy = BrowserProxyService.getInstance();
