@@ -28,6 +28,7 @@ import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
 // `backend/src/utils/node-require.utils.ts` JSDoc for the lessons.
 // Static import keeps sync method signatures AND fixes the resolution.
 import { BrowserRelayAdapter } from './browser-relay-adapter.service.js';
+import { getRegisteredProxy, registerBridgeAccessor } from './browser-services.registry.js';
 
 /** Represents a connected Chrome Extension client */
 export interface BrowserClient {
@@ -174,6 +175,10 @@ export class BrowserBridgeService {
 	static getInstance(): BrowserBridgeService {
 		if (!BrowserBridgeService.instance) {
 			BrowserBridgeService.instance = new BrowserBridgeService();
+			// Let the proxy reach this singleton without importing this module
+			// (that would be a cycle) and without `require()` (which throws in
+			// the ESM build). See browser-services.registry.ts.
+			registerBridgeAccessor(() => BrowserBridgeService.getInstance());
 		}
 		return BrowserBridgeService.instance;
 	}
@@ -851,16 +856,14 @@ export class BrowserBridgeService {
 		isAvailable: () => boolean;
 		getInstances: () => Array<{ instanceId: string; instanceName: string }>;
 	} | null {
-		try {
-			// require() is fine here: BrowserProxyService also lives under
-			// backend/src/services/browser, so the resolution is local and
-			// doesn't trip the dynamic-import + ESM treadmill.
-			// eslint-disable-next-line @typescript-eslint/no-require-imports
-			const mod = require('./browser-proxy.service.js');
-			return mod?.BrowserProxyService?.getInstance?.() ?? null;
-		} catch {
-			return null;
-		}
+		// Read the proxy through the registry, not a `require()`. The shipped
+		// backend is ESM ("type": "module"), where a bare require throws — and
+		// the old try/catch swallowed it, so in production this always returned
+		// null: /bind answered 503 NO_BROWSER_CLIENT with a browser registered on
+		// the relay, and getStatus reported relayAvailable:false next to a true
+		// `drivable` computed from the very same proxy. It only ever worked under
+		// jest (CJS) and tsx-from-source.
+		return getRegisteredProxy();
 	}
 
 	/**

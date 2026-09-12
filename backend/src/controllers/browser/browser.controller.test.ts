@@ -481,6 +481,36 @@ describe('Browser Controller — per-tab dispatch (M2)', () => {
 			expect(res.body.code).toBe('NO_BROWSER_CLIENT');
 		});
 
+		// Regression: over the Cloud relay there is no direct WS client; the
+		// bridge learns the Extension is reachable only through the proxy. The
+		// old bridge→proxy lookup was a bare `require()` that threw in the ESM
+		// build (swallowed → null), so /bind answered 503 with a browser plainly
+		// registered on the relay while /status reported drivable:true from the
+		// same proxy. The registry makes the proxy visible without require().
+		it('binds over the relay path when only the proxy reports a browser (no direct WS client)', async () => {
+			const { BrowserProxyService } = await import('../../services/browser/browser-proxy.service.js');
+			const proxy = BrowserProxyService.getInstance();
+			jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+
+			const bridge = BrowserBridgeService.getInstance();
+			expect(bridge.isConnected()).toBe(true);
+			jest.spyOn(bridge, 'bindAgentTab').mockResolvedValue({
+				agentSession: 'agent-relay',
+				tabId: 7,
+				windowId: 1,
+				boundAt: new Date(),
+				lastActivityAt: new Date(),
+			});
+
+			const res = await request(app)
+				.post('/api/browser/bind')
+				.set('X-Agent-Session', 'agent-relay')
+				.send({});
+
+			expect(res.status).toBe(200);
+			expect(res.body).toMatchObject({ success: true, data: { tabId: 7, windowId: 1 } });
+		});
+
 		it('returns the new tabId on success and increments bindingCount', async () => {
 			const bridge = BrowserBridgeService.getInstance();
 			markBridgeConnected(bridge);

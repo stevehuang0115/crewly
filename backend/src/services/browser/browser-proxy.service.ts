@@ -17,6 +17,7 @@ import WebSocket from 'ws';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { BrowserCommandResponse } from './browser-bridge.service.js';
 import { BROWSER_BRIDGE_CONSTANTS, BROWSER_PROXY_CONSTANTS } from '../../constants.js';
+import { getRegisteredBridge, registerProxyAccessor } from './browser-services.registry.js';
 
 /** Minimal info about a connected browser instance. */
 export interface BrowserInstanceInfo {
@@ -219,6 +220,10 @@ export class BrowserProxyService {
   static getInstance(): BrowserProxyService {
     if (!BrowserProxyService.instance) {
       BrowserProxyService.instance = new BrowserProxyService();
+      // Let the bridge reach this singleton without importing this module
+      // (that would be a cycle) and without `require()` (which throws in the
+      // ESM build). See browser-services.registry.ts.
+      registerProxyAccessor(() => BrowserProxyService.getInstance());
     }
     return BrowserProxyService.instance;
   }
@@ -840,25 +845,21 @@ export class BrowserProxyService {
   /**
    * Lazily reach BrowserBridgeService, which owns the per-agent tab bindings.
    *
-   * The bridge already reaches this proxy the same way (see its
-   * `resolveProxy`), so a static import in either direction would be a cycle.
-   * `require()` is fine here: both modules live in this directory, so the
-   * resolution is local and does not trip the dynamic-import + ESM treadmill.
+   * The bridge reaches this proxy the same way (see its
+   * `tryGetProxyInstance`), so a static import in either direction would be a
+   * cycle. Both sides go through the registry instead of `require()`: the
+   * shipped backend is ESM, where a bare `require` throws, and the old
+   * try/catch turned that into a silent null.
    *
-   * @returns The bridge singleton, or null when it cannot be loaded (tests
-   *   that stub the module, or an install that never started the bridge)
+   * @returns The bridge singleton, or null when the bridge has not been
+   *   initialised in this process (tests that stub the module, or an install
+   *   that never started the bridge)
    */
   private resolveBridge(): {
     handleTabInventory: (tabs: Array<{ tabId: number; crewlyOwned?: boolean }>) => { orphans: number[] };
     handleTabRemoved: (tabId: number) => void;
   } | null {
-    try {
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const mod = require('./browser-bridge.service.js');
-      return mod?.BrowserBridgeService?.getInstance?.() ?? null;
-    } catch {
-      return null;
-    }
+    return getRegisteredBridge();
   }
 
   /**
