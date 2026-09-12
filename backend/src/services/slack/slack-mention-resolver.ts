@@ -21,6 +21,11 @@ export interface MentionCandidate {
   name: string;
   /** Agent session name (e.g. `crewly-alpha-sam`). */
   sessionName: string;
+  /**
+   * The agent's own Slack bot user id when it has a real identity. A native
+   * Slack mention arrives as `<@U…>` and is matched here first.
+   */
+  botUserId?: string;
 }
 
 /** An `@name` that matched no candidate, with close alternatives. */
@@ -60,6 +65,26 @@ const RESERVED_TOKENS = new Set(['here', 'channel', 'everyone', 'group']);
  * digits, `_`, `.` and `-`; a trailing `.`/`-` is punctuation, not name.
  */
 const MENTION_TOKEN_RE = /(?<![\w<@])@([\p{L}\p{N}_.-]+)/gu;
+
+/** Native Slack user mention: `<@U0123ABC>` or `<@U0123ABC|name>`. */
+const NATIVE_MENTION_RE = /<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g;
+
+/**
+ * Extract the user ids of native `<@U…>` mentions, in order, deduped.
+ *
+ * @param text - Slack message text
+ * @returns Slack user ids
+ */
+export function extractNativeMentionIds(text: string): string[] {
+  const seen = new Set<string>();
+  const ids: string[] = [];
+  for (const m of (text ?? '').matchAll(NATIVE_MENTION_RE)) {
+    if (seen.has(m[1])) continue;
+    seen.add(m[1]);
+    ids.push(m[1]);
+  }
+  return ids;
+}
 
 /**
  * Levenshtein edit distance between two strings, compared case-insensitively.
@@ -173,6 +198,19 @@ export function resolveSlackMentions(
   const mentions: string[] = [];
   const seenSessions = new Set<string>();
   const unknown: UnknownMention[] = [];
+
+  // Real identities first: a native <@U…> mention of an agent's own bot user.
+  const byBotUserId = new Map<string, MentionCandidate>();
+  for (const c of candidates) {
+    if (c.botUserId) byBotUserId.set(c.botUserId, c);
+  }
+  for (const id of extractNativeMentionIds(text)) {
+    const hit = byBotUserId.get(id);
+    if (hit && !seenSessions.has(hit.sessionName)) {
+      seenSessions.add(hit.sessionName);
+      mentions.push(hit.sessionName);
+    }
+  }
 
   for (const token of extractMentionTokens(text)) {
     const hit = aliasIndex.get(token.toLowerCase());

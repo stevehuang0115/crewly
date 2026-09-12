@@ -16,6 +16,7 @@ import { Card } from '../UI/Card';
 import { Alert } from '../UI/Alert';
 import { FormInput, FormLabel } from '../UI/Form';
 import { SlackTeamChannels } from './SlackTeamChannels';
+import { SlackAgentIdentities } from './SlackAgentIdentities';
 
 /**
  * Slack connection status from the API
@@ -244,6 +245,9 @@ export const SlackTab: React.FC = () => {
 
           {/* Team channels — one Slack channel per Crewly team */}
           <SlackTeamChannels />
+
+          {/* Agent identities — one real Slack bot user per agent (via Cloud) */}
+          <SlackAgentIdentities />
 
           {/* Actions */}
           <div className="flex items-center gap-3">

@@ -169,6 +169,12 @@ export interface SlackOutgoingMessage {
   /** Per-message icon as an image URL. Ignored when `iconEmoji` is set. */
   iconUrl?: string;
   /**
+   * Post as a different bot user: the agent's own Slack app token (Slack
+   * agent identities). When set, `username`/icon are ignored — the message
+   * already carries a real identity.
+   */
+  botToken?: string;
+  /**
    * Skip the best-effort mirror of this reply into the `slack-<channel>-<ts>`
    * chat-v2 channel. Set by callers that already persisted the message in
    * chat-v2 under a different channel (team-channel outbound mirror), so the
@@ -499,4 +505,33 @@ export function parseCommandIntent(text: string): SlackCommandIntent {
   }
 
   return 'conversation'; // Default to conversation
+}
+
+/**
+ * One agent's Slack identity as cached by the OSS install
+ * (`~/.crewly/slack-agent-identities.json`, mode 0600). Mirrors the Cloud's
+ * `SlackAgentView` plus local bookkeeping.
+ */
+export interface SlackAgentIdentityRecord {
+  agentSession: string;
+  displayName: string;
+  appId: string;
+  status: 'pending_install' | 'installed' | 'error';
+  botUserId?: string;
+  teamId?: string;
+  /** The agent's own bot token — never leaves this machine except to Slack. */
+  botToken?: string;
+  installUrl?: string;
+  error?: string;
+  /** Slack channel ids where the install link has been announced. */
+  announcedIn: string[];
+  /** Slack channel ids the bot user has been invited into. */
+  invitedTo: string[];
+  updatedAt: string;
+}
+
+/** On-disk shape of the identity cache. */
+export interface SlackAgentIdentitiesFile {
+  version: 1;
+  identities: SlackAgentIdentityRecord[];
 }

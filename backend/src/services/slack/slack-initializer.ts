@@ -172,13 +172,28 @@ export async function initializeSlackIfConfigured(
  */
 export async function startSlackTeamChannels(): Promise<void> {
   try {
-    const [{ SlackTeamChannelService, getSlackTeamChannelService, setSlackTeamChannelService }, { getChatV2Service }, { getChatV2RealtimeDeps }, { StorageService }] =
-      await Promise.all([
-        import('./slack-team-channel.service.js'),
-        import('../chat-v2/chat-v2.singleton.js'),
-        import('../chat-v2/chat-v2.realtime-holder.js'),
-        import('../core/storage.service.js'),
-      ]);
+    const [
+      { SlackTeamChannelService, getSlackTeamChannelService, setSlackTeamChannelService },
+      { SlackAgentIdentityService, getSlackAgentIdentityService, setSlackAgentIdentityService },
+      { getChatV2Service },
+      { getChatV2RealtimeDeps },
+      { StorageService },
+      { CloudClientService },
+    ] = await Promise.all([
+      import('./slack-team-channel.service.js'),
+      import('./slack-agent-identity.service.js'),
+      import('../chat-v2/chat-v2.singleton.js'),
+      import('../chat-v2/chat-v2.realtime-holder.js'),
+      import('../core/storage.service.js'),
+      import('../cloud/cloud-client.service.js'),
+    ]);
+    // Real per-agent identities live behind the Cloud login; the service is
+    // always constructed and simply reports unavailable until then.
+    let identities = getSlackAgentIdentityService();
+    if (!identities) {
+      identities = new SlackAgentIdentityService({ cloud: CloudClientService.getInstance() });
+      setSlackAgentIdentityService(identities);
+    }
     let service = getSlackTeamChannelService();
     if (!service) {
       service = new SlackTeamChannelService({
@@ -186,6 +201,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         chat: getChatV2Service(),
         storage: StorageService.getInstance(),
         getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
+        identities,
       });
       setSlackTeamChannelService(service);
     }

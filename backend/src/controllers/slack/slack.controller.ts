@@ -14,6 +14,7 @@ import { getSlackService } from '../../services/slack/slack.service.js';
 import { getSlackOrchestratorBridge } from '../../services/slack/slack-orchestrator-bridge.js';
 import { saveSlackCredentials, deleteSlackCredentials, hasSavedCredentials } from '../../services/slack/slack-credentials.service.js';
 import { getSlackTeamChannelService } from '../../services/slack/slack-team-channel.service.js';
+import { getSlackAgentIdentityService, SlackIdentityCloudError } from '../../services/slack/slack-agent-identity.service.js';
 import { startSlackTeamChannels } from '../../services/slack/slack-initializer.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
@@ -892,6 +893,155 @@ router.delete('/team-channels/:teamId', async (req: Request, res: Response, next
     res.json({ success: true, data: { removed: true, archivedSlackChannel: archive } });
   } catch (error) {
     next(error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Agent identities — one real Slack bot user per agent, via Crewly Cloud
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolve the identity service, answering 503 when Slack team channels are
+ * not started, and 401 when the OSS install is not logged in to Cloud.
+ *
+ * @param res - Response used for the error
+ * @returns The service, or null after the response was sent
+ */
+function requireIdentities(res: Response) {
+  const service = getSlackAgentIdentityService();
+  if (!service) {
+    res.status(503).json({ success: false, error: 'Slack is not connected', code: 'SLACK_NOT_CONNECTED' });
+    return null;
+  }
+  if (!service.isAvailable()) {
+    res.status(401).json({
+      success: false,
+      error: 'Log in to Crewly Cloud first (crewly cloud login) — agent identities are provisioned there',
+      code: 'CLOUD_NOT_CONNECTED',
+    });
+    return null;
+  }
+  return service;
+}
+
+/**
+ * Serialize a Cloud failure with its status and code, or pass on.
+ */
+function sendIdentityError(err: unknown, res: Response, next: NextFunction): void {
+  if (err instanceof SlackIdentityCloudError) {
+    res.status(err.status >= 400 && err.status < 600 ? err.status : 502).json({ success: false, error: err.message, code: err.code });
+    return;
+  }
+  next(err);
+}
+
+/** Strip bot tokens before anything leaves the process. */
+function publicIdentity<T extends { botToken?: string }>(record: T): Omit<T, 'botToken'> & { hasToken: boolean } {
+  const { botToken, ...rest } = record;
+  return { ...rest, hasToken: !!botToken };
+}
+
+/**
+ * GET /api/slack/agent-identities
+ *
+ * Cloud status (config token, counts) plus the local identity cache
+ * (without tokens). `?refresh=1` pulls from Cloud first.
+ */
+router.get('/agent-identities', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireIdentities(res);
+    if (!service) return;
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    const [cloud, identities] = await Promise.all([
+      service.getCloudStatus(),
+      refresh ? service.refreshFromCloud() : service.list(),
+    ]);
+    res.json({ success: true, data: { cloud, identities: identities.map(publicIdentity) } });
+  } catch (error) {
+    sendIdentityError(error, res, next);
+  }
+});
+
+/**
+ * PUT /api/slack/agent-identities/config-token
+ *
+ * @body token - Slack app configuration token (optional, may be expired)
+ * @body refreshToken - Its refresh token (required)
+ */
+router.put('/agent-identities/config-token', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireIdentities(res);
+    if (!service) return;
+    const { token, refreshToken } = req.body ?? {};
+    if (typeof refreshToken !== 'string' || !refreshToken.trim()) {
+      res.status(400).json({ success: false, error: 'refreshToken is required' });
+      return;
+    }
+    const status = await service.setConfigToken(typeof token === 'string' ? token.trim() : '', refreshToken.trim());
+    res.json({ success: true, data: status });
+  } catch (error) {
+    sendIdentityError(error, res, next);
+  }
+});
+
+/**
+ * DELETE /api/slack/agent-identities/config-token
+ */
+router.delete('/agent-identities/config-token', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireIdentities(res);
+    if (!service) return;
+    const removed = await service.deleteConfigToken();
+    res.json({ success: true, data: { removed } });
+  } catch (error) {
+    sendIdentityError(error, res, next);
+  }
+});
+
+/**
+ * POST /api/slack/agent-identities/provision
+ *
+ * Provision identities for every member of a mapped team and (re)announce
+ * the install links in its Slack channel.
+ *
+ * @body teamId - A team with a Slack channel (required)
+ */
+router.post('/agent-identities/provision', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireIdentities(res);
+    if (!service) return;
+    const teamChannels = getSlackTeamChannelService();
+    const { teamId } = req.body ?? {};
+    if (typeof teamId !== 'string' || !teamId.trim() || !teamChannels) {
+      res.status(400).json({ success: false, error: 'teamId is required' });
+      return;
+    }
+    const team = await teamChannels.getTeam(teamId);
+    const mapping = teamChannels.findByTeamId(teamId);
+    if (!team || !mapping) {
+      res.status(404).json({ success: false, error: 'Team has no Slack channel yet — create one first' });
+      return;
+    }
+    const result = await teamChannels.ensureIdentities(team, mapping);
+    res.json({ success: true, data: result });
+  } catch (error) {
+    sendIdentityError(error, res, next);
+  }
+});
+
+/**
+ * DELETE /api/slack/agent-identities/:agentSession
+ *
+ * Delete the agent's Slack app on Cloud and forget it locally.
+ */
+router.delete('/agent-identities/:agentSession', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireIdentities(res);
+    if (!service) return;
+    const removed = await service.remove(req.params.agentSession);
+    res.json({ success: true, data: { removed } });
+  } catch (error) {
+    sendIdentityError(error, res, next);
   }
 });
 

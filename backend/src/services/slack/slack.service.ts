@@ -144,6 +144,8 @@ interface PostMessageArgs {
   username?: string;
   icon_emoji?: string;
   icon_url?: string;
+  /** Per-call token override (post as another bot user). */
+  token?: string;
 }
 
 /**
@@ -906,14 +908,20 @@ export class SlackService extends EventEmitter {
         attachments: message.attachments,
         unfurl_links: message.unfurlLinks,
         unfurl_media: message.unfurlMedia,
-        // Per-agent identity for team channels. Only sent when set so the
-        // orchestrator's plain posts keep the app's default bot identity.
-        ...(message.username ? { username: message.username } : {}),
-        ...(message.iconEmoji
-          ? { icon_emoji: message.iconEmoji }
-          : message.iconUrl
-            ? { icon_url: message.iconUrl }
-            : {}),
+        // Per-agent identity for team channels. A real agent bot token wins
+        // (the message is posted by that bot user); otherwise the cosmetic
+        // username/icon override. Only sent when set so the orchestrator's
+        // plain posts keep the app's default bot identity.
+        ...(message.botToken
+          ? { token: message.botToken }
+          : {
+              ...(message.username ? { username: message.username } : {}),
+              ...(message.iconEmoji
+                ? { icon_emoji: message.iconEmoji }
+                : message.iconUrl
+                  ? { icon_url: message.iconUrl }
+                  : {}),
+            }),
       });
 
       this.status.messagesSent++;
@@ -1021,7 +1029,10 @@ export class SlackService extends EventEmitter {
     for (let i = 0; i < text.length; i++) {
       hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
     }
-    return `${message.channelId}:${message.threadTs || ''}:${hash}`;
+    // Two agents saying the same thing in the same thread are two messages,
+    // so the sender identity is part of the key.
+    const sender = message.botToken ? `bot:${message.botToken.slice(-8)}` : message.username || '';
+    return `${message.channelId}:${message.threadTs || ''}:${sender}:${hash}`;
   }
 
   /**

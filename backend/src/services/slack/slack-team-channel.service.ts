@@ -35,7 +35,7 @@ import type {
   SlackTeamChannelsFile,
   SlackChannelInfo,
 } from '../../types/slack.types.js';
-import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
+import type { ChatMessageDTO } from '../chat-v2/types.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import type {
   ChatV2DispatcherService,
@@ -47,6 +47,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
+import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
 
 // ---------------------------------------------------------------------------
 // Dependency contracts (narrow so tests can pass plain fakes)
@@ -62,7 +63,14 @@ export interface TeamChannelSlackApi {
   setChannelPurpose(channelId: string, purpose: string): Promise<void>;
   sendMessage(message: SlackOutgoingMessage): Promise<string>;
   addReaction(channelId: string, messageTs: string, emoji: string): Promise<void>;
+  inviteToChannel(channelId: string, userIds: string[]): Promise<void>;
 }
+
+/** The slice of SlackAgentIdentityService this service uses (optional). */
+export type TeamChannelIdentityApi = Pick<
+  SlackAgentIdentityService,
+  'isAvailable' | 'load' | 'provision' | 'get' | 'getInstalled' | 'markChannel' | 'onInstalled'
+>;
 
 /** The slice of ChatV2Service this service uses. */
 export type TeamChannelChatApi = Pick<
@@ -95,6 +103,11 @@ export interface SlackTeamChannelServiceDeps {
   storage: TeamChannelStorageApi;
   /** Returns the live dispatcher, or null before it is wired. */
   getDispatcher: () => TeamChannelDispatcherApi | null;
+  /**
+   * Real per-agent Slack identities (Cloud-provisioned bot users). Optional:
+   * without it agents post under the cosmetic username/icon override.
+   */
+  identities?: TeamChannelIdentityApi | null;
   /** Mapping store path; defaults to `<CREWLY_HOME>/slack-team-channels.json`. */
   storePath?: string;
   /** Clock override for tests. */
@@ -202,6 +215,7 @@ export class SlackTeamChannelService {
   private store: SlackTeamChannelsFile | null = null;
   private loading: Promise<SlackTeamChannelsFile> | null = null;
   private unsubscribeStorage: (() => void) | null = null;
+  private unsubscribeIdentity: (() => void) | null = null;
   private readonly onChatMessage = (dto: ChatMessageDTO): void => {
     void this.mirrorOutbound(dto);
   };
@@ -230,6 +244,12 @@ export class SlackTeamChannelService {
     await this.load();
     this.unsubscribeStorage = this.deps.storage.onStorageEvent((event) => this.handleStorageEvent(event));
     this.deps.chat.on('chat_message', this.onChatMessage);
+    // A freshly installed agent bot gets invited into every channel of a
+    // team it belongs to, so it can post there under its own identity.
+    this.unsubscribeIdentity =
+      this.deps.identities?.onInstalled((record) => {
+        void this.inviteInstalledEverywhere(record.agentSession);
+      }) ?? null;
     this.started = true;
     this.logger.info('Slack team channels started', {
       mappings: this.store?.mappings.length ?? 0,
@@ -242,6 +262,8 @@ export class SlackTeamChannelService {
     if (!this.started) return;
     this.unsubscribeStorage?.();
     this.unsubscribeStorage = null;
+    this.unsubscribeIdentity?.();
+    this.unsubscribeIdentity = null;
     this.deps.chat.off('chat_message', this.onChatMessage);
     this.started = false;
   }
@@ -460,6 +482,7 @@ export class SlackTeamChannelService {
       });
 
       await this.postWelcome(mapping, team, members);
+      await this.ensureIdentities(team, mapping);
       return mapping;
     });
   }
@@ -517,6 +540,7 @@ export class SlackTeamChannelService {
     if (diff.added.length || diff.removed.length) {
       this.logger.info('Team channel roster synced', { teamId: team.id, ...diff });
     }
+    await this.ensureIdentities(team, m);
     return diff;
   }
 
@@ -600,7 +624,12 @@ export class SlackTeamChannelService {
 
     const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
     const members = team ? teamChannelMembers(team) : [];
-    const candidates: MentionCandidate[] = members.map((m) => ({ name: m.name, sessionName: m.sessionName }));
+    if (this.deps.identities) await this.deps.identities.load();
+    const candidates: MentionCandidate[] = members.map((m) => ({
+      name: m.name,
+      sessionName: m.sessionName,
+      botUserId: this.deps.identities?.get(m.sessionName)?.botUserId,
+    }));
     const resolved = resolveSlackMentions(message.text ?? '', candidates);
 
     // Thread correlation.
@@ -685,7 +714,10 @@ export class SlackTeamChannelService {
       const threadTs = this.resolveOutboundThreadTs(mapping, dto);
       const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
       const member = team?.members.find((m) => m.sessionName === dto.senderId);
-      const identity = slackIdentityFor(member, dto.senderId);
+      // A real bot user (Cloud-provisioned identity) beats the cosmetic
+      // username/icon override.
+      const installed = this.deps.identities?.getInstalled(dto.senderId) ?? null;
+      const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
 
       await this.deps.slack.sendMessage({
         channelId: mapping.slackChannelId,
@@ -719,6 +751,119 @@ export class SlackTeamChannelService {
     const latest = this.deps.chat.findLatestSlackRoot(mapping.chatChannelId);
     const ts = latest?.metadata?.slackThreadTs;
     return typeof ts === 'string' && ts ? ts : undefined;
+  }
+
+  // -------------------------------------------------------------------------
+  // Agent identities (real bot users)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Give every member of a mapped team a real Slack identity: ask Cloud for
+   * one where missing, announce the owner's install links in the team's
+   * channel (once per agent per channel), and invite installed bots into the
+   * channel (once). Silent no-op when identities are unavailable (no Cloud
+   * login) or the owner has not stored a config token yet.
+   *
+   * @param team - The team
+   * @param mapping - Its channel mapping
+   * @returns Counts, for logging and the REST surface
+   */
+  async ensureIdentities(
+    team: Team,
+    mapping: SlackTeamChannelMapping,
+  ): Promise<{ provisioned: number; announced: number; invited: number; skipped: string | null }> {
+    const identities = this.deps.identities;
+    const result = { provisioned: 0, announced: 0, invited: 0, skipped: null as string | null };
+    if (!identities || !identities.isAvailable()) {
+      result.skipped = 'identities unavailable';
+      return result;
+    }
+    await identities.load();
+    const pendingLinks: Array<{ name: string; url: string; session: string }> = [];
+    for (const member of teamChannelMembers(team)) {
+      let record = identities.get(member.sessionName);
+      if (!record || record.status !== 'installed') {
+        try {
+          record = await identities.provision(member.sessionName, member.name, `${member.name} — ${member.role} on ${team.name} (Crewly)`);
+          result.provisioned += 1;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          // A missing/invalid config token stops the whole pass — every
+          // member would fail the same way. Anything else is per-member.
+          if (/config_token|not_configured|not_logged_in/i.test(message) || /config(uration)? token/i.test(message)) {
+            this.logger.info('Agent identities skipped', { reason: message });
+            result.skipped = message;
+            break;
+          }
+          this.logger.warn('Could not provision Slack identity', { agent: member.sessionName, error: message });
+          continue;
+        }
+      }
+      if (record.status === 'pending_install' && record.installUrl && !record.announcedIn.includes(mapping.slackChannelId)) {
+        pendingLinks.push({ name: member.name, url: record.installUrl, session: member.sessionName });
+      }
+      if (record.status === 'installed' && record.botUserId && !record.invitedTo.includes(mapping.slackChannelId)) {
+        if (await this.inviteBot(mapping, member.sessionName, record.botUserId)) result.invited += 1;
+      }
+    }
+    if (pendingLinks.length > 0) {
+      const lines = pendingLinks.map((p) => `• *${p.name}* → <${p.url}|安装 ${p.name}>`);
+      await this.deps.slack
+        .sendMessage({
+          channelId: mapping.slackChannelId,
+          text: [
+            `:id: 给 *${team.name}* 的 ${pendingLinks.length} 位成员创建了 Slack 身份，点一下安装（每个各一次）：`,
+            ...lines,
+            '_安装后它们会以自己的名字出现在成员列表里，可以直接 @。_',
+          ].join('\n'),
+          skipChatV2Mirror: true,
+        })
+        .then(async () => {
+          for (const p of pendingLinks) await identities.markChannel(p.session, { announcedIn: mapping.slackChannelId });
+          result.announced = pendingLinks.length;
+        })
+        .catch((err: unknown) => {
+          this.logger.warn('Could not announce install links', { error: err instanceof Error ? err.message : String(err) });
+        });
+    }
+    return result;
+  }
+
+  /**
+   * Invite a newly installed agent bot into every channel of every team it
+   * belongs to. Runs from the identity service's `onInstalled` hook.
+   *
+   * @param agentSession - The agent that just got its bot user
+   */
+  async inviteInstalledEverywhere(agentSession: string): Promise<void> {
+    const identities = this.deps.identities;
+    if (!identities) return;
+    const record = identities.get(agentSession);
+    if (!record?.botUserId) return;
+    await this.load();
+    const teams = await this.deps.storage.getTeams();
+    for (const team of teams) {
+      if (!teamChannelMembers(team).some((m) => m.sessionName === agentSession)) continue;
+      const mapping = this.findByTeamId(team.id);
+      if (!mapping || record.invitedTo.includes(mapping.slackChannelId)) continue;
+      await this.inviteBot(mapping, agentSession, record.botUserId);
+    }
+  }
+
+  /** Invite one bot user into a mapped channel and remember it. */
+  private async inviteBot(mapping: SlackTeamChannelMapping, agentSession: string, botUserId: string): Promise<boolean> {
+    try {
+      await this.deps.slack.inviteToChannel(mapping.slackChannelId, [botUserId]);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (!/already_in_channel/.test(message)) {
+        this.logger.warn('Could not invite agent bot into channel', { agentSession, channel: mapping.slackChannelName, error: message });
+        return false;
+      }
+    }
+    await this.deps.identities?.markChannel(agentSession, { invitedTo: mapping.slackChannelId });
+    this.logger.info('Agent bot invited into team channel', { agentSession, channel: `#${mapping.slackChannelName}` });
+    return true;
   }
 
   // -------------------------------------------------------------------------

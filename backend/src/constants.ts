@@ -609,6 +609,23 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for Slack agent identities — one real Slack bot user per agent,
+ * provisioned through Crewly Cloud (`/api/cloud/slack/*`).
+ */
+export const SLACK_AGENT_IDENTITY_CONSTANTS = {
+	/** Local identity cache filename under CREWLY_HOME (mode 0600) */
+	STORE_FILENAME: 'slack-agent-identities.json',
+	/** Cloud API prefix (appended to the cloud URL) */
+	CLOUD_PATH: '/api/cloud/slack',
+	/** How often to ask Cloud about pending installs (ms) */
+	PENDING_POLL_INTERVAL_MS: 30_000,
+	/** Stop polling a pending install after this long (ms) */
+	PENDING_POLL_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+	/** HTTP timeout for Cloud calls (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+} as const;
+
+/**
  * Constants for cross-machine messaging via Slack.
  * Two Crewly instances communicate through a shared Slack channel.
  */

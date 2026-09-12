@@ -7,6 +7,7 @@
 import {
   candidateAliases,
   extractMentionTokens,
+  extractNativeMentionIds,
   levenshtein,
   resolveSlackMentions,
 } from './slack-mention-resolver.js';
@@ -52,6 +53,25 @@ describe('extractMentionTokens', () => {
   });
   it('returns [] for empty text', () => {
     expect(extractMentionTokens('')).toEqual([]);
+  });
+});
+
+describe('native <@U…> mentions (real agent identities)', () => {
+  const withIds = [
+    { name: 'Sam', sessionName: 'crewly-alpha-sam', botUserId: 'USAM' },
+    { name: 'Leo', sessionName: 'crewly-alpha-leo' },
+  ];
+  it('extracts native mention ids', () => {
+    expect(extractNativeMentionIds('<@USAM> and <@ULEO|leo> and <@USAM>')).toEqual(['USAM', 'ULEO']);
+  });
+  it('resolves an agent by its bot user id, and dedupes against the text alias', () => {
+    const r = resolveSlackMentions('<@USAM> @sam @leo', withIds);
+    expect(r.mentions).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    expect(r.unknown).toEqual([]);
+  });
+  it('ignores native mentions of non-agents (the master bot, humans)', () => {
+    const r = resolveSlackMentions('<@UBOT> <@UHUMAN> hi', withIds);
+    expect(r).toEqual({ mentions: [], unknown: [] });
   });
 });
 

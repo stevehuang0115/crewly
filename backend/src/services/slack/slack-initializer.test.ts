@@ -29,6 +29,11 @@ jest.mock('../../utils/file-io.utils.js', () => ({
   safeReadJson: async (_p: string, d: unknown) => d,
   atomicWriteJson: async () => undefined,
 }));
+jest.mock('../cloud/cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({ isConnected: () => false, getToken: () => null, getCloudUrl: () => null }),
+  },
+}));
 import { resetSlackService, getSlackService, SlackService } from './slack.service.js';
 import { resetSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
 import * as slackCredentials from './slack-credentials.service.js';

@@ -20,11 +20,12 @@ import {
   getSlackTeamChannelService,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
+  type TeamChannelIdentityApi,
   type TeamChannelSlackApi,
   type TeamChannelStorageApi,
 } from './slack-team-channel.service.js';
 import type { Team, TeamMember } from '../../types/index.js';
-import type { SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
+import type { SlackAgentIdentityRecord, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { StorageEvent } from '../core/storage.service.js';
 
@@ -113,6 +114,69 @@ class FakeSlack implements TeamChannelSlackApi {
   }
   async addReaction(channelId: string, ts: string, emoji: string) {
     this.reactions.push({ channelId, ts, emoji });
+  }
+  invites: Array<{ channelId: string; userIds: string[] }> = [];
+  async inviteToChannel(channelId: string, userIds: string[]) {
+    this.invites.push({ channelId, userIds });
+  }
+}
+
+/** Scripted stand-in for SlackAgentIdentityService. */
+class FakeIdentities implements TeamChannelIdentityApi {
+  available = true;
+  records = new Map<string, SlackAgentIdentityRecord>();
+  provisionCalls: string[] = [];
+  provisionError: Error | null = null;
+  private installedListeners: Array<(r: SlackAgentIdentityRecord) => void> = [];
+  isAvailable() {
+    return this.available;
+  }
+  async load() {
+    return { version: 1 as const, identities: [...this.records.values()] };
+  }
+  async provision(agentSession: string, displayName: string) {
+    this.provisionCalls.push(agentSession);
+    if (this.provisionError) throw this.provisionError;
+    const existing = this.records.get(agentSession);
+    if (existing) return { ...existing };
+    const rec: SlackAgentIdentityRecord = {
+      agentSession,
+      displayName,
+      appId: `A-${agentSession}`,
+      status: 'pending_install',
+      installUrl: `https://slack.com/oauth/v2/authorize?state=${agentSession}`,
+      announcedIn: [],
+      invitedTo: [],
+      updatedAt: 'now',
+    };
+    this.records.set(agentSession, rec);
+    return { ...rec };
+  }
+  get(agentSession: string) {
+    return this.records.get(agentSession) ?? null;
+  }
+  getInstalled(agentSession: string) {
+    const r = this.records.get(agentSession);
+    return r?.status === 'installed' && r.botUserId && r.botToken ? { botUserId: r.botUserId, botToken: r.botToken } : null;
+  }
+  async markChannel(agentSession: string, patch: { announcedIn?: string; invitedTo?: string }) {
+    const r = this.records.get(agentSession);
+    if (!r) return;
+    if (patch.announcedIn) r.announcedIn.push(patch.announcedIn);
+    if (patch.invitedTo) r.invitedTo.push(patch.invitedTo);
+  }
+  onInstalled(l: (r: SlackAgentIdentityRecord) => void) {
+    this.installedListeners.push(l);
+    return () => undefined;
+  }
+  /** Test helper: simulate the owner completing an install. */
+  install(agentSession: string, botUserId: string, botToken: string) {
+    const r = this.records.get(agentSession)!;
+    r.status = 'installed';
+    r.botUserId = botUserId;
+    r.botToken = botToken;
+    delete r.installUrl;
+    for (const l of this.installedListeners) l({ ...r });
   }
 }
 
@@ -244,6 +308,7 @@ let slack: FakeSlack;
 let chat: FakeChat;
 let storage: FakeStorage;
 let dispatcher: { dispatchMessage: jest.Mock } | null;
+let identities: FakeIdentities | null;
 let service: SlackTeamChannelService;
 
 function makeService() {
@@ -252,6 +317,7 @@ function makeService() {
     chat: chat as unknown as TeamChannelChatApi,
     storage,
     getDispatcher: () => dispatcher,
+    identities,
     storePath: path.join(tmpDir, 'slack-team-channels.json'),
     now: () => new Date('2026-09-12T00:00:00.000Z'),
   });
@@ -264,6 +330,7 @@ beforeEach(async () => {
   storage = new FakeStorage();
   storage.teams = [team()];
   dispatcher = { dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true }) };
+  identities = null;
   service = makeService();
 });
 
@@ -654,6 +721,105 @@ describe('mirrorOutbound', () => {
   it('uses the session name when the sender is not a known member', async () => {
     await service.mirrorOutbound(agentMessage({ senderId: 'crewly-alpha-ghost' }));
     expect(slack.sent[0]).toEqual(expect.objectContaining({ username: 'crewly-alpha-ghost', iconEmoji: ':robot_face:' }));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real agent identities (Cloud-provisioned bot users)
+// ---------------------------------------------------------------------------
+
+describe('agent identities', () => {
+  beforeEach(() => {
+    identities = new FakeIdentities();
+    service = makeService();
+  });
+
+  it('provisions an identity per member and announces the install links once in the channel', async () => {
+    await service.ensureTeamChannel(team());
+    expect(identities!.provisionCalls).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    const announce = slack.sent.find((m) => m.text.includes('创建了 Slack 身份'));
+    expect(announce?.channelId).toBe('C1');
+    expect(announce?.text).toContain('安装 Sam');
+    expect(announce?.text).toContain('state=crewly-alpha-leo');
+    expect(identities!.get('crewly-alpha-sam')?.announcedIn).toEqual(['C1']);
+
+    // A second roster sync must not re-announce.
+    slack.sent = [];
+    await service.syncTeamMembers(team());
+    expect(slack.sent.find((m) => m.text.includes('创建了 Slack 身份'))).toBeUndefined();
+  });
+
+  it('invites an installed bot into the channel once and posts as that bot afterwards', async () => {
+    await service.ensureTeamChannel(team());
+    await service.start();
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    await new Promise((r) => setImmediate(r));
+    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['USAM'] }]);
+    expect(identities!.get('crewly-alpha-sam')?.invitedTo).toEqual(['C1']);
+
+    // Later syncs do not re-invite.
+    await service.syncTeamMembers(team());
+    expect(slack.invites).toHaveLength(1);
+
+    // Outbound uses the agent's own token, no cosmetic identity.
+    slack.sent = [];
+    await service.mirrorOutbound({
+      id: 'r1',
+      channelId: 'huddle-1',
+      seq: 1,
+      senderType: 'agent',
+      senderId: 'crewly-alpha-sam',
+      content: 'as myself',
+      contentType: 'markdown',
+      createdAt: 1,
+      attachments: [],
+      mentions: [],
+      metadata: { source: 'reply-tool' },
+    });
+    expect(slack.sent[0]).toEqual(expect.objectContaining({ botToken: 'xoxb-sam', text: 'as myself' }));
+    expect(slack.sent[0].username).toBeUndefined();
+
+    // Leo (not installed) still gets the cosmetic identity.
+    await service.mirrorOutbound({
+      id: 'r2',
+      channelId: 'huddle-1',
+      seq: 2,
+      senderType: 'agent',
+      senderId: 'crewly-alpha-leo',
+      content: 'cosmetic',
+      contentType: 'markdown',
+      createdAt: 2,
+      attachments: [],
+      mentions: [],
+      metadata: { source: 'reply-tool' },
+    });
+    expect(slack.sent[1]).toEqual(expect.objectContaining({ username: 'Leo', iconEmoji: ':mag:' }));
+    expect(slack.sent[1].botToken).toBeUndefined();
+  });
+
+  it('resolves a native <@bot> mention to the agent', async () => {
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    const result = await service.routeInbound(inbound({ text: '<@USAM> 看一下' }));
+    expect(result!.mentions).toEqual(['crewly-alpha-sam']);
+  });
+
+  it('stops the pass quietly when the owner has no config token', async () => {
+    identities!.provisionError = Object.assign(new Error('No Slack app configuration token stored'), { code: 'config_token_missing' });
+    const mapping = await service.ensureTeamChannel(team());
+    const result = await service.ensureIdentities(team(), mapping);
+    expect(result.skipped).toMatch(/configuration token/);
+    // Each pass stops at the first failing member: one call from
+    // ensureTeamChannel's pass, one from the explicit call above.
+    expect(identities!.provisionCalls).toEqual(['crewly-alpha-sam', 'crewly-alpha-sam']);
+    expect(slack.sent.find((m) => m.text.includes('创建了 Slack 身份'))).toBeUndefined();
+  });
+
+  it('does nothing when identities are unavailable', async () => {
+    identities!.available = false;
+    const mapping = await service.ensureTeamChannel(team());
+    expect(await service.ensureIdentities(team(), mapping)).toEqual({ provisioned: 0, announced: 0, invited: 0, skipped: 'identities unavailable' });
+    expect(identities!.provisionCalls).toEqual([]);
   });
 });
 

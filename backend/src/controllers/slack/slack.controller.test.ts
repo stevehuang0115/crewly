@@ -34,6 +34,19 @@ const mockTeamChannels: { current: null | Record<string, jest.Mock> } = { curren
 jest.mock('../../services/slack/slack-team-channel.service.js', () => ({
   getSlackTeamChannelService: jest.fn(() => mockTeamChannels.current),
 }));
+// Agent identities — same swap-in pattern.
+const mockIdentities: { current: null | Record<string, jest.Mock | (() => boolean)> } = { current: null };
+jest.mock('../../services/slack/slack-agent-identity.service.js', () => {
+  class SlackIdentityCloudError extends Error {
+    constructor(public status: number, public code: string, message: string) {
+      super(message);
+    }
+  }
+  return {
+    getSlackAgentIdentityService: jest.fn(() => mockIdentities.current),
+    SlackIdentityCloudError,
+  };
+});
 // /connect starts team channels best-effort; keep it inert here.
 const mockStartTeamChannels = jest.fn().mockResolvedValue(undefined);
 jest.mock('../../services/slack/slack-initializer.js', () => ({
@@ -1029,6 +1042,84 @@ describe('Slack Controller', () => {
       expect(fake.unlinkTeam).toHaveBeenCalledWith('t1', { archiveSlackChannel: true });
       fake.unlinkTeam.mockResolvedValueOnce(false);
       expect((await request(app).delete('/api/slack/team-channels/t1')).status).toBe(404);
+    });
+  });
+
+  describe('agent identities', () => {
+    afterEach(() => {
+      mockIdentities.current = null;
+      mockTeamChannels.current = null;
+    });
+
+    function installIdentities(overrides: Record<string, jest.Mock | (() => boolean)> = {}) {
+      mockIdentities.current = {
+        isAvailable: () => true,
+        getCloudStatus: jest.fn().mockResolvedValue({ enabled: true, configToken: { configured: true }, agents: { total: 1, installed: 1, pending: 0 } }),
+        list: jest.fn().mockResolvedValue([
+          { agentSession: 's', displayName: 'Sam', appId: 'A', status: 'installed', botUserId: 'USAM', botToken: 'xoxb-secret', announcedIn: [], invitedTo: [], updatedAt: 'x' },
+        ]),
+        refreshFromCloud: jest.fn().mockResolvedValue([]),
+        setConfigToken: jest.fn().mockResolvedValue({ configured: true, status: 'ok' }),
+        deleteConfigToken: jest.fn().mockResolvedValue(true),
+        remove: jest.fn().mockResolvedValue(true),
+        ...overrides,
+      };
+      return mockIdentities.current;
+    }
+
+    it('503s when Slack is not connected and 401s without a Cloud login', async () => {
+      expect((await request(app).get('/api/slack/agent-identities')).status).toBe(503);
+      installIdentities({ isAvailable: () => false });
+      const res = await request(app).get('/api/slack/agent-identities');
+      expect(res.status).toBe(401);
+      expect(res.body.code).toBe('CLOUD_NOT_CONNECTED');
+    });
+
+    it('GET lists identities without bot tokens and honours ?refresh', async () => {
+      const fake = installIdentities();
+      const res = await request(app).get('/api/slack/agent-identities');
+      expect(res.status).toBe(200);
+      expect(res.body.data.cloud.enabled).toBe(true);
+      expect(res.body.data.identities[0]).toMatchObject({ agentSession: 's', hasToken: true });
+      expect(JSON.stringify(res.body)).not.toContain('xoxb-secret');
+      await request(app).get('/api/slack/agent-identities?refresh=1');
+      expect(fake.refreshFromCloud).toHaveBeenCalled();
+    });
+
+    it('PUT config-token validates and forwards; Cloud errors keep their status + code', async () => {
+      const fake = installIdentities();
+      expect((await request(app).put('/api/slack/agent-identities/config-token').send({})).status).toBe(400);
+      const ok = await request(app).put('/api/slack/agent-identities/config-token').send({ token: ' t ', refreshToken: ' r ' });
+      expect(ok.status).toBe(200);
+      expect(fake.setConfigToken).toHaveBeenCalledWith('t', 'r');
+
+      const { SlackIdentityCloudError } = jest.requireMock('../../services/slack/slack-agent-identity.service.js');
+      (fake.setConfigToken as jest.Mock).mockRejectedValueOnce(new SlackIdentityCloudError(409, 'config_token_invalid', 'bad'));
+      const bad = await request(app).put('/api/slack/agent-identities/config-token').send({ refreshToken: 'r' });
+      expect(bad.status).toBe(409);
+      expect(bad.body).toEqual({ success: false, error: 'bad', code: 'config_token_invalid' });
+    });
+
+    it('POST provision needs a mapped team and runs the identity pass', async () => {
+      installIdentities();
+      mockTeamChannels.current = {
+        getTeam: jest.fn().mockImplementation(async (id: string) => (id === 't1' ? { id: 't1', name: 'Alpha', members: [] } : null)),
+        findByTeamId: jest.fn().mockImplementation((id: string) => (id === 't1' ? { teamId: 't1', slackChannelId: 'C1' } : null)),
+        ensureIdentities: jest.fn().mockResolvedValue({ provisioned: 2, announced: 2, invited: 0, skipped: null }),
+      };
+      expect((await request(app).post('/api/slack/agent-identities/provision').send({})).status).toBe(400);
+      expect((await request(app).post('/api/slack/agent-identities/provision').send({ teamId: 'nope' })).status).toBe(404);
+      const ok = await request(app).post('/api/slack/agent-identities/provision').send({ teamId: 't1' });
+      expect(ok.status).toBe(200);
+      expect(ok.body.data).toEqual({ provisioned: 2, announced: 2, invited: 0, skipped: null });
+    });
+
+    it('DELETE removes an identity', async () => {
+      const fake = installIdentities();
+      const res = await request(app).delete('/api/slack/agent-identities/crewly-a-sam');
+      expect(res.status).toBe(200);
+      expect(fake.remove).toHaveBeenCalledWith('crewly-a-sam');
+      expect((await request(app).delete('/api/slack/agent-identities/config-token')).body.data).toEqual({ removed: true });
     });
   });
 
