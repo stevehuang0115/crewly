@@ -233,6 +233,21 @@ describe('Slack failures get actionable messages', () => {
     });
   });
 
+  it('explains a missing scope while resolving a channel name', async () => {
+    const lookupFails = new SlackAgentPostService({
+      slack: Object.assign(Object.create(Object.getPrototypeOf(slack)), slack, {
+        findChannelByName: async () => {
+          throw Object.assign(new Error('missing_scope'), { data: { error: 'missing_scope' } });
+        },
+      }),
+      storage: { getTeams: async () => TEAMS },
+    });
+    await expect(lookupFails.post({ agentSession: 'a', target: '#general', text: 'x' })).rejects.toMatchObject({
+      code: 'slack_error',
+      message: expect.stringContaining('channels:read'),
+    });
+  });
+
   it('passes other Slack errors through', async () => {
     slack.sendError = Object.assign(new Error('rate_limited'), { data: { error: 'rate_limited' } });
     await expect(service.post({ agentSession: 'a', target: '#general', text: 'x' })).rejects.toMatchObject({

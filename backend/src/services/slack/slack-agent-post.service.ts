@@ -231,7 +231,13 @@ export class SlackAgentPostService {
     try {
       channel = await this.deps.slack.findChannelByName(name);
     } catch (err) {
-      throw new SlackAgentPostError('slack_error', `Could not look up channel "#${name}": ${errText(err)}`);
+      const text = errText(err);
+      // Resolving a name needs channels:read / groups:read. Say so, rather
+      // than handing the agent a bare Slack error code it cannot act on.
+      const hint = /missing_scope/.test(text)
+        ? ' — the app is missing channels:read; reinstall it to pick up the new scopes, or pass the channel id instead'
+        : '';
+      throw new SlackAgentPostError('slack_error', `Could not look up channel "#${name}": ${text}${hint}`);
     }
     if (!channel) throw new SlackAgentPostError('target_not_found', `No Slack channel named "#${name}"`);
     if (channel.isArchived) throw new SlackAgentPostError('target_not_found', `Channel "#${name}" is archived`);
