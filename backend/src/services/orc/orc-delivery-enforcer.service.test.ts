@@ -103,7 +103,46 @@ describe('OrcDeliveryEnforcerService', () => {
     });
   });
 
+  describe('orchestrator self-reports', () => {
+    // 2026-09-13: ORC's own "[DONE] Agent crewly-orc: …" was tracked as an
+    // undelivered deliverable → reminder → ORC replied → another [DONE] →
+    // the thread never went quiet after Steve said "好了".
+    it('ignores a [DONE] posted by the orchestrator itself', () => {
+      for (const sender of ['crewly-orc', 'Orchestrator', 'orc']) {
+        svc.markPendingDelivery({
+          conversationId: 'slack-D0AC7NF5N7L-1789324221-953849',
+          agentSender: sender,
+          text: '[DONE] Agent crewly-orc: Delivered the diagnosis to Steve',
+        });
+      }
+      expect(svc._peekPending()).toHaveLength(0);
+    });
+
+    it('still tracks a worker agent posting to the same thread', () => {
+      svc.markPendingDelivery({
+        conversationId: 'slack-D0AC7NF5N7L-1789324221-953849',
+        agentSender: 'crewly-alpha-sage',
+        text: '[DONE] research finished',
+      });
+      expect(svc._peekPending()).toHaveLength(1);
+    });
+  });
+
   describe('markDelivered', () => {
+    // The orchestrator names conversations with a trailing `:tag`
+    // (`…-953849:737ad8eb`). The reply arrives with the real channel + ts,
+    // so the two must key identically or the entry can never clear.
+    it('clears an entry recorded under a `:tag`-suffixed conversation id', () => {
+      svc.markPendingDelivery({
+        conversationId: 'slack-D0AC7NF5N7L-1789324221-953849:737ad8eb',
+        agentSender: 'crewly-alpha-sage',
+        text: '[DONE] done',
+      });
+      expect(svc._peekPending()[0]?.key).toEqual({ channelId: 'D0AC7NF5N7L', threadTs: '1789324221.953849' });
+      svc.markDelivered({ channelId: 'D0AC7NF5N7L', threadTs: '1789324221.953849' });
+      expect(svc._peekPending()).toHaveLength(0);
+    });
+
     it('clears a pending delivery when ORC replies to the matching thread', () => {
       svc.markPendingDelivery({
         conversationId: 'slack-D0AC7NF5N7L-1779555555.588569',
@@ -276,6 +315,17 @@ describe('parseSlackConversationId', () => {
   it('handles dash-instead-of-dot ts form (legacy)', () => {
     expect(parseSlackConversationId('slack-D0AC-1779555555-588569')).toEqual({
       channelId: 'D0AC',
+      threadTs: '1779555555.588569',
+    });
+  });
+
+  it('strips a trailing `:tag` before parsing', () => {
+    expect(parseSlackConversationId('slack-D0AC7NF5N7L-1789324221-953849:737ad8eb')).toEqual({
+      channelId: 'D0AC7NF5N7L',
+      threadTs: '1789324221.953849',
+    });
+    expect(parseSlackConversationId('slack-C1-1779555555.588569:abc')).toEqual({
+      channelId: 'C1',
       threadTs: '1779555555.588569',
     });
   });

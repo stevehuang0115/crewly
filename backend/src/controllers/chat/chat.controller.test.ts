@@ -19,6 +19,9 @@ jest.mock('../../services/orc/orc-delivery-enforcer.service.js', () => ({
   OrcDeliveryEnforcerService: {
     getInstance: () => ({ markPendingDelivery: mockMarkPendingDelivery }),
   },
+  // Same rule as the real helper: the orchestrator by session name or alias.
+  isOrchestratorSender: (sender: string) =>
+    ['crewly-orc', 'orchestrator', 'orc'].includes(String(sender ?? '').trim().toLowerCase()),
 }));
 
 // Phase 6c migration note — chat.controller still calls the legacy
@@ -793,6 +796,31 @@ describe('Chat Controller', () => {
           source: 'system_event',
         })
       );
+
+      setMessageQueueService(null as any);
+    });
+
+    // 2026-09-13: report-status posts the orchestrator's own [DONE] with
+    // senderType 'agent' and senderName 'crewly-orc'. Routing that back to
+    // the orchestrator as an "agent status" and tracking it as an
+    // undelivered deliverable made ORC answer its own report, forever.
+    it("does not echo the orchestrator's own status report back to it, nor track it as a delivery", async () => {
+      const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-self' });
+      setMessageQueueService({ enqueue: mockEnqueue } as any);
+      mockMarkPendingDelivery.mockClear();
+
+      const response = await request(app)
+        .post('/api/chat/agent-response')
+        .send({
+          content: '[DONE] Agent crewly-orc: Delivered the diagnosis to Steve',
+          senderName: 'crewly-orc',
+          senderType: 'agent',
+          conversationId: 'slack-D0AC7NF5N7L-1789324221-953849:737ad8eb',
+        });
+
+      expect(response.status).toBe(201);
+      expect(mockEnqueue).not.toHaveBeenCalled();
+      expect(mockMarkPendingDelivery).not.toHaveBeenCalled();
 
       setMessageQueueService(null as any);
     });

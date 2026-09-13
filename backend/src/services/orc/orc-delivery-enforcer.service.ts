@@ -48,6 +48,7 @@
  */
 
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 /** Reminder cadence (ms): first reminder at 3 min, then 10 min, then 30 min, then stop. */
 const REMINDER_CADENCE_MS = [
@@ -161,6 +162,18 @@ export class OrcDeliveryEnforcerService {
     text: string;
   }): void {
     if (!isAgentDeliveryMarker(input.text)) return;
+    // The orchestrator is the deliverer, never the source. Its own
+    // `[DONE] Agent crewly-orc: …` status report is bookkeeping about work
+    // it already did; treating it as an undelivered deliverable made the
+    // enforcer nag ORC to "deliver" its own summary, ORC replied and filed
+    // another [DONE], and the thread never went quiet (2026-09-13, Steve:
+    // "我说了好了 但是crewly还一直在回复").
+    if (isOrchestratorSender(input.agentSender)) {
+      this.logger.debug('OrcDeliveryEnforcer ignoring orchestrator self-report', {
+        conversationId: input.conversationId,
+      });
+      return;
+    }
     const key = parseSlackConversationId(input.conversationId);
     if (!key) return; // not a slack thread — ignore
 
@@ -292,8 +305,12 @@ export function parseSlackConversationId(
   conversationId: string,
 ): SlackThreadKey | null {
   if (!conversationId || !conversationId.startsWith('slack-')) return null;
-  // Strip any per-message suffix (`-msg-<ts>`) so we key on thread root.
-  const stripped = conversationId.replace(/-msg-\d+\.\d+$/, '');
+  // Strip any per-message suffix (`-msg-<ts>`) so we key on thread root,
+  // and any `:<tag>` the orchestrator appends when it names a conversation
+  // (`slack-D0AC…-953849:737ad8eb`). Without this the tag leaked into
+  // threadTs, the key never matched the one `markDelivered` builds from
+  // the real channel + ts, and a reply could never clear the entry.
+  const stripped = conversationId.replace(/:[^:]*$/, '').replace(/-msg-\d+\.\d+$/, '');
   const rest = stripped.slice('slack-'.length);
   const lastDash = rest.lastIndexOf('-');
   if (lastDash < 1) return null;
@@ -315,6 +332,18 @@ export function parseSlackConversationId(
   }
   // If threadTs already contains a dot (dotted form), keep as-is.
   return { channelId, threadTs };
+}
+
+/**
+ * Is this sender the orchestrator itself (by session name or the display
+ * names the prompt/skills use for it)?
+ *
+ * @param sender - `senderName` as posted to `/chat/agent-response`
+ * @returns True for the orchestrator
+ */
+export function isOrchestratorSender(sender: string): boolean {
+  const s = (sender ?? '').trim().toLowerCase();
+  return s === ORCHESTRATOR_SESSION_NAME.toLowerCase() || s === 'orchestrator' || s === 'orc';
 }
 
 function serializeKey(k: SlackThreadKey): string {

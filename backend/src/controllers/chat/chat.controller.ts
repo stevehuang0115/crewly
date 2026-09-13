@@ -395,6 +395,17 @@ export async function agentResponse(
     // appear in the user's chat.
     const isAgentSender = resolvedSenderType === 'agent';
 
+    // The orchestrator's own status report (report-status with
+    // senderType 'agent', senderName 'crewly-orc') must not be routed back
+    // to the orchestrator as an "agent status" event, nor tracked as an
+    // undelivered deliverable, nor announced to Slack as "Agent Completed".
+    // Each of those made ORC react to its own [DONE], reply again, and file
+    // another [DONE] — the thread never went quiet (2026-09-13).
+    const { isOrchestratorSender } = await import(
+      '../../services/orc/orc-delivery-enforcer.service.js'
+    );
+    const isOrchestratorSelfReport = isAgentSender && isOrchestratorSender(String(senderName));
+
     let savedMessageId: string | undefined;
 
     if (!isAgentSender) {
@@ -421,7 +432,12 @@ export async function agentResponse(
     // Agents call report-status with [DONE], [IDLE], [WORKING], or structured [STATUS REPORT].
     // All are forwarded so the orchestrator can take follow-up action
     // (assign next task, notify user, etc.) without waiting for ActivityMonitor polling.
-    if (isAgentSender) {
+    if (isOrchestratorSelfReport) {
+      logger.info('Orchestrator self-report acknowledged (not echoed back)', {
+        conversationId: resolvedConversationId,
+        preview: content.substring(0, 80),
+      });
+    } else if (isAgentSender) {
       logger.info('Agent status routed to orchestrator (not saved to chat)', {
         senderName,
         conversationId: resolvedConversationId,
