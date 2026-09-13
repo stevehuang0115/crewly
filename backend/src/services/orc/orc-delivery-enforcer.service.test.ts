@@ -330,6 +330,13 @@ describe('parseSlackConversationId', () => {
     });
   });
 
+  it('keeps an already-dotted threadTs unchanged', () => {
+    expect(parseSlackConversationId('slack-C1-1779555555.588569')).toEqual({
+      channelId: 'C1',
+      threadTs: '1779555555.588569',
+    });
+  });
+
   it('returns null for non-slack ids', () => {
     expect(parseSlackConversationId('web-chat-abc')).toBeNull();
     expect(parseSlackConversationId('system:bookkeep')).toBeNull();

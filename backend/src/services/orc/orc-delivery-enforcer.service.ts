@@ -315,7 +315,7 @@ export function parseSlackConversationId(
   const lastDash = rest.lastIndexOf('-');
   if (lastDash < 1) return null;
   const channelId = rest.slice(0, lastDash);
-  let threadTs = rest.slice(lastDash + 1);
+  const threadTs = rest.slice(lastDash + 1);
   // Some producers serialize ts as `1779555555-588569` (dash) or
   // `1779555555.588569` (dot). Normalize to dotted form to match
   // Slack-API ts shape.
