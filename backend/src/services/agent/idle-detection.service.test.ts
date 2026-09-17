@@ -93,6 +93,16 @@ jest.mock('../monitoring/activity-monitor.service.js', () => ({
 	},
 }));
 
+// Mock CronTaskService (cron keep-alive, 2026-09-16)
+const mockCronList = jest.fn().mockResolvedValue([]);
+jest.mock('../workflow/cron-task.service.js', () => ({
+	CronTaskService: {
+		getInstance: () => ({
+			list: mockCronList,
+		}),
+	},
+}));
+
 // Import after mocks
 import { IdleDetectionService } from './idle-detection.service.js';
 
@@ -282,6 +292,73 @@ describe('IdleDetectionService', () => {
 	});
 
 	// ===== New: crewly-agent timestamp-based idle detection =====
+
+	// 2026-09-16 token-burn fix: a 15-minute cron under a 10-minute idle
+	// timeout paid a full cold start (init prompt + registration + recall)
+	// on every single run.
+	describe('cron keep-alive', () => {
+		const idleDev = () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [{ id: 'dev1', sessionName: 'agent-dev', role: 'developer', agentStatus: 'active' }],
+			}]);
+			mockIsIdleFor.mockReturnValue(true);
+		};
+
+		afterEach(() => {
+			mockCronList.mockResolvedValue([]);
+		});
+
+		it('keeps an idle agent alive when a cron run for it is due within the window', async () => {
+			idleDev();
+			const inTenMinutes = new Date(Date.now() + 10 * 60 * 1000).toISOString();
+			mockCronList.mockResolvedValue([{ id: 'c1', targetAgent: 'agent-dev', enabled: true, nextRunAt: inTenMinutes }]);
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockCronList).toHaveBeenCalledWith({ targetAgent: 'agent-dev', enabled: true });
+			expect(mockTerminate).not.toHaveBeenCalled();
+			expect(mockSuspendAgent).not.toHaveBeenCalled();
+		});
+
+		it('treats an overdue cron (about to fire) as imminent', async () => {
+			idleDev();
+			const oneMinuteAgo = new Date(Date.now() - 60 * 1000).toISOString();
+			mockCronList.mockResolvedValue([{ id: 'c1', targetAgent: 'agent-dev', enabled: true, nextRunAt: oneMinuteAgo }]);
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+			expect(mockTerminate).not.toHaveBeenCalled();
+		});
+
+		it('still stops the agent when the next cron run is far away', async () => {
+			idleDev();
+			const inThreeHours = new Date(Date.now() + 3 * 60 * 60 * 1000).toISOString();
+			mockCronList.mockResolvedValue([{ id: 'c1', targetAgent: 'agent-dev', enabled: true, nextRunAt: inThreeHours }]);
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
+		});
+
+		it('falls back to the normal idle stop when the cron lookup fails', async () => {
+			idleDev();
+			mockCronList.mockRejectedValue(new Error('store unreadable'));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
+		});
+	});
 
 	describe('crewly-agent idle detection', () => {
 		it('should suspend crewly-agent after 30min idle via updatedAt timestamp', async () => {

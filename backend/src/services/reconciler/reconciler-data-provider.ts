@@ -52,6 +52,22 @@ const REDELIVER_COOLDOWN_MS = (() => {
 })();
 
 /**
+ * Ceiling for the per-WorkItem redeliver backoff. The first reminder for a
+ * queued WI waits {@link REDELIVER_COOLDOWN_MS}; each further reminder for
+ * the SAME WI waits twice as long as the previous one, up to this cap.
+ *
+ * Why (2026-09-16, steamfun-ops): a flat 5-minute cooldown meant every
+ * queued-but-unclaimed WI re-woke the orc every few minutes for as long as
+ * it stayed queued — 329 of the 563 messages the orc saw in one session were
+ * these reminders, each one a full-context model turn. Override with
+ * `CREWLY_RECONCILER_REDELIVER_MAX_COOLDOWN_MS`.
+ */
+const REDELIVER_MAX_COOLDOWN_MS = (() => {
+  const raw = Number(process.env['CREWLY_RECONCILER_REDELIVER_MAX_COOLDOWN_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : 6 * 60 * 60 * 1000; // 6 h
+})();
+
+/**
  * Minimum gap between re-attempting a wake the commitment-approval gate has
  * already refused. That gate's answer is deterministic — a dormant team stays
  * blocked until the OWNER says something — so retrying it on the ~10s fast
@@ -217,6 +233,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * {@link REDELIVER_COOLDOWN_MS}.
    */
   private readonly lastRedeliverAt = new Map<string, number>();
+
+  /**
+   * How many times each WorkItem has been redelivered. Drives the
+   * exponential backoff in {@link redeliverCooldownMs}; cleared with the
+   * cooldown record once the WI leaves the queue.
+   */
+  private readonly redeliverCount = new Map<string, number>();
 
   /**
    * Per-agent cooldown on wakes the commitment-approval gate refused.
@@ -1082,6 +1105,63 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     }
   }
 
+  /**
+   * Cooldown that applies to the NEXT redelivery of a WorkItem: the base
+   * window doubled once per reminder already sent, capped at
+   * {@link REDELIVER_MAX_COOLDOWN_MS}.
+   *
+   * @param workItemId - WorkItem id
+   * @returns Cooldown in ms
+   */
+  redeliverCooldownMs(workItemId: string): number {
+    const sent = this.redeliverCount.get(workItemId) ?? 0;
+    if (sent <= 1) return REDELIVER_COOLDOWN_MS;
+    return Math.min(REDELIVER_COOLDOWN_MS * 2 ** (sent - 1), REDELIVER_MAX_COOLDOWN_MS);
+  }
+
+  /**
+   * Whether a WorkItem may be redelivered now — never sent, or its
+   * backoff window has elapsed.
+   *
+   * @param workItemId - WorkItem id
+   * @returns True when a reminder is allowed
+   */
+  private isRedeliverDue(workItemId: string): boolean {
+    const lastAt = this.lastRedeliverAt.get(workItemId);
+    if (lastAt === undefined) return true;
+    return Date.now() - lastAt >= this.redeliverCooldownMs(workItemId);
+  }
+
+  /**
+   * The WorkItems to remind an agent about in one message: the one that
+   * triggered the wake plus every other queued WI targeting the same agent.
+   * Items still inside their own backoff are included too — a reminder that
+   * lists everything outstanding costs the agent nothing extra, while a
+   * second message minutes later costs a whole model turn.
+   *
+   * @param trigger - The queued WI whose wake action fired
+   * @returns The batch, trigger first; falls back to `[trigger]` on any error
+   */
+  private async collectRedeliverBatch(trigger: WorkItem): Promise<WorkItem[]> {
+    try {
+      const pool = TaskPoolService.getInstance();
+      const available = await pool.getAvailableItems();
+      const siblings = available.filter(
+        (item) =>
+          item.id !== trigger.id &&
+          item.status === 'queued' &&
+          item.target === trigger.target,
+      );
+      return [trigger, ...siblings];
+    } catch (err) {
+      this.logger.debug('collectRedeliverBatch failed — redelivering the trigger alone', {
+        workItemId: trigger.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [trigger];
+    }
+  }
+
   async executeWakeAction(action: WakeAction): Promise<boolean> {
     const { agentSessionName, strategy } = action;
 
@@ -1104,28 +1184,44 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             workItemId: action.workItemId,
             currentStatus: wi?.status,
           });
-          // WI left the queue (claimed/terminal) — drop its cooldown record.
+          // WI left the queue (claimed/terminal) — drop its backoff record.
           this.lastRedeliverAt.delete(action.workItemId);
+          this.redeliverCount.delete(action.workItemId);
           return false;
         }
-        // Per-WI redeliver cooldown — the fast loop re-emits this every ~10s
-        // while the WI stays queued; without the gate that floods the PTY.
-        const lastAt = this.lastRedeliverAt.get(action.workItemId);
-        if (lastAt !== undefined && Date.now() - lastAt < REDELIVER_COOLDOWN_MS) {
-          this.logger.debug('Redeliver suppressed — within cooldown', {
+        // Per-WI redeliver backoff — the fast loop re-emits this every ~10s
+        // while the WI stays queued; without the gate that floods the PTY,
+        // and with a flat gate it still wakes the agent every few minutes.
+        if (!this.isRedeliverDue(action.workItemId)) {
+          this.logger.debug('Redeliver suppressed — within backoff', {
             agent: agentSessionName,
             workItemId: action.workItemId,
-            sinceMs: Date.now() - lastAt,
+            cooldownMs: this.redeliverCooldownMs(action.workItemId),
           });
           return false;
         }
+        // One reminder per agent, not one per WorkItem: every other queued
+        // WI for the same target rides along in the same message, so an
+        // agent with N stale items gets one wake-up instead of N.
+        const batch = await this.collectRedeliverBatch(wi);
         const subscriber = WorkItemDispatchSubscriber.getInstance();
-        const delivered = await subscriber.redispatch(wi);
-        if (delivered) this.lastRedeliverAt.set(action.workItemId, Date.now());
+        const delivered =
+          batch.length > 1 && typeof subscriber.redispatchMany === 'function'
+            ? await subscriber.redispatchMany(batch)
+            : await subscriber.redispatch(wi);
         if (delivered) {
+          const now = Date.now();
+          const marked = batch.length > 1 ? batch : [wi];
+          for (const item of marked) {
+            this.lastRedeliverAt.set(item.id, now);
+            this.redeliverCount.set(item.id, (this.redeliverCount.get(item.id) ?? 0) + 1);
+          }
           this.logger.info('Redelivered WorkItem brief to active-but-idle agent', {
             agent: agentSessionName,
             workItemId: action.workItemId,
+            batched: marked.length,
+            attempt: this.redeliverCount.get(action.workItemId),
+            nextCooldownMs: this.redeliverCooldownMs(action.workItemId),
           });
         }
         return delivered;

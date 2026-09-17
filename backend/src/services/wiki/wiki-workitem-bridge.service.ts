@@ -89,10 +89,33 @@ interface PersistedBridgeState {
   version: number;
   /** key (`${kind}:${path}`) → last-created epoch ms. */
   lastCreatedAt: Record<string, number>;
+  /**
+   * key → the work count the last WI was created for, and how many
+   * consecutive creates saw that same count (see {@link NoProgressEntry}).
+   * Optional so state files written before 2026-09-16 still load.
+   */
+  noProgress?: Record<string, NoProgressEntry>;
 }
 
+/**
+ * No-progress ledger entry. `count` is the size the last WI for this key
+ * advertised (pending items / net-new pages / cleanup candidates);
+ * `strikes` counts consecutive creates that saw the SAME size — i.e. the
+ * previous WI was completed but changed nothing.
+ */
+export interface NoProgressEntry {
+  count: number;
+  strikes: number;
+}
+
+/**
+ * Ceiling on the no-progress backoff. With the default 30-min cooldown the
+ * ladder is 30m → 1h → 2h → 4h → 8h → 16h → 24h, then flat at 24h.
+ */
+const NO_PROGRESS_MAX_BACKOFF_MS = 24 * 60 * 60 * 1000;
+
 function emptyState(): PersistedBridgeState {
-  return { version: STATE_VERSION, lastCreatedAt: {} };
+  return { version: STATE_VERSION, lastCreatedAt: {}, noProgress: {} };
 }
 
 /** WorkItem.metadata.kind value identifying a wiki queue drain WI. */
@@ -205,6 +228,17 @@ export class WikiWorkItemBridgeService {
   private running = false;
   /** Per-key (kind + path) last-create timestamp. Survives pool deletes. */
   private readonly lastCreatedAt = new Map<string, number>();
+  /**
+   * No-progress backoff ledger (2026-09-16). On steamfun-ops the bridge
+   * re-created "Migrate 34 legacy wiki item(s) — crewly-pro" every 30 min
+   * for a day: `wiki-migrate --apply` returned `applied: 0, skipped: 34`
+   * each time, the scan still counted the same 34 as net-new, and every
+   * re-create woke the orc (dispatch + verify WI + reconciler reminders).
+   * When a key's count has not moved since the last WI, the cooldown for
+   * that key doubles per strike up to {@link NO_PROGRESS_MAX_BACKOFF_MS};
+   * any change in the count (progress, or genuinely new content) resets it.
+   */
+  private readonly noProgress = new Map<string, NoProgressEntry>();
   /** Absolute path of the persisted state file (or `null` to disable). */
   private readonly statePath: string | null;
   /** True after `loadStateFromDisk` has either populated or no-op'd. */
@@ -254,11 +288,23 @@ export class WikiWorkItemBridgeService {
     }
     let loadedCount = 0;
     const now = this.nowFn();
+    // The no-progress ledger must be hydrated first: the cooldown that
+    // decides whether a `lastCreatedAt` entry is still live depends on it.
+    for (const [key, entry] of Object.entries(state.noProgress ?? {})) {
+      if (
+        entry &&
+        typeof entry.count === 'number' &&
+        typeof entry.strikes === 'number' &&
+        entry.strikes >= 0
+      ) {
+        this.noProgress.set(key, { count: entry.count, strikes: entry.strikes });
+      }
+    }
     for (const [key, ts] of Object.entries(state.lastCreatedAt)) {
       if (typeof ts !== 'number') continue;
       // Drop entries already past their cooldown — they're no-ops and
       // would just bloat memory.
-      if (now - ts >= this.cooldownMs) continue;
+      if (now - ts >= this.effectiveCooldownMs(key)) continue;
       this.lastCreatedAt.set(key, ts);
       loadedCount++;
     }
@@ -281,7 +327,7 @@ export class WikiWorkItemBridgeService {
       const now = this.nowFn();
       const fresh: Record<string, number> = {};
       for (const [key, ts] of this.lastCreatedAt) {
-        if (now - ts >= this.cooldownMs) continue;
+        if (now - ts >= this.effectiveCooldownMs(key)) continue;
         fresh[key] = ts;
       }
       // Cap the file to STATE_MAX_ENTRIES newest by timestamp. Production
@@ -292,9 +338,15 @@ export class WikiWorkItemBridgeService {
         entries.sort((a, b) => b[1] - a[1]);
         entries.length = STATE_MAX_ENTRIES;
       }
+      // The no-progress ledger outlives the cooldown on purpose: a key whose
+      // last create expired hours ago still remembers its strikes, so a
+      // restart cannot reset a 24h backoff to 30 min.
+      const noProgress: Record<string, NoProgressEntry> = {};
+      for (const [key, entry] of this.noProgress) noProgress[key] = entry;
       const payload: PersistedBridgeState = {
         version: STATE_VERSION,
         lastCreatedAt: Object.fromEntries(entries),
+        noProgress,
       };
       await ensureDir(path.dirname(this.statePath));
       await atomicWriteJson(this.statePath, payload);
@@ -315,11 +367,44 @@ export class WikiWorkItemBridgeService {
   private isCoolingDown(key: string): boolean {
     const last = this.lastCreatedAt.get(key);
     if (last == null) return false;
-    return this.nowFn() - last < this.cooldownMs;
+    return this.nowFn() - last < this.effectiveCooldownMs(key);
   }
 
-  private markCreated(key: string): void {
+  /**
+   * The cooldown that applies to `key` right now: the configured base,
+   * doubled once per no-progress strike, capped at
+   * {@link NO_PROGRESS_MAX_BACKOFF_MS}.
+   *
+   * @param key - `${kind}:${path}` cooldown key
+   * @returns Cooldown in ms
+   */
+  effectiveCooldownMs(key: string): number {
+    const strikes = this.noProgress.get(key)?.strikes ?? 0;
+    if (strikes <= 0) return this.cooldownMs;
+    return Math.min(this.cooldownMs * 2 ** strikes, NO_PROGRESS_MAX_BACKOFF_MS);
+  }
+
+  /**
+   * Record a create for `key` and update its no-progress ledger.
+   *
+   * @param key - `${kind}:${path}` cooldown key
+   * @param count - Work size the new WI advertises; the same value as last
+   *   time means the previous WI changed nothing and earns a strike
+   */
+  private markCreated(key: string, count: number): void {
     this.lastCreatedAt.set(key, this.nowFn());
+    const prev = this.noProgress.get(key);
+    if (prev && prev.count === count) {
+      prev.strikes += 1;
+      this.logger.warn('WikiWorkItemBridge: no progress since the last WI for this key — backing off', {
+        key,
+        count,
+        strikes: prev.strikes,
+        nextCooldownMs: this.effectiveCooldownMs(key),
+      });
+      return;
+    }
+    this.noProgress.set(key, { count, strikes: 0 });
   }
 
   static getInstance(): WikiWorkItemBridgeService | null {
@@ -408,7 +493,7 @@ export class WikiWorkItemBridgeService {
             continue;
           }
           await this.createDrainWorkItem(vaultPath, pending.length);
-          this.markCreated(key);
+          this.markCreated(key, pending.length);
           result.createdForVault.push(vaultPath);
           createdThisTick++;
         } catch (err) {
@@ -449,7 +534,7 @@ export class WikiWorkItemBridgeService {
             continue;
           }
           await this.createMigrateWorkItem(projectRoot, proposed);
-          this.markCreated(key);
+          this.markCreated(key, proposed);
           result.createdForProject.push(projectRoot);
           createdThisTick++;
         } catch (err) {
@@ -487,7 +572,7 @@ export class WikiWorkItemBridgeService {
             scan.candidates.slice(0, CLEANUP_CHUNK_SIZE),
             scan.candidates.length,
           );
-          this.markCreated(cleanupKey);
+          this.markCreated(cleanupKey, scan.candidates.length);
           result.createdCleanupForVault.push(vaultPath);
           createdThisTick++;
         } catch (err) {

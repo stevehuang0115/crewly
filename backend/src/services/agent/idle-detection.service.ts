@@ -16,6 +16,7 @@ import { AgentSuspendService } from './agent-suspend.service.js';
 import { ActivityMonitorService } from '../monitoring/activity-monitor.service.js';
 import { getSettingsService } from '../settings/index.js';
 import { getSessionBackendSync } from '../session/index.js';
+import { CronTaskService } from '../workflow/cron-task.service.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 
 /**
@@ -321,6 +322,18 @@ export class IdleDetectionService {
 						// If we can't check workingStatus, proceed with normal idle check
 					}
 
+					// Keep an agent alive when a cron run for it is imminent. Stopping
+					// it now only to respawn it for the cron pays a full cold start
+					// (init prompt + registration + recall) every run.
+					if (isActive && (await this.hasImminentCronRun(member.sessionName))) {
+						this.logger.debug('Agent idle but a cron run is due soon, keeping alive', {
+							sessionName: member.sessionName,
+							role: member.role,
+							windowMinutes: AGENT_SUSPEND_CONSTANTS.CRON_KEEPALIVE_WINDOW_MINUTES,
+						});
+						continue;
+					}
+
 					// #201: Agents stuck in 'started' state should be marked inactive,
 					// not suspended, since they never completed initialization
 					// and have no session to rehydrate.
@@ -403,6 +416,30 @@ export class IdleDetectionService {
 					}
 				}
 			}
+		}
+	}
+
+	/**
+	 * Whether an enabled cron task targeting `sessionName` is due within
+	 * {@link AGENT_SUSPEND_CONSTANTS.CRON_KEEPALIVE_WINDOW_MINUTES} (an overdue
+	 * one counts too — it is about to fire).
+	 *
+	 * @param sessionName - Agent session to check
+	 * @returns True when the agent should be kept alive for its cron; false on
+	 *   any lookup failure so the idle check falls back to normal behaviour
+	 */
+	private async hasImminentCronRun(sessionName: string): Promise<boolean> {
+		try {
+			const tasks = await CronTaskService.getInstance().list({ targetAgent: sessionName, enabled: true });
+			const windowMs = AGENT_SUSPEND_CONSTANTS.CRON_KEEPALIVE_WINDOW_MINUTES * 60 * 1000;
+			const now = Date.now();
+			return tasks.some((task) => {
+				if (!task.nextRunAt) return false;
+				const dueAt = Date.parse(task.nextRunAt);
+				return Number.isFinite(dueAt) && dueAt - now <= windowMs;
+			});
+		} catch {
+			return false;
 		}
 	}
 

@@ -173,6 +173,61 @@ describe('WorkItemDispatchSubscriber', () => {
     });
   });
 
+  describe('redispatchMany (one reminder per agent)', () => {
+    it('writes ONE [CREWLY-DISPATCH] message listing every WI and re-arms their dedup keys', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const a = makeWorkItem({ id: 'wi-a', target: 'sora', title: 'first item' });
+      const b = makeWorkItem({ id: 'wi-b', target: 'sora', title: 'second item' });
+      await svc.dispatchTo(a); // already dispatched once → dedup key set
+      mockedAxios.post.mockClear();
+
+      const ok = await svc.redispatchMany([a, b]);
+      expect(ok).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      const [url, body] = mockedAxios.post.mock.calls[0];
+      expect(url).toContain('/api/terminal/sora/write');
+      const text = (body as { data: string }).data;
+      expect(text).toContain('[CREWLY-DISPATCH] 2 WorkItems');
+      expect(text).toContain('1. wi-a');
+      expect(text).toContain('2. wi-b');
+      expect(text).toContain('second item');
+      expect(text).toContain('"sessionName":"sora"');
+    });
+
+    it('drops items for other targets and SLA trackers, and delegates a single item to redispatch', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const a = makeWorkItem({ id: 'wi-a', target: 'sora' });
+      const other = makeWorkItem({ id: 'wi-o', target: 'someone-else' });
+
+      const ok = await svc.redispatchMany([a, other]);
+      expect(ok).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      const text = (mockedAxios.post.mock.calls[0][1] as { data: string }).data;
+      expect(text).toContain('wi-a');
+      expect(text).not.toContain('wi-o');
+      expect(text).not.toContain('WorkItems are still queued'); // single-item format
+    });
+
+    it('returns false for an empty batch or one without a target', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      expect(await svc.redispatchMany([])).toBe(false);
+      expect(await svc.redispatchMany([makeWorkItem({ id: 'wi-x', target: undefined })])).toBe(false);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+
+    it('does not mark the batch dispatched when the write fails', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const a = makeWorkItem({ id: 'wi-a', target: 'sora' });
+      const b = makeWorkItem({ id: 'wi-b', target: 'sora' });
+      mockedAxios.post.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
+      expect(await svc.redispatchMany([a, b])).toBe(false);
+      // A later plain dispatch of either item must still go through.
+      mockedAxios.post.mockResolvedValue({ status: 200, data: { success: true } });
+      expect(await svc.dispatchTo(a)).toBe(true);
+    });
+  });
+
   describe('event subscription', () => {
     it('warns when started without initialization', () => {
       const svc = WorkItemDispatchSubscriber.getInstance();

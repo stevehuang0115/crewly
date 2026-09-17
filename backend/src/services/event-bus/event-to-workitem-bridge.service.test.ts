@@ -266,6 +266,37 @@ describe('EventToWorkItemBridge', () => {
       bridge.stop();
     });
 
+    // 2026-09-16: every verify WI is a full orchestrator wake-up. A cron tick
+    // re-runs itself, and bridge-auto wiki maintenance re-scans itself, so
+    // neither needs a verifier.
+    it('does NOT create a verification WI when the source is a cron_run', async () => {
+      const sourceWI = buildWorkItem({ type: 'cron_run' as WorkItemType });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:done_by_worker' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
+
+    it('does NOT create a verification WI for bridge-auto maintenance work (metadata.autoCreated)', async () => {
+      const sourceWI = buildWorkItem({
+        metadata: { teamId: 'team-product', triggerSource: 'event', autoCreated: true, kind: 'wiki_legacy_migrate' },
+      });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:done_by_worker' }));
+      await bridge.flushPending();
+
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
+
     it('replay of the same event does NOT create a duplicate verification WI (V1)', async () => {
       const sourceWI = buildWorkItem();
       const taskPool = buildFakeTaskPool([sourceWI]);

@@ -2,11 +2,11 @@
  * Tests for WikiReflectTriggerService.
  *
  * Uses fake-time control + a stub queue service so we never hit disk.
+ * (Runs under jest; the file originally imported vitest and never executed.)
  *
  * @module services/wiki/wiki-reflect-trigger.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
 import * as fsp from 'fs/promises';
@@ -46,12 +46,12 @@ const VAULT_A = '/tmp/vault-a';
 const VAULT_B = '/tmp/vault-b';
 
 let trigger: WikiReflectTriggerService;
-let fireFn: ReturnType<typeof vi.fn>;
+let fireFn: jest.Mock;
 let now = 0;
 
 beforeEach(() => {
   now = Date.UTC(2026, 4, 24, 12, 0, 0); // fixed point in time
-  fireFn = vi.fn();
+  fireFn = jest.fn();
 });
 
 afterEach(() => {
@@ -108,6 +108,56 @@ describe('WikiReflectTriggerService.tick', () => {
     const meta = fireFn.mock.calls[0][0] as WikiReflectFireMeta;
     expect(meta.totalQueueItems).toBe(1);
     expect(Math.round(meta.msSinceLastQueueAdd / (60 * 60 * 1000))).toBe(5);
+  });
+
+  // 2026-09-16: each message to ORC is a full model turn; six vaults used
+  // to cost six turns per reflect cycle. With batchFireFn the tick hands
+  // every fired vault over in ONE call.
+  it('batchFireFn receives every fired vault in a single call per tick', async () => {
+    const batchFireFn = jest.fn();
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      batchFireFn,
+      discoverRoots: async () => [VAULT_A, VAULT_B],
+      queueService: makeFakeQueueService([]),
+      now: () => now,
+    });
+    const res = await trigger.tick();
+    expect(res.fired).toEqual([VAULT_A, VAULT_B]);
+    expect(batchFireFn).toHaveBeenCalledTimes(1);
+    const metas = batchFireFn.mock.calls[0][0] as WikiReflectFireMeta[];
+    expect(metas.map((m) => m.vaultPath)).toEqual([VAULT_A, VAULT_B]);
+    // Nothing fired on the next tick (debounced) → batchFireFn not called again.
+    await trigger.tick();
+    expect(batchFireFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('batchFireFn takes precedence over fireFn, and a throwing batchFireFn is swallowed', async () => {
+    const batchFireFn = jest.fn(async () => {
+      throw new Error('boom');
+    });
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      fireFn,
+      batchFireFn,
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => now,
+    });
+    await expect(trigger.tick()).resolves.toMatchObject({ fired: [VAULT_A] });
+    expect(batchFireFn).toHaveBeenCalledTimes(1);
+    expect(fireFn).not.toHaveBeenCalled();
+  });
+
+  it('refuses construction without any notifier', () => {
+    expect(
+      () =>
+        new WikiReflectTriggerService({
+          statePath: null,
+          discoverRoots: async () => [],
+          queueService: makeFakeQueueService([]),
+        }),
+    ).toThrow(/fireFn or batchFireFn/);
   });
 
   it('tick({ ignoreDebounce: true }) fires even within the debounce window (manual trigger-now)', async () => {
@@ -235,7 +285,7 @@ describe('WikiReflectTriggerService persistence (survives restart)', () => {
       await fsp.mkdtemp(path.join(os.tmpdir(), 'crewly-reflect-state-')),
       'reflect-state.json',
     );
-    const fire1 = vi.fn();
+    const fire1 = jest.fn();
     const t1 = new WikiReflectTriggerService({
       statePath,
       debounceMs: 4 * 60 * 60 * 1000,
@@ -250,7 +300,7 @@ describe('WikiReflectTriggerService persistence (survives restart)', () => {
 
     // Simulate a restart 1h later (still inside the 4h debounce): a brand-new
     // instance must read the persisted lastFiredAt and NOT re-fire.
-    const fire2 = vi.fn();
+    const fire2 = jest.fn();
     const t2 = new WikiReflectTriggerService({
       statePath,
       debounceMs: 4 * 60 * 60 * 1000,

@@ -47,13 +47,32 @@ export type WikiBookkeepFireFn = (
   report: WikiBookkeepReport,
 ) => Promise<void> | void;
 
+/** One vault's fire, as handed to a batched notifier. */
+export interface WikiBookkeepFire {
+  vaultPath: string;
+  report: WikiBookkeepReport;
+}
+
+/** Batched notifier — one call per tick with every vault that fired. */
+export type WikiBookkeepBatchFireFn = (fires: WikiBookkeepFire[]) => Promise<void> | void;
+
 export interface WikiBookkeepTriggerOptions {
   /** Interval between scans, ms. Default 30 minutes. */
   intervalMs?: number;
   /** Minimum gap between fires for the same vault, ms. Default 6 hours. */
   debounceMs?: number;
-  /** Caller-injected notifier. Production wires this to enqueue a message to ORC. */
-  fireFn: WikiBookkeepFireFn;
+  /**
+   * Caller-injected notifier, called once PER VAULT. Either this or
+   * `batchFireFn` is required.
+   */
+  fireFn?: WikiBookkeepFireFn;
+  /**
+   * Batched notifier, called once PER TICK with every vault that fired.
+   * Prefer this in production — one message to ORC per tick instead of one
+   * per vault (each message is a full model turn; see 2026-09-16 finding).
+   * When both are given, only `batchFireFn` is called.
+   */
+  batchFireFn?: WikiBookkeepBatchFireFn;
   /** Optional override of the discovery roots (tests). */
   discoverRoots?: () => Promise<string[]>;
   /** Optional override of the bookkeep service (tests). */
@@ -139,7 +158,8 @@ export class WikiBookkeepTriggerService {
   private readonly logger: ComponentLogger;
   private readonly intervalMs: number;
   private readonly debounceMs: number;
-  private readonly fireFn: WikiBookkeepFireFn;
+  private readonly fireFn: WikiBookkeepFireFn | null;
+  private readonly batchFireFn: WikiBookkeepBatchFireFn | null;
   private readonly discoverRoots: () => Promise<string[]>;
   private readonly bookkeepService: WikiBookkeepService;
   private timer: NodeJS.Timeout | null = null;
@@ -154,7 +174,11 @@ export class WikiBookkeepTriggerService {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiBookkeepTrigger');
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
-    this.fireFn = opts.fireFn;
+    if (!opts.fireFn && !opts.batchFireFn) {
+      throw new Error('WikiBookkeepTriggerService needs fireFn or batchFireFn');
+    }
+    this.fireFn = opts.fireFn ?? null;
+    this.batchFireFn = opts.batchFireFn ?? null;
     this.discoverRoots = opts.discoverRoots ?? discoverWikiVaults;
     this.bookkeepService = opts.bookkeepService ?? WikiBookkeepService.getInstance();
     if (opts.statePath === null) {
@@ -268,6 +292,7 @@ export class WikiBookkeepTriggerService {
       quietVaults: [] as string[],
     };
     let stateDirty = false;
+    const batch: WikiBookkeepFire[] = [];
     for (const v of vaults) {
       if (this.inflight.has(v)) continue;
       this.inflight.add(v);
@@ -317,8 +342,13 @@ export class WikiBookkeepTriggerService {
         prior.lastFiredAt = Date.now();
         prior.baselineMdCount = total;
         stateDirty = true;
+        if (this.batchFireFn) {
+          batch.push({ vaultPath: v, report: outcome.report });
+          result.fired.push(v);
+          continue;
+        }
         try {
-          await this.fireFn(v, outcome.report);
+          await this.fireFn?.(v, outcome.report);
           result.fired.push(v);
           this.logger.info('WikiBookkeepTrigger fired', {
             vault: v,
@@ -334,6 +364,19 @@ export class WikiBookkeepTriggerService {
         }
       } finally {
         this.inflight.delete(v);
+      }
+    }
+    if (this.batchFireFn && batch.length > 0) {
+      try {
+        await this.batchFireFn(batch);
+        this.logger.info('WikiBookkeepTrigger fired (batched)', {
+          vaults: batch.map((f) => f.vaultPath),
+        });
+      } catch (err) {
+        this.logger.warn('WikiBookkeepTrigger: batchFireFn threw (swallowed)', {
+          vaults: batch.length,
+          error: (err as Error).message,
+        });
       }
     }
     if (stateDirty) await this.saveStateToDisk();

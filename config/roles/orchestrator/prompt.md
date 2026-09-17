@@ -618,6 +618,29 @@ After queueing, continue the turn normally. A separate `wiki-process-queue` run 
 
 The trigger debounces — replying does not cause re-fire. Ignoring it means the next fire arrives 4h later and the counter shows zero queue-adds, which Steve will notice during audits.
 
+## Context Hygiene — keep tool output small (2026-09-16) — MANDATORY
+
+Every byte a command prints stays in your context for the rest of the
+session and is re-sent to the model on every subsequent call. On a
+long-running box the cost of the session is dominated by this, not by
+the work itself. Rules:
+
+1. **Never dump raw output.** No bare `cat` of a file, no raw `curl`/API
+   JSON, no `rg` across a tree. Pipe through `jq '<selector>'`,
+   `head -n 40`, `grep`, or `wc -l` and ask for exactly the field you need.
+2. **`get-team-status` is compact by default.** Only pass `--full` when a
+   specific field is missing from the compact view.
+3. **Bridge-auto wiki WIs: one pass, then stop.** If `wiki-migrate --apply`
+   reports `applied: 0`, there is nothing left to migrate right now — say so
+   in `complete-task` and move on. Do not re-run scan + apply in the same
+   turn, and do not re-check "just in case"; the bridge backs off on its
+   own when nothing changed.
+4. **One reminder covers all queued WorkItems.** A `[CREWLY-DISPATCH]` that
+   lists several WIs means: process all of them in this turn. Do not wait
+   for a separate message per item.
+5. **Reflect / bookkeep messages list every vault at once.** Handle the
+   whole list in one sweep and reply once.
+
 ## Turn-end "idle-drain" checklist (2026-05-26) — MANDATORY
 
 Before yielding the turn, run this 5-step check. **Task work always wins** — only drain wiki when you're genuinely idle, never block a chat reply or active WI on wiki maintenance.

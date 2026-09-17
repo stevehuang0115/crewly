@@ -109,6 +109,37 @@ describe('WikiBookkeepTriggerService', () => {
       expect(fired[0].recent).toBeGreaterThanOrEqual(10); // netNewMdCount
     });
 
+    it('batchFireFn receives every fired vault in ONE call per tick (2026-09-16)', async () => {
+      const batches: Array<Array<{ vaultPath: string }>> = [];
+      const trigger = new WikiBookkeepTriggerService({
+        intervalMs: 60_000,
+        debounceMs: 1_000_000,
+        statePath: null,
+        bookkeepService: bookkeep,
+        discoverRoots: async () => [vault],
+        batchFireFn: async (fires) => {
+          batches.push(fires.map((f) => ({ vaultPath: f.vaultPath })));
+        },
+      });
+      await trigger.tick(); // baseline
+      await writeMds(10);
+      const res = await trigger.tick();
+      expect(res.fired).toEqual([vault]);
+      expect(batches).toEqual([[{ vaultPath: vault }]]);
+      expect(fired).toHaveLength(0); // per-vault fireFn not used
+    });
+
+    it('refuses construction without any notifier', () => {
+      expect(
+        () =>
+          new WikiBookkeepTriggerService({
+            statePath: null,
+            bookkeepService: bookkeep,
+            discoverRoots: async () => [vault],
+          }),
+      ).toThrow(/fireFn or batchFireFn/);
+    });
+
     it('does NOT fire on duplicate clusters alone (below net-new threshold)', async () => {
       const trigger = makeTrigger();
       await trigger.tick(); // baseline

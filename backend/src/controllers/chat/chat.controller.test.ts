@@ -755,6 +755,47 @@ describe('Chat Controller', () => {
       setMessageQueueService(null as any);
     });
 
+    // 2026-09-16: every queued line is a full-context orchestrator turn, and
+    // progress chatter gives it nothing to act on.
+    it.each(['[IN_PROGRESS]', '[WORKING]', '[ACTIVE]', '[STARTED]'])(
+      'does NOT enqueue %s progress markers to the orchestrator',
+      async (marker) => {
+        const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-progress' });
+        setMessageQueueService({ enqueue: mockEnqueue } as any);
+
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({
+            content: `${marker} Agent test-agent: still working on it`,
+            senderName: 'test-agent',
+            senderType: 'agent',
+          });
+
+        expect(response.status).toBe(201);
+        expect(mockEnqueue).not.toHaveBeenCalled();
+        setMessageQueueService(null as any);
+      },
+    );
+
+    it('still enqueues [BLOCKED] (needs the orchestrator)', async () => {
+      const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-blocked' });
+      setMessageQueueService({ enqueue: mockEnqueue } as any);
+
+      const response = await request(app)
+        .post('/api/chat/agent-response')
+        .send({
+          content: '[BLOCKED] Agent test-agent: need credentials',
+          senderName: 'test-agent',
+          senderType: 'agent',
+        });
+
+      expect(response.status).toBe(201);
+      expect(mockEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({ content: expect.stringContaining('[BLOCKED]') }),
+      );
+      setMessageQueueService(null as any);
+    });
+
     it('should enqueue structured [STATUS REPORT] to MessageQueueService', async () => {
       const mockEnqueue = jest.fn().mockReturnValue({ id: 'q3' });
       setMessageQueueService({ enqueue: mockEnqueue } as any);

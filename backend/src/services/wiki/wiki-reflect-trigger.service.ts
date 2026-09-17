@@ -44,6 +44,9 @@ export interface WikiReflectFireMeta {
 
 export type WikiReflectFireFn = (meta: WikiReflectFireMeta) => Promise<void> | void;
 
+/** Batched notifier — one call per tick with every vault that fired. */
+export type WikiReflectBatchFireFn = (metas: WikiReflectFireMeta[]) => Promise<void> | void;
+
 export interface WikiReflectTriggerOptions {
   /** Interval between scans, ms. Default 60 minutes. */
   intervalMs?: number;
@@ -51,8 +54,18 @@ export interface WikiReflectTriggerOptions {
   quietWindowMs?: number;
   /** Minimum gap between fires for the same vault, ms. Default 4 hours. */
   debounceMs?: number;
-  /** Caller-injected notifier (e.g. enqueue `[REFLECT-WIKI]` chat to ORC). */
-  fireFn: WikiReflectFireFn;
+  /**
+   * Caller-injected notifier, called once PER VAULT (e.g. enqueue a
+   * `[REFLECT-WIKI]` chat to ORC). Either this or `batchFireFn` is required.
+   */
+  fireFn?: WikiReflectFireFn;
+  /**
+   * Batched notifier, called once PER TICK with every vault that fired.
+   * Prefer this in production: each message to ORC is a full model turn,
+   * and a box with six vaults was paying six turns per reflect cycle
+   * (2026-09-16). When both are given, only `batchFireFn` is called.
+   */
+  batchFireFn?: WikiReflectBatchFireFn;
   /** Optional discovery override (tests). */
   discoverRoots?: () => Promise<string[]>;
   /** Optional queue service override (tests). */
@@ -79,9 +92,10 @@ export class WikiReflectTriggerService {
   private static instance: WikiReflectTriggerService | null = null;
   private readonly logger: ComponentLogger;
   private readonly intervalMs: number;
+  private readonly batchFireFn: WikiReflectBatchFireFn | null;
   private readonly quietWindowMs: number;
   private readonly debounceMs: number;
-  private readonly fireFn: WikiReflectFireFn;
+  private readonly fireFn: WikiReflectFireFn | null;
   private readonly discoverRoots: () => Promise<string[]>;
   private readonly queueService: WikiQueueService;
   private readonly nowFn: () => number;
@@ -96,9 +110,13 @@ export class WikiReflectTriggerService {
   constructor(opts: WikiReflectTriggerOptions) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiReflectTrigger');
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
+    if (!opts.fireFn && !opts.batchFireFn) {
+      throw new Error('WikiReflectTriggerService needs fireFn or batchFireFn');
+    }
+    this.batchFireFn = opts.batchFireFn ?? null;
     this.quietWindowMs = opts.quietWindowMs ?? DEFAULT_QUIET_WINDOW_MS;
     this.debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
-    this.fireFn = opts.fireFn;
+    this.fireFn = opts.fireFn ?? null;
     this.discoverRoots = opts.discoverRoots ?? discoverWikiVaults;
     this.queueService = opts.queueService ?? WikiQueueService.getInstance();
     this.nowFn = opts.now ?? (() => Date.now());
@@ -203,6 +221,7 @@ export class WikiReflectTriggerService {
     const now = this.nowFn();
     const cutoff = now - this.quietWindowMs;
     let stateDirty = false;
+    const batch: WikiReflectFireMeta[] = [];
 
     for (const v of vaults) {
       if (this.inflight.has(v)) continue;
@@ -234,13 +253,19 @@ export class WikiReflectTriggerService {
         stateDirty = true;
         const msSinceLastQueueAdd =
           lastAddMs === -Infinity ? Number.POSITIVE_INFINITY : now - lastAddMs;
+        const meta: WikiReflectFireMeta = {
+          vaultPath: v,
+          msSinceLastQueueAdd,
+          recentQueueAdds: recentAdds,
+          totalQueueItems: items.length,
+        };
+        if (this.batchFireFn) {
+          batch.push(meta);
+          result.fired.push(v);
+          continue;
+        }
         try {
-          await this.fireFn({
-            vaultPath: v,
-            msSinceLastQueueAdd,
-            recentQueueAdds: recentAdds,
-            totalQueueItems: items.length,
-          });
+          await this.fireFn?.(meta);
           result.fired.push(v);
           this.logger.info('WikiReflectTrigger fired', {
             vault: v,
@@ -258,6 +283,19 @@ export class WikiReflectTriggerService {
         }
       } finally {
         this.inflight.delete(v);
+      }
+    }
+    if (this.batchFireFn && batch.length > 0) {
+      try {
+        await this.batchFireFn(batch);
+        this.logger.info('WikiReflectTrigger fired (batched)', {
+          vaults: batch.map((m) => m.vaultPath),
+        });
+      } catch (err) {
+        this.logger.warn('WikiReflectTrigger: batchFireFn threw (swallowed)', {
+          vaults: batch.length,
+          error: (err as Error).message,
+        });
       }
     }
     if (stateDirty) await this.saveStateToDisk();

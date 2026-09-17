@@ -376,6 +376,21 @@ export class EventToWorkItemBridge {
       return;
     }
 
+    // Two kinds of "done" need no human-grade verification, and each verify
+    // WI is a full orchestrator wake-up (dispatch → poll → review → complete):
+    //   - cron_run: the schedule itself re-runs the check; verifying every
+    //     15-minute tick doubled the orc's turn count on steamfun-ops (2026-09-16).
+    //   - bridge-auto maintenance (wiki drain/migrate/cleanup): the bridge
+    //     re-scans on its own tick and re-creates work if anything is left.
+    if (sourceWI.type === 'cron_run' || sourceWI.metadata?.['autoCreated'] === true) {
+      this.logger.debug('Skipping verification WI (cron run or auto-created maintenance)', {
+        sourceWorkItemId: sourceWI.id,
+        type: sourceWI.type,
+        autoCreated: sourceWI.metadata?.['autoCreated'] === true,
+      });
+      return;
+    }
+
     // Do NOT create a verification WI for a WI that is itself a verification/review.
     // A verify WI is a task; when the team lead completes it, it re-emits
     // task:done_by_worker — without this guard each verify spawns another verify

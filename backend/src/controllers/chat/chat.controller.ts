@@ -21,7 +21,7 @@ import {
 // architecture, only the import surface.
 import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING } from '../../constants.js';
 import { getSessionBackendSync } from '../../services/session/session-backend.factory.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
 import type { MessageQueueService } from '../../services/messaging/message-queue.service.js';
@@ -482,8 +482,21 @@ export async function agentResponse(
       }
 
       try {
-        // 1. Enqueue notification to orchestrator via MessageQueueService
-        if (messageQueueService) {
+        // 1. Enqueue notification to orchestrator via MessageQueueService.
+        // Progress-only markers ([IN_PROGRESS], [WORKING], [ACTIVE], …) stay
+        // out of the queue: each queued line is a full-context model turn for
+        // the orchestrator, and on steamfun-ops (2026-09-16) roughly a third
+        // of the sub-agent status lines it woke up for said nothing it could
+        // act on. Terminal and attention markers ([DONE], [BLOCKED], [FAILED],
+        // structured reports, anything unrecognised) are still forwarded.
+        if (!messageQueueService) {
+          // nothing to forward to
+        } else if (ORC_STATUS_FORWARDING.PROGRESS_ONLY_MARKERS.test(content)) {
+          logger.debug('Agent progress marker not forwarded to orchestrator (no action needed)', {
+            senderName,
+            preview: content.substring(0, 60),
+          });
+        } else {
           messageQueueService.enqueue({
             content: `Agent status: ${content}`,
             conversationId: resolvedConversationId,

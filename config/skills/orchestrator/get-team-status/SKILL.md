@@ -34,7 +34,11 @@ bash config/skills/orchestrator/get-team-status/execute.sh
 
 ## Parameters
 
-None required.
+None required. Output is **compact by default** (team id/name/projectIds and
+each member's name, sessionName, role, runtimeType, agentStatus,
+workingStatus, readyAt). Pass `--full` (or `'{"full":true}'`) for the raw
+`/teams` payload including system prompts — it is large, so only ask for it
+when you need a specific field.
 
 ## Output
 

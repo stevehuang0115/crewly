@@ -539,6 +539,115 @@ describe('WikiWorkItemBridgeService', () => {
     });
   });
 
+  describe('no-progress backoff (2026-09-16 token-burn fix)', () => {
+    // steamfun-ops: "Migrate 34 legacy wiki item(s)" was re-created every
+    // 30 min for a day because `--apply` skipped all 34 each time. Each
+    // re-create woke the orc. When the count does not move, the cooldown
+    // for that key must double per strike (30m → 1h → 2h …, capped 24h).
+    const project = '/h/proj';
+    const scanWith = (count: number) => async () => ({
+      ok: true,
+      legacyDetected: true,
+      proposedPages: Array.from({ length: count }, (_, i) => ({ relPath: `p${i}.md` })),
+    });
+    const completeAll = (items: WorkItem[]) => {
+      for (const wi of items) wi.status = 'done';
+    };
+
+    it('doubles the cooldown each time the same count is re-created, and resets on progress', async () => {
+      const clock = { t: 1_000_000 };
+      const min = 60 * 1000;
+      let count = 34;
+      const { bridge, addedItems } = makeBridge({
+        projects: [project],
+        migrateScan: () => scanWith(count)(),
+        cooldownMs: 30 * min,
+        now: () => clock.t,
+      });
+
+      expect((await bridge.tick()).createdForProject).toEqual([project]); // strike 0
+      completeAll(addedItems);
+
+      clock.t += 31 * min;
+      expect((await bridge.tick()).createdForProject).toEqual([project]); // same 34 → strike 1
+      completeAll(addedItems);
+      expect(bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(60 * min);
+
+      clock.t += 31 * min; // only 31 of the now-60-minute window
+      const r3 = await bridge.tick();
+      expect(r3.createdForProject).toEqual([]);
+      expect(r3.skippedByCooldown).toEqual([project]);
+
+      clock.t += 30 * min; // 61 min since the last create
+      expect((await bridge.tick()).createdForProject).toEqual([project]); // strike 2
+      completeAll(addedItems);
+      expect(bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(120 * min);
+
+      // The orc migrated some pages: the count moved, so the ladder resets.
+      count = 20;
+      clock.t += 121 * min;
+      expect((await bridge.tick()).createdForProject).toEqual([project]);
+      completeAll(addedItems);
+      expect(bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(30 * min);
+      expect(addedItems).toHaveLength(4);
+    });
+
+    it('caps the backoff at 24 hours', async () => {
+      const clock = { t: 1_000_000 };
+      const hour = 60 * 60 * 1000;
+      const { bridge, addedItems } = makeBridge({
+        projects: [project],
+        migrateScan: scanWith(5),
+        cooldownMs: 0.5 * hour,
+        now: () => clock.t,
+      });
+      for (let i = 0; i < 9; i++) {
+        await bridge.tick();
+        completeAll(addedItems);
+        clock.t += 25 * hour; // always past any cooldown
+      }
+      expect(bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(24 * hour);
+    });
+
+    it('persists the strikes so a restart cannot reset a long backoff', async () => {
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-bridge-noprogress-'));
+      const statePath = path.join(dir, 'state.json');
+      const clock = { t: 1_000_000 };
+      const min = 60 * 1000;
+      try {
+        const first = makeBridge({
+          projects: [project],
+          migrateScan: scanWith(34),
+          cooldownMs: 30 * min,
+          now: () => clock.t,
+          statePath,
+        });
+        await first.bridge.tick();
+        completeAll(first.addedItems);
+        clock.t += 31 * min;
+        await first.bridge.tick(); // strike 1 → 60-minute window
+        completeAll(first.addedItems);
+
+        // Fresh instance 31 min later: a plain 30-minute cooldown would
+        // re-create here; the persisted strike must still block it.
+        clock.t += 31 * min;
+        const second = makeBridge({
+          projects: [project],
+          migrateScan: scanWith(34),
+          cooldownMs: 30 * min,
+          now: () => clock.t,
+          statePath,
+        });
+        const res = await second.bridge.tick();
+        expect(res.createdForProject).toEqual([]);
+        expect(res.skippedByCooldown).toEqual([project]);
+        expect(second.bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(60 * min);
+      } finally {
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    });
+  });
+
   describe('cleanup WIs', () => {
     function manyCandidates(n: number) {
       return Array.from({ length: n }, (_, i) => ({

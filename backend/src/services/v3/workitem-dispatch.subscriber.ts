@@ -246,6 +246,55 @@ export class WorkItemDispatchSubscriber {
     return this.dispatchTo(workItem);
   }
 
+  /**
+   * Redeliver several queued WorkItems that share a target as ONE reminder.
+   *
+   * The reconciler calls this instead of {@link redispatch} per item when an
+   * active-but-idle agent has more than one stale WI: each PTY write is a
+   * full model turn for the agent, so N reminders cost N turns while one
+   * combined reminder costs one (2026-09-16 token-burn finding).
+   *
+   * @param workItems - Queued WIs with the same `target`; items whose target
+   *   differs from the first one are dropped
+   * @returns Whether the combined write succeeded (false for an empty batch)
+   */
+  async redispatchMany(workItems: ReadonlyArray<WorkItem>): Promise<boolean> {
+    const target = workItems[0]?.target;
+    if (!target) return false;
+    const batch = workItems.filter((wi) => wi.target === target && !SLA_TRACKER_ID_PATTERN.test(wi.id));
+    if (batch.length === 0) return false;
+    if (batch.length === 1) return this.redispatch(batch[0]);
+
+    for (const wi of batch) this.dispatched.delete(this.dispatchKey(wi.id, target));
+    const message = this.buildBatchDispatchMessage(batch, target);
+    try {
+      await axios.post(
+        `${API_BASE}/api/terminal/${encodeURIComponent(target)}/write`,
+        { data: message, mode: 'message' },
+        {
+          headers: { 'X-Agent-Session': SERVICE_NAME },
+          timeout: 5_000,
+        },
+      );
+      for (const wi of batch) this.dispatched.add(this.dispatchKey(wi.id, target));
+      this.logger.info('Redispatched WorkItem batch to target session', {
+        target,
+        count: batch.length,
+        workItemIds: batch.map((wi) => wi.id),
+      });
+      return true;
+    } catch (err) {
+      const status = (err as { response?: { status?: number } })?.response?.status;
+      this.logger.debug('Batch dispatch HTTP write failed (non-fatal)', {
+        target,
+        count: batch.length,
+        status: status ?? 'no-response',
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Internal — workitem:queued event path
   // -------------------------------------------------------------------------
@@ -325,6 +374,29 @@ export class WorkItemDispatchSubscriber {
    * @param workItem - WI being dispatched
    * @returns Multi-line message suitable for terminal write
    */
+  /**
+   * Compose one reminder covering every queued WI for a target. Same tag and
+   * closing command as {@link buildDispatchMessage}, one line per item.
+   *
+   * @param workItems - Queued WIs sharing `target`
+   * @param target - Session the reminder is written to
+   * @returns Multi-line message suitable for terminal write
+   */
+  private buildBatchDispatchMessage(workItems: ReadonlyArray<WorkItem>, target: string): string {
+    const lines = workItems.map((wi, i) => {
+      const titleSnippet = wi.title.length > 80 ? wi.title.substring(0, 77) + '...' : wi.title;
+      return `  ${i + 1}. ${wi.id} (type=${wi.type}) — ${titleSnippet}`;
+    });
+    return [
+      '',
+      `[CREWLY-DISPATCH] ${workItems.length} WorkItems are still queued for you — this one message covers all of them; work through them in this turn.`,
+      ...lines,
+      '  Run poll-tasks to claim the next one:',
+      `    bash $AGENT_SKILLS_PATH/core/poll-tasks/execute.sh '{"sessionName":"${target}"}'`,
+      '',
+    ].join('\n');
+  }
+
   private buildDispatchMessage(workItem: WorkItem): string {
     const titleSnippet = workItem.title.length > 80
       ? workItem.title.substring(0, 77) + '...'

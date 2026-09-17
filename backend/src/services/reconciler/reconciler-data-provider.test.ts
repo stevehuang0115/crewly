@@ -75,6 +75,7 @@ jest.mock('../task-pool/task-pool.service.js', () => {
 jest.mock('../v3/workitem-dispatch.subscriber.js', () => {
   const mockSubscriber = {
     redispatch: jest.fn().mockResolvedValue(true),
+    redispatchMany: jest.fn().mockResolvedValue(true),
   };
   return {
     WorkItemDispatchSubscriber: {
@@ -1274,6 +1275,84 @@ describe('LiveReconcilerDataProvider', () => {
       beforeEach(() => {
         mockSubscriber.redispatch.mockReset();
         mockSubscriber.redispatch.mockResolvedValue(true);
+        mockSubscriber.redispatchMany.mockReset();
+        mockSubscriber.redispatchMany.mockResolvedValue(true);
+        mockPool.getAvailableItems.mockResolvedValue([]);
+      });
+
+      afterEach(() => {
+        jest.restoreAllMocks();
+      });
+
+      // 2026-09-16 token-burn fix: a flat 5-minute cooldown re-woke the orc
+      // every few minutes for as long as a WI stayed queued. Each further
+      // reminder for the same WI now waits twice as long as the last one.
+      it('doubles the wait between reminders for the same WI (exponential backoff)', async () => {
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        const min = 60 * 1000;
+        let t = 1_000_000_000;
+        jest.spyOn(Date, 'now').mockImplementation(() => t);
+
+        expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 1
+        expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(5 * min);
+
+        t += 5 * min + 1;
+        expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 2
+        expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(10 * min);
+
+        t += 5 * min + 1; // only 5 of the now-10-minute window
+        expect(await provider.executeWakeAction(buildAction())).toBe(false);
+
+        t += 5 * min; // 10 min since reminder 2
+        expect(await provider.executeWakeAction(buildAction())).toBe(true); // reminder 3
+        expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(20 * min);
+        expect(mockSubscriber.redispatch).toHaveBeenCalledTimes(3);
+      });
+
+      it('caps the backoff at the configured maximum', async () => {
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        const hour = 60 * 60 * 1000;
+        let t = 1_000_000_000;
+        jest.spyOn(Date, 'now').mockImplementation(() => t);
+        for (let i = 0; i < 12; i++) {
+          expect(await provider.executeWakeAction(buildAction())).toBe(true);
+          t += 7 * hour; // always past any window
+        }
+        expect(provider.redeliverCooldownMs('wi-sora-1')).toBe(6 * hour);
+      });
+
+      it('sends ONE reminder listing every queued WI for the same agent, and marks them all', async () => {
+        const sibling = (id: string, target = 'sora'): WorkItem =>
+          ({ ...queuedWi, id, target, title: `sibling ${id}` }) as WorkItem;
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        mockPool.getAvailableItems.mockResolvedValue([
+          sibling('wi-sora-2'),
+          sibling('wi-other-1', 'other-agent'),
+          { ...sibling('wi-sora-claimed'), status: 'claimed' },
+          sibling('wi-sora-3'),
+        ]);
+
+        expect(await provider.executeWakeAction(buildAction())).toBe(true);
+
+        expect(mockSubscriber.redispatch).not.toHaveBeenCalled();
+        expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
+        const batch = mockSubscriber.redispatchMany.mock.calls[0][0] as WorkItem[];
+        expect(batch.map((wi) => wi.id)).toEqual(['wi-sora-1', 'wi-sora-2', 'wi-sora-3']);
+
+        // A wake for a sibling right afterwards is inside its own window —
+        // it was covered by the batch, so it must not produce a second message.
+        mockPool.findWorkItem.mockResolvedValue(sibling('wi-sora-2'));
+        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-sora-2' })).toBe(false);
+        expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
+      });
+
+      it('falls back to a single redeliver when the pool lookup fails', async () => {
+        mockPool.findWorkItem.mockResolvedValue(queuedWi);
+        mockPool.getAvailableItems.mockRejectedValueOnce(new Error('pool down'));
+
+        expect(await provider.executeWakeAction(buildAction())).toBe(true);
+        expect(mockSubscriber.redispatch).toHaveBeenCalledWith(queuedWi);
+        expect(mockSubscriber.redispatchMany).not.toHaveBeenCalled();
       });
 
       it('redelivers a queued WI via WorkItemDispatchSubscriber', async () => {

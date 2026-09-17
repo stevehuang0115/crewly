@@ -626,6 +626,20 @@ export const SLACK_AGENT_IDENTITY_CONSTANTS = {
 } as const;
 
 /**
+ * Which sub-agent `report-status` lines are forwarded to the orchestrator's
+ * message queue. Every forwarded line is a full-context model turn for the
+ * orchestrator, so progress chatter it cannot act on stays out.
+ */
+export const ORC_STATUS_FORWARDING = {
+	/**
+	 * Markers that only say "still going" — not forwarded. Everything else
+	 * ([DONE], [IDLE] (agent is free for the next task), [BLOCKED], [FAILED],
+	 * structured reports, unknown formats) is.
+	 */
+	PROGRESS_ONLY_MARKERS: /^\s*\[(IN_PROGRESS|WORKING|ACTIVE|STARTED|HEARTBEAT)\]/i,
+} as const;
+
+/**
  * Constants for agent-initiated Slack posts (the `slack-post` skill).
  */
 export const SLACK_AGENT_POST_CONSTANTS = {

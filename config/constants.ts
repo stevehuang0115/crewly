@@ -873,6 +873,14 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
 	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */
 	AGENT_IDLE_STOP_TIMEOUT_MS: 1_800_000,
+	/**
+	 * Do not idle-stop an agent whose next cron run is due within this many
+	 * minutes. Killing it only to respawn it for the cron costs a cold start
+	 * (init prompt + registration + recall, ~0.5-1M input tokens on Codex)
+	 * every single run — a 15-minute cron under a 10-minute idle timeout
+	 * paid that 50 times a day on steamfun-ops (2026-09-16).
+	 */
+	CRON_KEEPALIVE_WINDOW_MINUTES: 30,
 } as const;
 
 // ========================= SERVER PROCESS CONSTANTS =========================

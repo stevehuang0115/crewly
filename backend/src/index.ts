@@ -471,9 +471,19 @@ void (async () => {
 				const trigger = new WikiBookkeepTriggerService({
 					intervalMs,
 					debounceMs,
-					fireFn: async (vaultPath, report) => {
+					// One message per tick listing every vault, not one per vault:
+					// each queued message is a full model turn for ORC.
+					batchFireFn: async (fires) => {
 						if (!this.messageQueueService) return;
-						const summary = `[BOOKKEEP] vault=${vaultPath} | ${report.netNewMdCount} net-new md(s) since last pass (threshold ${report.threshold}) | duplicates=${report.duplicateCandidates.length} | pending-queue=${report.queue.pending}. Run wiki-bookkeep to drain.`;
+						const lines = fires.map(
+							({ vaultPath, report }) =>
+								`  - vault=${vaultPath} | ${report.netNewMdCount} net-new md(s) since last pass (threshold ${report.threshold}) | duplicates=${report.duplicateCandidates.length} | pending-queue=${report.queue.pending}`,
+						);
+						const summary = [
+							`[BOOKKEEP] ${fires.length} vault(s) need bookkeeping — handle all of them in this turn:`,
+							...lines,
+							'Run wiki-bookkeep for each vault listed to drain.',
+						].join('\n');
 						this.messageQueueService.enqueue({
 							content: summary,
 							conversationId: 'system:wiki-bookkeep',
@@ -509,13 +519,22 @@ void (async () => {
 					intervalMs: reflectInterval,
 					quietWindowMs: reflectQuiet,
 					debounceMs: reflectDebounce,
-					fireFn: async (meta) => {
+					// One message per tick listing every quiet vault, not one per
+					// vault: six vaults used to cost ORC six model turns per cycle.
+					batchFireFn: async (metas) => {
 						if (!this.messageQueueService) return;
-						const lastAddText =
-							meta.msSinceLastQueueAdd === Number.POSITIVE_INFINITY
-								? 'never'
-								: `${Math.floor(meta.msSinceLastQueueAdd / (60 * 60 * 1000))}h ago`;
-						const summary = `[REFLECT-WIKI] vault=${meta.vaultPath} | last wiki-queue-add: ${lastAddText} | total queue items: ${meta.totalQueueItems}. Sweep the recent conversation for worth-saving content (decisions, customer facts, learnings) and call wiki-queue-add for each, OR reply "nothing this period" if there genuinely is nothing.`;
+						const lines = metas.map((meta) => {
+							const lastAddText =
+								meta.msSinceLastQueueAdd === Number.POSITIVE_INFINITY
+									? 'never'
+									: `${Math.floor(meta.msSinceLastQueueAdd / (60 * 60 * 1000))}h ago`;
+							return `  - vault=${meta.vaultPath} | last wiki-queue-add: ${lastAddText} | total queue items: ${meta.totalQueueItems}`;
+						});
+						const summary = [
+							`[REFLECT-WIKI] ${metas.length} vault(s) have had no wiki-queue-add recently:`,
+							...lines,
+							'Sweep the recent conversation ONCE for worth-saving content (decisions, customer facts, learnings) and call wiki-queue-add for each item against the right vault, OR reply "nothing this period" once if there genuinely is nothing.',
+						].join('\n');
 						this.messageQueueService.enqueue({
 							content: summary,
 							conversationId: 'system:wiki-reflect',
