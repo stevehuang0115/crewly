@@ -687,6 +687,18 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Agents already engaged in a thread (posted in it or @-mentioned in it),
+   * so a human's follow-up in the thread reaches them without another @.
+   *
+   * @param channelId - The channel id
+   * @param threadId - The thread root message id
+   * @returns Session names, first-seen order
+   */
+  queryThreadParticipantsForDispatch(channelId: string, threadId: string): string[] {
+    return this.messages.threadParticipants(channelId, threadId);
+  }
+
+  /**
    * Replace a huddle's roster with exactly `memberSessions` (insert the
    * missing ones, delete the rest). Used by Slack team channels to keep
    * the huddle in step with the Crewly team's members. No-op on non-huddle

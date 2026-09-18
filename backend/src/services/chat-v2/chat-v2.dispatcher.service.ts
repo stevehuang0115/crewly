@@ -147,6 +147,19 @@ export interface ChatV2DispatcherOptions {
    */
   huddleMembersFor?: (channelId: string) => readonly string[];
   /**
+   * Agents already engaged in a thread (posted in it, or @-mentioned in
+   * it). A human's follow-up inside that thread is delivered to them
+   * without another @. When omitted, thread follow-ups need an @.
+   */
+  threadParticipantsFor?: (channelId: string, threadId: string) => readonly string[];
+  /**
+   * The team leader behind a huddle (team channel). A message that @'s
+   * nobody and sits in no agent thread goes to the leader alone, marked
+   * optional — the leader judges relevance (it may be humans talking to
+   * each other). When omitted such messages are delivered to nobody.
+   */
+  huddleLeaderFor?: (channelId: string) => Promise<string | null>;
+  /**
    * Activate-on-send hook. When a DM dispatch fails because the agent's
    * session doesn't exist (inactive), the dispatcher calls this to start the
    * agent, then retries delivery once. Returns true when the agent is now
@@ -226,11 +239,11 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     // Slack team channel: reply as yourself into the channel, in-thread.
     const cmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
     replyHint = mode === 'optional'
-      ? `回复本频道: 这是团队频道，你收到此消息但未被 @ — 如有必要用 \`reply-channel\` skill 回复（${cmd}），否则不回复也可以。`
-      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread。`;
+      ? `回复本频道: 这是团队频道，消息没有 @ 任何人，只转给你（team leader）判断。若与团队的工作相关且你有对应的上下文或知识，用 \`reply-channel\` skill 回复（${cmd}）；若是频道里的人之间在交流、或与你无关，不要回复，也不要为此展开调查。`
+      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。`;
   } else {
     replyHint = mode === 'optional'
-      ? `回复本频道: 你在此 huddle 中收到此消息但未被 @ — 如有必要可用 \`reply-chat\` skill (conversationId="${channelId}") 回复，否则不回复也可以。`
+      ? `回复本频道: 这条消息没有 @ 任何人，只转给你（team leader）判断。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
   }
   return [
@@ -257,6 +270,8 @@ export class ChatV2DispatcherService {
   private readonly formatPrompt: (args: FormatPromptArgs) => string;
   private readonly mentionResolver?: ChatV2MentionResolver;
   private readonly huddleMembersFor?: (channelId: string) => readonly string[];
+  private readonly threadParticipantsFor?: (channelId: string, threadId: string) => readonly string[];
+  private readonly huddleLeaderFor?: (channelId: string) => Promise<string | null>;
   private readonly activateAgent?: (agentSession: string) => Promise<boolean>;
   private readonly logger: ComponentLogger;
 
@@ -265,6 +280,8 @@ export class ChatV2DispatcherService {
     this.formatPrompt = options.formatPrompt ?? defaultFormatPrompt;
     this.mentionResolver = options.mentionResolver;
     this.huddleMembersFor = options.huddleMembersFor;
+    this.threadParticipantsFor = options.threadParticipantsFor;
+    this.huddleLeaderFor = options.huddleLeaderFor;
     this.activateAgent = options.activateAgent;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
@@ -368,10 +385,36 @@ export class ChatV2DispatcherService {
       };
     }
 
-    // Pre-build the mention set so each member lookup is O(1). The
-    // wire mention is the agent session id (same shape as the roster
-    // entries) so a simple Set membership check is enough.
-    const mentioned = new Set(Array.isArray(message.mentions) ? message.mentions : []);
+    // Who hears this message. Every agent that hears one spends tokens on
+    // it (measured 2026-09-18: one un-addressed "有人吗？" cold-started three
+    // Claude Code agents and set off an investigation), so delivery is
+    // targeted, not broadcast:
+    //   1. @-mentioned members → required reply;
+    //   2. members already engaged in the thread (posted or @'d in it) →
+    //      required reply — a follow-up in a thread needs no second @;
+    //   3. nobody addressed → the team leader alone, optional reply (it
+    //      judges relevance; humans may just be talking to each other).
+    // Everyone else is left alone. Inactive targets are woken.
+    const memberSet = new Set(members);
+    const mentioned = (Array.isArray(message.mentions) ? message.mentions : []).filter((m) => memberSet.has(m));
+    const engaged =
+      options.threadId && this.threadParticipantsFor
+        ? this.threadParticipantsFor(channel.id, options.threadId).filter((m) => memberSet.has(m))
+        : [];
+    const targets = new Map<string, 'required' | 'optional'>();
+    for (const m of [...mentioned, ...engaged]) targets.set(m, 'required');
+    if (targets.size === 0 && this.huddleLeaderFor) {
+      const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
+      if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
+    }
+    if (targets.size === 0) {
+      this.logger.debug('chat-v2 huddle dispatch: nobody addressed — recorded only', {
+        channelId: channel.id,
+        messageId: message.id,
+        members: members.length,
+      });
+      return { strategy: 'huddle-broadcast', dispatched: false, huddleOutcomes: [] };
+    }
 
     const outcomes: HuddleDispatchOutcome[] = [];
     let anyDispatched = false;
@@ -404,61 +447,37 @@ export class ChatV2DispatcherService {
       }
     };
 
-    const failed: Array<{ sessionName: string; responseMode: 'required' | 'optional'; error: string }> = [];
-    for (const sessionName of members) {
-      const responseMode: 'required' | 'optional' = mentioned.has(sessionName) ? 'required' : 'optional';
-      const first = await attempt(sessionName, responseMode);
-      if (first.ok) {
-        outcomes.push({ sessionName, responseMode, dispatched: true });
-        anyDispatched = true;
-      } else {
-        failed.push({ sessionName, responseMode, error: first.error ?? 'unknown sink failure' });
-      }
-    }
-
-    // Activate on send, huddle flavour: a team channel with nobody awake
-    // would otherwise swallow the owner's message (observed in Slack: a
-    // message in #think-tank got no reply because all three agents were
-    // inactive). Wake the members that were @-mentioned, and — when no one
-    // at all could be reached — the whole roster, then retry once each.
-    if (this.activateAgent && failed.length > 0) {
-      const toWake = failed.filter((f) => f.responseMode === 'required' || !anyDispatched);
-      for (const f of toWake) {
+    for (const [sessionName, responseMode] of targets) {
+      let result = await attempt(sessionName, responseMode);
+      if (!result.ok && this.activateAgent) {
+        // Activate on send: the addressee is inactive — wake it and retry once.
         this.logger.info('chat-v2 huddle dispatch: agent inactive — activating on send', {
           channelId: channel.id,
-          sessionName: f.sessionName,
-          mentioned: f.responseMode === 'required',
+          sessionName,
+          responseMode,
         });
         let activated = false;
         try {
-          activated = await this.activateAgent(f.sessionName);
+          activated = await this.activateAgent(sessionName);
         } catch (err) {
           this.logger.warn('chat-v2 huddle activate-on-send failed', {
-            sessionName: f.sessionName,
+            sessionName,
             err: err instanceof Error ? err.message : String(err),
           });
         }
-        if (activated) {
-          const retry = await attempt(f.sessionName, f.responseMode);
-          if (retry.ok) {
-            f.error = '';
-            anyDispatched = true;
-            outcomes.push({ sessionName: f.sessionName, responseMode: f.responseMode, dispatched: true });
-            continue;
-          }
-          f.error = retry.error ?? f.error;
-        }
+        if (activated) result = await attempt(sessionName, responseMode);
       }
-    }
-
-    for (const f of failed) {
-      if (f.error === '') continue; // delivered on retry
-      this.logger.warn('chat-v2 huddle dispatch reported failure', {
-        channelId: channel.id,
-        sessionName: f.sessionName,
-        err: f.error,
-      });
-      outcomes.push({ sessionName: f.sessionName, responseMode: f.responseMode, dispatched: false, error: f.error });
+      if (result.ok) {
+        outcomes.push({ sessionName, responseMode, dispatched: true });
+        anyDispatched = true;
+      } else {
+        this.logger.warn('chat-v2 huddle dispatch reported failure', {
+          channelId: channel.id,
+          sessionName,
+          err: result.error,
+        });
+        outcomes.push({ sessionName, responseMode, dispatched: false, error: result.error ?? 'unknown sink failure' });
+      }
     }
 
     return {

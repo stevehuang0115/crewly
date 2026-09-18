@@ -1806,6 +1806,24 @@ void (async () => {
 					// to fan-out a user message to every huddle member.
 					huddleMembersFor: (channelId) =>
 						chatService.queryHuddleMembersForDispatch(channelId),
+					// Thread follow-ups reach the agents already in the thread
+					// without another @.
+					threadParticipantsFor: (channelId, threadId) =>
+						chatService.queryThreadParticipantsForDispatch(channelId, threadId),
+					// A message that addresses nobody goes to the team leader alone
+					// (optional reply); the team is found by the huddle's roster.
+					huddleLeaderFor: async (channelId) => {
+						const members = new Set(chatService.queryHuddleMembersForDispatch(channelId));
+						if (members.size === 0) return null;
+						const teams = await this.storageService.getTeams();
+						for (const team of teams) {
+							const roster = (team.members ?? []).filter((m) => m.sessionName && members.has(m.sessionName));
+							if (roster.length === 0) continue;
+							const leader = roster.find((m) => m.role === 'team-leader') ?? roster[0];
+							return leader?.sessionName ?? null;
+						}
+						return null;
+					},
 					// Activate-on-send: messaging an offline agent wakes it, then
 					// the dispatcher retries delivery. User-initiated, so it uses
 					// the wake-gate-free activation path.

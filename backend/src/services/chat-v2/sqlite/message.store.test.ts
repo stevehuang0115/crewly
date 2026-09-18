@@ -440,6 +440,19 @@ describe('MessageStore', () => {
       expect(messages.findThreadRootBySlackTs(channelId, '999.9')).toBeNull();
     });
 
+    it('threadParticipants lists agents that posted in the thread or were @-mentioned in it, once each, in order', () => {
+      const root = messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: 'q', mentions: ['sess-b'] }).row;
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-b', content: 'a1', threadId: root.id });
+      messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: 'follow-up', threadId: root.id, mentions: ['sess-c'] });
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-c', content: 'a2', threadId: root.id });
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-b', content: 'a3', threadId: root.id });
+      // Another thread in the same channel is not counted.
+      const other = messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: 'unrelated' }).row;
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-z', content: 'x', threadId: other.id });
+      expect(messages.threadParticipants(channelId, root.id)).toEqual(['sess-b', 'sess-c']);
+      expect(messages.threadParticipants(channelId, 'nope')).toEqual([]);
+    });
+
     it('findLatestSlackRoot returns the newest Slack-origin root only', () => {
       insert(channelId, 'first', { slackThreadTs: '100.1' });
       const second = insert(channelId, 'second', { slackThreadTs: '200.1' });

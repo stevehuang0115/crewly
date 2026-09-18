@@ -442,6 +442,47 @@ export class MessageStore {
   }
 
   /**
+   * Agents already engaged in a thread: every agent that posted in it
+   * (root or reply) plus every session @-mentioned anywhere in it. A
+   * human's follow-up in that thread goes to these agents without another
+   * @, which is what makes a Slack thread feel like a conversation.
+   *
+   * @param channelId - The channel id
+   * @param rootId - The thread root message id
+   * @returns Distinct session names, in first-seen order
+   */
+  threadParticipants(channelId: string, rootId: string): string[] {
+    const rows = this.db
+      .prepare(
+        `SELECT sender_type, sender_id, mentions
+         FROM chat_messages
+         WHERE channel_id = ? AND (id = ? OR thread_id = ?)
+         ORDER BY seq ASC`,
+      )
+      .all(channelId, rootId, rootId) as Array<{ sender_type: string; sender_id: string; mentions: string | null }>;
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (s: string) => {
+      if (s && !seen.has(s)) {
+        seen.add(s);
+        out.push(s);
+      }
+    };
+    for (const r of rows) {
+      if (r.sender_type === 'agent') add(r.sender_id);
+      if (r.mentions) {
+        try {
+          const parsed = JSON.parse(r.mentions) as unknown;
+          if (Array.isArray(parsed)) for (const m of parsed) if (typeof m === 'string') add(m);
+        } catch {
+          // malformed mentions column — ignore
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
    * Return the current `MAX(seq)` for a channel, or 0 when empty.
    *
    * @param channelId - The channel id
