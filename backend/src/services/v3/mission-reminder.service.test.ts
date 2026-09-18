@@ -150,6 +150,44 @@ describe('MissionReminderService', () => {
     expect(result.checked).toBe(1); // only m2 was active
   });
 
+  it('skips active missions whose cascade approval is still pending (isMissionExecutable gate)', async () => {
+    (fs.readdir as any).mockResolvedValue(['m1.json', 'm2.json', 'm3.json']);
+    (fs.readFile as any).mockImplementation((p: string) => {
+      if (p.includes('m1')) {
+        return Promise.resolve(
+          JSON.stringify({ id: 'm1', status: 'active', approval: { state: 'pending_approval' } }),
+        );
+      }
+      if (p.includes('m2')) {
+        return Promise.resolve(
+          JSON.stringify({ id: 'm2', status: 'active', approval: { state: 'approved' } }),
+        );
+      }
+      if (p.includes('m3')) {
+        return Promise.resolve(
+          JSON.stringify({ id: 'm3', status: 'active', approval: { state: 'rejected' } }),
+        );
+      }
+      return Promise.reject(new Error('File not found'));
+    });
+
+    mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue({
+      offTrack: 1,
+      atRisk: 0,
+    });
+
+    const result = await service.runSweep();
+
+    // Only the approved child is swept; the pending + rejected ones are
+    // neither reminded about nor handed review WIs.
+    expect(result.checked).toBe(1);
+    expect(mockKRTrackingService.computeMissionOKRProgress).toHaveBeenCalledTimes(1);
+    expect(mockKRTrackingService.computeMissionOKRProgress).toHaveBeenCalledWith('m2');
+    expect(mockTaskPool.addToPool).not.toHaveBeenCalledWith(
+      expect.objectContaining({ missionId: 'm1' }),
+    );
+  });
+
   // ---- M5 NEW CASES ------------------------------------------------------
 
   it('case 4: at-risk only (no off-track) → urgency=normal', async () => {

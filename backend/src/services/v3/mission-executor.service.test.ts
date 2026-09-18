@@ -83,6 +83,33 @@ describe('MissionExecutorService', () => {
   });
 
   describe('processDecomposition', () => {
+    it('refuses a mission whose cascade approval is still pending', async () => {
+      const service = MissionExecutorService.getInstance();
+      const mission = makeMission({ approval: { state: 'pending_approval' } });
+
+      const result: DecompositionResult = {
+        missionId: 'mission-1',
+        phase: 1,
+        tasks: [
+          { title: 'Design schema', description: 'Design DB schema', type: 'delegate', priority: 'high' },
+        ],
+      };
+
+      await expect(service.processDecomposition(result, mission)).rejects.toThrow(
+        /not executable.*pending_approval/,
+      );
+      expect(mockAddToPool).not.toHaveBeenCalled();
+    });
+
+    it('refuses a paused mission', async () => {
+      const service = MissionExecutorService.getInstance();
+      const mission = makeMission({ status: 'paused' });
+
+      await expect(
+        service.processDecomposition({ missionId: 'mission-1', phase: 1, tasks: [] }, mission),
+      ).rejects.toThrow(/not executable/);
+    });
+
     it('should create WorkItems from decomposition result', async () => {
       const service = MissionExecutorService.getInstance();
       const mission = makeMission();

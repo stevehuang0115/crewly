@@ -50,8 +50,10 @@ jest.mock('./mission-executor.service.js', () => ({
   },
 }));
 
-// Mock getEffectiveCadence
+// Mock getEffectiveCadence; keep the real approval gate so the
+// pending-approval refusal below exercises the production predicate.
 jest.mock('../../types/v2/mission.types.js', () => ({
+  ...jest.requireActual('../../types/v2/mission.types.js'),
   getEffectiveCadence: jest.fn().mockReturnValue({
     reviewSchedule: '0 9 * * 1',
     phaseGateApproval: 'none',
@@ -212,6 +214,13 @@ describe('OKRReviewService', () => {
     it('should throw for non-existent mission', async () => {
       const service = OKRReviewService.getInstance();
       await expect(service.executeReview('nonexistent')).rejects.toThrow('Mission nonexistent not found');
+    });
+
+    it('refuses to review a mission whose cascade approval is still pending', async () => {
+      writeMission('m-pending', { approval: { state: 'pending_approval' } });
+      const service = OKRReviewService.getInstance();
+      await expect(service.executeReview('m-pending')).rejects.toThrow(/not executable/);
+      expect(mockComputeProgress).not.toHaveBeenCalled();
     });
   });
 

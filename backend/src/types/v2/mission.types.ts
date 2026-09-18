@@ -745,6 +745,36 @@ export const AUTONOMOUS_POLICY: Readonly<Omit<MissionPolicy, 'missionId'>> = {
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether a mission may be acted on by the runtime loops (reminder sweep,
+ * decomposition executor, event bridge, review service).
+ *
+ * `createMission` stamps `status: 'active'` unconditionally — including on
+ * cascade children whose `approval.state` is still `pending_approval`. Every
+ * runtime consumer used to filter on `status` alone, so a proposed-but-not-
+ * yet-approved child OKR was swept, reminded and handed review WorkItems
+ * before its owner had said yes. This helper is the single gate: a mission is
+ * executable iff it is `active` AND cascade-active (approval absent for legacy
+ * missions, or explicitly `approved`). Mirrors the roll-up's
+ * `isCascadeActive` rule in `kr-tracking.service.ts`.
+ *
+ * @param mission - Mission to test
+ * @returns `true` when the runtime loops should process the mission
+ *
+ * @example
+ * ```ts
+ * isMissionExecutable({ status: 'active' }); // true (legacy, no approval)
+ * isMissionExecutable({ status: 'active', approval: { state: 'pending_approval' } }); // false
+ * ```
+ */
+export function isMissionExecutable(
+  mission: Pick<Mission, 'status' | 'approval'>,
+): boolean {
+  if (mission.status !== 'active') return false;
+  if (mission.approval === undefined) return true;
+  return mission.approval.state === 'approved';
+}
+
+/**
  * Checks whether a string is a valid MissionStatus.
  */
 export function isValidMissionStatus(value: string): value is MissionStatus {

@@ -17,6 +17,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { createWorkItem, type WorkItem, type WorkItemType } from '../../types/v2/work-item.types.js';
 import {
+  isMissionExecutable,
   type Mission,
   type MissionPolicy,
 } from '../../types/v2/mission.types.js';
@@ -101,6 +102,16 @@ export class MissionExecutorService {
    * @returns Created WorkItem IDs
    */
   async processDecomposition(result: DecompositionResult, mission: Mission): Promise<string[]> {
+    // Approval gate: a proposed cascade child (approval.state !==
+    // 'approved') or a paused/terminal mission must never spawn WorkItems.
+    if (!isMissionExecutable(mission)) {
+      throw new Error(
+        `Mission ${mission.id} is not executable ` +
+          `(status='${mission.status}', approval='${mission.approval?.state ?? 'none'}') — ` +
+          'decomposition refused',
+      );
+    }
+
     // Policy check
     if (!mission.policy.canCreateTasks) {
       throw new Error(`Mission ${mission.id} policy does not allow task creation`);

@@ -25,7 +25,7 @@ import type {
   CascadeOKRSummary,
 } from '../../types/v2/key-result.types.js';
 import type { Mission } from '../../types/v2/mission.types.js';
-import { getEffectiveCadence } from '../../types/v2/mission.types.js';
+import { getEffectiveCadence, isMissionExecutable } from '../../types/v2/mission.types.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -91,6 +91,12 @@ export class OKRReviewService {
     const mission = await this.loadMission(missionId);
     if (!mission) {
       throw new Error(`Mission ${missionId} not found`);
+    }
+    if (!isMissionExecutable(mission)) {
+      throw new Error(
+        `Mission ${missionId} is not executable ` +
+          `(status='${mission.status}', approval='${mission.approval?.state ?? 'none'}') — review refused`,
+      );
     }
 
     const staleCycles = mission.staleCycles ?? 0;

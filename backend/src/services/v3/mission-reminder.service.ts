@@ -23,7 +23,7 @@ import { StorageService } from '../core/storage.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
-import type { Mission } from '../../types/v2/mission.types.js';
+import { isMissionExecutable, type Mission } from '../../types/v2/mission.types.js';
 import type { MissionOKRSummary } from '../../types/v2/key-result.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
@@ -563,7 +563,10 @@ cc: @${ORCHESTRATOR_SESSION_NAME}`;
   }
 
   /**
-   * Load all missions with 'active' status.
+   * Load all executable missions — `status: 'active'` AND approved (or
+   * legacy, no approval metadata). A cascade child still awaiting its
+   * owner's approval is skipped so it is neither reminded about nor handed
+   * review WorkItems before anyone said yes. See {@link isMissionExecutable}.
    */
   private async loadAllActiveMissions(): Promise<Mission[]> {
     const dir = getMissionsDir();
@@ -575,7 +578,7 @@ cc: @${ORCHESTRATOR_SESSION_NAME}`;
         try {
           const raw = await fs.readFile(path.join(dir, file), 'utf-8');
           const mission = JSON.parse(raw) as Mission;
-          if (mission.status === 'active') {
+          if (isMissionExecutable(mission)) {
             missions.push(mission);
           }
         } catch {
