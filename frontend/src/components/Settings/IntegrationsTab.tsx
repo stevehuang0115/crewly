@@ -9,13 +9,14 @@
  */
 
 import React, { useState } from 'react';
-import { MessageSquare, Phone, Hash, Send, MessageCircle, ChevronRight, ChevronDown } from 'lucide-react';
+import { MessageSquare, Phone, Hash, Send, MessageCircle, Mail, ChevronRight, ChevronDown } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { SlackTab } from './SlackTab';
 import { WhatsAppTab } from './WhatsAppTab';
 import { GoogleChatTab } from './GoogleChatTab';
 import { TelegramTab } from './TelegramTab';
 import { DiscordTab } from './DiscordTab';
+import { GoogleWorkspaceTab } from './GoogleWorkspaceTab';
 
 // =============================================================================
 // Types
@@ -24,7 +25,7 @@ import { DiscordTab } from './DiscordTab';
 /**
  * Supported messaging platform identifiers
  */
-type PlatformId = 'slack' | 'whatsapp' | 'discord' | 'telegram' | 'google-chat';
+type PlatformId = 'slack' | 'whatsapp' | 'discord' | 'telegram' | 'google-chat' | 'google-workspace';
 
 /**
  * Configuration for a messaging platform card
@@ -91,6 +92,14 @@ const PLATFORMS: PlatformConfig[] = [
     icon: MessageSquare,
     available: true,
     component: GoogleChatTab,
+  },
+  {
+    id: 'google-workspace',
+    name: 'Google Workspace',
+    description: 'Let agents read your Gmail, send mail on your behalf and manage your Google Calendar.',
+    icon: Mail,
+    available: true,
+    component: GoogleWorkspaceTab,
   },
 ];
 
