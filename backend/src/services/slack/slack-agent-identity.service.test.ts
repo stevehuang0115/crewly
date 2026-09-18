@@ -203,3 +203,40 @@ describe('singleton', () => {
     expect(e.status).toBe(409);
   });
 });
+
+describe('applyCloudConfig (Slack v3 — identities delivered with the Cloud config)', () => {
+  it('installs every agent from the config once, fires onInstalled for new ones and persists tokens', async () => {
+    const installed = jest.fn();
+    service.onInstalled(installed);
+    const agents = [
+      { agentSession: 'alpha-kai-1', teamId: 't1', botUserId: 'UKAI', botToken: 'xoxb-kai', appId: 'A1', displayName: 'Kai' },
+      { agentSession: 'alpha-mia-2', teamId: 't1', botUserId: 'UMIA', botToken: 'xoxb-mia', appId: 'A2', displayName: 'Mia' },
+    ];
+
+    expect(await service.applyCloudConfig(agents)).toBe(2);
+    expect(installed).toHaveBeenCalledTimes(2);
+    expect(service.getInstalled('alpha-kai-1')).toEqual({ botUserId: 'UKAI', botToken: 'xoxb-kai' });
+    expect(service.findByBotUserId('UMIA')).toBe('alpha-mia-2');
+    expect(service.get('alpha-kai-1')?.teamId).toBe('t1');
+
+    // Second application is a no-op (no new installs, no re-fire).
+    expect(await service.applyCloudConfig(agents)).toBe(0);
+    expect(installed).toHaveBeenCalledTimes(2);
+
+    // Persisted for the next boot.
+    const reloaded = makeService();
+    expect((await reloaded.list()).map((r) => r.agentSession).sort()).toEqual(['alpha-kai-1', 'alpha-mia-2']);
+    expect(reloaded.getInstalled('alpha-mia-2')?.botToken).toBe('xoxb-mia');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('skips entries without a token or bot user id', async () => {
+    expect(
+      await service.applyCloudConfig([
+        { agentSession: 'x', botUserId: '', botToken: 'xoxb', appId: 'A', displayName: 'X' },
+        { agentSession: 'y', botUserId: 'UY', botToken: '', appId: 'A', displayName: 'Y' },
+      ]),
+    ).toBe(0);
+    expect(await service.list()).toEqual([]);
+  });
+});

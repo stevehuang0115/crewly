@@ -23,6 +23,16 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
   }),
 }));
 
+// Cloud transport builds a bare Web API client (no Bolt app / socket).
+const mockWebClientCtor = jest.fn().mockImplementation(() => ({
+  auth: { test: jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT' }) },
+  chat: { postMessage: jest.fn().mockResolvedValue({ ts: '9.9' }), update: jest.fn() },
+  reactions: { add: jest.fn() },
+  users: { info: jest.fn() },
+  files: { uploadV2: jest.fn(), info: jest.fn() },
+}));
+jest.mock('@slack/web-api', () => ({ WebClient: mockWebClientCtor }));
+
 jest.mock('@slack/bolt', () => ({
   App: jest.fn().mockImplementation(() => ({
     client: {
@@ -1331,6 +1341,260 @@ describe('SlackService', () => {
       expect(isFatal(new Error('socket hang up'))).toBe(false);
       expect(isFatal(new Error('network error'))).toBe(false);
       expect(isFatal(new Error('ENOTFOUND'))).toBe(false);
+    });
+  });
+
+  describe('inbound transport split (Socket Mode vs Cloud relay)', () => {
+    const cloudConfig: SlackConfig = {
+      botToken: 'xoxb-cloud-token',
+      appToken: '',
+      signingSecret: '',
+      socketMode: false,
+      transport: 'cloud',
+      botUserId: 'UBOT',
+    };
+
+    /** Raw Slack `message` event as Slack delivers it to both transports. */
+    const rawMessage = {
+      type: 'message',
+      ts: '1700000000.000100',
+      text: 'hello team',
+      user: 'U123',
+      channel: 'C42',
+      thread_ts: '1700000000.000001',
+      team: 'T1',
+      files: [{ id: 'F1', name: 'a.png', mimetype: 'image/png', filetype: 'png', size: 1, url_private: '', url_private_download: '', permalink: '' }],
+    };
+
+    /** Boot a socket-mode service and return the captured Bolt `message` listener. */
+    async function bootSocket(): Promise<{ service: SlackService; onMessage: (args: any) => Promise<void>; onMention: (args: any) => Promise<void> }> {
+      let onMessage: ((args: any) => Promise<void>) | null = null;
+      let onMention: ((args: any) => Promise<void>) | null = null;
+      const { App } = await import('@slack/bolt');
+      (App as jest.Mock).mockImplementationOnce(() => ({
+        client: { chat: { postMessage: jest.fn(), update: jest.fn() }, reactions: { add: jest.fn() }, users: { info: jest.fn() }, files: { uploadV2: jest.fn(), info: jest.fn() } },
+        receiver: { client: new EventEmitter() },
+        message: jest.fn().mockImplementation((h: (args: any) => Promise<void>) => { onMessage = h; }),
+        event: jest.fn().mockImplementation((_t: string, h: (args: any) => Promise<void>) => { onMention = h; }),
+        action: jest.fn(),
+        error: jest.fn(),
+        start: jest.fn().mockResolvedValue(undefined),
+        stop: jest.fn().mockResolvedValue(undefined),
+      }));
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+      return { service, onMessage: onMessage!, onMention: onMention! };
+    }
+
+    beforeEach(() => {
+      mockWebClientCtor.mockClear();
+      mockBoltStart.mockClear();
+    });
+
+    it('cloud transport opens no Socket Mode connection and reports connected with a bot token', async () => {
+      const { App } = await import('@slack/bolt');
+      (App as jest.Mock).mockClear();
+      const service = new SlackService();
+      const connected = jest.fn();
+      service.on('connected', connected);
+
+      await service.initialize(cloudConfig);
+
+      expect(App).not.toHaveBeenCalled();
+      expect(mockBoltStart).not.toHaveBeenCalled();
+      expect(mockWebClientCtor).toHaveBeenCalledWith('xoxb-cloud-token');
+      expect(service.isConnected()).toBe(true);
+      expect(service.getStatus().socketMode).toBe(false);
+      expect(service.getTransport()).toBe('cloud');
+      expect(connected).toHaveBeenCalledTimes(1);
+      // Bot user id comes from the Cloud config — no auth.test round-trip.
+      await expect(service.getBotUserId()).resolves.toBe('UBOT');
+      await service.disconnect();
+      expect(service.isConnected()).toBe(false);
+    });
+
+    it('cloud transport refuses to start without a bot token', async () => {
+      const service = new SlackService();
+      service.on('error', () => undefined);
+      await expect(service.initialize({ ...cloudConfig, botToken: '' })).rejects.toThrow('no bot token');
+      expect(service.isConnected()).toBe(false);
+    });
+
+    it('outbound chat.postMessage still goes straight to the Web API in cloud transport', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      const ts = await service.sendMessage({ channelId: 'C1', text: 'hi' });
+      expect(ts).toBe('9.9');
+      expect(service.getStatus().messagesSent).toBe(1);
+    });
+
+    it('the same Slack message event produces the same routing result via both transports', async () => {
+      const { service: socketService, onMessage } = await bootSocket();
+      const socketEmitted: any[] = [];
+      socketService.on('message', (m) => socketEmitted.push(m));
+      await onMessage({ message: rawMessage, say: jest.fn() });
+
+      const cloudService = new SlackService();
+      await cloudService.initialize({ ...cloudConfig, allowedUserIds: ['U123'] });
+      const cloudEmitted: any[] = [];
+      cloudService.on('message', (m) => cloudEmitted.push(m));
+      const result = cloudService.handleCloudEnvelope({
+        eventId: 'Ev1',
+        slackTeamId: 'T1',
+        apiAppId: 'A1',
+        source: 'master',
+        event: rawMessage,
+        receivedAt: new Date().toISOString(),
+      });
+
+      expect(socketEmitted).toHaveLength(1);
+      expect(cloudEmitted).toHaveLength(1);
+      expect(result).toBe(cloudEmitted[0]);
+      const { source: s1, eventId: e1, ...socketMsg } = socketEmitted[0];
+      const { source: s2, eventId: e2, ...cloudMsg } = cloudEmitted[0];
+      expect(cloudMsg).toEqual(socketMsg);
+      expect(socketMsg).toMatchObject({
+        id: '1700000000.000100',
+        type: 'message',
+        text: 'hello team',
+        userId: 'U123',
+        channelId: 'C42',
+        threadTs: '1700000000.000001',
+        teamId: 'T1',
+        hasImages: true,
+        hasFiles: true,
+      });
+      expect(s1).toBe('socket');
+      expect(e1).toBeUndefined();
+      expect(s2).toBe('cloud');
+      expect(e2).toBe('Ev1');
+      expect(socketService.getStatus().messagesReceived).toBe(1);
+      expect(cloudService.getStatus().messagesReceived).toBe(1);
+    });
+
+    it('app_mention routes identically via both transports', async () => {
+      const mention = { type: 'app_mention', ts: '2.2', text: '<@UBOT> status?', user: 'U123', channel: 'C42', event_ts: '2.2', team: 'T1' };
+      const { service: socketService, onMention } = await bootSocket();
+      const socketEmitted: any[] = [];
+      socketService.on('message', (m) => socketEmitted.push(m));
+      await onMention({ event: mention });
+
+      const cloudService = new SlackService();
+      await cloudService.initialize(cloudConfig);
+      const cloudEmitted: any[] = [];
+      cloudService.on('message', (m) => cloudEmitted.push(m));
+      cloudService.handleCloudEnvelope({ eventId: 'Ev2', slackTeamId: 'T1', apiAppId: 'A1', source: 'master', event: mention, receivedAt: '' });
+
+      const strip = ({ source, eventId, ...rest }: any) => rest;
+      expect(strip(cloudEmitted[0])).toEqual(strip(socketEmitted[0]));
+      expect(socketEmitted[0]).toMatchObject({ type: 'app_mention', eventTs: '2.2', text: '<@UBOT> status?' });
+    });
+
+    it('applies the allow-list in both transports', async () => {
+      const { service: socketService, onMessage } = await bootSocket();
+      const socketEmitted: any[] = [];
+      socketService.on('message', (m) => socketEmitted.push(m));
+      await onMessage({ message: { ...rawMessage, user: 'U999' }, say: jest.fn() });
+      expect(socketEmitted).toHaveLength(0);
+
+      const cloudService = new SlackService();
+      await cloudService.initialize({ ...cloudConfig, allowedUserIds: ['U123'] });
+      const dropped = cloudService.handleInboundEvent({ ...rawMessage, user: 'U999' }, { source: 'cloud' });
+      expect(dropped).toBeNull();
+    });
+
+    it('carries the per-agent app provenance on cloud events', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      const msg = service.handleCloudEnvelope({
+        eventId: 'Ev3', slackTeamId: 'T1', apiAppId: 'A-agent', source: 'agent', agentSession: 'team-kai-1',
+        event: { type: 'message', ts: '3.3', text: 'dm to kai', user: 'U123', channel: 'D77' },
+        receivedAt: '',
+      });
+      expect(msg).toMatchObject({ agentSession: 'team-kai-1', source: 'cloud', eventId: 'Ev3', channelId: 'D77' });
+    });
+
+    it('keeps DMs to a per-agent app but drops its copies of channel events (the master app delivers those)', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      const emitted: any[] = [];
+      service.on('message', (m) => emitted.push(m));
+      const agentEnv = (event: any) => ({
+        eventId: 'x', slackTeamId: 'T1', apiAppId: 'A-kai', source: 'agent' as const, agentSession: 'team-kai-1', event, receivedAt: '',
+      });
+
+      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '1', text: 'hi kai', user: 'U1', channel: 'D77', channel_type: 'im' }))).not.toBeNull();
+      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '1', text: 'hi kai', user: 'U1', channel: 'D78' }))).not.toBeNull();
+      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42', channel_type: 'channel' }))).toBeNull();
+      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42' }))).toBeNull();
+      expect(service.handleCloudEnvelope(agentEnv({ type: 'app_mention', ts: '3', text: '<@UKAI> ping', user: 'U1', channel: 'C42', event_ts: '3' }))).toBeNull();
+      expect(emitted).toHaveLength(2);
+      // The master app's copy of the same channel message still routes.
+      expect(service.handleCloudEnvelope({ ...agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42' }), source: 'master', agentSession: undefined })).not.toBeNull();
+    });
+
+    it('cloud transport drops its own bot posts, bot chatter and non-routable subtypes (Bolt ignoreSelf parity)', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      const emitted: any[] = [];
+      service.on('message', (m) => emitted.push(m));
+      const env = (event: any) => ({ eventId: 'x', slackTeamId: 'T1', apiAppId: 'A1', source: 'master' as const, event, receivedAt: '' });
+
+      expect(service.handleCloudEnvelope(env({ type: 'message', ts: '1', text: 'my own reply', user: 'UBOT', channel: 'C1' }))).toBeNull();
+      expect(service.handleCloudEnvelope(env({ type: 'message', ts: '1', text: 'x', bot_id: 'B1', channel: 'C1' }))).toBeNull();
+      expect(service.handleCloudEnvelope(env({ type: 'message', subtype: 'message_changed', ts: '1', text: 'x', user: 'U1', channel: 'C1' }))).toBeNull();
+      expect(service.handleCloudEnvelope(env({ type: 'message', subtype: 'channel_join', ts: '1', text: 'x', user: 'U1', channel: 'C1' }))).toBeNull();
+      expect(service.handleCloudEnvelope(env({ type: 'reaction_added', user: 'U1' }))).toBeNull();
+      expect(service.handleCloudEnvelope({ eventId: 'bad' } as any)).toBeNull();
+      expect(emitted).toHaveLength(0);
+
+      // file_share keeps flowing (attachments), as it does over the socket.
+      const kept = service.handleCloudEnvelope(env({ ...rawMessage, subtype: 'file_share' }));
+      expect(kept?.hasFiles).toBe(true);
+      expect(emitted).toHaveLength(1);
+    });
+
+    it('attachCloudTransport routes slack_event relay messages and ignores other types', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      const emitted: any[] = [];
+      service.on('message', (m) => emitted.push(m));
+      const relay = new EventEmitter();
+
+      service.attachCloudTransport(relay as any);
+      relay.emit('message', { id: 'm1', type: 'chat_request', payload: { anything: true } });
+      relay.emit('message', {
+        id: 'm2',
+        type: 'slack_event',
+        fromDeviceName: 'crewly-cloud-slack',
+        payload: { eventId: 'Ev9', slackTeamId: 'T1', apiAppId: 'A1', source: 'master', event: rawMessage, receivedAt: '' },
+      });
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({ eventId: 'Ev9', source: 'cloud' });
+
+      // Malformed payloads never throw out of the emitter.
+      expect(() => relay.emit('message', { type: 'slack_event', payload: null })).not.toThrow();
+
+      service.detachCloudTransport();
+      relay.emit('message', { type: 'slack_event', payload: { eventId: 'Ev10', event: rawMessage } });
+      expect(emitted).toHaveLength(1);
+      expect(relay.listenerCount('message')).toBe(0);
+    });
+
+    it('disconnect detaches the relay listener in cloud transport', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      const relay = new EventEmitter();
+      service.attachCloudTransport(relay as any);
+      expect(relay.listenerCount('message')).toBe(1);
+      await service.disconnect();
+      expect(relay.listenerCount('message')).toBe(0);
+      expect(service.isConnected()).toBe(false);
+    });
+
+    it('handleInboundEvent is a no-op before initialize', () => {
+      const service = new SlackService();
+      expect(service.handleInboundEvent(rawMessage)).toBeNull();
     });
   });
 

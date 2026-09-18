@@ -50,12 +50,28 @@ async function readJson<T>(res: Response): Promise<T> {
   return data.data as T;
 }
 
+/** One agent app still needing its install click (from `/api/slack/cloud/status`). */
+export interface PendingInstallLink {
+  agentSession: string;
+  url: string;
+}
+
+export interface SlackAgentIdentitiesProps {
+  /**
+   * Install links reported by the Cloud agent sync for agents that have no
+   * local identity record yet. Rendered alongside the identity list so the
+   * one place to click is here.
+   */
+  pendingInstalls?: PendingInstallLink[];
+}
+
 /**
  * Agent identities card.
  *
+ * @param props - Optional pending install links from the Cloud sync
  * @returns The card
  */
-export const SlackAgentIdentities: React.FC = () => {
+export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pendingInstalls = [] }) => {
   const [data, setData] = useState<Payload | null>(null);
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -138,6 +154,8 @@ export const SlackAgentIdentities: React.FC = () => {
 
   const configured = !!data?.cloud?.configToken?.configured;
   const tokenInvalid = data?.cloud?.configToken?.status === 'invalid';
+  const known = new Set((data?.identities ?? []).map((r) => r.agentSession));
+  const extraPending = pendingInstalls.filter((p) => !known.has(p.agentSession));
 
   return (
     <Card padding="lg">
@@ -239,10 +257,34 @@ export const SlackAgentIdentities: React.FC = () => {
             </form>
           )}
 
+          {extraPending.length > 0 && (
+            <ul className="divide-y divide-border-dark" data-testid="slack-pending-installs">
+              {extraPending.map((p) => (
+                <li key={p.agentSession} className="py-3 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{p.agentSession}</div>
+                    <div className="text-xs text-text-secondary-dark">Waiting for your install click</div>
+                  </div>
+                  <a
+                    href={p.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                  >
+                    Install {p.agentSession}
+                    <ExternalLink className="w-3 h-3" />
+                  </a>
+                </li>
+              ))}
+            </ul>
+          )}
+
           {data.identities.length === 0 ? (
-            <p className="text-sm text-text-secondary-dark">
-              No agent identities yet. They are created automatically for members of teams that have a Slack channel.
-            </p>
+            extraPending.length === 0 && (
+              <p className="text-sm text-text-secondary-dark">
+                No agent identities yet. They are created automatically for members of teams that have a Slack channel.
+              </p>
+            )
           ) : (
             <ul className="divide-y divide-border-dark">
               {data.identities.map((row) => (

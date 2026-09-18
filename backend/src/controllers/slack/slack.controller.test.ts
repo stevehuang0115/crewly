@@ -62,8 +62,49 @@ jest.mock('../../services/slack/slack-agent-post.service.js', () => {
 });
 // /connect starts team channels best-effort; keep it inert here.
 const mockStartTeamChannels = jest.fn().mockResolvedValue(undefined);
+// Slack v3 (Cloud owns Slack) collaborators the /cloud/* routes reach for.
+const mockCloudConfig = {
+  refresh: jest.fn(),
+  load: jest.fn(),
+  getConfig: jest.fn(() => null as null | Record<string, unknown>),
+  getSourceMode: jest.fn(() => 'auto'),
+  getFetchedAt: jest.fn(() => null),
+  getLastError: jest.fn(() => null),
+  removeWorkspace: jest.fn(),
+};
+const mockRegistry = {
+  isPrimary: jest.fn(async () => false),
+  setPrimary: jest.fn(async () => undefined),
+  getInstanceId: jest.fn(() => 'device-1'),
+  getLastHeartbeatAt: jest.fn(() => null),
+  getLastError: jest.fn((): string | null => null),
+  getPendingInstalls: jest.fn(() => [] as Array<{ agentSession: string; url: string }>),
+  syncAgents: jest.fn(),
+};
+const mockHandleCloudConfigChange = jest.fn(async (_config: unknown) => undefined);
+let mockActiveSource: 'env' | 'cloud' | null = null;
 jest.mock('../../services/slack/slack-initializer.js', () => ({
   startSlackTeamChannels: (...args: unknown[]) => mockStartTeamChannels(...args),
+  ensureSlackCloudConfigService: async () => mockCloudConfig,
+  ensureSlackInstanceRegistry: async () => mockRegistry,
+  handleSlackCloudConfigChange: (config: unknown) => mockHandleCloudConfigChange(config),
+  getActiveSlackSource: () => mockActiveSource,
+  setActiveSlackSource: (s: 'env' | 'cloud' | null) => {
+    mockActiveSource = s;
+  },
+}));
+jest.mock('../../services/slack/slack-instance-registry.service.js', () => ({
+  getSlackInstanceRegistryService: () => mockRegistry,
+}));
+const mockCloudClient = { connected: true, token: 'jwt-abc' as string | null, url: 'https://api.crewlyai.com/' as string | null };
+jest.mock('../../services/cloud/cloud-client.service.js', () => ({
+  CloudClientService: {
+    getInstance: () => ({
+      isConnected: () => mockCloudClient.connected,
+      getToken: () => mockCloudClient.token,
+      getCloudUrl: () => mockCloudClient.url,
+    }),
+  },
 }));
 
 // Jest globals are available automatically
@@ -1247,6 +1288,151 @@ describe('Slack Controller', () => {
   // Phase 3 — /slack/send dual-write to chat-v2
   // Spec: 2026-05-14-unified-chat-message-store.md
   // ──────────────────────────────────────────────────────────────────
+  describe('Cloud owns Slack — /api/slack/cloud/*', () => {
+    beforeEach(() => {
+      mockCloudClient.connected = true;
+      mockCloudClient.token = 'jwt-abc';
+      mockCloudClient.url = 'https://api.crewlyai.com/';
+      mockActiveSource = null;
+      mockCloudConfig.getConfig.mockReturnValue(null);
+      mockCloudConfig.refresh.mockReset();
+      mockCloudConfig.load.mockReset();
+      mockRegistry.getPendingInstalls.mockReturnValue([]);
+      mockRegistry.setPrimary.mockClear();
+      mockRegistry.syncAgents.mockReset();
+      mockHandleCloudConfigChange.mockClear();
+    });
+
+    describe('GET /cloud/install-url', () => {
+      it('builds <cloud>/api/cloud/slack/install with the current JWT and the dashboard return URL', async () => {
+        const response = await request(app).get('/api/slack/cloud/install-url').set('Host', 'crewly.local:3000');
+        expect(response.status).toBe(200);
+        const url = new URL(response.body.data.url);
+        expect(`${url.origin}${url.pathname}`).toBe('https://api.crewlyai.com/api/cloud/slack/install');
+        expect(url.searchParams.get('token')).toBe('jwt-abc');
+        expect(url.searchParams.get('returnUrl')).toBe('http://crewly.local:3000/settings?tab=slack');
+        expect(response.body.data.returnUrl).toBe('http://crewly.local:3000/settings?tab=slack');
+      });
+
+      it('honours an http(s) returnUrl from the caller and ignores anything else', async () => {
+        const good = await request(app).get('/api/slack/cloud/install-url').query({ returnUrl: 'https://dash.example.com/settings?tab=slack' });
+        expect(new URL(good.body.data.url).searchParams.get('returnUrl')).toBe('https://dash.example.com/settings?tab=slack');
+        const bad = await request(app).get('/api/slack/cloud/install-url').query({ returnUrl: 'javascript:alert(1)' }).set('Host', 'h:1');
+        expect(new URL(bad.body.data.url).searchParams.get('returnUrl')).toBe('http://h:1/settings?tab=slack');
+      });
+
+      it('answers 401 CLOUD_NOT_CONNECTED without a Cloud login', async () => {
+        mockCloudClient.connected = false;
+        const response = await request(app).get('/api/slack/cloud/install-url');
+        expect(response.status).toBe(401);
+        expect(response.body.code).toBe('CLOUD_NOT_CONNECTED');
+      });
+    });
+
+    describe('GET /cloud/status', () => {
+      it('reports no workspace and the primary flag when nothing is installed', async () => {
+        const response = await request(app).get('/api/slack/cloud/status');
+        expect(response.status).toBe(200);
+        expect(response.body.data).toMatchObject({
+          cloudConnected: true,
+          sourceMode: 'auto',
+          activeSource: null,
+          connected: false,
+          transport: null,
+          workspace: null,
+          primary: false,
+          instanceId: 'device-1',
+          pendingInstalls: [],
+          local: { env: false },
+        });
+        expect(mockCloudConfig.load).toHaveBeenCalled();
+        expect(mockCloudConfig.refresh).not.toHaveBeenCalled();
+      });
+
+      it('with ?refresh=1 re-fetches, connects when a workspace appeared, and redacts tokens', async () => {
+        const config = {
+          workspace: { slackTeamId: 'T1', slackTeamName: 'Acme', botUserId: 'UBOT', botToken: 'xoxb-secret', appId: 'A0' },
+          agents: [{ agentSession: 'a', botUserId: 'UA', botToken: 'xoxb-a', appId: 'A1', displayName: 'A' }],
+          transport: 'cloud',
+        };
+        mockCloudConfig.getConfig.mockReturnValue(config);
+        mockRegistry.getPendingInstalls.mockReturnValue([{ agentSession: 'alpha-kai-1', url: 'https://slack.com/oauth/kai' }]);
+
+        const response = await request(app).get('/api/slack/cloud/status').query({ refresh: '1' });
+        expect(mockCloudConfig.refresh).toHaveBeenCalledTimes(1);
+        expect(mockHandleCloudConfigChange).toHaveBeenCalledWith(config);
+        expect(response.body.data.workspace).toEqual({
+          slackTeamId: 'T1',
+          slackTeamName: 'Acme',
+          botUserId: 'UBOT',
+          appId: 'A0',
+          agentIdentities: 1,
+        });
+        expect(JSON.stringify(response.body)).not.toContain('xoxb-');
+        expect(response.body.data.pendingInstalls).toEqual([{ agentSession: 'alpha-kai-1', url: 'https://slack.com/oauth/kai' }]);
+      });
+
+      it('does not auto-connect when CREWLY_SLACK_SOURCE=env', async () => {
+        mockCloudConfig.getSourceMode.mockReturnValueOnce('env');
+        mockCloudConfig.getConfig.mockReturnValue({ workspace: { slackTeamId: 'T', slackTeamName: 'W', botUserId: 'U', botToken: 'x', appId: 'A' }, agents: [], transport: 'cloud' });
+        await request(app).get('/api/slack/cloud/status').query({ refresh: '1' });
+        expect(mockHandleCloudConfigChange).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('PUT /cloud/primary', () => {
+      it('validates the body and persists the toggle through the registry', async () => {
+        const bad = await request(app).put('/api/slack/cloud/primary').send({ primary: 'yes' });
+        expect(bad.status).toBe(400);
+
+        mockRegistry.isPrimary.mockResolvedValueOnce(true);
+        const response = await request(app).put('/api/slack/cloud/primary').send({ primary: true });
+        expect(response.status).toBe(200);
+        expect(mockRegistry.setPrimary).toHaveBeenCalledWith(true);
+        expect(response.body.data.primary).toBe(true);
+      });
+    });
+
+    describe('POST /cloud/agents/sync', () => {
+      it('returns the pending install links from Cloud', async () => {
+        mockRegistry.syncAgents.mockResolvedValue({ installUrls: [{ agentSession: 'a', url: 'u' }] });
+        const response = await request(app).post('/api/slack/cloud/agents/sync');
+        expect(response.status).toBe(200);
+        expect(response.body.data.installUrls).toEqual([{ agentSession: 'a', url: 'u' }]);
+      });
+
+      it('answers 502 when Cloud refused', async () => {
+        mockRegistry.syncAgents.mockResolvedValue(null);
+        mockRegistry.getLastError.mockReturnValueOnce('config token missing');
+        const response = await request(app).post('/api/slack/cloud/agents/sync');
+        expect(response.status).toBe(502);
+        expect(response.body.error).toBe('config token missing');
+      });
+    });
+
+    describe('DELETE /cloud/workspace', () => {
+      it('removes the workspace on Cloud and disconnects a cloud-transport connection', async () => {
+        mockCloudConfig.removeWorkspace.mockResolvedValue(true);
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        jest.spyOn(slackService, 'getTransport').mockReturnValue('cloud');
+        const disconnect = jest.spyOn(slackService, 'disconnect').mockResolvedValue(undefined);
+
+        const response = await request(app).delete('/api/slack/cloud/workspace');
+        expect(response.status).toBe(200);
+        expect(response.body.data.removed).toBe(true);
+        expect(mockHandleCloudConfigChange).toHaveBeenCalledWith(null);
+        expect(disconnect).toHaveBeenCalled();
+      });
+
+      it('requires a Cloud login', async () => {
+        mockCloudClient.token = null;
+        const response = await request(app).delete('/api/slack/cloud/workspace');
+        expect(response.status).toBe(401);
+      });
+    });
+  });
+
   describe('POST /api/slack/send — chat-v2 dual-write', () => {
     beforeEach(() => {
       mockChatV2EnsureChannel.mockClear();

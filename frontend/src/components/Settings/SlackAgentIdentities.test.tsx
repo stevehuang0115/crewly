@@ -114,4 +114,21 @@ describe('SlackAgentIdentities', () => {
     fireEvent.click(screen.getByLabelText('Refresh agent identities'));
     await waitFor(() => expect(mockFetch).toHaveBeenCalledWith('/api/slack/agent-identities?refresh=1'));
   });
+
+  it('renders Cloud-sync pending install links for agents without a local record (and not for known ones)', async () => {
+    routeFetch();
+    render(
+      <SlackAgentIdentities
+        pendingInstalls={[
+          { agentSession: 'alpha-zed-1', url: 'https://slack.com/oauth/zed' },
+          { agentSession: 'l', url: 'https://slack.com/oauth/dup' },
+        ]}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText('Sam')).toBeInTheDocument());
+    const link = screen.getByText('Install alpha-zed-1').closest('a')!;
+    expect(link.getAttribute('href')).toBe('https://slack.com/oauth/zed');
+    // Leo already has a local record → only his own install link is shown.
+    expect(screen.getAllByText(/^Install /)).toHaveLength(2);
+  });
 });

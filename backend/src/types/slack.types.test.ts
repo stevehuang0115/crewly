@@ -15,6 +15,9 @@ import {
   SlackFile,
   SlackImageInfo,
   SlackFileInfo,
+  SlackCloudEventEnvelope,
+  SlackCloudConfig,
+  SlackInstanceRegistryPayload,
   NOTIFICATION_URGENCIES,
   COMMAND_PATTERNS,
   isUserAllowed,
@@ -389,6 +392,63 @@ describe('Slack Types', () => {
       expect(notif.metadata?.missionId).toBe('m1');
       expect(notif.metadata?.offTrack).toBe(2);
       expect(notif.metadata?.atRisk).toBe(1);
+    });
+  });
+
+  describe('Slack v3 (Cloud owns Slack) shapes', () => {
+    it('SlackConfig accepts the cloud transport with empty socket credentials', () => {
+      const config: SlackConfig = {
+        botToken: 'xoxb-cloud',
+        appToken: '',
+        signingSecret: '',
+        socketMode: false,
+        transport: 'cloud',
+        botUserId: 'UBOT',
+      };
+      expect(config.transport).toBe('cloud');
+      expect(config.botUserId).toBe('UBOT');
+    });
+
+    it('SlackCloudEventEnvelope carries the raw Slack event and its provenance', () => {
+      const envelope: SlackCloudEventEnvelope = {
+        eventId: 'Ev1',
+        slackTeamId: 'T1',
+        apiAppId: 'A1',
+        source: 'agent',
+        agentSession: 'team-kai-1234',
+        event: { type: 'message', ts: '1.1', text: 'hi', user: 'U1', channel: 'D1' },
+        receivedAt: new Date().toISOString(),
+      };
+      expect(envelope.event.type).toBe('message');
+      expect(envelope.agentSession).toBe('team-kai-1234');
+    });
+
+    it('SlackCloudConfig pairs the workspace with installed agent identities', () => {
+      const config: SlackCloudConfig = {
+        workspace: { slackTeamId: 'T1', slackTeamName: 'Acme', botUserId: 'UB', botToken: 'xoxb', appId: 'A0' },
+        agents: [{ agentSession: 's1', botUserId: 'UA', botToken: 'xoxb-a', appId: 'A1', displayName: 'Kai' }],
+        transport: 'cloud',
+      };
+      expect(config.agents).toHaveLength(1);
+    });
+
+    it('SlackInstanceRegistryPayload lists teams with their channel and agents', () => {
+      const payload: SlackInstanceRegistryPayload = {
+        deviceName: 'mbp',
+        relayQueueId: 'q1',
+        primary: true,
+        teams: [{ teamId: 't1', name: 'Alpha', channelId: 'C1', agents: ['a', 'b'] }],
+        crewlyVersion: '1.16.0',
+      };
+      expect(payload.teams[0].agents).toEqual(['a', 'b']);
+    });
+
+    it('SlackIncomingMessage records the delivering transport', () => {
+      const message: SlackIncomingMessage = {
+        id: '1', type: 'message', text: 'x', userId: 'U', channelId: 'C', ts: '1', teamId: 'T', eventTs: '1',
+        source: 'cloud', eventId: 'Ev1',
+      };
+      expect(message.source).toBe('cloud');
     });
   });
 });

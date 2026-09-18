@@ -2718,15 +2718,19 @@ void (async () => {
 				messageQueueService: this.messageQueueService,
 			});
 
+			// Wire thread store into the bridge for persistent thread tracking.
+			// Done regardless of the boot outcome: with Cloud-owned Slack the
+			// connection can come up later (workspace installed from Settings)
+			// and the bridge must already know its stores.
+			const threadStore = getSlackThreadStore();
+			if (threadStore) {
+				const { getSlackOrchestratorBridge } = await import('./services/slack/slack-orchestrator-bridge.js');
+				const bridge = getSlackOrchestratorBridge();
+				bridge.setSlackThreadStore(threadStore);
+				bridge.setThreadStatusQueue(this.threadStatusQueueService);
+			}
+
 			if (result.success) {
-				// Wire thread store into the bridge for persistent thread tracking
-				const threadStore = getSlackThreadStore();
-				if (threadStore) {
-					const { getSlackOrchestratorBridge } = await import('./services/slack/slack-orchestrator-bridge.js');
-					const bridge = getSlackOrchestratorBridge();
-					bridge.setSlackThreadStore(threadStore);
-					bridge.setThreadStatusQueue(this.threadStatusQueueService);
-				}
 				this.logger.info('Slack integration initialized successfully');
 			} else if (result.attempted) {
 				this.logger.warn('Slack initialization failed', { error: result.error });

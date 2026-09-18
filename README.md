@@ -125,15 +125,47 @@ Optional environment variables (`.env` file or shell):
 ```bash
 GEMINI_API_KEY=your_key_here       # Required for Gemini CLI runtime
 
-SLACK_BOT_TOKEN=xoxb-...           # Optional: Slack integration
+SLACK_BOT_TOKEN=xoxb-...           # Optional: self-hosted Slack app (see "Slack" below)
 SLACK_APP_TOKEN=xapp-...
 SLACK_SIGNING_SECRET=...
+CREWLY_SLACK_SOURCE=cloud          # Optional: env | cloud (unset = Cloud wins when both exist)
+CREWLY_SLACK_PRIMARY=1             # Optional: this instance handles DMs / unmapped channels
 
 LOG_LEVEL=info                     # debug, info, warn, error
 WEB_PORT=8787                      # Dashboard port (default: 8787)
 CREWLY_BIND_HOST=0.0.0.0           # Interface to listen on (127.0.0.1 = this machine only)
 CREWLY_API_TOKEN=...               # Pin the API token (otherwise generated at ~/.crewly/api-token)
 ```
+
+### Slack
+
+**One click (recommended).** Log in to Crewly Cloud (Settings → Cloud), open
+Settings → Integrations → Slack and press **Connect Slack**. Slack asks you to
+approve the Crewly app once; from then on every Crewly instance signed in to the
+same Crewly account gets Slack automatically — team channels, and one real Slack
+bot user per agent — with no tokens to copy. The instance pulls its config from
+Cloud on boot and every 10 minutes (cached 0600 at
+`~/.crewly/slack-cloud-config.json`); Slack events reach it through the Cloud
+relay, so no Socket Mode connection is opened.
+
+**The one manual step.** Slack only lets an app be created by an *App
+Configuration Token* of a workspace member, and Crewly creates one Slack app per
+agent so each agent is a real bot user (name in the member list, native `@`
+mentions). Generate the token at api.slack.com/apps ("Your App Configuration
+Tokens" → Generate) and paste it in Settings → Slack → Agent Identities. Cloud
+keeps it refreshed. Each new agent then shows an install link you click once.
+
+**Several instances, one workspace.** Every instance registers its teams,
+channels and agents with Cloud (on boot, on team changes, every 5 min); Slack
+traffic for a team channel goes to the instance running that team. Direct
+messages to the Crewly bot and channels no team owns go to the **primary**
+instance — the Settings toggle, or `CREWLY_SLACK_PRIMARY=1`.
+
+**Self-hosted app.** The original path (your own Slack app, Socket Mode,
+`SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `SLACK_SIGNING_SECRET` or the form under
+Settings → Slack → Advanced) still works. `CREWLY_SLACK_SOURCE` picks the source:
+`cloud` uses only the Cloud workspace, `env` uses only local tokens and never
+asks Cloud, unset prefers Cloud when both exist (logged once at boot).
 
 ### Securing a server install
 

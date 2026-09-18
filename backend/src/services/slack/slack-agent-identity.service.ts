@@ -25,7 +25,11 @@
 
 import * as path from 'path';
 import { promises as fs } from 'fs';
-import type { SlackAgentIdentityRecord, SlackAgentIdentitiesFile } from '../../types/slack.types.js';
+import type {
+  SlackAgentIdentityRecord,
+  SlackAgentIdentitiesFile,
+  SlackCloudAgentConfig,
+} from '../../types/slack.types.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -205,6 +209,35 @@ export class SlackAgentIdentityService {
     const store = await this.load();
     if (!store.identities.some((r) => r.status === 'pending_install')) this.stopPolling();
     return store.identities.map((r) => ({ ...r }));
+  }
+
+  /**
+   * Merge the installed identities handed down with the Cloud-owned Slack
+   * config (`GET /api/cloud/slack/config` → `agents`). Each entry is a fully
+   * installed bot user, so it lands as `installed` and fires
+   * {@link onInstalled} the first time it is seen — the team-channel
+   * service then invites the bot into its channels. Idempotent.
+   *
+   * @param agents - Agents from the Cloud config
+   * @returns Number of records that became installed by this call
+   */
+  async applyCloudConfig(agents: SlackCloudAgentConfig[]): Promise<number> {
+    let newlyInstalled = 0;
+    for (const agent of agents) {
+      if (!agent.agentSession || !agent.botToken || !agent.botUserId) continue;
+      const before = this.getInstalled(agent.agentSession);
+      await this.mergeView({
+        agentSession: agent.agentSession,
+        displayName: agent.displayName || agent.agentSession,
+        appId: agent.appId,
+        status: 'installed',
+        botUserId: agent.botUserId,
+        teamId: agent.teamId,
+        botToken: agent.botToken,
+      });
+      if (!before) newlyInstalled += 1;
+    }
+    return newlyInstalled;
   }
 
   /**

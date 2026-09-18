@@ -8,14 +8,25 @@
  */
 
 /**
+ * How inbound Slack events reach this instance.
+ *
+ * - `socket` — the self-hosted app: Bolt opens a Socket Mode connection with
+ *   the app token (the original transport).
+ * - `cloud` — Crewly Cloud owns the Slack app, receives events over HTTP and
+ *   pushes them to this instance as `slack_event` relay messages. No socket
+ *   is opened; outbound calls still go straight to the Slack Web API.
+ */
+export type SlackTransport = 'socket' | 'cloud';
+
+/**
  * Slack bot configuration
  */
 export interface SlackConfig {
   /** Bot OAuth token (xoxb-...) */
   botToken: string;
-  /** App-level token for Socket Mode (xapp-...) */
+  /** App-level token for Socket Mode (xapp-...). Empty for the cloud transport. */
   appToken: string;
-  /** Signing secret for request verification */
+  /** Signing secret for request verification. Empty for the cloud transport. */
   signingSecret: string;
   /** Channel ID for orchestrator notifications */
   defaultChannelId?: string;
@@ -23,6 +34,138 @@ export interface SlackConfig {
   allowedUserIds?: string[];
   /** Enable Socket Mode for real-time events */
   socketMode: boolean;
+  /** Inbound transport; defaults to `socket` */
+  transport?: SlackTransport;
+  /** Bot user id (`U…`) when already known (cloud config) — skips `auth.test` */
+  botUserId?: string;
+}
+
+/**
+ * Raw Slack event object as delivered by the Events API / Socket Mode for
+ * `message` and `app_mention`. Only the fields the inbound handler reads.
+ */
+export interface SlackRawInboundEvent {
+  /** `message` | `app_mention` (anything else is ignored) */
+  type: string;
+  ts?: string;
+  text?: string;
+  user?: string;
+  channel?: string;
+  thread_ts?: string;
+  team?: string;
+  event_ts?: string;
+  /** Message subtype (`file_share`, `bot_message`, `message_changed`, …) */
+  subtype?: string;
+  /** `im` | `channel` | `group` | `mpim` on Events API `message` events */
+  channel_type?: string;
+  /** Set when a bot posted the message */
+  bot_id?: string;
+  files?: SlackFile[];
+}
+
+/** Provenance attached to an inbound event by the transport that received it. */
+export interface SlackInboundMeta {
+  source: SlackTransport;
+  /** Slack `event_id` (cloud transport) */
+  eventId?: string;
+  /** App the event was delivered to (cloud transport) */
+  apiAppId?: string;
+  /** Set when the event came through a per-agent app */
+  agentSession?: string;
+}
+
+/**
+ * `data` of a `slack_event` relay message pushed by Crewly Cloud (contract:
+ * Slack v3 events). `event` is the raw Slack event object.
+ */
+export interface SlackCloudEventEnvelope {
+  eventId: string;
+  slackTeamId: string;
+  apiAppId: string;
+  /** `master` = the account's workspace app; `agent` = a per-agent app */
+  source: 'master' | 'agent';
+  agentSession?: string;
+  event: SlackRawInboundEvent;
+  receivedAt: string;
+}
+
+/** The master workspace half of `GET /api/cloud/slack/config`. */
+export interface SlackCloudWorkspaceConfig {
+  slackTeamId: string;
+  slackTeamName: string;
+  botUserId: string;
+  botToken: string;
+  appId: string;
+}
+
+/** One provisioned + installed per-agent app from `GET /api/cloud/slack/config`. */
+export interface SlackCloudAgentConfig {
+  agentSession: string;
+  teamId?: string;
+  botUserId: string;
+  botToken: string;
+  appId: string;
+  displayName: string;
+}
+
+/** `GET /api/cloud/slack/config` payload (the Cloud-owned Slack setup). */
+export interface SlackCloudConfig {
+  workspace: SlackCloudWorkspaceConfig;
+  agents: SlackCloudAgentConfig[];
+  transport: 'cloud';
+}
+
+/** On-disk cache of {@link SlackCloudConfig} (`~/.crewly/slack-cloud-config.json`, 0600). */
+export interface SlackCloudConfigFile {
+  version: 1;
+  fetchedAt: string;
+  config: SlackCloudConfig;
+}
+
+/** Per-instance Slack settings (`~/.crewly/slack-instance.json`). */
+export interface SlackInstanceSettingsFile {
+  version: 1;
+  /** This instance receives DMs / unmapped channels for the account */
+  primary: boolean;
+}
+
+/** One team as reported to the Cloud instance registry. */
+export interface SlackRegistryTeam {
+  teamId: string;
+  name: string;
+  /** Slack channel id when the team has one */
+  channelId?: string;
+  /** Member session names (orchestrator excluded) */
+  agents: string[];
+}
+
+/** Body of `PUT /api/cloud/slack/instances/:instanceId`. */
+export interface SlackInstanceRegistryPayload {
+  deviceName: string;
+  relayQueueId: string;
+  primary?: boolean;
+  teams: SlackRegistryTeam[];
+  crewlyVersion: string;
+}
+
+/** Body of `POST /api/cloud/slack/agents/sync`. */
+export interface SlackAgentsSyncPayload {
+  teams: Array<{
+    teamId: string;
+    name: string;
+    agents: Array<{ agentSession: string; displayName: string; avatar?: string }>;
+  }>;
+}
+
+/** One agent still waiting for its one-time install click. */
+export interface SlackPendingInstall {
+  agentSession: string;
+  url: string;
+}
+
+/** Response of `POST /api/cloud/slack/agents/sync`. */
+export interface SlackAgentsSyncResult {
+  installUrls: SlackPendingInstall[];
 }
 
 /**
@@ -146,6 +289,12 @@ export interface SlackIncomingMessage {
   attachments?: SlackFileInfo[];
   /** Whether the message has any file attachments (images or other) */
   hasFiles?: boolean;
+  /** Transport that delivered the event (`socket` when omitted) */
+  source?: SlackTransport;
+  /** Slack `event_id` when known (cloud transport) */
+  eventId?: string;
+  /** Agent whose per-agent app received the event (cloud transport) */
+  agentSession?: string;
 }
 
 /**

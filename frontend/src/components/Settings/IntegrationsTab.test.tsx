@@ -79,6 +79,27 @@ describe('IntegrationsTab', () => {
   });
 
   describe('Platform Expansion', () => {
+    it('expands Slack on first render when the URL says ?tab=slack (Cloud install return)', () => {
+      const original = window.location.search;
+      window.history.replaceState({}, '', '/settings?tab=slack&slack=connected');
+      try {
+        render(<IntegrationsTab />);
+        expect(screen.getByTestId('platform-content-slack')).toBeInTheDocument();
+      } finally {
+        window.history.replaceState({}, '', `/${original}`);
+      }
+    });
+
+    it('ignores ?platform= for unknown platforms', () => {
+      window.history.replaceState({}, '', '/settings?platform=nope');
+      try {
+        render(<IntegrationsTab />);
+        expect(screen.queryByTestId('platform-content-slack')).not.toBeInTheDocument();
+      } finally {
+        window.history.replaceState({}, '', '/');
+      }
+    });
+
     it('should not show any platform content by default', () => {
       render(<IntegrationsTab />);
 

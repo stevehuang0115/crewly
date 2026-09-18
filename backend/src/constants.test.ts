@@ -16,6 +16,7 @@ import {
   RUNTIME_COMPACT_COMMANDS,
   RUNTIME_INPUT_READY_PATTERNS,
   RUNTIME_TYPES,
+  SLACK_CLOUD_CONSTANTS,
 } from './constants.js';
 
 describe('GOOGLE_OAUTH_CONSTANTS', () => {
@@ -184,5 +185,31 @@ describe('GOOGLE_WORKSPACE_CONSTANTS', () => {
     expect(GOOGLE_WORKSPACE_CONSTANTS.CALENDAR_DEFAULT_MAX_RESULTS).toBeLessThanOrEqual(
       GOOGLE_WORKSPACE_CONSTANTS.CALENDAR_MAX_RESULTS_CEILING,
     );
+  });
+});
+
+describe('SLACK_CLOUD_CONSTANTS (Slack v3 — Cloud owns Slack)', () => {
+  it('uses the relay message type Cloud pushes Slack events with', () => {
+    expect(SLACK_CLOUD_CONSTANTS.MESSAGE_TYPE).toBe('slack_event');
+    expect(SLACK_CLOUD_CONSTANTS.CLOUD_DEVICE_NAME).toBe('crewly-cloud-slack');
+  });
+
+  it('refreshes the config every 10 minutes and heartbeats every 5', () => {
+    expect(SLACK_CLOUD_CONSTANTS.CONFIG_REFRESH_INTERVAL_MS).toBe(10 * 60 * 1000);
+    expect(SLACK_CLOUD_CONSTANTS.REGISTRY_HEARTBEAT_INTERVAL_MS).toBe(5 * 60 * 1000);
+    expect(SLACK_CLOUD_CONSTANTS.TEAM_SAVED_DEBOUNCE_MS).toBeLessThan(SLACK_CLOUD_CONSTANTS.REGISTRY_HEARTBEAT_INTERVAL_MS);
+  });
+
+  it('addresses the contract paths under /api/cloud/slack', () => {
+    expect(SLACK_CLOUD_CONSTANTS.CLOUD_PATH).toBe('/api/cloud/slack');
+    expect(SLACK_CLOUD_CONSTANTS.CONFIG_PATH).toBe('/config');
+    expect(SLACK_CLOUD_CONSTANTS.INSTANCES_PATH).toBe('/instances');
+    expect(SLACK_CLOUD_CONSTANTS.AGENTS_SYNC_PATH).toBe('/agents/sync');
+    expect(SLACK_CLOUD_CONSTANTS.INSTALL_PATH).toBe('/install');
+    expect(SLACK_CLOUD_CONSTANTS.INSTALL_RETURN_PATH).toBe('/settings?tab=slack');
+  });
+
+  it('keeps file-share and thread-broadcast subtypes routable and nothing else', () => {
+    expect([...SLACK_CLOUD_CONSTANTS.INBOUND_ALLOWED_SUBTYPES]).toEqual(['file_share', 'thread_broadcast']);
   });
 });
