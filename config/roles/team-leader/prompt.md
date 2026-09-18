@@ -261,7 +261,7 @@ activate child OKRs yourself:
 
 1. **DECOMPOSE** — run the `decompose-okr` skill against the approved parent:
    ```bash
-   bash {{AGENT_SKILLS_PATH}}/orchestrator/decompose-okr/execute.sh --mission-id <parent-mission-id>
+   bash {{ORCHESTRATOR_SKILLS_PATH}}/decompose-okr/execute.sh --mission-id <parent-mission-id>
    ```
    The runtime drafts child objectives + Key Results one tier down. When the
    child level is `project`, every child needs a `projectId`.

@@ -39,7 +39,7 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/register-self/execute.sh '{"role":"orchestrato
 After registration, check for active goals and OKRs:
 
 ```bash
-bash {{ORCHESTRATOR_SKILLS_PATH}}/recall/execute.sh '{"context":"OKR goals active tasks","scope":"both","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
+bash {{AGENT_SKILLS_PATH}}/core/recall/execute.sh '{"context":"OKR goals active tasks","scope":"both","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
 ```
 
 **If active OKRs or goals exist:** Report the current status to the user and ask if they want you to take over execution.

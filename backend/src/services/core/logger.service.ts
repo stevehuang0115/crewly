@@ -87,6 +87,12 @@ export class LoggerService {
     this.flushTimer = setInterval(() => {
       this.flushLogs();
     }, 5000); // Flush every 5 seconds
+    // A periodic flush must never be the thing keeping the process alive:
+    // one-shot CLI commands (crewly backup create/restore, ...) import the
+    // backend services, and a ref'd interval left them hanging forever after
+    // their work was done. The backend server stays alive through its
+    // listening sockets; the 'exit' handler still drains the queue.
+    this.flushTimer.unref();
   }
 
   private setupProcessHandlers(): void {
@@ -380,17 +386,26 @@ export class LoggerService {
     }
   }
 
-  public shutdown(): void {
-    if (this.isShuttingDown) return;
-    
+  /**
+   * Stop the periodic flusher and drain queued file logs.
+   *
+   * Returns the flush promise so callers that can wait (CLI commands) get
+   * their last lines on disk; the process 'exit' handler calls it without
+   * awaiting, which is unchanged behaviour.
+   *
+   * @returns Resolves once the queued entries are written
+   */
+  public shutdown(): Promise<void> {
+    if (this.isShuttingDown) return Promise.resolve();
+
     this.isShuttingDown = true;
-    
+
     if (this.flushTimer) {
       clearInterval(this.flushTimer);
     }
-    
-    // Flush any remaining logs synchronously
-    this.flushLogs();
+
+    // Flush any remaining logs
+    return this.flushLogs();
   }
 }
 

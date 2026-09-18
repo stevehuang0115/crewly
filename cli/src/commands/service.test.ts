@@ -26,6 +26,7 @@ jest.mock('chalk', () => ({
 }));
 
 const mockExecAsync = jest.fn();
+const mockExecSync = jest.fn((_cmd: string): string => '');
 jest.mock('child_process', () => ({
 	exec: jest.fn(
 		(
@@ -55,6 +56,7 @@ jest.mock('child_process', () => ({
 		},
 	),
 	spawn: jest.fn(),
+	execSync: jest.fn((cmd: string) => mockExecSync(cmd)),
 }));
 
 jest.mock('../../../config/index.js', () => ({
@@ -81,13 +83,17 @@ jest.mock('fs', () => ({
 
 import {
 	serviceCommand,
+	captureServiceEnvironment,
 	generateCommandFile,
 	generateSystemdUnit,
 	generateLinuxWrapper,
+	enableLinger,
+	getLingerState,
 	getRunningPid,
 	getSystemdState,
 	isLoginItemRegistered,
 } from './service.js';
+import { setCliModuleDir } from '../utils/package-root.js';
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -552,7 +558,32 @@ describe('serviceCommand', () => {
 				'systemctl --user enable crewly.service',
 			);
 
+			// finding 10: linger is enabled so the user manager survives logout
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				expect.stringMatching(/^loginctl enable-linger \S+$/),
+			);
+
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('installed successfully');
+		});
+
+		it('prints the manual linger command when loginctl is missing, and still installs', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.service')) return false;
+				if (p.includes('package.json')) return true;
+				return false;
+			});
+			mockReadFileSync.mockReturnValue(JSON.stringify({ name: 'crewly' }));
+			mockExecAsync.mockImplementation((cmd: string) => {
+				if (cmd.startsWith('loginctl')) return new Error('loginctl: command not found');
+				return '';
+			});
+
+			await serviceCommand('install', {});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('Could not enable linger');
+			expect(output).toMatch(/Run manually: loginctl enable-linger \S+/);
 			expect(output).toContain('installed successfully');
 		});
 
@@ -670,6 +701,19 @@ describe('serviceCommand', () => {
 			killSpy.mockRestore();
 		});
 
+		it('warns when linger is disabled', async () => {
+			mockExistsSync.mockReturnValue(false);
+			mockExecAsync.mockImplementation((cmd: string) => {
+				if (cmd.includes('show-user')) return 'no\n';
+				throw new Error('not found');
+			});
+
+			await serviceCommand('status', {});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toMatch(/Linger: Disabled — run: loginctl enable-linger \S+/);
+		});
+
 		it('shows not installed when nothing exists', async () => {
 			mockExistsSync.mockReturnValue(false);
 			mockExecAsync.mockImplementation(() => {
@@ -699,6 +743,14 @@ describe('generateCommandFile', () => {
 	it('sources zshrc for NVM/PATH', () => {
 		const content = generateCommandFile('/any/path');
 		expect(content).toContain('.zshrc');
+	});
+
+	it('also exports the captured PATH/node and sources service.env', () => {
+		const content = generateCommandFile('/any/path', fakeEnv);
+		expect(content).toContain('export PATH="/opt/npm/bin:/opt/node/bin:/usr/local/bin:/usr/bin"');
+		expect(content).toContain('NODE_BIN="/opt/node/bin/node"');
+		expect(content).toContain('SERVICE_ENV="$HOME/.crewly/service.env"');
+		expect(content).toContain('"$NODE_BIN" dist/cli/cli/src/index.js start');
 	});
 
 	it('includes PID-based duplicate prevention', () => {
@@ -760,9 +812,43 @@ describe('generateSystemdUnit', () => {
 		expect(content).toContain('RestartSec=5');
 	});
 
+	it('loads the optional ~/.crewly/service.env (missing file tolerated)', () => {
+		const content = generateSystemdUnit('/any/path');
+		expect(content).toContain('EnvironmentFile=-%h/.crewly/service.env');
+	});
+
 	it('targets default.target for user services', () => {
 		const content = generateSystemdUnit('/any/path');
 		expect(content).toContain('WantedBy=default.target');
+	});
+});
+
+/** Deterministic environment for wrapper-generation assertions. */
+const fakeEnv = {
+	nodeBin: '/opt/node/bin/node',
+	npmGlobalBin: '/opt/npm/bin',
+	path: '/usr/local/bin:/usr/bin',
+};
+
+describe('captureServiceEnvironment', () => {
+	beforeEach(() => {
+		jest.clearAllMocks();
+	});
+
+	it('captures execPath, npm prefix bin and PATH', () => {
+		mockExecSync.mockReturnValue('/usr/local\n');
+		const env = captureServiceEnvironment();
+		expect(env.nodeBin).toBe(process.execPath);
+		expect(env.npmGlobalBin).toBe('/usr/local/bin');
+		expect(env.path).toBe(process.env.PATH);
+		expect(mockExecSync).toHaveBeenCalledWith('npm prefix -g');
+	});
+
+	it('degrades to null npm bin when npm is unavailable', () => {
+		mockExecSync.mockImplementation(() => {
+			throw new Error('npm: not found');
+		});
+		expect(captureServiceEnvironment().npmGlobalBin).toBeNull();
 	});
 });
 
@@ -772,9 +858,42 @@ describe('generateLinuxWrapper', () => {
 		expect(content).toContain('CREWLY_DIR="/path/to/crewly"');
 	});
 
-	it('sources bashrc for NVM/PATH', () => {
-		const content = generateLinuxWrapper('/any/path');
-		expect(content).toContain('.bashrc');
+	it('does NOT source .bashrc (finding 9: it returns early under systemd)', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).not.toContain('source "$HOME/.bashrc"');
+	});
+
+	it('exports the captured PATH with npm global bin and node dir first', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('export PATH="/opt/npm/bin:/opt/node/bin:/usr/local/bin:/usr/bin"');
+	});
+
+	it('pins NODE_BIN to the absolute node binary and execs it', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('NODE_BIN="/opt/node/bin/node"');
+		expect(content).toContain('exec "$NODE_BIN" dist/cli/cli/src/index.js start');
+	});
+
+	it('sources ~/.crewly/service.env when present (with allexport)', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('SERVICE_ENV="$HOME/.crewly/service.env"');
+		expect(content).toContain('set -a');
+		expect(content).toContain('source "$SERVICE_ENV"');
+	});
+
+	it('lets service.env override NODE_ENV', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('export NODE_ENV="${NODE_ENV:-development}"');
+	});
+
+	it('tolerates an unknown npm global bin dir', () => {
+		const content = generateLinuxWrapper('/any/path', { ...fakeEnv, npmGlobalBin: null });
+		expect(content).toContain('export PATH="/opt/node/bin:/usr/local/bin:/usr/bin"');
+	});
+
+	it('de-duplicates PATH entries already present in the captured PATH', () => {
+		const content = generateLinuxWrapper('/any/path', { ...fakeEnv, path: '/opt/node/bin:/usr/bin' });
+		expect(content).toContain('export PATH="/opt/npm/bin:/opt/node/bin:/usr/bin"');
 	});
 
 	it('writes PID file', () => {
@@ -784,8 +903,8 @@ describe('generateLinuxWrapper', () => {
 	});
 
 	it('uses exec to replace shell with node', () => {
-		const content = generateLinuxWrapper('/any/path');
-		expect(content).toContain('exec node');
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('exec "$NODE_BIN"');
 	});
 
 	it('includes native module arch check', () => {
@@ -835,6 +954,68 @@ describe('getRunningPid', () => {
 		expect(getRunningPid()).toBe(12345);
 
 		killSpy.mockRestore();
+	});
+});
+
+describe('enableLinger', () => {
+	let logSpy: jest.SpyInstance;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		logSpy = jest.spyOn(console, 'log').mockImplementation();
+	});
+
+	afterEach(() => {
+		logSpy.mockRestore();
+	});
+
+	it('runs loginctl enable-linger for the user and reports success', async () => {
+		mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('show-user') ? 'yes\n' : ''));
+		expect(await enableLinger('alice')).toBe(true);
+		expect(mockExecAsync).toHaveBeenCalledWith('loginctl enable-linger alice');
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).toContain('Enabled linger for alice');
+	});
+
+	it('returns false and prints the manual command when enable-linger fails', async () => {
+		mockExecAsync.mockReturnValue(new Error('Interactive authentication required'));
+		expect(await enableLinger('alice')).toBe(false);
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).toContain('Interactive authentication required');
+		expect(output).toContain('Run manually: loginctl enable-linger alice');
+	});
+
+	it('returns false when enable-linger exits 0 but Linger is still "no"', async () => {
+		mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('show-user') ? 'no\n' : ''));
+		expect(await enableLinger('alice')).toBe(false);
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).toContain('Linger is still off');
+	});
+
+	it('trusts the enable call when show-user is unavailable', async () => {
+		mockExecAsync.mockImplementation((cmd: string) => {
+			if (cmd.includes('show-user')) return new Error('unknown option');
+			return '';
+		});
+		expect(await enableLinger('alice')).toBe(true);
+	});
+});
+
+describe('getLingerState', () => {
+	beforeEach(() => {
+		jest.clearAllMocks();
+	});
+
+	it('returns yes/no from loginctl', async () => {
+		mockExecAsync.mockReturnValue('yes\n');
+		expect(await getLingerState('alice')).toBe('yes');
+		mockExecAsync.mockReturnValue('no\n');
+		expect(await getLingerState('alice')).toBe('no');
+	});
+
+	it('returns null when loginctl is unavailable', async () => {
+		mockExecAsync.mockReturnValue(new Error('not found'));
+		expect(await getLingerState('alice')).toBeNull();
 	});
 });
 
@@ -888,5 +1069,42 @@ describe('isLoginItemRegistered', () => {
 	it('returns false when osascript fails', async () => {
 		mockExecAsync.mockReturnValue(new Error('osascript error'));
 		expect(await isLoginItemRegistered()).toBe(false);
+	});
+});
+
+describe('install from an unrelated cwd (finding 8)', () => {
+	const originalPlatform = process.platform;
+	let logSpy: jest.SpyInstance;
+	let cwdSpy: jest.SpyInstance;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		logSpy = jest.spyOn(console, 'log').mockImplementation();
+		cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue('/home/operator');
+		Object.defineProperty(process, 'platform', { value: 'linux' });
+		setCliModuleDir('/opt/crewly-install/dist/cli/cli/src');
+	});
+
+	afterEach(() => {
+		setCliModuleDir(null);
+		cwdSpy.mockRestore();
+		logSpy.mockRestore();
+		Object.defineProperty(process, 'platform', { value: originalPlatform });
+	});
+
+	it('resolves the package root from the CLI module location, not cwd', async () => {
+		mockExistsSync.mockImplementation((p: string) => p === '/opt/crewly-install/package.json');
+		mockReadFileSync.mockReturnValue(JSON.stringify({ name: 'crewly' }));
+		mockExecAsync.mockReturnValue('');
+
+		await serviceCommand('install', {});
+
+		expect(mockWriteFileSync).toHaveBeenCalledWith(
+			expect.stringContaining('crewly-start.sh'),
+			expect.stringContaining('CREWLY_DIR="/opt/crewly-install"'),
+			expect.objectContaining({ mode: 0o755 }),
+		);
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).not.toContain('Could not find');
 	});
 });

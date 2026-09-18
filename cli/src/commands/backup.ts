@@ -15,6 +15,10 @@ import path from 'path';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import { BackupArchiveService } from '../../../backend/src/services/backup/backup-archive.service.js';
+import {
+  DEFAULT_PROJECT_FILE_EXCLUDES,
+  PROJECT_FILES_SIZE_WARN_BYTES,
+} from '../../../backend/src/services/backup/backup.types.js';
 import { BackupRestoreService, RestoreConflictError } from '../../../backend/src/services/backup/backup-restore.service.js';
 import {
   BackupCloudClient,
@@ -23,6 +27,7 @@ import {
 } from '../../../backend/src/services/backup/backup-cloud.client.js';
 import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
 import { CloudClientService } from '../../../backend/src/services/cloud/cloud-client.service.js';
+import { LoggerService } from '../../../backend/src/services/core/logger.service.js';
 
 /** Options accepted by `crewly backup`. */
 export interface BackupCommandOptions {
@@ -36,6 +41,14 @@ export interface BackupCommandOptions {
   map?: string[];
   /** Actually apply the restore. Without this, restore is a dry-run preview. */
   apply?: boolean;
+  /** Also archive each project's own source tree under projects/<id>/files/ (create). */
+  includeProjectFiles?: boolean;
+  /** Extra exclude globs for project files, added to the defaults (create, repeatable). */
+  exclude?: string[];
+  /** Skip the size confirmation when project files exceed the warning threshold (create). */
+  yes?: boolean;
+  /** Leave Slack credentials out of the restore (restore). */
+  skipSlack?: boolean;
 }
 
 /** Human-readable byte size. */
@@ -96,10 +109,44 @@ export async function backupCommand(
       break;
     default:
       console.log(chalk.red(`Unknown backup action: ${action}`));
-      console.log(chalk.gray('Usage: crewly backup create [--out <file>] [--no-chat-db]'));
-      console.log(chalk.gray('       crewly backup restore <file> [--mode overwrite] [--map OLD=NEW] [--apply]'));
+      console.log(chalk.gray('Usage: crewly backup create [--out <file>] [--no-chat-db] [--include-project-files] [--exclude <glob>]... [--yes]'));
+      console.log(chalk.gray('       crewly backup restore <file> [--mode overwrite] [--map OLD=NEW] [--skip-slack] [--apply]'));
       process.exitCode = 1;
   }
+}
+
+/**
+ * `crewly backup` entry used by the CLI: runs {@link backupCommand}, drains the
+ * backend logger, and terminates the process with the accumulated exit code.
+ *
+ * The command's own promise settles when the work is done; this wrapper is the
+ * safety net for item 27 ("backup create/restore never exit"): whatever handle
+ * a backend service leaves behind (the logger's flush interval was the
+ * culprit — now unref'd — but the next one would hang the operator's shell
+ * again), the process still ends. A rejected command prints the error and
+ * exits 1 instead of turning into a swallowed unhandledRejection.
+ *
+ * @param action - Subcommand
+ * @param target - Positional target (archive path / backup id)
+ * @param options - CLI options
+ * @param exit - Process terminator (injectable for tests)
+ */
+export async function backupCommandAndExit(
+  action: string,
+  target?: string,
+  options: BackupCommandOptions = {},
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<void> {
+  let code: number;
+  try {
+    await backupCommand(action, target, options);
+    code = typeof process.exitCode === 'number' ? process.exitCode : 0;
+  } catch (err) {
+    console.error(chalk.red(`\nBackup ${action} failed: ${err instanceof Error ? err.message : String(err)}`));
+    code = 1;
+  }
+  await LoggerService.getInstance().shutdown();
+  exit(code);
 }
 
 /**
@@ -116,6 +163,17 @@ async function runCreate(options: BackupCommandOptions): Promise<void> {
   console.log(chalk.gray(`  CREWLY_HOME: ${home}`));
 
   const svc = new BackupArchiveService();
+  const includeProjectFiles = options.includeProjectFiles === true;
+  const projectFileExcludes = [...DEFAULT_PROJECT_FILE_EXCLUDES, ...(options.exclude ?? [])];
+
+  if (includeProjectFiles) {
+    const ok = await confirmProjectFilesSize(svc, home, projectFileExcludes, options.yes === true);
+    if (!ok) {
+      process.exitCode = 1;
+      return;
+    }
+  }
+
   const { archivePath, manifest, totalBytes } = await svc.createArchive({
     homePath: home,
     outPath: options.out,
@@ -123,6 +181,8 @@ async function runCreate(options: BackupCommandOptions): Promise<void> {
     createdAt,
     sourceDeviceId: readDeviceId(home),
     sourceDeviceName: os.hostname(),
+    includeProjectFiles,
+    projectFileExcludes,
   });
 
   const archiveBytes = fs.statSync(archivePath).size;
@@ -131,10 +191,62 @@ async function runCreate(options: BackupCommandOptions): Promise<void> {
   console.log(`  ${chalk.bold('Size')}       ${humanBytes(archiveBytes)} compressed (${humanBytes(totalBytes)} raw)`);
   console.log(`  ${chalk.bold('Globals')}    ${manifest.global.length} files`);
   console.log(`  ${chalk.bold('Projects')}   ${manifest.projects.length}`);
+  if (manifest.includesProjectFiles) {
+    const files = manifest.projects.reduce((n, p) => n + (p.projectFiles?.length ?? 0), 0);
+    const bytes = manifest.projects.reduce((n, p) => n + (p.projectFilesBytes ?? 0), 0);
+    console.log(`  ${chalk.bold('Files')}      ${files} project files (${humanBytes(bytes)}) — excludes: ${projectFileExcludes.join(', ')}`);
+  } else {
+    console.log(chalk.gray('  Files      project source files not included (add --include-project-files)'));
+  }
   console.log(
     `  ${chalk.bold('chat.db')}    ${manifest.chatDb.included ? `included (${humanBytes(manifest.chatDb.bytes ?? 0)})` : `excluded${manifest.chatDb.skippedReason ? ` — ${manifest.chatDb.skippedReason}` : ''}`}`,
   );
   console.log(chalk.gray('\n  Restore on another machine with: crewly backup restore <file>'));
+}
+
+/**
+ * Print per-project source sizes and, above {@link PROJECT_FILES_SIZE_WARN_BYTES},
+ * refuse to continue unless `--yes` was passed.
+ *
+ * @param svc - Archive service (for the estimate)
+ * @param home - CREWLY_HOME
+ * @param excludes - Exclude patterns in effect
+ * @param yes - Whether the operator pre-confirmed
+ * @returns true to proceed with the archive
+ */
+async function confirmProjectFilesSize(
+  svc: BackupArchiveService,
+  home: string,
+  excludes: string[],
+  yes: boolean,
+): Promise<boolean> {
+  const estimates = await svc.estimateProjectFiles({ homePath: home, projectFileExcludes: excludes });
+  const total = estimates.reduce((n, e) => n + e.bytes, 0);
+  console.log(chalk.gray(`  Project files (excluding ${excludes.join(', ')}):`));
+  for (const e of estimates) {
+    console.log(chalk.gray(`    • ${e.name} (${e.path}) — ${humanBytes(e.bytes)}, ${e.fileCount} files`));
+  }
+  console.log(chalk.gray(`    Total ${humanBytes(total)} uncompressed`));
+  if (total <= PROJECT_FILES_SIZE_WARN_BYTES || yes) return true;
+  console.log(chalk.yellow(`\n⚠ Project files total ${humanBytes(total)}, above the ${humanBytes(PROJECT_FILES_SIZE_WARN_BYTES)} warning threshold.`));
+  console.log(chalk.gray('  Trim with --exclude <glob> (e.g. --exclude dist --exclude "*.mp4"), or re-run with --yes to continue anyway.'));
+  return false;
+}
+
+/**
+ * Print the Slack ownership warning (item 29): one Slack app must be answered
+ * by exactly one Crewly instance.
+ */
+function printSlackOwnershipWarning(): void {
+  const line = '!'.repeat(72);
+  console.log(chalk.yellow(`\n  ${line}`));
+  console.log(chalk.yellow.bold('  !!  SLACK OWNERSHIP: this backup carries slack-credentials.json.'));
+  console.log(chalk.yellow('  !!  If the source machine is still running, BOTH instances will answer the'));
+  console.log(chalk.yellow('  !!  same Slack app and each message goes to whichever responds first —'));
+  console.log(chalk.yellow('  !!  replies, threads and approvals become non-deterministic.'));
+  console.log(chalk.yellow('  !!  Decide who owns Slack: restore with --skip-slack to keep it on the'));
+  console.log(chalk.yellow('  !!  source, or stop / disconnect Slack on the source before applying.'));
+  console.log(chalk.yellow(`  ${line}\n`));
 }
 
 /**
@@ -163,7 +275,14 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
   }
 
   const svc = new BackupRestoreService();
-  const restoreOpts = { archivePath: target, homePath: home, mode: mode as 'abort' | 'overwrite', pathMap, now: new Date().toISOString() };
+  const restoreOpts = {
+    archivePath: target,
+    homePath: home,
+    mode: mode as 'abort' | 'overwrite',
+    pathMap,
+    now: new Date().toISOString(),
+    skipSlack: options.skipSlack === true,
+  };
 
   // Always show the plan first.
   const plan = await svc.preview(restoreOpts);
@@ -171,13 +290,25 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
   console.log(`  ${chalk.bold('From backup')} taken ${plan.manifestCreatedAt} (source home ${plan.sourceHomePath})`);
   console.log(`  ${chalk.bold('Into')}        ${home}`);
   console.log(`  ${chalk.bold('Globals')}     ${plan.globalFileCount} files · ${chalk.bold('chat.db')} ${plan.chatDbIncluded ? 'yes' : 'no'}`);
-  console.log(`  ${chalk.bold('Projects')}`);
+  console.log(`  ${chalk.bold('Projects')}${plan.includesProjectFiles ? ' (archive carries project source files)' : ''}`);
   for (const p of plan.projects) {
     const tgt = p.targetPath ? p.targetPath + (p.targetExists ? '' : ' (will be created)') : chalk.yellow('UNRESOLVED — pass --map');
-    console.log(`    • ${p.name} → ${tgt}`);
+    const files = p.projectFileCount > 0 ? ` [${p.projectFileCount} files, ${humanBytes(p.projectFilesBytes)}${p.targetNonEmpty ? chalk.yellow(' → target NOT empty') : ''}]` : '';
+    console.log(`    • ${p.name} → ${tgt}${files}`);
   }
   if (plan.conflicts.teams.length || plan.conflicts.projects.length) {
     console.log(chalk.yellow(`  Conflicts: ${plan.conflicts.teams.length} team(s), ${plan.conflicts.projects.length} project(s) already on this machine`));
+  }
+  if (plan.conflicts.projectFiles.length) {
+    console.log(chalk.yellow(`  Conflicts: project files would overwrite ${plan.conflicts.projectFiles.length} non-empty director${plan.conflicts.projectFiles.length === 1 ? 'y' : 'ies'}`));
+  }
+  if (plan.hasSlackCredentials) {
+    if (plan.slackSkipped) {
+      console.log(chalk.gray('  Slack       credentials in backup — SKIPPED (--skip-slack); this machine will not answer the Slack app'));
+    } else {
+      console.log(`  ${chalk.bold('Slack')}       credentials in backup — will be restored`);
+      printSlackOwnershipWarning();
+    }
   }
   for (const w of plan.warnings) console.log(chalk.yellow(`  ⚠ ${w}`));
   console.log(chalk.gray(`  Discards: ${plan.discarded.join(', ')}`));
@@ -194,12 +325,16 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
     console.log(chalk.green('\n✓ Restore complete'));
     console.log(`  ${chalk.bold('Globals')}    ${res.restoredGlobalFiles} files`);
     console.log(`  ${chalk.bold('Projects')}   ${res.restoredProjects}`);
+    if (plan.includesProjectFiles) console.log(`  ${chalk.bold('Files')}      ${res.restoredProjectFiles} project files`);
     console.log(`  ${chalk.bold('chat.db')}    ${res.chatDbRestored ? 'restored' : 'not in backup'}`);
+    if (plan.hasSlackCredentials) {
+      console.log(`  ${chalk.bold('Slack')}      ${res.slackSkipped ? 'credentials skipped (--skip-slack)' : 'credentials restored — make sure the source machine no longer runs Slack'}`);
+    }
     console.log(`  ${chalk.bold('Rollback')}   ${res.rollbackSnapshotPath}`);
     console.log(chalk.gray('\n  Restart Crewly so agents pick up the restored workspace.'));
   } catch (err) {
     if (err instanceof RestoreConflictError) {
-      console.log(chalk.red('\n✗ Restore aborted — conflicts present. Re-run with --mode overwrite to replace them.'));
+      console.log(chalk.red(`\n✗ ${err.message}`));
       process.exitCode = 1;
       return;
     }

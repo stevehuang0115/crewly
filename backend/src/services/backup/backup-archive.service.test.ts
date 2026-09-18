@@ -169,3 +169,123 @@ describe('BackupArchiveService.createArchive', () => {
     ).rejects.toThrow(/CREWLY_HOME not found/);
   });
 });
+
+describe('BackupArchiveService project files (item 26)', () => {
+  /** Add a small source tree next to the existing .crewly + .git fixture. */
+  async function seedSourceTree(): Promise<void> {
+    await fs.mkdir(path.join(projectPath, 'src', 'lib'), { recursive: true });
+    await fs.writeFile(path.join(projectPath, 'src', 'index.ts'), 'export const a = 1;\n', 'utf8');
+    await fs.writeFile(path.join(projectPath, 'src', 'lib', 'util.ts'), 'export const b = 2;\n', 'utf8');
+    await fs.writeFile(path.join(projectPath, 'README.md'), '# web\n', 'utf8');
+    await fs.mkdir(path.join(projectPath, 'node_modules', 'left-pad'), { recursive: true });
+    await fs.writeFile(path.join(projectPath, 'node_modules', 'left-pad', 'index.js'), 'module.exports = 1;', 'utf8');
+    await fs.mkdir(path.join(projectPath, 'dist'), { recursive: true });
+    await fs.writeFile(path.join(projectPath, 'dist', 'bundle.js'), '// built', 'utf8');
+    await fs.writeFile(path.join(projectPath, 'debug.log'), 'noise', 'utf8');
+  }
+
+  it('does not capture project files by default (manifest.includesProjectFiles=false)', async () => {
+    await seedSourceTree();
+    const { manifest } = await new BackupArchiveService(silentLogger).createArchive({
+      homePath: home,
+      outPath: path.join(outDir, 'a.tar.gz'),
+      excludeChatDb: true,
+      createdAt: CREATED_AT,
+    });
+    expect(manifest.includesProjectFiles).toBe(false);
+    expect(manifest.projects[0].projectFiles).toBeUndefined();
+    expect(manifest.projects[0].projectFilesBytes).toBeUndefined();
+  });
+
+  it('captures the source tree under projects/<id>/files/, keeps .git, excludes node_modules and .crewly', async () => {
+    await seedSourceTree();
+    const out = path.join(outDir, 'b.tar.gz');
+    const { manifest, totalBytes } = await new BackupArchiveService(silentLogger).createArchive({
+      homePath: home,
+      outPath: out,
+      excludeChatDb: true,
+      createdAt: CREATED_AT,
+      includeProjectFiles: true,
+    });
+
+    expect(manifest.includesProjectFiles).toBe(true);
+    expect(manifest.projectFileExcludes).toEqual(['node_modules', '.crewly', '.DS_Store']);
+    const p = manifest.projects[0];
+    const paths = (p.projectFiles ?? []).map((f) => f.path);
+    expect(paths).toEqual(expect.arrayContaining([
+      'projects/p1/files/src/index.ts',
+      'projects/p1/files/src/lib/util.ts',
+      'projects/p1/files/README.md',
+      'projects/p1/files/dist/bundle.js',
+      'projects/p1/files/debug.log',
+    ]));
+    expect(paths.some((x) => x.startsWith('projects/p1/files/.git/'))).toBe(true);
+    expect(paths.some((x) => x.includes('node_modules'))).toBe(false);
+    expect(paths.some((x) => x.startsWith('projects/p1/files/.crewly/'))).toBe(false);
+    // .crewly data still lives in its own place.
+    expect(p.files.map((f) => f.path)).toContain('projects/p1/.crewly/wiki/arch.md');
+
+    const sum = (p.projectFiles ?? []).reduce((n, f) => n + f.bytes, 0);
+    expect(p.projectFilesBytes).toBe(sum);
+    expect(sum).toBeGreaterThan(0);
+    expect(totalBytes).toBeGreaterThanOrEqual(sum);
+
+    // Archive really contains the bytes.
+    const extractDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-extract-'));
+    try {
+      await tarExtract({ file: out, cwd: extractDir });
+      const content = await fs.readFile(path.join(extractDir, 'projects', 'p1', 'files', 'src', 'index.ts'), 'utf8');
+      expect(content).toBe('export const a = 1;\n');
+    } finally {
+      await fs.rm(extractDir, { recursive: true, force: true });
+    }
+  });
+
+  it('honours custom exclude patterns (segment and path globs)', async () => {
+    await seedSourceTree();
+    const { manifest } = await new BackupArchiveService(silentLogger).createArchive({
+      homePath: home,
+      outPath: path.join(outDir, 'c.tar.gz'),
+      excludeChatDb: true,
+      createdAt: CREATED_AT,
+      includeProjectFiles: true,
+      projectFileExcludes: ['node_modules', '.crewly', '*.log', 'dist/**', '.git'],
+    });
+    const paths = (manifest.projects[0].projectFiles ?? []).map((f) => f.path);
+    expect(paths).toContain('projects/p1/files/src/index.ts');
+    expect(paths).not.toContain('projects/p1/files/debug.log');
+    expect(paths).not.toContain('projects/p1/files/dist/bundle.js');
+    expect(paths.some((x) => x.includes('/.git/'))).toBe(false);
+    expect(manifest.projectFileExcludes).toEqual(['node_modules', '.crewly', '*.log', 'dist/**', '.git']);
+  });
+
+  it('captures a project that has no .crewly directory when project files are requested', async () => {
+    await seedSourceTree();
+    await fs.rm(path.join(projectPath, '.crewly'), { recursive: true, force: true });
+    const { manifest } = await new BackupArchiveService(silentLogger).createArchive({
+      homePath: home,
+      outPath: path.join(outDir, 'd.tar.gz'),
+      excludeChatDb: true,
+      createdAt: CREATED_AT,
+      includeProjectFiles: true,
+    });
+    expect(manifest.projects).toHaveLength(1);
+    expect(manifest.projects[0].files).toEqual([]);
+    expect((manifest.projects[0].projectFiles ?? []).map((f) => f.path)).toContain('projects/p1/files/README.md');
+  });
+
+  it('estimateProjectFiles reports bytes/file counts after excludes without writing anything', async () => {
+    await seedSourceTree();
+    const svc = new BackupArchiveService(silentLogger);
+    const est = await svc.estimateProjectFiles({ homePath: home, projectFileExcludes: ['node_modules', '.crewly', '.git'] });
+    expect(est).toHaveLength(1);
+    expect(est[0]).toMatchObject({ id: 'p1', name: 'web', path: projectPath });
+    // src/index.ts + src/lib/util.ts + README.md + dist/bundle.js + debug.log
+    expect(est[0].fileCount).toBe(5);
+    const expected = ['src/index.ts', 'src/lib/util.ts', 'README.md', 'dist/bundle.js', 'debug.log'];
+    let bytes = 0;
+    for (const rel of expected) bytes += (await fs.stat(path.join(projectPath, rel))).size;
+    expect(est[0].bytes).toBe(bytes);
+    expect(await fs.readdir(outDir)).toEqual([]);
+  });
+});

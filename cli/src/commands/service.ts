@@ -24,6 +24,7 @@ import * as path from 'path';
 import * as os from 'os';
 import chalk from 'chalk';
 import { CREWLY_CONSTANTS } from '../../../config/index.js';
+import { resolvePackageRoot } from '../utils/package-root.js';
 
 const execAsync = promisify(exec);
 
@@ -77,6 +78,91 @@ const SYSTEMD_UNIT_PATH = path.join(SYSTEMD_USER_DIR, SYSTEMD_UNIT_NAME);
 /** Path to the wrapper script used by the systemd service */
 const SYSTEMD_WRAPPER_PATH = path.join(SERVICE_DIR, 'crewly-start.sh');
 
+/** Optional env file (KEY=VALUE lines) sourced by the wrappers and loaded by systemd. */
+const SERVICE_ENV_FILE_NAME = 'service.env';
+
+/** Absolute path to the optional service env file (~/.crewly/service.env) */
+const SERVICE_ENV_PATH = path.join(SERVICE_DIR, SERVICE_ENV_FILE_NAME);
+
+/** Shell-side path to the service env file (uses $HOME so the wrapper stays portable). */
+const SERVICE_ENV_SHELL_PATH = `$HOME/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/${SERVICE_ENV_FILE_NAME}`;
+
+// ---------------------------------------------------------------------------
+// Service environment capture (finding 9)
+// ---------------------------------------------------------------------------
+
+/**
+ * Environment captured at install time and written verbatim into the wrapper
+ * scripts. systemd (and launchd) never source interactive shell profiles —
+ * Ubuntu's stock `.bashrc` returns on its first lines for non-interactive
+ * shells — so anything the wrapper needs must be spelled out explicitly.
+ */
+export interface ServiceEnvironment {
+	/** Absolute path of the node binary that is running the installer. */
+	nodeBin: string;
+	/** npm global bin directory (where `crewly`, `claude`, etc. are linked), or null if unknown. */
+	npmGlobalBin: string | null;
+	/** PATH of the installing shell. */
+	path: string;
+}
+
+/**
+ * Capture the node binary, npm global bin dir and PATH of the current shell.
+ *
+ * Best-effort: `npm prefix -g` may be unavailable (no npm on PATH); the
+ * wrapper then relies on the node dir + captured PATH alone.
+ *
+ * @returns The captured environment
+ */
+export function captureServiceEnvironment(): ServiceEnvironment {
+	let npmGlobalBin: string | null = null;
+	try {
+		const prefix = execSync('npm prefix -g', { encoding: 'utf-8', timeout: 10_000 }).trim();
+		if (prefix) npmGlobalBin = path.join(prefix, 'bin');
+	} catch {
+		// npm not on PATH — fall back to node dir + PATH
+	}
+	return {
+		nodeBin: process.execPath,
+		npmGlobalBin,
+		path: process.env.PATH ?? '',
+	};
+}
+
+/**
+ * Render the explicit-environment block shared by both wrapper scripts.
+ *
+ * Exports a PATH that leads with the npm global bin dir and the node dir,
+ * pins `NODE_BIN` to an absolute path, and sources `~/.crewly/service.env`
+ * when present (the documented place for `DEFAULT_RUNTIME`,
+ * `CREWLY_API_TOKEN`, `CREWLY_WEB_PORT`, ...).
+ *
+ * @param env - Environment captured at install time
+ * @returns Shell snippet
+ */
+function renderEnvironmentBlock(env: ServiceEnvironment): string {
+	const nodeDir = path.dirname(env.nodeBin);
+	const pathParts = [env.npmGlobalBin, nodeDir, env.path].filter((p): p is string => !!p);
+	const mergedPath = [...new Set(pathParts.join(':').split(':').filter(Boolean))].join(':');
+	return `# Explicit environment captured by \`crewly service install\` — service managers do not
+# source interactive shell profiles (Ubuntu's .bashrc returns early when PS1 is unset),
+# so PATH and the node binary are written here verbatim. Re-run
+# \`crewly service install --force\` after changing node versions.
+export PATH="${mergedPath}"
+NODE_BIN="${env.nodeBin}"
+if [ ! -x "$NODE_BIN" ]; then NODE_BIN="$(command -v node)"; fi
+
+# Optional overrides: put KEY=VALUE lines (DEFAULT_RUNTIME, CREWLY_API_TOKEN,
+# CREWLY_WEB_PORT, ...) in ${SERVICE_ENV_SHELL_PATH}
+SERVICE_ENV="${SERVICE_ENV_SHELL_PATH}"
+if [ -f "$SERVICE_ENV" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "$SERVICE_ENV"
+  set +a
+fi`;
+}
+
 // ---------------------------------------------------------------------------
 // Shared shell snippet: native module arch check
 // ---------------------------------------------------------------------------
@@ -92,7 +178,7 @@ const SYSTEMD_WRAPPER_PATH = path.join(SERVICE_DIR, 'crewly-start.sh');
 const NATIVE_MODULE_CHECK = `# Auto-rebuild native modules if node arch doesn't match compiled binaries
 PTY_NODE="node_modules/node-pty/build/Release/pty.node"
 if [ -f "$PTY_NODE" ]; then
-  NODE_ARCH=$(node -p "process.arch")
+  NODE_ARCH=$("\${NODE_BIN:-node}" -p "process.arch")
   PTY_ARCH=$(file "$PTY_NODE" | grep -o 'arm64\\|x86_64' | head -1)
   # Normalize: node uses "x64", file uses "x86_64"
   if [ "$NODE_ARCH" = "x64" ]; then NODE_ARCH="x86_64"; fi
@@ -191,7 +277,7 @@ async function installService(options: ServiceOptions): Promise<void> {
 	if (!projectRoot) {
 		console.log(
 			chalk.red(
-				'Could not find Crewly project root. Run this from within the Crewly directory.',
+				'Could not find the Crewly package root from the CLI location, the entry script, or the current directory.',
 			),
 		);
 		process.exit(1);
@@ -274,7 +360,7 @@ async function installDarwin(
 		return;
 	}
 
-	const commandFileContent = generateCommandFile(projectRoot);
+	const commandFileContent = generateCommandFile(projectRoot, captureServiceEnvironment());
 	fs.writeFileSync(COMMAND_FILE_PATH, commandFileContent, { mode: 0o755 });
 	console.log(chalk.green(`  Created ${COMMAND_FILE_PATH}`));
 
@@ -296,8 +382,11 @@ async function installDarwin(
 	);
 	console.log(
 		chalk.gray(
-			'  - Your shell profile is sourced, so NVM/Homebrew paths are available',
+			'  - Your shell profile is sourced, and PATH/node are also captured explicitly',
 		),
+	);
+	console.log(
+		chalk.gray(`  - Extra env (DEFAULT_RUNTIME, CREWLY_API_TOKEN, ...): ${SERVICE_ENV_PATH}`),
 	);
 	console.log('');
 	console.log(
@@ -387,8 +476,8 @@ async function installLinux(
 		return;
 	}
 
-	// 1. Write the wrapper script (sources shell profile for NVM/PATH)
-	const wrapperContent = generateLinuxWrapper(projectRoot);
+	// 1. Write the wrapper script with the environment captured explicitly
+	const wrapperContent = generateLinuxWrapper(projectRoot, captureServiceEnvironment());
 	fs.writeFileSync(SYSTEMD_WRAPPER_PATH, wrapperContent, { mode: 0o755 });
 	console.log(chalk.green(`  Created ${SYSTEMD_WRAPPER_PATH}`));
 
@@ -412,6 +501,9 @@ async function installLinux(
 		);
 	}
 
+	// 4. Keep the user manager alive after logout (finding 10)
+	await enableLinger();
+
 	console.log('');
 	console.log(chalk.green('Crewly service installed successfully!'));
 	console.log('');
@@ -423,7 +515,10 @@ async function installLinux(
 		chalk.gray('  - Auto-restarts on crash (5s delay)'),
 	);
 	console.log(
-		chalk.gray('  - Shell profile sourced for NVM/PATH'),
+		chalk.gray('  - PATH and the node binary are captured into the wrapper (systemd does not source shell profiles)'),
+	);
+	console.log(
+		chalk.gray(`  - Extra env (DEFAULT_RUNTIME, CREWLY_API_TOKEN, ...): ${SERVICE_ENV_PATH}`),
 	);
 	console.log('');
 	console.log(
@@ -498,6 +593,16 @@ async function statusLinux(): Promise<void> {
 		console.log(chalk.yellow('  Process: Not running'));
 	}
 
+	// Check linger (finding 10)
+	const linger = await getLingerState();
+	if (linger === 'yes') {
+		console.log(chalk.green('  Linger: Enabled (survives logout)'));
+	} else if (linger === 'no') {
+		console.log(chalk.yellow(`  Linger: Disabled — run: loginctl enable-linger ${os.userInfo().username}`));
+	} else {
+		console.log(chalk.gray('  Linger: Unknown (loginctl unavailable)'));
+	}
+
 	console.log('');
 	if (unitExists && serviceState === 'active' && pid) {
 		console.log(chalk.green('Service is fully operational.'));
@@ -519,8 +624,10 @@ async function statusLinux(): Promise<void> {
 /**
  * Generates the systemd unit file content.
  *
- * Uses a wrapper script as ExecStart so the user's shell profile is sourced,
- * ensuring NVM and other PATH additions are available.
+ * Uses a wrapper script as ExecStart that carries an explicitly captured
+ * PATH/node binary (shell profiles are not sourced under systemd). The
+ * optional `~/.crewly/service.env` is loaded both by systemd
+ * (`EnvironmentFile=-`, missing file tolerated) and by the wrapper.
  *
  * @param projectRoot - Absolute path to the Crewly project directory
  * @returns The systemd unit file content
@@ -537,6 +644,7 @@ WorkingDirectory=${projectRoot}
 Restart=on-failure
 RestartSec=5
 Environment=NODE_ENV=development
+EnvironmentFile=-%h/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/${SERVICE_ENV_FILE_NAME}
 
 StandardOutput=append:${LOG_DIR}/service.log
 StandardError=append:${LOG_DIR}/service.log
@@ -547,25 +655,32 @@ WantedBy=default.target
 }
 
 /**
- * Generates the Linux wrapper script that sources the shell profile
- * before starting node, ensuring NVM/PATH are available.
+ * Generates the Linux wrapper script used as the systemd ExecStart.
+ *
+ * Exports the PATH/node binary captured at install time (finding 9: sourcing
+ * `.bashrc` is a no-op under systemd on Ubuntu), sources the optional
+ * `~/.crewly/service.env`, runs the native-module arch check and execs node.
  *
  * @param projectRoot - Absolute path to the Crewly project directory
+ * @param env - Environment captured at install time (defaults to the current process)
  * @returns The shell script content
  */
-export function generateLinuxWrapper(projectRoot: string): string {
+export function generateLinuxWrapper(
+	projectRoot: string,
+	env: ServiceEnvironment = captureServiceEnvironment(),
+): string {
 	return `#!/bin/bash
 # Crewly Backend Service wrapper for systemd
-# Sources shell profile for NVM/PATH, then starts the backend.
+# Carries an explicit PATH/node captured at install time, then starts the backend.
 
-# Source shell profile for NVM, PATH, etc.
-if [ -f "$HOME/.bashrc" ]; then
-  source "$HOME/.bashrc" 2>/dev/null || true
-elif [ -f "$HOME/.profile" ]; then
+# ~/.profile is safe to source non-interactively (unlike .bashrc); best-effort only.
+if [ -f "$HOME/.profile" ]; then
   source "$HOME/.profile" 2>/dev/null || true
 fi
 
-export NODE_ENV="development"
+${renderEnvironmentBlock(env)}
+
+export NODE_ENV="\${NODE_ENV:-development}"
 
 CREWLY_DIR="${projectRoot}"
 PIDFILE="$HOME/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/crewly.pid"
@@ -576,13 +691,70 @@ cd "$CREWLY_DIR" || { echo "Cannot cd to $CREWLY_DIR"; exit 1; }
 
 ${NATIVE_MODULE_CHECK}
 
-echo "$(date): Starting Crewly backend (node $(node --version))..."
+echo "$(date): Starting Crewly backend ($NODE_BIN $("$NODE_BIN" --version))..."
 
 # Write PID file for status checks
 echo $$ > "$PIDFILE"
 
-exec node dist/cli/cli/src/index.js start
+exec "$NODE_BIN" dist/cli/cli/src/index.js start
 `;
+}
+
+/**
+ * Enable lingering for the current user so the systemd user manager — and
+ * the Crewly service under it — survives the SSH session ending.
+ *
+ * Without `loginctl enable-linger`, a `systemctl --user` service is torn
+ * down when the user's last session closes, which on a server is the normal
+ * path right after install (finding 10). Best-effort: failures (no
+ * loginctl, no polkit authority, non-systemd box) are reported with the
+ * manual command and never abort the install.
+ *
+ * @param user - User to enable lingering for (defaults to the current user)
+ * @returns true when linger was enabled (or already on), false otherwise
+ */
+export async function enableLinger(user: string = os.userInfo().username): Promise<boolean> {
+	const manual = `loginctl enable-linger ${user}`;
+	try {
+		await execAsync(manual);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
+		console.log(chalk.yellow('  Could not enable linger — the service will stop when you log out.'));
+		console.log(chalk.gray(`  (${reason})`));
+		console.log(chalk.gray(`  Run manually: ${manual}`));
+		return false;
+	}
+
+	// Verify — enable-linger exits 0 in some containers without taking effect.
+	try {
+		const { stdout } = await execAsync(`loginctl show-user ${user} --property=Linger --value`);
+		if (stdout.trim() === 'no') {
+			console.log(chalk.yellow('  Linger is still off — the service will stop when you log out.'));
+			console.log(chalk.gray(`  Run manually: ${manual}`));
+			return false;
+		}
+	} catch {
+		// show-user unavailable (older systemd) — trust the enable call
+	}
+
+	console.log(chalk.green(`  Enabled linger for ${user} (service survives logout)`));
+	return true;
+}
+
+/**
+ * Read the linger state of the current user via loginctl.
+ *
+ * @param user - User to query (defaults to the current user)
+ * @returns "yes", "no", or null when loginctl is unavailable
+ */
+export async function getLingerState(user: string = os.userInfo().username): Promise<'yes' | 'no' | null> {
+	try {
+		const { stdout } = await execAsync(`loginctl show-user ${user} --property=Linger --value`);
+		const v = stdout.trim();
+		return v === 'yes' || v === 'no' ? v : null;
+	} catch {
+		return null;
+	}
 }
 
 /**
@@ -621,13 +793,19 @@ export async function getSystemdState(): Promise<string | null> {
 /**
  * Generates the content of the .command wrapper script (macOS).
  *
- * The script sources the user's shell profile (for NVM/PATH), prevents
- * duplicate instances via a PID file, and auto-restarts on crash.
+ * The script sources the user's shell profile (for NVM/PATH), additionally
+ * exports the PATH/node captured at install time and the optional
+ * `~/.crewly/service.env`, prevents duplicate instances via a PID file, and
+ * auto-restarts on crash.
  *
  * @param projectRoot - Absolute path to the Crewly project directory
+ * @param env - Environment captured at install time (defaults to the current process)
  * @returns The shell script content
  */
-export function generateCommandFile(projectRoot: string): string {
+export function generateCommandFile(
+	projectRoot: string,
+	env: ServiceEnvironment = captureServiceEnvironment(),
+): string {
 	return `#!/bin/bash
 # Crewly Backend Service — runs inside Terminal.app for FDA inheritance
 # Registered as a macOS Login Item for auto-start on boot.
@@ -644,7 +822,9 @@ elif [ -f "$HOME/.bashrc" ]; then
   source "$HOME/.bashrc" 2>/dev/null || true
 fi
 
-export NODE_ENV="development"
+${renderEnvironmentBlock(env)}
+
+export NODE_ENV="\${NODE_ENV:-development}"
 
 CREWLY_DIR="${projectRoot}"
 LOG_DIR="$HOME/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/logs"
@@ -661,7 +841,7 @@ if [ -f "$PIDFILE" ]; then
   fi
 fi
 
-echo "$(date): Starting Crewly backend (node $(node --version))..." | tee -a "$LOG_DIR/service.log"
+echo "$(date): Starting Crewly backend ($NODE_BIN $("$NODE_BIN" --version))..." | tee -a "$LOG_DIR/service.log"
 
 # Run in foreground so Terminal keeps the tab open; restart on crash
 while true; do
@@ -681,7 +861,7 @@ while true; do
     exit 0
   fi
 
-  node dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
+  "$NODE_BIN" dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
   NODE_PID=$!
   echo "$NODE_PID" > "$PIDFILE"
   wait "$NODE_PID" || true
@@ -1050,11 +1230,11 @@ async function upgradeService(options: ServiceOptions): Promise<void> {
 		fs.mkdirSync(LOG_DIR, { recursive: true });
 
 		if (process.platform === 'darwin') {
-			const commandFileContent = generateCommandFile(newProjectRoot);
+			const commandFileContent = generateCommandFile(newProjectRoot, captureServiceEnvironment());
 			fs.writeFileSync(COMMAND_FILE_PATH, commandFileContent, { mode: 0o755 });
 			console.log(chalk.green(`  Updated ${COMMAND_FILE_PATH}`));
 		} else {
-			const wrapperContent = generateLinuxWrapper(newProjectRoot);
+			const wrapperContent = generateLinuxWrapper(newProjectRoot, captureServiceEnvironment());
 			fs.writeFileSync(SYSTEMD_WRAPPER_PATH, wrapperContent, { mode: 0o755 });
 			console.log(chalk.green(`  Updated ${SYSTEMD_WRAPPER_PATH}`));
 
@@ -1235,33 +1415,17 @@ function assertSupportedPlatform(): void {
 }
 
 /**
- * Finds the Crewly project root by walking up from cwd looking for
- * a package.json with `"name": "crewly"`.
+ * Finds the Crewly package root the CLI is running from.
  *
- * @returns Absolute path to the project root, or null if not found
+ * Anchors on the CLI's own module location and the entry script before the
+ * cwd, so `crewly service install` works from any directory after a global
+ * npm install (finding 8) instead of demanding the operator `cd` into
+ * `/usr/lib/node_modules/crewly` first.
+ *
+ * @returns Absolute path to the package root, or null if not found
  */
 export function findProjectRoot(): string | null {
-	let current = process.cwd();
-
-	while (true) {
-		const pkgPath = path.join(current, 'package.json');
-		if (fs.existsSync(pkgPath)) {
-			try {
-				const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-				if (pkg.name === 'crewly') {
-					return current;
-				}
-			} catch {
-				// Malformed package.json — keep searching
-			}
-		}
-
-		const parent = path.dirname(current);
-		if (parent === current) {
-			return null;
-		}
-		current = parent;
-	}
+	return resolvePackageRoot();
 }
 
 /**

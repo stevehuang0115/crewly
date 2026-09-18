@@ -18,8 +18,11 @@
 
 // ========================= CROSS-DOMAIN CONSTANTS =========================
 
+// NOTE: no comment may precede the first specifier in the import/export lists
+// below. TypeScript's CommonJS emit (used by ts-jest) attaches such a comment
+// after `return` in the re-export getter, and ASI turns it into `return;`, so
+// CREWLY_CONSTANTS read as undefined under jest (fine under the ESM build).
 import {
-  // Core system constants
   CREWLY_CONSTANTS,
   WEB_CONSTANTS,
   TIMING_CONSTANTS,
@@ -48,7 +51,6 @@ import {
 } from './constants.js';
 
 export {
-  // Core system constants
   CREWLY_CONSTANTS,
   WEB_CONSTANTS,
   TIMING_CONSTANTS,

@@ -1,3 +1,4 @@
+import * as fsMocked from 'fs';
 import { RecoveryModule } from './recovery.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 
@@ -147,6 +148,25 @@ describe('RecoveryModule', () => {
 
 			expect(result).toContain('Orchestrator Recovery');
 			expect(result).toContain('Custom startup sequence');
+		});
+
+		it('substitutes skill-path and session placeholders in the orchestrator fragment (finding 12)', async () => {
+			jest.mocked(fsMocked.existsSync).mockReturnValueOnce(true);
+			jest.mocked(fsMocked.readFileSync).mockReturnValueOnce(
+				[
+					'bash {{ORCHESTRATOR_SKILLS_PATH}}/register-self/execute.sh \'{"sessionName":"{{SESSION_ID}}"}\'',
+					'bash {{AGENT_SKILLS_PATH}}/core/recall/execute.sh \'{"projectPath":"{{PROJECT_PATH}}"}\'',
+				].join('\n'),
+			);
+
+			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator', sessionName: 'crewly-orc' };
+			const result = await module.build(orchConfig);
+
+			expect(result).not.toContain('{{');
+			expect(result).toContain(`${baseConfig.projectRoot}/config/skills/orchestrator/register-self/execute.sh`);
+			expect(result).toContain(`${baseConfig.agentSkillsPath}/core/recall/execute.sh`);
+			expect(result).toContain('"sessionName":"crewly-orc"');
+			expect(result).toContain(`"projectPath":"${baseConfig.projectPath || baseConfig.projectRoot}"`);
 		});
 
 		it('should fall back to inline content for orchestrator when no fragment', async () => {

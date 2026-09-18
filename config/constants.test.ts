@@ -517,3 +517,13 @@ describe('Crewly Cross-Domain Constants', () => {
     });
   });
 });
+describe('config/index re-exports (CommonJS emit regression)', () => {
+  it('exposes CREWLY_CONSTANTS through the centralized index', async () => {
+    // A leading comment inside the export list used to make TypeScript's CJS
+    // emit produce `return\n// comment\n...` → `return;` (ASI), so this was
+    // undefined under jest while fine under the ESM build.
+    const index = await import('./index.js');
+    expect(index.CREWLY_CONSTANTS).toBeDefined();
+    expect(index.CREWLY_CONSTANTS.PATHS.CREWLY_HOME).toBe('.crewly');
+  });
+});

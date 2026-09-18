@@ -16,12 +16,18 @@ import { mcpServerCommand } from './commands/mcp-server.js';
 import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
-import { backupCommand } from './commands/backup.js';
+import { backupCommandAndExit } from './commands/backup.js';
+import { doctorCommand } from './commands/doctor.js';
 import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion, registerCliModuleDir } from './utils/version-check.js';
+import { setCliModuleDir } from './utils/package-root.js';
+
+// Anchor package-root resolution on this module's own location so commands
+// like `crewly service install` work from any cwd after a global install.
+setCliModuleDir(path.dirname(fileURLToPath(import.meta.url)));
 
 const program = new Command();
 
@@ -121,6 +127,11 @@ program
   .action(seedMarketplaceCommand);
 
 program
+  .command('doctor')
+  .description('Check this install: package root, node, native modules, build toolchain, service environment')
+  .action(doctorCommand);
+
+program
   .command('service <action>')
   .description('Manage Crewly background service (install|uninstall|status|restart|stop|logs)')
   .option('--force', 'Overwrite existing installation')
@@ -135,10 +146,18 @@ program
   .description('Workspace backup: create | restore <file>. Archive this machine to restore on another. Pro: cloud push/pull (soon)')
   .option('-o, --out <file>', 'Output archive path (create)')
   .option('--no-chat-db', 'Exclude chat.db from the archive (create)')
-  .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite')
-  .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable)')
+  .option('--include-project-files', 'Also archive each project\'s own files under projects/<id>/files/ — .git kept, node_modules/.crewly/.DS_Store excluded by default (create)')
+  .option('--exclude <glob...>', 'Extra exclude pattern for project files, added to the defaults; no "/" = any path segment (e.g. dist, *.log), with "/" = project-relative path (e.g. build/**) (create, repeatable)')
+  .option('-y, --yes', 'Continue even when project files exceed the 2 GB warning threshold (create)')
+  .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite. Project files are never written into a non-empty directory without overwrite')
+  .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable); project files and .crewly follow the mapped path')
+  .option('--skip-slack', 'Restore without Slack credentials (slack-credentials.json). Two instances sharing one Slack app answer non-deterministically — use this when the source machine keeps Slack')
   .option('--apply', 'Apply the restore (without this, restore is a dry-run preview)')
-  .action(backupCommand);
+  // Explicit arity: commander appends the Command object as a trailing
+  // argument, which must not land in backupCommandAndExit's `exit` parameter.
+  .action((action: string, target: string | undefined, options: Parameters<typeof backupCommandAndExit>[2]) =>
+    backupCommandAndExit(action, target, options),
+  );
 
 program
   .command('pair')

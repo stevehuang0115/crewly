@@ -353,6 +353,26 @@ describe('LoggerService', () => {
         logger.shutdown();
       }).not.toThrow();
     });
+
+    test('shutdown resolves once queued logs are flushed', async () => {
+      await expect(logger.shutdown()).resolves.toBeUndefined();
+      await expect(logger.shutdown()).resolves.toBeUndefined();
+    });
+  });
+
+  describe('Flush timer', () => {
+    test('does not keep the process alive (unref) so one-shot CLI commands can exit', () => {
+      const timer = (logger as any).flushTimer as NodeJS.Timeout;
+      expect(timer).toBeDefined();
+      expect(timer.hasRef()).toBe(false);
+    });
+
+    test('is cleared on shutdown', () => {
+      const clearSpy = jest.spyOn(global, 'clearInterval');
+      logger.shutdown();
+      expect(clearSpy).toHaveBeenCalledWith((logger as any).flushTimer);
+      clearSpy.mockRestore();
+    });
   });
 
   describe('Process Event Handlers', () => {

@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 /**
@@ -36,10 +37,21 @@ export class RecoveryModule implements PromptModule {
 	 */
 	async build(config: ModuleConfig): Promise<string> {
 		// Try loading role-specific fragment (orchestrator has a different startup flow)
+		// The fragment carries {{ORCHESTRATOR_SKILLS_PATH}} / {{AGENT_SKILLS_PATH}}
+		// placeholders (memory skills such as recall live under agent/core, not
+		// under the orchestrator namespace — server-install finding 12) plus the
+		// session/project placeholders; loadRoleFragment returns the file as-is,
+		// so resolve them here exactly like communication.module does.
 		if (config.role === 'orchestrator') {
 			const fragment = loadRoleFragment(config.projectRoot, config.role, 'recovery');
 			if (fragment) {
-				return fragment;
+				const orchestratorSkillsPath = path.join(config.projectRoot, 'config', 'skills', 'orchestrator');
+				return fragment
+					.replace(/\{\{ORCHESTRATOR_SKILLS_PATH\}\}/g, orchestratorSkillsPath)
+					.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, config.agentSkillsPath)
+					.replace(/\{\{SESSION_ID\}\}/g, config.sessionName)
+					.replace(/\{\{SESSION_NAME\}\}/g, config.sessionName)
+					.replace(/\{\{PROJECT_PATH\}\}/g, config.projectPath || config.projectRoot);
 			}
 		}
 

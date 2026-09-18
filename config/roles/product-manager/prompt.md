@@ -88,7 +88,7 @@ At the **start of an OKR period**, when you (or the orchestrator) hold an
    (company→team, team→project). projectId is required on every child when the
    child level is `project`.
    ```bash
-   bash {{AGENT_SKILLS_PATH}}/orchestrator/decompose-okr/execute.sh --mission-id <parent-mission-id>
+   bash {{ORCHESTRATOR_SKILLS_PATH}}/decompose-okr/execute.sh --mission-id <parent-mission-id>
    ```
 
 2. **PROPOSE** — POST the drafted children to
