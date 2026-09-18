@@ -1949,6 +1949,41 @@ export class TaskPoolService {
   }
 
   /**
+   * Records an auditor quality score on a WorkItem.
+   *
+   * Backs `POST /api/tasks/score` (auditor `score-task` skill). The score
+   * lives under `metadata.qualityScore` with the scorer and timestamp next
+   * to it, so it survives the regular WorkItem update path and needs no
+   * separate persistence.
+   *
+   * @param workItemId - WorkItem id to score
+   * @param qualityScore - Score in the 0–100 range (validated by the caller)
+   * @param scoredBy - Session/member name of the scorer
+   * @returns The updated WorkItem, or null if not found
+   */
+  async scoreItem(
+    workItemId: string,
+    qualityScore: number,
+    scoredBy: string,
+  ): Promise<WorkItem | null> {
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      const existing = (wi.metadata && typeof wi.metadata === 'object' ? wi.metadata : {}) as Record<
+        string,
+        unknown
+      >;
+      wi.metadata = {
+        ...existing,
+        qualityScore,
+        qualityScoredBy: scoredBy,
+        qualityScoredAt: new Date().toISOString(),
+      };
+    });
+    if (!ok) return null;
+    this.logger.info('WorkItem quality scored', { workItemId, qualityScore, scoredBy });
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
    * Reassigns a WorkItem to a different target agent.
    *
    * Replaces the v1 `/task-management/handoff` filesystem reassign with a

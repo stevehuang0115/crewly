@@ -2144,6 +2144,30 @@ describe('TaskPoolService', () => {
   // getPoolStatus
   // -----------------------------------------------------------------------
 
+  describe('scoreItem (POST /api/tasks/score)', () => {
+    it('stores qualityScore/qualityScoredBy/qualityScoredAt under metadata and keeps existing keys', async () => {
+      const wi = makeWorkItem({ metadata: { notes: ['x'] } });
+      await service.addToPool(wi);
+
+      const updated = await service.scoreItem(wi.id, 92, 'auditor-1');
+      expect(updated).not.toBeNull();
+      expect(updated!.metadata).toMatchObject({
+        notes: ['x'],
+        qualityScore: 92,
+        qualityScoredBy: 'auditor-1',
+      });
+      expect(typeof updated!.metadata!.qualityScoredAt).toBe('string');
+      expect(Number.isNaN(Date.parse(updated!.metadata!.qualityScoredAt as string))).toBe(false);
+
+      const persisted = await service.findWorkItem(wi.id);
+      expect(persisted!.metadata!.qualityScore).toBe(92);
+    });
+
+    it('returns null for an unknown item', async () => {
+      expect(await service.scoreItem('missing', 50, 'auditor-1')).toBeNull();
+    });
+  });
+
   describe('getPoolStatus', () => {
     it('returns correct snapshot for empty pool', async () => {
       const status = await service.getPoolStatus();
