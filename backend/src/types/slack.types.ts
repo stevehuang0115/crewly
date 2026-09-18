@@ -56,6 +56,8 @@ export interface SlackRawInboundEvent {
   event_ts?: string;
   /** Message subtype (`file_share`, `bot_message`, `message_changed`, …) */
   subtype?: string;
+  /** `im` | `channel` | `group` | `mpim` on Events API `message` events */
+  channel_type?: string;
   /** Set when a bot posted the message */
   bot_id?: string;
   files?: SlackFile[];

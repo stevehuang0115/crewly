@@ -575,6 +575,21 @@ export class SlackService extends EventEmitter {
     if (event.bot_id && !event.user) {
       return null;
     }
+    // A per-agent app sees every channel it is a member of, so a team
+    // channel message arrives once per agent app plus once from the master
+    // app. Only the DM to the agent's own bot is unique to its app; the
+    // master copy routes everything else (native <@bot> mentions are
+    // resolved from the text by the team-channel service).
+    if (envelope.source === 'agent') {
+      const isDm = event.channel_type ? event.channel_type === 'im' : !!event.channel?.startsWith('D');
+      if (!isDm) {
+        this.logger.debug('Dropping agent-app copy of a channel event', {
+          eventId: envelope.eventId,
+          agentSession: envelope.agentSession,
+        });
+        return null;
+      }
+    }
     return this.handleInboundEvent(event, {
       source: 'cloud',
       eventId: envelope.eventId,
