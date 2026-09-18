@@ -28,6 +28,8 @@ import {
 import { MissionExecutorService, type DecompositionResult } from '../../services/v3/mission-executor.service.js';
 import { OKRReviewService } from '../../services/v3/okr-review.service.js';
 import { OKRCascadeService, type DecomposeOKRInput } from '../../services/v3/okr-cascade.service.js';
+import { requireOwnerToken } from '../../middleware/api-token.middleware.js';
+import { API_SECURITY_CONSTANTS } from '../../constants.js';
 import type { ReviewDecision, KeyResult } from '../../types/v2/key-result.types.js';
 import {
   validateCascadeLink,
@@ -37,6 +39,7 @@ import {
   type MissionPriority,
   type MissionLevel,
   type ProposalState,
+  type ApprovalAudit,
 } from '../../types/v2/mission.types.js';
 
 /** Default priority applied to missions missing the field at read time. */
@@ -340,10 +343,11 @@ async function updateMission(req: Request, res: Response, next: NextFunction): P
  * field, falling back to {@link UNKNOWN_ACTOR}.
  *
  * @param req - Incoming request
- * @param bodyField - Body property to consult (e.g. `proposedBy`/`decidedBy`)
+ * @param bodyField - Body property to consult (`proposedBy`; decisions are
+ *   never actor-resolved from the request — see {@link approveProposal})
  * @returns The resolved actor identifier
  */
-function resolveActor(req: Request, bodyField: 'proposedBy' | 'decidedBy'): string {
+function resolveActor(req: Request, bodyField: 'proposedBy'): string {
   const fromBody = typeof req.body?.[bodyField] === 'string' ? (req.body[bodyField] as string) : '';
   const fromHeader = req.header('X-Agent-Session') ?? '';
   return fromBody || fromHeader || UNKNOWN_ACTOR;
@@ -381,29 +385,58 @@ async function listProposals(req: Request, res: Response, next: NextFunction): P
   } catch (err) { next(err); }
 }
 
-/** Approve a pending decomposition proposal (owner decision). */
-async function approveProposal(req: Request, res: Response, next: NextFunction): Promise<void> {
+/**
+ * Build the owner audit trail for an approve/reject decision.
+ *
+ * Only reachable behind {@link requireOwnerToken}, which rejects agent
+ * sessions and stores the presented token's fingerprint on `res.locals`.
+ *
+ * @param res - Response carrying `locals.ownerTokenFingerprint`
+ * @returns Audit fields persisted on the mission's approval state
+ */
+function ownerAudit(res: Response): ApprovalAudit {
+  return {
+    approvedBy: API_SECURITY_CONSTANTS.OWNER_ACTOR,
+    approverTokenFingerprint: String(res.locals.ownerTokenFingerprint ?? ''),
+  };
+}
+
+/**
+ * Approve a pending decomposition proposal (owner decision).
+ *
+ * The actor is always the owner: this route sits behind
+ * {@link requireOwnerToken}, so an `X-Agent-Session` caller never reaches it
+ * and `decidedBy` is not taken from the request.
+ */
+async function approveProposal(req: Request, res: Response, _next: NextFunction): Promise<void> {
   try {
-    const decidedBy = resolveActor(req, 'decidedBy');
     const service = OKRCascadeService.getInstance();
-    const mission = await service.approveDecomposition(req.params.id, decidedBy);
+    const mission = await service.approveDecomposition(
+      req.params.id,
+      API_SECURITY_CONSTANTS.OWNER_ACTOR,
+      ownerAudit(res),
+    );
     res.json({ success: true, data: mission });
   } catch (err) {
     res.status(400).json({ success: false, error: (err as Error).message });
   }
 }
 
-/** Reject a pending decomposition proposal with a required reason. */
-async function rejectProposal(req: Request, res: Response, next: NextFunction): Promise<void> {
+/** Reject a pending decomposition proposal with a required reason (owner decision). */
+async function rejectProposal(req: Request, res: Response, _next: NextFunction): Promise<void> {
   try {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason : '';
     if (!reason || reason.trim().length === 0) {
       res.status(400).json({ success: false, error: 'reason is required' });
       return;
     }
-    const decidedBy = resolveActor(req, 'decidedBy');
     const service = OKRCascadeService.getInstance();
-    const mission = await service.rejectDecomposition(req.params.id, decidedBy, reason);
+    const mission = await service.rejectDecomposition(
+      req.params.id,
+      API_SECURITY_CONSTANTS.OWNER_ACTOR,
+      reason,
+      ownerAudit(res),
+    );
     res.json({ success: true, data: mission });
   } catch (err) {
     res.status(400).json({ success: false, error: (err as Error).message });
@@ -474,10 +507,12 @@ export function createMissionPolicyRouter(): Router {
   router.get('/:id/proposals', listProposals);
 
   // Approve a pending proposal (owner)
-  router.post('/:id/approve', approveProposal);
+  // Owner-only: requires the API token even from loopback and refuses
+  // agent sessions (403 owner_approval_required).
+  router.post('/:id/approve', requireOwnerToken, approveProposal);
 
   // Reject a pending proposal with a reason (owner)
-  router.post('/:id/reject', rejectProposal);
+  router.post('/:id/reject', requireOwnerToken, rejectProposal);
 
   // --- Mission Execution Endpoints ---
 

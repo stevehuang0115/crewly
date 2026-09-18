@@ -6,6 +6,10 @@ import request from 'supertest';
 import { createMissionPolicyRouter } from './mission-policy.routes.js';
 import { OKRCascadeService } from '../../services/v3/okr-cascade.service.js';
 import { KRTrackingService } from '../../services/v3/kr-tracking.service.js';
+import { resetApiTokenCache, getApiTokenFingerprint } from '../../services/core/api-token.service.js';
+
+/** Owner API token pinned for the approve/reject tests. */
+const OWNER_TOKEN = 'mission-routes-owner-token';
 
 describe('createMissionPolicyRouter', () => {
   it('should create a router with expected routes', () => {
@@ -250,10 +254,14 @@ describe('OKR cascade decompose/approve/reject routes', () => {
   let app: express.Express;
   let tmpDir: string;
   let originalCwd: string;
+  let originalApiToken: string | undefined;
 
   beforeEach(async () => {
     OKRCascadeService.resetInstance();
     KRTrackingService.resetInstance();
+    originalApiToken = process.env.CREWLY_API_TOKEN;
+    process.env.CREWLY_API_TOKEN = OWNER_TOKEN;
+    resetApiTokenCache();
     originalCwd = process.cwd();
     tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-cascade-okr-'));
     process.chdir(tmpDir);
@@ -267,6 +275,9 @@ describe('OKR cascade decompose/approve/reject routes', () => {
   afterEach(async () => {
     OKRCascadeService.resetInstance();
     KRTrackingService.resetInstance();
+    if (originalApiToken === undefined) delete process.env.CREWLY_API_TOKEN;
+    else process.env.CREWLY_API_TOKEN = originalApiToken;
+    resetApiTokenCache();
     process.chdir(originalCwd);
     await fs.rm(tmpDir, { recursive: true, force: true });
   });
@@ -311,32 +322,81 @@ describe('OKR cascade decompose/approve/reject routes', () => {
     expect(res.body.count).toBe(1);
   });
 
-  it('POST /:id/approve activates a pending child', async () => {
+  it('POST /:id/approve with the owner token activates a pending child and records the audit trail', async () => {
     const proposed = await request(app).post('/api/missions/co-1/decompose-okr').send(childPayload());
     const childId = proposed.body.data.childMissionIds[0];
 
     const res = await request(app)
       .post(`/api/missions/${childId}/approve`)
-      .set('X-Agent-Session', 'steve')
-      .send({});
+      .set('X-Crewly-Token', OWNER_TOKEN)
+      .send({ decidedBy: 'ignored-body-actor' });
     expect(res.status).toBe(200);
     expect(res.body.data.approval.state).toBe('approved');
-    expect(res.body.data.approval.decidedBy).toBe('steve');
+    expect(res.body.data.approval.decidedBy).toBe('owner');
+    expect(res.body.data.approval.approvedBy).toBe('owner');
+    expect(res.body.data.approval.approverTokenFingerprint).toBe(getApiTokenFingerprint(OWNER_TOKEN));
+    expect(res.body.data.approval.approverTokenFingerprint).toMatch(/^[0-9a-f]{8}$/);
   });
 
-  it('POST /:id/reject requires a reason and records it', async () => {
+  it('POST /:id/approve requires the token even from loopback (supertest is loopback)', async () => {
     const proposed = await request(app).post('/api/missions/co-1/decompose-okr').send(childPayload());
     const childId = proposed.body.data.childMissionIds[0];
 
-    const noReason = await request(app).post(`/api/missions/${childId}/reject`).send({});
+    const res = await request(app).post(`/api/missions/${childId}/approve`).send({});
+    expect(res.status).toBe(401);
+    expect(res.body).toMatchObject({ success: false, error: 'unauthorized' });
+
+    const child = await request(app).get(`/api/missions/${childId}`);
+    expect(child.body.data.approval.state).toBe('pending_approval');
+  });
+
+  it('POST /:id/approve refuses agent sessions with 403 owner_approval_required', async () => {
+    const proposed = await request(app).post('/api/missions/co-1/decompose-okr').send(childPayload());
+    const childId = proposed.body.data.childMissionIds[0];
+
+    const res = await request(app)
+      .post(`/api/missions/${childId}/approve`)
+      .set('X-Agent-Session', 'crewly-orc')
+      .set('X-Crewly-Token', OWNER_TOKEN)
+      .send({});
+    expect(res.status).toBe(403);
+    expect(res.body).toMatchObject({ success: false, error: 'owner_approval_required' });
+
+    const child = await request(app).get(`/api/missions/${childId}`);
+    expect(child.body.data.approval.state).toBe('pending_approval');
+  });
+
+  it('POST /:id/reject requires the owner token, a reason, and records the audit trail', async () => {
+    const proposed = await request(app).post('/api/missions/co-1/decompose-okr').send(childPayload());
+    const childId = proposed.body.data.childMissionIds[0];
+
+    const noToken = await request(app).post(`/api/missions/${childId}/reject`).send({ reason: 'x' });
+    expect(noToken.status).toBe(401);
+
+    const agent = await request(app)
+      .post(`/api/missions/${childId}/reject`)
+      .set('X-Agent-Session', 'tl-session')
+      .set('Authorization', `Bearer ${OWNER_TOKEN}`)
+      .send({ reason: 'x' });
+    expect(agent.status).toBe(403);
+    expect(agent.body.error).toBe('owner_approval_required');
+
+    const noReason = await request(app)
+      .post(`/api/missions/${childId}/reject`)
+      .set('Authorization', `Bearer ${OWNER_TOKEN}`)
+      .send({});
     expect(noReason.status).toBe(400);
 
     const res = await request(app)
       .post(`/api/missions/${childId}/reject`)
+      .set('Cookie', `crewly_token=${OWNER_TOKEN}`)
       .send({ reason: 'scope unclear' });
     expect(res.status).toBe(200);
     expect(res.body.data.approval.state).toBe('rejected');
     expect(res.body.data.approval.rejectionReason).toBe('scope unclear');
+    expect(res.body.data.approval.decidedBy).toBe('owner');
+    expect(res.body.data.approval.approvedBy).toBe('owner');
+    expect(res.body.data.approval.approverTokenFingerprint).toBe(getApiTokenFingerprint(OWNER_TOKEN));
   });
 });
 
