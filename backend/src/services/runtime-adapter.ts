@@ -318,6 +318,16 @@ export class CodexAdapter extends BaseRuntimeAdapter {
 	readonly displayName = 'OpenAI Codex';
 }
 
+/**
+ * Adapter for the OpenCode CLI (opencode.ai, issue #306).
+ *
+ * Uses the base adapter behavior which delegates to OpenCodeRuntimeService.
+ */
+export class OpenCodeAdapter extends BaseRuntimeAdapter {
+	readonly runtimeType = RUNTIME_TYPES.OPENCODE_CLI;
+	readonly displayName = 'OpenCode';
+}
+
 // ========================= Factory =========================
 
 /**
@@ -327,7 +337,7 @@ export class CodexAdapter extends BaseRuntimeAdapter {
  * the appropriate adapter. Requires the session backend to be initialized
  * first (via createSessionBackend()).
  *
- * @param runtimeType - The runtime type ('claude-code', 'gemini-cli', 'codex-cli')
+ * @param runtimeType - The runtime type ('claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli')
  * @param projectRoot - The project root directory (for runtime config resolution)
  * @returns A RuntimeAdapter instance for the specified runtime
  * @throws Error if session backend is not initialized or runtime type is unknown
@@ -365,6 +375,9 @@ export function getRuntimeAdapter(
 
 		case RUNTIME_TYPES.CODEX_CLI:
 			return new CodexAdapter(backend, sessionHelper, runtimeService);
+
+		case RUNTIME_TYPES.OPENCODE_CLI:
+			return new OpenCodeAdapter(backend, sessionHelper, runtimeService);
 
 		default: {
 			// Fallback to Claude Code for unrecognized types

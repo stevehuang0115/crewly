@@ -2,6 +2,7 @@ import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { ClaudeRuntimeService } from './claude-runtime.service.js';
 import { GeminiRuntimeService } from './gemini-runtime.service.js';
 import { CodexRuntimeService } from './codex-runtime.service.js';
+import { OpenCodeRuntimeService } from './opencode-runtime.service.js';
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 import type { SessionCommandHelper } from '../session/index.js';
@@ -72,6 +73,16 @@ describe('RuntimeServiceFactory', () => {
 			);
 
 			expect(service).toBeInstanceOf(CodexRuntimeService);
+		});
+
+		it('should create OpenCodeRuntimeService for OPENCODE_CLI runtime type (#306)', () => {
+			const service = RuntimeServiceFactory.create(
+				RUNTIME_TYPES.OPENCODE_CLI,
+				null,
+				testProjectRoot
+			);
+
+			expect(service).toBeInstanceOf(OpenCodeRuntimeService);
 		});
 
 		it('should create CrewlyAgentExternalRuntimeService for CREWLY_AGENT runtime type', () => {
@@ -190,8 +201,15 @@ describe('RuntimeServiceFactory', () => {
 				testProjectRoot
 			);
 
+			const opencode = RuntimeServiceFactory.createFresh(
+				RUNTIME_TYPES.OPENCODE_CLI,
+				null,
+				testProjectRoot
+			);
+
 			expect(gemini).toBeInstanceOf(GeminiRuntimeService);
 			expect(codex).toBeInstanceOf(CodexRuntimeService);
+			expect(opencode).toBeInstanceOf(OpenCodeRuntimeService);
 		});
 	});
 
@@ -205,6 +223,16 @@ describe('RuntimeServiceFactory', () => {
 
 			expect(service).toBeInstanceOf(ClaudeRuntimeService);
 		});
+
+		it('should create OpenCodeRuntimeService with explicit session helper (#306)', () => {
+			const service = RuntimeServiceFactory.createWithHelper(
+				RUNTIME_TYPES.OPENCODE_CLI,
+				mockSessionHelper,
+				testProjectRoot
+			);
+
+			expect(service).toBeInstanceOf(OpenCodeRuntimeService);
+		});
 	});
 
 	describe('getAvailableRuntimeTypes', () => {
@@ -214,8 +242,9 @@ describe('RuntimeServiceFactory', () => {
 			expect(types).toContain(RUNTIME_TYPES.CLAUDE_CODE);
 			expect(types).toContain(RUNTIME_TYPES.GEMINI_CLI);
 			expect(types).toContain(RUNTIME_TYPES.CODEX_CLI);
+			expect(types).toContain(RUNTIME_TYPES.OPENCODE_CLI);
 			expect(types).toContain(RUNTIME_TYPES.CREWLY_AGENT);
-			expect(types).toHaveLength(4);
+			expect(types).toHaveLength(5);
 		});
 	});
 
@@ -224,6 +253,7 @@ describe('RuntimeServiceFactory', () => {
 			expect(RuntimeServiceFactory.isRuntimeTypeSupported(RUNTIME_TYPES.CLAUDE_CODE)).toBe(true);
 			expect(RuntimeServiceFactory.isRuntimeTypeSupported(RUNTIME_TYPES.GEMINI_CLI)).toBe(true);
 			expect(RuntimeServiceFactory.isRuntimeTypeSupported(RUNTIME_TYPES.CODEX_CLI)).toBe(true);
+			expect(RuntimeServiceFactory.isRuntimeTypeSupported(RUNTIME_TYPES.OPENCODE_CLI)).toBe(true);
 			expect(RuntimeServiceFactory.isRuntimeTypeSupported(RUNTIME_TYPES.CREWLY_AGENT)).toBe(true);
 		});
 

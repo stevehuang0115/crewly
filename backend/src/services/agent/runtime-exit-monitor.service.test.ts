@@ -650,6 +650,37 @@ describe('RuntimeExitMonitorService', () => {
 			jest.useRealTimers();
 		});
 
+		it('#306: should auto-restart an idle-exited opencode-cli agent even with no in-progress tasks (like Claude Code / Codex)', async () => {
+			jest.useFakeTimers();
+
+			mockGetAllItems.mockResolvedValue([]);
+			mockGetExitPatterns.mockReturnValueOnce([/opencode.*exited/i, /Unknown arguments?:/i]);
+
+			service.startMonitoring('opencode-agent', RUNTIME_TYPES.OPENCODE_CLI, 'developer', 'team-1', 'member-1');
+			const onDataCallback = mockOnData.mock.calls[0][0];
+
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 100);
+			onDataCallback('opencode exited');
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 100);
+			await jest.runAllTimersAsync();
+
+			// Idle-exit auto-restart kicks in (no tasks needed), so the agent is NOT marked inactive
+			expect(mockCreateAgentSession).toHaveBeenCalledWith(
+				expect.objectContaining({
+					sessionName: 'opencode-agent',
+					role: 'developer',
+					teamId: 'team-1',
+					memberId: 'member-1',
+				})
+			);
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalledWith(
+				'opencode-agent',
+				CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE
+			);
+
+			jest.useRealTimers();
+		});
+
 		it('should restart orchestrator on exit via OrchestratorRestartService', async () => {
 			jest.useFakeTimers();
 			mockAttemptRestart.mockResolvedValue(true);

@@ -1257,6 +1257,7 @@ export class AgentRegistrationService {
 	 * - Claude Code  → .crewly/CLAUDE.md
 	 * - Gemini CLI   → GEMINI.md (project root)
 	 * - Codex        → AGENTS.md (project root)
+	 * - OpenCode     → AGENTS.md (project root, same convention as Codex — #306)
 	 *
 	 * Uses 'wx' flag to avoid overwriting existing files.
 	 *
@@ -1275,6 +1276,10 @@ export class AgentRegistrationService {
 				outputPath: path.join(projectPath, 'GEMINI.md'),
 			},
 			[RUNTIME_TYPES.CODEX_CLI]: {
+				template: 'agent-agents-md.md',
+				outputPath: path.join(projectPath, 'AGENTS.md'),
+			},
+			[RUNTIME_TYPES.OPENCODE_CLI]: {
 				template: 'agent-agents-md.md',
 				outputPath: path.join(projectPath, 'AGENTS.md'),
 			},
@@ -1999,7 +2004,7 @@ export class AgentRegistrationService {
 
 			// Write runtime-specific project config file so the agent CLI
 			// recognizes Crewly as a legitimate project configuration (fixes #33)
-			// Claude Code → .crewly/CLAUDE.md, Gemini CLI → GEMINI.md, Codex → AGENTS.md
+			// Claude Code → .crewly/CLAUDE.md, Gemini CLI → GEMINI.md, Codex / OpenCode → AGENTS.md
 			if (role !== ORCHESTRATOR_ROLE) {
 				await this.provisionRuntimeConfigFile(projectPath, runtimeType);
 			}
@@ -3313,7 +3318,7 @@ Loop until done, blocked, or explicitly reassigned:
 			);
 
 			// Inject API keys from settings (with override chain) for the PTY
-			// runtimes (claude-code, gemini-cli, codex-cli). crewly-agent never
+			// runtimes (claude-code, gemini-cli, codex-cli, opencode-cli). crewly-agent never
 			// reaches this block — it returns from the in-process branch above —
 			// and gets its keys via CrewlyAgentExternalRuntimeService.buildChildEnv
 			// on the child's spawn environment instead.
@@ -3333,7 +3338,7 @@ Loop until done, blocked, or explicitly reassigned:
 				await sessionHelper.setEnvironmentVariable(sessionName, 'ANTHROPIC_API_KEY', anthropicKey);
 			}
 
-			// OpenAI key — needed by codex-cli and crewly-agent
+			// OpenAI key — needed by codex-cli, opencode-cli and crewly-agent
 			const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
 			if (openaiKey) {
 				await sessionHelper.setEnvironmentVariable(sessionName, 'OPENAI_API_KEY', openaiKey);

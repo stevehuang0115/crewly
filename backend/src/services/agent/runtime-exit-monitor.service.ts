@@ -45,6 +45,19 @@ import {
 import { delay } from '../../utils/async.utils.js';
 
 /**
+ * Runtimes that exit cleanly after task completion / idle timeout and are
+ * auto-restarted (non-orchestrator agents only) to keep the agent available.
+ * Gemini is excluded on purpose: its exits go through the failure-retry flow.
+ *
+ * #228 Claude Code, #234 Codex CLI, #306 OpenCode.
+ */
+const IDLE_EXIT_AUTO_RESTART_RUNTIMES: ReadonlySet<RuntimeType> = new Set<RuntimeType>([
+	RUNTIME_TYPES.CLAUDE_CODE,
+	RUNTIME_TYPES.CODEX_CLI,
+	RUNTIME_TYPES.OPENCODE_CLI,
+]);
+
+/**
  * Internal state tracked per monitored session.
  */
 interface MonitoredSession {
@@ -71,7 +84,7 @@ interface MonitoredSession {
 /**
  * Service that monitors PTY sessions for runtime exit patterns.
  *
- * When an agent CLI (Claude Code, Gemini CLI, Codex CLI) exits inside a PTY
+ * When an agent CLI (Claude Code, Gemini CLI, Codex CLI, OpenCode) exits inside a PTY
  * session, the PTY shell itself stays alive. This service watches terminal
  * output for runtime-specific exit patterns and reacts by:
  *
@@ -484,9 +497,9 @@ export class RuntimeExitMonitorService {
 				if (restarted) return;
 			}
 
-			// #228/#234: Auto-restart agents that exit idle (Claude Code + Codex CLI).
+			// #228/#234/#306: Auto-restart agents that exit idle (Claude Code, Codex CLI, OpenCode).
 			// These runtimes exit after task completion or idle timeout. Restart to keep available.
-			if ((monitored.runtimeType === 'claude-code' || monitored.runtimeType === 'codex-cli')
+			if (IDLE_EXIT_AUTO_RESTART_RUNTIMES.has(monitored.runtimeType)
 				&& monitored.role !== ORCHESTRATOR_ROLE
 				&& this.agentRegistrationService && this.isAgentRestartAllowed(sessionName)) {
 				try {
