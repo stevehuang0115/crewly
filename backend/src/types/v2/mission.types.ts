@@ -495,6 +495,8 @@ export interface Mission {
   nextReviewAt?: string;
   /** Last Slack reminder sent for off-track KRs */
   lastReminderAt?: string;
+  /** Last time the owner was nudged about this pending proposal (ISO8601); see OKROwnerGuidanceService */
+  lastApprovalNudgeAt?: string;
   /**
    * WorkItem id of the currently-pending review WorkItem for this Mission
    * (REVIEW-1 reentrancy lock — Arch Veto V8). Populated by

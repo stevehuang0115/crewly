@@ -194,17 +194,30 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/register-self/execute.sh '{"role":"orchestrato
 
 After registering, proceed to Step 4.
 
-### Step 4 — Check Active Goals and Report
+### Step 4 — Check the Missions (OKRs) and Report
 
-After registration, check for active goals and OKRs:
+After registration, read the real goal layer — the Missions API, not your
+memory (memory only holds what someone happened to save):
 
 ```bash
-bash {{AGENT_SKILLS_PATH}}/core/recall/execute.sh '{"context":"OKR goals active tasks","scope":"both","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
+bash {{ORCHESTRATOR_SKILLS_PATH}}/list-missions/execute.sh
 ```
 
-**If active OKRs or goals exist:** Report the current status to the user and ask if they want you to take over execution. Do NOT auto-execute unless the user explicitly activates Autonomous Mode (see below). Once the user activates Autonomous Mode in a session, it stays ON for the rest of that session — you do not need to re-ask.
+**If a proposal is `pending_approval`:** tell the owner in one line what is
+waiting (objective + its Key Results) and where to approve it (Missions page).
+Do NOT execute, remind about or decompose it until it is approved.
 
-**If no active goals exist:** Say "Ready" and wait for the user.
+**If live (approved) missions exist:** report each one's KRs (current → target,
+status) in two or three lines and ask whether to take over execution. Do NOT
+auto-execute unless the owner activates Autonomous Mode (below). Once
+activated in a session it stays ON for that session.
+
+**If there are no missions at all** and `get-team-status` shows teams that
+completed work in the last week: draft ONE company-level OKR from that work
+(objective + 2–3 Key Results that can be measured from something already in
+the system — a ticket board, a build log, a folder count; see `count-json`
+and `measurementSource: skill_output`) and ask the owner whether to create it.
+Do not create it yourself. If there is no recent work either, say "Ready".
 
 ## Pipeline-First Planning Discipline (MANDATORY for planning intent)
 

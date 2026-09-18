@@ -24,6 +24,7 @@ import { KRTrackingService } from './kr-tracking.service.js';
 import { OKRReviewService } from './okr-review.service.js';
 import { MissionPeriodService } from './mission-period.service.js';
 import { KRSkillMeasurerService } from './kr-skill-measurer.service.js';
+import { OKROwnerGuidanceService } from './okr-owner-guidance.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -242,6 +243,10 @@ export class MissionReminderService {
     staleFlagged: number;
     /** KRs re-measured from skill output this sweep */
     skillMeasured: number;
+    /** Pending proposals the owner was nudged about this sweep */
+    proposalsNudged: number;
+    /** Whether the weekly digest went out this sweep */
+    digestSent: boolean;
   }> {
     const now = new Date();
     const previousSweepAt = this.lastSweepAt;
@@ -261,7 +266,23 @@ export class MissionReminderService {
       reviewsAutoContinued: 0,
       staleFlagged: 0,
       skillMeasured: 0,
+      proposalsNudged: 0,
+      digestSent: false,
     };
+
+    // Owner guidance runs on every sweep and looks at ALL missions (pending
+    // proposals included — those are exactly what the owner must hear about).
+    try {
+      const guidance = await OKROwnerGuidanceService.getInstance()?.run();
+      if (guidance) {
+        result.proposalsNudged = guidance.nudged;
+        result.digestSent = guidance.digestSent;
+      }
+    } catch (err) {
+      this.logger.warn('Owner guidance failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     this.logger.info('Starting Mission OKR reminder sweep', { count: missions.length });
 

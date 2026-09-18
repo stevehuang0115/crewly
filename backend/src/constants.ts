@@ -650,6 +650,23 @@ export const ORC_STATUS_FORWARDING = {
 } as const;
 
 /**
+ * Owner-facing OKR guidance (OKROwnerGuidanceService): approval nudges and
+ * the weekly digest.
+ */
+export const OKR_GUIDANCE_CONSTANTS = {
+	/** Re-nudge a pending proposal no more often than this */
+	APPROVAL_NUDGE_COOLDOWN_MS: 24 * 60 * 60 * 1000,
+	/** Weekly digest schedule (cron, in DIGEST_TZ); env CREWLY_OKR_DIGEST_CRON */
+	DIGEST_CRON: '0 9 * * 1',
+	/** Timezone for DIGEST_CRON; env CREWLY_OKR_DIGEST_TZ */
+	DIGEST_TZ: 'UTC',
+	/** KR lines shown per mission in a message */
+	MAX_KRS_IN_MESSAGE: 6,
+	/** staleCycles at or above this flags a mission as "no progress" in the digest */
+	STALE_CYCLES_FLAG: 2,
+} as const;
+
+/**
  * `skill_output` Key Result measurement (KRSkillMeasurerService).
  */
 export const KR_SKILL_MEASURER_CONSTANTS = {

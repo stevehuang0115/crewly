@@ -69,6 +69,9 @@ import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-br
 import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.js';
 import { FallbackTriggerCleanupSubscriber } from './services/v3/fallback-trigger-cleanup.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
+import { OKROwnerGuidanceService } from './services/v3/okr-owner-guidance.service.js';
+import { KRTrackingService } from './services/v3/kr-tracking.service.js';
+import { getSlackOrchestratorBridge } from './services/slack/slack-orchestrator-bridge.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
 import { bootEscalationService } from './services/v3/escalation-boot.js';
 import { TeamBudgetGateService } from './services/budget/team-budget-gate.service.js';
@@ -765,6 +768,34 @@ void (async () => {
 		// declared + bridged events with no publisher before this.
 		MissionReminderService.getInstance().setEventBusService(this.eventBusService);
 		OKRReviewService.getInstance().setEventBusService(this.eventBusService);
+
+		// Owner guidance for the goal layer: a pending OKR proposal is pushed to
+		// the owner (Slack via the orchestrator bridge + a line in the orc's
+		// queue) instead of waiting to be discovered on the Missions page, and
+		// a weekly digest summarises every mission. Runs inside the sweep.
+		{
+			const guidance = new OKROwnerGuidanceService({
+				listKeyResults: (missionId) => KRTrackingService.getInstance().listByMission(missionId),
+			});
+			guidance.setNotifiers(
+				async ({ title, message, urgency, metadata }) => {
+					const bridge = getSlackOrchestratorBridge();
+					if (!bridge) return;
+					await bridge.sendNotification({
+						type: 'okr_reminder',
+						title,
+						message,
+						urgency,
+						timestamp: new Date().toISOString(),
+						metadata,
+					});
+				},
+				(content) => {
+					this.messageQueueService?.enqueue({ content, conversationId: 'system:okr', source: 'system_event' });
+				},
+			);
+			OKROwnerGuidanceService.setInstance(guidance);
+		}
 
 		// Hierarchy escalation: a TL that has not acted on a worker's
 		// verification handoff within 15 min triggers the documented bypass to
