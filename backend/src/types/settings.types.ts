@@ -12,7 +12,7 @@ import { CREWLY_AGENT_MANAGED_COMMAND } from '../constants.js';
 /**
  * Available AI runtime options
  */
-export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'crewly-agent';
+export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
 
 /**
  * Array of all valid AI runtimes
@@ -21,6 +21,7 @@ export const AI_RUNTIMES: readonly AIRuntime[] = [
   'claude-code',
   'gemini-cli',
   'codex-cli',
+  'opencode-cli',
   'crewly-agent',
 ] as const;
 
@@ -348,6 +349,10 @@ export function getDefaultSettings(): CrewlySettings {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',
         'codex-cli': 'codex -a never -s danger-full-access',
+        // `--auto` approves every permission request that is not explicitly
+        // denied in opencode.json — the OpenCode equivalent of the danger /
+        // yolo flags above (issue #306).
+        'opencode-cli': 'opencode --auto',
         // The managed external binary (PR #599). NOT 'crewly-agent-in-process'
         // — that stale sentinel shelled out to a non-existent command and
         // exited 127 (issue #693).
@@ -681,6 +686,8 @@ export function getAIRuntimeDisplayName(runtime: AIRuntime): string {
       return 'Gemini CLI';
     case 'codex-cli':
       return 'Codex CLI';
+    case 'opencode-cli':
+      return 'OpenCode CLI';
     case 'crewly-agent':
       return 'Crewly Agent';
     default:

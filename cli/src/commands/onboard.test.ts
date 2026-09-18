@@ -195,12 +195,22 @@ describe('onboard command', () => {
       ['1', 'claude'],
       ['2', 'gemini'],
       ['3', 'codex'],
-      ['4', 'both'],
-      ['5', 'skip'],
+      ['4', 'opencode'],
+      ['5', 'both'],
+      ['6', 'skip'],
     ] as [string, ProviderChoice][])('returns "%s" when user enters %s', async (input, expected) => {
       const rl = createMockReadline([input]);
       const result = await selectProvider(rl);
       expect(result).toBe(expected);
+    });
+
+    it('#306: lists OpenCode with its install hint in the provider menu', async () => {
+      const rl = createMockReadline(['4']);
+      await selectProvider(rl);
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('4. OpenCode (open source)');
+      expect(output).toContain('npm install -g opencode-ai');
+      expect(output).toContain('opencode auth login');
     });
 
     it('re-prompts on invalid input then accepts valid', async () => {
@@ -209,7 +219,7 @@ describe('onboard command', () => {
       expect(result).toBe('gemini');
       // Should have printed a warning for bad inputs
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('Please enter 1, 2, 3, 4, or 5');
+      expect(output).toContain('Please enter 1, 2, 3, 4, 5, or 6');
     });
   });
 
@@ -360,6 +370,41 @@ describe('onboard command', () => {
 
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('Skipped Claude Code');
+    });
+
+    it('#306: detects an installed OpenCode binary for the opencode provider', async () => {
+      // tmux → found; which opencode → found; opencode --version
+      mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'))         // tmux -V
+        .mockReturnValueOnce(Buffer.from('/usr/local/bin/opencode'))
+        .mockReturnValueOnce(Buffer.from('1.18.31'));
+
+      const rl = createMockReadline([]);
+      await ensureTools(rl, 'opencode');
+
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('OpenCode detected (v1.18.31)');
+    });
+
+    it('#306: offers to install OpenCode from the opencode-ai npm package when missing', async () => {
+      // tmux → found; which opencode → not found; npm install → succeeds
+      mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/bin/tmux'))   // which tmux
+        .mockReturnValueOnce(Buffer.from('tmux 3.4'))         // tmux -V
+        .mockImplementationOnce(() => { throw new Error('not found'); })  // which opencode
+        .mockReturnValueOnce(Buffer.from(''));  // npm install
+
+      const rl = createMockReadline(['Y']);
+      await ensureTools(rl, 'opencode');
+
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('OpenCode not found');
+      expect(output).toContain('OpenCode installed');
+      expect(mockExecSync).toHaveBeenCalledWith(
+        'npm install -g opencode-ai',
+        expect.anything(),
+      );
     });
 
     it('auto-installs missing tools when autoYes is true', async () => {
@@ -538,6 +583,15 @@ describe('onboard command', () => {
       expect(config.members[0].id).toBeDefined();
       expect(config.members[0].sessionName).toBeDefined();
       expect(config.members[0].createdAt).toBeDefined();
+    });
+
+    it('#306: maps the opencode provider to the opencode-cli runtime type', () => {
+      createTeamFromTemplate(sampleTemplate, 'opencode');
+
+      const writeCall = mockWriteFileSync.mock.calls[0];
+      const config = JSON.parse(writeCall[1] as string);
+
+      expect(config.members.every((m: { runtimeType: string }) => m.runtimeType === 'opencode-cli')).toBe(true);
     });
 
     it('returns false when filesystem operation fails', () => {
@@ -736,7 +790,7 @@ describe('onboard command', () => {
     });
 
     it('runs the full wizard selecting skip provider', async () => {
-      mockReadlineAnswers = ['5']; // skip provider; template auto-skips (no templates)
+      mockReadlineAnswers = ['6']; // skip provider; template auto-skips (no templates)
       mockReadlineAnswerIndex = 0;
 
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
@@ -760,8 +814,8 @@ describe('onboard command', () => {
         },
       ]);
 
-      // Answer '5' for provider (skip), '1' for template selection
-      mockReadlineAnswers = ['5', '1'];
+      // Answer '6' for provider (skip), '1' for template selection
+      mockReadlineAnswers = ['6', '1'];
       mockReadlineAnswerIndex = 0;
 
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
@@ -778,7 +832,7 @@ describe('onboard command', () => {
     it('creates team when template is selected', async () => {
       mockListTemplates.mockReturnValue([sampleTemplate]);
 
-      mockReadlineAnswers = ['5', '1']; // skip provider, select first template
+      mockReadlineAnswers = ['6', '1']; // skip provider, select first template
       mockReadlineAnswerIndex = 0;
 
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
@@ -809,7 +863,7 @@ describe('onboard command', () => {
     });
 
     it('scaffolds .crewly/ directory during interactive flow', async () => {
-      mockReadlineAnswers = ['5']; // skip provider
+      mockReadlineAnswers = ['6']; // skip provider
       mockReadlineAnswerIndex = 0;
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
@@ -905,7 +959,7 @@ describe('onboard command', () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
       // Skip provider (step 1)
-      mockReadlineAnswers = ['5'];
+      mockReadlineAnswers = ['6'];
       mockReadlineAnswerIndex = 0;
 
       await onboardCommand({ template: 'web-dev-team' });
@@ -935,7 +989,7 @@ describe('onboard command', () => {
       mockListTemplates.mockReturnValue([sampleTemplate]);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
-      mockReadlineAnswers = ['5', '']; // skip provider, skip template
+      mockReadlineAnswers = ['6', '']; // skip provider, skip template
       mockReadlineAnswerIndex = 0;
 
       await onboardCommand({ template: 'nonexistent' });
@@ -950,7 +1004,7 @@ describe('onboard command', () => {
       mockListTemplates.mockReturnValue([]);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
-      mockReadlineAnswers = ['5'];
+      mockReadlineAnswers = ['6'];
       mockReadlineAnswerIndex = 0;
 
       await onboardCommand({ template: 'nonexistent' });

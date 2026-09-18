@@ -562,6 +562,50 @@ describe('AgentRegistrationService', () => {
 			);
 		});
 
+		it('#306: should boot an opencode-cli agent through its own runtime service, provision AGENTS.md and inject the same API keys as codex-cli', async () => {
+			const { getSettingsService } = require('../settings/settings.service.js');
+			(getSettingsService as any).mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue({
+					general: { autoResumeOnRestart: true, tokenTracking: false },
+				}),
+				getApiKey: jest.fn().mockImplementation(async (provider: string) =>
+					provider === 'openai' ? 'sk-openai-test' : provider === 'anthropic' ? 'sk-ant-test' : undefined),
+			});
+			const provisionSpy = jest.spyOn(service as any, 'provisionRuntimeConfigFile').mockResolvedValue(undefined);
+
+			mockSessionHelper.sessionExists
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(true);
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile
+				.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+				.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+			const result = await service.createAgentSession({
+				sessionName: 'opencode-session',
+				role: 'developer',
+				runtimeType: RUNTIME_TYPES.OPENCODE_CLI,
+				projectPath: '/test/project',
+			});
+
+			expect(result.success).toBe(true);
+			// The factory is asked for the OpenCode runtime, not a fallback
+			expect(RuntimeServiceFactory.create).toHaveBeenCalledWith(
+				RUNTIME_TYPES.OPENCODE_CLI,
+				null,
+				expect.any(String),
+			);
+			expect(mockRuntimeService.executeRuntimeInitScript).toHaveBeenCalled();
+			// AGENTS.md convention, same as Codex (the path is resolved from the
+			// team's project, falling back to the install root when there is none)
+			expect(provisionSpy).toHaveBeenCalledWith(expect.any(String), RUNTIME_TYPES.OPENCODE_CLI);
+			// Provider keys land in the PTY environment so `opencode` can pick them up
+			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('opencode-session', 'OPENAI_API_KEY', 'sk-openai-test');
+			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('opencode-session', 'ANTHROPIC_API_KEY', 'sk-ant-test');
+			// Claude-only telemetry env must not leak into other runtimes
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('opencode-session', 'CLAUDE_CODE_ENABLE_TELEMETRY', '1');
+		});
+
 		it('should attempt recovery when session already exists', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			mockRuntimeService.detectRuntimeWithCommand.mockResolvedValue(true);
@@ -3577,6 +3621,20 @@ describe('AgentRegistrationService', () => {
 
 		it('should write AGENTS.md for codex-cli runtime', async () => {
 			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.CODEX_CLI);
+
+			expect(mockReadFile).toHaveBeenCalledWith(
+				expect.stringContaining('agent-agents-md.md'),
+				'utf8',
+			);
+			expect(mockWriteFileFs).toHaveBeenCalledWith(
+				expect.stringContaining('AGENTS.md'),
+				'# Agent Config Template Content',
+				{ flag: 'wx' },
+			);
+		});
+
+		it('should write AGENTS.md for opencode-cli runtime (same convention as Codex, #306)', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.OPENCODE_CLI);
 
 			expect(mockReadFile).toHaveBeenCalledWith(
 				expect.stringContaining('agent-agents-md.md'),

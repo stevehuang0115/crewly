@@ -13,6 +13,7 @@ import {
 	ClaudeCodeAdapter,
 	GeminiCliAdapter,
 	CodexAdapter,
+	OpenCodeAdapter,
 	getRuntimeAdapter,
 	getSupportedRuntimeTypes,
 	isSupportedRuntime,
@@ -36,10 +37,11 @@ jest.mock('./agent/runtime-service.factory.js', () => ({
 			'claude-code',
 			'gemini-cli',
 			'codex-cli',
+			'opencode-cli',
 			'crewly-agent',
 		]),
 		isRuntimeTypeSupported: jest.fn((type: string) =>
-			['claude-code', 'gemini-cli', 'codex-cli', 'crewly-agent'].includes(type),
+			['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent'].includes(type),
 		),
 	},
 }));
@@ -429,6 +431,14 @@ describe('RuntimeAdapter', () => {
 			expect(adapter.runtimeType).toBe(RUNTIME_TYPES.CODEX_CLI);
 		});
 
+		it('returns OpenCodeAdapter for opencode-cli (#306)', () => {
+			const adapter = getRuntimeAdapter(RUNTIME_TYPES.OPENCODE_CLI, '/project');
+
+			expect(adapter).toBeInstanceOf(OpenCodeAdapter);
+			expect(adapter.runtimeType).toBe(RUNTIME_TYPES.OPENCODE_CLI);
+			expect(adapter.displayName).toBe('OpenCode');
+		});
+
 		it('falls back to ClaudeCodeAdapter for unknown runtime', () => {
 			const adapter = getRuntimeAdapter('unknown' as any, '/project');
 
@@ -465,8 +475,9 @@ describe('RuntimeAdapter', () => {
 			expect(types).toContain('claude-code');
 			expect(types).toContain('gemini-cli');
 			expect(types).toContain('codex-cli');
+			expect(types).toContain('opencode-cli');
 			expect(types).toContain('crewly-agent');
-			expect(types).toHaveLength(4);
+			expect(types).toHaveLength(5);
 		});
 	});
 

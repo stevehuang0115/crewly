@@ -29,6 +29,11 @@ const SPINNER_CHARS = new Set([
 /** Filled circle (⏺ U+23FA) — Claude Code working indicator. */
 const WORKING_INDICATOR_CODE = 0x23FA; // ⏺
 
+/** OpenCode TUI empty-input placeholder (lower-cased prefix, normal mode). */
+const OPENCODE_PROMPT_PLACEHOLDER = 'ask anything';
+/** OpenCode TUI empty-input placeholder (lower-cased prefix, `!` shell mode). */
+const OPENCODE_SHELL_PLACEHOLDER = 'run a command';
+
 /** Box-drawing codepoints (U+2500–U+257F) plus ASCII equivalents. */
 const BOX_DRAWING_MIN = 0x2500;
 const BOX_DRAWING_MAX = 0x257F;
@@ -409,6 +414,8 @@ export function matchTuiPromptLine(line: string): string | null {
  * Claude Code: ❯, ⏵, $ alone (or with box-drawing), or ❯❯
  * Gemini CLI:  > or ! or bordered │ >, or "Type your message" / "YOLO mode"
  * Codex CLI:   › or bordered │ ›
+ * OpenCode:    no prompt glyph — the input box shows the `Ask anything…`
+ *              placeholder (or `Run a command…` in shell mode) when empty
  *
  * @param line - A single non-empty terminal line (already stripped of ANSI)
  * @param runtimeType - The agent runtime type
@@ -423,6 +430,15 @@ export function isPromptLine(line: string, runtimeType?: RuntimeType): boolean {
 	const isGemini = runtimeType === RUNTIME_TYPES.GEMINI_CLI;
 	const isClaudeCode = runtimeType === RUNTIME_TYPES.CLAUDE_CODE;
 	const isCodex = runtimeType === RUNTIME_TYPES.CODEX_CLI;
+	const isOpenCode = runtimeType === RUNTIME_TYPES.OPENCODE_CLI;
+
+	// OpenCode prompts — textual placeholder only. Its TUI paints `>`-quoted
+	// model output and `❯`-style glyphs nowhere near the input box, so the
+	// glyph rules below are deliberately NOT applied to this runtime.
+	if (isOpenCode) {
+		const lower = stripped.toLowerCase();
+		return lower.startsWith(OPENCODE_PROMPT_PLACEHOLDER) || lower.startsWith(OPENCODE_SHELL_PLACEHOLDER);
+	}
 
 	// Claude Code prompts
 	if (!isGemini && !isCodex) {

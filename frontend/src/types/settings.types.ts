@@ -10,7 +10,7 @@
 /**
  * Supported AI runtime types
  */
-export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'crewly-agent';
+export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
 
 /**
  * General application settings
@@ -175,7 +175,7 @@ export interface SettingsValidationResult {
 /**
  * Available AI runtimes
  */
-export const AI_RUNTIMES: AIRuntime[] = ['claude-code', 'gemini-cli', 'codex-cli', 'crewly-agent'];
+export const AI_RUNTIMES: AIRuntime[] = ['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent'];
 
 /**
  * AI runtime display names
@@ -184,6 +184,7 @@ export const AI_RUNTIME_DISPLAY_NAMES: Record<AIRuntime, string> = {
   'claude-code': 'Claude Code',
   'gemini-cli': 'Gemini CLI',
   'codex-cli': 'Codex CLI',
+  'opencode-cli': 'OpenCode CLI',
   'crewly-agent': 'Crewly Agent',
 };
 

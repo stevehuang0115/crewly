@@ -11,6 +11,10 @@ import {
   BROWSER_PROXY_CONSTANTS,
   CLOUD_SYNC_CONSTANTS,
   GOOGLE_OAUTH_CONSTANTS,
+  LOGIN_REQUIRED_PATTERN_SETS,
+  RUNTIME_COMPACT_COMMANDS,
+  RUNTIME_INPUT_READY_PATTERNS,
+  RUNTIME_TYPES,
 } from './constants.js';
 
 describe('GOOGLE_OAUTH_CONSTANTS', () => {
@@ -109,5 +113,49 @@ describe('API_SECURITY_CONSTANTS (backend re-export)', () => {
   it('re-exports the cross-domain block so index.ts can read the bind host default', () => {
     expect(API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST).toBe('0.0.0.0');
     expect(API_SECURITY_CONSTANTS.ENV.BIND_HOST).toBe('CREWLY_BIND_HOST');
+  });
+});
+
+describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
+  it('registers OpenCode as a fourth PTY runtime next to claude/gemini/codex', () => {
+    expect(RUNTIME_TYPES.OPENCODE_CLI).toBe('opencode-cli');
+    expect(Object.values(RUNTIME_TYPES)).toEqual(
+      expect.arrayContaining(['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent']),
+    );
+  });
+
+  it('has a compact command for every runtime type (Record<RuntimeType, string> is exhaustive)', () => {
+    for (const type of Object.values(RUNTIME_TYPES)) {
+      expect(typeof RUNTIME_COMPACT_COMMANDS[type]).toBe('string');
+    }
+    expect(RUNTIME_COMPACT_COMMANDS['opencode-cli']).toBe('/compact');
+  });
+
+  it('treats the OpenCode /connect provider dialog as a login-required screen', () => {
+    const lower = 'connect a provider\n  anthropic\n  openai\n  other  custom provider';
+    const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) =>
+      set.every((pattern) => lower.includes(pattern.toLowerCase())),
+    );
+    expect(matched).toBe(true);
+  });
+
+  it('treats the OpenCode "Get started /connect" footer as a login-required screen', () => {
+    const lower = '~/projects/demo                     get started /connect';
+    const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) =>
+      set.every((pattern) => lower.includes(pattern.toLowerCase())),
+    );
+    expect(matched).toBe(true);
+  });
+
+  it('marks the OpenCode busy hint and provider dialog as not-ready-for-input', () => {
+    const markers = RUNTIME_INPUT_READY_PATTERNS.OPENCODE_CLI.NOT_READY_MARKERS;
+    expect(markers).toContain('esc interrupt');
+    expect(markers).toContain('esc again to interrupt');
+    expect(markers).toContain('connect a provider');
+    // Markers are lower-case + whitespace-collapsed by contract (isReadyForInput normalises the screen that way)
+    for (const marker of markers) {
+      expect(marker).toBe(marker.toLowerCase());
+      expect(marker).not.toMatch(/\s{2,}/);
+    }
   });
 });

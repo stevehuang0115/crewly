@@ -157,6 +157,8 @@ export const RUNTIME_TYPES = {
 	CLAUDE_CODE: 'claude-code',
 	GEMINI_CLI: 'gemini-cli',
 	CODEX_CLI: 'codex-cli',
+	/** OpenCode (opencode.ai) — open-source TUI coding agent, issue #306 */
+	OPENCODE_CLI: 'opencode-cli',
 	CREWLY_AGENT: 'crewly-agent',
 } as const;
 
@@ -985,11 +987,13 @@ export const CONTEXT_WINDOW_MONITOR_CONSTANTS = {
  * - Claude Code: `/compact`
  * - Gemini CLI: `/compress`
  * - Codex CLI: `/compact`
+ * - OpenCode CLI: `/compact`
  */
 export const RUNTIME_COMPACT_COMMANDS: Record<RuntimeType, string> = {
 	'claude-code': '/compact',
 	'gemini-cli': '/compress',
 	'codex-cli': '/compact',
+	'opencode-cli': '/compact',
 	'crewly-agent': '',
 } as const;
 
@@ -1057,6 +1061,9 @@ export const LOGIN_REQUIRED_PATTERN_SETS: string[][] = [
 	['please run /login'],
 	// Gemini CLI sign-in screen
 	['login with google'],
+	// OpenCode CLI: `/connect` provider dialog and the "no provider yet" footer
+	['connect a provider'],
+	['get started', '/connect'],
 ];
 
 /**
@@ -1100,6 +1107,22 @@ export const RUNTIME_INPUT_READY_PATTERNS = {
 	},
 	GEMINI_CLI: {
 		NOT_READY_MARKERS: ['login with google', 'waiting for auth'],
+	},
+	OPENCODE_CLI: {
+		/**
+		 * OpenCode keeps its input box (and the `Ask anything…` placeholder) on
+		 * screen while the model is running, so the busy signal is the
+		 * `esc interrupt` hint under the box rather than a missing prompt. The
+		 * remaining markers are the `/connect` provider dialog and the
+		 * "no provider configured" footer.
+		 */
+		NOT_READY_MARKERS: [
+			'esc interrupt',
+			'esc again to interrupt',
+			'connect a provider',
+			'select auth method',
+			'get started /connect',
+		],
 	},
 } as const;
 

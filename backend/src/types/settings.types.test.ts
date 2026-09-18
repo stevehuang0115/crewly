@@ -38,11 +38,12 @@ describe('Settings Types', () => {
       expect(AI_RUNTIMES).toContain('claude-code');
       expect(AI_RUNTIMES).toContain('gemini-cli');
       expect(AI_RUNTIMES).toContain('codex-cli');
+      expect(AI_RUNTIMES).toContain('opencode-cli');
       expect(AI_RUNTIMES).toContain('crewly-agent');
     });
 
-    it('should have exactly 4 runtimes', () => {
-      expect(AI_RUNTIMES).toHaveLength(4);
+    it('should have exactly 5 runtimes', () => {
+      expect(AI_RUNTIMES).toHaveLength(5);
     });
   });
 
@@ -70,6 +71,7 @@ describe('Settings Types', () => {
           'claude-code': 'claude --dangerously-skip-permissions',
           'gemini-cli': 'gemini --yolo',
           'codex-cli': 'codex -a never -s danger-full-access',
+          'opencode-cli': 'opencode --auto',
           'crewly-agent': 'crewly-agent-in-process',
         },
         agentIdleTimeoutMinutes: 10,
@@ -105,6 +107,7 @@ describe('Settings Types', () => {
           'claude-code': '/custom/path/to/claude --dangerously-skip-permissions',
           'gemini-cli': '/custom/gemini --custom-flag',
           'codex-cli': '/custom/codex --custom-flag',
+          'opencode-cli': '/custom/opencode --auto',
           'crewly-agent': 'crewly-agent-in-process',
         },
         agentIdleTimeoutMinutes: 15,
@@ -172,6 +175,7 @@ describe('Settings Types', () => {
             'claude-code': 'claude --dangerously-skip-permissions',
             'gemini-cli': 'gemini --yolo',
             'codex-cli': 'codex -a never -s danger-full-access',
+            'opencode-cli': 'opencode --auto',
             'crewly-agent': 'crewly-agent-in-process',
           },
           agentIdleTimeoutMinutes: 10,
@@ -254,6 +258,7 @@ describe('Settings Types', () => {
       expect(isValidAIRuntime('claude-code')).toBe(true);
       expect(isValidAIRuntime('gemini-cli')).toBe(true);
       expect(isValidAIRuntime('codex-cli')).toBe(true);
+      expect(isValidAIRuntime('opencode-cli')).toBe(true);
     });
 
     it('should return false for invalid runtimes', () => {
@@ -315,6 +320,11 @@ describe('Settings Types', () => {
       expect(defaults.general.runtimeCommands['claude-code']).toBe('claude --dangerously-skip-permissions');
       expect(defaults.general.runtimeCommands['gemini-cli']).toBe('gemini --yolo');
       expect(defaults.general.runtimeCommands['codex-cli']).toBe('codex -a never -s danger-full-access');
+    });
+
+    it('defaults opencode-cli to `opencode --auto` (auto-approve permissions, issue #306)', () => {
+      const defaults = getDefaultSettings();
+      expect(defaults.general.runtimeCommands['opencode-cli']).toBe('opencode --auto');
     });
 
     it('defaults crewly-agent to the managed binary, NOT the stale in-process sentinel (issue #693)', () => {
@@ -463,6 +473,16 @@ describe('Settings Types', () => {
       expect(result.errors.some(e => e.includes('codex-cli'))).toBe(true);
     });
 
+    it('should detect empty opencode-cli runtime command', () => {
+      const settings = getDefaultSettings();
+      settings.general.runtimeCommands['opencode-cli'] = '';
+
+      const result = validateSettings(settings);
+
+      expect(result.valid).toBe(false);
+      expect(result.errors.some(e => e.includes('opencode-cli'))).toBe(true);
+    });
+
     it('should collect multiple errors', () => {
       const settings = getDefaultSettings();
       settings.general.defaultRuntime = 'invalid' as AIRuntime;
@@ -590,6 +610,9 @@ describe('Settings Types', () => {
       // crewly-agent should be backfilled from defaults (the managed binary,
       // not the stale 'crewly-agent-in-process' sentinel — issue #693).
       expect(merged.general.runtimeCommands['crewly-agent']).toBe('crewly-agent');
+      // opencode-cli (added in #306) must also be backfilled for settings
+      // files written before it existed.
+      expect(merged.general.runtimeCommands['opencode-cli']).toBe('opencode --auto');
       // Existing entries should be preserved
       expect(merged.general.runtimeCommands['claude-code']).toBe('claude --dangerously-skip-permissions');
     });
@@ -603,6 +626,7 @@ describe('Settings Types', () => {
             'claude-code': 'custom-claude',
             'gemini-cli': 'custom-gemini',
             'codex-cli': 'custom-codex',
+            'opencode-cli': 'custom-opencode',
             'crewly-agent': 'custom-agent',
           },
         },
@@ -655,6 +679,7 @@ describe('Settings Types', () => {
       expect(getAIRuntimeDisplayName('claude-code')).toBe('Claude Code');
       expect(getAIRuntimeDisplayName('gemini-cli')).toBe('Gemini CLI');
       expect(getAIRuntimeDisplayName('codex-cli')).toBe('Codex CLI');
+      expect(getAIRuntimeDisplayName('opencode-cli')).toBe('OpenCode CLI');
     });
 
     it('should handle unknown runtime gracefully', () => {
