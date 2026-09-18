@@ -213,8 +213,11 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
           // numbers ever logged were the ones that look identical either way.
           // A run whose prefix is cached shows most of its input under `cached`;
           // a persistent 0 there means caching silently stopped engaging.
+          // `cachedInput` is the cached PORTION of `input` (see AgentRunResult),
+          // so the hit rate is cached / input — not cached / (input + cached),
+          // which halved every rate reported before 2026-09-18.
           const cached = result.usage.cachedInput ?? 0;
-          const promptTokens = result.usage.input + cached;
+          const promptTokens = Math.max(result.usage.input, cached);
           const hitRate = promptTokens > 0 ? Math.round((cached / promptTokens) * 100) : 0;
           this.logBuffer.append(
             session,

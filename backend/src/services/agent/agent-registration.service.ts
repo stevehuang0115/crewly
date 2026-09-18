@@ -3301,8 +3301,9 @@ Loop until done, blocked, or explicitly reassigned:
 					.then((result) => {
 						// Usage goes in the main log, not only the per-session buffer: this
 						// is the line an operator greps to see what a run cost (2026-09-18).
+						// cachedInput is the cached portion of input, so the rate is cached / input.
 						const cachedInput = result.usage?.cachedInput ?? 0;
-						const promptTokens = (result.usage?.input ?? 0) + cachedInput;
+						const promptTokens = Math.max(result.usage?.input ?? 0, cachedInput);
 						this.logger.info('Crewly Agent finished processing message', {
 							sessionName, messageLength: message.length,
 							responseLength: result.text?.length ?? 0,
