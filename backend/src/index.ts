@@ -519,6 +519,14 @@ void (async () => {
 					intervalMs: reflectInterval,
 					quietWindowMs: reflectQuiet,
 					debounceMs: reflectDebounce,
+					// Only wake ORC when someone has actually said something since
+					// the last nudge — the sweep is over recent conversation, and an
+					// hourly nudge with nothing to sweep was the largest remaining
+					// full-price wake-up after the 2026-09-16 fixes.
+					hasConversationSince: async (sinceMs) => {
+						const { getChatV2Service } = await import('./services/chat-v2/chat-v2.singleton.js');
+						return getChatV2Service().hasConversationSince(sinceMs);
+					},
 					// One message per tick listing every quiet vault, not one per
 					// vault: six vaults used to cost ORC six model turns per cycle.
 					batchFireFn: async (metas) => {

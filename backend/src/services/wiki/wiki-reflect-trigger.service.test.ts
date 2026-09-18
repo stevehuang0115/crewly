@@ -132,6 +132,135 @@ describe('WikiReflectTriggerService.tick', () => {
     expect(batchFireFn).toHaveBeenCalledTimes(1);
   });
 
+  // 2026-09-17: per-vault debounce alone let six vaults on staggered windows
+  // wake ORC every hour, each an uncached full-context turn ending in
+  // "nothing this period". Two whole-tick gates now sit in front of the scan.
+  it('does not fire again within batchDebounceMs even when other vaults are due', async () => {
+    const batchFireFn = jest.fn();
+    let clock = now;
+    // Vault B is discovered only from the second tick on, so its per-vault
+    // ledger says "due" while the batch ledger says "too soon".
+    let roots = [VAULT_A];
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      batchFireFn,
+      debounceMs: 4 * 60 * 60 * 1000,
+      batchDebounceMs: 4 * 60 * 60 * 1000,
+      discoverRoots: async () => roots,
+      queueService: makeFakeQueueService([]),
+      now: () => clock,
+    });
+    expect((await trigger.tick()).fired).toEqual([VAULT_A]);
+    roots = [VAULT_A, VAULT_B];
+    clock += 60 * 60 * 1000;
+    const r2 = await trigger.tick();
+    expect(r2.skippedTick).toBe('batch_debounce');
+    expect(r2.fired).toEqual([]);
+    expect(batchFireFn).toHaveBeenCalledTimes(1);
+    // Past the batch window (4h since the first fire) both are due and go
+    // out together in ONE message.
+    clock += 3 * 60 * 60 * 1000 + 1;
+    const r3 = await trigger.tick();
+    expect(r3.fired).toEqual([VAULT_A, VAULT_B]);
+    expect(batchFireFn).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not wake ORC when nobody has said anything since the last batch fire', async () => {
+    const batchFireFn = jest.fn();
+    const hasConversationSince = jest.fn(async () => false);
+    let clock = now;
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      batchFireFn,
+      hasConversationSince,
+      debounceMs: 1000,
+      batchDebounceMs: 1000,
+      discoverRoots: async () => [VAULT_A, VAULT_B],
+      queueService: makeFakeQueueService([]),
+      now: () => clock,
+    });
+    const r1 = await trigger.tick();
+    expect(r1.skippedTick).toBe('no_conversation');
+    expect(r1.scanned).toEqual([]); // vault ledgers untouched
+    expect(batchFireFn).not.toHaveBeenCalled();
+    // First ever check is asked about "since 0" (never fired).
+    expect(hasConversationSince).toHaveBeenCalledWith(0);
+
+    hasConversationSince.mockResolvedValue(true);
+    clock += 2000;
+    const r2 = await trigger.tick();
+    expect(r2.fired).toEqual([VAULT_A, VAULT_B]);
+    expect(batchFireFn).toHaveBeenCalledTimes(1);
+    // The next probe is anchored at the last batch fire.
+    clock += 2000;
+    await trigger.tick();
+    expect(hasConversationSince).toHaveBeenLastCalledWith(now + 2000);
+  });
+
+  it('fails open when the conversation probe throws', async () => {
+    const batchFireFn = jest.fn();
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      batchFireFn,
+      hasConversationSince: async () => {
+        throw new Error('db closed');
+      },
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => now,
+    });
+    expect((await trigger.tick()).fired).toEqual([VAULT_A]);
+  });
+
+  it('persists the batch fire time so a restart cannot re-fire early', async () => {
+    const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'crewly-reflect-batch-'));
+    const statePath = path.join(dir, 'state.json');
+    try {
+      let clock = now;
+      const first = new WikiReflectTriggerService({
+        statePath,
+        batchFireFn: jest.fn(),
+        batchDebounceMs: 4 * 60 * 60 * 1000,
+        discoverRoots: async () => [VAULT_A],
+        queueService: makeFakeQueueService([]),
+        now: () => clock,
+      });
+      expect((await first.tick()).fired).toEqual([VAULT_A]);
+      first.stop();
+
+      clock += 60 * 60 * 1000;
+      const batchFireFn = jest.fn();
+      trigger = new WikiReflectTriggerService({
+        statePath,
+        batchFireFn,
+        batchDebounceMs: 4 * 60 * 60 * 1000,
+        discoverRoots: async () => [VAULT_A, VAULT_B],
+        queueService: makeFakeQueueService([]),
+        now: () => clock,
+      });
+      expect((await trigger.tick()).skippedTick).toBe('batch_debounce');
+      expect(batchFireFn).not.toHaveBeenCalled();
+    } finally {
+      await fsp.rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('tick({ ignoreDebounce: true }) bypasses the whole-tick gates too', async () => {
+    const batchFireFn = jest.fn();
+    trigger = new WikiReflectTriggerService({
+      statePath: null,
+      batchFireFn,
+      hasConversationSince: async () => false,
+      batchDebounceMs: 4 * 60 * 60 * 1000,
+      discoverRoots: async () => [VAULT_A],
+      queueService: makeFakeQueueService([]),
+      now: () => now,
+    });
+    expect((await trigger.tick({ ignoreDebounce: true })).fired).toEqual([VAULT_A]);
+    expect((await trigger.tick({ ignoreDebounce: true })).fired).toEqual([VAULT_A]);
+    expect(batchFireFn).toHaveBeenCalledTimes(2);
+  });
+
   it('batchFireFn takes precedence over fireFn, and a throwing batchFireFn is swallowed', async () => {
     const batchFireFn = jest.fn(async () => {
       throw new Error('boom');

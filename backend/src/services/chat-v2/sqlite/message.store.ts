@@ -491,6 +491,29 @@ export class MessageStore {
   }
 
   /**
+   * Count messages created after `sinceMs` that a person or an agent wrote —
+   * `system` rows (dispatches, nudges, status echoes) are excluded because
+   * they are not conversation.
+   *
+   * Used by the wiki reflect trigger to decide whether there is anything new
+   * to sweep before it wakes the orchestrator (2026-09-17): a reflect nudge
+   * that follows no conversation costs a full model turn and always ends in
+   * "nothing this period".
+   *
+   * @param sinceMs - Epoch ms; rows with `created_at > sinceMs` count
+   * @returns Number of user/agent messages newer than `sinceMs`
+   */
+  countConversationSince(sinceMs: number): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM chat_messages
+         WHERE created_at > ? AND sender_type IN ('user', 'agent')`,
+      )
+      .get(sinceMs) as { n: number };
+    return row.n;
+  }
+
+  /**
    * Phase 6.0b — delete every message in a channel while leaving the
    * channel row in place. Used by the legacy `clearConversation`
    * controller route. Not transactional with channel state; callers

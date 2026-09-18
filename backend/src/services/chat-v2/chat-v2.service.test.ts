@@ -966,6 +966,17 @@ describe('ChatV2Service', () => {
     });
   });
 
+  describe('hasConversationSince (wiki reflect gate, 2026-09-17)', () => {
+    it('is false on a fresh service and true once a person has written', () => {
+      expect(service.hasConversationSince(0)).toBe(false);
+      const ch = createSam();
+      service.sendMessage({ channelId: ch.id, principal: owner, content: 'hello' });
+      expect(service.hasConversationSince(0)).toBe(true);
+      // Nothing is newer than "now".
+      expect(service.hasConversationSince(Date.now() + 60_000)).toBe(false);
+    });
+  });
+
   // -------------------------------------------------------------------------
   // recordTurn — canonical server-internal write entry
   // Spec: 2026-05-14-unified-chat-message-store.md (Phase 1)

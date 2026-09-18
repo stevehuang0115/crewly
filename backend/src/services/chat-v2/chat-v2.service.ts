@@ -346,6 +346,18 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Whether anyone (a person or an agent) has said anything since `sinceMs`.
+   * System rows do not count. Bypasses principal scoping on purpose — this
+   * is a global "is there new conversation to reflect on" probe.
+   *
+   * @param sinceMs - Epoch ms lower bound (exclusive)
+   * @returns True when at least one user/agent message is newer
+   */
+  hasConversationSince(sinceMs: number): boolean {
+    return this.messages.countConversationSince(sinceMs) > 0;
+  }
+
+  /**
    * Phase 6.0 of unified-chat-message-store spec — replacement for the
    * legacy `ChatService.updateMessageMetadata`. Merges a partial
    * metadata object into the stored row's `metadata` JSON column using
