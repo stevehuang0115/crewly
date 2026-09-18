@@ -17,6 +17,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { createWorkItem, type WorkItem, type WorkItemType } from '../../types/v2/work-item.types.js';
 import {
+  getEffectiveCadence,
   isMissionExecutable,
   type Mission,
   type MissionPolicy,
@@ -118,6 +119,24 @@ export class MissionExecutorService {
     }
 
     const taskPool = TaskPoolService.getInstance();
+    const cadence = getEffectiveCadence(mission.policy);
+
+    // Daily item limit (executionCadence.dailyItemLimit, 0 = unlimited):
+    // count the WorkItems already created for this mission today (UTC) and
+    // refuse the whole decomposition if it would exceed the cap. All-or-
+    // nothing keeps the dependency graph consistent — a partially created
+    // phase would leave dependents blocked on tasks that never land.
+    if (cadence.dailyItemLimit > 0) {
+      const createdToday = await this.countItemsCreatedToday(taskPool, mission.id);
+      const requested = result.tasks.length;
+      if (createdToday + requested > cadence.dailyItemLimit) {
+        throw new Error(
+          `Mission ${mission.id} daily item limit reached: ${createdToday} created today, ` +
+            `${requested} requested, limit ${cadence.dailyItemLimit} (policy.executionCadence.dailyItemLimit)`,
+        );
+      }
+    }
+
     const createdIds: string[] = [];
     const titleToId = new Map<string, string>();
     const createdItems = new Map<string, WorkItem>();
@@ -139,6 +158,11 @@ export class MissionExecutorService {
           priority: task.priority,
           krId: task.krId,
           krContribution: task.krContribution,
+          // executionCadence.requireVerificationGate: every executor-created
+          // WI must pass TL verification before it counts as done. Omitted
+          // (not `false`) when the gate is off so the pool's per-type
+          // default policy still applies.
+          ...(cadence.requireVerificationGate ? { requiresVerification: true } : {}),
         },
       });
 
@@ -221,6 +245,18 @@ export class MissionExecutorService {
     });
 
     return createdIds;
+  }
+
+  /**
+   * Number of WorkItems already created for a mission during the current
+   * UTC calendar day. Backs the `dailyItemLimit` gate.
+   */
+  private async countItemsCreatedToday(taskPool: TaskPoolService, missionId: string): Promise<number> {
+    const today = new Date().toISOString().slice(0, 10);
+    const allItems = await taskPool.getAllItems();
+    return allItems.filter(
+      (wi) => wi.missionId === missionId && typeof wi.createdAt === 'string' && wi.createdAt.slice(0, 10) === today,
+    ).length;
   }
 
   // ---------------------------------------------------------------------------

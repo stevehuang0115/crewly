@@ -178,6 +178,37 @@ async function listMissions(_req: Request, res: Response, next: NextFunction): P
   } catch (err) { next(err); }
 }
 
+/** Read a mission document, or `null` when missing / unreadable. */
+async function readMissionOrNull(missionId: string): Promise<Mission | null> {
+  try {
+    const raw = await fs.readFile(path.join(getMissionsDir(), `${missionId}.json`), 'utf-8');
+    return JSON.parse(raw) as Mission;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check a review decision against the mission's policy capability gates.
+ *
+ * @param mission - The mission whose policy applies
+ * @param decision - The submitted decision
+ * @returns A human-readable refusal, or `null` when the decision is allowed
+ */
+export function reviewDecisionPolicyViolation(
+  mission: Pick<Mission, 'id' | 'policy'>,
+  decision: ReviewDecision,
+): string | null {
+  const policy = mission.policy;
+  if (decision.action === 'replan_phase' && policy?.canReplanMission === false) {
+    return `Mission ${mission.id} policy does not allow autonomous replanning (canReplanMission=false) — owner approval required`;
+  }
+  if (decision.krUpdates && decision.krUpdates.length > 0 && policy?.canAdjustKRTargets === false) {
+    return `Mission ${mission.id} policy does not allow adjusting KR targets (canAdjustKRTargets=false) — owner approval required`;
+  }
+  return null;
+}
+
 /** Get a single mission by ID with KR summaries and normalised priority. */
 async function getMission(req: Request, res: Response, next: NextFunction): Promise<void> {
   try {
@@ -544,6 +575,20 @@ export function createMissionPolicyRouter(): Router {
       const decision = req.body as ReviewDecision;
       if (!decision.action) {
         res.status(400).json({ success: false, error: 'action is required' });
+        return;
+      }
+      // MissionPolicy capability gates. `canReplanMission` / `canAdjustKRTargets`
+      // default to permitted when absent (legacy policies); an explicit `false`
+      // means the human owner must approve, so the agent-driven decision is
+      // refused with 403 and nothing is applied.
+      const mission = await readMissionOrNull(req.params.id);
+      if (!mission) {
+        res.status(404).json({ success: false, error: 'Mission not found' });
+        return;
+      }
+      const denied = reviewDecisionPolicyViolation(mission, decision);
+      if (denied) {
+        res.status(403).json({ success: false, error: denied });
         return;
       }
       const reviewService = OKRReviewService.getInstance();
