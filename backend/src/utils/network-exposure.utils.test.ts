@@ -84,7 +84,11 @@ describe('describeNetworkExposure', () => {
     expect(out.details.loopbackOnly).toBe(true);
   });
 
-  it('always states the loopback rule in the details', () => {
-    expect(String(describeNetworkExposure(base).details.rule)).toContain('loopback');
+  it('always states the loopback rule and the knobs in the details', () => {
+    const details = describeNetworkExposure({ ...base, headless: false }).details;
+    expect(String(details.rule)).toContain('loopback');
+    expect(String(details.configure)).toContain('CREWLY_BIND_HOST');
+    expect(String(details.configure)).toContain('CREWLY_API_TOKEN');
+    expect(String(details.configure)).toContain('crewly token');
   });
 });

@@ -113,6 +113,7 @@ crewly logs          # View aggregated logs
 crewly upgrade       # Upgrade to latest version
 crewly install [id]  # Install a skill from marketplace
 crewly search [q]    # Search skill marketplace
+crewly token         # Print the API token remote callers must send (--url: dashboard link)
 ```
 
 ## Configuration
@@ -128,7 +129,34 @@ SLACK_SIGNING_SECRET=...
 
 LOG_LEVEL=info                     # debug, info, warn, error
 WEB_PORT=8787                      # Dashboard port (default: 8787)
+CREWLY_BIND_HOST=0.0.0.0           # Interface to listen on (127.0.0.1 = this machine only)
+CREWLY_API_TOKEN=...               # Pin the API token (otherwise generated at ~/.crewly/api-token)
 ```
+
+### Securing a server install
+
+Crewly agents run as real shells on the host, and `POST /api/terminal/:session/write`
+types into them — so the API must not be open to the network. The rules:
+
+- **Loopback needs no token.** Requests from `127.0.0.1` / `::1` (local skills via
+  `api_call`, the dashboard at `http://localhost:8787`) work with zero setup, as before.
+- **Every other address must send the API token** on `/api/*`, Socket.IO and WebSocket
+  connections: `Authorization: Bearer <token>`, `X-Crewly-Token: <token>`, a
+  `crewly_token` cookie, or `?token=` for WebSocket handshakes. Missing/invalid → `401
+  {"error":"unauthorized"}`. `X-Forwarded-For` is only honoured with `CREWLY_TRUST_PROXY=1`.
+- **The token** is `CREWLY_API_TOKEN` if set, otherwise generated on first boot and stored
+  (mode 0600) at `~/.crewly/api-token`. Print it with `crewly token`; `crewly token --url`
+  prints a ready-to-open `http://<lan-ip>:8787/?token=…` link — the dashboard stores the
+  token once and strips it from the address bar. Otherwise the dashboard asks for it the
+  first time a request is refused.
+- **Bind loopback only** with `CREWLY_BIND_HOST=127.0.0.1` and reach the box over SSH
+  (`ssh -L 8787:localhost:8787 user@host`) or a VPN. Headless installs that bind every
+  interface with neither variable set log a WARN at startup.
+- **OKR approvals are owner-only.** `POST /api/missions/:id/approve|reject` require the
+  token even from loopback and refuse agent sessions (`403 owner_approval_required`);
+  agent PTYs never inherit `CREWLY_API_TOKEN`.
+- `/health` and the static dashboard assets stay open. `POST /api/cloud/mobile-pair`
+  is token-gated like everything else (it hands out the Cloud session).
 
 ## Docker
 

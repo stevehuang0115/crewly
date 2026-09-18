@@ -96,6 +96,7 @@ export function describeNetworkExposure(input: NetworkExposureInput): NetworkExp
     tokenSource: input.tokenSource,
     tokenFile: input.tokenFilePath,
     rule: 'loopback callers need no token; every other address must send it (Bearer / X-Crewly-Token / crewly_token cookie)',
+    configure: `${ENV.BIND_HOST}=<host> to change the interface, ${ENV.API_TOKEN}=<token> to pin the token, \`crewly token\` to print it`,
   };
 
   if (loopbackOnly) {
