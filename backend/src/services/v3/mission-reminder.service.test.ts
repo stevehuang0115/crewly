@@ -17,6 +17,7 @@
 import { jest } from '@jest/globals';
 import { MissionReminderService } from './mission-reminder.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
+import { OKRReviewService } from './okr-review.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -25,6 +26,7 @@ import * as fs from 'fs/promises';
 
 // Mock dependencies
 jest.mock('./kr-tracking.service.js');
+jest.mock('./okr-review.service.js');
 jest.mock('../core/storage.service.js');
 jest.mock('../slack/slack-orchestrator-bridge.js');
 jest.mock('../task-pool/task-pool.service.js');
@@ -34,6 +36,7 @@ jest.mock('fs/promises');
 describe('MissionReminderService', () => {
   let service: MissionReminderService;
   let mockKRTrackingService: any;
+  let mockOKRReviewService: any;
   let mockStorageService: any;
   let mockSlackBridge: any;
   let mockTaskPool: any;
@@ -45,6 +48,33 @@ describe('MissionReminderService', () => {
       computeMissionOKRProgress: jest.fn(),
     };
     (KRTrackingService.getInstance as any).mockReturnValue(mockKRTrackingService);
+
+    // Deterministic review at the cadence boundary. Default to a
+    // non-`continue` recommendation so the legacy "WI is created at the
+    // boundary" cases keep their shape; the loop-closure cases below
+    // override per test.
+    mockOKRReviewService = {
+      executeReview: jest.fn(() =>
+        Promise.resolve({
+          missionId: 'm-cadence',
+          reviewedAt: new Date().toISOString(),
+          recommendation: 'adjust_strategy',
+          action: 'trigger_review_skill',
+          okrSummary: {
+            missionId: 'm-cadence',
+            totalKRs: 1,
+            achieved: 0,
+            onTrack: 0,
+            atRisk: 1,
+            offTrack: 0,
+            notStarted: 0,
+            overallProgress: 40,
+            recommendation: 'adjust_strategy',
+          },
+        }),
+      ),
+    };
+    (OKRReviewService.getInstance as any).mockReturnValue(mockOKRReviewService);
 
     mockStorageService = {
       getMemberById: jest.fn(),
@@ -430,6 +460,162 @@ describe('MissionReminderService', () => {
       expect(wi.metadata.requiresVerification).toBe(false);
       // V1: idempotencyKey == id (same dedup surface).
       expect(wi.metadata.idempotencyKey).toBe(wi.id);
+    });
+
+    // ---- Loop closure: deterministic review runs at the boundary ------
+
+    function reviewResult(recommendation: string, action: string, okr: Record<string, number> = {}) {
+      return {
+        missionId: 'm-cadence',
+        reviewedAt: '2026-04-27T10:00:00.000Z',
+        recommendation,
+        action,
+        okrSummary: {
+          missionId: 'm-cadence',
+          totalKRs: 2,
+          achieved: 1,
+          onTrack: 1,
+          atRisk: 0,
+          offTrack: 0,
+          notStarted: 0,
+          overallProgress: 75,
+          recommendation,
+          ...okr,
+        },
+      };
+    }
+
+    it('runs the deterministic OKR review at the cadence boundary before deciding on a WI', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      await service.runSweep();
+
+      expect(mockOKRReviewService.executeReview).toHaveBeenCalledTimes(1);
+      expect(mockOKRReviewService.executeReview).toHaveBeenCalledWith('m-cadence');
+    });
+
+    it('does NOT run the review when the cadence boundary has not fired (lastReviewAt within cycle)', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence({ lastReviewAt: '2026-04-27T09:30:00.000Z' });
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsSkipped).toBe(1);
+      expect(mockOKRReviewService.executeReview).not.toHaveBeenCalled();
+    });
+
+    it('recommendation=continue with no off-track KR → NO review WI, lastReviewAt persisted', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockOKRReviewService.executeReview.mockResolvedValue(reviewResult('continue', 'continue'));
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(0);
+      expect(result.reviewsAutoContinued).toBe(1);
+      expect(mockTaskPool.addToPool).not.toHaveBeenCalled();
+      // Bookkeeping still lands so the next hourly sweep does not re-run
+      // the review inside the same cycle.
+      const saved = (atomicWriteJson as any).mock.calls.at(-1)[1];
+      expect(saved.lastReviewAt).toBe('2026-04-27T10:00:00.000Z');
+      expect(saved.pendingReviewWorkItemId).toBeUndefined();
+    });
+
+    it('recommendation=continue but an off-track KR → review WI is still created', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary({ offTrack: 1 }));
+      mockOKRReviewService.executeReview.mockResolvedValue(reviewResult('continue', 'continue'));
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      expect(result.reviewsAutoContinued).toBe(0);
+      expect(mockTaskPool.addToPool).toHaveBeenCalledTimes(1);
+      expect(mockTaskPool.addToPool.mock.calls[0][0].metadata.reviewReason).toBe('off_track_kr');
+    });
+
+    it.each([
+      ['adjust_strategy', 'trigger_review_skill'],
+      ['replan', 'trigger_replan'],
+      ['escalate', 'escalate'],
+    ])('recommendation=%s → review WI with the recommendation embedded', async (rec, action) => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockOKRReviewService.executeReview.mockResolvedValue(
+        reviewResult(rec, action, { overallProgress: 33, offTrack: 0, atRisk: 1 }),
+      );
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      const wi = mockTaskPool.addToPool.mock.calls[0][0];
+      expect(wi.description).toContain(`Recommendation: ${rec} (${action})`);
+      expect(wi.description).toContain('progress 33%');
+      expect(wi.metadata.recommendation).toBe(rec);
+      expect(wi.metadata.reviewAction).toBe(action);
+      expect(wi.metadata.okrProgress).toBe(33);
+    });
+
+    it('falls back to the legacy review WI when the deterministic review throws', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(mission));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockOKRReviewService.executeReview.mockRejectedValue(new Error('pool unavailable'));
+
+      const result = await service.runSweep();
+
+      expect(result.reviewsCreated).toBe(1);
+      const wi = mockTaskPool.addToPool.mock.calls[0][0];
+      expect(wi.id).toBe('m-cadence:review:2026-04-27');
+      expect(wi.metadata.recommendation).toBeUndefined();
+      expect(wi.metadata.reviewReason).toBe('scheduled_review');
+    });
+
+    it('folds the persisted staleCycles / lastReviewSummary into the saved mission', async () => {
+      pinNow('2026-04-27T10:00:00Z');
+      const mission = makeMissionWithCadence();
+      (fs.readdir as any).mockResolvedValue(['m-cadence.json']);
+      let reviewed = false;
+      (fs.readFile as any).mockImplementation(() =>
+        Promise.resolve(
+          JSON.stringify(
+            reviewed
+              ? { ...mission, staleCycles: 2, lastReviewSummary: 'Progress: 33% | Recommendation: replan' }
+              : mission,
+          ),
+        ),
+      );
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue(defaultSummary());
+      mockOKRReviewService.executeReview.mockImplementation(async () => {
+        reviewed = true;
+        return reviewResult('replan', 'trigger_replan');
+      });
+
+      await service.runSweep();
+
+      const saved = (atomicWriteJson as any).mock.calls.at(-1)[1];
+      expect(saved.staleCycles).toBe(2);
+      expect(saved.lastReviewSummary).toBe('Progress: 33% | Recommendation: replan');
+      expect(saved.pendingReviewWorkItemId).toBe('m-cadence:review:2026-04-27');
+      expect(mockTaskPool.addToPool.mock.calls[0][0].metadata.staleCycles).toBe(2);
     });
 
     it('persists pendingReviewWorkItemId + lastReviewAt on the Mission after creation', async () => {

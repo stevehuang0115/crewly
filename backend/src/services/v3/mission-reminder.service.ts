@@ -21,10 +21,11 @@ import { CronExpressionParser } from 'cron-parser';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
+import { OKRReviewService } from './okr-review.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { isMissionExecutable, type Mission } from '../../types/v2/mission.types.js';
-import type { MissionOKRSummary } from '../../types/v2/key-result.types.js';
+import type { MissionOKRSummary, OKRReviewResult } from '../../types/v2/key-result.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson } from '../../utils/file-io.utils.js';
@@ -191,6 +192,8 @@ export class MissionReminderService {
     skipped: number;
     reviewsCreated: number;
     reviewsSkipped: number;
+    /** Cadence boundaries where the deterministic review said `continue` — no WI raised. */
+    reviewsAutoContinued: number;
   }> {
     const now = new Date();
     const missions = await this.loadAllActiveMissions();
@@ -200,6 +203,7 @@ export class MissionReminderService {
       skipped: 0,
       reviewsCreated: 0,
       reviewsSkipped: 0,
+      reviewsAutoContinued: 0,
     };
 
     this.logger.info('Starting Mission OKR reminder sweep', { count: missions.length });
@@ -258,6 +262,7 @@ export class MissionReminderService {
           const created = await this.maybeCreateReviewWorkItem(mission, summary, now);
           if (created === 'created') result.reviewsCreated++;
           else if (created === 'skipped') result.reviewsSkipped++;
+          else if (created === 'auto_continued') result.reviewsAutoContinued++;
         } catch (err) {
           this.logger.error('Failed to create mission review WorkItem', {
             missionId: mission.id,
@@ -275,13 +280,16 @@ export class MissionReminderService {
    * Result of {@link maybeCreateReviewWorkItem} — `'created'` when a new
    * review WorkItem was added to the pool, `'skipped'` when the
    * reentrancy lock or cadence boundary blocked creation, `'noop'` when
-   * the mission has no executionCadence configured (legacy missions).
+   * the mission has no executionCadence configured (legacy missions),
+   * `'auto_continued'` when the cadence boundary fired but the
+   * deterministic OKR review recommended `continue` with no off-track KR
+   * — the review is persisted on the mission and NO WorkItem is raised.
    */
   private async maybeCreateReviewWorkItem(
     mission: Mission,
     summary: MissionOKRSummary | null,
     now: Date,
-  ): Promise<'created' | 'skipped' | 'noop'> {
+  ): Promise<'created' | 'skipped' | 'noop' | 'auto_continued'> {
     const cadence = mission.policy?.executionCadence;
     if (!cadence?.reviewSchedule) return 'noop';
 
@@ -358,16 +366,50 @@ export class MissionReminderService {
     }
 
     // -----------------------------------------------------------------
+    // Cadence boundary fired. Run the deterministic OKR review FIRST
+    // (aggregate → recommendation, no LLM) so the loop actually closes
+    // on the clock instead of only when someone POSTs /okr-review.
+    // `executeReview` persists lastReviewSummary / staleCycles /
+    // lastReviewAt on disk; we fold those back into our in-memory copy
+    // so the single saveMission below does not clobber them.
+    // -----------------------------------------------------------------
+    const review = await this.runDeterministicReview(mission);
+
+    const cycleId = boundary.toISOString().slice(0, 10);
+    const offTrack = (summary?.offTrack ?? 0) > 0 || (review?.okrSummary.offTrack ?? 0) > 0;
+
+    if (review && review.recommendation === 'continue' && !offTrack) {
+      // Healthy on the clock: nothing for the TL to decide. Persist the
+      // bookkeeping (lastReviewAt from the review, any cleared lock) and
+      // move on without waking anyone.
+      mission.lastReviewAt = review.reviewedAt;
+      await this.saveMission(mission);
+      this.logger.info('Mission cadence review: continue — no review WorkItem raised', {
+        missionId: mission.id,
+        cycleId,
+        progress: review.okrSummary.overallProgress,
+        staleCycles: mission.staleCycles ?? 0,
+      });
+      return 'auto_continued';
+    }
+
+    // -----------------------------------------------------------------
     // Build the deterministic review WorkItem.
     //
     // The id collapses to the date-form of the boundary so a sweep
     // replay within the same cycle hits the existing addToPool
     // dedup-by-id guard (V1 satisfied without a TaskPoolService change).
     // -----------------------------------------------------------------
-    const cycleId = boundary.toISOString().slice(0, 10);
     const reviewWorkItemId = `${mission.id}:review:${cycleId}`;
-    const reviewReason = this.inferReviewReason(mission, summary);
+    const reviewReason = this.inferReviewReason(mission, summary ?? review?.okrSummary ?? null);
     const target = await this.resolveTeamLeadSession(mission);
+    const recommendationLine = review
+      ? ` Recommendation: ${review.recommendation} (${review.action}) — ` +
+        `progress ${review.okrSummary.overallProgress}%, ` +
+        `${review.okrSummary.achieved}/${review.okrSummary.totalKRs} KRs achieved, ` +
+        `${review.okrSummary.offTrack} off-track, ${review.okrSummary.atRisk} at-risk, ` +
+        `staleCycles=${mission.staleCycles ?? 0}.`
+      : '';
 
     const reviewWorkItem: WorkItem = {
       id: reviewWorkItemId,
@@ -375,7 +417,7 @@ export class MissionReminderService {
       owner: 'team_lead',
       target,
       title: `Mission review — ${mission.objective.slice(0, 60)}${mission.objective.length > 60 ? '…' : ''}`,
-      description: `Cadence-driven review for mission ${mission.id}. Reason: ${reviewReason}.`,
+      description: `Cadence-driven review for mission ${mission.id}. Reason: ${reviewReason}.${recommendationLine}`,
       status: 'queued',
       createdAt: now.toISOString(),
       retryCount: 0,
@@ -390,6 +432,16 @@ export class MissionReminderService {
         reviewReason,
         reviewCycleId: cycleId,
         cadenceSchedule: cadence.reviewSchedule,
+        ...(review
+          ? {
+              recommendation: review.recommendation,
+              reviewAction: review.action,
+              okrProgress: review.okrSummary.overallProgress,
+              okrOffTrack: review.okrSummary.offTrack,
+              okrAtRisk: review.okrSummary.atRisk,
+              staleCycles: mission.staleCycles ?? 0,
+            }
+          : {}),
       },
     };
 
@@ -411,6 +463,37 @@ export class MissionReminderService {
     });
 
     return 'created';
+  }
+
+  /**
+   * Run {@link OKRReviewService.executeReview} for a mission at its cadence
+   * boundary and fold the persisted bookkeeping (`lastReviewSummary`,
+   * `staleCycles`, `lastReviewAt`) back into the caller's in-memory copy.
+   *
+   * Failure-soft: any error is logged and `null` is returned so the sweep
+   * falls back to the legacy behaviour (create the review WI with an
+   * inferred reason) rather than dropping the cadence tick.
+   *
+   * @param mission - In-memory mission (mutated with the persisted fields)
+   * @returns The review result, or `null` if the review could not run
+   */
+  private async runDeterministicReview(mission: Mission): Promise<OKRReviewResult | null> {
+    try {
+      const review = await OKRReviewService.getInstance().executeReview(mission.id);
+      const persisted = await this.loadMission(mission.id);
+      if (persisted) {
+        mission.lastReviewSummary = persisted.lastReviewSummary;
+        mission.staleCycles = persisted.staleCycles;
+        mission.lastReviewAt = persisted.lastReviewAt;
+      }
+      return review;
+    } catch (err) {
+      this.logger.warn('Deterministic OKR review failed at cadence boundary — falling back to review WI', {
+        missionId: mission.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   /**
@@ -588,6 +671,18 @@ cc: @${ORCHESTRATOR_SESSION_NAME}`;
       return missions;
     } catch {
       return [];
+    }
+  }
+
+  /**
+   * Load a single mission from disk (null when missing/corrupt).
+   */
+  private async loadMission(missionId: string): Promise<Mission | null> {
+    try {
+      const raw = await fs.readFile(path.join(getMissionsDir(), `${missionId}.json`), 'utf-8');
+      return JSON.parse(raw) as Mission;
+    } catch {
+      return null;
     }
   }
 
