@@ -23,7 +23,7 @@ jest.mock('chalk', () => ({
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { backupCommand } from './backup.js';
+import { backupCommand, backupCommandAndExit } from './backup.js';
 import { CloudClientService } from '../../../backend/src/services/cloud/cloud-client.service.js';
 
 let home: string;
@@ -105,5 +105,44 @@ describe('backupCommand', () => {
     await backupCommand('restore', outFile, { apply: true, mode: 'overwrite' });
     const afterApply = fs.readdirSync(backupsDir).filter((d) => d.startsWith('pre-restore-'));
     expect(afterApply.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('backupCommandAndExit (item 27: the process must end)', () => {
+  /** Ref'd timers currently registered with the event loop. */
+  const refdTimers = (): unknown[] =>
+    (process as unknown as { _getActiveHandles(): Array<{ constructor: { name: string }; hasRef?: () => boolean }> })
+      ._getActiveHandles()
+      .filter((h) => h.constructor.name === 'Timeout' && h.hasRef?.() === true);
+
+  it('create resolves, leaves no new ref\'d timers behind, and exits 0', async () => {
+    const before = new Set(refdTimers());
+    const exit = jest.fn();
+    await backupCommandAndExit('create', undefined, { out: outFile, chatDb: false }, exit);
+    expect(exit).toHaveBeenCalledWith(0);
+    const leaked = refdTimers().filter((t) => !before.has(t));
+    expect(leaked).toEqual([]);
+  });
+
+  it('restore --apply resolves and exits 0', async () => {
+    await backupCommand('create', undefined, { out: outFile, chatDb: false });
+    const exit = jest.fn();
+    await backupCommandAndExit('restore', outFile, { apply: true, mode: 'overwrite' }, exit);
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it('propagates a non-zero exit code', async () => {
+    const exit = jest.fn();
+    await backupCommandAndExit('restore', undefined, {}, exit);
+    expect(exit).toHaveBeenCalledWith(1);
+  });
+
+  it('turns a thrown error into exit 1 with a printed message', async () => {
+    const errSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+    const exit = jest.fn();
+    await backupCommandAndExit('restore', path.join(home, 'missing.tar.gz'), { apply: true }, exit);
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(errSpy.mock.calls.map((c) => c[0]).join('\n')).toContain('Backup restore failed');
+    errSpy.mockRestore();
   });
 });

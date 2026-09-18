@@ -23,6 +23,7 @@ import {
 } from '../../../backend/src/services/backup/backup-cloud.client.js';
 import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
 import { CloudClientService } from '../../../backend/src/services/cloud/cloud-client.service.js';
+import { LoggerService } from '../../../backend/src/services/core/logger.service.js';
 
 /** Options accepted by `crewly backup`. */
 export interface BackupCommandOptions {
@@ -100,6 +101,40 @@ export async function backupCommand(
       console.log(chalk.gray('       crewly backup restore <file> [--mode overwrite] [--map OLD=NEW] [--apply]'));
       process.exitCode = 1;
   }
+}
+
+/**
+ * `crewly backup` entry used by the CLI: runs {@link backupCommand}, drains the
+ * backend logger, and terminates the process with the accumulated exit code.
+ *
+ * The command's own promise settles when the work is done; this wrapper is the
+ * safety net for item 27 ("backup create/restore never exit"): whatever handle
+ * a backend service leaves behind (the logger's flush interval was the
+ * culprit — now unref'd — but the next one would hang the operator's shell
+ * again), the process still ends. A rejected command prints the error and
+ * exits 1 instead of turning into a swallowed unhandledRejection.
+ *
+ * @param action - Subcommand
+ * @param target - Positional target (archive path / backup id)
+ * @param options - CLI options
+ * @param exit - Process terminator (injectable for tests)
+ */
+export async function backupCommandAndExit(
+  action: string,
+  target?: string,
+  options: BackupCommandOptions = {},
+  exit: (code: number) => void = (code) => process.exit(code),
+): Promise<void> {
+  let code: number;
+  try {
+    await backupCommand(action, target, options);
+    code = typeof process.exitCode === 'number' ? process.exitCode : 0;
+  } catch (err) {
+    console.error(chalk.red(`\nBackup ${action} failed: ${err instanceof Error ? err.message : String(err)}`));
+    code = 1;
+  }
+  await LoggerService.getInstance().shutdown();
+  exit(code);
 }
 
 /**

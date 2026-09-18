@@ -14,7 +14,7 @@ import { mcpServerCommand } from './commands/mcp-server.js';
 import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
-import { backupCommand } from './commands/backup.js';
+import { backupCommandAndExit } from './commands/backup.js';
 import { doctorCommand } from './commands/doctor.js';
 import { pairCommand } from './commands/pair.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
@@ -144,7 +144,11 @@ program
   .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite')
   .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable)')
   .option('--apply', 'Apply the restore (without this, restore is a dry-run preview)')
-  .action(backupCommand);
+  // Explicit arity: commander appends the Command object as a trailing
+  // argument, which must not land in backupCommandAndExit's `exit` parameter.
+  .action((action: string, target: string | undefined, options: Parameters<typeof backupCommandAndExit>[2]) =>
+    backupCommandAndExit(action, target, options),
+  );
 
 program
   .command('pair')
