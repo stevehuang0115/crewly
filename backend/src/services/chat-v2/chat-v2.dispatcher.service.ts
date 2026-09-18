@@ -376,9 +376,8 @@ export class ChatV2DispatcherService {
     const outcomes: HuddleDispatchOutcome[] = [];
     let anyDispatched = false;
 
-    for (const sessionName of members) {
-      const responseMode: 'required' | 'optional' = mentioned.has(sessionName) ? 'required' : 'optional';
-      const prompt = this.formatPrompt({
+    const promptFor = (sessionName: string, responseMode: 'required' | 'optional'): string =>
+      this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
         agentSession: sessionName,
@@ -393,33 +392,73 @@ export class ChatV2DispatcherService {
         replyVia: options.replyVia,
       });
 
+    /** One delivery attempt; false when the sink refused (typically: no session). */
+    const attempt = async (sessionName: string, responseMode: 'required' | 'optional'): Promise<{ ok: boolean; error?: string }> => {
       try {
-        const result = await this.agentSink.sendMessageToAgent(sessionName, prompt);
-        if (result.success) {
-          outcomes.push({ sessionName, responseMode, dispatched: true });
-          anyDispatched = true;
-        } else {
-          this.logger.warn('chat-v2 huddle dispatch reported failure', {
-            channelId: channel.id,
-            sessionName,
-            err: result.error,
-          });
-          outcomes.push({
-            sessionName,
-            responseMode,
-            dispatched: false,
-            error: result.error ?? 'unknown sink failure',
-          });
-        }
+        const result = await this.agentSink.sendMessageToAgent(sessionName, promptFor(sessionName, responseMode));
+        return result.success ? { ok: true } : { ok: false, error: result.error ?? 'unknown sink failure' };
       } catch (err) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        this.logger.error('chat-v2 huddle dispatch threw', {
-          channelId: channel.id,
-          sessionName,
-          err: errMsg,
-        });
-        outcomes.push({ sessionName, responseMode, dispatched: false, error: errMsg });
+        this.logger.error('chat-v2 huddle dispatch threw', { channelId: channel.id, sessionName, err: errMsg });
+        return { ok: false, error: errMsg };
       }
+    };
+
+    const failed: Array<{ sessionName: string; responseMode: 'required' | 'optional'; error: string }> = [];
+    for (const sessionName of members) {
+      const responseMode: 'required' | 'optional' = mentioned.has(sessionName) ? 'required' : 'optional';
+      const first = await attempt(sessionName, responseMode);
+      if (first.ok) {
+        outcomes.push({ sessionName, responseMode, dispatched: true });
+        anyDispatched = true;
+      } else {
+        failed.push({ sessionName, responseMode, error: first.error ?? 'unknown sink failure' });
+      }
+    }
+
+    // Activate on send, huddle flavour: a team channel with nobody awake
+    // would otherwise swallow the owner's message (observed in Slack: a
+    // message in #think-tank got no reply because all three agents were
+    // inactive). Wake the members that were @-mentioned, and — when no one
+    // at all could be reached — the whole roster, then retry once each.
+    if (this.activateAgent && failed.length > 0) {
+      const toWake = failed.filter((f) => f.responseMode === 'required' || !anyDispatched);
+      for (const f of toWake) {
+        this.logger.info('chat-v2 huddle dispatch: agent inactive — activating on send', {
+          channelId: channel.id,
+          sessionName: f.sessionName,
+          mentioned: f.responseMode === 'required',
+        });
+        let activated = false;
+        try {
+          activated = await this.activateAgent(f.sessionName);
+        } catch (err) {
+          this.logger.warn('chat-v2 huddle activate-on-send failed', {
+            sessionName: f.sessionName,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (activated) {
+          const retry = await attempt(f.sessionName, f.responseMode);
+          if (retry.ok) {
+            f.error = '';
+            anyDispatched = true;
+            outcomes.push({ sessionName: f.sessionName, responseMode: f.responseMode, dispatched: true });
+            continue;
+          }
+          f.error = retry.error ?? f.error;
+        }
+      }
+    }
+
+    for (const f of failed) {
+      if (f.error === '') continue; // delivered on retry
+      this.logger.warn('chat-v2 huddle dispatch reported failure', {
+        channelId: channel.id,
+        sessionName: f.sessionName,
+        err: f.error,
+      });
+      outcomes.push({ sessionName: f.sessionName, responseMode: f.responseMode, dispatched: false, error: f.error });
     }
 
     return {

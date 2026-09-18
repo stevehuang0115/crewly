@@ -587,6 +587,55 @@ describe('ChatV2DispatcherService', () => {
         };
       }
 
+      it('wakes the whole roster when nobody is up, retries each once, and reports the outcomes', async () => {
+        const up = new Set<string>();
+        const sink: AgentMessageSink = {
+          async sendMessageToAgent(sessionName) {
+            return up.has(sessionName) ? { success: true } : { success: false, error: `Session '${sessionName}' does not exist` };
+          },
+        };
+        const activated: string[] = [];
+        const svc = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['tt-atlas', 'tt-sage', 'tt-kai'],
+          activateAgent: async (s) => {
+            activated.push(s);
+            if (s === 'tt-kai') return false; // one agent fails to start
+            up.add(s);
+            return true;
+          },
+        });
+        const result = await svc.dispatchMessage(makeHuddle(), makeMessage({ mentions: [] }));
+        expect(result.strategy).toBe('huddle-broadcast');
+        expect(result.dispatched).toBe(true);
+        expect(activated).toEqual(['tt-atlas', 'tt-sage', 'tt-kai']);
+        const byName = Object.fromEntries((result.huddleOutcomes ?? []).map((o) => [o.sessionName, o.dispatched]));
+        expect(byName).toEqual({ 'tt-atlas': true, 'tt-sage': true, 'tt-kai': false });
+      });
+
+      it('wakes only the @-mentioned member when someone else is already up', async () => {
+        const up = new Set(['tt-atlas']);
+        const sink: AgentMessageSink = {
+          async sendMessageToAgent(sessionName) {
+            return up.has(sessionName) ? { success: true } : { success: false, error: 'Session does not exist' };
+          },
+        };
+        const activated: string[] = [];
+        const svc = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['tt-atlas', 'tt-sage', 'tt-kai'],
+          activateAgent: async (s) => {
+            activated.push(s);
+            up.add(s);
+            return true;
+          },
+        });
+        const result = await svc.dispatchMessage(makeHuddle(), makeMessage({ mentions: ['tt-kai'] }));
+        expect(activated).toEqual(['tt-kai']);
+        const byName = Object.fromEntries((result.huddleOutcomes ?? []).map((o) => [o.sessionName, o.dispatched]));
+        expect(byName).toEqual({ 'tt-atlas': true, 'tt-kai': true, 'tt-sage': false });
+      });
+
       it('forwards threadId + replyVia into every member prompt', async () => {
         const sink = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }) };
         const svc = new ChatV2DispatcherService({
