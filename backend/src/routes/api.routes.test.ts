@@ -71,6 +71,7 @@ jest.mock('../controllers/mission/mission-policy.routes.js', () => ({ createMiss
 jest.mock('../controllers/v2-workspace/workspace.routes.js', () => ({ createV2WorkspaceRouter: () => Router() }));
 jest.mock('../controllers/trigger/trigger.routes.js', () => ({ createTriggerRouter: () => Router() }));
 jest.mock('../controllers/growth/growth.routes.js', () => ({ createGrowthRouter: () => Router() }));
+jest.mock('../controllers/agent-self-improvement/agent-self-improvement.controller.js', () => ({ createAgentSelfImprovementRouter: () => Router() }));
 jest.mock('../controllers/task-projection/task-projection.routes.js', () => ({ __esModule: true, default: Router() }));
 jest.mock('../controllers/chat-v2/index.js', () => ({ createChatV2Router: () => Router() }));
 jest.mock('../services/chat-v2/chat-v2.singleton.js', () => ({

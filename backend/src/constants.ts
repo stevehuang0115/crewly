@@ -1715,6 +1715,44 @@ export const TRACING_CONSTANTS = {
 	},
 } as const;
 
+/**
+ * Agent self-improvement wiring (attention / self-model / prediction
+ * calibration / memory consolidation). The four services under
+ * `services/ai/self-improvement/` were built and tested but never consumed;
+ * these constants govern the API, the daily consolidation cadence, and the
+ * bounded prompt injection that finally puts them to work.
+ */
+export const SELF_IMPROVEMENT_CONSTANTS = {
+	/** State file (under CREWLY_HOME) recording the last consolidation sweep */
+	STATE_FILE: 'self-improvement-state.json',
+	/** How often the consolidation sweep runs (24 h) */
+	CONSOLIDATION_INTERVAL_MS: 24 * 60 * 60 * 1000,
+	/** Env override for the consolidation interval (positive integer ms) */
+	CONSOLIDATION_INTERVAL_ENV: 'CREWLY_SELF_IMPROVEMENT_INTERVAL_MS',
+	/** Delay before the boot-time catch-up run so startup I/O settles first */
+	BOOT_RUN_DELAY_MS: 60 * 1000,
+	/** Prompt injection caps — keep the self-model card small and stable */
+	PROMPT: {
+		/** Max focus items rendered in the prompt */
+		MAX_FOCUS_ITEMS: 5,
+		/** Max suppressed topics rendered in the prompt */
+		MAX_SUPPRESSED_ITEMS: 5,
+		/** Max consolidation insights rendered in the prompt */
+		MAX_INSIGHTS: 3,
+		/** Hard character ceiling for the whole self-model section */
+		MAX_CHARS: 600,
+		/** Calibration below this → "you are overconfident" guidance */
+		LOW_CALIBRATION: 0.5,
+		/** Calibration at/above this → "well calibrated" guidance */
+		HIGH_CALIBRATION: 0.8,
+	},
+	/** Outcome keywords that resolve a prediction without an explicit `accurate` flag */
+	OUTCOME_KEYWORDS: {
+		ACCURATE: ['correct', 'accurate', 'true', 'yes', 'confirmed', 'right'],
+		INACCURATE: ['incorrect', 'inaccurate', 'false', 'no', 'wrong', 'missed'],
+	},
+} as const;
+
 /** License status type */
 export type CloudLicenseStatus = (typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS)[keyof typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS];
 

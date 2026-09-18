@@ -595,6 +595,54 @@ void (async () => {
 				});
 			}
 
+			// Daily memory consolidation (self-improvement wiring): the
+			// MemoryConsolidationService existed but nothing ever called
+			// consolidate(), so no agent ever had a consolidation.json. Run it
+			// for every active member once per day, with a boot-time catch-up
+			// when the last recorded sweep (CREWLY_HOME/self-improvement-
+			// state.json) is older than the interval. Non-fatal throughout.
+			try {
+				const { ConsolidationSchedulerService } = await import(
+					'./services/ai/self-improvement/consolidation-scheduler.service.js'
+				);
+				const { createMemoryConsolidationService } = await import(
+					'./services/ai/self-improvement/agent-memory-provider.js'
+				);
+				const { SELF_IMPROVEMENT_CONSTANTS } = await import('./constants.js');
+				const posIntMs = (raw: string | undefined, fallback: number): number => {
+					const n = Number(raw);
+					return Number.isFinite(n) && n > 0 ? n : fallback;
+				};
+				const consolidation = createMemoryConsolidationService();
+				const scheduler = new ConsolidationSchedulerService({
+					intervalMs: posIntMs(
+						process.env[SELF_IMPROVEMENT_CONSTANTS.CONSOLIDATION_INTERVAL_ENV],
+						SELF_IMPROVEMENT_CONSTANTS.CONSOLIDATION_INTERVAL_MS,
+					),
+					consolidate: (sessionName) => consolidation.consolidate(sessionName),
+					listActiveSessions: async () => {
+						const sessions: string[] = [];
+						const orc = await this.storageService.getOrchestratorStatus();
+						if (orc && orc.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE) sessions.push(orc.sessionName);
+						const teams = await this.storageService.getTeams();
+						for (const team of teams) {
+							for (const member of team.members ?? []) {
+								if (member.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE && member.sessionName) {
+									sessions.push(member.sessionName);
+								}
+							}
+						}
+						return sessions;
+					},
+				});
+				ConsolidationSchedulerService.setInstance(scheduler);
+				scheduler.start();
+			} catch (consolidationErr) {
+				this.logger.warn('Memory consolidation scheduler failed to start (non-fatal)', {
+					error: (consolidationErr as Error).message,
+				});
+			}
+
 			// LLM-wiki → WorkItem bridge (2026-05-27): pending wiki queue
 			// items + legacy migration candidates become claimable
 			// WorkItems in the V3 pool. Replaces the bookkeep/reflect

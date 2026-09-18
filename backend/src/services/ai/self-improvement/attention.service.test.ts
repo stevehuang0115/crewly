@@ -1,10 +1,9 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import { AttentionService } from './attention.service.js';
 
-vi.mock('fs');
+jest.mock('fs');
 
-const mockedFs = fs as unknown as vi.Mocked<typeof fs>;
+const mockedFs = fs as unknown as jest.Mocked<typeof fs>;
 
 describe('AttentionService', () => {
 	let service: AttentionService;
@@ -12,7 +11,7 @@ describe('AttentionService', () => {
 
 	beforeEach(() => {
 		service = new AttentionService();
-		vi.resetAllMocks();
+		jest.resetAllMocks();
 		mockedFs.mkdirSync.mockReturnValue(undefined);
 		mockedFs.writeFileSync.mockReturnValue(undefined);
 	});
