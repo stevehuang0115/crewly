@@ -30,6 +30,10 @@ vi.mock('./DiscordTab', () => ({
   DiscordTab: () => <div data-testid="discord-tab-content">Discord Config</div>,
 }));
 
+vi.mock('./GoogleWorkspaceTab', () => ({
+  GoogleWorkspaceTab: () => <div data-testid="google-workspace-tab-content">Google Workspace Config</div>,
+}));
+
 describe('IntegrationsTab', () => {
   describe('Rendering', () => {
     it('should render header', () => {
@@ -47,6 +51,16 @@ describe('IntegrationsTab', () => {
       expect(screen.getByText('Discord')).toBeInTheDocument();
       expect(screen.getByText('Telegram')).toBeInTheDocument();
       expect(screen.getByText('Google Chat')).toBeInTheDocument();
+      expect(screen.getByText('Google Workspace')).toBeInTheDocument();
+    });
+
+    it('should expand the Google Workspace card to its connect UI', () => {
+      render(<IntegrationsTab />);
+
+      fireEvent.click(screen.getByTestId('platform-toggle-google-workspace'));
+
+      expect(screen.getByTestId('platform-content-google-workspace')).toBeInTheDocument();
+      expect(screen.getByTestId('google-workspace-tab-content')).toBeInTheDocument();
     });
 
     it('should not show Coming Soon badge for any platform', () => {

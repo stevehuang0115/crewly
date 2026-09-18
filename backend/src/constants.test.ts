@@ -11,6 +11,7 @@ import {
   BROWSER_PROXY_CONSTANTS,
   CLOUD_SYNC_CONSTANTS,
   GOOGLE_OAUTH_CONSTANTS,
+  GOOGLE_WORKSPACE_CONSTANTS,
   LOGIN_REQUIRED_PATTERN_SETS,
   RUNTIME_COMPACT_COMMANDS,
   RUNTIME_INPUT_READY_PATTERNS,
@@ -157,5 +158,31 @@ describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
       expect(marker).toBe(marker.toLowerCase());
       expect(marker).not.toMatch(/\s{2,}/);
     }
+  });
+});
+
+describe('GOOGLE_WORKSPACE_CONSTANTS', () => {
+  it('points at the Cloud workspace-grant prefix the auth service mounts', () => {
+    expect(GOOGLE_WORKSPACE_CONSTANTS.CLOUD_PATH).toBe('/api/cloud/google/workspace');
+    expect(GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.TOKEN).toBe('/token');
+    expect(GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.DISCONNECT).toBe('');
+  });
+
+  it('refreshes ahead of expiry by the same 60 s margin Cloud caches with', () => {
+    expect(GOOGLE_WORKSPACE_CONSTANTS.TOKEN_REFRESH_MARGIN_MS).toBe(60_000);
+  });
+
+  it('talks to Google directly, never through Cloud', () => {
+    expect(GOOGLE_WORKSPACE_CONSTANTS.GMAIL_API_BASE).toMatch(/^https:\/\/gmail\.googleapis\.com\//);
+    expect(GOOGLE_WORKSPACE_CONSTANTS.CALENDAR_API_BASE).toMatch(/^https:\/\/www\.googleapis\.com\/calendar\//);
+  });
+
+  it('keeps defaults under their ceilings', () => {
+    expect(GOOGLE_WORKSPACE_CONSTANTS.GMAIL_DEFAULT_MAX_RESULTS).toBeLessThanOrEqual(
+      GOOGLE_WORKSPACE_CONSTANTS.GMAIL_MAX_RESULTS_CEILING,
+    );
+    expect(GOOGLE_WORKSPACE_CONSTANTS.CALENDAR_DEFAULT_MAX_RESULTS).toBeLessThanOrEqual(
+      GOOGLE_WORKSPACE_CONSTANTS.CALENDAR_MAX_RESULTS_CEILING,
+    );
   });
 });

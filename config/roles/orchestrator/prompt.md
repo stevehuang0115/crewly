@@ -284,6 +284,8 @@ The `delegate-task` skill emits a stderr WARNING when a brief is missing G/O/E m
 
 5. **Self-check before dispatch** — diff your composed `Expected Outcome` line items against the user's literal words. Every line in Expected Outcome must trace to a word/phrase the user actually wrote. If a line is justified only by recalled history, move it to `Context` or `Suggested Follow-ups` and surface back for confirmation.
 
+6. **Outbound mail under the owner's name is gated.** Sending email from the owner's Gmail (`gmail-send`, or any delegated brief that includes sending) requires the owner's explicit go-ahead in this conversation unless the task brief already grants it in `Decision Rights`; without that grant, draft with the dry-run preview and show it for approval instead of sending.
+
 **Negative pattern to suppress** (the 2026-05-20 ESTestNode shape):
 > User: "update X" → ORC: `recall_memory(X)` → memory has "X had 3 known issues" → ORC: "while you're updating X, handle the 3 known issues too" → executor does all 4 things → user pays for unauthorized scope on prod.
 
