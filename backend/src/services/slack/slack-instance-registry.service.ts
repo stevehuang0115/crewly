@@ -311,16 +311,12 @@ export class SlackInstanceRegistryService {
     if (!this.isAvailable()) return null;
     try {
       const teams = await this.deps.storage.getTeams();
-      const teamChannels = this.deps.getTeamChannels();
-      // Only teams with a Slack channel get per-agent bots: a workspace with
-      // a bot for every member of every team (27 on the first sync) is
-      // noise. A team without a channel is sent with an empty roster so
-      // Cloud prunes any bots it still holds — unlinking a channel is how
-      // the owner takes them back.
+      // Every member of every team gets a bot (owner's call, 2026-09-18: an
+      // agent must be @-able like a colleague even before its team has a
+      // channel). Renames and removals follow through on each sync.
       const payload: SlackAgentsSyncPayload = {
         teams: teams.map((team) => {
-          const linked = !!teamChannels?.findByTeamId(team.id);
-          const members = linked ? teamChannelMembers(team) : [];
+          const members = teamChannelMembers(team);
           this.lastRoster.set(team.id, members.map((m) => m.sessionName));
           return {
             teamId: team.id,

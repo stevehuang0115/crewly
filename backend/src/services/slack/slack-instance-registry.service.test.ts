@@ -252,11 +252,11 @@ describe('agent sync', () => {
     expect(service.getPendingInstalls()).toEqual([{ agentSession: 'alpha-mia-1234', url: 'https://slack.com/oauth/x' }]);
   });
 
-  it('a team without a Slack channel is synced with an empty roster, so Cloud prunes its bots', async () => {
+  it('every team is synced with its full roster, channel or not', async () => {
     mappings = {};
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
     await makeService().syncAgents();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ teams: [{ teamId: 'team-alpha', name: 'Alpha', agents: [] }], prune: true });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).teams[0].agents.map((a: { agentSession: string }) => a.agentSession)).toEqual(['alpha-kai-1234', 'alpha-mia-1234']);
   });
 
   it('a deleted team loses its agents\' Slack apps (DELETE per session from the last synced roster)', async () => {
