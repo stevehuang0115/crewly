@@ -13,6 +13,10 @@ import { PoolStorage } from './pool-storage.js';
 import { ClaimService, type HeartbeatResult, type ExtendLeaseResult, type ExpiredClaimsSummary } from './claim.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { formatError } from '../../utils/format-error.js';
+import {
+  TeamBudgetExceededError,
+  type TeamBudgetGateService,
+} from '../budget/team-budget-gate.service.js';
 import type {
   WorkItem,
   WorkItemStatus,
@@ -266,6 +270,14 @@ export class TaskPoolService {
   private isAgentActive: ((agentId: string) => Promise<boolean>) | null = null;
 
   /**
+   * Team budget gate consulted by {@link claimFromPool}. Wired from the
+   * backend boot path via {@link setTeamBudgetGate} (mirrors
+   * {@link setIsAgentActive}); `null` — the default — disables the gate so
+   * tests and single-process CLI paths never touch the team store.
+   */
+  private teamBudgetGate: Pick<TeamBudgetGateService, 'checkForSession'> | null = null;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -321,6 +333,17 @@ export class TaskPoolService {
    */
   setIsAgentActive(probe: ((agentId: string) => Promise<boolean>) | null): void {
     this.isAgentActive = probe;
+  }
+
+  /**
+   * Wire (or disable with `null`) the team budget gate consulted by
+   * {@link claimFromPool}. Called from the backend boot path with the
+   * {@link TeamBudgetGateService} singleton.
+   *
+   * @param gate - Gate implementation, or null to bypass budget checks
+   */
+  setTeamBudgetGate(gate: Pick<TeamBudgetGateService, 'checkForSession'> | null): void {
+    this.teamBudgetGate = gate;
   }
 
   /**
@@ -629,6 +652,63 @@ export class TaskPoolService {
   }
 
   /**
+   * Publish a terminal-success lifecycle event (`task:done` from
+   * {@link completeSimpleItem}, `task:verified` from {@link verifyItem}).
+   *
+   * **Why this exists.** Both event types were declared in `EVENT_TYPES`,
+   * listed as CRITICAL, and consumed by five subscribers (KR auto-measure,
+   * request cascade, auto-learning, milestone notification, the orc's and
+   * TL's standing subscriptions) — but nothing ever published them. The
+   * pool only emitted `task:done_by_worker` / `task:rejected` /
+   * `task:cancelled`, so `measurementSource: 'task_completion'` KRs never
+   * moved and `team:all_tasks_done` could never be derived.
+   *
+   * Mirrors {@link publishTaskDoneByWorker}: empty `sessionName` (system
+   * event, bypasses the per-session debounce), deterministic id keyed on
+   * the WI so a replay collapses, and a swallowed publisher error so the
+   * committed transition is never rolled back.
+   *
+   * @param type - `'task:done'` or `'task:verified'`
+   * @param workItem - The WI snapshot AFTER the transition committed
+   * @param previousStatus - The status it transitioned from
+   */
+  private publishTaskTerminalSuccess(
+    type: 'task:done' | 'task:verified',
+    workItem: WorkItem,
+    previousStatus: WorkItemStatus,
+  ): void {
+    if (!this.eventBus) {
+      this.logger.debug(`No EventBus wired — skipping ${type} publish`, {
+        workItemId: workItem.id,
+      });
+      return;
+    }
+    try {
+      this.eventBus.publish({
+        id: `${type}:${workItem.id}`,
+        type,
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: previousStatus,
+        newValue: workItem.status,
+        changedField: 'taskStatus',
+        workItemId: workItem.id,
+        missionId: workItem.missionId,
+        requestId: workItem.requestId,
+      });
+    } catch (err) {
+      this.logger.warn(`${type} publish threw`, {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
+  }
+
+  /**
    * Publish `task:cancelled` whenever a WorkItem transitions to the
    * cancelled status via {@link updateItemStatus} or {@link transitionStatus}.
    *
@@ -716,6 +796,23 @@ export class TaskPoolService {
         if (!alive) {
           this.logger.info('claimFromPool refused — agent session not active', { agentId });
           return null;
+        }
+      }
+
+      // Team budget gate — refuse new work for an over-budget team. Throws a
+      // typed error (reason: 'team_budget_exceeded') so the REST controller
+      // can answer 429 with the reason instead of a misleading 404. Fail-open
+      // on gate errors (the gate itself already swallows ledger failures).
+      const budgetGate = this.teamBudgetGate;
+      if (budgetGate) {
+        const budget = await budgetGate.checkForSession(agentId).catch(() => null);
+        if (budget && !budget.allowed) {
+          this.logger.info('claimFromPool refused — team budget exceeded', {
+            agentId,
+            teamId: budget.teamId,
+            detail: budget.detail,
+          });
+          throw new TeamBudgetExceededError(budget);
         }
       }
 
@@ -1235,6 +1332,11 @@ export class TaskPoolService {
     await this.resolveBlockedDependents(workItemId);
     await this.storage.flush();
     this.logger.info('WorkItem completed', { workItemId, actorRole });
+    // Terminal-success signal for KR auto-measure / cascade / learning
+    // subscribers — see {@link publishTaskTerminalSuccess}.
+    if (updated) {
+      this.publishTaskTerminalSuccess('task:done', updated, 'running');
+    }
     return updated;
   }
 
@@ -1284,12 +1386,17 @@ export class TaskPoolService {
     }
     await this.storage.flush();
     this.logger.info('WorkItem verdict recorded', { workItemId, verdict, actorRole });
-    // F1-BRIDGE-1: only the `rejected` branch publishes. The bridge's
-    // task:rejected handler creates the retry-or-escalate WI; the `verified`
-    // branch is terminal-success and unblocks dependents above without any
-    // bridge involvement. Skip the publish on race-window deletion.
-    if (verdict === 'rejected' && updated) {
-      this.publishTaskRejected(updated);
+    // F1-BRIDGE-1: the `rejected` branch publishes task:rejected so the
+    // bridge can retry-or-escalate. The `verified` branch publishes
+    // task:verified (terminal success) for the KR auto-measure / cascade /
+    // learning subscribers — see {@link publishTaskTerminalSuccess}. Skip
+    // both on race-window deletion.
+    if (updated) {
+      if (verdict === 'rejected') {
+        this.publishTaskRejected(updated);
+      } else {
+        this.publishTaskTerminalSuccess('task:verified', updated, 'done_by_worker');
+      }
     }
     return updated;
   }

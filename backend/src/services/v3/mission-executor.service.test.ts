@@ -82,7 +82,119 @@ describe('MissionExecutorService', () => {
     mockGetAllItems.mockResolvedValue([]);
   });
 
+  describe('processDecomposition — MissionPolicy cadence gates', () => {
+    const baseCadence = {
+      reviewSchedule: '0 9 * * *',
+      dailyItemLimit: 0,
+      workHours: null,
+      phaseGateApproval: 'none' as const,
+      requireVerificationGate: false,
+    };
+
+    function decomposition(n: number): DecompositionResult {
+      return {
+        missionId: 'mission-1',
+        phase: 1,
+        tasks: Array.from({ length: n }, (_, i) => ({
+          title: `Task ${i}`,
+          description: `Do ${i}`,
+          type: 'delegate' as const,
+          priority: 'medium' as const,
+        })),
+      };
+    }
+
+    function missionWithCadence(overrides: Partial<typeof baseCadence>) {
+      const base = makeMission();
+      return { ...base, policy: { ...base.policy, executionCadence: { ...baseCadence, ...overrides } } };
+    }
+
+    it('refuses the whole decomposition when it would exceed dailyItemLimit (counting today\'s items)', async () => {
+      const today = new Date().toISOString();
+      mockGetAllItems.mockResolvedValue([
+        { id: 'a', missionId: 'mission-1', createdAt: today },
+        { id: 'b', missionId: 'mission-1', createdAt: today },
+        { id: 'old', missionId: 'mission-1', createdAt: '2020-01-01T00:00:00.000Z' },
+        { id: 'other', missionId: 'mission-2', createdAt: today },
+      ]);
+      const service = MissionExecutorService.getInstance();
+
+      await expect(
+        service.processDecomposition(decomposition(2), missionWithCadence({ dailyItemLimit: 3 })),
+      ).rejects.toThrow(/daily item limit reached: 2 created today, 2 requested, limit 3/);
+      expect(mockAddToPool).not.toHaveBeenCalled();
+    });
+
+    it('allows a decomposition that fits within dailyItemLimit', async () => {
+      const today = new Date().toISOString();
+      mockGetAllItems.mockResolvedValue([{ id: 'a', missionId: 'mission-1', createdAt: today }]);
+      const service = MissionExecutorService.getInstance();
+
+      const ids = await service.processDecomposition(
+        decomposition(2),
+        missionWithCadence({ dailyItemLimit: 3 }),
+      );
+      expect(ids).toHaveLength(2);
+      expect(mockAddToPool).toHaveBeenCalledTimes(2);
+    });
+
+    it('treats dailyItemLimit=0 as unlimited', async () => {
+      const today = new Date().toISOString();
+      mockGetAllItems.mockResolvedValue(
+        Array.from({ length: 50 }, (_, i) => ({ id: `w${i}`, missionId: 'mission-1', createdAt: today })),
+      );
+      const service = MissionExecutorService.getInstance();
+      const ids = await service.processDecomposition(decomposition(5), missionWithCadence({ dailyItemLimit: 0 }));
+      expect(ids).toHaveLength(5);
+    });
+
+    it('stamps metadata.requiresVerification=true when requireVerificationGate is on', async () => {
+      const service = MissionExecutorService.getInstance();
+      await service.processDecomposition(
+        decomposition(1),
+        missionWithCadence({ requireVerificationGate: true }),
+      );
+      expect(mockAddToPool.mock.calls[0][0].metadata.requiresVerification).toBe(true);
+    });
+
+    it('leaves metadata.requiresVerification unset when the gate is off (pool default applies)', async () => {
+      const service = MissionExecutorService.getInstance();
+      await service.processDecomposition(
+        decomposition(1),
+        missionWithCadence({ requireVerificationGate: false }),
+      );
+      expect(mockAddToPool.mock.calls[0][0].metadata.requiresVerification).toBeUndefined();
+    });
+  });
+
   describe('processDecomposition', () => {
+    it('refuses a mission whose cascade approval is still pending', async () => {
+      const service = MissionExecutorService.getInstance();
+      const mission = makeMission({ approval: { state: 'pending_approval' } });
+
+      const result: DecompositionResult = {
+        missionId: 'mission-1',
+        phase: 1,
+        tasks: [
+          { title: 'Design schema', description: 'Design DB schema', type: 'delegate', priority: 'high' },
+        ],
+      };
+
+      await expect(service.processDecomposition(result, mission)).rejects.toThrow(
+        /not executable.*pending_approval/,
+      );
+      expect(mockAddToPool).not.toHaveBeenCalled();
+    });
+
+    it('refuses a paused mission', async () => {
+      const service = MissionExecutorService.getInstance();
+      const mission = makeMission({ status: 'paused' });
+
+      await expect(
+        service.processDecomposition({ missionId: 'mission-1', phase: 1, tasks: [] }, mission),
+      ).rejects.toThrow(/not executable/);
+    });
+
     it('should create WorkItems from decomposition result', async () => {
       const service = MissionExecutorService.getInstance();
       const mission = makeMission();

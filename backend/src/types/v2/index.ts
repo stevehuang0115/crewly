@@ -172,6 +172,7 @@ export {
   MODERATE_CADENCE,
   AUTONOMOUS_CADENCE,
   isValidMissionStatus,
+  isMissionExecutable,
   isValidPolicyAction,
   isValidEscalationCondition,
   isValidMissionTransition,

@@ -60,6 +60,43 @@ describe('WorkItemDispatchSubscriber', () => {
     });
   });
 
+  describe('dispatchTo — team budget gate', () => {
+    it('skips the push (and does not mark dispatched) when the target team is over budget', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      let allowed = false;
+      svc.setTeamBudgetGate({
+        checkForSession: async () => ({
+          allowed,
+          reason: allowed ? undefined : 'team_budget_exceeded',
+          detail: 'over',
+          level: allowed ? 'ok' : 'blocked',
+          teamId: 't1',
+          teamName: 'T',
+          usage: { tokensToday: 0, usdThisMonth: 0, sessions: [] },
+        }),
+      });
+      const wi = makeWorkItem({ id: 'wi-budget' });
+
+      expect(await svc.dispatchTo(wi)).toBe(false);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+
+      // Budget window resets → the same WI dispatches on the next attempt.
+      allowed = true;
+      expect(await svc.dispatchTo(wi)).toBe(true);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('fails open when the gate throws', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setTeamBudgetGate({
+        checkForSession: async () => {
+          throw new Error('gate down');
+        },
+      });
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-open' }))).toBe(true);
+    });
+  });
+
   describe('dispatchTo', () => {
     it('POSTs a [CREWLY-DISPATCH] message to the target session', async () => {
       const svc = WorkItemDispatchSubscriber.getInstance();

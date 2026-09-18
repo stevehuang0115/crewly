@@ -10,6 +10,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { getMissionsDir, getKeyResultsDir } from '../../services/v3/mission-paths.js';
 import {
   getPolicy,
   updatePolicy,
@@ -78,10 +79,6 @@ interface KeyResultSummary {
   status: KeyResult['status'];
 }
 
-/** Resolve the missions directory from the project root. */
-function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
-}
 
 /**
  * Reads all KR JSON files stored under `<missionsDir>/<missionId>/key-results/`.
@@ -90,7 +87,7 @@ function getMissionsDir(): string {
  * @returns Array of KR summaries (empty if the folder is missing or unreadable)
  */
 async function readKeyResultSummaries(missionId: string): Promise<KeyResultSummary[]> {
-  const krDir = path.join(getMissionsDir(), missionId, 'key-results');
+  const krDir = getKeyResultsDir(missionId);
   let files: string[] = [];
   try {
     files = (await fs.readdir(krDir)).filter(f => f.endsWith('.json'));
@@ -182,6 +179,37 @@ async function listMissions(_req: Request, res: Response, next: NextFunction): P
     const enriched = await Promise.all(missions.map((m) => normalizeMissionForResponse(m, byId)));
     res.json({ success: true, data: enriched, count: enriched.length });
   } catch (err) { next(err); }
+}
+
+/** Read a mission document, or `null` when missing / unreadable. */
+async function readMissionOrNull(missionId: string): Promise<Mission | null> {
+  try {
+    const raw = await fs.readFile(path.join(getMissionsDir(), `${missionId}.json`), 'utf-8');
+    return JSON.parse(raw) as Mission;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Check a review decision against the mission's policy capability gates.
+ *
+ * @param mission - The mission whose policy applies
+ * @param decision - The submitted decision
+ * @returns A human-readable refusal, or `null` when the decision is allowed
+ */
+export function reviewDecisionPolicyViolation(
+  mission: Pick<Mission, 'id' | 'policy'>,
+  decision: ReviewDecision,
+): string | null {
+  const policy = mission.policy;
+  if (decision.action === 'replan_phase' && policy?.canReplanMission === false) {
+    return `Mission ${mission.id} policy does not allow autonomous replanning (canReplanMission=false) — owner approval required`;
+  }
+  if (decision.krUpdates && decision.krUpdates.length > 0 && policy?.canAdjustKRTargets === false) {
+    return `Mission ${mission.id} policy does not allow adjusting KR targets (canAdjustKRTargets=false) — owner approval required`;
+  }
+  return null;
 }
 
 /** Get a single mission by ID with KR summaries and normalised priority. */
@@ -582,6 +610,20 @@ export function createMissionPolicyRouter(): Router {
       const decision = req.body as ReviewDecision;
       if (!decision.action) {
         res.status(400).json({ success: false, error: 'action is required' });
+        return;
+      }
+      // MissionPolicy capability gates. `canReplanMission` / `canAdjustKRTargets`
+      // default to permitted when absent (legacy policies); an explicit `false`
+      // means the human owner must approve, so the agent-driven decision is
+      // refused with 403 and nothing is applied.
+      const mission = await readMissionOrNull(req.params.id);
+      if (!mission) {
+        res.status(404).json({ success: false, error: 'Mission not found' });
+        return;
+      }
+      const denied = reviewDecisionPolicyViolation(mission, decision);
+      if (denied) {
+        res.status(403).json({ success: false, error: denied });
         return;
       }
       const reviewService = OKRReviewService.getInstance();

@@ -66,6 +66,13 @@ import { MessageQueueService, QueueProcessorService, ResponseRouterService } fro
 import { ThreadStatusQueueService } from './services/messaging/thread-status-queue.service.js';
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
+import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.js';
+import { MissionReminderService } from './services/v3/mission-reminder.service.js';
+import { OKRReviewService } from './services/v3/okr-review.service.js';
+import { bootEscalationService } from './services/v3/escalation-boot.js';
+import { TeamBudgetGateService } from './services/budget/team-budget-gate.service.js';
+import { HierarchyEscalationMonitor } from './services/hierarchy/hierarchy-escalation-monitor.service.js';
+import type { EscalationService } from './services/v3/escalation.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
 import {
@@ -211,6 +218,9 @@ export class CrewlyServer {
 	private eventBusService!: EventBusService;
 	/** BRIDGE-1: subscribes to autonomy events and creates WorkItems. */
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
+	private krCompletionSubscriber: KRCompletionSubscriber | null = null;
+	private escalationService: EscalationService | null = null;
+	private hierarchyEscalationMonitor: HierarchyEscalationMonitor | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
 	// DF-1 #438 — symmetric to AutoLearningSubscriber; surfaces milestones
@@ -392,6 +402,16 @@ export class CrewlyServer {
 		// triggers addToPool — the slack listener / TaskPool router below both
 		// depend on this for the auto-close path b chain. Idempotent.
 		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
+
+		// Team budget gate (Team.budget was stored + prompt-injected but never
+		// evaluated). Enforced in claimFromPool + WorkItemDispatchSubscriber;
+		// here we give it the bus + queue so cap crossings reach the owner.
+		const teamBudgetGate = TeamBudgetGateService.getInstance();
+		teamBudgetGate.setNotifiers({
+			eventBus: this.eventBusService,
+			messageQueue: this.messageQueueService,
+		});
+		TaskPoolService.getInstance().setTeamBudgetGate(teamBudgetGate);
 
 		// Memory: TaskHistorySubscriber listens on the bus for
 		// task:done_by_worker / task:rejected / task:cancelled and writes
@@ -676,6 +696,29 @@ void (async () => {
 		// for idempotency contract + retry cap + cron-recursion guard.
 		this.eventToWorkItemBridge = EventToWorkItemBridge.boot(this.eventBusService);
 		this.eventToWorkItemBridge.start();
+
+		// OKR loop closure: auto-measure `task_completion` KRs from task:done /
+		// task:verified and publish `team:all_tasks_done` when a mission has no
+		// active WorkItems left (the bridge turns that into a review WI). See
+		// `kr-completion.subscriber.ts`.
+		this.krCompletionSubscriber = KRCompletionSubscriber.boot(this.eventBusService);
+		this.krCompletionSubscriber.start();
+
+		// OKR loop closure: give the reminder sweep (mission:stale) and the
+		// review service (mission:replanned) a bus to publish on. Both were
+		// declared + bridged events with no publisher before this.
+		MissionReminderService.getInstance().setEventBusService(this.eventBusService);
+		OKRReviewService.getInstance().setEventBusService(this.eventBusService);
+
+		// Hierarchy escalation: a TL that has not acted on a worker's
+		// verification handoff within 15 min triggers the documented bypass to
+		// the orchestrator (`hierarchy:escalation` + [ESCALATION] queue message).
+		// HierarchyEscalationService had the rules but no runtime consumer.
+		this.hierarchyEscalationMonitor = HierarchyEscalationMonitor.boot(
+			this.eventBusService,
+			this.messageQueueService,
+		);
+		this.hierarchyEscalationMonitor.start();
 
 		// LEARN-1: subscribe to terminal task / mission:replanned events and
 		// auto-record a learning entry via MemoryService.recordLearning. Closes
@@ -2158,6 +2201,16 @@ void (async () => {
 				await triggerEngine.start();
 				this.logger.info('TriggerEngine started with action handler wired');
 
+				// MissionPolicy escalation loop (every 5 min: cost/time/failure rules →
+				// notify/pause/block). Sequenced AFTER the action handler above because
+				// EscalationService.start() wraps the installed handler and delegates
+				// non-escalation triggers back to it. Gated by CREWLY_ESCALATION_ENABLED
+				// (default on); a no-op when no mission carries escalation rules.
+				this.escalationService = await bootEscalationService({
+					messageQueue: this.messageQueueService,
+					logger: this.logger,
+				});
+
 				// Wire team-scoped triggers: reconcile declarative Team.triggers spec
 				// against the running engine on every team save, and cancel all of a
 				// team's triggers when it's deleted. Listener is fire-and-forget.
@@ -2222,6 +2275,7 @@ void (async () => {
 			try {
 				const { WorkItemDispatchSubscriber } = await import('./services/v3/workitem-dispatch.subscriber.js');
 				const dispatchSubscriber = WorkItemDispatchSubscriber.getInstance();
+				dispatchSubscriber.setTeamBudgetGate(TeamBudgetGateService.getInstance());
 				dispatchSubscriber.initialize(this.eventBusService);
 				dispatchSubscriber.start();
 				this.logger.info('WorkItemDispatchSubscriber started — workitem:queued events push to target sessions');
@@ -3277,7 +3331,6 @@ void (async () => {
 		// Scans active missions and sends Slack alerts for off-track KRs
 		setInterval(async () => {
 			try {
-				const { MissionReminderService } = await import('./services/v3/mission-reminder.service.js');
 				await MissionReminderService.getInstance().runSweep();
 			} catch (err) {
 				this.logger.warn('Mission OKR reminder sweep failed', { error: String(err) });
@@ -3290,7 +3343,6 @@ void (async () => {
 		setTimeout(() => this.purgeCompletedData(), 30 * 1000);
 		setTimeout(async () => {
 			try {
-				const { MissionReminderService } = await import('./services/v3/mission-reminder.service.js');
 				await MissionReminderService.getInstance().runSweep();
 			} catch (err) {
 				// Non-critical
@@ -3655,6 +3707,18 @@ void (async () => {
 			if (this.eventToWorkItemBridge) {
 				this.eventToWorkItemBridge.stop();
 				this.eventToWorkItemBridge = null;
+			}
+			if (this.krCompletionSubscriber) {
+				this.krCompletionSubscriber.stop();
+				this.krCompletionSubscriber = null;
+			}
+			if (this.escalationService) {
+				try { await this.escalationService.stop(); } catch { /* best-effort */ }
+				this.escalationService = null;
+			}
+			if (this.hierarchyEscalationMonitor) {
+				this.hierarchyEscalationMonitor.stop();
+				this.hierarchyEscalationMonitor = null;
 			}
 
 			// LEARN-1: stop the AutoLearningSubscriber on the same window as the

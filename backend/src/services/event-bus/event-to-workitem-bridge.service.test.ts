@@ -658,6 +658,48 @@ describe('EventToWorkItemBridge', () => {
       expect(reviewWI.id).toBe(`mission-1:review:replan:${eventId}`);
       bridge.stop();
     });
+
+    it.each(['mission:review_due', 'mission:stale', 'mission:replanned'] as const)(
+      '%s does NOT create a review WI for a mission still pending approval',
+      async (type) => {
+        const mission = buildMission({ approval: { state: 'pending_approval' } });
+        const taskPool = buildFakeTaskPool([]);
+        const { bridge, bus } = buildBridge({
+          taskPool,
+          loadMission: async () => mission,
+        });
+        bridge.start();
+
+        bus.publish(buildEvent({ type, missionId: mission.id, workItemId: undefined }));
+        await bridge.flushPending();
+
+        expect(taskPool.addCalls).toHaveLength(0);
+        bridge.stop();
+      },
+    );
+
+    it('team:all_tasks_done does NOT emit review_due for a mission still pending approval', async () => {
+      const mission = buildMission({ approval: { state: 'pending_approval' } });
+      const taskPool = buildFakeTaskPool([]);
+      const { bridge, bus } = buildBridge({
+        taskPool,
+        loadMission: async () => mission,
+      });
+      bridge.start();
+      const published: string[] = [];
+      bus.onInProcess('mission:review_due', (e) => {
+        published.push(e.id);
+      });
+
+      bus.publish(
+        buildEvent({ type: 'team:all_tasks_done', missionId: mission.id, workItemId: undefined }),
+      );
+      await bridge.flushPending();
+
+      expect(published).toHaveLength(0);
+      expect(taskPool.addCalls).toHaveLength(0);
+      bridge.stop();
+    });
   });
 
   // -------------------------------------------------------------------------

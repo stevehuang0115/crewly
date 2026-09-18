@@ -35,6 +35,7 @@
 import axios from 'axios';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
+import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -106,8 +107,25 @@ export class WorkItemDispatchSubscriber {
     return `${workItemId}::${target}`;
   }
 
+  /**
+   * Team budget gate consulted before pushing a brief. Wired from the
+   * backend boot path via {@link setTeamBudgetGate}; `null` (default)
+   * bypasses the check so tests / CLI never touch the team store.
+   */
+  private teamBudgetGate: Pick<TeamBudgetGateService, 'checkForSession'> | null = null;
+
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger(SERVICE_NAME);
+  }
+
+  /**
+   * Wire (or disable with `null`) the team budget gate used by
+   * {@link dispatchTo}. Called from the backend boot path.
+   *
+   * @param gate - Gate implementation, or null to bypass budget checks
+   */
+  setTeamBudgetGate(gate: Pick<TeamBudgetGateService, 'checkForSession'> | null): void {
+    this.teamBudgetGate = gate;
   }
 
   public static getInstance(): WorkItemDispatchSubscriber {
@@ -191,6 +209,23 @@ export class WorkItemDispatchSubscriber {
     if (SLA_TRACKER_ID_PATTERN.test(workItem.id)) return false;
     const key = this.dispatchKey(workItem.id, workItem.target);
     if (this.dispatched.has(key)) return false;
+
+    // Team budget gate: do not wake an agent whose team is over budget. The
+    // WI stays queued (not marked dispatched) so it is picked up once the
+    // window resets or the budget is raised. Fail-open on gate errors.
+    const budgetGate = this.teamBudgetGate;
+    if (budgetGate) {
+      const budget = await budgetGate.checkForSession(workItem.target).catch(() => null);
+      if (budget && !budget.allowed) {
+        this.logger.info('Dispatch skipped — team budget exceeded', {
+          workItemId: workItem.id,
+          target: workItem.target,
+          teamId: budget.teamId,
+          detail: budget.detail,
+        });
+        return false;
+      }
+    }
 
     const message = this.buildDispatchMessage(workItem);
 

@@ -50,8 +50,10 @@ jest.mock('./mission-executor.service.js', () => ({
   },
 }));
 
-// Mock getEffectiveCadence
+// Mock getEffectiveCadence; keep the real approval gate so the
+// pending-approval refusal below exercises the production predicate.
 jest.mock('../../types/v2/mission.types.js', () => ({
+  ...jest.requireActual('../../types/v2/mission.types.js'),
   getEffectiveCadence: jest.fn().mockReturnValue({
     reviewSchedule: '0 9 * * 1',
     phaseGateApproval: 'none',
@@ -213,6 +215,13 @@ describe('OKRReviewService', () => {
       const service = OKRReviewService.getInstance();
       await expect(service.executeReview('nonexistent')).rejects.toThrow('Mission nonexistent not found');
     });
+
+    it('refuses to review a mission whose cascade approval is still pending', async () => {
+      writeMission('m-pending', { approval: { state: 'pending_approval' } });
+      const service = OKRReviewService.getInstance();
+      await expect(service.executeReview('m-pending')).rejects.toThrow(/not executable/);
+      expect(mockComputeProgress).not.toHaveBeenCalled();
+    });
   });
 
   describe('processReviewDecision', () => {
@@ -239,6 +248,56 @@ describe('OKRReviewService', () => {
         newPhase: 2,
       });
 
+      expect(mockCancelRemaining).toHaveBeenCalledWith('m1');
+    });
+
+    it('publishes mission:replanned with the new strategy on replan_phase', async () => {
+      writeMission('m1', { currentStrategy: 'old plan' });
+      mockCancelRemaining.mockResolvedValue(0);
+      const published: any[] = [];
+      const service = OKRReviewService.getInstance();
+      service.setEventBusService({ publish: jest.fn((e: any) => published.push(e)) } as any);
+
+      await service.processReviewDecision('m1', {
+        action: 'replan_phase',
+        newPhase: 3,
+        newStrategy: 'pivot to B2B',
+      });
+
+      expect(published).toHaveLength(1);
+      expect(published[0]).toMatchObject({
+        type: 'mission:replanned',
+        missionId: 'm1',
+        teamId: 'team-1',
+        previousValue: 'old plan',
+        newValue: 'pivot to B2B',
+        sessionName: '',
+      });
+      expect(published[0].id).toMatch(/^m1:replanned:3:\d+$/);
+      // The new strategy is persisted alongside the replan.
+      const saved = JSON.parse(readFileSync(join(tempDir, '.crewly', 'missions', 'm1.json'), 'utf-8'));
+      expect(saved.currentStrategy).toBe('pivot to B2B');
+    });
+
+    it('does NOT publish mission:replanned for non-replan decisions', async () => {
+      writeMission('m1');
+      const published: any[] = [];
+      const service = OKRReviewService.getInstance();
+      service.setEventBusService({ publish: jest.fn((e: any) => published.push(e)) } as any);
+
+      await service.processReviewDecision('m1', { action: 'adjust_strategy', newStrategy: 'x' });
+      await service.processReviewDecision('m1', { action: 'continue' });
+
+      expect(published).toHaveLength(0);
+    });
+
+    it('replan_phase without a bus still cancels tasks and does not throw', async () => {
+      writeMission('m1');
+      mockCancelRemaining.mockResolvedValue(1);
+      const service = OKRReviewService.getInstance();
+      await expect(
+        service.processReviewDecision('m1', { action: 'replan_phase' }),
+      ).resolves.toBeUndefined();
       expect(mockCancelRemaining).toHaveBeenCalledWith('m1');
     });
 

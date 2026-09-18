@@ -29,6 +29,7 @@ import {
   type WorkItem,
 } from '../../types/v2/work-item.types.js';
 import { formatError } from '../../utils/format-error.js';
+import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
@@ -449,6 +450,15 @@ export async function claimItem(req: Request, res: Response): Promise<void> {
 
     res.json({ success: true, data: result });
   } catch (error) {
+    if (error instanceof TeamBudgetExceededError) {
+      res.status(429).json({
+        success: false,
+        error: error.message,
+        reason: error.reason,
+        usage: error.check.usage,
+      });
+      return;
+    }
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 }

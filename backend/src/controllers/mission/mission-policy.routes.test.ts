@@ -3,7 +3,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import express from 'express';
 import request from 'supertest';
-import { createMissionPolicyRouter } from './mission-policy.routes.js';
+import { createMissionPolicyRouter, reviewDecisionPolicyViolation } from './mission-policy.routes.js';
 import { OKRCascadeService } from '../../services/v3/okr-cascade.service.js';
 import { KRTrackingService } from '../../services/v3/kr-tracking.service.js';
 import { resetApiTokenCache, getApiTokenFingerprint } from '../../services/core/api-token.service.js';
@@ -559,5 +559,104 @@ describe('legacy level resolution is identical across route + service (finding 5
       'tl',
     );
     expect(result.childLevel).toBe('team');
+  });
+});
+
+describe('POST /:id/review-decision — MissionPolicy capability gates', () => {
+  let app: express.Express;
+  let tmpDir: string;
+  let originalCwd: string;
+
+  beforeEach(async () => {
+    originalCwd = process.cwd();
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-review-gate-'));
+    process.chdir(tmpDir);
+    app = express();
+    app.use(express.json());
+    app.use('/api/missions', createMissionPolicyRouter());
+  });
+
+  afterEach(async () => {
+    process.chdir(originalCwd);
+    await fs.rm(tmpDir, { recursive: true, force: true });
+  });
+
+  async function seedMission(id: string, policy: Record<string, unknown>) {
+    const res = await request(app)
+      .post('/api/missions')
+      .send({ id, objective: 'Gate me', ownerTeamId: 't1', policy: { missionId: id, ...policy } });
+    expect(res.status).toBe(201);
+  }
+
+  it('403s replan_phase when canReplanMission=false', async () => {
+    await seedMission('m-noreplan', { canCreateTasks: true, canReplanMission: false, escalationRules: [] });
+    const res = await request(app)
+      .post('/api/missions/m-noreplan/review-decision')
+      .send({ action: 'replan_phase', newPhase: 2 });
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+    expect(res.body.error).toMatch(/canReplanMission=false/);
+  });
+
+  it('403s krUpdates when canAdjustKRTargets=false', async () => {
+    await seedMission('m-nokr', { canCreateTasks: true, canAdjustKRTargets: false, escalationRules: [] });
+    const res = await request(app)
+      .post('/api/missions/m-nokr/review-decision')
+      .send({ action: 'continue', krUpdates: [{ krId: 'kr-1', newTarget: 10 }] });
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/canAdjustKRTargets=false/);
+  });
+
+  it('404s an unknown mission before touching the review service', async () => {
+    const res = await request(app)
+      .post('/api/missions/nope/review-decision')
+      .send({ action: 'replan_phase' });
+    expect(res.status).toBe(404);
+  });
+
+  it('still 400s a missing action', async () => {
+    const res = await request(app).post('/api/missions/m-x/review-decision').send({});
+    expect(res.status).toBe(400);
+  });
+
+  describe('reviewDecisionPolicyViolation (pure)', () => {
+    const mission = (policy: Record<string, unknown>) => ({ id: 'm', policy } as never);
+
+    it('allows everything when the booleans are absent (legacy policy)', () => {
+      expect(reviewDecisionPolicyViolation(mission({}), { action: 'replan_phase' })).toBeNull();
+      expect(
+        reviewDecisionPolicyViolation(mission({}), { action: 'continue', krUpdates: [{ krId: 'k' }] }),
+      ).toBeNull();
+    });
+
+    it('allows when the booleans are explicitly true', () => {
+      expect(
+        reviewDecisionPolicyViolation(mission({ canReplanMission: true, canAdjustKRTargets: true }), {
+          action: 'replan_phase',
+          krUpdates: [{ krId: 'k', newTarget: 1 }],
+        }),
+      ).toBeNull();
+    });
+
+    it('does not treat an empty krUpdates array as an adjustment', () => {
+      expect(
+        reviewDecisionPolicyViolation(mission({ canAdjustKRTargets: false }), {
+          action: 'continue',
+          krUpdates: [],
+        }),
+      ).toBeNull();
+    });
+
+    it('refuses replan / kr adjustments when explicitly false', () => {
+      expect(
+        reviewDecisionPolicyViolation(mission({ canReplanMission: false }), { action: 'replan_phase' }),
+      ).toMatch(/canReplanMission=false/);
+      expect(
+        reviewDecisionPolicyViolation(mission({ canAdjustKRTargets: false }), {
+          action: 'adjust_strategy',
+          krUpdates: [{ krId: 'k', newTarget: 2 }],
+        }),
+      ).toMatch(/canAdjustKRTargets=false/);
+    });
   });
 });

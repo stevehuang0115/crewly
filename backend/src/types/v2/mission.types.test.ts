@@ -21,6 +21,7 @@ import {
   MISSION_PRIORITIES,
   MISSION_PRIORITY_RANK,
   isValidMissionStatus,
+  isMissionExecutable,
   isValidPolicyAction,
   isValidEscalationCondition,
   isValidMissionTransition,
@@ -171,6 +172,36 @@ describe('Mission Types', () => {
   // -----------------------------------------------------------------------
   // Type Guards
   // -----------------------------------------------------------------------
+  describe('isMissionExecutable', () => {
+    it('treats an active mission without approval metadata as executable (legacy)', () => {
+      expect(isMissionExecutable({ status: 'active', approval: undefined })).toBe(true);
+    });
+
+    it('treats an active + approved mission as executable', () => {
+      expect(
+        isMissionExecutable({ status: 'active', approval: { state: 'approved' } }),
+      ).toBe(true);
+    });
+
+    it('refuses an active mission whose approval is still pending / draft / rejected', () => {
+      expect(
+        isMissionExecutable({ status: 'active', approval: { state: 'pending_approval' } }),
+      ).toBe(false);
+      expect(isMissionExecutable({ status: 'active', approval: { state: 'draft' } })).toBe(false);
+      expect(
+        isMissionExecutable({ status: 'active', approval: { state: 'rejected' } }),
+      ).toBe(false);
+    });
+
+    it('refuses any non-active status even when approved', () => {
+      expect(
+        isMissionExecutable({ status: 'paused', approval: { state: 'approved' } }),
+      ).toBe(false);
+      expect(isMissionExecutable({ status: 'completed', approval: undefined })).toBe(false);
+      expect(isMissionExecutable({ status: 'cancelled', approval: undefined })).toBe(false);
+    });
+  });
+
   describe('isValidMissionStatus', () => {
     it('should accept valid statuses', () => {
       for (const s of MISSION_STATUSES) {

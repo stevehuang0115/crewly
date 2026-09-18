@@ -23,6 +23,7 @@ import {
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
+import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -199,6 +200,33 @@ describe('TaskPoolController', () => {
       await claimItem(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
+    });
+
+    it('returns 429 with reason team_budget_exceeded when the team is over budget', async () => {
+      const check = {
+        allowed: false,
+        reason: 'team_budget_exceeded' as const,
+        detail: 'Team "T" (t1) is over budget: 1000 tokens today ≥ 1000/day',
+        level: 'blocked' as const,
+        teamId: 't1',
+        teamName: 'T',
+        usage: { tokensToday: 1000, usdThisMonth: 0, maxTokensPerDay: 1000, sessions: ['agent-leo'] },
+      };
+      mockService.claimFromPool.mockRejectedValue(new TeamBudgetExceededError(check));
+
+      const req = mockReq({ body: { agentId: 'agent-leo' } });
+      const res = mockRes();
+      await claimItem(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(429);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          success: false,
+          reason: 'team_budget_exceeded',
+          error: check.detail,
+          usage: check.usage,
+        }),
+      );
     });
 
     it('passes filters from body', async () => {

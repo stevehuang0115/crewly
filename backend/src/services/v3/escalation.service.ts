@@ -20,6 +20,7 @@
 
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { getMissionsDir } from './mission-paths.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { PolicyEnforcementService, type EscalationResult } from '../policy/policy-enforcement.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -27,10 +28,11 @@ import { TriggerEngine } from './trigger-engine.service.js';
 import type { Trigger } from '../../types/v2/trigger.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { ensureDir, safeReadJson } from '../../utils/file-io.utils.js';
-import type {
-  Mission,
-  EscalationContext,
-  EscalationRule,
+import {
+  isMissionExecutable,
+  type Mission,
+  type EscalationContext,
+  type EscalationRule,
 } from '../../types/v2/index.js';
 
 // ---------------------------------------------------------------------------
@@ -39,9 +41,6 @@ import type {
 
 /** Default cron expression for escalation checks: every 5 minutes. */
 const DEFAULT_ESCALATION_CRON = '*/5 * * * *';
-
-/** Directory name for missions under .crewly. */
-const MISSIONS_DIR = 'missions';
 
 /** Maximum escalation results to log per evaluation cycle. */
 const MAX_LOG_RESULTS = 20;
@@ -136,7 +135,7 @@ export class EscalationService {
   ) {
     this.logger = LoggerService.getInstance().createComponentLogger('EscalationService');
     this.projectPath = projectPath;
-    this.missionsDir = path.join(projectPath, '.crewly', MISSIONS_DIR);
+    this.missionsDir = getMissionsDir(projectPath);
     this.policyService = policyService ?? new PolicyEnforcementService();
   }
 
@@ -523,7 +522,7 @@ export class EscalationService {
           if (
             mission &&
             mission.id &&
-            mission.status === 'active' &&
+            isMissionExecutable(mission) &&
             mission.policy?.escalationRules?.length > 0
           ) {
             missions.push(mission);

@@ -15,6 +15,7 @@
 import type { Request, Response } from 'express';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getMissionPath } from '../../services/v3/mission-paths.js';
 import type {
   Mission,
   MissionPolicy,
@@ -36,20 +37,15 @@ import { ensureDir, atomicWriteJson, safeReadJson } from '../../utils/file-io.ut
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Default project path — resolved from CWD or env. */
-const PROJECT_PATH = process.env.CREWLY_PROJECT_PATH || process.cwd();
-
-/** Directory where mission JSON files are stored. */
-const MISSIONS_DIR = '.crewly/missions';
-
 /**
- * Resolves the file path for a mission JSON file.
+ * Resolves the file path for a mission JSON file via the shared resolver
+ * (`CREWLY_MISSIONS_DIR` > `CREWLY_PROJECT_PATH` > cwd).
  *
  * @param missionId - The mission ID
  * @returns Absolute path to the mission JSON file
  */
 function getMissionFilePath(missionId: string): string {
-  return path.join(PROJECT_PATH, MISSIONS_DIR, `${missionId}.json`);
+  return getMissionPath(missionId);
 }
 
 /**

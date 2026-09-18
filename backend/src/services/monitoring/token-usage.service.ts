@@ -496,7 +496,10 @@ export class TokenUsageService {
       if (eventMs >= sinceMs && eventMs <= untilMs) {
         inputTokens += event.input;
         outputTokens += event.output;
-        cost += calculateCost(event.input, event.output, event.model);
+        // Cache-aware: a cache hit is billed at a fraction of the miss rate,
+        // and the team budget gate keys on this figure — pricing every input
+        // token at the miss rate would trip monthly USD caps ~40x early.
+        cost += calculateCost(event.input, event.output, event.model, event.cachedInput ?? 0);
       }
     }
 

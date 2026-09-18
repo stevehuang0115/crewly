@@ -28,6 +28,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
+import { getMissionsDir } from './mission-paths.js';
 import {
   createMission,
   validateCascadeLink,
@@ -46,12 +47,6 @@ import type { CreateKeyResultInput } from '../../types/v2/key-result.types.js';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-/** Workspace root folder for Crewly runtime state. */
-const CREWLY_HOME = '.crewly';
-
-/** Folder under {@link CREWLY_HOME} that holds one JSON file per Mission. */
-const MISSIONS_DIR = 'missions';
 
 /** Proposal state stamped on a freshly-proposed child mission. */
 const PROPOSED_STATE = 'pending_approval' as const;
@@ -439,9 +434,9 @@ export class OKRCascadeService {
     return MISSION_LEVELS[childDepth] ?? null;
   }
 
-  /** Absolute path to the missions directory under the current cwd. */
+  /** Absolute path to the missions directory (shared resolver). */
   private getMissionsDir(): string {
-    return path.join(process.cwd(), CREWLY_HOME, MISSIONS_DIR);
+    return getMissionsDir();
   }
 
   /** Absolute path to a single mission's JSON file. */

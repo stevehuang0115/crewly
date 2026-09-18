@@ -69,7 +69,9 @@ import {
   type WorkItemOwner,
   DEFAULT_MAX_RETRIES,
 } from '../../types/v2/work-item.types.js';
-import type { Mission } from '../../types/v2/mission.types.js';
+import { isMissionExecutable, type Mission } from '../../types/v2/mission.types.js';
+import { getMissionPath } from '../v3/mission-paths.js';
+import { safeReadJson } from '../../utils/file-io.utils.js';
 import type { Team } from '../../types/index.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import {
@@ -259,11 +261,12 @@ export class EventToWorkItemBridge {
       eventBus,
       taskPool,
       loadMission: async (missionId: string) => {
-        // Storage exposes mission read by id; fall back to null on miss/error
+        // Missions live as flat JSON under the shared missions dir (see
+        // `mission-paths.ts`). This used to probe a non-existent
+        // `storage.getMissionById`, which always resolved null — so every
+        // mission:* handler was a silent no-op in production.
         try {
-          const mission = await (storage as unknown as {
-            getMissionById?: (id: string) => Promise<Mission | null | undefined>;
-          }).getMissionById?.(missionId);
+          const mission = await safeReadJson<Mission | null>(getMissionPath(missionId), null);
           return mission ?? null;
         } catch {
           return null;
@@ -641,10 +644,11 @@ export class EventToWorkItemBridge {
       });
       return;
     }
-    if (mission.status !== 'active') {
-      this.logger.debug('team:all_tasks_done for non-active mission — skipping emit', {
+    if (!isMissionExecutable(mission)) {
+      this.logger.debug('team:all_tasks_done for non-executable mission — skipping emit', {
         missionId: mission.id,
         status: mission.status,
+        approval: mission.approval?.state,
       });
       return;
     }
@@ -678,7 +682,7 @@ export class EventToWorkItemBridge {
   private handleMissionReviewDue = async (event: AgentEvent): Promise<void> => {
     if (!event.missionId) return;
     const mission = await this.loadMission(event.missionId);
-    if (!mission) return;
+    if (!mission || !this.isExecutable(mission, 'mission:review_due')) return;
 
     const cycleId = todayCycleKey();
     const id = `${mission.id}:review:${cycleId}`;
@@ -717,7 +721,7 @@ export class EventToWorkItemBridge {
   private handleMissionStale = async (event: AgentEvent): Promise<void> => {
     if (!event.missionId) return;
     const mission = await this.loadMission(event.missionId);
-    if (!mission) return;
+    if (!mission || !this.isExecutable(mission, 'mission:stale')) return;
 
     const cycleId = todayCycleKey();
     const id = `${mission.id}:review:stale:${cycleId}`;
@@ -751,7 +755,7 @@ export class EventToWorkItemBridge {
   private handleMissionReplanned = async (event: AgentEvent): Promise<void> => {
     if (!event.missionId) return;
     const mission = await this.loadMission(event.missionId);
-    if (!mission) return;
+    if (!mission || !this.isExecutable(mission, 'mission:replanned')) return;
 
     const id = `${mission.id}:review:replan:${event.id}`;
     const target = await this.resolveTeamLeadSessionForMission(mission);
@@ -780,6 +784,21 @@ export class EventToWorkItemBridge {
   // -------------------------------------------------------------------------
   // Internal helpers
   // -------------------------------------------------------------------------
+
+  /**
+   * Approval/status gate shared by every mission:* handler. A paused,
+   * terminal, or not-yet-approved cascade child must not receive review
+   * WorkItems — see {@link isMissionExecutable}.
+   */
+  private isExecutable(mission: Mission, eventType: EventType): boolean {
+    if (isMissionExecutable(mission)) return true;
+    this.logger.debug(`${eventType} for non-executable mission — skipping`, {
+      missionId: mission.id,
+      status: mission.status,
+      approval: mission.approval?.state,
+    });
+    return false;
+  }
 
   /**
    * Build an auto-created WorkItem with all the BRIDGE-1 metadata invariants

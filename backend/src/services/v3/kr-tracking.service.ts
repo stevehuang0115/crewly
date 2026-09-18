@@ -12,6 +12,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getMissionsDir, getKeyResultsDir } from './mission-paths.js';
 import { existsSync, mkdirSync } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -43,14 +44,9 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/** Base directory for mission data. */
-function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
-}
-
-/** Directory for a mission's key results. */
+/** Directory for a mission's key results (shared resolver). */
 function getKRDir(missionId: string): string {
-  return path.join(getMissionsDir(), missionId, 'key-results');
+  return getKeyResultsDir(missionId);
 }
 
 /** File path for a single key result. */
