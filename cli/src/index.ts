@@ -15,6 +15,7 @@ import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
 import { backupCommand } from './commands/backup.js';
+import { doctorCommand } from './commands/doctor.js';
 import { pairCommand } from './commands/pair.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
@@ -119,6 +120,11 @@ program
   .option('--dry-run', 'Validate only, do not publish')
   .option('--skills-dir <dir>', 'Skills directory to package from')
   .action(seedMarketplaceCommand);
+
+program
+  .command('doctor')
+  .description('Check this install: package root, node, native modules, build toolchain, service environment')
+  .action(doctorCommand);
 
 program
   .command('service <action>')
