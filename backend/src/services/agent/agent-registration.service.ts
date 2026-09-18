@@ -33,6 +33,7 @@ import {
 	GEMINI_SHELL_MODE_CONSTANTS,
 	GEMINI_STUCK_CONNECTIVITY_PATTERN,
 	GEMINI_ERROR_STATE_CONSTANTS,
+	REGISTRATION_DELIVERY_CONSTANTS,
 } from '../../constants.js';
 import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
@@ -755,6 +756,17 @@ export class AgentRegistrationService {
 	}
 
 	/**
+	 * Use the short test-environment cadence under Jest, otherwise the given
+	 * production interval.
+	 *
+	 * @param productionMs - Interval to use outside the test environment
+	 * @returns Interval in milliseconds
+	 */
+	private testAwareInterval(productionMs: number): number {
+		return process.env.NODE_ENV === 'test' ? this.getCheckInterval() : productionMs;
+	}
+
+	/**
 	 * Update agent status with safe error handling (non-blocking).
 	 * Returns true if successful, false if failed.
 	 */
@@ -1332,6 +1344,14 @@ export class AgentRegistrationService {
 				sessionName, role, runtimeType, promptLength: prompt.length,
 			});
 
+			// Gate on the runtime actually accepting input. `waitForRuntimeReady`
+			// (already passed by the caller) matches banner text that is on screen
+			// while the TUI is still booting — with Codex the instruction landed
+			// ~2 s after spawn, during `model: loading`, and was swallowed while
+			// every log line still said "sent successfully" (server-install finding 3).
+			if (controller.signal.aborted) return;
+			await this.waitForRuntimeInputReady(sessionName, runtimeType, controller.signal);
+
 			if (controller.signal.aborted) return;
 			const sent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, controller.signal);
 
@@ -1340,6 +1360,11 @@ export class AgentRegistrationService {
 			} else {
 				this.logger.warn('Registration prompt delivery returned false', { sessionName, role, runtimeType });
 			}
+
+			// Make a silent non-registration loud, and re-deliver once. Previously a
+			// swallowed instruction left the agent at `started` / readyAt null forever
+			// with no log line saying so.
+			await this.redeliverIfUnregistered(sessionName, role, prompt, runtimeType, controller.signal);
 		} catch (error) {
 			if (controller.signal.aborted) {
 				this.logger.info('Registration prompt cancelled (runtime exited)', { sessionName });
@@ -1352,6 +1377,153 @@ export class AgentRegistrationService {
 			});
 		} finally {
 			this.registrationAbortControllers.delete(sessionName);
+		}
+	}
+
+	/**
+	 * Poll the PTY screen until the runtime is idle at its input prompt
+	 * (`RuntimeAgentService.isReadyForInput`) or the timeout elapses.
+	 *
+	 * On timeout we log a warning and return `false` but the caller still
+	 * sends the instruction — a late instruction is recoverable (re-delivery,
+	 * `POST /api/terminal/:s/deliver`), a never-sent one is not.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param runtimeType - Runtime whose prompt heuristics to use
+	 * @param abortSignal - Aborts the wait when the runtime exits
+	 * @param timeoutMs - Maximum time to wait (defaults to RUNTIME_INPUT_READY_TIMEOUT_MS)
+	 * @returns true when the idle prompt was observed, false on timeout/abort
+	 */
+	private async waitForRuntimeInputReady(
+		sessionName: string,
+		runtimeType: RuntimeType,
+		abortSignal?: AbortSignal,
+		timeoutMs: number = REGISTRATION_DELIVERY_CONSTANTS.RUNTIME_INPUT_READY_TIMEOUT_MS
+	): Promise<boolean> {
+		const runtimeService = this.createRuntimeService(runtimeType);
+		// Mocked / non-TUI runtimes without the predicate: nothing to wait for.
+		if (typeof runtimeService.isReadyForInput !== 'function') {
+			return true;
+		}
+
+		const sessionHelper = await this.getSessionHelper();
+		const pollMs = this.testAwareInterval(REGISTRATION_DELIVERY_CONSTANTS.RUNTIME_INPUT_READY_POLL_MS);
+		const startedAt = Date.now();
+		let polls = 0;
+
+		while (!abortSignal?.aborted) {
+			let screen = '';
+			try {
+				screen = sessionHelper.capturePane(sessionName);
+			} catch (captureError) {
+				this.logger.debug('Runtime input-ready capture failed (will retry)', {
+					sessionName,
+					error: captureError instanceof Error ? captureError.message : String(captureError),
+				});
+			}
+			polls++;
+
+			if (runtimeService.isReadyForInput(screen)) {
+				this.logger.info('Runtime idle at input prompt — delivering registration instruction', {
+					sessionName,
+					runtimeType,
+					waitedMs: Date.now() - startedAt,
+					polls,
+				});
+				return true;
+			}
+
+			if (Date.now() - startedAt >= timeoutMs) {
+				const lastLines = screen.split('\n').filter((l) => l.trim()).slice(-5);
+				this.logger.warn('Timed out waiting for runtime input prompt — sending registration instruction anyway', {
+					sessionName,
+					runtimeType,
+					timeoutMs,
+					polls,
+					lastTerminalLines: lastLines,
+				});
+				return false;
+			}
+
+			await delay(pollMs);
+		}
+
+		this.logger.info('Runtime input-ready wait aborted (runtime exited)', { sessionName });
+		return false;
+	}
+
+	/**
+	 * Resolve how long an agent gets to register after its prompt is delivered.
+	 * Mirrors the timeout selection used when the session is created.
+	 *
+	 * @param role - Agent role
+	 * @param runtimeType - Agent runtime
+	 * @returns Registration timeout in milliseconds
+	 */
+	private resolveRegistrationTimeout(role: string, runtimeType: RuntimeType): number {
+		if (role === ORCHESTRATOR_ROLE) return AGENT_TIMEOUTS.ORCHESTRATOR_INITIALIZATION;
+		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) return AGENT_TIMEOUTS.CLAUDE_CODE_INITIALIZATION;
+		return AGENT_TIMEOUTS.REGULAR_AGENT_INITIALIZATION;
+	}
+
+	/**
+	 * After the registration instruction was delivered, wait the registration
+	 * timeout for the agent to flip to `active`. If it does not, log an error
+	 * (this used to be completely silent) and re-deliver the instruction once,
+	 * gated again on the runtime being idle at its prompt.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param role - Agent role
+	 * @param prompt - The full registration prompt (re-written to the prompt file)
+	 * @param runtimeType - Agent runtime
+	 * @param abortSignal - Aborts when the runtime exits
+	 */
+	private async redeliverIfUnregistered(
+		sessionName: string,
+		role: string,
+		prompt: string,
+		runtimeType: RuntimeType,
+		abortSignal: AbortSignal
+	): Promise<void> {
+		const timeout = this.resolveRegistrationTimeout(role, runtimeType);
+		const checkInterval = this.testAwareInterval(REGISTRATION_DELIVERY_CONSTANTS.REGISTRATION_CHECK_INTERVAL_MS);
+
+		for (let redelivery = 0; redelivery <= REGISTRATION_DELIVERY_CONSTANTS.MAX_REDELIVERIES; redelivery++) {
+			const startedAt = Date.now();
+			while (Date.now() - startedAt < timeout) {
+				if (abortSignal.aborted) return;
+				if (await this.checkAgentRegistration(sessionName, role)) {
+					this.logger.info('Agent registration confirmed after prompt delivery', {
+						sessionName, role, redeliveries: redelivery, waitedMs: Date.now() - startedAt,
+					});
+					return;
+				}
+				await delay(checkInterval);
+			}
+
+			if (abortSignal.aborted) return;
+
+			if (redelivery >= REGISTRATION_DELIVERY_CONSTANTS.MAX_REDELIVERIES) {
+				this.logger.error('Agent never registered after registration prompt delivery', {
+					sessionName, role, runtimeType, timeoutMs: timeout, redeliveries: redelivery,
+					hint: `POST /api/terminal/${sessionName}/deliver {force:true} with the prompt-file instruction`,
+				});
+				return;
+			}
+
+			const sessionHelper = await this.getSessionHelper();
+			if (!sessionHelper.sessionExists(sessionName)) {
+				this.logger.warn('Registration re-delivery skipped — session no longer exists', { sessionName, role });
+				return;
+			}
+
+			this.logger.warn('No registration within timeout — re-delivering registration instruction', {
+				sessionName, role, runtimeType, timeoutMs: timeout,
+			});
+			await this.waitForRuntimeInputReady(sessionName, runtimeType, abortSignal);
+			if (abortSignal.aborted) return;
+			const resent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, abortSignal);
+			this.logger.info('registration re-delivered', { sessionName, role, runtimeType, resent });
 		}
 	}
 
@@ -1422,14 +1594,18 @@ export class AgentRegistrationService {
 
 		// Recreate session based on role
 		if (role === ORCHESTRATOR_ROLE) {
+			// Same deterministic cwd for the PTY and the runtime `cd` — this site
+			// used to `cd` into process.cwd() (the package install dir under
+			// systemd) while the PTY was created elsewhere.
+			const orchestratorCwd = projectPath || (await this.resolveOrchestratorCwd());
 			await this.createOrchestratorSession({
 				sessionName,
-				projectPath: projectPath || process.cwd(),
+				projectPath: orchestratorCwd,
 			});
 
 			// Initialize runtime for orchestrator using script (always fresh start)
 			const runtimeService = this.createRuntimeService(runtimeType);
-			await runtimeService.executeRuntimeInitScript(sessionName, process.cwd(), effectiveFlags, promptFilePath, agentName);
+			await runtimeService.executeRuntimeInitScript(sessionName, orchestratorCwd, effectiveFlags, promptFilePath, agentName);
 
 			// Wait for runtime to be ready
 			const checkInterval = this.getCheckInterval();
@@ -2473,6 +2649,46 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Resolve the orchestrator's working directory deterministically:
+	 * `CREWLY_ORC_CWD` env → first stored project whose path exists → CREWLY_HOME.
+	 *
+	 * Never the package install dir or the server's `process.cwd()`: under
+	 * systemd that is `/usr/lib/node_modules/crewly`, and the orchestrator
+	 * would see a different filesystem depending on which code path started it.
+	 *
+	 * @returns Absolute directory to spawn the orchestrator PTY in
+	 */
+	async resolveOrchestratorCwd(): Promise<string> {
+		const envCwd = process.env[ENV_CONSTANTS.CREWLY_ORC_CWD]?.trim();
+		if (envCwd) {
+			const resolved = path.resolve(envCwd);
+			this.logger.info('Orchestrator cwd resolved from CREWLY_ORC_CWD', { cwd: resolved });
+			return resolved;
+		}
+
+		try {
+			const projects = await this.storageService.getProjects();
+			const firstProject = projects.find((project) => project.path && existsSync(project.path));
+			if (firstProject) {
+				this.logger.info('Orchestrator cwd resolved from first assigned project', {
+					cwd: firstProject.path,
+					projectId: firstProject.id,
+					projectName: firstProject.name,
+				});
+				return firstProject.path;
+			}
+		} catch (error) {
+			this.logger.debug('Could not read projects for orchestrator cwd (falling back to CREWLY_HOME)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+
+		const home = getCrewlyHomePath();
+		this.logger.info('Orchestrator cwd resolved to CREWLY_HOME (no env override, no project)', { cwd: home });
+		return home;
+	}
+
+	/**
 	 * Create orchestrator session - extracted from the original tmux service
 	 */
 	private async createOrchestratorSession(config: OrchestratorConfig): Promise<void> {
@@ -2603,7 +2819,14 @@ Loop until done, blocked, or explicitly reassigned:
 		message?: string;
 		error?: string;
 	}> {
-		const { sessionName, role, projectPath = process.cwd(), windowName, memberId } = config;
+		const { sessionName, role, windowName, memberId } = config;
+		// The orchestrator's cwd is resolved deterministically (env > first
+		// project > CREWLY_HOME) regardless of which boot path called us — the
+		// boot path, /orchestrator/setup and the restart service used to pass
+		// three different directories (server-install finding 4).
+		const projectPath = role === ORCHESTRATOR_ROLE
+			? await this.resolveOrchestratorCwd()
+			: (config.projectPath ?? process.cwd());
 		const forceRecreate = config.forceRecreate ?? false;
 
 		// Get runtime type from config or default to claude-code
@@ -3111,12 +3334,7 @@ Loop until done, blocked, or explicitly reassigned:
 
 			// Use the existing unified registration system
 			// #227: Claude Code gets extended timeout for PI protection evaluation
-			const timeout =
-				role === ORCHESTRATOR_ROLE
-					? AGENT_TIMEOUTS.ORCHESTRATOR_INITIALIZATION
-					: runtimeType === RUNTIME_TYPES.CLAUDE_CODE
-						? AGENT_TIMEOUTS.CLAUDE_CODE_INITIALIZATION
-						: AGENT_TIMEOUTS.REGULAR_AGENT_INITIALIZATION;
+			const timeout = this.resolveRegistrationTimeout(role, runtimeType);
 			const initResult = await this.initializeAgentWithRegistration(
 				sessionName,
 				role,

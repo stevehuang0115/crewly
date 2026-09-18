@@ -4,7 +4,13 @@ import * as path from 'path';
 import * as os from 'os';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RuntimeType, ADDON_CONSTANTS } from '../../constants.js';
+import { RuntimeType, ADDON_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS } from '../../constants.js';
+import {
+	stripAnsiCodes,
+	isPromptLine,
+	containsSpinnerOrWorkingIndicator,
+	containsBusyStatusBar,
+} from '../../utils/terminal-string-ops.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { delay } from '../../utils/async.utils.js';
@@ -402,6 +408,57 @@ export abstract class RuntimeAgentService {
 			});
 		}
 		return false;
+	}
+
+	/**
+	 * Whether a captured screen shows the runtime idle at its input prompt —
+	 * i.e. it will accept typed input *right now*.
+	 *
+	 * This is deliberately stricter than `waitForRuntimeReady()`: that method
+	 * matches banner text (`OpenAI Codex`, `model:` …) which is already on
+	 * screen while the TUI is still booting, so an instruction typed at that
+	 * point is swallowed. Registration gates on this predicate instead.
+	 *
+	 * Base rule: a prompt line for this runtime is visible in the last
+	 * `RUNTIME_INPUT_READY_PATTERNS.TAIL_LINES` non-empty lines, and no
+	 * spinner / busy status bar / runtime-specific "not ready" marker is
+	 * present in that tail. Concrete runtimes extend the marker list via
+	 * {@link getNotReadyMarkers}.
+	 *
+	 * @param screen - Captured terminal screen (ANSI is stripped defensively)
+	 * @returns true when the runtime is idle at its prompt
+	 */
+	isReadyForInput(screen: string): boolean {
+		if (!screen || typeof screen !== 'string') return false;
+		const clean = stripAnsiCodes(screen);
+		const lines = clean.split('\n').filter((line) => line.trim().length > 0);
+		if (lines.length === 0) return false;
+
+		const tail = lines.slice(-RUNTIME_INPUT_READY_PATTERNS.TAIL_LINES);
+		const runtimeType = this.getRuntimeType();
+
+		const hasPrompt = tail.some((line) => isPromptLine(line, runtimeType));
+		if (!hasPrompt) return false;
+
+		const tailText = tail.join('\n');
+		if (containsSpinnerOrWorkingIndicator(tailText) || containsBusyStatusBar(tailText)) {
+			return false;
+		}
+
+		// Whitespace-collapsed, lower-cased so `model:     loading` matches `model: loading`.
+		const normalized = tailText.toLowerCase().split(/\s+/).join(' ');
+		return !this.getNotReadyMarkers().some((marker) => normalized.includes(marker));
+	}
+
+	/**
+	 * Runtime-specific substrings (lower-case, whitespace-collapsed) whose
+	 * presence in the screen tail means the TUI is not yet accepting input
+	 * even though a prompt glyph may already be painted. Override per runtime.
+	 *
+	 * @returns Markers to treat as "not ready"
+	 */
+	protected getNotReadyMarkers(): readonly string[] {
+		return [];
 	}
 
 	/**

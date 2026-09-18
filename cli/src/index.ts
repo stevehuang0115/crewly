@@ -2,6 +2,8 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import { startCommand } from './commands/start.js';
 import { stopCommand } from './commands/stop.js';
 import { statusCommand } from './commands/status.js';
@@ -19,9 +21,13 @@ import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
-import { getLocalVersion } from './utils/version-check.js';
+import { getLocalVersion, registerCliModuleDir } from './utils/version-check.js';
 
 const program = new Command();
+
+// Anchor version lookups to this module's own location (works for global
+// installs, npx and dev checkouts alike) — never to process.cwd().
+registerCliModuleDir(path.dirname(fileURLToPath(import.meta.url)));
 
 let cliVersion = '1.0.0';
 try {
@@ -180,6 +186,13 @@ program.exitOverride();
 try {
   program.parse();
 } catch (err) {
+  // With exitOverride(), commander throws for --version / --help after it has
+  // already printed the output. Those are not errors — exit cleanly instead of
+  // echoing "Error: 1.13.1" to the terminal.
+  const code = (err as { code?: string } | null)?.code;
+  if (code === 'commander.version' || code === 'commander.helpDisplayed' || code === 'commander.help') {
+    process.exit(0);
+  }
   console.error(chalk.red('Error:'), err instanceof Error ? err.message : 'Unknown error');
   process.exit(1);
 }

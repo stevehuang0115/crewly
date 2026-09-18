@@ -922,4 +922,37 @@ echo "second command"
 			expect(result).toBe(false);
 		});
 	});
+
+	describe('isReadyForInput (base behaviour)', () => {
+		it('is ready when a prompt line is in the tail and nothing is busy', () => {
+			expect(service.isReadyForInput('Welcome\n\n❯ ')).toBe(true);
+		});
+
+		it('is NOT ready when the tail shows a spinner even with a prompt line above it', () => {
+			expect(service.isReadyForInput('❯ do the thing\n⠋ Working…')).toBe(false);
+		});
+
+		it('is NOT ready when the tail shows the esc-to-interrupt busy bar', () => {
+			expect(service.isReadyForInput('❯ \n  (esc to interrupt)')).toBe(false);
+		});
+
+		it('is NOT ready when no prompt line is present', () => {
+			expect(service.isReadyForInput('Loading…\nstill loading')).toBe(false);
+		});
+
+		it('returns false for empty / non-string input', () => {
+			expect(service.isReadyForInput('')).toBe(false);
+			expect(service.isReadyForInput(undefined as unknown as string)).toBe(false);
+		});
+
+		it('only inspects the tail — an old prompt far above busy output does not count', () => {
+			const oldPrompt = '❯ old command';
+			const filler = Array.from({ length: 30 }, (_, i) => `output line ${i}`).join('\n');
+			expect(service.isReadyForInput(`${oldPrompt}\n${filler}`)).toBe(false);
+		});
+
+		it('has no not-ready markers by default (concrete runtimes add their own)', () => {
+			expect(service['getNotReadyMarkers']()).toEqual([]);
+		});
+	});
 });

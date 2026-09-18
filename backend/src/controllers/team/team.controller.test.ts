@@ -127,6 +127,7 @@ describe('Teams Handlers', () => {
       saveProject: jest.fn<any>(),
       getOrchestratorStatus: jest.fn<any>(),
       updateOrchestratorStatus: jest.fn<any>(),
+      markOrchestratorRegistered: jest.fn<any>().mockResolvedValue(undefined),
       findMemberBySessionName: jest.fn<any>(),
     };
 
@@ -449,6 +450,59 @@ describe('Teams Handlers', () => {
       // The second team (index 1) is the regular team (index 0 is orchestrator)
       const regularTeam = responseData.data[1];
       expect(regularTeam.members[0].workingStatus).toBe('in_progress');
+    });
+
+    it('surfaces loginRequired (url + device code) on members and the orchestrator parked on a sign-in screen', async () => {
+      const { OAuthReloginMonitorService } = await import('../../services/agent/oauth-relogin-monitor.service.js');
+      const monitor = OAuthReloginMonitorService.getInstance();
+      const deviceScreen = 'Sign in with your ChatGPT account using a device code\n  1. Go to https://auth.openai.com/codex/device\n  2. Enter the code: FBVZ-MJHKK';
+      monitor.inspectScreen('team-1-alice', deviceScreen, 'codex-cli');
+      monitor.inspectScreen(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, deviceScreen, 'codex-cli');
+
+      mockStorageService.getTeams.mockResolvedValue([
+        {
+          id: 'team-1',
+          name: 'Team 1',
+          description: 'First team',
+          members: [
+            {
+              id: 'member-1', name: 'Alice', sessionName: 'team-1-alice', role: 'developer',
+              runtimeType: 'codex-cli', systemPrompt: 'Test', agentStatus: 'started', workingStatus: 'idle',
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+            },
+            {
+              id: 'member-2', name: 'Bob', sessionName: 'team-1-bob', role: 'developer',
+              runtimeType: 'codex-cli', systemPrompt: 'Test', agentStatus: 'active', workingStatus: 'idle',
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+            }
+          ],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]);
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      try {
+        await teamsHandlers.getTeams.call(
+          mockApiContext,
+          mockRequest as Request,
+          mockResponse as Response
+        );
+      } finally {
+        monitor.clearLoginRequired('team-1-alice');
+        monitor.clearLoginRequired(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+      }
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const orchestratorMember = responseData.data[0].members.find((m: any) => m.sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+      expect(orchestratorMember.loginRequired).toEqual(expect.objectContaining({
+        url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK',
+      }));
+      const [alice, bob] = responseData.data[1].members;
+      expect(alice.loginRequired).toEqual(expect.objectContaining({
+        url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK',
+      }));
+      expect(bob.loginRequired).toBeUndefined();
     });
 
     it('should handle storage service errors when getting teams', async () => {
@@ -1954,14 +2008,13 @@ describe('Teams Handlers', () => {
     });
 
     it('should handle orchestrator registration correctly', async () => {
+      const registeredAt = new Date().toISOString();
       mockRequest.body = {
         sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
         role: 'orchestrator',
         status: 'active',
-        registeredAt: new Date().toISOString()
+        registeredAt
       };
-
-      mockStorageService.updateOrchestratorStatus.mockResolvedValue(undefined);
 
       await teamsHandlers.registerMemberStatus.call(
         mockApiContext,
@@ -1969,12 +2022,49 @@ describe('Teams Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockStorageService.updateOrchestratorStatus).toHaveBeenCalledWith('active');
+      // Server-install finding 6: the orchestrator gets agentStatus=active AND
+      // readyAt in one write, the same way regular members do.
+      expect(mockStorageService.markOrchestratorRegistered).toHaveBeenCalledWith(registeredAt);
+      expect(mockStorageService.updateOrchestratorStatus).not.toHaveBeenCalled();
       expect(responseMock.json).toHaveBeenCalledWith({
         success: true,
         message: `Orchestrator ${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME} registered as active`,
         sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
       });
+    });
+
+    it('should stamp readyAt with "now" when the orchestrator registers without registeredAt', async () => {
+      mockRequest.body = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        role: 'orchestrator',
+        status: 'active'
+      };
+
+      await teamsHandlers.registerMemberStatus.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockStorageService.markOrchestratorRegistered).toHaveBeenCalledWith(undefined);
+      expect(responseMock.status).not.toHaveBeenCalledWith(500);
+    });
+
+    it('should return 500 when recording the orchestrator registration fails', async () => {
+      mockRequest.body = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        role: 'orchestrator',
+        status: 'active'
+      };
+      mockStorageService.markOrchestratorRegistered.mockRejectedValue(new Error('disk full'));
+
+      await teamsHandlers.registerMemberStatus.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.status).toHaveBeenCalledWith(500);
     });
 
     it('should fire pushResumeNotification when orchestrator registers', async () => {

@@ -1,6 +1,6 @@
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RUNTIME_TYPES, type RuntimeType } from '../../constants.js';
+import { RUNTIME_TYPES, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 
 /**
  * OpenAI Codex CLI specific runtime service implementation.
@@ -50,6 +50,17 @@ export class CodexRuntimeService extends RuntimeAgentService {
 			'Welcome to Codex',
 			'Initialized successfully',
 		];
+	}
+
+	/**
+	 * Codex paints its `›` prompt glyph before the model finishes loading
+	 * (`model: loading` in the header) and also on its sign-in screen, so a
+	 * bare prompt-line check is not enough — those markers veto readiness.
+	 *
+	 * @returns Codex-specific "not ready" markers
+	 */
+	protected getNotReadyMarkers(): readonly string[] {
+		return RUNTIME_INPUT_READY_PATTERNS.CODEX.NOT_READY_MARKERS;
 	}
 
 	/**

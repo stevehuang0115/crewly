@@ -1066,6 +1066,12 @@ describe('Orchestrator Handlers', () => {
 
   describe('Command execution edge cases', () => {
     it('should handle list_sessions command via session backend', async () => {
+      // The suite's afterEach resetAllMocks() wipes the factory-time
+      // mockReturnValue once the module has been loaded, so set it here.
+      const { getSessionBackendSync } = await import('../../services/session/index.js');
+      (getSessionBackendSync as jest.Mock).mockReturnValue({
+        listSessions: jest.fn().mockReturnValue(['session-1', 'session-2']),
+      });
       mockRequest.body = { command: 'list_sessions' };
 
       await orchestratorHandlers.executeOrchestratorCommand.call(
@@ -1184,6 +1190,63 @@ describe('Orchestrator Handlers', () => {
   });
 
   describe('getOrchestratorStatus', () => {
+    it('surfaces a pending sign-in (url + device code) captured from the orchestrator PTY', async () => {
+      const { OAuthReloginMonitorService } = await import('../../services/agent/oauth-relogin-monitor.service.js');
+      const monitor = OAuthReloginMonitorService.getInstance();
+      monitor.inspectScreen(
+        ORCHESTRATOR_SESSION_NAME,
+        'Sign in with your ChatGPT account using a device code\n  1. Go to https://auth.openai.com/codex/device\n  2. Enter the code: FBVZ-MJHKK',
+        'codex-cli',
+      );
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: false,
+        agentStatus: 'started',
+        message: 'Orchestrator is starting up. Please wait a moment and try again.',
+      });
+
+      try {
+        await orchestratorHandlers.getOrchestratorStatus.call(
+          mockApiContext as ApiContext,
+          mockRequest as Request,
+          mockResponse as Response
+        );
+      } finally {
+        monitor.clearLoginRequired(ORCHESTRATOR_SESSION_NAME);
+      }
+
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: expect.objectContaining({
+          isActive: false,
+          agentStatus: 'started',
+          message: 'Orchestrator needs you to sign in: https://auth.openai.com/codex/device code FBVZ-MJHKK',
+          loginRequired: expect.objectContaining({
+            url: 'https://auth.openai.com/codex/device',
+            code: 'FBVZ-MJHKK',
+          }),
+        }),
+      });
+    });
+
+    it('reports loginRequired: null when no sign-in is pending', async () => {
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: true,
+        agentStatus: 'active',
+        message: 'Orchestrator is active and ready.',
+      });
+
+      await orchestratorHandlers.getOrchestratorStatus.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: expect.objectContaining({ isActive: true, loginRequired: null }),
+      });
+    });
+
     it('should have the status endpoint function exported', () => {
       expect(typeof orchestratorHandlers.getOrchestratorStatus).toBe('function');
     });

@@ -1005,4 +1005,51 @@ describe('GeminiRuntimeService', () => {
 		});
 	});
 
+	describe('isReadyForInput', () => {
+		const GEMINI_IDLE_SCREEN = [
+			' ██████  ███████ ███    ███ ██ ███    ██ ██',
+			'',
+			'Tips for getting started:',
+			'1. Ask questions, edit files, or run commands.',
+			'',
+			'╭──────────────────────────────────────────────────────────╮',
+			'│ > Type your message or @path/to/file                     │',
+			'╰──────────────────────────────────────────────────────────╯',
+			'',
+			'~/projects/app  no sandbox  gemini-2.5-pro (100% context left)',
+		].join('\n');
+
+		const GEMINI_WORKING_SCREEN = [
+			'> Read the file at /home/x/.crewly/prompts/dev-init.md and follow all instructions in it.',
+			'',
+			'⠹ Reading file... (esc to cancel)',
+		].join('\n');
+
+		const GEMINI_LOGIN_SCREEN = [
+			'How would you like to authenticate for this project?',
+			'',
+			'● 1. Login with Google',
+			'  2. Use Gemini API Key',
+			'  3. Vertex AI',
+			'',
+			'> Waiting for auth... (Press ESC to cancel)',
+		].join('\n');
+
+		it('is ready at the idle > prompt', () => {
+			expect(service.isReadyForInput(GEMINI_IDLE_SCREEN)).toBe(true);
+		});
+
+		it('is NOT ready while a spinner is showing', () => {
+			expect(service.isReadyForInput(GEMINI_WORKING_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready on the auth-method picker', () => {
+			expect(service.isReadyForInput(GEMINI_LOGIN_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready on an empty capture', () => {
+			expect(service.isReadyForInput('')).toBe(false);
+		});
+	});
+
 });

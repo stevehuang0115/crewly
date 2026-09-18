@@ -43,6 +43,7 @@ import type { EventBusService } from '../../services/event-bus/event-bus.service
 import { getCriticalEventTypes } from '../../types/event-bus.types.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import {
   evaluateColdLaunch,
   isDormantTeam,
@@ -347,6 +348,8 @@ interface OrchestratorStatusInfo {
   runtimeType?: string;
   /** Optional model ID for the in-process Crewly Agent runtime (format: provider/modelId) */
   modelId?: string;
+  /** ISO timestamp of the orchestrator's last successful registration */
+  readyAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -425,6 +428,7 @@ function buildOrchestratorTeam(
       // Surface configured modelId so the in-process Crewly Agent runtime can use it.
       // Only set when present — undefined preserves "use DEFAULT_MODEL" semantics.
       ...(orchestratorStatus?.modelId ? { modelId: orchestratorStatus.modelId } : {}),
+      ...(orchestratorStatus?.readyAt ? { readyAt: orchestratorStatus.readyAt } : {}),
       createdAt: orchestratorStatus?.createdAt || now,
       updatedAt: orchestratorStatus?.updatedAt || now
     },
@@ -1176,6 +1180,17 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
     const auditorEnabled = await isAuditorEnabled();
     const orchestratorTeam = buildOrchestratorTeam(actualOrchestratorStatus, orchestratorStatus, undefined, inProcessRuntimeStatus, { auditorEnabled });
 
+    // Sessions parked on a sign-in screen — surfaced per member so the UI can
+    // show the login URL / device code instead of an endless "starting".
+    const loginRequiredFor = (sessionName: string): TeamMember['loginRequired'] | undefined => {
+      const pending = OAuthReloginMonitorService.getInstance().getLoginRequired(sessionName);
+      return pending ? { url: pending.url, code: pending.code, detectedAt: pending.detectedAt } : undefined;
+    };
+    orchestratorTeam.members = orchestratorTeam.members.map(member => {
+      const loginRequired = loginRequiredFor(member.sessionName);
+      return loginRequired ? { ...member, loginRequired } : member;
+    });
+
     // Load working status data from ActivityMonitorService
     let workingStatusData;
     try {
@@ -1194,10 +1209,12 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
         const isInProcessActive = this.agentRegistrationService.isInProcessRuntimeActive(member.sessionName);
         const resolvedStatus = resolveAgentStatus(member.agentStatus, memberSessionExists, isInProcessActive);
         const resolvedWorkingStatus = workingStatusData?.teamMembers[member.sessionName]?.workingStatus || member.workingStatus || 'idle';
+        const loginRequired = loginRequiredFor(member.sessionName);
         return {
           ...member,
           agentStatus: resolvedStatus,
           workingStatus: resolvedWorkingStatus,
+          ...(loginRequired ? { loginRequired } : {}),
         };
       })
     }));
@@ -2181,7 +2198,8 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     // Handle orchestrator registration separately
     if (role === 'orchestrator' && sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) {
       try {
-        await this.storageService.updateOrchestratorStatus(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+        // Sets agentStatus=active AND readyAt, mirroring the regular-member path below.
+        await this.storageService.markOrchestratorRegistered(registeredAt);
 
         // Broadcast orchestrator status change via WebSocket for real-time UI updates
         const terminalGateway = getTerminalGateway();

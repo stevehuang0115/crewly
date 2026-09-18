@@ -37,6 +37,16 @@ export interface TeamMember {
   enableBrowserAutomation?: boolean; // Per-agent browser override (undefined = use global setting)
   currentTickets?: string[];
   readyAt?: string; // ISO timestamp when agent reported ready
+  /**
+   * Set (in API responses only — never persisted) while the agent's runtime
+   * is waiting on a human sign-in. Carries the login URL / device code the
+   * OAuth monitor captured from the PTY so the UI can show them.
+   */
+  loginRequired?: {
+    url: string | null;
+    code: string | null;
+    detectedAt: string;
+  };
   capabilities?: string[]; // Agent-reported capabilities
   lastActivityCheck?: string; // ISO timestamp of last activity monitoring
   createdAt: string;

@@ -12,7 +12,7 @@
  * @module cli/utils/version-check
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, realpathSync } from 'fs';
 import path from 'path';
 import os from 'os';
 import chalk from 'chalk';
@@ -78,15 +78,63 @@ function findPackageRoot(startDir: string): string {
 	}
 }
 
+/**
+ * Directory of the CLI entry module, registered by `cli/src/index.ts` from
+ * `import.meta.url`. Kept out of this module because ts-jest compiles tests
+ * as CommonJS where `import.meta` is a syntax error (see
+ * `backend/src/utils/node-require.utils.ts` for the banked lessons).
+ */
+let cliModuleDir: string | null = null;
+
+/**
+ * Register the directory of the CLI's own entry module so version lookups
+ * resolve the *installed* Crewly package rather than whatever project the
+ * user happens to be standing in.
+ *
+ * @param dir - Absolute directory of the CLI entry module (null clears it)
+ */
+export function registerCliModuleDir(dir: string | null): void {
+	cliModuleDir = dir;
+}
+
+/**
+ * Best-effort directory of the running CLI when nothing was registered:
+ * the real path of the entry script (`process.argv[1]`), which for a global
+ * install resolves through the `bin` symlink into the package tree.
+ *
+ * @returns Directory of the entry script, or null when unavailable
+ */
+function entryScriptDir(): string | null {
+	const entry = process.argv[1];
+	if (!entry) return null;
+	try {
+		return path.dirname(realpathSync(entry));
+	} catch {
+		return null;
+	}
+}
+
 // ========================= Functions =========================
 
 /**
- * Reads the current Crewly version from the root package.json.
+ * Reads the installed Crewly version from the package's own package.json.
  *
+ * Resolution starts from the CLI module's location — never from
+ * `process.cwd()`. The old cwd-based lookup returned `1.0.0` (the hardcoded
+ * fallback) from any directory outside the package and, worse, reported a
+ * *different* project's version when run inside one (server-install finding 5).
+ *
+ * @param startDir - Directory to walk up from (defaults to the registered
+ *   CLI module dir, then the entry script's real path)
  * @returns The version string from package.json
+ * @throws Error if no package.json with `"name": "crewly"` is found above startDir
  */
-export function getLocalVersion(): string {
-	const root = findPackageRoot(process.cwd());
+export function getLocalVersion(startDir?: string): string {
+	const from = startDir ?? cliModuleDir ?? entryScriptDir();
+	if (!from) {
+		throw new Error('Could not determine the Crewly CLI module location for version lookup');
+	}
+	const root = findPackageRoot(from);
 	const pkgPath = path.join(root, 'package.json');
 	const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
 	return pkg.version as string;

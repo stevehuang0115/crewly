@@ -21,6 +21,7 @@ jest.mock('chalk', () => ({
 
 import {
 	getLocalVersion,
+	registerCliModuleDir,
 	readCache,
 	writeCache,
 	checkForUpdate,
@@ -55,10 +56,47 @@ describe('CLI version-check utilities', () => {
 	});
 
 	describe('getLocalVersion', () => {
+		const rootPkgVersion = JSON.parse(
+			fs.readFileSync(path.join(__dirname, '..', '..', '..', 'package.json'), 'utf-8'),
+		).version as string;
+
+		afterEach(() => {
+			registerCliModuleDir(null);
+		});
+
 		it('should return a version string', () => {
 			const version = getLocalVersion();
 			expect(typeof version).toBe('string');
 			expect(version).toMatch(/^\d+\.\d+\.\d+/);
+		});
+
+		it('resolves from the CLI module location, not process.cwd() (finding 5)', () => {
+			// Stand in a directory that is NOT inside the crewly package — the old
+			// cwd-based lookup threw here and the CLI fell back to "1.0.0".
+			const cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(os.tmpdir());
+
+			expect(getLocalVersion(__dirname)).toBe(rootPkgVersion);
+			cwdSpy.mockRestore();
+		});
+
+		it('uses the registered CLI module dir when no startDir is passed', () => {
+			const cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(os.tmpdir());
+			registerCliModuleDir(__dirname);
+
+			expect(getLocalVersion()).toBe(rootPkgVersion);
+			cwdSpy.mockRestore();
+		});
+
+		it('does not report a different project\'s version when run inside one', () => {
+			// A foreign package.json above the start dir must be skipped: only
+			// the package named "crewly" counts.
+			const foreign = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-vc-'));
+			fs.writeFileSync(path.join(foreign, 'package.json'), JSON.stringify({ name: 'other-app', version: '9.9.9' }));
+			try {
+				expect(() => getLocalVersion(foreign)).toThrow(/no package.json with name "crewly"/);
+			} finally {
+				fs.rmSync(foreign, { recursive: true, force: true });
+			}
 		});
 	});
 

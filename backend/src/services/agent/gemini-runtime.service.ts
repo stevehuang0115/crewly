@@ -3,7 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, type RuntimeType } from '../../constants.js';
+import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { addGeminiTrustedFolders } from '../../utils/gemini-trusted-folders.js';
 import { getSettingsService } from '../settings/settings.service.js';
@@ -164,6 +164,16 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 			'Model loaded',
 			'context left)',
 		];
+	}
+
+	/**
+	 * Gemini CLI paints its `>` input box on the auth-method picker too, so
+	 * the sign-in text vetoes readiness until login completes.
+	 *
+	 * @returns Gemini-specific "not ready" markers
+	 */
+	protected getNotReadyMarkers(): readonly string[] {
+		return RUNTIME_INPUT_READY_PATTERNS.GEMINI_CLI.NOT_READY_MARKERS;
 	}
 
 	private isGeminiTrustPrompt(output: string): boolean {
