@@ -13,6 +13,12 @@ export {
 	ModuleBuildResult,
 	AssemblyReport,
 	TruncatedModuleInfo,
+	PromptProfile,
+	PROMPT_PROFILES,
+	DEFAULT_PROMPT_PROFILE,
+	ORC_PROMPT_PROFILE_ENV,
+	isPromptProfile,
+	resolveOrcPromptProfile,
 	estimateTokens,
 	loadRoleFragment,
 } from './prompt-module.interface.js';

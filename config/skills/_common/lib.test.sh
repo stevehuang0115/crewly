@@ -1,7 +1,8 @@
 #!/bin/bash
 # =============================================================================
 # Tests for lib.sh — shared skills library
-# Covers: --file preprocessor, read_json_input, require_param, error_exit
+# Covers: --file preprocessor, read_json_input, require_param, error_exit,
+#         api_call output cap (CREWLY_SKILL_MAX_OUTPUT_BYTES)
 # =============================================================================
 set -euo pipefail
 
@@ -183,6 +184,72 @@ cat > "$TEMP_DIR/heredoc_mixed.json" << 'CREWLY_EOF'
 CREWLY_EOF
 RESULT=$(bash "$TEMP_DIR/test_skill.sh" --file "$TEMP_DIR/heredoc_mixed.json")
 assert_contains "heredoc handles mixed quotes" "it's fine" "$RESULT"
+
+# =============================================================================
+# api_call output cap (CREWLY_SKILL_MAX_OUTPUT_BYTES)
+# curl is mocked with a shell function that returns $MOCK_BODY + "\n200".
+# =============================================================================
+mkdir -p "$TEMP_DIR/skills/fake-skill"
+cat > "$TEMP_DIR/skills/fake-skill/execute.sh" << 'SKILL_EOF'
+#!/bin/bash
+set -euo pipefail
+source "$LIB_PATH"
+# Mock curl: emit the canned body followed by the http code line, like
+# `curl -w '\n%{http_code}'` does.
+curl() {
+  printf '%s\n%s' "$MOCK_BODY" "${MOCK_CODE:-200}"
+}
+api_call GET "/anything"
+SKILL_EOF
+chmod +x "$TEMP_DIR/skills/fake-skill/execute.sh"
+
+export CREWLY_HOME="$TEMP_DIR/crewly-home"
+CAP_DIR="$CREWLY_HOME/tmp/skill-output"
+
+# ---- Test 17: small body passes through untouched ----
+export MOCK_BODY='{"ok":true,"items":[1,2,3]}'
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=100 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
+assert_eq "api_call: body under cap passes through" '{"ok":true,"items":[1,2,3]}' "$RESULT"
+
+# ---- Test 18: oversized body becomes a valid JSON envelope ----
+BIG=$(jq -nc '{ok:true, rows:[range(0;400)|{id:., text:"row-\(.)-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]}')
+export MOCK_BODY="$BIG"
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
+assert_eq "api_call: oversized body -> truncated=true" "true" "$(printf '%s' "$RESULT" | jq -r '.truncated')"
+assert_eq "api_call: envelope bytes == real byte count" "$(printf '%s' "$BIG" | LC_ALL=C wc -c | tr -d ' ')" "$(printf '%s' "$RESULT" | jq -r '.bytes')"
+assert_contains "api_call: envelope hint present" "pass --full or read the file" "$(printf '%s' "$RESULT" | jq -r '.hint')"
+assert_eq "api_call: head is the first 4000 chars" "${BIG:0:4000}" "$(printf '%s' "$RESULT" | jq -r '.head')"
+CAP_FILE=$(printf '%s' "$RESULT" | jq -r '.file')
+assert_contains "api_call: file lands under CREWLY_HOME/tmp/skill-output" "$CAP_DIR/fake-skill-" "$CAP_FILE"
+assert_eq "api_call: parked file holds the full body" "$BIG" "$(cat "$CAP_FILE")"
+
+# ---- Test 19: --full bypasses the cap (flag is detected at source time) ----
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 bash "$TEMP_DIR/skills/fake-skill/execute.sh" --full)
+assert_eq "api_call: --full returns the raw body" "$BIG" "$RESULT"
+
+# ---- Test 20: CREWLY_SKILL_FULL_OUTPUT=1 bypasses the cap ----
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 CREWLY_SKILL_FULL_OUTPUT=1 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
+assert_eq "api_call: CREWLY_SKILL_FULL_OUTPUT=1 returns the raw body" "$BIG" "$RESULT"
+
+# ---- Test 21: cap of 0 disables truncation ----
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=0 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
+assert_eq "api_call: CREWLY_SKILL_MAX_OUTPUT_BYTES=0 disables the cap" "$BIG" "$RESULT"
+
+# ---- Test 22: parked files older than the TTL are pruned at the start of any api_call ----
+mkdir -p "$CAP_DIR"
+touch -t 202001010000 "$CAP_DIR/old-skill-stale.json"
+touch "$CAP_DIR/fresh-skill-recent.json"
+export MOCK_BODY='{"ok":true}'
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
+assert_eq "api_call: prune runs even when the body is small" '{"ok":true}' "$RESULT"
+assert_eq "api_call: stale parked output is deleted" "missing" "$([ -f "$CAP_DIR/old-skill-stale.json" ] && echo present || echo missing)"
+assert_eq "api_call: fresh parked output is kept" "present" "$([ -f "$CAP_DIR/fresh-skill-recent.json" ] && echo present || echo missing)"
+
+# ---- Test 23: error responses are untouched by the cap ----
+export MOCK_BODY='{"error":"nope"}' MOCK_CODE=500
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=5 bash "$TEMP_DIR/skills/fake-skill/execute.sh" 2>&1 || true)
+assert_contains "api_call: non-2xx still reports the error object" '"status":500' "$RESULT"
+unset MOCK_BODY MOCK_CODE CREWLY_HOME
 
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

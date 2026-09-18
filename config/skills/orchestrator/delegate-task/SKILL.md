@@ -47,7 +47,7 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
 | `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
 | `--request-id` / `-R` | `requestId` | No | Parent V3 Request ID; tags the resulting WorkItem so `Request.workItemIds[]` is populated by the SLA subscriber (Pipeline-#4 fix) |
-| `monitor` (JSON only) | `monitor` | No | Auto-monitoring config (see below) |
+| `--fallback-minutes` | — | No | Minutes until the ONE §3.0 fallback check fires for this delegation (default `120` ≈ 2× a TL milestone ETA). `0` disables it. Not cancelled on completion — keep it at 2× ETA, never a poll interval |
 
 ## Usage — CLI Flags (preferred)
 
@@ -71,51 +71,47 @@ bash execute.sh --to agent-joe --task-file /tmp/task-description.txt --priority 
 bash execute.sh '{"to":"agent-joe","task":"Implement the login form","priority":"high","context":"Use React hooks","projectPath":"/path/to/project"}'
 ```
 
-### With monitoring disabled (opt-out, JSON only)
+### With the fallback timer disabled (opt-out)
 
 ```bash
-bash execute.sh '{"to":"agent-joe","task":"Implement the login form","priority":"high","projectPath":"/path/to/project","monitor":{"idleEvent":false,"fallbackCheckMinutes":0}}'
+bash execute.sh --to agent-joe --task "Implement the login form" --priority high --project /path/to/project --fallback-minutes 0
 ```
 
 ## Examples
 
-### Example 1: Basic delegation (monitoring enabled by default)
+### Example 1: Basic delegation (one fallback timer by default)
 ```bash
 bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-joe","task":"Fix the login bug","priority":"high"}'
 ```
 This will automatically:
-1. Send the task to agent-joe's terminal
-2. Subscribe to `agent:idle` for agent-joe (auto-notifies when agent goes idle)
-3. Schedule a recurring check every 5 minutes (auto-reminds orchestrator to check progress)
-4. Link all monitoring IDs to the task for auto-cleanup on completion
+1. Create + claim the WorkItem in the task pool and deliver it to agent-joe's terminal
+2. Schedule ONE fallback check (`fallbackTriggerId`, fires after `--fallback-minutes`, default 120) that wakes the orchestrator with a "Fallback check on agent-joe" WorkItem if the work is still open
 
-### Example 2: Delegation with project tracking + monitoring
+It does NOT set up a recurring check — the reconciler escalates stalled or unverified work on its own. Add the `agent:idle_after_task` watch yourself per §3.0; never add a second fallback or a self-targeted "check on agent" WorkItem for the same delegation.
+
+### Example 2: Delegation with project tracking
 ```bash
 bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-joe","task":"Implement user auth","priority":"high","projectPath":"/path/to/project"}'
 ```
 Also creates a task file in the project's `.crewly/tasks/` directory.
 
-### Example 3: Delegation with custom monitoring interval
+### Example 3: Cross-team delegation with a longer fallback (2× an 8 h ETA)
 ```bash
-bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-sam","task":"Write unit tests","priority":"normal","monitor":{"fallbackCheckMinutes":10}}'
+bash config/skills/orchestrator/delegate-task/execute.sh --to agent-sam --task "Ship the billing rewrite" --priority normal --fallback-minutes 720
 ```
 
-### Example 4: Delegation with monitoring disabled
+### Example 4: Quick fix with the fallback disabled
 ```bash
-bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-joe","task":"Quick fix","priority":"low","monitor":{"idleEvent":false,"fallbackCheckMinutes":0}}'
+bash config/skills/orchestrator/delegate-task/execute.sh --to agent-joe --task "Quick fix" --priority low --fallback-minutes 0
 ```
 
 ## Output
 
 JSON confirmation of task delivery. When `projectPath` is provided, also returns the created task file path.
 
-## Auto-Cleanup
+## Cleanup
 
-When the agent completes the task (via `report-status` with `status: done` or `complete-task`), all linked monitoring is automatically cleaned up:
-- Scheduled checks are cancelled
-- Event subscriptions are unsubscribed
-
-No manual cleanup needed.
+The fallback trigger is **not** cancelled when the task completes. When it fires on already-verified work, complete the resulting check WorkItem immediately; to avoid the wake-up altogether, `cancel-followup --id <fallbackTriggerId from this skill's output>` once you have verified the deliverable (§3.0 step 3).
 
 ## Delivery Strategy
 
@@ -141,6 +137,6 @@ Error messages are output to **stdout** (JSON format) so the orchestrator can re
 
 - `assign-task` — for formal task tracking in the management system (file-based kanban)
 - `send-message` — for simple messages without task structure
-- `subscribe-event` — manual event subscription (auto-handled when using `monitor`)
-- `schedule-check` — manual schedule creation (auto-handled when using `monitor`)
+- `watch-for-event` — the `agent:idle_after_task` watch that completes the §3.0 loop (not created by this skill)
+- `cancel-followup` — cancel the fallback trigger once the deliverable is verified
 - `report-status` — agent reports completion, triggers auto-cleanup

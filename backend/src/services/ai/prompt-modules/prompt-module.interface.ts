@@ -114,6 +114,60 @@ export interface ModuleConfig {
 	 * during eval runs. Core modules: identity, soul, role-boundary, recovery.
 	 */
 	evalMode?: boolean;
+
+	// === Prompt profile ===
+
+	/**
+	 * Prompt tier to assemble. `full` (default) includes every applicable
+	 * module; `lite` drops the modules that only matter for planning /
+	 * onboarding (expert profile, domain SOP, learning reference, SOP-vs-norm
+	 * distinction, lazy anti-patterns) and collapses the mission card to one
+	 * line, so routine wake-ups re-read a smaller system prompt. Operational
+	 * modules (identity, communication, lifecycle, recovery, project and
+	 * memory references) are always kept. See {@link PromptProfile}.
+	 */
+	promptProfile?: PromptProfile;
+}
+
+/**
+ * Prompt tiers understood by the assembler. `full` is the default and the
+ * historical behaviour; `lite` is the reduced tier for routine wake-ups.
+ */
+export const PROMPT_PROFILES = ['full', 'lite'] as const;
+
+/** One of {@link PROMPT_PROFILES}. */
+export type PromptProfile = (typeof PROMPT_PROFILES)[number];
+
+/** Profile used when none is requested — the historical full assembly. */
+export const DEFAULT_PROMPT_PROFILE: PromptProfile = 'full';
+
+/**
+ * Environment variable selecting the orchestrator's prompt profile at
+ * registration time. Any value other than a known profile falls back to
+ * {@link DEFAULT_PROMPT_PROFILE}.
+ */
+export const ORC_PROMPT_PROFILE_ENV = 'CREWLY_ORC_PROMPT_PROFILE';
+
+/**
+ * Type guard for {@link PromptProfile}.
+ *
+ * @param value - Candidate value (typically an env var)
+ * @returns true when `value` names a known profile
+ */
+export function isPromptProfile(value: unknown): value is PromptProfile {
+	return typeof value === 'string' && (PROMPT_PROFILES as readonly string[]).includes(value);
+}
+
+/**
+ * Resolve the orchestrator prompt profile from the environment.
+ *
+ * @param env - Environment map (defaults to `process.env`)
+ * @returns The configured profile, or {@link DEFAULT_PROMPT_PROFILE} when
+ *   the variable is unset or invalid
+ */
+export function resolveOrcPromptProfile(env: NodeJS.ProcessEnv = process.env): PromptProfile {
+	const raw = env[ORC_PROMPT_PROFILE_ENV]?.trim().toLowerCase();
+	return isPromptProfile(raw) ? raw : DEFAULT_PROMPT_PROFILE;
 }
 
 /**
@@ -178,6 +232,8 @@ export interface PromptModule {
  * token usage and any truncation that occurred.
  */
 export interface AssemblyReport {
+	/** Prompt profile the assembly ran under (see {@link PromptProfile}). */
+	profile: PromptProfile;
 	/** Total estimated tokens in the final prompt */
 	totalTokens: number;
 	/** Per-module token breakdown */

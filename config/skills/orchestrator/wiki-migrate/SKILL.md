@@ -1,7 +1,7 @@
 ---
 name: Wiki Migrate
 description: One-shot conversion from legacy `.crewly/knowledge/*.json` + loose `.md` + agent `memory.json` into the v2.1 three-scope vault structure. Default dry-run; idempotent; never deletes legacy files.
-version: 1.0.0
+version: 1.1.0
 category: knowledge
 skillType: claude-skill
 assignableRoles:
@@ -65,14 +65,39 @@ Vault picker:
 | `--project-root <abs path>` | yes | — | The dir containing `.crewly/`. |
 | `--apply` | no | off | Execute writes. Without this, run a dry-run scan. |
 | `--no-memory` | no | off | Skip the per-agent `memory.json` import. |
+| `--full` (or `"full": true`) | no | off | Return the raw backend payload including the full `proposedPages` array. Default output is the compact report below. |
+
+## Output: compact by default
+
+The backend payload carries one row per proposed page — hundreds of entries on a real project — and re-reading it on every scan is a context-cost problem, not a decision aid. By default the skill therefore returns a **compact report**:
+
+```json
+{
+  "ok": true, "vaultPath": "...", "legacyDetected": true,
+  "bootstrapNeeded": { "project": true, "global": false, "teams": [] },
+  "summary": { "decisions": 10, "patterns": 8, "...": 0, "alreadyMigrated": 8 },
+  "totalProposed": 25, "alreadyMigrated": 8, "skippedOther": 1, "netNew": 16,
+  "routingUncertain": 2,
+  "byCategory": { "decision": { "proposed": 10, "netNew": 6 }, "pattern": { "...": 0 } },
+  "netNewSample": [ "llm-curated/decisions/2026-05-01-foo.md", "..." ],
+  "hint": "compact view — pass --full for the complete proposedPages array"
+}
+```
+
+- `byCategory` is keyed by `sourceType`; `netNew` = pages without a `skipReason`.
+- `netNewSample` lists the first 10 net-new target paths (`WIKI_MIGRATE_SAMPLE_SIZE` env overrides the count).
+- Apply-only keys (`applied`, `skipped`, `bootstrapped`, `manifestPath`) pass through unchanged.
+
+Only pass `--full` when you actually need per-row detail (a specific `sourceFile`, `sourceId`, or the `routingUncertain` rows). Even then the shared skill output cap applies: very large payloads are parked under `$CREWLY_HOME/tmp/skill-output/` and you get a `{"truncated":true,"file":...}` envelope — read the file with `jq` and select the fields you need.
 
 ## What you do with the report
 
 **On scan (dry-run):**
-- Read `proposedPages` — each row tells you target path, source file, sourceId.
+- `netNew == 0` → nothing to do; stop here.
+- Read `byCategory` / `netNewSample` to sanity-check what will land; use `--full` only if a specific row needs inspection.
 - Look at `bootstrapNeeded` — confirms which vaults will be created.
 - Look at `summary` — counts per source type.
-- Look for `routingUncertain: true` rows — these will land in the project vault but flagged for later human review.
+- `routingUncertain` counts rows that will land in the project vault but flagged for later human review (`--full` shows which).
 
 **On apply:**
 - Confirm `applied` count matches the proposal.
@@ -95,6 +120,11 @@ bash execute.sh --project-root /Users/me/code/myproject --apply
 **Apply but skip agent memory.json copies:**
 ```bash
 bash execute.sh --project-root /Users/me/code/myproject --no-memory --apply
+```
+
+**Inspect every proposed row (raw payload):**
+```bash
+bash execute.sh --project-root /Users/me/code/myproject --full
 ```
 
 ## Failure modes

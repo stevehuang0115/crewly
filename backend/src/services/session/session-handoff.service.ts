@@ -47,6 +47,44 @@ const MAX_MESSAGES_PER_THREAD = 3;
 /** Maximum number of active threads to include in the summary */
 const MAX_ACTIVE_THREADS = 6;
 
+/**
+ * Maximum number of threads rendered into a `[CHAT_RESUME]` notification
+ * (newest first). Observed on a production box: an uncapped resume message
+ * cost ~150k input tokens on every restart. Override with
+ * `CREWLY_CHAT_RESUME_MAX_THREADS`.
+ */
+const RESUME_MAX_THREADS = 5;
+
+/**
+ * Maximum characters rendered per thread block inside `[CHAT_RESUME]`.
+ * Override with `CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD`.
+ */
+const RESUME_MAX_CHARS_PER_THREAD = 600;
+
+/** Env var overriding {@link RESUME_MAX_THREADS}. */
+const RESUME_MAX_THREADS_ENV = 'CREWLY_CHAT_RESUME_MAX_THREADS';
+
+/** Env var overriding {@link RESUME_MAX_CHARS_PER_THREAD}. */
+const RESUME_MAX_CHARS_ENV = 'CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD';
+
+/** Marker appended to a thread block that was cut at the per-thread cap. */
+const RESUME_TRUNCATION_MARKER = '  … (truncated — open the file for the rest)';
+
+/**
+ * Read a positive-integer override from the environment, falling back to
+ * the compiled default when unset or invalid.
+ *
+ * @param envName - Environment variable name
+ * @param fallback - Default value
+ * @returns The override or the fallback
+ */
+function positiveIntFromEnv(envName: string, fallback: number): number {
+  const raw = process.env[envName];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 /** Directory name for session summaries under crewly home */
 const SUMMARIES_DIR = 'session-summaries';
 
@@ -928,30 +966,7 @@ export class SessionHandoffService {
         return;
       }
 
-      const lines: string[] = [
-        '[CHAT_RESUME] You just restarted. The following threads have PENDING or UNREPLIED messages.',
-        'Review them and reply where needed. Do NOT re-process threads that were already handled.',
-        '',
-      ];
-
-      for (const thread of threads) {
-        const label = thread.channelType.toUpperCase();
-        lines.push(`## ${label} Thread: ${thread.channelId} / ${thread.threadId}`);
-        lines.push(`- Source: ${thread.channelType}`);
-        lines.push(`- File: \`${thread.filePath}\``);
-        lines.push(`- Channel: ${thread.channelId}`);
-        lines.push(`- Thread ID: ${thread.threadId}`);
-        lines.push(`- Last active: ${thread.lastActiveAt}`);
-        if (thread.recentMessages.length > 0) {
-          lines.push('- Recent messages:');
-          for (const msg of thread.recentMessages) {
-            lines.push(`  - ${msg}`);
-          }
-        }
-        lines.push('');
-      }
-
-      const message = lines.join('\n');
+      const { message, included, omitted } = SessionHandoffService.buildResumeMessage(threads);
 
       await agentService.sendMessageToAgent(
         sessionName,
@@ -962,6 +977,9 @@ export class SessionHandoffService {
       this.logger.info('Pushed resume notification', {
         sessionName,
         threadCount: threads.length,
+        includedThreads: included,
+        omittedThreads: omitted,
+        messageChars: message.length,
         channels: [...new Set(threads.map(t => t.channelType))],
       });
     } catch (error) {
@@ -970,6 +988,92 @@ export class SessionHandoffService {
         error: error instanceof Error ? error.message : String(error),
       });
     }
+  }
+
+  /**
+   * Render the `[CHAT_RESUME]` message body for a set of pending threads.
+   *
+   * Bounded on purpose: at most {@link RESUME_MAX_THREADS} threads (newest
+   * first) and at most {@link RESUME_MAX_CHARS_PER_THREAD} characters per
+   * thread block; anything beyond is summarised as a single "and K more"
+   * line. The orchestrator re-reads this message on every restart, so its
+   * size is paid at full input-token price each time.
+   *
+   * @param threads - Pending threads (any order; sorted newest-first here)
+   * @returns The message plus how many threads were included / omitted
+   */
+  static buildResumeMessage(threads: ResumeThread[]): {
+    message: string;
+    included: number;
+    omitted: number;
+  } {
+    const maxThreads = positiveIntFromEnv(RESUME_MAX_THREADS_ENV, RESUME_MAX_THREADS);
+    const maxChars = positiveIntFromEnv(RESUME_MAX_CHARS_ENV, RESUME_MAX_CHARS_PER_THREAD);
+
+    const newestFirst = [...threads].sort(
+      (a, b) => new Date(b.lastActiveAt).getTime() - new Date(a.lastActiveAt).getTime(),
+    );
+    const shown = newestFirst.slice(0, maxThreads);
+    const omitted = newestFirst.length - shown.length;
+
+    const lines: string[] = [
+      '[CHAT_RESUME] You just restarted. The following threads have PENDING or UNREPLIED messages.',
+      'Review them and reply where needed. Do NOT re-process threads that were already handled.',
+      '',
+    ];
+
+    for (const thread of shown) {
+      lines.push(SessionHandoffService.renderResumeThread(thread, maxChars));
+      lines.push('');
+    }
+
+    if (omitted > 0) {
+      lines.push(`and ${omitted} more — use list-my-followups`);
+      lines.push('');
+    }
+
+    return { message: lines.join('\n'), included: shown.length, omitted };
+  }
+
+  /**
+   * Render one thread block for `[CHAT_RESUME]`, cut at a line boundary so
+   * the block never exceeds `maxChars` (a truncation marker is appended when
+   * lines were dropped; the heading line is always kept).
+   *
+   * @param thread - Thread to render
+   * @param maxChars - Character budget for the block
+   * @returns Rendered block (no trailing newline)
+   */
+  private static renderResumeThread(thread: ResumeThread, maxChars: number): string {
+    const label = thread.channelType.toUpperCase();
+    const lines: string[] = [
+      `## ${label} Thread: ${thread.channelId} / ${thread.threadId}`,
+      `- Source: ${thread.channelType}`,
+      `- File: \`${thread.filePath}\``,
+      `- Channel: ${thread.channelId}`,
+      `- Thread ID: ${thread.threadId}`,
+      `- Last active: ${thread.lastActiveAt}`,
+    ];
+    if (thread.recentMessages.length > 0) {
+      lines.push('- Recent messages:');
+      for (const msg of thread.recentMessages) {
+        lines.push(`  - ${msg}`);
+      }
+    }
+
+    const full = lines.join('\n');
+    if (full.length <= maxChars) return full;
+
+    const budget = Math.max(0, maxChars - RESUME_TRUNCATION_MARKER.length - 1);
+    const kept: string[] = [lines[0]];
+    let used = lines[0].length;
+    for (const line of lines.slice(1)) {
+      if (used + 1 + line.length > budget) break;
+      kept.push(line);
+      used += 1 + line.length;
+    }
+    kept.push(RESUME_TRUNCATION_MARKER);
+    return kept.join('\n');
   }
 
   /**
