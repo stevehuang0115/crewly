@@ -204,4 +204,75 @@ describe('ApiService', () => {
       await expect(apiService.getWorkItem('wi-missing')).rejects.toThrow('Work item not found');
     });
   });
+  describe('mission OKR cascade endpoints', () => {
+    it('getKeyResults hits /api/missions/:id/key-results and tolerates a non-array payload', async () => {
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'get').mockResolvedValue({ data: { success: true, data: [{ id: 'kr-1' }] } });
+      expect(await apiService.getKeyResults('m-1')).toEqual([{ id: 'kr-1' }]);
+      expect(spy).toHaveBeenCalledWith('/api/missions/m-1/key-results');
+
+      spy.mockResolvedValue({ data: { success: true, data: null } });
+      expect(await apiService.getKeyResults('m-1')).toEqual([]);
+    });
+
+    it('createKeyResult posts the body and unwraps the KR', async () => {
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'post').mockResolvedValue({ data: { success: true, data: { id: 'kr-1' } } });
+      const input = { title: 'MRR', metricType: 'currency' as const, baseline: 0, target: 5000, unit: '$' };
+      expect(await apiService.createKeyResult('m-1', input)).toEqual({ id: 'kr-1' });
+      expect(spy).toHaveBeenCalledWith('/api/missions/m-1/key-results', input);
+    });
+
+    it('updateKeyResult / deleteKeyResult target /key-results/:krId', async () => {
+      const axios = await import('axios');
+      const put = vi.spyOn(axios.default, 'put').mockResolvedValue({ data: { success: true, data: { id: 'kr-1', target: 9 } } });
+      const del = vi.spyOn(axios.default, 'delete').mockResolvedValue({ data: { success: true } });
+      expect(await apiService.updateKeyResult('m-1', 'kr-1', { target: 9 })).toEqual({ id: 'kr-1', target: 9 });
+      expect(put).toHaveBeenCalledWith('/api/missions/m-1/key-results/kr-1', { target: 9 });
+      await apiService.deleteKeyResult('m-1', 'kr-1');
+      expect(del).toHaveBeenCalledWith('/api/missions/m-1/key-results/kr-1');
+    });
+
+    it('measureKeyResult posts to /measure and surfaces the server error', async () => {
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'post').mockResolvedValue({ data: { success: true, data: { id: 'kr-1', current: 42 } } });
+      expect(await apiService.measureKeyResult('m-1', 'kr-1', { value: 42, note: 'weekly' })).toEqual({ id: 'kr-1', current: 42 });
+      expect(spy).toHaveBeenCalledWith('/api/missions/m-1/key-results/kr-1/measure', { value: 42, note: 'weekly' });
+
+      spy.mockResolvedValue({ data: { success: false, error: 'value must be a number' } });
+      await expect(apiService.measureKeyResult('m-1', 'kr-1', { value: NaN })).rejects.toThrow('value must be a number');
+    });
+
+    it('getOkrSummary / getCascadeSummary / getMissionProgress hit their routes', async () => {
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'get').mockResolvedValue({ data: { success: true, data: { missionId: 'm-1' } } });
+      await apiService.getOkrSummary('m-1');
+      expect(spy).toHaveBeenLastCalledWith('/api/missions/m-1/okr-summary');
+      await apiService.getCascadeSummary('m-1');
+      expect(spy).toHaveBeenLastCalledWith('/api/missions/m-1/okr-summary/cascade');
+      await apiService.getMissionProgress('m-1');
+      expect(spy).toHaveBeenLastCalledWith('/api/missions/m-1/progress');
+    });
+
+    it('getProposals lists pending children of a parent', async () => {
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'get').mockResolvedValue({ data: { success: true, data: [{ id: 'child' }], count: 1 } });
+      expect(await apiService.getProposals('parent')).toEqual([{ id: 'child' }]);
+      expect(spy).toHaveBeenCalledWith('/api/missions/parent/proposals');
+    });
+
+    it('approveMission / rejectMission post the decision (reject carries the reason)', async () => {
+      const axios = await import('axios');
+      const spy = vi.spyOn(axios.default, 'post').mockResolvedValue({ data: { success: true, data: { id: 'child' } } });
+      await apiService.approveMission('child');
+      expect(spy).toHaveBeenLastCalledWith('/api/missions/child/approve', {});
+      await apiService.approveMission('child', 'steve');
+      expect(spy).toHaveBeenLastCalledWith('/api/missions/child/approve', { decidedBy: 'steve' });
+      await apiService.rejectMission('child', 'Too vague');
+      expect(spy).toHaveBeenLastCalledWith('/api/missions/child/reject', { reason: 'Too vague' });
+
+      spy.mockResolvedValue({ data: { success: false, error: 'Cannot approve a mission in state "approved"' } });
+      await expect(apiService.approveMission('child')).rejects.toThrow('Cannot approve');
+    });
+  });
 });
