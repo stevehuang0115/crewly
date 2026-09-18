@@ -2,7 +2,7 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, type RuntimeType } from '../../constants.js';
+import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 
 /**
@@ -158,6 +158,16 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 			'bypass permissions on',
 			'✻ Welcome to Claude',
 		];
+	}
+
+	/**
+	 * Claude Code's sign-in screen shows a prompt-like box, so the login
+	 * instructions veto readiness until the user has authenticated.
+	 *
+	 * @returns Claude Code-specific "not ready" markers
+	 */
+	protected getNotReadyMarkers(): readonly string[] {
+		return RUNTIME_INPUT_READY_PATTERNS.CLAUDE_CODE.NOT_READY_MARKERS;
 	}
 
 	/**

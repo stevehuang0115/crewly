@@ -396,4 +396,65 @@ describe('ClaudeRuntimeService', () => {
 		});
 	});
 
+	describe('isReadyForInput', () => {
+		const CLAUDE_IDLE_SCREEN = [
+			'╭───────────────────────────────────────────────────────────╮',
+			'│ ✻ Welcome to Claude Code!                                 │',
+			'│                                                           │',
+			'│   /help for help, /status for your current setup          │',
+			'│                                                           │',
+			'│   cwd: /home/crewly/projects/app                          │',
+			'╰───────────────────────────────────────────────────────────╯',
+			'',
+			'╭───────────────────────────────────────────────────────────╮',
+			'│ ❯                                                         │',
+			'╰───────────────────────────────────────────────────────────╯',
+			'  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+		].join('\n');
+
+		const CLAUDE_BOOTING_SCREEN = [
+			'╭───────────────────────────────────────────────────────────╮',
+			'│ ✻ Welcome to Claude Code!                                 │',
+			'│                                                           │',
+			'│   cwd: /home/crewly/projects/app                          │',
+			'╰───────────────────────────────────────────────────────────╯',
+			'',
+			'⠋ Loading MCP servers…',
+		].join('\n');
+
+		const CLAUDE_WORKING_SCREEN = [
+			'❯ Begin your work now. Follow the step-by-step instructions…',
+			'',
+			'✶ Thinking… (esc to interrupt)',
+		].join('\n');
+
+		const CLAUDE_LOGIN_SCREEN = [
+			'  Browser didn\'t open? Use the url below to sign in:',
+			'',
+			'  https://claude.ai/oauth/authorize?code=true&client_id=abc&response_type=code',
+			'',
+			'  Paste code here if prompted >',
+		].join('\n');
+
+		it('is ready at the idle ❯ prompt', () => {
+			expect(service.isReadyForInput(CLAUDE_IDLE_SCREEN)).toBe(true);
+		});
+
+		it('is NOT ready while the banner is up but no prompt box has been painted', () => {
+			expect(service.isReadyForInput(CLAUDE_BOOTING_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready while thinking / esc to interrupt is showing', () => {
+			expect(service.isReadyForInput(CLAUDE_WORKING_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready on the sign-in screen', () => {
+			expect(service.isReadyForInput(CLAUDE_LOGIN_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready on an empty capture', () => {
+			expect(service.isReadyForInput('')).toBe(false);
+		});
+	});
+
 });

@@ -128,4 +128,87 @@ describe('CodexRuntimeService', () => {
 			expect(result.message).toBe('Init failed');
 		});
 	});
+
+	describe('isReadyForInput', () => {
+		const CODEX_IDLE_SCREEN = [
+			'╭──────────────────────────────────────────────────────────╮',
+			'│ >_ OpenAI Codex (v0.50.0)                                  │',
+			'│                                                            │',
+			'│ model:     gpt-5-codex   /model to change                  │',
+			'│ directory: /root/.crewly                                   │',
+			'╰──────────────────────────────────────────────────────────╯',
+			'',
+			'  Tip: Use /status to see your session details.',
+			'',
+			'› Ask Codex to do anything',
+			'',
+			'  ? for shortcuts                       gpt-5-codex · /root/.crewly',
+		].join('\n');
+
+		const CODEX_BOOTING_SCREEN = [
+			'╭──────────────────────────────────────────────────────────╮',
+			'│ >_ OpenAI Codex (v0.50.0)                                  │',
+			'│                                                            │',
+			'│ model:     loading                                         │',
+			'│ directory: /root/.crewly                                   │',
+			'╰──────────────────────────────────────────────────────────╯',
+			'',
+			'› Ask Codex to do anything',
+			'',
+			'  ? for shortcuts',
+		].join('\n');
+
+		const CODEX_WORKING_SCREEN = [
+			'› Read the file at /root/.crewly/prompts/crewly-orc-init.md and follow all instructions in it.',
+			'',
+			'⠋ Working (3s · esc to interrupt)',
+			'',
+			'  ? for shortcuts                       gpt-5-codex · /root/.crewly',
+		].join('\n');
+
+		const CODEX_SIGNIN_SCREEN = [
+			'  Welcome to Codex, OpenAI\'s command-line coding agent',
+			'',
+			'  Sign in with ChatGPT to use Codex as part of your paid ChatGPT plan',
+			'',
+			'› 1. Sign in with ChatGPT',
+			'  2. Provide your own API key',
+			'',
+			'  Press Enter to continue',
+		].join('\n');
+
+		it('is ready when the idle prompt and status line are showing', () => {
+			expect(service.isReadyForInput(CODEX_IDLE_SCREEN)).toBe(true);
+		});
+
+		it('is NOT ready while the header still says model: loading (prompt glyph already painted)', () => {
+			expect(service.isReadyForInput(CODEX_BOOTING_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready while a spinner / esc-to-interrupt is showing', () => {
+			expect(service.isReadyForInput(CODEX_WORKING_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready on the sign-in screen', () => {
+			expect(service.isReadyForInput(CODEX_SIGNIN_SCREEN)).toBe(false);
+		});
+
+		it('is NOT ready on a bare shell prompt (runtime not launched yet)', () => {
+			expect(service.isReadyForInput('root@server:~# ')).toBe(false);
+		});
+
+		it('is NOT ready on an empty capture', () => {
+			expect(service.isReadyForInput('')).toBe(false);
+		});
+
+		it('tolerates ANSI escape codes in the capture', () => {
+			const withAnsi = CODEX_IDLE_SCREEN.replace('› Ask Codex', '\u001b[36m› \u001b[0mAsk Codex');
+			expect(service.isReadyForInput(withAnsi)).toBe(true);
+		});
+
+		it('matches model: loading regardless of column alignment whitespace', () => {
+			const spaced = CODEX_IDLE_SCREEN.replace('model:     gpt-5-codex   /model to change', 'model:\t\t  loading');
+			expect(service.isReadyForInput(spaced)).toBe(false);
+		});
+	});
 });

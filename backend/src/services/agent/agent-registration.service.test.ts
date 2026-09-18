@@ -4164,4 +4164,237 @@ describe('AgentRegistrationService', () => {
 	// `ChatV2Service`). The chat-v2 mock at module scope is kept so
 	// future tests can assert against `recordTurn` without opening a
 	// real SQLite database.
+
+	// ── Server-install finding 3: registration raced the runtime's startup ──
+	describe('registration delivery gating (waitForRuntimeInputReady + re-delivery)', () => {
+		const getLogger = () =>
+			(LoggerService.getInstance() as any).createComponentLogger() as {
+				info: jest.Mock; warn: jest.Mock; error: jest.Mock; debug: jest.Mock;
+			};
+
+		beforeEach(() => {
+			jest.useFakeTimers();
+			mockReadFile.mockResolvedValue('Register {{SESSION_ID}} as {{ROLE}}');
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('polls the capture until the runtime reports ready for input', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn()
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(false)
+				.mockReturnValueOnce(true);
+			mockSessionHelper.capturePane.mockReturnValue('model: loading');
+
+			const promise = service['waitForRuntimeInputReady']('test-session', RUNTIME_TYPES.CODEX_CLI, undefined, 30000);
+			await jest.advanceTimersByTimeAsync(2500);
+			const ready = await promise;
+
+			expect(ready).toBe(true);
+			expect(mockRuntimeService.isReadyForInput).toHaveBeenCalledTimes(3);
+			expect(mockSessionHelper.capturePane).toHaveBeenCalledWith('test-session');
+			expect(getLogger().info).toHaveBeenCalledWith(
+				'Runtime idle at input prompt — delivering registration instruction',
+				expect.objectContaining({ sessionName: 'test-session', runtimeType: RUNTIME_TYPES.CODEX_CLI, polls: 3 }),
+			);
+		});
+
+		it('gives up after the timeout with a warning (caller still sends)', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(false);
+			mockSessionHelper.capturePane.mockReturnValue('model: loading');
+
+			const promise = service['waitForRuntimeInputReady']('test-session', RUNTIME_TYPES.CODEX_CLI, undefined, 3000);
+			await jest.advanceTimersByTimeAsync(4000);
+			const ready = await promise;
+
+			expect(ready).toBe(false);
+			expect(getLogger().warn).toHaveBeenCalledWith(
+				'Timed out waiting for runtime input prompt — sending registration instruction anyway',
+				expect.objectContaining({ sessionName: 'test-session', timeoutMs: 3000 }),
+			);
+		});
+
+		it('stops waiting when the abort signal fires (runtime exited)', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(false);
+			const controller = new AbortController();
+
+			const promise = service['waitForRuntimeInputReady']('test-session', RUNTIME_TYPES.CODEX_CLI, controller.signal, 60000);
+			await jest.advanceTimersByTimeAsync(1500);
+			controller.abort();
+			await jest.advanceTimersByTimeAsync(1500);
+
+			expect(await promise).toBe(false);
+		});
+
+		it('returns immediately when the runtime service has no readiness predicate', async () => {
+			delete mockRuntimeService.isReadyForInput;
+			const ready = await service['waitForRuntimeInputReady']('test-session', RUNTIME_TYPES.CODEX_CLI, undefined, 30000);
+			expect(ready).toBe(true);
+			expect(mockSessionHelper.capturePane).not.toHaveBeenCalled();
+		});
+
+		it('does NOT type the Codex file-read instruction while the TUI is still booting', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn()
+				.mockReturnValueOnce(false)
+				.mockReturnValue(true);
+			// Registered right away so the re-delivery watcher exits quickly
+			mockStorageService.getTeams.mockResolvedValue([
+				{ id: 't', members: [{ sessionName: 'test-session', role: 'developer', agentStatus: 'active' }] },
+			] as any);
+
+			const run = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+
+			// First poll says "not ready" — nothing may be typed yet
+			await jest.advanceTimersByTimeAsync(0);
+			const typedEarly = mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => c[1]);
+			expect(typedEarly.find((m: string) => m?.includes('Read the file at'))).toBeUndefined();
+
+			// Next poll (1 s in test env) says ready → C-u, 300 ms, then the instruction
+			await jest.advanceTimersByTimeAsync(1500);
+			const typed = mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => c[1]);
+			expect(typed.find((m: string) => m?.includes('Read the file at'))).toBeDefined();
+
+			await jest.advanceTimersByTimeAsync(2000);
+			await run;
+		});
+
+		it('re-delivers the instruction ONCE when no registration arrives within the registration timeout', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockStorageService.getTeams.mockResolvedValue([]); // never registers
+
+			const run = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+
+			// First delivery
+			await jest.advanceTimersByTimeAsync(1000);
+			const countFileRead = () =>
+				mockSessionHelper.sendMessage.mock.calls.filter((c: any[]) => String(c[1]).includes('Read the file at')).length;
+			expect(countFileRead()).toBe(1);
+
+			// Registration timeout for a non-Claude regular agent is 75 s
+			await jest.advanceTimersByTimeAsync(75_000 + 2_000);
+			expect(countFileRead()).toBe(2);
+			expect(getLogger().info).toHaveBeenCalledWith(
+				'registration re-delivered',
+				expect.objectContaining({ sessionName: 'test-session', role: 'developer', resent: true }),
+			);
+
+			// Second window elapses with still no registration → loud error, no third delivery
+			await jest.advanceTimersByTimeAsync(75_000 + 2_000);
+			expect(countFileRead()).toBe(2);
+			expect(getLogger().error).toHaveBeenCalledWith(
+				'Agent never registered after registration prompt delivery',
+				expect.objectContaining({ sessionName: 'test-session', redeliveries: 1 }),
+			);
+			await run;
+		});
+
+		it('does not re-deliver when the agent registers in time', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			mockStorageService.getTeams
+				.mockResolvedValueOnce([]) // first check: not yet
+				.mockResolvedValue([
+					{ id: 't', members: [{ sessionName: 'test-session', role: 'developer', agentStatus: 'active' }] },
+				] as any);
+
+			const run = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(80_000);
+			await run;
+
+			const fileReads = mockSessionHelper.sendMessage.mock.calls.filter((c: any[]) => String(c[1]).includes('Read the file at'));
+			expect(fileReads).toHaveLength(1);
+			expect(getLogger().info).toHaveBeenCalledWith(
+				'Agent registration confirmed after prompt delivery',
+				expect.objectContaining({ sessionName: 'test-session', redeliveries: 0 }),
+			);
+		});
+
+		it('does not re-deliver when the runtime exited (registration cancelled)', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockStorageService.getTeams.mockResolvedValue([]);
+
+			const run = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(1000);
+			service.cancelPendingRegistration('test-session');
+			await jest.advanceTimersByTimeAsync(160_000);
+			await run;
+
+			const fileReads = mockSessionHelper.sendMessage.mock.calls.filter((c: any[]) => String(c[1]).includes('Read the file at'));
+			expect(fileReads).toHaveLength(1);
+			expect(getLogger().info).not.toHaveBeenCalledWith('registration re-delivered', expect.anything());
+		});
+	});
+
+	// ── Server-install finding 4: orchestrator cwd depended on the boot path ──
+	describe('resolveOrchestratorCwd', () => {
+		const savedOrcCwd = process.env.CREWLY_ORC_CWD;
+		const savedHome = process.env.CREWLY_HOME;
+
+		beforeEach(() => {
+			delete process.env.CREWLY_ORC_CWD;
+			process.env.CREWLY_HOME = '/home/test/.crewly';
+		});
+
+		afterEach(() => {
+			if (savedOrcCwd === undefined) delete process.env.CREWLY_ORC_CWD; else process.env.CREWLY_ORC_CWD = savedOrcCwd;
+			if (savedHome === undefined) delete process.env.CREWLY_HOME; else process.env.CREWLY_HOME = savedHome;
+		});
+
+		it('prefers CREWLY_ORC_CWD when set', async () => {
+			process.env.CREWLY_ORC_CWD = '/srv/orc-home';
+			(mockStorageService as any).getProjects = jest.fn().mockResolvedValue([{ id: 'p1', name: 'A', path: process.cwd() }]);
+
+			expect(await service.resolveOrchestratorCwd()).toBe('/srv/orc-home');
+			expect((mockStorageService as any).getProjects).not.toHaveBeenCalled();
+		});
+
+		it('falls back to the first assigned project whose path exists', async () => {
+			(mockStorageService as any).getProjects = jest.fn().mockResolvedValue([
+				{ id: 'gone', name: 'Gone', path: '/definitely/not/here/xyz' },
+				{ id: 'p1', name: 'A', path: process.cwd() },
+				{ id: 'p2', name: 'B', path: '/also/not/here' },
+			]);
+
+			expect(await service.resolveOrchestratorCwd()).toBe(process.cwd());
+		});
+
+		it('falls back to CREWLY_HOME when there are no projects', async () => {
+			(mockStorageService as any).getProjects = jest.fn().mockResolvedValue([]);
+			expect(await service.resolveOrchestratorCwd()).toBe('/home/test/.crewly');
+		});
+
+		it('falls back to CREWLY_HOME when the project lookup throws — never process.cwd()', async () => {
+			(mockStorageService as any).getProjects = jest.fn().mockRejectedValue(new Error('disk'));
+			expect(await service.resolveOrchestratorCwd()).toBe('/home/test/.crewly');
+		});
+
+		it('ignores the caller-supplied projectPath for the orchestrator session', async () => {
+			(mockStorageService as any).getProjects = jest.fn().mockResolvedValue([]);
+			mockSessionHelper.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile
+				.mockResolvedValueOnce('{"roles": [{"key": "orchestrator", "promptFile": "orchestrator-prompt.md"}]}')
+				.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+			await service.createAgentSession({
+				sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+				role: 'orchestrator',
+				projectPath: '/usr/lib/node_modules/crewly', // the systemd WorkingDirectory
+				forceRecreate: true,
+			});
+
+			const createCalls = mockSessionHelper.createSession.mock.calls;
+			expect(createCalls.length).toBeGreaterThan(0);
+			for (const call of createCalls) {
+				expect(call[1]).toBe('/home/test/.crewly');
+			}
+			// The runtime `cd` uses the same directory as the PTY
+			for (const call of mockRuntimeService.executeRuntimeInitScript.mock.calls) {
+				expect(call[1]).toBe('/home/test/.crewly');
+			}
+		});
+	});
 });

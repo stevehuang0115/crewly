@@ -69,6 +69,12 @@ export const ENV_CONSTANTS = {
 	CLAUDE_CODE_ENABLE_TELEMETRY: 'CLAUDE_CODE_ENABLE_TELEMETRY',
 	/** #222: Absolute path to the Crewly installation directory (where config/skills/ lives) */
 	CREWLY_INSTALL_DIR: 'CREWLY_INSTALL_DIR',
+	/**
+	 * Explicit working directory for the orchestrator's PTY. When unset the
+	 * orchestrator starts in the first assigned project path, then CREWLY_HOME —
+	 * never in the package install dir or the server's process.cwd().
+	 */
+	CREWLY_ORC_CWD: 'CREWLY_ORC_CWD',
 } as const;
 
 // Agent-specific timeout values (in milliseconds)
@@ -1013,6 +1019,90 @@ export const OAUTH_ERROR_PATTERN_SETS: string[][] = [
 	['authentication_error', 'Invalid authentication credentials'],
 	['401', 'Invalid authentication credentials'],
 ];
+
+/**
+ * Patterns that indicate a runtime is sitting on a *first-run* sign-in
+ * screen (as opposed to a mid-session token expiry, which
+ * `OAUTH_ERROR_PATTERN_SETS` covers). A fresh server install matches none of
+ * the expiry sets, so without these the OAuth monitor stays idle while the
+ * runtime waits for a human to log in.
+ *
+ * Each entry is a set of substrings that must ALL be present (AND logic,
+ * case-insensitive) in the recent screen text. Plain string matching — no
+ * regex — to stay ReDoS-free.
+ */
+export const LOGIN_REQUIRED_PATTERN_SETS: string[][] = [
+	// Codex device-code flow (headless-friendly)
+	['auth.openai.com/codex/device'],
+	// Codex default sign-in screen
+	['sign in with chatgpt'],
+	// Claude Code sign-in screens
+	['claude.ai/oauth/authorize'],
+	['use the url below to sign in'],
+	['paste code here if prompted'],
+	['please run /login'],
+	// Gemini CLI sign-in screen
+	['login with google'],
+];
+
+/**
+ * Constants for first-run / device-code login detection and notification
+ * in `OAuthReloginMonitorService`.
+ */
+export const LOGIN_REQUIRED_CONSTANTS = {
+	/** Periodic screen sweep interval for sessions on a sign-in screen (ms) */
+	SWEEP_INTERVAL_MS: 30_000,
+	/** Lines of screen to inspect per sweep */
+	SWEEP_CAPTURE_LINES: 60,
+	/** Do not re-notify the owner for the same session/code within this window (ms) */
+	RENOTIFY_COOLDOWN_MS: 15 * 60 * 1000,
+	/** Length of the first device-code segment, e.g. `FBVZ` in `FBVZ-MJHKK` */
+	DEVICE_CODE_HEAD_LEN: 4,
+	/** Minimum length of the second device-code segment */
+	DEVICE_CODE_TAIL_MIN_LEN: 4,
+	/** Maximum length of the second device-code segment */
+	DEVICE_CODE_TAIL_MAX_LEN: 8,
+	/** Conversation id used when enqueueing the login notice to the orchestrator */
+	ORCHESTRATOR_CONVERSATION_ID: 'system_login_required',
+} as const;
+
+/**
+ * Per-runtime screen markers used by `isReadyForInput()` to decide whether a
+ * TUI will accept typed input *right now*. `waitForRuntimeReady()` matches
+ * banner text that is already on screen while the TUI is still booting (e.g.
+ * Codex prints `OpenAI Codex` while `model: loading`), which is why the
+ * registration instruction used to be typed into a half-booted TUI and
+ * swallowed.
+ */
+export const RUNTIME_INPUT_READY_PATTERNS = {
+	/** Number of trailing non-empty lines inspected for prompt / busy markers */
+	TAIL_LINES: 12,
+	CODEX: {
+		/** Substrings (whitespace-collapsed, lower-case) that mean "still booting / not ready" */
+		NOT_READY_MARKERS: ['model: loading', 'sign in with chatgpt', 'auth.openai.com/codex/device'],
+	},
+	CLAUDE_CODE: {
+		NOT_READY_MARKERS: ['use the url below to sign in', 'paste code here if prompted'],
+	},
+	GEMINI_CLI: {
+		NOT_READY_MARKERS: ['login with google', 'waiting for auth'],
+	},
+} as const;
+
+/**
+ * Timing for delivering the registration instruction to a freshly booted
+ * runtime and re-delivering it once when no registration arrives.
+ */
+export const REGISTRATION_DELIVERY_CONSTANTS = {
+	/** Give the runtime this long to reach an idle input prompt before we type the instruction anyway (ms) */
+	RUNTIME_INPUT_READY_TIMEOUT_MS: 90_000,
+	/** Poll cadence while waiting for the idle prompt (ms) */
+	RUNTIME_INPUT_READY_POLL_MS: 2_000,
+	/** Poll cadence while waiting for the agent to register after delivery (ms) */
+	REGISTRATION_CHECK_INTERVAL_MS: 5_000,
+	/** Maximum number of re-deliveries after the first instruction */
+	MAX_REDELIVERIES: 1,
+} as const;
 
 /**
  * Constants for sub-agent message queue.
