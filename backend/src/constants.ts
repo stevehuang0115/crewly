@@ -1448,6 +1448,66 @@ export const GOOGLE_OAUTH_CONSTANTS = {
 } as const;
 
 /**
+ * Google Workspace (Gmail + Calendar) via Crewly Cloud.
+ *
+ * Cloud holds the OAuth grant (`/api/cloud/google/workspace/*`); the OSS
+ * instance fetches a short-lived access token from Cloud and talks to
+ * Google directly so mail content never passes through Cloud.
+ */
+export const GOOGLE_WORKSPACE_CONSTANTS = {
+	/** Cloud API prefix for the Workspace grant (appended to the cloud URL) */
+	CLOUD_PATH: '/api/cloud/google/workspace',
+	/** Cloud sub-paths under CLOUD_PATH */
+	CLOUD_ENDPOINTS: {
+		/** GET → { connected, email, scopes, grantedAt } */
+		STATUS: '/status',
+		/** GET → { accessToken, expiresAt, scopes, email } */
+		TOKEN: '/token',
+		/** GET ?token=&returnUrl= → 302 to Google consent */
+		START: '/start',
+		/** DELETE CLOUD_PATH itself → { removed } */
+		DISCONNECT: '',
+	},
+	/** Re-fetch the access token this long before Cloud's `expiresAt` (ms) */
+	TOKEN_REFRESH_MARGIN_MS: 60_000,
+	/** HTTP timeout for Cloud and Google calls (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** Gmail REST base for the signed-in user */
+	GMAIL_API_BASE: 'https://gmail.googleapis.com/gmail/v1/users/me',
+	/** Calendar REST base */
+	CALENDAR_API_BASE: 'https://www.googleapis.com/calendar/v3',
+	/** Default / ceiling for Gmail search results per call */
+	GMAIL_DEFAULT_MAX_RESULTS: 20,
+	GMAIL_MAX_RESULTS_CEILING: 100,
+	/** Default / ceiling for Calendar list results per call */
+	CALENDAR_DEFAULT_MAX_RESULTS: 50,
+	CALENDAR_MAX_RESULTS_CEILING: 250,
+	/** Calendar used when the caller names none */
+	DEFAULT_CALENDAR_ID: 'primary',
+	/** Dashboard path the Cloud consent flow returns to */
+	SETTINGS_RETURN_PATH: '/settings?tab=integrations',
+	/** Metadata headers requested on Gmail search hits */
+	GMAIL_SEARCH_HEADERS: ['From', 'To', 'Subject', 'Date'],
+	/** RFC 2045 line width for base64 message bodies */
+	MIME_LINE_WIDTH: 76,
+	/** Error codes shared between the token service, controller and skills */
+	ERROR_CODES: {
+		/** Not signed in to Crewly Cloud at all */
+		NOT_LOGGED_IN: 'not_logged_in',
+		/** Cloud has no Workspace grant for this account (or it was revoked) */
+		NOT_CONNECTED: 'not_connected',
+		/** Cloud is not configured with a Google client */
+		NOT_CONFIGURED: 'not_configured',
+		/** Google answered Cloud (or us) with an error */
+		GOOGLE_ERROR: 'google_error',
+		/** Cloud or Google unreachable */
+		NETWORK: 'network',
+		/** Caller sent an invalid request */
+		VALIDATION: 'validation',
+	},
+} as const;
+
+/**
  * Constants for CrewlyAI Cloud integration.
  * Used by CloudClientService and CloudAuthMiddleware to connect
  * the open-source Crewly instance to CrewlyAI Cloud for premium features.
