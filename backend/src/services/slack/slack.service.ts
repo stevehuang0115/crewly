@@ -29,6 +29,7 @@ import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { resolveFallbackNotificationChannel } from './slack-notification-fallback.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 
@@ -1294,10 +1295,16 @@ export class SlackService extends EventEmitter {
    * @param notification - Notification to send
    */
   async sendNotification(notification: SlackNotification): Promise<void> {
-    const targetChannelId = notification.channelId || this.config?.defaultChannelId;
+    let targetChannelId = notification.channelId || this.config?.defaultChannelId;
     if (!targetChannelId) {
-      this.logger.warn('No channel configured for notification');
-      return;
+      // No SLACK_DEFAULT_CHANNEL: deliver where the owner last talked to us.
+      const fallback = resolveFallbackNotificationChannel();
+      if (!fallback) {
+        this.logger.warn('No channel configured for notification');
+        return;
+      }
+      this.logger.info('No default channel; sending notification to the most recent thread channel', { channelId: fallback });
+      targetChannelId = fallback;
     }
 
     const blocks = this.formatNotificationBlocks(notification);
