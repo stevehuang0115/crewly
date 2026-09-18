@@ -19,6 +19,13 @@ import { pairCommand } from './commands/pair.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion } from './utils/version-check.js';
+import { setCliModuleDir } from './utils/package-root.js';
+import { fileURLToPath } from 'url';
+import { dirname } from 'path';
+
+// Anchor package-root resolution on this module's own location so commands
+// like `crewly service install` work from any cwd after a global install.
+setCliModuleDir(dirname(fileURLToPath(import.meta.url)));
 
 const program = new Command();
 

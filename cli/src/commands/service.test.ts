@@ -88,6 +88,7 @@ import {
 	getSystemdState,
 	isLoginItemRegistered,
 } from './service.js';
+import { setCliModuleDir } from '../utils/package-root.js';
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -888,5 +889,42 @@ describe('isLoginItemRegistered', () => {
 	it('returns false when osascript fails', async () => {
 		mockExecAsync.mockReturnValue(new Error('osascript error'));
 		expect(await isLoginItemRegistered()).toBe(false);
+	});
+});
+
+describe('install from an unrelated cwd (finding 8)', () => {
+	const originalPlatform = process.platform;
+	let logSpy: jest.SpyInstance;
+	let cwdSpy: jest.SpyInstance;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		logSpy = jest.spyOn(console, 'log').mockImplementation();
+		cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue('/home/operator');
+		Object.defineProperty(process, 'platform', { value: 'linux' });
+		setCliModuleDir('/opt/crewly-install/dist/cli/cli/src');
+	});
+
+	afterEach(() => {
+		setCliModuleDir(null);
+		cwdSpy.mockRestore();
+		logSpy.mockRestore();
+		Object.defineProperty(process, 'platform', { value: originalPlatform });
+	});
+
+	it('resolves the package root from the CLI module location, not cwd', async () => {
+		mockExistsSync.mockImplementation((p: string) => p === '/opt/crewly-install/package.json');
+		mockReadFileSync.mockReturnValue(JSON.stringify({ name: 'crewly' }));
+		mockExecAsync.mockReturnValue('');
+
+		await serviceCommand('install', {});
+
+		expect(mockWriteFileSync).toHaveBeenCalledWith(
+			expect.stringContaining('crewly-start.sh'),
+			expect.stringContaining('CREWLY_DIR="/opt/crewly-install"'),
+			expect.objectContaining({ mode: 0o755 }),
+		);
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).not.toContain('Could not find');
 	});
 });

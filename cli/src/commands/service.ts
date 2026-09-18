@@ -24,6 +24,7 @@ import * as path from 'path';
 import * as os from 'os';
 import chalk from 'chalk';
 import { CREWLY_CONSTANTS } from '../../../config/index.js';
+import { resolvePackageRoot } from '../utils/package-root.js';
 
 const execAsync = promisify(exec);
 
@@ -191,7 +192,7 @@ async function installService(options: ServiceOptions): Promise<void> {
 	if (!projectRoot) {
 		console.log(
 			chalk.red(
-				'Could not find Crewly project root. Run this from within the Crewly directory.',
+				'Could not find the Crewly package root from the CLI location, the entry script, or the current directory.',
 			),
 		);
 		process.exit(1);
@@ -1235,33 +1236,17 @@ function assertSupportedPlatform(): void {
 }
 
 /**
- * Finds the Crewly project root by walking up from cwd looking for
- * a package.json with `"name": "crewly"`.
+ * Finds the Crewly package root the CLI is running from.
  *
- * @returns Absolute path to the project root, or null if not found
+ * Anchors on the CLI's own module location and the entry script before the
+ * cwd, so `crewly service install` works from any directory after a global
+ * npm install (finding 8) instead of demanding the operator `cd` into
+ * `/usr/lib/node_modules/crewly` first.
+ *
+ * @returns Absolute path to the package root, or null if not found
  */
 export function findProjectRoot(): string | null {
-	let current = process.cwd();
-
-	while (true) {
-		const pkgPath = path.join(current, 'package.json');
-		if (fs.existsSync(pkgPath)) {
-			try {
-				const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
-				if (pkg.name === 'crewly') {
-					return current;
-				}
-			} catch {
-				// Malformed package.json — keep searching
-			}
-		}
-
-		const parent = path.dirname(current);
-		if (parent === current) {
-			return null;
-		}
-		current = parent;
-	}
+	return resolvePackageRoot();
 }
 
 /**
