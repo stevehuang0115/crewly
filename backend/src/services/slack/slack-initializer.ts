@@ -10,11 +10,39 @@
 import { getSlackService } from './slack.service.js';
 import { getSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
 import { loadSlackCredentials } from './slack-credentials.service.js';
-import { SlackConfig } from '../../types/slack.types.js';
+import {
+  SlackCloudConfigService,
+  getSlackCloudConfigService,
+  setSlackCloudConfigService,
+} from './slack-cloud-config.service.js';
+import {
+  SlackInstanceRegistryService,
+  getSlackInstanceRegistryService,
+  setSlackInstanceRegistryService,
+} from './slack-instance-registry.service.js';
+import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
+import { getSlackTeamChannelService } from './slack-team-channel.service.js';
+import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SlackInitializer');
+
+/** Where the active Slack connection's tokens came from. */
+export type SlackSource = 'env' | 'cloud';
+
+/** A config together with its provenance. */
+export interface ResolvedSlackConfig {
+  config: SlackConfig;
+  source: SlackSource;
+}
+
+/** Source of the connection currently held by SlackService (null = none). */
+let activeSource: SlackSource | null = null;
+/** Unsubscribe for the Cloud config watch. */
+let unsubscribeCloudConfig: (() => void) | null = null;
+/** Init options captured at boot so a later Cloud-triggered connect gets the queue. */
+let bootOptions: SlackInitOptions | undefined;
 
 /**
  * Result of initialization attempt
@@ -95,6 +123,75 @@ export async function getSlackConfig(): Promise<SlackConfig | null> {
 }
 
 /**
+ * Build (once) the Cloud config service on top of the Cloud client.
+ *
+ * @returns The process-wide SlackCloudConfigService
+ */
+export async function ensureSlackCloudConfigService(): Promise<SlackCloudConfigService> {
+  let service = getSlackCloudConfigService();
+  if (!service) {
+    const { CloudClientService } = await import('../cloud/cloud-client.service.js');
+    service = new SlackCloudConfigService({ cloud: CloudClientService.getInstance() });
+    setSlackCloudConfigService(service);
+  }
+  return service;
+}
+
+/**
+ * Pick the Slack config to connect with, applying the source precedence:
+ *
+ *  - `CREWLY_SLACK_SOURCE=env`   → local tokens only (env / credentials file);
+ *  - `CREWLY_SLACK_SOURCE=cloud` → the Cloud-owned workspace only;
+ *  - unset                       → Cloud when the account has a workspace
+ *    installed, otherwise local tokens. When both exist Cloud wins and this
+ *    is logged once so the migration is visible.
+ *
+ * @returns The config and where it came from, or null when nothing is set up
+ */
+export async function resolveSlackConfig(): Promise<ResolvedSlackConfig | null> {
+  const cloudConfigService = await ensureSlackCloudConfigService();
+  const mode = cloudConfigService.getSourceMode();
+
+  const local = mode === 'cloud' ? null : await getSlackConfig();
+
+  let cloud: SlackConfig | null = null;
+  if (mode !== 'env') {
+    await cloudConfigService.loadOrRefresh();
+    cloud = cloudConfigService.toSlackConfig();
+  }
+
+  if (cloud) {
+    if (local) {
+      logger.info(
+        'Both local Slack tokens and a Cloud-owned workspace are present — using Crewly Cloud. Set CREWLY_SLACK_SOURCE=env to keep the self-hosted app.',
+      );
+    }
+    return { config: cloud, source: 'cloud' };
+  }
+  if (local) return { config: local, source: 'env' };
+  return null;
+}
+
+/**
+ * The source of the live Slack connection.
+ *
+ * @returns `env`, `cloud`, or null when Slack is not connected
+ */
+export function getActiveSlackSource(): SlackSource | null {
+  return activeSource;
+}
+
+/**
+ * Record the source of a connection made outside {@link connectSlack}
+ * (the manual `/api/slack/connect` route).
+ *
+ * @param source - The source, or null after a disconnect
+ */
+export function setActiveSlackSource(source: SlackSource | null): void {
+  activeSource = source;
+}
+
+/**
  * Options for Slack initialization
  */
 export interface SlackInitOptions {
@@ -129,16 +226,42 @@ export interface SlackInitOptions {
 export async function initializeSlackIfConfigured(
   options?: SlackInitOptions
 ): Promise<SlackInitResult> {
-  const config = await getSlackConfig();
+  bootOptions = options;
+  const resolved = await resolveSlackConfig();
 
-  if (!config) {
+  // Keep watching Cloud: a workspace connected later from Settings (or on
+  // another machine) lights this instance up without a restart.
+  await watchSlackCloudConfig();
+
+  if (!resolved) {
     logger.info('Not configured - skipping initialization');
     return { attempted: false, success: false };
   }
 
+  return connectSlack(resolved, options);
+}
+
+/**
+ * Connect SlackService with a resolved config and bring up the bridge, team
+ * channels and — for the Cloud source — the relay transport, the identities
+ * from the Cloud config and the instance registry.
+ *
+ * @param resolved - Config + source
+ * @param options - Init options (message queue)
+ * @returns Result object indicating success or failure
+ */
+export async function connectSlack(
+  resolved: ResolvedSlackConfig,
+  options?: SlackInitOptions,
+): Promise<SlackInitResult> {
+  const { config, source } = resolved;
   try {
     const slackService = getSlackService();
     await slackService.initialize(config);
+
+    if (source === 'cloud') {
+      await attachSlackCloudTransport();
+    }
 
     const bridge = getSlackOrchestratorBridge();
 
@@ -151,13 +274,175 @@ export async function initializeSlackIfConfigured(
 
     await startSlackTeamChannels();
 
-    logger.info('Successfully connected');
+    if (source === 'cloud') {
+      await applyCloudIdentities();
+      await startSlackInstanceRegistry();
+    }
+
+    activeSource = source;
+    logger.info('Successfully connected', { source, transport: slackService.getTransport() });
     return { attempted: true, success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    logger.error('Failed to initialize', { error: errorMessage });
+    logger.error('Failed to initialize', { error: errorMessage, source });
     return { attempted: true, success: false, error: errorMessage };
   }
+}
+
+/**
+ * Route `slack_event` relay messages from CloudSyncService into SlackService
+ * (the cloud inbound transport). Non-fatal when Cloud Sync is not running —
+ * events simply cannot arrive until it is.
+ */
+async function attachSlackCloudTransport(): Promise<void> {
+  try {
+    const { CloudSyncService } = await import('../cloud/cloud-sync.service.js');
+    getSlackService().attachCloudTransport(CloudSyncService.getInstance());
+  } catch (error) {
+    logger.warn('Could not attach the Cloud Slack transport — inbound Slack events will not arrive', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Feed the per-agent identities delivered with the Cloud config into the
+ * identity service (installed bot users, tokens included).
+ */
+async function applyCloudIdentities(): Promise<void> {
+  const cloudConfigService = getSlackCloudConfigService();
+  const identities = getSlackAgentIdentityService();
+  if (!cloudConfigService || !identities) return;
+  try {
+    const added = await identities.applyCloudConfig(cloudConfigService.getAgents());
+    if (added > 0) logger.info('Agent identities installed from Cloud config', { added });
+  } catch (error) {
+    logger.warn('Could not apply agent identities from Cloud config', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
+ * Build (once) the instance registry service without starting it — the
+ * primary toggle needs it even before Slack is connected.
+ *
+ * @returns The process-wide SlackInstanceRegistryService
+ */
+export async function ensureSlackInstanceRegistry(): Promise<SlackInstanceRegistryService> {
+  let registry = getSlackInstanceRegistryService();
+  if (!registry) {
+    const [{ CloudClientService }, { CloudSyncService }, { DeviceIdentityService }, { StorageService }] =
+      await Promise.all([
+        import('../cloud/cloud-client.service.js'),
+        import('../cloud/cloud-sync.service.js'),
+        import('../cloud/device-identity.service.js'),
+        import('../core/storage.service.js'),
+      ]);
+    registry = new SlackInstanceRegistryService({
+      cloud: CloudClientService.getInstance(),
+      identity: DeviceIdentityService.getInstance(),
+      sync: CloudSyncService.getInstance(),
+      storage: StorageService.getInstance(),
+      getTeamChannels: () => getSlackTeamChannelService(),
+    });
+    setSlackInstanceRegistryService(registry);
+  }
+  return registry;
+}
+
+/**
+ * Build (once) and start the instance registry heartbeat. Never throws.
+ *
+ * @returns The registry service, or null when its dependencies are missing
+ */
+export async function startSlackInstanceRegistry(): Promise<SlackInstanceRegistryService | null> {
+  try {
+    const registry = await ensureSlackInstanceRegistry();
+    await registry.start();
+    return registry;
+  } catch (error) {
+    logger.warn('Slack instance registry not started', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+/**
+ * Subscribe to Cloud config changes and start the 10-minute refresh (unless
+ * `CREWLY_SLACK_SOURCE=env`). Idempotent.
+ */
+export async function watchSlackCloudConfig(): Promise<void> {
+  const cloudConfigService = await ensureSlackCloudConfigService();
+  if (cloudConfigService.getSourceMode() === 'env') return;
+  if (!unsubscribeCloudConfig) {
+    unsubscribeCloudConfig = cloudConfigService.onChange((config) => {
+      void handleSlackCloudConfigChange(config);
+    });
+  }
+  cloudConfigService.start();
+}
+
+/**
+ * React to the Cloud config appearing, rotating or disappearing:
+ *
+ *  - appeared and Slack is not connected → connect with the cloud source;
+ *  - changed while connected via Cloud → re-initialise with the new token
+ *    and merge new identities;
+ *  - removed while connected via Cloud → disconnect.
+ *
+ * A live self-hosted (`env`) connection is left alone; precedence is only
+ * applied at boot so a running socket is never yanked under the owner.
+ *
+ * @param config - The new Cloud config (null when removed)
+ */
+export async function handleSlackCloudConfigChange(config: SlackCloudConfig | null): Promise<void> {
+  const slackService = getSlackService();
+  const cloudConfigService = getSlackCloudConfigService();
+  if (!cloudConfigService) return;
+
+  if (!config) {
+    if (activeSource === 'cloud') {
+      logger.info('Cloud Slack workspace removed — disconnecting');
+      getSlackInstanceRegistryService()?.stop();
+      await slackService.disconnect().catch(() => undefined);
+      activeSource = null;
+    }
+    return;
+  }
+
+  const slackConfig = cloudConfigService.toSlackConfig();
+  if (!slackConfig) return;
+
+  if (!slackService.isConnected()) {
+    logger.info('Cloud Slack workspace available — connecting', { workspace: config.workspace.slackTeamName });
+    await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions);
+    return;
+  }
+
+  if (activeSource === 'cloud') {
+    if (slackService.getBotToken() !== slackConfig.botToken) {
+      logger.info('Cloud Slack bot token rotated — re-initialising');
+      await slackService.initialize(slackConfig);
+      await attachSlackCloudTransport();
+    }
+    await applyCloudIdentities();
+  }
+}
+
+/**
+ * Reset module state (tests).
+ */
+export function resetSlackInitializerState(): void {
+  unsubscribeCloudConfig?.();
+  unsubscribeCloudConfig = null;
+  activeSource = null;
+  bootOptions = undefined;
+  getSlackCloudConfigService()?.stop();
+  getSlackInstanceRegistryService()?.stop();
+  setSlackInstanceRegistryService(null);
+  setSlackCloudConfigService(null);
 }
 
 /**
@@ -232,9 +517,12 @@ export async function startSlackTeamChannels(): Promise<void> {
  */
 export async function shutdownSlack(): Promise<void> {
   try {
+    getSlackInstanceRegistryService()?.stop();
+    getSlackCloudConfigService()?.stop();
     const slackService = getSlackService();
     if (slackService.isConnected()) {
       await slackService.disconnect();
+      activeSource = null;
       logger.info('Disconnected');
     }
   } catch (error) {

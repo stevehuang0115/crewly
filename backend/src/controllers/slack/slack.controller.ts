@@ -16,9 +16,18 @@ import { saveSlackCredentials, deleteSlackCredentials, hasSavedCredentials } fro
 import { getSlackTeamChannelService } from '../../services/slack/slack-team-channel.service.js';
 import { getSlackAgentIdentityService, SlackIdentityCloudError } from '../../services/slack/slack-agent-identity.service.js';
 import { getSlackAgentPostService, SlackAgentPostError } from '../../services/slack/slack-agent-post.service.js';
-import { startSlackTeamChannels } from '../../services/slack/slack-initializer.js';
+import {
+  startSlackTeamChannels,
+  ensureSlackCloudConfigService,
+  ensureSlackInstanceRegistry,
+  handleSlackCloudConfigChange,
+  getActiveSlackSource,
+  setActiveSlackSource,
+} from '../../services/slack/slack-initializer.js';
+import { getSlackInstanceRegistryService } from '../../services/slack/slack-instance-registry.service.js';
+import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 import { synthesizeSlackConversationId } from '../../services/chat-v2/legacy-dto.utils.js';
 
@@ -334,6 +343,7 @@ router.post('/connect', async (req: Request, res: Response, next: NextFunction) 
 
     // Persist credentials to disk so they survive server restarts
     await saveSlackCredentials(config);
+    setActiveSlackSource('env');
 
     res.json({
       success: true,
@@ -356,6 +366,7 @@ router.post('/disconnect', async (req: Request, res: Response, next: NextFunctio
   try {
     const slackService = getSlackService();
     await slackService.disconnect();
+    setActiveSlackSource(null);
 
     // Remove saved credentials so Slack doesn't auto-reconnect on restart
     await deleteSlackCredentials();
@@ -770,6 +781,208 @@ router.get('/config', async (req: Request, res: Response, next: NextFunction) =>
       },
     });
   } catch (error) {
+    next(error);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Crewly Cloud owns Slack (Slack v3) — one-click install, status, primary
+// ---------------------------------------------------------------------------
+
+/**
+ * Answer 401 unless the OSS install is signed in to Crewly Cloud.
+ *
+ * @param res - Response used for the 401
+ * @returns `{ token, cloudUrl }` or null after the response was sent
+ */
+function requireCloudLogin(res: Response): { token: string; cloudUrl: string } | null {
+  const cloud = CloudClientService.getInstance();
+  const token = cloud.getToken();
+  const cloudUrl = cloud.getCloudUrl();
+  if (!cloud.isConnected() || !token || !cloudUrl) {
+    res.status(401).json({
+      success: false,
+      error: 'Log in to Crewly Cloud first (Settings → Cloud) — Slack is installed through your Crewly account',
+      code: 'CLOUD_NOT_CONNECTED',
+    });
+    return null;
+  }
+  return { token, cloudUrl: cloudUrl.replace(/\/$/, '') };
+}
+
+/**
+ * The dashboard URL the Slack install flow returns to: the caller's
+ * `returnUrl` when it is an http(s) URL, otherwise this server's origin +
+ * the Settings Slack tab.
+ *
+ * @param req - The request
+ * @returns An absolute http(s) URL
+ */
+function resolveInstallReturnUrl(req: Request): string {
+  const requested = typeof req.query.returnUrl === 'string' ? req.query.returnUrl.trim() : '';
+  if (/^https?:\/\//i.test(requested)) return requested;
+  const host = req.get('host') || `localhost`;
+  return `${req.protocol}://${host}${SLACK_CLOUD_CONSTANTS.INSTALL_RETURN_PATH}`;
+}
+
+/**
+ * GET /api/slack/cloud/install-url
+ *
+ * Build the one-click install link: Cloud's `/api/cloud/slack/install`
+ * with the current Cloud JWT (a browser redirect cannot set headers) and
+ * the dashboard return URL.
+ *
+ * @query returnUrl - Optional absolute http(s) URL to come back to
+ * @returns `{ url, returnUrl }`
+ */
+router.get('/cloud/install-url', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const login = requireCloudLogin(res);
+    if (!login) return;
+    const returnUrl = resolveInstallReturnUrl(req);
+    const url =
+      `${login.cloudUrl}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.INSTALL_PATH}` +
+      `?token=${encodeURIComponent(login.token)}&returnUrl=${encodeURIComponent(returnUrl)}`;
+    res.json({ success: true, data: { url, returnUrl } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/slack/cloud/status
+ *
+ * The Cloud-owned Slack picture for this instance: connected workspace,
+ * transport, primary flag, registry heartbeat and agents still waiting for
+ * their install click. `?refresh=1` re-fetches the config from Cloud first
+ * and connects when a workspace just appeared (the post-install landing).
+ */
+router.get('/cloud/status', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const cloud = CloudClientService.getInstance();
+    const cloudConnected = cloud.isConnected() && !!cloud.getToken() && !!cloud.getCloudUrl();
+    const configService = await ensureSlackCloudConfigService();
+    const refresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    if (refresh) {
+      await configService.refresh();
+    } else {
+      await configService.load();
+    }
+    const slackService = getSlackService();
+    const config = configService.getConfig();
+    if (refresh && config && !slackService.isConnected() && configService.getSourceMode() !== 'env') {
+      await handleSlackCloudConfigChange(config);
+    }
+    const registry = getSlackInstanceRegistryService();
+    const primary = registry ? await registry.isPrimary() : await (await ensureSlackInstanceRegistry()).isPrimary();
+    const hasSaved = await hasSavedCredentials();
+    res.json({
+      success: true,
+      data: {
+        cloudConnected,
+        sourceMode: configService.getSourceMode(),
+        activeSource: getActiveSlackSource(),
+        connected: slackService.isConnected(),
+        transport: slackService.isConnected() ? slackService.getTransport() : null,
+        workspace: config
+          ? {
+              slackTeamId: config.workspace.slackTeamId,
+              slackTeamName: config.workspace.slackTeamName,
+              botUserId: config.workspace.botUserId,
+              appId: config.workspace.appId,
+              agentIdentities: config.agents.length,
+            }
+          : null,
+        configFetchedAt: configService.getFetchedAt(),
+        configError: configService.getLastError(),
+        primary,
+        instanceId: registry?.getInstanceId() ?? null,
+        lastHeartbeatAt: registry?.getLastHeartbeatAt() ?? null,
+        registryError: registry?.getLastError() ?? null,
+        pendingInstalls: registry?.getPendingInstalls() ?? [],
+        local: {
+          env: !!(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN && process.env.SLACK_SIGNING_SECRET),
+          saved: hasSaved,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/slack/cloud/primary
+ *
+ * Make (or unmake) this instance the account's primary — the one that gets
+ * DMs to the master bot and messages in channels no team owns. Persisted
+ * locally and pushed to Cloud right away.
+ *
+ * @body primary - boolean (required)
+ */
+router.put('/cloud/primary', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { primary } = req.body ?? {};
+    if (typeof primary !== 'boolean') {
+      res.status(400).json({ success: false, error: 'primary (boolean) is required' });
+      return;
+    }
+    const registry = await ensureSlackInstanceRegistry();
+    await registry.setPrimary(primary);
+    res.json({
+      success: true,
+      data: { primary: await registry.isPrimary(), lastHeartbeatAt: registry.getLastHeartbeatAt(), registryError: registry.getLastError() },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * POST /api/slack/cloud/agents/sync
+ *
+ * Re-run the per-agent app provisioning for every team and return the
+ * install links still pending (the Settings "Sync agents" button).
+ */
+router.post('/cloud/agents/sync', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireCloudLogin(res)) return;
+    const registry = await ensureSlackInstanceRegistry();
+    const result = await registry.syncAgents();
+    if (!result) {
+      res.status(502).json({ success: false, error: registry.getLastError() ?? 'Agent sync failed', code: 'AGENT_SYNC_FAILED' });
+      return;
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * DELETE /api/slack/cloud/workspace
+ *
+ * Remove the account's Slack workspace on Cloud and disconnect here.
+ */
+router.delete('/cloud/workspace', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireCloudLogin(res)) return;
+    const configService = await ensureSlackCloudConfigService();
+    const removed = await configService.removeWorkspace();
+    // The config change already asked the initializer to disconnect (async);
+    // make sure a cloud-sourced connection is down before answering.
+    await handleSlackCloudConfigChange(null);
+    const slackService = getSlackService();
+    if (slackService.isConnected() && slackService.getTransport() === 'cloud') {
+      await slackService.disconnect();
+      setActiveSlackSource(null);
+    }
+    res.json({ success: true, data: { removed } });
+  } catch (error) {
+    if (error instanceof SlackIdentityCloudError) {
+      res.status(error.status >= 400 && error.status < 600 ? error.status : 502).json({ success: false, error: error.message, code: error.code });
+      return;
+    }
     next(error);
   }
 });
