@@ -105,6 +105,7 @@ import { OrchestratorHeartbeatMonitorService } from './services/orchestrator/orc
 import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor.service.js';
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
+import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
@@ -1508,11 +1509,43 @@ void (async () => {
 				});
 			}
 
-			// Wire OAuthReloginMonitorService EventBus dependency
+			// Wire OAuthReloginMonitorService: event bus, orchestrator queue,
+			// chat + Slack sinks for the owner-facing login notice, and the
+			// boot-level sign-in-screen sweep (server-install finding 7).
 			try {
-				OAuthReloginMonitorService.getInstance().setEventBusService(this.eventBusService);
+				const oauthMonitor = OAuthReloginMonitorService.getInstance();
+				oauthMonitor.setEventBusService(this.eventBusService);
+				oauthMonitor.setNoticeQueue(this.messageQueueService);
+				oauthMonitor.setSlackProvider(async () => {
+					const slack = getSlackService();
+					return slack.isConnected() ? slack : null;
+				});
+				oauthMonitor.setChatProvider(() => {
+					const gateway = this.terminalGateway;
+					if (!gateway) return null;
+					return {
+						getActiveConversationId: () => gateway.getActiveConversationId(),
+						recordSystemTurn: (conversationId: string, content: string) => {
+							const chatV2 = getChatV2Service();
+							const channel = chatV2.ensureChannelForLegacyConversation({
+								conversationId,
+								agentSession: ORCHESTRATOR_SESSION_NAME,
+							});
+							chatV2.recordTurn({
+								channelId: channel.id,
+								senderType: 'system',
+								senderId: 'system',
+								content,
+								metadata: { source: 'system' },
+							});
+						},
+						broadcastSystemNotification: (message: string, type: 'warning') =>
+							gateway.broadcastSystemNotification(message, type),
+					};
+				});
+				oauthMonitor.start();
 			} catch (error) {
-				this.logger.warn('Failed to wire OAuthReloginMonitorService EventBus (non-critical)', {
+				this.logger.warn('Failed to wire OAuthReloginMonitorService (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}

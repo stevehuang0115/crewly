@@ -14,6 +14,7 @@ import {
 	getOrchestratorOfflineMessage,
 } from '../../services/orchestrator/index.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
+import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import { MemoryService } from '../../services/memory/memory.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { isModelProvider } from '../../services/agent/crewly-agent/types.js';
@@ -729,13 +730,23 @@ export async function getOrchestratorStatus(
 	try {
 		const status = await getOrchestratorStatusFromService();
 
+		// Pending sign-in captured from the orchestrator's PTY (url + device code),
+		// so the UI can show "needs you to sign in" instead of a bare "starting up".
+		const pendingLogin = OAuthReloginMonitorService.getInstance().getLoginRequired(ORCHESTRATOR_SESSION_NAME);
+		const loginRequired = pendingLogin
+			? { url: pendingLogin.url, code: pendingLogin.code, detectedAt: pendingLogin.detectedAt }
+			: null;
+
 		res.json({
 			success: true,
 			data: {
 				isActive: status.isActive,
 				agentStatus: status.agentStatus,
-				message: status.message,
+				message: loginRequired
+					? `Orchestrator needs you to sign in${loginRequired.url ? `: ${loginRequired.url}` : ''}${loginRequired.code ? ` code ${loginRequired.code}` : ''}`
+					: status.message,
 				offlineMessage: status.isActive ? null : getOrchestratorOfflineMessage(false),
+				loginRequired,
 			},
 		} as ApiResponse);
 	} catch (error) {

@@ -44,6 +44,10 @@ export const EVENT_TYPES = [
   'agent:context_warning',
   'agent:context_critical',
   'agent:oauth_url',
+  // Runtime is sitting on a sign-in screen (first-run or device-code
+  // flow) and needs a human to complete login. Payload: newValue = login
+  // URL, and `loginCode` carries the device code when one was captured.
+  'agent:login_required',
 
   // Hierarchical task events
   'task:submitted',
@@ -161,6 +165,9 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'agent:idle_after_task',
   'agent:inactive',
   'agent:context_critical',
+  // A runtime parked on a sign-in screen is dead until a human acts, and a
+  // device code expires in minutes — always actionable.
+  'agent:login_required',
   'hierarchy:escalation',
   // Architecture Upgrade: task event chain — these drive workflow progression
   'task:done',
@@ -238,7 +245,7 @@ export function getCriticalEventTypes(): EventType[] {
 /**
  * Fields that can trigger events when changed
  */
-export type ChangedField = 'agentStatus' | 'workingStatus' | 'contextUsage' | 'oauthUrl' | 'taskStatus' | 'hierarchyAction';
+export type ChangedField = 'agentStatus' | 'workingStatus' | 'contextUsage' | 'oauthUrl' | 'loginRequired' | 'taskStatus' | 'hierarchyAction';
 
 // =============================================================================
 // Event Interfaces
@@ -280,6 +287,9 @@ export interface AgentEvent {
 
   /** Which field changed to trigger this event */
   changedField: ChangedField;
+
+  /** Device/authorization code captured alongside a login URL (agent:login_required) */
+  loginCode?: string;
 
   // === Hierarchy metadata (optional, used for task/hierarchy events) ===
 

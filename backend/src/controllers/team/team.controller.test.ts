@@ -452,6 +452,59 @@ describe('Teams Handlers', () => {
       expect(regularTeam.members[0].workingStatus).toBe('in_progress');
     });
 
+    it('surfaces loginRequired (url + device code) on members and the orchestrator parked on a sign-in screen', async () => {
+      const { OAuthReloginMonitorService } = await import('../../services/agent/oauth-relogin-monitor.service.js');
+      const monitor = OAuthReloginMonitorService.getInstance();
+      const deviceScreen = 'Sign in with your ChatGPT account using a device code\n  1. Go to https://auth.openai.com/codex/device\n  2. Enter the code: FBVZ-MJHKK';
+      monitor.inspectScreen('team-1-alice', deviceScreen, 'codex-cli');
+      monitor.inspectScreen(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, deviceScreen, 'codex-cli');
+
+      mockStorageService.getTeams.mockResolvedValue([
+        {
+          id: 'team-1',
+          name: 'Team 1',
+          description: 'First team',
+          members: [
+            {
+              id: 'member-1', name: 'Alice', sessionName: 'team-1-alice', role: 'developer',
+              runtimeType: 'codex-cli', systemPrompt: 'Test', agentStatus: 'started', workingStatus: 'idle',
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+            },
+            {
+              id: 'member-2', name: 'Bob', sessionName: 'team-1-bob', role: 'developer',
+              runtimeType: 'codex-cli', systemPrompt: 'Test', agentStatus: 'active', workingStatus: 'idle',
+              createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+            }
+          ],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        }
+      ]);
+      mockStorageService.getOrchestratorStatus.mockResolvedValue(null);
+
+      try {
+        await teamsHandlers.getTeams.call(
+          mockApiContext,
+          mockRequest as Request,
+          mockResponse as Response
+        );
+      } finally {
+        monitor.clearLoginRequired('team-1-alice');
+        monitor.clearLoginRequired(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+      }
+
+      const responseData = responseMock.json.mock.calls[0][0] as any;
+      const orchestratorMember = responseData.data[0].members.find((m: any) => m.sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+      expect(orchestratorMember.loginRequired).toEqual(expect.objectContaining({
+        url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK',
+      }));
+      const [alice, bob] = responseData.data[1].members;
+      expect(alice.loginRequired).toEqual(expect.objectContaining({
+        url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK',
+      }));
+      expect(bob.loginRequired).toBeUndefined();
+    });
+
     it('should handle storage service errors when getting teams', async () => {
       mockStorageService.getTeams.mockRejectedValue(new Error('Database connection failed'));
 

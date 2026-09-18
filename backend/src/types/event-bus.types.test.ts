@@ -34,6 +34,7 @@ describe('Event Bus Types', () => {
         'agent:context_warning',
         'agent:context_critical',
         'agent:oauth_url',
+        'agent:login_required',
         // Hierarchical task events
         'task:submitted',
         'task:accepted',
@@ -152,6 +153,11 @@ describe('Event Bus Types', () => {
     it('should classify agent crashes and context exhaustion as critical', () => {
       expect(CRITICAL_EVENT_TYPES.has('agent:inactive')).toBe(true);
       expect(CRITICAL_EVENT_TYPES.has('agent:context_critical')).toBe(true);
+    });
+
+    it('should classify agent:login_required as critical (device codes expire in minutes)', () => {
+      expect(CRITICAL_EVENT_TYPES.has('agent:login_required')).toBe(true);
+      expect(isCriticalEventType('agent:login_required')).toBe(true);
     });
 
     it('should classify hierarchy escalations as critical', () => {

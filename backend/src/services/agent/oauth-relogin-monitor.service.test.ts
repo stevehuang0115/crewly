@@ -34,6 +34,8 @@ const mockSession = {
 const mockBackend = {
 	getSession: jest.fn().mockReturnValue(mockSession),
 	sessionExists: jest.fn().mockReturnValue(true),
+	captureOutput: jest.fn().mockReturnValue(''),
+	listSessions: jest.fn().mockReturnValue([]),
 };
 
 jest.mock('../session/index.js', () => ({
@@ -94,6 +96,8 @@ describe('OAuthReloginMonitorService', () => {
 		mockBackend.getSession.mockClear();
 		mockBackend.getSession.mockReturnValue(mockSession);
 		mockBackend.sessionExists.mockReturnValue(true);
+		mockBackend.captureOutput.mockReset().mockReturnValue('');
+		mockBackend.listSessions.mockReset().mockReturnValue([]);
 	});
 
 	afterEach(() => {
@@ -586,6 +590,269 @@ describe('OAuthReloginMonitorService', () => {
 			const state = service.getState('test-session');
 			expect(state).toBeDefined();
 			expect(state!.buffer).toBe('');
+		});
+	});
+
+	// =========================================================================
+	// First-run / device-code login detection (server-install finding 7)
+	// =========================================================================
+
+	const CODEX_DEVICE_CODE_SCREEN = [
+		'  Welcome to Codex, OpenAI\'s command-line coding agent',
+		'',
+		'  Sign in with your ChatGPT account using a device code',
+		'',
+		'  1. Go to https://auth.openai.com/codex/device',
+		'  2. Enter the code: FBVZ-MJHKK',
+		'',
+		'  The code expires in 15 minutes.',
+		'',
+		'  Press esc to go back',
+	].join('\n');
+
+	const CODEX_BROWSER_SIGNIN_SCREEN = [
+		'  Welcome to Codex',
+		'',
+		'  Sign in with ChatGPT to use Codex as part of your paid ChatGPT plan',
+		'',
+		'› 1. Sign in with ChatGPT',
+		'  2. Provide your own API key',
+	].join('\n');
+
+	const CLAUDE_LOGIN_SCREEN = [
+		"  Browser didn't open? Use the url below to sign in:",
+		'',
+		'  https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code',
+		'',
+		'  Paste code here if prompted >',
+	].join('\n');
+
+	const CODEX_IDLE_SCREEN = [
+		'│ model:     gpt-5-codex   /model to change │',
+		'',
+		'› Ask Codex to do anything',
+		'',
+		'  ? for shortcuts                       gpt-5-codex · /root/.crewly',
+	].join('\n');
+
+	describe('detectLoginRequired', () => {
+		it('extracts the device URL and XXXX-XXXXX code from the Codex device-code screen', () => {
+			expect(service.detectLoginRequired(CODEX_DEVICE_CODE_SCREEN)).toEqual({
+				url: 'https://auth.openai.com/codex/device',
+				code: 'FBVZ-MJHKK',
+			});
+		});
+
+		it('detects the Codex browser sign-in screen (no URL, no code)', () => {
+			expect(service.detectLoginRequired(CODEX_BROWSER_SIGNIN_SCREEN)).toEqual({ url: null, code: null });
+		});
+
+		it('extracts the Claude Code OAuth URL from its login screen', () => {
+			expect(service.detectLoginRequired(CLAUDE_LOGIN_SCREEN)).toEqual({
+				url: 'https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code',
+				code: null,
+			});
+		});
+
+		it('returns null for an idle runtime screen', () => {
+			expect(service.detectLoginRequired(CODEX_IDLE_SCREEN)).toBeNull();
+		});
+
+		it('returns null for empty input', () => {
+			expect(service.detectLoginRequired('')).toBeNull();
+		});
+
+		it('ignores ANSI colour codes around the code', () => {
+			const withAnsi = CODEX_DEVICE_CODE_SCREEN.replace('FBVZ-MJHKK', '\x1b[1mFBVZ-MJHKK\x1b[0m');
+			expect(service.detectLoginRequired(withAnsi)?.code).toBe('FBVZ-MJHKK');
+		});
+
+		it('does not mistake lowercase hex or short segments for a device code', () => {
+			const screen = CODEX_DEVICE_CODE_SCREEN.replace('FBVZ-MJHKK', 'a1b2-c3d4e5').replace('code:', 'code: GPT-5 ');
+			expect(service.detectLoginRequired(screen)?.code).toBeNull();
+		});
+	});
+
+	describe('inspectScreen / notification path', () => {
+		const mockEventBus = { publish: jest.fn() };
+		const mockQueue = { enqueue: jest.fn() };
+		const mockSlack = { isConnected: jest.fn().mockReturnValue(true), sendNotification: jest.fn().mockResolvedValue(undefined) };
+		const mockChat = {
+			getActiveConversationId: jest.fn().mockReturnValue('conv-1'),
+			recordSystemTurn: jest.fn(),
+			broadcastSystemNotification: jest.fn(),
+		};
+
+		beforeEach(() => {
+			mockEventBus.publish.mockClear();
+			mockQueue.enqueue.mockClear();
+			mockSlack.isConnected.mockClear().mockReturnValue(true);
+			mockSlack.sendNotification.mockClear();
+			mockChat.getActiveConversationId.mockClear().mockReturnValue('conv-1');
+			mockChat.recordSystemTurn.mockClear();
+			mockChat.broadcastSystemNotification.mockClear();
+			service.setEventBusService(mockEventBus as any);
+			service.setNoticeQueue(mockQueue);
+			service.setSlackProvider(async () => mockSlack);
+			service.setChatProvider(() => mockChat);
+		});
+
+		it('flags the session, publishes agent:login_required, enqueues a [NOTIFY], surfaces in chat and Slack', async () => {
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+
+			const pending = service.getLoginRequired('agent-dev-001');
+			expect(pending).toMatchObject({
+				sessionName: 'agent-dev-001',
+				runtimeType: 'codex-cli',
+				url: 'https://auth.openai.com/codex/device',
+				code: 'FBVZ-MJHKK',
+			});
+			expect(pending!.detectedAt).toBeTruthy();
+
+			expect(mockEventBus.publish).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'agent:login_required',
+				sessionName: 'agent-dev-001',
+				newValue: 'https://auth.openai.com/codex/device',
+				loginCode: 'FBVZ-MJHKK',
+				changedField: 'loginRequired',
+			}));
+
+			const expectedText = 'Agent agent-dev-001 needs you to sign in: https://auth.openai.com/codex/device code FBVZ-MJHKK';
+			expect(mockQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
+				content: `[NOTIFY] ${expectedText}`,
+				source: 'system_event',
+				targetSession: 'crewly-orc',
+			}));
+			expect(mockChat.recordSystemTurn).toHaveBeenCalledWith('conv-1', `[Login required] ${expectedText}`);
+			expect(mockChat.broadcastSystemNotification).toHaveBeenCalledWith(expectedText, 'warning');
+			expect(mockSlack.sendNotification).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'agent_error',
+				urgency: 'high',
+				message: expectedText,
+				metadata: { agentId: 'agent-dev-001' },
+			}));
+		});
+
+		it('does not enqueue to the orchestrator queue when the orchestrator itself needs login', async () => {
+			service.inspectScreen('crewly-orc', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+
+			expect(service.getLoginRequired('crewly-orc')).toBeDefined();
+			expect(mockQueue.enqueue).not.toHaveBeenCalled();
+			expect(mockEventBus.publish).toHaveBeenCalled();
+			expect(mockSlack.sendNotification).toHaveBeenCalled();
+		});
+
+		it('skips Slack when not connected', async () => {
+			mockSlack.isConnected.mockReturnValue(false);
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			expect(mockSlack.sendNotification).not.toHaveBeenCalled();
+		});
+
+		it('does not re-notify for the same url/code within the cooldown', async () => {
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			expect(mockEventBus.publish).toHaveBeenCalledTimes(1);
+			expect(mockSlack.sendNotification).toHaveBeenCalledTimes(1);
+		});
+
+		it('re-notifies when the device code changes', async () => {
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN.replace('FBVZ-MJHKK', 'QWER-TYUIO'), 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			expect(mockEventBus.publish).toHaveBeenCalledTimes(2);
+			expect(service.getLoginRequired('agent-dev-001')?.code).toBe('QWER-TYUIO');
+		});
+
+		it('clears the flag once the screen moves past the login prompt', () => {
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			expect(service.getLoginRequired('agent-dev-001')).toBeDefined();
+			service.inspectScreen('agent-dev-001', CODEX_IDLE_SCREEN, 'codex-cli');
+			expect(service.getLoginRequired('agent-dev-001')).toBeUndefined();
+		});
+
+		it('survives a throwing sink without dropping the flag', async () => {
+			mockQueue.enqueue.mockImplementation(() => { throw new Error('queue full'); });
+			service.setSlackProvider(async () => { throw new Error('slack down'); });
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			expect(service.getLoginRequired('agent-dev-001')).toBeDefined();
+			expect(mockEventBus.publish).toHaveBeenCalled();
+		});
+
+		it('formats a notice without url/code for the bare browser sign-in screen', async () => {
+			service.inspectScreen('agent-dev-001', CODEX_BROWSER_SIGNIN_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			expect(mockChat.broadcastSystemNotification).toHaveBeenCalledWith(
+				'Agent agent-dev-001 needs you to sign in (open its terminal to complete login)',
+				'warning',
+			);
+		});
+	});
+
+	describe('startMonitoring initial screen inspection', () => {
+		it('flags a session whose sign-in screen was painted before monitoring began', () => {
+			mockBackend.captureOutput.mockReturnValue(CODEX_DEVICE_CODE_SCREEN);
+			service.startMonitoring('agent-dev-001', 'codex-cli');
+			expect(mockBackend.captureOutput).toHaveBeenCalledWith('agent-dev-001', expect.any(Number));
+			expect(service.getLoginRequired('agent-dev-001')?.code).toBe('FBVZ-MJHKK');
+		});
+
+		it('detects a sign-in screen that streams in during the startup grace period', () => {
+			service.startMonitoring('agent-dev-001', 'codex-cli');
+			mockBackend.captureOutput.mockReturnValue(CODEX_DEVICE_CODE_SCREEN);
+			// Well inside STARTUP_GRACE_PERIOD_MS — expiry patterns are muted here, login must not be
+			capturedOnDataCallback!('  1. Go to https://auth.openai.com/codex/device\n');
+			expect(service.getLoginRequired('agent-dev-001')?.url).toBe('https://auth.openai.com/codex/device');
+		});
+	});
+
+	describe('periodic sweep', () => {
+		it('scans every live session and clears flags for sessions that are gone', () => {
+			mockBackend.listSessions.mockReturnValue(['agent-a', 'agent-b']);
+			mockBackend.captureOutput.mockImplementation((name: string) =>
+				name === 'agent-a' ? CODEX_DEVICE_CODE_SCREEN : CODEX_IDLE_SCREEN
+			);
+
+			service.start(1000);
+			jest.advanceTimersByTime(1000);
+
+			expect(service.getLoginRequired('agent-a')?.code).toBe('FBVZ-MJHKK');
+			expect(service.getLoginRequired('agent-b')).toBeUndefined();
+			expect(service.getAllLoginRequired()).toHaveLength(1);
+
+			// agent-a disappears
+			mockBackend.listSessions.mockReturnValue(['agent-b']);
+			jest.advanceTimersByTime(1000);
+			expect(service.getLoginRequired('agent-a')).toBeUndefined();
+
+			service.stop();
+		});
+
+		it('start() is idempotent and stop() halts the sweep', () => {
+			mockBackend.listSessions.mockReturnValue(['agent-a']);
+			mockBackend.captureOutput.mockReturnValue(CODEX_DEVICE_CODE_SCREEN);
+			service.start(1000);
+			service.start(1000);
+			service.stop();
+			jest.advanceTimersByTime(5000);
+			expect(mockBackend.listSessions).not.toHaveBeenCalled();
+		});
+	});
+
+	describe('submitOAuthCode clears the login-required flag', () => {
+		it('drops the flag once a code is written to the session', () => {
+			service.startMonitoring('agent-dev-001', 'codex-cli');
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			expect(service.getLoginRequired('agent-dev-001')).toBeDefined();
+
+			OAuthReloginMonitorService.submitOAuthCode('agent-dev-001', 'FBVZ-MJHKK');
+			expect(service.getLoginRequired('agent-dev-001')).toBeUndefined();
 		});
 	});
 });

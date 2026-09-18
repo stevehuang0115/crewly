@@ -25,11 +25,15 @@ import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import {
 	OAUTH_RELOGIN_CONSTANTS,
 	OAUTH_ERROR_PATTERN_SETS,
+	LOGIN_REQUIRED_PATTERN_SETS,
+	LOGIN_REQUIRED_CONSTANTS,
+	ORCHESTRATOR_SESSION_NAME,
 	RUNTIME_TYPES,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
+import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 
 // =============================================================================
 // Types
@@ -82,6 +86,68 @@ export interface OAuthUrlEventPayload {
 	url: string;
 }
 
+/**
+ * What the monitor extracted from a sign-in screen.
+ */
+export interface LoginRequiredDetection {
+	/** Login URL, or null when the screen names no URL (e.g. a bare "Sign in with ChatGPT") */
+	url: string | null;
+	/** Device / authorization code (e.g. `FBVZ-MJHKK`), or null for browser-callback flows */
+	code: string | null;
+}
+
+/**
+ * A session currently waiting on a human sign-in. Held in memory only —
+ * it describes the live screen, and a stale flag after restart would mislead.
+ */
+export interface LoginRequiredInfo extends LoginRequiredDetection {
+	/** PTY session name */
+	sessionName: string;
+	/** Runtime type when known (unmonitored sessions found by the sweep have none) */
+	runtimeType: RuntimeType | null;
+	/** ISO timestamp of first detection for this url/code */
+	detectedAt: string;
+	/** ISO timestamp the owner was last notified for this url/code */
+	notifiedAt: string | null;
+}
+
+/**
+ * Minimal orchestrator message-queue surface the monitor needs to push an
+ * owner-facing `[NOTIFY]` notice. Structural so tests can pass a stub.
+ */
+export interface LoginNoticeQueueLike {
+	enqueue(input: EnqueueMessageInput): unknown;
+}
+
+/**
+ * Minimal Slack surface the monitor needs. Structural so the Slack service
+ * (a heavy module with its own dependency graph) can be lazily provided.
+ */
+export interface LoginNoticeSlackLike {
+	isConnected(): boolean;
+	sendNotification(notification: {
+		type: 'agent_error';
+		title: string;
+		message: string;
+		urgency: 'high';
+		timestamp: string;
+		metadata?: { agentId?: string };
+	}): Promise<void>;
+}
+
+/**
+ * Minimal chat surface (terminal gateway + chat-v2) for surfacing the notice
+ * in the orchestrator conversation the owner is looking at.
+ */
+export interface LoginNoticeChatLike {
+	/** Conversation the owner currently has open, if any */
+	getActiveConversationId(): string | null;
+	/** Record a system turn in that conversation */
+	recordSystemTurn(conversationId: string, content: string): void;
+	/** Broadcast a WebSocket system notification for a toast/banner */
+	broadcastSystemNotification(message: string, type: 'warning'): void;
+}
+
 // =============================================================================
 // Service
 // =============================================================================
@@ -113,8 +179,397 @@ export class OAuthReloginMonitorService {
 	/** Callback invoked when an OAuth URL is captured (for orchestrator/Slack integration) */
 	private onOAuthUrlCallback: ((sessionName: string, url: string) => void) | null = null;
 
+	/** Sessions currently waiting on a human sign-in, keyed by session name */
+	private loginRequired: Map<string, LoginRequiredInfo> = new Map();
+
+	/** Orchestrator message queue for the `[NOTIFY]` notice (optional) */
+	private noticeQueue: LoginNoticeQueueLike | null = null;
+
+	/** Slack provider (lazy so the Slack module graph is not loaded at import time) */
+	private slackProvider: (() => Promise<LoginNoticeSlackLike | null>) | null = null;
+
+	/** Chat provider for the active orchestrator conversation (optional) */
+	private chatProvider: (() => LoginNoticeChatLike | null) | null = null;
+
+	/** Periodic screen sweep timer (started by `start()`) */
+	private sweepTimer: ReturnType<typeof setInterval> | null = null;
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('OAuthReloginMonitor');
+	}
+
+	/**
+	 * Provide the orchestrator message queue used to push the owner-facing
+	 * `[NOTIFY]` login notice. Skipped for the orchestrator's own session
+	 * (it cannot process its queue while stuck on a sign-in screen).
+	 *
+	 * @param queue - Message queue (structural — the real MessageQueueService fits)
+	 */
+	setNoticeQueue(queue: LoginNoticeQueueLike | null): void {
+		this.noticeQueue = queue;
+	}
+
+	/**
+	 * Provide a lazy Slack accessor. Resolved on each notification so a Slack
+	 * connection established after boot is still used.
+	 *
+	 * @param provider - Returns the Slack service, or null when unavailable
+	 */
+	setSlackProvider(provider: (() => Promise<LoginNoticeSlackLike | null>) | null): void {
+		this.slackProvider = provider;
+	}
+
+	/**
+	 * Provide a chat accessor for surfacing the notice in the owner's open
+	 * orchestrator conversation and as a WebSocket banner.
+	 *
+	 * @param provider - Returns the chat surface, or null when unavailable
+	 */
+	setChatProvider(provider: (() => LoginNoticeChatLike | null) | null): void {
+		this.chatProvider = provider;
+	}
+
+	/**
+	 * Start the boot-level periodic sweep. Every `SWEEP_INTERVAL_MS` the
+	 * captured screen of every live PTY session is checked for a sign-in
+	 * screen — including sessions that never reached `startMonitoring`
+	 * because runtime-ready detection timed out on the login screen — and
+	 * flags are cleared once the screen moves past login.
+	 *
+	 * @param intervalMs - Sweep cadence (defaults to LOGIN_REQUIRED_CONSTANTS.SWEEP_INTERVAL_MS)
+	 */
+	start(intervalMs: number = LOGIN_REQUIRED_CONSTANTS.SWEEP_INTERVAL_MS): void {
+		if (this.sweepTimer) return;
+		this.sweepTimer = setInterval(() => {
+			this.sweepAllSessions();
+		}, intervalMs);
+		if (typeof this.sweepTimer.unref === 'function') {
+			this.sweepTimer.unref();
+		}
+		this.logger.info('Login-required sweep started', { intervalMs });
+	}
+
+	/**
+	 * Stop the periodic sweep (monitoring subscriptions are left alone).
+	 */
+	stop(): void {
+		if (this.sweepTimer) {
+			clearInterval(this.sweepTimer);
+			this.sweepTimer = null;
+		}
+	}
+
+	/**
+	 * Sessions currently flagged as waiting on a human sign-in.
+	 *
+	 * @returns Snapshot of all pending login records
+	 */
+	getAllLoginRequired(): LoginRequiredInfo[] {
+		return [...this.loginRequired.values()];
+	}
+
+	/**
+	 * The pending login record for one session, if any.
+	 *
+	 * @param sessionName - PTY session name
+	 * @returns The record, or undefined when the session is not waiting on login
+	 */
+	getLoginRequired(sessionName: string): LoginRequiredInfo | undefined {
+		return this.loginRequired.get(sessionName);
+	}
+
+	/**
+	 * Clear a session's login-required flag (login completed, session gone,
+	 * or code submitted).
+	 *
+	 * @param sessionName - PTY session name
+	 * @returns true when a flag was cleared
+	 */
+	clearLoginRequired(sessionName: string): boolean {
+		const existed = this.loginRequired.delete(sessionName);
+		if (existed) {
+			this.logger.info('Login-required flag cleared', { sessionName });
+		}
+		return existed;
+	}
+
+	/**
+	 * Inspect screen text for a sign-in screen and extract the login URL and
+	 * device code. Runtime-agnostic: the pattern sets in
+	 * `LOGIN_REQUIRED_PATTERN_SETS` cover Codex (device-code and browser
+	 * flows), Claude Code and Gemini CLI. Plain substring matching — no regex
+	 * on untrusted length.
+	 *
+	 * @param screen - Captured terminal text (ANSI is stripped defensively)
+	 * @returns The extracted url/code, or null when no sign-in screen is showing
+	 *
+	 * @example
+	 * ```typescript
+	 * monitor.detectLoginRequired(
+	 *   'Go to https://auth.openai.com/codex/device and enter code FBVZ-MJHKK'
+	 * );
+	 * // → { url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK' }
+	 * ```
+	 */
+	detectLoginRequired(screen: string): LoginRequiredDetection | null {
+		if (!screen || typeof screen !== 'string') return null;
+		const clean = stripAnsiCodes(screen);
+		const lower = clean.toLowerCase();
+
+		const matched = LOGIN_REQUIRED_PATTERN_SETS.some((patternSet) =>
+			patternSet.every((pattern) => lower.includes(pattern.toLowerCase()))
+		);
+		if (!matched) return null;
+
+		return {
+			url: this.extractHttpsUrl(clean, false),
+			code: this.extractDeviceCode(clean),
+		};
+	}
+
+	/**
+	 * Check one session's current screen for a sign-in state, flag/notify on
+	 * a new detection, and clear the flag once login is done.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param screen - Captured screen text
+	 * @param runtimeType - Runtime type when known
+	 */
+	inspectScreen(sessionName: string, screen: string, runtimeType: RuntimeType | null = null): void {
+		const detection = this.detectLoginRequired(screen);
+		const existing = this.loginRequired.get(sessionName);
+
+		if (!detection) {
+			if (existing) {
+				this.clearLoginRequired(sessionName);
+			}
+			return;
+		}
+
+		// Same url/code already flagged and notified recently — nothing new to say.
+		if (existing && existing.url === detection.url && existing.code === detection.code) {
+			const notifiedMs = existing.notifiedAt ? Date.now() - new Date(existing.notifiedAt).getTime() : Infinity;
+			if (notifiedMs < LOGIN_REQUIRED_CONSTANTS.RENOTIFY_COOLDOWN_MS) {
+				return;
+			}
+		}
+
+		const info: LoginRequiredInfo = {
+			sessionName,
+			runtimeType: runtimeType ?? existing?.runtimeType ?? this.sessions.get(sessionName)?.runtimeType ?? null,
+			url: detection.url,
+			code: detection.code,
+			detectedAt: existing && existing.url === detection.url && existing.code === detection.code
+				? existing.detectedAt
+				: new Date().toISOString(),
+			notifiedAt: null,
+		};
+		this.loginRequired.set(sessionName, info);
+
+		this.logger.warn('Agent runtime is waiting on a human sign-in', {
+			sessionName,
+			runtimeType: info.runtimeType,
+			url: info.url,
+			code: info.code,
+		});
+
+		this.notifyLoginRequired(info).catch((err) => {
+			this.logger.warn('Login-required notification failed (non-fatal)', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+	}
+
+	/**
+	 * Sweep every live PTY session's screen for a sign-in state.
+	 * Safe to call at any time; errors are swallowed per session.
+	 */
+	sweepAllSessions(): void {
+		const backend = getSessionBackendSync();
+		if (!backend) return;
+
+		let names: string[] = [];
+		try {
+			names = backend.listSessions();
+		} catch {
+			return;
+		}
+
+		for (const sessionName of names) {
+			try {
+				const screen = backend.captureOutput(sessionName, LOGIN_REQUIRED_CONSTANTS.SWEEP_CAPTURE_LINES);
+				this.inspectScreen(sessionName, screen, this.sessions.get(sessionName)?.runtimeType ?? null);
+			} catch (err) {
+				this.logger.debug('Login-required sweep failed for session (ignored)', {
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		// Drop flags for sessions that no longer exist
+		for (const flagged of [...this.loginRequired.keys()]) {
+			if (!names.includes(flagged)) {
+				this.clearLoginRequired(flagged);
+			}
+		}
+	}
+
+	/**
+	 * Push the owner-facing notice everywhere a human might see it: main log,
+	 * event bus, the orchestrator queue (`[NOTIFY]`, skipped when the
+	 * orchestrator itself is the one stuck), the open chat conversation +
+	 * WebSocket banner, and Slack when connected.
+	 *
+	 * @param info - The pending login record
+	 */
+	private async notifyLoginRequired(info: LoginRequiredInfo): Promise<void> {
+		const message = this.formatLoginNotice(info);
+		info.notifiedAt = new Date().toISOString();
+
+		this.logger.warn(`[LOGIN REQUIRED] ${message}`, { sessionName: info.sessionName });
+
+		// 1. Event bus
+		if (this.eventBusService) {
+			const event: AgentEvent = {
+				id: uuidv4(),
+				type: 'agent:login_required',
+				timestamp: info.notifiedAt,
+				teamId: '',
+				teamName: '',
+				memberId: '',
+				memberName: '',
+				sessionName: info.sessionName,
+				previousValue: '',
+				newValue: info.url ?? '',
+				changedField: 'loginRequired',
+				...(info.code ? { loginCode: info.code } : {}),
+			};
+			try {
+				this.eventBusService.publish(event);
+			} catch (err) {
+				this.logger.warn('Failed to publish agent:login_required', {
+					sessionName: info.sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		// 2. Orchestrator queue — a [NOTIFY] the orchestrator relays to the owner.
+		//    Not for the orchestrator's own session: it cannot drain its queue
+		//    while parked on a sign-in screen.
+		if (this.noticeQueue && info.sessionName !== ORCHESTRATOR_SESSION_NAME) {
+			try {
+				this.noticeQueue.enqueue({
+					content: `[NOTIFY] ${message}`,
+					conversationId: LOGIN_REQUIRED_CONSTANTS.ORCHESTRATOR_CONVERSATION_ID,
+					source: 'system_event',
+					targetSession: ORCHESTRATOR_SESSION_NAME,
+					sourceMetadata: {
+						eventType: 'agent:login_required',
+						sessionName: info.sessionName,
+						url: info.url,
+						code: info.code,
+					},
+				});
+			} catch (err) {
+				this.logger.warn('Failed to enqueue login notice for orchestrator', {
+					sessionName: info.sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		// 3. Open chat conversation + WebSocket banner
+		if (this.chatProvider) {
+			try {
+				const chat = this.chatProvider();
+				if (chat) {
+					const conversationId = chat.getActiveConversationId();
+					if (conversationId) {
+						chat.recordSystemTurn(conversationId, `[Login required] ${message}`);
+					}
+					chat.broadcastSystemNotification(message, 'warning');
+				}
+			} catch (err) {
+				this.logger.warn('Failed to surface login notice in chat', {
+					sessionName: info.sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+
+		// 4. Slack when connected
+		if (this.slackProvider) {
+			try {
+				const slack = await this.slackProvider();
+				if (slack && slack.isConnected()) {
+					await slack.sendNotification({
+						type: 'agent_error',
+						title: 'Agent needs you to sign in',
+						message,
+						urgency: 'high',
+						timestamp: info.notifiedAt,
+						metadata: { agentId: info.sessionName },
+					});
+				}
+			} catch (err) {
+				this.logger.warn('Failed to send login notice to Slack', {
+					sessionName: info.sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+	}
+
+	/**
+	 * Human-readable notice: "Agent X needs you to sign in: <url> code <XXXX-XXXXX>".
+	 *
+	 * @param info - The pending login record
+	 * @returns The notice text
+	 */
+	private formatLoginNotice(info: LoginRequiredInfo): string {
+		const parts = [`Agent ${info.sessionName} needs you to sign in`];
+		if (info.url) parts.push(`: ${info.url}`);
+		if (info.code) parts.push(` code ${info.code}`);
+		if (!info.url && !info.code) parts.push(' (open its terminal to complete login)');
+		return parts.join('');
+	}
+
+	/**
+	 * Find a device/authorization code such as `FBVZ-MJHKK`: an upper-case
+	 * alphanumeric head of `DEVICE_CODE_HEAD_LEN` chars, a dash, and a tail of
+	 * `DEVICE_CODE_TAIL_MIN_LEN`..`DEVICE_CODE_TAIL_MAX_LEN` chars, delimited by
+	 * non-alphanumerics. Linear scan, no regex.
+	 *
+	 * @param text - Screen text
+	 * @returns The first code found, or null
+	 */
+	private extractDeviceCode(text: string): string | null {
+		const { DEVICE_CODE_HEAD_LEN, DEVICE_CODE_TAIL_MIN_LEN, DEVICE_CODE_TAIL_MAX_LEN } = LOGIN_REQUIRED_CONSTANTS;
+		const isCodeChar = (ch: string): boolean => (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9');
+		const isWordChar = (ch: string): boolean => /[A-Za-z0-9]/.test(ch);
+
+		let i = 0;
+		while (i < text.length) {
+			// Candidate must start at a word boundary
+			if (i > 0 && isWordChar(text[i - 1])) { i++; continue; }
+
+			let head = 0;
+			while (head < DEVICE_CODE_HEAD_LEN && i + head < text.length && isCodeChar(text[i + head])) head++;
+			if (head !== DEVICE_CODE_HEAD_LEN || text[i + head] !== '-') { i++; continue; }
+
+			let tail = 0;
+			const tailStart = i + head + 1;
+			while (tail < DEVICE_CODE_TAIL_MAX_LEN && tailStart + tail < text.length && isCodeChar(text[tailStart + tail])) tail++;
+			const after = text[tailStart + tail];
+			if (tail >= DEVICE_CODE_TAIL_MIN_LEN && (after === undefined || !isWordChar(after))) {
+				return text.slice(i, tailStart + tail);
+			}
+			i++;
+		}
+		return null;
 	}
 
 	/**
@@ -196,6 +651,7 @@ export class OAuthReloginMonitorService {
 					state.captureTimeoutTimer = null;
 				}
 			}
+			instance.clearLoginRequired(sessionName);
 		}
 
 		return true;
@@ -255,6 +711,16 @@ export class OAuthReloginMonitorService {
 			sessionName,
 			runtimeType,
 		});
+
+		// The sign-in screen is usually already painted by the time we
+		// subscribe, and a static screen produces no further onData — so
+		// inspect what is on screen right now.
+		try {
+			const screen = backend.captureOutput(sessionName, LOGIN_REQUIRED_CONSTANTS.SWEEP_CAPTURE_LINES);
+			this.inspectScreen(sessionName, screen, runtimeType);
+		} catch {
+			// Non-fatal — the periodic sweep will catch it
+		}
 	}
 
 	/**
@@ -305,10 +771,12 @@ export class OAuthReloginMonitorService {
 	 * Destroy all monitoring subscriptions.
 	 */
 	destroy(): void {
+		this.stop();
 		const sessionNames = [...this.sessions.keys()];
 		for (const sessionName of sessionNames) {
 			this.stopMonitoring(sessionName);
 		}
+		this.loginRequired.clear();
 		this.logger.debug('All OAuth relogin monitors destroyed');
 	}
 
@@ -347,6 +815,24 @@ export class OAuthReloginMonitorService {
 		// Cap buffer size
 		if (state.buffer.length > OAUTH_RELOGIN_CONSTANTS.MAX_BUFFER_SIZE) {
 			state.buffer = state.buffer.slice(-OAUTH_RELOGIN_CONSTANTS.MAX_BUFFER_SIZE);
+		}
+
+		// First-run / device-code sign-in screens are checked against the
+		// rolling buffer (URL and code often arrive in separate chunks) and
+		// are NOT subject to the startup grace period — a fresh install shows
+		// the login screen within seconds of spawn, which is exactly when the
+		// expiry patterns below would still be muted.
+		if (this.detectLoginRequired(state.buffer)) {
+			// The buffer is only the trigger — inspect the live screen so the
+			// URL and code are read together and the flag clears once login is
+			// done (stale login text lingers in the rolling buffer for a while).
+			let screen = '';
+			try {
+				screen = getSessionBackendSync()?.captureOutput(sessionName, LOGIN_REQUIRED_CONSTANTS.SWEEP_CAPTURE_LINES) ?? '';
+			} catch {
+				// fall back to the buffer below
+			}
+			this.inspectScreen(sessionName, screen || state.buffer, state.runtimeType);
 		}
 
 		// Skip during startup grace period
@@ -434,6 +920,20 @@ export class OAuthReloginMonitorService {
 	 * @returns The OAuth URL or null if not found
 	 */
 	private extractOAuthUrl(buffer: string): string | null {
+		return this.extractHttpsUrl(buffer, true);
+	}
+
+	/**
+	 * Extract the first `https://` URL from terminal output.
+	 *
+	 * @param buffer - Terminal output buffer
+	 * @param requireOAuthPath - When true, the URL must contain a known
+	 *   OAuth path segment (`/oauth`, `/authorize`, `/login`, `/auth`,
+	 *   `/consent`, `/device`); when false any https URL qualifies (sign-in
+	 *   screens name plain landing pages too)
+	 * @returns The URL or null if not found
+	 */
+	private extractHttpsUrl(buffer: string, requireOAuthPath: boolean): string | null {
 		// Match https:// URLs — extract until whitespace or end of string.
 		// Using a simple, non-backtracking pattern to avoid ReDoS.
 		const urlStart = buffer.indexOf('https://');
@@ -459,9 +959,14 @@ export class OAuthReloginMonitorService {
 			return null;
 		}
 
-		// Check for common OAuth path segments (case-insensitive)
+		if (!requireOAuthPath) {
+			return url;
+		}
+
+		// Check for common OAuth path segments (case-insensitive).
+		// `/device` covers the Codex device-code flow (auth.openai.com/codex/device).
 		const lowerUrl = url.toLowerCase();
-		const oauthIndicators = ['/oauth', '/authorize', '/login', '/auth', '/consent'];
+		const oauthIndicators = ['/oauth', '/authorize', '/login', '/auth', '/consent', '/device'];
 		const isOAuthUrl = oauthIndicators.some((indicator) => lowerUrl.includes(indicator));
 
 		if (!isOAuthUrl) {
