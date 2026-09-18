@@ -13,6 +13,7 @@ import type {
   Mission,
   CreateMissionInput,
   KeyResult,
+  KRMeasurement,
   CreateKeyResultInput,
   UpdateKeyResultInput,
   MeasureKeyResultInput,
@@ -1104,9 +1105,13 @@ class ApiService {
     }
   }
 
-  /** Records a measurement against a Key Result and returns the updated KR. */
-  async measureKeyResult(missionId: string, krId: string, input: MeasureKeyResultInput): Promise<KeyResult> {
-    const response = await axios.post<ApiResponse<KeyResult>>(
+  /**
+   * Records a measurement against a Key Result. The backend returns the
+   * stored measurement (not the KR) — re-fetch the KR list to see the new
+   * `current` / `status`.
+   */
+  async measureKeyResult(missionId: string, krId: string, input: MeasureKeyResultInput): Promise<KRMeasurement> {
+    const response = await axios.post<ApiResponse<KRMeasurement>>(
       `${API_BASE}/missions/${missionId}/key-results/${krId}/measure`,
       input,
     );

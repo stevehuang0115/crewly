@@ -5,6 +5,10 @@
  * of the key mutable fields (objective, status, priority, team, strategy,
  * success criteria, period, parent). Save issues PUT /api/missions/:id.
  *
+ * OKR cascade surfaces live in dedicated sections: Key Results (measure /
+ * add / edit / delete), Cascade (parent + children roll-up), Proposals
+ * (pending child decompositions awaiting approval) and Execution Progress.
+ *
  * @module pages/MissionDetail
  */
 
@@ -32,59 +36,28 @@ import { Button } from '../components/UI/Button';
 import { Input } from '../components/UI/Input';
 import { FormSelect } from '../components/UI/Form';
 import { Alert } from '../components/UI/Alert';
+import { LevelBadge, ApprovalChip } from '../components/Missions/OkrBadges';
+import { ApprovalActions } from '../components/Missions/ApprovalActions';
+import { KeyResultsSection } from '../components/Missions/KeyResultsSection';
+import { CascadeSection } from '../components/Missions/CascadeSection';
+import { ProposalsSection } from '../components/Missions/ProposalsSection';
+import { MissionProgressSection } from '../components/Missions/MissionProgressSection';
 import { apiService } from '../services/api.service';
 import {
   PRIORITY_LABEL,
   PRIORITY_VARIANT,
   getMissionStatusType,
   getMissionStatusLabel,
+  resolveLevel,
+  type Mission,
   type MissionStatus,
   type MissionPriority,
   type MissionPeriodType,
-  type MissionPeriod,
 } from '../types/mission.types';
 
 // =============================================================================
-// Types (KR summaries are only used on this page)
+// Types
 // =============================================================================
-
-/** KR metric type (mirrors backend). */
-type KRMetricType = 'number' | 'percentage' | 'boolean' | 'currency';
-
-/** KR progress status (mirrors backend). */
-type KRStatus = 'not_started' | 'on_track' | 'at_risk' | 'off_track' | 'achieved';
-
-interface KeyResultSummary {
-  id: string;
-  title: string;
-  metricType: KRMetricType;
-  baseline: number;
-  target: number;
-  current: number;
-  unit: string;
-  status: KRStatus;
-}
-
-/** Full Mission object returned by the API. */
-interface Mission {
-  id: string;
-  objective: string;
-  ownerTeamId: string;
-  successCriteria: string[];
-  currentStrategy: string;
-  activeProjectTaskIds: string[];
-  cadence: string;
-  status: MissionStatus;
-  createdAt: string;
-  updatedAt: string;
-  lastReviewAt?: string;
-  nextReviewAt?: string;
-  learnings?: string[];
-  priority?: MissionPriority;
-  period?: MissionPeriod;
-  parentMissionId?: string;
-  keyResults?: KeyResultSummary[];
-}
 
 /**
  * Form draft shape — a subset of Mission fields that are user-editable.
@@ -200,6 +173,13 @@ export const MissionDetail: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
+  /** id → objective for every known mission (parent / children names). */
+  const [missionNames, setMissionNames] = useState<Map<string, string>>(new Map());
+  /** Lookup used to resolve the level of legacy missions. */
+  const [missionsById, setMissionsById] = useState<Map<string, Pick<Mission, 'level' | 'parentMissionId'>>>(new Map());
+  /** Bumped after KR / approval changes so the roll-up sections re-fetch. */
+  const [okrRefreshKey, setOkrRefreshKey] = useState(0);
+
   /**
    * Fetches the mission from the backend API.
    */
@@ -227,6 +207,39 @@ export const MissionDetail: React.FC = () => {
   useEffect(() => {
     loadMission();
   }, [loadMission]);
+
+  // Names for the cascade view come from the list endpoint; non-fatal.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const all = (await apiService.getMissions()) as Mission[];
+        if (cancelled) return;
+        setMissionNames(new Map(all.map((m) => [m.id, m.objective] as const)));
+        setMissionsById(new Map(all.map((m) => [m.id, { level: m.level, parentMissionId: m.parentMissionId }] as const)));
+      } catch {
+        // Cascade falls back to id prefixes.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [id]);
+
+  /** Refresh roll-ups (and the mission header's inline KR summaries). */
+  const handleOkrChanged = useCallback(() => {
+    setOkrRefreshKey((k) => k + 1);
+    void loadMission(false);
+  }, [loadMission]);
+
+  /** A decision on this mission (or on one of its child proposals). */
+  const handleDecided = useCallback(
+    (updated: Mission) => {
+      setMission((prev) => (prev && prev.id === updated.id ? { ...prev, ...updated } : prev));
+      handleOkrChanged();
+    },
+    [handleOkrChanged],
+  );
 
   const beginEdit = useCallback(() => {
     if (!mission) return;
@@ -337,6 +350,9 @@ export const MissionDetail: React.FC = () => {
   // ---------------------------------------------------------------------------
   // Main render (view + edit modes share the layout)
   // ---------------------------------------------------------------------------
+  const level = resolveLevel(mission, missionsById);
+  const approvalState = mission.approval?.state;
+
   return (
     <div className="p-6 max-w-[1000px] mx-auto" data-testid="mission-detail-page">
       <button
@@ -365,9 +381,13 @@ export const MissionDetail: React.FC = () => {
             </h1>
           )}
           <div className="flex items-center gap-2 flex-wrap mt-2">
+            <LevelBadge level={level} />
             <StatusBadge status={getMissionStatusType(mission.status)}>
               {getMissionStatusLabel(mission.status)}
             </StatusBadge>
+            {approvalState && (approvalState !== 'approved' || mission.approval?.decidedAt) && (
+              <ApprovalChip state={approvalState} />
+            )}
             {mission.priority && (
               <Badge variant={PRIORITY_VARIANT[mission.priority]} size="sm">
                 {PRIORITY_LABEL[mission.priority]}
@@ -378,6 +398,19 @@ export const MissionDetail: React.FC = () => {
             )}
             <Badge variant="default" size="sm">{mission.id.slice(0, 12)}</Badge>
           </div>
+          {approvalState === 'pending_approval' && !isEditing && (
+            <div className="mt-3 flex items-center gap-3 flex-wrap" data-testid="mission-pending-banner">
+              <span className="text-xs text-yellow-400">
+                Proposed{mission.approval?.proposedBy ? ` by ${mission.approval.proposedBy}` : ''} — awaiting your decision.
+              </span>
+              <ApprovalActions missionId={mission.id} onDecided={handleDecided} />
+            </div>
+          )}
+          {approvalState === 'rejected' && mission.approval?.rejectionReason && (
+            <p className="mt-2 text-xs text-red-400" data-testid="mission-rejection-reason">
+              Rejected: {mission.approval.rejectionReason}
+            </p>
+          )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           {isEditing ? (
@@ -496,6 +529,27 @@ export const MissionDetail: React.FC = () => {
             )}
           </Card>
 
+          {/* Key Results */}
+          {!isEditing && (
+            <KeyResultsSection missionId={mission.id} onChanged={handleOkrChanged} />
+          )}
+
+          {/* Pending child proposals */}
+          {!isEditing && (
+            <ProposalsSection parentMissionId={mission.id} onDecided={handleDecided} />
+          )}
+
+          {/* Cascade: parent + children roll-up */}
+          {!isEditing && (
+            <CascadeSection
+              missionId={mission.id}
+              level={level}
+              parentMissionId={mission.parentMissionId}
+              missionNames={missionNames}
+              refreshKey={okrRefreshKey}
+            />
+          )}
+
           {/* Learnings (view-only for now) */}
           {!isEditing && mission.learnings && mission.learnings.length > 0 && (
             <Card variant="default" padding="md" className="border border-border-dark">
@@ -516,6 +570,9 @@ export const MissionDetail: React.FC = () => {
 
         {/* Sidebar */}
         <div className="flex flex-col gap-4">
+          {/* Execution progress (WorkItems by status) */}
+          {!isEditing && <MissionProgressSection missionId={mission.id} refreshKey={okrRefreshKey} />}
+
           {/* Team & Tasks */}
           <Card variant="default" padding="md" className="border border-border-dark">
             <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide mb-3 flex items-center gap-1.5">
@@ -589,12 +646,40 @@ export const MissionDetail: React.FC = () => {
                     fullWidth
                     data-testid="edit-parent"
                   />
+                ) : mission.parentMissionId ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/missions/${mission.parentMissionId}`)}
+                    className="text-left text-xs text-primary hover:underline truncate"
+                    data-testid="mission-parent-link"
+                  >
+                    {missionNames.get(mission.parentMissionId) ?? mission.parentMissionId}
+                  </button>
                 ) : (
-                  <span className="text-text-primary-dark font-mono text-xs">
-                    {mission.parentMissionId ?? '—'}
-                  </span>
+                  <span className="text-text-primary-dark font-mono text-xs">—</span>
                 )}
               </div>
+
+              {/* Level / project (view-only; set at creation) */}
+              {!isEditing && (
+                <div className="flex justify-between">
+                  <span className="text-text-secondary-dark">Level</span>
+                  <span className="text-text-primary-dark" data-testid="mission-level">{level}</span>
+                </div>
+              )}
+              {!isEditing && mission.projectId && (
+                <div className="flex justify-between">
+                  <span className="text-text-secondary-dark">Project</span>
+                  <button
+                    type="button"
+                    onClick={() => navigate(`/projects/${mission.projectId}`)}
+                    className="text-xs text-primary hover:underline font-mono"
+                    data-testid="mission-project-link"
+                  >
+                    {mission.projectId.slice(0, 12)}
+                  </button>
+                </div>
+              )}
 
               <div className="flex justify-between">
                 <span className="text-text-secondary-dark">Active Tasks</span>

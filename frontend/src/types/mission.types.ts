@@ -230,24 +230,25 @@ export interface KeyResult extends KeyResultSummary {
   updatedAt: string;
 }
 
-/** Body for POST /api/missions/:id/key-results. */
+/** Body for POST /api/missions/:id/key-results (`unit` is required by the backend validator). */
 export interface CreateKeyResultInput {
   title: string;
   metricType: KRMetricType;
   baseline: number;
   target: number;
-  unit?: string;
+  unit: string;
   measurementSource?: KRMeasurementSource;
   measurementConfig?: Record<string, unknown>;
 }
 
-/** Body for PUT /api/missions/:id/key-results/:krId. */
+/**
+ * Body for PUT /api/missions/:id/key-results/:krId. The backend only merges
+ * these fields (title / unit / baseline are immutable after creation).
+ */
 export interface UpdateKeyResultInput {
-  title?: string;
   current?: number;
   status?: KRStatus;
   target?: number;
-  unit?: string;
   measurementSource?: KRMeasurementSource;
   measurementConfig?: Record<string, unknown>;
 }

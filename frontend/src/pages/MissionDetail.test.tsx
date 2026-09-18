@@ -15,6 +15,17 @@ vi.mock('../services/api.service', () => ({
   apiService: {
     getMission: vi.fn(),
     updateMission: vi.fn(),
+    getMissions: vi.fn(),
+    getKeyResults: vi.fn(),
+    createKeyResult: vi.fn(),
+    updateKeyResult: vi.fn(),
+    deleteKeyResult: vi.fn(),
+    measureKeyResult: vi.fn(),
+    getCascadeSummary: vi.fn(),
+    getProposals: vi.fn(),
+    approveMission: vi.fn(),
+    rejectMission: vi.fn(),
+    getMissionProgress: vi.fn(),
   },
 }));
 
@@ -60,6 +71,11 @@ function renderWithRouter(id = '12345678-abcd-1234-abcd-123456789012') {
 describe('MissionDetail', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(apiService.getMissions).mockResolvedValue([]);
+    vi.mocked(apiService.getKeyResults).mockResolvedValue([]);
+    vi.mocked(apiService.getCascadeSummary).mockRejectedValue(new Error('no cascade'));
+    vi.mocked(apiService.getProposals).mockResolvedValue([]);
+    vi.mocked(apiService.getMissionProgress).mockRejectedValue(new Error('no progress'));
   });
 
   it('shows loading state initially', () => {
@@ -236,5 +252,170 @@ describe('MissionDetail', () => {
       expect(screen.getByTestId('mission-save-error')).toBeTruthy();
     });
     expect(apiService.updateMission).not.toHaveBeenCalled();
+  });
+  // ---------------------------------------------------------------------------
+  // OKR cascade sections
+  // ---------------------------------------------------------------------------
+
+  const cascadeSummary = {
+    missionId: mockMission.id,
+    level: 'team' as const,
+    totalKRs: 1,
+    achieved: 0,
+    onTrack: 1,
+    atRisk: 0,
+    offTrack: 0,
+    notStarted: 0,
+    overallProgress: 40,
+    recommendation: 'continue' as const,
+    childMissionCount: 1,
+    rolledUpProgress: 55,
+    children: [
+      {
+        missionId: 'proj-1',
+        level: 'project' as const,
+        totalKRs: 1,
+        achieved: 0,
+        onTrack: 1,
+        atRisk: 0,
+        offTrack: 0,
+        notStarted: 0,
+        overallProgress: 70,
+        recommendation: 'continue' as const,
+        childMissionCount: 0,
+        rolledUpProgress: 70,
+        children: [],
+      },
+    ],
+  };
+
+  it('renders level badge, parent link and cascade children with rolled-up progress', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue({
+      ...mockMission,
+      level: 'team',
+      parentMissionId: 'co-1',
+      approval: { state: 'approved' },
+    });
+    vi.mocked(apiService.getMissions).mockResolvedValue([
+      { id: 'co-1', objective: 'Company: profitability', level: 'company' },
+      { id: 'proj-1', objective: 'Project: pricing page', level: 'project', parentMissionId: mockMission.id },
+    ]);
+    vi.mocked(apiService.getCascadeSummary).mockResolvedValue(cascadeSummary);
+    renderWithRouter();
+
+    await waitFor(() => expect(screen.getByTestId('mission-detail-page')).toBeTruthy());
+    expect(screen.getByTestId('level-badge-team')).toBeTruthy();
+    // Legacy/approved missions show no approval chip
+    expect(screen.queryByTestId('approval-chip-approved')).toBeNull();
+
+    await waitFor(() => expect(screen.getByTestId('cascade-parent-link')).toHaveTextContent('Company: profitability'));
+    await waitFor(() => expect(screen.getByTestId('cascade-child-proj-1')).toHaveTextContent('Project: pricing page'));
+    expect(screen.getByTestId('cascade-rollup-bar')).toHaveTextContent('55%');
+    expect(screen.getByTestId('cascade-child-progress-proj-1')).toHaveTextContent('70%');
+    expect(screen.getByTestId('mission-parent-link')).toHaveTextContent('Company: profitability');
+  });
+
+  it('renders the Key Results table and posts a measurement', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    const kr = {
+      id: 'kr-1',
+      missionId: mockMission.id,
+      title: 'Reach $5k MRR',
+      metricType: 'currency',
+      baseline: 0,
+      target: 5000,
+      current: 1000,
+      unit: '$',
+      status: 'off_track',
+      measurementSource: 'manual',
+      linkedWorkItemIds: [],
+      measurements: [],
+      createdAt: '2026-09-01T00:00:00.000Z',
+      updatedAt: '2026-09-01T00:00:00.000Z',
+    };
+    vi.mocked(apiService.getKeyResults).mockResolvedValue([kr] as never);
+    vi.mocked(apiService.measureKeyResult).mockResolvedValue({ value: 3000, measuredAt: 'now', source: 'user' });
+    renderWithRouter();
+
+    await waitFor(() => expect(screen.getByTestId('kr-row-kr-1')).toBeTruthy());
+    expect(screen.getByTestId('kr-values-kr-1')).toHaveTextContent('$0 → $1,000 → $5,000');
+
+    fireEvent.click(screen.getByTestId('kr-measure-kr-1'));
+    fireEvent.change(screen.getByTestId('kr-measure-value-kr-1'), { target: { value: '3000' } });
+    vi.mocked(apiService.getKeyResults).mockResolvedValue([{ ...kr, current: 3000, status: 'on_track' }] as never);
+    fireEvent.click(screen.getByTestId('kr-measure-submit-kr-1'));
+
+    await waitFor(() =>
+      expect(apiService.measureKeyResult).toHaveBeenCalledWith(mockMission.id, 'kr-1', { value: 3000, source: 'user' }),
+    );
+    await waitFor(() => expect(screen.getByTestId('kr-status-kr-1')).toHaveTextContent('On track'));
+    // A measurement refreshes the mission header + roll-ups
+    await waitFor(() => expect(apiService.getMission).toHaveBeenCalledTimes(2));
+  });
+
+  it('shows pending child proposals with approve, and hides them once decided', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue({ ...mockMission, level: 'company' });
+    const proposal = {
+      ...mockMission,
+      id: 'child-1',
+      objective: 'Team: grow MRR',
+      level: 'team',
+      parentMissionId: mockMission.id,
+      approval: { state: 'pending_approval', proposedBy: 'orchestrator' },
+    };
+    vi.mocked(apiService.getProposals).mockResolvedValue([proposal] as never);
+    vi.mocked(apiService.approveMission).mockResolvedValue({ ...proposal, approval: { state: 'approved' } } as never);
+    renderWithRouter();
+
+    await waitFor(() => expect(screen.getByTestId('proposal-child-1')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('approve-child-1'));
+
+    await waitFor(() => expect(apiService.approveMission).toHaveBeenCalledWith('child-1'));
+    await waitFor(() => expect(screen.queryByTestId('proposals-section')).toBeNull());
+  });
+
+  it('lets the owner approve this mission when it is itself a pending proposal', async () => {
+    const approved = {
+      ...mockMission,
+      level: 'team',
+      parentMissionId: 'co-1',
+      approval: { state: 'approved', decidedBy: 'steve', decidedAt: '2026-09-18T00:00:00.000Z' },
+    };
+    // First load: pending. The post-decision refresh returns the approved mission.
+    vi.mocked(apiService.getMission)
+      .mockResolvedValue(approved)
+      .mockResolvedValueOnce({ ...approved, approval: { state: 'pending_approval', proposedBy: 'orchestrator' } });
+    vi.mocked(apiService.approveMission).mockResolvedValue(approved as never);
+    renderWithRouter();
+
+    await waitFor(() => expect(screen.getByTestId('mission-pending-banner')).toBeTruthy());
+    expect(screen.getByTestId('approval-chip-pending_approval')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId(`approve-${mockMission.id}`));
+
+    await waitFor(() => expect(screen.getByTestId('approval-chip-approved')).toBeTruthy());
+    expect(screen.queryByTestId('mission-pending-banner')).toBeNull();
+  });
+
+  it('renders execution progress from /progress', async () => {
+    vi.mocked(apiService.getMission).mockResolvedValue(mockMission);
+    vi.mocked(apiService.getMissionProgress).mockResolvedValue({
+      missionId: mockMission.id,
+      status: 'active',
+      phase: 1,
+      totalTasks: 4,
+      completedTasks: 1,
+      runningTasks: 1,
+      queuedTasks: 2,
+      blockedTasks: 0,
+      failedTasks: 0,
+      progressPercent: 25,
+      totalCost: 0.5,
+    });
+    renderWithRouter();
+
+    await waitFor(() => expect(screen.getByTestId('mission-progress-rows')).toBeTruthy());
+    expect(screen.getByTestId('mission-progress-bar')).toHaveTextContent('1/4 tasks');
+    expect(screen.getByTestId('mission-progress-queuedTasks')).toHaveTextContent('2');
   });
 });

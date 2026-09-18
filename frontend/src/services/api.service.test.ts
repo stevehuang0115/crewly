@@ -235,8 +235,9 @@ describe('ApiService', () => {
 
     it('measureKeyResult posts to /measure and surfaces the server error', async () => {
       const axios = await import('axios');
-      const spy = vi.spyOn(axios.default, 'post').mockResolvedValue({ data: { success: true, data: { id: 'kr-1', current: 42 } } });
-      expect(await apiService.measureKeyResult('m-1', 'kr-1', { value: 42, note: 'weekly' })).toEqual({ id: 'kr-1', current: 42 });
+      const measurement = { value: 42, measuredAt: '2026-09-18T00:00:00.000Z', source: 'api', note: 'weekly' };
+      const spy = vi.spyOn(axios.default, 'post').mockResolvedValue({ data: { success: true, data: measurement } });
+      expect(await apiService.measureKeyResult('m-1', 'kr-1', { value: 42, note: 'weekly' })).toEqual(measurement);
       expect(spy).toHaveBeenCalledWith('/api/missions/m-1/key-results/kr-1/measure', { value: 42, note: 'weekly' });
 
       spy.mockResolvedValue({ data: { success: false, error: 'value must be a number' } });
