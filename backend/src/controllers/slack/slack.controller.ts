@@ -958,6 +958,30 @@ router.put('/cloud/primary', async (req: Request, res: Response, next: NextFunct
 });
 
 /**
+ * GET /api/slack/directory?channel=C…
+ *
+ * Who an agent can @: every agent of the Crewly account (any machine) with
+ * team, machine and Slack mention, plus — when a channel is given — every
+ * bot and human actually in that channel, including agents of other
+ * Crewly accounts. Backs the `list-colleagues` skill.
+ */
+router.get('/directory', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { getSlackDirectoryService } = await import('../../services/slack/slack-directory.service.js');
+    const directory = getSlackDirectoryService();
+    if (!directory) {
+      res.status(503).json({ success: false, error: 'Slack directory is available only on the Cloud transport (Settings → Slack → Connect Slack)', code: 'directory_unavailable' });
+      return;
+    }
+    const channel = typeof req.query.channel === 'string' && req.query.channel ? req.query.channel : undefined;
+    const entries = await directory.list(channel);
+    res.json({ success: true, data: { channel: channel ?? null, colleagues: entries } });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
  * GET /api/slack/cloud/workspaces
  *
  * Every Slack workspace installed on the Cloud account (redacted), plus the

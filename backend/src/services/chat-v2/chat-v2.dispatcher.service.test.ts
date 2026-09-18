@@ -92,6 +92,17 @@ describe('ChatV2DispatcherService', () => {
     });
   });
 
+  describe('defaultFormatPrompt roster', () => {
+    it('appends the channel roster line when one is given', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1', channelName: '#team', agentSession: 's', senderId: 'U1', content: 'hi',
+        replyVia: 'reply-channel', responseMode: 'required', channelRoster: 'Atlas (Think Tank, this machine) → @Atlas · Mia (Portal, mac-mini) → @Mia',
+      });
+      expect(prompt).toContain('本频道成员（可 @ 的同事）: Atlas (Think Tank, this machine) → @Atlas · Mia (Portal, mac-mini) → @Mia');
+      expect(defaultFormatPrompt({ channelId: 'h', channelName: 'c', agentSession: 's', senderId: 'U', content: 'x' })).not.toContain('本频道成员');
+    });
+  });
+
   describe('defaultFormatPrompt', () => {
     it('includes the [CHAT:<id>] tag, author, and reply instruction', () => {
       const prompt = defaultFormatPrompt({

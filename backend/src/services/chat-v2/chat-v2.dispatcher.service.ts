@@ -171,6 +171,8 @@ export interface ChatV2DispatcherOptions {
 
 /** Inputs to the prompt formatter. */
 export interface FormatPromptArgs {
+  /** One line naming the channel's members and how to @ them. */
+  channelRoster?: string;
   channelId: string;
   channelName: string;
   agentSession: string;
@@ -207,6 +209,8 @@ export interface FormatPromptArgs {
  * Forwarded verbatim into {@link FormatPromptArgs}.
  */
 export interface DispatchMessageOptions {
+  /** One line naming the channel's members and how to @ them (Slack team channels). */
+  channelRoster?: string;
   /** See {@link FormatPromptArgs.threadId}. */
   threadId?: string;
   /** See {@link FormatPromptArgs.replyVia}. */
@@ -227,7 +231,7 @@ export interface DispatchMessageOptions {
  * instruction on how to reply.
  */
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
-  const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia } = args;
+  const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
   const trimmed = content.trim();
   const idHint = clientMessageId ? ` [cmid:${clientMessageId}]` : '';
   // Default to "required" so DM and single-mention channel dispatches
@@ -253,6 +257,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     ``,
     `---`,
     replyHint,
+    ...(channelRoster ? [`本频道成员（可 @ 的同事）: ${channelRoster}`] : []),
   ].join('\n');
 }
 
@@ -433,6 +438,7 @@ export class ChatV2DispatcherService {
         responseMode,
         threadId: options.threadId,
         replyVia: options.replyVia,
+        channelRoster: options.channelRoster,
       });
 
     /** One delivery attempt; false when the sink refused (typically: no session). */

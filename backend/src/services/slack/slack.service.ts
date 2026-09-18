@@ -90,6 +90,11 @@ interface SlackWebClient {
     setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
     /** Open (or reuse) a DM channel. `token` posts as another bot user. */
     open: (args: { users: string; token?: string }) => Promise<{ channel?: { id?: string } }>;
+    /** Member ids of a channel (paginated). Optional so older test doubles compile. */
+    members?: (args: { channel: string; limit?: number; cursor?: string }) => Promise<{
+      members?: string[];
+      response_metadata?: { next_cursor?: string };
+    }>;
   };
   reactions: {
     add: (args: AddReactionArgs) => Promise<void>;
@@ -97,9 +102,11 @@ interface SlackWebClient {
   users: {
     info: (args: { user: string }) => Promise<{
       user?: {
+        id?: string;
         name?: string;
         real_name?: string;
-        profile?: { email?: string };
+        is_bot?: boolean;
+        profile?: { email?: string; display_name?: string };
       };
     }>;
     /**
@@ -1945,6 +1952,45 @@ export class SlackService extends EventEmitter {
    * @param userId - Slack user ID
    * @returns User info object
    */
+  /**
+   * Member user ids of a channel, bots included (`conversations.members`,
+   * paginated).
+   *
+   * @param channelId - Slack channel id
+   * @returns User ids; empty when the bot is not in the channel
+   */
+  async listChannelMembers(channelId: string): Promise<string[]> {
+    const conversations = this.requireConversationsApi();
+    if (!conversations.members) throw new Error('Slack client has no conversations.members');
+    const out: string[] = [];
+    let cursor: string | undefined;
+    do {
+      const res = await conversations.members({ channel: channelId, limit: 200, ...(cursor ? { cursor } : {}) });
+      for (const id of res.members ?? []) out.push(id);
+      cursor = res.response_metadata?.next_cursor || undefined;
+    } while (cursor);
+    return out;
+  }
+
+  /**
+   * A user's display name and whether it is a bot (`users.info`).
+   *
+   * @param userId - Slack user id
+   * @returns Name + bot flag, or null when Slack does not know the id
+   */
+  async getUserBasic(userId: string): Promise<{ name: string; isBot: boolean } | null> {
+    if (!this.client) throw new Error('Slack client not initialized');
+    try {
+      const res = await this.client.users.info({ user: userId });
+      const u = res.user;
+      if (!u) return null;
+      const name = u.profile?.display_name || u.real_name || u.name || userId;
+      return { name, isBot: !!u.is_bot || u.id === 'USLACKBOT' };
+    } catch {
+      return null;
+    }
+  }
+
   async getUserInfo(
     userId: string
   ): Promise<{ name: string; realName: string; email?: string }> {

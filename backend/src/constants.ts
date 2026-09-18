@@ -662,6 +662,10 @@ export const SLACK_CLOUD_CONSTANTS = {
 	AGENTS_SYNC_PATH: '/agents/sync',
 	/** DELETE <AGENTS_PATH>/:agentSession removes one agent's Slack app */
 	AGENTS_PATH: '/agents',
+	/** GET → who is who across the account (instances, teams, agents, bot users) */
+	DIRECTORY_PATH: '/directory',
+	/** Channel rosters are cached this long (users.info is rate-limited) */
+	DIRECTORY_CACHE_MS: 5 * 60 * 1000,
 	/** `GET` — one-click install redirect (token + returnUrl in the query) */
 	INSTALL_PATH: '/install',
 	/** Dashboard path the install flow returns to */

@@ -7,7 +7,7 @@
  * @module services/slack/initializer
  */
 
-import { getSlackService } from './slack.service.js';
+import { getSlackService, type SlackService } from './slack.service.js';
 import { getSlackOrchestratorBridge } from './slack-orchestrator-bridge.js';
 import { loadSlackCredentials } from './slack-credentials.service.js';
 import {
@@ -50,6 +50,38 @@ let unsubscribeCloudConfig: (() => void) | null = null;
  * connection alone.
  */
 let slackBootAt = 0;
+/**
+ * Wire the directory (who can be @'d): Cloud roster + live channel members.
+ * Never throws — without it agents simply get no roster line.
+ */
+async function startSlackDirectory(slackService: SlackService): Promise<void> {
+  try {
+    const { CloudClientService } = await import('../cloud/cloud-client.service.js');
+    const { SlackDirectoryService, setSlackDirectoryService } = await import('./slack-directory.service.js');
+    const cloud = CloudClientService.getInstance();
+    setSlackDirectoryService(
+      new SlackDirectoryService({
+        getInstanceId: () => getSlackInstanceRegistryService()?.getInstanceId() ?? null,
+        fetchCloudDirectory: async () => {
+          const token = cloud.getToken();
+          const base = cloud.getCloudUrl();
+          if (!token || !base) return null;
+          const res = await fetch(`${base.replace(/\/$/, '')}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.DIRECTORY_PATH}`, {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (!res.ok) return null;
+          const body = (await res.json()) as { success?: boolean; data?: unknown };
+          return body.success && Array.isArray(body.data) ? (body.data as import('./slack-directory.service.js').CloudDirectoryInstance[]) : null;
+        },
+        listChannelMembers: (channelId) => slackService.listChannelMembers(channelId),
+        getUser: (userId) => slackService.getUserBasic(userId),
+      }),
+    );
+  } catch (err) {
+    logger.debug('Slack directory not started', { error: err instanceof Error ? err.message : String(err) });
+  }
+}
+
 /** Session names of the agents this instance runs (team rosters), for the agent-to-agent self filter. */
 const localAgentSessions = new Set<string>();
 
@@ -314,6 +346,7 @@ export async function connectSlack(
         return localAgentSessions.has(agentSession);
       };
       void refreshLocalAgentSessions();
+      await startSlackDirectory(slackService);
     }
 
     const bridge = getSlackOrchestratorBridge();

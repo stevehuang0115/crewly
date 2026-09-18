@@ -45,6 +45,7 @@ import type { StorageEvent } from '../core/storage.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -690,9 +691,11 @@ export class SlackTeamChannelService {
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
+      const roster = await getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '');
       dispatch = await dispatcher.dispatchMessage(channel, persisted, {
         threadId: threadId ?? persisted.id,
         replyVia: 'reply-channel',
+        ...(roster ? { channelRoster: roster } : {}),
       });
     } else {
       this.logger.warn('No chat dispatcher wired — message persisted but not delivered', {
