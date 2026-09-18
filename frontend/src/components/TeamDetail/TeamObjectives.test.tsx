@@ -29,7 +29,7 @@ describe('TeamObjectives', () => {
 
   it('renders only missions owned by the team, with KR counts', async () => {
     getMissionsMock.mockResolvedValue([
-      { id: 'm1', objective: 'Grow XHS following', ownerTeamId: 'team-a', status: 'active', keyResults: [{ id: 'k1', title: 'x', status: 'active' }] },
+      { id: 'm1', objective: 'Grow XHS following', ownerTeamId: 'team-a', status: 'active', keyResults: [{ id: 'k1', title: 'x', status: 'on_track' }] },
       { id: 'm2', objective: 'Other team mission', ownerTeamId: 'team-b', status: 'active' },
     ]);
 
@@ -38,6 +38,38 @@ describe('TeamObjectives', () => {
     await waitFor(() => expect(screen.getByText('Grow XHS following')).toBeInTheDocument());
     expect(screen.queryByText('Other team mission')).not.toBeInTheDocument();
     expect(screen.getByText('1 key result')).toBeInTheDocument();
+  });
+
+  it('shows per-status KR counts, the level badge and a pending-approval chip', async () => {
+    getMissionsMock.mockResolvedValue([
+      {
+        id: 'm1',
+        objective: 'Grow XHS following',
+        ownerTeamId: 'team-a',
+        status: 'active',
+        level: 'team',
+        approval: { state: 'pending_approval' },
+        keyResults: [
+          { id: 'k1', title: 'a', status: 'on_track' },
+          { id: 'k2', title: 'b', status: 'on_track' },
+          { id: 'k3', title: 'c', status: 'off_track' },
+        ],
+      },
+      { id: 'm2', objective: 'Approved one', ownerTeamId: 'team-a', status: 'active', level: 'team', approval: { state: 'approved' } },
+    ]);
+
+    render(<TeamObjectives teamId="team-a" />);
+
+    await waitFor(() => expect(screen.getByTestId('team-mission-m1')).toBeInTheDocument());
+    const row = screen.getByTestId('team-mission-m1');
+    expect(row.querySelector('[data-testid="kr-count-on_track"]')).toHaveTextContent('2 on track');
+    expect(row.querySelector('[data-testid="kr-count-off_track"]')).toHaveTextContent('1 off track');
+    expect(row.querySelector('[data-testid="level-badge-team"]')).toBeInTheDocument();
+    expect(row.querySelector('[data-testid="approval-chip-pending_approval"]')).toBeInTheDocument();
+    // Approved missions carry no chip and no counts row
+    const approved = screen.getByTestId('team-mission-m2');
+    expect(approved.querySelector('[data-testid^="approval-chip-"]')).toBeNull();
+    expect(approved.querySelector('[data-testid="kr-status-counts"]')).toBeNull();
   });
 
   it('shows an empty state when the team owns no missions', async () => {

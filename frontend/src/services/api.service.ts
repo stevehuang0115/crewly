@@ -9,6 +9,18 @@ import axios from 'axios';
 import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
+import type {
+  Mission,
+  CreateMissionInput,
+  KeyResult,
+  KRMeasurement,
+  CreateKeyResultInput,
+  UpdateKeyResultInput,
+  MeasureKeyResultInput,
+  MissionOKRSummary,
+  CascadeOKRSummary,
+  MissionProgress,
+} from '../types/mission.types';
 
 /** Base URL for all API requests */
 const API_BASE = '/api';
@@ -1018,20 +1030,7 @@ class ApiService {
     return Array.isArray(d) ? d : [];
   }
 
-  async createMission(input: {
-    objective: string;
-    ownerTeamId: string;
-    cadence?: string;
-    successCriteria?: string[];
-    priority?: 'critical' | 'high' | 'medium' | 'low';
-    period?: {
-      type: 'weekly' | 'biweekly' | 'monthly' | 'quarterly' | 'custom';
-      startDate: string;
-      endDate: string;
-      label?: string;
-    };
-    parentMissionId?: string;
-  }): Promise<unknown> {
+  async createMission(input: CreateMissionInput): Promise<unknown> {
     const response = await axios.post<ApiResponse<unknown>>(`${API_BASE}/missions`, input);
     return response.data.data;
   }
@@ -1056,6 +1055,112 @@ class ApiService {
       throw new Error(response.data.error || 'Failed to update mission');
     }
     return response.data.data;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Mission OKR cascade: Key Results, roll-ups, proposals, progress
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Unwraps a mission-API envelope, throwing the server error on failure.
+   *
+   * @param response - Axios response carrying an ApiResponse envelope
+   * @param fallback - Error message when the server gives none
+   * @returns The `data` payload
+   */
+  private unwrapMissionResponse<T>(response: { data: ApiResponse<T> }, fallback: string): T {
+    if (!response.data.success || response.data.data === undefined) {
+      throw new Error(response.data.error || fallback);
+    }
+    return response.data.data;
+  }
+
+  /** Lists the Key Results attached to a mission. */
+  async getKeyResults(missionId: string): Promise<KeyResult[]> {
+    const response = await axios.get<ApiResponse<KeyResult[]>>(`${API_BASE}/missions/${missionId}/key-results`);
+    const d = response.data.data;
+    return Array.isArray(d) ? d : [];
+  }
+
+  /** Creates a Key Result under a mission. */
+  async createKeyResult(missionId: string, input: CreateKeyResultInput): Promise<KeyResult> {
+    const response = await axios.post<ApiResponse<KeyResult>>(`${API_BASE}/missions/${missionId}/key-results`, input);
+    return this.unwrapMissionResponse(response, 'Failed to create key result');
+  }
+
+  /** Partially updates a Key Result. */
+  async updateKeyResult(missionId: string, krId: string, patch: UpdateKeyResultInput): Promise<KeyResult> {
+    const response = await axios.put<ApiResponse<KeyResult>>(
+      `${API_BASE}/missions/${missionId}/key-results/${krId}`,
+      patch,
+    );
+    return this.unwrapMissionResponse(response, 'Failed to update key result');
+  }
+
+  /** Deletes a Key Result. */
+  async deleteKeyResult(missionId: string, krId: string): Promise<void> {
+    const response = await axios.delete<ApiResponse<unknown>>(`${API_BASE}/missions/${missionId}/key-results/${krId}`);
+    if (!response.data.success) {
+      throw new Error(response.data.error || 'Failed to delete key result');
+    }
+  }
+
+  /**
+   * Records a measurement against a Key Result. The backend returns the
+   * stored measurement (not the KR) — re-fetch the KR list to see the new
+   * `current` / `status`.
+   */
+  async measureKeyResult(missionId: string, krId: string, input: MeasureKeyResultInput): Promise<KRMeasurement> {
+    const response = await axios.post<ApiResponse<KRMeasurement>>(
+      `${API_BASE}/missions/${missionId}/key-results/${krId}/measure`,
+      input,
+    );
+    return this.unwrapMissionResponse(response, 'Failed to record measurement');
+  }
+
+  /** Aggregated OKR progress for a single mission. */
+  async getOkrSummary(missionId: string): Promise<MissionOKRSummary> {
+    const response = await axios.get<ApiResponse<MissionOKRSummary>>(`${API_BASE}/missions/${missionId}/okr-summary`);
+    return this.unwrapMissionResponse(response, 'Failed to load OKR summary');
+  }
+
+  /** Cross-level (cascade) OKR roll-up for a mission and its approved children. */
+  async getCascadeSummary(missionId: string): Promise<CascadeOKRSummary> {
+    const response = await axios.get<ApiResponse<CascadeOKRSummary>>(
+      `${API_BASE}/missions/${missionId}/okr-summary/cascade`,
+    );
+    return this.unwrapMissionResponse(response, 'Failed to load cascade summary');
+  }
+
+  /** Pending child proposals awaiting the owner's decision under a parent mission. */
+  async getProposals(parentMissionId: string): Promise<Mission[]> {
+    const response = await axios.get<ApiResponse<Mission[]>>(`${API_BASE}/missions/${parentMissionId}/proposals`);
+    const d = response.data.data;
+    return Array.isArray(d) ? d : [];
+  }
+
+  /** Approves a pending proposal (the proposal is the child mission itself). */
+  async approveMission(missionId: string, decidedBy?: string): Promise<Mission> {
+    const response = await axios.post<ApiResponse<Mission>>(
+      `${API_BASE}/missions/${missionId}/approve`,
+      decidedBy ? { decidedBy } : {},
+    );
+    return this.unwrapMissionResponse(response, 'Failed to approve mission');
+  }
+
+  /** Rejects a pending proposal; the backend requires a non-empty reason. */
+  async rejectMission(missionId: string, reason: string, decidedBy?: string): Promise<Mission> {
+    const response = await axios.post<ApiResponse<Mission>>(
+      `${API_BASE}/missions/${missionId}/reject`,
+      { reason, ...(decidedBy ? { decidedBy } : {}) },
+    );
+    return this.unwrapMissionResponse(response, 'Failed to reject mission');
+  }
+
+  /** WorkItem execution snapshot for a mission. */
+  async getMissionProgress(missionId: string): Promise<MissionProgress> {
+    const response = await axios.get<ApiResponse<MissionProgress>>(`${API_BASE}/missions/${missionId}/progress`);
+    return this.unwrapMissionResponse(response, 'Failed to load mission progress');
   }
 
   // ---------------------------------------------------------------------------
