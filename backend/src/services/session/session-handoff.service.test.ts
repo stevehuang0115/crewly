@@ -592,7 +592,7 @@ describe('SessionHandoffService', () => {
       expect(message).toContain('GCHAT');
       expect(message).toContain('spaces-abc');
       expect(message).toContain('thread-xyz');
-      expect(message).toContain('MUST read');
+      expect(message).toContain('Do NOT re-process threads that were already handled');
     });
 
     it('should include Chat UI threads', async () => {
@@ -619,6 +619,115 @@ describe('SessionHandoffService', () => {
       expect(message).toContain('CHAT-UI');
       expect(message).toContain('conv-123');
       expect(message).toContain('Hello from chat UI');
+    });
+
+    describe('size cap (restart cost)', () => {
+      const ORIGINAL_MAX_THREADS = process.env.CREWLY_CHAT_RESUME_MAX_THREADS;
+      const ORIGINAL_MAX_CHARS = process.env.CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD;
+
+      afterEach(() => {
+        if (ORIGINAL_MAX_THREADS === undefined) delete process.env.CREWLY_CHAT_RESUME_MAX_THREADS;
+        else process.env.CREWLY_CHAT_RESUME_MAX_THREADS = ORIGINAL_MAX_THREADS;
+        if (ORIGINAL_MAX_CHARS === undefined) delete process.env.CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD;
+        else process.env.CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD = ORIGINAL_MAX_CHARS;
+      });
+
+      /** Build N slack threads; index 0 is the OLDEST so ordering is exercised. */
+      const makeThreads = (count: number, messageChars = 40): ResumeThread[] =>
+        Array.from({ length: count }, (_, i) => ({
+          channelType: 'slack' as const,
+          channelId: `C${i}`,
+          threadId: `t${i}`,
+          filePath: `/home/.crewly/slack-threads/C${i}/t${i}.md`,
+          lastActiveAt: new Date(Date.UTC(2026, 2, 16, 0, i)).toISOString(),
+          recentMessages: ['Steve: ' + 'x'.repeat(messageChars)],
+        }));
+
+      it('caps at 5 threads, newest first, and says how many were left out', () => {
+        delete process.env.CREWLY_CHAT_RESUME_MAX_THREADS;
+        const { message, included, omitted } = SessionHandoffService.buildResumeMessage(makeThreads(12));
+
+        expect(included).toBe(5);
+        expect(omitted).toBe(7);
+        expect(message).toContain('and 7 more — use list-my-followups');
+        // Newest (highest index) first; the oldest seven never appear.
+        for (const i of [11, 10, 9, 8, 7]) expect(message).toContain(`## SLACK Thread: C${i} / t${i}`);
+        for (const i of [6, 5, 4, 3, 2, 1, 0]) expect(message).not.toContain(`Thread: C${i} / t${i}`);
+        expect(message.indexOf('Thread: C11 /')).toBeLessThan(message.indexOf('Thread: C10 /'));
+        expect(message.indexOf('Thread: C8 /')).toBeLessThan(message.indexOf('Thread: C7 /'));
+      });
+
+      it('does not add the "and K more" line when everything fits', () => {
+        const { message, omitted } = SessionHandoffService.buildResumeMessage(makeThreads(3));
+        expect(omitted).toBe(0);
+        expect(message).not.toContain('more — use list-my-followups');
+      });
+
+      it('caps each thread block at 600 chars, cut at a line boundary with a marker', () => {
+        delete process.env.CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD;
+        const threads: ResumeThread[] = [{
+          channelType: 'chat-ui',
+          channelId: 'conv-big',
+          threadId: 'conv-big',
+          filePath: '/home/.crewly/chat/conv-big.json',
+          lastActiveAt: '2026-03-16T13:00:00.000Z',
+          recentMessages: [
+            'User: ' + 'a'.repeat(300),
+            'User: ' + 'b'.repeat(300),
+            'User: ' + 'c'.repeat(300),
+          ],
+        }];
+        const { message } = SessionHandoffService.buildResumeMessage(threads);
+        const block = message.split('\n\n').find((b) => b.startsWith('## CHAT-UI Thread')) ?? '';
+
+        expect(block.length).toBeLessThanOrEqual(600);
+        expect(block).toContain('## CHAT-UI Thread: conv-big / conv-big');
+        expect(block).toContain('- File: `/home/.crewly/chat/conv-big.json`');
+        expect(block).toContain('(truncated');
+        // Whole lines only: a dropped message never appears half-cut.
+        expect(block).not.toContain('b'.repeat(300));
+        expect(block).not.toContain('c'.repeat(300));
+        expect(block.split('\n').every((l) => !/a{1,299}$/.test(l) || l.endsWith('a'.repeat(300)))).toBe(true);
+      });
+
+      it('leaves short thread blocks untouched (no marker)', () => {
+        const { message } = SessionHandoffService.buildResumeMessage(makeThreads(1));
+        expect(message).not.toContain('(truncated');
+        expect(message).toContain('Steve: ' + 'x'.repeat(40));
+      });
+
+      it('honours the env overrides and ignores garbage values', () => {
+        process.env.CREWLY_CHAT_RESUME_MAX_THREADS = '2';
+        process.env.CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD = '120';
+        const two = SessionHandoffService.buildResumeMessage(makeThreads(4, 200));
+        expect(two.included).toBe(2);
+        expect(two.omitted).toBe(2);
+        expect(two.message).toContain('and 2 more — use list-my-followups');
+        const blocks = two.message.split('\n\n').filter((b) => b.startsWith('## SLACK'));
+        expect(blocks).toHaveLength(2);
+        for (const b of blocks) expect(b.length).toBeLessThanOrEqual(120);
+
+        process.env.CREWLY_CHAT_RESUME_MAX_THREADS = 'lots';
+        process.env.CREWLY_CHAT_RESUME_MAX_CHARS_PER_THREAD = '-1';
+        const fallback = SessionHandoffService.buildResumeMessage(makeThreads(7, 20));
+        expect(fallback.included).toBe(5);
+        expect(fallback.message).not.toContain('(truncated');
+      });
+
+      it('pushResumeNotification sends the capped message and logs the split', async () => {
+        delete process.env.CREWLY_CHAT_RESUME_MAX_THREADS;
+        jest.spyOn(service, 'findRecentThreads').mockResolvedValue(makeThreads(8));
+        const mockSender: AgentMessageSender = {
+          sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }),
+        };
+
+        await service.pushResumeNotification(mockSender, 'crewly-orc');
+
+        const message = (mockSender.sendMessageToAgent as jest.Mock).mock.calls[0][1] as string;
+        expect(message).toContain('[CHAT_RESUME]');
+        expect((message.match(/^## SLACK Thread:/gm) ?? []).length).toBe(5);
+        expect(message).toContain('and 3 more — use list-my-followups');
+      });
     });
 
     it('should not send if no recent threads', async () => {
