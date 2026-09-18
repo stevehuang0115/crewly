@@ -17,6 +17,12 @@ import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 
 // Mock dependencies
+// The stored conversation is assumed to exist on disk in these tests; the
+// real check looks under ~/.claude/projects and ~/.codex/sessions.
+jest.mock('./runtime-session-recovery.js', () => ({
+	...jest.requireActual('./runtime-session-recovery.js'),
+	conversationExists: () => true,
+}));
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: jest.fn().mockReturnValue({

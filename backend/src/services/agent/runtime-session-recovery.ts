@@ -82,21 +82,37 @@ export interface RuntimeSessionPlan {
  */
 export function planRuntimeSessionFlags(args: {
   runtimeType: string;
+  /** Informational: whether the persistence layer flagged this as a restored session. */
   isRestored: boolean;
   storedSessionId: string | null | undefined;
   autoResume: boolean;
+  /**
+   * Whether the stored conversation still exists on disk. `false` forces a
+   * fresh start (resuming a deleted conversation would fail to boot);
+   * omitted = trust the stored id.
+   */
+  conversationExists?: boolean;
   newId?: () => string;
 }): RuntimeSessionPlan {
   const { runtimeType, isRestored, storedSessionId, autoResume } = args;
   const newId = args.newId ?? randomUUID;
-  const canResume = autoResume && isRestored && !!storedSessionId;
+  // A stored id is enough to resume: the "restored session" flag is only
+  // set by one boot path and stayed false in the common one, which is why
+  // auto-resume never actually fired before 2026-09-18.
+  const canResume = autoResume && !!storedSessionId && args.conversationExists !== false;
+  void isRestored;
 
   if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
     if (canResume) {
       return { flags: ['--resume', storedSessionId as string], resumeSessionId: storedSessionId as string, presetSessionId: null, note: 'resuming Claude Code conversation' };
     }
     const id = newId();
-    return { flags: ['--session-id', id], resumeSessionId: null, presetSessionId: id, note: isRestored && !autoResume ? 'auto-resume disabled; fresh conversation with a preset id' : 'fresh Claude Code conversation with a preset id' };
+    const note = storedSessionId && !autoResume
+      ? 'auto-resume disabled; fresh conversation with a preset id'
+      : storedSessionId && args.conversationExists === false
+        ? 'stored conversation no longer exists; fresh conversation with a preset id'
+        : 'fresh Claude Code conversation with a preset id';
+    return { flags: ['--session-id', id], resumeSessionId: null, presetSessionId: id, note };
   }
   if (runtimeType === RUNTIME_TYPES.CODEX_CLI) {
     if (canResume) {
@@ -219,14 +235,43 @@ function pad(n: number): string {
   return n < 10 ? `0${n}` : String(n);
 }
 
-/** Parse the `session_meta` line (the first line) of a rollout file. */
-function readSessionMeta(filePath: string): { sessionId: string; cwd: string } | null {
+/** Longest first line we are willing to read (Codex embeds its base instructions in `session_meta`). */
+const MAX_META_LINE_BYTES = 4 * 1024 * 1024;
+
+/** Read a file's first line, chunk by chunk, without loading the rest of it. */
+function readFirstLine(filePath: string): string | null {
   let fd: number | null = null;
   try {
     fd = fs.openSync(filePath, 'r');
-    const buf = Buffer.alloc(8192);
-    const n = fs.readSync(fd, buf, 0, buf.length, 0);
-    const firstLine = buf.toString('utf8', 0, n).split('\n')[0];
+    const chunks: Buffer[] = [];
+    const chunk = Buffer.alloc(64 * 1024);
+    let position = 0;
+    let total = 0;
+    for (;;) {
+      const n = fs.readSync(fd, chunk, 0, chunk.length, position);
+      if (n === 0) break;
+      const nl = chunk.subarray(0, n).indexOf(0x0a);
+      if (nl >= 0) {
+        chunks.push(Buffer.from(chunk.subarray(0, nl)));
+        return Buffer.concat(chunks).toString('utf8');
+      }
+      chunks.push(Buffer.from(chunk.subarray(0, n)));
+      position += n;
+      total += n;
+      if (total > MAX_META_LINE_BYTES) return null;
+    }
+    return chunks.length ? Buffer.concat(chunks).toString('utf8') : null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
+/** Parse the `session_meta` line (the first line) of a rollout file. */
+function readSessionMeta(filePath: string): { sessionId: string; cwd: string } | null {
+  try {
+    const firstLine = readFirstLine(filePath);
     if (!firstLine) return null;
     const parsed = JSON.parse(firstLine) as { type?: string; payload?: { session_id?: string; id?: string; cwd?: string } };
     if (parsed.type !== 'session_meta' || !parsed.payload) return null;
@@ -236,7 +281,50 @@ function readSessionMeta(filePath: string): { sessionId: string; cwd: string } |
     return { sessionId, cwd };
   } catch {
     return null;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
   }
+}
+
+/**
+ * Whether a stored conversation still exists on disk, so a resume will not
+ * fail to boot. Claude Code keeps `~/.claude/projects/<cwd slug>/<id>.jsonl`;
+ * Codex keeps `<codexHome>/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl`.
+ *
+ * @param args - Runtime, id, the agent's cwd, optional home overrides
+ * @returns True when found; true (benefit of the doubt) for unknown runtimes
+ */
+export function conversationExists(args: {
+  runtimeType: string;
+  sessionId: string;
+  cwd: string;
+  claudeHome?: string;
+  codexHome?: string;
+}): boolean {
+  const { runtimeType, sessionId, cwd } = args;
+  if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
+    const home = args.claudeHome ?? path.join(os.homedir(), '.claude');
+    const slug = path.resolve(cwd).replace(/[\/.]/g, '-');
+    return fs.existsSync(path.join(home, 'projects', slug, `${sessionId}.jsonl`));
+  }
+  if (runtimeType === RUNTIME_TYPES.CODEX_CLI) {
+    const root = path.join(args.codexHome ?? defaultCodexHome(), 'sessions');
+    const suffix = `-${sessionId}.jsonl`;
+    const stack = [root];
+    let visited = 0;
+    while (stack.length > 0 && visited < 5000) {
+      const dir = stack.pop() as string;
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(dir, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const e of entries) {
+        visited += 1;
+        if (e.isDirectory()) stack.push(path.join(dir, e.name));
+        else if (e.name.startsWith('rollout-') && e.name.endsWith(suffix)) return true;
+      }
+    }
+    return false;
+  }
+  return true;
 }

@@ -75,7 +75,7 @@ import {
 } from '../../utils/terminal-string-ops.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
-import { planRuntimeSessionFlags, waitForCodexSessionId, type RuntimeSessionPlan } from './runtime-session-recovery.js';
+import { conversationExists, planRuntimeSessionFlags, waitForCodexSessionId, type RuntimeSessionPlan } from './runtime-session-recovery.js';
 
 export interface OrchestratorConfig {
 	sessionName: string;
@@ -764,6 +764,7 @@ export class AgentRegistrationService {
 		sessionName: string,
 		runtimeType: string,
 		effectiveFlags: string[],
+		cwd?: string,
 	): Promise<RuntimeSessionPlan> {
 		let autoResume = true;
 		try {
@@ -782,11 +783,14 @@ export class AgentRegistrationService {
 				error: err instanceof Error ? err.message : String(err),
 			});
 		}
+		const storedSessionId = persistence?.getSessionId(sessionName) ?? null;
 		const plan = planRuntimeSessionFlags({
 			runtimeType,
 			isRestored: persistence?.isRestoredSession(sessionName) ?? false,
-			storedSessionId: persistence?.getSessionId(sessionName) ?? null,
+			storedSessionId,
 			autoResume,
+			conversationExists:
+				storedSessionId && cwd ? conversationExists({ runtimeType, sessionId: storedSessionId, cwd }) : undefined,
 		});
 		effectiveFlags.push(...plan.flags);
 		if (plan.presetSessionId && persistence) {
@@ -1152,7 +1156,7 @@ export class AgentRegistrationService {
 		// Conversation id: preset for Claude Code (--session-id), resumed on
 		// restore (--resume / `codex resume`), discovered after launch for Codex.
 		const effectiveFlags = runtimeFlags ? [...runtimeFlags] : [];
-		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags);
+		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags, projectPath);
 
 		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
 		let promptFilePath: string | undefined;
@@ -1651,7 +1655,7 @@ export class AgentRegistrationService {
 
 		// Conversation id (see planSessionRecovery): preset, resumed, or discovered.
 		const effectiveFlags = runtimeFlags ? [...runtimeFlags] : [];
-		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags);
+		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags, projectPath);
 
 		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
 		let promptFilePath: string | undefined;

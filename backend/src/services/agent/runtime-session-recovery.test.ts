@@ -9,6 +9,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  conversationExists,
   discoverCodexSessionId,
   planRuntimeSessionFlags,
   stripNestedClaudeSessionEnv,
@@ -24,10 +25,15 @@ describe('planRuntimeSessionFlags', () => {
     expect(plan.resumeSessionId).toBeNull();
   });
 
-  it('resumes a restored Claude Code agent with its stored id; a fresh id when auto-resume is off', () => {
+  it('resumes a Claude Code agent with its stored id (restored flag or not); a fresh id when auto-resume is off or the transcript is gone', () => {
     const on = planRuntimeSessionFlags({ runtimeType: 'claude-code', isRestored: true, storedSessionId: 'old', autoResume: true, newId: () => 'x' });
     expect(on.flags).toEqual(['--resume', 'old']);
     expect(on.resumeSessionId).toBe('old');
+    // The persistence "restored" flag is not required — a stored id is.
+    expect(planRuntimeSessionFlags({ runtimeType: 'claude-code', isRestored: false, storedSessionId: 'old', autoResume: true, newId: () => 'x' }).flags).toEqual(['--resume', 'old']);
+    const gone = planRuntimeSessionFlags({ runtimeType: 'claude-code', isRestored: false, storedSessionId: 'old', autoResume: true, conversationExists: false, newId: () => 'fresh' });
+    expect(gone.flags).toEqual(['--session-id', 'fresh']);
+    expect(gone.note).toContain('no longer exists');
     const off = planRuntimeSessionFlags({ runtimeType: 'claude-code', isRestored: true, storedSessionId: 'old', autoResume: false, newId: () => 'new' });
     expect(off.flags).toEqual(['--session-id', 'new']);
     expect(off.note).toContain('disabled');
@@ -95,6 +101,33 @@ describe('discoverCodexSessionId', () => {
     const second = discoverCodexSessionId({ codexHome: home, cwd: '/opt/app', notBeforeMs: T0, claimed: new Set(['ours']) });
     expect(second?.sessionId).toBe('next-agent');
     expect(discoverCodexSessionId({ codexHome: home, cwd: '/nope', notBeforeMs: T0 })).toBeNull();
+  });
+
+  it('reads a session_meta line longer than 8 KB (Codex embeds its base instructions)', () => {
+    const dir = path.join(home, 'sessions', '2026/09/18');
+    fs.mkdirSync(dir, { recursive: true });
+    const meta = { type: 'session_meta', payload: { session_id: 'big-one', id: 'big-one', cwd: '/opt/app', base_instructions: { text: 'x'.repeat(40_000) } } };
+    const p = path.join(dir, 'rollout-2026-09-18T00-00-00-big-one.jsonl');
+    fs.writeFileSync(p, `${JSON.stringify(meta)}\n{"type":"turn"}\n`);
+    fs.utimesSync(p, (T0 + 3_000) / 1000, (T0 + 3_000) / 1000);
+    expect(discoverCodexSessionId({ codexHome: home, cwd: '/opt/app', notBeforeMs: T0 })?.sessionId).toBe('big-one');
+  });
+
+  it('conversationExists finds a Codex rollout by id anywhere under sessions/, and a Claude transcript by cwd slug', () => {
+    rollout('2026/08/01', 'old-codex', '/opt/app', T0 - 86_400_000 * 40);
+    expect(conversationExists({ runtimeType: 'codex-cli', sessionId: 'old-codex', cwd: '/opt/app', codexHome: home })).toBe(true);
+    expect(conversationExists({ runtimeType: 'codex-cli', sessionId: 'nope', cwd: '/opt/app', codexHome: home })).toBe(false);
+    const claudeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'claude-home-'));
+    try {
+      const slugDir = path.join(claudeHome, 'projects', '-Users-me-proj-crewly');
+      fs.mkdirSync(slugDir, { recursive: true });
+      fs.writeFileSync(path.join(slugDir, 'abc.jsonl'), '{}');
+      expect(conversationExists({ runtimeType: 'claude-code', sessionId: 'abc', cwd: '/Users/me/proj/crewly', claudeHome })).toBe(true);
+      expect(conversationExists({ runtimeType: 'claude-code', sessionId: 'zzz', cwd: '/Users/me/proj/crewly', claudeHome })).toBe(false);
+      expect(conversationExists({ runtimeType: 'gemini-cli', sessionId: 'any', cwd: '/x' })).toBe(true);
+    } finally {
+      fs.rmSync(claudeHome, { recursive: true, force: true });
+    }
   });
 
   it('tolerates a missing home, malformed first lines and non-rollout files', () => {
