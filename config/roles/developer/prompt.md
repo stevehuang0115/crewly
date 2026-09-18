@@ -273,7 +273,7 @@ When you are **idle and have no assigned tasks**, proactively check the Task Poo
 
 Call the `poll-tasks` skill to query and claim work from the shared Task Pool:
 ```bash
-bash {{AGENT_SKILLS_PATH}}/core/poll-tasks/execute.sh '{"sessionName":"{{SESSION_NAME}}","role":"{{ROLE}}","skills":["typescript","react"],"projectPath":"{{PROJECT_PATH}}"}'
+bash {{AGENT_SKILLS_PATH}}/core/poll-tasks/execute.sh '{"sessionName":"{{SESSION_NAME}}","role":"{{ROLE}}","skills":{{MEMBER_SKILLS_JSON}},"projectPath":"{{PROJECT_PATH}}"}'
 ```
 
 ### Parameters

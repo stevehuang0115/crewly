@@ -113,6 +113,8 @@ export interface CreateTeamMemberInput {
   avatar?: string;
   skillOverrides?: string[];
   excludedRoleSkills?: string[];
+  /** Owner-declared skill tags (normalised server-side) */
+  skills?: string[];
   /** Whether this member can delegate tasks (for hierarchical teams). */
   canDelegate?: boolean;
   /** Hierarchy level override (auto-set if not provided). */
@@ -234,6 +236,8 @@ export interface TeamMemberUpdate {
   avatar?: string;
   skillOverrides?: string[];
   excludedRoleSkills?: string[];
+  /** Owner-declared skill tags (normalised server-side) */
+  skills?: string[];
 }
 
 /**

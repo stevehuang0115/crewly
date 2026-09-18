@@ -44,6 +44,7 @@ import { getCriticalEventTypes } from '../../types/event-bus.types.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
+import { normalizeMemberSkills } from '../../services/ai/prompt-builder.service.js';
 import {
   evaluateColdLaunch,
   isDormantTeam,
@@ -1067,6 +1068,7 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
         runtimeType: member.runtimeType || await getDefaultRuntime(),
         skillOverrides: member.skillOverrides || [],
         excludedRoleSkills: member.excludedRoleSkills || [],
+        ...(normalizeMemberSkills(member.skills) ? { skills: normalizeMemberSkills(member.skills) } : {}),
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         // Hierarchy fields (only set for hierarchical teams)
@@ -2964,6 +2966,7 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
             avatar: memberUpdate.avatar || existingMember.avatar,
             skillOverrides: memberUpdate.skillOverrides || [],
             excludedRoleSkills: memberUpdate.excludedRoleSkills || [],
+            skills: normalizeMemberSkills(memberUpdate.skills ?? existingMember.skills),
             updatedAt: new Date().toISOString()
           } as MutableTeamMember;
         } else {
@@ -2979,6 +2982,7 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
             avatar: memberUpdate.avatar,
             skillOverrides: memberUpdate.skillOverrides || [],
             excludedRoleSkills: memberUpdate.excludedRoleSkills || [],
+            skills: normalizeMemberSkills(memberUpdate.skills),
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           } as MutableTeamMember;

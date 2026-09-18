@@ -69,6 +69,47 @@ function recordPromptSize(
  * @param team - Full Team record (used to detect implicit subordination)
  * @returns The resolved organisational role
  */
+/** Bounds for owner-declared member skill tags. */
+export const MEMBER_SKILL_LIMITS = { MAX_TAGS: 20, MAX_TAG_LENGTH: 32 } as const;
+
+/**
+ * Normalise owner-declared skill tags: trim, lowercase, drop empties and
+ * duplicates, cap length and count. Returns `undefined` when nothing is left
+ * so an absent field stays absent on the stored member.
+ *
+ * @param input - Raw tags from the API or a form (array or comma-separated)
+ * @returns Clean tag list, or undefined when empty
+ */
+export function normalizeMemberSkills(input: unknown): string[] | undefined {
+	const raw: unknown[] = Array.isArray(input)
+		? input
+		: typeof input === 'string'
+			? input.split(',')
+			: [];
+	const seen = new Set<string>();
+	for (const item of raw) {
+		if (typeof item !== 'string') continue;
+		const tag = item.trim().toLowerCase().slice(0, MEMBER_SKILL_LIMITS.MAX_TAG_LENGTH);
+		if (!tag) continue;
+		seen.add(tag);
+		if (seen.size >= MEMBER_SKILL_LIMITS.MAX_TAGS) break;
+	}
+	return seen.size > 0 ? [...seen] : undefined;
+}
+
+/**
+ * The `{{MEMBER_SKILLS_JSON}}` value for a prompt: the member's declared
+ * skills, else its reported capabilities, else `[]`. Role prompts hand this
+ * to poll-tasks so an agent polls with its own tags instead of an example.
+ *
+ * @param config - Module config for the member being prompted
+ * @returns A JSON array literal
+ */
+export function memberSkillsJson(config: Pick<ModuleConfig, 'skills' | 'capabilities'>): string {
+	const tags = normalizeMemberSkills(config.skills) ?? normalizeMemberSkills(config.capabilities) ?? [];
+	return JSON.stringify(tags);
+}
+
 export function deriveOrgRole(member: TeamMember, team: Team): OrgRole {
 	if (member.role === 'orchestrator') return 'orchestrator';
 	if (member.canDelegate === true) return 'team-lead';
@@ -179,6 +220,7 @@ export function buildModuleConfigFromTeamMember(
 		orgRole,
 		autonomyLevel: member.autonomyLevel,
 		capabilities: member.capabilities,
+		skills: member.skills,
 		domainSOP: member.domainSOP,
 		riskPolicy: member.riskPolicy,
 
@@ -457,6 +499,7 @@ Recursion clause: every delegator hop carries this rule — ORC→TL, TL→Worke
 				PROJECT_PATH: config.projectPath || 'Not specified',
 				MEMBER_ID: config.memberId || '',
 				AGENT_SKILLS_PATH: this.agentSkillsPath,
+				MEMBER_SKILLS_JSON: memberSkillsJson(config),
 			});
 
 			this.logger.info('Loaded role-specific system prompt', {
@@ -873,6 +916,7 @@ ${fullContext}
 				MEMBER_ID: config.memberId || '',
 				PROJECT_PATH: config.projectPath || '',
 				AGENT_SKILLS_PATH: this.agentSkillsPath,
+				MEMBER_SKILLS_JSON: memberSkillsJson(config),
 				// Pipeline Dogfood Amendment §3.5 — TL prompt references {{SESSION_NAME}}
 				// in poll-tasks / schedule-followup invocations, so the addon now
 				// participates in session-name substitution alongside the worker prompts.
@@ -1337,6 +1381,7 @@ After reviewing the results from Steps 1-3:
 				SESSION_ID: sessionName,
 				ROLE: role,
 				AGENT_SKILLS_PATH: this.agentSkillsPath,
+				MEMBER_SKILLS_JSON: '[]',
 			};
 
 			if (memberId) {

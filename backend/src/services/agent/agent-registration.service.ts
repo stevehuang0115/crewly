@@ -48,6 +48,7 @@ import { AgentSuspendService } from './agent-suspend.service.js';
 import {
 	PromptBuilderService,
 	buildModuleConfigFromTeamMember,
+	memberSkillsJson,
 	type SessionRuntimeContext,
 } from '../ai/prompt-builder.service.js';
 import { PromptAssemblyService } from '../ai/prompt-modules/prompt-assembly.service.js';
@@ -1911,6 +1912,23 @@ export class AgentRegistrationService {
 	/**
 	 * Load registration prompt from config files (with caching to prevent file I/O contention)
 	 */
+	/**
+	 * The `{{MEMBER_SKILLS_JSON}}` value for a session: the member's declared
+	 * skills, else its reported capabilities, else `[]`. Storage failures
+	 * degrade to `[]` so registration never blocks on it.
+	 *
+	 * @param sessionName - Session whose member to look up
+	 * @returns A JSON array literal
+	 */
+	private async resolveMemberSkillsJson(sessionName: string): Promise<string> {
+		try {
+			const found = await this.storageService.findMemberBySessionName(sessionName);
+			return memberSkillsJson({ skills: found?.member.skills, capabilities: found?.member.capabilities });
+		} catch {
+			return '[]';
+		}
+	}
+
 	private async loadRegistrationPrompt(
 		role: string,
 		sessionName: string,
@@ -1941,6 +1959,12 @@ export class AgentRegistrationService {
 			prompt = prompt.replace(/\{\{SESSION_ID\}\}/g, sessionName);
 			prompt = prompt.replace(/\{\{SESSION_NAME\}\}/g, sessionName);
 			prompt = prompt.replace(/\{\{ROLE\}\}/g, role);
+			// The member's own skill tags for poll-tasks (2026-09-18): role prompts
+			// used to ship a literal `["typescript","react"]` example, so every
+			// agent polled the pool with those two tags whatever its job was.
+			if (prompt.includes('{{MEMBER_SKILLS_JSON}}')) {
+				prompt = prompt.replace(/\{\{MEMBER_SKILLS_JSON\}\}/g, await this.resolveMemberSkillsJson(sessionName));
+			}
 			if (memberId) {
 				prompt = prompt.replace(/\{\{MEMBER_ID\}\}/g, memberId);
 			} else {

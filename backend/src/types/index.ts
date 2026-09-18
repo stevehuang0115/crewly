@@ -48,6 +48,12 @@ export interface TeamMember {
     detectedAt: string;
   };
   capabilities?: string[]; // Agent-reported capabilities
+  /**
+   * Owner-declared skill tags (lowercase, e.g. `["devops","docker","sql"]`).
+   * Used by poll-tasks / the task pool to match work to this member; falls
+   * back to `capabilities` when empty. See `normalizeMemberSkills`.
+   */
+  skills?: string[];
   lastActivityCheck?: string; // ISO timestamp of last activity monitoring
   createdAt: string;
   updatedAt: string;
@@ -364,6 +370,10 @@ export interface TeamMemberSessionConfig {
   runtimeType?: TeamMember['runtimeType'];
   skillOverrides?: string[];
   excludedRoleSkills?: string[];
+  /** Owner-declared skill tags, rendered into the prompt as {{MEMBER_SKILLS_JSON}} */
+  skills?: string[];
+  /** Agent-reported capabilities (fallback for skills) */
+  capabilities?: string[];
 
   // === Team Lead fields (for TL-aware prompt building) ===
 

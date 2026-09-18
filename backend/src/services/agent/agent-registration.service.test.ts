@@ -70,11 +70,19 @@ jest.mock('./runtime-service.factory.js', () => ({
 }));
 
 // Mock PromptBuilderService for TL addon injection
-jest.mock('../ai/prompt-builder.service.js', () => ({
-	PromptBuilderService: jest.fn().mockImplementation(() => ({
-		buildTeamLeadSection: jest.fn().mockResolvedValue('## TL ADDON INJECTED\n\nYou are the Team Lead.'),
-	})),
-}));
+jest.mock('../ai/prompt-builder.service.js', () => {
+	const actual = jest.requireActual('../ai/prompt-builder.service.js');
+	return {
+		PromptBuilderService: jest.fn().mockImplementation(() => ({
+			buildTeamLeadSection: jest.fn().mockResolvedValue('## TL ADDON INJECTED\n\nYou are the Team Lead.'),
+		})),
+		// Pure helpers keep their real implementation.
+		memberSkillsJson: actual.memberSkillsJson,
+		normalizeMemberSkills: actual.normalizeMemberSkills,
+		buildModuleConfigFromTeamMember: actual.buildModuleConfigFromTeamMember,
+		deriveOrgRole: actual.deriveOrgRole,
+	};
+});
 
 // Mock PtyActivityTrackerService — default to high idle time (agent not busy)
 const mockGetIdleTimeMs = jest.fn().mockReturnValue(999999);
@@ -1160,6 +1168,31 @@ describe('AgentRegistrationService', () => {
 			expect(result).toContain('member-123');
 			expect(result).not.toContain('{{AGENT_SKILLS_PATH}}');
 			expect(result).toContain('config/skills/agent/core/register-self/execute.sh');
+		});
+
+		// 2026-09-18: role prompts shipped a literal `["typescript","react"]`
+		// example for poll-tasks, so every agent polled with those tags.
+		it('renders the member\'s own skill tags into {{MEMBER_SKILLS_JSON}}', async () => {
+			mockReadFile.mockResolvedValue('poll {"skills":{{MEMBER_SKILLS_JSON}}}');
+			mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue({
+				team: { id: 't1' },
+				member: { id: 'm1', sessionName: 'kai', skills: ['DevOps', 'docker', 'devops'] },
+			});
+			const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+			const result = await loadRegistrationPrompt('devops', 'kai', 'm1');
+			expect(result).toContain('poll {"skills":["devops","docker"]}');
+		});
+
+		it('falls back to capabilities, then to [] when the member has no tags or storage fails', async () => {
+			mockReadFile.mockResolvedValue('{{MEMBER_SKILLS_JSON}}');
+			const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+			mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue({
+				team: { id: 't1' },
+				member: { id: 'm1', sessionName: 'a', capabilities: ['sql'] },
+			});
+			expect(await loadRegistrationPrompt('ops', 'a', 'm1')).toContain('["sql"]');
+			mockStorageService.findMemberBySessionName = jest.fn().mockRejectedValue(new Error('disk'));
+			expect((await loadRegistrationPrompt('ops', 'a', 'm1')).startsWith('[]')).toBe(true);
 		});
 
 		it('should remove member ID parameter when not provided', async () => {

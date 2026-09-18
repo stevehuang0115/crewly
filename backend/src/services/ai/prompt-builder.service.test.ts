@@ -1741,9 +1741,37 @@ Decompose and delegate.`;
 import {
 	deriveOrgRole,
 	buildModuleConfigFromTeamMember,
+	normalizeMemberSkills,
+	memberSkillsJson,
 	type SessionRuntimeContext,
 } from './prompt-builder.service.js';
 import type { Team, TeamMember } from '../../types/index.js';
+
+describe('member skill tags (2026-09-18)', () => {
+	it('normalizeMemberSkills trims, lowercases, dedupes, caps, and returns undefined when empty', () => {
+		expect(normalizeMemberSkills([' DevOps ', 'docker', 'devops', '', 42])).toEqual(['devops', 'docker']);
+		expect(normalizeMemberSkills('SQL, prod-readonly ,sql')).toEqual(['sql', 'prod-readonly']);
+		expect(normalizeMemberSkills(['x'.repeat(50)])).toEqual(['x'.repeat(32)]);
+		expect(normalizeMemberSkills(Array.from({ length: 30 }, (_, i) => `s${i}`))).toHaveLength(20);
+		expect(normalizeMemberSkills([])).toBeUndefined();
+		expect(normalizeMemberSkills(undefined)).toBeUndefined();
+	});
+
+	it('memberSkillsJson prefers skills, then capabilities, then []', () => {
+		expect(memberSkillsJson({ skills: ['DevOps'], capabilities: ['sql'] })).toBe('["devops"]');
+		expect(memberSkillsJson({ capabilities: ['sql'] })).toBe('["sql"]');
+		expect(memberSkillsJson({})).toBe('[]');
+	});
+
+	it('buildModuleConfigFromTeamMember carries the member skills', () => {
+		const member = { id: 'm', name: 'Kai', sessionName: 's', role: 'developer', skills: ['devops'] } as unknown as TeamMember;
+		const team = { id: 't', name: 'T', members: [member] } as unknown as Team;
+		const cfg = buildModuleConfigFromTeamMember(member, team, {
+			agentSkillsPath: '/a', tlSkillsPath: '/t', projectRoot: '/p',
+		} as SessionRuntimeContext);
+		expect(cfg.skills).toEqual(['devops']);
+	});
+});
 import { RoleBoundaryModule } from './prompt-modules/role-boundary.module.js';
 
 /**

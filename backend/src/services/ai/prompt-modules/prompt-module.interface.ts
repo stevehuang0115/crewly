@@ -61,6 +61,8 @@ export interface ModuleConfig {
 	autonomyLevel?: AutonomyLevel;
 	/** Capability flags (e.g., ['can-decide', 'can-verify']) */
 	capabilities?: string[];
+	/** Owner-declared skill tags; rendered as `{{MEMBER_SKILLS_JSON}}` in role prompts. */
+	skills?: string[];
 	/** Domain SOP name — loads config/domain-sops/{domainSOP}.sop.md */
 	domainSOP?: string;
 	/** Risk policy name — loads config/risk-policies/{riskPolicy}.policy.md */
