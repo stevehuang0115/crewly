@@ -41,6 +41,10 @@ describe('SkillsReferenceModule', () => {
 		expect(result).toContain('core/remember');
 		expect(result).toContain('core/record-learning');
 		expect(result).toContain('core/report-status');
+		expect(result).toContain('core/set-focus');
+		expect(result).toContain('core/suppress-noise');
+		expect(result).toContain('core/record-prediction');
+		expect(result).toContain('core/resolve-prediction');
 	});
 
 	it('should include skill catalog reference', async () => {
