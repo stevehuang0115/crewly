@@ -70,6 +70,7 @@ import { MissionReminderService } from './services/v3/mission-reminder.service.j
 import { OKRReviewService } from './services/v3/okr-review.service.js';
 import { bootEscalationService } from './services/v3/escalation-boot.js';
 import { TeamBudgetGateService } from './services/budget/team-budget-gate.service.js';
+import { HierarchyEscalationMonitor } from './services/hierarchy/hierarchy-escalation-monitor.service.js';
 import type { EscalationService } from './services/v3/escalation.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
@@ -210,6 +211,7 @@ export class CrewlyServer {
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
 	private krCompletionSubscriber: KRCompletionSubscriber | null = null;
 	private escalationService: EscalationService | null = null;
+	private hierarchyEscalationMonitor: HierarchyEscalationMonitor | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
 	// DF-1 #438 — symmetric to AutoLearningSubscriber; surfaces milestones
@@ -677,6 +679,16 @@ void (async () => {
 		// declared + bridged events with no publisher before this.
 		MissionReminderService.getInstance().setEventBusService(this.eventBusService);
 		OKRReviewService.getInstance().setEventBusService(this.eventBusService);
+
+		// Hierarchy escalation: a TL that has not acted on a worker's
+		// verification handoff within 15 min triggers the documented bypass to
+		// the orchestrator (`hierarchy:escalation` + [ESCALATION] queue message).
+		// HierarchyEscalationService had the rules but no runtime consumer.
+		this.hierarchyEscalationMonitor = HierarchyEscalationMonitor.boot(
+			this.eventBusService,
+			this.messageQueueService,
+		);
+		this.hierarchyEscalationMonitor.start();
 
 		// LEARN-1: subscribe to terminal task / mission:replanned events and
 		// auto-record a learning entry via MemoryService.recordLearning. Closes
@@ -3585,6 +3597,10 @@ void (async () => {
 			if (this.escalationService) {
 				try { await this.escalationService.stop(); } catch { /* best-effort */ }
 				this.escalationService = null;
+			}
+			if (this.hierarchyEscalationMonitor) {
+				this.hierarchyEscalationMonitor.stop();
+				this.hierarchyEscalationMonitor = null;
 			}
 
 			// LEARN-1: stop the AutoLearningSubscriber on the same window as the
