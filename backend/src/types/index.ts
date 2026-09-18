@@ -415,6 +415,12 @@ export interface StartupConfig {
   autoCommitInterval: number;
   /** When true, skip frontend serving (API-only mode for cloud deployment) */
   headless: boolean;
+  /**
+   * Host/interface passed to `httpServer.listen` (`CREWLY_BIND_HOST`).
+   * Defaults to `0.0.0.0` for backward compatibility; set `127.0.0.1` to
+   * keep a server install reachable from the box only.
+   */
+  bindHost: string;
 }
 
 // Re-export memory types

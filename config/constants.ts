@@ -245,6 +245,63 @@ export const WEB_CONSTANTS = {
 	},
 } as const;
 
+// ========================= API SECURITY CONSTANTS =========================
+
+/**
+ * Network exposure + API token authentication for the OSS server.
+ *
+ * The REST API and WebSocket endpoints are open to loopback callers (local
+ * skills, the local dashboard) and require a shared API token from every
+ * other address. See README "Securing a server install".
+ */
+export const API_SECURITY_CONSTANTS = {
+	/** Environment variable names */
+	ENV: {
+		/** Host/interface the HTTP server binds to (default: all interfaces) */
+		BIND_HOST: 'CREWLY_BIND_HOST',
+		/** Pinned API token; when unset one is generated on first boot */
+		API_TOKEN: 'CREWLY_API_TOKEN',
+		/** Set to `1` to honour `X-Forwarded-For` when classifying loopback callers */
+		TRUST_PROXY: 'CREWLY_TRUST_PROXY',
+		/** Set to `1`/`true` to force headless (no display) detection */
+		HEADLESS: 'CREWLY_HEADLESS',
+	},
+	/** Default bind host — every interface, for backward compatibility */
+	DEFAULT_BIND_HOST: '0.0.0.0',
+	/** Loopback-only bind host suggested in the startup warning */
+	LOOPBACK_BIND_HOST: '127.0.0.1',
+	/** File (relative to CREWLY_HOME) holding the generated API token */
+	TOKEN_FILE_NAME: 'api-token',
+	/** Random bytes in a generated token (hex-encoded → 64 chars) */
+	TOKEN_BYTES: 32,
+	/** POSIX mode for the token file (owner read/write only) */
+	TOKEN_FILE_MODE: 0o600,
+	/** Hex characters of sha256(token) recorded for audit purposes */
+	FINGERPRINT_HEX_LENGTH: 8,
+	/** Request header carrying the token */
+	TOKEN_HEADER: 'x-crewly-token',
+	/** Cookie name carrying the token (lets `<img>`/asset/WS requests pass) */
+	TOKEN_COOKIE: 'crewly_token',
+	/** Query-string parameter carrying the token (WebSocket + dashboard deep link) */
+	TOKEN_QUERY_PARAM: 'token',
+	/** localStorage key the dashboard stores the token under */
+	TOKEN_STORAGE_KEY: 'crewly_api_token',
+	/** `WWW-Authenticate` scheme advertised on 401 so clients can detect the challenge */
+	AUTH_SCHEME: 'Crewly-Token',
+	/** Error codes returned in `{ success: false, error }` */
+	ERRORS: {
+		UNAUTHORIZED: 'unauthorized',
+		OWNER_APPROVAL_REQUIRED: 'owner_approval_required',
+	},
+	/** Actor recorded on approvals performed with the owner token */
+	OWNER_ACTOR: 'owner',
+	/** Hint appended to 401 responses */
+	UNAUTHORIZED_HINT:
+		'Non-loopback callers must send the API token: `Authorization: Bearer <token>`, `X-Crewly-Token: <token>` or a `crewly_token` cookie. Run `crewly token` on the server to print it.',
+	/** Loopback addresses that bypass token auth */
+	LOOPBACK_ADDRESSES: ['127.0.0.1', '::1', '::ffff:127.0.0.1'],
+} as const;
+
 // ========================= TIMING CONSTANTS =========================
 
 /**

@@ -103,6 +103,32 @@ describe('PtySession', () => {
 			expect(session.pid).toBeGreaterThan(0);
 		});
 
+		it('never passes the owner API token (CREWLY_API_TOKEN) into an agent PTY', () => {
+			const previous = process.env.CREWLY_API_TOKEN;
+			process.env.CREWLY_API_TOKEN = 'owner-secret';
+			let spawnedEnv: Record<string, string> | undefined;
+			const restoreSpawn = _setPtySpawnImplForTesting(((
+				_file: string,
+				_args: string | string[],
+				options: pty.IPtyForkOptions,
+			): pty.IPty => {
+				spawnedEnv = options.env as Record<string, string>;
+				return makeStubPty();
+			}) as unknown as typeof pty.spawn);
+			try {
+				session = new PtySession('test-session', TEST_CWD, createTestOptions({
+					env: { CUSTOM_VAR: 'test-value' },
+				}));
+				expect(spawnedEnv).toBeDefined();
+				expect(spawnedEnv?.CUSTOM_VAR).toBe('test-value');
+				expect(spawnedEnv).not.toHaveProperty('CREWLY_API_TOKEN');
+			} finally {
+				restoreSpawn();
+				if (previous === undefined) delete process.env.CREWLY_API_TOKEN;
+				else process.env.CREWLY_API_TOKEN = previous;
+			}
+		});
+
 		// Regression: 2026-05-23 incident — node-pty's "posix_spawnp failed"
 		// was bubbling up to the user on transient process-table pressure.
 		// We now retry up to 4 times with backoff (150/400/1000 ms).

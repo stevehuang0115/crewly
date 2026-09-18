@@ -7,6 +7,7 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+  API_SECURITY_CONSTANTS,
   BROWSER_PROXY_CONSTANTS,
   CLOUD_SYNC_CONSTANTS,
   GOOGLE_OAUTH_CONSTANTS,
@@ -101,5 +102,12 @@ describe('CLOUD_SYNC_CONSTANTS', () => {
     // "tolerable" — keep it tight.
     expect(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS).toBeGreaterThanOrEqual(30_000);
     expect(CLOUD_SYNC_CONSTANTS.REGISTER_INTERVAL_MS).toBeLessThanOrEqual(120_000);
+  });
+});
+
+describe('API_SECURITY_CONSTANTS (backend re-export)', () => {
+  it('re-exports the cross-domain block so index.ts can read the bind host default', () => {
+    expect(API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST).toBe('0.0.0.0');
+    expect(API_SECURITY_CONSTANTS.ENV.BIND_HOST).toBe('CREWLY_BIND_HOST');
   });
 });
