@@ -17,9 +17,14 @@ import { apiService } from '../../services/api.service';
 import {
   getMissionStatusType,
   getMissionStatusLabel,
+  countKrStatuses,
   type MissionStatus,
+  type MissionLevel,
+  type ProposalState,
+  type KeyResultSummary,
 } from '../../types/mission.types';
 import { StatusBadge } from '../UI/StatusBadge';
+import { LevelBadge, ApprovalChip, KrStatusCountsRow } from '../Missions/OkrBadges';
 import { TEAM_QUERY_PARAM } from '../../utils/team-chat.utils';
 
 /** Minimal mission shape this panel renders (subset of the Missions page type). */
@@ -28,7 +33,9 @@ interface TeamMission {
   objective: string;
   ownerTeamId: string;
   status: MissionStatus;
-  keyResults?: Array<{ id: string; title: string; status: string }>;
+  level?: MissionLevel;
+  approval?: { state: ProposalState };
+  keyResults?: Array<Pick<KeyResultSummary, 'id' | 'title' | 'status'>>;
 }
 
 export interface TeamObjectivesProps {
@@ -103,15 +110,22 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
                   data-testid={`team-mission-${m.id}`}
                   className="flex w-full items-start justify-between gap-2 rounded-lg border border-transparent px-2 py-2 text-left hover:border-border-dark hover:bg-background-dark"
                 >
-                  <span className="min-w-0">
-                    <span className="block truncate text-sm text-text-primary-dark">{m.objective}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex items-center gap-2 min-w-0">
+                      {m.level && <LevelBadge level={m.level} />}
+                      <span className="block truncate text-sm text-text-primary-dark">{m.objective}</span>
+                    </span>
                     <span className="text-xs text-text-secondary-dark">
                       {(m.keyResults?.length ?? 0)} key result{(m.keyResults?.length ?? 0) === 1 ? '' : 's'}
                     </span>
+                    <KrStatusCountsRow counts={countKrStatuses(m.keyResults)} className="mt-1" />
                   </span>
-                  <StatusBadge status={getMissionStatusType(m.status)}>
-                    {getMissionStatusLabel(m.status)}
-                  </StatusBadge>
+                  <span className="flex items-center gap-1.5 flex-shrink-0">
+                    {m.approval && m.approval.state !== 'approved' && <ApprovalChip state={m.approval.state} />}
+                    <StatusBadge status={getMissionStatusType(m.status)}>
+                      {getMissionStatusLabel(m.status)}
+                    </StatusBadge>
+                  </span>
                 </button>
               </li>
             ))}
