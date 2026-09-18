@@ -13,7 +13,7 @@
  */
 
 import React, { useState } from 'react';
-import { Cloud, ExternalLink, RefreshCw, Unlink, Users } from 'lucide-react';
+import { Cloud, ExternalLink, RefreshCw, Unlink } from 'lucide-react';
 import { Button } from '../UI/Button';
 import { Card } from '../UI/Card';
 import { Alert } from '../UI/Alert';
@@ -139,12 +139,6 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
           body: JSON.stringify({ primary }),
         }),
       );
-      await onRefresh();
-    });
-
-  const syncAgents = () =>
-    run('sync', async () => {
-      await readJson(await fetch('/api/slack/cloud/agents/sync', { method: 'POST' }));
       await onRefresh();
     });
 
@@ -319,40 +313,6 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
             Direct messages to the Crewly bot and channels no team owns go to the primary instance. Team channels
             always reach the instance running that team.
           </p>
-
-          <div>
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <h4 className="text-xs font-semibold text-text-secondary-dark uppercase tracking-wide">
-                <Users className="inline w-3.5 h-3.5 -mt-0.5 mr-1" />
-                Agents waiting for install
-              </h4>
-              <Button variant="ghost" size="sm" onClick={syncAgents} loading={busy === 'sync'} disabled={busy !== null}>
-                Sync agents
-              </Button>
-            </div>
-            {status.pendingInstalls.length === 0 ? (
-              <p className="text-xs text-text-secondary-dark">
-                Every agent with a Slack identity is installed. New team members get an install link here.
-              </p>
-            ) : (
-              <ul className="divide-y divide-border-dark">
-                {status.pendingInstalls.map((p) => (
-                  <li key={p.agentSession} className="py-2 flex items-center justify-between gap-3">
-                    <span className="text-sm truncate">{p.agentSession}</span>
-                    <a
-                      href={p.url}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-sm text-primary hover:underline inline-flex items-center gap-1"
-                    >
-                      Install
-                      <ExternalLink className="w-3 h-3" />
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
 
           <div className="flex items-center gap-3">
             <Button variant="danger-ghost" size="sm" icon={Unlink} onClick={disconnectWorkspace} loading={busy === 'disconnect'} disabled={busy !== null}>

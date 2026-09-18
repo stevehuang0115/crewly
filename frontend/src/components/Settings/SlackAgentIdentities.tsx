@@ -71,8 +71,49 @@ export interface SlackAgentIdentitiesProps {
  * @param props - Optional pending install links from the Cloud sync
  * @returns The card
  */
+/** Session name → team, from /api/teams (for grouping the identity list). */
+interface TeamLookup {
+  teamName: string;
+  memberName: string;
+}
+
 export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pendingInstalls = [] }) => {
   const [data, setData] = useState<Payload | null>(null);
+  const [teamBySession, setTeamBySession] = useState<Record<string, TeamLookup>>({});
+  const [syncing, setSyncing] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/teams')
+      .then((res) => res.json())
+      .then((body) => {
+        if (cancelled || !body?.success || !Array.isArray(body.data)) return;
+        const map: Record<string, TeamLookup> = {};
+        for (const team of body.data as Array<{ name?: string; members?: Array<{ sessionName?: string; name?: string }> }>) {
+          for (const m of team.members ?? []) {
+            if (m.sessionName) map[m.sessionName] = { teamName: team.name ?? 'Team', memberName: m.name ?? m.sessionName };
+          }
+        }
+        setTeamBySession(map);
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const syncAgents = async () => {
+    setSyncing(true);
+    setError(null);
+    try {
+      await readJson(await fetch('/api/slack/cloud/agents/sync', { method: 'POST' }));
+      await load(true);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sync failed');
+    } finally {
+      setSyncing(false);
+    }
+  };
   const [unavailable, setUnavailable] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -157,6 +198,27 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
   const known = new Set((data?.identities ?? []).map((r) => r.agentSession));
   const extraPending = pendingInstalls.filter((p) => !known.has(p.agentSession));
 
+  // Group by team so a 20-agent account reads as a handful of teams, each
+  // with an "installed x / y" summary, instead of one long list.
+  const rows: AgentIdentityRow[] = [
+    ...(data?.identities ?? []),
+    ...extraPending.map((p) => ({
+      agentSession: p.agentSession,
+      displayName: teamBySession[p.agentSession]?.memberName ?? p.agentSession,
+      appId: '',
+      status: 'pending_install' as const,
+      installUrl: p.url,
+      hasToken: false,
+    })),
+  ];
+  const groups = new Map<string, AgentIdentityRow[]>();
+  for (const row of rows) {
+    const team = teamBySession[row.agentSession]?.teamName ?? 'Other agents';
+    if (!groups.has(team)) groups.set(team, []);
+    groups.get(team)!.push(row);
+  }
+  const installedTotal = rows.filter((r) => r.status === 'installed').length;
+
   return (
     <Card padding="lg">
       <div className="flex items-start justify-between gap-4 mb-4">
@@ -170,9 +232,14 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
             mentioned natively. Provisioned through Crewly Cloud; each new agent needs one install click from you.
           </p>
         </div>
-        <Button variant="ghost" size="sm" onClick={() => load(true)} icon={RefreshCw} aria-label="Refresh agent identities">
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={syncAgents} loading={syncing} disabled={syncing} aria-label="Sync agents with Crewly Cloud">
+            Sync agents
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => load(true)} icon={RefreshCw} aria-label="Refresh agent identities">
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {error && (
@@ -257,65 +324,64 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
             </form>
           )}
 
-          {extraPending.length > 0 && (
-            <ul className="divide-y divide-border-dark" data-testid="slack-pending-installs">
-              {extraPending.map((p) => (
-                <li key={p.agentSession} className="py-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{p.agentSession}</div>
-                    <div className="text-xs text-text-secondary-dark">Waiting for your install click</div>
-                  </div>
-                  <a
-                    href={p.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-sm text-primary hover:underline inline-flex items-center gap-1"
-                  >
-                    Install {p.agentSession}
-                    <ExternalLink className="w-3 h-3" />
-                  </a>
-                </li>
-              ))}
-            </ul>
-          )}
-
-          {data.identities.length === 0 ? (
-            extraPending.length === 0 && (
-              <p className="text-sm text-text-secondary-dark">
-                No agent identities yet. They are created automatically for members of teams that have a Slack channel.
-              </p>
-            )
+          {rows.length === 0 ? (
+            <p className="text-sm text-text-secondary-dark">
+              No agent identities yet. They are created automatically for members of teams that have a Slack channel.
+            </p>
           ) : (
-            <ul className="divide-y divide-border-dark">
-              {data.identities.map((row) => (
-                <li key={row.agentSession} className="py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0">
-                    <div className="text-sm font-medium truncate">{row.displayName}</div>
-                    <div className="text-xs text-text-secondary-dark">
-                      {row.status === 'installed' && `Installed · bot ${row.botUserId ?? ''}`}
-                      {row.status === 'pending_install' && 'Waiting for your install click'}
-                      {row.status === 'error' && `Install failed${row.error ? `: ${row.error}` : ''}`}
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    {row.status !== 'installed' && row.installUrl && (
-                      <a
-                        href={row.installUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-sm text-primary hover:underline inline-flex items-center gap-1"
-                      >
-                        Install {row.displayName}
-                        <ExternalLink className="w-3 h-3" />
-                      </a>
-                    )}
-                    <Button variant="danger-ghost" size="sm" icon={Trash2} onClick={() => removeIdentity(row)} aria-label={`Delete identity for ${row.displayName}`}>
-                      Delete
-                    </Button>
-                  </div>
-                </li>
-              ))}
-            </ul>
+            <div className="space-y-4" data-testid="slack-identity-groups">
+              <p className="text-xs text-text-secondary-dark">
+                {installedTotal} of {rows.length} agents installed. Installed agents join their team channel by themselves.
+              </p>
+              {[...groups.entries()].map(([team, members]) => {
+                const installed = members.filter((m) => m.status === 'installed').length;
+                return (
+                  <details key={team} open={installed < members.length} className="group">
+                    <summary className="cursor-pointer list-none flex items-center justify-between gap-3 py-2 border-b border-border-dark">
+                      <span className="text-sm font-medium">{team}</span>
+                      <span className={`text-xs ${installed === members.length ? 'text-green-400' : 'text-text-secondary-dark'}`}>
+                        {installed === members.length ? 'all installed' : `${installed} / ${members.length} installed`}
+                      </span>
+                    </summary>
+                    <ul className="divide-y divide-border-dark">
+                      {members.map((row) => (
+                        <li key={row.agentSession} className="py-2 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <div className="min-w-0">
+                            <div className="text-sm truncate">
+                              {row.status === 'installed' && <span className="text-green-400 mr-1">✓</span>}
+                              {row.displayName}
+                            </div>
+                            <div className="text-xs text-text-secondary-dark">
+                              {row.status === 'installed' && `Installed · bot ${row.botUserId ?? ''}`}
+                              {row.status === 'pending_install' && 'Waiting for your install click'}
+                              {row.status === 'error' && `Install failed${row.error ? `: ${row.error}` : ''}`}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            {row.status !== 'installed' && row.installUrl && (
+                              <a
+                                href={row.installUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-sm text-primary hover:underline inline-flex items-center gap-1"
+                              >
+                                Install {row.displayName}
+                                <ExternalLink className="w-3 h-3" />
+                              </a>
+                            )}
+                            {row.appId && (
+                              <Button variant="danger-ghost" size="sm" icon={Trash2} onClick={() => removeIdentity(row)} aria-label={`Delete identity for ${row.displayName}`}>
+                                Delete
+                              </Button>
+                            )}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                );
+              })}
+            </div>
           )}
         </div>
       ) : null}

@@ -310,6 +310,8 @@ export class SlackService extends EventEmitter {
    * Prevents identical messages from being sent to the same thread within a time window.
    */
   private recentMessageFingerprints: Map<string, number> = new Map();
+  /** Inbound cloud events already handled, keyed `channel:ts:type` (a message reaches us once per app that can see it). */
+  private seenInboundKeys: Map<string, number> = new Map();
 
   /** Whether a reconnection attempt is currently in progress */
   private reconnecting = false;
@@ -577,25 +579,33 @@ export class SlackService extends EventEmitter {
       return null;
     }
     // A per-agent app sees every channel it is a member of, so a team
-    // channel message arrives once per agent app plus once from the master
-    // app. Only the DM to the agent's own bot is unique to its app; the
-    // master copy routes everything else (native <@bot> mentions are
-    // resolved from the text by the team-channel service).
-    if (envelope.source === 'agent') {
-      const isDm = event.channel_type ? event.channel_type === 'im' : !!event.channel?.startsWith('D');
-      if (!isDm) {
-        this.logger.debug('Dropping agent-app copy of a channel event', {
-          eventId: envelope.eventId,
-          agentSession: envelope.agentSession,
-        });
+    // channel message can reach Cloud once per agent app plus once from the
+    // master app. Cloud keeps whichever copy arrives first — which may be
+    // an agent app's — so every copy must be routable here; the first one
+    // wins and later copies of the same message are dropped. (Dropping
+    // agent-app copies outright lost the message whenever Cloud had
+    // already discarded the master copy as a duplicate.)
+    const isDm = event.channel_type ? event.channel_type === 'im' : !!event.channel?.startsWith('D');
+    const ts = typeof event.ts === 'string' ? event.ts : typeof event.event_ts === 'string' ? event.event_ts : '';
+    if (event.channel && ts) {
+      const key = `${event.channel}:${ts}:${event.type}`;
+      if (this.seenInboundKeys.has(key)) {
+        this.logger.debug('Dropping repeated copy of an inbound Slack event', { eventId: envelope.eventId, key });
         return null;
+      }
+      this.seenInboundKeys.set(key, Date.now());
+      if (this.seenInboundKeys.size > SLACK_DEDUP_CONSTANTS.MAX_TRACKED_MESSAGES) {
+        const oldest = this.seenInboundKeys.keys().next().value;
+        if (oldest !== undefined) this.seenInboundKeys.delete(oldest);
       }
     }
     return this.handleInboundEvent(event, {
       source: 'cloud',
       eventId: envelope.eventId,
       apiAppId: envelope.apiAppId,
-      agentSession: envelope.agentSession,
+      // The agent-session provenance only means "DM to this agent's bot";
+      // a channel message seen through an agent app is an ordinary channel message.
+      agentSession: envelope.source === 'agent' && isDm ? envelope.agentSession : undefined,
     });
   }
 

@@ -203,11 +203,17 @@ export const SlackTeamChannels: React.FC = () => {
             </div>
           </div>
 
+          {data.teams.length > 0 && (
+            <p className="text-xs text-text-secondary-dark">
+              {data.teams.filter((t) => t.mapping).length} of {data.teams.length} teams have a channel.
+              {data.teams.some((t) => !t.mapping) && ' Teams without one are listed below.'}
+            </p>
+          )}
           {data.teams.length === 0 ? (
             <p className="text-sm text-text-secondary-dark">No teams yet. Create a team and its channel will appear here.</p>
           ) : (
             <ul className="divide-y divide-border-dark">
-              {data.teams.map((row) => (
+              {[...data.teams].sort((a, b) => Number(!!b.mapping) - Number(!!a.mapping)).map((row) => (
                 <li key={row.teamId} className="py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <div className="text-sm font-medium truncate">{row.teamName}</div>

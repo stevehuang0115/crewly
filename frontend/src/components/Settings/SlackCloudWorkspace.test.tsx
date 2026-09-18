@@ -136,23 +136,6 @@ describe('SlackCloudWorkspace', () => {
     await waitFor(() => expect(onRefresh).toHaveBeenCalled());
   });
 
-  it('lists agents waiting for install with their link and can re-sync', async () => {
-    mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: { installUrls: [] } }));
-    const onRefresh = vi.fn().mockResolvedValue(undefined);
-    render(<SlackCloudWorkspace status={connected} onRefresh={onRefresh} />);
-
-    expect(screen.getByText('alpha-kai-1')).toBeInTheDocument();
-    expect(screen.getByText('Install').closest('a')!.getAttribute('href')).toBe('https://slack.com/oauth/kai');
-
-    fireEvent.click(screen.getByText('Sync agents'));
-    await waitFor(() => expect(mockFetch).toHaveBeenCalledWith('/api/slack/cloud/agents/sync', { method: 'POST' }));
-    await waitFor(() => expect(onRefresh).toHaveBeenCalled());
-  });
-
-  it('says so when no agent is waiting', () => {
-    render(<SlackCloudWorkspace status={{ ...connected, pendingInstalls: [] }} onRefresh={vi.fn()} />);
-    expect(screen.getByText(/Every agent with a Slack identity is installed/)).toBeInTheDocument();
-  });
 
   it('Disconnect workspace asks for confirmation, then DELETEs /api/slack/cloud/workspace', async () => {
     mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: { removed: true } }));

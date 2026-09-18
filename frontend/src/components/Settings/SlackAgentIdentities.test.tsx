@@ -107,6 +107,28 @@ describe('SlackAgentIdentities', () => {
     expect(del).toHaveBeenCalledTimes(2);
   });
 
+  it('groups identities by team with an installed count, and Sync agents re-provisions then reloads', async () => {
+    routeFetch({
+      'GET /api/teams': () =>
+        jsonResponse({
+          success: true,
+          data: [
+            { name: 'Alpha', members: [{ sessionName: 's', name: 'Sam' }, { sessionName: 'l', name: 'Leo' }] },
+          ],
+        }),
+      'POST /api/slack/cloud/agents/sync': () => jsonResponse({ success: true, data: { installUrls: [] } }),
+    });
+    render(<SlackAgentIdentities pendingInstalls={[{ agentSession: 'beta-zed-1', url: 'https://slack.com/oauth/zed' }]} />);
+    await waitFor(() => expect(screen.getByText('Alpha')).toBeInTheDocument());
+    expect(screen.getByText('1 / 2 installed')).toBeInTheDocument();
+    expect(screen.getByText('Other agents')).toBeInTheDocument();
+    expect(screen.getByText(/1 of 3 agents installed/)).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Sync agents with Crewly Cloud'));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledWith('/api/slack/cloud/agents/sync', { method: 'POST' }));
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledWith('/api/slack/agent-identities?refresh=1'));
+  });
+
   it('refresh asks Cloud for fresh data', async () => {
     routeFetch();
     render(<SlackAgentIdentities />);

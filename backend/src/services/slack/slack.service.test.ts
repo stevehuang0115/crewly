@@ -1514,7 +1514,7 @@ describe('SlackService', () => {
       expect(msg).toMatchObject({ agentSession: 'team-kai-1', source: 'cloud', eventId: 'Ev3', channelId: 'D77' });
     });
 
-    it('keeps DMs to a per-agent app but drops its copies of channel events (the master app delivers those)', async () => {
+    it('routes whichever copy of a channel message arrives first (agent app or master) and drops the rest', async () => {
       const service = new SlackService();
       await service.initialize(cloudConfig);
       const emitted: any[] = [];
@@ -1523,14 +1523,20 @@ describe('SlackService', () => {
         eventId: 'x', slackTeamId: 'T1', apiAppId: 'A-kai', source: 'agent' as const, agentSession: 'team-kai-1', event, receivedAt: '',
       });
 
-      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '1', text: 'hi kai', user: 'U1', channel: 'D77', channel_type: 'im' }))).not.toBeNull();
-      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '1', text: 'hi kai', user: 'U1', channel: 'D78' }))).not.toBeNull();
-      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42', channel_type: 'channel' }))).toBeNull();
-      expect(service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42' }))).toBeNull();
-      expect(service.handleCloudEnvelope(agentEnv({ type: 'app_mention', ts: '3', text: '<@UKAI> ping', user: 'U1', channel: 'C42', event_ts: '3' }))).toBeNull();
-      expect(emitted).toHaveLength(2);
-      // The master app's copy of the same channel message still routes.
-      expect(service.handleCloudEnvelope({ ...agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42' }), source: 'master', agentSession: undefined })).not.toBeNull();
+      // DMs to the agent's bot keep the agent provenance.
+      const dm = service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '1', text: 'hi kai', user: 'U1', channel: 'D77', channel_type: 'im' }));
+      expect(dm).toMatchObject({ agentSession: 'team-kai-1' });
+      // A channel message seen through the agent app routes as a plain channel message (Cloud may have
+      // dropped the master copy as a duplicate — this copy is the only one we will ever get).
+      const viaAgent = service.handleCloudEnvelope(agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42', channel_type: 'channel' }));
+      expect(viaAgent).not.toBeNull();
+      expect(viaAgent?.agentSession).toBeUndefined();
+      // Later copies of the same message — from the master app or another agent app — are dropped.
+      expect(service.handleCloudEnvelope({ ...agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42' }), source: 'master', agentSession: undefined })).toBeNull();
+      expect(service.handleCloudEnvelope({ ...agentEnv({ type: 'message', ts: '2', text: 'team chatter', user: 'U1', channel: 'C42' }), apiAppId: 'A-sam', agentSession: 'team-sam-1' })).toBeNull();
+      // A different message still routes.
+      expect(service.handleCloudEnvelope({ ...agentEnv({ type: 'message', ts: '3', text: 'next', user: 'U1', channel: 'C42' }), source: 'master', agentSession: undefined })).not.toBeNull();
+      expect(emitted).toHaveLength(3);
     });
 
     it('cloud transport drops its own bot posts, bot chatter and non-routable subtypes (Bolt ignoreSelf parity)', async () => {
