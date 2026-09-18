@@ -1782,11 +1782,17 @@ describe('AgentRegistrationService', () => {
 				RUNTIME_TYPES.CLAUDE_CODE
 			);
 
-			// executeRuntimeInitScript should NOT have --resume flag
+			// executeRuntimeInitScript should NOT have --resume flag — instead a
+			// fresh conversation id is preset and persisted so the NEXT restart can resume.
 			const initCalls = mockRuntimeService.executeRuntimeInitScript.mock.calls;
 			expect(initCalls.length).toBeGreaterThanOrEqual(1);
-			const flags = initCalls[0][2];
+			const flags = initCalls[0][2] as string[];
 			expect(flags).not.toContain('--resume');
+			expect(flags).toContain('--session-id');
+			const preset = flags[flags.indexOf('--session-id') + 1];
+			expect(preset).toMatch(/^[0-9a-f-]{36}$/);
+			const persistence = (sessionModule.getSessionStatePersistence as any)();
+			expect(persistence.updateSessionId).toHaveBeenCalledWith('test-session', preset);
 		});
 
 		it('should not inject --resume flag for non-restored sessions', async () => {

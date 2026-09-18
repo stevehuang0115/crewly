@@ -16,6 +16,7 @@ import {
 } from '../session-backend.interface.js';
 import { PTY_CONSTANTS, API_SECURITY_CONSTANTS } from '../../../constants.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
+import { stripNestedClaudeSessionEnv } from '../../agent/runtime-session-recovery.js';
 
 /**
  * Test affordance: lets `pty-session.test.ts` swap in a stub instead of
@@ -682,7 +683,11 @@ export class PtySession implements ISession {
 	 */
 	private sanitizeEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 		const result: Record<string, string> = {};
-		for (const [key, value] of Object.entries(env)) {
+		// A backend started from inside a Claude Code session carries that
+		// session's markers; an agent that inherits them thinks it is a nested
+		// session and stops saving transcripts (so it can never be resumed).
+		const cleaned = stripNestedClaudeSessionEnv(env);
+		for (const [key, value] of Object.entries(cleaned)) {
 			if (value !== undefined && key !== API_SECURITY_CONSTANTS.ENV.API_TOKEN) {
 				result[key] = value;
 			}

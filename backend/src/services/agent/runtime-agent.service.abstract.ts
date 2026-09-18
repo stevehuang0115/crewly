@@ -15,6 +15,7 @@ import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
+import { toCodexResumeCommand } from './runtime-session-recovery.js';
 
 /**
  * Environment variable that stops OpenCode from self-upgrading on launch
@@ -102,8 +103,10 @@ export abstract class RuntimeAgentService {
 	 * @param promptFilePath - Optional path to a prompt file; for non-Claude-Code runtimes,
 	 *                         appends --append-system-prompt-file flag
 	 * @param agentName - Optional agent name for Claude Code --agent flag (#207)
+	 * @param resumeSessionId - Conversation to resume for runtimes whose resume is a
+	 *   subcommand rather than a flag (Codex: `codex … ` → `codex resume … <id>`)
 	 */
-	async executeRuntimeInitScript(sessionName: string, targetPath?: string, runtimeFlags?: string[], promptFilePath?: string, agentName?: string): Promise<void> {
+	async executeRuntimeInitScript(sessionName: string, targetPath?: string, runtimeFlags?: string[], promptFilePath?: string, agentName?: string, resumeSessionId?: string): Promise<void> {
 		try {
 			// Try to get command from user settings first, fallback to init script
 			let commands: string[];
@@ -208,6 +211,10 @@ export abstract class RuntimeAgentService {
 			// Codex CLI uses `-a never` (set in default runtimeCommands) which serves
 			// the same purpose. Combining both causes a startup failure.
 			if (this.getRuntimeType() === 'codex-cli') {
+				if (resumeSessionId) {
+					finalCommands = finalCommands.map((cmd) => toCodexResumeCommand(cmd, resumeSessionId));
+					this.logger.info('Resuming Codex conversation', { sessionName, sessionId: resumeSessionId });
+				}
 				finalCommands = finalCommands.map(cmd => {
 					if (cmd.includes('codex')) {
 						// Only inject --full-auto if neither --full-auto nor -a flag is present

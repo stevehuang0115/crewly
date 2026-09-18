@@ -75,6 +75,7 @@ import {
 } from '../../utils/terminal-string-ops.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
+import { planRuntimeSessionFlags, waitForCodexSessionId, type RuntimeSessionPlan } from './runtime-session-recovery.js';
 
 export interface OrchestratorConfig {
 	sessionName: string;
@@ -749,6 +750,112 @@ export class AgentRegistrationService {
 	}
 
 	/**
+	 * Decide how the runtime's conversation id is handled for this launch and
+	 * apply the Claude Code half (flags + persisting a preset id). Codex's
+	 * resume id is returned for the command rewrite; a fresh Codex id is
+	 * discovered after launch by {@link recordRuntimeSessionAfterLaunch}.
+	 *
+	 * @param sessionName - Agent session
+	 * @param runtimeType - Runtime
+	 * @param effectiveFlags - Flag list to extend in place
+	 * @returns The plan
+	 */
+	private async planSessionRecovery(
+		sessionName: string,
+		runtimeType: string,
+		effectiveFlags: string[],
+	): Promise<RuntimeSessionPlan> {
+		let autoResume = true;
+		try {
+			autoResume = (await getSettingsService().getSettings()).general.autoResumeOnRestart !== false;
+		} catch {
+			// settings unavailable — default to resuming
+		}
+		// Persistence is optional infrastructure: without it the agent still
+		// launches, it just cannot be resumed after a restart.
+		let persistence: ReturnType<typeof getSessionStatePersistence> | null = null;
+		try {
+			persistence = getSessionStatePersistence();
+		} catch (err) {
+			this.logger.warn('Session persistence unavailable — launching without resume support', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+		const plan = planRuntimeSessionFlags({
+			runtimeType,
+			isRestored: persistence?.isRestoredSession(sessionName) ?? false,
+			storedSessionId: persistence?.getSessionId(sessionName) ?? null,
+			autoResume,
+		});
+		effectiveFlags.push(...plan.flags);
+		if (plan.presetSessionId && persistence) {
+			try {
+				persistence.updateSessionId(sessionName, plan.presetSessionId);
+			} catch (err) {
+				this.logger.warn('Could not persist the preset session id (resume after restart may not work)', {
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			}
+		}
+		this.logger.info('Runtime conversation plan', {
+			sessionName,
+			runtimeType,
+			note: plan.note,
+			sessionId: plan.presetSessionId ?? plan.resumeSessionId ?? null,
+		});
+		return plan;
+	}
+
+	/**
+	 * For a freshly launched Codex agent, learn its conversation id from the
+	 * rollout file it writes right after start and persist it. Runs in the
+	 * background; never throws.
+	 *
+	 * @param sessionName - Agent session
+	 * @param runtimeType - Runtime
+	 * @param cwd - The agent's working directory (matched against the rollout's cwd)
+	 * @param launchedAtMs - When the launch command was sent
+	 * @param plan - The launch plan (skips when the id is already known)
+	 */
+	private recordRuntimeSessionAfterLaunch(
+		sessionName: string,
+		runtimeType: string,
+		cwd: string | undefined,
+		launchedAtMs: number,
+		plan: RuntimeSessionPlan,
+	): void {
+		if (runtimeType !== RUNTIME_TYPES.CODEX_CLI || plan.resumeSessionId || !cwd) return;
+		let persistence: ReturnType<typeof getSessionStatePersistence>;
+		try {
+			persistence = getSessionStatePersistence();
+		} catch {
+			return; // no persistence, nothing to record into
+		}
+		const claimed = new Set<string>();
+		for (const name of persistence.getRegisteredSessions()) {
+			const id = persistence.getSessionId(name);
+			if (id && name !== sessionName) claimed.add(id);
+		}
+		void waitForCodexSessionId({ cwd, notBeforeMs: launchedAtMs, claimed })
+			.then((found) => {
+				if (!found) {
+					this.logger.warn('Codex conversation id not found after launch (resume after restart will not work)', { sessionName, cwd });
+					return;
+				}
+				persistence.updateSessionId(sessionName, found.sessionId);
+				this.logger.info('Codex conversation id recorded', { sessionName, sessionId: found.sessionId });
+			})
+			.catch((err) => {
+				this.logger.debug('Codex conversation id discovery failed (non-fatal)', {
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	}
+
+	/**
 	 * Get the check interval based on environment.
 	 * Uses shorter intervals in test environment for faster tests.
 	 */
@@ -1042,31 +1149,10 @@ export class AgentRegistrationService {
 		// Clear Commandline
 		await (await this.getSessionHelper()).clearCurrentCommandLine(sessionName);
 
-		// Inject --resume flag if this was a previously running Claude Code session
+		// Conversation id: preset for Claude Code (--session-id), resumed on
+		// restore (--resume / `codex resume`), discovered after launch for Codex.
 		const effectiveFlags = runtimeFlags ? [...runtimeFlags] : [];
-		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-			try {
-				const settings = await getSettingsService().getSettings();
-				if (settings.general.autoResumeOnRestart) {
-					const persistence = getSessionStatePersistence();
-					if (persistence.isRestoredSession(sessionName)) {
-						const storedSessionId = persistence.getSessionId(sessionName);
-						if (storedSessionId) {
-							effectiveFlags.push('--resume', storedSessionId);
-							this.logger.info('Injecting --resume flag for session restore', {
-								sessionName, sessionId: storedSessionId,
-							});
-						}
-					}
-				} else {
-					this.logger.info('Auto-resume disabled by settings, skipping session resume', { sessionName });
-				}
-			} catch (resumeError) {
-				this.logger.debug('Could not resolve resume flag (non-fatal)', {
-					sessionName, error: resumeError instanceof Error ? resumeError.message : String(resumeError),
-				});
-			}
-		}
+		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags);
 
 		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
 		let promptFilePath: string | undefined;
@@ -1090,7 +1176,9 @@ export class AgentRegistrationService {
 
 		// Reinitialize runtime using the appropriate initialization script (always fresh start)
 		const runtimeService2 = this.createRuntimeService(runtimeType);
-		await runtimeService2.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName);
+		const launchedAtMs = Date.now();
+		await runtimeService2.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName, sessionPlan.resumeSessionId ?? undefined);
+		this.recordRuntimeSessionAfterLaunch(sessionName, runtimeType, projectPath, launchedAtMs, sessionPlan);
 
 		// Wait for runtime to be ready (simplified detection)
 		// Use shorter check interval in test environment, and reasonable interval in production
@@ -1552,31 +1640,9 @@ export class AgentRegistrationService {
 		// Wait for cleanup
 		await delay(1000);
 
-		// Inject --resume flag if this was a previously running Claude Code session
+		// Conversation id (see planSessionRecovery): preset, resumed, or discovered.
 		const effectiveFlags = runtimeFlags ? [...runtimeFlags] : [];
-		if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-			try {
-				const settings = await getSettingsService().getSettings();
-				if (settings.general.autoResumeOnRestart) {
-					const persistence = getSessionStatePersistence();
-					if (persistence.isRestoredSession(sessionName)) {
-						const storedSessionId = persistence.getSessionId(sessionName);
-						if (storedSessionId) {
-							effectiveFlags.push('--resume', storedSessionId);
-							this.logger.info('Injecting --resume flag for session restore (full recreation)', {
-								sessionName, sessionId: storedSessionId,
-							});
-						}
-					}
-				} else {
-					this.logger.info('Auto-resume disabled by settings, skipping session resume after recreation', { sessionName });
-				}
-			} catch (resumeError) {
-				this.logger.debug('Could not resolve resume flag (non-fatal)', {
-					sessionName, error: resumeError instanceof Error ? resumeError.message : String(resumeError),
-				});
-			}
-		}
+		const sessionPlan = await this.planSessionRecovery(sessionName, runtimeType, effectiveFlags);
 
 		// Write prompt file before launching runtime so --agent (Claude Code) or --append-system-prompt-file works
 		let promptFilePath: string | undefined;
@@ -1611,7 +1677,9 @@ export class AgentRegistrationService {
 
 			// Initialize runtime for orchestrator using script (always fresh start)
 			const runtimeService = this.createRuntimeService(runtimeType);
-			await runtimeService.executeRuntimeInitScript(sessionName, orchestratorCwd, effectiveFlags, promptFilePath, agentName);
+			const launchedAtMs = Date.now();
+			await runtimeService.executeRuntimeInitScript(sessionName, orchestratorCwd, effectiveFlags, promptFilePath, agentName, sessionPlan.resumeSessionId ?? undefined);
+			this.recordRuntimeSessionAfterLaunch(sessionName, runtimeType, orchestratorCwd, launchedAtMs, sessionPlan);
 
 			// Wait for runtime to be ready
 			const checkInterval = this.getCheckInterval();
@@ -1678,7 +1746,9 @@ export class AgentRegistrationService {
 			await (await this.getSessionHelper()).createSession(sessionName, projectPath || process.cwd());
 
 			const runtimeService = this.createRuntimeService(runtimeType);
-			await runtimeService.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName);
+			const launchedAtMs = Date.now();
+			await runtimeService.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName, sessionPlan.resumeSessionId ?? undefined);
+			this.recordRuntimeSessionAfterLaunch(sessionName, runtimeType, projectPath, launchedAtMs, sessionPlan);
 
 			// Wait for runtime to be ready (simplified detection)
 			const checkInterval = this.getCheckInterval();

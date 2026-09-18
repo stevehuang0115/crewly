@@ -697,6 +697,21 @@ echo "second command"
 			expect(calledCmd).toContain('-s danger-full-access');
 		});
 
+		it('resumes a Codex conversation by rewriting the launch to `codex resume … <id>`', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', undefined, undefined, undefined, '01a0b5a6-f945-7743-a765-788a23a838cc');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toBe('codex resume -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc');
+		});
+
 		it('#246: should NOT inject --full-auto when --approval-mode is present', async () => {
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
 			const mockSettings = getDefaultSettings();
