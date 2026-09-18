@@ -296,6 +296,24 @@ describe('api-token.middleware', () => {
       expect(socket.destroy).toHaveBeenCalled();
     });
 
+    it('can be installed twice (re-armed after addons attach) without double-answering', () => {
+      const server = new EventEmitter() as unknown as HttpServer;
+      const downstream = jest.fn();
+      server.on('upgrade', downstream);
+      installWebSocketGate(server);
+      installWebSocketGate(server);
+
+      const denied = { write: jest.fn(), destroy: jest.fn() };
+      server.emit('upgrade', makeUpgradeReq({}), denied, Buffer.alloc(0));
+      expect(denied.write).toHaveBeenCalledTimes(1);
+      expect(downstream).not.toHaveBeenCalled();
+
+      const allowed = { write: jest.fn(), destroy: jest.fn() };
+      server.emit('upgrade', makeUpgradeReq({ remoteAddress: '127.0.0.1' }), allowed, Buffer.alloc(0));
+      expect(downstream).toHaveBeenCalledTimes(1);
+      expect(allowed.destroy).not.toHaveBeenCalled();
+    });
+
     it('forwards authorised upgrades and unrelated events untouched', () => {
       const server = new EventEmitter() as unknown as HttpServer;
       const downstream = jest.fn();

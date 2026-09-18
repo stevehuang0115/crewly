@@ -2363,6 +2363,12 @@ void (async () => {
 				const loadedAddons = await addonLoader.loadAddons(this.app, this.httpServer);
 				if (loadedAddons.length > 0) {
 					this.logger.info('Addons loaded successfully', { addons: loadedAddons });
+					// An addon that attaches its own WebSocket gateway wraps
+					// `httpServer.emit` after our gate did; re-install so the
+					// gate is outermost again (double-wrapping is harmless —
+					// an allowed upgrade passes both, a refused one is
+					// answered once by the outer wrapper).
+					installWebSocketGate(this.httpServer);
 				}
 			} catch (addonErr) {
 				this.logger.warn('Addon loading encountered an error (non-fatal)', {
