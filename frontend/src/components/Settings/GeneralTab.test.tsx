@@ -23,6 +23,7 @@ describe('GeneralTab', () => {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',
         'codex-cli': 'codex -a never -s danger-full-access',
+        'opencode-cli': 'opencode --auto',
         'crewly-agent': 'crewly-agent-in-process',
       },
       agentIdleTimeoutMinutes: 30,
@@ -124,6 +125,7 @@ describe('GeneralTab', () => {
       expect(screen.getByLabelText('Claude Code')).toBeInTheDocument();
       expect(screen.getByLabelText('Gemini CLI')).toBeInTheDocument();
       expect(screen.getByLabelText('Codex CLI')).toBeInTheDocument();
+      expect(screen.getByLabelText('OpenCode CLI')).toBeInTheDocument();
     });
 
     it('should render runtime command values', () => {
@@ -137,6 +139,9 @@ describe('GeneralTab', () => {
 
       const codexInput = screen.getByLabelText('Codex CLI') as HTMLInputElement;
       expect(codexInput.value).toBe('codex -a never -s danger-full-access');
+
+      const opencodeInput = screen.getByLabelText('OpenCode CLI') as HTMLInputElement;
+      expect(opencodeInput.value).toBe('opencode --auto');
     });
 
     it('should render action buttons', () => {

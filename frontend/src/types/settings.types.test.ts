@@ -20,11 +20,12 @@ describe('Settings Types', () => {
       expect(AI_RUNTIMES).toContain('claude-code');
       expect(AI_RUNTIMES).toContain('gemini-cli');
       expect(AI_RUNTIMES).toContain('codex-cli');
+      expect(AI_RUNTIMES).toContain('opencode-cli');
       expect(AI_RUNTIMES).toContain('crewly-agent');
     });
 
-    it('should have exactly 4 runtimes', () => {
-      expect(AI_RUNTIMES).toHaveLength(4);
+    it('should have exactly 5 runtimes', () => {
+      expect(AI_RUNTIMES).toHaveLength(5);
     });
   });
 
@@ -33,6 +34,7 @@ describe('Settings Types', () => {
       expect(AI_RUNTIME_DISPLAY_NAMES['claude-code']).toBe('Claude Code');
       expect(AI_RUNTIME_DISPLAY_NAMES['gemini-cli']).toBe('Gemini CLI');
       expect(AI_RUNTIME_DISPLAY_NAMES['codex-cli']).toBe('Codex CLI');
+      expect(AI_RUNTIME_DISPLAY_NAMES['opencode-cli']).toBe('OpenCode CLI');
       expect(AI_RUNTIME_DISPLAY_NAMES['crewly-agent']).toBe('Crewly Agent');
     });
   });
@@ -50,6 +52,10 @@ describe('Settings Types', () => {
       expect(getAIRuntimeDisplayName('codex-cli')).toBe('Codex CLI');
     });
 
+    it('should return display name for opencode-cli (#306)', () => {
+      expect(getAIRuntimeDisplayName('opencode-cli')).toBe('OpenCode CLI');
+    });
+
     it('should return display name for crewly-agent', () => {
       expect(getAIRuntimeDisplayName('crewly-agent')).toBe('Crewly Agent');
     });
@@ -60,6 +66,7 @@ describe('Settings Types', () => {
       expect(isValidAIRuntime('claude-code')).toBe(true);
       expect(isValidAIRuntime('gemini-cli')).toBe(true);
       expect(isValidAIRuntime('codex-cli')).toBe(true);
+      expect(isValidAIRuntime('opencode-cli')).toBe(true);
       expect(isValidAIRuntime('crewly-agent')).toBe(true);
     });
 

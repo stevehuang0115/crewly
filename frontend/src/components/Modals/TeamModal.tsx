@@ -28,7 +28,7 @@ interface TeamMember {
   name: string;
   role: string;
   systemPrompt: string;
-  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'crewly-agent';
+  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
   modelId?: string; // AI model override for crewly-agent runtime
   avatar?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
@@ -483,6 +483,7 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
                           <option value="claude-code">Claude CLI</option>
                           <option value="gemini-cli">Gemini CLI</option>
                           <option value="codex-cli">Codex CLI</option>
+                          <option value="opencode-cli">OpenCode CLI</option>
                           <option value="crewly-agent">Crewly Agent</option>
                         </FormSelect>
                       </div>

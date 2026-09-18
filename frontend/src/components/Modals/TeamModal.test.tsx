@@ -891,4 +891,46 @@ describe('TeamModal Component', () => {
       expect(parentSelect.value).toBe('');
     });
   });
+
+  // Runs last on purpose: it is the only test in this file that successfully
+  // adds a member (the rest of the suite predates the current modal markup),
+  // and the role-details effect it triggers must not bleed into other tests.
+  describe('Runtime selector (#306)', () => {
+    it('should offer OpenCode CLI in the member runtime selector (#306)', async () => {
+      // Adding a member fetches its role details; resolve to a real role so the
+      // details cache short-circuits instead of re-fetching on every render.
+      const { rolesService } = await import('../../services/roles.service');
+      vi.mocked(rolesService.getRole).mockResolvedValue({
+        ...mockRoles.roles[1],
+        prompt: 'Fullstack developer prompt',
+        skills: [],
+      } as any);
+
+      let view: ReturnType<typeof render> | undefined;
+      await act(async () => {
+        view = render(<TeamModal {...defaultProps} />);
+      });
+
+      // A new team starts with no members; add one to render the per-member runtime selector.
+      await act(async () => {
+        fireEvent.click(screen.getByText('Add Team Member'));
+      });
+
+      const runtimeSelect = await waitFor(() => {
+        const el = document.getElementById('runtime-type-0') as HTMLSelectElement | null;
+        expect(el).not.toBeNull();
+        return el as HTMLSelectElement;
+      });
+      const values = Array.from(runtimeSelect.querySelectorAll('option')).map((o) => o.value);
+      expect(values).toEqual(['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent']);
+      const opencodeOption = runtimeSelect.querySelector('option[value="opencode-cli"]');
+      expect(opencodeOption?.textContent).toBe('OpenCode CLI');
+
+      // Tear down explicitly so the role-details effect cannot keep running into the next test.
+      await act(async () => {
+        view?.unmount();
+      });
+      vi.mocked(rolesService.getRole).mockReset();
+    });
+  });
 });
