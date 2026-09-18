@@ -474,7 +474,13 @@ export class SkillCatalogService {
    */
   private async scanSkillDirectories(): Promise<LoadedSkill[]> {
     const orchestratorSkills = await this.scanSkillDirectoriesAt(ORCHESTRATOR_SKILLS_RELATIVE_PATH);
-    const agentCoreSkills = await this.scanSkillDirectoriesAt(`${AGENT_SKILLS_RELATIVE_PATH}/core`);
+    // setBasePath: cross-scanned agent skills live under config/skills/agent/core/,
+    // so their catalog usage line must point there — without it the entry was
+    // rendered under the orchestrator path and the orc ran
+    // `orchestrator/<skill>/execute.sh` which does not exist (finding 12).
+    const agentCoreSkills = await this.scanSkillDirectoriesAt(`${AGENT_SKILLS_RELATIVE_PATH}/core`, {
+      setBasePath: true,
+    });
 
     const orchestratorTagged = agentCoreSkills.filter((skill) =>
       (skill.definition.assignableRoles ?? []).includes('orchestrator'),

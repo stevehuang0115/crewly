@@ -199,7 +199,7 @@ After registering, proceed to Step 4.
 After registration, check for active goals and OKRs:
 
 ```bash
-bash {{ORCHESTRATOR_SKILLS_PATH}}/recall/execute.sh '{"context":"OKR goals active tasks","scope":"both","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
+bash {{AGENT_SKILLS_PATH}}/core/recall/execute.sh '{"context":"OKR goals active tasks","scope":"both","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
 ```
 
 **If active OKRs or goals exist:** Report the current status to the user and ask if they want you to take over execution. Do NOT auto-execute unless the user explicitly activates Autonomous Mode (see below). Once the user activates Autonomous Mode in a session, it stays ON for the rest of that session — you do not need to re-ask.
@@ -1343,7 +1343,7 @@ next tier of OKRs, drive (or delegate to the owning team-leader/PM) this flow.
 
 1. **DECOMPOSE** — run `decompose-okr` against the approved parent Mission:
    ```bash
-   bash {{AGENT_SKILLS_PATH}}/orchestrator/decompose-okr/execute.sh --mission-id <parent-mission-id>
+   bash {{ORCHESTRATOR_SKILLS_PATH}}/decompose-okr/execute.sh --mission-id <parent-mission-id>
    ```
    The runtime drafts child objectives + KRs one tier down (company→team,
    team→project; `projectId` required on each project-level child).
@@ -2100,18 +2100,18 @@ As the orchestrator, you are responsible for learning about your team's strength
 
 - After an agent completes a task successfully, use `record-learning` to note what they did well:
   ```bash
-  bash {{ORCHESTRATOR_SKILLS_PATH}}/record-learning/execute.sh '{"learning":"Alice excels at React component work — completed login form task in 20min with tests","agentId":"{{SESSION_ID}}","agentRole":"orchestrator","projectPath":"{{PROJECT_PATH}}"}'
+  bash {{AGENT_SKILLS_PATH}}/core/record-learning/execute.sh '{"learning":"Alice excels at React component work — completed login form task in 20min with tests","agentId":"{{SESSION_ID}}","agentRole":"orchestrator","projectPath":"{{PROJECT_PATH}}"}'
   ```
 - After a task fails or needs significant rework, record what went wrong:
   ```bash
-  bash {{ORCHESTRATOR_SKILLS_PATH}}/record-learning/execute.sh '{"learning":"Bob struggled with database migrations — needed 3 attempts, consider assigning DB tasks to Alice instead","agentId":"{{SESSION_ID}}","agentRole":"orchestrator","projectPath":"{{PROJECT_PATH}}"}'
+  bash {{AGENT_SKILLS_PATH}}/core/record-learning/execute.sh '{"learning":"Bob struggled with database migrations — needed 3 attempts, consider assigning DB tasks to Alice instead","agentId":"{{SESSION_ID}}","agentRole":"orchestrator","projectPath":"{{PROJECT_PATH}}"}'
   ```
 
 ### Smart Delegation
 
 - Before delegating a task, use `recall` to check agent track records:
   ```bash
-  bash {{ORCHESTRATOR_SKILLS_PATH}}/recall/execute.sh '{"context":"agent performance frontend tasks","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
+  bash {{AGENT_SKILLS_PATH}}/core/recall/execute.sh '{"context":"agent performance frontend tasks","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
   ```
 - Match tasks to agents based on their demonstrated strengths
 - When a new agent joins, start with smaller tasks to assess capabilities
@@ -2120,7 +2120,7 @@ As the orchestrator, you are responsible for learning about your team's strength
 
 - When the user expresses a preference (e.g., "I prefer detailed status updates", "always run tests before completing"), store it:
   ```bash
-  bash {{ORCHESTRATOR_SKILLS_PATH}}/remember/execute.sh '{"content":"User prefers detailed status updates with code snippets","category":"user_preference","scope":"project","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
+  bash {{AGENT_SKILLS_PATH}}/core/remember/execute.sh '{"content":"User prefers detailed status updates with code snippets","category":"user_preference","scope":"project","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
   ```
 - Before starting new work sessions, recall user preferences to maintain consistency
 

@@ -402,8 +402,9 @@ describe('SkillCatalogService', () => {
       const content = await fs.readFile(result.catalogPath, 'utf-8');
 
       expect(content).toContain('## How to Use');
+      const orcPath = path.join(projectRoot, 'config', 'skills', 'orchestrator');
       expect(content).toContain(
-        "bash config/skills/orchestrator/{skill-name}/execute.sh '{\"param\":\"value\"}'"
+        `bash ${orcPath}/{skill-name}/execute.sh '{"param":"value"}'`
       );
       expect(content).toContain('All scripts output JSON to stdout. Errors go to stderr.');
     });
@@ -458,9 +459,24 @@ describe('SkillCatalogService', () => {
       const result = await service.generateCatalog();
       const content = await fs.readFile(result.catalogPath, 'utf-8');
 
-      expect(content).toContain(
-        "**Usage:** `bash config/skills/orchestrator/assign-task/execute.sh '{}'`"
-      );
+      // Absolute path: the orc's cwd is not the Crewly root on a global install.
+      const orcPath = path.join(projectRoot, 'config', 'skills', 'orchestrator');
+      expect(content).toContain(`**Usage:** \`bash ${orcPath}/assign-task/execute.sh '{}'\``);
+    });
+
+    it('renders cross-scanned agent/core skills with their real agent/core path (finding 12)', async () => {
+      await createStandardSkill('assign-task');
+      await createStandardAgentSkill('core/recall', { assignableRoles: ['developer', 'orchestrator'] });
+      await createStandardAgentSkill('core/worker-only', { assignableRoles: ['developer'] });
+
+      const result = await service.generateCatalog();
+      const content = await fs.readFile(result.catalogPath, 'utf-8');
+
+      const agentCorePath = path.join(projectRoot, 'config', 'skills', 'agent', 'core');
+      expect(content).toContain(`**Usage:** \`bash ${agentCorePath}/recall/execute.sh '{}'\``);
+      expect(content).not.toContain('config/skills/orchestrator/recall/');
+      // Not tagged for the orchestrator → not in the orc catalog at all.
+      expect(content).not.toContain('worker-only');
     });
 
     it('should extract and include Parameters section from instructions.md', async () => {
