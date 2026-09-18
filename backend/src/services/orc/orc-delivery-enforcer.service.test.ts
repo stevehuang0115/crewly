@@ -8,7 +8,10 @@ import {
   OrcDeliveryEnforcerService,
   isAgentDeliveryMarker,
   parseSlackConversationId,
+  STALE_THREAD_MAX_AGE_MS,
   type DeliveryReminderSink,
+  type ThreadActivity,
+  type ThreadActivityProvider,
 } from './orc-delivery-enforcer.service.js';
 
 describe('OrcDeliveryEnforcerService', () => {
@@ -342,5 +345,111 @@ describe('parseSlackConversationId', () => {
     expect(parseSlackConversationId('system:bookkeep')).toBeNull();
     expect(parseSlackConversationId('')).toBeNull();
     expect(parseSlackConversationId('slack-D0AC')).toBeNull(); // no ts
+  });
+});
+
+/**
+ * Issue #731 — the watchdog false-fired daily against a long-resolved
+ * Slack thread. Two gaps beyond the "inferred conversation" fix in
+ * chat.controller: an agent can NAME a stale thread explicitly (its
+ * environment still carries the original delegation's conversationId), and
+ * a reply that lands on the thread through any path other than
+ * `/api/slack/send` never cleared the entry. The enforcer now consults the
+ * thread's recorded activity for both.
+ */
+describe('OrcDeliveryEnforcerService thread-activity gate (#731)', () => {
+  const CONV = 'slack-D0AG8QM4J21-1785672178.254459';
+  const HOUR = 60 * 60 * 1000;
+  let fired: Array<{ conversationId: string; text: string }>;
+  let activity: ThreadActivity | null;
+  let provider: jest.MockedFunction<ThreadActivityProvider>;
+  let svc: OrcDeliveryEnforcerService;
+
+  beforeEach(() => {
+    fired = [];
+    activity = null;
+    provider = jest.fn((_key) => activity);
+    svc = new OrcDeliveryEnforcerService({
+      reminderSink: (p) => {
+        fired.push(p);
+      },
+      threadActivityProvider: provider,
+    });
+  });
+
+  afterEach(() => {
+    svc.stop();
+    OrcDeliveryEnforcerService.setInstance(null);
+  });
+
+  function done(now: number): void {
+    svc.markPendingDelivery({
+      conversationId: CONV,
+      agentSender: 'personal-assistant-team-ella',
+      text: '[COMPLETED] daily tech briefing posted',
+      now,
+    });
+  }
+
+  it('does not track a delivery when the thread\'s last owner message is older than the stale threshold', () => {
+    const now = Date.now();
+    activity = { lastOwnerMessageAt: now - STALE_THREAD_MAX_AGE_MS - HOUR, lastReplyAt: now - STALE_THREAD_MAX_AGE_MS };
+    done(now);
+    expect(provider).toHaveBeenCalledWith({ channelId: 'D0AG8QM4J21', threadTs: '1785672178.254459' });
+    expect(svc._peekPending()).toHaveLength(0);
+  });
+
+  it('tracks a delivery when the owner spoke in the thread recently', () => {
+    const now = Date.now();
+    activity = { lastOwnerMessageAt: now - HOUR, lastReplyAt: now - 2 * HOUR };
+    done(now);
+    expect(svc._peekPending()).toHaveLength(1);
+  });
+
+  it('tracks a delivery when the thread activity is unknown (provider returns null) — old behaviour', () => {
+    activity = null;
+    done(Date.now());
+    expect(svc._peekPending()).toHaveLength(1);
+  });
+
+  it('does not track a delivery when nobody ever spoke as the owner in that thread', () => {
+    activity = { lastOwnerMessageAt: null, lastReplyAt: null };
+    done(Date.now());
+    expect(svc._peekPending()).toHaveLength(0);
+  });
+
+  it('drops a pending delivery without reminding once the thread was replied to after the [DONE], via any path', () => {
+    const now = Date.now();
+    activity = { lastOwnerMessageAt: now - HOUR, lastReplyAt: now - 2 * HOUR };
+    done(now);
+    expect(svc._peekPending()).toHaveLength(1);
+
+    // The orc replied on the thread 1 min after the agent's [DONE] through a
+    // path that never called markDelivered (e.g. the Slack bridge's own send).
+    activity = { lastOwnerMessageAt: now - HOUR, lastReplyAt: now + 60_000 };
+    const { firedFor } = svc.tick(now + 4 * 60_000);
+    expect(firedFor).toEqual([]);
+    expect(fired).toHaveLength(0);
+    expect(svc._peekPending()).toHaveLength(0);
+  });
+
+  it('still reminds when the only reply on the thread predates the [DONE]', () => {
+    const now = Date.now();
+    activity = { lastOwnerMessageAt: now - HOUR, lastReplyAt: now - 30 * 60_000 };
+    done(now);
+    const { firedFor } = svc.tick(now + 4 * 60_000);
+    expect(firedFor).toEqual([CONV]);
+    expect(fired[0].text).toContain('[DELIVER_REQUIRED]');
+  });
+
+  it('keeps working when the provider throws (fail open to the old behaviour)', () => {
+    provider.mockImplementation(() => {
+      throw new Error('db closed');
+    });
+    const now = Date.now();
+    done(now);
+    expect(svc._peekPending()).toHaveLength(1);
+    const { firedFor } = svc.tick(now + 4 * 60_000);
+    expect(firedFor).toEqual([CONV]);
   });
 });

@@ -1328,6 +1328,38 @@ export class ChatV2Service extends EventEmitter {
     return rows.map((r) => r.content);
   }
 
+  /**
+   * Returns when the owner last spoke on a channel and when it was last
+   * replied to by anyone else (agent/orc/system), as epoch ms.
+   *
+   * Purpose: the OrcDeliveryEnforcer (issue #731) must not demand a
+   * deliverable in a Slack thread the owner abandoned long ago, and must stop
+   * nagging once a reply has landed on the thread through ANY path — every
+   * outbound Slack reply is mirrored here, so this is the single place that
+   * knows. Server-internal read; no per-channel authorization.
+   *
+   * @param channelId - chat-v2 channel id (for Slack threads this is the
+   *   synthesized `slack-<channel>-<ts>` conversation id).
+   * @returns Both timestamps (`null` when no such row), or `null` when the
+   *   channel itself does not exist.
+   */
+  getChannelActivity(channelId: string): { lastOwnerMessageAt: number | null; lastReplyAt: number | null } | null {
+    if (!this.channels.getById(channelId)) return null;
+    const row = this.db
+      .prepare(
+        `SELECT
+           MAX(CASE WHEN sender_type = 'user' THEN created_at END) AS last_owner_at,
+           MAX(CASE WHEN sender_type <> 'user' THEN created_at END) AS last_reply_at
+         FROM chat_messages
+         WHERE channel_id = ?`,
+      )
+      .get(channelId) as { last_owner_at: number | null; last_reply_at: number | null } | undefined;
+    return {
+      lastOwnerMessageAt: row?.last_owner_at ?? null,
+      lastReplyAt: row?.last_reply_at ?? null,
+    };
+  }
+
   // -------------------------------------------------------------------------
   // Message operations
   // -------------------------------------------------------------------------
