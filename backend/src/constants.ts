@@ -666,6 +666,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	REGISTRY_HEARTBEAT_INTERVAL_MS: 5 * 60 * 1000,
 	/** Coalesce bursts of `team-saved` events into one heartbeat (ms) */
 	TEAM_SAVED_DEBOUNCE_MS: 5_000,
+	/** Short retries while the relay queue is not registered yet (then the 5-min cadence takes over) */
+	QUEUE_WAIT_MAX_RETRIES: 24,
 	/** HTTP timeout for Cloud calls (ms) */
 	REQUEST_TIMEOUT_MS: 15_000,
 	/** `env` = only local tokens, `cloud` = only Cloud, unset = Cloud wins when both exist */

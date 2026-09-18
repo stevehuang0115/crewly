@@ -15,6 +15,7 @@ import {
   resolveSlackConfig,
   connectSlack,
   handleSlackCloudConfigChange,
+  refreshSlackCloudConfig,
   getActiveSlackSource,
   resetSlackInitializerState,
 } from './slack-initializer.js';
@@ -486,6 +487,24 @@ describe('Slack Initializer', () => {
         expect(init).not.toHaveBeenCalled();
         (service as unknown as { config: SlackCloudConfig }).config = CLOUD_CONFIG;
         await handleSlackCloudConfigChange(CLOUD_CONFIG);
+        expect(init).toHaveBeenCalledWith(expect.objectContaining({ transport: 'cloud' }));
+        expect(getActiveSlackSource()).toBe('cloud');
+      });
+
+      it('refreshSlackCloudConfig (after Cloud login) fetches now and connects from a cached config Cloud could not confirm at boot', async () => {
+        jest.spyOn(slackCredentials, 'loadSlackCredentials').mockResolvedValue(null);
+        const { service, fetchImpl } = installCloudConfig(CLOUD_CONFIG);
+        // Boot happened while signed out: cache is populated, nothing connected.
+        await service.refresh();
+        expect(getSlackService().isConnected()).toBe(false);
+
+        const init = jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);
+        jest
+          .spyOn((await import('./slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+          .mockResolvedValue(undefined);
+        await refreshSlackCloudConfig();
+
+        expect(fetchImpl).toHaveBeenCalledTimes(2);
         expect(init).toHaveBeenCalledWith(expect.objectContaining({ transport: 'cloud' }));
         expect(getActiveSlackSource()).toBe('cloud');
       });

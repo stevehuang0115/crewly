@@ -195,8 +195,10 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
 
       // Start MessageRouterService for cross-device agent communication
       try {
-        const { startMessageRouter } = await import('../../services/cloud/cloud-initializer.js');
+        const { startMessageRouter, startSlackCloudSync } = await import('../../services/cloud/cloud-initializer.js');
         startMessageRouter();
+        // Slack v3: fetch the Cloud-owned Slack config right after login
+        startSlackCloudSync();
       } catch {
         logger.debug('MessageRouterService start deferred (non-fatal)');
       }

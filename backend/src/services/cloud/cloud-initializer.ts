@@ -130,6 +130,29 @@ export function startBrowserRelayAutoDiscovery(): void {
 }
 
 /**
+ * Slack v3 (Crewly Cloud owns Slack): once Cloud is signed in, pull the
+ * Slack config now so a workspace installed on the account connects this
+ * instance without waiting for the periodic refresh.
+ *
+ * Non-blocking: failures are logged but do not affect Cloud connectivity.
+ */
+export function startSlackCloudSync(): void {
+	try {
+		import('../slack/slack-initializer.js')
+			.then(({ refreshSlackCloudConfig }) => refreshSlackCloudConfig())
+			.catch((err) => {
+				logger.warn('Slack Cloud config refresh failed (non-fatal)', {
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	} catch (err) {
+		logger.warn('Slack Cloud config refresh failed (non-fatal)', {
+			error: err instanceof Error ? err.message : String(err),
+		});
+	}
+}
+
+/**
  * Attempt to restore Cloud connection from persisted config.
  *
  * Called during backend startup. If ~/.crewly/cloud/config.json exists
@@ -229,6 +252,9 @@ export async function initializeCloudIfConfigured(): Promise<CloudInitResult> {
 
 			// Start browser extension auto-discovery via CloudSync device events
 			startBrowserRelayAutoDiscovery();
+
+			// Pull the Cloud-owned Slack config now that we are signed in
+			startSlackCloudSync();
 		} catch (syncError) {
 			logger.warn('CloudSyncService start failed during initialization (non-fatal)', {
 				error: syncError instanceof Error ? syncError.message : String(syncError),

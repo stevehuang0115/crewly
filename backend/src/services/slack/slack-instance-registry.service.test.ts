@@ -189,6 +189,31 @@ describe('heartbeat', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('retries on the short debounce while the relay queue is not registered, then stops', async () => {
+    queueId = null;
+    const service = makeService();
+    await service.start();
+    // start() heartbeats once (skipped) and scheduled a retry.
+    expect(timeouts).toHaveLength(1);
+    expect(timeouts[0].ms).toBe(SLACK_CLOUD_CONSTANTS.TEAM_SAVED_DEBOUNCE_MS);
+
+    for (let i = 0; i < SLACK_CLOUD_CONSTANTS.QUEUE_WAIT_MAX_RETRIES + 5; i++) {
+      const next = timeouts.shift();
+      if (!next) break;
+      next.fn();
+      await new Promise((r) => setImmediate(r));
+    }
+    // Capped: no more retries queued once the budget is spent.
+    expect(timeouts).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([, init]) => init.method === 'PUT')).toHaveLength(0);
+
+    // Queue appears → the next heartbeat goes through and the budget resets.
+    queueId = 'queue-late';
+    expect(await service.heartbeat()).toBe(true);
+    expect(calls().at(-1)?.body.relayQueueId).toBe('queue-late');
+    service.stop();
+  });
+
   it('records Cloud failures without throwing', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: false, error: 'nope', code: 'bad' }, 500));
     const service = makeService();

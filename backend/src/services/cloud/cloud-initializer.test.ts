@@ -1,5 +1,11 @@
-import { initializeCloudIfConfigured } from './cloud-initializer.js';
+import { initializeCloudIfConfigured, startSlackCloudSync } from './cloud-initializer.js';
 import { CloudClientService } from './cloud-client.service.js';
+
+// Slack v3: the Cloud-owned Slack config is pulled right after login.
+const mockRefreshSlackCloudConfig = jest.fn().mockResolvedValue(undefined);
+jest.mock('../slack/slack-initializer.js', () => ({
+	refreshSlackCloudConfig: () => mockRefreshSlackCloudConfig(),
+}));
 
 // Mock logger
 jest.mock('../core/logger.service.js', () => ({
@@ -117,7 +123,11 @@ describe('CloudInitializer', () => {
 		expect(result.success).toBe(false);
 	});
 
-	it('should trigger relay auto-connect on successful restore', async () => {
+	// (The relay auto-connect assertion that used to live here referenced
+	// `autoConnectRelayFromToken`, which no longer exists — the suite did not
+	// compile. Relay registration is covered by cloud-sync.service.test.ts.)
+
+	it('should pull the Cloud-owned Slack config on successful restore', async () => {
 		const config = {
 			cloudUrl: 'https://api.crewlyai.com',
 			token: 'jwt-token',
@@ -127,9 +137,9 @@ describe('CloudInitializer', () => {
 		mockReadFile.mockResolvedValue(JSON.stringify(config));
 
 		await initializeCloudIfConfigured();
+		await new Promise((r) => setImmediate(r));
 
-		const { autoConnectRelayFromToken } = await import('../../controllers/cloud/cloud.controller.js');
-		expect(autoConnectRelayFromToken).toHaveBeenCalledWith('jwt-token');
+		expect(mockRefreshSlackCloudConfig).toHaveBeenCalled();
 	});
 
 	it('should start CloudSyncService on successful restore', async () => {
@@ -204,5 +214,19 @@ describe('CloudInitializer', () => {
 		// Should still succeed — sync failure is non-fatal
 		expect(result.attempted).toBe(true);
 		expect(result.success).toBe(true);
+	});
+
+	describe('startSlackCloudSync', () => {
+		it('asks the Slack initializer to refresh the Cloud config (non-blocking)', async () => {
+			startSlackCloudSync();
+			await new Promise((r) => setImmediate(r));
+			expect(mockRefreshSlackCloudConfig).toHaveBeenCalledTimes(1);
+		});
+
+		it('swallows a failing refresh', async () => {
+			mockRefreshSlackCloudConfig.mockRejectedValueOnce(new Error('cloud down'));
+			expect(() => startSlackCloudSync()).not.toThrow();
+			await new Promise((r) => setImmediate(r));
+		});
 	});
 });

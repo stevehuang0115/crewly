@@ -432,6 +432,33 @@ export async function handleSlackCloudConfigChange(config: SlackCloudConfig | nu
 }
 
 /**
+ * Called once Cloud is signed in (boot restore or the login route — both
+ * happen after the Slack boot path ran): fetch the Cloud config now instead
+ * of waiting for the 10-minute tick, connect if a workspace exists and
+ * Slack is down, and re-register the instance now that a relay queue may
+ * exist. Never throws.
+ */
+export async function refreshSlackCloudConfig(): Promise<void> {
+  try {
+    const cloudConfigService = await ensureSlackCloudConfigService();
+    if (cloudConfigService.getSourceMode() === 'env') return;
+    await watchSlackCloudConfig();
+    const config = await cloudConfigService.refresh();
+    // onChange only fires when the config differs from the cache; a cached
+    // config that could not connect at boot needs an explicit nudge.
+    if (config && !getSlackService().isConnected()) {
+      await handleSlackCloudConfigChange(config);
+    } else if (activeSource === 'cloud') {
+      await getSlackInstanceRegistryService()?.heartbeat();
+    }
+  } catch (error) {
+    logger.warn('Cloud Slack config refresh after login failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/**
  * Reset module state (tests).
  */
 export function resetSlackInitializerState(): void {

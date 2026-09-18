@@ -119,6 +119,8 @@ export class SlackInstanceRegistryService {
   private lastHeartbeatAt: string | null = null;
   private lastError: string | null = null;
   private started = false;
+  /** Consecutive heartbeats skipped because the relay queue was not registered yet */
+  private queueWaitRetries = 0;
 
   constructor(deps: SlackInstanceRegistryServiceDeps) {
     this.deps = deps;
@@ -221,14 +223,22 @@ export class SlackInstanceRegistryService {
    */
   async heartbeat(): Promise<boolean> {
     if (!this.isAvailable()) return false;
+    if (!this.deps.sync.getQueueId()) {
+      // Cloud Sync registers its queue asynchronously right after login;
+      // retry on the short debounce a few times, then leave it to the
+      // 5-minute cadence (and team saves).
+      this.logger.debug('Relay queue not registered yet — skipping Slack registry heartbeat');
+      if (this.started && this.queueWaitRetries < SLACK_CLOUD_CONSTANTS.QUEUE_WAIT_MAX_RETRIES) {
+        this.queueWaitRetries += 1;
+        this.scheduleHeartbeat();
+      }
+      return false;
+    }
     try {
       const { deviceId } = await this.resolveIdentity();
       const payload = await this.buildPayload();
-      if (!payload.relayQueueId) {
-        this.logger.debug('Relay queue not registered yet — skipping Slack registry heartbeat');
-        return false;
-      }
       await this.cloudRequest('PUT', `${SLACK_CLOUD_CONSTANTS.INSTANCES_PATH}/${encodeURIComponent(deviceId)}`, payload);
+      this.queueWaitRetries = 0;
       this.lastHeartbeatAt = new Date(this.now()).toISOString();
       this.lastError = null;
       this.logger.debug('Slack instance registered', {
