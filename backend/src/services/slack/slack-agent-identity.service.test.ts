@@ -143,6 +143,11 @@ describe('provision + cache', () => {
 
     await service.refreshFromCloud();
     expect(installed).toHaveBeenCalledTimes(1);
+
+    // Cloud pruned the agent → the local record goes too.
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: [] }));
+    expect(await service.refreshFromCloud()).toEqual([]);
+    expect(service.getInstalled('s')).toBeNull();
   });
 
   it('markChannel records announcements and invites without duplicates', async () => {

@@ -206,7 +206,18 @@ export class SlackAgentIdentityService {
   async refreshFromCloud(): Promise<SlackAgentIdentityRecord[]> {
     const views = await this.cloudRequest<CloudAgentView[]>('GET', '/agents?includeTokens=1');
     for (const view of views) await this.mergeView(view);
+    // Cloud is the source of truth: an identity it no longer lists (pruned
+    // when the member left, the channel was unlinked, or the team was
+    // deleted) is dropped here too, or Settings keeps showing 27 "waiting
+    // for install" rows for bots that no longer exist.
+    const known = new Set(views.map((v) => v.agentSession));
     const store = await this.load();
+    const before = store.identities.length;
+    store.identities = store.identities.filter((r) => known.has(r.agentSession));
+    if (store.identities.length !== before) {
+      await this.save();
+      this.logger.info('Dropped identities Cloud no longer holds', { removed: before - store.identities.length });
+    }
     if (!store.identities.some((r) => r.status === 'pending_install')) this.stopPolling();
     return store.identities.map((r) => ({ ...r }));
   }
