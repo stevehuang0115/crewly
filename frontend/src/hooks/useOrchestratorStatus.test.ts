@@ -172,6 +172,40 @@ describe('useOrchestratorStatus', () => {
       expect(result.current.status?.agentStatus).toBe('active');
     });
 
+    it('should keep loginRequired across WebSocket updates until the orchestrator is active', async () => {
+      const loginRequired = { url: 'https://auth.example/device', code: 'ABCD-EFGH', detectedAt: '2026-09-18T10:00:00.000Z' };
+      mockedAxios.get.mockResolvedValue({
+        data: {
+          success: true,
+          data: {
+            isActive: false,
+            agentStatus: 'starting',
+            message: 'Orchestrator needs you to sign in',
+            offlineMessage: 'offline',
+            loginRequired,
+          },
+        },
+      });
+
+      const { result } = renderHook(() => useOrchestratorStatus());
+      await waitFor(() => expect(result.current.isLoading).toBe(false));
+      expect(result.current.status?.loginRequired).toEqual(loginRequired);
+
+      const statusChangeHandler = mockOn.mock.calls.find(
+        (call) => call[0] === 'orchestrator_status_changed'
+      )?.[1];
+
+      act(() => {
+        statusChangeHandler({ agentStatus: 'starting' });
+      });
+      expect(result.current.status?.loginRequired).toEqual(loginRequired);
+
+      act(() => {
+        statusChangeHandler({ agentStatus: 'active' });
+      });
+      expect(result.current.status?.loginRequired).toBeNull();
+    });
+
     it('should re-fetch status on WebSocket reconnect', async () => {
       mockedAxios.get.mockResolvedValue({
         data: {

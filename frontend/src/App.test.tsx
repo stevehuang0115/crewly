@@ -39,12 +39,26 @@ vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> })
 vi.mock('./pages/MissionDetail', () => ({ MissionDetail: () => <div>Mission Detail Page</div> }));
 vi.mock('./pages/RequestDetail', () => ({ RequestDetail: () => <div>Request Detail Page</div> }));
 
+// Global sign-in banner — rendered on every route; its polling is covered
+// in PendingLoginsBanner.test.tsx.
+vi.mock('./components/PendingLoginsBanner', () => ({
+  PendingLoginsBanner: () => <div data-testid="pending-logins-banner-mock" />,
+}));
+
 // Consolidated multi-team chat — mounted live at /team-chat via TeamChatRoute.
 vi.mock('./components/Chat-team/TeamChatRoute', () => ({
   TeamChatRoute: () => <div data-testid="team-chat-route">Team Chat Page</div>,
 }));
 
 describe('App routes', () => {
+  it('mounts the global pending-logins banner outside the router', async () => {
+    window.history.pushState({}, '', '/scheduled-checkins');
+
+    render(<App />);
+
+    expect(await screen.findByTestId('pending-logins-banner-mock')).toBeInTheDocument();
+  });
+
   it('redirects /schedules to the scheduled check-ins page', async () => {
     window.history.pushState({}, '', '/schedules');
 

@@ -14,6 +14,7 @@ import { OverflowMenu } from '@/components/UI/OverflowMenu';
 import { MemberAvatar } from '@/components/common/MemberAvatar';
 import { ConfirmDialog } from '@/components/UI/ConfirmDialog';
 import { formatRelativeTimeCompact } from '@/utils/time';
+import { SignInNeededChip } from '@/components/SignInNeededChip';
 
 export interface TeamsGridCardProps {
   team: Team;
@@ -50,6 +51,9 @@ export const TeamsGridCard: React.FC<TeamsGridCardProps> = ({
   const extra = Math.max(members.length - 3, 0);
   const hasActiveMembers = members.some(m => m.agentStatus === 'active');
   const hasNoProject = !team.projectIds || team.projectIds.length === 0;
+  // Members parked on a runtime sign-in screen — surfaced as a chip per
+  // member so the owner can finish the login from the dashboard.
+  const membersNeedingSignIn = members.filter(m => m.loginRequired);
 
   const lastActivity = members.reduce<string | null>((latest, m) => {
     const ts = m.readyAt || m.updatedAt;
@@ -154,6 +158,17 @@ export const TeamsGridCard: React.FC<TeamsGridCardProps> = ({
           <div className="flex items-center gap-2 text-text-secondary-dark text-sm mb-4">
             <Users className="w-4 h-4" />
             <span>{members.length} member{members.length !== 1 ? 's' : ''}</span>
+          </div>
+        )}
+
+        {membersNeedingSignIn.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 mb-3" data-testid="team-sign-in-needed">
+            {membersNeedingSignIn.map(m => (
+              <div key={m.id} className="flex items-center gap-1 text-xs text-text-secondary-dark">
+                <span>{m.name}</span>
+                <SignInNeededChip loginRequired={m.loginRequired as NonNullable<typeof m.loginRequired>} agentLabel={m.name} />
+              </div>
+            ))}
           </div>
         )}
 

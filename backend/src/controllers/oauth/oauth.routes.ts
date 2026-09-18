@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { GOOGLE_OAUTH_CONSTANTS } from '../../constants.js';
 import { UserIdentityService } from '../../services/user/user-identity.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
+import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 
 /**
  * Build Google OAuth client config from environment variables.
@@ -29,6 +30,36 @@ export function createOAuthRouter(): Router {
   const router = Router();
   const users = UserIdentityService.getInstance();
   const logger = LoggerService.getInstance().createComponentLogger('OAuthRoutes');
+
+  /**
+   * GET /api/oauth/pending
+   *
+   * Every agent session currently parked on a runtime sign-in screen, as
+   * captured by the OAuth re-login monitor (url + device code + when it was
+   * first seen). The dashboard polls this for its global "Sign-in needed"
+   * banner; per-member detail is also exposed on GET /api/teams and the
+   * orchestrator's own on GET /api/orchestrator/status.
+   */
+  router.get('/pending', (_req: Request, res: Response) => {
+    try {
+      const pending = OAuthReloginMonitorService.getInstance()
+        .getAllLoginRequired()
+        .map(({ sessionName, runtimeType, url, code, detectedAt, notifiedAt }) => ({
+          sessionName,
+          runtimeType,
+          url,
+          code,
+          detectedAt,
+          notifiedAt,
+        }));
+      res.json({ success: true, data: pending, count: pending.length });
+    } catch (error) {
+      res.status(500).json({
+        success: false,
+        error: error instanceof Error ? error.message : 'Failed to list pending logins',
+      });
+    }
+  });
 
   router.get('/google/start', async (req: Request, res: Response, next: NextFunction) => {
     try {

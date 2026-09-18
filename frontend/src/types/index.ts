@@ -1,4 +1,30 @@
 // Frontend types (mirrors backend types exactly)
+
+/**
+ * A runtime sign-in the owner must complete before an agent session can
+ * continue. Captured from the agent's terminal by the OAuth re-login monitor.
+ */
+export interface LoginRequiredInfo {
+  /** Login URL, or null when the screen names no URL */
+  url: string | null;
+  /** Device / authorization code (e.g. `FBVZ-MJHKK`), or null for browser-callback flows */
+  code: string | null;
+  /** ISO timestamp of first detection */
+  detectedAt: string;
+}
+
+/**
+ * One entry from `GET /api/oauth/pending` — a session waiting on a human sign-in.
+ */
+export interface PendingLogin extends LoginRequiredInfo {
+  /** PTY session name */
+  sessionName: string;
+  /** Runtime type when known */
+  runtimeType: string | null;
+  /** ISO timestamp the owner was last notified, or null */
+  notifiedAt: string | null;
+}
+
 export interface TeamMember {
   id: string;
   name: string;
@@ -16,6 +42,8 @@ export interface TeamMember {
   readyAt?: string; // ISO timestamp when agent reported ready
   capabilities?: string[]; // Agent-reported capabilities
   lastActivityCheck?: string; // ISO timestamp of last activity monitoring
+  /** Set while the session is parked on a runtime sign-in screen (url + device code) */
+  loginRequired?: LoginRequiredInfo;
   createdAt: string;
   updatedAt: string;
 
