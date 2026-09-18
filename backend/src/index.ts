@@ -68,6 +68,8 @@ import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-br
 import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
+import { bootEscalationService } from './services/v3/escalation-boot.js';
+import type { EscalationService } from './services/v3/escalation.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
 import {
@@ -206,6 +208,7 @@ export class CrewlyServer {
 	/** BRIDGE-1: subscribes to autonomy events and creates WorkItems. */
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
 	private krCompletionSubscriber: KRCompletionSubscriber | null = null;
+	private escalationService: EscalationService | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
 	// DF-1 #438 — symmetric to AutoLearningSubscriber; surfaces milestones
@@ -2108,6 +2111,16 @@ void (async () => {
 				await triggerEngine.start();
 				this.logger.info('TriggerEngine started with action handler wired');
 
+				// MissionPolicy escalation loop (every 5 min: cost/time/failure rules →
+				// notify/pause/block). Sequenced AFTER the action handler above because
+				// EscalationService.start() wraps the installed handler and delegates
+				// non-escalation triggers back to it. Gated by CREWLY_ESCALATION_ENABLED
+				// (default on); a no-op when no mission carries escalation rules.
+				this.escalationService = await bootEscalationService({
+					messageQueue: this.messageQueueService,
+					logger: this.logger,
+				});
+
 				// Wire team-scoped triggers: reconcile declarative Team.triggers spec
 				// against the running engine on every team save, and cancel all of a
 				// team's triggers when it's deleted. Listener is fire-and-forget.
@@ -3556,6 +3569,10 @@ void (async () => {
 			if (this.krCompletionSubscriber) {
 				this.krCompletionSubscriber.stop();
 				this.krCompletionSubscriber = null;
+			}
+			if (this.escalationService) {
+				try { await this.escalationService.stop(); } catch { /* best-effort */ }
+				this.escalationService = null;
 			}
 
 			// LEARN-1: stop the AutoLearningSubscriber on the same window as the

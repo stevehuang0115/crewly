@@ -28,10 +28,11 @@ import { TriggerEngine } from './trigger-engine.service.js';
 import type { Trigger } from '../../types/v2/trigger.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { ensureDir, safeReadJson } from '../../utils/file-io.utils.js';
-import type {
-  Mission,
-  EscalationContext,
-  EscalationRule,
+import {
+  isMissionExecutable,
+  type Mission,
+  type EscalationContext,
+  type EscalationRule,
 } from '../../types/v2/index.js';
 
 // ---------------------------------------------------------------------------
@@ -521,7 +522,7 @@ export class EscalationService {
           if (
             mission &&
             mission.id &&
-            mission.status === 'active' &&
+            isMissionExecutable(mission) &&
             mission.policy?.escalationRules?.length > 0
           ) {
             missions.push(mission);
