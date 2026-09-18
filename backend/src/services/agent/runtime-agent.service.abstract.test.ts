@@ -713,6 +713,51 @@ echo "second command"
 			expect(calledCmd).toContain('--approval-mode full-auto');
 		});
 
+		it('#306: should inject --auto and OPENCODE_DISABLE_AUTOUPDATE=1 for opencode-cli when --auto is missing', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('opencode-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['opencode-cli'] = 'opencode';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toBe('OPENCODE_DISABLE_AUTOUPDATE=1 opencode --auto');
+		});
+
+		it('#306: should NOT double-inject --auto or the env prefix for the default opencode-cli command', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('opencode-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['opencode-cli'] = 'OPENCODE_DISABLE_AUTOUPDATE=1 opencode --auto -m anthropic/claude-sonnet-4';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toBe('OPENCODE_DISABLE_AUTOUPDATE=1 opencode --auto -m anthropic/claude-sonnet-4');
+		});
+
+		it('#306: should leave the opencode `--auto` flag alone when the runtime is codex-cli', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).not.toContain('OPENCODE_DISABLE_AUTOUPDATE');
+			expect(calledCmd).not.toContain('--auto');
+		});
+
 		it('#243: should NOT inject --no-update-check for codex-cli (invalid flag)', async () => {
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
 			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({

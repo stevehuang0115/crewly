@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RuntimeType, ADDON_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS } from '../../constants.js';
+import { RuntimeType, ADDON_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_TYPES } from '../../constants.js';
 import {
 	stripAnsiCodes,
 	isPromptLine,
@@ -15,6 +15,13 @@ import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
+
+/**
+ * Environment variable that stops OpenCode from self-upgrading on launch
+ * (https://opencode.ai/docs/cli/). Prefixed onto the init command like
+ * `GEMINI_NO_UPDATE=1` is for Gemini (#229).
+ */
+const OPENCODE_DISABLE_AUTOUPDATE_ENV = 'OPENCODE_DISABLE_AUTOUPDATE';
 
 /**
  * Result of MCP configuration operation.
@@ -212,6 +219,22 @@ export abstract class RuntimeAgentService {
 					}
 					return cmd;
 				});
+			}
+
+			// #306: OpenCode needs `--auto` to approve permission requests without
+			// a human, and OPENCODE_DISABLE_AUTOUPDATE so a background upgrade
+			// cannot restart the TUI mid-task (same failure mode as Gemini #229).
+			if (this.getRuntimeType() === RUNTIME_TYPES.OPENCODE_CLI) {
+				finalCommands = finalCommands.map(cmd => {
+					if (/\bopencode\b/.test(cmd) && !/\s--auto\b/.test(cmd)) {
+						cmd = cmd.replace(/\bopencode\b/, 'opencode --auto');
+						this.logger.info('Injected --auto for OpenCode CLI (no auto-approve flag present)', { sessionName });
+					}
+					return cmd.startsWith(`${OPENCODE_DISABLE_AUTOUPDATE_ENV}=`)
+						? cmd
+						: `${OPENCODE_DISABLE_AUTOUPDATE_ENV}=1 ${cmd}`;
+				});
+				this.logger.info('Injected OPENCODE_DISABLE_AUTOUPDATE=1 to prevent auto-update kills', { sessionName });
 			}
 
 			// Clear the commandline before execute
