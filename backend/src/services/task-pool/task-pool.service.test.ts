@@ -5,6 +5,7 @@
  */
 
 import { TaskPoolService, WorkItemClaimedError } from './task-pool.service.js';
+import { TeamBudgetExceededError } from '../budget/team-budget-gate.service.js';
 import { PoolStorage } from './pool-storage.js';
 import {
   createWorkItem,
@@ -467,6 +468,54 @@ describe('TaskPoolService', () => {
   // -----------------------------------------------------------------------
   // claimFromPool
   // -----------------------------------------------------------------------
+
+  describe('claimFromPool — team budget gate', () => {
+    afterEach(() => {
+      service.setTeamBudgetGate(null);
+    });
+
+    it('throws TeamBudgetExceededError (reason team_budget_exceeded) and leaves the WI queued', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      service.setTeamBudgetGate({
+        checkForSession: async () => ({
+          allowed: false,
+          reason: 'team_budget_exceeded',
+          detail: 'Team "T" (t1) is over budget',
+          level: 'blocked',
+          teamId: 't1',
+          teamName: 'T',
+          usage: { tokensToday: 1, usdThisMonth: 0, sessions: ['agent-leo'] },
+        }),
+      });
+
+      await expect(service.claimFromPool('agent-leo')).rejects.toBeInstanceOf(TeamBudgetExceededError);
+      await expect(service.claimFromPool('agent-leo')).rejects.toMatchObject({
+        reason: 'team_budget_exceeded',
+      });
+      const after = (await service.getAllItems()).find((w) => w.id === wi.id);
+      expect(after?.status).toBe('queued');
+    });
+
+    it('claims normally when the gate allows, and fails open when the gate throws', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      service.setTeamBudgetGate({
+        checkForSession: async () => {
+          throw new Error('gate exploded');
+        },
+      });
+      const result = await service.claimFromPool('agent-leo');
+      expect(result?.workItem.id).toBe(wi.id);
+    });
+
+    it('is bypassed entirely when no gate is wired (default)', async () => {
+      const wi = makeWorkItem();
+      await service.addToPool(wi);
+      const result = await service.claimFromPool('agent-leo');
+      expect(result?.workItem.id).toBe(wi.id);
+    });
+  });
 
   describe('claimFromPool', () => {
     it('claims the oldest available item (FIFO)', async () => {

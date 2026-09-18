@@ -132,6 +132,13 @@ export const EVENT_TYPES = [
   // The reconciler emits with per-WI dedup so a long-stuck WI doesn't
   // re-fire every reconcile tick — see ReconcilerDataProvider.broadcastStaleQueuedWIs.
   'task:queued_too_long',
+
+  // Team budget gate (OKR loop closure, 2026-09-18): emitted by
+  // TeamBudgetGateService once per team per level per UTC day when a
+  // team's token/USD usage crosses `Team.budget.alertThreshold` (warn) or
+  // the cap itself (blocked). Owner-facing; pairs with a `[BUDGET]` queue
+  // message to the orchestrator.
+  'team:budget_exceeded',
 ] as const;
 
 /**
@@ -195,6 +202,8 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   // its delegations has been silently dropped. The reconciler dedups
   // per-WI so this never floods even when many WIs are stuck.
   'task:queued_too_long',
+  // Budget cap crossings are owner-visible money events.
+  'team:budget_exceeded',
 ]);
 
 /**

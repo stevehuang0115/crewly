@@ -69,6 +69,7 @@ import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.j
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
 import { bootEscalationService } from './services/v3/escalation-boot.js';
+import { TeamBudgetGateService } from './services/budget/team-budget-gate.service.js';
 import type { EscalationService } from './services/v3/escalation.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
@@ -382,6 +383,16 @@ export class CrewlyServer {
 		// triggers addToPool — the slack listener / TaskPool router below both
 		// depend on this for the auto-close path b chain. Idempotent.
 		TaskPoolService.getInstance().setEventBusService(this.eventBusService);
+
+		// Team budget gate (Team.budget was stored + prompt-injected but never
+		// evaluated). Enforced in claimFromPool + WorkItemDispatchSubscriber;
+		// here we give it the bus + queue so cap crossings reach the owner.
+		const teamBudgetGate = TeamBudgetGateService.getInstance();
+		teamBudgetGate.setNotifiers({
+			eventBus: this.eventBusService,
+			messageQueue: this.messageQueueService,
+		});
+		TaskPoolService.getInstance().setTeamBudgetGate(teamBudgetGate);
 
 		// Memory: TaskHistorySubscriber listens on the bus for
 		// task:done_by_worker / task:rejected / task:cancelled and writes
@@ -2185,6 +2196,7 @@ void (async () => {
 			try {
 				const { WorkItemDispatchSubscriber } = await import('./services/v3/workitem-dispatch.subscriber.js');
 				const dispatchSubscriber = WorkItemDispatchSubscriber.getInstance();
+				dispatchSubscriber.setTeamBudgetGate(TeamBudgetGateService.getInstance());
 				dispatchSubscriber.initialize(this.eventBusService);
 				dispatchSubscriber.start();
 				this.logger.info('WorkItemDispatchSubscriber started — workitem:queued events push to target sessions');

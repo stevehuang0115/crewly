@@ -170,6 +170,33 @@ describe('TokenUsageService', () => {
     });
   });
 
+  describe('getSessionUsageSince', () => {
+    it('prices cache hits at the cached rate (feeds the team budget gate)', () => {
+      const since = new Date(Date.now() - 60_000);
+      service.recordUsage('session-1', 'agent-a', 38_532, 1, 'deepseek/deepseek-chat', undefined, {
+        cachedInput: 32_384,
+      });
+
+      const usage = service.getSessionUsageSince('session-1', since);
+
+      expect(usage.inputTokens).toBe(38_532);
+      expect(usage.outputTokens).toBe(1);
+      expect(usage.cost).toBeCloseTo(calculateCost(38_532, 1, 'deepseek/deepseek-chat', 32_384), 12);
+      expect(usage.cost).toBeLessThan(calculateCost(38_532, 1, 'deepseek/deepseek-chat'));
+    });
+
+    it('excludes events before the window', () => {
+      service.recordUsage('session-1', 'agent-a', 100, 10, 'claude-opus');
+      const future = new Date(Date.now() + 60_000);
+      expect(service.getSessionUsageSince('session-1', future)).toEqual({
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 0,
+      });
+      expect(service.getSessionUsageSince('missing', future).cost).toBe(0);
+    });
+  });
+
   describe('resetUsage', () => {
     it('should clear all tracked data', () => {
       service.recordUsage('session-1', 'agent-a', 100, 50, 'claude-opus');

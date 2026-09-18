@@ -73,6 +73,8 @@ describe('Event Bus Types', () => {
         // Self-heal fix #2 (2026-05-20): reconciler-emitted escalation
         // for WIs stuck in `queued` past the staleness threshold.
         'task:queued_too_long',
+        // Team budget gate (2026-09-18)
+        'team:budget_exceeded',
       ]);
     });
   });
