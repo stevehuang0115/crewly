@@ -5,7 +5,7 @@
  * @module services/monitoring/token-usage.service.test
  */
 
-import { TokenUsageService } from './token-usage.service.js';
+import { TokenUsageService, calculateCost } from './token-usage.service.js';
 
 describe('TokenUsageService', () => {
   let service: TokenUsageService;
@@ -41,6 +41,18 @@ describe('TokenUsageService', () => {
     it('should create a new session record on first call', () => {
       service.recordUsage('session-1', 'agent-a', 100, 50, 'claude-opus');
       expect(service.getSessionCount()).toBe(1);
+    });
+
+    it('bills DeepSeek cache hits at the hit rate, not the miss rate', () => {
+      // 38,532 input of which 32,384 cached, 1 output — the local orc's
+      // real smoke-test run. Flat miss pricing said $0.0116; cache-aware
+      // pricing is 6,148 × $0.30/M + 32,384 × $0.006/M + 1 × $1.20/M.
+      const cost = calculateCost(38_532, 1, 'deepseek/deepseek-chat', 32_384);
+      expect(cost).toBeCloseTo(6_148 * 0.0000003 + 32_384 * 0.000000006 + 0.0000012, 9);
+      // A model without a cache rate ignores the hint entirely.
+      expect(calculateCost(1000, 10, 'claude-3-opus', 900)).toBe(1000 * 0.000015 + 10 * 0.000075);
+      // Cached can never exceed input.
+      expect(calculateCost(100, 0, 'deepseek/deepseek-chat', 5000)).toBeCloseTo(100 * 0.000000006, 12);
     });
 
     it('keeps cache-hit and step counts per event and totals cached input (2026-09-18)', () => {

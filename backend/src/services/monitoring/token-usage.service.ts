@@ -119,7 +119,18 @@ export interface ModelUsageBreakdown {
  * Per-model token cost rates in USD per token.
  * Used for server-side cost calculation.
  */
-export const TOKEN_COSTS: Record<string, { input: number; output: number }> = {
+export const TOKEN_COSTS: Record<string, { input: number; output: number; cachedInput?: number }> = {
+  // DeepSeek — keyed the way the in-process runtime reports its model
+  // (`provider/modelId`). Peak-hour rates from api-docs.deepseek.com (the
+  // off-peak rate is half); `deepseek-chat` is the flash tier's alias.
+  // `cachedInput` is the cache-HIT rate: DeepSeek bills a hit at ~2% of a
+  // miss, so pricing every input token at the miss rate overstated an
+  // orchestrator's spend ~40× (2026-09-18).
+  'deepseek/deepseek-chat': { input: 0.0000003, cachedInput: 0.000000006, output: 0.0000012 },
+  'deepseek/deepseek-flash': { input: 0.0000003, cachedInput: 0.000000006, output: 0.0000012 },
+  'deepseek/deepseek-v4-flash': { input: 0.0000003, cachedInput: 0.000000006, output: 0.0000012 },
+  'deepseek/deepseek-v4-pro': { input: 0.00000132, cachedInput: 0.000000044, output: 0.00000396 },
+  'deepseek/deepseek-reasoner': { input: 0.00000132, cachedInput: 0.000000044, output: 0.00000396 },
   'claude-3-opus': { input: 0.000015, output: 0.000075 },
   'claude-3-5-sonnet': { input: 0.000003, output: 0.000015 },
   'claude-3-haiku': { input: 0.00000025, output: 0.00000125 },
@@ -137,14 +148,25 @@ export const TOKEN_COSTS: Record<string, { input: number; output: number }> = {
 /**
  * Calculate the cost for a given number of tokens and model.
  *
- * @param inputTokens - Number of input tokens (excluding cache tokens)
+ * When the model has a `cachedInput` rate and the caller passes how many of
+ * the input tokens were cache hits, those tokens are billed at the hit rate
+ * and only the remainder at the full input rate.
+ *
+ * @param inputTokens - Total input tokens for the call(s), cache hits included
  * @param outputTokens - Number of output tokens
  * @param model - Model identifier
+ * @param cachedInputTokens - Portion of `inputTokens` served from cache (default 0)
  * @returns Cost in USD
  */
-export function calculateCost(inputTokens: number, outputTokens: number, model: string): number {
+export function calculateCost(
+  inputTokens: number,
+  outputTokens: number,
+  model: string,
+  cachedInputTokens = 0,
+): number {
   const rates = TOKEN_COSTS[model] || TOKEN_COSTS.default;
-  return inputTokens * rates.input + outputTokens * rates.output;
+  const cached = rates.cachedInput !== undefined ? Math.min(Math.max(cachedInputTokens, 0), inputTokens) : 0;
+  return (inputTokens - cached) * rates.input + cached * (rates.cachedInput ?? 0) + outputTokens * rates.output;
 }
 
 /**
@@ -335,14 +357,15 @@ export class TokenUsageService {
       if (taskId && events.length === 0) continue;
 
       // Compute per-model breakdown
-      const modelMap = new Map<string, { input: number; output: number }>();
+      const modelMap = new Map<string, { input: number; output: number; cached: number }>();
       let filteredInput = 0;
       let filteredOutput = 0;
 
       for (const event of events) {
-        const existing = modelMap.get(event.model) || { input: 0, output: 0 };
+        const existing = modelMap.get(event.model) || { input: 0, output: 0, cached: 0 };
         existing.input += event.input;
         existing.output += event.output;
+        existing.cached += event.cachedInput ?? 0;
         modelMap.set(event.model, existing);
         filteredInput += event.input;
         filteredOutput += event.output;
@@ -354,7 +377,7 @@ export class TokenUsageService {
           model,
           inputTokens: usage.input,
           outputTokens: usage.output,
-          cost: calculateCost(usage.input, usage.output, model),
+          cost: calculateCost(usage.input, usage.output, model, usage.cached),
         });
       }
 
