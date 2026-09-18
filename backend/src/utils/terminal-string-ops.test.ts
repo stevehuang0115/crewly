@@ -333,6 +333,38 @@ describe('isPromptLine', () => {
 		});
 	});
 
+	describe('OpenCode CLI', () => {
+		it('should detect the Ask anything placeholder (bordered input box)', () => {
+			expect(isPromptLine('┃  Ask anything… "Fix a TODO in the codebase"', RUNTIME_TYPES.OPENCODE_CLI)).toBe(true);
+		});
+
+		it('should detect the Ask anything placeholder without borders', () => {
+			expect(isPromptLine('Ask anything… "What is the tech stack of this project?"', RUNTIME_TYPES.OPENCODE_CLI)).toBe(true);
+		});
+
+		it('should detect the shell-mode Run a command placeholder', () => {
+			expect(isPromptLine('┃  Run a command… "git status"', RUNTIME_TYPES.OPENCODE_CLI)).toBe(true);
+		});
+
+		it('should be case-insensitive on the placeholder', () => {
+			expect(isPromptLine('ASK ANYTHING…', RUNTIME_TYPES.OPENCODE_CLI)).toBe(true);
+		});
+
+		it('should not treat > / ❯ / › glyphs as an OpenCode prompt', () => {
+			expect(isPromptLine('> quoted model output', RUNTIME_TYPES.OPENCODE_CLI)).toBe(false);
+			expect(isPromptLine('❯', RUNTIME_TYPES.OPENCODE_CLI)).toBe(false);
+			expect(isPromptLine('›', RUNTIME_TYPES.OPENCODE_CLI)).toBe(false);
+		});
+
+		it('should not match the agent/model meta line under the input box', () => {
+			expect(isPromptLine('┃  Build auto · claude-sonnet-4 Anthropic', RUNTIME_TYPES.OPENCODE_CLI)).toBe(false);
+		});
+
+		it('should not match a bare shell prompt', () => {
+			expect(isPromptLine('user@host:~$ ', RUNTIME_TYPES.OPENCODE_CLI)).toBe(false);
+		});
+	});
+
 	describe('Gemini CLI', () => {
 		it('should detect > prompt', () => {
 			expect(isPromptLine('> hello', RUNTIME_TYPES.GEMINI_CLI)).toBe(true);

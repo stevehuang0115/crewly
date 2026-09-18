@@ -21,6 +21,13 @@
       "timeout": 90000,
       "description": "OpenAI's Codex CLI for advanced code understanding"
     },
+    "opencode-cli": {
+      "displayName": "OpenCode",
+      "initScript": "",
+      "welcomeMessage": "Ask anything",
+      "timeout": 90000,
+      "description": "OpenCode open-source TUI coding agent (opencode.ai), any provider/model"
+    },
     "crewly-agent": {
       "displayName": "Crewly Agent",
       "initScript": "",
