@@ -67,6 +67,7 @@ import { ThreadStatusQueueService } from './services/messaging/thread-status-que
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
 import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.js';
+import { FallbackTriggerCleanupSubscriber } from './services/v3/fallback-trigger-cleanup.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
 import { bootEscalationService } from './services/v3/escalation-boot.js';
@@ -219,6 +220,7 @@ export class CrewlyServer {
 	/** BRIDGE-1: subscribes to autonomy events and creates WorkItems. */
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
 	private krCompletionSubscriber: KRCompletionSubscriber | null = null;
+	private fallbackTriggerCleanup: FallbackTriggerCleanupSubscriber | null = null;
 	private escalationService: EscalationService | null = null;
 	private hierarchyEscalationMonitor: HierarchyEscalationMonitor | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
@@ -703,6 +705,12 @@ void (async () => {
 		// `kr-completion.subscriber.ts`.
 		this.krCompletionSubscriber = KRCompletionSubscriber.boot(this.eventBusService);
 		this.krCompletionSubscriber.start();
+
+		// A delegation's fallback timer is cancelled the moment its WorkItem
+		// finishes, so the orchestrator stops being woken to "check" work that
+		// is already verified (26 of 65 WorkItems on steamfun-ops, 2026-09-18).
+		this.fallbackTriggerCleanup = FallbackTriggerCleanupSubscriber.boot(this.eventBusService);
+		this.fallbackTriggerCleanup.start();
 
 		// OKR loop closure: give the reminder sweep (mission:stale) and the
 		// review service (mission:replanned) a bus to publish on. Both were
@@ -3711,6 +3719,10 @@ void (async () => {
 			if (this.krCompletionSubscriber) {
 				this.krCompletionSubscriber.stop();
 				this.krCompletionSubscriber = null;
+			}
+			if (this.fallbackTriggerCleanup) {
+				this.fallbackTriggerCleanup.stop();
+				this.fallbackTriggerCleanup = null;
 			}
 			if (this.escalationService) {
 				try { await this.escalationService.stop(); } catch { /* best-effort */ }
