@@ -131,6 +131,10 @@ export class SessionStatePersistence {
 		teamId?: string,
 		memberId?: string
 	): void {
+		// Re-registering (every agent launch does it) must not forget the
+		// conversation id recorded earlier: that id is what --resume needs,
+		// and losing it here is why resume never fired before 2026-09-18.
+		const previous = this.sessionMetadata.get(name);
 		this.sessionMetadata.set(name, {
 			name,
 			cwd: options.cwd,
@@ -141,9 +145,12 @@ export class SessionStatePersistence {
 			teamId,
 			memberId,
 			env: options.env,
+			...(previous?.claudeSessionId && previous.runtimeType === runtimeType
+				? { claudeSessionId: previous.claudeSessionId }
+				: {}),
 		});
 
-		this.logger.debug('Registered session for persistence', { name, runtimeType, role });
+		this.logger.debug('Registered session for persistence', { name, runtimeType, role, keptSessionId: !!previous?.claudeSessionId });
 		this.autoSave().catch((err) => {
 			this.logger.warn('Auto-save after register failed', {
 				error: err instanceof Error ? err.message : String(err),

@@ -131,6 +131,18 @@ describe('SessionStatePersistence', () => {
 			const metadata = persistence.getSessionMetadata('no-member-session');
 			expect(metadata?.memberId).toBeUndefined();
 		});
+
+		it('keeps the recorded conversation id when the same session is registered again (every launch re-registers)', () => {
+			const options: SessionOptions = { cwd: '/home/user/project', command: 'claude', args: [] };
+			persistence.registerSession('agent-1', options, RUNTIME_TYPES.CLAUDE_CODE, 'dev');
+			persistence.updateSessionId('agent-1', 'conv-123');
+			persistence.registerSession('agent-1', { ...options, cwd: '/home/user/other' }, RUNTIME_TYPES.CLAUDE_CODE, 'dev');
+			expect(persistence.getSessionId('agent-1')).toBe('conv-123');
+			expect(persistence.getSessionMetadata('agent-1')?.cwd).toBe('/home/user/other');
+			// A different runtime cannot resume the other runtime's conversation.
+			persistence.registerSession('agent-1', options, RUNTIME_TYPES.CODEX_CLI, 'dev');
+			expect(persistence.getSessionId('agent-1')).toBeUndefined();
+		});
 	});
 
 	describe('unregisterSession', () => {
