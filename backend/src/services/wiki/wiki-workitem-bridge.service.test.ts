@@ -19,6 +19,7 @@ import {
   META_KIND_WIKI_MIGRATE,
   META_KIND_WIKI_CLEANUP,
   describeVaultScope,
+  defaultProjectRoots,
 } from './wiki-workitem-bridge.service.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { WikiQueueItem } from './wiki-queue.service.js';
@@ -869,5 +870,31 @@ describe('WikiWorkItemBridgeService', () => {
       expect(describeVaultScope(team)).toMatch(/^team /);
       expect(describeVaultScope('/Users/me/projects/closie/.crewly/wiki')).toBe('project closie');
     });
+  });
+});
+
+describe('defaultProjectRoots (package-tree guard)', () => {
+  let tmp: string;
+  let cwdSpy: jest.SpyInstance;
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-roots-'));
+  });
+  afterEach(async () => {
+    cwdSpy?.mockRestore();
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('treats a normal cwd with .crewly as a project root', async () => {
+    const project = path.join(tmp, 'proj');
+    await fs.mkdir(path.join(project, '.crewly'), { recursive: true });
+    cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(project);
+    expect(await defaultProjectRoots()).toContain(project);
+  });
+
+  it('never treats the npm package tree as a project root', async () => {
+    const pkg = path.join(tmp, 'lib/node_modules/crewly');
+    await fs.mkdir(path.join(pkg, '.crewly'), { recursive: true });
+    cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(pkg);
+    expect(await defaultProjectRoots()).not.toContain(pkg);
   });
 });

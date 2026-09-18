@@ -13,7 +13,7 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import { WikiQueueService } from './wiki-queue.service.js';
 import { WikiBookkeepService } from './wiki-bookkeep.service.js';
-import { WikiBookkeepTriggerService } from './wiki-bookkeep-trigger.service.js';
+import { WikiBookkeepTriggerService, discoverWikiVaults } from './wiki-bookkeep-trigger.service.js';
 
 const SCHEMA = `
 vault_scope: project
@@ -250,5 +250,33 @@ describe('WikiBookkeepTriggerService', () => {
       // Setting null should have stopped a. Calling stop() again is safe.
       expect(() => a.stop()).not.toThrow();
     });
+  });
+});
+
+describe('discoverWikiVaults (package-tree guard)', () => {
+  let tmp: string;
+  let cwdSpy: jest.SpyInstance;
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'wiki-discover-'));
+  });
+  afterEach(async () => {
+    cwdSpy?.mockRestore();
+    await fs.rm(tmp, { recursive: true, force: true });
+  });
+
+  it('includes <cwd>/.crewly/wiki for a normal project cwd', async () => {
+    const project = path.join(tmp, 'proj');
+    await fs.mkdir(path.join(project, '.crewly/wiki'), { recursive: true });
+    await fs.writeFile(path.join(project, '.crewly/wiki/SCHEMA.md'), SCHEMA, 'utf8');
+    cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(project);
+    expect(await discoverWikiVaults()).toContain(path.join(project, '.crewly/wiki'));
+  });
+
+  it('skips <cwd>/.crewly/wiki when cwd is inside node_modules (global npm install)', async () => {
+    const pkg = path.join(tmp, 'lib/node_modules/crewly');
+    await fs.mkdir(path.join(pkg, '.crewly/wiki'), { recursive: true });
+    await fs.writeFile(path.join(pkg, '.crewly/wiki/SCHEMA.md'), SCHEMA, 'utf8');
+    cwdSpy = jest.spyOn(process, 'cwd').mockReturnValue(pkg);
+    expect(await discoverWikiVaults()).not.toContain(path.join(pkg, '.crewly/wiki'));
   });
 });

@@ -13,6 +13,7 @@ import {
 import { CONTINUATION_CONSTANTS } from '../../constants.js';
 import { v4 as uuidv4 } from 'uuid';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 export interface Subtask {
   id: string;
@@ -54,9 +55,7 @@ export class TicketEditorService {
   private readonly logger: ComponentLogger = LoggerService.getInstance().createComponentLogger('TicketEditorService');
 
   constructor(projectPath?: string) {
-    this.ticketsDir = projectPath 
-      ? path.join(path.resolve(projectPath), '.crewly', 'tasks')
-      : path.join(process.cwd(), '.crewly', 'tasks');
+    this.ticketsDir = path.join(resolveProjectDataDir(path.resolve(projectPath ?? process.cwd())), 'tasks');
   }
 
   async ensureTicketsDirectory(): Promise<void> {

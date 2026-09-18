@@ -35,6 +35,7 @@ import { WikiQueueService } from './wiki-queue.service.js';
 import { WikiMigrateService } from './wiki-migrate.service.js';
 import { WikiCleanupService } from './wiki-cleanup.service.js';
 import { discoverWikiVaults } from './wiki-bookkeep-trigger.service.js';
+import { isInsidePackageTree } from '../v3/mission-paths.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
@@ -853,7 +854,8 @@ function migrateBrief(projectRoot: string, proposedCount: number): string {
 export async function defaultProjectRoots(): Promise<string[]> {
   const roots: string[] = [];
   const cwd = process.cwd();
-  if (existsSync(path.join(cwd, '.crewly'))) roots.push(cwd);
+  // Never treat the npm package tree (global install cwd) as a project root.
+  if (!isInsidePackageTree(cwd) && existsSync(path.join(cwd, '.crewly'))) roots.push(cwd);
   const projectsJsonPath = path.join(os.homedir(), '.crewly/projects.json');
   if (existsSync(projectsJsonPath)) {
     try {

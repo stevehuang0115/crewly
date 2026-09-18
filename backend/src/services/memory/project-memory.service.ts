@@ -26,6 +26,7 @@ import {
 } from '../../types/memory.types.js';
 import { MEMORY_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /**
  * Search results from cross-entity search
@@ -121,7 +122,7 @@ export class ProjectMemoryService implements IProjectMemoryService {
    * @returns Path to the knowledge directory
    */
   private getKnowledgePath(projectPath: string): string {
-    return path.join(projectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MEMORY_CONSTANTS.PATHS.KNOWLEDGE_DIR);
+    return path.join(resolveProjectDataDir(projectPath), MEMORY_CONSTANTS.PATHS.KNOWLEDGE_DIR);
   }
 
   /**

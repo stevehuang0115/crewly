@@ -24,7 +24,10 @@
  */
 
 import * as path from 'path';
-import { CREWLY_CONSTANTS, ENV_CONSTANTS } from '../../constants.js';
+import { ENV_CONSTANTS } from '../../constants.js';
+import { isInsidePackageTree, resolveProjectDataDir } from '../core/crewly-home.utils.js';
+
+export { isInsidePackageTree };
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,6 +58,24 @@ export function getMissionProjectPath(): string {
 }
 
 /**
+ * Where missions live when nothing explicit is configured.
+ *
+ * Until 2026-09-18 this was `<cwd>/.crewly/missions`. On a server install the
+ * service's cwd is the npm package directory, so `npm i -g crewly@next`
+ * replaced the directory and deleted every mission with it (observed on
+ * steamfun-ops: the day's OKRs vanished on upgrade). A cwd inside
+ * `node_modules` therefore falls back to `CREWLY_HOME/missions`; a real
+ * project cwd keeps the per-project location so local development is
+ * unchanged.
+ *
+ * @param projectPath - The resolved project path
+ * @returns Absolute missions directory
+ */
+export function defaultMissionsDir(projectPath: string): string {
+  return path.join(resolveProjectDataDir(projectPath), MISSIONS_FOLDER);
+}
+
+/**
  * Resolve the absolute missions directory.
  *
  * @param projectPath - Optional explicit project root. When given it is used
@@ -73,7 +94,7 @@ export function getMissionsDir(projectPath?: string): string {
   const override = process.env[MISSIONS_DIR_ENV];
   if (override && override.length > 0) return override;
   const root = projectPath && projectPath.length > 0 ? projectPath : getMissionProjectPath();
-  return path.join(root, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MISSIONS_FOLDER);
+  return defaultMissionsDir(root);
 }
 
 /**

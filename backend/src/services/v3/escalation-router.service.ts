@@ -21,6 +21,7 @@ import { ensureDir, atomicWriteJson, safeReadJson } from '../../utils/file-io.ut
 import type { AlignmentRequest } from '../../types/v2/work-item.types.js';
 import type { EscalationRule, Mission } from '../../types/v2/mission.types.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -85,7 +86,7 @@ export class EscalationRouterService {
 
   private constructor(projectPath: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('EscalationRouter');
-    this.escalationsDir = path.join(projectPath, '.crewly', 'escalations');
+    this.escalationsDir = path.join(resolveProjectDataDir(projectPath), 'escalations');
   }
 
   public static getInstance(projectPath?: string): EscalationRouterService {

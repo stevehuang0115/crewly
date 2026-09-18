@@ -28,6 +28,7 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { isInsidePackageTree } from '../v3/mission-paths.js';
 import { WikiBookkeepService, WikiBookkeepReport } from './wiki-bookkeep.service.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -106,7 +107,10 @@ export async function discoverWikiVaults(): Promise<string[]> {
 
   const fromEnv = process.env['CREWLY_PROJECT_VAULT_PATH'];
   if (fromEnv && path.isAbsolute(fromEnv)) candidates.push(fromEnv);
-  candidates.push(path.join(process.cwd(), '.crewly/wiki'));
+  // A globally installed crewly runs with cwd inside node_modules; a vault
+  // created there is wiped by the next `npm i -g` upgrade, so never treat the
+  // package tree as a project.
+  if (!isInsidePackageTree(process.cwd())) candidates.push(path.join(process.cwd(), '.crewly/wiki'));
   candidates.push(path.join(os.homedir(), '.crewly/global-wiki'));
 
   // (NEW 2026-05-27) Every registered project's wiki. Without this, only

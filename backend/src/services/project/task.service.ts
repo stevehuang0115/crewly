@@ -1,6 +1,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 export const TASK_STATUSES = ['open', 'in_progress', 'review', 'done', 'blocked'] as const;
 export type TaskStatus = typeof TASK_STATUSES[number];
@@ -46,9 +47,7 @@ export class TaskService {
   private tasksDir: string;
 
   constructor(projectPath?: string) {
-    this.tasksDir = projectPath
-      ? path.join(path.resolve(projectPath), '.crewly', 'tasks')
-      : path.join(process.cwd(), '.crewly', 'tasks');
+    this.tasksDir = path.join(resolveProjectDataDir(path.resolve(projectPath ?? process.cwd())), 'tasks');
   }
 
   private parseMarkdownContent(content: string): {

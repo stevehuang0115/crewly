@@ -29,6 +29,7 @@ import {
   sortMissionsByPriority,
 } from '../../types/v2/mission.types.js';
 import { MEMORY_CONSTANTS } from '../../constants.js';
+import { getMissionsDir } from '../v3/mission-paths.js';
 
 // ---------------------------------------------------------------------------
 // Tunables
@@ -231,7 +232,7 @@ export class MissionContextService {
     teamScope: string[],
   ): Promise<Mission[]> {
     if (teamScope.length === 0) return [];
-    const dir = path.join(projectPath, '.crewly', 'missions');
+    const dir = getMissionsDir(projectPath);
     let files: string[];
     try {
       files = await fs.readdir(dir);

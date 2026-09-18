@@ -27,6 +27,7 @@ import {
 } from '../../types/v2/work-item.types.js';
 import { classifyIntent, planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /** Directory name under .crewly for request storage. */
 const REQUESTS_DIR = 'requests';
@@ -164,7 +165,7 @@ export class RequestService {
    * @param projectPath - Absolute path to the project root
    */
   private constructor(private readonly projectPath: string) {
-    this.requestsDir = path.join(projectPath, '.crewly', REQUESTS_DIR);
+    this.requestsDir = path.join(resolveProjectDataDir(projectPath), REQUESTS_DIR);
   }
 
   /**

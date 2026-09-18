@@ -19,6 +19,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { getMissionsDir } from './mission-paths.js';
 import { LoggerService } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -159,7 +160,7 @@ export class V3DataService {
     projectPath: string,
   ) {
     this.projectPath = projectPath;
-    this.missionsDir = path.join(projectPath, '.crewly', 'missions');
+    this.missionsDir = getMissionsDir(projectPath);
 
     // Subscribe to events — all handlers are fire-and-forget
     this.eventBus.on('v3:task_delegated', this.onTaskDelegated.bind(this));

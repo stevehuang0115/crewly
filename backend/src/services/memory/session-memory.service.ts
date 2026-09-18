@@ -22,6 +22,7 @@ import { LoggerService } from '../core/logger.service.js';
 import { AgentMemoryService } from './agent-memory.service.js';
 import { ProjectMemoryService } from './project-memory.service.js';
 import type { SessionSummary, StartupBriefing, AgentIndexEntry, ProjectAgentsIndex } from '../../types/memory.types.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /** Maximum number of characters to include from learning files */
 const LEARNING_TAIL_CHARS = 500;
@@ -266,7 +267,7 @@ export class SessionMemoryService {
     role: string,
     projectPath: string,
   ): Promise<StartupBriefing> {
-    const crewlyDir = path.join(projectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
+    const crewlyDir = resolveProjectDataDir(projectPath);
 
     // Read latest session summary
     const latestSummaryPath = path.join(

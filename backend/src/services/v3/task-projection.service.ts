@@ -26,6 +26,7 @@ import {
   createTaskRecord,
   createTaskEvent,
 } from '../../types/v3/task-record.types.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -55,7 +56,7 @@ export class TaskProjectionService {
 
   private constructor(projectPath: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('TaskProjection');
-    this.recordsDir = path.join(projectPath, '.crewly', RECORDS_DIR);
+    this.recordsDir = path.join(resolveProjectDataDir(projectPath), RECORDS_DIR);
     this.recordsFile = path.join(this.recordsDir, RECORDS_FILE);
     this.eventsFile = path.join(this.recordsDir, EVENTS_FILE);
   }

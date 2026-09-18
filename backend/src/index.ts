@@ -70,6 +70,7 @@ import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.j
 import { FallbackTriggerCleanupSubscriber } from './services/v3/fallback-trigger-cleanup.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKROwnerGuidanceService } from './services/v3/okr-owner-guidance.service.js';
+import { migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
 import { KRTrackingService } from './services/v3/kr-tracking.service.js';
 import { getSlackOrchestratorBridge } from './services/slack/slack-orchestrator-bridge.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
@@ -322,6 +323,24 @@ export class CrewlyServer {
 	}
 
 	private initializeServices(): void {
+		// Rescue per-project state (missions, escalations, requests, triggers…)
+		// that earlier versions wrote under `<cwd>/.crewly` while cwd was the
+		// npm package directory — `npm i -g crewly` replaces that tree and
+		// deleted a day's OKRs on steamfun-ops (2026-09-18). Runs before any
+		// store is opened; a no-op once the safe location is populated.
+		try {
+			const legacy = path.join(process.cwd(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
+			const safe = resolveProjectDataDir(process.cwd());
+			const copied = migrateLegacyProjectData(legacy, safe);
+			if (copied.length > 0) {
+				this.logger.warn('Migrated project state out of the package tree', { from: legacy, to: safe, stores: copied });
+			}
+		} catch (err) {
+			this.logger.warn('Legacy project-state migration failed (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+
 		this.storageService = StorageService.getInstance(this.config.crewlyHome);
 		this.tmuxService = new TmuxService();
 		this.schedulerService = new SchedulerService(this.storageService);

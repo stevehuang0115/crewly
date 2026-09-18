@@ -37,6 +37,7 @@ import {
 } from '../../types/v2/index.js';
 import { getNextRunTime } from '../workflow/cron-task.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -149,7 +150,7 @@ export class TriggerEngine {
    */
   private constructor(private readonly projectPath: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('TriggerEngine');
-    this.triggersDir = path.join(projectPath, '.crewly', TRIGGERS_DIR);
+    this.triggersDir = path.join(resolveProjectDataDir(projectPath), TRIGGERS_DIR);
     this.triggersFile = path.join(this.triggersDir, TRIGGERS_FILE);
   }
 

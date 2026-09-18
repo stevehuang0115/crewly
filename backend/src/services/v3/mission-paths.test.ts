@@ -5,12 +5,14 @@
  */
 
 import * as path from 'path';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import {
   getMissionsDir,
   getMissionPath,
   getKeyResultsDir,
   getMissionProjectPath,
   MISSIONS_DIR_ENV,
+  isInsidePackageTree,
 } from './mission-paths.js';
 
 describe('mission-paths', () => {
@@ -37,6 +39,16 @@ describe('mission-paths', () => {
   it('defaults to <cwd>/.crewly/missions when nothing is set', () => {
     expect(getMissionsDir()).toBe(path.join('/cwd-root', '.crewly', 'missions'));
     expect(getMissionProjectPath()).toBe('/cwd-root');
+  });
+
+  // 2026-09-18: on a global install the service's cwd is the npm package
+  // directory; `npm i -g crewly@next` replaced it and deleted the missions.
+  it('falls back to CREWLY_HOME/missions when the cwd is inside node_modules', () => {
+    process.cwd = () => '/usr/lib/node_modules/crewly';
+    expect(getMissionsDir()).toBe(path.join(getCrewlyHomePath(), 'missions'));
+    expect(isInsidePackageTree('/usr/lib/node_modules/crewly')).toBe(true);
+    expect(isInsidePackageTree('/home/me/project')).toBe(false);
+    expect(isInsidePackageTree('C:\\Users\\me\\AppData\\Roaming\\npm\\node_modules\\crewly')).toBe(true);
   });
 
   it('prefers CREWLY_PROJECT_PATH over cwd', () => {
