@@ -235,11 +235,13 @@ assert_eq "api_call: CREWLY_SKILL_FULL_OUTPUT=1 returns the raw body" "$BIG" "$R
 RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=0 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
 assert_eq "api_call: CREWLY_SKILL_MAX_OUTPUT_BYTES=0 disables the cap" "$BIG" "$RESULT"
 
-# ---- Test 22: parked files older than the TTL are pruned on the next call ----
+# ---- Test 22: parked files older than the TTL are pruned at the start of any api_call ----
 mkdir -p "$CAP_DIR"
 touch -t 202001010000 "$CAP_DIR/old-skill-stale.json"
 touch "$CAP_DIR/fresh-skill-recent.json"
+export MOCK_BODY='{"ok":true}'
 RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
+assert_eq "api_call: prune runs even when the body is small" '{"ok":true}' "$RESULT"
 assert_eq "api_call: stale parked output is deleted" "missing" "$([ -f "$CAP_DIR/old-skill-stale.json" ] && echo present || echo missing)"
 assert_eq "api_call: fresh parked output is kept" "present" "$([ -f "$CAP_DIR/fresh-skill-recent.json" ] && echo present || echo missing)"
 

@@ -145,6 +145,19 @@ _skill_name() {
 }
 
 # -----------------------------------------------------------------------------
+# _prune_skill_output
+# Cheap housekeeping run at the start of every api_call: delete parked
+# outputs older than CREWLY_SKILL_OUTPUT_TTL_MINUTES (default 24h). No-op
+# when the directory does not exist yet.
+# -----------------------------------------------------------------------------
+_prune_skill_output() {
+  local dir
+  dir=$(_skill_output_dir)
+  [ -d "$dir" ] || return 0
+  find "$dir" -type f -name '*.json' -mmin "+${CREWLY_SKILL_OUTPUT_TTL_MINUTES:-1440}" -delete 2>/dev/null || true
+}
+
+# -----------------------------------------------------------------------------
 # _cap_skill_output body
 #
 # Prints `body` unchanged when it is within CREWLY_SKILL_MAX_OUTPUT_BYTES (or
@@ -176,8 +189,6 @@ _cap_skill_output() {
     echo "$body"
     return 0
   fi
-  # Cheap housekeeping: drop parked outputs past their TTL.
-  find "$dir" -type f -name '*.json' -mmin "+${CREWLY_SKILL_OUTPUT_TTL_MINUTES:-1440}" -delete 2>/dev/null || true
 
   local file
   file="${dir}/$(_skill_name)-$(date +%Y%m%dT%H%M%S)-$$.json"
@@ -207,6 +218,7 @@ _cap_skill_output() {
 api_call() {
   local method="$1" endpoint="$2" body="${3:-}"
   local url="${CREWLY_API_URL}/api${endpoint}"
+  _prune_skill_output
   local args=(-s -w '\n%{http_code}' -X "$method" -H "Content-Type: application/json")
   # Include agent session identity header for heartbeat tracking
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
