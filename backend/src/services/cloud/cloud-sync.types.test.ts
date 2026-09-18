@@ -228,6 +228,27 @@ describe('cloud-sync.types', () => {
     });
   });
 
+  describe('slack_event message type (Slack v3 — Cloud owns Slack)', () => {
+    it('is a valid MessageType so relay polling keeps its type instead of degrading to relay', () => {
+      expect(isMessageType('slack_event')).toBe(true);
+      expect(MESSAGE_TYPES).toContain('slack_event');
+    });
+
+    it('validates a Cloud-pushed Slack event as an IncomingMessage', () => {
+      expect(
+        isIncomingMessage({
+          id: 'm1',
+          from: 'crewly-cloud-slack',
+          fromDeviceName: 'crewly-cloud-slack',
+          type: 'slack_event',
+          payload: { eventId: 'Ev1', event: { type: 'message' } },
+          encrypted: false,
+          sentAt: new Date().toISOString(),
+        }),
+      ).toBe(true);
+    });
+  });
+
   describe('CHAT_RPC_METHODS', () => {
     it('lists the closed set of RPC methods', () => {
       // Locked set — if you add a new ChatRpcMethod, update both the

@@ -148,7 +148,12 @@ export type MessageType =
   //                    relay queue.
   | 'chat_request'
   | 'chat_response'
-  | 'chat_event';
+  | 'chat_event'
+  // Slack v3 (Crewly Cloud owns Slack): Cloud pushes a Slack Events API
+  // payload to the instance that should handle it. `data` is a
+  // SlackCloudEventEnvelope (see types/slack.types.ts); handled by
+  // SlackService.handleCloudEnvelope via the cloud transport.
+  | 'slack_event';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -166,6 +171,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'chat_request',
   'chat_response',
   'chat_event',
+  'slack_event',
 ] as const;
 
 /**

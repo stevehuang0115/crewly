@@ -20,10 +20,14 @@ import type {
   SlackBlock,
   SlackElement,
   SlackChannelInfo,
+  SlackTransport,
+  SlackRawInboundEvent,
+  SlackInboundMeta,
+  SlackCloudEventEnvelope,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
@@ -252,6 +256,23 @@ interface BlockActionEventArgs {
 }
 
 /**
+ * The slice of CloudSyncService the cloud transport listens on: relay
+ * messages of type `slack_event` carry a {@link SlackCloudEventEnvelope}.
+ */
+export interface SlackCloudEventSource {
+  on(event: 'message', handler: (msg: SlackCloudRelayMessage) => void): unknown;
+  off(event: 'message', handler: (msg: SlackCloudRelayMessage) => void): unknown;
+}
+
+/** Minimal relay message shape (see `cloud-sync.types.ts` IncomingMessage). */
+export interface SlackCloudRelayMessage {
+  id?: string;
+  type: string;
+  payload: unknown;
+  fromDeviceName?: string;
+}
+
+/**
  * Slack Service singleton instance
  */
 let slackServiceInstance: SlackService | null = null;
@@ -303,9 +324,21 @@ export class SlackService extends EventEmitter {
   private lastPingAt = 0;
   /** Number of consecutive health-check ping failures */
   private consecutivePingFailures = 0;
+  /** Inbound transport the service was initialised with */
+  private transport: SlackTransport = 'socket';
+  /** Relay source the cloud transport is attached to (see attachCloudTransport) */
+  private cloudSource: SlackCloudEventSource | null = null;
+  /** Bound relay listener so it can be detached */
+  private cloudListener: ((msg: SlackCloudRelayMessage) => void) | null = null;
 
   /**
    * Initialize the Slack service with configuration
+   *
+   * With `config.transport === 'cloud'` no Socket Mode connection is opened:
+   * Crewly Cloud owns the Slack app and pushes events through the relay (see
+   * {@link attachCloudTransport}); only a Web API client is created for
+   * outbound calls, and the service reports connected as soon as a bot
+   * token is present.
    *
    * @param config - Slack bot configuration
    * @returns Promise that resolves when connected
@@ -314,6 +347,12 @@ export class SlackService extends EventEmitter {
     this.config = config;
     this.intentionalDisconnect = false;
     this.reconnectAttempts = 0;
+    this.transport = config.transport ?? 'socket';
+
+    if (this.transport === 'cloud') {
+      await this.initializeCloudTransport(config);
+      return;
+    }
 
     try {
       // Dynamic import of @slack/bolt (CJS module requires default import handling).
@@ -372,77 +411,225 @@ export class SlackService extends EventEmitter {
   }
 
   /**
-   * Set up Slack event handlers
+   * Cloud transport bootstrap: build a bare Web API client from the bot
+   * token (no Bolt app, no socket, no reconnect loop). The bot user id from
+   * the Cloud config seeds the cache so routing never needs `auth.test`.
+   *
+   * @param config - Config with `transport: 'cloud'`
+   * @throws When the Web API client cannot be constructed
    */
-  private setupEventHandlers(): void {
-    if (!this.app || !this.config) return;
+  private async initializeCloudTransport(config: SlackConfig): Promise<void> {
+    try {
+      if (!config.botToken) {
+        throw new Error('Cloud Slack config has no bot token');
+      }
+      // `@slack/web-api` ships with Bolt; dynamic import keeps the CJS/ESM
+      // interop identical to the Bolt path above.
+      const webApiModule = (await import('@slack/web-api')) as Record<string, unknown>;
+      const defaultExport = webApiModule.default as Record<string, unknown> | undefined;
+      const WebClient = (webApiModule.WebClient ?? defaultExport?.WebClient) as new (
+        token: string,
+      ) => unknown;
+      this.app = null;
+      this.client = new WebClient(config.botToken) as unknown as SlackWebClient;
+      if (config.botUserId) this.cachedBotUserId = config.botUserId;
+      this.status.connected = true;
+      this.status.socketMode = false;
+      this.emit('connected');
+      this.logger.info('Connected via Crewly Cloud transport (events arrive over the relay, no Socket Mode)');
+    } catch (error) {
+      this.app = null;
+      this.client = null;
+      this.status.connected = false;
+      this.status.socketMode = false;
+      this.status.lastError = (error as Error).message;
+      this.status.lastErrorAt = new Date().toISOString();
+      this.emit('error', error);
+      throw error;
+    }
+  }
 
+  /**
+   * The inbound transport this service was initialised with.
+   *
+   * @returns `socket` (Bolt Socket Mode) or `cloud` (relay push)
+   */
+  getTransport(): SlackTransport {
+    return this.transport;
+  }
+
+  /**
+   * Shared inbound handler for both transports. Turns a raw Slack `message`
+   * or `app_mention` event into a {@link SlackIncomingMessage}, applies the
+   * allow-list, bumps counters and emits `message` — exactly what the Socket
+   * Mode listeners did before the split, so a Cloud-pushed event routes the
+   * same way as one received over the socket.
+   *
+   * @param event - Raw Slack event object
+   * @param meta - Which transport delivered it (defaults to `socket`)
+   * @returns The emitted message, or null when the event was dropped
+   */
+  handleInboundEvent(event: SlackRawInboundEvent, meta: SlackInboundMeta = { source: 'socket' }): SlackIncomingMessage | null {
     const config = this.config;
+    if (!config) return null;
 
-    // Handle direct messages
-    this.app.message(async ({ message }) => {
+    const provenance: Pick<SlackIncomingMessage, 'source' | 'eventId' | 'agentSession'> = {
+      source: meta.source,
+      ...(meta.eventId ? { eventId: meta.eventId } : {}),
+      ...(meta.agentSession ? { agentSession: meta.agentSession } : {}),
+    };
+
+    let incomingMessage: SlackIncomingMessage;
+
+    if (event.type === 'app_mention') {
+      if (!event.user || !event.channel) return null;
+      if (!isUserAllowed(event.user, config)) {
+        this.logger.info('Unauthorized user mention', { userId: event.user });
+        return null;
+      }
+      incomingMessage = {
+        id: event.ts ?? '',
+        type: 'app_mention',
+        text: event.text ?? '',
+        userId: event.user,
+        channelId: event.channel,
+        threadTs: event.thread_ts,
+        ts: event.ts ?? '',
+        teamId: event.team || '',
+        eventTs: event.event_ts ?? event.ts ?? '',
+        ...provenance,
+      };
+    } else if (event.type === 'message') {
       // Allow messages with text or files (or both)
-      if (!message.text && (!message.files || message.files.length === 0)) return;
-      if (!message.user) return;
+      if (!event.text && (!event.files || event.files.length === 0)) return null;
+      if (!event.user || !event.channel) return null;
 
       // Bypass user permission check for cross-machine messages —
       // these come from other bots and are authenticated by device ID,
       // not Slack user ID. The CrossMachineMessageService handles its
       // own security (device identity, target filtering, deduplication).
-      const isCrossMachine = message.text && message.text.startsWith(CROSS_MACHINE_PREFIX);
+      const isCrossMachine = !!event.text && event.text.startsWith(CROSS_MACHINE_PREFIX);
 
       // Check user permissions (skip for cross-machine messages)
-      if (!isCrossMachine && !isUserAllowed(message.user, config)) {
-        this.logger.info('Unauthorized user', { userId: message.user });
-        return;
+      if (!isCrossMachine && !isUserAllowed(event.user, config)) {
+        this.logger.info('Unauthorized user', { userId: event.user });
+        return null;
       }
 
       // Pass ALL files through; downstream services handle image vs non-image distinction
-      const allFiles = (message.files || []) as import('../../types/slack.types.js').SlackFile[];
-      const imageFiles = allFiles.filter(f => f.mimetype?.startsWith('image/'));
+      const allFiles = event.files || [];
+      const imageFiles = allFiles.filter((f) => f.mimetype?.startsWith('image/'));
 
-      const incomingMessage: SlackIncomingMessage = {
-        id: message.ts || '',
+      incomingMessage = {
+        id: event.ts || '',
         type: 'message',
-        text: message.text || '',
-        userId: message.user,
-        channelId: message.channel,
-        threadTs: message.thread_ts,
-        ts: message.ts || '',
-        teamId: message.team || '',
-        eventTs: message.ts || '',
+        text: event.text || '',
+        userId: event.user,
+        channelId: event.channel,
+        threadTs: event.thread_ts,
+        ts: event.ts || '',
+        teamId: event.team || '',
+        eventTs: event.ts || '',
         files: allFiles.length > 0 ? allFiles : undefined,
         hasImages: imageFiles.length > 0,
         hasFiles: allFiles.length > 0,
+        ...provenance,
       };
+    } else {
+      this.logger.debug('Ignoring unsupported inbound Slack event', { type: event.type, source: meta.source });
+      return null;
+    }
 
-      this.status.messagesReceived++;
-      this.status.lastEventAt = new Date().toISOString();
-      this.emit('message', incomingMessage);
+    this.status.messagesReceived++;
+    this.status.lastEventAt = new Date().toISOString();
+    this.emit('message', incomingMessage);
+    return incomingMessage;
+  }
+
+  /**
+   * Cloud transport entry point: unwrap a `slack_event` envelope and hand
+   * the raw event to {@link handleInboundEvent}. Reproduces what Bolt does
+   * for free on the socket path — its `ignoreSelf` middleware and the
+   * subtype filtering — so the master bot never reacts to its own posts and
+   * edits/joins/bot chatter never reach routing.
+   *
+   * @param envelope - The relay message `data`
+   * @returns The emitted message, or null when dropped
+   */
+  handleCloudEnvelope(envelope: SlackCloudEventEnvelope): SlackIncomingMessage | null {
+    const event = envelope?.event;
+    if (!event || typeof event !== 'object' || typeof event.type !== 'string') {
+      this.logger.warn('Malformed slack_event envelope — dropped', { eventId: envelope?.eventId });
+      return null;
+    }
+    const allowedSubtypes: readonly string[] = SLACK_CLOUD_CONSTANTS.INBOUND_ALLOWED_SUBTYPES;
+    if (event.subtype && !allowedSubtypes.includes(event.subtype)) {
+      this.logger.debug('Dropping Slack event subtype', { subtype: event.subtype, eventId: envelope.eventId });
+      return null;
+    }
+    // Bolt's ignoreSelf equivalent: our own bot user's posts (replies the
+    // orchestrator just sent) must not come back as inbound.
+    if (this.cachedBotUserId && event.user === this.cachedBotUserId) {
+      return null;
+    }
+    if (event.bot_id && !event.user) {
+      return null;
+    }
+    return this.handleInboundEvent(event, {
+      source: 'cloud',
+      eventId: envelope.eventId,
+      apiAppId: envelope.apiAppId,
+      agentSession: envelope.agentSession,
+    });
+  }
+
+  /**
+   * Subscribe to a relay source (CloudSyncService) and route every
+   * `slack_event` message into {@link handleCloudEnvelope}. Idempotent —
+   * re-attaching replaces the previous subscription.
+   *
+   * @param source - Emitter of relay `message` events
+   */
+  attachCloudTransport(source: SlackCloudEventSource): void {
+    this.detachCloudTransport();
+    this.cloudListener = (msg: SlackCloudRelayMessage): void => {
+      if (msg?.type !== SLACK_CLOUD_CONSTANTS.MESSAGE_TYPE) return;
+      try {
+        this.handleCloudEnvelope(msg.payload as SlackCloudEventEnvelope);
+      } catch (err) {
+        this.logger.warn('slack_event handling failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    };
+    source.on('message', this.cloudListener);
+    this.cloudSource = source;
+    this.logger.info('Cloud Slack transport attached to relay');
+  }
+
+  /** Undo {@link attachCloudTransport}. */
+  detachCloudTransport(): void {
+    if (this.cloudSource && this.cloudListener) {
+      this.cloudSource.off('message', this.cloudListener);
+    }
+    this.cloudSource = null;
+    this.cloudListener = null;
+  }
+
+  /**
+   * Set up Slack event handlers
+   */
+  private setupEventHandlers(): void {
+    if (!this.app || !this.config) return;
+
+    // Handle direct messages
+    this.app.message(async ({ message }) => {
+      this.handleInboundEvent({ ...message, type: 'message' }, { source: 'socket' });
     });
 
     // Handle @mentions
     this.app.event('app_mention', async ({ event }) => {
-      if (!isUserAllowed(event.user, config)) {
-        this.logger.info('Unauthorized user mention', { userId: event.user });
-        return;
-      }
-
-      const incomingMessage: SlackIncomingMessage = {
-        id: event.ts,
-        type: 'app_mention',
-        text: event.text,
-        userId: event.user,
-        channelId: event.channel,
-        threadTs: event.thread_ts,
-        ts: event.ts,
-        teamId: event.team || '',
-        eventTs: event.event_ts,
-      };
-
-      this.status.messagesReceived++;
-      this.status.lastEventAt = new Date().toISOString();
-      this.emit('message', incomingMessage);
+      this.handleInboundEvent({ ...event, type: 'app_mention' }, { source: 'socket' });
     });
 
     // Handle content approval button clicks (Block Kit interactive actions)
@@ -1672,11 +1859,17 @@ export class SlackService extends EventEmitter {
     this.intentionalDisconnect = true;
     this.cancelReconnectGrace();
     this.stopHealthCheck();
+    this.detachCloudTransport();
     if (this.app) {
       await this.app.stop();
       this.status.connected = false;
       this.emit('disconnected');
       this.logger.info('Disconnected');
+    } else if (this.transport === 'cloud' && this.client) {
+      this.client = null;
+      this.status.connected = false;
+      this.emit('disconnected');
+      this.logger.info('Disconnected (cloud transport)');
     }
   }
 

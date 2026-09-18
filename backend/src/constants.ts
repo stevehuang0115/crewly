@@ -636,6 +636,55 @@ export const SLACK_AGENT_IDENTITY_CONSTANTS = {
 } as const;
 
 /**
+ * Slack v3 — "Crewly Cloud owns Slack". Cloud installs the master Slack app
+ * once per account, receives Slack events over HTTP and pushes them to the
+ * right OSS instance through the relay queue; instances register themselves
+ * (teams, channels, agents) so Cloud can route.
+ */
+export const SLACK_CLOUD_CONSTANTS = {
+	/** Cached copy of `GET /api/cloud/slack/config` under CREWLY_HOME (mode 0600) */
+	CONFIG_CACHE_FILENAME: 'slack-cloud-config.json',
+	/** Per-instance Slack settings (currently only the `primary` flag) under CREWLY_HOME */
+	INSTANCE_SETTINGS_FILENAME: 'slack-instance.json',
+	/** Cloud API prefix (appended to the cloud URL) */
+	CLOUD_PATH: '/api/cloud/slack',
+	/** `GET` — master workspace + agent identities for this account */
+	CONFIG_PATH: '/config',
+	/** `DELETE` — remove the account's Slack workspace on Cloud */
+	WORKSPACE_PATH: '/workspace',
+	/** `PUT /instances/:instanceId` — registry heartbeat */
+	INSTANCES_PATH: '/instances',
+	/** `POST` — provision per-agent apps for a team roster */
+	AGENTS_SYNC_PATH: '/agents/sync',
+	/** `GET` — one-click install redirect (token + returnUrl in the query) */
+	INSTALL_PATH: '/install',
+	/** Dashboard path the install flow returns to */
+	INSTALL_RETURN_PATH: '/settings?tab=slack',
+	/** How often the cached Cloud config is re-fetched (ms) */
+	CONFIG_REFRESH_INTERVAL_MS: 10 * 60 * 1000,
+	/** How often the instance registry heartbeat is sent (ms) */
+	REGISTRY_HEARTBEAT_INTERVAL_MS: 5 * 60 * 1000,
+	/** Coalesce bursts of `team-saved` events into one heartbeat (ms) */
+	TEAM_SAVED_DEBOUNCE_MS: 5_000,
+	/** HTTP timeout for Cloud calls (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** `env` = only local tokens, `cloud` = only Cloud, unset = Cloud wins when both exist */
+	SOURCE_ENV_VAR: 'CREWLY_SLACK_SOURCE',
+	/** `1`/`true` marks this instance as the account's primary (DM / unmapped-channel target) */
+	PRIMARY_ENV_VAR: 'CREWLY_SLACK_PRIMARY',
+	/** Relay `type` of a Slack event pushed by Cloud */
+	MESSAGE_TYPE: 'slack_event',
+	/** `fromDeviceName` Cloud uses on pushed Slack events */
+	CLOUD_DEVICE_NAME: 'crewly-cloud-slack',
+	/**
+	 * Slack `message` subtypes the cloud transport still hands to the shared
+	 * inbound handler. Everything else (`message_changed`, `channel_join`,
+	 * `bot_message`, …) is dropped before it reaches routing.
+	 */
+	INBOUND_ALLOWED_SUBTYPES: ['file_share', 'thread_broadcast'],
+} as const;
+
+/**
  * Which sub-agent `report-status` lines are forwarded to the orchestrator's
  * message queue. Every forwarded line is a full-context model turn for the
  * orchestrator, so progress chatter it cannot act on stays out.
