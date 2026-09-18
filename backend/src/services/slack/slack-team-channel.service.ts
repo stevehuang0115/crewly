@@ -659,7 +659,13 @@ export class SlackTeamChannelService {
       threadId = root?.id;
     }
 
-    const senderId = message.user?.name || message.userId || 'slack-user';
+    // A colleague agent on another machine is recorded under its display
+    // name, as a user turn: the dispatcher delivers user turns and skips
+    // agent turns (self-loop guard), and to this team it IS an outside voice.
+    const remoteAgent = message.authorAgentSession ?? null;
+    const senderId = remoteAgent
+      ? `${message.authorDisplayName || remoteAgent} (agent)`
+      : message.user?.name || message.userId || 'slack-user';
     const { message: persisted } = this.deps.chat.recordTurn({
       channelId: mapping.chatChannelId,
       senderType: 'user',
@@ -673,6 +679,7 @@ export class SlackTeamChannelService {
         slackThreadTs,
         slackTs: message.ts,
         slackUserId: message.userId,
+        ...(remoteAgent ? { remoteAgentSession: remoteAgent } : {}),
       },
     });
 
@@ -740,7 +747,7 @@ export class SlackTeamChannelService {
 
       await this.deps.slack.sendMessage({
         channelId: mapping.slackChannelId,
-        text: dto.content,
+        text: await this.linkAgentMentions(dto.content),
         threadTs,
         skipChatV2Mirror: true,
         ...identity,
@@ -754,6 +761,29 @@ export class SlackTeamChannelService {
       });
       return false;
     }
+  }
+
+  /**
+   * Turn `@Name` in an agent's reply into a real Slack mention of that
+   * agent's bot user, for every agent of the account with an installed bot
+   * — including agents on other machines (the identity cache holds the
+   * whole account). Names nobody owns are left as typed.
+   *
+   * @param text - Reply text
+   * @returns Text with `<@Uxxx>` mentions
+   */
+  async linkAgentMentions(text: string): Promise<string> {
+    if (!text || !text.includes('@') || !this.deps.identities) return text;
+    const store = await this.deps.identities.load();
+    const byName = new Map<string, string>();
+    for (const r of store.identities) {
+      if (r.status === 'installed' && r.botUserId && r.displayName) byName.set(r.displayName.toLowerCase(), r.botUserId);
+    }
+    if (byName.size === 0) return text;
+    return text.replace(/(?<![\w<@])@([\p{L}\p{N}_.-]+)/gu, (whole, name: string) => {
+      const id = byName.get(name.replace(/[.-]+$/u, '').toLowerCase());
+      return id ? `<@${id}>` : whole;
+    });
   }
 
   /**

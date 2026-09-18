@@ -619,6 +619,18 @@ describe('routeInbound', () => {
     expect(slack.sent).toEqual([]); // no hint: mention resolved
   });
 
+  it('a message written by an agent on another machine is recorded under its name as an outside voice and dispatched', async () => {
+    const result = await service.routeInbound(
+      inbound({ text: '<@USAM> can you check?', userId: 'UMIA', authorAgentSession: 'remote-team-mia', authorDisplayName: 'Mia' }),
+    );
+    expect(result).not.toBeNull();
+    const msg = result!.message;
+    expect(msg.senderType).toBe('user');
+    expect(msg.senderId).toBe('Mia (agent)');
+    expect(msg.metadata).toMatchObject({ source: 'slack', remoteAgentSession: 'remote-team-mia' });
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalled();
+  });
+
   it('files a Slack thread reply under the matching chat-v2 root', async () => {
     const root = await service.routeInbound(inbound({ ts: '100.1' }));
     const reply = await service.routeInbound(inbound({ ts: '100.2', threadTs: '100.1', text: 'more' }));
@@ -688,6 +700,19 @@ describe('mirrorOutbound', () => {
       ...overrides,
     };
   }
+
+  it('turns @Name into a real mention of that agent\'s bot user (any agent of the account), leaving unknown names alone', async () => {
+    identities = new FakeIdentities();
+    service = makeService();
+    identities.records.set('crewly-alpha-leo', {
+      agentSession: 'crewly-alpha-leo', displayName: 'Leo', appId: 'A-leo', status: 'installed', botUserId: 'ULEO', botToken: 'xoxb-leo', announcedIn: [], invitedTo: [],
+    } as unknown as SlackAgentIdentityRecord);
+    identities.records.set('remote-team-mia', {
+      agentSession: 'remote-team-mia', displayName: 'Mia', appId: 'A-mia', status: 'installed', botUserId: 'UMIA', botToken: 'xoxb-mia', announcedIn: [], invitedTo: [],
+    } as unknown as SlackAgentIdentityRecord);
+    expect(await service.linkAgentMentions('@Leo and @mia please; @Nobody too, email a@b.c')).toBe('<@ULEO> and <@UMIA> please; @Nobody too, email a@b.c');
+    expect(await service.linkAgentMentions('no mentions')).toBe('no mentions');
+  });
 
   it('posts an agent reply into the Slack thread of its chat-v2 thread root, as the agent', async () => {
     const root = await service.routeInbound(inbound({ ts: '100.1', text: '@sam go' }));

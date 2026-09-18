@@ -312,6 +312,8 @@ export class SlackService extends EventEmitter {
   private recentMessageFingerprints: Map<string, number> = new Map();
   /** Inbound cloud events already handled, keyed `channel:ts:type` (a message reaches us once per app that can see it). */
   private seenInboundKeys: Map<string, number> = new Map();
+  /** Whether an agent session runs on this instance (set by the initializer; agent-to-agent routing). */
+  isLocalAgent: ((agentSession: string) => boolean) | null = null;
 
   /** Whether a reconnection attempt is currently in progress */
   private reconnecting = false;
@@ -476,10 +478,11 @@ export class SlackService extends EventEmitter {
     const config = this.config;
     if (!config) return null;
 
-    const provenance: Pick<SlackIncomingMessage, 'source' | 'eventId' | 'agentSession'> = {
+    const provenance: Pick<SlackIncomingMessage, 'source' | 'eventId' | 'agentSession' | 'authorAgentSession' | 'authorDisplayName'> = {
       source: meta.source,
       ...(meta.eventId ? { eventId: meta.eventId } : {}),
       ...(meta.agentSession ? { agentSession: meta.agentSession } : {}),
+      ...(meta.authorAgentSession ? { authorAgentSession: meta.authorAgentSession, authorDisplayName: meta.authorDisplayName } : {}),
     };
 
     let incomingMessage: SlackIncomingMessage;
@@ -513,8 +516,10 @@ export class SlackService extends EventEmitter {
       // own security (device identity, target filtering, deduplication).
       const isCrossMachine = !!event.text && event.text.startsWith(CROSS_MACHINE_PREFIX);
 
-      // Check user permissions (skip for cross-machine messages)
-      if (!isCrossMachine && !isUserAllowed(event.user, config)) {
+      // Check user permissions (skip for cross-machine messages and for
+      // messages the account's own agents wrote — those are colleagues, not
+      // Slack users on the allow-list)
+      if (!isCrossMachine && !meta.authorAgentSession && !isUserAllowed(event.user, config)) {
         this.logger.info('Unauthorized user', { userId: event.user });
         return null;
       }
@@ -578,6 +583,13 @@ export class SlackService extends EventEmitter {
     if (event.bot_id && !event.user) {
       return null;
     }
+    // A message written by one of the account's agents: Cloud only forwards
+    // these when they @-mention another agent. An agent running HERE already
+    // has its message in chat-v2; one on another machine is a colleague and
+    // is delivered like a human's message.
+    if (envelope.authorAgentSession && this.isLocalAgent?.(envelope.authorAgentSession)) {
+      return null;
+    }
     // A per-agent app sees every channel it is a member of, so a team
     // channel message can reach Cloud once per agent app plus once from the
     // master app. Cloud keeps whichever copy arrives first — which may be
@@ -606,6 +618,7 @@ export class SlackService extends EventEmitter {
       // The agent-session provenance only means "DM to this agent's bot";
       // a channel message seen through an agent app is an ordinary channel message.
       agentSession: envelope.source === 'agent' && isDm ? envelope.agentSession : undefined,
+      ...(envelope.authorAgentSession ? { authorAgentSession: envelope.authorAgentSession, authorDisplayName: envelope.authorDisplayName } : {}),
     });
   }
 

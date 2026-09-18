@@ -50,6 +50,21 @@ let unsubscribeCloudConfig: (() => void) | null = null;
  * connection alone.
  */
 let slackBootAt = 0;
+/** Session names of the agents this instance runs (team rosters), for the agent-to-agent self filter. */
+const localAgentSessions = new Set<string>();
+
+/** Rebuild {@link localAgentSessions} from storage. Never throws. */
+async function refreshLocalAgentSessions(): Promise<void> {
+  try {
+    const { StorageService } = await import('../core/storage.service.js');
+    const teams = await StorageService.getInstance().getTeams();
+    localAgentSessions.clear();
+    for (const team of teams) for (const m of team.members ?? []) if (m.sessionName) localAgentSessions.add(m.sessionName);
+  } catch {
+    // storage unavailable — the live-session check still applies
+  }
+}
+
 /** Init options captured at boot so a later Cloud-triggered connect gets the queue. */
 let bootOptions: SlackInitOptions | undefined;
 
@@ -285,6 +300,20 @@ export async function connectSlack(
 
     if (source === 'cloud') {
       await attachSlackCloudTransport();
+      // Agent-to-agent: a message written by an agent running here is
+      // already in chat-v2 and must not come back through Slack; one from
+      // an agent on another machine is a colleague and is delivered.
+      const sessionModule = await import('../session/index.js').catch(() => null);
+      slackService.isLocalAgent = (agentSession) => {
+        try {
+          const backend = sessionModule?.getSessionBackendSync();
+          if (backend?.sessionExists(agentSession)) return true;
+        } catch {
+          // fall through to the roster check
+        }
+        return localAgentSessions.has(agentSession);
+      };
+      void refreshLocalAgentSessions();
     }
 
     const bridge = getSlackOrchestratorBridge();

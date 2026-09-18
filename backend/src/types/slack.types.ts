@@ -72,6 +72,9 @@ export interface SlackInboundMeta {
   apiAppId?: string;
   /** Set when the event came through a per-agent app */
   agentSession?: string;
+  /** Set when one of the account's agents (possibly on another machine) wrote the message */
+  authorAgentSession?: string;
+  authorDisplayName?: string;
 }
 
 /**
@@ -85,6 +88,11 @@ export interface SlackCloudEventEnvelope {
   /** `master` = the account's workspace app; `agent` = a per-agent app */
   source: 'master' | 'agent';
   agentSession?: string;
+  /** The account's agent that wrote the message (agent-to-agent @-mention), when any */
+  authorAgentSession?: string;
+  authorDisplayName?: string;
+  /** Session names of the account's agents @-mentioned in the text */
+  mentionedAgentSessions?: string[];
   event: SlackRawInboundEvent;
   receivedAt: string;
 }
@@ -312,6 +320,9 @@ export interface SlackIncomingMessage {
   eventId?: string;
   /** Agent whose per-agent app received the event (cloud transport) */
   agentSession?: string;
+  /** Agent (on any machine of the account) that wrote the message, when a bot did */
+  authorAgentSession?: string;
+  authorDisplayName?: string;
 }
 
 /**
