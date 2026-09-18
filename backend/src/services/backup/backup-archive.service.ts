@@ -26,12 +26,16 @@ import { safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import {
   BACKUP_SCHEMA_VERSION,
+  DEFAULT_PROJECT_FILE_EXCLUDES,
+  PROJECT_FILES_ARCHIVE_DIR,
   type BackupFileEntry,
   type BackupManifest,
   type BackupProjectEntry,
   type CreateBackupOptions,
   type CreateBackupResult,
+  type ProjectFilesEstimate,
 } from './backup.types.js';
+import { createProjectFileFilter, type ProjectFileFilter } from './project-file-filter.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -63,6 +67,13 @@ const EXCLUDE_DIR_ANYWHERE = new Set<string>(['sessions', 'logs', '.orchestrator
 /** True for files excluded at any depth (ephemeral session logs). */
 function isExcludedFile(name: string): boolean {
   return name.endsWith('.jsonl');
+}
+
+/** Minimal project record read from projects.json. */
+interface ProjectRecord {
+  id: string;
+  name: string;
+  path: string;
 }
 
 /**
@@ -111,8 +122,14 @@ export class BackupArchiveService {
       }
 
       // 2) Per-project .crewly trees → staging/projects/<id>/<rel>
-      const projects = await this.collectProjects(home, staging);
-      for (const p of projects) for (const f of p.files) totalBytes += f.bytes;
+      //    (+ the project's own files → staging/projects/<id>/files/<rel> when asked)
+      const projectFileExcludes = options.projectFileExcludes ?? [...DEFAULT_PROJECT_FILE_EXCLUDES];
+      const projectFilter = options.includeProjectFiles ? createProjectFileFilter(projectFileExcludes) : null;
+      const projects = await this.collectProjects(home, staging, projectFilter);
+      for (const p of projects) {
+        for (const f of p.files) totalBytes += f.bytes;
+        totalBytes += p.projectFilesBytes ?? 0;
+      }
 
       // 3) chat.db via SQLite online backup → staging/chat.db
       const chatDb = options.excludeChatDb
@@ -133,6 +150,8 @@ export class BackupArchiveService {
         projects,
         chatDb,
         crypto: { mode: 'none' },
+        includesProjectFiles: !!options.includeProjectFiles,
+        ...(options.includeProjectFiles ? { projectFileExcludes } : {}),
       };
       await fs.writeFile(path.join(staging, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf8');
 
@@ -144,6 +163,7 @@ export class BackupArchiveService {
         outPath,
         globalFiles: global.length,
         projects: projects.length,
+        projectFiles: projects.reduce((n, p) => n + (p.projectFiles?.length ?? 0), 0),
         chatDb: chatDb.included,
         totalBytes,
       });
@@ -181,23 +201,87 @@ export class BackupArchiveService {
   }
 
   /**
+   * Estimate how much each project's source tree would add to an archive
+   * built with `includeProjectFiles`, after excludes. Read-only; the CLI uses
+   * it to print sizes and demand confirmation above the warning threshold.
+   *
+   * @param options - homePath override and exclude patterns (defaults as in createArchive)
+   * @returns One estimate per project listed in projects.json whose path exists
+   */
+  async estimateProjectFiles(options: {
+    homePath?: string;
+    projectFileExcludes?: string[];
+  } = {}): Promise<ProjectFilesEstimate[]> {
+    const home = options.homePath ?? getCrewlyHomePath();
+    const filter = createProjectFileFilter(options.projectFileExcludes ?? [...DEFAULT_PROJECT_FILE_EXCLUDES]);
+    const projects = await safeReadJson<ProjectRecord[]>(path.join(home, 'projects.json'), []);
+    const out: ProjectFilesEstimate[] = [];
+    for (const proj of projects) {
+      if (!(await fs.stat(proj.path).catch(() => null))?.isDirectory()) continue;
+      let bytes = 0;
+      let fileCount = 0;
+      await this.walkProjectFiles(proj.path, filter, async (abs) => {
+        const st = await fs.stat(abs).catch(() => null);
+        if (st?.isFile()) {
+          bytes += st.size;
+          fileCount += 1;
+        }
+      });
+      out.push({ id: proj.id, name: proj.name, path: proj.path, bytes, fileCount });
+    }
+    return out;
+  }
+
+  /**
+   * Walk a project's source tree depth-first, skipping excluded paths
+   * (directories matching a pattern are pruned whole) and non-regular entries
+   * (symlinks are not followed).
+   *
+   * @param projectPath - Absolute project root
+   * @param filter - Exclude matcher
+   * @param onFile - Called with (absolute path, project-relative POSIX path) per regular file
+   */
+  private async walkProjectFiles(
+    projectPath: string,
+    filter: ProjectFileFilter,
+    onFile: (abs: string, rel: string) => Promise<void>,
+  ): Promise<void> {
+    const walk = async (absDir: string, rel: string): Promise<void> => {
+      const entries = await fs.readdir(absDir, { withFileTypes: true }).catch(() => []);
+      for (const e of entries) {
+        const childRel = rel ? `${rel}/${e.name}` : e.name;
+        if (filter.isExcluded(childRel)) continue;
+        if (e.isDirectory()) await walk(path.join(absDir, e.name), childRel);
+        else if (e.isFile()) await onFile(path.join(absDir, e.name), childRel);
+      }
+    };
+    await walk(projectPath, '');
+  }
+
+  /**
    * Walk projects.json and capture each project's `.crewly/` tree + git
-   * provenance into staging/projects/<id>/.
+   * provenance into staging/projects/<id>/ — and, when `projectFilter` is
+   * given, the project's own files into staging/projects/<id>/files/.
    *
    * @param home - CREWLY_HOME absolute path
    * @param staging - staging dir root
+   * @param projectFilter - Exclude matcher for project files, or null to capture `.crewly/` only
    * @returns Project entries for the manifest
    */
-  private async collectProjects(home: string, staging: string): Promise<BackupProjectEntry[]> {
-    const projects = await safeReadJson<Array<{ id: string; name: string; path: string }>>(
-      path.join(home, 'projects.json'),
-      [],
-    );
+  private async collectProjects(
+    home: string,
+    staging: string,
+    projectFilter: ProjectFileFilter | null = null,
+  ): Promise<BackupProjectEntry[]> {
+    const projects = await safeReadJson<ProjectRecord[]>(path.join(home, 'projects.json'), []);
     const result: BackupProjectEntry[] = [];
     for (const proj of projects) {
       const crewlyDir = path.join(proj.path, '.crewly');
       const dirStat = await fs.stat(crewlyDir).catch(() => null);
-      if (!dirStat?.isDirectory()) continue; // project gone / never initialized
+      const projectStat = await fs.stat(proj.path).catch(() => null);
+      // .crewly-only mode keeps the historical rule: skip projects never initialised.
+      // With project files requested, a project directory alone is enough to capture.
+      if (!dirStat?.isDirectory() && !(projectFilter && projectStat?.isDirectory())) continue;
 
       const files: BackupFileEntry[] = [];
       const walk = async (absDir: string, rel: string): Promise<void> => {
@@ -212,15 +296,30 @@ export class BackupArchiveService {
           }
         }
       };
-      await walk(crewlyDir, '');
+      if (dirStat?.isDirectory()) await walk(crewlyDir, '');
 
-      result.push({
+      const entry: BackupProjectEntry = {
         id: proj.id,
         name: proj.name,
         sourcePath: proj.path,
         git: await this.readGitProvenance(proj.path),
         files,
-      });
+      };
+
+      if (projectFilter && projectStat?.isDirectory()) {
+        const projectFiles: BackupFileEntry[] = [];
+        let projectFilesBytes = 0;
+        await this.walkProjectFiles(proj.path, projectFilter, async (_abs, rel) => {
+          const archivePath = `projects/${proj.id}/${PROJECT_FILES_ARCHIVE_DIR}/${rel}`;
+          const staged = await this.stageFile(proj.path, rel, staging, archivePath);
+          projectFiles.push(staged);
+          projectFilesBytes += staged.bytes;
+        });
+        entry.projectFiles = projectFiles;
+        entry.projectFilesBytes = projectFilesBytes;
+      }
+
+      result.push(entry);
     }
     return result;
   }

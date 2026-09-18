@@ -34,6 +34,7 @@ import {
   type RestoreProjectPlan,
   type RestoreResult,
   BACKUP_SCHEMA_VERSION,
+  PROJECT_FILES_ARCHIVE_DIR,
 } from './backup.types.js';
 
 /** Runtime/session state wiped on restore so agents start clean (relative to home). */
@@ -110,6 +111,16 @@ export class BackupRestoreService {
           plan,
         );
       }
+      if (mode === 'abort' && plan.conflicts.projectFiles.length > 0) {
+        const dirs = plan.projects
+          .filter((p) => plan.conflicts.projectFiles.includes(p.id))
+          .map((p) => `${p.name} → ${p.targetPath}`)
+          .join(', ');
+        throw new RestoreConflictError(
+          `Restore aborted: project files would overwrite non-empty director${plan.conflicts.projectFiles.length === 1 ? 'y' : 'ies'} (${dirs}). Re-run with mode='overwrite' or --map to an empty path.`,
+          plan,
+        );
+      }
 
       // 1) Snapshot current home for rollback (best-effort full copy, sans backups/).
       const rollbackSnapshotPath = path.join(home, 'backups', `pre-restore-${options.now.replace(/[:.]/g, '-')}`);
@@ -119,7 +130,7 @@ export class BackupRestoreService {
       try {
         // 2) Apply
         const restoredGlobalFiles = await this.applyGlobals(temp, home);
-        const restoredProjects = await this.applyProjects(temp, manifest, plan);
+        const { restoredProjects, restoredProjectFiles } = await this.applyProjects(temp, manifest, plan);
         const chatDbRestored = await this.applyChatDb(temp, home, manifest);
         await this.rewriteProjectsJson(home, plan);
         await this.resetCron(home);
@@ -128,10 +139,18 @@ export class BackupRestoreService {
         this.logger.info('Workspace restore applied', {
           restoredGlobalFiles,
           restoredProjects,
+          restoredProjectFiles,
           chatDbRestored,
           rollbackSnapshotPath,
         });
-        return { restoredGlobalFiles, restoredProjects, chatDbRestored, rollbackSnapshotPath, warnings: plan.warnings };
+        return {
+          restoredGlobalFiles,
+          restoredProjects,
+          restoredProjectFiles,
+          chatDbRestored,
+          rollbackSnapshotPath,
+          warnings: plan.warnings,
+        };
       } catch (applyErr) {
         // 3) Rollback from the pre-restore snapshot.
         this.logger.error('Restore failed mid-apply — rolling back', {
@@ -179,7 +198,7 @@ export class BackupRestoreService {
   private async verifyChecksums(temp: string, manifest: BackupManifest): Promise<void> {
     const entries: Array<{ path: string; sha256: string }> = [
       ...manifest.global,
-      ...manifest.projects.flatMap((p) => p.files),
+      ...manifest.projects.flatMap((p) => [...p.files, ...(p.projectFiles ?? [])]),
     ];
     if (manifest.chatDb.included && manifest.chatDb.sha256) {
       entries.push({ path: 'chat.db', sha256: manifest.chatDb.sha256 });
@@ -215,6 +234,8 @@ export class BackupRestoreService {
     );
     const conflictProjects = manifest.projects.map((p) => p.id).filter((id) => targetProjectIds.has(id));
 
+    const includesProjectFiles = manifest.includesProjectFiles === true;
+    const conflictProjectFiles: string[] = [];
     const projects: RestoreProjectPlan[] = [];
     for (const p of manifest.projects) {
       const mapped = options.pathMap?.[p.sourcePath];
@@ -223,21 +244,48 @@ export class BackupRestoreService {
       else if (await this.pathExists(p.sourcePath)) targetPath = p.sourcePath;
 
       const targetExists = targetPath ? await this.pathExists(targetPath) : false;
+      const projectFileCount = p.projectFiles?.length ?? 0;
+      const projectFilesBytes = p.projectFilesBytes ?? 0;
+      // Project files landing in a directory that already holds something
+      // (other than .crewly, which the backup owns) need explicit consent.
+      const targetNonEmpty =
+        projectFileCount > 0 && !!targetPath && targetExists && (await this.dirHasContentBesides(targetPath, '.crewly'));
+      if (targetNonEmpty) conflictProjectFiles.push(p.id);
+
       if (!targetPath) {
+        const what = projectFileCount > 0 ? 'its files and .crewly data' : 'its .crewly data';
         warnings.push(
-          `Project "${p.name}" (${p.sourcePath}) has no target path on this machine — re-clone ${p.git.remote ?? 'the repo'} and pass --map ${p.sourcePath}=<new-path> to restore its .crewly data.`,
+          `Project "${p.name}" (${p.sourcePath}) has no target path on this machine — ${projectFileCount > 0 ? 'pass' : `re-clone ${p.git.remote ?? 'the repo'} and pass`} --map ${p.sourcePath}=<new-path> to restore ${what}.`,
         );
       } else if (!targetExists) {
-        warnings.push(`Project "${p.name}" target path ${targetPath} does not exist yet — its .crewly will be created there.`);
+        warnings.push(
+          `Project "${p.name}" target path ${targetPath} does not exist yet — ${projectFileCount > 0 ? 'its files and .crewly' : 'its .crewly'} will be created there.`,
+        );
+      } else if (targetNonEmpty) {
+        warnings.push(
+          `Project "${p.name}" target path ${targetPath} is not empty — restoring its ${projectFileCount} file(s) requires --mode overwrite (or --map to an empty path).`,
+        );
       }
-      projects.push({ id: p.id, name: p.name, sourcePath: p.sourcePath, targetPath, git: p.git, targetExists });
+      projects.push({
+        id: p.id,
+        name: p.name,
+        sourcePath: p.sourcePath,
+        targetPath,
+        git: p.git,
+        targetExists,
+        projectFileCount,
+        projectFilesBytes,
+        targetNonEmpty,
+      });
     }
 
+    const hasConflicts = conflictTeams.length > 0 || conflictProjects.length > 0 || conflictProjectFiles.length > 0;
     return {
-      ok: !(options.mode !== 'overwrite' && (conflictTeams.length > 0 || conflictProjects.length > 0)),
+      ok: !(options.mode !== 'overwrite' && hasConflicts),
       manifestCreatedAt: manifest.createdAt,
       sourceHomePath: manifest.sourceHomePath,
-      conflicts: { teams: conflictTeams, projects: conflictProjects },
+      conflicts: { teams: conflictTeams, projects: conflictProjects, projectFiles: conflictProjectFiles },
+      includesProjectFiles,
       globalFileCount: manifest.global.length,
       projects,
       chatDbIncluded: manifest.chatDb.included,
@@ -262,24 +310,51 @@ export class BackupRestoreService {
     return n;
   }
 
-  /** Copy each resolved project's `.crewly/` from the archive to its target path. */
-  private async applyProjects(temp: string, manifest: BackupManifest, plan: RestorePlan): Promise<number> {
-    let n = 0;
+  /**
+   * Copy each resolved project's `.crewly/` — and its source files when the
+   * archive carries them — from the archive to its target path.
+   *
+   * @returns Number of projects touched and number of source files written
+   */
+  private async applyProjects(
+    temp: string,
+    manifest: BackupManifest,
+    plan: RestorePlan,
+  ): Promise<{ restoredProjects: number; restoredProjectFiles: number }> {
+    let restoredProjects = 0;
+    let restoredProjectFiles = 0;
     const planById = new Map(plan.projects.map((p) => [p.id, p]));
     for (const proj of manifest.projects) {
       const target = planById.get(proj.id)?.targetPath;
       if (!target) continue; // unresolved — warned in the plan
+      const prefix = `projects/${proj.id}/`;
       for (const f of proj.files) {
         // f.path = 'projects/<id>/.crewly/<rel>' → dest = <target>/.crewly/<rel>
-        const rel = f.path.replace(new RegExp(`^projects/${proj.id}/`), '');
-        const src = path.join(temp, ...f.path.split('/'));
-        const dest = path.join(target, ...rel.split('/'));
-        await fs.mkdir(path.dirname(dest), { recursive: true });
-        await fs.copyFile(src, dest);
+        await this.copyArchiveFile(temp, f.path, path.join(target, ...f.path.slice(prefix.length).split('/')));
       }
-      n += 1;
+      const filesPrefix = `${prefix}${PROJECT_FILES_ARCHIVE_DIR}/`;
+      for (const f of proj.projectFiles ?? []) {
+        // f.path = 'projects/<id>/files/<rel>' → dest = <target>/<rel>
+        if (!f.path.startsWith(filesPrefix)) continue;
+        await this.copyArchiveFile(temp, f.path, path.join(target, ...f.path.slice(filesPrefix.length).split('/')));
+        restoredProjectFiles += 1;
+      }
+      restoredProjects += 1;
     }
-    return n;
+    return { restoredProjects, restoredProjectFiles };
+  }
+
+  /** Copy one archive-relative file out of the extracted temp dir, creating parents. */
+  private async copyArchiveFile(temp: string, archivePath: string, dest: string): Promise<void> {
+    const src = path.join(temp, ...archivePath.split('/'));
+    await fs.mkdir(path.dirname(dest), { recursive: true });
+    await fs.copyFile(src, dest);
+  }
+
+  /** True when `dir` contains any entry other than `ignore`. */
+  private async dirHasContentBesides(dir: string, ignore: string): Promise<boolean> {
+    const entries = await fs.readdir(dir).catch(() => []);
+    return entries.some((name) => name !== ignore);
   }
 
   /** Atomically swap chat.db into place (temp copy → rename). */

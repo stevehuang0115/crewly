@@ -12,6 +12,23 @@
 /** Manifest schema version — bump on any breaking layout/field change. */
 export const BACKUP_SCHEMA_VERSION = 1;
 
+/**
+ * Default exclude patterns applied to project source trees when
+ * `includeProjectFiles` is set. Patterns without a `/` match a path segment
+ * at any depth; patterns with a `/` match the project-relative POSIX path
+ * (`*` = one segment, `**` = any depth).
+ *
+ * `.git` is deliberately NOT excluded (history survives, pack files
+ * included); `.crewly` is captured separately under `projects/<id>/.crewly/`.
+ */
+export const DEFAULT_PROJECT_FILE_EXCLUDES: readonly string[] = ['node_modules', '.crewly', '.DS_Store'];
+
+/** Archive path prefix for a project's source files: `projects/<id>/files/`. */
+export const PROJECT_FILES_ARCHIVE_DIR = 'files';
+
+/** Above this estimated project-files size the CLI requires `--yes` (2 GiB). */
+export const PROJECT_FILES_SIZE_WARN_BYTES = 2 * 1024 * 1024 * 1024;
+
 /** A single captured file recorded in the manifest for integrity + listing. */
 export interface BackupFileEntry {
   /** Path inside the archive, relative to the archive root. */
@@ -40,8 +57,15 @@ export interface BackupProjectEntry {
   sourcePath: string;
   /** Git provenance for re-clone on restore. */
   git: BackupProjectGit;
-  /** Captured files under `projects/<id>/` in the archive. */
+  /** Captured `.crewly/` files under `projects/<id>/.crewly/` in the archive. */
   files: BackupFileEntry[];
+  /**
+   * Project source files under `projects/<id>/files/` — present only when the
+   * archive was created with `includeProjectFiles`. Absent on older archives.
+   */
+  projectFiles?: BackupFileEntry[];
+  /** Total bytes of `projectFiles`, when captured. */
+  projectFilesBytes?: number;
 }
 
 /** chat.db capture record. */
@@ -81,6 +105,13 @@ export interface BackupManifest {
   projects: BackupProjectEntry[];
   chatDb: BackupChatDb;
   crypto: BackupCrypto;
+  /**
+   * True when each project's own source tree was captured under
+   * `projects/<id>/files/`. Absent/false on archives that only carry `.crewly/`.
+   */
+  includesProjectFiles?: boolean;
+  /** Exclude patterns that were applied to project files (when included). */
+  projectFileExcludes?: string[];
 }
 
 /** Options for building an archive. */
@@ -98,6 +129,25 @@ export interface CreateBackupOptions {
   /** Source device id/name for the manifest (observability). */
   sourceDeviceId?: string | null;
   sourceDeviceName?: string | null;
+  /** Also capture each project's own source tree (item 26). Default false. */
+  includeProjectFiles?: boolean;
+  /**
+   * Exclude patterns for project files. Replaces
+   * {@link DEFAULT_PROJECT_FILE_EXCLUDES} when given (callers that want to add
+   * to the defaults should spread them in).
+   */
+  projectFileExcludes?: string[];
+}
+
+/** Per-project size estimate produced before an archive is built. */
+export interface ProjectFilesEstimate {
+  id: string;
+  name: string;
+  path: string;
+  /** Bytes of regular files that would be captured after excludes. */
+  bytes: number;
+  /** Number of regular files that would be captured. */
+  fileCount: number;
 }
 
 /** Result of a successful archive build. */
@@ -144,6 +194,16 @@ export interface RestoreProjectPlan {
   git: { remote: string | null; commit: string | null };
   /** Whether the resolved target path currently exists on this machine. */
   targetExists: boolean;
+  /** Number of project source files carried by the archive for this project (0 when none). */
+  projectFileCount: number;
+  /** Bytes of project source files carried by the archive for this project. */
+  projectFilesBytes: number;
+  /**
+   * True when the archive carries project files AND the target directory
+   * already holds something other than `.crewly/` — restoring would overwrite
+   * it, which requires mode='overwrite'.
+   */
+  targetNonEmpty: boolean;
 }
 
 /** Non-destructive restore plan (dry-run). */
@@ -152,8 +212,14 @@ export interface RestorePlan {
   ok: boolean;
   manifestCreatedAt: string;
   sourceHomePath: string;
-  /** Stable ids present on BOTH the backup and this machine (would be overwritten). */
-  conflicts: { teams: string[]; projects: string[] };
+  /**
+   * Stable ids present on BOTH the backup and this machine (would be
+   * overwritten). `projectFiles` lists project ids whose source files would
+   * land in a non-empty target directory.
+   */
+  conflicts: { teams: string[]; projects: string[]; projectFiles: string[] };
+  /** Whether the archive carries project source files. */
+  includesProjectFiles: boolean;
   globalFileCount: number;
   projects: RestoreProjectPlan[];
   chatDbIncluded: boolean;
@@ -167,6 +233,8 @@ export interface RestorePlan {
 export interface RestoreResult {
   restoredGlobalFiles: number;
   restoredProjects: number;
+  /** Project source files written (0 when the archive carried none). */
+  restoredProjectFiles: number;
   chatDbRestored: boolean;
   /** Where the pre-restore snapshot of the current CREWLY_HOME was saved. */
   rollbackSnapshotPath: string;

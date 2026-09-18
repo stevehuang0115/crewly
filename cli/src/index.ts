@@ -141,8 +141,11 @@ program
   .description('Workspace backup: create | restore <file>. Archive this machine to restore on another. Pro: cloud push/pull (soon)')
   .option('-o, --out <file>', 'Output archive path (create)')
   .option('--no-chat-db', 'Exclude chat.db from the archive (create)')
-  .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite')
-  .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable)')
+  .option('--include-project-files', 'Also archive each project\'s own files under projects/<id>/files/ — .git kept, node_modules/.crewly/.DS_Store excluded by default (create)')
+  .option('--exclude <glob...>', 'Extra exclude pattern for project files, added to the defaults; no "/" = any path segment (e.g. dist, *.log), with "/" = project-relative path (e.g. build/**) (create, repeatable)')
+  .option('-y, --yes', 'Continue even when project files exceed the 2 GB warning threshold (create)')
+  .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite. Project files are never written into a non-empty directory without overwrite')
+  .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable); project files and .crewly follow the mapped path')
   .option('--apply', 'Apply the restore (without this, restore is a dry-run preview)')
   // Explicit arity: commander appends the Command object as a trailing
   // argument, which must not land in backupCommandAndExit's `exit` parameter.
