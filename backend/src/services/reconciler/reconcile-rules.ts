@@ -514,26 +514,27 @@ const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
  * is inert, instead of throwing on every reconciler pass forever.
  *
  * `null` results (currently `rejected` and `failed`) are intentional — the
- * alternative is an illegal edge, not a cleanup. Both statuses have their own
- * lifecycle, though NEITHER is fully covered today; see the caveats, which are
- * tracked as follow-ups rather than silently assumed away:
+ * alternative is an illegal edge, not a cleanup. Both statuses end their
+ * lifecycle through the successor model (#740, correcting #736) rather than
+ * through a status transition: the writer that parks an item there stamps a
+ * `WorkItemDisposition` on it, and {@link detectUndisposedStrandedWorkItems}
+ * is the safety net for writers that did not.
  *
  * - `failed`: {@link detectRetryableFailedWorkItems} re-queues it while
- *   retries remain, and `V3DataService.onTaskFailed` escalates it to the
- *   orchestrator once the budget is spent. CAVEAT: that escalation only fires
- *   for failures arriving via the `v3:task_failed` event. A WI that reaches
- *   `failed` another way (direct `failItem`, the SLA `pickFailTarget`
- *   `running → failed` path, reconciler-driven failures) with
- *   `retryCount >= maxRetries` currently has no lifecycle at all.
+ *   retries remain and it is undisposed. Once the budget is spent,
+ *   `V3DataService.onTaskFailed` and the reconciler safety net both route
+ *   through `TaskPoolService.disposeFailedWorkItem`, which escalates once and
+ *   stamps `terminal`. Failures arriving any other way (direct `failItem`, the
+ *   SLA `pickFailTarget` `running → failed` path) are caught by the same
+ *   safety net after {@link DISPOSITION_GRACE_MS}.
  * - `rejected`: `EventToWorkItemBridge`'s `task:rejected` handler spawns a
- *   retry or TL-escalation WorkItem, and the source stays `rejected` as an
- *   audit record. CAVEAT: `verifyItem` is the only publisher of
- *   `task:rejected`, so rejections arriving via
- *   `RequestSlaSubscriber.failOrphanRespondWi` produce no successor and
- *   currently strand.
+ *   retry or TL-escalation WorkItem and stamps the source `succeeded_by` with
+ *   that WorkItem's id. Rejections that never publish `task:rejected` (the SLA
+ *   `pickFailTarget` `done_by_worker → rejected` path — see #736) are stamped
+ *   `terminal` by the writer or, failing that, by the safety net.
  *
  * Skipping them here is still correct: the TTL sweeper cannot legally act on
- * either, so these gaps belong to the owning lifecycles, not to this rule.
+ * either, and the disposition stamp is what makes the strand visible.
  *
  * @param current - Current (non-terminal) WorkItem status
  * @returns A legal terminal status for TTL expiry, or `null` when the
@@ -1444,6 +1445,12 @@ export function detectUndisposedStrandedWorkItems(
  * Detects WorkItems in 'failed' status that still have remaining retries
  * and can be automatically re-queued for another attempt.
  *
+ * A `failed` item that already carries a disposition stamp (see
+ * `WorkItemDisposition`) is never re-queued, whatever its `retryCount`
+ * says: `succeeded_by` means another WorkItem is carrying the work and a
+ * re-queue would run it twice; `terminal` means the decision has been
+ * handed to a human/orchestrator and the item is an audit record.
+ *
  * @param workItems - Active WorkItems to inspect
  * @returns Corrections for retryable items and their IDs
  */
@@ -1456,6 +1463,7 @@ export function detectRetryableFailedWorkItems(
   for (const wi of workItems) {
     if (wi.status !== 'failed') continue;
     if (wi.retryCount >= wi.maxRetries) continue;
+    if (isWorkItemDisposed(wi)) continue;
 
     corrections.push(createCorrection({
       entityType: 'work_item',

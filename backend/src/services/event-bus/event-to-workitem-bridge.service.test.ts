@@ -164,6 +164,7 @@ function buildFakeTaskPool(initial: WorkItem[] = []) {
       items.set(wi.id, wi);
     }),
     findWorkItem: jest.fn(async (id: string) => items.get(id) ?? null),
+    disposeFailedWorkItem: jest.fn(async () => null),
   };
 }
 
@@ -423,6 +424,47 @@ describe('EventToWorkItemBridge', () => {
       // V2 invariant: NO retry-shaped WI (id contains ':retry:')
       const retries = taskPool.addCalls.filter((wi) => wi.id.includes(':retry:'));
       expect(retries).toHaveLength(0);
+      bridge.stop();
+    });
+
+    it('at the retry cap the source is stamped succeeded_by → the review WI (#736 lifecycle)', async () => {
+      const sourceWI = buildWorkItem({ retryCount: 3 });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:rejected' }));
+      await bridge.flushPending();
+
+      const reviewId = `${sourceWI.id}:review:max_retries`;
+      expect(taskPool.addCalls.map((wi) => wi.id)).toEqual([reviewId]);
+      // The source's lifecycle ends here: the disposition stamp points at the
+      // review WI, so the reconciler's safety net never re-escalates it and
+      // the auto-retry rule never re-queues it. Status is NOT mutated — the
+      // bridge never transitions status (see class doc), and `rejected` has
+      // no terminal edge by design (#733/#740).
+      expect(taskPool.disposeFailedWorkItem).toHaveBeenCalledTimes(1);
+      expect(taskPool.disposeFailedWorkItem).toHaveBeenCalledWith(sourceWI.id, {
+        reason: expect.stringContaining('retry cap'),
+        successorWorkItemId: reviewId,
+      });
+      expect(taskPool.items.get(sourceWI.id)?.status).toBe(sourceWI.status);
+      bridge.stop();
+    });
+
+    it('a retry rejection stamps the source with the retry WI as successor', async () => {
+      const sourceWI = buildWorkItem({ retryCount: 1 });
+      const taskPool = buildFakeTaskPool([sourceWI]);
+      const { bridge, bus } = buildBridge({ taskPool });
+      bridge.start();
+
+      bus.publish(buildEvent({ type: 'task:rejected' }));
+      await bridge.flushPending();
+
+      expect(taskPool.disposeFailedWorkItem).toHaveBeenCalledWith(sourceWI.id, {
+        reason: expect.stringContaining('retry 2/'),
+        successorWorkItemId: `${sourceWI.id}:retry:2`,
+      });
       bridge.stop();
     });
 
