@@ -346,9 +346,10 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
-   * Whether anyone (a person or an agent) has said anything since `sinceMs`.
-   * System rows do not count. Bypasses principal scoping on purpose — this
-   * is a global "is there new conversation to reflect on" probe.
+   * Whether a person has said anything since `sinceMs`. Agent and system
+   * rows do not count (an agent's own echo must not re-arm the nudge that
+   * produced it). Bypasses principal scoping on purpose — this is a global
+   * "is there new conversation to reflect on" probe.
    *
    * @param sinceMs - Epoch ms lower bound (exclusive)
    * @returns True when at least one user/agent message is newer

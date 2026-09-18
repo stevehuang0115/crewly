@@ -381,14 +381,16 @@ describe('MessageStore', () => {
   // -------------------------------------------------------------------------
 
   describe('countConversationSince (wiki reflect gate, 2026-09-17)', () => {
-    it('counts only user/agent rows newer than the cutoff', () => {
+    it('counts only rows a person wrote, newer than the cutoff', () => {
       messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'old', nowMs: 1_000 });
       messages.insert({ channelId, senderType: 'system', senderId: 'sys', content: 'nudge', nowMs: 5_000 });
-      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-a', content: 'reply', nowMs: 6_000 });
+      // An agent's own echo must not count as conversation — it would re-arm
+      // the reflect nudge that produced it.
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-a', content: '[DONE] Agent orc: Task complete', nowMs: 6_000 });
       messages.insert({ channelId, senderType: 'user', senderId: 'user-a', content: 'more', nowMs: 7_000 });
 
-      expect(messages.countConversationSince(0)).toBe(3); // system row excluded
-      expect(messages.countConversationSince(1_000)).toBe(2); // cutoff is exclusive
+      expect(messages.countConversationSince(0)).toBe(2); // system + agent rows excluded
+      expect(messages.countConversationSince(1_000)).toBe(1); // cutoff is exclusive
       expect(messages.countConversationSince(6_500)).toBe(1);
       expect(messages.countConversationSince(7_000)).toBe(0);
     });

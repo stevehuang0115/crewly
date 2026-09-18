@@ -491,9 +491,11 @@ export class MessageStore {
   }
 
   /**
-   * Count messages created after `sinceMs` that a person or an agent wrote —
-   * `system` rows (dispatches, nudges, status echoes) are excluded because
-   * they are not conversation.
+   * Count messages created after `sinceMs` that a PERSON wrote. Agent rows
+   * are excluded on purpose: an agent's own status echo ("[DONE] Agent orc:
+   * Task complete") or a cron post lands in chat as an agent row, and
+   * counting it would let the orchestrator re-arm its own reflect nudge.
+   * System rows (dispatches, nudges) are not conversation either.
    *
    * Used by the wiki reflect trigger to decide whether there is anything new
    * to sweep before it wakes the orchestrator (2026-09-17): a reflect nudge
@@ -507,7 +509,7 @@ export class MessageStore {
     const row = this.db
       .prepare(
         `SELECT COUNT(*) AS n FROM chat_messages
-         WHERE created_at > ? AND sender_type IN ('user', 'agent')`,
+         WHERE created_at > ? AND sender_type = 'user'`,
       )
       .get(sinceMs) as { n: number };
     return row.n;
