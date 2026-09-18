@@ -224,7 +224,25 @@ export class SessionHandoffService {
   private static instance: SessionHandoffService | null = null;
   private readonly logger = LoggerService.getInstance().createComponentLogger('SessionHandoffService');
 
+  /**
+   * Channels whose threads are NOT the orchestrator's to resume. Slack team
+   * channels belong to their team: pushing their recent threads into the
+   * orchestrator's resume briefing made the orchestrator answer in the
+   * team's channel ("[Orc] 在的…" under a message meant for Think Tank).
+   */
+  private channelFilter: ((channelType: 'slack' | 'gchat', channelId: string) => boolean) | null = null;
+
   private constructor() {}
+
+  /**
+   * Install a predicate that marks channels to leave out of the resume
+   * briefing (true = exclude).
+   *
+   * @param filter - Predicate, or null to clear
+   */
+  setChannelFilter(filter: ((channelType: 'slack' | 'gchat', channelId: string) => boolean) | null): void {
+    this.channelFilter = filter;
+  }
 
   /**
    * Gets the singleton instance.
@@ -287,6 +305,7 @@ export class SessionHandoffService {
 
       for (const entry of entries) {
         if (entry.endsWith('.json')) continue; // Skip index files
+        if (this.channelFilter?.(channelType, entry)) continue; // a team's channel, not the orchestrator's
 
         const entryPath = path.join(baseDir, entry);
         const stat = await fs.stat(entryPath).catch(() => null);
@@ -756,6 +775,7 @@ export class SessionHandoffService {
 
       for (const entry of entries) {
         if (entry.endsWith('.json')) continue;
+        if (this.channelFilter?.(channelType, entry)) continue; // a team's channel, not the orchestrator's
         const channelDir = path.join(baseDir, entry);
         const stat = await fs.stat(channelDir).catch(() => null);
         if (!stat?.isDirectory()) continue;

@@ -572,6 +572,18 @@ export async function startSlackTeamChannels(): Promise<void> {
       setSlackTeamChannelService(service);
     }
     await service.start();
+    // Team-channel threads belong to the team, not the orchestrator's resume
+    // briefing (which otherwise had the orchestrator answering in #team channels).
+    try {
+      const { SessionHandoffService } = await import('../session/session-handoff.service.js');
+      SessionHandoffService.getInstance().setChannelFilter(
+        (channelType, channelId) => channelType === 'slack' && !!getSlackTeamChannelService()?.findBySlackChannelId(channelId),
+      );
+    } catch (err) {
+      logger.debug('Could not install the team-channel filter on the handoff briefing', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   } catch (error) {
     logger.warn('Slack team channels not started', {
       error: error instanceof Error ? error.message : String(error),

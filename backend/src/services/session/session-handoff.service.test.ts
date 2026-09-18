@@ -65,6 +65,22 @@ describe('SessionHandoffService', () => {
       expect(result[0].lastActiveAt).toBeDefined();
     });
 
+    it('leaves out channels the filter marks as a team\'s (not the orchestrator\'s to resume)', async () => {
+      for (const ch of ['C-TEAM', 'D-OWNER']) {
+        await fs.mkdir(path.join(testDir, ch), { recursive: true });
+        await fs.writeFile(path.join(testDir, ch, '1.md'), '---\n---\n\n**A** (12:00):\nhi');
+      }
+      service.setChannelFilter((type, id) => type === 'slack' && id === 'C-TEAM');
+      try {
+        const result = await service.scanThreadDirectory(testDir, 'slack');
+        expect(result.map((t) => t.channelId)).toEqual(['D-OWNER']);
+        // The filter is per channel type: the same id under gchat is not excluded.
+        expect((await service.scanThreadDirectory(testDir, 'gchat')).map((t) => t.channelId).sort()).toEqual(['C-TEAM', 'D-OWNER']);
+      } finally {
+        service.setChannelFilter(null);
+      }
+    });
+
     it('should sort by most recent first', async () => {
       const ch1 = path.join(testDir, 'C1');
       const ch2 = path.join(testDir, 'C2');
