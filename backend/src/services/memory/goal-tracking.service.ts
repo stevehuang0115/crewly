@@ -18,6 +18,7 @@ import * as path from 'path';
 import { ensureDir, atomicWriteFile } from '../../utils/file-io.utils.js';
 import { MEMORY_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /**
  * Parameters for logging a decision via {@link GoalTrackingService.logDecision}.
@@ -116,7 +117,7 @@ export class GoalTrackingService {
    * @returns Absolute path to `{projectPath}/.crewly/goals`
    */
   private getGoalsDir(projectPath: string): string {
-    return path.join(projectPath, '.crewly', MEMORY_CONSTANTS.PATHS.GOALS_DIR);
+    return path.join(resolveProjectDataDir(projectPath), MEMORY_CONSTANTS.PATHS.GOALS_DIR);
   }
 
   /**

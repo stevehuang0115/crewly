@@ -408,11 +408,7 @@ export class SessionMemoryService {
    * ```
    */
   public async updateAgentsIndex(projectPath: string, agentId: string, role: string): Promise<void> {
-    const indexPath = path.join(
-      projectPath,
-      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
-      MEMORY_CONSTANTS.PATHS.AGENTS_INDEX,
-    );
+    const indexPath = path.join(resolveProjectDataDir(projectPath), MEMORY_CONSTANTS.PATHS.AGENTS_INDEX);
 
     // Ensure the parent directory exists
     await ensureDir(path.dirname(indexPath));

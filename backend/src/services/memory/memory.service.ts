@@ -17,7 +17,7 @@ import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
-import { CREWLY_CONSTANTS, MEMORY_CONSTANTS } from '../../constants.js';
+import { MEMORY_CONSTANTS } from '../../constants.js';
 import type {
   RoleKnowledgeEntry,
   RoleKnowledgeCategory,
@@ -27,6 +27,7 @@ import type {
   ProjectAgentsIndex,
   TaskHistoryEntry,
 } from '../../types/memory.types.js';
+import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /**
  * Categories for the unified remember operation
@@ -1241,11 +1242,7 @@ export class MemoryService implements IMemoryService {
   ): Promise<string[]> {
     this.logger.debug('Recalling from all agents', { projectPath, context: context.substring(0, 50) });
 
-    const indexPath = path.join(
-      projectPath,
-      CREWLY_CONSTANTS.PATHS.CREWLY_HOME,
-      MEMORY_CONSTANTS.PATHS.AGENTS_INDEX,
-    );
+    const indexPath = path.join(resolveProjectDataDir(projectPath), MEMORY_CONSTANTS.PATHS.AGENTS_INDEX);
 
     const defaultIndex: ProjectAgentsIndex = { agents: [] };
     const index = await safeReadJson<ProjectAgentsIndex>(indexPath, defaultIndex, this.logger);

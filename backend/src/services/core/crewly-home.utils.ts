@@ -111,6 +111,7 @@ export const PACKAGE_TREE_STORES = [
   'triggers',
   'knowledge',
   'tasks',
+  'goals',
   'agents-index.json',
 ] as const;
 

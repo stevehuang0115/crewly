@@ -716,6 +716,23 @@ describe('SessionMemoryService', () => {
       expect(index.agents[0].lastActive).toBeDefined();
     });
 
+    it('writes the index under CREWLY_HOME when the project path is the npm package tree', async () => {
+      const pkgPath = path.join(testDir, 'lib', 'node_modules', 'crewly');
+      const savedHome = process.env.CREWLY_HOME;
+      process.env.CREWLY_HOME = path.join(testDir, 'safe-home');
+      try {
+        await service.updateAgentsIndex(pkgPath, testAgentId, testRole);
+        const safeIndex = path.join(testDir, 'safe-home', MEMORY_CONSTANTS.PATHS.AGENTS_INDEX);
+        expect(JSON.parse(await fs.readFile(safeIndex, 'utf-8')).agents).toHaveLength(1);
+        await expect(
+          fs.access(path.join(pkgPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MEMORY_CONSTANTS.PATHS.AGENTS_INDEX)),
+        ).rejects.toBeDefined();
+      } finally {
+        if (savedHome === undefined) delete process.env.CREWLY_HOME;
+        else process.env.CREWLY_HOME = savedHome;
+      }
+    });
+
     it('should store a valid ISO timestamp in lastActive', async () => {
       await service.updateAgentsIndex(testProjectPath, testAgentId, testRole);
 
