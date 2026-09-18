@@ -757,7 +757,7 @@ describe('Chat Controller', () => {
 
     // 2026-09-16: every queued line is a full-context orchestrator turn, and
     // progress chatter gives it nothing to act on.
-    it.each(['[IN_PROGRESS]', '[WORKING]', '[ACTIVE]', '[STARTED]'])(
+    it.each(['[IN_PROGRESS]', '[WORKING]', '[ACTIVE]', '[STARTED]', '[READY]', '[ONLINE]'])(
       'does NOT enqueue %s progress markers to the orchestrator',
       async (marker) => {
         const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-progress' });

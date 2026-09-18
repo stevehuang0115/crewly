@@ -697,11 +697,16 @@ export const SLACK_CLOUD_CONSTANTS = {
  */
 export const ORC_STATUS_FORWARDING = {
 	/**
-	 * Markers that only say "still going" — not forwarded. Everything else
+	 * Markers that only say "still going" or "I am up" — not forwarded.
+	 * [READY]/[ONLINE] joined the list on 2026-09-18: an agent woken by a
+	 * Slack message announced itself and the orchestrator spent a full
+	 * turn on it. Message delivery to a freshly started agent is the
+	 * system's job (queued messages flush on registration), so the
+	 * orchestrator has nothing to do with the announcement. Everything else
 	 * ([DONE], [IDLE] (agent is free for the next task), [BLOCKED], [FAILED],
-	 * structured reports, unknown formats) is.
+	 * structured reports, unknown formats) is forwarded.
 	 */
-	PROGRESS_ONLY_MARKERS: /^\s*\[(IN_PROGRESS|WORKING|ACTIVE|STARTED|HEARTBEAT)\]/i,
+	PROGRESS_ONLY_MARKERS: /^\s*\[(IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
 } as const;
 
 /**

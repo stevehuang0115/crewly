@@ -3246,7 +3246,21 @@ Loop until done, blocked, or explicitly reassigned:
 			});
 
 			try {
-				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse);
+				// The identity variables go in at spawn time as well as via the
+				// typed `export`s below. The exports are typed into the shell
+				// right after spawn; when the shell is still initialising they
+				// can be lost, and every skill then runs without
+				// CREWLY_SESSION_NAME — no X-Agent-Session header, and
+				// reply-channel fails with a misleading 404 (Think Tank, 2026-09-18).
+				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse, {
+					env: {
+						[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
+						[ENV_CONSTANTS.CREWLY_ROLE]: role,
+						[ENV_CONSTANTS.CREWLY_API_URL]: `http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`,
+						[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwdToUse,
+						[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
+					},
+				});
 				this.logger.info('PTY session created successfully', {
 					sessionName,
 					pid: createdSession.pid,

@@ -222,7 +222,15 @@ api_call() {
   local args=(-s -w '\n%{http_code}' -X "$method" -H "Content-Type: application/json")
   # Include agent session identity header for heartbeat tracking
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
-  [ -n "${CREWLY_SESSION_NAME:-}" ] && args+=(-H "X-Agent-Session: $CREWLY_SESSION_NAME")
+  if [ -n "${CREWLY_SESSION_NAME:-}" ]; then
+    args+=(-H "X-Agent-Session: $CREWLY_SESSION_NAME")
+  else
+    # Without the identity header the backend treats the call as anonymous:
+    # membership checks fail with a misleading 404 and heartbeats are lost.
+    # Say so once per call instead of failing silently (2026-09-18, Think
+    # Tank: every reply-channel call 404'd for want of this variable).
+    echo '{"warning":"CREWLY_SESSION_NAME is not set in this shell — the request is sent without X-Agent-Session; channel replies and heartbeats will not be attributed to you. Prefix the call with CREWLY_SESSION_NAME=<your session name> or restart the agent."}' >&2
+  fi
   [ -n "$body" ] && args+=(-d "$body")
 
   local response

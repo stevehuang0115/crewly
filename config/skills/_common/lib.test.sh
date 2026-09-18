@@ -211,6 +211,13 @@ export MOCK_BODY='{"ok":true,"items":[1,2,3]}'
 RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=100 bash "$TEMP_DIR/skills/fake-skill/execute.sh")
 assert_eq "api_call: body under cap passes through" '{"ok":true,"items":[1,2,3]}' "$RESULT"
 
+# ---- Test 17b: a missing CREWLY_SESSION_NAME is reported on stderr, not silent ----
+export MOCK_BODY='{"ok":true}'
+STDERR_OUT=$(CREWLY_SESSION_NAME= bash "$TEMP_DIR/skills/fake-skill/execute.sh" 2>&1 >/dev/null)
+assert_contains "api_call: warns when CREWLY_SESSION_NAME is unset" "CREWLY_SESSION_NAME is not set" "$STDERR_OUT"
+STDERR_OUT=$(CREWLY_SESSION_NAME=agent-1 bash "$TEMP_DIR/skills/fake-skill/execute.sh" 2>&1 >/dev/null)
+assert_eq "api_call: silent when CREWLY_SESSION_NAME is set" "" "$STDERR_OUT"
+
 # ---- Test 18: oversized body becomes a valid JSON envelope ----
 BIG=$(jq -nc '{ok:true, rows:[range(0;400)|{id:., text:"row-\(.)-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}]}')
 export MOCK_BODY="$BIG"

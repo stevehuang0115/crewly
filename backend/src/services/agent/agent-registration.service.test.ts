@@ -434,7 +434,19 @@ describe('AgentRegistrationService', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.createSession).toHaveBeenCalledWith('test-session', '/test/project');
+			// Identity variables travel with the spawn (not only as typed exports,
+			// which a still-initialising shell can drop).
+			expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+				'test-session',
+				'/test/project',
+				expect.objectContaining({
+					env: expect.objectContaining({
+						CREWLY_SESSION_NAME: 'test-session',
+						CREWLY_ROLE: 'developer',
+						CREWLY_PROJECT_PATH: '/test/project',
+					}),
+				}),
+			);
 		});
 
 		it('should set environment variables after creating session', async () => {
