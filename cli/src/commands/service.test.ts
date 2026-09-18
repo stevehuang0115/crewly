@@ -87,6 +87,8 @@ import {
 	generateCommandFile,
 	generateSystemdUnit,
 	generateLinuxWrapper,
+	enableLinger,
+	getLingerState,
 	getRunningPid,
 	getSystemdState,
 	isLoginItemRegistered,
@@ -556,7 +558,32 @@ describe('serviceCommand', () => {
 				'systemctl --user enable crewly.service',
 			);
 
+			// finding 10: linger is enabled so the user manager survives logout
+			expect(mockExecAsync).toHaveBeenCalledWith(
+				expect.stringMatching(/^loginctl enable-linger \S+$/),
+			);
+
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('installed successfully');
+		});
+
+		it('prints the manual linger command when loginctl is missing, and still installs', async () => {
+			mockExistsSync.mockImplementation((p: string) => {
+				if (p.includes('crewly.service')) return false;
+				if (p.includes('package.json')) return true;
+				return false;
+			});
+			mockReadFileSync.mockReturnValue(JSON.stringify({ name: 'crewly' }));
+			mockExecAsync.mockImplementation((cmd: string) => {
+				if (cmd.startsWith('loginctl')) return new Error('loginctl: command not found');
+				return '';
+			});
+
+			await serviceCommand('install', {});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('Could not enable linger');
+			expect(output).toMatch(/Run manually: loginctl enable-linger \S+/);
 			expect(output).toContain('installed successfully');
 		});
 
@@ -672,6 +699,19 @@ describe('serviceCommand', () => {
 			expect(output).toContain('fully operational');
 
 			killSpy.mockRestore();
+		});
+
+		it('warns when linger is disabled', async () => {
+			mockExistsSync.mockReturnValue(false);
+			mockExecAsync.mockImplementation((cmd: string) => {
+				if (cmd.includes('show-user')) return 'no\n';
+				throw new Error('not found');
+			});
+
+			await serviceCommand('status', {});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toMatch(/Linger: Disabled — run: loginctl enable-linger \S+/);
 		});
 
 		it('shows not installed when nothing exists', async () => {
@@ -914,6 +954,68 @@ describe('getRunningPid', () => {
 		expect(getRunningPid()).toBe(12345);
 
 		killSpy.mockRestore();
+	});
+});
+
+describe('enableLinger', () => {
+	let logSpy: jest.SpyInstance;
+
+	beforeEach(() => {
+		jest.clearAllMocks();
+		logSpy = jest.spyOn(console, 'log').mockImplementation();
+	});
+
+	afterEach(() => {
+		logSpy.mockRestore();
+	});
+
+	it('runs loginctl enable-linger for the user and reports success', async () => {
+		mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('show-user') ? 'yes\n' : ''));
+		expect(await enableLinger('alice')).toBe(true);
+		expect(mockExecAsync).toHaveBeenCalledWith('loginctl enable-linger alice');
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).toContain('Enabled linger for alice');
+	});
+
+	it('returns false and prints the manual command when enable-linger fails', async () => {
+		mockExecAsync.mockReturnValue(new Error('Interactive authentication required'));
+		expect(await enableLinger('alice')).toBe(false);
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).toContain('Interactive authentication required');
+		expect(output).toContain('Run manually: loginctl enable-linger alice');
+	});
+
+	it('returns false when enable-linger exits 0 but Linger is still "no"', async () => {
+		mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('show-user') ? 'no\n' : ''));
+		expect(await enableLinger('alice')).toBe(false);
+		const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+		expect(output).toContain('Linger is still off');
+	});
+
+	it('trusts the enable call when show-user is unavailable', async () => {
+		mockExecAsync.mockImplementation((cmd: string) => {
+			if (cmd.includes('show-user')) return new Error('unknown option');
+			return '';
+		});
+		expect(await enableLinger('alice')).toBe(true);
+	});
+});
+
+describe('getLingerState', () => {
+	beforeEach(() => {
+		jest.clearAllMocks();
+	});
+
+	it('returns yes/no from loginctl', async () => {
+		mockExecAsync.mockReturnValue('yes\n');
+		expect(await getLingerState('alice')).toBe('yes');
+		mockExecAsync.mockReturnValue('no\n');
+		expect(await getLingerState('alice')).toBe('no');
+	});
+
+	it('returns null when loginctl is unavailable', async () => {
+		mockExecAsync.mockReturnValue(new Error('not found'));
+		expect(await getLingerState('alice')).toBeNull();
 	});
 });
 

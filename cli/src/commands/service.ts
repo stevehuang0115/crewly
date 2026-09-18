@@ -501,6 +501,9 @@ async function installLinux(
 		);
 	}
 
+	// 4. Keep the user manager alive after logout (finding 10)
+	await enableLinger();
+
 	console.log('');
 	console.log(chalk.green('Crewly service installed successfully!'));
 	console.log('');
@@ -588,6 +591,16 @@ async function statusLinux(): Promise<void> {
 		console.log(chalk.green(`  Process: Running (PID ${pid})`));
 	} else {
 		console.log(chalk.yellow('  Process: Not running'));
+	}
+
+	// Check linger (finding 10)
+	const linger = await getLingerState();
+	if (linger === 'yes') {
+		console.log(chalk.green('  Linger: Enabled (survives logout)'));
+	} else if (linger === 'no') {
+		console.log(chalk.yellow(`  Linger: Disabled — run: loginctl enable-linger ${os.userInfo().username}`));
+	} else {
+		console.log(chalk.gray('  Linger: Unknown (loginctl unavailable)'));
 	}
 
 	console.log('');
@@ -685,6 +698,63 @@ echo $$ > "$PIDFILE"
 
 exec "$NODE_BIN" dist/cli/cli/src/index.js start
 `;
+}
+
+/**
+ * Enable lingering for the current user so the systemd user manager — and
+ * the Crewly service under it — survives the SSH session ending.
+ *
+ * Without `loginctl enable-linger`, a `systemctl --user` service is torn
+ * down when the user's last session closes, which on a server is the normal
+ * path right after install (finding 10). Best-effort: failures (no
+ * loginctl, no polkit authority, non-systemd box) are reported with the
+ * manual command and never abort the install.
+ *
+ * @param user - User to enable lingering for (defaults to the current user)
+ * @returns true when linger was enabled (or already on), false otherwise
+ */
+export async function enableLinger(user: string = os.userInfo().username): Promise<boolean> {
+	const manual = `loginctl enable-linger ${user}`;
+	try {
+		await execAsync(manual);
+	} catch (error) {
+		const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
+		console.log(chalk.yellow('  Could not enable linger — the service will stop when you log out.'));
+		console.log(chalk.gray(`  (${reason})`));
+		console.log(chalk.gray(`  Run manually: ${manual}`));
+		return false;
+	}
+
+	// Verify — enable-linger exits 0 in some containers without taking effect.
+	try {
+		const { stdout } = await execAsync(`loginctl show-user ${user} --property=Linger --value`);
+		if (stdout.trim() === 'no') {
+			console.log(chalk.yellow('  Linger is still off — the service will stop when you log out.'));
+			console.log(chalk.gray(`  Run manually: ${manual}`));
+			return false;
+		}
+	} catch {
+		// show-user unavailable (older systemd) — trust the enable call
+	}
+
+	console.log(chalk.green(`  Enabled linger for ${user} (service survives logout)`));
+	return true;
+}
+
+/**
+ * Read the linger state of the current user via loginctl.
+ *
+ * @param user - User to query (defaults to the current user)
+ * @returns "yes", "no", or null when loginctl is unavailable
+ */
+export async function getLingerState(user: string = os.userInfo().username): Promise<'yes' | 'no' | null> {
+	try {
+		const { stdout } = await execAsync(`loginctl show-user ${user} --property=Linger --value`);
+		const v = stdout.trim();
+		return v === 'yes' || v === 'no' ? v : null;
+	} catch {
+		return null;
+	}
 }
 
 /**
