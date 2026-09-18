@@ -236,3 +236,41 @@ describe('backupCommand project files (item 26)', () => {
     expect(estimateSpy).toHaveBeenCalledTimes(2);
   });
 });
+
+describe('backupCommand Slack ownership (item 29)', () => {
+  const output = (): string => logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+
+  beforeEach(() => {
+    fs.writeFileSync(path.join(home, 'slack-credentials.json'), '{"botToken":"xoxb-1"}', 'utf8');
+  });
+
+  it('restore preview prints the prominent ownership warning when credentials are in the archive', async () => {
+    await backupCommand('create', undefined, { out: outFile, chatDb: false });
+    logSpy.mockClear();
+    await backupCommand('restore', outFile, {});
+    const out = output();
+    expect(out).toContain('SLACK OWNERSHIP');
+    expect(out).toContain('BOTH instances will answer');
+    expect(out).toContain('--skip-slack');
+  });
+
+  it('--skip-slack restores without the credentials and says so', async () => {
+    await backupCommand('create', undefined, { out: outFile, chatDb: false });
+    fs.unlinkSync(path.join(home, 'slack-credentials.json'));
+    logSpy.mockClear();
+    await backupCommand('restore', outFile, { apply: true, mode: 'overwrite', skipSlack: true });
+    const out = output();
+    expect(out).not.toContain('SLACK OWNERSHIP');
+    expect(out).toContain('SKIPPED (--skip-slack)');
+    expect(out).toContain('credentials skipped (--skip-slack)');
+    expect(fs.existsSync(path.join(home, 'slack-credentials.json'))).toBe(false);
+  });
+
+  it('no warning when the archive has no Slack credentials', async () => {
+    fs.unlinkSync(path.join(home, 'slack-credentials.json'));
+    await backupCommand('create', undefined, { out: outFile, chatDb: false });
+    logSpy.mockClear();
+    await backupCommand('restore', outFile, {});
+    expect(output()).not.toContain('SLACK OWNERSHIP');
+  });
+});

@@ -261,3 +261,77 @@ describe('BackupRestoreService project files (item 26)', () => {
     expect(res.restoredProjectFiles).toBe(0);
   });
 });
+
+describe('BackupRestoreService Slack ownership (item 29)', () => {
+  let slackArchive: string;
+
+  beforeEach(async () => {
+    await fs.writeFile(path.join(srcHome, 'slack-credentials.json'), JSON.stringify({ botToken: 'xoxb-1' }), 'utf8');
+    slackArchive = path.join(srcHome, 'wb-slack.tar.gz');
+    await new BackupArchiveService(silent).createArchive({
+      homePath: srcHome,
+      outPath: slackArchive,
+      excludeChatDb: true,
+      createdAt: '2026-06-07T20:00:00.000Z',
+    });
+  });
+
+  it('preview flags the credentials and warns when they would be restored', async () => {
+    const plan = await new BackupRestoreService(silent).preview({
+      archivePath: slackArchive,
+      homePath: targetHome,
+      pathMap: { [srcProj]: targetProj },
+      now: '2026-06-07T21:00:00.000Z',
+    });
+    expect(plan.hasSlackCredentials).toBe(true);
+    expect(plan.slackSkipped).toBe(false);
+    expect(plan.warnings.join('\n')).toContain('BOTH instances will answer the same Slack app');
+  });
+
+  it('archives without the file report hasSlackCredentials=false and no warning', async () => {
+    const plan = await new BackupRestoreService(silent).preview({
+      archivePath: archive,
+      homePath: targetHome,
+      pathMap: { [srcProj]: targetProj },
+      now: '2026-06-07T21:00:00.000Z',
+    });
+    expect(plan.hasSlackCredentials).toBe(false);
+    expect(plan.warnings.join('\n')).not.toContain('Slack');
+  });
+
+  it('restores the credentials by default', async () => {
+    const res = await new BackupRestoreService(silent).restore({
+      archivePath: slackArchive,
+      homePath: targetHome,
+      pathMap: { [srcProj]: targetProj },
+      now: '2026-06-07T21:00:00.000Z',
+    });
+    expect(res.slackSkipped).toBe(false);
+    expect(JSON.parse(readFileSync(path.join(targetHome, 'slack-credentials.json'), 'utf8'))).toEqual({ botToken: 'xoxb-1' });
+  });
+
+  it('skipSlack leaves the credentials out and restores everything else', async () => {
+    const svc = new BackupRestoreService(silent);
+    const plan = await svc.preview({
+      archivePath: slackArchive,
+      homePath: targetHome,
+      pathMap: { [srcProj]: targetProj },
+      now: '2026-06-07T21:00:00.000Z',
+      skipSlack: true,
+    });
+    expect(plan.slackSkipped).toBe(true);
+    expect(plan.warnings.join('\n')).not.toContain('BOTH instances');
+
+    const res = await svc.restore({
+      archivePath: slackArchive,
+      homePath: targetHome,
+      pathMap: { [srcProj]: targetProj },
+      now: '2026-06-07T21:00:00.000Z',
+      skipSlack: true,
+    });
+    expect(res.slackSkipped).toBe(true);
+    expect(existsSync(path.join(targetHome, 'slack-credentials.json'))).toBe(false);
+    expect(existsSync(path.join(targetHome, 'settings.json'))).toBe(true);
+    expect(res.restoredGlobalFiles).toBe(plan.globalFileCount - 1);
+  });
+});

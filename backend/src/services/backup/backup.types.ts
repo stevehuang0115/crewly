@@ -29,6 +29,14 @@ export const PROJECT_FILES_ARCHIVE_DIR = 'files';
 /** Above this estimated project-files size the CLI requires `--yes` (2 GiB). */
 export const PROJECT_FILES_SIZE_WARN_BYTES = 2 * 1024 * 1024 * 1024;
 
+/**
+ * Archive path of the Slack app credentials captured from CREWLY_HOME. Two
+ * instances holding the same credentials both answer the same Slack app,
+ * non-deterministically — restore warns about it and `skipSlack` leaves the
+ * file out (item 29).
+ */
+export const SLACK_CREDENTIALS_ARCHIVE_PATH = 'home/slack-credentials.json';
+
 /** A single captured file recorded in the manifest for integrity + listing. */
 export interface BackupFileEntry {
   /** Path inside the archive, relative to the archive root. */
@@ -182,6 +190,11 @@ export interface RestoreOptions {
   pathMap?: Record<string, string>;
   /** ISO timestamp used to name the pre-restore rollback snapshot. */
   now: string;
+  /**
+   * Leave Slack credentials (`slack-credentials.json`) out of the restore so
+   * this instance does not answer the same Slack app as the source (item 29).
+   */
+  skipSlack?: boolean;
 }
 
 /** One project's restore plan entry. */
@@ -220,6 +233,10 @@ export interface RestorePlan {
   conflicts: { teams: string[]; projects: string[]; projectFiles: string[] };
   /** Whether the archive carries project source files. */
   includesProjectFiles: boolean;
+  /** Whether the archive carries Slack app credentials (see SLACK_CREDENTIALS_ARCHIVE_PATH). */
+  hasSlackCredentials: boolean;
+  /** Whether Slack credentials will be left out (skipSlack requested and present). */
+  slackSkipped: boolean;
   globalFileCount: number;
   projects: RestoreProjectPlan[];
   chatDbIncluded: boolean;
@@ -235,6 +252,8 @@ export interface RestoreResult {
   restoredProjects: number;
   /** Project source files written (0 when the archive carried none). */
   restoredProjectFiles: number;
+  /** True when Slack credentials were in the archive and left out (skipSlack). */
+  slackSkipped: boolean;
   chatDbRestored: boolean;
   /** Where the pre-restore snapshot of the current CREWLY_HOME was saved. */
   rollbackSnapshotPath: string;

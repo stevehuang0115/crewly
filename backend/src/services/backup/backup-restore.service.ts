@@ -35,6 +35,7 @@ import {
   type RestoreResult,
   BACKUP_SCHEMA_VERSION,
   PROJECT_FILES_ARCHIVE_DIR,
+  SLACK_CREDENTIALS_ARCHIVE_PATH,
 } from './backup.types.js';
 
 /** Runtime/session state wiped on restore so agents start clean (relative to home). */
@@ -129,7 +130,7 @@ export class BackupRestoreService {
 
       try {
         // 2) Apply
-        const restoredGlobalFiles = await this.applyGlobals(temp, home);
+        const restoredGlobalFiles = await this.applyGlobals(temp, home, plan.slackSkipped);
         const { restoredProjects, restoredProjectFiles } = await this.applyProjects(temp, manifest, plan);
         const chatDbRestored = await this.applyChatDb(temp, home, manifest);
         await this.rewriteProjectsJson(home, plan);
@@ -141,6 +142,7 @@ export class BackupRestoreService {
           restoredProjects,
           restoredProjectFiles,
           chatDbRestored,
+          slackSkipped: plan.slackSkipped,
           rollbackSnapshotPath,
         });
         return {
@@ -148,6 +150,7 @@ export class BackupRestoreService {
           restoredProjects,
           restoredProjectFiles,
           chatDbRestored,
+          slackSkipped: plan.slackSkipped,
           rollbackSnapshotPath,
           warnings: plan.warnings,
         };
@@ -279,6 +282,16 @@ export class BackupRestoreService {
       });
     }
 
+    // Slack ownership (item 29): both machines holding the same app credentials
+    // would race for every Slack event.
+    const hasSlackCredentials = manifest.global.some((g) => g.path === SLACK_CREDENTIALS_ARCHIVE_PATH);
+    const slackSkipped = hasSlackCredentials && options.skipSlack === true;
+    if (hasSlackCredentials && !slackSkipped) {
+      warnings.push(
+        'Backup contains Slack app credentials (slack-credentials.json). If the source machine is still running, BOTH instances will answer the same Slack app and messages will be handled by whichever responds first. Pass --skip-slack to leave the credentials out, or stop Slack on the source.',
+      );
+    }
+
     const hasConflicts = conflictTeams.length > 0 || conflictProjects.length > 0 || conflictProjectFiles.length > 0;
     return {
       ok: !(options.mode !== 'overwrite' && hasConflicts),
@@ -286,6 +299,8 @@ export class BackupRestoreService {
       sourceHomePath: manifest.sourceHomePath,
       conflicts: { teams: conflictTeams, projects: conflictProjects, projectFiles: conflictProjectFiles },
       includesProjectFiles,
+      hasSlackCredentials,
+      slackSkipped,
       globalFileCount: manifest.global.length,
       projects,
       chatDbIncluded: manifest.chatDb.included,
@@ -295,10 +310,15 @@ export class BackupRestoreService {
     };
   }
 
-  /** Copy every manifest global file from temp/home/* into CREWLY_HOME. */
-  private async applyGlobals(temp: string, home: string): Promise<number> {
+  /**
+   * Copy every manifest global file from temp/home/* into CREWLY_HOME.
+   *
+   * @param skipSlack - Leave `slack-credentials.json` out (item 29)
+   */
+  private async applyGlobals(temp: string, home: string, skipSlack = false): Promise<number> {
     let n = 0;
     for (const g of (await this.readManifest(temp)).global) {
+      if (skipSlack && g.path === SLACK_CREDENTIALS_ARCHIVE_PATH) continue;
       // g.path = 'home/<rel>'
       const rel = g.path.replace(/^home\//, '');
       const src = path.join(temp, ...g.path.split('/'));

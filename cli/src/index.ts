@@ -146,6 +146,7 @@ program
   .option('-y, --yes', 'Continue even when project files exceed the 2 GB warning threshold (create)')
   .option('--mode <mode>', 'Restore conflict mode: abort (default) | overwrite. Project files are never written into a non-empty directory without overwrite')
   .option('--map <mapping...>', 'Restore source→target path remap, OLD=NEW (repeatable); project files and .crewly follow the mapped path')
+  .option('--skip-slack', 'Restore without Slack credentials (slack-credentials.json). Two instances sharing one Slack app answer non-deterministically — use this when the source machine keeps Slack')
   .option('--apply', 'Apply the restore (without this, restore is a dry-run preview)')
   // Explicit arity: commander appends the Command object as a trailing
   // argument, which must not land in backupCommandAndExit's `exit` parameter.

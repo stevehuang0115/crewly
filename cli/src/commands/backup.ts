@@ -47,6 +47,8 @@ export interface BackupCommandOptions {
   exclude?: string[];
   /** Skip the size confirmation when project files exceed the warning threshold (create). */
   yes?: boolean;
+  /** Leave Slack credentials out of the restore (restore). */
+  skipSlack?: boolean;
 }
 
 /** Human-readable byte size. */
@@ -108,7 +110,7 @@ export async function backupCommand(
     default:
       console.log(chalk.red(`Unknown backup action: ${action}`));
       console.log(chalk.gray('Usage: crewly backup create [--out <file>] [--no-chat-db] [--include-project-files] [--exclude <glob>]... [--yes]'));
-      console.log(chalk.gray('       crewly backup restore <file> [--mode overwrite] [--map OLD=NEW] [--apply]'));
+      console.log(chalk.gray('       crewly backup restore <file> [--mode overwrite] [--map OLD=NEW] [--skip-slack] [--apply]'));
       process.exitCode = 1;
   }
 }
@@ -232,6 +234,22 @@ async function confirmProjectFilesSize(
 }
 
 /**
+ * Print the Slack ownership warning (item 29): one Slack app must be answered
+ * by exactly one Crewly instance.
+ */
+function printSlackOwnershipWarning(): void {
+  const line = '!'.repeat(72);
+  console.log(chalk.yellow(`\n  ${line}`));
+  console.log(chalk.yellow.bold('  !!  SLACK OWNERSHIP: this backup carries slack-credentials.json.'));
+  console.log(chalk.yellow('  !!  If the source machine is still running, BOTH instances will answer the'));
+  console.log(chalk.yellow('  !!  same Slack app and each message goes to whichever responds first —'));
+  console.log(chalk.yellow('  !!  replies, threads and approvals become non-deterministic.'));
+  console.log(chalk.yellow('  !!  Decide who owns Slack: restore with --skip-slack to keep it on the'));
+  console.log(chalk.yellow('  !!  source, or stop / disconnect Slack on the source before applying.'));
+  console.log(chalk.yellow(`  ${line}\n`));
+}
+
+/**
  * Restore a workspace archive. Dry-run preview by default; `--apply` to commit.
  *
  * @param target - Archive file path
@@ -257,7 +275,14 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
   }
 
   const svc = new BackupRestoreService();
-  const restoreOpts = { archivePath: target, homePath: home, mode: mode as 'abort' | 'overwrite', pathMap, now: new Date().toISOString() };
+  const restoreOpts = {
+    archivePath: target,
+    homePath: home,
+    mode: mode as 'abort' | 'overwrite',
+    pathMap,
+    now: new Date().toISOString(),
+    skipSlack: options.skipSlack === true,
+  };
 
   // Always show the plan first.
   const plan = await svc.preview(restoreOpts);
@@ -277,6 +302,14 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
   if (plan.conflicts.projectFiles.length) {
     console.log(chalk.yellow(`  Conflicts: project files would overwrite ${plan.conflicts.projectFiles.length} non-empty director${plan.conflicts.projectFiles.length === 1 ? 'y' : 'ies'}`));
   }
+  if (plan.hasSlackCredentials) {
+    if (plan.slackSkipped) {
+      console.log(chalk.gray('  Slack       credentials in backup — SKIPPED (--skip-slack); this machine will not answer the Slack app'));
+    } else {
+      console.log(`  ${chalk.bold('Slack')}       credentials in backup — will be restored`);
+      printSlackOwnershipWarning();
+    }
+  }
   for (const w of plan.warnings) console.log(chalk.yellow(`  ⚠ ${w}`));
   console.log(chalk.gray(`  Discards: ${plan.discarded.join(', ')}`));
 
@@ -294,6 +327,9 @@ async function runRestore(target: string | undefined, options: BackupCommandOpti
     console.log(`  ${chalk.bold('Projects')}   ${res.restoredProjects}`);
     if (plan.includesProjectFiles) console.log(`  ${chalk.bold('Files')}      ${res.restoredProjectFiles} project files`);
     console.log(`  ${chalk.bold('chat.db')}    ${res.chatDbRestored ? 'restored' : 'not in backup'}`);
+    if (plan.hasSlackCredentials) {
+      console.log(`  ${chalk.bold('Slack')}      ${res.slackSkipped ? 'credentials skipped (--skip-slack)' : 'credentials restored — make sure the source machine no longer runs Slack'}`);
+    }
     console.log(`  ${chalk.bold('Rollback')}   ${res.rollbackSnapshotPath}`);
     console.log(chalk.gray('\n  Restart Crewly so agents pick up the restored workspace.'));
   } catch (err) {
