@@ -1298,6 +1298,15 @@ export class AgentRegistrationService {
 	 */
 	private async detectAndStoreSessionId(sessionName: string, projectPath: string): Promise<void> {
 		try {
+			// A launch with a preset or resumed id already knows the answer. The
+			// "newest transcript in the project dir" guess below is only for
+			// legacy sessions — with several agents sharing a cwd it picks the
+			// wrong agent's (or an older) conversation, and did exactly that 17 s
+			// after a preset launch on 2026-09-18.
+			if (getSessionStatePersistence().getSessionId(sessionName)) {
+				this.logger.debug('Session id already known — skipping filesystem detection', { sessionName });
+				return;
+			}
 			const slug = projectPath.replace(/\//g, '-');
 			const claudeProjectDir = path.join(os.homedir(), '.claude', 'projects', slug);
 

@@ -1727,6 +1727,22 @@ describe('AgentRegistrationService', () => {
 		});
 	});
 
+	describe('detectAndStoreSessionId', () => {
+		it('never overwrites a known (preset or resumed) session id with a filesystem guess', async () => {
+			const updateSessionId = jest.fn();
+			(sessionModule.getSessionStatePersistence as any).mockReturnValue({
+				registerSession: jest.fn(),
+				unregisterSession: jest.fn(),
+				isSessionRegistered: jest.fn().mockReturnValue(true),
+				isRestoredSession: jest.fn().mockReturnValue(false),
+				getSessionId: jest.fn().mockReturnValue('preset-uuid'),
+				updateSessionId,
+			});
+			await (service as any).detectAndStoreSessionId('test-session', '/test/project');
+			expect(updateSessionId).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('session resume via --resume CLI flag', () => {
 		it('should inject --resume flag for restored Claude Code sessions with stored session ID', async () => {
 			// Mark session as restored with a stored session ID
