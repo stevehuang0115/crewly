@@ -26,6 +26,7 @@ jest.mock('chalk', () => ({
 }));
 
 const mockExecAsync = jest.fn();
+const mockExecSync = jest.fn((_cmd: string): string => '');
 jest.mock('child_process', () => ({
 	exec: jest.fn(
 		(
@@ -55,6 +56,7 @@ jest.mock('child_process', () => ({
 		},
 	),
 	spawn: jest.fn(),
+	execSync: jest.fn((cmd: string) => mockExecSync(cmd)),
 }));
 
 jest.mock('../../../config/index.js', () => ({
@@ -81,6 +83,7 @@ jest.mock('fs', () => ({
 
 import {
 	serviceCommand,
+	captureServiceEnvironment,
 	generateCommandFile,
 	generateSystemdUnit,
 	generateLinuxWrapper,
@@ -702,6 +705,14 @@ describe('generateCommandFile', () => {
 		expect(content).toContain('.zshrc');
 	});
 
+	it('also exports the captured PATH/node and sources service.env', () => {
+		const content = generateCommandFile('/any/path', fakeEnv);
+		expect(content).toContain('export PATH="/opt/npm/bin:/opt/node/bin:/usr/local/bin:/usr/bin"');
+		expect(content).toContain('NODE_BIN="/opt/node/bin/node"');
+		expect(content).toContain('SERVICE_ENV="$HOME/.crewly/service.env"');
+		expect(content).toContain('"$NODE_BIN" dist/cli/cli/src/index.js start');
+	});
+
 	it('includes PID-based duplicate prevention', () => {
 		const content = generateCommandFile('/any/path');
 		expect(content).toContain('PIDFILE');
@@ -761,9 +772,43 @@ describe('generateSystemdUnit', () => {
 		expect(content).toContain('RestartSec=5');
 	});
 
+	it('loads the optional ~/.crewly/service.env (missing file tolerated)', () => {
+		const content = generateSystemdUnit('/any/path');
+		expect(content).toContain('EnvironmentFile=-%h/.crewly/service.env');
+	});
+
 	it('targets default.target for user services', () => {
 		const content = generateSystemdUnit('/any/path');
 		expect(content).toContain('WantedBy=default.target');
+	});
+});
+
+/** Deterministic environment for wrapper-generation assertions. */
+const fakeEnv = {
+	nodeBin: '/opt/node/bin/node',
+	npmGlobalBin: '/opt/npm/bin',
+	path: '/usr/local/bin:/usr/bin',
+};
+
+describe('captureServiceEnvironment', () => {
+	beforeEach(() => {
+		jest.clearAllMocks();
+	});
+
+	it('captures execPath, npm prefix bin and PATH', () => {
+		mockExecSync.mockReturnValue('/usr/local\n');
+		const env = captureServiceEnvironment();
+		expect(env.nodeBin).toBe(process.execPath);
+		expect(env.npmGlobalBin).toBe('/usr/local/bin');
+		expect(env.path).toBe(process.env.PATH);
+		expect(mockExecSync).toHaveBeenCalledWith('npm prefix -g');
+	});
+
+	it('degrades to null npm bin when npm is unavailable', () => {
+		mockExecSync.mockImplementation(() => {
+			throw new Error('npm: not found');
+		});
+		expect(captureServiceEnvironment().npmGlobalBin).toBeNull();
 	});
 });
 
@@ -773,9 +818,42 @@ describe('generateLinuxWrapper', () => {
 		expect(content).toContain('CREWLY_DIR="/path/to/crewly"');
 	});
 
-	it('sources bashrc for NVM/PATH', () => {
-		const content = generateLinuxWrapper('/any/path');
-		expect(content).toContain('.bashrc');
+	it('does NOT source .bashrc (finding 9: it returns early under systemd)', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).not.toContain('source "$HOME/.bashrc"');
+	});
+
+	it('exports the captured PATH with npm global bin and node dir first', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('export PATH="/opt/npm/bin:/opt/node/bin:/usr/local/bin:/usr/bin"');
+	});
+
+	it('pins NODE_BIN to the absolute node binary and execs it', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('NODE_BIN="/opt/node/bin/node"');
+		expect(content).toContain('exec "$NODE_BIN" dist/cli/cli/src/index.js start');
+	});
+
+	it('sources ~/.crewly/service.env when present (with allexport)', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('SERVICE_ENV="$HOME/.crewly/service.env"');
+		expect(content).toContain('set -a');
+		expect(content).toContain('source "$SERVICE_ENV"');
+	});
+
+	it('lets service.env override NODE_ENV', () => {
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('export NODE_ENV="${NODE_ENV:-development}"');
+	});
+
+	it('tolerates an unknown npm global bin dir', () => {
+		const content = generateLinuxWrapper('/any/path', { ...fakeEnv, npmGlobalBin: null });
+		expect(content).toContain('export PATH="/opt/node/bin:/usr/local/bin:/usr/bin"');
+	});
+
+	it('de-duplicates PATH entries already present in the captured PATH', () => {
+		const content = generateLinuxWrapper('/any/path', { ...fakeEnv, path: '/opt/node/bin:/usr/bin' });
+		expect(content).toContain('export PATH="/opt/npm/bin:/opt/node/bin:/usr/bin"');
 	});
 
 	it('writes PID file', () => {
@@ -785,8 +863,8 @@ describe('generateLinuxWrapper', () => {
 	});
 
 	it('uses exec to replace shell with node', () => {
-		const content = generateLinuxWrapper('/any/path');
-		expect(content).toContain('exec node');
+		const content = generateLinuxWrapper('/any/path', fakeEnv);
+		expect(content).toContain('exec "$NODE_BIN"');
 	});
 
 	it('includes native module arch check', () => {
