@@ -23,6 +23,7 @@ import { updateAgentHeartbeat } from '../agent-heartbeat.service.js';
 import { PtyActivityTrackerService } from '../pty-activity-tracker.service.js';
 import { TokenUsageService } from '../../monitoring/token-usage.service.js';
 import { getSettingsService } from '../../settings/settings.service.js';
+import { API_KEY_ENV_VARS, API_KEY_PROVIDERS } from '../../../types/settings.types.js';
 import { LoggerService } from '../../core/logger.service.js';
 import {
   ADDON_CONSTANTS,
@@ -410,9 +411,30 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     }
   }
 
-  private async spawnAgentProcess(config: CrewlyAgentConfig): Promise<void> {
-    const { command, useShell } = await this.resolveRuntimeCommand();
-    const env = {
+  /**
+   * Build the environment the agent child process is spawned with.
+   *
+   * The crewly-agent runtime resolves API keys from its own environment only
+   * (see model-manager.ts) — by design it does not reach into OSS settings.
+   * The bridging it expects instead is that the process spawning it sets the
+   * keys, so this is where Settings → API Keys reaches the runtime. Until it
+   * did, a key entered in the UI was written to settings.json and went no
+   * further: the child inherited whatever the engine's own shell happened to
+   * export, and an agent on a DeepSeek/OpenAI/Gemini model only worked on the
+   * machine where the operator had exported that key by hand.
+   *
+   * Keys are resolved through the settings override chain (skill → runtime →
+   * global → env) with this runtime as context, so a per-runtime override for
+   * crewly-agent applies. They are layered after the inherited environment so
+   * a configured key wins over an exported one, and a provider with no key
+   * leaves its variable untouched rather than exporting an empty value that
+   * would shadow anything the child could otherwise have inherited.
+   *
+   * @param config - The agent configuration being spawned
+   * @returns The complete child environment
+   */
+  private async buildChildEnv(config: CrewlyAgentConfig): Promise<NodeJS.ProcessEnv> {
+    const env: NodeJS.ProcessEnv = {
       ...process.env,
       [ENV_CONSTANTS.CREWLY_SESSION_NAME]: config.sessionName,
       [ENV_CONSTANTS.CREWLY_ROLE]: this.currentRoleName,
@@ -420,6 +442,26 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       [ENV_CONSTANTS.CREWLY_PROJECT_PATH]: config.projectPath || this.projectRoot,
       [ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
     };
+
+    const settings = getSettingsService();
+    const context = { runtime: RUNTIME_TYPES.CREWLY_AGENT };
+    for (const provider of API_KEY_PROVIDERS) {
+      const key = await settings.getApiKey(provider, context);
+      if (!key) continue;
+      // A provider can be read under more than one name (Gemini answers to
+      // GOOGLE_GENERATIVE_AI_API_KEY and GEMINI_API_KEY); set every alias so
+      // the runtime finds it whichever one it checks first.
+      for (const envVar of API_KEY_ENV_VARS[provider]) {
+        env[envVar] = key;
+      }
+    }
+
+    return env;
+  }
+
+  private async spawnAgentProcess(config: CrewlyAgentConfig): Promise<void> {
+    const { command, useShell } = await this.resolveRuntimeCommand();
+    const env = await this.buildChildEnv(config);
 
     // Pre-flight check: when running the default `crewly-agent` binary
     // (no shell, no custom user command), confirm it resolves on PATH

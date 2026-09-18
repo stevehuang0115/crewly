@@ -17,8 +17,9 @@
 // Controllable settings mock — resolveRuntimeCommand() reads
 // settings.general.runtimeCommands['crewly-agent'] via getSettingsService().
 const mockGetSettings = jest.fn();
+const mockGetApiKey = jest.fn();
 jest.mock('../../settings/settings.service.js', () => ({
-  getSettingsService: jest.fn(() => ({ getSettings: mockGetSettings })),
+  getSettingsService: jest.fn(() => ({ getSettings: mockGetSettings, getApiKey: mockGetApiKey })),
 }));
 
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
@@ -221,6 +222,139 @@ describe('CrewlyAgentExternalRuntimeService — public API contract', () => {
  * status reset. These tests pin that the parent now gives up and rebuilds the
  * runtime.
  */
+/**
+ * Settings → API Keys must reach the crewly-agent child through its spawn
+ * environment. The runtime reads keys from env only (model-manager.ts), and
+ * crewly-agent never passes through the PTY key-injection block in
+ * agent-registration.service — it returns from the in-process branch first —
+ * so this is the only bridge. Before it existed, a DeepSeek key entered in the
+ * UI landed in settings.json and stopped; the agent only ran on the machine
+ * whose shell had exported DEEPSEEK_API_KEY by hand.
+ */
+describe('CrewlyAgentExternalRuntimeService.buildChildEnv — Settings API keys reach the child', () => {
+  type Internals = {
+    currentRoleName: string;
+    buildChildEnv: (config: unknown) => Promise<NodeJS.ProcessEnv>;
+  };
+
+  const CONFIG = {
+    sessionName: 'crewly-orc',
+    apiBaseUrl: 'http://localhost:8787',
+    projectPath: '/tmp/project',
+  };
+
+  const KEY_VARS = [
+    'DEEPSEEK_API_KEY',
+    'ANTHROPIC_API_KEY',
+    'OPENAI_API_KEY',
+    'GOOGLE_GENERATIVE_AI_API_KEY',
+    'GEMINI_API_KEY',
+  ];
+  const savedEnv: Record<string, string | undefined> = {};
+
+  function makeService(): Internals {
+    const svc = new CrewlyAgentExternalRuntimeService({} as never, '/tmp/project');
+    const inner = svc as unknown as Internals;
+    inner.currentRoleName = 'orchestrator';
+    return inner;
+  }
+
+  /** Answer only the given providers; everything else resolves to nothing. */
+  function keysFor(keys: Partial<Record<string, string>>): void {
+    mockGetApiKey.mockImplementation(async (provider: string) => keys[provider]);
+  }
+
+  beforeEach(() => {
+    mockGetApiKey.mockReset();
+    // Isolate from the developer's own shell so an exported key cannot make a
+    // test pass (or fail) by accident.
+    for (const v of KEY_VARS) {
+      savedEnv[v] = process.env[v];
+      delete process.env[v];
+    }
+  });
+
+  afterEach(() => {
+    for (const v of KEY_VARS) {
+      if (savedEnv[v] === undefined) delete process.env[v];
+      else process.env[v] = savedEnv[v];
+    }
+  });
+
+  it('puts a DeepSeek key from settings into DEEPSEEK_API_KEY', async () => {
+    keysFor({ deepseek: 'sk-deepseek-from-settings' });
+
+    const env = await makeService().buildChildEnv(CONFIG);
+
+    expect(env.DEEPSEEK_API_KEY).toBe('sk-deepseek-from-settings');
+  });
+
+  // The override chain is only worth having if its answer beats a value the
+  // engine happened to inherit from the operator's shell.
+  it('lets a configured key win over one inherited from the engine environment', async () => {
+    process.env.DEEPSEEK_API_KEY = 'sk-from-shell';
+    keysFor({ deepseek: 'sk-from-settings' });
+
+    const env = await makeService().buildChildEnv(CONFIG);
+
+    expect(env.DEEPSEEK_API_KEY).toBe('sk-from-settings');
+  });
+
+  it('sets every alias a provider answers to', async () => {
+    keysFor({ gemini: 'gm-key' });
+
+    const env = await makeService().buildChildEnv(CONFIG);
+
+    expect(env.GOOGLE_GENERATIVE_AI_API_KEY).toBe('gm-key');
+    expect(env.GEMINI_API_KEY).toBe('gm-key');
+  });
+
+  it('covers all four providers, not just DeepSeek', async () => {
+    keysFor({ deepseek: 'd', anthropic: 'a', openai: 'o', gemini: 'g' });
+
+    const env = await makeService().buildChildEnv(CONFIG);
+
+    expect(env.DEEPSEEK_API_KEY).toBe('d');
+    expect(env.ANTHROPIC_API_KEY).toBe('a');
+    expect(env.OPENAI_API_KEY).toBe('o');
+    expect(env.GEMINI_API_KEY).toBe('g');
+  });
+
+  // Exporting an empty value would shadow a key the child could otherwise
+  // have inherited; a provider with nothing configured must be left alone.
+  it('leaves a variable untouched when no key is configured for its provider', async () => {
+    process.env.OPENAI_API_KEY = 'sk-inherited';
+    keysFor({ deepseek: 'sk-deepseek' });
+
+    const env = await makeService().buildChildEnv(CONFIG);
+
+    expect(env.OPENAI_API_KEY).toBe('sk-inherited');
+    expect(env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+
+  // Resolving with this runtime as context is what makes a per-runtime
+  // override for crewly-agent apply instead of the global key.
+  it('resolves each key with crewly-agent as the runtime context', async () => {
+    keysFor({});
+
+    await makeService().buildChildEnv(CONFIG);
+
+    for (const provider of ['gemini', 'anthropic', 'openai', 'deepseek']) {
+      expect(mockGetApiKey).toHaveBeenCalledWith(provider, { runtime: 'crewly-agent' });
+    }
+  });
+
+  it('still carries the Crewly session variables the child needs', async () => {
+    keysFor({});
+
+    const env = await makeService().buildChildEnv(CONFIG);
+
+    expect(env.CREWLY_SESSION_NAME).toBe('crewly-orc');
+    expect(env.CREWLY_API_URL).toBe('http://localhost:8787');
+    expect(env.CREWLY_PROJECT_PATH).toBe('/tmp/project');
+  });
+});
+
 describe('CrewlyAgentExternalRuntimeService — IPC deadline and recycle', () => {
   /** Escape hatch onto the private fields the deadline path touches. */
   type Internals = {

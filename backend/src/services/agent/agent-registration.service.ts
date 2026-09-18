@@ -2997,7 +2997,11 @@ Loop until done, blocked, or explicitly reassigned:
 				this.projectRoot
 			);
 
-			// Inject API keys from settings (with override chain) for all runtimes
+			// Inject API keys from settings (with override chain) for the PTY
+			// runtimes (claude-code, gemini-cli, codex-cli). crewly-agent never
+			// reaches this block — it returns from the in-process branch above —
+			// and gets its keys via CrewlyAgentExternalRuntimeService.buildChildEnv
+			// on the child's spawn environment instead.
 			const settingsService = getSettingsService();
 			const runtimeContext = { runtime: runtimeType };
 
