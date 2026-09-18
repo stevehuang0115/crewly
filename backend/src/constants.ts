@@ -648,6 +648,18 @@ export const ORC_STATUS_FORWARDING = {
 } as const;
 
 /**
+ * `skill_output` Key Result measurement (KRSkillMeasurerService).
+ */
+export const KR_SKILL_MEASURER_CONSTANTS = {
+	/** Kill a measuring skill after this long */
+	TIMEOUT_MS: 60_000,
+	/** Largest stdout accepted from a measuring skill */
+	MAX_OUTPUT_BYTES: 1_000_000,
+	/** Dot path read when `measurementConfig.jsonPath` is absent */
+	DEFAULT_JSON_PATH: '.value',
+} as const;
+
+/**
  * Constants for agent-initiated Slack posts (the `slack-post` skill).
  */
 export const SLACK_AGENT_POST_CONSTANTS = {

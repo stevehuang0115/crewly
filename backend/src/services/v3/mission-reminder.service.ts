@@ -23,6 +23,7 @@ import { StorageService } from '../core/storage.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { OKRReviewService } from './okr-review.service.js';
 import { MissionPeriodService } from './mission-period.service.js';
+import { KRSkillMeasurerService } from './kr-skill-measurer.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -239,6 +240,8 @@ export class MissionReminderService {
     reviewsAutoContinued: number;
     /** Missions flagged stale this sweep (`mission:stale` published, staleCycles bumped). */
     staleFlagged: number;
+    /** KRs re-measured from skill output this sweep */
+    skillMeasured: number;
   }> {
     const now = new Date();
     const previousSweepAt = this.lastSweepAt;
@@ -257,6 +260,7 @@ export class MissionReminderService {
       reviewsSkipped: 0,
       reviewsAutoContinued: 0,
       staleFlagged: 0,
+      skillMeasured: 0,
     };
 
     this.logger.info('Starting Mission OKR reminder sweep', { count: missions.length });
@@ -290,6 +294,19 @@ export class MissionReminderService {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+      }
+
+      // Refresh skill-measured KRs before reading progress, so the sweep
+      // reviews this hour's numbers rather than whatever was typed in last.
+      try {
+        const measured = await KRSkillMeasurerService.getInstance().measureMission(mission.id);
+        const recorded = measured.filter((m) => m.status === 'recorded').length;
+        if (recorded > 0) result.skillMeasured += recorded;
+      } catch (err) {
+        this.logger.warn('skill_output measurement failed for mission', {
+          missionId: mission.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
 
       let summary: MissionOKRSummary | null = null;
