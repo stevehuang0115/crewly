@@ -241,6 +241,21 @@ describe('OKRCascadeService', () => {
       expect(readMission(childId).approval?.state).toBe('approved');
     });
 
+    it('persists the optional owner audit trail (approvedBy + token fingerprint)', async () => {
+      seedMission({ id: 'co-1', level: 'company', approval: { state: 'approved' } });
+      const service = OKRCascadeService.getInstance();
+      const { childMissionIds } = await service.proposeDecomposition('co-1', minimalInput(), 'tl');
+      const childId = childMissionIds[0];
+
+      const approved = await service.approveDecomposition(childId, 'owner', {
+        approvedBy: 'owner',
+        approverTokenFingerprint: 'deadbeef',
+      });
+      expect(approved.approval?.approvedBy).toBe('owner');
+      expect(approved.approval?.approverTokenFingerprint).toBe('deadbeef');
+      expect(readMission(childId).approval?.approverTokenFingerprint).toBe('deadbeef');
+    });
+
     it('rejects approving an already-approved (terminal) mission', async () => {
       seedMission({ id: 'co-1', level: 'company', approval: { state: 'approved' } });
       const service = OKRCascadeService.getInstance();
@@ -264,6 +279,18 @@ describe('OKRCascadeService', () => {
       expect(rejected.approval?.state).toBe('rejected');
       expect(rejected.approval?.rejectionReason).toBe('too vague');
       expect(rejected.approval?.decidedBy).toBe('steve');
+    });
+
+    it('persists the optional owner audit trail on rejection', async () => {
+      seedMission({ id: 'co-1', level: 'company', approval: { state: 'approved' } });
+      const service = OKRCascadeService.getInstance();
+      const { childMissionIds } = await service.proposeDecomposition('co-1', minimalInput(), 'tl');
+      const rejected = await service.rejectDecomposition(childMissionIds[0], 'owner', 'nope', {
+        approvedBy: 'owner',
+        approverTokenFingerprint: 'cafebabe',
+      });
+      expect(rejected.approval?.approvedBy).toBe('owner');
+      expect(rejected.approval?.approverTokenFingerprint).toBe('cafebabe');
     });
 
     it('requires a non-empty reason', async () => {

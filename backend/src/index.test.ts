@@ -357,3 +357,67 @@ describe('CrewlyServer headless mode', () => {
 		});
 	});
 });
+
+// ---------------------------------------------------------------------------
+// StartupConfig bindHost resolution + /api token gate mounting
+// ---------------------------------------------------------------------------
+
+import { API_SECURITY_CONSTANTS } from './constants.js';
+import { apiTokenMiddleware } from './middleware/api-token.middleware.js';
+import { resetApiTokenCache } from './services/core/api-token.service.js';
+
+/** Replicates the bindHost resolution in CrewlyServer's constructor. */
+function resolveBindHost(config?: { bindHost?: string }): string {
+	return (
+		config?.bindHost ||
+		process.env[API_SECURITY_CONSTANTS.ENV.BIND_HOST] ||
+		API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST
+	);
+}
+
+describe('CrewlyServer bindHost + API token gate', () => {
+	const originalEnv = { ...process.env };
+
+	afterEach(() => {
+		process.env = { ...originalEnv };
+		resetApiTokenCache();
+	});
+
+	it('defaults bindHost to 0.0.0.0 for backward compatibility', () => {
+		delete process.env.CREWLY_BIND_HOST;
+		expect(resolveBindHost()).toBe('0.0.0.0');
+	});
+
+	it('honours CREWLY_BIND_HOST and lets config override it', () => {
+		process.env.CREWLY_BIND_HOST = '127.0.0.1';
+		expect(resolveBindHost()).toBe('127.0.0.1');
+		expect(resolveBindHost({ bindHost: '::1' })).toBe('::1');
+	});
+
+	it('mounted in front of /api: loopback passes, remote callers need the token, /health stays open', async () => {
+		process.env.CREWLY_API_TOKEN = 'idx-test-token';
+		const app = express();
+		app.use('/api', apiTokenMiddleware);
+		app.get('/api/teams', (_req, res) => res.json({ success: true, data: [] }));
+		app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+
+		// supertest connects over loopback → no token needed.
+		expect((await request(app).get('/api/teams')).status).toBe(200);
+		expect((await request(app).get('/health')).status).toBe(200);
+
+		// Simulate a LAN caller by trusting a forwarded address.
+		process.env.CREWLY_TRUST_PROXY = '1';
+		const denied = await request(app).get('/api/teams').set('X-Forwarded-For', '192.168.1.20');
+		expect(denied.status).toBe(401);
+		expect(denied.body).toMatchObject({ success: false, error: 'unauthorized' });
+
+		const allowed = await request(app)
+			.get('/api/teams')
+			.set('X-Forwarded-For', '192.168.1.20')
+			.set('X-Crewly-Token', 'idx-test-token');
+		expect(allowed.status).toBe(200);
+
+		// /health is outside /api and is never gated.
+		expect((await request(app).get('/health').set('X-Forwarded-For', '192.168.1.20')).status).toBe(200);
+	});
+});

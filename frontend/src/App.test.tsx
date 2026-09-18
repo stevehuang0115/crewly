@@ -6,7 +6,7 @@
  */
 
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
 import { Outlet } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import App from './App';
@@ -98,5 +98,17 @@ describe('App routes', () => {
     render(<App />);
 
     expect(await screen.findByText('WorkItems Page')).toBeInTheDocument();
+  });
+});
+
+describe('App token prompt', () => {
+  it('shows the API token prompt when a token challenge is raised', async () => {
+    window.history.pushState({}, '', '/');
+    render(<App />);
+    expect(screen.queryByTestId('api-token-prompt')).toBeNull();
+    act(() => {
+      window.dispatchEvent(new CustomEvent('crewly:api-token-required'));
+    });
+    expect(await screen.findByTestId('api-token-prompt')).toBeInTheDocument();
   });
 });

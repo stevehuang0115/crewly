@@ -79,6 +79,29 @@ describe('WebSocketService', () => {
   });
 
   describe('Connection Management', () => {
+    it('passes the stored API token as the `token` query param on the handshake', async () => {
+      const ioMock = (await import('socket.io-client')).default as unknown as ReturnType<typeof vi.fn>;
+      ioMock.mockClear();
+      localStorage.setItem('crewly_api_token', 'ws-token');
+      try {
+        service.connect();
+        expect(ioMock).toHaveBeenCalledWith(
+          expect.any(String),
+          expect.objectContaining({ query: { token: 'ws-token' } }),
+        );
+      } finally {
+        localStorage.removeItem('crewly_api_token');
+      }
+    });
+
+    it('sends no token query on loopback (nothing stored)', async () => {
+      const ioMock = (await import('socket.io-client')).default as unknown as ReturnType<typeof vi.fn>;
+      ioMock.mockClear();
+      localStorage.removeItem('crewly_api_token');
+      service.connect();
+      expect(ioMock).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ query: {} }));
+    });
+
     it('connects successfully when socket connects', async () => {
       const connectPromise = service.connect();
 

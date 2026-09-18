@@ -220,6 +220,25 @@ export interface ApprovalState {
   decidedAt?: string;
   /** Required when `state === 'rejected'`. */
   rejectionReason?: string;
+  /**
+   * Audit: principal that made the decision. Decisions taken through the
+   * API-token-guarded approve/reject routes record `'owner'` — agents
+   * cannot reach those routes.
+   */
+  approvedBy?: string;
+  /** Audit: first 8 hex of sha256(API token) used for the decision. */
+  approverTokenFingerprint?: string;
+}
+
+/**
+ * Audit trail attached to an owner decision (approve/reject) so the
+ * persisted mission records WHO decided and WITH WHICH credential.
+ */
+export interface ApprovalAudit {
+  /** Principal recorded on the decision (e.g. `'owner'`). */
+  approvedBy: string;
+  /** First 8 hex of sha256(API token) presented for the decision. */
+  approverTokenFingerprint: string;
 }
 
 // ---------------------------------------------------------------------------

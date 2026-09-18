@@ -57,6 +57,7 @@ import type {
   MissionLevel,
   ProposalState,
   ApprovalState,
+  ApprovalAudit,
   UpdateMissionInput,
 } from './mission.types.js';
 
@@ -848,6 +849,13 @@ describe('Mission Types', () => {
         rejectionReason: 'scope too broad',
       };
       expect(a.state).toBe('rejected');
+    });
+
+    it('ApprovalAudit spreads into ApprovalState for owner decisions', () => {
+      const audit: ApprovalAudit = { approvedBy: 'owner', approverTokenFingerprint: '0123abcd' };
+      const a: ApprovalState = { state: 'approved', decidedBy: 'owner', ...audit };
+      expect(a.approvedBy).toBe('owner');
+      expect(a.approverTokenFingerprint).toHaveLength(8);
     });
   });
 

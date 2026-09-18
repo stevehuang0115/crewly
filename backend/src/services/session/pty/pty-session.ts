@@ -14,7 +14,7 @@ import {
 	DEFAULT_TERMINAL_COLS,
 	DEFAULT_TERMINAL_ROWS,
 } from '../session-backend.interface.js';
-import { PTY_CONSTANTS } from '../../../constants.js';
+import { PTY_CONSTANTS, API_SECURITY_CONSTANTS } from '../../../constants.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
 
 /**
@@ -669,7 +669,13 @@ export class PtySession implements ISession {
 	}
 
 	/**
-	 * Sanitize environment variables, removing undefined values.
+	 * Sanitize environment variables, removing undefined values and the
+	 * owner API token.
+	 *
+	 * `CREWLY_API_TOKEN` is the owner's credential (it unlocks OKR approvals
+	 * and remote API access). Agent sessions must never inherit it, otherwise
+	 * an agent could approve its own proposals or hand the token to a
+	 * remote caller.
 	 *
 	 * @param env - Environment variables object
 	 * @returns Sanitized environment object with string values only
@@ -677,7 +683,7 @@ export class PtySession implements ISession {
 	private sanitizeEnv(env: NodeJS.ProcessEnv): Record<string, string> {
 		const result: Record<string, string> = {};
 		for (const [key, value] of Object.entries(env)) {
-			if (value !== undefined) {
+			if (value !== undefined && key !== API_SECURITY_CONSTANTS.ENV.API_TOKEN) {
 				result[key] = value;
 			}
 		}

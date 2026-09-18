@@ -51,6 +51,7 @@ import {
 	RUNTIME_TYPES,
 	AUDITOR_CONSTANTS,
 	AUDITOR_SCHEDULER_CONSTANTS,
+	API_SECURITY_CONSTANTS,
 	type RuntimeType,
 } from './constants.js';
 import { getSettingsService } from './services/settings/index.js';
@@ -95,6 +96,13 @@ import { createMessagingRouter } from './controllers/messaging/messaging.routes.
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
 import { TokenUsageService } from './services/monitoring/token-usage.service.js';
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
+import {
+	apiTokenMiddleware,
+	socketIoAllowRequest,
+	installWebSocketGate,
+} from './middleware/api-token.middleware.js';
+import { resolveApiToken } from './services/core/api-token.service.js';
+import { isHeadlessEnvironment, describeNetworkExposure } from './utils/network-exposure.utils.js';
 import { RedisCacheService } from './services/cache/redis-cache.service.js';
 import { OrchestratorRestartService } from './services/orchestrator/orchestrator-restart.service.js';
 import { setOrchestratorSetupDependencies } from './services/orchestrator/orchestrator-setup.service.js';
@@ -254,6 +262,10 @@ export class CrewlyServer {
 			autoCommitInterval:
 				config?.autoCommitInterval || parseIntWithFallback(process.env.AUTO_COMMIT_INTERVAL, 30, 'AUTO_COMMIT_INTERVAL'),
 			headless: config?.headless ?? process.env.CREWLY_HEADLESS === 'true',
+			bindHost:
+				config?.bindHost ||
+				process.env[API_SECURITY_CONSTANTS.ENV.BIND_HOST] ||
+				API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST,
 		};
 
 		this.app = express();
@@ -281,6 +293,10 @@ export class CrewlyServer {
 			// that doesn't match /socket.io/ — killing Crewly in Chrome connections before
 			// any data is exchanged (manifests as "Invalid frame header" errors).
 			destroyUpgrade: false,
+			// Non-loopback clients must present the API token (query `token`
+			// or the `crewly_token` cookie). Engine.IO's polling handshake
+			// bypasses Express, so the gate has to live here as well.
+			allowRequest: socketIoAllowRequest,
 		});
 
 		this.initializeServices();
@@ -1084,6 +1100,11 @@ void (async () => {
 	}
 
 	private configureRoutes(): void {
+		// API token gate — loopback callers (local skills, local dashboard)
+		// pass; every other address must present the API token. `/health`,
+		// static assets and the SPA shell are outside `/api` and stay open.
+		this.app.use('/api', apiTokenMiddleware);
+
 		// Agent heartbeat middleware - any API call with X-Agent-Session header updates heartbeat
 		this.app.use('/api', agentHeartbeatMiddleware);
 
@@ -2355,6 +2376,12 @@ void (async () => {
 				const loadedAddons = await addonLoader.loadAddons(this.app, this.httpServer);
 				if (loadedAddons.length > 0) {
 					this.logger.info('Addons loaded successfully', { addons: loadedAddons });
+					// An addon that attaches its own WebSocket gateway wraps
+					// `httpServer.emit` after our gate did; re-install so the
+					// gate is outermost again (double-wrapping is harmless —
+					// an allowed upgrade passes both, a refused one is
+					// answered once by the outer wrapper).
+					installWebSocketGate(this.httpServer);
 				}
 			} catch (addonErr) {
 				this.logger.warn('Addon loading encountered an error (non-fatal)', {
@@ -2991,9 +3018,9 @@ void (async () => {
 		const testServer = createServer();
 
 		return new Promise<void>((resolve, reject) => {
-			testServer.listen(this.config.webPort, () => {
+			testServer.listen(this.config.webPort, this.config.bindHost, () => {
 				testServer.close(() => {
-					this.logger.info('Port is available', { port: this.config.webPort });
+					this.logger.info('Port is available', { port: this.config.webPort, host: this.config.bindHost });
 					resolve();
 				});
 			});
@@ -3008,19 +3035,64 @@ void (async () => {
 		});
 	}
 
+	/**
+	 * Log where the API token lives and how reachable the API is.
+	 *
+	 * Resolving the token here also performs the first-boot generation so
+	 * the file exists (0600) before the first non-loopback caller arrives.
+	 * Emits a WARN for a headless install that binds every interface with
+	 * neither `CREWLY_BIND_HOST` nor `CREWLY_API_TOKEN` set.
+	 */
+	private logNetworkExposure(): void {
+		try {
+			const token = resolveApiToken();
+			const summary = describeNetworkExposure({
+				bindHost: this.config.bindHost,
+				port: this.config.webPort,
+				bindHostExplicit: Boolean(process.env[API_SECURITY_CONSTANTS.ENV.BIND_HOST]),
+				tokenSource: token.source,
+				tokenFilePath: token.filePath,
+				headless: this.config.headless || isHeadlessEnvironment(),
+			});
+			if (token.source === 'generated') {
+				this.logger.info('Generated API token for non-loopback callers', {
+					file: token.filePath,
+					usage: 'crewly token | curl -H "X-Crewly-Token: $(crewly token)" http://<host>:<port>/api/teams',
+				});
+			}
+			if (summary.level === 'warn') {
+				this.logger.warn(summary.message, summary.details);
+			} else {
+				this.logger.info(summary.message, summary.details);
+			}
+		} catch (error) {
+			this.logger.error('Failed to resolve API token', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
 	private async startHttpServer(): Promise<void> {
 		return new Promise<void>((resolve, reject) => {
 			const startTime = Date.now();
 
-			this.httpServer.listen(this.config.webPort, () => {
+			// Outermost upgrade wrapper: every gateway (Socket.IO, browser
+			// bridge, chat-v2, terminal) has attached by now, so this gate
+			// runs before any of them sees a non-loopback upgrade.
+			installWebSocketGate(this.httpServer);
+
+			this.httpServer.listen(this.config.webPort, this.config.bindHost, () => {
 				const duration = Date.now() - startTime;
 				this.logger.info('Crewly server started', {
+					host: this.config.bindHost,
 					port: this.config.webPort,
+					listening: `${this.config.bindHost}:${this.config.webPort}`,
 					durationMs: duration,
 					dashboardUrl: `http://localhost:${this.config.webPort}`,
 					websocketUrl: `ws://localhost:${this.config.webPort}`,
 					home: this.config.crewlyHome
 				});
+				this.logNetworkExposure();
 
 				// B0 (interim) per `.crewly/specs/2026-05-05-trigger-persistence-bug.md`:
 				// Broadcast `system:backend_restarted` exactly once per boot. The

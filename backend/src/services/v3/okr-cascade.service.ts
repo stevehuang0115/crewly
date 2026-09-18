@@ -39,6 +39,7 @@ import {
   MISSION_LEVEL_DEPTH,
   type Mission,
   type MissionLevel,
+  type ApprovalAudit,
 } from '../../types/v2/mission.types.js';
 import type { CreateKeyResultInput } from '../../types/v2/key-result.types.js';
 
@@ -288,11 +289,16 @@ export class OKRCascadeService {
    *
    * @param missionId - ID of the proposed (pending_approval) mission
    * @param decidedBy - Human owner who approved (e.g. "steve")
+   * @param audit - Optional audit trail (principal + token fingerprint)
    * @returns The updated mission
    * @throws If the mission is missing, has no approval state, or the
    *   `pending_approval → approved` transition is illegal
    */
-  async approveDecomposition(missionId: string, decidedBy: string): Promise<Mission> {
+  async approveDecomposition(
+    missionId: string,
+    decidedBy: string,
+    audit?: ApprovalAudit,
+  ): Promise<Mission> {
     const mission = await this.loadMission(missionId);
     if (!mission) {
       throw new Error(`Mission ${missionId} does not exist`);
@@ -312,12 +318,13 @@ export class OKRCascadeService {
         state: APPROVED_STATE,
         decidedBy,
         decidedAt: new Date().toISOString(),
+        ...(audit ?? {}),
       },
       updatedAt: new Date().toISOString(),
     };
     await this.persistMission(decided);
 
-    this.logger.info('Approved OKR decomposition', { missionId, decidedBy });
+    this.logger.info('Approved OKR decomposition', { missionId, decidedBy, ...(audit ?? {}) });
     return decided;
   }
 
@@ -328,6 +335,7 @@ export class OKRCascadeService {
    * @param missionId - ID of the proposed (pending_approval) mission
    * @param decidedBy - Human owner who rejected (e.g. "steve")
    * @param reason - Non-empty explanation surfaced back to the proposing agent
+   * @param audit - Optional audit trail (principal + token fingerprint)
    * @returns The updated mission
    * @throws If the reason is empty, the mission is missing, has no approval
    *   state, or the `pending_approval → rejected` transition is illegal
@@ -336,6 +344,7 @@ export class OKRCascadeService {
     missionId: string,
     decidedBy: string,
     reason: string,
+    audit?: ApprovalAudit,
   ): Promise<Mission> {
     if (!reason || reason.trim().length === 0) {
       throw new Error('Rejection requires a non-empty reason');
@@ -360,12 +369,13 @@ export class OKRCascadeService {
         decidedBy,
         decidedAt: new Date().toISOString(),
         rejectionReason: reason.trim(),
+        ...(audit ?? {}),
       },
       updatedAt: new Date().toISOString(),
     };
     await this.persistMission(decided);
 
-    this.logger.info('Rejected OKR decomposition', { missionId, decidedBy, reason: reason.trim() });
+    this.logger.info('Rejected OKR decomposition', { missionId, decidedBy, reason: reason.trim(), ...(audit ?? {}) });
     return decided;
   }
 

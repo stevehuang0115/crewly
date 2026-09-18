@@ -14,6 +14,7 @@ import {
   ENV_CONSTANTS,
   SERVER_CONSTANTS,
   AUDITOR_CONSTANTS,
+  API_SECURITY_CONSTANTS,
   type AgentStatus,
   type WorkingStatus,
   type AgentRole,
@@ -478,6 +479,31 @@ describe('Crewly Cross-Domain Constants', () => {
     test('heap memory ratio is between 0 and 1', () => {
       expect(SERVER_CONSTANTS.HEAP_MEMORY_RATIO).toBeGreaterThan(0);
       expect(SERVER_CONSTANTS.HEAP_MEMORY_RATIO).toBeLessThanOrEqual(1);
+    });
+  });
+
+  describe('API_SECURITY_CONSTANTS', () => {
+    test('defaults to binding every interface with a loopback alternative', () => {
+      expect(API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST).toBe('0.0.0.0');
+      expect(API_SECURITY_CONSTANTS.LOOPBACK_BIND_HOST).toBe('127.0.0.1');
+      expect(API_SECURITY_CONSTANTS.ENV.BIND_HOST).toBe('CREWLY_BIND_HOST');
+      expect(API_SECURITY_CONSTANTS.ENV.API_TOKEN).toBe('CREWLY_API_TOKEN');
+    });
+
+    test('lists every loopback address form node reports', () => {
+      expect(API_SECURITY_CONSTANTS.LOOPBACK_ADDRESSES).toEqual(
+        expect.arrayContaining(['127.0.0.1', '::1', '::ffff:127.0.0.1']),
+      );
+    });
+
+    test('token file is owner-only and the token is 32 random bytes', () => {
+      expect(API_SECURITY_CONSTANTS.TOKEN_FILE_MODE).toBe(0o600);
+      expect(API_SECURITY_CONSTANTS.TOKEN_BYTES).toBe(32);
+      expect(API_SECURITY_CONSTANTS.FINGERPRINT_HEX_LENGTH).toBe(8);
+    });
+
+    test('header names are lower-case (node normalises incoming headers)', () => {
+      expect(API_SECURITY_CONSTANTS.TOKEN_HEADER).toBe(API_SECURITY_CONSTANTS.TOKEN_HEADER.toLowerCase());
     });
   });
 
