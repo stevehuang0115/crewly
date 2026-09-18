@@ -66,6 +66,8 @@ import { ThreadStatusQueueService } from './services/messaging/thread-status-que
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
 import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.js';
+import { MissionReminderService } from './services/v3/mission-reminder.service.js';
+import { OKRReviewService } from './services/v3/okr-review.service.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
 import {
@@ -655,6 +657,12 @@ void (async () => {
 		// `kr-completion.subscriber.ts`.
 		this.krCompletionSubscriber = KRCompletionSubscriber.boot(this.eventBusService);
 		this.krCompletionSubscriber.start();
+
+		// OKR loop closure: give the reminder sweep (mission:stale) and the
+		// review service (mission:replanned) a bus to publish on. Both were
+		// declared + bridged events with no publisher before this.
+		MissionReminderService.getInstance().setEventBusService(this.eventBusService);
+		OKRReviewService.getInstance().setEventBusService(this.eventBusService);
 
 		// LEARN-1: subscribe to terminal task / mission:replanned events and
 		// auto-record a learning entry via MemoryService.recordLearning. Closes
@@ -3168,7 +3176,6 @@ void (async () => {
 		// Scans active missions and sends Slack alerts for off-track KRs
 		setInterval(async () => {
 			try {
-				const { MissionReminderService } = await import('./services/v3/mission-reminder.service.js');
 				await MissionReminderService.getInstance().runSweep();
 			} catch (err) {
 				this.logger.warn('Mission OKR reminder sweep failed', { error: String(err) });
@@ -3181,7 +3188,6 @@ void (async () => {
 		setTimeout(() => this.purgeCompletedData(), 30 * 1000);
 		setTimeout(async () => {
 			try {
-				const { MissionReminderService } = await import('./services/v3/mission-reminder.service.js');
 				await MissionReminderService.getInstance().runSweep();
 			} catch (err) {
 				// Non-critical

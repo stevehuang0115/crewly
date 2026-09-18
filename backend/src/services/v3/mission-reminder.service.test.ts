@@ -18,6 +18,7 @@ import { jest } from '@jest/globals';
 import { MissionReminderService } from './mission-reminder.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { OKRReviewService } from './okr-review.service.js';
+import { MissionPeriodService } from './mission-period.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -27,6 +28,7 @@ import * as fs from 'fs/promises';
 // Mock dependencies
 jest.mock('./kr-tracking.service.js');
 jest.mock('./okr-review.service.js');
+jest.mock('./mission-period.service.js');
 jest.mock('../core/storage.service.js');
 jest.mock('../slack/slack-orchestrator-bridge.js');
 jest.mock('../task-pool/task-pool.service.js');
@@ -37,6 +39,7 @@ describe('MissionReminderService', () => {
   let service: MissionReminderService;
   let mockKRTrackingService: any;
   let mockOKRReviewService: any;
+  let mockPeriodService: any;
   let mockStorageService: any;
   let mockSlackBridge: any;
   let mockTaskPool: any;
@@ -46,6 +49,7 @@ describe('MissionReminderService', () => {
 
     mockKRTrackingService = {
       computeMissionOKRProgress: jest.fn(),
+      listByMission: jest.fn(() => Promise.resolve([])),
     };
     (KRTrackingService.getInstance as any).mockReturnValue(mockKRTrackingService);
 
@@ -92,8 +96,14 @@ describe('MissionReminderService', () => {
     mockTaskPool = {
       addToPool: jest.fn(() => Promise.resolve(undefined)),
       findWorkItem: jest.fn(() => Promise.resolve(null)),
+      getAllItems: jest.fn(() => Promise.resolve([])),
     };
     (TaskPoolService.getInstance as any).mockReturnValue(mockTaskPool);
+
+    mockPeriodService = {
+      reconcile: jest.fn(() => Promise.resolve({ activated: [], endOfPeriod: [], evaluated: 0 })),
+    };
+    (MissionPeriodService.getInstance as any).mockReturnValue(mockPeriodService);
 
     (atomicWriteJson as any).mockResolvedValue(undefined);
 
@@ -1052,6 +1062,136 @@ describe('MissionReminderService', () => {
       // AFTER NTH-4: cached in the private field after first access,
       // so AT MOST 1 call across the entire service lifetime.
       expect((TaskPoolService.getInstance as any).mock.calls.length).toBeLessThanOrEqual(1);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Period reconcile + stale detection (OKR loop closure)
+  // ---------------------------------------------------------------------------
+
+  describe('period reconcile + mission:stale', () => {
+    function activeMission(overrides: Record<string, unknown> = {}) {
+      return {
+        id: 'm-stale',
+        objective: 'Possibly idle mission',
+        status: 'active',
+        ownerTeamId: 't-1',
+        ...overrides,
+      };
+    }
+
+    function wireBus() {
+      const published: any[] = [];
+      service.setEventBusService({ publish: jest.fn((e: any) => published.push(e)) } as any);
+      return published;
+    }
+
+    beforeEach(() => {
+      (fs.readdir as any).mockResolvedValue(['m-stale.json']);
+      (fs.readFile as any).mockResolvedValue(JSON.stringify(activeMission()));
+      mockKRTrackingService.computeMissionOKRProgress.mockResolvedValue({ offTrack: 0, atRisk: 0 });
+    });
+
+    it('runs MissionPeriodService.reconcile on every sweep, before loading missions', async () => {
+      const order: string[] = [];
+      mockPeriodService.reconcile.mockImplementation(async () => {
+        order.push('reconcile');
+        return { activated: [], endOfPeriod: [], evaluated: 0 };
+      });
+      (fs.readdir as any).mockImplementation(async () => {
+        order.push('readdir');
+        return [];
+      });
+
+      await service.runSweep();
+
+      expect(mockPeriodService.reconcile).toHaveBeenCalledTimes(1);
+      expect(order).toEqual(['reconcile', 'readdir']);
+    });
+
+    it('a reconcile failure does not abort the sweep', async () => {
+      mockPeriodService.reconcile.mockRejectedValue(new Error('disk'));
+      const result = await service.runSweep();
+      expect(result.checked).toBe(1);
+    });
+
+    it('flags a mission stale after 2 consecutive idle sweeps: bumps staleCycles + publishes once per day', async () => {
+      const published = wireBus();
+
+      const first = await service.runSweep();
+      expect(first.staleFlagged).toBe(0);
+      expect(published).toHaveLength(0);
+
+      const second = await service.runSweep();
+      expect(second.staleFlagged).toBe(1);
+      expect(published).toHaveLength(1);
+      expect(published[0]).toMatchObject({
+        type: 'mission:stale',
+        missionId: 'm-stale',
+        teamId: 't-1',
+        sessionName: '',
+        newValue: '1',
+      });
+      expect(published[0].id).toMatch(/^m-stale:stale:\d{4}-\d{2}-\d{2}$/);
+      const saved = (atomicWriteJson as any).mock.calls.at(-1)[1];
+      expect(saved.staleCycles).toBe(1);
+
+      // Same day → idempotent, no second publish, no second bump.
+      const third = await service.runSweep();
+      expect(third.staleFlagged).toBe(0);
+      expect(published).toHaveLength(1);
+    });
+
+    it('does NOT flag stale while the mission still has a non-terminal WorkItem', async () => {
+      const published = wireBus();
+      mockTaskPool.getAllItems.mockResolvedValue([
+        { id: 'wi-1', missionId: 'm-stale', status: 'queued' },
+        { id: 'wi-2', missionId: 'm-stale', status: 'done' },
+      ]);
+
+      await service.runSweep();
+      await service.runSweep();
+      await service.runSweep();
+
+      expect(published).toHaveLength(0);
+    });
+
+    it('a fresh KR measurement since the previous sweep resets the idle counter', async () => {
+      const published = wireBus();
+
+      await service.runSweep(); // idle=1
+      // A measurement lands "now" — newer than the previous sweep timestamp.
+      mockKRTrackingService.listByMission.mockResolvedValue([
+        { id: 'kr-1', measurements: [{ measuredAt: new Date(Date.now() + 1000).toISOString() }] },
+      ]);
+      await service.runSweep(); // measured since last sweep → reset
+      expect(published).toHaveLength(0);
+
+      mockKRTrackingService.listByMission.mockResolvedValue([
+        { id: 'kr-1', measurements: [{ measuredAt: '2020-01-01T00:00:00.000Z' }] },
+      ]);
+      await service.runSweep(); // idle=1 again
+      expect(published).toHaveLength(0);
+      await service.runSweep(); // idle=2 → flagged
+      expect(published).toHaveLength(1);
+    });
+
+    it('still bumps staleCycles when no EventBus is wired (publish is optional)', async () => {
+      await service.runSweep();
+      const result = await service.runSweep();
+      expect(result.staleFlagged).toBe(1);
+      const saved = (atomicWriteJson as any).mock.calls.at(-1)[1];
+      expect(saved.staleCycles).toBe(1);
+    });
+
+    it('skips stale detection (but not the rest of the sweep) when the pool is unavailable', async () => {
+      const published = wireBus();
+      mockTaskPool.getAllItems.mockRejectedValue(new Error('pool down'));
+      await service.runSweep();
+      const result = await service.runSweep();
+      expect(result.checked).toBe(1);
+      expect(result.staleFlagged).toBe(0);
+      expect(published).toHaveLength(0);
     });
   });
 });

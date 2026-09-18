@@ -15,6 +15,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { getMissionsDir } from './mission-paths.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { MissionExecutorService } from './mission-executor.service.js';
@@ -55,8 +56,24 @@ export class OKRReviewService {
   private static instance: OKRReviewService | null = null;
   private readonly logger: ComponentLogger;
 
+  /**
+   * Optional EventBus for `mission:replanned` publication. Wired from the
+   * backend boot path via {@link setEventBusService}; absent in tests/CLI.
+   */
+  private eventBus: EventBusService | null = null;
+
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('OKRReview');
+  }
+
+  /**
+   * Wire the EventBus used to publish `mission:replanned`. Idempotent; pass
+   * `null` to disable publication.
+   *
+   * @param bus - The live EventBusService, or null
+   */
+  setEventBusService(bus: EventBusService | null): void {
+    this.eventBus = bus;
   }
 
   static getInstance(): OKRReviewService {
@@ -199,10 +216,16 @@ export class OKRReviewService {
       case 'replan_phase':
         // Cancel remaining tasks, bump phase for new decomposition
         await executor.cancelRemainingPhaseTasks(missionId);
+        if (decision.newStrategy) {
+          await this.updateMissionReview(missionId, {
+            currentStrategy: decision.newStrategy,
+          });
+        }
         if (decision.newPhase) {
           // Phase will be set when new decomposition arrives
           this.logger.info('Replan triggered', { missionId, newPhase: decision.newPhase });
         }
+        this.publishReplanned(mission, decision);
         break;
 
       case 'add_tasks':
@@ -254,6 +277,42 @@ export class OKRReviewService {
       return JSON.parse(raw) as Mission;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Publish `mission:replanned` so the bridge raises a TL-acknowledge
+   * review WI, the auto-learning subscriber records an `sop_update`
+   * learning and the milestone subscriber surfaces it to the owner. The
+   * event was declared and handled but never published before this.
+   *
+   * Payload: `previousValue` = strategy before the replan, `newValue` =
+   * new strategy (or `'replan'` when none given); `newPhase` rides on the
+   * id so each replan is a distinct event.
+   */
+  private publishReplanned(mission: Mission, decision: ReviewDecision): void {
+    if (!this.eventBus) return;
+    const stamp = Date.now();
+    try {
+      this.eventBus.publish({
+        id: `${mission.id}:replanned:${decision.newPhase ?? 'phase'}:${stamp}`,
+        type: 'mission:replanned',
+        timestamp: new Date(stamp).toISOString(),
+        teamId: mission.ownerTeamId,
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: mission.currentStrategy ?? '',
+        newValue: decision.newStrategy ?? 'replan',
+        changedField: 'taskStatus',
+        missionId: mission.id,
+      });
+    } catch (err) {
+      this.logger.warn('mission:replanned publish threw', {
+        missionId: mission.id,
+        error: (err as Error).message,
+      });
     }
   }
 

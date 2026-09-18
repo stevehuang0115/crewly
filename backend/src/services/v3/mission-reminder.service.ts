@@ -22,10 +22,12 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { OKRReviewService } from './okr-review.service.js';
+import { MissionPeriodService } from './mission-period.service.js';
+import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { getSlackOrchestratorBridge } from '../slack/slack-orchestrator-bridge.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { isMissionExecutable, type Mission } from '../../types/v2/mission.types.js';
-import type { MissionOKRSummary, OKRReviewResult } from '../../types/v2/key-result.types.js';
+import type { KeyResult, MissionOKRSummary, OKRReviewResult } from '../../types/v2/key-result.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson } from '../../utils/file-io.utils.js';
@@ -46,6 +48,16 @@ export type { ReviewReason };
 
 /** Minimum interval between reminders for the same mission (24 hours) */
 const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Consecutive sweeps a mission must show no active WorkItem AND no fresh
+ * KR measurement before it is flagged stale (`mission:stale` published,
+ * `staleCycles` bumped). Two sweeps ≈ two hours on the production timer.
+ */
+const STALE_SWEEP_THRESHOLD = 2;
+
+/** Bounded size of the per-day `mission:stale` publish dedup set. */
+const STALE_DEDUP_CAPACITY = 1000;
 
 /**
  * Statuses that *clear* a Mission's `pendingReviewWorkItemId` so the next
@@ -125,6 +137,27 @@ export class MissionReminderService {
    */
   private cronParseFailures = 0;
 
+  /**
+   * Optional EventBus for `mission:stale` publication. Wired from the
+   * backend boot path via {@link setEventBusService}; when absent the
+   * stale detection still bumps `staleCycles` but publishes nothing.
+   */
+  private eventBus: EventBusService | null = null;
+
+  /**
+   * Consecutive idle sweeps per mission (no active WI + no KR measurement
+   * since the previous sweep). In-memory by design — a restart simply
+   * restarts the count, and the per-day publish id keeps the downstream
+   * review WI idempotent regardless.
+   */
+  private readonly idleSweeps = new Map<string, number>();
+
+  /** Wall-clock of the previous sweep (for "measurement since last sweep"). */
+  private lastSweepAt: Date | null = null;
+
+  /** `<missionId>:stale:<YYYY-MM-DD>` ids already published (FIFO-bounded). */
+  private readonly publishedStale: string[] = [];
+
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('MissionReminder');
     this.storageService = StorageService.getInstance();
@@ -167,6 +200,16 @@ export class MissionReminderService {
   }
 
   /**
+   * Wire the EventBus used to publish `mission:stale`. Idempotent; pass
+   * `null` to disable publication (tests / CLI).
+   *
+   * @param bus - The live EventBusService, or null
+   */
+  setEventBusService(bus: EventBusService | null): void {
+    this.eventBus = bus;
+  }
+
+  /**
    * Run a full sweep of all active missions, sending Slack OKR reminders
    * AND (per REVIEW-1, Phase E pre-beta) creating cadence-driven review
    * WorkItems that wake the Team Lead.
@@ -194,8 +237,17 @@ export class MissionReminderService {
     reviewsSkipped: number;
     /** Cadence boundaries where the deterministic review said `continue` — no WI raised. */
     reviewsAutoContinued: number;
+    /** Missions flagged stale this sweep (`mission:stale` published, staleCycles bumped). */
+    staleFlagged: number;
   }> {
     const now = new Date();
+    const previousSweepAt = this.lastSweepAt;
+    this.lastSweepAt = now;
+
+    // Period lifecycle first: a paused mission whose period just started
+    // becomes active and is then picked up by loadAllActiveMissions below.
+    await this.reconcilePeriods(now);
+
     const missions = await this.loadAllActiveMissions();
     const result = {
       checked: 0,
@@ -204,12 +256,41 @@ export class MissionReminderService {
       reviewsCreated: 0,
       reviewsSkipped: 0,
       reviewsAutoContinued: 0,
+      staleFlagged: 0,
     };
 
     this.logger.info('Starting Mission OKR reminder sweep', { count: missions.length });
 
+    // One pool read per sweep for the stale detector (not per mission).
+    let poolItems: WorkItem[] | null = null;
+    if (missions.length > 0) {
+      try {
+        poolItems = await this.getTaskPool().getAllItems();
+      } catch (err) {
+        this.logger.warn('Stale detection skipped — pool unavailable', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
     for (const mission of missions) {
       result.checked++;
+
+      // -------------------------------------------------------------------
+      // Stale detection: no active WorkItem AND no KR measurement since the
+      // previous sweep, for STALE_SWEEP_THRESHOLD consecutive sweeps.
+      // -------------------------------------------------------------------
+      if (poolItems) {
+        try {
+          const flagged = await this.detectStale(mission, poolItems, previousSweepAt, now);
+          if (flagged) result.staleFlagged++;
+        } catch (err) {
+          this.logger.warn('Stale detection failed for mission', {
+            missionId: mission.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
 
       let summary: MissionOKRSummary | null = null;
       try {
@@ -463,6 +544,100 @@ export class MissionReminderService {
     });
 
     return 'created';
+  }
+
+  /**
+   * Run {@link MissionPeriodService.reconcile} so period-bound missions
+   * auto-activate / get flagged at period end. Previously nothing called
+   * reconcile(), so periods never advanced on their own. Failure-soft.
+   */
+  private async reconcilePeriods(now: Date): Promise<void> {
+    try {
+      const outcome = await MissionPeriodService.getInstance().reconcile(now);
+      if (outcome.activated.length > 0 || outcome.endOfPeriod.length > 0) {
+        this.logger.info('Mission periods reconciled', outcome);
+      }
+    } catch (err) {
+      this.logger.warn('Mission period reconcile failed (non-fatal)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Stale detector. A mission is "idle" this sweep when it has no
+   * non-terminal WorkItem in the pool AND no KR measurement recorded since
+   * the previous sweep. After {@link STALE_SWEEP_THRESHOLD} consecutive
+   * idle sweeps the mission's `staleCycles` is bumped, persisted, and a
+   * `mission:stale` event is published with the idempotent id
+   * `<missionId>:stale:<YYYY-MM-DD>` (once per mission per UTC day). The
+   * bridge turns that into a `no_active_work` review WorkItem.
+   *
+   * @returns `true` when the mission was flagged stale on this sweep
+   */
+  private async detectStale(
+    mission: Mission,
+    poolItems: WorkItem[],
+    previousSweepAt: Date | null,
+    now: Date,
+  ): Promise<boolean> {
+    const hasActiveWork = poolItems.some(
+      (wi) => wi.missionId === mission.id && !SLA_TERMINAL_WORK_ITEM_STATUSES.has(wi.status),
+    );
+    const krs = await this.krTrackingService.listByMission(mission.id);
+    const measuredSinceLastSweep =
+      previousSweepAt !== null && this.hasMeasurementSince(krs, previousSweepAt);
+
+    if (hasActiveWork || measuredSinceLastSweep) {
+      this.idleSweeps.delete(mission.id);
+      return false;
+    }
+
+    const idle = (this.idleSweeps.get(mission.id) ?? 0) + 1;
+    this.idleSweeps.set(mission.id, idle);
+    if (idle < STALE_SWEEP_THRESHOLD) return false;
+
+    const day = now.toISOString().slice(0, 10);
+    const eventId = `${mission.id}:stale:${day}`;
+    if (this.publishedStale.includes(eventId)) return false;
+    this.publishedStale.push(eventId);
+    if (this.publishedStale.length > STALE_DEDUP_CAPACITY) this.publishedStale.shift();
+
+    mission.staleCycles = (mission.staleCycles ?? 0) + 1;
+    await this.saveMission(mission);
+
+    if (this.eventBus) {
+      this.eventBus.publish({
+        id: eventId,
+        type: 'mission:stale',
+        timestamp: now.toISOString(),
+        teamId: mission.ownerTeamId,
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: String(mission.staleCycles - 1),
+        newValue: String(mission.staleCycles),
+        changedField: 'taskStatus',
+        missionId: mission.id,
+      });
+    }
+
+    this.logger.info('Mission flagged stale', {
+      missionId: mission.id,
+      idleSweeps: idle,
+      staleCycles: mission.staleCycles,
+      published: this.eventBus !== null,
+    });
+    return true;
+  }
+
+  /** Whether any KR carries a measurement taken at/after `since`. */
+  private hasMeasurementSince(krs: KeyResult[], since: Date): boolean {
+    const sinceMs = since.getTime();
+    return krs.some((kr) =>
+      (kr.measurements ?? []).some((m) => new Date(m.measuredAt).getTime() >= sinceMs),
+    );
   }
 
   /**
