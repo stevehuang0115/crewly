@@ -34,7 +34,7 @@ import {
 } from '../utils/templates.js';
 
 /** Provider choice returned by the selection step */
-export type ProviderChoice = 'claude' | 'gemini' | 'codex' | 'both' | 'skip';
+export type ProviderChoice = 'claude' | 'gemini' | 'codex' | 'opencode' | 'both' | 'skip';
 
 /** Options passed from Commander.js for the onboard command */
 export interface OnboardOptions {
@@ -109,25 +109,28 @@ export async function selectProvider(rl: ReadlineInterface): Promise<ProviderCho
   console.log(chalk.gray('       Free tier available, fast responses'));
   console.log('    3. Codex CLI (OpenAI)');
   console.log(chalk.gray('       GPT-powered coding assistant'));
-  console.log('    4. All providers');
-  console.log('    5. Skip\n');
+  console.log('    4. OpenCode (open source)');
+  console.log(chalk.gray('       Bring any provider/model; install: npm install -g opencode-ai, then opencode auth login'));
+  console.log('    5. All providers');
+  console.log('    6. Skip\n');
 
   const choices: Record<string, ProviderChoice> = {
     '1': 'claude',
     '2': 'gemini',
     '3': 'codex',
-    '4': 'both',
-    '5': 'skip',
+    '4': 'opencode',
+    '5': 'both',
+    '6': 'skip',
   };
 
   while (true) {
-    const answer = await ask(rl, '  Enter choice (1-5): ');
+    const answer = await ask(rl, '  Enter choice (1-6): ');
     const choice = choices[answer];
     if (choice) {
       console.log('');
       return choice;
     }
-    console.log(chalk.yellow('  Please enter 1, 2, 3, 4, or 5.'));
+    console.log(chalk.yellow('  Please enter 1, 2, 3, 4, 5, or 6.'));
   }
 }
 
@@ -211,10 +214,14 @@ const PROVIDER_TOOLS: Record<string, ToolInfo[]> = {
   codex: [
     { displayName: 'Codex CLI', command: 'codex', npmPackage: '@openai/codex' },
   ],
+  opencode: [
+    { displayName: 'OpenCode', command: 'opencode', npmPackage: 'opencode-ai' },
+  ],
   both: [
     { displayName: 'Claude Code', command: 'claude', npmPackage: '@anthropic-ai/claude-code' },
     { displayName: 'Gemini CLI', command: 'gemini', npmPackage: '@google/gemini-cli' },
     { displayName: 'Codex CLI', command: 'codex', npmPackage: '@openai/codex' },
+    { displayName: 'OpenCode', command: 'opencode', npmPackage: 'opencode-ai' },
   ],
   skip: [],
 };
@@ -398,6 +405,7 @@ export function createTeamFromTemplate(template: TeamTemplate, provider: Provide
     'claude': 'claude-code',
     'gemini': 'gemini-cli',
     'codex': 'codex-cli',
+    'opencode': 'opencode-cli',
     'both': 'claude-code', // Default to Claude if both are selected
     'skip': 'claude-code',
   };
@@ -581,7 +589,7 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
  * Runs the onboarding wizard.
  *
  * In interactive mode (default), walks the user through 5 steps:
- * 1. Choose an AI provider (Claude Code, Gemini CLI, both, or skip)
+ * 1. Choose an AI provider (Claude Code, Gemini CLI, Codex, OpenCode, all, or skip)
  * 2. Detect / install the chosen tool(s)
  * 3. Install agent skills from the marketplace
  * 4. Pick a team template (or skip)
