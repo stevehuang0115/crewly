@@ -7,12 +7,12 @@
 
 **Website:** [crewlyai.com](https://crewlyai.com/)
 
-Crewly is an open-source multi-agent orchestration platform that coordinates AI coding agents (Claude Code, Gemini CLI, Codex) to work together as a team. It provides a web dashboard for real-time monitoring, task management, and team coordination — all running locally on your machine.
+Crewly is an open-source multi-agent orchestration platform that coordinates AI coding agents (Claude Code, Gemini CLI, Codex, OpenCode) to work together as a team. It provides a web dashboard for real-time monitoring, task management, and team coordination — all running locally on your machine.
 
 ## Features
 
 - **Multi-agent teams** — Create teams with different roles (developer, QA, PM, orchestrator) and watch them collaborate
-- **Multi-runtime support** — Use Claude Code, Gemini CLI, or OpenAI Codex — mix and match per agent
+- **Multi-runtime support** — Use Claude Code, Gemini CLI, OpenAI Codex, or OpenCode — mix and match per agent
 - **Real-time dashboard** — Monitor all agents through live terminal streams, task boards, and activity feeds
 - **Skill system** — Agents coordinate through bash skills (report status, delegate tasks, manage memory)
 - **Agent memory** — Persistent knowledge that agents build and share across sessions
@@ -49,8 +49,9 @@ The `init` command walks you through provider selection, installs agent skills, 
 | **Claude Code** (default) | `npm install -g @anthropic-ai/claude-code` | `claude --version` |
 | **Gemini CLI** | `npm install -g @google/gemini-cli` | `gemini --version` |
 | **Codex (OpenAI)** | `npm install -g @openai/codex` | `codex --version` |
+| **OpenCode** | `npm install -g opencode-ai` | `opencode --version` |
 
-**API keys:** Gemini CLI requires `GEMINI_API_KEY`. Codex requires an OpenAI API key. Claude Code authenticates through its own login flow.
+**API keys:** Gemini CLI requires `GEMINI_API_KEY`. Codex requires an OpenAI API key. Claude Code authenticates through its own login flow. OpenCode uses whichever provider you connect via `opencode auth login` (or the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` env vars Crewly already exports to agent sessions).
 
 ## Architecture
 
@@ -98,7 +99,8 @@ Storage: ~/.crewly/ (global) + project/.crewly/ (per-project)
 |---------|-----------------|-------|
 | **Claude Code** | `claude --dangerously-skip-permissions` | Default runtime |
 | **Gemini CLI** | `gemini --yolo` | Requires `GEMINI_API_KEY` |
-| **Codex (OpenAI)** | `codex --full-auto` | Requires OpenAI API key |
+| **Codex (OpenAI)** | `codex -a never -s danger-full-access` | Requires OpenAI API key |
+| **OpenCode** | `opencode --auto` | Any provider/model (`-m provider/model`); reads `AGENTS.md`; auth via `opencode auth login` |
 
 You can change the default runtime or customize launch commands in **Settings**.
 
