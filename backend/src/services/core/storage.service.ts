@@ -1533,7 +1533,7 @@ This is a foundational task that should be completed first before other developm
    *
    * @returns Orchestrator status object or null if not found
    */
-  async getOrchestratorStatus(): Promise<{ sessionName: string; agentStatus: AgentStatus; workingStatus: WorkingStatus; runtimeType: RuntimeType; modelId?: string; createdAt: string; updatedAt: string } | null> {
+  async getOrchestratorStatus(): Promise<{ sessionName: string; agentStatus: AgentStatus; workingStatus: WorkingStatus; runtimeType: RuntimeType; modelId?: string; readyAt?: string; createdAt: string; updatedAt: string } | null> {
     try {
       // Migrate from legacy format if needed
       await this.migrateFromLegacyTeamsFile();
@@ -1764,5 +1764,40 @@ This is a foundational task that should be completed first before other developm
    */
   async updateOrchestratorStatus(status: string): Promise<void> {
     return this.updateAgentStatus(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, status as AgentStatus);
+  }
+
+  /**
+   * Record a successful orchestrator registration: flips `agentStatus` to
+   * `active` AND stamps `readyAt`, exactly as regular team members get on
+   * `POST /api/teams/members/register`. Before this, the orchestrator's
+   * `readyAt` stayed `null` forever and misled anything using it as a
+   * readiness signal (server-install finding 6).
+   *
+   * @param readyAt - ISO timestamp to record (defaults to now)
+   */
+  async markOrchestratorRegistered(readyAt?: string): Promise<void> {
+    return withOperationLock(this.orchestratorFile, async () => {
+      try {
+        let orchestrator;
+        if (existsSync(this.orchestratorFile)) {
+          const content = await fs.readFile(this.orchestratorFile, 'utf-8');
+          orchestrator = JSON.parse(content);
+        } else {
+          orchestrator = this.createDefaultOrchestrator();
+        }
+
+        orchestrator.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+        orchestrator.readyAt = readyAt || new Date().toISOString();
+        orchestrator.updatedAt = new Date().toISOString();
+
+        await atomicWriteFile(this.orchestratorFile, JSON.stringify(orchestrator, null, 2));
+        this.logger.debug('Orchestrator registered', { readyAt: orchestrator.readyAt });
+      } catch (error) {
+        this.logger.error('Error recording orchestrator registration', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    });
   }
 }

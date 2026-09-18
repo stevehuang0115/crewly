@@ -720,4 +720,93 @@ describe('StorageService', () => {
       expect(written.modelId).toBe('openai/gpt-4o');
     });
   });
+
+  describe('markOrchestratorRegistered', () => {
+    const setOrchestratorExists = (orchestratorExists: boolean): void => {
+      mockFs.existsSync.mockImplementation((p: any) => {
+        if (typeof p !== 'string') return true;
+        if (p.endsWith('teams.json')) return false;
+        if (p.includes('orchestrator')) return orchestratorExists;
+        return true;
+      });
+    };
+
+    const findOrchestratorWrite = () => {
+      const call = mockFsPromises.writeFile.mock.calls.find((c: any[]) =>
+        typeof c[0] === 'string' && c[0].includes('orchestrator')
+      );
+      expect(call).toBeDefined();
+      return JSON.parse(call![1] as string);
+    };
+
+    beforeEach(() => {
+      setOrchestratorExists(true);
+      mockFsPromises.readdir.mockResolvedValue([]);
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+    });
+
+    test('flips agentStatus to active AND stamps readyAt (finding 6)', async () => {
+      const existing = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.STARTED,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'codex-cli',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify(existing));
+
+      await storageService.markOrchestratorRegistered('2026-09-15T10:00:00.000Z');
+
+      const written = findOrchestratorWrite();
+      expect(written.agentStatus).toBe(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+      expect(written.readyAt).toBe('2026-09-15T10:00:00.000Z');
+      expect(written.runtimeType).toBe('codex-cli');
+      expect(written.updatedAt).not.toBe(existing.updatedAt);
+    });
+
+    test('defaults readyAt to now when no timestamp is given', async () => {
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.STARTED,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'claude-code',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }));
+
+      const before = Date.now();
+      await storageService.markOrchestratorRegistered();
+
+      const written = findOrchestratorWrite();
+      expect(written.agentStatus).toBe(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+      expect(new Date(written.readyAt).getTime()).toBeGreaterThanOrEqual(before);
+    });
+
+    test('creates the default orchestrator record when none exists', async () => {
+      setOrchestratorExists(false);
+
+      await storageService.markOrchestratorRegistered('2026-09-15T10:00:00.000Z');
+
+      const written = findOrchestratorWrite();
+      expect(written.sessionName).toBe(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME);
+      expect(written.agentStatus).toBe(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+      expect(written.readyAt).toBe('2026-09-15T10:00:00.000Z');
+    });
+
+    test('getOrchestratorStatus surfaces readyAt once recorded', async () => {
+      mockFsPromises.readFile.mockResolvedValue(JSON.stringify({
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE,
+        workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+        runtimeType: 'claude-code',
+        readyAt: '2026-09-15T10:00:00.000Z',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      }));
+
+      const status = await storageService.getOrchestratorStatus();
+      expect(status?.readyAt).toBe('2026-09-15T10:00:00.000Z');
+    });
+  });
 });

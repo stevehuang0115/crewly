@@ -347,6 +347,8 @@ interface OrchestratorStatusInfo {
   runtimeType?: string;
   /** Optional model ID for the in-process Crewly Agent runtime (format: provider/modelId) */
   modelId?: string;
+  /** ISO timestamp of the orchestrator's last successful registration */
+  readyAt?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -425,6 +427,7 @@ function buildOrchestratorTeam(
       // Surface configured modelId so the in-process Crewly Agent runtime can use it.
       // Only set when present — undefined preserves "use DEFAULT_MODEL" semantics.
       ...(orchestratorStatus?.modelId ? { modelId: orchestratorStatus.modelId } : {}),
+      ...(orchestratorStatus?.readyAt ? { readyAt: orchestratorStatus.readyAt } : {}),
       createdAt: orchestratorStatus?.createdAt || now,
       updatedAt: orchestratorStatus?.updatedAt || now
     },
@@ -2181,7 +2184,8 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     // Handle orchestrator registration separately
     if (role === 'orchestrator' && sessionName === CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) {
       try {
-        await this.storageService.updateOrchestratorStatus(CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE);
+        // Sets agentStatus=active AND readyAt, mirroring the regular-member path below.
+        await this.storageService.markOrchestratorRegistered(registeredAt);
 
         // Broadcast orchestrator status change via WebSocket for real-time UI updates
         const terminalGateway = getTerminalGateway();

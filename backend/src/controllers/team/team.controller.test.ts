@@ -127,6 +127,7 @@ describe('Teams Handlers', () => {
       saveProject: jest.fn<any>(),
       getOrchestratorStatus: jest.fn<any>(),
       updateOrchestratorStatus: jest.fn<any>(),
+      markOrchestratorRegistered: jest.fn<any>().mockResolvedValue(undefined),
       findMemberBySessionName: jest.fn<any>(),
     };
 
@@ -1954,14 +1955,13 @@ describe('Teams Handlers', () => {
     });
 
     it('should handle orchestrator registration correctly', async () => {
+      const registeredAt = new Date().toISOString();
       mockRequest.body = {
         sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
         role: 'orchestrator',
         status: 'active',
-        registeredAt: new Date().toISOString()
+        registeredAt
       };
-
-      mockStorageService.updateOrchestratorStatus.mockResolvedValue(undefined);
 
       await teamsHandlers.registerMemberStatus.call(
         mockApiContext,
@@ -1969,12 +1969,49 @@ describe('Teams Handlers', () => {
         mockResponse as Response
       );
 
-      expect(mockStorageService.updateOrchestratorStatus).toHaveBeenCalledWith('active');
+      // Server-install finding 6: the orchestrator gets agentStatus=active AND
+      // readyAt in one write, the same way regular members do.
+      expect(mockStorageService.markOrchestratorRegistered).toHaveBeenCalledWith(registeredAt);
+      expect(mockStorageService.updateOrchestratorStatus).not.toHaveBeenCalled();
       expect(responseMock.json).toHaveBeenCalledWith({
         success: true,
         message: `Orchestrator ${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME} registered as active`,
         sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME
       });
+    });
+
+    it('should stamp readyAt with "now" when the orchestrator registers without registeredAt', async () => {
+      mockRequest.body = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        role: 'orchestrator',
+        status: 'active'
+      };
+
+      await teamsHandlers.registerMemberStatus.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(mockStorageService.markOrchestratorRegistered).toHaveBeenCalledWith(undefined);
+      expect(responseMock.status).not.toHaveBeenCalledWith(500);
+    });
+
+    it('should return 500 when recording the orchestrator registration fails', async () => {
+      mockRequest.body = {
+        sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+        role: 'orchestrator',
+        status: 'active'
+      };
+      mockStorageService.markOrchestratorRegistered.mockRejectedValue(new Error('disk full'));
+
+      await teamsHandlers.registerMemberStatus.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect(responseMock.status).toHaveBeenCalledWith(500);
     });
 
     it('should fire pushResumeNotification when orchestrator registers', async () => {
