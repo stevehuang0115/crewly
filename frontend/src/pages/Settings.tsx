@@ -58,7 +58,10 @@ export const Settings: React.FC = () => {
     }
   }, [tabParam, navigate]);
 
-  const initialTab: SettingsTab = tabParam && VALID_TABS.has(tabParam) ? (tabParam as SettingsTab) : 'general';
+  // `?tab=slack` is the return URL of the Cloud Slack install flow — the
+  // Slack card lives inside Integrations.
+  const initialTab: SettingsTab =
+    tabParam === 'slack' ? 'integrations' : tabParam && VALID_TABS.has(tabParam) ? (tabParam as SettingsTab) : 'general';
   const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
 
   const tabs: TabConfig[] = [

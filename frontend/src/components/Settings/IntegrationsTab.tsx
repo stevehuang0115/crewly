@@ -106,8 +106,24 @@ const PLATFORMS: PlatformConfig[] = [
  *
  * @returns IntegrationsTab component
  */
+/**
+ * Platform to open on first render, from the URL: `?tab=slack` (the Cloud
+ * Slack install flow returns here) or `?platform=<id>`.
+ *
+ * @returns The platform id or null
+ */
+export function initialPlatformFromUrl(): PlatformId | null {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const requested = params.get('platform') ?? (params.get('tab') === 'slack' ? 'slack' : null);
+    return PLATFORMS.some((p) => p.id === requested && p.available) ? (requested as PlatformId) : null;
+  } catch {
+    return null;
+  }
+}
+
 export const IntegrationsTab: React.FC = () => {
-  const [expandedPlatform, setExpandedPlatform] = useState<PlatformId | null>(null);
+  const [expandedPlatform, setExpandedPlatform] = useState<PlatformId | null>(() => initialPlatformFromUrl());
 
   /**
    * Toggle platform card expansion

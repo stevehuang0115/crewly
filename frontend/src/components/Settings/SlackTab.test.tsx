@@ -67,11 +67,23 @@ describe('SlackTab', () => {
       render(<SlackTab />);
 
       await waitFor(() => {
-        expect(screen.getByText('Connect to Slack')).toBeInTheDocument();
+        expect(screen.getByRole('button', { name: 'Connect to Slack' })).toBeInTheDocument();
       });
 
-      const connectButton = screen.getByText('Connect to Slack');
-      expect(connectButton).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Connect to Slack' })).toBeDisabled();
+    });
+
+    it('keeps the manual token form under the "Advanced: self-hosted app" disclosure', async () => {
+      render(<SlackTab />);
+
+      await waitFor(() => {
+        expect(screen.getByText('Advanced: self-hosted app')).toBeInTheDocument();
+      });
+      const details = screen.getByTestId('slack-advanced') as HTMLDetailsElement;
+      expect(details.tagName).toBe('DETAILS');
+      expect(details).toContainElement(screen.getByLabelText(/Bot Token/i));
+      // Closed by default when nothing self-hosted is configured.
+      expect(details.open).toBe(false);
     });
 
     it('should enable connect button when required fields are filled', async () => {
@@ -91,8 +103,7 @@ describe('SlackTab', () => {
         target: { value: 'test-secret' },
       });
 
-      const connectButton = screen.getByText('Connect to Slack');
-      expect(connectButton).not.toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Connect to Slack' })).not.toBeDisabled();
     });
 
     it('should call connect API when form is submitted', async () => {
@@ -272,6 +283,92 @@ describe('SlackTab', () => {
     });
   });
 
+  describe('Cloud-owned Slack (one-click path)', () => {
+    const cloudStatus = {
+      cloudConnected: true,
+      sourceMode: 'auto',
+      activeSource: 'cloud',
+      connected: true,
+      transport: 'cloud',
+      workspace: { slackTeamId: 'T1', slackTeamName: 'Acme', botUserId: 'UBOT', appId: 'A0', agentIdentities: 1 },
+      configFetchedAt: null,
+      configError: null,
+      primary: true,
+      instanceId: 'device-1',
+      lastHeartbeatAt: null,
+      registryError: null,
+      pendingInstalls: [{ agentSession: 'alpha-kai-1', url: 'https://slack.com/oauth/kai' }],
+      local: { env: false, saved: false },
+    };
+
+    /** Route fetches by URL so the two status endpoints answer differently. */
+    function routeFetch(cloud: Record<string, unknown> | null, slackConnected: boolean) {
+      mockFetch.mockImplementation((url: string) => {
+        if (url.startsWith('/api/slack/cloud/status')) {
+          return Promise.resolve({
+            ok: !!cloud,
+            status: cloud ? 200 : 500,
+            json: () => Promise.resolve(cloud ? { success: true, data: cloud } : { success: false, error: 'boom' }),
+          });
+        }
+        if (url === '/api/slack/status') {
+          return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true, data: { isConfigured: slackConnected } }) });
+        }
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({ success: true, data: {} }) });
+      });
+    }
+
+    afterEach(() => {
+      window.history.replaceState({}, '', '/');
+    });
+
+    it('fetches the Cloud status on mount and renders the Cloud card', async () => {
+      routeFetch({ ...cloudStatus, activeSource: null, connected: false, transport: null, workspace: null, pendingInstalls: [] }, false);
+      render(<SlackTab />);
+
+      await waitFor(() => expect(screen.getByText('Connect Slack')).toBeInTheDocument());
+      expect(mockFetch).toHaveBeenCalledWith('/api/slack/cloud/status');
+      expect(screen.getByText('Slack via Crewly Cloud')).toBeInTheDocument();
+      expect(screen.getByText('Not connected to Slack')).toBeInTheDocument();
+    });
+
+    it('when connected via Cloud: says so, hides the local Disconnect, keeps the primary toggle on', async () => {
+      routeFetch(cloudStatus, true);
+      render(<SlackTab />);
+
+      await waitFor(() => expect(screen.getByText('Connected to Slack via Crewly Cloud')).toBeInTheDocument());
+      expect(screen.queryByRole('button', { name: /^Disconnect$/ })).not.toBeInTheDocument();
+      expect(screen.getByText('Disconnect workspace')).toBeInTheDocument();
+      expect((screen.getByLabelText('Make this the primary instance') as HTMLInputElement).checked).toBe(true);
+      expect(screen.getByText('Acme')).toBeInTheDocument();
+    });
+
+    it('after the install redirect (?slack=connected) it asks Cloud for a fresh config and shows a banner', async () => {
+      window.history.replaceState({}, '', '/settings?tab=slack&slack=connected');
+      routeFetch(cloudStatus, true);
+      render(<SlackTab />);
+
+      await waitFor(() => expect(mockFetch).toHaveBeenCalledWith('/api/slack/cloud/status?refresh=1'));
+      expect(screen.getByText(/Slack workspace connected to your Crewly account/)).toBeInTheDocument();
+    });
+
+    it('opens Advanced by default when the self-hosted app is the active source', async () => {
+      routeFetch({ ...cloudStatus, activeSource: 'env', transport: 'socket' }, true);
+      render(<SlackTab />);
+
+      await waitFor(() => expect(screen.getByText('Connected to Slack')).toBeInTheDocument());
+      await waitFor(() => expect((screen.getByTestId('slack-advanced') as HTMLDetailsElement).open).toBe(true));
+      expect(screen.getByRole('button', { name: /^Disconnect$/ })).toBeInTheDocument();
+    });
+
+    it('survives a failing Cloud status request', async () => {
+      routeFetch(null, false);
+      render(<SlackTab />);
+      await waitFor(() => expect(screen.getByText('Not connected to Slack')).toBeInTheDocument());
+      expect(screen.getByText('Loading Cloud Slack status...')).toBeInTheDocument();
+    });
+  });
+
   describe('Error Handling', () => {
     it('should show error when fetch fails', async () => {
       mockFetch.mockRejectedValue(new Error('Network error'));
@@ -314,7 +411,7 @@ describe('SlackTab', () => {
       });
 
       // Dismiss error
-      fireEvent.click(screen.getByRole('button', { name: '×' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Dismiss alert' }));
 
       expect(screen.queryByText('Connection failed')).not.toBeInTheDocument();
     });

@@ -11,8 +11,10 @@ import { Settings } from './Settings';
 
 let mockSearchParams = new URLSearchParams('');
 
+const mockNavigate = vi.fn();
 vi.mock('react-router-dom', () => ({
   useSearchParams: () => [mockSearchParams],
+  useNavigate: () => mockNavigate,
 }));
 
 // Mock the tab components
@@ -184,6 +186,14 @@ describe('Settings Page', () => {
 
     it('should open Integrations tab when tab=integrations is in URL', () => {
       mockSearchParams = new URLSearchParams('?tab=integrations');
+      render(<Settings />);
+
+      expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
+      expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+    });
+
+    it('should open Integrations tab when tab=slack is in URL (Cloud Slack install return)', () => {
+      mockSearchParams = new URLSearchParams('?tab=slack&slack=connected');
       render(<Settings />);
 
       expect(screen.getByTestId('integrations-tab')).toBeInTheDocument();
