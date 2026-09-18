@@ -2106,5 +2106,34 @@ describe('ChatV2Service', () => {
       seed(ch.id, 'agent', 'recent agent', 5000, 2);
       expect(service.getRecentOwnerMessageContents(1000)).toEqual([]);
     });
+
+    /**
+     * Issue #730 — the commitment gate must see the owner's approval no matter
+     * which surface/conversation it arrived on. The read is deliberately NOT
+     * scoped to a conversationId: a legacy `[CHAT:…]` conversation channel, a
+     * Slack-bridged channel and a fresh DM all contribute. A regression to a
+     * per-conversation query would silently re-open the "go ahead is never
+     * found" loop the issue reported.
+     */
+    it('is conversation-agnostic: owner rows from every channel in the window are returned (#730)', () => {
+      const dm = createSam();
+      const legacy = service.ensureChannelForLegacyConversation({
+        conversationId: 'conv-legacy-1',
+        agentSession: 'crewly-orc',
+      });
+      const slackish = service.createChannel({
+        agentSession: 'crewly-orc',
+        name: 'slack-thread-42',
+        principal: owner,
+      });
+
+      seed(dm.id, 'user', 'first on the DM', 2000, 1);
+      seed(legacy.id, 'user', 'go ahead', 3000, 2);
+      seed(slackish.id, 'user', '启动 Phase 1', 4000, 3);
+      seed(slackish.id, 'agent', 'agent echo — ignored', 4500, 4);
+
+      const got = service.getRecentOwnerMessageContents(1000);
+      expect(got).toEqual(['启动 Phase 1', 'go ahead', 'first on the DM']);
+    });
   });
 });

@@ -113,6 +113,18 @@ describe('evaluateColdLaunch', () => {
       expect(d.reason).toMatch(/Slack.*Chat UI/s);
     });
 
+    it('honours an approval regardless of which message in the window carries it (no conversation scoping)', () => {
+      // The caller hands over ALL owner rows in the window, newest first. The
+      // approval need not be the latest message, nor from the thread the
+      // start request was issued in — the gate is channel/conversation-agnostic.
+      const d = evaluateColdLaunch({
+        team: dormant,
+        recentOwnerMessages: ['thanks, looks good', 'go ahead', 'what is the ETA?'],
+      });
+      expect(d.allowed).toBe(true);
+      expect(d.evidence).toBe('go ahead');
+    });
+
     it('still blames wording when owner messages exist but none approve', () => {
       const d = evaluateColdLaunch({
         team: dormant,
