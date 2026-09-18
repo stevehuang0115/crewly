@@ -28,6 +28,7 @@ import { getSlackInstanceRegistryService } from '../../services/slack/slack-inst
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import type { SlackCloudWorkspaceSummary } from '../../types/slack.types.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 import { synthesizeSlackConversationId } from '../../services/chat-v2/legacy-dto.utils.js';
 
@@ -840,10 +841,15 @@ router.get('/cloud/install-url', async (req: Request, res: Response, next: NextF
     const login = requireCloudLogin(res);
     if (!login) return;
     const returnUrl = resolveInstallReturnUrl(req);
+    // The instance id lets Cloud bind the installed workspace to this
+    // instance, so an account with several workspaces needs no extra pick.
+    const registry = await ensureSlackInstanceRegistry();
+    const instanceId = registry.getInstanceId() ?? (await registry.resolveInstanceId());
     const url =
       `${login.cloudUrl}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.INSTALL_PATH}` +
-      `?token=${encodeURIComponent(login.token)}&returnUrl=${encodeURIComponent(returnUrl)}`;
-    res.json({ success: true, data: { url, returnUrl } });
+      `?token=${encodeURIComponent(login.token)}&returnUrl=${encodeURIComponent(returnUrl)}` +
+      (instanceId ? `&instanceId=${encodeURIComponent(instanceId)}` : '');
+    res.json({ success: true, data: { url, returnUrl, instanceId } });
   } catch (error) {
     next(error);
   }
@@ -876,6 +882,16 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
     const registry = getSlackInstanceRegistryService();
     const primary = registry ? await registry.isPrimary() : await (await ensureSlackInstanceRegistry()).isPrimary();
     const hasSaved = await hasSavedCredentials();
+    // Every workspace on the account, for the Settings switcher. Best effort:
+    // a listing failure must not hide the rest of the status.
+    let workspaces: SlackCloudWorkspaceSummary[] | null = null;
+    if (cloudConnected && configService.getSourceMode() !== 'env') {
+      try {
+        workspaces = await configService.listWorkspaces();
+      } catch {
+        workspaces = null;
+      }
+    }
     res.json({
       success: true,
       data: {
@@ -900,6 +916,9 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
         lastHeartbeatAt: registry?.getLastHeartbeatAt() ?? null,
         registryError: registry?.getLastError() ?? null,
         pendingInstalls: registry?.getPendingInstalls() ?? [],
+        availableWorkspaces: configService.getAvailableWorkspaces(),
+        workspaces,
+        selectedWorkspaceId: registry ? await registry.getWorkspaceId() : null,
         local: {
           env: !!(process.env.SLACK_BOT_TOKEN && process.env.SLACK_APP_TOKEN && process.env.SLACK_SIGNING_SECRET),
           saved: hasSaved,
@@ -932,6 +951,72 @@ router.put('/cloud/primary', async (req: Request, res: Response, next: NextFunct
     res.json({
       success: true,
       data: { primary: await registry.isPrimary(), lastHeartbeatAt: registry.getLastHeartbeatAt(), registryError: registry.getLastError() },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * GET /api/slack/cloud/workspaces
+ *
+ * Every Slack workspace installed on the Cloud account (redacted), plus the
+ * one this instance currently serves.
+ */
+router.get('/cloud/workspaces', async (_req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireCloudLogin(res)) return;
+    const configService = await ensureSlackCloudConfigService();
+    const registry = await ensureSlackInstanceRegistry();
+    const workspaces = await configService.listWorkspaces();
+    res.json({
+      success: true,
+      data: {
+        workspaces,
+        selectedWorkspaceId: await registry.getWorkspaceId(),
+        activeWorkspaceId: configService.getConfig()?.workspace.slackTeamId ?? null,
+      },
+    });
+  } catch (error) {
+    if (error instanceof SlackIdentityCloudError) {
+      res.status(error.status >= 400 && error.status < 600 ? error.status : 502).json({ success: false, error: error.message, code: error.code });
+      return;
+    }
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/slack/cloud/workspace
+ *
+ * Choose which of the account's workspaces this instance serves. Persisted
+ * locally, pushed to Cloud (re-binding the instance), then the config is
+ * refreshed and Slack reconnects on the new workspace.
+ *
+ * @body slackTeamId - Slack team id (required)
+ */
+router.put('/cloud/workspace', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    if (!requireCloudLogin(res)) return;
+    const { slackTeamId } = req.body ?? {};
+    if (typeof slackTeamId !== 'string' || !/^[TE][A-Z0-9]{2,20}$/.test(slackTeamId)) {
+      res.status(400).json({ success: false, error: 'slackTeamId (Slack team id) is required' });
+      return;
+    }
+    const registry = await ensureSlackInstanceRegistry();
+    await registry.setWorkspaceId(slackTeamId);
+    const configService = await ensureSlackCloudConfigService();
+    const config = await configService.refresh();
+    if (config) await handleSlackCloudConfigChange(config);
+    res.json({
+      success: true,
+      data: {
+        selectedWorkspaceId: slackTeamId,
+        activeWorkspaceId: config?.workspace.slackTeamId ?? null,
+        connected: getSlackService().isConnected(),
+        registryError: registry.getLastError(),
+        configError: configService.getLastError(),
+      },
     });
   } catch (error) {
     next(error);

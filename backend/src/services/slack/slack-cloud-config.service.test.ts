@@ -45,9 +45,11 @@ let cloud: { connected: boolean; token: string | null; url: string | null };
 let env: NodeJS.ProcessEnv;
 let intervals: Array<{ fn: () => void; ms: number }>;
 let storePath: string;
+let instanceId: string | null = null;
 
 function makeService() {
   return new SlackCloudConfigService({
+    getInstanceId: () => instanceId,
     cloud: {
       isConnected: () => cloud.connected,
       getToken: () => cloud.token,
@@ -74,6 +76,7 @@ beforeEach(async () => {
   cloud = { connected: true, token: 'jwt-1', url: 'https://api.crewlyai.com/' };
   env = {};
   intervals = [];
+  instanceId = null;
 });
 
 afterEach(async () => {
@@ -208,6 +211,43 @@ describe('refresh + cache', () => {
   });
 });
 
+describe('multiple workspaces per account', () => {
+  it('sends the instance id with /config so Cloud can serve the bound workspace', async () => {
+    instanceId = 'dev-mac';
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
+    await makeService().refresh();
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.crewlyai.com/api/cloud/slack/config?instanceId=dev-mac');
+  });
+
+  it('a 409 workspace_not_selected keeps the list to choose from, caches nothing and is not an error', async () => {
+    const workspaces = [
+      { slackTeamId: 'T1', slackTeamName: 'Acme' },
+      { slackTeamId: 'T2', slackTeamName: 'Client' },
+    ];
+    fetchMock.mockResolvedValue(
+      jsonResponse({ success: false, code: 'workspace_not_selected', error: 'choose', details: { workspaces } }, 409),
+    );
+    const service = makeService();
+    expect(await service.refresh()).toBeNull();
+    expect(service.getLastError()).toBeNull();
+    expect(service.getAvailableWorkspaces()).toEqual(workspaces);
+    await expect(fs.access(storePath)).rejects.toBeDefined();
+    // Once Cloud serves a config the list is dropped.
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
+    await service.refresh();
+    expect(service.getAvailableWorkspaces()).toBeNull();
+  });
+
+  it('listWorkspaces GETs /api/cloud/slack/workspaces and keeps only well-formed rows', async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ success: true, data: [{ slackTeamId: 'T1', slackTeamName: 'Acme', agentIdentities: 2 }, { junk: true }] }),
+    );
+    const list = await makeService().listWorkspaces();
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.crewlyai.com/api/cloud/slack/workspaces');
+    expect(list).toEqual([{ slackTeamId: 'T1', slackTeamName: 'Acme', agentIdentities: 2 }]);
+  });
+});
+
 describe('removeWorkspace', () => {
   it('DELETEs /api/cloud/slack/workspace, clears the cache and notifies', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
@@ -219,7 +259,7 @@ describe('removeWorkspace', () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { removed: true } }));
     expect(await service.removeWorkspace()).toBe(true);
     const [url, init] = fetchMock.mock.calls[1];
-    expect(url).toBe('https://api.crewlyai.com/api/cloud/slack/workspace');
+    expect(url).toBe('https://api.crewlyai.com/api/cloud/slack/workspace/T1');
     expect(init.method).toBe('DELETE');
     expect(service.getConfig()).toBeNull();
     expect(listener).toHaveBeenLastCalledWith(null);

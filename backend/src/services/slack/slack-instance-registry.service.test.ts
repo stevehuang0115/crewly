@@ -337,6 +337,26 @@ describe('primary toggle', () => {
   });
 });
 
+describe('workspace choice', () => {
+  it('is absent from the payload until chosen, then persisted and re-registered at once', async () => {
+    const service = makeService();
+    expect(await service.getWorkspaceId()).toBeNull();
+    expect((await service.buildPayload()).slackTeamId).toBeUndefined();
+
+    await service.setWorkspaceId('T0CLIENT');
+    expect(calls()).toHaveLength(1);
+    expect(calls()[0].body.slackTeamId).toBe('T0CLIENT');
+    const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-instance.json'), 'utf8'));
+    expect(onDisk).toEqual({ version: 1, primary: false, slackTeamId: 'T0CLIENT' });
+
+    // Survives a restart and rides along with every heartbeat.
+    const again = makeService();
+    expect(await again.getWorkspaceId()).toBe('T0CLIENT');
+    expect((await again.buildPayload()).slackTeamId).toBe('T0CLIENT');
+    expect(await again.resolveInstanceId()).toBe(again.getInstanceId());
+  });
+});
+
 describe('singleton holder', () => {
   it('stores and clears the process-wide instance', () => {
     expect(getSlackInstanceRegistryService()).toBeNull();

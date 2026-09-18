@@ -310,6 +310,7 @@ let storage: FakeStorage;
 let dispatcher: { dispatchMessage: jest.Mock } | null;
 let identities: FakeIdentities | null;
 let service: SlackTeamChannelService;
+let ownerUserId: string | null = 'UOWNER';
 
 function makeService() {
   return new SlackTeamChannelService({
@@ -318,6 +319,7 @@ function makeService() {
     storage,
     getDispatcher: () => dispatcher,
     identities,
+    getOwnerUserId: () => ownerUserId,
     storePath: path.join(tmpDir, 'slack-team-channels.json'),
     now: () => new Date('2026-09-12T00:00:00.000Z'),
   });
@@ -397,6 +399,8 @@ describe('ensureTeamChannel', () => {
     const mapping = await service.ensureTeamChannel(team());
 
     expect(slack.created).toEqual(['alpha-team']);
+    // A bot-created channel is invisible until someone joins: the owner is invited first.
+    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['UOWNER'] }]);
     expect(slack.purposes[0]).toEqual({ id: 'C1', purpose: 'Ships the alpha' });
     expect(mapping).toMatchObject({
       teamId: 'team-alpha',
@@ -418,6 +422,17 @@ describe('ensureTeamChannel', () => {
     const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf-8'));
     expect(onDisk.mappings).toHaveLength(1);
     expect(onDisk.version).toBe(1);
+  });
+
+  it('still creates the channel when no owner id is known (self-hosted app)', async () => {
+    ownerUserId = null;
+    try {
+      const mapping = await service.ensureTeamChannel(team());
+      expect(mapping.slackChannelId).toBe('C1');
+      expect(slack.invites).toEqual([]);
+    } finally {
+      ownerUserId = 'UOWNER';
+    }
   });
 
   it('is idempotent and re-syncs the roster on a second call', async () => {
@@ -754,12 +769,12 @@ describe('agent identities', () => {
     await service.start();
     identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
     await new Promise((r) => setImmediate(r));
-    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['USAM'] }]);
+    expect(slack.invites.filter((i) => !i.userIds.includes('UOWNER'))).toEqual([{ channelId: 'C1', userIds: ['USAM'] }]);
     expect(identities!.get('crewly-alpha-sam')?.invitedTo).toEqual(['C1']);
 
     // Later syncs do not re-invite.
     await service.syncTeamMembers(team());
-    expect(slack.invites).toHaveLength(1);
+    expect(slack.invites.filter((i) => !i.userIds.includes('UOWNER'))).toHaveLength(1);
 
     // Outbound uses the agent's own token, no cosmetic identity.
     slack.sent = [];

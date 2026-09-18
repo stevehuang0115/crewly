@@ -25,6 +25,15 @@ export interface SlackPendingInstall {
   url: string;
 }
 
+/** One workspace on the Crewly Cloud account (never a token). */
+export interface SlackCloudWorkspaceSummary {
+  slackTeamId: string;
+  slackTeamName: string;
+  botUserId?: string;
+  installedAt?: string;
+  agentIdentities?: number;
+}
+
 /** `GET /api/slack/cloud/status` payload. */
 export interface SlackCloudStatus {
   cloudConnected: boolean;
@@ -46,6 +55,12 @@ export interface SlackCloudStatus {
   lastHeartbeatAt: string | null;
   registryError: string | null;
   pendingInstalls: SlackPendingInstall[];
+  /** Set when Cloud holds several workspaces and this instance has not chosen one. */
+  availableWorkspaces?: SlackCloudWorkspaceSummary[] | null;
+  /** Every workspace on the account (null when Cloud could not be asked). */
+  workspaces?: SlackCloudWorkspaceSummary[] | null;
+  /** The workspace this instance chose to serve (null = Cloud decides). */
+  selectedWorkspaceId?: string | null;
   local: { env: boolean; saved: boolean };
 }
 
@@ -82,6 +97,7 @@ export function slackInstallReturnUrl(): string {
 export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status, onRefresh }) => {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [pick, setPick] = useState<string>('');
 
   const run = async (name: string, fn: () => Promise<void>) => {
     setBusy(name);
@@ -100,6 +116,18 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
       const res = await fetch(`/api/slack/cloud/install-url?returnUrl=${encodeURIComponent(slackInstallReturnUrl())}`);
       const { url } = await readJson<{ url: string }>(res);
       window.location.assign(url);
+    });
+
+  const useWorkspace = (slackTeamId: string) =>
+    run('workspace', async () => {
+      await readJson(
+        await fetch('/api/slack/cloud/workspace', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ slackTeamId }),
+        }),
+      );
+      await onRefresh(true);
     });
 
   const setPrimary = (primary: boolean) =>
@@ -122,7 +150,7 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
 
   const disconnectWorkspace = () =>
     run('disconnect', async () => {
-      if (!window.confirm('Remove the Slack workspace from your Crewly account? Every Crewly instance signed in to it loses Slack.')) {
+      if (!window.confirm('Remove this Slack workspace from your Crewly account? Every Crewly instance serving it loses Slack.')) {
         return;
       }
       await readJson(await fetch('/api/slack/cloud/workspace', { method: 'DELETE' }));
@@ -132,6 +160,35 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
   const workspace = status?.workspace ?? null;
   const cloudConnected = !!status?.cloudConnected;
   const envOnly = status?.sourceMode === 'env';
+  const choices = status?.availableWorkspaces && status.availableWorkspaces.length > 0 ? status.availableWorkspaces : null;
+  const switchable = status?.workspaces && status.workspaces.length > 1 ? status.workspaces : null;
+
+  const workspacePicker = (list: SlackCloudWorkspaceSummary[], current: string | null) => (
+    <div className="flex items-center gap-2" data-testid="slack-cloud-workspace-picker">
+      <select
+        className="bg-background-dark border border-border-dark rounded px-2 py-1.5 text-sm"
+        value={pick || current || ''}
+        onChange={(e) => setPick(e.target.value)}
+        aria-label="Slack workspace for this instance"
+        disabled={busy !== null}
+      >
+        {!current && !pick && <option value="">Choose a workspace…</option>}
+        {list.map((w) => (
+          <option key={w.slackTeamId} value={w.slackTeamId}>
+            {w.slackTeamName}
+          </option>
+        ))}
+      </select>
+      <Button
+        size="sm"
+        onClick={() => useWorkspace(pick || current || '')}
+        loading={busy === 'workspace'}
+        disabled={busy !== null || !(pick || current) || (pick || current) === current}
+      >
+        Use this workspace
+      </Button>
+    </div>
+  );
 
   return (
     <Card padding="lg">
@@ -170,6 +227,17 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
           <a href="/cloud" className="underline">Settings → Cloud</a>
           ) — Slack is installed through your Crewly account.
         </Alert>
+      ) : !workspace && choices ? (
+        <div className="space-y-3">
+          <p className="text-sm text-text-secondary-dark">
+            Your Crewly account has {choices.length} Slack workspaces. Pick the one this instance should serve, or
+            connect another one.
+          </p>
+          {workspacePicker(choices, null)}
+          <Button variant="ghost" size="sm" onClick={connect} loading={busy === 'connect'} disabled={busy !== null} icon={ExternalLink}>
+            Connect another workspace
+          </Button>
+        </div>
       ) : !workspace ? (
         <div className="space-y-3">
           <p className="text-sm text-text-secondary-dark">
@@ -221,6 +289,20 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
             {status.registryError && (
               <p className="text-xs text-amber-400/80">Registry: {status.registryError}</p>
             )}
+          </div>
+
+          <div className="space-y-2">
+            {switchable && (
+              <>
+                <p className="text-xs text-text-secondary-dark">
+                  Your account has {switchable.length} workspaces. This instance serves one of them:
+                </p>
+                {workspacePicker(switchable, workspace.slackTeamId)}
+              </>
+            )}
+            <Button variant="ghost" size="sm" onClick={connect} loading={busy === 'connect'} disabled={busy !== null} icon={ExternalLink}>
+              Connect another workspace
+            </Button>
           </div>
 
           <div className="flex items-start gap-3">

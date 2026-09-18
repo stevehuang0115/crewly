@@ -169,6 +169,52 @@ describe('SlackCloudWorkspace', () => {
     await waitFor(() => expect(onRefresh).toHaveBeenCalled());
   });
 
+  it('with several workspaces and no choice yet, offers a picker and PUTs the chosen team', async () => {
+    mockFetch.mockResolvedValueOnce(jsonResponse({ success: true, data: { selectedWorkspaceId: 'T0CLIENT' } }));
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    const status: SlackCloudStatus = {
+      ...base,
+      availableWorkspaces: [
+        { slackTeamId: 'T0ACME', slackTeamName: 'Acme' },
+        { slackTeamId: 'T0CLIENT', slackTeamName: 'Client' },
+      ],
+    };
+    render(<SlackCloudWorkspace status={status} onRefresh={onRefresh} />);
+
+    expect(screen.getByText(/has 2 Slack workspaces/)).toBeInTheDocument();
+    const select = screen.getByLabelText('Slack workspace for this instance') as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: 'T0CLIENT' } });
+    fireEvent.click(screen.getByText('Use this workspace'));
+
+    await waitFor(() =>
+      expect(mockFetch).toHaveBeenCalledWith('/api/slack/cloud/workspace', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slackTeamId: 'T0CLIENT' }),
+      }),
+    );
+    await waitFor(() => expect(onRefresh).toHaveBeenCalledWith(true));
+    expect(screen.getByText('Connect another workspace')).toBeInTheDocument();
+  });
+
+  it('when connected, shows the switcher only if the account has more than one workspace', () => {
+    const { rerender } = render(
+      <SlackCloudWorkspace status={{ ...connected, workspaces: [{ slackTeamId: 'T1', slackTeamName: 'Acme' }] }} onRefresh={vi.fn()} />,
+    );
+    expect(screen.queryByTestId('slack-cloud-workspace-picker')).toBeNull();
+    expect(screen.getByText('Connect another workspace')).toBeInTheDocument();
+
+    rerender(
+      <SlackCloudWorkspace
+        status={{ ...connected, workspaces: [{ slackTeamId: 'T1', slackTeamName: 'Acme' }, { slackTeamId: 'T2', slackTeamName: 'Client' }] }}
+        onRefresh={vi.fn()}
+      />,
+    );
+    const select = screen.getByLabelText('Slack workspace for this instance') as HTMLSelectElement;
+    expect(select.value).toBe('T1');
+    expect((screen.getByText('Use this workspace').closest('button') as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('Refresh asks the parent for a Cloud re-fetch', () => {
     const onRefresh = vi.fn().mockResolvedValue(undefined);
     render(<SlackCloudWorkspace status={connected} onRefresh={onRefresh} />);

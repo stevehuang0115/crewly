@@ -191,17 +191,19 @@ export class SlackInstanceRegistryService {
    * @returns The `PUT /instances/:id` body
    */
   async buildPayload(): Promise<SlackInstanceRegistryPayload> {
-    const [{ deviceName }, teams, primary, version] = await Promise.all([
+    const [{ deviceName }, teams, primary, version, slackTeamId] = await Promise.all([
       this.resolveIdentity(),
       this.deps.storage.getTeams(),
       this.isPrimary(),
       this.resolveVersion(),
+      this.getWorkspaceId(),
     ]);
     const teamChannels = this.deps.getTeamChannels();
     return {
       deviceName,
       relayQueueId: this.deps.sync.getQueueId() ?? '',
       primary,
+      ...(slackTeamId ? { slackTeamId } : {}),
       teams: teams.map((team) => {
         const channelId = teamChannels?.findByTeamId(team.id)?.slackChannelId;
         return {
@@ -342,6 +344,19 @@ export class SlackInstanceRegistryService {
     return this.instanceId;
   }
 
+  /**
+   * Resolve (and cache) the Cloud device id now, without a heartbeat.
+   *
+   * @returns The device id, or null when the identity store is unavailable
+   */
+  async resolveInstanceId(): Promise<string | null> {
+    try {
+      return (await this.resolveIdentity()).deviceId;
+    } catch {
+      return null;
+    }
+  }
+
   /** @returns ISO timestamp of the last accepted heartbeat */
   getLastHeartbeatAt(): string | null {
     return this.lastHeartbeatAt;
@@ -392,8 +407,36 @@ export class SlackInstanceRegistryService {
   private async loadSettings(): Promise<SlackInstanceSettingsFile> {
     if (this.settings) return this.settings;
     const raw = await safeReadJson<Partial<SlackInstanceSettingsFile> | null>(this.settingsPath, null);
-    this.settings = { version: 1, primary: raw?.primary === true };
+    this.settings = {
+      version: 1,
+      primary: raw?.primary === true,
+      ...(typeof raw?.slackTeamId === 'string' && raw.slackTeamId ? { slackTeamId: raw.slackTeamId } : {}),
+    };
     return this.settings;
+  }
+
+  /**
+   * The workspace this instance chose to serve (Settings), when the account
+   * has several. Null = let Cloud decide (its binding, or the only one).
+   *
+   * @returns Slack team id or null
+   */
+  async getWorkspaceId(): Promise<string | null> {
+    return (await this.loadSettings()).slackTeamId ?? null;
+  }
+
+  /**
+   * Persist the workspace choice and re-register at once so Cloud re-binds
+   * this instance; the next config refresh then serves that workspace.
+   *
+   * @param slackTeamId - Slack team id to serve
+   */
+  async setWorkspaceId(slackTeamId: string): Promise<void> {
+    const settings = await this.loadSettings();
+    settings.slackTeamId = slackTeamId;
+    await fs.mkdir(path.dirname(this.settingsPath), { recursive: true });
+    await atomicWriteJson(this.settingsPath, settings);
+    await this.heartbeat();
   }
 
   private now(): number {

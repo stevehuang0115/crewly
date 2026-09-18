@@ -131,7 +131,21 @@ export async function ensureSlackCloudConfigService(): Promise<SlackCloudConfigS
   let service = getSlackCloudConfigService();
   if (!service) {
     const { CloudClientService } = await import('../cloud/cloud-client.service.js');
-    service = new SlackCloudConfigService({ cloud: CloudClientService.getInstance() });
+    // The device id is what Cloud binds a workspace to; it must accompany
+    // the very first `/config` call, before the registry has started.
+    const { DeviceIdentityService } = await import('../cloud/device-identity.service.js');
+    let deviceId: string | null = null;
+    try {
+      deviceId = (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceId;
+    } catch (err) {
+      logger.debug('Device identity unavailable for the Slack config request', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    service = new SlackCloudConfigService({
+      cloud: CloudClientService.getInstance(),
+      getInstanceId: () => getSlackInstanceRegistryService()?.getInstanceId() ?? deviceId,
+    });
     setSlackCloudConfigService(service);
   }
   return service;
@@ -526,6 +540,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         storage: StorageService.getInstance(),
         getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
         identities,
+        getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
       });
       setSlackTeamChannelService(service);
     }

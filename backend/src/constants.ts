@@ -652,6 +652,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	CONFIG_PATH: '/config',
 	/** `DELETE` — remove the account's Slack workspace on Cloud */
 	WORKSPACE_PATH: '/workspace',
+	/** GET → every workspace on the account (redacted) */
+	WORKSPACES_PATH: '/workspaces',
 	/** `PUT /instances/:instanceId` — registry heartbeat */
 	INSTANCES_PATH: '/instances',
 	/** `POST` — provision per-agent apps for a team roster */

@@ -30,6 +30,7 @@ import type {
   SlackCloudConfig,
   SlackCloudConfigFile,
   SlackConfig,
+  SlackCloudWorkspaceSummary,
 } from '../../types/slack.types.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
@@ -43,6 +44,12 @@ export type SlackSourceMode = 'env' | 'cloud' | 'auto';
 /** Constructor dependencies. */
 export interface SlackCloudConfigServiceDeps {
   cloud: IdentityCloudClient;
+  /**
+   * This instance's Cloud device id, when known. Sent with `GET /config` so
+   * Cloud can serve the workspace this instance is bound to when the
+   * account holds several.
+   */
+  getInstanceId?: () => string | null;
   /** Cache path; defaults to `<CREWLY_HOME>/slack-cloud-config.json`. */
   storePath?: string;
   fetchImpl?: typeof fetch;
@@ -83,6 +90,8 @@ export class SlackCloudConfigService {
   private loading: Promise<SlackCloudConfig | null> | null = null;
   private refreshTimer: ReturnType<typeof setInterval> | null = null;
   private lastError: string | null = null;
+  /** Set when Cloud answered `workspace_not_selected`: the list to choose from. */
+  private availableWorkspaces: SlackCloudWorkspaceSummary[] | null = null;
   private readonly listeners = new Set<SlackCloudConfigListener>();
 
   constructor(deps: SlackCloudConfigServiceDeps) {
@@ -198,7 +207,12 @@ export class SlackCloudConfigService {
     if (!token || !base) {
       throw new SlackIdentityCloudError(401, 'not_logged_in', 'Not logged in to Crewly Cloud');
     }
-    const url = `${base.replace(/\/$/, '')}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.WORKSPACE_PATH}`;
+    // Name the workspace this instance serves so an account with several
+    // loses only this one.
+    const current = this.config?.workspace.slackTeamId;
+    const url =
+      `${base.replace(/\/$/, '')}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.WORKSPACE_PATH}` +
+      (current ? `/${encodeURIComponent(current)}` : '');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SLACK_CLOUD_CONSTANTS.REQUEST_TIMEOUT_MS);
     let removed = false;
@@ -360,14 +374,68 @@ export class SlackCloudConfigService {
     }
   }
 
-  /** `GET /api/cloud/slack/config`; null on 404 (not connected). */
+  /**
+   * Workspaces Cloud listed the last time it refused `/config` with
+   * `workspace_not_selected`; null otherwise.
+   *
+   * @returns Copies, or null
+   */
+  getAvailableWorkspaces(): SlackCloudWorkspaceSummary[] | null {
+    return this.availableWorkspaces ? this.availableWorkspaces.map((w) => ({ ...w })) : null;
+  }
+
+  /**
+   * `GET /api/cloud/slack/workspaces` — every workspace on the account.
+   *
+   * @returns The list (empty when none is installed)
+   * @throws {SlackIdentityCloudError} on a Cloud failure
+   */
+  async listWorkspaces(): Promise<SlackCloudWorkspaceSummary[]> {
+    const token = this.deps.cloud.getToken();
+    const base = this.deps.cloud.getCloudUrl();
+    if (!token || !base) {
+      throw new SlackIdentityCloudError(401, 'not_logged_in', 'Not logged in to Crewly Cloud');
+    }
+    const url = `${base.replace(/\/$/, '')}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.WORKSPACES_PATH}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), SLACK_CLOUD_CONSTANTS.REQUEST_TIMEOUT_MS);
+    try {
+      const res = await this.fetchImpl(url, { method: 'GET', headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+      const text = await res.text();
+      let parsed: { success?: boolean; data?: unknown; error?: string; code?: string } = {};
+      try {
+        parsed = JSON.parse(text) as typeof parsed;
+      } catch {
+        parsed = {};
+      }
+      if (!res.ok || parsed.success !== true || !Array.isArray(parsed.data)) {
+        throw new SlackIdentityCloudError(res.status, parsed.code ?? `http_${res.status}`, parsed.error ?? `Cloud request failed (${res.status})`);
+      }
+      return (parsed.data as unknown[]).filter(isWorkspaceSummary);
+    } catch (err) {
+      if (err instanceof SlackIdentityCloudError) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      throw new SlackIdentityCloudError(502, 'network', `Cloud unreachable: ${message}`);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * `GET /api/cloud/slack/config?instanceId=…`; null on 404 (not connected)
+   * and on 409 `workspace_not_selected` (several workspaces, none bound —
+   * the list is kept in {@link getAvailableWorkspaces}).
+   */
   private async fetchFromCloud(): Promise<SlackCloudConfig | null> {
     const token = this.deps.cloud.getToken();
     const base = this.deps.cloud.getCloudUrl();
     if (!token || !base) {
       throw new SlackIdentityCloudError(401, 'not_logged_in', 'Not logged in to Crewly Cloud');
     }
-    const url = `${base.replace(/\/$/, '')}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.CONFIG_PATH}`;
+    const instanceId = this.deps.getInstanceId?.() ?? null;
+    const url =
+      `${base.replace(/\/$/, '')}${SLACK_CLOUD_CONSTANTS.CLOUD_PATH}${SLACK_CLOUD_CONSTANTS.CONFIG_PATH}` +
+      (instanceId ? `?instanceId=${encodeURIComponent(instanceId)}` : '');
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), SLACK_CLOUD_CONSTANTS.REQUEST_TIMEOUT_MS);
     try {
@@ -376,14 +444,26 @@ export class SlackCloudConfigService {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       });
-      if (res.status === 404) return null;
+      if (res.status === 404) {
+        this.availableWorkspaces = null;
+        return null;
+      }
       const text = await res.text();
-      let parsed: { success?: boolean; data?: unknown; error?: string; code?: string } = {};
+      let parsed: { success?: boolean; data?: unknown; error?: string; code?: string; details?: { workspaces?: unknown } } = {};
       try {
         parsed = JSON.parse(text) as typeof parsed;
       } catch {
         parsed = {};
       }
+      if (res.status === 409 && parsed.code === 'workspace_not_selected') {
+        const list = Array.isArray(parsed.details?.workspaces) ? (parsed.details!.workspaces as unknown[]) : [];
+        this.availableWorkspaces = list.filter(isWorkspaceSummary);
+        this.logger.info('Cloud holds several Slack workspaces; this instance has not chosen one yet', {
+          workspaces: this.availableWorkspaces.map((w) => w.slackTeamName),
+        });
+        return null;
+      }
+      this.availableWorkspaces = null;
       if (!res.ok || parsed.success !== true) {
         throw new SlackIdentityCloudError(
           res.status,
@@ -428,6 +508,17 @@ export function isCloudConfig(value: unknown): value is SlackCloudConfig {
       typeof (a as SlackCloudAgentConfig).botToken === 'string' &&
       typeof (a as SlackCloudAgentConfig).botUserId === 'string',
   );
+}
+
+/**
+ * Runtime guard for a workspace summary from Cloud.
+ *
+ * @param value - Parsed JSON
+ * @returns True when it names a Slack team
+ */
+export function isWorkspaceSummary(value: unknown): value is SlackCloudWorkspaceSummary {
+  const v = value as Partial<SlackCloudWorkspaceSummary> | null;
+  return !!v && typeof v === 'object' && typeof v.slackTeamId === 'string' && v.slackTeamId.length > 0 && typeof v.slackTeamName === 'string';
 }
 
 let instance: SlackCloudConfigService | null = null;

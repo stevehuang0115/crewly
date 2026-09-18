@@ -96,6 +96,8 @@ export interface SlackCloudWorkspaceConfig {
   botUserId: string;
   botToken: string;
   appId: string;
+  /** Slack user id of the installer (the owner); invited into every channel Crewly creates. */
+  installedBy?: string;
 }
 
 /** One provisioned + installed per-agent app from `GET /api/cloud/slack/config`. */
@@ -127,6 +129,17 @@ export interface SlackInstanceSettingsFile {
   version: 1;
   /** This instance receives DMs / unmapped channels for the account */
   primary: boolean;
+  /** Slack team id this instance serves when the account has several workspaces */
+  slackTeamId?: string;
+}
+
+/** One workspace on the account, as listed by Cloud (never a token). */
+export interface SlackCloudWorkspaceSummary {
+  slackTeamId: string;
+  slackTeamName: string;
+  botUserId?: string;
+  installedAt?: string;
+  agentIdentities?: number;
 }
 
 /** One team as reported to the Cloud instance registry. */
@@ -144,6 +157,8 @@ export interface SlackInstanceRegistryPayload {
   deviceName: string;
   relayQueueId: string;
   primary?: boolean;
+  /** Workspace this instance serves (omitted = keep Cloud's binding) */
+  slackTeamId?: string;
   teams: SlackRegistryTeam[];
   crewlyVersion: string;
 }

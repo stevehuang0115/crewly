@@ -110,6 +110,12 @@ export interface SlackTeamChannelServiceDeps {
   identities?: TeamChannelIdentityApi | null;
   /** Mapping store path; defaults to `<CREWLY_HOME>/slack-team-channels.json`. */
   storePath?: string;
+  /**
+   * Slack user id of the workspace owner (the person who installed the
+   * app). A channel the bot creates is invisible to everyone until they
+   * join it, so the owner is invited right after creation.
+   */
+  getOwnerUserId?: () => string | null;
   /** Clock override for tests. */
   now?: () => Date;
 }
@@ -442,6 +448,19 @@ export class SlackTeamChannelService {
         const store = await this.load();
         channel = await this.deps.slack.createChannel(slackChannelNameFor(team.name, store.channelPrefix));
         autoCreated = true;
+        const owner = this.deps.getOwnerUserId?.() ?? null;
+        if (owner) {
+          await this.deps.slack.inviteToChannel(channel.id, [owner]).catch((err: unknown) => {
+            this.logger.warn('Could not invite the owner into the new channel — search for it in Slack and join', {
+              channel: channel.name,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+        } else {
+          this.logger.info('New channel created; no owner id known to invite — search for it in Slack and join', {
+            channel: channel.name,
+          });
+        }
         const purpose = team.description?.trim() || `Crewly team "${team.name}"`;
         await this.deps.slack.setChannelPurpose(channel.id, purpose).catch((err: unknown) => {
           this.logger.debug('setPurpose failed (non-critical)', {

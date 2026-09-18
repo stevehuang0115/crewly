@@ -1297,8 +1297,9 @@ export class SlackService extends EventEmitter {
   async sendNotification(notification: SlackNotification): Promise<void> {
     let targetChannelId = notification.channelId || this.config?.defaultChannelId;
     if (!targetChannelId) {
-      // No SLACK_DEFAULT_CHANNEL: deliver where the owner last talked to us.
-      const fallback = resolveFallbackNotificationChannel();
+      // No SLACK_DEFAULT_CHANNEL: deliver where the owner last talked to us
+      // (only worth trying on a live connection).
+      const fallback = this.isConnected() ? resolveFallbackNotificationChannel() : null;
       if (!fallback) {
         this.logger.warn('No channel configured for notification');
         return;

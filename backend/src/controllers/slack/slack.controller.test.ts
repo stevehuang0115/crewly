@@ -71,6 +71,8 @@ const mockCloudConfig = {
   getFetchedAt: jest.fn(() => null),
   getLastError: jest.fn(() => null),
   removeWorkspace: jest.fn(),
+  getAvailableWorkspaces: jest.fn(() => null as null | Array<{ slackTeamId: string; slackTeamName: string }>),
+  listWorkspaces: jest.fn(async () => [] as Array<{ slackTeamId: string; slackTeamName: string }>),
 };
 const mockRegistry = {
   isPrimary: jest.fn(async () => false),
@@ -80,6 +82,9 @@ const mockRegistry = {
   getLastError: jest.fn((): string | null => null),
   getPendingInstalls: jest.fn(() => [] as Array<{ agentSession: string; url: string }>),
   syncAgents: jest.fn(),
+  resolveInstanceId: jest.fn(async () => 'device-1'),
+  getWorkspaceId: jest.fn(async (): Promise<string | null> => null),
+  setWorkspaceId: jest.fn(async () => undefined),
 };
 const mockHandleCloudConfigChange = jest.fn(async (_config: unknown) => undefined);
 let mockActiveSource: 'env' | 'cloud' | null = null;
@@ -1311,6 +1316,7 @@ describe('Slack Controller', () => {
         expect(`${url.origin}${url.pathname}`).toBe('https://api.crewlyai.com/api/cloud/slack/install');
         expect(url.searchParams.get('token')).toBe('jwt-abc');
         expect(url.searchParams.get('returnUrl')).toBe('http://crewly.local:3000/settings?tab=slack');
+        expect(url.searchParams.get('instanceId')).toBe('device-1');
         expect(response.body.data.returnUrl).toBe('http://crewly.local:3000/settings?tab=slack');
       });
 
@@ -1326,6 +1332,43 @@ describe('Slack Controller', () => {
         const response = await request(app).get('/api/slack/cloud/install-url');
         expect(response.status).toBe(401);
         expect(response.body.code).toBe('CLOUD_NOT_CONNECTED');
+      });
+    });
+
+    describe('multiple workspaces', () => {
+      it('status lists the account workspaces and the pending choice; a listing failure is not fatal', async () => {
+        mockCloudConfig.listWorkspaces.mockResolvedValueOnce([{ slackTeamId: 'T1', slackTeamName: 'Acme' }, { slackTeamId: 'T2', slackTeamName: 'Client' }]);
+        mockCloudConfig.getAvailableWorkspaces.mockReturnValueOnce([{ slackTeamId: 'T1', slackTeamName: 'Acme' }, { slackTeamId: 'T2', slackTeamName: 'Client' }]);
+        const ok = await request(app).get('/api/slack/cloud/status');
+        expect(ok.body.data.workspaces).toHaveLength(2);
+        expect(ok.body.data.availableWorkspaces).toHaveLength(2);
+        expect(ok.body.data.selectedWorkspaceId).toBeNull();
+
+        mockCloudConfig.listWorkspaces.mockRejectedValueOnce(new Error('cloud down'));
+        const degraded = await request(app).get('/api/slack/cloud/status');
+        expect(degraded.status).toBe(200);
+        expect(degraded.body.data.workspaces).toBeNull();
+      });
+
+      it('PUT /cloud/workspace validates the team id, persists the choice, refreshes and reconnects', async () => {
+        const bad = await request(app).put('/api/slack/cloud/workspace').send({ slackTeamId: 'nope' });
+        expect(bad.status).toBe(400);
+
+        mockCloudConfig.refresh.mockResolvedValueOnce({ workspace: { slackTeamId: 'T0CLIENT2' }, agents: [], transport: 'cloud' });
+        const response = await request(app).put('/api/slack/cloud/workspace').send({ slackTeamId: 'T0CLIENT2' });
+        expect(response.status).toBe(200);
+        expect(mockRegistry.setWorkspaceId).toHaveBeenCalledWith('T0CLIENT2');
+        expect(mockCloudConfig.refresh).toHaveBeenCalled();
+        expect(mockHandleCloudConfigChange).toHaveBeenCalledWith(expect.objectContaining({ workspace: { slackTeamId: 'T0CLIENT2' } }));
+        expect(response.body.data).toMatchObject({ selectedWorkspaceId: 'T0CLIENT2', activeWorkspaceId: 'T0CLIENT2' });
+      });
+
+      it('GET /cloud/workspaces proxies the Cloud list with the local choice', async () => {
+        mockCloudConfig.listWorkspaces.mockResolvedValueOnce([{ slackTeamId: 'T1', slackTeamName: 'Acme' }]);
+        mockRegistry.getWorkspaceId.mockResolvedValueOnce('T1');
+        const response = await request(app).get('/api/slack/cloud/workspaces');
+        expect(response.status).toBe(200);
+        expect(response.body.data).toEqual({ workspaces: [{ slackTeamId: 'T1', slackTeamName: 'Acme' }], selectedWorkspaceId: 'T1', activeWorkspaceId: null });
       });
     });
 
