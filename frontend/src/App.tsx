@@ -30,6 +30,7 @@ import { WorkItems } from './pages/WorkItems';
 import { WorkItemDetail } from './pages/WorkItemDetail';
 import { RequestsPage } from './pages/RequestsPage';
 import { RequestDetail } from './pages/RequestDetail';
+import { ApiTokenPrompt } from './components/ApiTokenPrompt/ApiTokenPrompt';
 
 
 /**
@@ -50,6 +51,8 @@ function App() {
     <PaymentWallProvider>
     <TerminalProvider>
       <SidebarProvider>
+        {/* Shown only when the backend challenges for the API token (non-loopback access). */}
+        <ApiTokenPrompt />
         <Router>
           <Routes>
             {/* OAuth callback route (outside AppLayout — no sidebar/header) */}

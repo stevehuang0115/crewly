@@ -1,4 +1,5 @@
 import io from 'socket.io-client';
+import { getSocketTokenQuery } from './api-token.service';
 
 // Define Socket interface locally to avoid import issues
 interface Socket {
@@ -42,6 +43,9 @@ export class WebSocketService {
       this.isIntentionalDisconnect = false;
 
       this.socket = io(this.url!, {
+        // Non-loopback access: the backend gates the handshake on the API
+        // token (`?token=`), see backend/src/middleware/api-token.middleware.ts.
+        query: getSocketTokenQuery(),
         transports: ['websocket', 'polling'],
         upgrade: true,
         autoConnect: true,
