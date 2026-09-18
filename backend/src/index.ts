@@ -3624,6 +3624,18 @@ void (async () => {
 			// Stop auditor scheduler
 			AuditorSchedulerService.getInstance().stop();
 
+			// Persist the token ledger: it flushes every 5 minutes, so a restart
+			// used to drop everything recorded since the last tick (2026-09-18).
+			try {
+				const ledger = TokenUsageService.getInstance();
+				ledger.stopPeriodicFlush();
+				await ledger.flushToDisk();
+			} catch (flushErr) {
+				this.logger.warn('Token ledger flush on shutdown failed (non-fatal)', {
+					error: flushErr instanceof Error ? flushErr.message : String(flushErr),
+				});
+			}
+
 			// Flush and shutdown OpenTelemetry tracing
 			try {
 				const { TracingService: TracingSvc } = await import('./services/core/tracing.service.js');
