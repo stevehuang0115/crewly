@@ -16,6 +16,7 @@ import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
 import { backupCommand } from './commands/backup.js';
 import { pairCommand } from './commands/pair.js';
+import { tokenCommand } from './commands/token.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion } from './utils/version-check.js';
@@ -143,6 +144,14 @@ program
   .option('--disconnect', 'Disconnect from active relay session')
   .option('--devices', 'List paired devices')
   .action(pairCommand);
+
+program
+  .command('token')
+  .description('Print the API token non-loopback callers must send (see README "Securing a server install")')
+  .option('--url', 'Print a ready-to-open dashboard link (http://<host>:<port>/?token=...) instead')
+  .option('--host <host>', 'Host to use in the --url link (default: first LAN IPv4)')
+  .option('--port <port>', 'Port to use in the --url link (default: WEB_PORT or 8787)')
+  .action(tokenCommand);
 
 const cloudCmd = program
   .command('cloud')
