@@ -434,8 +434,12 @@ export class V3DataService {
    *      error, releases the claim). This is the ground truth state.
    *   2. If `retryCount < maxRetries` → requeueAfterFailure (failed →
    *      queued, retryCount++). The original target keeps the WI.
-   *   3. Otherwise → leave it in failed AND escalate to ORC so it can
-   *      surface the failure to the user and ask for a new plan.
+   *   3. Otherwise → leave it in failed and dispose of it through
+   *      `taskPool.disposeFailedWorkItem`, which escalates to ORC (so it
+   *      can surface the failure to the user and ask for a new plan) AND
+   *      stamps a `terminal` disposition on the WI. The stamp is what stops
+   *      the reconciler's stranded-item safety net from escalating the
+   *      same WI a second time five minutes later.
    *
    * Cascade-to-parent-Request happens ONLY on the terminal path
    * (exhausted retries). A retry-eligible WI doesn't cascade, since
@@ -492,15 +496,16 @@ export class V3DataService {
       });
 
       try {
-        // Lazy-import to avoid a hard dep cycle: v3-data is loaded very
-        // early during bootstrap; escalation-router has its own init
-        // dependencies (filesystem dirs, etc).
-        const { EscalationRouterService } = await import('./escalation-router.service.js');
-        await EscalationRouterService.getInstance().escalateFailedWorkItem(failed, reason);
+        // Route through the disposition funnel rather than calling the
+        // escalation router directly: `disposeFailedWorkItem` escalates
+        // (retry budget spent → `terminal`) and records the disposition in
+        // the same operation, so the reconciler's safety net sees the WI as
+        // dealt with instead of raising a duplicate escalation.
+        await taskPool.disposeFailedWorkItem(failed.id, { reason });
       } catch (err) {
-        // Escalation is best-effort — a routing failure mustn't strand
+        // Disposition is best-effort — a routing failure mustn't strand
         // the original failure handler; the cascade below still runs.
-        this.logger.warn('escalateFailedWorkItem threw (non-fatal)', {
+        this.logger.warn('disposeFailedWorkItem threw (non-fatal)', {
           workItemId: failed.id,
           error: err instanceof Error ? err.message : String(err),
         });

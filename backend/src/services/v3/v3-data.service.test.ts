@@ -22,6 +22,13 @@ const mockRequestUpdate = jest.fn().mockResolvedValue(undefined);
 const mockRequestLinkWorkItem = jest.fn().mockResolvedValue(undefined);
 const mockRequestListAll = jest.fn().mockResolvedValue([]);
 const mockFindBySource = jest.fn().mockResolvedValue(null);
+const mockDisposeFailedWorkItem = jest.fn().mockResolvedValue({
+  kind: 'terminal',
+  at: new Date().toISOString(),
+  by: 'system',
+  reason: 'retries exhausted',
+  escalationId: 'esc-1',
+});
 const mockAtomicWriteJson = jest.fn().mockResolvedValue(undefined);
 const mockWriteFile = jest.fn().mockResolvedValue(undefined);
 
@@ -49,6 +56,7 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
       requeueAfterFailure: mockRequeueAfterFailure,
       findWorkItem: mockFindWorkItem,
       updateItemStatus: mockUpdateItemStatus,
+      disposeFailedWorkItem: mockDisposeFailedWorkItem,
     }),
   },
 }));
@@ -455,6 +463,7 @@ describe('V3DataService', () => {
       mockRequeueAfterFailure.mockClear();
       mockFindWorkItem.mockClear();
       mockEscalateFailedWorkItem.mockClear();
+      mockDisposeFailedWorkItem.mockClear();
     });
 
     it('should transition queued → running before failing (Bug 1 fix)', async () => {
@@ -541,16 +550,18 @@ describe('V3DataService', () => {
       });
       await new Promise((r) => setTimeout(r, 50));
 
-      // Path: failItem (always) → NO requeue → escalate → cascade.
+      // Path: failItem (always) → NO requeue → dispose (escalate + stamp) → cascade.
       expect(mockFailItem).toHaveBeenCalledWith('wi-done', expect.any(String));
       expect(mockRequeueAfterFailure).not.toHaveBeenCalled();
-      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
-      const escalateArgs = mockEscalateFailedWorkItem.mock.calls[0];
-      expect(escalateArgs[0]).toMatchObject({ id: 'wi-done', retryCount: 3, maxRetries: 3 });
+      expect(mockDisposeFailedWorkItem).toHaveBeenCalledTimes(1);
+      expect(mockDisposeFailedWorkItem).toHaveBeenCalledWith('wi-done', {
+        reason: expect.stringContaining('agent-max'),
+      });
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
       expect(mockRequestUpdate).toHaveBeenCalledWith('req-d1', { status: 'cancelled' });
     });
 
-    it('proceeds with cascade even if escalation throws (escalation is best-effort)', async () => {
+    it('proceeds with cascade even if disposition throws (disposition is best-effort)', async () => {
       mockGetAllItems
         .mockResolvedValueOnce([
           { id: 'wi-esc-fail', target: 'agent-max', status: 'running', requestId: 'req-e1' },
@@ -562,7 +573,7 @@ describe('V3DataService', () => {
         id: 'wi-esc-fail', target: 'agent-max', status: 'failed', requestId: 'req-e1',
         retryCount: 3, maxRetries: 3, title: 'x', type: 'delegate',
       });
-      mockEscalateFailedWorkItem.mockRejectedValueOnce(new Error('message queue down'));
+      mockDisposeFailedWorkItem.mockRejectedValueOnce(new Error('message queue down'));
       mockRequestGetById.mockResolvedValueOnce({
         id: 'req-e1', status: 'running', workItemIds: ['wi-esc-fail'],
       });
@@ -678,9 +689,18 @@ describe('V3DataService', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Still 2 requeues (no new ones on the 3rd fire), exactly 1
-      // escalation, and the Request finally cascades to cancelled.
+      // terminal disposition (which escalates AND stamps the WI so the
+      // reconciler safety net cannot escalate it a second time), and the
+      // Request finally cascades to cancelled.
       expect(mockRequeueAfterFailure).toHaveBeenCalledTimes(2);
-      expect(mockEscalateFailedWorkItem).toHaveBeenCalledTimes(1);
+      expect(mockDisposeFailedWorkItem).toHaveBeenCalledTimes(1);
+      expect(mockDisposeFailedWorkItem).toHaveBeenCalledWith(wiId, {
+        reason: expect.stringContaining('agent-leo'),
+      });
+      // The escalation router is reached through the disposition funnel,
+      // never called directly — a direct call would leave the WI unstamped
+      // and the reconciler would raise a duplicate escalation 5 min later.
+      expect(mockEscalateFailedWorkItem).not.toHaveBeenCalled();
       expect(mockRequestUpdate).toHaveBeenCalledWith(reqId, { status: 'cancelled' });
     });
   });

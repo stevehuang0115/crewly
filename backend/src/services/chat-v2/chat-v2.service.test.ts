@@ -2106,5 +2106,77 @@ describe('ChatV2Service', () => {
       seed(ch.id, 'agent', 'recent agent', 5000, 2);
       expect(service.getRecentOwnerMessageContents(1000)).toEqual([]);
     });
+
+    /**
+     * Issue #730 — the commitment gate must see the owner's approval no matter
+     * which surface/conversation it arrived on. The read is deliberately NOT
+     * scoped to a conversationId: a legacy `[CHAT:…]` conversation channel, a
+     * Slack-bridged channel and a fresh DM all contribute. A regression to a
+     * per-conversation query would silently re-open the "go ahead is never
+     * found" loop the issue reported.
+     */
+    it('is conversation-agnostic: owner rows from every channel in the window are returned (#730)', () => {
+      const dm = createSam();
+      const legacy = service.ensureChannelForLegacyConversation({
+        conversationId: 'conv-legacy-1',
+        agentSession: 'crewly-orc',
+      });
+      const slackish = service.createChannel({
+        agentSession: 'crewly-orc',
+        name: 'slack-thread-42',
+        principal: owner,
+      });
+
+      seed(dm.id, 'user', 'first on the DM', 2000, 1);
+      seed(legacy.id, 'user', 'go ahead', 3000, 2);
+      seed(slackish.id, 'user', '启动 Phase 1', 4000, 3);
+      seed(slackish.id, 'agent', 'agent echo — ignored', 4500, 4);
+
+      const got = service.getRecentOwnerMessageContents(1000);
+      expect(got).toEqual(['启动 Phase 1', 'go ahead', 'first on the DM']);
+    });
+  });
+
+  describe('getChannelActivity (OrcDeliveryEnforcer read, #731)', () => {
+    function seed(channelId: string, senderType: string, createdAt: number, seq: number): void {
+      db.prepare(
+        `INSERT INTO chat_messages (id, channel_id, seq, sender_type, sender_id, content, content_type, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, 'markdown', ?)`,
+      ).run(`a-${channelId}-${seq}`, channelId, seq, senderType, `${senderType}-1`, `msg ${seq}`, createdAt);
+    }
+
+    it('returns null for an unknown channel', () => {
+      expect(service.getChannelActivity('slack-NOPE-1-2')).toBeNull();
+    });
+
+    it('returns both nulls for a channel with no messages', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0AG8QM4J21-1785672178-254459',
+        agentSession: 'crewly-orc',
+      });
+      expect(service.getChannelActivity(ch.id)).toEqual({ lastOwnerMessageAt: null, lastReplyAt: null });
+    });
+
+    it('reports the latest owner row and the latest non-owner row separately', () => {
+      const ch = service.ensureChannelForLegacyConversation({
+        conversationId: 'slack-D0AG8QM4J21-1785672178-254459',
+        agentSession: 'crewly-orc',
+      });
+      seed(ch.id, 'user', 1000, 1);
+      seed(ch.id, 'agent', 2000, 2);
+      seed(ch.id, 'user', 3000, 3);
+      seed(ch.id, 'system', 4000, 4);
+      seed(ch.id, 'agent', 5000, 5);
+      expect(service.getChannelActivity(ch.id)).toEqual({ lastOwnerMessageAt: 3000, lastReplyAt: 5000 });
+    });
+
+    it('does not mix channels', () => {
+      const a = service.ensureChannelForLegacyConversation({ conversationId: 'slack-A-1-1', agentSession: 'crewly-orc' });
+      const b = service.ensureChannelForLegacyConversation({ conversationId: 'slack-B-1-1', agentSession: 'crewly-orc' });
+      seed(a.id, 'user', 1000, 1);
+      seed(b.id, 'agent', 9000, 1);
+      expect(service.getChannelActivity(a.id)).toEqual({ lastOwnerMessageAt: 1000, lastReplyAt: null });
+      expect(service.getChannelActivity(b.id)).toEqual({ lastOwnerMessageAt: null, lastReplyAt: 9000 });
+    });
   });
 });

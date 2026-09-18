@@ -2043,6 +2043,50 @@ describe('detectUnverifiedWorkItems', () => {
 // ---------------------------------------------------------------------------
 // detectUndisposedStrandedWorkItems — successor model safety net
 // ---------------------------------------------------------------------------
+describe('detectRetryableFailedWorkItems — disposed items are never re-queued', () => {
+  function disposed(kind: 'succeeded_by' | 'terminal', extra: Record<string, unknown> = {}): WorkItem {
+    return makeWorkItem({
+      status: 'failed',
+      retryCount: 0,
+      maxRetries: 3,
+      metadata: {
+        [DISPOSITION_METADATA_KEY]: {
+          kind,
+          at: new Date().toISOString(),
+          by: 'system',
+          reason: 'already handled',
+          ...extra,
+        },
+      },
+    });
+  }
+
+  it('re-queues an undisposed failed item with budget left (baseline)', () => {
+    const wi = makeWorkItem({ status: 'failed', retryCount: 0, maxRetries: 3 });
+    const { corrections, retriedIds } = detectRetryableFailedWorkItems([wi]);
+    expect(retriedIds).toEqual([wi.id]);
+    expect(corrections[0].newState).toBe('queued');
+  });
+
+  it('skips a failed item that was succeeded by another WorkItem (would double-run the work)', () => {
+    const wi = disposed('succeeded_by', { successorWorkItemId: 'wi-x:review:max_retries' });
+    const { corrections, retriedIds } = detectRetryableFailedWorkItems([wi]);
+    expect(retriedIds).toEqual([]);
+    expect(corrections).toEqual([]);
+  });
+
+  it('skips a failed item with a terminal disposition even if retryCount is below maxRetries', () => {
+    const wi = disposed('terminal', { escalationId: 'esc-1' });
+    const { retriedIds } = detectRetryableFailedWorkItems([wi]);
+    expect(retriedIds).toEqual([]);
+  });
+
+  it('still skips a failed item whose budget is spent', () => {
+    const wi = makeWorkItem({ status: 'failed', retryCount: 3, maxRetries: 3 });
+    expect(detectRetryableFailedWorkItems([wi]).retriedIds).toEqual([]);
+  });
+});
+
 describe('detectUndisposedStrandedWorkItems', () => {
   const HOUR = 3600 * 1000;
 

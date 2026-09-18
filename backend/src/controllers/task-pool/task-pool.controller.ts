@@ -1237,6 +1237,61 @@ export async function appendItemNote(req: Request, res: Response): Promise<void>
   }
 }
 
+/** Inclusive lower bound of an auditor quality score. */
+const QUALITY_SCORE_MIN = 0;
+
+/** Inclusive upper bound of an auditor quality score. */
+const QUALITY_SCORE_MAX = 100;
+
+/** Scorer recorded when the caller does not identify itself. */
+const DEFAULT_SCORED_BY = 'auditor';
+
+/**
+ * Records an auditor quality score on a WorkItem.
+ *
+ * Serves `POST /api/tasks/score`, the route the auditor `score-task` skill
+ * has always posted to (it previously did not exist). Mirrors the v1
+ * `Task.qualityScore` field on the WorkItem as
+ * `metadata.qualityScore` / `metadata.qualityScoredBy` / `metadata.qualityScoredAt`.
+ *
+ * Body: `{ taskId | workItemId: string, qualityScore: number (0–100), scoredBy?: string }`.
+ *
+ * @param req - Express request with the score body
+ * @param res - 200 `{ success, data: WorkItem }` | 400 invalid input | 404 unknown item
+ */
+export async function scoreItem(req: Request, res: Response): Promise<void> {
+  try {
+    const workItemId = String(req.body?.taskId ?? req.body?.workItemId ?? '').trim();
+    if (!workItemId) {
+      res.status(400).json({ success: false, error: 'body.taskId (or workItemId) is required' });
+      return;
+    }
+    const qualityScore = req.body?.qualityScore;
+    if (
+      typeof qualityScore !== 'number' ||
+      !Number.isFinite(qualityScore) ||
+      qualityScore < QUALITY_SCORE_MIN ||
+      qualityScore > QUALITY_SCORE_MAX
+    ) {
+      res.status(400).json({
+        success: false,
+        error: `body.qualityScore must be a number between ${QUALITY_SCORE_MIN} and ${QUALITY_SCORE_MAX}`,
+      });
+      return;
+    }
+    const scoredBy = String(req.body?.scoredBy ?? req.body?.sessionName ?? DEFAULT_SCORED_BY).trim() || DEFAULT_SCORED_BY;
+
+    const updated = await getService().scoreItem(workItemId, qualityScore, scoredBy);
+    if (!updated) {
+      res.status(404).json({ success: false, error: `WorkItem not found: ${workItemId}` });
+      return;
+    }
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    res.status(500).json({ success: false, error: formatError(error) });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

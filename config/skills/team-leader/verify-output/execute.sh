@@ -44,6 +44,12 @@ elif [ -n "$WI_BRIEF" ]; then
   TASK_OUTPUT="$WI_BRIEF"
 fi
 
+# Defaults. A pre-approved checklist or a template pipeline (below) may
+# override these — they must NOT be reset after checklist loading, or the
+# checklist's passPolicy is silently discarded.
+PASS_POLICY="all"
+MAX_RETRIES=2
+
 # =============================================================================
 # Pre-approved checklist loading (from design-checklist skill)
 # =============================================================================
@@ -55,13 +61,17 @@ if [ -n "$CHECKLIST_PATH" ] && [ -f "$CHECKLIST_PATH" ]; then
   CHECKLIST_STATUS=$(echo "$CHECKLIST_DATA" | jq -r '.status // "unknown"' 2>/dev/null || true)
 
   if [ "$CHECKLIST_STATUS" = "approved" ]; then
-    # Convert checklist items to verification checks
+    # Convert checklist items to verification checks.
+    # NOTE: `(.command // empty)` inside an object constructor makes jq drop
+    # the WHOLE item when the key is absent, so every checklist item without
+    # both `command` and `pattern` used to vanish. Use `// null` instead —
+    # the consumers below read fields with `// empty`, so null is harmless.
     CHECKS=$(echo "$CHECKLIST_DATA" | jq -c '
       [.items[] | {
         name: .id,
         type: .type,
-        command: (.command // empty),
-        pattern: (.pattern // empty),
+        command: (.command // null),
+        pattern: (.pattern // null),
         description: .description,
         critical: (.critical // false)
       }]
@@ -79,7 +89,7 @@ elif [ -n "$TASK_ID" ] && [ -n "$PROJECT_PATH" ]; then
   if [ -f "$AUTO_CHECKLIST" ]; then
     CHECKLIST_STATUS=$(jq -r '.status // "unknown"' "$AUTO_CHECKLIST" 2>/dev/null || true)
     if [ "$CHECKLIST_STATUS" = "approved" ]; then
-      CHECKS=$(jq -c '[.items[] | {name: .id, type: .type, command: (.command // empty), pattern: (.pattern // empty), description: .description, critical: (.critical // false)}]' "$AUTO_CHECKLIST" 2>/dev/null || echo '[]')
+      CHECKS=$(jq -c '[.items[] | {name: .id, type: .type, command: (.command // null), pattern: (.pattern // null), description: .description, critical: (.critical // false)}]' "$AUTO_CHECKLIST" 2>/dev/null || echo '[]')
       PASS_POLICY=$(jq -r '.passPolicy // "critical_only"' "$AUTO_CHECKLIST" 2>/dev/null || echo "critical_only")
     fi
   fi
@@ -89,8 +99,6 @@ fi
 # Pipeline loading: convert template pipeline steps to checks
 # =============================================================================
 
-PASS_POLICY="all"
-MAX_RETRIES=2
 CHECK_COUNT=$(echo "$CHECKS" | jq 'length')
 
 if [ "$CHECK_COUNT" = "0" ] && [ -n "$TEMPLATE_ID" ]; then

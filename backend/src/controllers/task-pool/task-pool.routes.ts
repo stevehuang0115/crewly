@@ -27,6 +27,7 @@ import {
   setItemOutput,
   handoffItem,
   appendItemNote,
+  scoreItem,
 } from './task-pool.controller.js';
 
 /**
@@ -97,5 +98,19 @@ export function createTaskPoolRouter(): Router {
   // from DELETE which is a hard purge.
   router.post('/items/:workItemId/cancel', cancelQueuedItem);
 
+  return router;
+}
+
+/**
+ * Creates the `/tasks` router.
+ *
+ * Only `POST /score` lives here: the auditor `score-task` skill posts to
+ * `/api/tasks/score`, which had no handler until this router was added.
+ *
+ * @returns Express router mounted at `/api/tasks`
+ */
+export function createTaskScoreRouter(): Router {
+  const router = Router();
+  router.post('/score', scoreItem);
   return router;
 }

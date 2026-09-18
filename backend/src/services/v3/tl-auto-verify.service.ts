@@ -12,6 +12,7 @@
  */
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -31,6 +32,22 @@ interface TeamInfo {
   hierarchical?: boolean;
   members: TeamMemberInfo[];
 }
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Service identifier for logs and the X-Agent-Session caller header. */
+const SERVICE_NAME = 'TLAutoVerify';
+
+/** Loopback API base (same one workitem-dispatch.subscriber.ts uses). */
+const API_BASE = 'http://localhost:8787';
+
+/** Timeout for the direct terminal write to the TL session. */
+const TL_WRITE_TIMEOUT_MS = 5_000;
+
+/** How the verify instruction reached the TL. */
+type DeliveryPath = 'tl-terminal' | 'orchestrator-queue';
 
 // ---------------------------------------------------------------------------
 // Service
@@ -118,11 +135,7 @@ export class TLAutoVerifyService {
       return;
     }
 
-    // Send verification request to TL via message queue
     try {
-      const { MessageQueueService } = await import('../messaging/message-queue.service.js');
-      const mqService = new MessageQueueService(process.cwd());
-
       const verifyInstruction = [
         `[AUTO-VERIFY] Worker ${workerSessionName} has completed a task.`,
         taskId ? `Task ID: ${taskId}` : '',
@@ -141,28 +154,85 @@ export class TLAutoVerifyService {
         'If verification fails, use handle-failure to retry or reassign.',
       ].filter(Boolean).join('\n');
 
-      mqService.enqueue({
-        content: verifyInstruction,
-        conversationId: `auto-verify-${taskId || workerSessionName}-${Date.now()}`,
-        source: 'system_event',
-        sourceMetadata: {
-          type: 'auto-verify',
-          workerSession: workerSessionName,
-          taskId,
-        },
-      });
+      const deliveredVia = await this.deliverToTeamLeader(
+        tlInfo.tlSessionName,
+        verifyInstruction,
+        workerSessionName,
+        taskId,
+      );
 
       this.logger.info('TL auto-verify triggered', {
         workerSession: workerSessionName,
         tlSession: tlInfo.tlSessionName,
         teamId: tlInfo.teamId,
         taskId,
+        deliveredVia,
       });
     } catch (err) {
       this.logger.debug('Failed to send verify request to TL (non-fatal)', {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /**
+   * Deliver the verify instruction to the TL.
+   *
+   * The MessageQueueService is a FIFO destined for the orchestrator only (it
+   * has no recipient field), so enqueuing there for a non-orchestrator TL
+   * sends the instruction to the wrong agent. When the TL is a regular agent
+   * session we write straight to its terminal the same way
+   * `workitem-dispatch.subscriber.ts` does, and only fall back to the
+   * orchestrator queue when that write fails (session offline/unknown).
+   *
+   * @param tlSessionName - Resolved TL session name
+   * @param verifyInstruction - Message text to deliver
+   * @param workerSessionName - Worker whose task completed (for queue metadata)
+   * @param taskId - Task id (for queue metadata)
+   * @returns Which path actually carried the message
+   */
+  private async deliverToTeamLeader(
+    tlSessionName: string,
+    verifyInstruction: string,
+    workerSessionName: string,
+    taskId?: string,
+  ): Promise<DeliveryPath> {
+    if (tlSessionName !== ORCHESTRATOR_SESSION_NAME) {
+      try {
+        const axios = (await import('axios')).default;
+        await axios.post(
+          `${API_BASE}/api/terminal/${encodeURIComponent(tlSessionName)}/write`,
+          { data: verifyInstruction, mode: 'message' },
+          {
+            headers: { 'X-Agent-Session': SERVICE_NAME },
+            timeout: TL_WRITE_TIMEOUT_MS,
+          },
+        );
+        return 'tl-terminal';
+      } catch (err) {
+        const status = (err as { response?: { status?: number } })?.response?.status;
+        this.logger.warn('Direct TL terminal write failed — falling back to orchestrator queue', {
+          tlSession: tlSessionName,
+          status: status ?? 'no-response',
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    const { MessageQueueService } = await import('../messaging/message-queue.service.js');
+    const mqService = new MessageQueueService(process.cwd());
+    mqService.enqueue({
+      content: verifyInstruction,
+      conversationId: `auto-verify-${taskId || workerSessionName}-${Date.now()}`,
+      source: 'system_event',
+      sourceMetadata: {
+        type: 'auto-verify',
+        workerSession: workerSessionName,
+        tlSession: tlSessionName,
+        taskId,
+      },
+    });
+    return 'orchestrator-queue';
   }
 
   /**

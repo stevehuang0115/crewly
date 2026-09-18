@@ -41,6 +41,16 @@
  *      avoid spamming ORC if it's genuinely stuck or rate-limited.
  *      First reminder at 3 min, then 10 min, then 30 min, then stop.
  *
+ *   5. (issue #731) Before tracking, and again before every reminder, the
+ *      thread's recorded activity is consulted via an injected
+ *      {@link ThreadActivityProvider}. A `[DONE]` naming a thread whose
+ *      last OWNER message is older than {@link STALE_THREAD_MAX_AGE_MS}
+ *      is not tracked (nobody is waiting there — the agent's environment
+ *      just still carries an old delegation's conversationId), and a
+ *      pending entry is dropped silently once ANY reply landed on the
+ *      thread after the `[DONE]`, whether or not it came through
+ *      `/api/slack/send`.
+ *
  * Fire-and-forget on all writes — a fault in the enforcer MUST NOT
  * block chat or slack flow.
  *
@@ -58,6 +68,14 @@ const REMINDER_CADENCE_MS = [
 ] as const;
 
 const DEFAULT_TICK_INTERVAL_MS = 30 * 1000;
+
+/**
+ * A `[DONE]` naming a Slack thread whose last OWNER message is older than
+ * this is not tracked (issue #731). A user who asked for something and has
+ * been silent on that thread for a day is not "waiting on a deliverable"
+ * there — the deliverable, if any, goes out as a fresh top-level message.
+ */
+export const STALE_THREAD_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 /** Markers in agent output that indicate user-facing delivery is ready. */
 const DELIVERY_MARKERS = ['[DONE]', '[COMPLETED]', '[DELIVERED]'];
@@ -97,11 +115,32 @@ export type DeliveryReminderSink = (params: {
   text: string;
 }) => void;
 
+/**
+ * What the chat store knows about a Slack thread (issue #731).
+ * Timestamps are epoch ms; `null` when no such row exists.
+ */
+export interface ThreadActivity {
+  /** Last message authored by the owner (`sender_type='user'`) on the thread. */
+  lastOwnerMessageAt: number | null;
+  /** Last non-owner message (agent/orc/system reply) on the thread. */
+  lastReplyAt: number | null;
+}
+
+/**
+ * Looks up a thread's recorded activity. Returns `null` when the thread is
+ * unknown to the store, in which case the enforcer keeps its pre-#731
+ * behaviour (track and remind). Injected so the service has no hard dep on
+ * ChatV2Service and tests can stub it.
+ */
+export type ThreadActivityProvider = (key: SlackThreadKey) => ThreadActivity | null;
+
 export interface OrcDeliveryEnforcerOptions {
   /** Wired from index.ts to enqueue the reminder via MessageQueueService. */
   reminderSink: DeliveryReminderSink;
   /** Scan interval. Default 30 s. */
   tickIntervalMs?: number;
+  /** Optional thread-activity lookup (issue #731). Absent → legacy behaviour. */
+  threadActivityProvider?: ThreadActivityProvider;
 }
 
 /**
@@ -112,6 +151,7 @@ export class OrcDeliveryEnforcerService {
   private readonly logger: ComponentLogger;
   private readonly reminderSink: DeliveryReminderSink;
   private readonly tickIntervalMs: number;
+  private readonly threadActivityProvider: ThreadActivityProvider | null;
   private timer: NodeJS.Timeout | null = null;
   /** key = `${channelId}::${threadTs}` */
   private readonly pending = new Map<string, PendingDelivery>();
@@ -120,6 +160,7 @@ export class OrcDeliveryEnforcerService {
     this.logger = LoggerService.getInstance().createComponentLogger('OrcDeliveryEnforcer');
     this.reminderSink = opts.reminderSink;
     this.tickIntervalMs = opts.tickIntervalMs ?? DEFAULT_TICK_INTERVAL_MS;
+    this.threadActivityProvider = opts.threadActivityProvider ?? null;
   }
 
   static getInstance(): OrcDeliveryEnforcerService | null {
@@ -160,6 +201,8 @@ export class OrcDeliveryEnforcerService {
     conversationId: string;
     agentSender: string;
     text: string;
+    /** Injectable clock (tests). */
+    now?: number;
   }): void {
     if (!isAgentDeliveryMarker(input.text)) return;
     // The orchestrator is the deliverer, never the source. Its own
@@ -178,7 +221,23 @@ export class OrcDeliveryEnforcerService {
     if (!key) return; // not a slack thread — ignore
 
     const k = serializeKey(key);
-    const now = Date.now();
+    const now = input.now ?? Date.now();
+
+    // Issue #731: a [DONE] can NAME a thread the owner stopped talking in
+    // long ago (the agent's env still carries the original delegation's
+    // conversationId, and a daily cron reports completion with it). Nobody
+    // is waiting there; tracking it makes ORC post into a resolved thread.
+    const activity = this.lookupActivity(key);
+    if (activity && (activity.lastOwnerMessageAt === null || now - activity.lastOwnerMessageAt > STALE_THREAD_MAX_AGE_MS)) {
+      this.logger.info('OrcDeliveryEnforcer skipping stale thread — owner has not spoken there recently', {
+        conversationId: input.conversationId,
+        agentSender: input.agentSender,
+        lastOwnerMessageAt: activity.lastOwnerMessageAt,
+        staleAfterHours: STALE_THREAD_MAX_AGE_MS / (60 * 60 * 1000),
+      });
+      return;
+    }
+
     const summary = input.text.slice(0, 200);
     this.pending.set(k, {
       key,
@@ -226,6 +285,21 @@ export class OrcDeliveryEnforcerService {
     const firedFor: string[] = [];
     for (const [k, item] of this.pending) {
       if (now < item.nextDueAt) continue;
+
+      // Issue #731: a reply that reached the thread through any path other
+      // than /api/slack/send (bridge auto-route, agent-post, …) never called
+      // markDelivered. The chat store mirrors every outbound Slack reply, so
+      // ask it directly before nagging.
+      const activity = this.lookupActivity(item.key);
+      if (activity?.lastReplyAt !== null && activity?.lastReplyAt !== undefined && activity.lastReplyAt > item.doneAt) {
+        this.pending.delete(k);
+        this.logger.info('OrcDeliveryEnforcer delivery cleared — thread already replied to after [DONE]', {
+          conversationId: item.conversationId,
+          repliedAt: new Date(activity.lastReplyAt).toISOString(),
+        });
+        continue;
+      }
+
       if (item.remindersFired >= REMINDER_CADENCE_MS.length) {
         // Out of reminder budget — drop the entry so we stop spamming.
         this.pending.delete(k);
@@ -266,6 +340,25 @@ export class OrcDeliveryEnforcerService {
       }
     }
     return { firedFor };
+  }
+
+  /**
+   * Consult the thread-activity provider, failing open: a store hiccup must
+   * never break delivery enforcement, so any throw reads as "unknown".
+   *
+   * @param key - Thread to look up
+   * @returns Activity, or null when unavailable/unknown
+   */
+  private lookupActivity(key: SlackThreadKey): ThreadActivity | null {
+    if (!this.threadActivityProvider) return null;
+    try {
+      return this.threadActivityProvider(key);
+    } catch (err) {
+      this.logger.debug('OrcDeliveryEnforcer threadActivityProvider threw (treated as unknown)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   private formatReminder(item: PendingDelivery): string {

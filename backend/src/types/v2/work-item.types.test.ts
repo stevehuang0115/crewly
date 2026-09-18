@@ -23,6 +23,9 @@ import {
   createWorkItem,
   getTtlAnchorAt,
   LAST_REQUEUED_AT_METADATA_KEY,
+  DISPOSITION_METADATA_KEY,
+  isWorkItemDisposed,
+  getWorkItemDisposition,
 } from './work-item.types.js';
 import type { CreateWorkItemInput, WorkItem } from './work-item.types.js';
 
@@ -212,6 +215,36 @@ describe('WorkItem Types', () => {
     });
     it('should allow rejected → queued (re-queue)', () => {
       expect(isValidWorkItemTransition('rejected', 'queued')).toBe(true);
+    });
+    // #736 pin: `rejected` and `failed` are reachable stranding statuses with
+    // NO terminal edge. Their lifecycle ends with a WorkItemDisposition stamp
+    // (successor model, #740), not a status transition. If someone adds a
+    // `→ cancelled` / `→ failed` edge here, the pruning rules regain an
+    // illegal-correction surface (#733) and the disposition model becomes
+    // ambiguous — change this test only together with that design.
+    it('rejected and failed have queued as their only outbound edge (disposition, not transition, ends them)', () => {
+      for (const stranding of ['rejected', 'failed'] as const) {
+        const targets = WORK_ITEM_STATUSES.filter((to) => isValidWorkItemTransition(stranding, to));
+        expect(targets).toEqual(['queued']);
+        expect(TERMINAL_WORK_ITEM_STATUSES.has(stranding)).toBe(false);
+      }
+    });
+    it('isWorkItemDisposed reads the successor stamp that ends a stranded item\'s lifecycle', () => {
+      const undisposed: Pick<WorkItem, 'metadata'> = { metadata: {} };
+      expect(isWorkItemDisposed(undisposed)).toBe(false);
+      const succeeded: Pick<WorkItem, 'metadata'> = {
+        metadata: {
+          [DISPOSITION_METADATA_KEY]: {
+            kind: 'succeeded_by',
+            at: new Date().toISOString(),
+            by: 'system',
+            reason: 'retry cap 3 reached — escalated for review',
+            successorWorkItemId: 'wi-1:review:max_retries',
+          },
+        },
+      };
+      expect(isWorkItemDisposed(succeeded)).toBe(true);
+      expect(getWorkItemDisposition(succeeded)?.successorWorkItemId).toBe('wi-1:review:max_retries');
     });
     it('should allow escalated → queued', () => {
       expect(isValidWorkItemTransition('escalated', 'queued')).toBe(true);

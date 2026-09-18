@@ -19,6 +19,7 @@ import {
   cancelQueuedItem,
   listAllItems,
   blockItem,
+  scoreItem,
 } from './task-pool.controller.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
@@ -64,6 +65,7 @@ const mockService = {
   getAllItems: jest.fn().mockResolvedValue([]),
   cancelQueued: jest.fn(),
   updateItemStatus: jest.fn(),
+  scoreItem: jest.fn(),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -1390,5 +1392,78 @@ describe('TaskPoolController', () => {
         expect.objectContaining({ success: false, error: expect.stringMatching(/status must be 'queued'/) }),
       );
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /tasks/score — scoreItem (auditor score-task skill)
+// ---------------------------------------------------------------------------
+
+describe('scoreItem', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('stores the quality score via the service and returns the updated item', async () => {
+    const updated = {
+      id: 'wi-1',
+      status: 'done',
+      metadata: { qualityScore: 87, qualityScoredBy: 'auditor-1', qualityScoredAt: '2026-09-18T00:00:00.000Z' },
+    };
+    mockService.scoreItem.mockResolvedValue(updated);
+
+    const req = mockReq({ body: { taskId: 'wi-1', qualityScore: 87, scoredBy: 'auditor-1' } });
+    const res = mockRes();
+    await scoreItem(req, res);
+
+    expect(mockService.scoreItem).toHaveBeenCalledWith('wi-1', 87, 'auditor-1');
+    expect(res.json).toHaveBeenCalledWith({ success: true, data: updated });
+  });
+
+  it('accepts workItemId as an alias for taskId', async () => {
+    mockService.scoreItem.mockResolvedValue({ id: 'wi-2', metadata: { qualityScore: 50 } });
+    const req = mockReq({ body: { workItemId: 'wi-2', qualityScore: 50 } });
+    const res = mockRes();
+    await scoreItem(req, res);
+    expect(mockService.scoreItem).toHaveBeenCalledWith('wi-2', 50, expect.any(String));
+  });
+
+  it('returns 404 for an unknown work item', async () => {
+    mockService.scoreItem.mockResolvedValue(null);
+    const req = mockReq({ body: { taskId: 'nope', qualityScore: 10, scoredBy: 'a' } });
+    const res = mockRes();
+    await scoreItem(req, res);
+    expect(res.status).toHaveBeenCalledWith(404);
+  });
+
+  it('returns 400 when taskId is missing', async () => {
+    const req = mockReq({ body: { qualityScore: 10 } });
+    const res = mockRes();
+    await scoreItem(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockService.scoreItem).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['non-numeric', 'high'],
+    ['NaN', Number.NaN],
+    ['below range', -1],
+    ['above range', 101],
+    ['missing', undefined],
+  ])('returns 400 when qualityScore is %s', async (_label, value) => {
+    const req = mockReq({ body: { taskId: 'wi-1', qualityScore: value } });
+    const res = mockRes();
+    await scoreItem(req, res);
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockService.scoreItem).not.toHaveBeenCalled();
+  });
+
+  it('accepts the boundary values 0 and 100', async () => {
+    mockService.scoreItem.mockResolvedValue({ id: 'wi-1' });
+    for (const value of [0, 100]) {
+      const res = mockRes();
+      await scoreItem(mockReq({ body: { taskId: 'wi-1', qualityScore: value } }), res);
+      expect(res.json).toHaveBeenCalledWith({ success: true, data: { id: 'wi-1' } });
+    }
   });
 });

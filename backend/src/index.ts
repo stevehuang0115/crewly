@@ -603,6 +603,10 @@ void (async () => {
 				const { OrcDeliveryEnforcerService } = await import(
 					'./services/orc/orc-delivery-enforcer.service.js'
 				);
+				const [{ getChatV2Service }, { synthesizeSlackConversationId }] = await Promise.all([
+					import('./services/chat-v2/chat-v2.singleton.js'),
+					import('./services/chat-v2/legacy-dto.utils.js'),
+				]);
 				const enforcer = new OrcDeliveryEnforcerService({
 					reminderSink: ({ conversationId, text }) => {
 						if (!this.messageQueueService) return;
@@ -612,6 +616,15 @@ void (async () => {
 							source: 'system_event',
 						});
 					},
+					// Issue #731: let the enforcer see the thread's real activity
+					// (owner silence → don't track; reply via any path → stop).
+					// Every Slack thread is a chat-v2 channel keyed by its
+					// synthesized conversation id, and every outbound Slack
+					// reply is mirrored into it.
+					threadActivityProvider: ({ channelId, threadTs }) =>
+						getChatV2Service().getChannelActivity(
+							synthesizeSlackConversationId(channelId, threadTs),
+						),
 				});
 				OrcDeliveryEnforcerService.setInstance(enforcer);
 				enforcer.start();

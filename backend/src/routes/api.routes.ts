@@ -36,7 +36,7 @@ import { createOnboardingRouter } from '../controllers/onboarding/onboarding.rou
 import { createOrchestratorOnboardingRouter } from '../controllers/orchestrator-onboarding/orchestrator-onboarding.routes.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
-import { createTaskPoolRouter } from '../controllers/task-pool/task-pool.routes.js';
+import { createTaskPoolRouter, createTaskScoreRouter } from '../controllers/task-pool/task-pool.routes.js';
 import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
@@ -167,6 +167,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Task Pool routes for V2 work item pool management
   router.use('/task-pool', createTaskPoolRouter());
+
+  // Auditor quality scoring (`POST /api/tasks/score`, used by the score-task skill)
+  router.use('/tasks', createTaskScoreRouter());
 
   // Reconciler routes for status monitoring, manual trigger, and history
   router.use('/reconciler', createReconcilerRouter());
