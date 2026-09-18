@@ -118,7 +118,7 @@ function makeService() {
 
 /** Calls by method+path suffix, for readable assertions. */
 function calls(): Array<{ method: string; url: string; body: any }> {
-  return fetchMock.mock.calls.map(([url, init]) => ({ method: init.method, url, body: JSON.parse(init.body) }));
+  return fetchMock.mock.calls.map(([url, init]) => ({ method: init.method, url, body: init.body === undefined ? undefined : JSON.parse(init.body) }));
 }
 
 beforeEach(async () => {
@@ -246,9 +246,32 @@ describe('agent sync', () => {
           ],
         },
       ],
+      prune: true,
     });
     expect(result).toEqual({ installUrls: [{ agentSession: 'alpha-mia-1234', url: 'https://slack.com/oauth/x' }] });
     expect(service.getPendingInstalls()).toEqual([{ agentSession: 'alpha-mia-1234', url: 'https://slack.com/oauth/x' }]);
+  });
+
+  it('a team without a Slack channel is synced with an empty roster, so Cloud prunes its bots', async () => {
+    mappings = {};
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
+    await makeService().syncAgents();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ teams: [{ teamId: 'team-alpha', name: 'Alpha', agents: [] }], prune: true });
+  });
+
+  it('a deleted team loses its agents\' Slack apps (DELETE per session from the last synced roster)', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
+    const service = makeService();
+    await service.syncAgents();
+    fetchMock.mockClear();
+    await service.removeTeamAgents('team-alpha');
+    expect(calls().map((c) => `${c.method} ${c.url.split('/api/cloud/slack')[1]}`)).toEqual([
+      'DELETE /agents/alpha-kai-1234',
+      'DELETE /agents/alpha-mia-1234',
+    ]);
+    fetchMock.mockClear();
+    await service.removeTeamAgents('team-alpha'); // already forgotten
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('returns null and keeps the previous list on failure', async () => {
@@ -286,7 +309,7 @@ describe('lifecycle', () => {
     expect(storageListeners).toHaveLength(0);
   });
 
-  it('a team save re-registers once per debounce window; a created team also syncs agents', async () => {
+  it('a team save schedules one debounced heartbeat and one debounced agent sync (rename/remove follow through)', async () => {
     const service = makeService();
     await service.start();
     fetchMock.mockClear();
@@ -296,24 +319,19 @@ describe('lifecycle', () => {
     await storageListeners[0](saved);
     await storageListeners[0](saved);
     expect(fetchMock).not.toHaveBeenCalled();
-    expect(timeouts).toHaveLength(1);
-    expect(timeouts[0].ms).toBe(SLACK_CLOUD_CONSTANTS.TEAM_SAVED_DEBOUNCE_MS);
+    // One agent-sync timer + one heartbeat timer, both on the team-saved debounce.
+    expect(timeouts).toHaveLength(2);
+    expect(timeouts.every((t) => t.ms === SLACK_CLOUD_CONSTANTS.TEAM_SAVED_DEBOUNCE_MS)).toBe(true);
 
-    timeouts[0].fn();
+    for (const t of timeouts) t.fn();
     await new Promise((r) => setImmediate(r));
-    expect(calls().map((c) => c.method)).toEqual(['PUT']);
-
-    fetchMock.mockClear();
-    timeouts = [];
-    await storageListeners[0]({ kind: 'team-saved', team: teams[0], created: true });
-    expect(calls().map((c) => c.method)).toEqual(['POST']);
-    timeouts[0].fn();
-    await new Promise((r) => setImmediate(r));
-    expect(calls().map((c) => c.method)).toEqual(['POST', 'PUT']);
+    expect(calls().map((c) => c.method).sort()).toEqual(['POST', 'PUT']);
 
     fetchMock.mockClear();
     timeouts = [];
     await storageListeners[0]({ kind: 'team-deleted', teamId: 'team-alpha' });
+    // The roster was synced at start → the two agents' apps are deleted, then a heartbeat is scheduled.
+    expect(calls().map((c) => c.method)).toEqual(['DELETE', 'DELETE']);
     expect(timeouts).toHaveLength(1);
   });
 });

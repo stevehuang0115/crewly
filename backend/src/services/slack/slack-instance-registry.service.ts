@@ -110,6 +110,8 @@ export class SlackInstanceRegistryService {
   private readonly fetchImpl: typeof fetch;
   private settings: SlackInstanceSettingsFile | null = null;
   private instanceId: string | null = null;
+  /** Last synced roster per team, so a deleted team's bots can still be removed. */
+  private readonly lastRoster = new Map<string, string[]>();
   private deviceName: string | null = null;
   private version: string | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
@@ -174,10 +176,53 @@ export class SlackInstanceRegistryService {
    * @param event - Storage event
    */
   async handleStorageEvent(event: StorageEvent): Promise<void> {
-    if (event.kind === 'team-saved' && event.created) {
-      await this.syncAgents();
+    if (event.kind === 'team-saved') {
+      // Created: provision. Updated: a member may have been renamed or
+      // removed — the sync renames / prunes on Cloud. Debounced by the
+      // heartbeat schedule so a burst of status writes does not spam Cloud.
+      this.scheduleAgentSync();
+    } else if (event.kind === 'team-deleted') {
+      await this.removeTeamAgents(event.teamId);
     }
     this.scheduleHeartbeat();
+  }
+
+  private agentSyncTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /** Coalesce team saves into one agent sync a few seconds later. */
+  private scheduleAgentSync(): void {
+    if (this.agentSyncTimer) return;
+    const setT = this.deps.setTimeout ?? setTimeout;
+    this.agentSyncTimer = setT(() => {
+      this.agentSyncTimer = null;
+      void this.syncAgents();
+    }, SLACK_CLOUD_CONSTANTS.TEAM_SAVED_DEBOUNCE_MS);
+    (this.agentSyncTimer as { unref?: () => void }).unref?.();
+  }
+
+  /**
+   * A deleted team's agents lose their Slack apps. The team is gone from
+   * storage, so the pruning sync cannot see it; the sessions are remembered
+   * from the last registry payload instead.
+   *
+   * @param teamId - The deleted team
+   */
+  async removeTeamAgents(teamId: string): Promise<void> {
+    const sessions = this.lastRoster.get(teamId) ?? [];
+    this.lastRoster.delete(teamId);
+    if (!this.isAvailable() || sessions.length === 0) return;
+    for (const agentSession of sessions) {
+      try {
+        await this.cloudRequest('DELETE', `${SLACK_CLOUD_CONSTANTS.AGENTS_PATH}/${encodeURIComponent(agentSession)}`, undefined);
+        this.logger.info('Slack agent app removed for deleted team', { teamId, agentSession });
+      } catch (err) {
+        this.logger.warn('Could not remove a deleted team\'s Slack agent app', {
+          teamId,
+          agentSession,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -266,16 +311,28 @@ export class SlackInstanceRegistryService {
     if (!this.isAvailable()) return null;
     try {
       const teams = await this.deps.storage.getTeams();
+      const teamChannels = this.deps.getTeamChannels();
+      // Only teams with a Slack channel get per-agent bots: a workspace with
+      // a bot for every member of every team (27 on the first sync) is
+      // noise. A team without a channel is sent with an empty roster so
+      // Cloud prunes any bots it still holds — unlinking a channel is how
+      // the owner takes them back.
       const payload: SlackAgentsSyncPayload = {
-        teams: teams.map((team) => ({
-          teamId: team.id,
-          name: team.name,
-          agents: teamChannelMembers(team).map((m) => ({
-            agentSession: m.sessionName,
-            displayName: m.name || m.sessionName,
-            ...(m.avatar ? { avatar: m.avatar } : {}),
-          })),
-        })),
+        teams: teams.map((team) => {
+          const linked = !!teamChannels?.findByTeamId(team.id);
+          const members = linked ? teamChannelMembers(team) : [];
+          this.lastRoster.set(team.id, members.map((m) => m.sessionName));
+          return {
+            teamId: team.id,
+            name: team.name,
+            agents: members.map((m) => ({
+              agentSession: m.sessionName,
+              displayName: m.name || m.sessionName,
+              ...(m.avatar ? { avatar: m.avatar } : {}),
+            })),
+          };
+        }),
+        prune: true,
       };
       const result = await this.cloudRequest<SlackAgentsSyncResult>('POST', SLACK_CLOUD_CONSTANTS.AGENTS_SYNC_PATH, payload);
       this.pendingInstalls = Array.isArray(result?.installUrls)
@@ -443,7 +500,7 @@ export class SlackInstanceRegistryService {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private async cloudRequest<T = unknown>(method: 'PUT' | 'POST', suffix: string, body: unknown): Promise<T> {
+  private async cloudRequest<T = unknown>(method: 'PUT' | 'POST' | 'DELETE', suffix: string, body: unknown): Promise<T> {
     const token = this.deps.cloud.getToken();
     const base = this.deps.cloud.getCloudUrl();
     if (!token || !base) {
@@ -456,7 +513,7 @@ export class SlackInstanceRegistryService {
       const res = await this.fetchImpl(url, {
         method,
         headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: controller.signal,
       });
       const text = await res.text();

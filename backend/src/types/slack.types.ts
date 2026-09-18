@@ -170,6 +170,8 @@ export interface SlackAgentsSyncPayload {
     name: string;
     agents: Array<{ agentSession: string; displayName: string; avatar?: string }>;
   }>;
+  /** Delete the apps of agents that left one of these teams. */
+  prune?: boolean;
 }
 
 /** One agent still waiting for its one-time install click. */

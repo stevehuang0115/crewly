@@ -660,6 +660,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	INSTANCES_PATH: '/instances',
 	/** `POST` — provision per-agent apps for a team roster */
 	AGENTS_SYNC_PATH: '/agents/sync',
+	/** DELETE <AGENTS_PATH>/:agentSession removes one agent's Slack app */
+	AGENTS_PATH: '/agents',
 	/** `GET` — one-click install redirect (token + returnUrl in the query) */
 	INSTALL_PATH: '/install',
 	/** Dashboard path the install flow returns to */
