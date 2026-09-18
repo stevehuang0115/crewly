@@ -1,5 +1,14 @@
 // ExpertProfileModule integration
-import { estimateTokens, PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
+import {
+	estimateTokens,
+	PromptModule,
+	ModuleConfig,
+	loadRoleFragment,
+	isPromptProfile,
+	resolveOrcPromptProfile,
+	ORC_PROMPT_PROFILE_ENV,
+	DEFAULT_PROMPT_PROFILE,
+} from './prompt-module.interface.js';
 
 // Mock fs
 jest.mock('fs', () => ({
@@ -102,6 +111,34 @@ describe('prompt-module.interface', () => {
 
 			const result = await module.build(config);
 			expect(result).toBe('Hello test-session');
+		});
+	});
+
+	describe('prompt profile helpers', () => {
+		it('isPromptProfile accepts only known profiles', () => {
+			expect(isPromptProfile('full')).toBe(true);
+			expect(isPromptProfile('lite')).toBe(true);
+			expect(isPromptProfile('LITE')).toBe(false);
+			expect(isPromptProfile('')).toBe(false);
+			expect(isPromptProfile(undefined)).toBe(false);
+			expect(isPromptProfile(42)).toBe(false);
+		});
+
+		it('resolveOrcPromptProfile defaults to full when the env is unset', () => {
+			expect(DEFAULT_PROMPT_PROFILE).toBe('full');
+			expect(resolveOrcPromptProfile({})).toBe('full');
+		});
+
+		it('resolveOrcPromptProfile reads CREWLY_ORC_PROMPT_PROFILE case-insensitively', () => {
+			expect(ORC_PROMPT_PROFILE_ENV).toBe('CREWLY_ORC_PROMPT_PROFILE');
+			expect(resolveOrcPromptProfile({ [ORC_PROMPT_PROFILE_ENV]: 'lite' })).toBe('lite');
+			expect(resolveOrcPromptProfile({ [ORC_PROMPT_PROFILE_ENV]: ' Lite ' })).toBe('lite');
+			expect(resolveOrcPromptProfile({ [ORC_PROMPT_PROFILE_ENV]: 'full' })).toBe('full');
+		});
+
+		it('resolveOrcPromptProfile falls back to full on garbage', () => {
+			expect(resolveOrcPromptProfile({ [ORC_PROMPT_PROFILE_ENV]: 'tiny' })).toBe('full');
+			expect(resolveOrcPromptProfile({ [ORC_PROMPT_PROFILE_ENV]: '' })).toBe('full');
 		});
 	});
 });

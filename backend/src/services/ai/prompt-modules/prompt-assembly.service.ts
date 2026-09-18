@@ -5,6 +5,8 @@ import {
 	ModuleBuildResult,
 	AssemblyReport,
 	TruncatedModuleInfo,
+	PromptProfile,
+	DEFAULT_PROMPT_PROFILE,
 	estimateTokens,
 } from './prompt-module.interface.js';
 import { IdentityModule } from './identity.module.js';
@@ -62,6 +64,46 @@ const EVAL_MODE_CORE_MODULES: ReadonlySet<string> = new Set([
 	'decision-rights',
 	'lazy-anti-patterns',
 ]);
+
+/**
+ * Modules omitted under the `lite` prompt profile. Each of these only earns
+ * its tokens during planning or onboarding — expert thinking frameworks,
+ * domain procedures, how-to-record-learnings guidance, SOP-vs-norm doc
+ * classification, and the anti-pattern self-check list — none of which a
+ * routine wake-up (event fired, follow-up due) needs to re-read. Operational
+ * modules (identity, communication, lifecycle, recovery, project/memory
+ * references, skills, team, decision rights, request contract, working
+ * memory) are never listed here.
+ */
+export const LITE_PROFILE_DROPPED_MODULES: ReadonlySet<string> = new Set([
+	'expert-profile',
+	'domain-sop',
+	'learning_references',
+	'sop_norm_distinction',
+	'lazy-anti-patterns',
+]);
+
+/**
+ * Modules collapsed to their heading plus first content line under the
+ * `lite` profile. The mission card is useful as a one-line reminder of the
+ * current objective; its full OKR / sub-OKR / status breakdown is planning
+ * context.
+ */
+export const LITE_PROFILE_SUMMARISED_MODULES: ReadonlySet<string> = new Set(['mission_context']);
+
+/**
+ * Modules that must survive every profile. Used by tests and by the
+ * registration-time comparison log to assert the lite tier never drops an
+ * operational module.
+ */
+export const PROFILE_REQUIRED_MODULES: ReadonlyArray<string> = [
+	'identity',
+	'communication',
+	'lifecycle',
+	'recovery',
+	'project_references',
+	'memory_references',
+];
 
 /**
  * Internal build result with module reference for truncation.
@@ -228,6 +270,7 @@ export class PromptAssemblyService {
 	async assemble(config: ModuleConfig): Promise<{ prompt: string; report: AssemblyReport }> {
 		const built: InternalBuildResult[] = [];
 		const truncated: TruncatedModuleInfo[] = [];
+		const profile: PromptProfile = config.promptProfile ?? DEFAULT_PROMPT_PROFILE;
 
 		// Sort modules by priority (ascending — lower number = higher priority)
 		const sorted = [...this.modules].sort((a, b) => a.priority - b.priority);
@@ -242,6 +285,14 @@ export class PromptAssemblyService {
 				continue;
 			}
 
+			// Lite profile: skip planning/onboarding-only modules outright.
+			if (profile === 'lite' && LITE_PROFILE_DROPPED_MODULES.has(module.name)) {
+				this.logger.debug(`Module '${module.name}' skipped (profile=lite)`, {
+					sessionName: config.sessionName,
+				});
+				continue;
+			}
+
 			if (!module.shouldInclude(config)) {
 				this.logger.debug(`Module '${module.name}' skipped (shouldInclude=false)`, {
 					sessionName: config.sessionName,
@@ -250,7 +301,10 @@ export class PromptAssemblyService {
 			}
 
 			try {
-				const content = await module.build(config);
+				let content = await module.build(config);
+				if (profile === 'lite' && content && LITE_PROFILE_SUMMARISED_MODULES.has(module.name)) {
+					content = this.summariseToOneLine(content);
+				}
 				if (content && content.trim()) {
 					const tokens = estimateTokens(content);
 					built.push({
@@ -359,6 +413,7 @@ export class PromptAssemblyService {
 		const finalTotalTokens = finalResults.reduce((sum, r) => sum + r.estimatedTokens, 0);
 
 		const report: AssemblyReport = {
+			profile,
 			totalTokens: finalTotalTokens,
 			moduleBreakdown: finalResults.map((r) => ({
 				name: r.name,
@@ -370,6 +425,7 @@ export class PromptAssemblyService {
 
 		this.logger.info('Prompt assembly complete', {
 			sessionName: config.sessionName,
+			profile,
 			moduleCount: finalResults.length,
 			totalTokens: finalTotalTokens,
 			budget: this.totalTokenBudget,
@@ -403,6 +459,30 @@ export class PromptAssemblyService {
 			totalTokens: report.totalTokens,
 			truncated: report.truncated,
 		};
+	}
+
+	/**
+	 * Collapse a module's markdown to its heading plus the first content
+	 * line (used by the `lite` profile for modules that are worth a one-line
+	 * reminder but not their full body). Section labels ending in ':' are
+	 * skipped so the surviving line is an actual data line.
+	 *
+	 * @param content - Full module markdown
+	 * @returns Heading + first content line, or the trimmed input when it is
+	 *   already that short
+	 */
+	private summariseToOneLine(content: string): string {
+		const lines = content
+			.split('\n')
+			.map((l) => l.trim())
+			.filter((l) => l.length > 0);
+		if (lines.length <= 2) return lines.join('\n');
+
+		const heading = lines[0].startsWith('#') ? lines[0] : undefined;
+		const body = lines.find(
+			(l, i) => (heading === undefined || i > 0) && !l.startsWith('#') && !l.endsWith(':')
+		);
+		return [heading, body].filter((l): l is string => Boolean(l)).join('\n');
 	}
 
 	/**

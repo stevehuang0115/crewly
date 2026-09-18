@@ -50,7 +50,12 @@ import {
 	type SessionRuntimeContext,
 } from '../ai/prompt-builder.service.js';
 import { PromptAssemblyService } from '../ai/prompt-modules/prompt-assembly.service.js';
-import type { ModuleConfig } from '../ai/prompt-modules/prompt-module.interface.js';
+import {
+	resolveOrcPromptProfile,
+	ORC_PROMPT_PROFILE_ENV,
+	type ModuleConfig,
+	type PromptProfile,
+} from '../ai/prompt-modules/prompt-module.interface.js';
 import type { SubordinateInfo, TeamMemberSessionConfig, Team, TeamMember } from '../../types/index.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import {
@@ -791,6 +796,54 @@ export class AgentRegistrationService {
 		['tl', 'team-leader'],
 		['team-lead', 'team-leader'],
 	]);
+
+	/**
+	 * Assemble the orchestrator prompt at the *other* profile and log the
+	 * module count + token estimate of both tiers side by side, so the
+	 * operator can judge what `CREWLY_ORC_PROMPT_PROFILE=lite` would save (or
+	 * did save) without diffing prompts by hand. Read-only and best-effort:
+	 * a failure here never affects the prompt that was already assembled.
+	 *
+	 * @param assembler - The assembler used for the live prompt
+	 * @param moduleConfig - Config the live prompt was assembled from
+	 * @param liveReport - Report of the live (selected-profile) assembly
+	 */
+	private async logPromptProfileComparison(
+		assembler: PromptAssemblyService,
+		moduleConfig: ModuleConfig,
+		liveReport: Awaited<ReturnType<PromptAssemblyService['assemble']>>['report'],
+	): Promise<void> {
+		const otherProfile: PromptProfile = liveReport.profile === 'lite' ? 'full' : 'lite';
+		try {
+			const { report: other } = await assembler.assemble({
+				...moduleConfig,
+				promptProfile: otherProfile,
+			});
+			const byProfile = {
+				[liveReport.profile]: {
+					moduleCount: liveReport.moduleBreakdown.length,
+					estimatedTokens: liveReport.totalTokens,
+				},
+				[otherProfile]: {
+					moduleCount: other.moduleBreakdown.length,
+					estimatedTokens: other.totalTokens,
+				},
+			};
+			this.logger.info('Orchestrator prompt profile comparison', {
+				sessionName: moduleConfig.sessionName,
+				selected: liveReport.profile,
+				env: ORC_PROMPT_PROFILE_ENV,
+				...byProfile,
+				liteSavesTokens:
+					(byProfile.full?.estimatedTokens ?? 0) - (byProfile.lite?.estimatedTokens ?? 0),
+			});
+		} catch (error) {
+			this.logger.debug('Prompt profile comparison skipped', {
+				sessionName: moduleConfig.sessionName,
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 
 	/**
 	 * Get prompt file path for a specific role
@@ -2014,17 +2067,32 @@ export class AgentRegistrationService {
 					};
 				}
 
+				// Prompt tiering: the orchestrator is re-registered on every
+				// cold start and re-reads the whole system prompt at full price.
+				// CREWLY_ORC_PROMPT_PROFILE=lite drops the planning/onboarding
+				// modules; the default stays `full`. Both tiers are assembled
+				// for the orchestrator so the operator can compare their size
+				// in the log before flipping the env.
+				const requestedProfile: PromptProfile | undefined =
+					role === ORCHESTRATOR_ROLE ? resolveOrcPromptProfile() : undefined;
+				if (requestedProfile) moduleConfig.promptProfile = requestedProfile;
+
 				const assembler = new PromptAssemblyService();
 				const { prompt: modularPrompt, report } = await assembler.assemble(moduleConfig);
 
 				this.logger.info('Modular prompt assembled for registration', {
 					sessionName,
 					role,
+					profile: report.profile,
 					totalTokens: report.totalTokens,
 					moduleCount: report.moduleBreakdown.length,
 					truncatedCount: report.truncated.length,
 					modules: report.moduleBreakdown.map(m => m.name),
 				});
+
+				if (requestedProfile) {
+					await this.logPromptProfileComparison(assembler, moduleConfig, report);
+				}
 
 				return modularPrompt;
 			}

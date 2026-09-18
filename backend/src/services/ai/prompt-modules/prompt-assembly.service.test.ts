@@ -1,5 +1,10 @@
 // ExpertProfileModule integration
-import { PromptAssemblyService } from './prompt-assembly.service.js';
+import {
+	PromptAssemblyService,
+	LITE_PROFILE_DROPPED_MODULES,
+	LITE_PROFILE_SUMMARISED_MODULES,
+	PROFILE_REQUIRED_MODULES,
+} from './prompt-assembly.service.js';
 import { PromptModule, ModuleConfig, estimateTokens } from './prompt-module.interface.js';
 
 // Mock logger
@@ -573,6 +578,154 @@ describe('PromptAssemblyService', () => {
 
 			expect(prompt).toContain('identity-content');
 			expect(prompt).not.toContain('extra-content');
+		});
+	});
+
+	describe('promptProfile', () => {
+		/** Orchestrator-shaped config so role-scoped modules (request contract etc.) build. */
+		const orcConfig: ModuleConfig = {
+			...baseConfig,
+			sessionName: 'crewly-orc',
+			role: 'orchestrator',
+			orgRole: 'orchestrator',
+			expertId: 'some-expert',
+			domainSOP: 'some-domain',
+		};
+
+		it('defaults to the full profile and reports it', async () => {
+			const service = new PromptAssemblyService();
+			const { report } = await service.assemble(orcConfig);
+			expect(report.profile).toBe('full');
+		});
+
+		it('assembles both profiles and lite is strictly smaller', async () => {
+			const service = new PromptAssemblyService();
+			const full = await service.assemble({ ...orcConfig, promptProfile: 'full' });
+			const lite = await service.assemble({ ...orcConfig, promptProfile: 'lite' });
+
+			expect(full.report.profile).toBe('full');
+			expect(lite.report.profile).toBe('lite');
+			expect(lite.prompt.length).toBeGreaterThan(0);
+			expect(lite.report.totalTokens).toBeLessThan(full.report.totalTokens);
+			expect(lite.report.moduleBreakdown.length).toBeLessThan(full.report.moduleBreakdown.length);
+		});
+
+		it('full profile output is byte-identical to a profile-less assembly (default unchanged)', async () => {
+			const service = new PromptAssemblyService();
+			const implicit = await service.assemble(orcConfig);
+			const explicit = await service.assemble({ ...orcConfig, promptProfile: 'full' });
+			expect(explicit.prompt).toBe(implicit.prompt);
+		});
+
+		it('lite keeps every required operational module', async () => {
+			const service = new PromptAssemblyService();
+			const { report } = await service.assemble({ ...orcConfig, promptProfile: 'lite' });
+			const names = report.moduleBreakdown.map((m) => m.name);
+			for (const required of PROFILE_REQUIRED_MODULES) {
+				expect(names).toContain(required);
+			}
+		});
+
+		it('lite drops exactly the planning/onboarding modules', async () => {
+			const service = new PromptAssemblyService();
+			const full = await service.assemble({ ...orcConfig, promptProfile: 'full' });
+			const lite = await service.assemble({ ...orcConfig, promptProfile: 'lite' });
+			const fullNames = full.report.moduleBreakdown.map((m) => m.name);
+			const liteNames = new Set(lite.report.moduleBreakdown.map((m) => m.name));
+
+			// The static, always-present dropped modules must be gone in lite...
+			expect(fullNames).toContain('lazy-anti-patterns');
+			expect(fullNames).toContain('learning_references');
+			expect(fullNames).toContain('sop_norm_distinction');
+			for (const dropped of LITE_PROFILE_DROPPED_MODULES) {
+				expect(liteNames.has(dropped)).toBe(false);
+			}
+			// ...and nothing else may disappear.
+			for (const name of fullNames) {
+				if (!LITE_PROFILE_DROPPED_MODULES.has(name)) {
+					expect(liteNames.has(name)).toBe(true);
+				}
+			}
+		});
+
+		it('lite never drops or summarises a required module (config sanity)', () => {
+			for (const required of PROFILE_REQUIRED_MODULES) {
+				expect(LITE_PROFILE_DROPPED_MODULES.has(required)).toBe(false);
+				expect(LITE_PROFILE_SUMMARISED_MODULES.has(required)).toBe(false);
+			}
+		});
+
+		it('lite collapses summarised modules to heading + first data line', async () => {
+			const service = emptyService();
+			const card = [
+				'## Current Mission Context',
+				'',
+				'Active Project OKR (90-day):',
+				'- [high] Ship the billing rewrite — 0 P0 bugs in first week',
+				'- [medium] Cut support tickets by 30%',
+				'',
+				'Recent Mission Status:',
+				'- 2026-09-01: Ship the billing rewrite — on track',
+			].join('\n');
+			service.addModule({
+				name: 'mission_context',
+				priority: 6.5,
+				maxTokens: 600,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => card,
+			});
+
+			const full = await service.assemble({ ...baseConfig, promptProfile: 'full' });
+			const lite = await service.assemble({ ...baseConfig, promptProfile: 'lite' });
+
+			expect(full.prompt).toBe(card);
+			expect(lite.prompt).toBe(
+				'## Current Mission Context\n- [high] Ship the billing rewrite — 0 P0 bugs in first week'
+			);
+		});
+
+		it('lite leaves an already-short summarised module untouched', async () => {
+			const service = emptyService();
+			service.addModule({
+				name: 'mission_context',
+				priority: 6.5,
+				maxTokens: 600,
+				compactable: true,
+				shouldInclude: () => true,
+				build: async () => '## Current Mission Context\n- [high] Only one line',
+			});
+			const lite = await service.assemble({ ...baseConfig, promptProfile: 'lite' });
+			expect(lite.prompt).toBe('## Current Mission Context\n- [high] Only one line');
+		});
+
+		it('lite skips dropped custom modules without calling build', async () => {
+			const service = emptyService();
+			const build = jest.fn().mockResolvedValue('expert stuff');
+			service.addModule({
+				name: 'expert-profile',
+				priority: 2.5,
+				maxTokens: 100,
+				compactable: true,
+				shouldInclude: () => true,
+				build,
+			});
+			service.addModule({
+				name: 'identity',
+				priority: 1,
+				maxTokens: 100,
+				compactable: false,
+				shouldInclude: () => true,
+				build: async () => 'identity-content',
+			});
+
+			const lite = await service.assemble({ ...baseConfig, promptProfile: 'lite' });
+			expect(build).not.toHaveBeenCalled();
+			expect(lite.prompt).toBe('identity-content');
+
+			const full = await service.assemble({ ...baseConfig, promptProfile: 'full' });
+			expect(build).toHaveBeenCalledTimes(1);
+			expect(full.prompt).toContain('expert stuff');
 		});
 	});
 

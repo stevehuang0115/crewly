@@ -1378,6 +1378,87 @@ describe('AgentRegistrationService', () => {
 				expect(result).not.toContain('Legacy prompt for');
 			});
 		});
+
+		describe('CREWLY_ORC_PROMPT_PROFILE (prompt tiering)', () => {
+			const originalModular = process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const originalProfile = process.env.CREWLY_ORC_PROMPT_PROFILE;
+
+			/** Collect the args of every logger.info call whose message matches. */
+			const infoCalls = (needle: string): Array<Record<string, unknown>> => {
+				const logger = (service as unknown as { logger: { info: jest.Mock } }).logger;
+				return logger.info.mock.calls
+					.filter((call: unknown[]) => typeof call[0] === 'string' && (call[0] as string).includes(needle))
+					.map((call: unknown[]) => call[1] as Record<string, unknown>);
+			};
+
+			beforeEach(() => {
+				delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+				mockReadFile.mockResolvedValue('Legacy prompt for {{SESSION_NAME}}');
+			});
+
+			afterEach(() => {
+				if (originalModular === undefined) delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+				else process.env.CREWLY_USE_MODULAR_PROMPTS = originalModular;
+				if (originalProfile === undefined) delete process.env.CREWLY_ORC_PROMPT_PROFILE;
+				else process.env.CREWLY_ORC_PROMPT_PROFILE = originalProfile;
+			});
+
+			it('assembles the orchestrator at the full profile by default and logs both tiers', async () => {
+				delete process.env.CREWLY_ORC_PROMPT_PROFILE;
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				const result = await loadRegistrationPrompt('orchestrator', 'crewly-orc');
+				expect(result.length).toBeGreaterThan(0);
+
+				const assembled = infoCalls('Modular prompt assembled for registration');
+				expect(assembled).toHaveLength(1);
+				expect(assembled[0].profile).toBe('full');
+
+				const comparison = infoCalls('Orchestrator prompt profile comparison');
+				expect(comparison).toHaveLength(1);
+				expect(comparison[0].selected).toBe('full');
+				expect(comparison[0].env).toBe('CREWLY_ORC_PROMPT_PROFILE');
+				const full = comparison[0].full as { moduleCount: number; estimatedTokens: number };
+				const lite = comparison[0].lite as { moduleCount: number; estimatedTokens: number };
+				expect(lite.moduleCount).toBeLessThan(full.moduleCount);
+				expect(lite.estimatedTokens).toBeLessThan(full.estimatedTokens);
+				expect(comparison[0].liteSavesTokens).toBe(full.estimatedTokens - lite.estimatedTokens);
+			});
+
+			it('assembles the orchestrator at the lite profile when the env says so', async () => {
+				process.env.CREWLY_ORC_PROMPT_PROFILE = 'lite';
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				const litePrompt = await loadRegistrationPrompt('orchestrator', 'crewly-orc');
+
+				const assembled = infoCalls('Modular prompt assembled for registration');
+				expect(assembled).toHaveLength(1);
+				expect(assembled[0].profile).toBe('lite');
+				expect(assembled[0].modules).not.toContain('lazy-anti-patterns');
+				expect(assembled[0].modules).toContain('identity');
+				expect(assembled[0].modules).toContain('recovery');
+				expect(infoCalls('Orchestrator prompt profile comparison')[0].selected).toBe('lite');
+
+				// Sanity: lite really is a smaller prompt than the default.
+				jest.clearAllMocks();
+				delete process.env.CREWLY_ORC_PROMPT_PROFILE;
+				mockReadFile.mockResolvedValue('Legacy prompt for {{SESSION_NAME}}');
+				const fullPrompt = await loadRegistrationPrompt('orchestrator', 'crewly-orc');
+				expect(litePrompt.length).toBeLessThan(fullPrompt.length);
+			});
+
+			it('never applies the profile env to non-orchestrator roles', async () => {
+				process.env.CREWLY_ORC_PROMPT_PROFILE = 'lite';
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				await loadRegistrationPrompt('developer', 'test-session', 'member-123');
+
+				const assembled = infoCalls('Modular prompt assembled for registration');
+				expect(assembled).toHaveLength(1);
+				expect(assembled[0].profile).toBe('full');
+				expect(infoCalls('Orchestrator prompt profile comparison')).toHaveLength(0);
+			});
+		});
 	});
 
 	describe('checkAgentRegistration (private method)', () => {
