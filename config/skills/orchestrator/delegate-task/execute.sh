@@ -17,16 +17,25 @@ TASK_TYPE="general"
 TEAM_ID=""
 FORCE_CROSS_TEAM="false"
 REQUEST_ID=""
-# Self-heal fix #3 (2026-05-20): default fallback timer at 30min. Per
-# the orchestrator prompt §3.0 the orc is supposed to set 2× ETA
-# manually for every dispatch, but the convention was unenforced —
-# observable in the 2026-05-20 ESTestNode incident where the orc set
-# only the idle subscription and not the fallback timer, leaving the
-# orc clueless when Sora never started. Auto-creating a 30min fallback
-# at dispatch time guarantees the dual-signal contract is honored.
+# Self-heal fix #3 (2026-05-20): default fallback timer. Per the
+# orchestrator prompt §3.0 the orc is supposed to set 2× ETA manually
+# for every dispatch, but the convention was unenforced — observable in
+# the 2026-05-20 ESTestNode incident where the orc set only the idle
+# subscription and not the fallback timer, leaving the orc clueless when
+# Sora never started. Auto-creating the fallback at dispatch time
+# guarantees the dual-signal contract is honored.
+#
+# Default raised 30 → 120 min (2026-09-18): the trigger is never cancelled
+# on completion, so at 30 min it fired inside the normal 30–90 min TL
+# ETA on essentially every delegation and materialised a "Fallback check
+# on <agent>" WorkItem for the orc — 26 of 65 real WorkItems on one
+# production box, each a full-context wake-up that found nothing to do.
+# 120 min is the §3.0 "2× ETA" figure for TL milestone delegations; the
+# reconciler (2h unverified escalation, task:queued_too_long) covers the
+# genuinely stuck case before this fires.
 # Caller can override via --fallback-minutes N, or disable with
 # --fallback-minutes 0.
-FALLBACK_MINUTES="30"
+FALLBACK_MINUTES="120"
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -345,7 +354,7 @@ if [ -n "$WI_ID" ] && [ "${FALLBACK_MINUTES:-0}" -gt 0 ] 2>/dev/null; then
       --arg createdBy "delegate-task" \
       --arg name "fallback-${TO}-${WI_ID:0:8}" \
       --arg title "Fallback check on ${TO} for task ${WI_ID:0:8}" \
-      --arg description "Per §3.0: ${FALLBACK_MINUTES}min fallback after dispatch to ${TO}. Check whether ${WI_ID} is making progress — if running but no output, re-prompt; if still queued, re-target or fail-fast." \
+      --arg description "Per §3.0: ${FALLBACK_MINUTES}min fallback after dispatch to ${TO}. If ${WI_ID} is already done/verified, complete this check immediately — no action. Otherwise: if running but no output, re-prompt; if still queued, re-target or fail-fast. Do NOT create further check WorkItems for yourself." \
       '{
         type: $type,
         config: {type: "time", fireAt: $fireAt},

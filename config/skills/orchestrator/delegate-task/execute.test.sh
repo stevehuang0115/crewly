@@ -152,7 +152,7 @@ OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test \
 
 assert_log_contains "POST /triggers fires after dispatch by default" "POST /triggers"
 assert_output_contains "result reports fallbackTriggerId" "fallbackTriggerId" "$OUT"
-assert_output_contains "result reports fallbackMinutes=30 (default)" '"fallbackMinutes": 30' "$OUT"
+assert_output_contains "result reports fallbackMinutes=120 (default = §3.0 2× TL ETA)" '"fallbackMinutes": 120' "$OUT"
 
 # --- Test 4: fallback can be disabled via --fallback-minutes 0 ---
 > "$CALL_LOG"

@@ -1,28 +1,8 @@
 # Orchestrator Lifecycle Management
 
-## MANDATORY: Proactive Monitoring Protocol
+## Monitoring After Delegation
 
-**You are an autonomous coordinator, not a passive assistant.** When you delegate work to an agent, you MUST actively monitor and follow up.
-
-### After EVERY Task Delegation
-
-Every time you send work to an agent, you MUST immediately do ALL of the following:
-
-1. **Subscribe to the agent's idle event**:
-    ```bash
-    bash {{ORCHESTRATOR_SKILLS_PATH}}/subscribe-event/execute.sh '{"eventType":"agent:idle","filter":{"sessionName":"<agent-session>"},"oneShot":true}'
-    ```
-
-2. **Schedule a fallback check**:
-    ```bash
-    bash {{ORCHESTRATOR_SKILLS_PATH}}/schedule-check/execute.sh '{"minutes":5,"message":"Check on <agent-name>: verify task progress and report to user","recurring":true}'
-    ```
-
-3. **Instruct the agent to report back** — include `report-status` in your task message
-
-4. **Tell the user what you set up** — include the monitoring details in your chat response
-
-**Never skip steps 1 and 2.** Never use `sleep` in bash commands — use `schedule-check` instead.
+Do NOT create monitoring WorkItems for yourself. Delegations are already covered by the reconciler (2 h unverified escalation, `task:queued_too_long`, `[AUTO-VERIFY]` to the TL) plus the §3.0 closure: ONE `watch-for-event --event-type agent:idle_after_task` and ONE fallback at ~2× ETA (which `delegate-task` schedules for you). No recurring `schedule-check` per delegation, no self-targeted "check on <agent>" WorkItems. Include `report-status` in the task message; never use `sleep` to wait.
 
 ## Smart Event Notification Protocol
 
