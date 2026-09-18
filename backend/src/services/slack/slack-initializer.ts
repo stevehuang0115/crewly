@@ -23,6 +23,7 @@ import {
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
+import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 
@@ -41,6 +42,14 @@ export interface ResolvedSlackConfig {
 let activeSource: SlackSource | null = null;
 /** Unsubscribe for the Cloud config watch. */
 let unsubscribeCloudConfig: (() => void) | null = null;
+/**
+ * When the Slack boot path ran. The Cloud token is often refreshed only
+ * after Slack has already connected with local tokens; a Cloud config that
+ * appears within this window is still treated as the boot decision and
+ * replaces the self-hosted socket. Later appearances leave a live
+ * connection alone.
+ */
+let slackBootAt = 0;
 /** Init options captured at boot so a later Cloud-triggered connect gets the queue. */
 let bootOptions: SlackInitOptions | undefined;
 
@@ -241,6 +250,7 @@ export async function initializeSlackIfConfigured(
   options?: SlackInitOptions
 ): Promise<SlackInitResult> {
   bootOptions = options;
+  slackBootAt = Date.now();
   const resolved = await resolveSlackConfig();
 
   // Keep watching Cloud: a workspace connected later from Settings (or on
@@ -431,6 +441,23 @@ export async function handleSlackCloudConfigChange(config: SlackCloudConfig | nu
 
   if (!slackService.isConnected()) {
     logger.info('Cloud Slack workspace available — connecting', { workspace: config.workspace.slackTeamName });
+    await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions);
+    return;
+  }
+
+  // Boot race: Slack came up on local tokens because the Cloud token was
+  // still being refreshed. Apply the boot precedence now instead of leaving
+  // the instance on Socket Mode until the next restart.
+  if (
+    activeSource === 'env' &&
+    cloudConfigService.getSourceMode() === 'auto' &&
+    slackBootAt > 0 &&
+    Date.now() - slackBootAt < SLACK_CLOUD_CONSTANTS.BOOT_PRECEDENCE_WINDOW_MS
+  ) {
+    logger.info('Cloud Slack workspace appeared right after boot — switching from the self-hosted app to Crewly Cloud', {
+      workspace: config.workspace.slackTeamName,
+    });
+    await slackService.disconnect().catch(() => undefined);
     await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions);
     return;
   }

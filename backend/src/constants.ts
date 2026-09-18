@@ -654,6 +654,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	WORKSPACE_PATH: '/workspace',
 	/** GET → every workspace on the account (redacted) */
 	WORKSPACES_PATH: '/workspaces',
+	/** A Cloud config appearing this soon after boot still counts as the boot decision (replaces a self-hosted socket) */
+	BOOT_PRECEDENCE_WINDOW_MS: 5 * 60 * 1000,
 	/** `PUT /instances/:instanceId` — registry heartbeat */
 	INSTANCES_PATH: '/instances',
 	/** `POST` — provision per-agent apps for a team roster */

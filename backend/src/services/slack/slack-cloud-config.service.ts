@@ -444,16 +444,22 @@ export class SlackCloudConfigService {
         headers: { Authorization: `Bearer ${token}` },
         signal: controller.signal,
       });
-      if (res.status === 404) {
-        this.availableWorkspaces = null;
-        return null;
-      }
       const text = await res.text();
       let parsed: { success?: boolean; data?: unknown; error?: string; code?: string; details?: { workspaces?: unknown } } = {};
       try {
         parsed = JSON.parse(text) as typeof parsed;
       } catch {
         parsed = {};
+      }
+      if (res.status === 404) {
+        // Our service answers 404 with a JSON envelope when the account has
+        // no workspace. A bare 404 (load balancer page during a rollout)
+        // must not wipe the cache.
+        if (parsed.success !== false) {
+          throw new SlackIdentityCloudError(404, 'http_404', 'Cloud answered 404 without a Crewly envelope');
+        }
+        this.availableWorkspaces = null;
+        return null;
       }
       if (res.status === 409 && parsed.code === 'workspace_not_selected') {
         const list = Array.isArray(parsed.details?.workspaces) ? (parsed.details!.workspaces as unknown[]) : [];

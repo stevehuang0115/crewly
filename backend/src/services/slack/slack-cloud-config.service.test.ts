@@ -161,6 +161,16 @@ describe('refresh + cache', () => {
     await expect(fs.access(storePath)).rejects.toBeDefined();
   });
 
+  it('a bare 404 without the Crewly envelope (load balancer during a rollout) keeps the cache', async () => {
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
+    const service = makeService();
+    await service.refresh();
+    fetchMock.mockResolvedValue({ ok: false, status: 404, text: async () => '<html>404 Not Found</html>' });
+    expect(await service.refresh()).toEqual(CONFIG);
+    expect(service.getLastError()).toContain('404');
+    await expect(fs.access(storePath)).resolves.toBeUndefined();
+  });
+
   it('keeps the cache and records the error on a Cloud failure', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: CONFIG }));
     const service = makeService();

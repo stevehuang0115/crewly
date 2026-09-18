@@ -509,6 +509,40 @@ describe('Slack Initializer', () => {
         expect(getActiveSlackSource()).toBe('cloud');
       });
 
+      it('a Cloud config that appears right after an env boot replaces the self-hosted socket (boot race), later ones do not', async () => {
+        // Boot: Cloud signed out (token still refreshing) → env tokens win.
+        process.env.SLACK_BOT_TOKEN = 'xoxb-env';
+        process.env.SLACK_APP_TOKEN = 'xapp-env';
+        process.env.SLACK_SIGNING_SECRET = 'secret-env';
+        const { service } = installCloudConfig(null);
+        mockCloud.connected = false;
+        const init = jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);
+        jest
+          .spyOn((await import('./slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+          .mockResolvedValue(undefined);
+        const disconnect = jest.spyOn(SlackService.prototype, 'disconnect').mockResolvedValue(undefined);
+        jest.spyOn(SlackService.prototype, 'isConnected').mockReturnValue(true);
+        const result = await initializeSlackIfConfigured();
+        expect(result.success).toBe(true);
+        expect(getActiveSlackSource()).toBe('env');
+
+        // Seconds later the token is back and the Cloud config lands.
+        mockCloud.connected = true;
+        (service as unknown as { config: SlackCloudConfig }).config = CLOUD_CONFIG;
+        await handleSlackCloudConfigChange(CLOUD_CONFIG);
+        expect(disconnect).toHaveBeenCalledTimes(1);
+        expect(init).toHaveBeenLastCalledWith(expect.objectContaining({ transport: 'cloud' }));
+        expect(getActiveSlackSource()).toBe('cloud');
+
+        // An env connection that has been up for a while is left alone.
+        await connectSlack({ config: { botToken: 'x', appToken: 'y', signingSecret: 'z', socketMode: true }, source: 'env' });
+        const nowSpy = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 60 * 60 * 1000);
+        await handleSlackCloudConfigChange(CLOUD_CONFIG);
+        nowSpy.mockRestore();
+        expect(disconnect).toHaveBeenCalledTimes(1);
+        expect(getActiveSlackSource()).toBe('env');
+      });
+
       it('disconnects a cloud-sourced connection when the workspace is removed, leaves an env one alone', async () => {
         const { service } = installCloudConfig(CLOUD_CONFIG);
         await service.refresh();
