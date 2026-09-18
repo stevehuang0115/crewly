@@ -1399,6 +1399,43 @@ describe('TaskPoolService', () => {
   // -----------------------------------------------------------------------
 
   describe('completeSimpleItem', () => {
+    it('publishes task:done exactly once with WI correlation fields (KR auto-measure feed)', async () => {
+      const publishCalls: any[] = [];
+      const fakeBus = { publish: jest.fn((event: any) => publishCalls.push(event)) } as any;
+      service.setEventBusService(fakeBus);
+
+      const wi = makeWorkItem({ type: 'cron_run', missionId: 'm-9', requestId: 'req-1' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      await service.completeSimpleItem(wi.id, 'agent');
+
+      const doneEvents = publishCalls.filter((e) => e.type === 'task:done');
+      expect(doneEvents).toHaveLength(1);
+      expect(doneEvents[0]).toMatchObject({
+        id: `task:done:${wi.id}`,
+        workItemId: wi.id,
+        missionId: 'm-9',
+        requestId: 'req-1',
+        previousValue: 'running',
+        newValue: 'done',
+        sessionName: '',
+      });
+    });
+
+    it('does NOT throw when the task:done publisher throws', async () => {
+      const fakeBus = {
+        publish: jest.fn((event: any) => {
+          if (event.type === 'task:done') throw new Error('bus down');
+        }),
+      } as any;
+      service.setEventBusService(fakeBus);
+      const wi = makeWorkItem({ type: 'cron_run' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      const updated = await service.completeSimpleItem(wi.id, 'agent');
+      expect(updated!.status).toBe('done');
+    });
+
     it('transitions running → done for an agent actor', async () => {
       const wi = makeWorkItem({ type: 'cron_run' });
       await service.addToPool(wi);
@@ -1538,6 +1575,26 @@ describe('TaskPoolService', () => {
 
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe('verified');
+    });
+
+    it('publishes task:verified (not task:rejected) on the verified verdict', async () => {
+      const publishCalls: any[] = [];
+      const fakeBus = { publish: jest.fn((event: any) => publishCalls.push(event)) } as any;
+      service.setEventBusService(fakeBus);
+      const wi = await makeAwaitingVerification();
+
+      await service.verifyItem(wi.id, 'team_lead', 'verified');
+
+      const verified = publishCalls.filter((e) => e.type === 'task:verified');
+      expect(verified).toHaveLength(1);
+      expect(verified[0]).toMatchObject({
+        id: `task:verified:${wi.id}`,
+        workItemId: wi.id,
+        previousValue: 'done_by_worker',
+        newValue: 'verified',
+        sessionName: '',
+      });
+      expect(publishCalls.filter((e) => e.type === 'task:rejected')).toHaveLength(0);
     });
 
     it('transitions done_by_worker → rejected for a team_lead actor with a reviewer comment', async () => {

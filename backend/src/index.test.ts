@@ -356,4 +356,27 @@ describe('CrewlyServer headless mode', () => {
 			]);
 		});
 	});
+
+	// -----------------------------------------------------------------------
+	// OKR loop closure — boot wiring smoke test for the KRCompletionSubscriber
+	// (booted right after the bridge in index.ts, stopped on the same window).
+	// -----------------------------------------------------------------------
+	describe('Boot wiring — KRCompletionSubscriber', () => {
+		it('boot(eventBus) returns an instance with start/stop/flushPending', async () => {
+			const { EventBusService } = await import('./services/event-bus/event-bus.service.js');
+			const { KRCompletionSubscriber } = await import(
+				'./services/v3/kr-completion.subscriber.js'
+			);
+			const bus = new EventBusService();
+			const subscriber = KRCompletionSubscriber.boot(bus);
+
+			expect(typeof subscriber.start).toBe('function');
+			expect(typeof subscriber.stop).toBe('function');
+			expect(typeof subscriber.flushPending).toBe('function');
+			expect(() => subscriber.start()).not.toThrow();
+			expect(() => subscriber.stop()).not.toThrow();
+
+			bus.cleanup();
+		});
+	});
 });

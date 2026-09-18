@@ -65,6 +65,7 @@ import { MessageQueueService, QueueProcessorService, ResponseRouterService } fro
 import { ThreadStatusQueueService } from './services/messaging/thread-status-queue.service.js';
 import { EventBusService } from './services/event-bus/index.js';
 import { EventToWorkItemBridge } from './services/event-bus/event-to-workitem-bridge.service.js';
+import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.js';
 import { AutoLearningSubscriber } from './services/memory/auto-learning.subscriber.js';
 import { MilestoneNotificationSubscriber } from './services/notification/milestone-notification.subscriber.js';
 import {
@@ -202,6 +203,7 @@ export class CrewlyServer {
 	private eventBusService!: EventBusService;
 	/** BRIDGE-1: subscribes to autonomy events and creates WorkItems. */
 	private eventToWorkItemBridge: EventToWorkItemBridge | null = null;
+	private krCompletionSubscriber: KRCompletionSubscriber | null = null;
 	/** LEARN-1: subscribes to terminal task / mission:replanned events and auto-records learnings. */
 	private autoLearningSubscriber: AutoLearningSubscriber | null = null;
 	// DF-1 #438 — symmetric to AutoLearningSubscriber; surfaces milestones
@@ -646,6 +648,13 @@ void (async () => {
 		// for idempotency contract + retry cap + cron-recursion guard.
 		this.eventToWorkItemBridge = EventToWorkItemBridge.boot(this.eventBusService);
 		this.eventToWorkItemBridge.start();
+
+		// OKR loop closure: auto-measure `task_completion` KRs from task:done /
+		// task:verified and publish `team:all_tasks_done` when a mission has no
+		// active WorkItems left (the bridge turns that into a review WI). See
+		// `kr-completion.subscriber.ts`.
+		this.krCompletionSubscriber = KRCompletionSubscriber.boot(this.eventBusService);
+		this.krCompletionSubscriber.start();
 
 		// LEARN-1: subscribe to terminal task / mission:replanned events and
 		// auto-record a learning entry via MemoryService.recordLearning. Closes
@@ -3537,6 +3546,10 @@ void (async () => {
 			if (this.eventToWorkItemBridge) {
 				this.eventToWorkItemBridge.stop();
 				this.eventToWorkItemBridge = null;
+			}
+			if (this.krCompletionSubscriber) {
+				this.krCompletionSubscriber.stop();
+				this.krCompletionSubscriber = null;
 			}
 
 			// LEARN-1: stop the AutoLearningSubscriber on the same window as the
