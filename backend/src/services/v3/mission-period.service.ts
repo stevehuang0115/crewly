@@ -18,6 +18,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getMissionsDir } from './mission-paths.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Mission, MissionPeriod, MissionStatus } from '../../types/v2/mission.types.js';
 import {
@@ -32,15 +33,6 @@ import {
 // Constants
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the mission store directory. Defaults to `<cwd>/.crewly/missions`
- * (the production store). Honors the `CREWLY_MISSIONS_DIR` env override so tests
- * can isolate to a temp directory and never read/delete the real store — without
- * this override a test's cleanup would wipe production missions.
- */
-function getMissionsDir(): string {
-  return process.env['CREWLY_MISSIONS_DIR'] || path.join(process.cwd(), '.crewly', 'missions');
-}
 
 // ---------------------------------------------------------------------------
 // Types

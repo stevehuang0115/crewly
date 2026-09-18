@@ -16,6 +16,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getMissionsDir } from './mission-paths.js';
 import { CronExpressionParser } from 'cron-parser';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
@@ -70,10 +71,6 @@ const REMINDER_COOLDOWN_MS = 24 * 60 * 60 * 1000;
  */
 const PENDING_REVIEW_TERMINAL_STATUSES: ReadonlySet<string> =
   SLA_TERMINAL_WORK_ITEM_STATUSES;
-
-function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
-}
 
 /**
  * Default timezone used when a mission's `policy.executionCadence.workHours`

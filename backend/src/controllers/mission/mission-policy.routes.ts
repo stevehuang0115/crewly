@@ -10,6 +10,7 @@
 import { Router, type Request, type Response, type NextFunction } from 'express';
 import * as path from 'path';
 import * as fs from 'fs/promises';
+import { getMissionsDir, getKeyResultsDir } from '../../services/v3/mission-paths.js';
 import {
   getPolicy,
   updatePolicy,
@@ -75,10 +76,6 @@ interface KeyResultSummary {
   status: KeyResult['status'];
 }
 
-/** Resolve the missions directory from the project root. */
-function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
-}
 
 /**
  * Reads all KR JSON files stored under `<missionsDir>/<missionId>/key-results/`.
@@ -87,7 +84,7 @@ function getMissionsDir(): string {
  * @returns Array of KR summaries (empty if the folder is missing or unreadable)
  */
 async function readKeyResultSummaries(missionId: string): Promise<KeyResultSummary[]> {
-  const krDir = path.join(getMissionsDir(), missionId, 'key-results');
+  const krDir = getKeyResultsDir(missionId);
   let files: string[] = [];
   try {
     files = (await fs.readdir(krDir)).filter(f => f.endsWith('.json'));

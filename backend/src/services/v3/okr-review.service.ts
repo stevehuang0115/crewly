@@ -14,6 +14,7 @@
 
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { getMissionsDir } from './mission-paths.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { KRTrackingService } from './kr-tracking.service.js';
 import { MissionExecutorService } from './mission-executor.service.js';
@@ -29,10 +30,6 @@ import { getEffectiveCadence } from '../../types/v2/mission.types.js';
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-
-function getMissionsDir(): string {
-  return path.join(process.cwd(), '.crewly', 'missions');
-}
 
 /**
  * Build the one-line review summary string persisted on a mission. Kept in one
