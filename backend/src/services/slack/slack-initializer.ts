@@ -75,6 +75,7 @@ async function startSlackDirectory(slackService: SlackService): Promise<void> {
         },
         listChannelMembers: (channelId) => slackService.listChannelMembers(channelId),
         getUser: (userId) => slackService.getUserBasic(userId),
+        localMemberName: (agentSession) => localAgentNames.get(agentSession) ?? null,
       }),
     );
   } catch (err) {
@@ -84,6 +85,8 @@ async function startSlackDirectory(slackService: SlackService): Promise<void> {
 
 /** Session names of the agents this instance runs (team rosters), for the agent-to-agent self filter. */
 const localAgentSessions = new Set<string>();
+/** Session → member display name for the agents this instance runs. */
+const localAgentNames = new Map<string, string>();
 
 /** Rebuild {@link localAgentSessions} from storage. Never throws. */
 async function refreshLocalAgentSessions(): Promise<void> {
@@ -91,7 +94,14 @@ async function refreshLocalAgentSessions(): Promise<void> {
     const { StorageService } = await import('../core/storage.service.js');
     const teams = await StorageService.getInstance().getTeams();
     localAgentSessions.clear();
-    for (const team of teams) for (const m of team.members ?? []) if (m.sessionName) localAgentSessions.add(m.sessionName);
+    localAgentNames.clear();
+    for (const team of teams) {
+      for (const m of team.members ?? []) {
+        if (!m.sessionName) continue;
+        localAgentSessions.add(m.sessionName);
+        if (m.name) localAgentNames.set(m.sessionName, m.name);
+      }
+    }
   } catch {
     // storage unavailable — the live-session check still applies
   }

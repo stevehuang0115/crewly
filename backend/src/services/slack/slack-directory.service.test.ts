@@ -40,6 +40,7 @@ function build(over: Partial<ConstructorParameters<typeof SlackDirectoryService>
     fetchCloudDirectory: async () => CLOUD,
     listChannelMembers: async (id) => (id === 'C-tt' ? ['UATLAS', 'UMIA', 'UOTHER', 'UHUMAN'] : []),
     getUser: async (id) => (id === 'UOTHER' ? { name: 'Nova', isBot: true } : id === 'UHUMAN' ? { name: 'Steve', isBot: false } : null),
+    localMemberName: (session) => (session === 'tt-atlas' ? 'Atlas TL' : null),
     now: () => now,
     ...over,
   });
@@ -51,7 +52,7 @@ describe('SlackDirectoryService', () => {
     const { svc } = build();
     const entries = await svc.list('C-tt');
     expect(entries.map((e) => [e.name, e.source, e.kind, e.inChannel, e.machine, e.mention])).toEqual([
-      ['Atlas', 'this-machine', 'agent', true, 'this machine', '<@UATLAS>'],
+      ['Atlas TL', 'this-machine', 'agent', true, 'this machine', '<@UATLAS>'],
       ['Bo', 'this-account', 'agent', true, 'mac-mini', null],
       ['Mia', 'this-account', 'agent', true, 'mac-mini', '<@UMIA>'],
       ['Nova', 'channel', 'bot', true, null, '<@UOTHER>'],
@@ -62,7 +63,7 @@ describe('SlackDirectoryService', () => {
   it('without a channel returns the account roster only; caches per key and refreshes after the TTL', async () => {
     const fetchCloudDirectory = jest.fn(async () => CLOUD);
     const { svc, tick } = build({ fetchCloudDirectory });
-    expect((await svc.list()).map((e) => e.name)).toEqual(['Atlas', 'Bo', 'Mia']);
+    expect((await svc.list()).map((e) => e.name)).toEqual(['Atlas TL', 'Bo', 'Mia']);
     await svc.list();
     expect(fetchCloudDirectory).toHaveBeenCalledTimes(1);
     tick(6 * 60 * 1000);
@@ -73,7 +74,7 @@ describe('SlackDirectoryService', () => {
   it('rosterLine names channel members with team, machine and how to @ them; empty when nothing is known', async () => {
     const { svc } = build();
     expect(await svc.rosterLine('C-tt')).toBe(
-      'Atlas (Think Tank, this machine) → @Atlas · Bo (Portal, mac-mini) · Mia (Portal, mac-mini) → @Mia · Nova (bot, other system) → @Nova · Steve (human) → @Steve',
+      'Atlas TL (Think Tank, this machine) → @Atlas TL · Bo (Portal, mac-mini) · Mia (Portal, mac-mini) → @Mia · Nova (bot, other system) → @Nova · Steve (human) → @Steve',
     );
     const offline = build({ fetchCloudDirectory: async () => null, listChannelMembers: async () => null });
     expect(await offline.svc.rosterLine('C-tt')).toBe('');

@@ -62,6 +62,8 @@ export interface SlackDirectoryDeps {
   listChannelMembers: (channelId: string) => Promise<string[] | null>;
   /** Slack: user record for a member id. */
   getUser: (userId: string) => Promise<{ name: string; isBot: boolean } | null>;
+  /** Display name of a local team member by session (Cloud only knows names once an app exists). */
+  localMemberName?: (agentSession: string) => string | null;
   now?: () => number;
 }
 
@@ -100,7 +102,7 @@ export class SlackDirectoryService {
       for (const team of inst.teams) {
         for (const a of team.agents) {
           const entry: DirectoryEntry = {
-            name: a.displayName,
+            name: (local && this.deps.localMemberName?.(a.agentSession)) || a.displayName,
             mention: a.botUserId ? `<@${a.botUserId}>` : null,
             botUserId: a.botUserId,
             agentSession: a.agentSession,
