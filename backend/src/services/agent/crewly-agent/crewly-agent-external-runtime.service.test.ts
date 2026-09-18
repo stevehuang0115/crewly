@@ -490,6 +490,7 @@ describe('CrewlyAgentExternalRuntimeService — concurrent run correlation', () 
     ready: boolean;
     child: unknown;
     currentSessionName: string | null;
+    currentModelString: string;
     storedConfig: unknown;
     pendingRuns: Map<string, unknown>;
     spawnAgentProcess: (config: unknown) => Promise<void>;
@@ -536,6 +537,37 @@ describe('CrewlyAgentExternalRuntimeService — concurrent run correlation', () 
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  // 2026-09-18: usage used to be recorded only when settings.general.tokenTracking
+  // was on (default off), so a DeepSeek orchestrator ran for months with no
+  // record of what it spent. Every run is recorded now, with cache hits and steps.
+  it('records every run in TokenUsageService with cached tokens and steps, regardless of tokenTracking', async () => {
+    const { TokenUsageService } = await import('../../monitoring/token-usage.service.js');
+    const recordUsage = jest.spyOn(TokenUsageService.getInstance(), 'recordUsage');
+    mockGetSettings.mockResolvedValue({ general: { tokenTracking: false, runtimeCommands: {} } });
+    inner.currentModelString = 'deepseek/deepseek-chat';
+
+    const run = svc.handleMessage('hello');
+    const [id] = dispatchedRunIds();
+    inner.handleWorkerMessage({
+      type: 'result',
+      runId: id,
+      data: { text: 'hi', steps: 3, toolCalls: [], usage: { input: 1200, output: 40, cachedInput: 38_000 } },
+    });
+    await run;
+
+    expect(recordUsage).toHaveBeenCalledTimes(1);
+    expect(recordUsage).toHaveBeenCalledWith(
+      'crewly-orc',
+      'crewly-orc',
+      1200,
+      40,
+      'deepseek/deepseek-chat',
+      undefined,
+      { cachedInput: 38_000, steps: 3 },
+    );
+    recordUsage.mockRestore();
   });
 
   it('settles each concurrent run with ITS OWN result', async () => {

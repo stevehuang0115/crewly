@@ -3299,9 +3299,22 @@ Loop until done, blocked, or explicitly reassigned:
 				// Process message asynchronously — don't block the caller
 				crewlyRuntime.handleMessage(message, slackMetadata)
 					.then((result) => {
+						// Usage goes in the main log, not only the per-session buffer: this
+						// is the line an operator greps to see what a run cost (2026-09-18).
+						const cachedInput = result.usage?.cachedInput ?? 0;
+						const promptTokens = (result.usage?.input ?? 0) + cachedInput;
 						this.logger.info('Crewly Agent finished processing message', {
 							sessionName, messageLength: message.length,
 							responseLength: result.text?.length ?? 0,
+							steps: result.steps,
+							toolCalls: result.toolCalls?.length ?? 0,
+							finishReason: result.finishReason,
+							usage: {
+								input: result.usage?.input ?? 0,
+								output: result.usage?.output ?? 0,
+								cachedInput,
+								cacheHitPercent: promptTokens > 0 ? Math.round((cachedInput / promptTokens) * 100) : 0,
+							},
 						});
 
 						// Route response text back to the originating chat conversation.

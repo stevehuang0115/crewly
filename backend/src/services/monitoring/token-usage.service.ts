@@ -32,6 +32,19 @@ export interface TokenUsageEvent {
   model: string;
   /** Optional task ID for per-task tracking */
   taskId?: string;
+  /**
+   * Portion of `input` the provider served from its prompt cache (billed at
+   * a fraction of the input rate). Absent when the runtime cannot tell.
+   */
+  cachedInput?: number;
+  /** Model round-trips the run took (agentic steps). Absent when unknown. */
+  steps?: number;
+}
+
+/** Optional per-event detail beyond the raw input/output counts. */
+export interface TokenUsageDetail {
+  cachedInput?: number;
+  steps?: number;
 }
 
 /**
@@ -48,6 +61,8 @@ export interface SessionUsageRecord {
   totalOutput: number;
   /** Number of usage events recorded */
   eventCount: number;
+  /** Total cached (cache-hit) input tokens across all events; absent on records written before 2026-09-18 */
+  totalCachedInput?: number;
   /** Individual usage events */
   events: TokenUsageEvent[];
 }
@@ -78,6 +93,8 @@ export interface SessionUsageSummary {
   totalOutput: number;
   /** Number of events */
   eventCount: number;
+  /** Total cache-hit input tokens, when the runtime reports them */
+  totalCachedInput?: number;
   /** Computed cost in USD based on model pricing */
   cost: number;
   /** Per-model breakdown of token usage */
@@ -222,8 +239,18 @@ export class TokenUsageService {
    * @param input - Number of input tokens consumed
    * @param output - Number of output tokens generated
    * @param model - AI model identifier used
+   * @param taskId - Optional task the usage belongs to
+   * @param detail - Optional cache-hit and step counts for this event
    */
-  recordUsage(sessionName: string, agentId: string, input: number, output: number, model: string, taskId?: string): void {
+  recordUsage(
+    sessionName: string,
+    agentId: string,
+    input: number,
+    output: number,
+    model: string,
+    taskId?: string,
+    detail?: TokenUsageDetail,
+  ): void {
     let record = this.sessions.get(sessionName);
     if (!record) {
       record = {
@@ -248,12 +275,17 @@ export class TokenUsageService {
       output,
       model,
       taskId: effectiveTaskId,
+      ...(detail?.cachedInput !== undefined ? { cachedInput: detail.cachedInput } : {}),
+      ...(detail?.steps !== undefined ? { steps: detail.steps } : {}),
     };
 
     record.events.push(event);
     record.totalInput += input;
     record.totalOutput += output;
     record.eventCount += 1;
+    if (detail?.cachedInput !== undefined) {
+      record.totalCachedInput = (record.totalCachedInput ?? 0) + detail.cachedInput;
+    }
   }
 
   /**
@@ -337,6 +369,13 @@ export class TokenUsageService {
         totalInput: taskId ? filteredInput : record.totalInput,
         totalOutput: taskId ? filteredOutput : record.totalOutput,
         eventCount: taskId ? events.length : record.eventCount,
+        ...(record.totalCachedInput !== undefined
+          ? {
+              totalCachedInput: taskId
+                ? events.reduce((sum, e) => sum + (e.cachedInput ?? 0), 0)
+                : record.totalCachedInput,
+            }
+          : {}),
         cost: totalCost,
         modelBreakdown,
       });

@@ -43,6 +43,17 @@ describe('TokenUsageService', () => {
       expect(service.getSessionCount()).toBe(1);
     });
 
+    it('keeps cache-hit and step counts per event and totals cached input (2026-09-18)', () => {
+      service.recordUsage('session-1', 'agent-a', 1200, 40, 'deepseek/deepseek-chat', undefined, { cachedInput: 38_000, steps: 3 });
+      service.recordUsage('session-1', 'agent-a', 900, 20, 'deepseek/deepseek-chat', undefined, { cachedInput: 39_000, steps: 1 });
+      service.recordUsage('session-1', 'agent-a', 100, 5, 'claude-opus'); // no detail → nothing invented
+
+      const [session] = service.getUsageBySessions();
+      expect(session.totalInput).toBe(2200);
+      expect(session.totalCachedInput).toBe(77_000);
+      expect(session.eventCount).toBe(3);
+    });
+
     it('should accumulate totals for the same session', () => {
       service.recordUsage('session-1', 'agent-a', 100, 50, 'claude-opus');
       service.recordUsage('session-1', 'agent-a', 200, 80, 'claude-opus');

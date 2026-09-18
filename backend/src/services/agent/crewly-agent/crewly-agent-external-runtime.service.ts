@@ -221,7 +221,11 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
             'debug',
             `  Tokens: ${result.usage.input}in/${result.usage.output}out, ${cached} cached (${hitRate}% of prompt)`,
           );
-          this.recordTokenUsageIfEnabled(session, result).catch(() => {});
+          try {
+            this.recordTokenUsage(session, result);
+          } catch (err) {
+            this.logBuffer.append(session, 'warn', `Token usage not recorded: ${(err as Error).message}`);
+          }
           resolve(result);
         },
         reject: (error) => {
@@ -844,16 +848,27 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
     }
   }
 
-  private async recordTokenUsageIfEnabled(session: string, result: AgentRunResult): Promise<void> {
-    const settings = await getSettingsService().getSettings();
-    if (!settings.general.tokenTracking) return;
-
+  /**
+   * Record one run's usage in the shared token ledger (`token-usage.json`).
+   *
+   * Not gated on `settings.general.tokenTracking`: that flag opts a PTY
+   * runtime into telemetry it would otherwise not emit (claude-code needs an
+   * env var). The in-process runtime already has exact counts in hand for
+   * every run, and until 2026-09-18 they were thrown away by default — a
+   * DeepSeek orchestrator ran for months with no record of what it spent.
+   *
+   * @param session - Session the run belongs to
+   * @param result - The completed run
+   */
+  private recordTokenUsage(session: string, result: AgentRunResult): void {
     TokenUsageService.getInstance().recordUsage(
       session,
       session,
       result.usage.input,
       result.usage.output,
       this.currentModelString,
+      undefined,
+      { cachedInput: result.usage.cachedInput ?? 0, steps: result.steps },
     );
   }
 
