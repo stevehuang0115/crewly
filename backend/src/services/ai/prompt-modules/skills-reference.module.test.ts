@@ -89,6 +89,10 @@ describe('SkillsReferenceModule', () => {
 			expect(result).toContain('reply-slack');
 			expect(result).toContain('delegate-task');
 			expect(result).toContain('delegated to agents');
+			// Cross-machine collaboration goes through Slack; the Cloud-queue skills are legacy.
+			expect(result).toContain('shared Slack team channel');
+			expect(result).toContain('list-colleagues');
+			expect(result).toContain('deprecated');
 		});
 
 		it('should give TLs delegation scope', async () => {

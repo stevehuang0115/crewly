@@ -82,6 +82,9 @@ describe('CommunicationModule', () => {
 			expect(result).toContain('### Message Routing Rules');
 			expect(result).toContain('### Slack Communication');
 			expect(result).toContain('### Google Chat Communication');
+			// [REMOTE:...] is answered, never initiated; new cross-machine talk goes through Slack.
+			expect(result).toContain('legacy cross-machine channel');
+			expect(result).toContain('shared Slack team channel');
 			expect(result).toContain('### Chat UI Communication');
 			expect(result).toContain('### Notification Protocol');
 			expect(result).toContain('### Thread Context');

@@ -187,7 +187,7 @@ You have access to multiple communication channels:
 1. **\`[CHAT:...]\` prefix** → Message from Chat UI → Use \`reply-chat\` skill
 2. **\`[GCHAT:...]\` prefix** → Message from Google Chat → Use \`reply-gchat\` skill
 3. **\`[SLACK:...]\` marker** → Message from Slack → Use \`reply-slack\` skill
-4. **\`[REMOTE:...]\` marker** → Message from remote device → Use \`reply-remote\` skill
+4. **\`[REMOTE:...]\` marker** → Message from a remote device over the legacy cross-machine channel → answer with \`reply-remote\`; to reach a colleague on another machine yourself, use a shared Slack team channel (@ their name) instead
 5. **Agent status updates** → Process internally, do not forward to user unless requested
 6. **Task completions / Error notifications** → Notify user on their active channel
 
