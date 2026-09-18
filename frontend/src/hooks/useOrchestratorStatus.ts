@@ -10,6 +10,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
 import { webSocketService } from '../services/websocket.service';
+import type { LoginRequiredInfo } from '../types';
 
 // =============================================================================
 // Types
@@ -27,6 +28,8 @@ export interface OrchestratorStatus {
   message: string;
   /** User-friendly offline message for display */
   offlineMessage: string | null;
+  /** Pending runtime sign-in (url + device code) captured from the orchestrator's terminal */
+  loginRequired?: LoginRequiredInfo | null;
 }
 
 /**
@@ -183,7 +186,10 @@ export function useOrchestratorStatus(): UseOrchestratorStatusResult {
 
       // Map the WebSocket payload to our OrchestratorStatus format
       const isActive = resolvedStatus === 'active';
-      setStatus({
+      // WebSocket payloads carry no sign-in detail; keep the last fetched
+      // loginRequired while the orchestrator is still not active, and clear
+      // it the moment it reports active (the sign-in evidently completed).
+      setStatus((prev) => ({
         isActive,
         agentStatus: resolvedStatus || null,
         message: isActive
@@ -194,7 +200,8 @@ export function useOrchestratorStatus(): UseOrchestratorStatusResult {
         offlineMessage: isActive
           ? null
           : 'The orchestrator is currently offline. Please start it from the Crewly dashboard.',
-      });
+        loginRequired: isActive ? null : prev?.loginRequired ?? null,
+      }));
       setIsLoading(false);
       setError(null);
     };

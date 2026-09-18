@@ -3,6 +3,7 @@ import { Play, Square, Loader2, Sparkles } from 'lucide-react';
 import { TeamMember } from '@/types';
 import { OverflowMenu } from '@/components/UI/OverflowMenu';
 import { Badge } from '@/components/UI/Badge';
+import { SignInNeededChip } from '@/components/SignInNeededChip';
 
 interface TeamMemberRowProps {
   member: TeamMember;
@@ -103,6 +104,9 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
         </div>
       </div>
       <div className="flex items-center gap-3">
+        {member.loginRequired && (
+          <SignInNeededChip loginRequired={member.loginRequired} agentLabel={member.name} align="right" />
+        )}
         <span className={`px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2 ${statusColor}`}>
           {isLoading && <Loader2 className="w-3 h-3 animate-spin" />}
           {statusText}

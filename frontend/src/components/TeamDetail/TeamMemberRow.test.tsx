@@ -14,6 +14,10 @@ vi.mock('lucide-react', () => ({
   Play: () => <span data-testid="play-icon">Play</span>,
   Square: () => <span data-testid="square-icon">Square</span>,
   Loader2: () => <span data-testid="loader-icon">Loader</span>,
+  KeyRound: () => <span data-testid="key-icon">Key</span>,
+  Copy: () => <span data-testid="copy-icon">Copy</span>,
+  Check: () => <span data-testid="check-icon">Check</span>,
+  ExternalLink: () => <span data-testid="link-icon">Link</span>,
 }));
 
 // Mock OverflowMenu component
@@ -320,6 +324,27 @@ describe('TeamMemberRow', () => {
       await waitFor(() => {
         expect(playButton).not.toBeDisabled();
       });
+    });
+  });
+
+  describe('sign-in needed', () => {
+    it('does not render the chip when the member has no pending sign-in', () => {
+      render(<TeamMemberRow member={createTestMember()} teamId="team-1" />);
+      expect(screen.queryByTestId('sign-in-needed-chip')).not.toBeInTheDocument();
+    });
+
+    it('renders the chip and opens the panel with the URL and code', () => {
+      const member = createTestMember({
+        agentStatus: 'starting',
+        loginRequired: { url: 'https://auth.openai.com/device', code: 'FBVZ-MJHKK', detectedAt: '2026-09-18T10:00:00.000Z' },
+      });
+      render(<TeamMemberRow member={member} teamId="team-1" />);
+
+      expect(screen.getByTestId('sign-in-needed-chip')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));
+      expect(screen.getByRole('dialog')).toHaveTextContent('Test Developer needs you to sign in');
+      expect(screen.getByTestId('sign-in-url')).toHaveAttribute('href', 'https://auth.openai.com/device');
+      expect(screen.getByTestId('sign-in-code')).toHaveTextContent('FBVZ-MJHKK');
     });
   });
 });

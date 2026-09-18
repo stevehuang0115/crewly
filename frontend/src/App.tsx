@@ -31,6 +31,7 @@ import { WorkItemDetail } from './pages/WorkItemDetail';
 import { RequestsPage } from './pages/RequestsPage';
 import { RequestDetail } from './pages/RequestDetail';
 import { ApiTokenPrompt } from './components/ApiTokenPrompt/ApiTokenPrompt';
+import { PendingLoginsBanner } from './components/PendingLoginsBanner';
 
 
 /**
@@ -53,6 +54,8 @@ function App() {
       <SidebarProvider>
         {/* Shown only when the backend challenges for the API token (non-loopback access). */}
         <ApiTokenPrompt />
+        {/* Global "an agent needs you to sign in" banner — polls /api/oauth/pending. */}
+        <PendingLoginsBanner />
         <Router>
           <Routes>
             {/* OAuth callback route (outside AppLayout — no sidebar/header) */}

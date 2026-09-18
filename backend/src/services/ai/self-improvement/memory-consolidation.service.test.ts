@@ -1,21 +1,20 @@
-import { vi, describe, it, expect, beforeEach, type MockedFunction } from 'vitest';
 import * as fs from 'fs';
 import { MemoryConsolidationService, MemoryProvider } from './memory-consolidation.service.js';
 
-vi.mock('fs');
+jest.mock('fs');
 
-const mockedFs = fs as unknown as vi.Mocked<typeof fs>;
+const mockedFs = fs as unknown as jest.Mocked<typeof fs>;
 
 describe('MemoryConsolidationService', () => {
 	let service: MemoryConsolidationService;
-	let mockProvider: MockedFunction<MemoryProvider>;
+	let mockProvider: jest.MockedFunction<MemoryProvider>;
 	const sessionName = 'crewly-product-sam-test';
 
 	beforeEach(() => {
-		vi.resetAllMocks();
+		jest.resetAllMocks();
 		mockedFs.mkdirSync.mockReturnValue(undefined);
 		mockedFs.writeFileSync.mockReturnValue(undefined);
-		mockProvider = vi.fn();
+		mockProvider = jest.fn();
 		service = new MemoryConsolidationService(mockProvider);
 	});
 

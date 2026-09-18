@@ -1,10 +1,9 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import { PredictionCalibrationService } from './prediction-calibration.service.js';
 
-vi.mock('fs');
+jest.mock('fs');
 
-const mockedFs = fs as unknown as vi.Mocked<typeof fs>;
+const mockedFs = fs as unknown as jest.Mocked<typeof fs>;
 
 describe('PredictionCalibrationService', () => {
 	let service: PredictionCalibrationService;
@@ -12,7 +11,7 @@ describe('PredictionCalibrationService', () => {
 
 	beforeEach(() => {
 		service = new PredictionCalibrationService();
-		vi.resetAllMocks();
+		jest.resetAllMocks();
 		mockedFs.mkdirSync.mockReturnValue(undefined);
 		mockedFs.writeFileSync.mockReturnValue(undefined);
 	});
@@ -68,6 +67,18 @@ describe('PredictionCalibrationService', () => {
 
 			const pred2 = await service.makePrediction(sessionName, 'test2', -0.5);
 			expect(pred2.confidence).toBe(0);
+		});
+
+		it('should persist an optional resolveBy deadline and omit the key when absent', async () => {
+			mockedFs.readFileSync.mockImplementation(() => {
+				throw new Error('ENOENT');
+			});
+
+			const withDeadline = await service.makePrediction(sessionName, 'ships Friday', 0.6, '2026-10-01');
+			expect(withDeadline.resolveBy).toBe('2026-10-01');
+
+			const without = await service.makePrediction(sessionName, 'no deadline', 0.6);
+			expect('resolveBy' in without).toBe(false);
 		});
 	});
 

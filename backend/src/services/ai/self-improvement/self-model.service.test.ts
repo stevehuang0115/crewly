@@ -1,10 +1,9 @@
-import { vi, describe, it, expect, beforeEach } from 'vitest';
 import * as fs from 'fs';
 import { SelfModelService } from './self-model.service.js';
 
-vi.mock('fs');
+jest.mock('fs');
 
-const mockedFs = fs as unknown as vi.Mocked<typeof fs>;
+const mockedFs = fs as unknown as jest.Mocked<typeof fs>;
 
 describe('SelfModelService', () => {
 	let service: SelfModelService;
@@ -12,7 +11,7 @@ describe('SelfModelService', () => {
 
 	beforeEach(() => {
 		service = new SelfModelService();
-		vi.resetAllMocks();
+		jest.resetAllMocks();
 		mockedFs.mkdirSync.mockReturnValue(undefined);
 		mockedFs.writeFileSync.mockReturnValue(undefined);
 	});

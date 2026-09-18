@@ -13,6 +13,8 @@ export interface Prediction {
 	confidence: number;
 	/** When the prediction was made (ISO date string) */
 	madeAt: string;
+	/** Optional deadline by which the prediction should be resolved (ISO date string) */
+	resolveBy?: string;
 	/** Actual outcome (set when resolved) */
 	outcome?: string;
 	/** Whether the prediction was accurate (set when resolved) */
@@ -74,12 +76,14 @@ export class PredictionCalibrationService {
 	 * @param sessionName - Agent session name
 	 * @param prediction - What is being predicted
 	 * @param confidence - Confidence level (0-1)
+	 * @param resolveBy - Optional ISO date by which the prediction should be resolved
 	 * @returns The created prediction
 	 */
 	async makePrediction(
 		sessionName: string,
 		prediction: string,
-		confidence: number
+		confidence: number,
+		resolveBy?: string
 	): Promise<Prediction> {
 		const data = await this.getPredictions(sessionName);
 		const clampedConfidence = Math.max(0, Math.min(1, confidence));
@@ -89,6 +93,7 @@ export class PredictionCalibrationService {
 			prediction,
 			confidence: clampedConfidence,
 			madeAt: new Date().toISOString().split('T')[0],
+			...(resolveBy ? { resolveBy } : {}),
 		};
 
 		data.predictions.push(newPrediction);

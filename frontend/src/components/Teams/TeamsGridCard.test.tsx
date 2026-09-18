@@ -20,6 +20,10 @@ vi.mock('lucide-react', () => ({
   Square: () => <svg data-testid="square-icon" />,
   Clock: () => <svg data-testid="clock-icon" />,
   MoreVertical: () => <svg data-testid="more-icon" />,
+  KeyRound: () => <svg data-testid="key-icon" />,
+  Copy: () => <svg data-testid="copy-icon" />,
+  Check: () => <svg data-testid="check-icon" />,
+  ExternalLink: () => <svg data-testid="link-icon" />,
 }));
 
 // Mock OverflowMenu — render the items as buttons so item wiring is testable.
@@ -247,6 +251,27 @@ describe('TeamsGridCard', () => {
       fireEvent.click(screen.getByTestId('confirm-dialog-cancel'));
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
       expect(defaultProps.onStopTeam).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Sign-in needed', () => {
+    it('renders nothing when no member is waiting on a sign-in', () => {
+      render(<TeamsGridCard {...defaultProps} />);
+      expect(screen.queryByTestId('team-sign-in-needed')).not.toBeInTheDocument();
+    });
+
+    it('renders a chip per member parked on a login screen and does not trigger the card click', () => {
+      const team = createTeam();
+      team.members[1].loginRequired = { url: 'https://auth.openai.com/device', code: 'FBVZ-MJHKK', detectedAt: '2026-09-18T10:00:00.000Z' };
+      render(<TeamsGridCard {...defaultProps} team={team} />);
+
+      const row = screen.getByTestId('team-sign-in-needed');
+      expect(row).toHaveTextContent('Bob');
+      expect(screen.getAllByTestId('sign-in-needed-chip')).toHaveLength(1);
+
+      fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));
+      expect(screen.getByTestId('sign-in-code')).toHaveTextContent('FBVZ-MJHKK');
+      expect(defaultProps.onClick).not.toHaveBeenCalled();
     });
   });
 

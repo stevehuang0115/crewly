@@ -45,6 +45,7 @@ import { createMissionPolicyRouter } from '../controllers/mission/mission-policy
 import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.routes.js';
 import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
+import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 import { createActiveWorkRouter } from '../controllers/active-work/active-work.controller.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
@@ -191,6 +192,12 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Growth routes — agent growth area tracking (keyword-based, no LLM)
   router.use('/growth', createGrowthRouter());
+
+  // Agent self-improvement — attention / self-model / prediction calibration /
+  // memory consolidation. Mounted at /api/agents/:sessionName/self-improvement
+  // and backed by the set-focus / suppress-noise / record-prediction /
+  // resolve-prediction skills.
+  router.use('/agents', createAgentSelfImprovementRouter());
 
   // Task Projection routes — V3.1 TaskRecord + TaskEvent observability layer
   router.use('/task-projection', taskProjectionRouter);
