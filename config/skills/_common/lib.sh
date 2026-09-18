@@ -8,6 +8,35 @@
 CREWLY_API_URL="${CREWLY_API_URL:-http://localhost:8787}"
 
 # -----------------------------------------------------------------------------
+# Skill output cap (context-cost control)
+#
+# A single unbounded `api_call` response (70k+ chars from get-team-status,
+# wiki-migrate scan, list endpoints, ...) lands verbatim in the calling LLM's
+# context and is re-read on every turn until the session is compacted. Any
+# body larger than CREWLY_SKILL_MAX_OUTPUT_BYTES is therefore parked on disk
+# under $CREWLY_HOME/tmp/skill-output/ and replaced on stdout by a small,
+# VALID JSON envelope (so downstream `| jq` still parses):
+#   {"truncated":true,"bytes":N,"file":"<path>","head":"<first 4000 chars>","hint":"..."}
+#
+# Opt out per invocation with CREWLY_SKILL_FULL_OUTPUT=1 or by passing --full
+# to a skill (detected at source time below; the flag is NOT stripped, so
+# skills that already parse --full keep working). Set
+# CREWLY_SKILL_MAX_OUTPUT_BYTES=0 to disable the cap entirely.
+# -----------------------------------------------------------------------------
+CREWLY_SKILL_MAX_OUTPUT_BYTES="${CREWLY_SKILL_MAX_OUTPUT_BYTES:-60000}"
+# Characters of the body preserved inline in the envelope's `head` field.
+CREWLY_SKILL_OUTPUT_HEAD_CHARS="${CREWLY_SKILL_OUTPUT_HEAD_CHARS:-4000}"
+# Parked outputs older than this (minutes) are deleted on the next api_call.
+CREWLY_SKILL_OUTPUT_TTL_MINUTES="${CREWLY_SKILL_OUTPUT_TTL_MINUTES:-1440}"
+# Hint printed inside the envelope so the caller knows how to get the rest.
+CREWLY_SKILL_OUTPUT_HINT="pass --full or read the file; use jq to select fields"
+
+for _crewly_arg in "$@"; do
+  if [ "$_crewly_arg" = "--full" ]; then export CREWLY_SKILL_FULL_OUTPUT=1; fi
+done
+unset _crewly_arg
+
+# -----------------------------------------------------------------------------
 # Universal --file flag preprocessor (#EOF-fix)
 #
 # Fixes Gemini CLI's "unexpected EOF while looking for matching `'" errors.
@@ -88,10 +117,91 @@ read_json_input() {
 }
 
 # -----------------------------------------------------------------------------
+# _skill_output_dir
+# Echoes the directory where oversized skill outputs are parked.
+# $CREWLY_HOME falls back to ~/.crewly.
+# -----------------------------------------------------------------------------
+_skill_output_dir() {
+  echo "${CREWLY_HOME:-${HOME}/.crewly}/tmp/skill-output"
+}
+
+# -----------------------------------------------------------------------------
+# _skill_name
+# Best-effort name of the running skill (its directory name, e.g.
+# "get-team-status") for the parked-output filename. Falls back to "skill"
+# when sourced interactively.
+# -----------------------------------------------------------------------------
+_skill_name() {
+  local script="${BASH_SOURCE[${#BASH_SOURCE[@]}-1]:-$0}"
+  local name
+  name=$(basename "$(dirname "$script")" 2>/dev/null)
+  case "$name" in
+    ""|"."|"/"|"_common") name=$(basename "$script" .sh) ;;
+  esac
+  case "$name" in
+    ""|"bash"|"-bash"|"sh"|"zsh") name="skill" ;;
+  esac
+  printf '%s' "$name" | tr -c 'A-Za-z0-9._-' '_'
+}
+
+# -----------------------------------------------------------------------------
+# _cap_skill_output body
+#
+# Prints `body` unchanged when it is within CREWLY_SKILL_MAX_OUTPUT_BYTES (or
+# the cap is disabled / bypassed). Otherwise parks the full body in
+# $CREWLY_HOME/tmp/skill-output/<skill>-<timestamp>.json, prunes parked files
+# older than CREWLY_SKILL_OUTPUT_TTL_MINUTES, and prints a valid JSON envelope
+# describing where the full payload went. Never fails the caller: if the
+# envelope cannot be built (no jq, unwritable dir) the raw body is printed.
+# -----------------------------------------------------------------------------
+_cap_skill_output() {
+  local body="$1"
+  local max="${CREWLY_SKILL_MAX_OUTPUT_BYTES:-60000}"
+
+  if [ "${CREWLY_SKILL_FULL_OUTPUT:-}" = "1" ] || ! [ "$max" -gt 0 ] 2>/dev/null; then
+    echo "$body"
+    return 0
+  fi
+
+  local bytes
+  bytes=$(printf '%s' "$body" | LC_ALL=C wc -c | tr -d ' ')
+  if [ "$bytes" -le "$max" ]; then
+    echo "$body"
+    return 0
+  fi
+
+  local dir
+  dir=$(_skill_output_dir)
+  if ! mkdir -p "$dir" 2>/dev/null || ! command -v jq >/dev/null 2>&1; then
+    echo "$body"
+    return 0
+  fi
+  # Cheap housekeeping: drop parked outputs past their TTL.
+  find "$dir" -type f -name '*.json' -mmin "+${CREWLY_SKILL_OUTPUT_TTL_MINUTES:-1440}" -delete 2>/dev/null || true
+
+  local file
+  file="${dir}/$(_skill_name)-$(date +%Y%m%dT%H%M%S)-$$.json"
+  if ! printf '%s' "$body" > "$file" 2>/dev/null; then
+    echo "$body"
+    return 0
+  fi
+
+  local head_chars="${CREWLY_SKILL_OUTPUT_HEAD_CHARS:-4000}"
+  jq -n \
+    --argjson bytes "$bytes" \
+    --arg file "$file" \
+    --arg head "${body:0:$head_chars}" \
+    --arg hint "$CREWLY_SKILL_OUTPUT_HINT" \
+    '{truncated: true, bytes: $bytes, file: $file, head: $head, hint: $hint}'
+}
+
+# -----------------------------------------------------------------------------
 # api_call METHOD endpoint [json_body]
 #
 # Makes an HTTP request to the Crewly backend API.
-# Outputs the response body on success (stdout).
+# Outputs the response body on success (stdout), subject to the output cap
+# (see _cap_skill_output: oversized bodies are parked on disk and replaced by
+# a {"truncated":true,...} envelope).
 # Outputs a JSON error object on failure (stderr) and returns 1.
 # -----------------------------------------------------------------------------
 api_call() {
@@ -118,7 +228,7 @@ api_call() {
   body_content=$(echo "$response" | sed '$d')
 
   if [ "$http_code" -ge 200 ] 2>/dev/null && [ "$http_code" -lt 300 ] 2>/dev/null; then
-    echo "$body_content"
+    _cap_skill_output "$body_content"
   else
     echo '{"error":true,"status":'"${http_code}"',"details":'"${body_content:-\"Request failed\"}"'}' >&2
     return 1
