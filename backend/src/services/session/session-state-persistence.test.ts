@@ -145,6 +145,19 @@ describe('SessionStatePersistence', () => {
 		});
 	});
 
+	describe('forgetSessions', () => {
+		it('drops only the named sessions and keeps the others with their conversation ids', async () => {
+			const options: SessionOptions = { cwd: '/p', command: 'claude', args: [] };
+			persistence.registerSession('alive', options, RUNTIME_TYPES.CLAUDE_CODE, 'dev');
+			persistence.updateSessionId('alive', 'conv-alive');
+			persistence.registerSession('dead', options, RUNTIME_TYPES.CLAUDE_CODE, 'dev');
+			// (no file write needed — forgetSessions only touches metadata and removes the file)
+			await persistence.forgetSessions(['dead']);
+			expect(persistence.getRegisteredSessions()).toEqual(['alive']);
+			expect(persistence.getSessionId('alive')).toBe('conv-alive');
+		});
+	});
+
 	describe('unregisterSession', () => {
 		it('should remove a session from persistence', () => {
 			const options: SessionOptions = {

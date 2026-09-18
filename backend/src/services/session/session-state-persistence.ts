@@ -438,6 +438,24 @@ export class SessionStatePersistence {
 	}
 
 	/**
+	 * Forget some sessions (the ones the owner declined to resume) while
+	 * keeping the others' metadata — and with it their conversation ids.
+	 * Dismissing the resume popup used to wipe every session, including
+	 * agents the backend had already brought back, so their next restart
+	 * could not resume (2026-09-18).
+	 *
+	 * @param names - Sessions to forget
+	 */
+	async forgetSessions(names: readonly string[]): Promise<void> {
+		for (const name of names) {
+			this.sessionMetadata.delete(name);
+			this.restoredSessionNames.delete(name);
+		}
+		await this.clearState();
+		this.logger.info('Forgot sessions', { forgotten: names.length, kept: this.sessionMetadata.size });
+	}
+
+	/**
 	 * Clear all registered session metadata (in-memory only).
 	 */
 	clearMetadata(): void {

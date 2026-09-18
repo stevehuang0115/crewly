@@ -364,8 +364,11 @@ export async function getPreviousSessions(
 /**
  * Dismiss previous sessions by clearing persisted state.
  *
- * Clears both in-memory metadata and the state file so the resume
- * popup won't appear again until new sessions are created and stopped.
+ * Forgets the sessions that are not running (the ones the popup offered)
+ * and clears the state file, so the popup won't appear again until new
+ * sessions are created and stopped. Sessions that are alive — typically
+ * the ones the backend auto-restored moments ago — keep their metadata
+ * and conversation id, so a later restart can still resume them.
  *
  * @route POST /api/sessions/previous/dismiss
  * @returns {object} JSON response confirming dismissal
@@ -377,9 +380,13 @@ export async function dismissPreviousSessions(
 ): Promise<void> {
 	try {
 		const persistence = getSessionStatePersistence();
-		await persistence.clearStateAndMetadata();
+		const backend = getSessionBackendSync();
+		const dead = persistence
+			.getRegisteredSessions()
+			.filter((name) => !backend || !backend.sessionExists(name));
+		await persistence.forgetSessions(dead);
 
-		logger.info('Dismissed previous sessions');
+		logger.info('Dismissed previous sessions', { forgotten: dead.length });
 		res.json({ success: true });
 	} catch (error) {
 		logger.error('Failed to dismiss previous sessions', {

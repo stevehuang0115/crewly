@@ -94,7 +94,9 @@ describe('Session Controller - Previous Sessions', () => {
 
 		mockPersistence = {
 			getRegisteredSessionsMap: jest.fn(() => new Map()),
+			getRegisteredSessions: jest.fn(() => [] as string[]),
 			clearStateAndMetadata: jest.fn(() => Promise.resolve()),
+			forgetSessions: jest.fn(() => Promise.resolve()),
 		};
 
 		mockBackend = {
@@ -257,18 +259,21 @@ describe('Session Controller - Previous Sessions', () => {
 	});
 
 	describe('dismissPreviousSessions', () => {
-		it('should call clearStateAndMetadata and return success', async () => {
+		it('forgets only the sessions that are not running, keeps live ones (their resume id survives)', async () => {
+			mockPersistence.getRegisteredSessions.mockReturnValue(['dead-1', 'alive-1', 'dead-2']);
+			mockBackend.sessionExists.mockImplementation((name: string) => name === 'alive-1');
 			const req = createMockReq();
 			const res = createMockRes();
 
 			await dismissPreviousSessions.call(undefined, req, res);
 
-			expect(mockPersistence.clearStateAndMetadata).toHaveBeenCalled();
+			expect(mockPersistence.forgetSessions).toHaveBeenCalledWith(['dead-1', 'dead-2']);
+			expect(mockPersistence.clearStateAndMetadata).not.toHaveBeenCalled();
 			expect(res.json).toHaveBeenCalledWith({ success: true });
 		});
 
 		it('should handle errors gracefully', async () => {
-			mockPersistence.clearStateAndMetadata.mockRejectedValue(new Error('Clear failed'));
+			mockPersistence.forgetSessions.mockRejectedValue(new Error('Clear failed'));
 
 			const req = createMockReq();
 			const res = createMockRes();
