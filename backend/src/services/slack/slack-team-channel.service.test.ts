@@ -867,6 +867,17 @@ describe('agent identities', () => {
     typing = null;
   });
 
+  it('routes a repeated copy of one Slack message (app_mention + message) only once', async () => {
+    await service.ensureTeamChannel(team());
+    const first = await service.routeInbound(inbound({ text: '@sam 看一下', ts: '200.1' }));
+    const again = await service.routeInbound(inbound({ text: '@sam 看一下', ts: '200.1' }));
+    expect(first!.duplicate).toBeUndefined();
+    expect(again!.duplicate).toBe(true);
+    expect(again!.message.id).toBe(first!.message.id);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(chat.messages.filter((m) => m.metadata?.slackTs === '200.1')).toHaveLength(1);
+  });
+
   it('resolves a native <@bot> mention to the agent', async () => {
     await service.ensureTeamChannel(team());
     identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');

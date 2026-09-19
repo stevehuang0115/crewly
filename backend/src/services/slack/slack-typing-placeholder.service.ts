@@ -54,6 +54,8 @@ export interface SlackTypingPlaceholderDeps {
 export class SlackTypingPlaceholderService {
   private readonly logger: ComponentLogger;
   private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout> }>();
+  /** Placeholders being posted right now (two copies of one message must not post two). */
+  private readonly inFlight = new Map<string, Promise<TypingPlaceholder | null>>();
 
   /**
    * @param deps - Slack slice plus optional timer overrides for tests
@@ -76,6 +78,14 @@ export class SlackTypingPlaceholderService {
     const k = keyOf(key);
     const existing = this.pending.get(k);
     if (existing) return existing.placeholder;
+    const running = this.inFlight.get(k);
+    if (running) return running;
+    const task = this.post(k, key, identity).finally(() => this.inFlight.delete(k));
+    this.inFlight.set(k, task);
+    return task;
+  }
+
+  private async post(k: string, key: TypingKeyParts, identity: { botToken: string; displayName: string }): Promise<TypingPlaceholder | null> {
     try {
       const ts = await this.deps.slack.sendMessage({
         channelId: key.slackChannelId,

@@ -36,6 +36,16 @@ describe('SlackTypingPlaceholderService', () => {
     expect(svc.pendingCount).toBe(0);
   });
 
+  it('posts one placeholder when two copies of a message begin concurrently', async () => {
+    const { slack, sent } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const [a, b] = await Promise.all([svc.begin(key, ella), svc.begin(key, ella)]);
+    expect(sent).toHaveLength(1);
+    expect(a?.ts).toBe('ts-1');
+    expect(b?.ts).toBe('ts-1');
+    expect(svc.pendingCount).toBe(1);
+  });
+
   it('posts the reply fresh when nothing is pending, and keeps one placeholder per key', async () => {
     const { slack, sent } = makeSlack();
     const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });

@@ -628,6 +628,8 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	MENTION_SUGGEST_MAX: 3,
 	/** Reaction added to a routed inbound message while the team works on it */
 	INBOUND_REACTION: 'eyes',
+	/** How many routed Slack messages to remember for duplicate-copy suppression */
+	SEEN_INBOUND_MAX: 500,
 	/** Fallback icon when a member has no avatar */
 	DEFAULT_ICON_EMOJI: ':robot_face:',
 	/** Per-role icon fallbacks (Slack emoji names) */

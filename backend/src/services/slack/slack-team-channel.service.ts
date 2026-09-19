@@ -141,6 +141,8 @@ export interface RouteInboundResult {
   mentions: string[];
   /** Dispatcher outcome, or null when no dispatcher is wired yet. */
   dispatch: DispatchMessageResult | null;
+  /** True when this was a repeated copy of a message already routed. */
+  duplicate?: boolean;
 }
 
 const EMPTY_STORE: SlackTeamChannelsFile = {
@@ -233,6 +235,9 @@ export class SlackTeamChannelService {
   private loading: Promise<SlackTeamChannelsFile> | null = null;
   private unsubscribeStorage: (() => void) | null = null;
   private unsubscribeIdentity: (() => void) | null = null;
+  /** Slack `channel:ts` of messages already routed → the persisted turn. */
+  private readonly seenInbound = new Map<string, ChatMessageDTO>();
+
   private readonly onChatMessage = (dto: ChatMessageDTO): void => {
     void this.mirrorOutbound(dto);
   };
@@ -642,6 +647,16 @@ export class SlackTeamChannelService {
     const mapping = this.findBySlackChannelId(message.channelId);
     if (!mapping) return null;
 
+    // One Slack message can reach us twice with different event types
+    // (`app_mention` for an @'d agent's app plus `message.channels`); the
+    // team must see it once — a second copy is acknowledged, not dispatched.
+    const seenKey = `${message.channelId}:${message.ts}`;
+    const seen = this.seenInbound.get(seenKey);
+    if (seen) {
+      this.logger.debug('Repeated copy of a team channel message — not dispatched again', { key: seenKey });
+      return { mapping, message: seen, mentions: [], dispatch: null, duplicate: true };
+    }
+
     const channel = this.deps.chat.getChannelForBridge(mapping.chatChannelId);
     if (!channel || channel.archivedAt) {
       this.logger.warn('Mapped huddle missing or archived — dropping mapping', {
@@ -693,6 +708,12 @@ export class SlackTeamChannelService {
         ...(remoteAgent ? { remoteAgentSession: remoteAgent } : {}),
       },
     });
+
+    this.seenInbound.set(seenKey, persisted);
+    if (this.seenInbound.size > SLACK_TEAM_CHANNEL_CONSTANTS.SEEN_INBOUND_MAX) {
+      const oldest = this.seenInbound.keys().next().value;
+      if (oldest !== undefined) this.seenInbound.delete(oldest);
+    }
 
     await this.deps.slack
       .addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION)
