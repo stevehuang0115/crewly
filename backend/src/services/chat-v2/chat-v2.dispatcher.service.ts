@@ -249,11 +249,11 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     // Slack team channel: reply as yourself into the channel, in-thread.
     const cmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
     replyHint = mode === 'optional'
-      ? `回复本频道: 这是团队频道，消息没有 @ 任何人，只转给你（team leader）判断。若与团队的工作相关且你有对应的上下文或知识，用 \`reply-channel\` skill 回复（${cmd}）；若是频道里的人之间在交流、或与你无关，不要回复，也不要为此展开调查。`
+      ? `回复本频道: 这是团队频道，消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员）。关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与团队的工作相关且你有对应的上下文或知识，用 \`reply-channel\` skill 回复（${cmd}）；若是频道里的人之间在交流、或与你无关，不要回复，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else {
     replyHint = mode === 'optional'
-      ? `回复本频道: 这条消息没有 @ 任何人，只转给你（team leader）判断。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
+      ? `回复本频道: 这条消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员），关于团队本身的问题由你来答。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
   }
   return [

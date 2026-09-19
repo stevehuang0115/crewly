@@ -793,9 +793,13 @@ export class SlackTeamChannelService {
     }
 
     // In an ad-hoc (often private) channel the master bot may not be a
-    // member; the first @'d agent's own bot reacts instead.
+    // member; an agent's own bot reacts instead — the first @'d agent, or
+    // (nobody @'d, e.g. "@Crewly who leads content?") any agent already in
+    // the huddle, whose bot is by definition in the channel.
     const reactAs = isAdhocMapping(mapping)
-      ? resolved.mentions.map((m) => this.deps.identities?.getInstalled(m)?.botToken).find((t): t is string => !!t)
+      ? [...resolved.mentions, ...(mapping.members ?? [])]
+          .map((m) => this.deps.identities?.getInstalled(m)?.botToken)
+          .find((t): t is string => !!t)
       : undefined;
     await this.deps.slack
       .addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION, reactAs)
@@ -843,7 +847,16 @@ export class SlackTeamChannelService {
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
-      const roster = await getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '');
+      let roster = await getSlackDirectoryService()?.rosterLine(message.channelId).catch(() => '');
+      // The directory needs the master bot to list a channel's members; in a
+      // private ad-hoc channel it is not a member, so fall back to the local
+      // huddle roster (with roles) — enough to answer "who leads this?".
+      if (!roster && isAdhocMapping(mapping)) {
+        roster = members
+          .filter((m) => (mapping.members ?? []).includes(m.sessionName))
+          .map((m) => `${m.name} (${teams.find((t) => (t.members ?? []).some((x) => x.id === m.id))?.name ?? '?'}, ${String(m.role)}, this machine)`)
+          .join(' · ');
+      }
       dispatch = await dispatcher.dispatchMessage(channel, persisted, {
         threadId: threadId ?? persisted.id,
         replyVia: 'reply-channel',

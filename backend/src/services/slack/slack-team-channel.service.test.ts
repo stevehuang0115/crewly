@@ -938,6 +938,20 @@ describe('agent identities', () => {
     expect(second!.mapping.chatChannelId).toBe(first!.mapping.chatChannelId);
     expect(second!.mapping.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
     expect(service.findBySlackChannelId('C-priv')?.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+
+    // A later message that @'s nobody local (e.g. the master bot: "@Crewly
+    // who leads content?") still gets 👀 — from a huddle member's bot, since
+    // the master bot is not in the private channel (2026-09-19, #steamfun-portal).
+    slack.reactions.length = 0;
+    const third = await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@UMASTER> 负责内容的Team lead是谁？', ts: '300.3' }));
+    expect(third).not.toBeNull();
+    expect(third!.mentions).toEqual([]);
+    expect(slack.reactions.at(-1)).toMatchObject({ channelId: 'C-priv', ts: '300.3', botToken: 'xoxb-sam' });
+    // …and the recipient gets a roster it can answer "who leads?" from, even
+    // though the directory cannot list a private channel's members.
+    const prompt = String(dispatcher!.dispatchMessage.mock.calls.at(-1)![2].channelRoster ?? '');
+    expect(prompt).toContain('Sam (');
+    expect(prompt).toContain('Leo (');
   });
 
   it('a no-@ message in a team without a leader shows the sole/first member (the dispatcher\'s rule)', async () => {
