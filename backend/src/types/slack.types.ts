@@ -180,6 +180,8 @@ export interface SlackAgentsSyncPayload {
   }>;
   /** Delete the apps of agents that left one of these teams. */
   prune?: boolean;
+  /** Slack workspace this instance serves — its config token creates the apps. */
+  slackTeamId?: string;
 }
 
 /** One agent still waiting for its one-time install click. */

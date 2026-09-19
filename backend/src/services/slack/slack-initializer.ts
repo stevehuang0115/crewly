@@ -441,6 +441,7 @@ export async function ensureSlackInstanceRegistry(): Promise<SlackInstanceRegist
       sync: CloudSyncService.getInstance(),
       storage: StorageService.getInstance(),
       getTeamChannels: () => getSlackTeamChannelService(),
+      getBoundWorkspaceId: () => getSlackCloudConfigService()?.getConfig()?.workspace.slackTeamId || null,
     });
     setSlackInstanceRegistryService(registry);
   }
@@ -622,7 +623,10 @@ export async function startSlackTeamChannels(): Promise<void> {
     // always constructed and simply reports unavailable until then.
     let identities = getSlackAgentIdentityService();
     if (!identities) {
-      identities = new SlackAgentIdentityService({ cloud: CloudClientService.getInstance() });
+      identities = new SlackAgentIdentityService({
+        cloud: CloudClientService.getInstance(),
+        getWorkspaceId: () => getSlackCloudConfigService()?.getConfig()?.workspace.slackTeamId || null,
+      });
       setSlackAgentIdentityService(identities);
     }
     // Agent-initiated posts (the `slack-post` skill).

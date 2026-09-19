@@ -32,6 +32,7 @@ let fetchMock: jest.Mock;
 let cloud: { connected: boolean; token: string | null; url: string | null };
 let service: SlackAgentIdentityService;
 let intervals: Array<() => void>;
+let workspaceId: string | null = null;
 
 function makeService() {
   return new SlackAgentIdentityService({
@@ -40,6 +41,7 @@ function makeService() {
       getToken: () => cloud.token,
       getCloudUrl: () => cloud.url,
     },
+    getWorkspaceId: () => workspaceId,
     storePath: path.join(tmpDir, 'slack-agent-identities.json'),
     fetchImpl: fetchMock as unknown as typeof fetch,
     now: () => 1_800_000_000_000,
@@ -103,6 +105,18 @@ describe('availability + Cloud transport', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: { removed: true } }));
     expect(await service.deleteConfigToken()).toBe(true);
     expect(fetchMock.mock.calls[1][1].method).toBe('DELETE');
+  });
+
+  it('names the workspace this instance serves on status, put and delete (config tokens are per workspace)', async () => {
+    workspaceId = 'T-SF';
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { configured: true, status: 'ok', slackTeamId: 'T-SF' } }));
+    await service.getCloudStatus();
+    expect(fetchMock.mock.calls[0][0]).toBe('https://api.crewlyai.com/api/cloud/slack/status?slackTeamId=T-SF');
+    await service.setConfigToken('cfg', 'ref');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ token: 'cfg', refreshToken: 'ref', slackTeamId: 'T-SF' });
+    await service.deleteConfigToken();
+    expect(fetchMock.mock.calls[2][0]).toBe('https://api.crewlyai.com/api/cloud/slack/config-token?slackTeamId=T-SF');
+    workspaceId = null;
   });
 });
 

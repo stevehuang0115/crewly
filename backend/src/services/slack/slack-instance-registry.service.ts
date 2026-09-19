@@ -72,6 +72,12 @@ export interface SlackInstanceRegistryServiceDeps {
   storage: RegistryStorage;
   /** Resolved lazily — the team-channel service is built after Slack connects. */
   getTeamChannels: () => RegistryTeamChannels | null;
+  /**
+   * The Slack workspace this instance is actually serving (the Cloud config
+   * it connected with). Agent apps are created with that workspace's config
+   * token. Falls back to the saved workspace choice when omitted.
+   */
+  getBoundWorkspaceId?: () => string | null;
   /** Crewly version reported to Cloud; read from package.json when omitted. */
   version?: string;
   /** Settings path; defaults to `<CREWLY_HOME>/slack-instance.json`. */
@@ -330,6 +336,8 @@ export class SlackInstanceRegistryService {
         }),
         prune: true,
       };
+      const slackTeamId = this.deps.getBoundWorkspaceId?.() ?? (await this.getWorkspaceId());
+      if (slackTeamId) payload.slackTeamId = slackTeamId;
       const result = await this.cloudRequest<SlackAgentsSyncResult>('POST', SLACK_CLOUD_CONSTANTS.AGENTS_SYNC_PATH, payload);
       this.pendingInstalls = Array.isArray(result?.installUrls)
         ? result.installUrls.filter((u) => u && typeof u.agentSession === 'string' && typeof u.url === 'string')

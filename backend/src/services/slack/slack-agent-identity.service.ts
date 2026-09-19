@@ -45,6 +45,8 @@ export interface IdentityCloudClient {
 /** Constructor dependencies. */
 export interface SlackAgentIdentityServiceDeps {
   cloud: IdentityCloudClient;
+  /** The Slack workspace this instance serves; config tokens are per workspace. */
+  getWorkspaceId?: () => string | null;
   storePath?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -58,6 +60,8 @@ export interface CloudConfigTokenStatus {
   configured: boolean;
   status?: 'ok' | 'invalid';
   expiresAt?: string;
+  /** Workspace the stored token belongs to. */
+  slackTeamId?: string;
   lastError?: string;
 }
 
@@ -156,7 +160,7 @@ export class SlackAgentIdentityService {
    * @throws {SlackIdentityCloudError} on a Cloud failure
    */
   async getCloudStatus(): Promise<CloudSlackStatus> {
-    return this.cloudRequest<CloudSlackStatus>('GET', '/status');
+    return this.cloudRequest<CloudSlackStatus>('GET', `/status${this.workspaceQuery()}`);
   }
 
   /**
@@ -168,7 +172,12 @@ export class SlackAgentIdentityService {
    * @returns The stored token's status
    */
   async setConfigToken(token: string, refreshToken: string): Promise<CloudConfigTokenStatus> {
-    return this.cloudRequest<CloudConfigTokenStatus>('PUT', '/config-token', { token, refreshToken });
+    const slackTeamId = this.deps.getWorkspaceId?.() ?? null;
+    return this.cloudRequest<CloudConfigTokenStatus>('PUT', '/config-token', {
+      token,
+      refreshToken,
+      ...(slackTeamId ? { slackTeamId } : {}),
+    });
   }
 
   /**
@@ -177,8 +186,14 @@ export class SlackAgentIdentityService {
    * @returns True when one existed
    */
   async deleteConfigToken(): Promise<boolean> {
-    const res = await this.cloudRequest<{ removed: boolean }>('DELETE', '/config-token');
+    const res = await this.cloudRequest<{ removed: boolean }>('DELETE', `/config-token${this.workspaceQuery()}`);
     return res.removed;
+  }
+
+  /** `?slackTeamId=…` for the workspace this instance serves, or ''. */
+  private workspaceQuery(): string {
+    const slackTeamId = this.deps.getWorkspaceId?.() ?? null;
+    return slackTeamId ? `?slackTeamId=${encodeURIComponent(slackTeamId)}` : '';
   }
 
   /**

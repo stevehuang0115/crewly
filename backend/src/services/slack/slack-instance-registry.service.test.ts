@@ -69,9 +69,11 @@ let storageListeners: Array<(event: StorageEvent) => Promise<void> | void>;
 let intervals: Array<{ fn: () => void; ms: number }>;
 let timeouts: Array<{ fn: () => void; ms: number }>;
 let mappings: Record<string, string>;
+let boundWorkspaceId: string | null = null;
 
 function makeService() {
   return new SlackInstanceRegistryService({
+    getBoundWorkspaceId: () => boundWorkspaceId,
     cloud: {
       isConnected: () => cloud.connected,
       getToken: () => cloud.token,
@@ -226,6 +228,14 @@ describe('heartbeat', () => {
 });
 
 describe('agent sync', () => {
+  it('tells Cloud which workspace this instance serves so agent apps use that workspace\'s config token', async () => {
+    boundWorkspaceId = 'T-SF';
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
+    await makeService().syncAgents();
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).slackTeamId).toBe('T-SF');
+    boundWorkspaceId = null;
+  });
+
   it('POSTs /api/cloud/slack/agents/sync with the roster and keeps the pending install links', async () => {
     fetchMock.mockResolvedValue(
       jsonResponse({ success: true, data: { installUrls: [{ agentSession: 'alpha-mia-1234', url: 'https://slack.com/oauth/x' }, { bogus: true }] } }),
