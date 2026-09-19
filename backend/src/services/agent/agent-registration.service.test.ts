@@ -4035,6 +4035,14 @@ describe('AgentRegistrationService', () => {
 	});
 
 	describe('getPromptFileForRole (Bug #1 guard at path resolver)', () => {
+		// The resolver checks the file exists; every known role dir does,
+		// custom roles ("executor") do not.
+		beforeEach(() => {
+			(fsPromises.access as jest.Mock).mockImplementation(async (p: string) =>
+				/config\/roles\/(developer|team-leader|ops|generalist|qa)\/prompt\.md$/.test(String(p)) ? undefined : Promise.reject(new Error('ENOENT')),
+			);
+		});
+
 		it('resolves a valid role to config/roles/{role}/prompt.md', async () => {
 			const result = await (service as any).getPromptFileForRole('developer');
 			expect(result).toContain('config/roles/developer/prompt.md');
@@ -4067,6 +4075,19 @@ describe('AgentRegistrationService', () => {
 		// while the canonical directory is `team-leader`, producing a
 		// steady drip of "Could not load prompt from config" warns on
 		// every member start.
+		// SteamFun teams use custom roles ("executor", "operations") with no
+		// prompt of their own; the bare inline fallback dropped identity/soul
+		// and Avery introduced herself as "Codex" in Slack (2026-09-19).
+		it('falls back to the generalist prompt for a custom role with no prompt file (identity/soul kept)', async () => {
+			const result = await (service as any).getPromptFileForRole('executor');
+			expect(result).toContain('config/roles/generalist/prompt.md');
+		});
+
+		it('maps "operations" / "devops" to the ops role', async () => {
+			expect(await (service as any).getPromptFileForRole('operations')).toContain('config/roles/ops/prompt.md');
+			expect(await (service as any).getPromptFileForRole('devops')).toContain('config/roles/ops/prompt.md');
+		});
+
 		it('resolves "tech-lead" alias → team-leader directory', async () => {
 			const result = await (service as any).getPromptFileForRole('tech-lead');
 			expect(result).toContain('config/roles/team-leader/prompt.md');

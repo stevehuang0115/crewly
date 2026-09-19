@@ -74,6 +74,10 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('--channel huddle-1');
       expect(prompt).toContain('--thread msg-root');
       expect(prompt).not.toContain('reply-chat');
+      // Multi-agent threads must converge (owner, 2026-09-19): two rounds
+      // each, the team leader writes the conclusion, then silence.
+      expect(prompt).toContain('最多发言两轮');
+      expect(prompt).toContain('「结论」');
     });
 
     it('omits --thread when no threadId and keeps the optional wording for non-mentioned members', () => {

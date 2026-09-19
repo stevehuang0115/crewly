@@ -77,6 +77,21 @@ import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
 import { conversationExists, planRuntimeSessionFlags, waitForCodexSessionId, type RuntimeSessionPlan } from './runtime-session-recovery.js';
 
+/**
+ * Whether a file exists (readable).
+ *
+ * @param filePath - Absolute path
+ * @returns True when `fs.access` succeeds
+ */
+async function fileExists(filePath: string): Promise<boolean> {
+	try {
+		await access(filePath);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 export interface OrchestratorConfig {
 	sessionName: string;
 	projectPath: string;
@@ -919,7 +934,21 @@ export class AgentRegistrationService {
 		['techlead', 'team-leader'],
 		['tl', 'team-leader'],
 		['team-lead', 'team-leader'],
+		['operations', 'ops'],
+		['devops', 'ops'],
 	]);
+
+	/**
+	 * Role directory used when a team's custom role string has no
+	 * `config/roles/<role>/prompt.md`. Falling back to this generic prompt
+	 * keeps the full modular assembly (identity, soul, member systemPrompt)
+	 * — the bare inline fallback left agents introducing themselves as
+	 * "Codex" instead of by their name.
+	 */
+	private static readonly FALLBACK_ROLE_DIR = 'generalist';
+
+	/** Custom roles already reported as falling back (warn once each). */
+	private readonly roleFallbackWarned = new Set<string>();
 
 	/**
 	 * Assemble the orchestrator prompt at the *other* profile and log the
@@ -984,7 +1013,16 @@ export class AgentRegistrationService {
 		// any role that already matches its directory name.
 		const roleName =
 			AgentRegistrationService.ROLE_DIR_ALIASES.get(normalized) ?? normalized;
-		return path.join(process.cwd(), 'config', 'roles', roleName, 'prompt.md');
+		const promptPath = path.join(process.cwd(), 'config', 'roles', roleName, 'prompt.md');
+		if (await fileExists(promptPath)) return promptPath;
+		// A custom role (e.g. "executor") with no prompt of its own: use the
+		// generic role prompt so the agent still gets its identity and soul.
+		const fallback = path.join(process.cwd(), 'config', 'roles', AgentRegistrationService.FALLBACK_ROLE_DIR, 'prompt.md');
+		if (!this.roleFallbackWarned.has(roleName)) {
+			this.roleFallbackWarned.add(roleName);
+			this.logger.warn('No prompt for this role — using the generalist role prompt', { role, promptPath, fallback });
+		}
+		return fallback;
 	}
 
 	/**
