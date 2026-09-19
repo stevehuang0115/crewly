@@ -379,6 +379,8 @@ export interface SlackTeamChannelMapping {
   createdAt: string;
   /** True when Crewly created the Slack channel (vs. linked an existing one) */
   autoCreated: boolean;
+  /** Ad-hoc channels only: the local agents @'d there so far (the huddle roster). */
+  members?: string[];
 }
 
 /**

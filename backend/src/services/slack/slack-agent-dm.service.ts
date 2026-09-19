@@ -25,6 +25,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
+import { toSlackMrkdwn } from './slack-mrkdwn.js';
 
 // ---------------------------------------------------------------------------
 // Dependency contracts (narrow so tests can pass plain fakes)
@@ -252,13 +253,14 @@ export class SlackAgentDmService {
         return false;
       }
       const key = { agentSession: link.agentSession, slackChannelId: link.slackChannelId, ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}) };
+      const text = toSlackMrkdwn(dto.content);
       if (this.deps.typing) {
-        await this.deps.typing.resolve(key, dto.content, { botToken: installed.botToken });
+        await this.deps.typing.resolve(key, text, { botToken: installed.botToken });
         return true;
       }
       await this.deps.slack.sendMessage({
         channelId: link.slackChannelId,
-        text: dto.content,
+        text,
         ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}),
         botToken: installed.botToken,
         skipChatV2Mirror: true,

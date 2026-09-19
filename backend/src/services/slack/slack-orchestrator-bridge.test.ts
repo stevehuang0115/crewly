@@ -1082,7 +1082,9 @@ describe('SlackOrchestratorBridge', () => {
       (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
       mockChatV2EnsureChannel.mockReturnValue({ id: 'conv-orc', agentSession: 'crewly-orc' });
       mockChatV2RecordTurn.mockReturnValue({ message: { id: 'm-orc' }, deduped: false });
-      const routeInbound = jest.fn();
+      // Every message is offered to the team-channel service (it links a
+      // channel on the fly when a local agent bot is @'d); null = not ours.
+      const routeInbound = jest.fn().mockResolvedValue(null);
       mockTeamChannels.current = { findBySlackChannelId: jest.fn(() => null), routeInbound };
       // Resolve the orc reply immediately so the test does not sit on the
       // bridge's response timeout.
@@ -1104,7 +1106,7 @@ describe('SlackOrchestratorBridge', () => {
       });
       await handled;
 
-      expect(routeInbound).not.toHaveBeenCalled();
+      expect(routeInbound).toHaveBeenCalledTimes(1);
       expect(mockQueueService.enqueue).toHaveBeenCalled();
     });
   });

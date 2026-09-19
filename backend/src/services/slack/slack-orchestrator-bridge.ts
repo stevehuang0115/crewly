@@ -47,6 +47,7 @@ import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { getSlackAgentDmService } from './slack-agent-dm.service.js';
+import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/request.types.js';
 
@@ -413,8 +414,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
       // team's huddle (every member sees it, @'d members must reply) and
       // never to the orchestrator. Unmapped channels and DMs fall through
       // to the existing routing below.
+      // (Any other channel where a local agent's bot is @'d is linked on
+      // the fly by routeInbound — the owner can pull agents of different
+      // teams into a private channel and address them there.)
       const teamChannels = getSlackTeamChannelService();
-      if (teamChannels && teamChannels.findBySlackChannelId(message.channelId)) {
+      if (teamChannels) {
         const routed = await teamChannels.routeInbound(message);
         if (routed) {
           this.emit('message_handled', {
@@ -1773,10 +1777,8 @@ Just type naturally to chat with the orchestrator!`;
    * @returns Formatted text
    */
   formatForSlack(text: string): string {
-    // Convert markdown headers to bold
-    let formatted = text.replace(/^### (.+)$/gm, '*$1*');
-    formatted = formatted.replace(/^## (.+)$/gm, '*$1*');
-    formatted = formatted.replace(/^# (.+)$/gm, '*$1*');
+    // Markdown → mrkdwn (bold, headings, bullets, links, literal "\n").
+    let formatted = toSlackMrkdwn(text);
 
     // Slack already supports backtick code formatting
     // Convert code blocks (simplified)

@@ -49,6 +49,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
+import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
 import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 
@@ -65,7 +66,7 @@ export interface TeamChannelSlackApi {
   archiveChannel(channelId: string): Promise<void>;
   setChannelPurpose(channelId: string, purpose: string): Promise<void>;
   sendMessage(message: SlackOutgoingMessage): Promise<string>;
-  addReaction(channelId: string, messageTs: string, emoji: string): Promise<void>;
+  addReaction(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
   inviteToChannel(channelId: string, userIds: string[]): Promise<void>;
 }
 
@@ -175,6 +176,16 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
   const p = clean(prefix);
   const joined = p ? `${p}-${body}` : body;
   return joined.slice(0, SLACK_TEAM_CHANNEL_CONSTANTS.MAX_CHANNEL_NAME_LENGTH).replace(/-+$/g, '') || 'team';
+}
+
+/**
+ * Whether a mapping is an ad-hoc channel (no Crewly team behind it).
+ *
+ * @param mapping - The mapping
+ * @returns True for `adhoc:<channel>` mappings
+ */
+export function isAdhocMapping(mapping: Pick<SlackTeamChannelMapping, 'teamId'>): boolean {
+  return mapping.teamId.startsWith(SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_TEAM_PREFIX);
 }
 
 /**
@@ -644,7 +655,8 @@ export class SlackTeamChannelService {
    */
   async routeInbound(message: SlackIncomingMessage): Promise<RouteInboundResult | null> {
     await this.load();
-    const mapping = this.findBySlackChannelId(message.channelId);
+    let mapping = this.findBySlackChannelId(message.channelId);
+    if (!mapping) mapping = await this.ensureAdhocChannel(message);
     if (!mapping) return null;
 
     // One Slack message can reach us twice with different event types
@@ -667,8 +679,11 @@ export class SlackTeamChannelService {
       return null;
     }
 
-    const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
-    const members = team ? teamChannelMembers(team) : [];
+    const teams = await this.deps.storage.getTeams();
+    const team = teams.find((t) => t.id === mapping.teamId);
+    // A team channel resolves @names against its team; an ad-hoc channel
+    // (any Slack channel where an agent bot was @'d) against every local agent.
+    const members = team ? teamChannelMembers(team) : isAdhocMapping(mapping) ? teams.flatMap((t) => teamChannelMembers(t)) : [];
     if (this.deps.identities) await this.deps.identities.load();
     const candidates: MentionCandidate[] = members.map((m) => ({
       name: m.name,
@@ -715,9 +730,24 @@ export class SlackTeamChannelService {
       if (oldest !== undefined) this.seenInbound.delete(oldest);
     }
 
+    // In an ad-hoc (often private) channel the master bot may not be a
+    // member; the first @'d agent's own bot reacts instead.
+    const reactAs = isAdhocMapping(mapping)
+      ? resolved.mentions.map((m) => this.deps.identities?.getInstalled(m)?.botToken).find((t): t is string => !!t)
+      : undefined;
     await this.deps.slack
-      .addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION)
+      .addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION, reactAs)
       .catch(() => undefined);
+
+    // Ad-hoc channels grow their huddle as new agents get @'d there.
+    if (isAdhocMapping(mapping) && resolved.mentions.length > 0) {
+      const next = [...new Set([...(mapping.members ?? []), ...resolved.mentions])];
+      if (next.length !== (mapping.members ?? []).length) {
+        mapping.members = next;
+        this.deps.chat.setHuddleMembers(mapping.chatChannelId, next);
+        await this.save();
+      }
+    }
 
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
@@ -764,6 +794,64 @@ export class SlackTeamChannelService {
     return { mapping, message: persisted, mentions: resolved.mentions, dispatch };
   }
 
+  /**
+   * Any Slack channel becomes routable the moment a local agent's bot is
+   * @'d in it (the owner invited agents from different teams into a private
+   * channel, say): a huddle is created for the channel with the @'d agents
+   * as members and mapped under the synthetic team id `adhoc:<channel>`.
+   * Messages that @ nobody local are left to the caller (orchestrator path).
+   *
+   * @param message - The inbound message
+   * @returns The new mapping, or null when no local agent was @'d
+   */
+  private async ensureAdhocChannel(message: SlackIncomingMessage): Promise<SlackTeamChannelMapping | null> {
+    if (!message.text || !message.text.includes('<@') && !message.text.includes('@')) return null;
+    const teams = await this.deps.storage.getTeams();
+    const members = teams.flatMap((t) => teamChannelMembers(t));
+    if (members.length === 0) return null;
+    if (this.deps.identities) await this.deps.identities.load();
+    const candidates: MentionCandidate[] = members.map((m) => ({
+      name: m.name,
+      sessionName: m.sessionName,
+      botUserId: this.deps.identities?.get(m.sessionName)?.botUserId,
+    }));
+    // Only a real Slack mention of an agent's bot user counts here — a bare
+    // "@name" in some unrelated channel must not hijack it.
+    const botIds = new Set(candidates.map((c) => c.botUserId).filter((id): id is string => !!id));
+    const mentionedBots = [...message.text.matchAll(/<@([A-Z0-9]+)>/g)].map((m) => m[1]).filter((id) => botIds.has(id));
+    if (mentionedBots.length === 0) return null;
+    const sessions = candidates.filter((c) => c.botUserId && mentionedBots.includes(c.botUserId)).map((c) => c.sessionName);
+
+    // The master bot is usually not in this channel (private); the name is
+    // best-effort and falls back to the id.
+    const info = await this.deps.slack.getChannelInfo(message.channelId).catch(() => null);
+    const channelName = info?.name || message.channelId;
+    const huddle = this.deps.chat.createHuddle({
+      name: `#${channelName}`,
+      purpose: `Slack channel #${channelName}`,
+      memberSessions: sessions,
+      principal: { userId: 'system', source: 'oss' },
+    });
+    const mapping: SlackTeamChannelMapping = {
+      teamId: `${SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_TEAM_PREFIX}${message.channelId}`,
+      slackChannelId: message.channelId,
+      slackChannelName: channelName,
+      chatChannelId: huddle.id,
+      createdAt: (this.deps.now?.() ?? new Date()).toISOString(),
+      autoCreated: false,
+      members: sessions,
+    };
+    const store = await this.load();
+    store.mappings.push(mapping);
+    await this.save();
+    this.logger.info('Ad-hoc Slack channel linked (agents @\'d outside a team channel)', {
+      slackChannel: `#${channelName}`,
+      huddle: huddle.id,
+      agents: sessions,
+    });
+    return mapping;
+  }
+
   // -------------------------------------------------------------------------
   // Outbound (huddle → Slack)
   // -------------------------------------------------------------------------
@@ -793,10 +881,11 @@ export class SlackTeamChannelService {
       const installed = this.deps.identities?.getInstalled(dto.senderId) ?? null;
       const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
 
+      const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content));
       if (installed && this.deps.typing) {
         await this.deps.typing.resolve(
           { agentSession: dto.senderId, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) },
-          await this.linkAgentMentions(dto.content),
+          text,
           { botToken: installed.botToken },
         );
         return true;
@@ -804,7 +893,7 @@ export class SlackTeamChannelService {
 
       await this.deps.slack.sendMessage({
         channelId: mapping.slackChannelId,
-        text: await this.linkAgentMentions(dto.content),
+        text,
         threadTs,
         skipChatV2Mirror: true,
         ...identity,

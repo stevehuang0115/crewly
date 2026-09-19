@@ -82,7 +82,7 @@ class FakeSlack implements TeamChannelSlackApi {
   joined: string[] = [];
   purposes: Array<{ id: string; purpose: string }> = [];
   sent: SlackOutgoingMessage[] = [];
-  reactions: Array<{ channelId: string; ts: string; emoji: string }> = [];
+  reactions: Array<{ channelId: string; ts: string; emoji: string; botToken?: string }> = [];
   channels = new Map<string, { id: string; name: string; isArchived: boolean; isPrivate: boolean }>();
   private seq = 0;
   private channelSeq = 0;
@@ -112,8 +112,8 @@ class FakeSlack implements TeamChannelSlackApi {
     this.sent.push(m);
     return `${++this.seq}.000`;
   }
-  async addReaction(channelId: string, ts: string, emoji: string) {
-    this.reactions.push({ channelId, ts, emoji });
+  async addReaction(channelId: string, ts: string, emoji: string, botToken?: string) {
+    this.reactions.push({ channelId, ts, emoji, ...(botToken ? { botToken } : {}) });
   }
   invites: Array<{ channelId: string; userIds: string[] }> = [];
   async inviteToChannel(channelId: string, userIds: string[]) {
@@ -876,6 +876,30 @@ describe('agent identities', () => {
     expect(again!.message.id).toBe(first!.message.id);
     expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
     expect(chat.messages.filter((m) => m.metadata?.slackTs === '200.1')).toHaveLength(1);
+  });
+
+  it('links any channel on the fly when a local agent bot is @\'d there, growing its roster as more agents are @\'d', async () => {
+    await service.ensureTeamChannel(team()); // provisions the identities
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    dispatcher!.dispatchMessage.mockClear();
+    // A private channel the master bot cannot see, nobody local @'d → not ours.
+    expect(await service.routeInbound(inbound({ channelId: 'C-priv', text: 'hello everyone' }))).toBeNull();
+    expect(await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USOMEONE> hi' }))).toBeNull();
+
+    const first = await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USAM> 自我介绍一下', ts: '300.1' }));
+    expect(first).not.toBeNull();
+    expect(first!.mapping.teamId).toBe('adhoc:C-priv');
+    expect(first!.mapping.members).toEqual(['crewly-alpha-sam']);
+    expect(first!.mentions).toEqual(['crewly-alpha-sam']);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    // The seen-reaction comes from Sam's bot (master bot is not a member).
+    expect(slack.reactions.at(-1)).toMatchObject({ channelId: 'C-priv', botToken: 'xoxb-sam' });
+
+    const second = await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@ULEO> 你呢', ts: '300.2' }));
+    expect(second!.mapping.chatChannelId).toBe(first!.mapping.chatChannelId);
+    expect(second!.mapping.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    expect(service.findBySlackChannelId('C-priv')?.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
   });
 
   it('resolves a native <@bot> mention to the agent', async () => {
