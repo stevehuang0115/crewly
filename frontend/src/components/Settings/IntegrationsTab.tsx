@@ -9,7 +9,7 @@
  */
 
 import React, { useState } from 'react';
-import { MessageSquare, Phone, Hash, Send, MessageCircle, Mail, ChevronRight, ChevronDown } from 'lucide-react';
+import { MessageSquare, Phone, Hash, Send, MessageCircle, Mail, Palette, ChevronRight, ChevronDown } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { SlackTab } from './SlackTab';
 import { WhatsAppTab } from './WhatsAppTab';
@@ -17,6 +17,7 @@ import { GoogleChatTab } from './GoogleChatTab';
 import { TelegramTab } from './TelegramTab';
 import { DiscordTab } from './DiscordTab';
 import { GoogleWorkspaceTab } from './GoogleWorkspaceTab';
+import { CanvaTab } from './CanvaTab';
 
 // =============================================================================
 // Types
@@ -25,7 +26,7 @@ import { GoogleWorkspaceTab } from './GoogleWorkspaceTab';
 /**
  * Supported messaging platform identifiers
  */
-type PlatformId = 'slack' | 'whatsapp' | 'discord' | 'telegram' | 'google-chat' | 'google-workspace';
+type PlatformId = 'slack' | 'whatsapp' | 'discord' | 'telegram' | 'google-chat' | 'google-workspace' | 'canva';
 
 /**
  * Configuration for a messaging platform card
@@ -96,10 +97,18 @@ const PLATFORMS: PlatformConfig[] = [
   {
     id: 'google-workspace',
     name: 'Google Workspace',
-    description: 'Let agents read your Gmail, send mail on your behalf and manage your Google Calendar.',
+    description: 'Let agents read your Gmail and Drive (Docs, Sheets, Slides), send mail, manage your Calendar and create documents.',
     icon: Mail,
     available: true,
     component: GoogleWorkspaceTab,
+  },
+  {
+    id: 'canva',
+    name: 'Canva',
+    description: 'Let agents find, create, upload to and export your Canva designs (posters, stories, decks, videos).',
+    icon: Palette,
+    available: true,
+    component: CanvaTab,
   },
 ];
 

@@ -1680,6 +1680,53 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 } as const;
 
 /**
+ * Canva Connect on the owner's account — Cloud holds the grant (see
+ * services/auth canva.service), this instance talks to api.canva.com.
+ * Backs the canva-* skills.
+ */
+export const CANVA_CONSTANTS = {
+	/** Cloud API prefix for the Canva grant (appended to the cloud URL) */
+	CLOUD_PATH: '/api/cloud/canva',
+	CLOUD_ENDPOINTS: {
+		/** GET → { connected, canvaUserId, displayName, scopes, grantedAt } */
+		STATUS: '/status',
+		/** GET → { accessToken, expiresAt, scopes, canvaUserId, canvaTeamId?, displayName? } */
+		TOKEN: '/token',
+		/** GET ?token=&returnUrl= → 302 to Canva consent */
+		START: '/start',
+		/** DELETE CLOUD_PATH itself → { removed } */
+		DISCONNECT: '',
+	},
+	/** Canva Connect REST base */
+	API_BASE: 'https://api.canva.com/rest/v1',
+	TOKEN_REFRESH_MARGIN_MS: 60_000,
+	REQUEST_TIMEOUT_MS: 20_000,
+	/** Default / ceiling for design listing per call */
+	DESIGNS_DEFAULT_LIMIT: 25,
+	DESIGNS_LIMIT_CEILING: 100,
+	/** Export / upload jobs: poll cadence and ceiling */
+	JOB_POLL_INTERVAL_MS: 1500,
+	JOB_POLL_TIMEOUT_MS: 120_000,
+	/** Largest asset accepted for upload (bytes) */
+	ASSET_MAX_BYTES: 50 * 1024 * 1024,
+	/** Preset design types Canva accepts for `design_type.type = preset` */
+	PRESET_DESIGN_TYPES: ['doc', 'whiteboard', 'presentation'] as readonly string[],
+	/** Export formats */
+	EXPORT_FORMATS: ['pdf', 'png', 'jpg', 'pptx', 'gif', 'mp4'] as readonly string[],
+	/** Dashboard path the Cloud consent flow returns to */
+	SETTINGS_RETURN_PATH: '/settings?tab=integrations',
+	/** Error codes shared between the token service, controller and skills */
+	ERROR_CODES: {
+		NOT_LOGGED_IN: 'not_logged_in',
+		NOT_CONNECTED: 'not_connected',
+		NOT_CONFIGURED: 'not_configured',
+		CANVA_ERROR: 'canva_error',
+		NETWORK: 'network',
+		VALIDATION: 'validation',
+	},
+} as const;
+
+/**
  * Constants for CrewlyAI Cloud integration.
  * Used by CloudClientService and CloudAuthMiddleware to connect
  * the open-source Crewly instance to CrewlyAI Cloud for premium features.

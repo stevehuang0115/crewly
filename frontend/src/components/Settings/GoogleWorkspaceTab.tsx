@@ -56,9 +56,6 @@ const SCOPE_LABELS: Record<string, string> = {
   'https://www.googleapis.com/auth/drive.readonly': 'Read Drive, Docs, Sheets, Slides',
   'https://www.googleapis.com/auth/drive.file': 'Create files (Docs, Sheets, Slides, uploads)',
   'https://www.googleapis.com/auth/documents.readonly': 'Read Docs',
-  'https://www.googleapis.com/auth/drive.readonly': 'Read Drive',
-  'https://www.googleapis.com/auth/drive.file': 'Drive files',
-  'https://www.googleapis.com/auth/documents.readonly': 'Read Docs',
 };
 
 /**

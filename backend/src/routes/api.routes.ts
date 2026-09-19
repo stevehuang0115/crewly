@@ -46,6 +46,7 @@ import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.r
 import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
+import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
 import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 import { createActiveWorkRouter } from '../controllers/active-work/active-work.controller.js';
@@ -197,6 +198,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Google Workspace (Gmail + Calendar) on the owner's account — Cloud holds
   // the grant, this instance talks to Google. Backs the gmail-*/calendar-* skills.
   router.use('/google', createGoogleRouter());
+
+  // Canva Connect on the owner's account — Cloud holds the grant. Backs the canva-* skills.
+  router.use('/canva', createCanvaRouter());
 
   // Agent self-improvement — attention / self-model / prediction calibration /
   // memory consolidation. Mounted at /api/agents/:sessionName/self-improvement
