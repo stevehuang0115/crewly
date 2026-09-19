@@ -643,6 +643,13 @@ export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
 export const SLACK_TYPING_CONSTANTS = {
 	/** Placeholder text; `{name}` is the agent's display name */
 	TYPING_TEXT: '💭 {name} is typing…',
+	/** Shown while an idle agent is being started + registered (cold start) */
+	WAKING_TEXT: '🌙 {name} is waking up…',
+	/** Shown when a cold start is taking longer than WAKING_SLOW_MS */
+	WAKING_SLOW_TEXT: '🌙 {name} is still starting up (a cold start takes 1–2 minutes)…',
+	WAKING_SLOW_MS: 60 * 1000,
+	/** Shown when the agent could not be started or the message could not be delivered */
+	FAILED_TEXT: '⚠️ {name} could not be reached right now — please try again in a minute.',
 	/** What the placeholder becomes when the agent has not replied in time */
 	TIMEOUT_TEXT: '⏱ {name} is still working on this — the reply will follow.',
 	/** How long a placeholder waits for the reply before it is edited to TIMEOUT_TEXT */

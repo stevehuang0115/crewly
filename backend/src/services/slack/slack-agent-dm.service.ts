@@ -57,7 +57,9 @@ export interface SlackAgentDmServiceDeps {
   /** Whether the agent runs on this instance (Cloud fans DMs out to the owner only, but be safe). */
   isLocalAgent?: (agentSession: string) => boolean;
   /** "Is typing…" placeholders; optional (replies are posted plainly without it). */
-  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve'> | null;
+  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> | null;
+  /** Whether the agent's runtime session exists right now (false = it must be woken first). */
+  isAgentAwake?: (agentSession: string) => boolean;
   /** Link store path; defaults to `<CREWLY_HOME>/slack-agent-dms.json`. */
   storePath?: string;
   now?: () => Date;
@@ -201,6 +203,16 @@ export class SlackAgentDmService {
         });
     }
 
+    // A reply is now owed: show the honest state where it will land —
+    // "waking up…" while an idle agent is started and registered (a cold
+    // start is 1–2 minutes), "is typing…" once it holds the message.
+    const typingKey = { agentSession, slackChannelId: message.channelId, ...(message.threadTs ? { threadTs: message.threadTs } : {}) };
+    const typing = installed && this.deps.typing ? this.deps.typing : null;
+    if (typing) {
+      const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(agentSession) : true;
+      await typing.begin(typingKey, { botToken: installed!.botToken, displayName: member?.name ?? agentSession }, awake ? 'typing' : 'waking');
+    }
+
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
@@ -208,12 +220,9 @@ export class SlackAgentDmService {
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }
-    // A reply is now owed: show "is typing…" where it will land.
-    if (dispatch?.dispatched && installed && this.deps.typing) {
-      await this.deps.typing.begin(
-        { agentSession, slackChannelId: message.channelId, ...(message.threadTs ? { threadTs: message.threadTs } : {}) },
-        { botToken: installed.botToken, displayName: member?.name ?? agentSession },
-      );
+    if (typing) {
+      if (dispatch?.dispatched) await typing.setPhase(typingKey, 'typing');
+      else await typing.fail(typingKey);
     }
 
     this.logger.info('Slack DM routed to agent', {

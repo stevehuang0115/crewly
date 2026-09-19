@@ -40,6 +40,8 @@ export interface ResolvedSlackConfig {
 
 /** Source of the connection currently held by SlackService (null = none). */
 let activeSource: SlackSource | null = null;
+/** Session module, captured once Slack starts (for live "is this agent awake" checks). */
+let sessionBackendModule: typeof import('../session/index.js') | null = null;
 /** Unsubscribe for the Cloud config watch. */
 let unsubscribeCloudConfig: (() => void) | null = null;
 /**
@@ -346,6 +348,7 @@ export async function connectSlack(
       // already in chat-v2 and must not come back through Slack; one from
       // an agent on another machine is a colleague and is delivered.
       const sessionModule = await import('../session/index.js').catch(() => null);
+      sessionBackendModule = sessionModule;
       slackService.isLocalAgent = (agentSession) => {
         try {
           const backend = sessionModule?.getSessionBackendSync();
@@ -596,6 +599,22 @@ export function resetSlackInitializerState(): void {
  * Dependencies are imported lazily so this module stays cheap to load in
  * unit tests that only exercise credential resolution.
  */
+/**
+ * Whether an agent's runtime session exists right now (PTY alive). False
+ * means a Slack message to it triggers a cold start — worth telling the
+ * person in the channel.
+ *
+ * @param agentSession - Session name
+ * @returns True when the session exists
+ */
+function sessionBackendExists(agentSession: string): boolean {
+  try {
+    return !!sessionBackendModule?.getSessionBackendSync()?.sessionExists(agentSession);
+  } catch {
+    return false;
+  }
+}
+
 export async function startSlackTeamChannels(): Promise<void> {
   try {
     const [
@@ -655,6 +674,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         identities,
         typing,
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? false,
+        isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
       });
       setSlackTeamChannelService(service);
@@ -671,6 +691,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         identities,
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? true,
         typing,
+        isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
       });
       setSlackAgentDmService(agentDm);
     }

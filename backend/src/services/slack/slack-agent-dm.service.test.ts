@@ -115,11 +115,13 @@ describe('SlackAgentDmService', () => {
     await fs.rm(deps.storePath as string, { force: true });
   });
 
-  it('shows "is typing…" on dispatch and edits it into the reply when a typing service is wired', async () => {
-    const { deps, sent, emit } = makeDeps();
+  it('shows "waking up…" for an idle agent BEFORE dispatch, "is typing…" once it holds the message, then edits in the reply', async () => {
+    const { deps, sent, emit } = makeDeps({ isAgentAwake: () => false });
     const calls: string[] = [];
     deps.typing = {
-      begin: async (key, id) => { calls.push(`begin:${key.agentSession}:${key.slackChannelId}:${id.displayName}`); return null; },
+      begin: async (key, id, phase) => { calls.push(`begin:${key.agentSession}:${key.slackChannelId}:${id.displayName}:${phase}`); return null; },
+      setPhase: async (key, phase) => { calls.push(`phase:${key.slackChannelId}:${phase}`); },
+      fail: async (key) => { calls.push(`fail:${key.slackChannelId}`); },
       resolve: async (key, text) => { calls.push(`resolve:${key.slackChannelId}:${text}`); return 'edited' as const; },
     };
     const svc = new SlackAgentDmService(deps);
@@ -127,8 +129,29 @@ describe('SlackAgentDmService', () => {
     await svc.routeInbound(dm());
     emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '回复' } as unknown as ChatMessageDTO);
     await new Promise((r) => setImmediate(r));
-    expect(calls).toEqual(['begin:crewly-marketing-ella-e6a6b8ea:D0C2YLU8F2A:Ella', 'resolve:D0C2YLU8F2A:回复']);
+    expect(calls).toEqual([
+      'begin:crewly-marketing-ella-e6a6b8ea:D0C2YLU8F2A:Ella:waking',
+      'phase:D0C2YLU8F2A:typing',
+      'resolve:D0C2YLU8F2A:回复',
+    ]);
     expect(sent).toHaveLength(0); // the typing service owns the post/edit
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+
+  it('an awake agent starts at "is typing…"; a failed dispatch turns the placeholder into a failure note', async () => {
+    const { deps } = makeDeps({ isAgentAwake: () => true, getDispatcher: () => ({ dispatchMessage: async () => ({ strategy: 'dm', dispatched: false }) }) as never });
+    const calls: string[] = [];
+    deps.typing = {
+      begin: async (key, _id, phase) => { calls.push(`begin:${phase}`); return null; },
+      setPhase: async (_key, phase) => { calls.push(`phase:${phase}`); },
+      fail: async () => { calls.push('fail'); },
+      resolve: async () => 'posted' as const,
+    };
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+    await svc.routeInbound(dm());
+    expect(calls).toEqual(['begin:typing', 'fail']);
     svc.stop();
     await fs.rm(deps.storePath as string, { force: true });
   });

@@ -311,7 +311,8 @@ let dispatcher: { dispatchMessage: jest.Mock } | null;
 let identities: FakeIdentities | null;
 let service: SlackTeamChannelService;
 let ownerUserId: string | null = 'UOWNER';
-let typing: { begin: jest.Mock; resolve: jest.Mock } | null = null;
+let typing: { begin: jest.Mock; resolve: jest.Mock; setPhase: jest.Mock; fail: jest.Mock } | null = null;
+let awake: (s: string) => boolean = () => true;
 let isLocal: (s: string) => boolean = () => false;
 
 function makeService() {
@@ -322,6 +323,7 @@ function makeService() {
     getDispatcher: () => dispatcher,
     identities,
     typing,
+    isAgentAwake: (s) => awake(s),
     isLocalAgent: (s) => isLocal(s),
     getOwnerUserId: () => ownerUserId,
     storePath: path.join(tmpDir, 'slack-team-channels.json'),
@@ -863,8 +865,10 @@ describe('agent identities', () => {
     expect(slack.sent[1].botToken).toBeUndefined();
   });
 
-  it('shows "is typing…" in the thread for an @\'d agent with its own bot, then edits it into the reply', async () => {
-    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited') };
+  it('shows "waking up…" in the thread for an idle @\'d agent before dispatch, "is typing…" after, then edits it into the reply', async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    awake = () => false;
+    dispatcher = { dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [{ sessionName: 'crewly-alpha-sam', responseMode: 'required', dispatched: true }] }) };
     service = makeService();
     await service.ensureTeamChannel(team());
     identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
@@ -873,7 +877,12 @@ describe('agent identities', () => {
     expect(typing.begin).toHaveBeenCalledWith(
       { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' },
       { botToken: 'xoxb-sam', displayName: 'Sam' },
+      'waking',
     );
+    expect(typing.begin.mock.invocationCallOrder[0]).toBeLessThan(dispatcher.dispatchMessage.mock.invocationCallOrder[0]);
+    expect(typing.setPhase).toHaveBeenCalledWith({ agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' }, 'typing');
+    expect(typing.fail).not.toHaveBeenCalled();
+    awake = () => true;
 
     const root = chat.messages.find((m) => m.metadata?.slackTs === '100.1');
     await service.mirrorOutbound({

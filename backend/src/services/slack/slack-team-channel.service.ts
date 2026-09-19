@@ -113,7 +113,9 @@ export interface SlackTeamChannelServiceDeps {
    */
   identities?: TeamChannelIdentityApi | null;
   /** "Is typing…" placeholders for @-mentioned agents; optional. */
-  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve'> | null;
+  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> | null;
+  /** Whether an agent's runtime session exists right now (false = it must be woken first). */
+  isAgentAwake?: (agentSession: string) => boolean;
   /** Whether an agent session runs on this instance (its own Slack copy is not re-recorded). */
   isLocalAgent?: (agentSession: string) => boolean;
   /** Mapping store path; defaults to `<CREWLY_HOME>/slack-team-channels.json`. */
@@ -772,6 +774,22 @@ export class SlackTeamChannelService {
       }
     }
 
+    // @'d agents must reply: show the honest state in the thread for each
+    // one that has its own bot — "waking up…" for an idle agent (a cold
+    // start is 1–2 minutes), "is typing…" once it holds the message.
+    const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
+    if (this.deps.typing) {
+      for (const session of resolved.mentions) {
+        const installed = this.deps.identities?.getInstalled(session);
+        const member = members.find((m) => m.sessionName === session);
+        if (!installed) continue;
+        const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
+        const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
+        await this.deps.typing.begin(key, { botToken: installed.botToken, displayName: member?.name ?? session }, awake ? 'typing' : 'waking');
+        typingTargets.push({ session, key });
+      }
+    }
+
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
@@ -794,17 +812,14 @@ export class SlackTeamChannelService {
       await this.postUnknownMentionHint(message, resolved.unknown, candidates);
     }
 
-    // @'d agents must reply: show "is typing…" in the thread for each one
-    // that has its own bot (the placeholder is edited into the reply).
-    if (dispatch?.dispatched && this.deps.typing) {
-      for (const session of resolved.mentions) {
-        const installed = this.deps.identities?.getInstalled(session);
-        const member = members.find((m) => m.sessionName === session);
-        if (!installed) continue;
-        await this.deps.typing.begin(
-          { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs },
-          { botToken: installed.botToken, displayName: member?.name ?? session },
-        );
+    // Dispatch is done: each placeholder now reflects whether its agent
+    // actually holds the message.
+    if (this.deps.typing && typingTargets.length > 0) {
+      const outcomes = new Map((dispatch?.huddleOutcomes ?? []).map((o) => [o.sessionName, o.dispatched]));
+      for (const { session, key } of typingTargets) {
+        const delivered = outcomes.get(session) ?? dispatch?.dispatched ?? false;
+        if (delivered) await this.deps.typing.setPhase(key, 'typing');
+        else await this.deps.typing.fail(key);
       }
     }
 

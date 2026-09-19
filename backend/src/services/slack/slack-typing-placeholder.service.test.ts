@@ -36,6 +36,27 @@ describe('SlackTypingPlaceholderService', () => {
     expect(svc.pendingCount).toBe(0);
   });
 
+  it('waking → typing edits the same message; a slow cold start gets an honest note; fail() replaces it with the failure text', async () => {
+    const { slack, sent, updated } = makeSlack();
+    const timers: Array<() => void> = [];
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined });
+    await svc.begin(key, ella, 'waking');
+    expect(sent[0].text).toBe('🌙 Ella is waking up…');
+    // Two timers armed: overall timeout + slow-wake note. Fire the slow one.
+    expect(timers).toHaveLength(2);
+    timers[1]();
+    await new Promise((r) => setImmediate(r));
+    expect(updated.at(-1)?.text).toContain('still starting up');
+    await svc.setPhase(key, 'typing');
+    expect(updated.at(-1)).toMatchObject({ ts: 'ts-1', text: '💭 Ella is typing…' });
+    await svc.setPhase(key, 'typing'); // idempotent
+    expect(updated).toHaveLength(2);
+    await svc.fail(key);
+    expect(updated.at(-1)?.text).toContain('could not be reached');
+    expect(svc.pendingCount).toBe(0);
+    expect(await svc.resolve(key, 'late reply', ella)).toBe('posted');
+  });
+
   it('posts one placeholder when two copies of a message begin concurrently', async () => {
     const { slack, sent } = makeSlack();
     const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });

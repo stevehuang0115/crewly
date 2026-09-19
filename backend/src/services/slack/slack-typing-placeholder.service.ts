@@ -24,6 +24,9 @@ export interface TypingSlackApi {
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: undefined, botToken?: string): Promise<void>;
 }
 
+/** What the agent is doing while the reply is owed. */
+export type TypingPhase = 'waking' | 'typing';
+
 /** Where a placeholder lives and which bot posted it. */
 export interface TypingPlaceholder {
   slackChannelId: string;
@@ -31,6 +34,7 @@ export interface TypingPlaceholder {
   threadTs?: string;
   botToken: string;
   displayName: string;
+  phase: TypingPhase;
 }
 
 /** Identifies one pending reply: this agent, in this Slack conversation/thread. */
@@ -53,7 +57,7 @@ export interface SlackTypingPlaceholderDeps {
  */
 export class SlackTypingPlaceholderService {
   private readonly logger: ComponentLogger;
-  private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout> }>();
+  private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout> }>();
   /** Placeholders being posted right now (two copies of one message must not post two). */
   private readonly inFlight = new Map<string, Promise<TypingPlaceholder | null>>();
 
@@ -73,23 +77,79 @@ export class SlackTypingPlaceholderService {
    * @param identity - The agent's bot token and display name
    * @returns The placeholder, or null when Slack is disconnected or the post failed
    */
-  async begin(key: TypingKeyParts, identity: { botToken: string; displayName: string }): Promise<TypingPlaceholder | null> {
+  async begin(
+    key: TypingKeyParts,
+    identity: { botToken: string; displayName: string },
+    phase: TypingPhase = 'typing',
+  ): Promise<TypingPlaceholder | null> {
     if (!this.deps.slack.isConnected()) return null;
     const k = keyOf(key);
     const existing = this.pending.get(k);
     if (existing) return existing.placeholder;
     const running = this.inFlight.get(k);
     if (running) return running;
-    const task = this.post(k, key, identity).finally(() => this.inFlight.delete(k));
+    const task = this.post(k, key, identity, phase).finally(() => this.inFlight.delete(k));
     this.inFlight.set(k, task);
     return task;
   }
 
-  private async post(k: string, key: TypingKeyParts, identity: { botToken: string; displayName: string }): Promise<TypingPlaceholder | null> {
+  /**
+   * Move a pending placeholder to another phase (e.g. the agent finished
+   * waking and now holds the message → "is typing…"). No-op when nothing
+   * is pending or the phase is unchanged.
+   *
+   * @param key - Agent + conversation (+ thread)
+   * @param phase - New phase
+   */
+  async setPhase(key: TypingKeyParts, phase: TypingPhase): Promise<void> {
+    const k = keyOf(key);
+    await this.inFlight.get(k);
+    const entry = this.pending.get(k);
+    if (!entry || entry.placeholder.phase === phase) return;
+    entry.placeholder.phase = phase;
+    if (entry.slowTimer) {
+      (this.deps.clearTimer ?? clearTimeout)(entry.slowTimer);
+      entry.slowTimer = undefined;
+    }
+    await this.edit(entry.placeholder, this.textFor(phase, entry.placeholder.displayName));
+  }
+
+  /**
+   * The reply will not come (agent could not be started / delivery
+   * failed): say so in place of the placeholder and stop tracking it.
+   *
+   * @param key - Agent + conversation (+ thread)
+   */
+  async fail(key: TypingKeyParts): Promise<void> {
+    const k = keyOf(key);
+    await this.inFlight.get(k);
+    const placeholder = this.take(key);
+    if (!placeholder) return;
+    await this.edit(placeholder, SLACK_TYPING_CONSTANTS.FAILED_TEXT.replace('{name}', placeholder.displayName));
+  }
+
+  private textFor(phase: TypingPhase, name: string): string {
+    return (phase === 'waking' ? SLACK_TYPING_CONSTANTS.WAKING_TEXT : SLACK_TYPING_CONSTANTS.TYPING_TEXT).replace('{name}', name);
+  }
+
+  private async edit(placeholder: TypingPlaceholder, text: string): Promise<void> {
+    try {
+      await this.deps.slack.updateMessage(placeholder.slackChannelId, placeholder.ts, text, undefined, placeholder.botToken);
+    } catch (err) {
+      this.logger.debug('Typing placeholder edit failed', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  private async post(
+    k: string,
+    key: TypingKeyParts,
+    identity: { botToken: string; displayName: string },
+    phase: TypingPhase,
+  ): Promise<TypingPlaceholder | null> {
     try {
       const ts = await this.deps.slack.sendMessage({
         channelId: key.slackChannelId,
-        text: SLACK_TYPING_CONSTANTS.TYPING_TEXT.replace('{name}', identity.displayName),
+        text: this.textFor(phase, identity.displayName),
         ...(key.threadTs ? { threadTs: key.threadTs } : {}),
         botToken: identity.botToken,
         skipChatV2Mirror: true,
@@ -100,11 +160,25 @@ export class SlackTypingPlaceholderService {
         ...(key.threadTs ? { threadTs: key.threadTs } : {}),
         botToken: identity.botToken,
         displayName: identity.displayName,
+        phase,
       };
       const setTimer = this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+      const unref = (t: ReturnType<typeof setTimeout>): void => {
+        if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref();
+      };
       const timer = setTimer(() => void this.expire(k), this.deps.timeoutMs ?? SLACK_TYPING_CONSTANTS.TIMEOUT_MS);
-      if (typeof (timer as { unref?: () => void }).unref === 'function') (timer as { unref: () => void }).unref();
-      this.pending.set(k, { placeholder, timer });
+      unref(timer);
+      const entry: { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout> } = { placeholder, timer };
+      if (phase === 'waking') {
+        // A cold start that drags on gets an honest note instead of a stale "waking up…".
+        entry.slowTimer = setTimer(() => {
+          if (this.pending.get(k)?.placeholder.phase === 'waking') {
+            void this.edit(placeholder, SLACK_TYPING_CONSTANTS.WAKING_SLOW_TEXT.replace('{name}', identity.displayName));
+          }
+        }, SLACK_TYPING_CONSTANTS.WAKING_SLOW_MS);
+        unref(entry.slowTimer);
+      }
+      this.pending.set(k, entry);
       return placeholder;
     } catch (err) {
       this.logger.debug('Typing placeholder not posted', { key: k, error: err instanceof Error ? err.message : String(err) });
@@ -123,6 +197,7 @@ export class SlackTypingPlaceholderService {
     const entry = this.pending.get(k);
     if (!entry) return null;
     (this.deps.clearTimer ?? clearTimeout)(entry.timer);
+    if (entry.slowTimer) (this.deps.clearTimer ?? clearTimeout)(entry.slowTimer);
     this.pending.delete(k);
     return entry.placeholder;
   }
