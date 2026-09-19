@@ -1355,19 +1355,23 @@ export class SlackService extends EventEmitter {
     // Owner notifications are for the owner: a DM with the master bot, never
     // a team channel (those belong to the agents and their humans — a boot
     // banner or an OKR nudge in #course-standardization-team is noise to
-    // everyone there). Candidates: the most recent master-bot DMs, then a
-    // fresh DM opened with the person who installed the app.
+    // everyone there). Candidates: a DM opened with the person who installed
+    // the app first (the one channel guaranteed to belong to this workspace),
+    // then the most recent master-bot DMs — thread dirs can be left over from
+    // an earlier workspace binding and fail with channel_not_found.
     const isAgentDm = (id: string) => !!this.isAgentOwnedConversation?.(id);
-    const candidates = resolveFallbackNotificationChannels(undefined, (id) => !id.startsWith('D') || isAgentDm(id))
-      .slice(0, SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES);
+    const candidates: string[] = [];
     const ownerId = this.getOwnerUserId?.() ?? null;
     if (ownerId) {
       try {
-        const dm = await this.openDirectMessage(ownerId);
-        if (!candidates.includes(dm)) candidates.push(dm);
+        candidates.push(await this.openDirectMessage(ownerId));
       } catch (err) {
         this.logger.debug('Could not open a DM with the workspace owner for the notification', { error: err instanceof Error ? err.message : String(err) });
       }
+    }
+    for (const id of resolveFallbackNotificationChannels(undefined, (id) => !id.startsWith('D') || isAgentDm(id))
+      .slice(0, SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES)) {
+      if (!candidates.includes(id)) candidates.push(id);
     }
     if (candidates.length === 0) {
       this.logger.warn('No channel configured for notification — set SLACK_DEFAULT_CHANNEL or DM the Crewly bot once');

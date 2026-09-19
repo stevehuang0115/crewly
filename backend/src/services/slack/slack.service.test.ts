@@ -171,6 +171,23 @@ describe('SlackService', () => {
       expect(postMessage.mock.calls[0][0].channel).toBe('D-OWNER');
     });
 
+    it('sendNotification tries the owner DM before stale master-bot DMs left over from another workspace', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '1.2' });
+      const open = jest.fn().mockResolvedValue({ channel: { id: 'D-OWNER' } });
+      (service as any).client = { chat: { postMessage }, conversations: { open } };
+      (service as any).status.connected = true;
+      (service as any).config = {};
+      service.getOwnerUserId = () => 'U-OWNER';
+      const fallback = await import('./slack-notification-fallback.js');
+      jest.spyOn(fallback, 'resolveFallbackNotificationChannels').mockReturnValue(['D-old-workspace-1', 'D-old-workspace-2']);
+
+      await service.sendNotification({ type: 'system', title: 't', message: 'v', urgency: 'normal', timestamp: '' } as never);
+      // No channel_not_found round-trips: the first (and only) post goes to the owner DM.
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      expect(postMessage.mock.calls[0][0].channel).toBe('D-OWNER');
+    });
+
     it('passes per-message identity (username + icon) to chat.postMessage', async () => {
       const service = new SlackService();
       const postMessage = jest.fn().mockResolvedValue({ ts: '1.2' });
