@@ -44,7 +44,30 @@ interface PlatformConfig {
   available: boolean;
   /** Detail component to render when expanded */
   component?: React.FC;
+  /**
+   * Which section the card sits in. `messaging` = a channel people talk to
+   * the orchestrator through; `data` = an account whose content and tools
+   * the agents may use.
+   */
+  group: IntegrationGroup;
 }
+
+/** The two kinds of connection this tab manages. */
+type IntegrationGroup = 'messaging' | 'data';
+
+/** Section headings, in render order. */
+const GROUPS: { id: IntegrationGroup; title: string; blurb: string }[] = [
+  {
+    id: 'messaging',
+    title: 'Messaging',
+    blurb: 'Channels you talk to the orchestrator through, from anywhere.',
+  },
+  {
+    id: 'data',
+    title: 'Data & content',
+    blurb: 'Accounts whose files and tools your agents may read and write on your behalf.',
+  },
+];
 
 // =============================================================================
 // Platform Definitions
@@ -61,6 +84,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Hash,
     available: true,
     component: SlackTab,
+    group: 'messaging',
   },
   {
     id: 'whatsapp',
@@ -69,6 +93,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Phone,
     available: true,
     component: WhatsAppTab,
+    group: 'messaging',
   },
   {
     id: 'discord',
@@ -77,6 +102,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: MessageCircle,
     available: true,
     component: DiscordTab,
+    group: 'messaging',
   },
   {
     id: 'telegram',
@@ -85,6 +111,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Send,
     available: true,
     component: TelegramTab,
+    group: 'messaging',
   },
   {
     id: 'google-chat',
@@ -93,6 +120,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: MessageSquare,
     available: true,
     component: GoogleChatTab,
+    group: 'messaging',
   },
   {
     id: 'google-workspace',
@@ -101,6 +129,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Mail,
     available: true,
     component: GoogleWorkspaceTab,
+    group: 'data',
   },
   {
     id: 'canva',
@@ -109,6 +138,7 @@ const PLATFORMS: PlatformConfig[] = [
     icon: Palette,
     available: true,
     component: CanvaTab,
+    group: 'data',
   },
 ];
 
@@ -154,15 +184,21 @@ export const IntegrationsTab: React.FC = () => {
     <div className="space-y-6 max-w-3xl">
       {/* Header */}
       <div>
-        <h2 className="text-xl font-semibold">Messaging Integrations</h2>
+        <h2 className="text-xl font-semibold">Integrations</h2>
         <p className="text-sm text-text-secondary-dark mt-1">
-          Connect messaging platforms to communicate with the orchestrator from anywhere.
+          The accounts this Crewly instance is connected to — the channels you reach the orchestrator
+          through, and the services your agents may act in on your behalf.
         </p>
       </div>
 
-      {/* Platform Cards */}
-      <div className="space-y-3">
-        {PLATFORMS.map((platform) => {
+      {/* Platform cards, one section per group */}
+      {GROUPS.map((group) => (
+        <section key={group.id} className="space-y-3" data-testid={`integration-group-${group.id}`}>
+          <div>
+            <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide">{group.title}</h3>
+            <p className="text-xs text-text-secondary-dark mt-0.5">{group.blurb}</p>
+          </div>
+        {PLATFORMS.filter((p) => p.group === group.id).map((platform) => {
           const isExpanded = expandedPlatform === platform.id;
           const Icon = platform.icon;
 
@@ -221,7 +257,8 @@ export const IntegrationsTab: React.FC = () => {
             </div>
           );
         })}
-      </div>
+        </section>
+      ))}
     </div>
   );
 };

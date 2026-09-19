@@ -39,8 +39,21 @@ describe('IntegrationsTab', () => {
     it('should render header', () => {
       render(<IntegrationsTab />);
 
-      expect(screen.getByText('Messaging Integrations')).toBeInTheDocument();
-      expect(screen.getByText(/Connect messaging platforms/)).toBeInTheDocument();
+      expect(screen.getByText('Integrations')).toBeInTheDocument();
+      expect(screen.getByText(/accounts this Crewly instance is connected to/)).toBeInTheDocument();
+    });
+
+    it('splits the cards into Messaging and Data & content sections', () => {
+      render(<IntegrationsTab />);
+
+      const messaging = screen.getByTestId('integration-group-messaging');
+      const data = screen.getByTestId('integration-group-data');
+      expect(messaging).toContainElement(screen.getByTestId('platform-card-slack'));
+      expect(messaging).toContainElement(screen.getByTestId('platform-card-google-chat'));
+      expect(data).toContainElement(screen.getByTestId('platform-card-google-workspace'));
+      expect(data).toContainElement(screen.getByTestId('platform-card-canva'));
+      // A data connector must not sit under Messaging (the 2026-09-19 mismatch).
+      expect(messaging).not.toContainElement(screen.getByTestId('platform-card-canva'));
     });
 
     it('should render all platform cards', () => {
