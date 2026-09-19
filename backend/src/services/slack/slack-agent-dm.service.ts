@@ -264,7 +264,7 @@ export class SlackAgentDmService {
       const key = { agentSession: link.agentSession, slackChannelId: link.slackChannelId, ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}) };
       const text = toSlackMrkdwn(dto.content);
       if (this.deps.typing) {
-        await this.deps.typing.resolve(key, text, { botToken: installed.botToken });
+        await this.deps.typing.resolve(key, text, { botToken: installed.botToken, displayName: link.agentSession });
         return true;
       }
       await this.deps.slack.sendMessage({

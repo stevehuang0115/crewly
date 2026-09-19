@@ -292,6 +292,43 @@ export class SlackTeamChannelService {
       mappings: this.store?.mappings.length ?? 0,
       autoCreate: this.store?.autoCreate ?? true,
     });
+    // Every team gets its channel by default (owner, 2026-09-19) — not just
+    // teams created after the feature shipped. Runs in the background so a
+    // slow Slack call never delays boot; idempotent per team.
+    void this.reconcileAllTeams().catch((err) => {
+      this.logger.warn('Team channel reconcile failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    });
+  }
+
+  /**
+   * Give every team with members a Slack channel when auto-create is on.
+   * Existing mappings are left alone; teams without a (non-orchestrator)
+   * member are skipped so the workspace is not carpeted with empty rooms.
+   * Safe to call any time Slack (re)connects.
+   *
+   * @returns Which teams got a channel this pass
+   */
+  async reconcileAllTeams(): Promise<{ created: string[]; skipped: number }> {
+    const settings = await this.getSettings();
+    const result = { created: [] as string[], skipped: 0 };
+    if (!settings.autoCreate || !this.deps.slack.isConnected()) return result;
+    for (const team of await this.deps.storage.getTeams()) {
+      if (this.findByTeamId(team.id)) continue;
+      if (teamChannelMembers(team).length === 0) {
+        result.skipped++;
+        continue;
+      }
+      try {
+        await this.ensureTeamChannel(team);
+        result.created.push(team.name);
+      } catch (err) {
+        this.logger.warn('Auto-create team channel failed', { teamId: team.id, teamName: team.name, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (result.created.length > 0) {
+      this.logger.info('Team channels auto-created for existing teams', { teams: result.created, skippedEmpty: result.skipped });
+    }
+    return result;
   }
 
   /** Undo {@link start}. */
@@ -777,15 +814,27 @@ export class SlackTeamChannelService {
     // @'d agents must reply: show the honest state in the thread for each
     // one that has its own bot — "waking up…" for an idle agent (a cold
     // start is 1–2 minutes), "is typing…" once it holds the message.
+    // Who will be asked to reply: the @'d members, or (nobody @'d, top-level
+    // message) the team leader alone. Mirrors the dispatcher's targeting so
+    // the placeholder matches who actually gets the message.
     const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
     if (this.deps.typing) {
-      for (const session of resolved.mentions) {
-        const installed = this.deps.identities?.getInstalled(session);
+      let sessions = resolved.mentions;
+      if (sessions.length === 0 && !message.threadTs && team) {
+        const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead');
+        if (leader) sessions = [leader.sessionName];
+      }
+      for (const session of sessions) {
         const member = members.find((m) => m.sessionName === session);
-        if (!installed) continue;
+        const installed = this.deps.identities?.getInstalled(session);
+        // Own bot when installed; otherwise the master bot wearing the agent's
+        // name/icon — the person should see *something* during a cold start.
+        const identity = installed
+          ? { botToken: installed.botToken, displayName: member?.name ?? session }
+          : { displayName: member?.name ?? session, ...slackIdentityFor(member, session) };
         const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
         const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
-        await this.deps.typing.begin(key, { botToken: installed.botToken, displayName: member?.name ?? session }, awake ? 'typing' : 'waking');
+        await this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking');
         typingTargets.push({ session, key });
       }
     }
@@ -923,11 +972,13 @@ export class SlackTeamChannelService {
       const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
 
       const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content));
-      if (installed && this.deps.typing) {
+      if (this.deps.typing) {
         await this.deps.typing.resolve(
           { agentSession: dto.senderId, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) },
           text,
-          { botToken: installed.botToken },
+          installed
+            ? { botToken: installed.botToken, displayName: member?.name ?? dto.senderId }
+            : { displayName: member?.name ?? dto.senderId, ...slackIdentityFor(member, dto.senderId) },
         );
         return true;
       }

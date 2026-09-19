@@ -680,6 +680,8 @@ export async function startSlackTeamChannels(): Promise<void> {
       setSlackTeamChannelService(service);
     }
     await service.start();
+    // Slack may have (re)connected after start(): give every team its channel now.
+    void service.reconcileAllTeams().catch(() => undefined);
     // DMs to an agent's own bot go to that agent's chat-v2 DM channel.
     let agentDm = getSlackAgentDmService();
     if (!agentDm) {

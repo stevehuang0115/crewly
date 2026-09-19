@@ -20,19 +20,43 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 /** The slice of SlackService this service uses. */
 export interface TypingSlackApi {
   isConnected(): boolean;
-  sendMessage(message: { channelId: string; text: string; threadTs?: string; botToken?: string; skipChatV2Mirror?: boolean }): Promise<string>;
+  sendMessage(message: {
+    channelId: string;
+    text: string;
+    threadTs?: string;
+    botToken?: string;
+    username?: string;
+    iconEmoji?: string;
+    iconUrl?: string;
+    skipChatV2Mirror?: boolean;
+  }): Promise<string>;
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: undefined, botToken?: string): Promise<void>;
 }
 
 /** What the agent is doing while the reply is owed. */
 export type TypingPhase = 'waking' | 'typing';
 
+/**
+ * Who posts the placeholder: the agent's own bot (`botToken`) or, for an
+ * agent without an installed bot, the master bot wearing the agent's
+ * name/icon (`username` / `iconEmoji` / `iconUrl`). Either way the
+ * message can later be edited into the reply by the same principal.
+ */
+export interface TypingIdentity {
+  displayName: string;
+  botToken?: string;
+  username?: string;
+  iconEmoji?: string;
+  iconUrl?: string;
+}
+
 /** Where a placeholder lives and which bot posted it. */
 export interface TypingPlaceholder {
   slackChannelId: string;
   ts: string;
   threadTs?: string;
-  botToken: string;
+  /** Undefined when the master bot posted it. */
+  botToken?: string;
   displayName: string;
   phase: TypingPhase;
 }
@@ -79,7 +103,7 @@ export class SlackTypingPlaceholderService {
    */
   async begin(
     key: TypingKeyParts,
-    identity: { botToken: string; displayName: string },
+    identity: TypingIdentity,
     phase: TypingPhase = 'typing',
   ): Promise<TypingPlaceholder | null> {
     if (!this.deps.slack.isConnected()) return null;
@@ -143,7 +167,7 @@ export class SlackTypingPlaceholderService {
   private async post(
     k: string,
     key: TypingKeyParts,
-    identity: { botToken: string; displayName: string },
+    identity: TypingIdentity,
     phase: TypingPhase,
   ): Promise<TypingPlaceholder | null> {
     try {
@@ -151,14 +175,14 @@ export class SlackTypingPlaceholderService {
         channelId: key.slackChannelId,
         text: this.textFor(phase, identity.displayName),
         ...(key.threadTs ? { threadTs: key.threadTs } : {}),
-        botToken: identity.botToken,
+        ...principalOf(identity),
         skipChatV2Mirror: true,
       });
       const placeholder: TypingPlaceholder = {
         slackChannelId: key.slackChannelId,
         ts,
         ...(key.threadTs ? { threadTs: key.threadTs } : {}),
-        botToken: identity.botToken,
+        ...(identity.botToken ? { botToken: identity.botToken } : {}),
         displayName: identity.displayName,
         phase,
       };
@@ -211,7 +235,7 @@ export class SlackTypingPlaceholderService {
    * @param identity - The agent's bot token
    * @returns 'edited' | 'posted'
    */
-  async resolve(key: TypingKeyParts, text: string, identity: { botToken: string }): Promise<'edited' | 'posted'> {
+  async resolve(key: TypingKeyParts, text: string, identity: TypingIdentity): Promise<'edited' | 'posted'> {
     const placeholder = this.take(key);
     if (placeholder) {
       try {
@@ -228,7 +252,7 @@ export class SlackTypingPlaceholderService {
       channelId: key.slackChannelId,
       text,
       ...(key.threadTs ? { threadTs: key.threadTs } : {}),
-      botToken: identity.botToken,
+      ...principalOf(identity),
       skipChatV2Mirror: true,
     });
     return 'posted';
@@ -256,6 +280,16 @@ export class SlackTypingPlaceholderService {
       this.logger.debug('Typing placeholder timeout edit failed', { key: k, error: err instanceof Error ? err.message : String(err) });
     }
   }
+}
+
+/** The Slack posting fields for an identity: own bot token, or master bot + cosmetic name/icon. */
+function principalOf(identity: TypingIdentity): { botToken?: string; username?: string; iconEmoji?: string; iconUrl?: string } {
+  if (identity.botToken) return { botToken: identity.botToken };
+  return {
+    username: identity.username ?? identity.displayName,
+    ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
+    ...(identity.iconUrl ? { iconUrl: identity.iconUrl } : {}),
+  };
 }
 
 function keyOf(key: TypingKeyParts): string {

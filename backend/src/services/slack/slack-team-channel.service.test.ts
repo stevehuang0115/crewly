@@ -551,10 +551,18 @@ describe('team lifecycle sync', () => {
   });
 
   it('does nothing on a new team when autoCreate is off', async () => {
-    await service.start();
     await service.updateSettings({ autoCreate: false });
+    await service.start();
     await storage.emit({ kind: 'team-saved', team: team(), created: true });
     expect(slack.created).toEqual([]);
+  });
+
+  it('start() gives every existing team with members a channel (auto-create on), skipping empty teams and existing mappings', async () => {
+    storage.teams = [team(), team({ id: 'team-empty', name: 'Empty', members: [] })];
+    await service.start();
+    await new Promise((r) => setImmediate(r));
+    expect(slack.created).toEqual(['alpha-team']);
+    expect((await service.reconcileAllTeams())).toEqual({ created: [], skipped: 1 });
   });
 
   it('does nothing when Slack is offline (no crash, no mapping)', async () => {
@@ -892,7 +900,7 @@ describe('agent identities', () => {
     expect(typing.resolve).toHaveBeenCalledWith(
       { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' },
       'done ✅',
-      { botToken: 'xoxb-sam' },
+      { botToken: 'xoxb-sam', displayName: 'Sam' },
     );
     typing = null;
   });
@@ -930,6 +938,21 @@ describe('agent identities', () => {
     expect(second!.mapping.chatChannelId).toBe(first!.mapping.chatChannelId);
     expect(second!.mapping.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
     expect(service.findBySlackChannelId('C-priv')?.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+  });
+
+  it('an agent without its own bot still gets a placeholder (master bot wearing its name), and a no-@ message shows the team leader', async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    storage.teams = [team({ members: [member('Sam', 'developer'), member('Lena', 'team-leader')] })];
+    service = makeService();
+    await service.ensureTeamChannel(storage.teams[0]);
+    await service.routeInbound(inbound({ text: '大家好，进度如何？', ts: '500.1' }));
+    expect(typing.begin).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-lena', slackChannelId: 'C1', threadTs: '500.1' },
+      expect.objectContaining({ displayName: 'Lena', username: 'Lena' }),
+      'typing',
+    );
+    expect((typing.begin.mock.calls[0][1] as { botToken?: string }).botToken).toBeUndefined();
+    typing = null;
   });
 
   it('resolves a native <@bot> mention to the agent', async () => {
