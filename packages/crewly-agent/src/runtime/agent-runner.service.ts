@@ -20,6 +20,7 @@ import {
   type CrewlyAgentConfig,
   type ConversationState,
   type AgentRunResult,
+  type IncompleteReason,
   type ToolCallRecord,
   type CompactionResult,
   type ContextBudgetStatus,
@@ -35,6 +36,109 @@ import {
   MODEL_CONTEXT_WINDOWS,
   resolveMaxOutputTokens,
 } from './types.js';
+
+/**
+ * What a provider's finish reason means for the turn, and how to recover.
+ *
+ * `reason === null` is the only healthy outcome; everything else left work
+ * on the table. `recoverable` turns get `budget` more attempts, each
+ * prefixed with `nudge` so the model knows to carry on rather than restart.
+ */
+interface FinishOutcome {
+  reason: IncompleteReason | null;
+  detail: string;
+  recoverable: boolean;
+  budget: number;
+  nudge: string;
+}
+
+/** Nudge used when the model ran out of output tokens mid-answer. */
+const CONTINUE_NUDGE =
+  'Your previous message was cut off because it hit the output limit. Continue from exactly where you stopped. Do not repeat what you already wrote, and do not start over.';
+
+/** Nudge used after the provider ended a turn abnormally. */
+const RESUME_NUDGE =
+  'Your previous turn ended unexpectedly before the work was finished. Review what you had already done, then carry on and complete the task. Do not repeat completed steps.';
+
+/**
+ * Classify how a turn ended.
+ *
+ * @param finishReason - Raw provider finish reason
+ * @param steps - Steps the turn consumed
+ * @param maxSteps - The configured step ceiling
+ * @returns What it means and whether to retry
+ */
+export function classifyFinish(finishReason: string, steps: number, maxSteps: number): FinishOutcome {
+  const healthy: FinishOutcome = { reason: null, detail: '', recoverable: false, budget: 0, nudge: '' };
+
+  // Hitting the step ceiling is never a natural end, whatever the provider
+  // then reports — the loop was stopped from the outside mid-task.
+  if (steps >= maxSteps) {
+    return {
+      reason: 'steps-exhausted',
+      detail: `Stopped after the ${maxSteps}-step ceiling with work still outstanding.`,
+      recoverable: false,
+      budget: 0,
+      nudge: '',
+    };
+  }
+
+  switch (finishReason) {
+    case 'stop':
+    case 'tool-calls':
+      return healthy;
+    case 'length':
+      return {
+        reason: 'truncated',
+        detail: 'The model ran out of output tokens before finishing.',
+        recoverable: true,
+        budget: CREWLY_AGENT_DEFAULTS.MAX_CONTINUATIONS,
+        nudge: CONTINUE_NUDGE,
+      };
+    case 'content-filter':
+      return {
+        reason: 'content-filter',
+        detail: 'The provider refused to complete this turn on content grounds.',
+        recoverable: false,
+        budget: 0,
+        nudge: '',
+      };
+    default:
+      // 'other' | 'error' | 'unknown' | anything a provider invents.
+      return {
+        reason: 'abnormal-finish',
+        detail: `The provider ended the turn with "${finishReason}" before the work was finished.`,
+        recoverable: true,
+        budget: CREWLY_AGENT_DEFAULTS.MAX_ABNORMAL_RETRIES,
+        nudge: RESUME_NUDGE,
+      };
+  }
+}
+
+/**
+ * Fold a recovery attempt into the run it continues: text is appended (the
+ * model was told not to repeat itself), counters accumulate, and the newer
+ * finish reason wins.
+ *
+ * @param first - The run so far
+ * @param next - The continuation
+ * @returns The combined run
+ */
+export function mergeRuns(first: AgentRunResult, next: AgentRunResult): AgentRunResult {
+  const text = [first.text, next.text].map((t) => (t ?? '').trim()).filter(Boolean).join('\n\n');
+  return {
+    ...next,
+    text,
+    steps: first.steps + next.steps,
+    usage: {
+      input: first.usage.input + next.usage.input,
+      output: first.usage.output + next.usage.output,
+    },
+    toolCalls: [...first.toolCalls, ...next.toolCalls],
+    budgetWarning: next.budgetWarning ?? first.budgetWarning,
+    reasoning: next.reasoning ?? first.reasoning,
+  };
+}
 
 /**
  * No-op stubs for OSS-internal services. In OSS these resolve to concrete
@@ -1081,6 +1185,46 @@ export class AgentRunnerService {
    * (429, 5xx, network) and progressive context trimming for context length errors.
    */
   private async executeRunWithStreamText(
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult> {
+    let result = await this.attemptWithErrorRetries(tools, abortSignal);
+    let outcome = classifyFinish(result.finishReason, result.steps, this.config.maxSteps);
+    let recoveryAttempts = 0;
+
+    // A turn only "finished" if the model chose to stop. Anything else left
+    // the job half-done, and until 0.1.2 that fragment was returned as if it
+    // were the answer — the agent would promise to do something, get cut off,
+    // and the user was told it was done (2026-09-19: the orchestrator ended
+    // 4 turns in a row on `other` and silently created nothing).
+    while (outcome.recoverable && recoveryAttempts < outcome.budget && !abortSignal.aborted) {
+      recoveryAttempts++;
+      this.streamingCallbacks.onTextChunk?.(`[recover] ${outcome.reason} — continuing (${recoveryAttempts}/${outcome.budget})\n`);
+      this.state.messages.push({ role: 'user', content: outcome.nudge });
+      const next = await this.attemptWithErrorRetries(tools, abortSignal);
+      result = mergeRuns(result, next);
+      outcome = classifyFinish(next.finishReason, next.steps, this.config.maxSteps);
+    }
+
+    if (outcome.reason === null) return result;
+
+    return {
+      ...result,
+      incomplete: {
+        reason: outcome.reason,
+        detail: outcome.detail,
+        finishReason: result.finishReason,
+        recoveryAttempts,
+      },
+    };
+  }
+
+  /**
+   * Run one turn, retrying only on *thrown* failures (rate limits, network,
+   * context length). A turn that returns with a bad `finishReason` is the
+   * caller's problem — see {@link executeRunWithStreamText}.
+   */
+  private async attemptWithErrorRetries(
     tools: Record<string, unknown>,
     abortSignal: AbortSignal,
   ): Promise<AgentRunResult> {

@@ -203,6 +203,34 @@ export interface AgentRunResult {
    * See P0-1 design-review gate for I2.5 reasoning-pipe routing.
    */
   reasoning?: string | null;
+  /**
+   * Set when the turn did NOT run to a natural end: the model was cut off,
+   * the provider bailed, or the step budget ran out. The text is then a
+   * fragment of an answer, not an answer.
+   */
+  incomplete?: IncompleteRun;
+}
+
+/** Why a turn ended early. */
+export type IncompleteReason =
+  /** Ran out of output tokens and continuation attempts. */
+  | 'truncated'
+  /** Provider returned an unmapped/error finish (`other`, `error`, `unknown`). */
+  | 'abnormal-finish'
+  /** Hit `maxSteps` with work still outstanding. */
+  | 'steps-exhausted'
+  /** Provider refused on content grounds. */
+  | 'content-filter';
+
+/** Describes a turn that ended early. */
+export interface IncompleteRun {
+  reason: IncompleteReason;
+  /** One line a human can act on. */
+  detail: string;
+  /** Raw provider finish reason of the final attempt. */
+  finishReason: string;
+  /** Recovery attempts made before giving up. */
+  recoveryAttempts: number;
 }
 
 /**
@@ -524,6 +552,10 @@ export interface SecurityGuardrailConfig {
 export const CREWLY_AGENT_DEFAULTS = {
   /** Default max reasoning steps per generateText call (high to mimic unlimited like Claude Code) */
   MAX_STEPS: 500,
+  /** Continuations allowed for a turn cut off by the output-token limit. */
+  MAX_CONTINUATIONS: 3,
+  /** Re-runs allowed after the provider ended a turn abnormally. */
+  MAX_ABNORMAL_RETRIES: 1,
   /** Maximum tool calls allowed per single response to prevent polling dead-loops */
   MAX_TOOL_CALLS_PER_RESPONSE: 15,
   /** Consecutive identical tool calls before aborting (loop detection) */
