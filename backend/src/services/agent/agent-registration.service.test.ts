@@ -418,6 +418,34 @@ describe('AgentRegistrationService', () => {
 			expect(fileReadCall).toBeDefined();
 			expect(fileReadCall).toContain('Read the file at');
 		});
+
+		// A resumed conversation has already read the init prompt once; told to
+		// read it again it says "Ready." and never re-registers (steamfun-ops
+		// orchestrator, 11 restarts, 2026-09-19). It gets the command instead.
+		it('sends an explicit register-self kickoff to a resumed (non-Claude) runtime', async () => {
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile.mockResolvedValue('Register {{SESSION_ID}} as {{ROLE}}');
+			jest.spyOn(service as any, 'planSessionRecovery').mockResolvedValue({
+				flags: [], resumeSessionId: '01a0-resumed', presetSessionId: null, note: 'resuming Codex conversation',
+			});
+
+			await service.initializeAgentWithRegistration(
+				'test-session',
+				'developer',
+				'/test/path',
+				90000,
+				undefined,
+				RUNTIME_TYPES.GEMINI_CLI
+			);
+			await jest.advanceTimersByTimeAsync(2000);
+
+			const allCalls = mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => c[1]);
+			const kickoff = allCalls.find((msg: string) => msg && msg.includes('registration was reset'));
+			expect(kickoff).toBeDefined();
+			expect(kickoff).toContain('register-self/execute.sh');
+			expect(kickoff).toContain('"sessionName":"test-session","role":"developer"');
+			expect(allCalls.find((msg: string) => msg && msg.startsWith('Read the file at'))).toBeUndefined();
+		});
 	});
 
 	describe('createAgentSession', () => {

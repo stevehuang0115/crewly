@@ -838,6 +838,38 @@ export class AgentRegistrationService {
 	 * @param launchedAtMs - When the launch command was sent
 	 * @param plan - The launch plan (skips when the id is already known)
 	 */
+	/**
+	 * Remember (or forget) that a session came up by resuming a conversation.
+	 *
+	 * @param sessionName - The session
+	 * @param role - Role it runs as (for the register-self kickoff)
+	 * @param plan - The launch plan
+	 */
+	private noteResumedLaunch(sessionName: string, role: string, plan: RuntimeSessionPlan): void {
+		if (plan.resumeSessionId) this.resumedSessions.set(sessionName, role);
+		else this.resumedSessions.delete(sessionName);
+	}
+
+	/**
+	 * Kickoff text for a resumed (non-Claude) runtime: the backend restarted,
+	 * so its registration is gone even though the conversation remembers
+	 * doing it. Tell it plainly and hand it the command.
+	 *
+	 * @param sessionName - The session
+	 * @param role - Its role
+	 * @param promptFilePath - The init prompt, for a context refresh if needed
+	 * @returns The message to type into the runtime
+	 */
+	private resumedKickoff(sessionName: string, role: string, promptFilePath: string): string {
+		const skillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
+		return (
+			`Crewly restarted and your registration was reset (you are "${sessionName}", role ${role}). ` +
+			`Even if you registered earlier in this conversation, run this now: ` +
+			`bash ${skillsPath}/core/register-self/execute.sh '{"sessionName":"${sessionName}","role":"${role}"}' ` +
+			`— then re-read ${promptFilePath} only if you have lost your context, and continue where you left off.`
+		);
+	}
+
 	private recordRuntimeSessionAfterLaunch(
 		sessionName: string,
 		runtimeType: string,
@@ -949,6 +981,16 @@ export class AgentRegistrationService {
 
 	/** Custom roles already reported as falling back (warn once each). */
 	private readonly roleFallbackWarned = new Set<string>();
+
+	/**
+	 * Sessions launched by resuming an earlier runtime conversation (Codex
+	 * `resume`, Claude `--resume`) → the role they run as. A resumed agent has
+	 * already read its init prompt once and answers "Ready." when told to
+	 * read it again, without re-registering — the orchestrator on
+	 * steamfun-ops sat unregistered for 11 restarts that way (2026-09-19).
+	 * Such sessions get an explicit register-self kickoff instead.
+	 */
+	private readonly resumedSessions = new Map<string, string>();
 
 	/**
 	 * Assemble the orchestrator prompt at the *other* profile and log the
@@ -1221,6 +1263,7 @@ export class AgentRegistrationService {
 		const launchedAtMs = Date.now();
 		await runtimeService2.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName, sessionPlan.resumeSessionId ?? undefined);
 		this.recordRuntimeSessionAfterLaunch(sessionName, runtimeType, projectPath, launchedAtMs, sessionPlan);
+		this.noteResumedLaunch(sessionName, role, sessionPlan);
 
 		// Wait for runtime to be ready (simplified detection)
 		// Use shorter check interval in test environment, and reasonable interval in production
@@ -1731,6 +1774,7 @@ export class AgentRegistrationService {
 			const launchedAtMs = Date.now();
 			await runtimeService.executeRuntimeInitScript(sessionName, orchestratorCwd, effectiveFlags, promptFilePath, agentName, sessionPlan.resumeSessionId ?? undefined);
 			this.recordRuntimeSessionAfterLaunch(sessionName, runtimeType, orchestratorCwd, launchedAtMs, sessionPlan);
+			this.noteResumedLaunch(sessionName, ORCHESTRATOR_ROLE, sessionPlan);
 
 			// Wait for runtime to be ready
 			const checkInterval = this.getCheckInterval();
@@ -1800,6 +1844,7 @@ export class AgentRegistrationService {
 			const launchedAtMs = Date.now();
 			await runtimeService.executeRuntimeInitScript(sessionName, projectPath, effectiveFlags, promptFilePath, agentName, sessionPlan.resumeSessionId ?? undefined);
 			this.recordRuntimeSessionAfterLaunch(sessionName, runtimeType, projectPath, launchedAtMs, sessionPlan);
+		this.noteResumedLaunch(sessionName, role, sessionPlan);
 
 			// Wait for runtime to be ready (simplified detection)
 			const checkInterval = this.getCheckInterval();
@@ -5604,9 +5649,12 @@ Loop until done, blocked, or explicitly reassigned:
 		// kickoff trigger — no need to ask it to read the file again.
 		// Gemini CLI / other runtimes: need the file-read instruction since the prompt
 		// was NOT loaded via system prompt.
+		const resumedRole = this.resumedSessions.get(sessionName);
 		const messageToSend = isClaudeCode
 			? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.'
-			: `Read the file at ${promptFilePath} and follow all instructions in it.`;
+			: resumedRole
+				? this.resumedKickoff(sessionName, resumedRole, promptFilePath)
+				: `Read the file at ${promptFilePath} and follow all instructions in it.`;
 		// Note: kickoff message is intentionally imperative for reliable agent bootstrapping.
 		// The --agent flag (Claude Code) loads the prompt as trusted system context, so this
 		// short trigger is not subject to PI detection.
