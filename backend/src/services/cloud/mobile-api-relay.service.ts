@@ -80,6 +80,13 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/projects' },   // list + /:id + /:id/status|stats
   { method: 'GET', prefix: '/wiki/' },      // vaults/tree/page/search reads
   { method: 'GET', prefix: '/chat/' },      // LAN-parity chat reads (messages incl. ?cursor=)
+  // Slack team channels — the portal manages them for an instance the
+  // owner is not sitting at (create/link a channel, see status, agent bots).
+  { method: 'GET', prefix: '/slack/team-channels' },
+  { method: 'GET', prefix: '/slack/cloud/status' },
+  { method: 'GET', prefix: '/slack/agent-identities' },
+  { method: 'POST', prefix: '/slack/team-channels' },  // create or link
+  { method: 'POST', prefix: '/slack/cloud/agents/sync' },
   // Mutations — human-in-the-loop actions only.
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject

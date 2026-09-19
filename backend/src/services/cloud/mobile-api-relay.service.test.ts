@@ -37,6 +37,11 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 describe('isAllowedMobileApiCall', () => {
   it('allows the read surface', () => {
     expect(isAllowedMobileApiCall('GET', '/teams')).toBe(true);
+    // Portal-driven Slack team channel management.
+    expect(isAllowedMobileApiCall('GET', '/slack/team-channels')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/slack/team-channels')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/slack/cloud/status')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/slack/cloud/workspace')).toBe(false);
     expect(isAllowedMobileApiCall('GET', '/escalations')).toBe(true);
     expect(isAllowedMobileApiCall('GET', '/task-pool/items')).toBe(true);
     expect(isAllowedMobileApiCall('GET', '/requests?status=running')).toBe(true);
