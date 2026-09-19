@@ -77,6 +77,31 @@ interface TeamLookup {
   memberName: string;
 }
 
+/**
+ * Build the session-name → team lookup used to group identities.
+ *
+ * A stopped member has an empty `sessionName` (the controller clears it on
+ * stop), so it is derived with the controller's formula
+ * (`<team-slug>-<member-slug>-<id[0:8]>`) — otherwise the member's identity
+ * would land under "Other agents".
+ *
+ * @param teams - Teams as returned by /api/teams
+ * @returns Lookup keyed by session name
+ */
+export function buildTeamLookup(
+  teams: Array<{ name?: string; members?: Array<{ id?: string; sessionName?: string; name?: string }> }>,
+): Record<string, TeamLookup> {
+  const slug = (v: string) => v.toLowerCase().replace(/\s+/g, '-');
+  const map: Record<string, TeamLookup> = {};
+  for (const team of teams) {
+    for (const m of team.members ?? []) {
+      const session = m.sessionName || (m.id && m.name && team.name ? `${slug(team.name)}-${slug(m.name)}-${m.id.substring(0, 8)}` : '');
+      if (session) map[session] = { teamName: team.name ?? 'Team', memberName: m.name ?? session };
+    }
+  }
+  return map;
+}
+
 export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pendingInstalls = [] }) => {
   const [data, setData] = useState<Payload | null>(null);
   const [teamBySession, setTeamBySession] = useState<Record<string, TeamLookup>>({});
@@ -88,13 +113,7 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
       .then((res) => res.json())
       .then((body) => {
         if (cancelled || !body?.success || !Array.isArray(body.data)) return;
-        const map: Record<string, TeamLookup> = {};
-        for (const team of body.data as Array<{ name?: string; members?: Array<{ sessionName?: string; name?: string }> }>) {
-          for (const m of team.members ?? []) {
-            if (m.sessionName) map[m.sessionName] = { teamName: team.name ?? 'Team', memberName: m.name ?? m.sessionName };
-          }
-        }
-        setTeamBySession(map);
+        setTeamBySession(buildTeamLookup(body.data));
       })
       .catch(() => undefined);
     return () => {

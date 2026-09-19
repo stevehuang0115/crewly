@@ -7,7 +7,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SlackAgentIdentities } from './SlackAgentIdentities';
+import { SlackAgentIdentities, buildTeamLookup } from './SlackAgentIdentities';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -152,5 +152,18 @@ describe('SlackAgentIdentities', () => {
     expect(link.getAttribute('href')).toBe('https://slack.com/oauth/zed');
     // Leo already has a local record → only his own install link is shown.
     expect(screen.getAllByText(/^Install /)).toHaveLength(2);
+  });
+});
+
+describe('buildTeamLookup', () => {
+  it('derives the session name for a stopped member so it groups under its team', () => {
+    const map = buildTeamLookup([
+      { name: 'Think Tank', members: [
+        { id: 'b4e166f6-1', name: 'Atlas', sessionName: 'think-tank-atlas-b4e166f6' },
+        { id: '2ffacc8f-0000-4000-8000-000000000000', name: 'Sage', sessionName: '' },
+      ] },
+    ]);
+    expect(map['think-tank-atlas-b4e166f6']?.teamName).toBe('Think Tank');
+    expect(map['think-tank-sage-2ffacc8f']).toEqual({ teamName: 'Think Tank', memberName: 'Sage' });
   });
 });
