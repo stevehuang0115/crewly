@@ -38,6 +38,7 @@ import {
 import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
+import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
@@ -3874,8 +3875,26 @@ Loop until done, blocked, or explicitly reassigned:
 							tc => tc.toolName === 'reply_slack' || tc.toolName === 'reply-slack'
 						) ?? false;
 
-						if (result.text && incomingConversationId && !agentAlreadyReplied) {
-							this.routeInProcessResponseToChat(sessionName, result.text, incomingConversationId);
+						// A model sometimes writes its function-call envelope into the
+						// *text* part as well as making the real call. The PTY runtimes
+						// never surface that, but this runtime forwards text straight to
+						// Slack and chat — so strip it before anyone sees it
+						// (2026-09-19: an orc reply reached #crewly-support as a wall of
+						// `<invoke name="Bash">…`). An answer that is nothing but markup
+						// is not posted at all: the delivery enforcer then nudges the
+						// agent, which beats showing the user the envelope.
+						const { text: replyText, stripped: replyHadMarkup } = stripToolCallMarkup(result.text ?? '');
+						if (replyHadMarkup) {
+							this.logger.warn('Stripped tool-call markup from in-process agent response', {
+								sessionName,
+								rawLength: result.text?.length ?? 0,
+								cleanLength: replyText.length,
+								dropped: replyText.length === 0,
+							});
+						}
+
+						if (replyText && incomingConversationId && !agentAlreadyReplied) {
+							this.routeInProcessResponseToChat(sessionName, replyText, incomingConversationId);
 						} else if (agentAlreadyReplied) {
 							this.logger.debug('Skipping chat routing — agent already replied via reply_slack', {
 								sessionName, conversationId: incomingConversationId,
@@ -3891,10 +3910,10 @@ Loop until done, blocked, or explicitly reassigned:
 						//
 						// Skipped when the agent already called reply_slack (which posts via
 						// /slack/send) to prevent double-posting on the same thread.
-						if (slackMetadata?.channelId && result.text && !agentAlreadyReplied) {
+						if (slackMetadata?.channelId && replyText && !agentAlreadyReplied) {
 							this.routeInProcessResponseToSlack(
 								sessionName,
-								result.text,
+								replyText,
 								{
 									channelId: slackMetadata.channelId,
 									threadTs: slackMetadata.threadTs,
