@@ -46,6 +46,7 @@ import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
+import { getSlackAgentDmService } from './slack-agent-dm.service.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/request.types.js';
 
@@ -391,6 +392,22 @@ export class SlackOrchestratorBridge extends EventEmitter {
 
       // Override message text with enriched version for downstream processing
       message.text = enrichedText;
+
+      // A DM to an agent's own Slack bot goes to that agent (its chat-v2 DM
+      // channel, activate-on-send) and never to the orchestrator.
+      if (message.agentSession) {
+        const agentDm = getSlackAgentDmService();
+        const routed = agentDm ? await agentDm.routeInbound(message) : null;
+        if (routed) {
+          this.emit('message_handled', {
+            message,
+            response: '',
+            routedTo: 'agent-dm',
+            agentSession: routed.link.agentSession,
+          });
+          return;
+        }
+      }
 
       // Slack team channels: a channel mapped to a Crewly team goes to that
       // team's huddle (every member sees it, @'d members must reply) and

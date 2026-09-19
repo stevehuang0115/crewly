@@ -584,6 +584,23 @@ export const SLACK_BRIDGE_CONSTANTS = {
  * per Crewly team, so the owner talks to a whole team (and to individual
  * agents by `@name`) without going through the orchestrator.
  */
+/**
+ * Slack DMs to an agent's own bot user (routed into the owner's chat-v2 DM
+ * channel with that agent, never to the orchestrator).
+ */
+export const SLACK_AGENT_DM_CONSTANTS = {
+	/** Link store filename under CREWLY_HOME */
+	STORE_FILENAME: 'slack-agent-dms.json',
+	/** Reaction added to a routed inbound DM while the agent works on it */
+	INBOUND_REACTION: 'eyes',
+	/**
+	 * Owner of the DM channels on a single-user OSS install — the same
+	 * principal the dashboard (no-JWT auth fallback) and the portal relay
+	 * adapter use, so Slack DMs land in the DM channel the owner already sees.
+	 */
+	OWNER_USER_ID: 'dev-user-001',
+} as const;
+
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	/** Mapping store filename under CREWLY_HOME */
 	STORE_FILENAME: 'slack-team-channels.json',

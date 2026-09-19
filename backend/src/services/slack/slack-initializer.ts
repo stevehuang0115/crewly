@@ -601,6 +601,7 @@ export async function startSlackTeamChannels(): Promise<void> {
       { SlackTeamChannelService, getSlackTeamChannelService, setSlackTeamChannelService },
       { SlackAgentIdentityService, getSlackAgentIdentityService, setSlackAgentIdentityService },
       { SlackAgentPostService, getSlackAgentPostService, setSlackAgentPostService },
+      { SlackAgentDmService, getSlackAgentDmService, setSlackAgentDmService },
       { getChatV2Service },
       { getChatV2RealtimeDeps },
       { StorageService },
@@ -609,6 +610,7 @@ export async function startSlackTeamChannels(): Promise<void> {
       import('./slack-team-channel.service.js'),
       import('./slack-agent-identity.service.js'),
       import('./slack-agent-post.service.js'),
+      import('./slack-agent-dm.service.js'),
       import('../chat-v2/chat-v2.singleton.js'),
       import('../chat-v2/chat-v2.realtime-holder.js'),
       import('../core/storage.service.js'),
@@ -644,12 +646,29 @@ export async function startSlackTeamChannels(): Promise<void> {
       setSlackTeamChannelService(service);
     }
     await service.start();
-    // Team-channel threads belong to the team, not the orchestrator's resume
-    // briefing (which otherwise had the orchestrator answering in #team channels).
+    // DMs to an agent's own bot go to that agent's chat-v2 DM channel.
+    let agentDm = getSlackAgentDmService();
+    if (!agentDm) {
+      agentDm = new SlackAgentDmService({
+        slack: getSlackService(),
+        chat: getChatV2Service(),
+        storage: StorageService.getInstance(),
+        getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
+        identities,
+        isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? true,
+      });
+      setSlackAgentDmService(agentDm);
+    }
+    await agentDm.start();
+    // Team-channel threads and agent DMs belong to the agents, not the
+    // orchestrator's resume briefing (which otherwise had the orchestrator
+    // answering in #team channels).
     try {
       const { SessionHandoffService } = await import('../session/session-handoff.service.js');
       SessionHandoffService.getInstance().setChannelFilter(
-        (channelType, channelId) => channelType === 'slack' && !!getSlackTeamChannelService()?.findBySlackChannelId(channelId),
+        (channelType, channelId) =>
+          channelType === 'slack' &&
+          (!!getSlackTeamChannelService()?.findBySlackChannelId(channelId) || !!getSlackAgentDmService()?.findBySlackChannelId(channelId)),
       );
     } catch (err) {
       logger.debug('Could not install the team-channel filter on the handoff briefing', {

@@ -1428,8 +1428,9 @@ export class SlackService extends EventEmitter {
    * @param channelId - Channel ID
    * @param messageTs - Message timestamp
    * @param emoji - Emoji name (without colons)
+   * @param botToken - Optional per-agent bot token (react in that bot's own DMs)
    */
-  async addReaction(channelId: string, messageTs: string, emoji: string): Promise<void> {
+  async addReaction(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void> {
     if (!this.client) {
       throw new Error('Slack client not initialized');
     }
@@ -1438,6 +1439,8 @@ export class SlackService extends EventEmitter {
       channel: channelId,
       timestamp: messageTs,
       name: emoji,
+      // An agent's own bot reacts in conversations the master bot cannot see (its DMs).
+      ...(botToken ? { token: botToken } : {}),
     });
   }
 
