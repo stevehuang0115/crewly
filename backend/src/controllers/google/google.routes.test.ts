@@ -33,7 +33,18 @@ describe('Google Workspace Routes', () => {
     expect(has('post', '/calendar/events')).toBe(true);
   });
 
-  it('registers exactly 8 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(8);
+  it('registers the Drive / Docs / Sheets / Slides routes', () => {
+    for (const [method, path] of [
+      ['get', '/drive/files'], ['get', '/drive/files/:id'], ['get', '/drive/files/:id/content'], ['post', '/drive/files'],
+      ['get', '/docs/:id'], ['post', '/docs'], ['post', '/docs/:id/append'],
+      ['get', '/sheets/:id'], ['get', '/sheets/:id/values'], ['post', '/sheets'], ['post', '/sheets/:id/values'],
+      ['get', '/slides/:id'], ['post', '/slides'],
+    ] as const) {
+      expect(has(method, path)).toBe(true);
+    }
+  });
+
+  it('registers exactly 21 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(21);
   });
 });

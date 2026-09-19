@@ -53,6 +53,9 @@ const SCOPE_LABELS: Record<string, string> = {
   'https://www.googleapis.com/auth/gmail.send': 'Send mail',
   'https://www.googleapis.com/auth/calendar.readonly': 'Read calendar',
   'https://www.googleapis.com/auth/calendar.events': 'Manage events',
+  'https://www.googleapis.com/auth/drive.readonly': 'Read Drive, Docs, Sheets, Slides',
+  'https://www.googleapis.com/auth/drive.file': 'Create files (Docs, Sheets, Slides, uploads)',
+  'https://www.googleapis.com/auth/documents.readonly': 'Read Docs',
   'https://www.googleapis.com/auth/drive.readonly': 'Read Drive',
   'https://www.googleapis.com/auth/drive.file': 'Drive files',
   'https://www.googleapis.com/auth/documents.readonly': 'Read Docs',
@@ -180,8 +183,9 @@ export const GoogleWorkspaceTab: React.FC = () => {
       <div>
         <h2 className="text-xl font-semibold">Google Workspace</h2>
         <p className="text-sm text-text-secondary-dark mt-1">
-          Let agents read your Gmail, send mail on your behalf and manage your calendar. Crewly Cloud keeps
-          the Google sign-in; mail content goes straight from Google to this instance.
+          Let agents read your Gmail, send mail on your behalf, manage your calendar, search and read Drive
+          (Docs, Sheets, Slides) and create new documents, spreadsheets and decks. Crewly Cloud keeps the
+          Google sign-in; content goes straight from Google to this instance.
         </p>
       </div>
 

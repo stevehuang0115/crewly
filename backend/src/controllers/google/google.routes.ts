@@ -17,6 +17,19 @@ import {
   gmailSend,
   calendarList,
   calendarCreate,
+  driveSearch,
+  driveGet,
+  driveContent,
+  driveUpload,
+  docsRead,
+  docsCreate,
+  docsAppend,
+  sheetsInfo,
+  sheetsRead,
+  sheetsCreate,
+  sheetsWrite,
+  slidesRead,
+  slidesCreate,
 } from './google.controller.js';
 
 /**
@@ -31,6 +44,19 @@ import {
  * - POST   /gmail/send            — { to, cc?, subject, text, threadId?, inReplyTo?, dryRun? }
  * - GET    /calendar/events       — ?from=&to=&calendarId=&max=
  * - POST   /calendar/events       — { calendarId?, summary, start, end, description?, attendees?, timezone? }
+ * - GET    /drive/files           — ?q=&mimeType=&folderId=&max=
+ * - GET    /drive/files/:id       — metadata
+ * - GET    /drive/files/:id/content — exported text / downloaded body
+ * - POST   /drive/files           — { name, content, encoding?, mimeType?, folderId?, convertTo? }
+ * - GET    /docs/:id              — document as text
+ * - POST   /docs                  — { title, text? }
+ * - POST   /docs/:id/append       — { text }
+ * - GET    /sheets/:id            — title + tabs
+ * - GET    /sheets/:id/values     — ?range=
+ * - POST   /sheets                — { title, sheetTitle?, rows? }
+ * - POST   /sheets/:id/values     — { range?, rows, mode?: append|update }
+ * - GET    /slides/:id            — deck as text
+ * - POST   /slides                — { title, slides: [{ title, bullets? }] }
  *
  * @returns Express router for /api/google routes
  */
@@ -45,6 +71,19 @@ export function createGoogleRouter(): Router {
   router.post('/gmail/send', gmailSend);
   router.get('/calendar/events', calendarList);
   router.post('/calendar/events', calendarCreate);
+  router.get('/drive/files', driveSearch);
+  router.get('/drive/files/:id', driveGet);
+  router.get('/drive/files/:id/content', driveContent);
+  router.post('/drive/files', driveUpload);
+  router.get('/docs/:id', docsRead);
+  router.post('/docs', docsCreate);
+  router.post('/docs/:id/append', docsAppend);
+  router.get('/sheets/:id', sheetsInfo);
+  router.get('/sheets/:id/values', sheetsRead);
+  router.post('/sheets', sheetsCreate);
+  router.post('/sheets/:id/values', sheetsWrite);
+  router.get('/slides/:id', slidesRead);
+  router.post('/slides', slidesCreate);
 
   return router;
 }

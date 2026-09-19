@@ -66,25 +66,34 @@ export function buildGoogleUrl(base: string, params: Record<string, string | num
   return url.toString();
 }
 
+/** Request options for {@link googleRequest}. */
+export interface GoogleRequestInit {
+  method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** JSON body (serialised, `Content-Type: application/json`). */
+  body?: unknown;
+  /** Pre-encoded body (multipart upload, binary) — needs `contentType`. */
+  rawBody?: string | Buffer;
+  contentType?: string;
+  /** `text` returns the body verbatim (Drive export / `alt=media`); default `json`. */
+  responseType?: 'json' | 'text';
+}
+
 /**
- * Authenticated JSON call to a Google API.
+ * Authenticated call to a Google API.
  *
  * @param deps - Token provider + fetch
  * @param url - Absolute URL (use {@link buildGoogleUrl})
- * @param init - Method and optional JSON body
- * @returns The parsed JSON response
+ * @param init - Method, body and response type
+ * @returns The parsed JSON response (or the raw text with `responseType: 'text'`)
  * @throws GoogleWorkspaceError — token failures pass through; Google 401 →
  *   401 google_error (cache dropped), 403/404/429 keep their status, other
  *   failures → 502 google_error, unreachable → 502 network
  */
-export async function googleRequest<T>(
-  deps: GoogleApiDeps,
-  url: string,
-  init: { method?: 'GET' | 'POST'; body?: unknown } = {},
-): Promise<T> {
+export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: GoogleRequestInit = {}): Promise<T> {
   const token = await deps.tokens.getAccessToken();
   const fetchImpl = deps.fetchImpl ?? fetch;
   const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
+  const wantsText = init.responseType === 'text';
 
   let res: Response;
   try {
@@ -92,10 +101,14 @@ export async function googleRequest<T>(
       method: init.method ?? 'GET',
       headers: {
         Authorization: `Bearer ${token}`,
-        Accept: 'application/json',
-        ...(init.body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        Accept: wantsText ? '*/*' : 'application/json',
+        ...(init.rawBody !== undefined
+          ? { 'Content-Type': init.contentType ?? 'application/octet-stream' }
+          : init.body !== undefined
+            ? { 'Content-Type': 'application/json' }
+            : {}),
       },
-      body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+      body: init.rawBody !== undefined ? init.rawBody : init.body !== undefined ? JSON.stringify(init.body) : undefined,
       signal: AbortSignal.timeout(GOOGLE_WORKSPACE_CONSTANTS.REQUEST_TIMEOUT_MS),
     });
   } catch (err) {
@@ -113,6 +126,7 @@ export async function googleRequest<T>(
     const passthrough = res.status === 403 || res.status === 404 || res.status === 429;
     throw new GoogleWorkspaceError(passthrough ? res.status : 502, CODES.GOOGLE_ERROR, message);
   }
+  if (wantsText) return text as unknown as T;
   if (!text) return {} as T;
   try {
     return JSON.parse(text) as T;

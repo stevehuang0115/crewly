@@ -1629,6 +1629,33 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	CALENDAR_MAX_RESULTS_CEILING: 250,
 	/** Calendar used when the caller names none */
 	DEFAULT_CALENDAR_ID: 'primary',
+	/** Drive REST base (metadata / search / export) */
+	DRIVE_API_BASE: 'https://www.googleapis.com/drive/v3',
+	/** Drive upload base (multipart create) */
+	DRIVE_UPLOAD_BASE: 'https://www.googleapis.com/upload/drive/v3',
+	/** Docs REST base */
+	DOCS_API_BASE: 'https://docs.googleapis.com/v1',
+	/** Sheets REST base */
+	SHEETS_API_BASE: 'https://sheets.googleapis.com/v4',
+	/** Slides REST base */
+	SLIDES_API_BASE: 'https://slides.googleapis.com/v1',
+	/** Default / ceiling for Drive search results per call */
+	DRIVE_DEFAULT_MAX_RESULTS: 20,
+	DRIVE_MAX_RESULTS_CEILING: 100,
+	/** Largest file body read into memory for `drive read` / `drive upload` (bytes) */
+	DRIVE_MAX_CONTENT_BYTES: 10 * 1024 * 1024,
+	/** Google-native MIME types and what they export to as text */
+	DRIVE_EXPORT_MIME: {
+		'application/vnd.google-apps.document': 'text/plain',
+		'application/vnd.google-apps.spreadsheet': 'text/csv',
+		'application/vnd.google-apps.presentation': 'text/plain',
+	} as Record<string, string>,
+	/** Sheets range used when the caller names none */
+	SHEETS_DEFAULT_RANGE: 'A1:Z1000',
+	/** Cap on rows accepted per Sheets write */
+	SHEETS_MAX_ROWS: 5000,
+	/** Cap on slides per Slides create */
+	SLIDES_MAX_SLIDES: 60,
 	/** Dashboard path the Cloud consent flow returns to */
 	SETTINGS_RETURN_PATH: '/settings?tab=integrations',
 	/** Metadata headers requested on Gmail search hits */

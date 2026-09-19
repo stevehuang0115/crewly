@@ -53,6 +53,17 @@ describe('googleRequest', () => {
     expect(init.body).toBeUndefined();
   });
 
+  it('sends a raw body with its content type and can return the body as text (Drive export / upload)', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 200, text: async () => 'a,b\n1,2' });
+    await expect(
+      googleRequest(deps, 'https://g/export', { method: 'PUT', rawBody: Buffer.from('bytes'), contentType: 'multipart/related; boundary=x', responseType: 'text' }),
+    ).resolves.toBe('a,b\n1,2');
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(init.method).toBe('PUT');
+    expect(init.headers).toEqual({ Authorization: 'Bearer ya29.tok', Accept: '*/*', 'Content-Type': 'multipart/related; boundary=x' });
+    expect(init.body).toEqual(Buffer.from('bytes'));
+  });
+
   it('drops the cached token on a Google 401 and reports it as 401 google_error', async () => {
     fetchMock.mockResolvedValueOnce(response(401, { error: { code: 401, message: 'Invalid Credentials' } }));
     await expect(googleRequest(deps, 'https://g/x')).rejects.toMatchObject({

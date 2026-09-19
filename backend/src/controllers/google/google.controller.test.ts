@@ -28,6 +28,10 @@ let app: Application;
 let tokens: { status: jest.Mock; disconnect: jest.Mock; buildConnectUrl: jest.Mock };
 let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock };
 let calendar: { listEvents: jest.Mock; createEvent: jest.Mock };
+let drive: { search: jest.Mock; get: jest.Mock; readContent: jest.Mock; upload: jest.Mock };
+let docs: { read: jest.Mock; create: jest.Mock; append: jest.Mock };
+let sheets: { info: jest.Mock; read: jest.Mock; create: jest.Mock; append: jest.Mock; update: jest.Mock };
+let slides: { read: jest.Mock; create: jest.Mock };
 
 beforeEach(() => {
   tokens = {
@@ -37,11 +41,16 @@ beforeEach(() => {
   };
   gmail = { search: jest.fn(), read: jest.fn(), send: jest.fn() };
   calendar = { listEvents: jest.fn(), createEvent: jest.fn() };
+  drive = { search: jest.fn(), get: jest.fn(), readContent: jest.fn(), upload: jest.fn() };
+  docs = { read: jest.fn(), create: jest.fn(), append: jest.fn() };
+  sheets = { info: jest.fn(), read: jest.fn(), create: jest.fn(), append: jest.fn(), update: jest.fn() };
+  slides = { read: jest.fn(), create: jest.fn() };
   setGoogleControllerDeps({
     tokens: tokens as unknown as GoogleWorkspaceTokenService,
     gmail: gmail as unknown as GmailService,
     calendar: calendar as unknown as CalendarService,
-  } as GoogleControllerDeps);
+    drive, docs, sheets, slides,
+  } as unknown as GoogleControllerDeps);
 
   app = express();
   app.use(express.json());
@@ -240,5 +249,58 @@ describe('POST /calendar/events', () => {
     const res = await request(app).post('/api/google/calendar/events').send({ start: '2026-10-01', end: '2026-10-02', attendees: 'a@b.c, d@e.f' });
     expect(calendar.createEvent).toHaveBeenCalledWith(expect.objectContaining({ summary: '', attendees: ['a@b.c', ' d@e.f'] }));
     expect(res.status).toBe(400);
+  });
+});
+
+describe('Drive / Docs / Sheets / Slides', () => {
+  it('drive: search passes q/mimeType/folderId/max, content and upload wrap the service', async () => {
+    drive.search.mockResolvedValue([{ id: '1' }]);
+    const res = await request(app).get('/api/google/drive/files?q=plan&mimeType=text%2Fplain&folderId=f&max=5');
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ count: 1, files: [{ id: '1' }] });
+    expect(drive.search).toHaveBeenCalledWith({ query: 'plan', mimeType: 'text/plain', folderId: 'f', max: 5 });
+
+    drive.readContent.mockResolvedValue({ content: 'x' });
+    expect((await request(app).get('/api/google/drive/files/abc/content')).body.data).toEqual({ content: 'x' });
+    expect(drive.readContent).toHaveBeenCalledWith('abc');
+
+    drive.upload.mockResolvedValue({ id: 'u' });
+    const up = await request(app).post('/api/google/drive/files').send({ name: 'n.txt', content: 'hi', folderId: 'f' });
+    expect(up.body.data).toEqual({ id: 'u' });
+    expect(drive.upload).toHaveBeenCalledWith({ name: 'n.txt', content: 'hi', encoding: 'utf8', mimeType: undefined, folderId: 'f', convertTo: undefined });
+  });
+
+  it('docs: read / create / append', async () => {
+    docs.read.mockResolvedValue({ id: 'd', text: 't' });
+    expect((await request(app).get('/api/google/docs/d')).body.data).toEqual({ id: 'd', text: 't' });
+    docs.create.mockResolvedValue({ id: 'n' });
+    await request(app).post('/api/google/docs').send({ title: 'T', text: 'body' });
+    expect(docs.create).toHaveBeenCalledWith({ title: 'T', text: 'body' });
+    docs.append.mockResolvedValue({ id: 'd' });
+    await request(app).post('/api/google/docs/d/append').send({ text: 'more' });
+    expect(docs.append).toHaveBeenCalledWith('d', 'more');
+  });
+
+  it('sheets: values read with range, write defaults to append and honours mode=update', async () => {
+    sheets.read.mockResolvedValue({ rows: [] });
+    await request(app).get('/api/google/sheets/s/values?range=A1%3AB2');
+    expect(sheets.read).toHaveBeenCalledWith('s', 'A1:B2');
+    sheets.append.mockResolvedValue({ updatedRows: 1 });
+    const a = await request(app).post('/api/google/sheets/s/values').send({ rows: [['x']] });
+    expect(a.body.data).toEqual({ mode: 'append', updatedRows: 1 });
+    sheets.update.mockResolvedValue({ updatedRows: 1 });
+    const u = await request(app).post('/api/google/sheets/s/values').send({ rows: [['x']], range: 'B2', mode: 'update' });
+    expect(u.body.data.mode).toBe('update');
+    expect(sheets.update).toHaveBeenCalledWith({ spreadsheetId: 's', range: 'B2', rows: [['x']] });
+  });
+
+  it('slides: create passes the outline and a service validation error maps to 400', async () => {
+    slides.create.mockResolvedValue({ id: 'p', slideCount: 1 });
+    await request(app).post('/api/google/slides').send({ title: 'Deck', slides: [{ title: 'a', bullets: ['b'] }] });
+    expect(slides.create).toHaveBeenCalledWith({ title: 'Deck', slides: [{ title: 'a', bullets: ['b'] }] });
+    slides.read.mockRejectedValue(new GoogleWorkspaceError(400, 'validation', '"id" is required'));
+    const res = await request(app).get('/api/google/slides/%20');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('validation');
   });
 });

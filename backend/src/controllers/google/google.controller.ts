@@ -21,6 +21,10 @@ import {
 } from '../../services/google/google-workspace-token.service.js';
 import { GmailService, buildRfc822, type GmailSendInput } from '../../services/google/gmail.service.js';
 import { CalendarService } from '../../services/google/calendar.service.js';
+import { DriveService } from '../../services/google/drive.service.js';
+import { DocsService } from '../../services/google/docs.service.js';
+import { SheetsService, type SheetCell } from '../../services/google/sheets.service.js';
+import { SlidesService, type SlideOutline } from '../../services/google/slides.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('GoogleController');
 
@@ -29,6 +33,10 @@ export interface GoogleControllerDeps {
   tokens: GoogleWorkspaceTokenService;
   gmail: GmailService;
   calendar: CalendarService;
+  drive: DriveService;
+  docs: DocsService;
+  sheets: SheetsService;
+  slides: SlidesService;
 }
 
 let deps: GoogleControllerDeps | null = null;
@@ -42,7 +50,15 @@ let deps: GoogleControllerDeps | null = null;
 function getDeps(): GoogleControllerDeps {
   if (!deps) {
     const tokens = GoogleWorkspaceTokenService.getInstance();
-    deps = { tokens, gmail: new GmailService({ tokens }), calendar: new CalendarService({ tokens }) };
+    deps = {
+      tokens,
+      gmail: new GmailService({ tokens }),
+      calendar: new CalendarService({ tokens }),
+      drive: new DriveService({ tokens }),
+      docs: new DocsService({ tokens }),
+      sheets: new SheetsService({ tokens }),
+      slides: new SlidesService({ tokens }),
+    };
   }
   return deps;
 }
@@ -308,6 +324,234 @@ export async function calendarCreate(req: Request, res: Response): Promise<void>
       timezone: body.timezone,
     });
     res.json({ success: true, data: event });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Drive
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/google/drive/files?q=&mimeType=&folderId=&max= — search.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function driveSearch(req: Request, res: Response): Promise<void> {
+  try {
+    const files = await getDeps().drive.search({
+      query: q(req, 'q') || undefined,
+      mimeType: q(req, 'mimeType') || undefined,
+      folderId: q(req, 'folderId') || undefined,
+      max: qInt(req, 'max'),
+    });
+    res.json({ success: true, data: { count: files.length, files } });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * GET /api/google/drive/files/:id — metadata.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function driveGet(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ success: true, data: await getDeps().drive.get(String(req.params.id ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * GET /api/google/drive/files/:id/content — exported text / downloaded body.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function driveContent(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ success: true, data: await getDeps().drive.readContent(String(req.params.id ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/drive/files — body `{ name, content, encoding?, mimeType?, folderId?, convertTo? }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function driveUpload(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { name?: string; content?: string; encoding?: string; mimeType?: string; folderId?: string; convertTo?: string };
+    const file = await getDeps().drive.upload({
+      name: String(body.name ?? ''),
+      content: typeof body.content === 'string' ? body.content : '',
+      encoding: body.encoding === 'base64' ? 'base64' : 'utf8',
+      mimeType: body.mimeType,
+      folderId: body.folderId,
+      convertTo: body.convertTo,
+    });
+    logger.info('Drive file uploaded', { id: file.id, name: file.name });
+    res.json({ success: true, data: file });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Docs
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/google/docs/:id — document as text.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsRead(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ success: true, data: await getDeps().docs.read(String(req.params.id ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/docs — body `{ title, text? }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsCreate(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { title?: string; text?: string };
+    const doc = await getDeps().docs.create({ title: String(body.title ?? ''), text: typeof body.text === 'string' ? body.text : undefined });
+    logger.info('Google Doc created', { id: doc.id, title: doc.title });
+    res.json({ success: true, data: doc });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/docs/:id/append — body `{ text }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function docsAppend(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { text?: string };
+    res.json({ success: true, data: await getDeps().docs.append(String(req.params.id ?? ''), String(body.text ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sheets
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/google/sheets/:id — title + tabs.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function sheetsInfo(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ success: true, data: await getDeps().sheets.info(String(req.params.id ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * GET /api/google/sheets/:id/values?range= — cell values.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function sheetsRead(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ success: true, data: await getDeps().sheets.read(String(req.params.id ?? ''), q(req, 'range') || undefined) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/sheets — body `{ title, sheetTitle?, rows? }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function sheetsCreate(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { title?: string; sheetTitle?: string; rows?: SheetCell[][] };
+    const info = await getDeps().sheets.create({ title: String(body.title ?? ''), sheetTitle: body.sheetTitle, rows: body.rows });
+    logger.info('Google Sheet created', { id: info.id, title: info.title });
+    res.json({ success: true, data: info });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/sheets/:id/values — body `{ range?, rows, mode?: 'append' | 'update' }`
+ * (default append).
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function sheetsWrite(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { range?: string; rows?: SheetCell[][]; mode?: string };
+    const input = { spreadsheetId: String(req.params.id ?? ''), range: body.range, rows: body.rows as SheetCell[][] };
+    const result = body.mode === 'update' ? await getDeps().sheets.update(input) : await getDeps().sheets.append(input);
+    res.json({ success: true, data: { mode: body.mode === 'update' ? 'update' : 'append', ...result } });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Slides
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /api/google/slides/:id — deck as text per slide.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function slidesRead(req: Request, res: Response): Promise<void> {
+  try {
+    res.json({ success: true, data: await getDeps().slides.read(String(req.params.id ?? '')) });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/slides — body `{ title, slides: [{ title, bullets? }] }`.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function slidesCreate(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { title?: string; slides?: SlideOutline[] };
+    const deck = await getDeps().slides.create({ title: String(body.title ?? ''), slides: Array.isArray(body.slides) ? body.slides : [] });
+    logger.info('Google Slides deck created', { id: deck.id, title: deck.title, slides: deck.slideCount });
+    res.json({ success: true, data: deck });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
