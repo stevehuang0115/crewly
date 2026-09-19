@@ -1,6 +1,8 @@
 /**
  * Canva routes — mounted at `/api/canva`.
  *
+ * Everything after /disconnect is behind the connector's role allowlist.
+ *
  * - GET    /status               — grant status
  * - GET    /connect-url          — Cloud consent-start URL
  * - DELETE /disconnect           — revoke + forget
@@ -14,6 +16,7 @@
  */
 
 import { Router } from 'express';
+import { requireConnectorAccess } from '../connector/connector.controller.js';
 import { getStatus, getConnectUrl, disconnect, listDesigns, getDesign, createDesign, exportDesign, uploadAsset } from './canva.controller.js';
 
 /**
@@ -26,6 +29,8 @@ export function createCanvaRouter(): Router {
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
   router.delete('/disconnect', disconnect);
+  // Data routes only — see the note in google.routes.ts.
+  router.use(requireConnectorAccess('canva'));
   router.get('/designs', listDesigns);
   router.get('/designs/:id', getDesign);
   router.post('/designs', createDesign);

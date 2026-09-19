@@ -42,7 +42,7 @@ const CONNECT_URL_ENDPOINT = '/api/google/connect-url';
 const DISCONNECT_URL = '/api/google/disconnect';
 
 /** Where Cloud sends the browser back after consent. */
-const RETURN_PATH = '/settings?tab=integrations';
+const RETURN_PATH = '/connections?platform=google-workspace';
 
 /** Query flag Cloud appends on return (`?google=connected` / `?google=error`). */
 const RETURN_FLAG_PARAM = 'google';

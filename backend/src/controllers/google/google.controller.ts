@@ -182,7 +182,7 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
 
 /**
  * GET /api/google/connect-url — `{ url }` to open in the browser
- * (Cloud `/start?token=<jwt>&returnUrl=<dashboard>/settings?tab=integrations`).
+ * (Cloud `/start?token=<jwt>&returnUrl=<dashboard>/connections?platform=google-workspace`).
  *
  * @param req - Incoming request; optional `returnUrl` query
  * @param res - Response

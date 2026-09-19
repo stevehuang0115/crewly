@@ -1315,16 +1315,16 @@ describe('Slack Controller', () => {
         const url = new URL(response.body.data.url);
         expect(`${url.origin}${url.pathname}`).toBe('https://api.crewlyai.com/api/cloud/slack/install');
         expect(url.searchParams.get('token')).toBe('jwt-abc');
-        expect(url.searchParams.get('returnUrl')).toBe('http://crewly.local:3000/settings?tab=slack');
+        expect(url.searchParams.get('returnUrl')).toBe('http://crewly.local:3000/connections?platform=slack');
         expect(url.searchParams.get('instanceId')).toBe('device-1');
-        expect(response.body.data.returnUrl).toBe('http://crewly.local:3000/settings?tab=slack');
+        expect(response.body.data.returnUrl).toBe('http://crewly.local:3000/connections?platform=slack');
       });
 
       it('honours an http(s) returnUrl from the caller and ignores anything else', async () => {
         const good = await request(app).get('/api/slack/cloud/install-url').query({ returnUrl: 'https://dash.example.com/settings?tab=slack' });
         expect(new URL(good.body.data.url).searchParams.get('returnUrl')).toBe('https://dash.example.com/settings?tab=slack');
         const bad = await request(app).get('/api/slack/cloud/install-url').query({ returnUrl: 'javascript:alert(1)' }).set('Host', 'h:1');
-        expect(new URL(bad.body.data.url).searchParams.get('returnUrl')).toBe('http://h:1/settings?tab=slack');
+        expect(new URL(bad.body.data.url).searchParams.get('returnUrl')).toBe('http://h:1/connections?platform=slack');
       });
 
       it('answers 401 CLOUD_NOT_CONNECTED without a Cloud login', async () => {

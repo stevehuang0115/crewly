@@ -41,7 +41,7 @@ it('status / connect-url / disconnect wrap the token service', async () => {
   expect((await request(app).get('/api/canva/status')).body).toEqual({ success: true, data: { connected: true, cloudConnected: true, canvaUserId: 'cu' } });
   const cu = await request(app).get('/api/canva/connect-url');
   expect(cu.body.data.url).toBe(CONNECT_URL);
-  expect(tokens.buildConnectUrl.mock.calls[0][0]).toMatch(/\/settings\?tab=integrations$/);
+  expect(tokens.buildConnectUrl.mock.calls[0][0]).toMatch(/\/connections\?platform=canva$/);
   expect((await request(app).delete('/api/canva/disconnect')).body).toEqual({ success: true, data: { removed: true } });
 });
 

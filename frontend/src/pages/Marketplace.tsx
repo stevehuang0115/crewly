@@ -9,7 +9,9 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { PageToolbar } from '../components/UI/PageToolbar';
+import { CONNECTORS, CONNECTOR_GROUPS } from '../config/connectors';
 import { Dropdown } from '../components/UI/Dropdown';
 import {
   fetchMarketplaceItems,
@@ -26,12 +28,20 @@ import { useToast } from '../hooks/useToast';
 import ToastContainer from '../components/Toast';
 
 /** Tab options for filtering by item type */
-const tabs: { label: string; value: MarketplaceItemType | 'all' }[] = [
+/**
+ * `connector` is not a marketplace item type: connectors are not installed,
+ * they are authorised against your own account. The tab lists them for
+ * discovery and hands off to Connections, which owns the Connect button.
+ */
+const CONNECTORS_TAB = 'connector' as const;
+
+const tabs: { label: string; value: MarketplaceItemType | 'all' | typeof CONNECTORS_TAB }[] = [
   { label: 'All', value: 'all' },
   { label: 'Skills', value: 'skill' },
   { label: '3D Models', value: 'model' },
   { label: 'Roles', value: 'role' },
   { label: 'MCP Tools', value: 'mcp_tool' },
+  { label: 'Connectors', value: CONNECTORS_TAB },
 ];
 
 /** Sort options for the dropdown */
@@ -78,7 +88,7 @@ export default function Marketplace() {
   const [items, setItems] = useState<MarketplaceItemWithStatus[]>([]);
   const [submissions, setSubmissions] = useState<MarketplaceSubmission[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeType, setActiveType] = useState<MarketplaceItemType | 'all'>('all');
+  const [activeType, setActiveType] = useState<MarketplaceItemType | 'all' | typeof CONNECTORS_TAB>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [sortBy, setSortBy] = useState<SortOption>('popular');
   const [operatingOn, setOperatingOn] = useState<string | null>(null);
@@ -93,7 +103,7 @@ export default function Marketplace() {
       setLoading(true);
       setError(null);
       const data = await fetchMarketplaceItems({
-        type: activeType === 'all' ? undefined : activeType,
+        type: activeType === 'all' || activeType === CONNECTORS_TAB ? undefined : activeType,
         search: searchQuery || undefined,
         sort: sortBy,
       });
@@ -283,7 +293,44 @@ export default function Marketplace() {
           />
 
           {/* Content */}
-          {loading ? (
+          {activeType === CONNECTORS_TAB ? (
+            <div className="space-y-6" data-testid="marketplace-connectors">
+              <p className="text-sm text-text-secondary-dark">
+                Connectors are not installed — you authorise them against your own account, and can revoke
+                them at any time. Manage them on{' '}
+                <Link to="/connections" className="text-primary hover:underline">Connections</Link>.
+              </p>
+              {CONNECTOR_GROUPS.map((group) => (
+                <section key={group.id} className="space-y-3">
+                  <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide">{group.title}</h2>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    {CONNECTORS.filter((c) => c.group === group.id)
+                      .filter((c) => !searchQuery.trim() || `${c.name} ${c.description}`.toLowerCase().includes(searchQuery.trim().toLowerCase()))
+                      .map((connector) => (
+                        <div
+                          key={connector.id}
+                          className="bg-surface-dark border border-border-dark rounded-xl p-5 flex flex-col hover:border-primary/30 transition-colors"
+                          data-testid={`marketplace-connector-${connector.id}`}
+                        >
+                          <div className="flex items-center gap-2 mb-3">
+                            <Plug className="w-4 h-4 text-primary" />
+                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary">connector</span>
+                          </div>
+                          <h3 className="text-sm font-semibold mb-1">{connector.name}</h3>
+                          <p className="text-xs text-text-secondary-dark leading-relaxed flex-1">{connector.description}</p>
+                          <Link
+                            to={`/connections?platform=${connector.id}`}
+                            className="mt-4 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors"
+                          >
+                            Connect →
+                          </Link>
+                        </div>
+                      ))}
+                  </div>
+                </section>
+              ))}
+            </div>
+          ) : loading ? (
             <div className="text-center py-16 text-text-secondary-dark" role="status">Loading marketplace...</div>
           ) : error ? (
             <div className="text-center py-16 text-red-400" role="alert">{error}</div>

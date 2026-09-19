@@ -28,7 +28,7 @@ import {
 	Target,
 	Inbox,
 	Cloud,
-	BookOpen,
+	BookOpen, Plug,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -78,6 +78,7 @@ const NAV_GROUPS: NavGroup[] = [
 		label: 'TOOLS',
 		items: [
 			{ name: 'Marketplace', href: '/marketplace', icon: Store },
+			{ name: 'Connections', href: '/connections', icon: Plug },
 			{ name: 'Triggers', href: '/triggers', icon: Clock },
 		],
 	},

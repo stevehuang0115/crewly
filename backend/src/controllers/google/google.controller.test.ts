@@ -77,19 +77,19 @@ describe('GET /status', () => {
 });
 
 describe('GET /connect-url', () => {
-  it('defaults the return URL to this API origin + /settings?tab=integrations', async () => {
+  it('defaults the return URL to this API origin + the Connections page', async () => {
     const res = await request(app).get('/api/google/connect-url').set('Host', 'localhost:8787');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ success: true, data: { url: CONNECT_URL } });
-    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/settings?tab=integrations');
+    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace');
   });
 
   it('honours an explicit http(s) returnUrl and ignores a non-http one', async () => {
-    await request(app).get('/api/google/connect-url').query({ returnUrl: 'http://localhost:3000/settings?tab=integrations' }).set('Host', 'localhost:8787');
-    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:3000/settings?tab=integrations');
+    await request(app).get('/api/google/connect-url').query({ returnUrl: 'http://localhost:3000/connections?platform=google-workspace' }).set('Host', 'localhost:8787');
+    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:3000/connections?platform=google-workspace');
 
     await request(app).get('/api/google/connect-url').query({ returnUrl: 'javascript:alert(1)' }).set('Host', 'localhost:8787');
-    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:8787/settings?tab=integrations');
+    expect(tokens.buildConnectUrl).toHaveBeenLastCalledWith('http://localhost:8787/connections?platform=google-workspace');
   });
 
   it('answers 401 not_logged_in when there is no Cloud session', async () => {
@@ -129,7 +129,7 @@ describe('GET /gmail/search', () => {
     const res = await request(app).get('/api/google/gmail/search').query({ q: 'x' }).set('Host', 'localhost:8787');
     expect(res.status).toBe(409);
     expect(res.body).toEqual({ success: false, error: 'not_connected', message: 'no grant', hint: CONNECT_URL });
-    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/settings?tab=integrations');
+    expect(tokens.buildConnectUrl).toHaveBeenCalledWith('http://localhost:8787/connections?platform=google-workspace');
   });
 
   it('falls back to a textual hint for not_connected when not even signed in to Cloud', async () => {

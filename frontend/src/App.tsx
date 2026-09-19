@@ -11,6 +11,7 @@ import { Triggers } from './pages/Triggers';
 import { Factory } from './pages/Factory';
 import { Settings } from './pages/Settings';
 import { TeamChatRoute } from './components/Chat-team/TeamChatRoute';
+import Connections from './pages/Connections';
 import Marketplace from './pages/Marketplace';
 import MarketplaceDetail from './pages/MarketplaceDetail';
 import { Wiki } from './pages/Wiki';
@@ -74,6 +75,7 @@ function App() {
               <Route path="scheduled-checkins" element={<ScheduledCheckins />} />
               <Route path="triggers" element={<Triggers />} />
               <Route path="factory" element={<Factory />} />
+              <Route path="connections" element={<Connections />} />
               <Route path="marketplace" element={<Marketplace />} />
               <Route path="marketplace/:id" element={<MarketplaceDetail />} />
               <Route path="wiki" element={<Wiki />} />

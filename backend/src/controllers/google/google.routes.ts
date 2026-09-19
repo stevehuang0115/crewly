@@ -8,6 +8,7 @@
  */
 
 import { Router } from 'express';
+import { requireConnectorAccess } from '../connector/connector.controller.js';
 import {
   getStatus,
   getConnectUrl,
@@ -35,7 +36,7 @@ import {
 /**
  * Creates the Google Workspace router.
  *
- * Routes:
+ * Routes (everything after /disconnect is behind the connector's role allowlist):
  * - GET    /status                — grant status (connected, email, scopes)
  * - GET    /connect-url           — Cloud consent-start URL for the browser
  * - DELETE /disconnect            — revoke + forget the grant
@@ -66,6 +67,12 @@ export function createGoogleRouter(): Router {
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
   router.delete('/disconnect', disconnect);
+
+  // Everything below touches the owner's Google data, so it goes through the
+  // per-connector role allowlist. Registered here on purpose: Express matches
+  // in order, so the three grant-management routes above (the dashboard's)
+  // stay ungated.
+  router.use(requireConnectorAccess('google-workspace'));
   router.get('/gmail/search', gmailSearch);
   router.get('/gmail/messages/:id', gmailRead);
   router.post('/gmail/send', gmailSend);

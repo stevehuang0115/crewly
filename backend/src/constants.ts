@@ -748,7 +748,7 @@ export const SLACK_CLOUD_CONSTANTS = {
 	/** `GET` — one-click install redirect (token + returnUrl in the query) */
 	INSTALL_PATH: '/install',
 	/** Dashboard path the install flow returns to */
-	INSTALL_RETURN_PATH: '/settings?tab=slack',
+	INSTALL_RETURN_PATH: '/connections?platform=slack',
 	/** How often the cached Cloud config is re-fetched (ms) */
 	CONFIG_REFRESH_INTERVAL_MS: 10 * 60 * 1000,
 	/** How often the instance registry heartbeat is sent (ms) */
@@ -1657,7 +1657,7 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 	/** Cap on slides per Slides create */
 	SLIDES_MAX_SLIDES: 60,
 	/** Dashboard path the Cloud consent flow returns to */
-	SETTINGS_RETURN_PATH: '/settings?tab=integrations',
+	SETTINGS_RETURN_PATH: '/connections?platform=google-workspace',
 	/** Metadata headers requested on Gmail search hits */
 	GMAIL_SEARCH_HEADERS: ['From', 'To', 'Subject', 'Date'],
 	/** RFC 2045 line width for base64 message bodies */
@@ -1714,7 +1714,7 @@ export const CANVA_CONSTANTS = {
 	/** Export formats */
 	EXPORT_FORMATS: ['pdf', 'png', 'jpg', 'pptx', 'gif', 'mp4'] as readonly string[],
 	/** Dashboard path the Cloud consent flow returns to */
-	SETTINGS_RETURN_PATH: '/settings?tab=integrations',
+	SETTINGS_RETURN_PATH: '/connections?platform=canva',
 	/** Error codes shared between the token service, controller and skills */
 	ERROR_CODES: {
 		NOT_LOGGED_IN: 'not_logged_in',

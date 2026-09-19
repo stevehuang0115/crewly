@@ -73,6 +73,7 @@ jest.mock('../controllers/trigger/trigger.routes.js', () => ({ createTriggerRout
 jest.mock('../controllers/growth/growth.routes.js', () => ({ createGrowthRouter: () => Router() }));
 jest.mock('../controllers/google/google.routes.js', () => ({ createGoogleRouter: () => Router() }));
 jest.mock('../controllers/canva/canva.routes.js', () => ({ createCanvaRouter: () => Router() }));
+jest.mock('../controllers/connector/connector.routes.js', () => ({ createConnectorRouter: () => Router() }));
 jest.mock('../controllers/agent-self-improvement/agent-self-improvement.controller.js', () => ({ createAgentSelfImprovementRouter: () => Router() }));
 jest.mock('../controllers/task-projection/task-projection.routes.js', () => ({ __esModule: true, default: Router() }));
 jest.mock('../controllers/chat-v2/index.js', () => ({ createChatV2Router: () => Router() }));

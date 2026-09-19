@@ -47,6 +47,7 @@ import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
 import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
+import { createConnectorRouter } from '../controllers/connector/connector.routes.js';
 import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 import { createActiveWorkRouter } from '../controllers/active-work/active-work.controller.js';
@@ -201,6 +202,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Canva Connect on the owner's account — Cloud holds the grant. Backs the canva-* skills.
   router.use('/canva', createCanvaRouter());
+
+  // Which agent roles may use each connected account.
+  router.use('/connectors', createConnectorRouter());
 
   // Agent self-improvement — attention / self-model / prediction calibration /
   // memory consolidation. Mounted at /api/agents/:sessionName/self-improvement

@@ -206,7 +206,7 @@ describe('SLACK_CLOUD_CONSTANTS (Slack v3 — Cloud owns Slack)', () => {
     expect(SLACK_CLOUD_CONSTANTS.INSTANCES_PATH).toBe('/instances');
     expect(SLACK_CLOUD_CONSTANTS.AGENTS_SYNC_PATH).toBe('/agents/sync');
     expect(SLACK_CLOUD_CONSTANTS.INSTALL_PATH).toBe('/install');
-    expect(SLACK_CLOUD_CONSTANTS.INSTALL_RETURN_PATH).toBe('/settings?tab=slack');
+    expect(SLACK_CLOUD_CONSTANTS.INSTALL_RETURN_PATH).toBe('/connections?platform=slack');
   });
 
   it('keeps file-share and thread-broadcast subtypes routable and nothing else', () => {

@@ -30,7 +30,7 @@ const STATUS_URL = '/api/canva/status';
 const CONNECT_URL_ENDPOINT = '/api/canva/connect-url';
 const DISCONNECT_URL = '/api/canva/disconnect';
 /** Where Cloud sends the browser back after consent. */
-const RETURN_PATH = '/settings?tab=integrations';
+const RETURN_PATH = '/connections?platform=canva';
 /** Query flag Cloud appends on return (`?canva=connected` / `?canva=error`). */
 const RETURN_FLAG_PARAM = 'canva';
 
