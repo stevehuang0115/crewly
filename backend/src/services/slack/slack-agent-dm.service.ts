@@ -205,7 +205,7 @@ export class SlackAgentDmService {
 
     // A reply is now owed: show the honest state where it will land —
     // "waking up…" while an idle agent is started and registered (a cold
-    // start is 1–2 minutes), "is typing…" once it holds the message.
+    // start is 1–2 minutes), "is working on it…" once it holds the message.
     const typingKey = { agentSession, slackChannelId: message.channelId, ...(message.threadTs ? { threadTs: message.threadTs } : {}) };
     const typing = installed && this.deps.typing ? this.deps.typing : null;
     if (typing) {

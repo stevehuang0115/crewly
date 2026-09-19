@@ -1360,7 +1360,8 @@ describe('Orchestrator Handlers', () => {
     });
 
     it('rejects with 400 for malformed modelId (no slash) and surfaces "format" error', async () => {
-      mockRequest.body = { modelId: 'gibberish' };
+      // provider/model is only required for the in-process Crewly Agent runtime
+      mockRequest.body = { runtimeType: 'crewly-agent', modelId: 'gibberish' };
 
       await orchestratorHandlers.updateOrchestratorRuntime.call(
         mockApiContext as ApiContext,
@@ -1379,7 +1380,7 @@ describe('Orchestrator Handlers', () => {
       // Format passes the structural regex (provider/modelId) but the provider
       // is not in MODEL_PROVIDERS — so isModelProvider() returns false and we
       // surface a precise "Provider not supported" error message.
-      mockRequest.body = { modelId: 'fakeprovider/some-model' };
+      mockRequest.body = { runtimeType: 'crewly-agent', modelId: 'fakeprovider/some-model' };
 
       await orchestratorHandlers.updateOrchestratorRuntime.call(
         mockApiContext as ApiContext,
@@ -1396,7 +1397,7 @@ describe('Orchestrator Handlers', () => {
     it('accepts the canonical default modelId without flagging it as invalid', async () => {
       // Edge case: when the input equals provider/modelId of DEFAULT_MODEL,
       // parseModelId() returns the default — but that's correct, not a fallback.
-      mockRequest.body = { modelId: 'google/gemini-3-flash-preview' };
+      mockRequest.body = { runtimeType: 'crewly-agent', modelId: 'google/gemini-3-flash-preview' };
 
       await orchestratorHandlers.updateOrchestratorRuntime.call(
         mockApiContext as ApiContext,
@@ -1406,6 +1407,44 @@ describe('Orchestrator Handlers', () => {
 
       expect(mockResponse.status).not.toHaveBeenCalledWith(400);
       expect(mockStorageService.updateOrchestratorModelId).toHaveBeenCalledWith('google/gemini-3-flash-preview');
+    });
+
+    it('accepts a plain harness model name for the PTY runtimes (no provider prefix needed)', async () => {
+      mockRequest.body = { runtimeType: 'codex-cli', modelId: 'gpt-5.6-sol', reasoningEffort: 'high' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockResponse.status).not.toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorModelId).toHaveBeenCalledWith('gpt-5.6-sol', 'high');
+    });
+
+    it('rejects a model name that is not shell-safe and an unknown effort level', async () => {
+      mockRequest.body = { runtimeType: 'claude-code', modelId: 'opus; rm -rf /' };
+      await orchestratorHandlers.updateOrchestratorRuntime.call(mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response);
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+
+      (mockResponse.status as jest.Mock).mockClear();
+      mockRequest.body = { reasoningEffort: 'Very High' };
+      await orchestratorHandlers.updateOrchestratorRuntime.call(mockApiContext as ApiContext, mockRequest as Request, mockResponse as Response);
+      expect(mockResponse.status).toHaveBeenCalledWith(400);
+      expect(mockStorageService.updateOrchestratorModelId).not.toHaveBeenCalled();
+    });
+
+    it('clears the effort with an empty string while keeping the stored model', async () => {
+      mockStorageService.getOrchestratorStatus = jest.fn().mockResolvedValue({ runtimeType: 'claude-code', modelId: 'opus' });
+      mockRequest.body = { reasoningEffort: '' };
+
+      await orchestratorHandlers.updateOrchestratorRuntime.call(
+        mockApiContext as ApiContext,
+        mockRequest as Request,
+        mockResponse as Response,
+      );
+
+      expect(mockStorageService.updateOrchestratorModelId).toHaveBeenCalledWith('opus', '');
     });
 
     it('returns 500 when storage write fails', async () => {

@@ -1,9 +1,9 @@
 /**
- * "Agent is typing…" placeholders in Slack.
+ * "Agent is working on it…" placeholders in Slack.
  *
  * Slack offers bots no typing indicator, so the moment a Slack message is
- * handed to an agent, the agent's own bot posts a placeholder ("💭 Ella is
- * typing…") where the reply will appear. When the reply arrives the
+ * handed to an agent, the agent's own bot posts a placeholder ("⚙️ Ella is
+ * working on it…") where the reply will appear. When the reply arrives the
  * placeholder is edited into it — no extra message. An agent that stays
  * silent past the timeout has its placeholder edited to a "still working"
  * note so nothing dangles forever.
@@ -119,7 +119,7 @@ export class SlackTypingPlaceholderService {
 
   /**
    * Move a pending placeholder to another phase (e.g. the agent finished
-   * waking and now holds the message → "is typing…"). No-op when nothing
+   * waking and now holds the message → "is working on it…"). No-op when nothing
    * is pending or the phase is unchanged.
    *
    * @param key - Agent + conversation (+ thread)

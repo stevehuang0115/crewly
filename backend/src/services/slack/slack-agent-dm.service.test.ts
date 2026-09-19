@@ -115,7 +115,7 @@ describe('SlackAgentDmService', () => {
     await fs.rm(deps.storePath as string, { force: true });
   });
 
-  it('shows "waking up…" for an idle agent BEFORE dispatch, "is typing…" once it holds the message, then edits in the reply', async () => {
+  it('shows "waking up…" for an idle agent BEFORE dispatch, "is working on it…" once it holds the message, then edits in the reply', async () => {
     const { deps, sent, emit } = makeDeps({ isAgentAwake: () => false });
     const calls: string[] = [];
     deps.typing = {
@@ -139,7 +139,7 @@ describe('SlackAgentDmService', () => {
     await fs.rm(deps.storePath as string, { force: true });
   });
 
-  it('an awake agent starts at "is typing…"; a failed dispatch turns the placeholder into a failure note', async () => {
+  it('an awake agent starts at "is working on it…"; a failed dispatch turns the placeholder into a failure note', async () => {
     const { deps } = makeDeps({ isAgentAwake: () => true, getDispatcher: () => ({ dispatchMessage: async () => ({ strategy: 'dm', dispatched: false }) }) as never });
     const calls: string[] = [];
     deps.typing = {

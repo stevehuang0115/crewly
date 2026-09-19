@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, User, Briefcase, Wrench, Check } from 'lucide-react';
-import { TeamMember, SUPPORTED_MODELS } from '../../types';
+import { TeamMember, SUPPORTED_MODELS, RUNTIME_MODEL_PRESETS, RUNTIME_EFFORT_LEVELS, RUNTIME_MODEL_HINTS } from '../../types';
 import { rolesService } from '../../services/roles.service';
 import { RoleWithPrompt, ROLE_CATEGORY_DISPLAY_NAMES } from '../../types/role.types';
 import { useSkills } from '../../hooks/useSkills';
@@ -45,6 +45,7 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
   const [skillDisplayInfos, setSkillDisplayInfos] = useState<SkillDisplayInfo[]>([]);
   const [editedRuntime, setEditedRuntime] = useState<string>(member.runtimeType || 'claude-code');
   const [editedModelId, setEditedModelId] = useState<string>(member.modelId || '');
+  const [editedEffort, setEditedEffort] = useState<string>(member.reasoningEffort || '');
   const [editedExpertId, setEditedExpertId] = useState<string | undefined>(member.expertId);
   const { skills: allSkills } = useSkills();
 
@@ -299,7 +300,62 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
             )}
           </div>
 
-          {/* AI Model — only for crewly-agent runtime */}
+          {/* AI Model — PTY runtimes take the harness's own model name (+ optional effort) */}
+          {editedRuntime !== 'crewly-agent' && (
+            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+                  Model
+                </div>
+                {isEditable ? (
+                  <>
+                    <input
+                      list="agent-model-presets"
+                      value={editedModelId}
+                      placeholder="Runtime default"
+                      onChange={(e) => setEditedModelId(e.target.value.trim())}
+                      className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
+                    />
+                    <datalist id="agent-model-presets">
+                      {(RUNTIME_MODEL_PRESETS[editedRuntime] || []).map(m => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
+                      ))}
+                    </datalist>
+                    <p className="mt-1 text-xs text-text-secondary-dark">{RUNTIME_MODEL_HINTS[editedRuntime]}</p>
+                  </>
+                ) : (
+                  <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+                    <span className="text-sm text-text-primary-dark">{member.modelId || 'Runtime default'}</span>
+                  </div>
+                )}
+              </div>
+              {(RUNTIME_EFFORT_LEVELS[editedRuntime] || []).length > 0 && (
+                <div>
+                  <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+                    Reasoning effort
+                  </div>
+                  {isEditable ? (
+                    <select
+                      value={editedEffort}
+                      onChange={(e) => setEditedEffort(e.target.value)}
+                      className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
+                    >
+                      <option value="">Default</option>
+                      {RUNTIME_EFFORT_LEVELS[editedRuntime].map(level => (
+                        <option key={level} value={level}>{level}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+                      <span className="text-sm text-text-primary-dark">{member.reasoningEffort || 'Default'}</span>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* AI Model — crewly-agent picks provider/model */}
           {editedRuntime === 'crewly-agent' && (
             <div className="mt-4">
               <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
@@ -346,9 +402,9 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
                       runtimeType: editedRuntime as TeamMember['runtimeType'],
                       expertId: editedExpertId,
                     };
-                    if (editedRuntime === 'crewly-agent') {
-                      updates.modelId = editedModelId || undefined;
-                    }
+                    // '' clears the override server-side (PUT /members/:id treats '' as "unset").
+                    updates.modelId = editedModelId || '';
+                    updates.reasoningEffort = editedRuntime === 'crewly-agent' ? '' : (editedEffort || '');
                     await onSave(member.id, updates);
                   }
                   onClose();

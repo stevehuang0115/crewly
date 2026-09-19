@@ -1546,7 +1546,7 @@ This is a foundational task that should be completed first before other developm
    *
    * @returns Orchestrator status object or null if not found
    */
-  async getOrchestratorStatus(): Promise<{ sessionName: string; agentStatus: AgentStatus; workingStatus: WorkingStatus; runtimeType: RuntimeType; modelId?: string; readyAt?: string; createdAt: string; updatedAt: string } | null> {
+  async getOrchestratorStatus(): Promise<{ sessionName: string; agentStatus: AgentStatus; workingStatus: WorkingStatus; runtimeType: RuntimeType; modelId?: string; reasoningEffort?: string; readyAt?: string; createdAt: string; updatedAt: string } | null> {
     try {
       // Migrate from legacy format if needed
       await this.migrateFromLegacyTeamsFile();
@@ -1715,9 +1715,11 @@ This is a foundational task that should be completed first before other developm
    * Other orchestrator fields (runtimeType, agentStatus, workingStatus) are
    * preserved by reading the existing config first and merging.
    *
-   * @param modelId - Format: "provider/modelId" (e.g. "google/gemini-3-flash-preview"), or undefined to clear
+   * @param modelId - Format: "provider/modelId" for crewly-agent (e.g. "google/gemini-3-flash-preview"),
+   *   the harness's own model name for PTY runtimes (e.g. "opus", "gpt-5.6-sol"), or undefined to clear
+   * @param reasoningEffort - Optional effort level (Claude Code / Codex); `''` clears it, omitted leaves it untouched
    */
-  async updateOrchestratorModelId(modelId: string | undefined): Promise<void> {
+  async updateOrchestratorModelId(modelId: string | undefined, reasoningEffort?: string): Promise<void> {
     return withOperationLock(this.orchestratorFile, async () => {
       try {
         let orchestrator;
@@ -1732,6 +1734,11 @@ This is a foundational task that should be completed first before other developm
           delete orchestrator.modelId;
         } else {
           orchestrator.modelId = modelId;
+        }
+        if (reasoningEffort === '') {
+          delete orchestrator.reasoningEffort;
+        } else if (reasoningEffort !== undefined) {
+          orchestrator.reasoningEffort = reasoningEffort;
         }
         orchestrator.updatedAt = new Date().toISOString();
 

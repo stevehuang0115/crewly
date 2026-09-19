@@ -813,7 +813,7 @@ export class SlackTeamChannelService {
 
     // @'d agents must reply: show the honest state in the thread for each
     // one that has its own bot — "waking up…" for an idle agent (a cold
-    // start is 1–2 minutes), "is typing…" once it holds the message.
+    // start is 1–2 minutes), "is working on it…" once it holds the message.
     // Who will be asked to reply: the @'d members, or (nobody @'d, top-level
     // message) the team leader alone. Mirrors the dispatcher's targeting so
     // the placeholder matches who actually gets the message.

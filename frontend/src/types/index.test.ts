@@ -295,4 +295,18 @@ describe('Types Index Exports', () => {
       });
     });
   });
+
+  describe('per-agent model presets', () => {
+    it('lists presets, effort levels and a hint for every PTY runtime', () => {
+      for (const runtime of ['claude-code', 'codex-cli', 'gemini-cli', 'opencode-cli']) {
+        expect(TypesModule.RUNTIME_MODEL_PRESETS[runtime].length).toBeGreaterThan(0);
+        expect(TypesModule.RUNTIME_MODEL_HINTS[runtime]).toBeTruthy();
+        expect(Array.isArray(TypesModule.RUNTIME_EFFORT_LEVELS[runtime])).toBe(true);
+      }
+      expect(TypesModule.RUNTIME_EFFORT_LEVELS['claude-code']).toContain('max');
+      expect(TypesModule.RUNTIME_EFFORT_LEVELS['codex-cli']).toContain('high');
+      expect(TypesModule.RUNTIME_EFFORT_LEVELS['gemini-cli']).toEqual([]);
+      expect(TypesModule.RUNTIME_EFFORT_LEVELS['crewly-agent']).toEqual([]);
+    });
+  });
 });

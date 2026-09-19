@@ -18,6 +18,7 @@ import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-m
 import { MemoryService } from '../../services/memory/memory.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { isModelProvider } from '../../services/agent/crewly-agent/types.js';
+import { isSafeModelId, isSafeReasoningEffort } from '../../utils/runtime-model-flags.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('OrchestratorController');
 
@@ -644,15 +645,24 @@ export async function updateOrchestratorRuntime(
 	res: Response
 ): Promise<void> {
 	try {
-		const { runtimeType, modelId } = req.body as { runtimeType?: string; modelId?: string };
+		const { runtimeType, modelId, reasoningEffort } = req.body as { runtimeType?: string; modelId?: string; reasoningEffort?: string };
 
-		// At least one field must be provided. Empty strings count as "not provided".
+		// At least one field must be provided. Empty strings count as "not provided"
+		// for runtimeType / modelId; an empty reasoningEffort clears the field.
 		const hasRuntimeType = typeof runtimeType === 'string' && runtimeType.length > 0;
 		const hasModelId = typeof modelId === 'string' && modelId.length > 0;
-		if (!hasRuntimeType && !hasModelId) {
+		const hasEffort = typeof reasoningEffort === 'string';
+		if (!hasRuntimeType && !hasModelId && !hasEffort) {
 			res.status(400).json({
 				success: false,
-				error: 'At least one of runtimeType or modelId must be provided',
+				error: 'At least one of runtimeType, modelId or reasoningEffort must be provided',
+			} as ApiResponse);
+			return;
+		}
+		if (hasEffort && reasoningEffort !== '' && !isSafeReasoningEffort(reasoningEffort)) {
+			res.status(400).json({
+				success: false,
+				error: 'Invalid reasoningEffort: use a level such as low, medium, high (Claude Code also xhigh, max)',
 			} as ApiResponse);
 			return;
 		}
@@ -669,8 +679,22 @@ export async function updateOrchestratorRuntime(
 			}
 		}
 
-		// Validate modelId format and provider when present.
-		if (hasModelId) {
+		// Validate modelId when present. The in-process Crewly Agent needs
+		// `provider/model` with a known provider; the PTY runtimes take the
+		// harness's own model name (`opus`, `gpt-5.6-sol`, …) which only has
+		// to be shell-safe.
+		const effectiveRuntime = hasRuntimeType
+			? runtimeType
+			: (await this.storageService.getOrchestratorStatus())?.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE;
+		if (hasModelId && effectiveRuntime !== RUNTIME_TYPES.CREWLY_AGENT) {
+			if (!isSafeModelId(modelId)) {
+				res.status(400).json({
+					success: false,
+					error: 'Invalid modelId: use the model name as the runtime expects it (letters, digits, . _ : / -)',
+				} as ApiResponse);
+				return;
+			}
+		} else if (hasModelId) {
 			const validation = validateModelId(modelId!);
 			if (!validation.ok) {
 				const errorMessage = validation.reason === 'malformed'
@@ -688,13 +712,17 @@ export async function updateOrchestratorRuntime(
 		if (hasRuntimeType) {
 			await this.storageService.updateOrchestratorRuntimeType(runtimeType as RuntimeType);
 		}
-		if (hasModelId) {
+		if (hasModelId && !hasEffort) {
 			await this.storageService.updateOrchestratorModelId(modelId);
+		} else if (hasEffort) {
+			const currentModelId = hasModelId ? modelId : (await this.storageService.getOrchestratorStatus())?.modelId;
+			await this.storageService.updateOrchestratorModelId(currentModelId, reasoningEffort);
 		}
 
 		const messageParts: string[] = [];
 		if (hasRuntimeType) messageParts.push(`runtime=${runtimeType}`);
 		if (hasModelId) messageParts.push(`modelId=${modelId}`);
+		if (hasEffort) messageParts.push(`reasoningEffort=${reasoningEffort || '<cleared>'}`);
 
 		res.json({
 			success: true,

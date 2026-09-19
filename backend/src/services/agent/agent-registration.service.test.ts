@@ -2161,6 +2161,17 @@ describe('AgentRegistrationService', () => {
 		}, 120000);
 	});
 
+	describe('resolveModelFlags (private method)', () => {
+		it('maps a member model / effort onto the runtime flag and ignores unsafe values', () => {
+			const resolveModelFlags = (service as any).resolveModelFlags.bind(service);
+			expect(resolveModelFlags('s', 'claude-code', 'opus', 'high')).toEqual(['--model', 'opus', '--effort', 'high']);
+			expect(resolveModelFlags('s', 'codex-cli', 'gpt-5.6-sol')).toEqual(['-m', 'gpt-5.6-sol']);
+			expect(resolveModelFlags('s', 'crewly-agent', 'google/gemini-3-flash-preview')).toEqual([]);
+			expect(resolveModelFlags('s', 'claude-code', 'opus && rm -rf /')).toEqual([]);
+			expect(resolveModelFlags('s', 'gemini-cli')).toEqual([]);
+		});
+	});
+
 	describe('resolveRuntimeFlags (private method)', () => {
 		it('should return flags from role skills', async () => {
 			// findSkillJsonPath uses access() for existence checks

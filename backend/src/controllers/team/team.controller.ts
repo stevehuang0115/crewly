@@ -45,6 +45,7 @@ import { LoggerService } from '../../services/core/logger.service.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import { normalizeMemberSkills } from '../../services/ai/prompt-builder.service.js';
+import { isSafeModelId, isSafeReasoningEffort } from '../../utils/runtime-model-flags.utils.js';
 import {
   evaluateColdLaunch,
   isDormantTeam,
@@ -343,12 +344,46 @@ interface MemberActivityStatus {
 /**
  * Orchestrator status shape from storage service
  */
+/**
+ * Copy the per-agent model fields out of a create/update payload, dropping
+ * empty strings so a cleared field is absent rather than `''`.
+ *
+ * @param input - Member payload
+ * @returns `{ modelId?, reasoningEffort? }` with only the set fields
+ */
+/**
+ * Validate the per-agent model fields of a payload: the values end up on a
+ * shell command line, so only the character set real model ids use is
+ * accepted (`provider/model`, dots, dashes, colons).
+ *
+ * @param input - Member payload
+ * @returns An error message, or null when valid / absent
+ */
+function validateModelFields(input: { modelId?: unknown; reasoningEffort?: unknown }): string | null {
+  if (input.modelId !== undefined && input.modelId !== '' && !isSafeModelId(input.modelId as string)) {
+    return 'Invalid modelId: use the model name as the runtime expects it (letters, digits, . _ : / -)';
+  }
+  if (input.reasoningEffort !== undefined && input.reasoningEffort !== '' && !isSafeReasoningEffort(input.reasoningEffort as string)) {
+    return 'Invalid reasoningEffort: use a level such as low, medium, high (Claude Code also xhigh, max)';
+  }
+  return null;
+}
+
+function pickModelFields(input: { modelId?: string; reasoningEffort?: string }): Pick<TeamMember, 'modelId' | 'reasoningEffort'> {
+  return {
+    ...(input.modelId ? { modelId: input.modelId } : {}),
+    ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+  };
+}
+
 interface OrchestratorStatusInfo {
   agentStatus?: string;
   workingStatus?: string;
   runtimeType?: string;
-  /** Optional model ID for the in-process Crewly Agent runtime (format: provider/modelId) */
+  /** Optional per-agent model (see `TeamMember.modelId`) */
   modelId?: string;
+  /** Optional per-agent reasoning effort (see `TeamMember.reasoningEffort`) */
+  reasoningEffort?: string;
   /** ISO timestamp of the orchestrator's last successful registration */
   readyAt?: string;
   createdAt?: string;
@@ -429,6 +464,7 @@ function buildOrchestratorTeam(
       // Surface configured modelId so the in-process Crewly Agent runtime can use it.
       // Only set when present — undefined preserves "use DEFAULT_MODEL" semantics.
       ...(orchestratorStatus?.modelId ? { modelId: orchestratorStatus.modelId } : {}),
+      ...(orchestratorStatus?.reasoningEffort ? { reasoningEffort: orchestratorStatus.reasoningEffort } : {}),
       ...(orchestratorStatus?.readyAt ? { readyAt: orchestratorStatus.readyAt } : {}),
       createdAt: orchestratorStatus?.createdAt || now,
       updatedAt: orchestratorStatus?.updatedAt || now
@@ -1004,6 +1040,11 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
         } as ApiResponse);
         return;
       }
+      const modelError = validateModelFields(member);
+      if (modelError) {
+        res.status(400).json({ success: false, error: `${member.name}: ${modelError}` } as ApiResponse);
+        return;
+      }
     }
 
     // Validate hierarchical team requirements
@@ -1066,6 +1107,7 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
         agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
         workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
         runtimeType: member.runtimeType || await getDefaultRuntime(),
+        ...pickModelFields(member),
         skillOverrides: member.skillOverrides || [],
         excludedRoleSkills: member.excludedRoleSkills || [],
         ...(normalizeMemberSkills(member.skills) ? { skills: normalizeMemberSkills(member.skills) } : {}),
@@ -1640,7 +1682,13 @@ export async function updateTeamMember(this: ApiContext, req: Request, res: Resp
     if (!team) { res.status(404).json({ success: false, error: 'Team not found' } as ApiResponse); return; }
     const memberIndex = team.members.findIndex(m => m.id === memberId);
     if (memberIndex === -1) { res.status(404).json({ success: false, error: 'Team member not found' } as ApiResponse); return; }
-    const updatedMember: MutableTeamMember = { ...team.members[memberIndex], ...updates, updatedAt: new Date().toISOString() };
+    const modelError = validateModelFields(updates);
+    if (modelError) { res.status(400).json({ success: false, error: modelError } as ApiResponse); return; }
+    // An empty string clears the per-agent model / effort override.
+    const modelUpdates = pickModelFields(updates);
+    const updatedMember: MutableTeamMember = { ...team.members[memberIndex], ...updates, ...modelUpdates, updatedAt: new Date().toISOString() };
+    if (updates.modelId === '') delete updatedMember.modelId;
+    if (updates.reasoningEffort === '') delete updatedMember.reasoningEffort;
     team.members[memberIndex] = updatedMember;
     team.updatedAt = new Date().toISOString();
     await this.storageService.saveTeam(team);
@@ -2952,6 +3000,13 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
 
     // Update members if provided (from TeamModal edit)
     if (updates.members !== undefined && Array.isArray(updates.members)) {
+      for (const memberUpdate of updates.members as TeamMemberUpdate[]) {
+        const modelError = validateModelFields(memberUpdate);
+        if (modelError) {
+          res.status(400).json({ success: false, error: `${memberUpdate.name}: ${modelError}` } as ApiResponse);
+          return;
+        }
+      }
       team.members = await Promise.all(updates.members.map(async (memberUpdate: TeamMemberUpdate) => {
         // Find existing member by name (since the modal doesn't send IDs)
         const existingMember = team.members.find(m => m.name === memberUpdate.name);
@@ -2963,6 +3018,9 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
             role: memberUpdate.role,
             systemPrompt: memberUpdate.systemPrompt,
             runtimeType: memberUpdate.runtimeType || existingMember.runtimeType,
+            // The modal always sends both fields; an empty string clears the override.
+            modelId: memberUpdate.modelId === undefined ? existingMember.modelId : (memberUpdate.modelId || undefined),
+            reasoningEffort: memberUpdate.reasoningEffort === undefined ? existingMember.reasoningEffort : (memberUpdate.reasoningEffort || undefined),
             avatar: memberUpdate.avatar || existingMember.avatar,
             skillOverrides: memberUpdate.skillOverrides || [],
             excludedRoleSkills: memberUpdate.excludedRoleSkills || [],
@@ -2979,6 +3037,7 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
             agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
             workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
             runtimeType: memberUpdate.runtimeType || await getDefaultRuntime(),
+            ...pickModelFields(memberUpdate),
             avatar: memberUpdate.avatar,
             skillOverrides: memberUpdate.skillOverrides || [],
             excludedRoleSkills: memberUpdate.excludedRoleSkills || [],

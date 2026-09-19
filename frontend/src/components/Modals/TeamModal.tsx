@@ -7,7 +7,7 @@ import { useProjects } from '../../hooks/useProjects';
 import { useTeams } from '../../hooks/useTeams';
 import { useSkills } from '../../hooks/useSkills';
 import { rolesService } from '../../services/roles.service';
-import { SUPPORTED_MODELS, type Project, type TeamMember as AppTeamMember } from '../../types';
+import { SUPPORTED_MODELS, RUNTIME_MODEL_PRESETS, RUNTIME_EFFORT_LEVELS, RUNTIME_MODEL_HINTS, type Project, type TeamMember as AppTeamMember } from '../../types';
 import type { RoleWithPrompt } from '../../types/role.types';
 import type { SkillSummary } from '../../types/skill.types';
 import { HierarchyModeConfig } from '../Hierarchy';
@@ -29,7 +29,8 @@ interface TeamMember {
   role: string;
   systemPrompt: string;
   runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
-  modelId?: string; // AI model override for crewly-agent runtime
+  modelId?: string; // Per-agent model (provider/model for crewly-agent, harness model name otherwise)
+  reasoningEffort?: string; // Per-agent effort level (claude-code / codex-cli)
   avatar?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
@@ -310,6 +311,9 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
           role: member.role,
           systemPrompt: member.systemPrompt,
           runtimeType: member.runtimeType,
+          // Always sent so clearing a field in the modal clears it server-side too.
+          modelId: member.modelId || '',
+          reasoningEffort: member.reasoningEffort || '',
           avatar: member.avatar,
           skillOverrides: member.skillOverrides || [],
           excludedRoleSkills: member.excludedRoleSkills || []
@@ -488,8 +492,8 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
                         </FormSelect>
                       </div>
 
-                      {/* AI Model Selection — only for crewly-agent runtime */}
-                      {member.runtimeType === 'crewly-agent' && (
+                      {/* AI Model — crewly-agent picks provider/model; PTY runtimes take the harness's own model name */}
+                      {member.runtimeType === 'crewly-agent' ? (
                         <div>
                           <FormLabel htmlFor={`model-id-${index}`}>AI Model</FormLabel>
                           <FormSelect
@@ -502,6 +506,40 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
                               <option key={m.id} value={m.id}>{m.label}</option>
                             ))}
                           </FormSelect>
+                        </div>
+                      ) : (
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          <div>
+                            <FormLabel htmlFor={`model-id-${index}`}>Model (optional)</FormLabel>
+                            <FormInput
+                              id={`model-id-${index}`}
+                              list={`model-presets-${member.runtimeType}`}
+                              value={member.modelId || ''}
+                              placeholder="Runtime default"
+                              onChange={(e) => handleMemberChange(member.id, 'modelId', e.target.value.trim())}
+                            />
+                            <datalist id={`model-presets-${member.runtimeType}`}>
+                              {(RUNTIME_MODEL_PRESETS[member.runtimeType] || []).map(m => (
+                                <option key={m.id} value={m.id}>{m.label}</option>
+                              ))}
+                            </datalist>
+                            <p className="mt-1 text-xs text-text-secondary-dark">{RUNTIME_MODEL_HINTS[member.runtimeType]}</p>
+                          </div>
+                          {(RUNTIME_EFFORT_LEVELS[member.runtimeType] || []).length > 0 && (
+                            <div>
+                              <FormLabel htmlFor={`effort-${index}`}>Reasoning effort</FormLabel>
+                              <FormSelect
+                                id={`effort-${index}`}
+                                value={member.reasoningEffort || ''}
+                                onChange={(e) => handleMemberChange(member.id, 'reasoningEffort', e.target.value)}
+                              >
+                                <option value="">Default</option>
+                                {RUNTIME_EFFORT_LEVELS[member.runtimeType].map(level => (
+                                  <option key={level} value={level}>{level}</option>
+                                ))}
+                              </FormSelect>
+                            </div>
+                          )}
                         </div>
                       )}
 

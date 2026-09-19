@@ -873,7 +873,7 @@ describe('agent identities', () => {
     expect(slack.sent[1].botToken).toBeUndefined();
   });
 
-  it('shows "waking up…" in the thread for an idle @\'d agent before dispatch, "is typing…" after, then edits it into the reply', async () => {
+  it('shows "waking up…" in the thread for an idle @\'d agent before dispatch, "is working on it…" after, then edits it into the reply', async () => {
     typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
     awake = () => false;
     dispatcher = { dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [{ sessionName: 'crewly-alpha-sam', responseMode: 'required', dispatched: true }] }) };

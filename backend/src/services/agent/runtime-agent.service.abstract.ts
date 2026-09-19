@@ -16,6 +16,7 @@ import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
+import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
 
 /**
  * Environment variable that stops OpenCode from self-upgrading on launch
@@ -99,7 +100,7 @@ export abstract class RuntimeAgentService {
 	 *
 	 * @param sessionName - PTY session name
 	 * @param targetPath - Working directory for the session
-	 * @param runtimeFlags - Optional CLI flags to inject before --dangerously-skip-permissions
+	 * @param runtimeFlags - Optional CLI flags to inject after the runtime binary (skill flags, --model/-m …)
 	 * @param promptFilePath - Optional path to a prompt file; for non-Claude-Code runtimes,
 	 *                         appends --append-system-prompt-file flag
 	 * @param agentName - Optional agent name for Claude Code --agent flag (#207)
@@ -141,16 +142,14 @@ export abstract class RuntimeAgentService {
 				targetPath: targetPath || process.cwd(),
 			});
 
-			// Inject runtime flags (e.g. --chrome) before --dangerously-skip-permissions
+			// Inject runtime flags (skill flags such as --chrome, and the member's
+			// model / effort flags) right after the harness binary. This used to
+			// anchor on --dangerously-skip-permissions, which silently dropped every
+			// flag for Codex / Gemini / OpenCode.
 			let finalCommands = commands;
 			if (runtimeFlags && runtimeFlags.length > 0) {
 				const flagStr = runtimeFlags.join(' ');
-				finalCommands = commands.map(cmd =>
-					cmd.replace(
-						/--dangerously-skip-permissions/g,
-						`${flagStr} --dangerously-skip-permissions`,
-					),
-				);
+				finalCommands = commands.map(cmd => injectRuntimeFlags(cmd, runtimeType, runtimeFlags));
 				this.logger.info('Injected runtime flags into init commands', {
 					sessionName,
 					flags: flagStr,

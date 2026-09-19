@@ -37,6 +37,7 @@ import {
 } from '../../constants.js';
 import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
+import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
@@ -637,6 +638,28 @@ export class AgentRegistrationService {
 			// Path resolution failed — fall back
 		}
 		return process.cwd();
+	}
+
+	/**
+	 * Turn a member's model / reasoning-effort choice into launch flags for
+	 * its PTY runtime (`--model` for Claude Code, `-m` for Codex / Gemini,
+	 * `--model provider/model` for OpenCode). The in-process Crewly Agent
+	 * runtime reads `modelId` directly and gets no flags here.
+	 *
+	 * @param sessionName - For logging
+	 * @param runtimeType - The member's runtime
+	 * @param modelId - Model name as the harness expects it
+	 * @param reasoningEffort - Optional effort level (Claude Code / Codex)
+	 * @returns Flags to inject after the binary, or `[]`
+	 */
+	private resolveModelFlags(sessionName: string, runtimeType: RuntimeType, modelId?: string, reasoningEffort?: string): string[] {
+		const flags = buildRuntimeModelFlags(runtimeType, modelId, reasoningEffort);
+		if ((modelId || reasoningEffort) && flags.length === 0 && runtimeType !== RUNTIME_TYPES.CREWLY_AGENT) {
+			this.logger.warn('Ignoring per-agent model setting (not shell-safe or unsupported runtime)', { sessionName, runtimeType, modelId, reasoningEffort });
+		} else if (flags.length > 0) {
+			this.logger.info('Per-agent model flags resolved', { sessionName, runtimeType, modelId, reasoningEffort });
+		}
+		return flags;
 	}
 
 	/**
@@ -3040,10 +3063,12 @@ Loop until done, blocked, or explicitly reassigned:
 						if (member.runtimeType) {
 							runtimeType = member.runtimeType as RuntimeType;
 						}
-						// Resolve runtime flags from role skills + member overrides
-						runtimeFlags = await this.resolveRuntimeFlags(
-							role, runtimeType, member.skillOverrides, member.excludedRoleSkills
-						);
+						// Resolve runtime flags from role skills + member overrides,
+						// then the member's own model / effort choice.
+						runtimeFlags = [
+							...(await this.resolveRuntimeFlags(role, runtimeType, member.skillOverrides, member.excludedRoleSkills)),
+							...this.resolveModelFlags(sessionName, runtimeType, member.modelId, member.reasoningEffort),
+						];
 						break;
 					}
 				}
@@ -3061,9 +3086,10 @@ Loop until done, blocked, or explicitly reassigned:
 				for (const team of teams) {
 					const member = team.members?.find((m) => m.sessionName === sessionName);
 					if (member) {
-						runtimeFlags = await this.resolveRuntimeFlags(
-							role, runtimeType, member.skillOverrides, member.excludedRoleSkills
-						);
+						runtimeFlags = [
+							...(await this.resolveRuntimeFlags(role, runtimeType, member.skillOverrides, member.excludedRoleSkills)),
+							...this.resolveModelFlags(sessionName, runtimeType, member.modelId, member.reasoningEffort),
+						];
 						break;
 					}
 				}
@@ -3075,13 +3101,17 @@ Loop until done, blocked, or explicitly reassigned:
 			}
 		}
 
-		// For orchestrator, try to get runtime type from orchestrator status
-		if (role === ORCHESTRATOR_ROLE && !config.runtimeType) {
+		// For orchestrator, try to get runtime type (and model) from orchestrator status
+		if (role === ORCHESTRATOR_ROLE) {
 			try {
 				const orchestratorStatus = await this.storageService.getOrchestratorStatus();
-				if (orchestratorStatus?.runtimeType) {
+				if (!config.runtimeType && orchestratorStatus?.runtimeType) {
 					runtimeType = orchestratorStatus.runtimeType as RuntimeType;
 				}
+				runtimeFlags = [
+					...runtimeFlags,
+					...this.resolveModelFlags(sessionName, runtimeType, orchestratorStatus?.modelId, orchestratorStatus?.reasoningEffort),
+				];
 			} catch (error) {
 				this.logger.warn(
 					'Failed to get orchestrator runtime type from storage, using default',

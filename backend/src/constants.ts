@@ -644,8 +644,8 @@ export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
 export const SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES = 4;
 
 export const SLACK_TYPING_CONSTANTS = {
-	/** Placeholder text; `{name}` is the agent's display name */
-	TYPING_TEXT: '💭 {name} is typing…',
+	/** Placeholder text once the agent holds the message. "working on it", not "typing": an agent that has the message is usually reading files, running commands or looking things up — typing is the last step. */
+	TYPING_TEXT: '⚙️ {name} is working on it…',
 	/** Shown while an idle agent is being started + registered (cold start) */
 	WAKING_TEXT: '🌙 {name} is waking up…',
 	/** Shown when a cold start is taking longer than WAKING_SLOW_MS */

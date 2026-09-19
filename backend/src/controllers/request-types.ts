@@ -110,6 +110,10 @@ export interface CreateTeamMemberInput {
   role: TeamMemberRole;
   systemPrompt: string;
   runtimeType?: TeamMember['runtimeType'];
+  /** Per-agent model (see `TeamMember.modelId`) */
+  modelId?: string;
+  /** Per-agent reasoning effort (see `TeamMember.reasoningEffort`) */
+  reasoningEffort?: string;
   avatar?: string;
   skillOverrides?: string[];
   excludedRoleSkills?: string[];
@@ -177,6 +181,10 @@ export interface UpdateTeamMemberRequestBody {
   avatar?: string;
   systemPrompt?: string;
   runtimeType?: TeamMember['runtimeType'];
+  /** Per-agent model; `''` clears the override */
+  modelId?: string;
+  /** Per-agent reasoning effort; `''` clears the override */
+  reasoningEffort?: string;
 }
 
 /**
@@ -233,6 +241,10 @@ export interface TeamMemberUpdate {
   role: string;
   systemPrompt: string;
   runtimeType?: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+  /** Per-agent model (see `TeamMember.modelId`) */
+  modelId?: string;
+  /** Per-agent reasoning effort (see `TeamMember.reasoningEffort`) */
+  reasoningEffort?: string;
   avatar?: string;
   skillOverrides?: string[];
   excludedRoleSkills?: string[];

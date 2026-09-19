@@ -712,6 +712,39 @@ echo "second command"
 			expect(calledCmd).toBe('codex resume -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc');
 		});
 
+		it('per-agent model: injects -m / -c after the codex binary and keeps them on resume', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			mockSettings.general.runtimeCommands['codex-cli'] = 'codex -a never -s danger-full-access';
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', ['-m', 'gpt-5.6-sol', '-c', 'model_reasoning_effort="high"']);
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe(
+				'codex -m gpt-5.6-sol -c model_reasoning_effort="high" -a never -s danger-full-access',
+			);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', ['-m', 'gpt-5.6-sol'], undefined, undefined, '01a0b5a6-f945-7743-a765-788a23a838cc');
+			expect((sendCommandsSpy.mock.calls[1][1] as string[])[0]).toBe(
+				'codex resume -m gpt-5.6-sol -a never -s danger-full-access 01a0b5a6-f945-7743-a765-788a23a838cc',
+			);
+		});
+
+		it('per-agent model: injects -m after the gemini binary (flags used to be dropped for non-Claude runtimes)', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('gemini-cli');
+			const mockSettings = getDefaultSettings();
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path', ['-m', 'gemini-2.5-pro']);
+
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).toBe('GEMINI_NO_UPDATE=1 gemini -m gemini-2.5-pro --yolo');
+		});
+
 		it('#246: should NOT inject --full-auto when --approval-mode is present', async () => {
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
 			const mockSettings = getDefaultSettings();

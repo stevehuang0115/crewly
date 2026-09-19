@@ -30,8 +30,21 @@ export interface TeamMember {
   agentStatus: 'inactive' | 'starting' | 'started' | 'active' | 'suspended' | 'activating'; // Connection/registration status (activating is deprecated)
   workingStatus: 'idle' | 'in_progress'; // Activity level status
   runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent'; // AI runtime to use
-  /** Model ID for crewly-agent runtime (format: provider/modelId, e.g. google/gemini-3-flash-preview) */
+  /**
+   * Per-agent model. For the PTY runtimes this is the name the harness
+   * itself accepts and is passed at launch (`claude --model opus`,
+   * `codex -m gpt-5.6-sol`, `gemini -m gemini-2.5-pro`,
+   * `opencode --model anthropic/claude-sonnet-4`); for `crewly-agent` it is
+   * `provider/modelId` (e.g. google/gemini-3-flash-preview). Unset = the
+   * harness's own default.
+   */
   modelId?: string;
+  /**
+   * Per-agent reasoning effort where the harness supports it: Claude Code
+   * `--effort low|medium|high|xhigh|max`, Codex `model_reasoning_effort`
+   * (low|medium|high). Ignored by other runtimes.
+   */
+  reasoningEffort?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   enableBrowserAutomation?: boolean; // Per-agent browser override (undefined = use global setting)

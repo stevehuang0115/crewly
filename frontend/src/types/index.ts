@@ -35,7 +35,14 @@ export interface TeamMember {
   agentStatus: 'inactive' | 'starting' | 'started' | 'active' | 'suspended' | 'activating'; // Connection/registration status (activating is deprecated)
   workingStatus: 'idle' | 'in_progress'; // Activity level status
   runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent'; // AI runtime to use
-  modelId?: string; // AI model override for crewly-agent runtime (format: provider/modelId)
+  /**
+   * Per-agent model. PTY runtimes take the harness's own model name and get
+   * it at launch (`claude --model`, `codex -m`, `gemini -m`, `opencode --model`);
+   * crewly-agent takes `provider/modelId`. Unset = the runtime's default.
+   */
+  modelId?: string;
+  /** Per-agent reasoning effort (Claude Code `--effort`, Codex `model_reasoning_effort`). */
+  reasoningEffort?: string;
   skillOverrides?: string[]; // Additional skill IDs beyond what the role provides
   excludedRoleSkills?: string[]; // Role skills to exclude for this specific member
   currentTickets?: string[];
@@ -70,6 +77,49 @@ export interface TeamMember {
   /** Expert profile ID — loads thinking patterns from config/experts/{expertId}.md */
   expertId?: string;
 }
+
+/**
+ * Model suggestions per PTY runtime. Free text is always allowed — these
+ * only seed the picker with names each harness is known to accept.
+ */
+export const RUNTIME_MODEL_PRESETS: Record<string, readonly { id: string; label: string }[]> = {
+  'claude-code': [
+    { id: 'fable', label: 'fable (latest Fable)' },
+    { id: 'opus', label: 'opus (latest Opus)' },
+    { id: 'sonnet', label: 'sonnet (latest Sonnet)' },
+    { id: 'haiku', label: 'haiku (latest Haiku)' },
+  ],
+  'codex-cli': [
+    { id: 'gpt-5.6-sol', label: 'gpt-5.6-sol' },
+    { id: 'gpt-5.4', label: 'gpt-5.4' },
+  ],
+  'gemini-cli': [
+    { id: 'gemini-2.5-pro', label: 'gemini-2.5-pro' },
+    { id: 'gemini-2.5-flash', label: 'gemini-2.5-flash' },
+  ],
+  'opencode-cli': [
+    { id: 'anthropic/claude-sonnet-4-20250514', label: 'anthropic/claude-sonnet-4-20250514' },
+    { id: 'openai/gpt-4o', label: 'openai/gpt-4o' },
+  ],
+};
+
+/** Reasoning-effort levels per runtime (empty = the runtime has no such flag). */
+export const RUNTIME_EFFORT_LEVELS: Record<string, readonly string[]> = {
+  'claude-code': ['low', 'medium', 'high', 'xhigh', 'max'],
+  'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh'],
+  'gemini-cli': [],
+  'opencode-cli': [],
+  'crewly-agent': [],
+};
+
+/** How each runtime expects the model name — shown as the field hint. */
+export const RUNTIME_MODEL_HINTS: Record<string, string> = {
+  'claude-code': 'Passed as `claude --model` — an alias (opus, sonnet) or a full model name.',
+  'codex-cli': 'Passed as `codex -m` — a model name your Codex account can use.',
+  'gemini-cli': 'Passed as `gemini -m`.',
+  'opencode-cli': 'Passed as `opencode --model` — must be provider/model.',
+  'crewly-agent': 'provider/model for the in-process runtime.',
+};
 
 /** Supported AI models for crewly-agent runtime dropdown */
 export const SUPPORTED_MODELS = [

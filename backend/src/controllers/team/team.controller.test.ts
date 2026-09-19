@@ -367,6 +367,57 @@ describe('Teams Handlers', () => {
     });
   });
 
+  describe('per-agent model fields', () => {
+    it('createTeam persists modelId / reasoningEffort per member and rejects unsafe values', async () => {
+      mockRequest.body = {
+        name: 'Model Team',
+        members: [
+          { name: 'Max', role: 'developer', systemPrompt: 'p', runtimeType: 'codex-cli', modelId: 'gpt-5.6-sol', reasoningEffort: 'high' },
+          { name: 'Leo', role: 'developer', systemPrompt: 'p', runtimeType: 'claude-code', modelId: '' },
+        ],
+        projectPath: '/test/project',
+        projectIds: ['test-project'],
+      };
+      await teamsHandlers.createTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(201);
+      const saved = (mockStorageService.saveTeam as jest.Mock).mock.calls[0][0] as Team;
+      expect(saved.members[0]).toMatchObject({ modelId: 'gpt-5.6-sol', reasoningEffort: 'high' });
+      expect(saved.members[1].modelId).toBeUndefined();
+
+      (responseMock.status as jest.Mock).mockClear();
+      mockRequest.body.members[0].modelId = 'opus; rm -rf /';
+      await teamsHandlers.createTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+    });
+
+    it('updateTeamMember sets, and clears with an empty string, the model override', async () => {
+      const team: Team = {
+        id: 'team-1', name: 'T', members: [{
+          id: 'm1', name: 'Max', sessionName: 'max', role: 'developer', systemPrompt: 'p', runtimeType: 'claude-code',
+          agentStatus: 'inactive', workingStatus: 'idle', modelId: 'sonnet', reasoningEffort: 'low',
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        }], projectIds: [], createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+      };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      mockRequest.params = { teamId: 'team-1', memberId: 'm1' };
+
+      mockRequest.body = { modelId: 'opus', reasoningEffort: 'max' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      let saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+      expect(saved.members[0]).toMatchObject({ modelId: 'opus', reasoningEffort: 'max' });
+
+      mockRequest.body = { modelId: '', reasoningEffort: '' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      saved = (mockStorageService.saveTeam as jest.Mock).mock.calls.at(-1)![0] as Team;
+      expect(saved.members[0].modelId).toBeUndefined();
+      expect(saved.members[0].reasoningEffort).toBeUndefined();
+
+      mockRequest.body = { reasoningEffort: 'Very High' };
+      await teamsHandlers.updateTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+    });
+  });
+
   describe('getTeams', () => {
     it('should return all teams successfully', async () => {
       const mockTeams = [

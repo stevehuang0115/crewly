@@ -1,5 +1,5 @@
 /**
- * Tests for SlackTypingPlaceholderService — the "is typing…" placeholder an
+ * Tests for SlackTypingPlaceholderService — the "is working on it…" placeholder an
  * agent's bot posts and later edits into its reply.
  */
 
@@ -27,7 +27,7 @@ describe('SlackTypingPlaceholderService', () => {
     const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
     const ph = await svc.begin(key, ella);
     expect(ph).toMatchObject({ slackChannelId: 'D1', ts: 'ts-1', botToken: 'xoxb-ella' });
-    expect(sent[0]).toMatchObject({ channelId: 'D1', text: '💭 Ella is typing…', botToken: 'xoxb-ella' });
+    expect(sent[0]).toMatchObject({ channelId: 'D1', text: '⚙️ Ella is working on it…', botToken: 'xoxb-ella' });
     expect(svc.pendingCount).toBe(1);
 
     expect(await svc.resolve(key, '你好，我是 Ella。', ella)).toBe('edited');
@@ -48,7 +48,7 @@ describe('SlackTypingPlaceholderService', () => {
     await new Promise((r) => setImmediate(r));
     expect(updated.at(-1)?.text).toContain('still starting up');
     await svc.setPhase(key, 'typing');
-    expect(updated.at(-1)).toMatchObject({ ts: 'ts-1', text: '💭 Ella is typing…' });
+    expect(updated.at(-1)).toMatchObject({ ts: 'ts-1', text: '⚙️ Ella is working on it…' });
     await svc.setPhase(key, 'typing'); // idempotent
     expect(updated).toHaveLength(2);
     await svc.fail(key);
@@ -102,7 +102,7 @@ describe('SlackTypingPlaceholderService', () => {
     const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
     await svc.begin(key, ella);
     expect(await svc.resolve(key, 'reply', ella)).toBe('posted');
-    expect(sent.map((m) => m.text)).toEqual(['💭 Ella is typing…', 'reply']);
+    expect(sent.map((m) => m.text)).toEqual(['⚙️ Ella is working on it…', 'reply']);
 
     const off = new SlackTypingPlaceholderService({ slack: { ...slack, isConnected: () => false } });
     expect(await off.begin(key, ella)).toBeNull();
