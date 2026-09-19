@@ -25,6 +25,7 @@
  * @module services/slack/slack-team-channel.service
  */
 
+import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import type { Team, TeamMember } from '../../types/index.js';
@@ -176,11 +177,17 @@ export function slackChannelNameFor(teamName: string, prefix = ''): string {
  * orchestrator role (the orc is not a huddle participant — the point of
  * team channels is talking to the team without it).
  *
+ * An idle member has no stored `sessionName` (the controller clears it on
+ * stop), so it is derived — otherwise a stopped agent would vanish from
+ * the Slack roster and its bot would be pruned.
+ *
  * @param team - The team
- * @returns Members with a session name, orchestrator excluded
+ * @returns Members with a (stored or derived) session name, orchestrator excluded
  */
 export function teamChannelMembers(team: Team): TeamMember[] {
-  return (team.members ?? []).filter((m) => !!m.sessionName && m.role !== 'orchestrator');
+  return (team.members ?? [])
+    .filter((m) => m.role !== 'orchestrator' && !!m.id)
+    .map((m) => (m.sessionName ? m : { ...m, sessionName: resolveMemberSessionName(team.name, m) }));
 }
 
 /**

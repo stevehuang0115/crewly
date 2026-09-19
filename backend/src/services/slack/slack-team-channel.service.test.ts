@@ -362,11 +362,14 @@ describe('slackChannelNameFor', () => {
 });
 
 describe('teamChannelMembers', () => {
-  it('excludes the orchestrator and members without a session', () => {
+  it('excludes the orchestrator and derives a session name for an idle member (stop clears it)', () => {
     const t = team({
-      members: [member('Sam', 'developer'), member('Orc', 'orchestrator'), member('Ghost', 'qa', { sessionName: '' })],
+      name: 'Think Tank',
+      members: [member('Sam', 'developer'), member('Orc', 'orchestrator'), member('Sage', 'qa', { sessionName: '', id: 'c1d2e3f4-0000-4000-8000-000000000000' })],
     });
-    expect(teamChannelMembers(t).map((m) => m.name)).toEqual(['Sam']);
+    const got = teamChannelMembers(t);
+    expect(got.map((m) => m.name)).toEqual(['Sam', 'Sage']);
+    expect(got[1].sessionName).toBe('think-tank-sage-c1d2e3f4');
   });
 });
 
