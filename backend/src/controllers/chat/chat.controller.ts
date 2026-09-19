@@ -322,6 +322,29 @@ export async function getMessage(
 // =============================================================================
 
 /**
+ * Whether `name` is the display name of the team member running as
+ * `agentSession` (case-insensitive).
+ *
+ * @param agentSession - The member's session name
+ * @param name - A display name an agent passed as `senderName`
+ * @returns True when they denote the same member
+ */
+async function isMemberNameOf(agentSession: string, name: string): Promise<boolean> {
+  const wanted = (name ?? '').trim().toLowerCase();
+  if (!wanted) return false;
+  try {
+    const { StorageService } = await import('../../services/core/storage.service.js');
+    for (const team of await StorageService.getInstance().getTeams()) {
+      const member = team.members?.find((m) => m.sessionName === agentSession);
+      if (member) return (member.name ?? '').trim().toLowerCase() === wanted;
+    }
+  } catch {
+    /* storage unavailable — fall through */
+  }
+  return false;
+}
+
+/**
  * Record an agent's reply on its own chat-v2 DM channel when
  * `conversationId` names one (the channel is bound to this very agent).
  * Anything else — an orchestrator thread a sub-agent reports [DONE] into,
@@ -333,22 +356,36 @@ export async function getMessage(
  * @param content - Reply text
  * @returns The persisted message id, or null when not a chat-v2 channel
  */
-async function recordChatV2AgentReply(channelId: string, senderName: string, content: string): Promise<string | null> {
+async function recordChatV2AgentReply(
+  channelId: string,
+  senderName: string,
+  content: string,
+  headerSession?: string,
+): Promise<string | null> {
   try {
     const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
     const chatV2 = getChatV2Service();
     const channel = chatV2.getChannelForBridge(channelId);
     if (!channel || channel.archivedAt) return null;
-    if (channel.type !== 'dm' || channel.agentSession !== senderName) return null;
+    if (channel.type !== 'dm' || !channel.agentSession) return null;
+    // Who is replying: the skills' X-Agent-Session header is authoritative;
+    // agents also pass their display name ("Ella") as senderName, so accept
+    // the member name bound to this channel's session as well.
+    const isOwnChannel =
+      headerSession === channel.agentSession ||
+      senderName === channel.agentSession ||
+      (await isMemberNameOf(channel.agentSession, senderName));
+    if (!isOwnChannel) return null;
     const { message } = chatV2.recordTurn({
       channelId,
       senderType: 'agent',
-      senderId: senderName,
+      senderId: channel.agentSession,
       content,
       metadata: { source: 'reply-tool' },
     });
     logger.info('Agent reply recorded on chat-v2 channel', {
       senderName,
+      agentSession: channel.agentSession,
       channelId,
       channelType: channel.type,
       messageId: message.id,
@@ -457,7 +494,13 @@ export async function agentResponse(
     // gateway shows the bubble and the Slack DM bridge mirrors it — instead
     // of routing it to the orchestrator as a status report.
     if (isAgentSender && !isOrchestratorSelfReport && conversationIdWasExplicit) {
-      const recorded = await recordChatV2AgentReply(String(resolvedConversationId), String(senderName), String(content));
+      const hdr = req.headers['x-agent-session'] ?? req.headers['x-crewly-agent-session'];
+      const recorded = await recordChatV2AgentReply(
+        String(resolvedConversationId),
+        String(senderName),
+        String(content),
+        typeof hdr === 'string' && hdr.length > 0 ? hdr : undefined,
+      );
       if (recorded) {
         res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });
         return;

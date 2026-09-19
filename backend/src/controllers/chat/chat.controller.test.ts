@@ -674,6 +674,22 @@ describe('Chat Controller', () => {
       expect(seen).toEqual([{ senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '你好！我是 Ella。' }]);
       expect(mockMarkPendingDelivery).not.toHaveBeenCalled();
 
+      // The agent may sign with its display name, or the skill header names the session.
+      const { StorageService } = await import('../../services/core/storage.service.js');
+      jest.spyOn(StorageService.getInstance(), 'getTeams').mockResolvedValue([
+        { id: 't1', name: 'Crewly Marketing', members: [{ id: 'e6a6b8ea-1', name: 'Ella', sessionName: 'crewly-marketing-ella-e6a6b8ea', role: 'team-leader' }] },
+      ] as never);
+      const byName = await request(app)
+        .post('/api/chat/agent-response')
+        .send({ content: 'by display name', senderName: 'Ella', senderType: 'agent', conversationId: channel.id });
+      expect(byName.body.data.messageId).toBeDefined();
+      const byHeader = await request(app)
+        .post('/api/chat/agent-response')
+        .set('X-Agent-Session', 'crewly-marketing-ella-e6a6b8ea')
+        .send({ content: 'by header', senderName: 'whatever', senderType: 'agent', conversationId: channel.id });
+      expect(byHeader.body.data.messageId).toBeDefined();
+      expect(seen.map((m) => m.senderId)).toEqual(Array(3).fill('crewly-marketing-ella-e6a6b8ea'));
+
       // Another agent reporting into that DM is not "the agent replying" — status path as before.
       const other = await request(app)
         .post('/api/chat/agent-response')
