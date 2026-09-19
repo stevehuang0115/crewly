@@ -940,6 +940,20 @@ describe('agent identities', () => {
     expect(service.findBySlackChannelId('C-priv')?.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
   });
 
+  it('a no-@ message in a team without a leader shows the sole/first member (the dispatcher\'s rule)', async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    storage.teams = [team({ members: [member('Claude', 'developer', { sessionName: '' , id: 'd11d57bb-0000-4000-8000-000000000000' })] })];
+    service = makeService();
+    await service.ensureTeamChannel(storage.teams[0]);
+    await service.routeInbound(inbound({ text: '这个团队是干什么的', ts: '600.1' }));
+    expect(typing.begin).toHaveBeenCalledWith(
+      expect.objectContaining({ agentSession: 'alpha-team-claude-d11d57bb' }),
+      expect.objectContaining({ displayName: 'Claude' }),
+      expect.any(String),
+    );
+    typing = null;
+  });
+
   it('an agent without its own bot still gets a placeholder (master bot wearing its name), and a no-@ message shows the team leader', async () => {
     typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
     storage.teams = [team({ members: [member('Sam', 'developer'), member('Lena', 'team-leader')] })];

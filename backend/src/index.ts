@@ -1819,11 +1819,17 @@ void (async () => {
 						const members = new Set(chatService.queryHuddleMembersForDispatch(channelId));
 						if (members.size === 0) return null;
 						const teams = await this.storageService.getTeams();
+						const { resolveMemberSessionName } = await import('./utils/member-session-name.utils.js');
 						for (const team of teams) {
-							const roster = (team.members ?? []).filter((m) => m.sessionName && members.has(m.sessionName));
+							// An idle member has no stored sessionName (cleared on stop);
+							// match on the derived name or a stopped leader is invisible
+							// and the message is silently dropped (#claude-login, 2026-09-19).
+							const roster = (team.members ?? [])
+								.map((m) => ({ m, session: resolveMemberSessionName(team.name, m) }))
+								.filter(({ session }) => session && members.has(session));
 							if (roster.length === 0) continue;
-							const leader = roster.find((m) => m.role === 'team-leader') ?? roster[0];
-							return leader?.sessionName ?? null;
+							const leader = roster.find(({ m }) => m.role === 'team-leader') ?? roster[0];
+							return leader?.session ?? null;
 						}
 						return null;
 					},

@@ -821,7 +821,8 @@ export class SlackTeamChannelService {
     if (this.deps.typing) {
       let sessions = resolved.mentions;
       if (sessions.length === 0 && !message.threadTs && team) {
-        const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead');
+        // Same rule as the dispatcher's huddleLeaderFor: the team leader, else the first member.
+        const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead') ?? members[0];
         if (leader) sessions = [leader.sessionName];
       }
       for (const session of sessions) {
