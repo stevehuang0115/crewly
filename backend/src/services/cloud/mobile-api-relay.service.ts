@@ -47,6 +47,12 @@ export interface IMobileRelayCloudSync {
   on(event: 'message', handler: (msg: MobileRelayIncomingMessage) => void): void;
   off(event: 'message', handler: (msg: MobileRelayIncomingMessage) => void): void;
   sendMessage(toDeviceId: string, type: string, payload: unknown): Promise<unknown>;
+  /**
+   * Reply straight to a relay queue id. The portal is not a registered
+   * device — it stamps its queue id into `fromDeviceName` — so a reply by
+   * device id would fail with "Device not found".
+   */
+  sendToPeerQueueId?(peerQueueId: string, type: string, payload: unknown): Promise<unknown>;
 }
 
 /** Minimal incoming-message shape from CloudSyncService. */
@@ -180,7 +186,12 @@ export class MobileApiRelayService {
     const reply = async (status: number, body: unknown): Promise<void> => {
       const response: ApiResponsePayload = { id: payload.id as string, status, body };
       try {
-        await this.cloudSync.sendMessage(fromDevice, 'api_response', response);
+        if (!msg.from && msg.fromDeviceName && typeof this.cloudSync.sendToPeerQueueId === 'function') {
+          // Portal: the sender is a queue id, not a device.
+          await this.cloudSync.sendToPeerQueueId(fromDevice, 'api_response', response);
+        } else {
+          await this.cloudSync.sendMessage(fromDevice, 'api_response', response);
+        }
       } catch (err) {
         this.logger.warn('Failed to send api_response (phone will retry)', {
           id: payload.id,

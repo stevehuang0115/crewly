@@ -83,6 +83,21 @@ describe('MobileApiRelayService', () => {
     expect(payload.body.success).toBe(true);
   });
 
+  it('replies to a portal sender (queue id in fromDeviceName, no device id) via sendToPeerQueueId', async () => {
+    const { sync, sent, emit } = makeSync();
+    const viaQueue: Array<{ to: string; type: string }> = [];
+    (sync as IMobileRelayCloudSync).sendToPeerQueueId = async (to, type) => { viaQueue.push({ to, type }); };
+    const fetchImpl = jest.fn().mockResolvedValue(new Response(JSON.stringify({ success: true, data: {} }), { status: 200 })) as unknown as typeof fetch;
+    const svc = new MobileApiRelayService({ cloudSync: sync, webPort: 8787, fetchImpl, logger: SILENT });
+    svc.start();
+
+    emit({ type: 'api_request', fromDeviceName: 'portal-queue-1', payload: { id: 'p1', method: 'GET', path: '/slack/team-channels' } });
+    await flush();
+
+    expect(viaQueue).toEqual([{ to: 'portal-queue-1', type: 'api_response' }]);
+    expect(sent).toHaveLength(0);
+  });
+
   it('forwards POST bodies for allowed mutations', async () => {
     const { sync, sent, emit } = makeSync();
     const fetchImpl = jest.fn().mockResolvedValue(new Response('{"success":true}', { status: 200 })) as unknown as typeof fetch;
