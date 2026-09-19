@@ -84,6 +84,8 @@ describe('wiki.types', () => {
           proposed_only: ['worker'],
           schema_writer: ['steve'],
         },
+        retention: { keep_because: ['hard_fact'], require_summary: true },
+        privacy: { pii: 'refuse', default_visibility: [] },
       };
       expect(schema.hardcoded[0].frozen).toBe(true);
       expect(schema.llm_curated[0].frozen).toBe(false);

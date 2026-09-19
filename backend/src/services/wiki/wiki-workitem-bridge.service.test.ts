@@ -10,6 +10,7 @@
  *   - empty queues / no legacy → no WIs created
  */
 
+import { WIKI_KB_CONSTANTS } from '../../constants.js';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
@@ -593,7 +594,7 @@ describe('WikiWorkItemBridgeService', () => {
       expect(addedItems).toHaveLength(4);
     });
 
-    it('caps the backoff at 24 hours', async () => {
+    it('gives up on a legacy migrate after MIGRATE_MAX_STRIKES no-progress WIs (2026-09-19: three projects looped for months)', async () => {
       const clock = { t: 1_000_000 };
       const hour = 60 * 60 * 1000;
       const { bridge, addedItems } = makeBridge({
@@ -607,7 +608,9 @@ describe('WikiWorkItemBridgeService', () => {
         completeAll(addedItems);
         clock.t += 25 * hour; // always past any cooldown
       }
-      expect(bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(24 * hour);
+      // First WI + one per strike up to the cap, then silence.
+      expect(addedItems.filter((w) => w.metadata?.kind === 'wiki_legacy_migrate')).toHaveLength(1 + WIKI_KB_CONSTANTS.MIGRATE_MAX_STRIKES);
+      expect(bridge.effectiveCooldownMs(`wiki_legacy_migrate:${project}`)).toBe(0.5 * hour * 2 ** WIKI_KB_CONSTANTS.MIGRATE_MAX_STRIKES);
     });
 
     it('persists the strikes so a restart cannot reset a long backoff', async () => {

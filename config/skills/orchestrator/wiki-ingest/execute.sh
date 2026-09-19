@@ -25,6 +25,12 @@ SOURCE_REF=""
 SOURCE_BODY=""
 CALLER=""
 TARGET=""
+TITLE=""
+SUMMARY=""
+KEEP_BECAUSE=""
+TAGS=""
+VISIBILITY=""
+REPLACE=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
@@ -45,6 +51,18 @@ while [[ $# -gt 0 ]]; do
       CALLER="$2"; shift 2 ;;
     --target)
       TARGET="$2"; shift 2 ;;
+    --title)
+      TITLE="$2"; shift 2 ;;
+    --summary)
+      SUMMARY="$2"; shift 2 ;;
+    --keep-because)
+      KEEP_BECAUSE="$2"; shift 2 ;;
+    --tags)
+      TAGS="$2"; shift 2 ;;
+    --visibility)
+      VISIBILITY="$2"; shift 2 ;;
+    --replace)
+      REPLACE="true"; shift ;;
     --json|-j)
       INPUT_JSON="$2"; shift 2 ;;
     --help|-h)
@@ -56,7 +74,14 @@ Usage:
 sourceType MUST be one of:
   user_chat | slack_message | spec_file | pr_merge | record_learning | task_verified
 
-Default target is "llm-curated/log.md". Override with --target for a dedicated page (must NOT be inside a frozen folder).
+Default target is "llm-curated/log.md" (append-only, no gate). A --target PAGE under llm-curated/ needs:
+  --title "<page name>"
+  --summary "<one line: the CONCLUSION — what this means for us>"
+  --keep-because changes_decision | contradicts | hard_fact | reusable_method
+Optional: --tags "a,b"  --visibility "teacher,admin"  --replace (rewrite the page instead of appending)
+Default is NOT to keep: without those three the write is refused (422 retention_gate) — append to log.md instead.
+Secrets are always refused; personal data follows the vault's privacy policy. A proposed_only role's page lands in
+llm-curated/_proposed/ until a canonical role accepts it (wiki-review-proposals).
 EOF
       exit 0 ;;
     --)
@@ -88,6 +113,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$SOURCE_BODY" ] && SOURCE_BODY=$(printf '%s' "$INPUT" | jq -r '.sourceBody         // empty')
   [ -z "$CALLER" ]      && CALLER=$(printf      '%s' "$INPUT" | jq -r '.callerSession      // empty')
   [ -z "$TARGET" ]      && TARGET=$(printf      '%s' "$INPUT" | jq -r '.targetRelativePath // empty')
+  [ -z "$TITLE" ]       && TITLE=$(printf       '%s' "$INPUT" | jq -r '.title              // empty')
+  [ -z "$SUMMARY" ]     && SUMMARY=$(printf     '%s' "$INPUT" | jq -r '.summary            // empty')
+  [ -z "$KEEP_BECAUSE" ] && KEEP_BECAUSE=$(printf '%s' "$INPUT" | jq -r '.keepBecause      // empty')
+  [ -z "$REPLACE" ]     && REPLACE=$(printf     '%s' "$INPUT" | jq -r 'if .replace == true then "true" else empty end')
 fi
 
 require_param "vaultPath  (--vault)"       "$VAULT_PATH"
@@ -108,6 +137,12 @@ BODY=$(jq -n '{
 }')
 [ -n "$CALLER" ] && { export _WI_CALLER="$CALLER"; BODY=$(echo "$BODY" | jq '. + {callerSession: env._WI_CALLER}'); unset _WI_CALLER; }
 [ -n "$TARGET" ] && { export _WI_TARGET="$TARGET"; BODY=$(echo "$BODY" | jq '. + {targetRelativePath: env._WI_TARGET}'); unset _WI_TARGET; }
+[ -n "$TITLE" ] && { export _WI_TITLE="$TITLE"; BODY=$(echo "$BODY" | jq '. + {title: env._WI_TITLE}'); unset _WI_TITLE; }
+[ -n "$SUMMARY" ] && { export _WI_SUMMARY="$SUMMARY"; BODY=$(echo "$BODY" | jq '. + {summary: env._WI_SUMMARY}'); unset _WI_SUMMARY; }
+[ -n "$KEEP_BECAUSE" ] && { export _WI_KEEP="$KEEP_BECAUSE"; BODY=$(echo "$BODY" | jq '. + {keepBecause: env._WI_KEEP}'); unset _WI_KEEP; }
+[ -n "$TAGS" ] && { export _WI_TAGS="$TAGS"; BODY=$(echo "$BODY" | jq '. + {tags: (env._WI_TAGS | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(. != "")))}'); unset _WI_TAGS; }
+[ -n "$VISIBILITY" ] && { export _WI_VIS="$VISIBILITY"; BODY=$(echo "$BODY" | jq '. + {visibility: (env._WI_VIS | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(. != "")))}'); unset _WI_VIS; }
+[ -n "$REPLACE" ] && BODY=$(echo "$BODY" | jq '. + {replace: true}')
 unset _WI_VAULT _WI_TYPE _WI_REF _WI_BODY
 
 api_call POST "/wiki/ingest" "$BODY"

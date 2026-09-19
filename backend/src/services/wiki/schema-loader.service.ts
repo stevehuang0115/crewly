@@ -16,6 +16,7 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { parse as parseYAML } from 'yaml';
 import { VaultSchema, VaultScope } from './wiki.types.js';
+import { WIKI_KB_CONSTANTS } from '../../constants.js';
 
 /** Standard schema filename inside any vault root. */
 export const SCHEMA_FILENAME = 'SCHEMA.md';
@@ -103,8 +104,42 @@ export class SchemaLoaderService {
     const hardcoded = this.requireHardcoded(p.hardcoded, source);
     const llm_curated = this.requireLlmCurated(p.llm_curated, source);
     const write_policy = this.requireWritePolicy(p.write_policy, source);
+    const retention = this.optionalRetention(p.retention, source);
+    const privacy = this.optionalPrivacy(p.privacy, source);
 
-    return { vault_scope, vault_id, hardcoded, llm_curated, write_policy };
+    return { vault_scope, vault_id, hardcoded, llm_curated, write_policy, retention, privacy };
+  }
+
+  /**
+   * `retention:` is optional; defaults = every built-in keep_because reason
+   * and a required summary.
+   */
+  private optionalRetention(raw: unknown, source: string): VaultSchema['retention'] {
+    const defaults: VaultSchema['retention'] = { keep_because: [...WIKI_KB_CONSTANTS.KEEP_BECAUSE], require_summary: true };
+    if (raw === undefined || raw === null) return defaults;
+    if (typeof raw !== 'object') throw new Error(`SchemaLoader: ${source} "retention" must be an object`);
+    const r = raw as Record<string, unknown>;
+    const keep = Array.isArray(r.keep_because) ? r.keep_because.filter((k): k is string => typeof k === 'string') : defaults.keep_because;
+    const unknown = keep.filter((k) => !(WIKI_KB_CONSTANTS.KEEP_BECAUSE as readonly string[]).includes(k));
+    if (unknown.length > 0) throw new Error(`SchemaLoader: ${source} retention.keep_because has unknown reasons: ${unknown.join(', ')}`);
+    if (keep.length === 0) throw new Error(`SchemaLoader: ${source} retention.keep_because must keep at least one reason`);
+    return { keep_because: keep, require_summary: r.require_summary !== false };
+  }
+
+  /**
+   * `privacy:` is optional; defaults = PII allowed, pages visible to all.
+   */
+  private optionalPrivacy(raw: unknown, source: string): VaultSchema['privacy'] {
+    const defaults: VaultSchema['privacy'] = { pii: 'allow', default_visibility: [] };
+    if (raw === undefined || raw === null) return defaults;
+    if (typeof raw !== 'object') throw new Error(`SchemaLoader: ${source} "privacy" must be an object`);
+    const r = raw as Record<string, unknown>;
+    const pii = r.pii === undefined ? 'allow' : r.pii;
+    if (pii !== 'allow' && pii !== 'mask' && pii !== 'refuse') {
+      throw new Error(`SchemaLoader: ${source} privacy.pii must be allow | mask | refuse`);
+    }
+    const vis = Array.isArray(r.default_visibility) ? r.default_visibility.filter((v): v is string => typeof v === 'string') : [];
+    return { pii, default_visibility: vis };
   }
 
   private requireScope(raw: unknown, source: string): VaultScope {

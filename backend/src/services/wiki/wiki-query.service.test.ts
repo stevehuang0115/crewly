@@ -226,4 +226,59 @@ describe('WikiQueryService', () => {
       expect(joined).toMatch(/refuse/);
     });
   });
+
+  describe('two-step retrieval (knowledge-base contract)', () => {
+    const writePage = async (rel: string, fm: Record<string, unknown>, body: string) => {
+      const { serializePage } = await import('./wiki-page.js');
+      await fs.mkdir(path.dirname(path.join(vault, rel)), { recursive: true });
+      await fs.writeFile(path.join(vault, rel), serializePage(fm, body), 'utf8');
+    };
+
+    beforeEach(async () => {
+      const { WikiIndexService } = await import('./wiki-index.service.js');
+      WikiIndexService._resetForTesting();
+      await writePage('llm-curated/decisions/pricing.md', { title: 'Pricing', summary: 'Pro is $800 + credits', keep_because: 'hard_fact' }, '# Pricing\n\nPro costs $800 plus 1000 credits.');
+      await writePage('llm-curated/decisions/pricing-old.md', { title: 'Pricing (old)', summary: 'Pro was $799', keep_because: 'hard_fact', superseded_by: 'llm-curated/decisions/pricing.md' }, '# Old\n\nPro cost $799 pricing.');
+      await writePage('llm-curated/people/parent-notes.md', { title: 'Parent notes', summary: 'Teacher-only notes', keep_because: 'hard_fact', visibility: ['teacher'] }, '# Notes\n\npricing complaints from parents');
+      await WikiIndexService.getInstance().rebuild(vault);
+    });
+
+    it('leads with the index, hides superseded and invisible pages, and returns requested pages in full', async () => {
+      const step1 = await svc.query({ vaultPath: vault, query: 'pricing', agent: 'kai', viewerRole: 'developer' });
+      expect(step1.ok).toBe(true);
+      if (!step1.ok) return;
+      expect(step1.context.index.text).toContain('[Pricing](llm-curated/decisions/pricing.md) — Pro is $800 + credits');
+      expect(step1.context.index.text).toContain('⟶ superseded by');
+      const paths = step1.context.candidatePages.map((c) => c.path);
+      expect(paths).toContain('llm-curated/decisions/pricing.md');
+      expect(paths).not.toContain('llm-curated/decisions/pricing-old.md'); // superseded
+      expect(paths).not.toContain('llm-curated/people/parent-notes.md'); // teacher-only
+      expect(step1.context.pages).toEqual([]);
+      expect(step1.context.callerNotes[0]).toMatch(/Two-step/);
+
+      const step2 = await svc.query({ vaultPath: vault, query: 'pricing', agent: 'kai', viewerRole: 'developer', pages: ['llm-curated/decisions/pricing.md', 'llm-curated/people/parent-notes.md', '../SCHEMA.md'] });
+      expect(step2.ok).toBe(true);
+      if (!step2.ok) return;
+      expect(step2.context.pages.map((p) => p.path)).toEqual(['llm-curated/decisions/pricing.md']);
+      expect(step2.context.pages[0].frontmatter.summary).toBe('Pro is $800 + credits');
+      expect(step2.context.pages[0].content).toContain('1000 credits');
+
+      // The teacher sees the teacher-only page; the owner (no role) sees everything incl. superseded on request.
+      const teacher = await svc.query({ vaultPath: vault, query: 'pricing', viewerRole: 'teacher', pages: ['llm-curated/people/parent-notes.md'] });
+      expect(teacher.ok && teacher.context.pages.length).toBe(1);
+      const owner = await svc.query({ vaultPath: vault, query: 'pricing', includeSuperseded: true });
+      expect(owner.ok && owner.context.candidatePages.map((c) => c.path)).toContain('llm-curated/decisions/pricing-old.md');
+    });
+
+    it('writes every query to the usage ledger and marks misses', async () => {
+      const { WikiUsageService } = await import('./wiki-usage.service.js');
+      await svc.query({ vaultPath: vault, query: 'pricing', agent: 'kai' });
+      await svc.query({ vaultPath: vault, query: 'zzqx nonexistent topic', agent: 'kai' });
+      const report = await WikiUsageService.getInstance().report(vault, 7);
+      expect(report.queries).toBe(2);
+      expect(report.misses).toBe(1);
+      expect(report.missedQueries).toEqual(['zzqx nonexistent topic']);
+      expect(report.topPages[0].path).toBe('llm-curated/decisions/pricing.md');
+    });
+  });
 });

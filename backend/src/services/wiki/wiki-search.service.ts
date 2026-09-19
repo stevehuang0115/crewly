@@ -23,6 +23,8 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { overlayRootFor } from './wiki-overlay.resolver.js';
+import { parsePage, isVisibleTo } from './wiki-page.js';
+import { WIKI_KB_CONSTANTS } from '../../constants.js';
 
 /** Cap on how many .md files are inspected per search. */
 export const WIKI_SEARCH_MAX_FILES = 500;
@@ -82,7 +84,17 @@ export interface WikiSearchFailure {
   message: string;
 }
 
-export interface WikiSearchInput {
+/** Eligibility filters applied per page (frontmatter-driven). */
+export interface WikiSearchFilters {
+  /** Include pages marked `superseded_by` (default false). */
+  includeSuperseded?: boolean;
+  /** Role of the reader; pages whose `visibility` excludes it are dropped. Undefined = owner (sees all). */
+  viewerRole?: string;
+  /** Include `_proposed/` pages (default false). */
+  includeProposed?: boolean;
+}
+
+export interface WikiSearchInput extends WikiSearchFilters {
   vaultPath: string;
   query: string;
 }
@@ -93,7 +105,7 @@ export interface VaultRef {
   label?: string;
 }
 
-export interface WikiMultiSearchInput {
+export interface WikiMultiSearchInput extends WikiSearchFilters {
   vaults: VaultRef[];
   query: string;
 }
@@ -198,7 +210,7 @@ export class WikiSearchService {
     if ('ok' in v) return v;
 
     const refs = (await this.collectDocs(vaultPath)).map((r) => ({ vaultPath, ...r }));
-    const { hits, truncated } = await this._searchCorpus(refs, v.query);
+    const { hits, truncated } = await this._searchCorpus(refs, v.query, input);
     return { ok: true, vaultPath, query: v.query, hits, truncated };
   }
 
@@ -223,7 +235,7 @@ export class WikiSearchService {
       if (refs.length >= WIKI_SEARCH_MAX_FILES) break;
     }
 
-    const { hits, truncated } = await this._searchCorpus(refs, v.query);
+    const { hits, truncated } = await this._searchCorpus(refs, v.query, input);
     for (const h of hits) {
       if (h.vaultPath) h.vaultLabel = labelByPath.get(h.vaultPath);
     }
@@ -246,11 +258,12 @@ export class WikiSearchService {
     vaultPath: string,
     docs: Array<{ relativePath: string; absPath: string }>,
     query: string,
+    filters: WikiSearchFilters = {},
   ): Promise<WikiSearchHit[]> {
     const v = this.validateQuery(query);
     if ('ok' in v) return [];
     const refs: DocRef[] = docs.map((d) => ({ vaultPath, ...d }));
-    const { hits } = await this._searchCorpus(refs, v.query);
+    const { hits } = await this._searchCorpus(refs, v.query, filters);
     return hits;
   }
 
@@ -262,17 +275,21 @@ export class WikiSearchService {
   private async _searchCorpus(
     docRefs: DocRef[],
     query: string,
+    filters: WikiSearchFilters = {},
   ): Promise<{ hits: WikiSearchHit[]; truncated: boolean }> {
     const queryTerms = Array.from(new Set(tokenize(query)));
     const needleLower = query.toLowerCase();
 
-    const truncatedFiles = docRefs.length >= WIKI_SEARCH_MAX_FILES;
-    const slice = docRefs.slice(0, WIKI_SEARCH_MAX_FILES);
+    const proposedPrefix = `${WIKI_KB_CONSTANTS.PROPOSED_DIR}/`;
+    const eligible = filters.includeProposed ? docRefs : docRefs.filter((r) => !r.relativePath.startsWith(proposedPrefix));
+    const truncatedFiles = eligible.length >= WIKI_SEARCH_MAX_FILES;
+    const slice = eligible.slice(0, WIKI_SEARCH_MAX_FILES);
 
     // Pass 1: read + tokenise each doc, accumulate query-term frequencies + length.
+    // Superseded pages and pages the viewer may not see are dropped here.
     const docs: ScoredDoc[] = [];
     for (const ref of slice) {
-      const doc = await this.statDoc(ref, queryTerms);
+      const doc = await this.statDoc(ref, queryTerms, filters);
       if (doc) docs.push(doc);
     }
     if (queryTerms.length === 0) return { hits: [], truncated: truncatedFiles };
@@ -387,7 +404,7 @@ export class WikiSearchService {
    * tokens are folded in (weighted) so title relevance contributes to BM25.
    * Returns null only on unreadable/oversize files with no filename match.
    */
-  private async statDoc(ref: DocRef, queryTerms: string[]): Promise<ScoredDoc | null> {
+  private async statDoc(ref: DocRef, queryTerms: string[], filters: WikiSearchFilters = {}): Promise<ScoredDoc | null> {
     const { vaultPath, relativePath, absPath } = ref;
     const filenameMatch = queryTerms.some((t) => relativePath.toLowerCase().includes(t));
 
@@ -414,6 +431,9 @@ export class WikiSearchService {
       const stat = await fs.stat(absPath);
       if (stat.size <= WIKI_SEARCH_MAX_FILE_BYTES) {
         content = await fs.readFile(absPath, 'utf8');
+        const { frontmatter } = parsePage(content);
+        if (frontmatter.superseded_by && !filters.includeSuperseded) return null;
+        if (!isVisibleTo(frontmatter, filters.viewerRole)) return null;
       }
     } catch {
       // unreadable — fall through with filename tokens only

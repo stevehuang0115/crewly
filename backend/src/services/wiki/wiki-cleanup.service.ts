@@ -36,6 +36,9 @@ import { existsSync } from 'fs';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { redactSensitive } from './wiki-redaction.js';
+import { WikiHistoryService } from './wiki-history.service.js';
+import { WikiIndexService } from './wiki-index.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -126,6 +129,8 @@ export interface WikiCleanupApplyInput {
    * deletion step, the decision happened upstream.
    */
   pages: string[];
+  /** Who decided (session name) — recorded in the page history. */
+  appliedBy?: string;
 }
 
 export interface WikiCleanupApplyResult {
@@ -366,18 +371,22 @@ export class WikiCleanupService {
         continue;
       }
 
-      // Read + parse before delete so we can archive shape.
+      // Read + parse before delete so we can archive shape. The archive is
+      // a rollback source, not a second copy of secrets: anything the
+      // confidentiality gate would refuse is masked here too.
       const raw = await fs.readFile(abs, 'utf8');
       const { frontmatter, body } = parseFrontmatter(raw);
       archive.entries.push({
         relPath: safe,
         archivedAt: new Date().toISOString(),
         reasons: ['apply-list'],
-        body,
+        body: redactSensitive(body),
         frontmatter,
       });
 
+      await WikiHistoryService.getInstance().snapshot(input.vaultPath, safe, input.appliedBy ?? 'wiki-cleanup', 'delete');
       await fs.unlink(abs);
+      await WikiIndexService.getInstance().remove(input.vaultPath, safe);
       deleted.push(safe);
     }
 

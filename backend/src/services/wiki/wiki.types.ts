@@ -70,6 +70,30 @@ export interface WritePolicy {
 }
 
 /**
+ * `retention:` block — what earns a page (defaults apply when absent).
+ * Per-instance: an enterprise vault can narrow the reasons or require a
+ * reviewer role on every page.
+ */
+export interface RetentionPolicy {
+  /** Allowed `keep_because` values (subset of the built-in set). */
+  keep_because: string[];
+  /** Require a one-line `summary` on every page (default true). */
+  require_summary: boolean;
+}
+
+/**
+ * `privacy:` block — direction of the confidentiality boundary.
+ * Personal vault: `pii: refuse` (customer detail must not flow in).
+ * Enterprise vault: `pii: allow` (customer data is the content) and
+ * `default_visibility` restricts who inside the instance may read.
+ */
+export interface PrivacyPolicy {
+  pii: 'allow' | 'mask' | 'refuse';
+  /** Roles a page is visible to when it declares none; empty = everyone. */
+  default_visibility: string[];
+}
+
+/**
  * Parsed SCHEMA.md content for one vault.
  */
 export interface VaultSchema {
@@ -78,6 +102,8 @@ export interface VaultSchema {
   hardcoded: HardcodedFolder[];
   llm_curated: LlmCuratedFolder[];
   write_policy: WritePolicy;
+  retention: RetentionPolicy;
+  privacy: PrivacyPolicy;
 }
 
 /**

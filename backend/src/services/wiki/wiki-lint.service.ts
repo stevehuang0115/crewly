@@ -29,6 +29,12 @@ import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SchemaLoaderService } from './schema-loader.service.js';
+import { WikiCurationService } from './wiki-curation.service.js';
+import { WikiIndexService } from './wiki-index.service.js';
+import { walkCuratedPages, isSeedFile } from './wiki-vault-walk.js';
+import { parsePage } from './wiki-page.js';
+import { tokenize } from './wiki-search.service.js';
+import { WIKI_KB_CONSTANTS } from '../../constants.js';
 import type { VaultSchema } from './wiki.types.js';
 
 /** Default age threshold (days) for marking a page stale. */
@@ -115,7 +121,25 @@ export interface WikiLintReport {
   orphanPages: string[];
   staleClaims: string[];
   restructureProposals: WikiLintRestructureProposal[];
+  /**
+   * Pairs of pages in the same folder whose title+summary overlap enough
+   * to be the same claim written twice — or two different conclusions on
+   * one topic. The agent decides: merge, or supersede one with the other.
+   */
+  contradictionCandidates: WikiLintContradictionCandidate[];
+  /** Pages under `_proposed/` awaiting review. */
+  proposalsPending: number;
+  /** Index vs. disk. */
+  index: { pages: number; indexed: number; missingFromIndex: number; indexedButMissing: number };
   truncated: boolean;
+}
+
+/** Two pages that look like one claim (or one topic, two answers). */
+export interface WikiLintContradictionCandidate {
+  pages: [string, string];
+  /** Jaccard similarity of title+summary token sets. */
+  similarity: number;
+  claim: string;
 }
 
 export type WikiLintOutcome =
@@ -212,6 +236,9 @@ export class WikiLintService {
     const staleClaims = this.detectStale(files, staleDays);
     const restructureProposals = this.proposeRestructures(files);
     const missingConcepts = this.detectMissingConcepts(unresolvedFrequency);
+    const contradictionCandidates = await this.detectContradictionCandidates(vaultPath);
+    const proposalsPending = (await WikiCurationService.getInstance().listProposals(vaultPath)).length;
+    const coverage = await WikiIndexService.getInstance().coverage(vaultPath);
 
     const report: WikiLintReport = {
       vault: {
@@ -228,6 +255,14 @@ export class WikiLintService {
       orphanPages: orphanPages.slice(0, WIKI_LINT_MAX_ROWS_PER_SECTION),
       staleClaims: staleClaims.slice(0, WIKI_LINT_MAX_ROWS_PER_SECTION),
       restructureProposals: restructureProposals.slice(0, WIKI_LINT_MAX_ROWS_PER_SECTION),
+      contradictionCandidates: contradictionCandidates.slice(0, WIKI_LINT_MAX_ROWS_PER_SECTION),
+      proposalsPending,
+      index: {
+        pages: coverage.pages,
+        indexed: coverage.indexed,
+        missingFromIndex: coverage.missingFromIndex.length,
+        indexedButMissing: coverage.indexedButMissing.length,
+      },
       truncated,
     };
     return { ok: true, report };
@@ -410,6 +445,53 @@ export class WikiLintService {
    *
    * Results sort by referenceCount desc — highest-leverage concepts first.
    */
+  /**
+   * Pages in the same folder whose title+summary token sets overlap above
+   * {@link WIKI_KB_CONSTANTS.DUPLICATE_JACCARD}. Superseded pages are
+   * excluded (that pair has already been resolved).
+   *
+   * @param vaultPath - Vault root
+   * @returns Candidate pairs, most similar first
+   */
+  private async detectContradictionCandidates(vaultPath: string): Promise<WikiLintContradictionCandidate[]> {
+    const byFolder = new Map<string, Array<{ rel: string; tokens: Set<string>; title: string }>>();
+    for (const page of await walkCuratedPages(vaultPath)) {
+      if (isSeedFile(page.relativePath)) continue;
+      let raw: string;
+      try {
+        raw = await fs.readFile(page.absPath, 'utf8');
+      } catch {
+        continue;
+      }
+      const { frontmatter, body } = parsePage(raw);
+      if (frontmatter.superseded_by) continue;
+      const title = String(frontmatter.title ?? body.match(/^#\s+(.+)$/m)?.[1] ?? path.basename(page.relativePath, '.md'));
+      const text = `${title} ${String(frontmatter.summary ?? '')}`;
+      const tokens = new Set(tokenize(text).filter((t) => t.length > 1));
+      if (tokens.size < 3) continue;
+      const folder = path.posix.dirname(page.relativePath);
+      const list = byFolder.get(folder) ?? [];
+      list.push({ rel: page.relativePath, tokens, title });
+      byFolder.set(folder, list);
+    }
+    const out: WikiLintContradictionCandidate[] = [];
+    for (const list of byFolder.values()) {
+      for (let i = 0; i < list.length; i++) {
+        for (let j = i + 1; j < list.length; j++) {
+          const a = list[i], b = list[j];
+          let inter = 0;
+          for (const t of a.tokens) if (b.tokens.has(t)) inter++;
+          const union = a.tokens.size + b.tokens.size - inter;
+          const sim = union === 0 ? 0 : inter / union;
+          if (sim >= WIKI_KB_CONSTANTS.DUPLICATE_JACCARD) {
+            out.push({ pages: [a.rel, b.rel], similarity: Math.round(sim * 100) / 100, claim: a.title });
+          }
+        }
+      }
+    }
+    return out.sort((x, y) => y.similarity - x.similarity);
+  }
+
   private detectMissingConcepts(
     unresolvedFrequency: Map<string, { count: number; sources: Set<string> }>,
   ): WikiLintMissingConcept[] {

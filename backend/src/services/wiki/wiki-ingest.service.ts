@@ -1,10 +1,17 @@
 /**
- * WikiIngestService — write canonical pages into a vault's `llm-curated/`.
+ * WikiIngestService — write into a vault's `llm-curated/`.
  *
- * Phase A scope per v2.1 spec: append entries to `llm-curated/log.md` for
- * every chat/spec/learning source. Decisions/pattern pages (separate files
- * under `llm-curated/decisions/`) are gated behind the LLM routing layer
- * which lands in Phase B.
+ * Two kinds of write:
+ *   - **log entry** (default): append to `llm-curated/log.md`. Cheap,
+ *     append-only, no gate beyond confidentiality. This is where "maybe
+ *     useful" goes — the default is NOT to keep.
+ *   - **page** (`targetRelativePath` under llm-curated/): a piece of
+ *     knowledge. Passes the retention gate (title + one-line summary +
+ *     keep_because), the vault's write policy (a `proposed_only` role's
+ *     page lands in `_proposed/` until a canonical role accepts), the
+ *     confidentiality gate (secrets never; PII per vault), gets YAML
+ *     frontmatter, an index line, and a history snapshot of what it
+ *     replaced.
  *
  * Frozen-path contract (§2): refuses ANY write whose target lives under a
  * `hardcoded:` folder. SchemaLoaderService.isFrozenPath() is the gate.
@@ -18,6 +25,12 @@ import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SchemaLoaderService } from './schema-loader.service.js';
 import { VaultSchema } from './wiki.types.js';
+import { WIKI_KB_CONSTANTS, type WikiKeepBecause } from '../../constants.js';
+import { checkRetention, parsePage, serializePage, oneLine, type WikiPageFrontmatter } from './wiki-page.js';
+import { applyPrivacyGate } from './wiki-redaction.js';
+import { decideWrite } from './wiki-policy.js';
+import { WikiIndexService } from './wiki-index.service.js';
+import { WikiHistoryService } from './wiki-history.service.js';
 
 /**
  * Categories of sources that trigger ingest. Mirrors §4 (ingest trigger
@@ -42,8 +55,21 @@ export interface WikiIngestInput {
   sourceBody: string;
   /** Session/user that authored the source — appears in the log header. */
   callerSession?: string;
+  /** Writer's role as resolved by the server (undefined = owner/UI). Drives write_policy. */
+  callerRole?: string;
   /** Optional override of the relative target path; defaults to `llm-curated/log.md`. */
   targetRelativePath?: string;
+  /** Page writes only: the page's name. */
+  title?: string;
+  /** Page writes only: the one-line conclusion — what this means for us. */
+  summary?: string;
+  /** Page writes only: why it earns a page. */
+  keepBecause?: WikiKeepBecause | string;
+  tags?: string[];
+  /** Page writes only: roles that may read it (default: the vault's default_visibility). */
+  visibility?: string[];
+  /** Page writes only: replace the page instead of appending to it (default: append). */
+  replace?: boolean;
 }
 
 export interface WikiIngestResult {
@@ -51,6 +77,19 @@ export interface WikiIngestResult {
   pagesWritten: string[];
   logEntry: string;
   frozenPathsTouched: string[];
+  /** True when the page landed in `_proposed/` (writer is a proposed_only role). */
+  proposed?: boolean;
+  /** PII pattern names that were masked (vault privacy `mask`). */
+  masked?: string[];
+  indexUpdated?: boolean;
+}
+
+export interface WikiIngestRefusedGate {
+  ok: false;
+  reason: 'retention_gate' | 'secret_detected' | 'pii_refused';
+  message: string;
+  /** retention_gate: missing fields; privacy: matched pattern names. */
+  details: string[];
 }
 
 export interface WikiIngestRefusedFrozen {
@@ -69,7 +108,8 @@ export interface WikiIngestRefusedInvalid {
 export type WikiIngestOutcome =
   | WikiIngestResult
   | WikiIngestRefusedFrozen
-  | WikiIngestRefusedInvalid;
+  | WikiIngestRefusedInvalid
+  | WikiIngestRefusedGate;
 
 const DEFAULT_LOG_RELATIVE_PATH = 'llm-curated/log.md';
 const MAX_BODY_BYTES = 64 * 1024;
@@ -90,10 +130,14 @@ export class WikiIngestService {
   private static instance: WikiIngestService | null = null;
   private readonly logger: ComponentLogger;
   private readonly schemaLoader: SchemaLoaderService;
+  private readonly index: WikiIndexService;
+  private readonly history: WikiHistoryService;
 
-  constructor(schemaLoader?: SchemaLoaderService) {
+  constructor(schemaLoader?: SchemaLoaderService, index?: WikiIndexService, history?: WikiHistoryService) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiIngest');
     this.schemaLoader = schemaLoader ?? new SchemaLoaderService();
+    this.index = index ?? WikiIndexService.getInstance();
+    this.history = history ?? WikiHistoryService.getInstance();
   }
 
   static getInstance(): WikiIngestService {
@@ -132,7 +176,7 @@ export class WikiIngestService {
       };
     }
 
-    const target = input.targetRelativePath ?? DEFAULT_LOG_RELATIVE_PATH;
+    const target = (input.targetRelativePath ?? DEFAULT_LOG_RELATIVE_PATH).replace(/\\/g, '/').replace(/^\/+/, '');
     if (this.schemaLoader.isFrozenPath(schema, target)) {
       return {
         ok: false,
@@ -141,27 +185,160 @@ export class WikiIngestService {
         frozenFolders: this.schemaLoader.getFrozenPaths(schema),
       };
     }
+    if (target.includes('..')) {
+      return { ok: false, reason: 'invalid_input', message: 'targetRelativePath may not contain ".."' };
+    }
 
-    const absoluteTarget = path.join(input.vaultPath, target);
-    await fs.mkdir(path.dirname(absoluteTarget), { recursive: true });
+    // Confidentiality gate — applies to log entries and pages alike.
+    const gate = applyPrivacyGate(input.sourceBody, schema.privacy);
+    if (!gate.ok) {
+      this.logger.warn('WikiIngest refused by the confidentiality gate', { vault: input.vaultPath, target, reason: gate.reason, patterns: gate.patterns });
+      return { ok: false, reason: gate.reason, message: gate.message, details: gate.patterns };
+    }
+    const safeInput: WikiIngestInput = { ...input, sourceBody: gate.body };
 
-    const logEntry = this.formatLogEntry(input);
-    await this.appendOrCreate(absoluteTarget, logEntry, input);
+    const isLogTarget = path.basename(target) === 'log.md';
+    if (isLogTarget) {
+      const absoluteTarget = path.join(input.vaultPath, target);
+      await fs.mkdir(path.dirname(absoluteTarget), { recursive: true });
+      const logEntry = this.formatLogEntry(safeInput);
+      await this.appendOrCreate(absoluteTarget, logEntry);
+      this.logger.info('WikiIngest wrote log entry', {
+        vault: input.vaultPath,
+        target,
+        sourceType: input.sourceType,
+        sourceRef: input.sourceRef,
+        bodyBytes: safeInput.sourceBody.length,
+      });
+      return { ok: true, pagesWritten: [target], logEntry, frozenPathsTouched: [], masked: gate.masked };
+    }
 
-    this.logger.info('WikiIngest wrote log entry', {
+    return this.writePage(schema, target, safeInput, gate.masked);
+  }
+
+  /**
+   * Write (create, append to, or replace) a knowledge page. See the module
+   * header for the gates it passes.
+   *
+   * @param schema - Vault schema
+   * @param target - Vault-relative page path (validated, not frozen)
+   * @param input - Ingest input with a body that already passed the privacy gate
+   * @param masked - PII pattern names masked in the body
+   * @returns Outcome
+   */
+  private async writePage(
+    schema: VaultSchema,
+    target: string,
+    input: WikiIngestInput,
+    masked: string[],
+  ): Promise<WikiIngestOutcome> {
+    if (!target.startsWith('llm-curated/')) {
+      return { ok: false, reason: 'invalid_input', message: 'pages live under llm-curated/ (log entries go to llm-curated/log.md)' };
+    }
+    const existingAbs = path.join(input.vaultPath, target);
+    const existing = existsSync(existingAbs) ? parsePage(await fs.readFile(existingAbs, 'utf8')) : null;
+
+    // Retention gate: a page needs title + summary + keep_because. An
+    // append to an existing page that already has them inherits them.
+    const supplied: Partial<WikiPageFrontmatter> = {
+      ...(existing?.frontmatter ?? {}),
+      ...(input.title ? { title: oneLine(input.title, WIKI_KB_CONSTANTS.TITLE_MAX_CHARS) } : {}),
+      ...(input.summary ? { summary: oneLine(input.summary, WIKI_KB_CONSTANTS.SUMMARY_MAX_CHARS + 1) } : {}),
+      ...(input.keepBecause ? { keep_because: input.keepBecause as WikiKeepBecause } : {}),
+      ...(input.tags ? { tags: input.tags } : {}),
+      ...(input.visibility ? { visibility: input.visibility } : {}),
+    };
+    if (!supplied.title && existing === null) supplied.title = this.titleFromBody(input.sourceBody);
+    const refusal = checkRetention(supplied);
+    if (refusal) {
+      return { ok: false, reason: 'retention_gate', message: refusal.message, details: refusal.missing };
+    }
+    if (!schema.retention.keep_because.includes(String(supplied.keep_because))) {
+      return {
+        ok: false,
+        reason: 'retention_gate',
+        message: `This vault keeps pages only for: ${schema.retention.keep_because.join(' | ')}.`,
+        details: ['keep_because'],
+      };
+    }
+
+    // Write policy: proposed_only roles land in _proposed/.
+    const decision = decideWrite(schema, input.callerRole);
+    const proposed = decision === 'proposed';
+    const finalTarget = proposed && !target.startsWith(`${WIKI_KB_CONSTANTS.PROPOSED_DIR}/`)
+      ? `${WIKI_KB_CONSTANTS.PROPOSED_DIR}/${target.replace(/^llm-curated\//, '')}`
+      : target;
+    const abs = path.join(input.vaultPath, finalTarget);
+    const prior = existsSync(abs) ? parsePage(await fs.readFile(abs, 'utf8')) : null;
+
+    const now = new Date().toISOString();
+    const author = input.callerSession ?? input.sourceRef;
+    const fm: Partial<WikiPageFrontmatter> = {
+      ...(prior?.frontmatter ?? {}),
+      ...supplied,
+      source: oneLine(input.sourceRef, 200),
+      caller: oneLine(author, 80),
+      recorded: prior?.frontmatter.recorded ?? now,
+      updated: now,
+      ...(proposed ? { proposed_by: oneLine(author, 80) } : {}),
+    };
+    if (!fm.visibility && schema.privacy.default_visibility.length > 0) fm.visibility = schema.privacy.default_visibility;
+
+    const entry = this.formatPageEntry(input);
+    const body = prior && !input.replace
+      ? `${prior.body.replace(/\s+$/, '')}\n${entry}`
+      : `# ${fm.title}\n${entry}`;
+
+    await this.history.snapshot(input.vaultPath, finalTarget, author, 'write');
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, serializePage(fm, body), 'utf8');
+
+    let indexUpdated = false;
+    if (!proposed) {
+      await this.index.upsert(input.vaultPath, finalTarget, fm);
+      indexUpdated = true;
+    }
+
+    this.logger.info(proposed ? 'WikiIngest wrote a proposed page' : 'WikiIngest wrote page', {
       vault: input.vaultPath,
-      target,
+      target: finalTarget,
       sourceType: input.sourceType,
-      sourceRef: input.sourceRef,
-      bodyBytes: input.sourceBody.length,
+      keepBecause: fm.keep_because,
+      callerRole: input.callerRole ?? 'owner',
+      appended: !!prior && !input.replace,
     });
-
     return {
       ok: true,
-      pagesWritten: [target],
-      logEntry,
+      pagesWritten: [finalTarget],
+      logEntry: entry,
       frozenPathsTouched: [],
+      proposed,
+      masked,
+      indexUpdated,
     };
+  }
+
+  /**
+   * The provenance block appended to a page for each ingest.
+   *
+   * @param input - Ingest input
+   * @returns Markdown block
+   */
+  private formatPageEntry(input: WikiIngestInput): string {
+    const ts = new Date().toISOString();
+    const caller = this.sanitizeOneLine(input.callerSession ?? input.sourceRef, 80);
+    return [
+      '',
+      this.sanitizeBody(input.sourceBody),
+      '',
+      `<sub>${input.sourceType} · ${this.sanitizeOneLine(input.sourceRef, 200)} · ${caller} · ${ts}</sub>`,
+      '',
+    ].join('\n');
+  }
+
+  private titleFromBody(body: string): string {
+    const heading = body.match(/^#\s+(.+)$/m);
+    return oneLine(heading ? heading[1] : body, WIKI_KB_CONSTANTS.TITLE_MAX_CHARS);
   }
 
   // ---------------------------------------------------------------------------
@@ -226,13 +403,9 @@ export class WikiIngestService {
     ].join('\n');
   }
 
-  private async appendOrCreate(
-    absolutePath: string,
-    entry: string,
-    input: WikiIngestInput,
-  ): Promise<void> {
+  private async appendOrCreate(absolutePath: string, entry: string): Promise<void> {
     if (!existsSync(absolutePath)) {
-      const header = this.buildPageHeader(absolutePath, input);
+      const header = this.buildPageHeader();
       await fs.writeFile(absolutePath, header + entry, 'utf8');
       return;
     }
@@ -240,32 +413,12 @@ export class WikiIngestService {
   }
 
   /**
-   * Pick the right header for a freshly-created page:
-   *   - `log.md`            → audit-log preamble (append-only)
-   *   - `decisions/*.md`    → decision-page title + provenance block
-   *   - anything else       → minimal title block from the source ref
+   * Header for a freshly-created `log.md` (pages are built by {@link writePage}).
+   *
+   * @returns The activity-log preamble
    */
-  private buildPageHeader(absolutePath: string, input: WikiIngestInput): string {
-    const basename = absolutePath.split(/[/\\]/).pop() ?? '';
-    if (basename === 'log.md') {
-      return '# Activity log\n\nAppend-only log of ingested sources. Each entry: `## [<ISO>] <sourceType> | <caller>`.\n';
-    }
-    if (absolutePath.includes('/decisions/')) {
-      const title = this.sanitizeOneLine(input.sourceBody, 80);
-      const caller = input.callerSession ?? input.sourceRef;
-      return [
-        `# ${title}`,
-        '',
-        `> **source:** \`${this.sanitizeOneLine(input.sourceRef, 200)}\`  `,
-        `> **caller:** \`${this.sanitizeOneLine(caller, 80)}\`  `,
-        `> **recorded:** ${new Date().toISOString()}`,
-        '',
-        '---',
-        '',
-      ].join('\n');
-    }
-    // Generic non-log target: minimal title block.
-    return `# ${this.sanitizeOneLine(input.sourceRef, 80)}\n\n`;
+  private buildPageHeader(): string {
+    return '# Activity log\n\nAppend-only log of ingested sources. Each entry: `## [<ISO>] <sourceType> | <caller>`.\n';
   }
 
   /**

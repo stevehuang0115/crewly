@@ -2,6 +2,14 @@
  * WikiQueryService — read a vault and build the `system-context` payload
  * that the caller's runtime feeds to its LLM for synthesis.
  *
+ * Retrieval is two-step: the payload leads with the vault's one-line
+ * index (`llm-curated/index.md`, trimmed to the query's neighbourhood
+ * when it would not fit), then BM25 candidate pages; the caller picks
+ * 3–5 paths and asks again with `pages` to get them in full. Superseded
+ * pages and pages the viewer's role may not see never appear. Every call
+ * is written to the vault's usage ledger (what was asked, what was read,
+ * whether it was a miss).
+ *
  * Per v2.1 spec §3 the skill is split into two halves:
  *   - System-context (LLM-agnostic) → what this service produces
  *   - Task-instruction (per-LLM)    → lives on disk under
@@ -18,13 +26,18 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SchemaLoaderService } from './schema-loader.service.js';
-import { WikiSearchService } from './wiki-search.service.js';
+import { WikiSearchService, tokenize, type WikiSearchFilters } from './wiki-search.service.js';
 import { VaultSchema } from './wiki.types.js';
+import { WikiIndexService } from './wiki-index.service.js';
+import { WikiUsageService } from './wiki-usage.service.js';
+import { parsePage, isVisibleTo, type WikiPageFrontmatter } from './wiki-page.js';
+import { walkCuratedPages, isSeedFile } from './wiki-vault-walk.js';
 
 const DEFAULT_RECENT_LOG_ENTRIES = 20;
 const DEFAULT_TOP_K_PAGES = 5;
 const MAX_PAGE_BYTES = 8 * 1024;          // truncate per-page excerpt
-const MAX_TOTAL_PAGES_SCANNED = 200;      // safety cap on filesystem walk
+const MAX_FULL_PAGE_BYTES = 64 * 1024;    // cap for a page returned in full (step 2)
+const MAX_FULL_PAGES = 8;                 // how many full pages one call may return
 
 export interface WikiQueryInput {
   /** Absolute path to the vault root. */
@@ -35,6 +48,14 @@ export interface WikiQueryInput {
   topK?: number;
   /** How many tail log.md entries to include (default 20). */
   recentLogEntries?: number;
+  /** Step 2: vault-relative pages to return in full (max 8). */
+  pages?: string[];
+  /** Who is asking (session name) — for the usage ledger. */
+  agent?: string;
+  /** Reader's role — pages whose `visibility` excludes it are hidden. Undefined = owner. */
+  viewerRole?: string;
+  /** Include superseded pages (default false). */
+  includeSuperseded?: boolean;
 }
 
 export interface WikiLogEntry {
@@ -54,8 +75,20 @@ export interface WikiCandidatePage {
   score: number;
 }
 
+/** A page returned in full (step 2). */
+export interface WikiFullPage {
+  path: string;
+  frontmatter: Partial<WikiPageFrontmatter>;
+  content: string;
+  truncated: boolean;
+}
+
 export interface WikiQuerySystemContext {
   vault: { scope: VaultSchema['vault_scope']; id: string; path: string };
+  /** Step 1: the one-line-per-page index (trimmed to the query when large). */
+  index: { text: string; truncated: boolean; entries: number };
+  /** Step 2: pages the caller asked for in full. */
+  pages: WikiFullPage[];
   schemaSummary: {
     hardcoded: Array<{ path: string; description: string }>;
     llmCurated: Array<{ path: string; seedSubdirs: string[] }>;
@@ -88,9 +121,14 @@ export class WikiQueryService {
   private readonly logger: ComponentLogger;
   private readonly schemaLoader: SchemaLoaderService;
 
-  constructor(schemaLoader?: SchemaLoaderService) {
+  private readonly index: WikiIndexService;
+  private readonly usage: WikiUsageService;
+
+  constructor(schemaLoader?: SchemaLoaderService, index?: WikiIndexService, usage?: WikiUsageService) {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiQuery');
     this.schemaLoader = schemaLoader ?? new SchemaLoaderService();
+    this.index = index ?? WikiIndexService.getInstance();
+    this.usage = usage ?? WikiUsageService.getInstance();
   }
 
   static getInstance(): WikiQueryService {
@@ -126,14 +164,23 @@ export class WikiQueryService {
 
     const topK = input.topK ?? DEFAULT_TOP_K_PAGES;
     const recentN = input.recentLogEntries ?? DEFAULT_RECENT_LOG_ENTRIES;
+    const filters: WikiSearchFilters = { viewerRole: input.viewerRole, includeSuperseded: input.includeSuperseded === true };
 
+    const index = await this.index.readForQuery(input.vaultPath, tokenize(input.query));
     const recentLog = await this.readRecentLog(input.vaultPath, recentN);
-    const candidatePages = await this.findCandidatePages(
-      input.vaultPath,
-      schema,
-      input.query,
-      topK,
-    );
+    const candidatePages = await this.findCandidatePages(input.vaultPath, input.query, topK, filters);
+    const pages = await this.readFullPages(input.vaultPath, schema, input.pages ?? [], filters);
+
+    // Usage ledger: what was read counts as a hit; a query that surfaced
+    // nothing (no full pages, no candidates) is a capture gap.
+    const hits = [...new Set([...pages.map((p) => p.path), ...candidatePages.map((c) => c.path)])];
+    await this.usage.record(input.vaultPath, {
+      via: 'wiki-query',
+      agent: input.agent ?? 'unknown',
+      query: input.query,
+      hits,
+      miss: hits.length === 0,
+    });
 
     const context: WikiQuerySystemContext = {
       vault: {
@@ -141,6 +188,8 @@ export class WikiQueryService {
         id: schema.vault_id,
         path: input.vaultPath,
       },
+      index,
+      pages,
       schemaSummary: {
         hardcoded: schema.hardcoded.map((h) => ({
           path: h.path,
@@ -157,10 +206,13 @@ export class WikiQueryService {
       recentLog,
       candidatePages,
       callerNotes: [
+        'Two-step retrieval: read `index` first, pick 3–5 relevant paths, then call wiki-query again with `pages` set to read them in full. Do not answer from index lines alone.',
         'Cite pages by their relative path inside the vault.',
         'Do not propose writes into any frozenPaths — refuse or redirect to llm-curated/.',
-        'Treat candidatePages.excerpt as truncated; ask wiki-query again with a refined query if you need full content.',
+        'candidatePages.excerpt is truncated; `pages` returns full content.',
+        'Pages marked superseded are hidden; ask with includeSuperseded when you need the history of a judgement.',
         'The recentLog is append-only audit; never propose rewrites to its content.',
+        'If nothing here answers the question, say so — that miss is recorded as a capture gap.',
       ],
     };
 
@@ -270,24 +322,27 @@ export class WikiQueryService {
   }
 
   /**
-   * Gather the vault's NON-frozen (`llm-curated/`) `.md` pages and rank them by
-   * Okapi BM25 against the query, reusing {@link WikiSearchService.searchCorpus}
-   * so the agent-facing `wiki-query` skill scores identically to the wiki UI
-   * search. IDF is computed over exactly the gathered pages, preserving this
-   * skill's scope: only curated pages are eligible, and `llm-curated/log.md`
-   * is excluded (it is surfaced separately as `recentLog`).
+   * Rank the vault's `llm-curated/` pages by Okapi BM25 against the query,
+   * reusing {@link WikiSearchService.searchCorpus} so the agent-facing
+   * skill scores identically to the wiki UI search. Seed files (index,
+   * log) are excluded; superseded/invisible/proposed pages are dropped by
+   * the search filters.
+   *
+   * @param vaultPath - Vault root
+   * @param query - Query text
+   * @param topK - How many candidates
+   * @param filters - Viewer/superseded filters
+   * @returns Candidates with truncated excerpts
    */
   private async findCandidatePages(
     vaultPath: string,
-    schema: VaultSchema,
     query: string,
     topK: number,
+    filters: WikiSearchFilters,
   ): Promise<WikiCandidatePage[]> {
-    const docs = await this.gatherCuratedPages(vaultPath, schema);
+    const docs = (await walkCuratedPages(vaultPath)).filter((p) => !isSeedFile(p.relativePath));
     if (docs.length === 0) return [];
-
-    const hits = await WikiSearchService.getInstance().searchCorpus(vaultPath, docs, query);
-
+    const hits = await WikiSearchService.getInstance().searchCorpus(vaultPath, docs, query, filters);
     const candidates: WikiCandidatePage[] = [];
     for (const hit of hits.slice(0, topK)) {
       const excerpt = await this.readExcerpt(path.join(vaultPath, hit.relativePath));
@@ -297,52 +352,47 @@ export class WikiQueryService {
   }
 
   /**
-   * Collect candidate `.md` pages under the schema's `llm-curated/` roots,
-   * skipping dotfile/`node_modules` dirs and `llm-curated/log.md`.
+   * Step 2: return the requested pages in full (frontmatter + content),
+   * honouring frozen paths, visibility and supersession. Unknown paths
+   * are skipped silently (the caller sees which ones came back).
    *
-   * @param vaultPath - Absolute vault root.
-   * @param schema - Loaded vault schema (defines the curated roots).
-   * @returns Page refs as `{ relativePath (POSIX), absPath }`.
+   * @param vaultPath - Vault root
+   * @param schema - Vault schema (frozen folders are readable — SOPs/norms are knowledge too)
+   * @param requested - Vault-relative paths
+   * @param filters - Viewer/superseded filters
+   * @returns Pages in request order
    */
-  private async gatherCuratedPages(
+  private async readFullPages(
     vaultPath: string,
     schema: VaultSchema,
-  ): Promise<Array<{ relativePath: string; absPath: string }>> {
-    const llmCuratedRoots = schema.llm_curated.map((l) =>
-      path.join(vaultPath, l.path.replace(/[/\\]+$/, '')),
-    );
-
-    const docs: Array<{ relativePath: string; absPath: string }> = [];
-    let scanned = 0;
-
-    for (const root of llmCuratedRoots) {
-      const stack: string[] = [root];
-      while (stack.length > 0 && scanned < MAX_TOTAL_PAGES_SCANNED) {
-        const current = stack.pop()!;
-        let entries: import('fs').Dirent[];
-        try {
-          entries = await fs.readdir(current, { withFileTypes: true });
-        } catch {
-          continue;
-        }
-        for (const entry of entries) {
-          const full = path.join(current, entry.name);
-          if (entry.isDirectory()) {
-            if (entry.name.startsWith('.') || entry.name === 'node_modules') continue;
-            stack.push(full);
-            continue;
-          }
-          if (!entry.isFile()) continue;
-          if (!entry.name.endsWith('.md')) continue;
-          const rel = path.relative(vaultPath, full).replace(/\\/g, '/');
-          // Skip log.md — it's surfaced separately as recentLog.
-          if (rel === 'llm-curated/log.md') continue;
-          scanned++;
-          docs.push({ relativePath: rel, absPath: full });
-        }
+    requested: string[],
+    filters: WikiSearchFilters,
+  ): Promise<WikiFullPage[]> {
+    void schema;
+    const out: WikiFullPage[] = [];
+    for (const raw of requested.slice(0, MAX_FULL_PAGES)) {
+      const rel = String(raw).replace(/\\/g, '/').replace(/^\/+/, '');
+      if (!rel.endsWith('.md') || rel.includes('..')) continue;
+      const abs = path.resolve(vaultPath, rel);
+      if (!abs.startsWith(path.resolve(vaultPath) + path.sep)) continue;
+      let content: string;
+      try {
+        content = await fs.readFile(abs, 'utf8');
+      } catch {
+        continue;
       }
+      const page = parsePage(content);
+      if (page.frontmatter.superseded_by && !filters.includeSuperseded) continue;
+      if (!isVisibleTo(page.frontmatter, filters.viewerRole)) continue;
+      const truncated = Buffer.byteLength(content, 'utf8') > MAX_FULL_PAGE_BYTES;
+      out.push({
+        path: rel,
+        frontmatter: page.frontmatter,
+        content: truncated ? content.slice(0, MAX_FULL_PAGE_BYTES) + '\n\n…[truncated]' : content,
+        truncated,
+      });
     }
-    return docs;
+    return out;
   }
 
   private async readExcerpt(absolutePath: string): Promise<string> {

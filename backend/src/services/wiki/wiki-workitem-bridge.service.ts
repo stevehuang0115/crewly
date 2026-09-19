@@ -40,6 +40,7 @@ import { createWorkItem } from '../../types/v2/work-item.types.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { WIKI_KB_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -156,8 +157,15 @@ const TERMINAL_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>([
 export interface WikiWorkItemBridgeOptions {
   /** How often to scan vaults + projects (default 10 min). */
   intervalMs?: number;
-  /** Target agent session for the created WIs (default `crewly-orc`). */
+  /** Fallback target agent session for the created WIs (default `crewly-orc`). */
   targetAgent?: string;
+  /**
+   * Resolve the session that should own a vault's wiki work — the team
+   * leader of the vault's team (team vault) or of a team assigned to the
+   * project (project vault). Return null to fall back to `targetAgent`.
+   * Processing is the TL's job, not the orchestrator's (2026-09-19).
+   */
+  resolveTarget?: (vaultPathOrProjectRoot: string) => Promise<string | null>;
   /**
    * Max new WIs to publish per tick (default 2). Throttles PTY flood —
    * see {@link DEFAULT_MAX_CREATES_PER_TICK}.
@@ -216,6 +224,7 @@ export class WikiWorkItemBridgeService {
   private readonly logger: ComponentLogger;
   private readonly intervalMs: number;
   private readonly targetAgent: string;
+  private readonly resolveTarget: ((vaultPathOrProjectRoot: string) => Promise<string | null>) | null;
   private readonly maxCreatesPerTick: number;
   private readonly cooldownMs: number;
   private readonly nowFn: () => number;
@@ -240,6 +249,8 @@ export class WikiWorkItemBridgeService {
    * any change in the count (progress, or genuinely new content) resets it.
    */
   private readonly noProgress = new Map<string, NoProgressEntry>();
+  /** Keys already reported as exhausted (warn once). */
+  private readonly exhaustedWarned = new Set<string>();
   /** Absolute path of the persisted state file (or `null` to disable). */
   private readonly statePath: string | null;
   /** True after `loadStateFromDisk` has either populated or no-op'd. */
@@ -249,6 +260,7 @@ export class WikiWorkItemBridgeService {
     this.logger = LoggerService.getInstance().createComponentLogger('WikiWorkItemBridge');
     this.intervalMs = opts.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.targetAgent = opts.targetAgent ?? DEFAULT_TARGET_AGENT;
+    this.resolveTarget = opts.resolveTarget ?? null;
     this.maxCreatesPerTick = Math.max(1, opts.maxCreatesPerTick ?? DEFAULT_MAX_CREATES_PER_TICK);
     this.cooldownMs = Math.max(0, opts.cooldownMs ?? DEFAULT_COOLDOWN_MS);
     this.nowFn = opts.now ?? (() => Date.now());
@@ -406,6 +418,7 @@ export class WikiWorkItemBridgeService {
       return;
     }
     this.noProgress.set(key, { count, strikes: 0 });
+    this.exhaustedWarned.delete(key);
   }
 
   static getInstance(): WikiWorkItemBridgeService | null {
@@ -530,6 +543,21 @@ export class WikiWorkItemBridgeService {
           // no skipReason represent genuine new work for the migrate agent.
           const proposed = scan.proposedPages.filter((p) => !p.skipReason).length;
           if (proposed === 0) continue;
+          // A migrate WI that changed nothing N times in a row is not going
+          // to succeed on the N+1th; stop feeding it to the agent and leave
+          // one warning instead of a WI every cooldown cycle.
+          const strikes = this.noProgress.get(key)?.strikes ?? 0;
+          if (strikes >= WIKI_KB_CONSTANTS.MIGRATE_MAX_STRIKES) {
+            if (!this.exhaustedWarned.has(key)) {
+              this.exhaustedWarned.add(key);
+              this.logger.warn('WikiWorkItemBridge: legacy migrate made no progress repeatedly — giving up on this project until its scan result changes', {
+                projectRoot,
+                proposed,
+                strikes,
+              });
+            }
+            continue;
+          }
           if (createdThisTick >= this.maxCreatesPerTick) {
             result.deferredByThrottle.push(projectRoot);
             continue;
@@ -642,12 +670,29 @@ export class WikiWorkItemBridgeService {
     return { inflightVaults, inflightProjects, inflightCleanupVaults };
   }
 
+  /**
+   * The session that should do a vault's wiki work: the resolver's answer
+   * (a team leader) or the fallback target.
+   *
+   * @param key - Vault path or project root
+   * @returns Session name
+   */
+  private async targetFor(key: string): Promise<string> {
+    if (!this.resolveTarget) return this.targetAgent;
+    try {
+      return (await this.resolveTarget(key)) ?? this.targetAgent;
+    } catch {
+      return this.targetAgent;
+    }
+  }
+
   private async createDrainWorkItem(vaultPath: string, pendingCount: number): Promise<void> {
     const scope = describeVaultScope(vaultPath);
+    const target = await this.targetFor(vaultPath);
     const wi: WorkItem = createWorkItem({
       type: 'delegate',
       owner: 'orchestrator',
-      target: this.targetAgent,
+      target,
       title: `Drain ${pendingCount} wiki queue item(s) — ${scope}`,
       description: `Process ${pendingCount} pending wiki queue items in ${vaultPath}.`,
       briefMarkdown: drainBrief(vaultPath, pendingCount),
@@ -664,7 +709,7 @@ export class WikiWorkItemBridgeService {
       workItemId: wi.id,
       vaultPath,
       pendingCount,
-      target: this.targetAgent,
+      target,
     });
   }
 
@@ -674,10 +719,11 @@ export class WikiWorkItemBridgeService {
     totalCandidates: number,
   ): Promise<void> {
     const scope = describeVaultScope(vaultPath);
+    const target = await this.targetFor(vaultPath);
     const wi: WorkItem = createWorkItem({
       type: 'delegate',
       owner: 'orchestrator',
-      target: this.targetAgent,
+      target,
       title: `Cleanup ${chunk.length} of ${totalCandidates} low-quality wiki page(s) — ${scope}`,
       description: `Review ${chunk.length} cleanup candidates in ${vaultPath}; decide keep/delete; call wiki-cleanup --apply with the final list.`,
       briefMarkdown: cleanupBrief(vaultPath, chunk, totalCandidates),
@@ -702,15 +748,16 @@ export class WikiWorkItemBridgeService {
       vaultPath,
       chunkSize: chunk.length,
       totalCandidates,
-      target: this.targetAgent,
+      target,
     });
   }
 
   private async createMigrateWorkItem(projectRoot: string, proposedCount: number): Promise<void> {
+    const target = await this.targetFor(projectRoot);
     const wi: WorkItem = createWorkItem({
       type: 'delegate',
       owner: 'orchestrator',
-      target: this.targetAgent,
+      target,
       title: `Migrate ${proposedCount} legacy wiki item(s) — ${path.basename(projectRoot)}`,
       description: `Apply wiki-migrate for ${projectRoot} (${proposedCount} new pages).`,
       briefMarkdown: migrateBrief(projectRoot, proposedCount),
@@ -727,7 +774,7 @@ export class WikiWorkItemBridgeService {
       workItemId: wi.id,
       projectRoot,
       proposedCount,
-      target: this.targetAgent,
+      target,
     });
   }
 }

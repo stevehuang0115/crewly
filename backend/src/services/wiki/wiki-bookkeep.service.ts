@@ -28,6 +28,11 @@ import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SchemaLoaderService } from './schema-loader.service.js';
 import { WikiQueueService } from './wiki-queue.service.js';
+import { WikiUsageService, type WikiUsageReport } from './wiki-usage.service.js';
+import { WikiIndexService, type WikiIndexCoverage } from './wiki-index.service.js';
+import { WikiCurationService } from './wiki-curation.service.js';
+import { walkCuratedPages, isSeedFile } from './wiki-vault-walk.js';
+import { parsePage, checkRetention } from './wiki-page.js';
 
 const DEFAULT_WINDOW_DAYS = 7;
 const DEFAULT_MD_THRESHOLD = 10;
@@ -96,6 +101,20 @@ export interface WikiBookkeepReport {
     processed: number;
     skipped: number;
     total: number;
+  };
+  /**
+   * Knowledge-base health (2026-09-19): is the vault being read, what could
+   * it not answer, what is waiting for review, is the index whole.
+   */
+  kb: {
+    usage: WikiUsageReport;
+    /** Pages nobody read in the window (candidates to consolidate or drop). */
+    unreadPages: string[];
+    unreadCount: number;
+    index: WikiIndexCoverage;
+    proposalsPending: number;
+    /** Pages without a summary / keep_because (pre-gate content awaiting curation). */
+    ungatedPages: number;
   };
   /** Recommendations the agent's LLM should act on. */
   recommendations: string[];
@@ -209,6 +228,7 @@ export class WikiBookkeepService {
         : recentMdCount;
     const shouldFire = netNewMdCount >= threshold;
 
+    const kb = await this.knowledgeBaseHealth(input.vaultPath, windowDays);
     const recommendations = this.buildRecommendations({
       shouldFire,
       netNewMdCount,
@@ -236,7 +256,8 @@ export class WikiBookkeepService {
       duplicateCandidates,
       staleCount,
       queue: queueStats,
-      recommendations,
+      kb,
+      recommendations: [...recommendations, ...this.kbRecommendations(kb)],
     };
 
     this.logger.info('WikiBookkeep generated', {
@@ -361,6 +382,61 @@ export class WikiBookkeepService {
       }
     }
     return prefix;
+  }
+
+  /**
+   * Knowledge-base health: usage ledger, unread pages, index coverage,
+   * pending proposals, pages that never passed the retention gate.
+   *
+   * @param vaultPath - Vault root
+   * @param windowDays - Usage window
+   * @returns The `kb` block of the report
+   */
+  private async knowledgeBaseHealth(vaultPath: string, windowDays: number): Promise<WikiBookkeepReport['kb']> {
+    const pages = (await walkCuratedPages(vaultPath)).filter((p) => !isSeedFile(p.relativePath));
+    const usage = await WikiUsageService.getInstance().report(vaultPath, windowDays);
+    const unreadPages = await WikiUsageService.getInstance().unreadPages(vaultPath, pages.map((p) => p.relativePath), windowDays);
+    const index = await WikiIndexService.getInstance().coverage(vaultPath);
+    const proposalsPending = (await WikiCurationService.getInstance().listProposals(vaultPath)).length;
+    let ungatedPages = 0;
+    for (const p of pages) {
+      try {
+        const { frontmatter } = parsePage(await fs.readFile(p.absPath, 'utf8'));
+        if (checkRetention(frontmatter)) ungatedPages++;
+      } catch {
+        ungatedPages++;
+      }
+    }
+    return { usage, unreadPages: unreadPages.slice(0, 50), unreadCount: unreadPages.length, index, proposalsPending, ungatedPages };
+  }
+
+  /**
+   * Turn the kb block into actions.
+   *
+   * @param kb - Health block
+   * @returns Recommendation lines
+   */
+  private kbRecommendations(kb: WikiBookkeepReport['kb']): string[] {
+    const out: string[] = [];
+    if (kb.usage.queries === 0) {
+      out.push(`No query touched this vault in ${kb.usage.windowDays} days — nothing here is being used. Either the agents are not calling wiki-query/recall, or the content is not worth reading.`);
+    }
+    if (kb.usage.misses > 0) {
+      out.push(`${kb.usage.misses} quer${kb.usage.misses === 1 ? 'y' : 'ies'} found nothing (capture gaps): ${kb.usage.missedQueries.slice(0, 5).map((q) => `"${q}"`).join(', ')} — decide whether each deserves a page.`);
+    }
+    if (kb.unreadCount > 0 && kb.usage.queries > 0) {
+      out.push(`${kb.unreadCount} page(s) were never read in the window — consolidate into fewer pages or supersede/drop the ones that no longer change a decision.`);
+    }
+    if (kb.index.missingFromIndex.length > 0 || kb.index.indexedButMissing.length > 0) {
+      out.push(`Index out of sync (${kb.index.missingFromIndex.length} pages unindexed, ${kb.index.indexedButMissing.length} dangling lines) — run POST /api/wiki/index/rebuild.`);
+    }
+    if (kb.proposalsPending > 0) {
+      out.push(`${kb.proposalsPending} proposed page(s) await a canonical role's accept/reject (wiki-review-proposals).`);
+    }
+    if (kb.ungatedPages > 0) {
+      out.push(`${kb.ungatedPages} page(s) have no summary/keep_because — give each a one-line conclusion and a reason, or move it to log.md.`);
+    }
+    return out;
   }
 
   private buildRecommendations(args: {

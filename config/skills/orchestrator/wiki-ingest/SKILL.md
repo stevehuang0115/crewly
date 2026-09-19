@@ -61,3 +61,22 @@ bash execute.sh \
   --caller user/steve \
   --target llm-curated/decisions/2026-05-22-crewly-pro-pricing.md
 ```
+
+## Page contract (2026-09-19 — the vault is a knowledge base, not a log)
+
+`log.md` (the default target) is append-only and ungated: put "maybe useful" there. A **page** (`--target llm-curated/<folder>/<name>.md`) is refused (`422 retention_gate`) unless it carries:
+
+| Flag | Meaning |
+|---|---|
+| `--title` | The page's name |
+| `--summary` | One line: the **conclusion** — what this means for us, not what the source said |
+| `--keep-because` | `changes_decision` · `contradicts` · `hard_fact` · `reusable_method` |
+
+Optional: `--tags a,b`, `--visibility teacher,admin` (roles that may read it), `--replace` (rewrite instead of append).
+
+What else happens on a page write:
+- **Write policy**: if your role is `proposed_only` in the vault's SCHEMA.md, the page lands in `llm-curated/_proposed/` until a canonical role accepts it (`wiki-review-proposals`).
+- **Confidentiality**: credentials are always refused (`422 secret_detected`, pattern name only); personal data follows the vault's `privacy.pii` (`allow` | `mask` | `refuse`).
+- **Index**: the page's line in `llm-curated/index.md` is created/updated (this is what `wiki-query` reads first).
+- **History**: the prior version is snapshotted under `.wiki-history/` with your session name.
+- A changed conclusion is never overwritten: write the new page, then `wiki-supersede`.

@@ -29,6 +29,13 @@ import {
   deleteOverlayPage,
   getBacklinks,
   lintVault,
+  supersedePage,
+  listProposals,
+  acceptProposal,
+  rejectProposal,
+  rebuildIndex,
+  pageHistory,
+  usageReport,
   getRecent,
   reflectTriggerNow,
   migrateScan,
@@ -69,6 +76,14 @@ export function createWikiRouter(): Router {
   router.post('/bookkeep/trigger-now', bookkeepTriggerNow);
   router.post('/reflect/trigger-now', reflectTriggerNow);
   router.post('/lint', lintVault);
+  // Knowledge-base curation (2026-09-19)
+  router.post('/supersede', supersedePage);
+  router.get('/proposals', listProposals);
+  router.post('/proposals/accept', acceptProposal);
+  router.post('/proposals/reject', rejectProposal);
+  router.post('/index/rebuild', rebuildIndex);
+  router.get('/history', pageHistory);
+  router.get('/usage', usageReport);
   // Browse endpoints — power the /wiki UI.
   router.get('/vaults', listVaults);
   router.get('/tree', getVaultTree);

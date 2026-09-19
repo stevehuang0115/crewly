@@ -689,11 +689,14 @@ void (async () => {
 				const cooldownMs = Number(
 					process.env['CREWLY_WIKI_BRIDGE_COOLDOWN_MS'] ?? 30 * 60 * 1000,
 				);
+				const { resolveWikiOwner } = await import('./services/wiki/wiki-owner.resolver.js');
 				const bridge = new WikiWorkItemBridgeService({
 					intervalMs,
 					targetAgent,
 					maxCreatesPerTick,
 					cooldownMs,
+					// Team leaders own their vault's curation; the global vault stays with the orchestrator.
+					resolveTarget: (key) => resolveWikiOwner(this.storageService, key),
 				});
 				WikiWorkItemBridgeService.setInstance(bridge);
 				bridge.start();

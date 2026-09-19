@@ -41,7 +41,35 @@ import * as os from 'os';
 import * as fs from 'fs/promises';
 import { existsSync } from 'fs';
 
+import { WikiCurationService } from '../../services/wiki/wiki-curation.service.js';
+import { WikiIndexService } from '../../services/wiki/wiki-index.service.js';
+import { WikiHistoryService } from '../../services/wiki/wiki-history.service.js';
+import { WikiUsageService } from '../../services/wiki/wiki-usage.service.js';
+import { StorageService } from '../../services/core/storage.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+
 const logger = LoggerService.getInstance().createComponentLogger('WikiController');
+
+/**
+ * Who is calling: the agent session from the skills' `X-Agent-Session`
+ * header and its role as stored in the team config (never a role the
+ * caller claims). No header = the owner via the dashboard.
+ *
+ * @param req - Request
+ * @returns `{ session, role }` — both undefined for the owner
+ */
+export async function resolveCaller(req: Request): Promise<{ session?: string; role?: string }> {
+  const hdr = req.headers['x-agent-session'] ?? req.headers['x-crewly-agent-session'];
+  const session = typeof hdr === 'string' && hdr.trim().length > 0 ? hdr.trim() : undefined;
+  if (!session) return {};
+  if (session === ORCHESTRATOR_SESSION_NAME) return { session, role: 'orchestrator' };
+  try {
+    const found = await StorageService.getInstance().findMemberBySessionName(session);
+    return { session, role: found ? String(found.member.role) : 'worker' };
+  } catch {
+    return { session, role: 'worker' };
+  }
+}
 
 const VALID_SOURCE_TYPES: ReadonlySet<WikiSourceType> = new Set<WikiSourceType>([
   'user_chat',
@@ -87,7 +115,14 @@ export async function ingest(
       sourceBody,
       callerSession,
       targetRelativePath,
+      title,
+      summary,
+      keepBecause,
+      tags,
+      visibility,
+      replace,
     } = req.body ?? {};
+    const caller = await resolveCaller(req);
 
     if (typeof vaultPath !== 'string' || vaultPath.length === 0) {
       res.status(400).json({ success: false, error: 'vaultPath (string) is required' });
@@ -122,8 +157,15 @@ export async function ingest(
       sourceType: sourceType as WikiSourceType,
       sourceRef,
       sourceBody,
-      callerSession,
+      callerSession: callerSession ?? caller.session,
+      callerRole: caller.role,
       targetRelativePath,
+      ...(typeof title === 'string' ? { title } : {}),
+      ...(typeof summary === 'string' ? { summary } : {}),
+      ...(typeof keepBecause === 'string' ? { keepBecause } : {}),
+      ...(Array.isArray(tags) ? { tags: tags.filter((t: unknown): t is string => typeof t === 'string') } : {}),
+      ...(Array.isArray(visibility) ? { visibility: visibility.filter((v: unknown): v is string => typeof v === 'string') } : {}),
+      ...(replace === true ? { replace: true } : {}),
     });
 
     if (outcome.ok) {
@@ -134,6 +176,10 @@ export async function ingest(
     // Refusal — surface a stable status code per reason so callers can branch.
     if (outcome.reason === 'frozen_path') {
       res.status(422).json({ success: false, error: 'frozen_path', outcome });
+      return;
+    }
+    if (outcome.reason === 'retention_gate' || outcome.reason === 'secret_detected' || outcome.reason === 'pii_refused') {
+      res.status(422).json({ success: false, error: outcome.reason, outcome });
       return;
     }
     if (outcome.reason === 'schema_missing') {
@@ -174,7 +220,8 @@ export async function queryVault(
   next: NextFunction,
 ): Promise<void> {
   try {
-    const { vaultPath, query, topK, recentLogEntries } = req.body ?? {};
+    const { vaultPath, query, topK, recentLogEntries, pages, includeSuperseded } = req.body ?? {};
+    const caller = await resolveCaller(req);
 
     if (typeof vaultPath !== 'string' || vaultPath.length === 0) {
       res.status(400).json({ success: false, error: 'vaultPath (string) is required' });
@@ -199,11 +246,19 @@ export async function queryVault(
       return;
     }
 
+    if (pages !== undefined && (!Array.isArray(pages) || pages.some((p: unknown) => typeof p !== 'string'))) {
+      res.status(400).json({ success: false, error: 'pages must be an array of vault-relative paths' });
+      return;
+    }
     const outcome = await WikiQueryService.getInstance().query({
       vaultPath,
       query,
       topK,
       recentLogEntries,
+      pages,
+      agent: caller.session ?? 'owner',
+      viewerRole: caller.role,
+      includeSuperseded: includeSuperseded === true,
     });
 
     if (outcome.ok) {
@@ -758,7 +813,7 @@ export async function getVaultTree(
     }
 
     const schemaLoader = new SchemaLoaderService();
-    let frozenSet = new Set<string>();
+    const frozenSet = new Set<string>();
     // path (without trailing slash) → description from SCHEMA.md hardcoded[]
     const frozenDescriptions = new Map<string, string>();
     try {
@@ -1642,6 +1697,144 @@ export async function queueStats(
     const vaultPath = typeof req.query.vaultPath === 'string' ? req.query.vaultPath : undefined;
     const stats = await WikiQueueService.getInstance().getStats(vaultPath);
     res.status(200).json({ success: true, stats, vaultPath: vaultPath ?? null });
+  } catch (err) {
+    next(err);
+  }
+}
+
+// =============================================================================
+// Knowledge-base curation (2026-09-19): supersede, proposals, index, history, usage
+// =============================================================================
+
+function requireVault(req: Request, res: Response): string | null {
+  const vaultPath = (req.body?.vaultPath ?? req.query?.vaultPath) as unknown;
+  if (typeof vaultPath !== 'string' || !path.isAbsolute(vaultPath)) {
+    res.status(400).json({ success: false, error: 'vaultPath (absolute path) is required' });
+    return null;
+  }
+  return vaultPath;
+}
+
+function sendCuration(res: Response, outcome: { ok: boolean; reason?: string; message?: string }): void {
+  if (outcome.ok) {
+    res.json({ success: true, result: outcome });
+    return;
+  }
+  const status = outcome.reason === 'not_found' ? 404 : outcome.reason === 'forbidden' ? 403 : outcome.reason === 'schema_missing' ? 404 : outcome.reason === 'frozen_path' ? 422 : 400;
+  res.status(status).json({ success: false, error: outcome.reason, message: outcome.message });
+}
+
+/**
+ * POST /api/wiki/supersede — `{ vaultPath, oldPath, newPath, reason }`.
+ * Marks oldPath as replaced by newPath (canonical roles only).
+ */
+export async function supersedePage(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    const { oldPath, newPath, reason } = req.body ?? {};
+    if (typeof oldPath !== 'string' || typeof newPath !== 'string') {
+      res.status(400).json({ success: false, error: 'oldPath and newPath (strings) are required' });
+      return;
+    }
+    const caller = await resolveCaller(req);
+    sendCuration(res, await WikiCurationService.getInstance().supersede({
+      vaultPath, oldPath, newPath, reason: typeof reason === 'string' ? reason : '', callerSession: caller.session, callerRole: caller.role,
+    }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** GET /api/wiki/proposals?vaultPath= — pending proposals. */
+export async function listProposals(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    res.json({ success: true, proposals: await WikiCurationService.getInstance().listProposals(vaultPath) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/wiki/proposals/accept — `{ vaultPath, proposedPath }`. */
+export async function acceptProposal(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    const { proposedPath } = req.body ?? {};
+    if (typeof proposedPath !== 'string') {
+      res.status(400).json({ success: false, error: 'proposedPath (string) is required' });
+      return;
+    }
+    const caller = await resolveCaller(req);
+    sendCuration(res, await WikiCurationService.getInstance().acceptProposal({ vaultPath, proposedPath, callerSession: caller.session, callerRole: caller.role }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/wiki/proposals/reject — `{ vaultPath, proposedPath, reason? }`. */
+export async function rejectProposal(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    const { proposedPath, reason } = req.body ?? {};
+    if (typeof proposedPath !== 'string') {
+      res.status(400).json({ success: false, error: 'proposedPath (string) is required' });
+      return;
+    }
+    const caller = await resolveCaller(req);
+    sendCuration(res, await WikiCurationService.getInstance().rejectProposal({ vaultPath, proposedPath, reason: typeof reason === 'string' ? reason : undefined, callerSession: caller.session, callerRole: caller.role }));
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** POST /api/wiki/index/rebuild — `{ vaultPath }` (or `all: true` for every vault). */
+export async function rebuildIndex(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    if (req.body?.all === true) {
+      const results: Array<{ vaultPath: string; entries: number }> = [];
+      for (const vaultPath of await discoverWikiVaults()) {
+        results.push({ vaultPath, entries: await WikiIndexService.getInstance().rebuild(vaultPath) });
+      }
+      res.json({ success: true, results });
+      return;
+    }
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    const entries = await WikiIndexService.getInstance().rebuild(vaultPath);
+    res.json({ success: true, result: { vaultPath, entries, coverage: await WikiIndexService.getInstance().coverage(vaultPath) } });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** GET /api/wiki/history?vaultPath=&relativePath= — revisions of a page. */
+export async function pageHistory(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    const relativePath = req.query.relativePath;
+    if (typeof relativePath !== 'string' || relativePath.includes('..')) {
+      res.status(400).json({ success: false, error: 'relativePath (vault-relative) is required' });
+      return;
+    }
+    const revisions = await WikiHistoryService.getInstance().list(vaultPath, relativePath);
+    res.json({ success: true, revisions: revisions.map((r) => ({ at: r.at, author: r.author, action: r.action, bytes: r.bytes })) });
+  } catch (err) {
+    next(err);
+  }
+}
+
+/** GET /api/wiki/usage?vaultPath=&days=7 — the retrieval ledger summary. */
+export async function usageReport(req: Request, res: Response, next: NextFunction): Promise<void> {
+  try {
+    const vaultPath = requireVault(req, res);
+    if (!vaultPath) return;
+    const days = Number(req.query.days ?? 7);
+    res.json({ success: true, report: await WikiUsageService.getInstance().report(vaultPath, Number.isFinite(days) && days > 0 ? days : 7) });
   } catch (err) {
     next(err);
   }

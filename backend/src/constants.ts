@@ -606,6 +606,40 @@ export const SLACK_AGENT_DM_CONSTANTS = {
  * for bots, so the agent's bot posts a placeholder the moment a message is
  * handed to the agent and edits it into the reply.
  */
+/**
+ * LLM-wiki as a knowledge base (2026-09-19 review): retention gate,
+ * two-step retrieval index, usage ledger, proposals, history, privacy.
+ */
+export const WIKI_KB_CONSTANTS = {
+	/** Why a page earns a place in the vault (one is required to create a page). */
+	KEEP_BECAUSE: ['changes_decision', 'contradicts', 'hard_fact', 'reusable_method'] as const,
+	/** One-line conclusion ("what this means for us") — required on every page. */
+	SUMMARY_MAX_CHARS: 240,
+	TITLE_MAX_CHARS: 120,
+	/** Per-vault one-line-per-page index read as retrieval step 1. */
+	INDEX_FILENAME: 'index.md',
+	/** Index bytes returned to an agent before it is cut down to the query's folders. */
+	INDEX_MAX_BYTES: 48 * 1024,
+	/** Retrieval ledger (JSONL): every query, what it read, and misses. */
+	USAGE_FILENAME: 'usage.jsonl',
+	USAGE_WINDOW_DAYS: 7,
+	USAGE_MAX_BYTES: 4 * 1024 * 1024,
+	/** Pages written by `proposed_only` roles wait here until a canonical role accepts. */
+	PROPOSED_DIR: 'llm-curated/_proposed',
+	/** Per-page prior revisions (who changed what) — capped per page. */
+	HISTORY_DIR: '.wiki-history',
+	HISTORY_MAX_REVISIONS: 20,
+	/** Bridge: stop re-creating a legacy-migrate WI after this many no-progress strikes. */
+	MIGRATE_MAX_STRIKES: 3,
+	/** Lint: token-set Jaccard on title+summary above which two pages are flagged as possible duplicates/contradictions. */
+	DUPLICATE_JACCARD: 0.5,
+	/** Frontmatter keys agents may set. */
+	FRONTMATTER_KEYS: ['title', 'summary', 'keep_because', 'tags', 'visibility', 'source', 'caller', 'recorded', 'updated', 'superseded_by', 'superseded_at', 'superseded_reason', 'proposed_by'] as const,
+} as const;
+
+/** One of {@link WIKI_KB_CONSTANTS.KEEP_BECAUSE}. */
+export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
+
 export const SLACK_TYPING_CONSTANTS = {
 	/** Placeholder text; `{name}` is the agent's display name */
 	TYPING_TEXT: '💭 {name} is typing…',

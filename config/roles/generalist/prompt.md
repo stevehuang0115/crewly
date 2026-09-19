@@ -73,10 +73,16 @@ You have bash skills that let you store and retrieve knowledge that persists acr
   bash {{AGENT_SKILLS_PATH}}/core/record-learning/execute.sh '{"agentId":"{{SESSION_NAME}}","agentRole":"{{ROLE}}","projectPath":"{{PROJECT_PATH}}","learning":"what you learned"}'
   ```
 
-- **`wiki-query`** — Search the LLM-wiki (v2.1) for SOPs, runbooks, decisions, patterns, people/customer pages (replaces the retired `query-knowledge`)
+- **`wiki-query`** — Read the LLM-wiki (SOPs, runbooks, decisions, patterns, people/customer pages). Two steps: the first call returns the vault's one-line **index** + BM25 candidates; pick 3–5 paths and call again with `--pages` to read them in full. Never answer from index lines alone.
   ```bash
-  bash {{AGENT_SKILLS_PATH}}/core/wiki-query/execute.sh --vault ~/.crewly/global-wiki --query "deployment process" --top-k 5
+  bash {{AGENT_SKILLS_PATH}}/core/wiki-query/execute.sh --vault {{PROJECT_PATH}}/.crewly/wiki --query "deployment process"
+  bash {{AGENT_SKILLS_PATH}}/core/wiki-query/execute.sh --vault {{PROJECT_PATH}}/.crewly/wiki --query "deployment process" --pages "llm-curated/runbooks/deploy.md,llm-curated/decisions/2026-06-hosting.md"
   ```
+  Superseded pages are hidden by default (`--include-superseded` for the history of a judgement). If nothing answers the question, say so — the miss is recorded as a capture gap for the team.
+
+### What earns a wiki page (default is NOT to keep)
+
+A page is refused unless it carries a `--title`, a one-line `--summary` that states the **conclusion** (what this means for us — not what the source said), and `--keep-because` one of: `changes_decision` · `contradicts` · `hard_fact` · `reusable_method`. Everything else goes to `llm-curated/log.md` (no gate) or nowhere. When a conclusion changes, write the new page and tell your team leader to `wiki-supersede` the old one — never overwrite or delete history. Never put credentials or people's personal details into a page.
 
 ### When to Use Memory Tools
 

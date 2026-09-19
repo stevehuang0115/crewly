@@ -433,3 +433,104 @@ describe('wiki.controller — /api/wiki/overlay-page (owner-authored norms/SOPs)
     await expect(fs.access(path.join(tmpRoot, 'sops', 'cat'))).rejects.toThrow();
   });
 });
+
+describe('wiki.controller — knowledge-base curation (2026-09-19)', () => {
+  let app: express.Express;
+  let vault: string;
+  const yaml = `
+vault_scope: project
+vault_id: kb
+hardcoded:
+  - path: memory/
+    frozen: true
+    description: "m"
+    referenced_by: [skill:remember]
+llm_curated:
+  - path: llm-curated/
+    frozen: false
+    seed_subdirs: [decisions]
+    llm_can_create_subdirs: true
+    lint_may_restructure: true
+write_policy:
+  canonical: [team-leader, orchestrator]
+  proposed_only: [worker]
+  schema_writer: [steve]
+`;
+
+  beforeEach(async () => {
+    WikiIngestService._resetForTesting();
+    WikiQueryService._resetForTesting();
+    const { WikiIndexService } = await import('../../services/wiki/wiki-index.service.js');
+    WikiIndexService._resetForTesting();
+    const { StorageService } = await import('../../services/core/storage.service.js');
+    jest.spyOn(StorageService.getInstance(), 'findMemberBySessionName').mockImplementation(async (name: string) => {
+      if (name === 'tl-1') return { team: { id: 't' }, member: { role: 'team-leader' } } as never;
+      if (name === 'dev-1') return { team: { id: 't' }, member: { role: 'developer' } } as never;
+      return null;
+    });
+    vault = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-wiki-kb-'));
+    await fs.writeFile(path.join(vault, 'SCHEMA.md'), yaml, 'utf8');
+    app = express();
+    app.use(express.json());
+    app.use('/api/wiki', createWikiRouter());
+  });
+  afterEach(async () => {
+    jest.restoreAllMocks();
+    await fs.rm(vault, { recursive: true, force: true });
+  });
+
+  const page = (session: string | undefined, rel: string, title: string, extra: Record<string, unknown> = {}) => {
+    const r = request(app).post('/api/wiki/ingest');
+    if (session) r.set('X-Agent-Session', session);
+    return r.send({ vaultPath: vault, sourceType: 'user_chat', sourceRef: 's', sourceBody: `${title} body`, targetRelativePath: rel, title, summary: `${title} means x`, keepBecause: 'hard_fact', ...extra });
+  };
+
+  it('a page without summary/keep_because is 422 retention_gate; a credential is 422 secret_detected', async () => {
+    const gate = await request(app).post('/api/wiki/ingest').send({ vaultPath: vault, sourceType: 'user_chat', sourceRef: 's', sourceBody: 'b', targetRelativePath: 'llm-curated/decisions/x.md' });
+    expect(gate.status).toBe(422);
+    expect(gate.body.error).toBe('retention_gate');
+    const secret = await request(app).post('/api/wiki/ingest').send({ vaultPath: vault, sourceType: 'user_chat', sourceRef: 's', sourceBody: `key sk-${'A'.repeat(32)}` });
+    expect(secret.status).toBe(422);
+    expect(secret.body.error).toBe('secret_detected');
+  });
+
+  it('role comes from X-Agent-Session (worker → proposal, TL accepts), then two-step query returns the index and full pages, and usage is recorded', async () => {
+    const worker = await page('dev-1', 'llm-curated/decisions/x.md', 'Pricing');
+    expect(worker.status).toBe(200);
+    expect(worker.body.result.proposed).toBe(true);
+
+    const list = await request(app).get('/api/wiki/proposals').query({ vaultPath: vault });
+    expect(list.body.proposals).toHaveLength(1);
+    const denied = await request(app).post('/api/wiki/proposals/accept').set('X-Agent-Session', 'dev-1').send({ vaultPath: vault, proposedPath: list.body.proposals[0].proposedPath });
+    expect(denied.status).toBe(403);
+    const accepted = await request(app).post('/api/wiki/proposals/accept').set('X-Agent-Session', 'tl-1').send({ vaultPath: vault, proposedPath: list.body.proposals[0].proposedPath });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.result.pagePath).toBe('llm-curated/decisions/x.md');
+
+    const step1 = await request(app).post('/api/wiki/query').set('X-Agent-Session', 'dev-1').send({ vaultPath: vault, query: 'pricing' });
+    expect(step1.status).toBe(200);
+    expect(step1.body.result.context.index.text).toContain('[Pricing](llm-curated/decisions/x.md) — Pricing means x');
+    const step2 = await request(app).post('/api/wiki/query').set('X-Agent-Session', 'dev-1').send({ vaultPath: vault, query: 'pricing', pages: ['llm-curated/decisions/x.md'] });
+    expect(step2.body.result.context.pages[0].content).toContain('Pricing body');
+
+    const usage = await request(app).get('/api/wiki/usage').query({ vaultPath: vault });
+    expect(usage.body.report.queries).toBe(2);
+    expect(usage.body.report.byAgent[0]).toEqual({ agent: 'dev-1', queries: 2 });
+  });
+
+  it('supersede (TL only), history, and index rebuild', async () => {
+    await page('tl-1', 'llm-curated/decisions/old.md', 'Old');
+    await page('tl-1', 'llm-curated/decisions/new.md', 'New');
+    await page('tl-1', 'llm-curated/decisions/old.md', 'Old', { sourceBody: 'edited', replace: true });
+    const denied = await request(app).post('/api/wiki/supersede').set('X-Agent-Session', 'dev-1').send({ vaultPath: vault, oldPath: 'llm-curated/decisions/old.md', newPath: 'llm-curated/decisions/new.md', reason: 'r' });
+    expect(denied.status).toBe(403);
+    const ok = await request(app).post('/api/wiki/supersede').set('X-Agent-Session', 'tl-1').send({ vaultPath: vault, oldPath: 'llm-curated/decisions/old.md', newPath: 'llm-curated/decisions/new.md', reason: 'changed' });
+    expect(ok.status).toBe(200);
+    const hist = await request(app).get('/api/wiki/history').query({ vaultPath: vault, relativePath: 'llm-curated/decisions/old.md' });
+    expect(hist.body.revisions.map((r: { action: string }) => r.action)).toEqual(['supersede', 'write']);
+    await fs.unlink(path.join(vault, 'llm-curated/index.md'));
+    const rebuilt = await request(app).post('/api/wiki/index/rebuild').send({ vaultPath: vault });
+    expect(rebuilt.body.result.entries).toBe(2);
+    expect(rebuilt.body.result.coverage.missingFromIndex).toEqual([]);
+  });
+});

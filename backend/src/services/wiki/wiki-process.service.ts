@@ -171,12 +171,15 @@ export class WikiProcessService {
    */
   private classifierNotes(): string[] {
     return [
-      'You have ALREADY decided this item is wiki-worthy at queue-add time (see item.reason). Do NOT re-justify; classify.',
+      'Default is to NOT keep. A page must change a decision, contradict what we believed, be a citable hard fact, or a reusable method — otherwise append it to llm-curated/log.md (no gate) or skip it.',
+      'A page needs three things or wiki-ingest refuses it: --title, a one-line --summary that states the CONCLUSION (what this means for us, not what the source said), and --keep-because <changes_decision|contradicts|hard_fact|reusable_method>.',
+      'If the item changes an earlier conclusion, write the new page and then call wiki-supersede old→new with the reason; never delete or overwrite the old page.',
       'Pick the target page path under llm-curated/. You may invent sub-folder names — there is NO preset taxonomy. Examples: llm-curated/customers/anthropic.md, llm-curated/decisions/2026-05-22-pricing-lock.md, llm-curated/patterns/embedding-fallback.md.',
       'NEVER target a frozen folder (vaultContext.schemaSummary.frozenPaths). The ingest call will reject these with HTTP 422.',
       'PREFER merging into an existing relevant page over creating a new one. Use vaultContext.candidatePages to check first; only create a new page when nothing fits.',
       'If after reading the context you decide the item is actually NOT wiki-worthy after all (duplicate of existing content, low signal), mark it skipped via POST /queue/:id/skip with a `skipReason`.',
-      'When committing: 1) call wiki-ingest with the target path; 2) call POST /queue/:id/process with { ingested, pagesWritten, targetPath, summary }.',
+      'When committing: 1) call wiki-ingest with the target path + title/summary/keep-because; 2) call POST /queue/:id/process with { ingested, pagesWritten, targetPath, summary }.',
+      'Never paste credentials or customer personal data; ingest refuses secrets and applies the vault privacy policy to personal data.',
     ];
   }
 }

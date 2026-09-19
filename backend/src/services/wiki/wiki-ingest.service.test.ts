@@ -10,6 +10,7 @@
  */
 
 import * as path from 'path';
+import * as fsSync from 'fs';
 import * as os from 'os';
 import * as fs from 'fs/promises';
 import { WikiIngestService } from './wiki-ingest.service.js';
@@ -170,6 +171,9 @@ describe('WikiIngestService', () => {
         sourceRef: 'msg-1',
         sourceBody: 'into a fresh sub-folder',
         targetRelativePath: 'llm-curated/fresh/today.md',
+        title: 'Fresh',
+        summary: 'Fresh folders are fine',
+        keepBecause: 'reusable_method',
       });
       expect(result.ok).toBe(true);
       const written = await fs.readFile(
@@ -264,7 +268,7 @@ describe('WikiIngestService', () => {
       expect(log).toContain('Append-only log');
     });
 
-    it('decisions/<slug>.md gets a decision-page header (title + source block, NOT activity log)', async () => {
+    it('a page gets YAML frontmatter (title/summary/keep_because/provenance), an H1, an index line — NOT the activity-log preamble', async () => {
       const r = await service.ingest({
         vaultPath: vault,
         sourceType: 'user_chat',
@@ -272,21 +276,97 @@ describe('WikiIngestService', () => {
         sourceBody: 'Pricing locked at $999 setup + $799/month.',
         callerSession: 'user/steve',
         targetRelativePath: 'llm-curated/decisions/2026-05-22-pricing.md',
+        title: 'Pricing locked',
+        summary: 'Setup $999 + $799/mo is final for 2026',
+        keepBecause: 'changes_decision',
+        tags: ['pricing'],
       });
       expect(r.ok).toBe(true);
-      const page = await fs.readFile(
-        path.join(vault, 'llm-curated/decisions/2026-05-22-pricing.md'),
-        'utf8',
-      );
-      // Title from the body.
-      expect(page).toMatch(/^# Pricing locked/);
-      // Provenance block.
-      expect(page).toContain('**source:**');
-      expect(page).toContain('**caller:**');
-      expect(page).toContain('**recorded:**');
-      // The "Activity log" preamble belongs to log.md ONLY.
+      if (!r.ok) return;
+      expect(r.proposed).toBe(false);
+      expect(r.indexUpdated).toBe(true);
+      const page = await fs.readFile(path.join(vault, 'llm-curated/decisions/2026-05-22-pricing.md'), 'utf8');
+      expect(page.startsWith('---\ntitle: Pricing locked\nsummary: Setup $999 + $799/mo is final for 2026\nkeep_because: changes_decision\n')).toBe(true);
+      expect(page).toContain('source: chat:msg-d1');
+      expect(page).toContain('caller: user/steve');
+      expect(page).toMatch(/recorded: \d{4}-/);
+      expect(page).toContain('\n# Pricing locked\n');
+      expect(page).toContain('Pricing locked at $999');
       expect(page).not.toContain('Activity log');
-      expect(page).not.toContain('Append-only log');
+      const index = await fs.readFile(path.join(vault, 'llm-curated/index.md'), 'utf8');
+      expect(index).toContain('- [Pricing locked](llm-curated/decisions/2026-05-22-pricing.md) — Setup $999 + $799/mo is final for 2026');
+    });
+  });
+
+  describe('retention gate (default is to NOT keep)', () => {
+    it('refuses a page without summary/keep_because and points at log.md', async () => {
+      const r = await service.ingest({
+        vaultPath: vault,
+        sourceType: 'record_learning',
+        sourceRef: 'mem:1',
+        sourceBody: 'Ran tests today',
+        targetRelativePath: 'llm-curated/patterns/today.md',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok || r.reason !== 'retention_gate') return;
+      expect(r.details).toEqual(['summary', expect.stringContaining('keep_because')]);
+      expect(r.message).toContain('log.md');
+      expect(fsSync.existsSync(path.join(vault, 'llm-curated/patterns/today.md'))).toBe(false);
+    });
+
+    it('log.md never needs the gate', async () => {
+      const r = await service.ingest({ vaultPath: vault, sourceType: 'record_learning', sourceRef: 'mem:2', sourceBody: 'maybe useful' });
+      expect(r.ok).toBe(true);
+    });
+
+    it('appending to an existing page inherits its frontmatter; replace rewrites the body', async () => {
+      const base = { vaultPath: vault, sourceType: 'user_chat' as const, targetRelativePath: 'llm-curated/decisions/p.md' };
+      await service.ingest({ ...base, sourceRef: 's1', sourceBody: 'first', title: 'P', summary: 'sum', keepBecause: 'hard_fact' });
+      const appended = await service.ingest({ ...base, sourceRef: 's2', sourceBody: 'second' });
+      expect(appended.ok).toBe(true);
+      let page = await fs.readFile(path.join(vault, base.targetRelativePath), 'utf8');
+      expect(page).toContain('first');
+      expect(page).toContain('second');
+      const replaced = await service.ingest({ ...base, sourceRef: 's3', sourceBody: 'only this', summary: 'new sum', replace: true });
+      expect(replaced.ok).toBe(true);
+      page = await fs.readFile(path.join(vault, base.targetRelativePath), 'utf8');
+      expect(page).not.toContain('first');
+      expect(page).toContain('summary: new sum');
+      // History kept the prior versions with author + action.
+      const { WikiHistoryService } = await import('./wiki-history.service.js');
+      const revs = await WikiHistoryService.getInstance().list(vault, base.targetRelativePath);
+      expect(revs.map((x) => x.action)).toEqual(['write', 'write']);
+    });
+  });
+
+  describe('confidentiality gate', () => {
+    it('refuses a body carrying a credential, naming the pattern only', async () => {
+      const r = await service.ingest({ vaultPath: vault, sourceType: 'slack_message', sourceRef: 's', sourceBody: `token is xoxb-${'1234567890-9876543210-abcdefghijkl'}` });
+      expect(r).toMatchObject({ ok: false, reason: 'secret_detected', details: ['slack_token'] });
+      expect(fsSync.existsSync(path.join(vault, 'llm-curated/log.md'))).toBe(false);
+    });
+
+    it('applies the vault privacy policy to PII (refuse / mask)', async () => {
+      await fs.writeFile(path.join(vault, 'SCHEMA.md'), PROJECT_VAULT_YAML + '\nprivacy:\n  pii: mask\n', 'utf8');
+      const r = await service.ingest({ vaultPath: vault, sourceType: 'slack_message', sourceRef: 's', sourceBody: 'parent mail a@b.co' });
+      expect(r).toMatchObject({ ok: true, masked: ['email'] });
+      expect(await fs.readFile(path.join(vault, 'llm-curated/log.md'), 'utf8')).toContain('parent mail [email]');
+      await fs.writeFile(path.join(vault, 'SCHEMA.md'), PROJECT_VAULT_YAML + '\nprivacy:\n  pii: refuse\n', 'utf8');
+      const refused = await service.ingest({ vaultPath: vault, sourceType: 'slack_message', sourceRef: 's', sourceBody: 'call 415-555-1234' });
+      expect(refused).toMatchObject({ ok: false, reason: 'pii_refused' });
+    });
+  });
+
+  describe('write policy', () => {
+    it('a proposed_only role lands in _proposed/ (no index line); a canonical role writes directly', async () => {
+      const base = { vaultPath: vault, sourceType: 'user_chat' as const, sourceRef: 's', sourceBody: 'b', title: 'T', summary: 'S', keepBecause: 'hard_fact' as const, targetRelativePath: 'llm-curated/decisions/x.md' };
+      const worker = await service.ingest({ ...base, callerRole: 'developer', callerSession: 'dev-1' });
+      expect(worker).toMatchObject({ ok: true, proposed: true, pagesWritten: ['llm-curated/_proposed/decisions/x.md'], indexUpdated: false });
+      const proposedPage = await fs.readFile(path.join(vault, 'llm-curated/_proposed/decisions/x.md'), 'utf8');
+      expect(proposedPage).toContain('proposed_by: dev-1');
+      const tl = await service.ingest({ ...base, callerRole: 'team-leader' });
+      expect(tl).toMatchObject({ ok: true, proposed: false, pagesWritten: ['llm-curated/decisions/x.md'] });
+      expect(fsSync.existsSync(path.join(vault, 'llm-curated/decisions/x.md'))).toBe(true);
     });
   });
 

@@ -20,6 +20,8 @@ VAULT_PATH=""
 QUERY=""
 TOP_K=""
 RECENT_LOG=""
+PAGES=""
+INCLUDE_SUPERSEDED=""
 
 # Detect legacy JSON positional arg
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -45,6 +47,14 @@ while [[ $# -gt 0 ]]; do
       RECENT_LOG="$2"
       shift 2
       ;;
+    --pages|-p)
+      PAGES="$2"
+      shift 2
+      ;;
+    --include-superseded)
+      INCLUDE_SUPERSEDED="true"
+      shift
+      ;;
     --json|-j)
       INPUT_JSON="$2"
       shift 2
@@ -52,10 +62,15 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       cat <<EOF
 Usage:
-  execute.sh --vault <vault-dir> --query "<question>" [--top-k 5] [--recent-log 20]
-  execute.sh --json '{"vaultPath":"...","query":"...","topK":5,"recentLogEntries":20}'
+  Step 1 — read the index + candidates:
+    execute.sh --vault <vault-dir> --query "<question>" [--top-k 5] [--recent-log 20]
+  Step 2 — read the 3–5 pages you picked, in full:
+    execute.sh --vault <vault-dir> --query "<question>" --pages "llm-curated/decisions/a.md,llm-curated/patterns/b.md"
+  execute.sh --json '{"vaultPath":"...","query":"...","pages":["..."],"includeSuperseded":false}'
 
-Outputs JSON system-context for the caller's LLM. Skill makes no LLM calls itself.
+Outputs JSON system-context (index, candidatePages, pages, recentLog) for the caller's LLM. Superseded pages and
+pages your role may not read are hidden; --include-superseded shows the history of a judgement. Every call is
+recorded in the vault's usage ledger (a query that finds nothing is logged as a capture gap — say so in your answer).
 EOF
       exit 0
       ;;
@@ -91,6 +106,8 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$QUERY" ]      && QUERY=$(printf '%s' "$INPUT" | jq -r '.query // empty')
   [ -z "$TOP_K" ]      && TOP_K=$(printf '%s' "$INPUT" | jq -r '.topK // empty')
   [ -z "$RECENT_LOG" ] && RECENT_LOG=$(printf '%s' "$INPUT" | jq -r '.recentLogEntries // empty')
+  [ -z "$PAGES" ]      && PAGES=$(printf '%s' "$INPUT" | jq -r '(.pages // []) | join(",")')
+  [ -z "$INCLUDE_SUPERSEDED" ] && INCLUDE_SUPERSEDED=$(printf '%s' "$INPUT" | jq -r 'if .includeSuperseded == true then "true" else empty end')
 fi
 
 require_param "vaultPath (--vault)" "$VAULT_PATH"
@@ -102,6 +119,8 @@ export _WQ_QUERY="$QUERY"
 BODY=$(jq -n '{vaultPath: env._WQ_VAULT, query: env._WQ_QUERY}')
 [ -n "$TOP_K" ]      && BODY=$(echo "$BODY" | jq --argjson k "$TOP_K" '. + {topK: $k}')
 [ -n "$RECENT_LOG" ] && BODY=$(echo "$BODY" | jq --argjson n "$RECENT_LOG" '. + {recentLogEntries: $n}')
+[ -n "$PAGES" ] && { export _WQ_PAGES="$PAGES"; BODY=$(echo "$BODY" | jq '. + {pages: (env._WQ_PAGES | split(",") | map(gsub("^\\s+|\\s+$";"")) | map(select(. != "")))}'); unset _WQ_PAGES; }
+[ -n "$INCLUDE_SUPERSEDED" ] && BODY=$(echo "$BODY" | jq '. + {includeSuperseded: true}')
 unset _WQ_VAULT _WQ_QUERY
 
 api_call POST "/wiki/query" "$BODY"

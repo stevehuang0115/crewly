@@ -13,6 +13,7 @@ import { AgentMemoryService, IAgentMemoryService } from './agent-memory.service.
 import { ProjectMemoryService, IProjectMemoryService, SearchResults } from './project-memory.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { WikiSearchService } from '../wiki/wiki-search.service.js';
+import { WikiUsageService } from '../wiki/wiki-usage.service.js';
 import { WikiIngestService } from '../wiki/wiki-ingest.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
@@ -110,6 +111,8 @@ export interface RecallParams {
   agentId: string;
   /** Project path (required for project/both scope) */
   projectPath?: string;
+  /** Reader's role — wiki pages whose `visibility` excludes it are hidden (undefined = owner). */
+  viewerRole?: string;
   /** Context/query for finding relevant memories */
   context: string;
   /** Scope: agent, project, or both */
@@ -628,6 +631,7 @@ export class MemoryService implements IMemoryService {
     scope: 'global' | 'project',
     projectPath?: string,
     limit: number = 5,
+    ledger?: { agent: string; viewerRole?: string },
   ): Promise<string[]> {
     const vaultPaths = this.resolveRecallVaults(scope, projectPath);
     if (vaultPaths.length === 0) return [];
@@ -636,10 +640,22 @@ export class MemoryService implements IMemoryService {
       const outcome = await WikiSearchService.getInstance().searchAllVaults({
         vaults: vaultPaths.map((vaultPath) => ({ vaultPath, label: this.wikiVaultLabel(vaultPath) })),
         query: context,
+        viewerRole: ledger?.viewerRole,
       });
       if (!outcome.ok) return [];
 
-      return outcome.hits.slice(0, limit).map((hit) => {
+      const top = outcome.hits.slice(0, limit);
+      // Usage ledger: recall is the most common way a vault gets read, so
+      // it must count — per vault, with the pages it surfaced (or a miss).
+      if (ledger) {
+        const usage = WikiUsageService.getInstance();
+        for (const vaultPath of vaultPaths) {
+          const hits = top.filter((h) => h.vaultPath === vaultPath).map((h) => h.relativePath);
+          void usage.record(vaultPath, { via: 'recall', agent: ledger.agent, query: context, hits, miss: hits.length === 0 });
+        }
+      }
+
+      return top.map((hit) => {
         const where = hit.vaultLabel ? `${hit.vaultLabel}/${hit.relativePath}` : hit.relativePath;
         const snippet = hit.snippets[0]?.text ?? '';
         return `[wiki:${where}] ${snippet} (score ${hit.score.toFixed(1)})`;
@@ -968,14 +984,14 @@ export class MemoryService implements IMemoryService {
     let projectWikiHits: string[] = [];
     if (params.scope === 'agent' || params.scope === 'both') {
       promises.push(
-        this.wikiRecallSearch(params.context, 'global', undefined, semanticLimit).then((hits) => {
+        this.wikiRecallSearch(params.context, 'global', undefined, semanticLimit, { agent: params.agentId, viewerRole: params.viewerRole }).then((hits) => {
           agentWikiHits = hits;
         }),
       );
     }
     if ((params.scope === 'project' || params.scope === 'both') && params.projectPath) {
       promises.push(
-        this.wikiRecallSearch(params.context, 'project', params.projectPath, semanticLimit).then((hits) => {
+        this.wikiRecallSearch(params.context, 'project', params.projectPath, semanticLimit, { agent: params.agentId, viewerRole: params.viewerRole }).then((hits) => {
           projectWikiHits = hits;
         }),
       );
