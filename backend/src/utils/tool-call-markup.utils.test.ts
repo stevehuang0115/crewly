@@ -8,7 +8,32 @@ const PCLOSE = '</' + 'parameter>';
 const FC_OPEN = '<' + 'function_calls>';
 const FC_CLOSE = '</' + 'function_calls>';
 
+/**
+ * The exact bytes deepseek-chat produced in #crewly-support (2026-09-19):
+ * full-width pipes around its own separator, then a space, then `calls`.
+ */
+const DS_OPEN = '<' + '\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>';
+const DS_CLOSE = '</' + '\uFF5C\uFF5CDSML\uFF5C\uFF5C calls>';
+const DS_INVOKE = '<' + '\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke name="Bash">';
+const DS_INVOKE_CLOSE = '</' + '\uFF5C\uFF5CDSML\uFF5C\uFF5C invoke>';
+
 describe('stripToolCallMarkup', () => {
+  it("removes deepseek's own envelope, wrapper included (the second #crewly-support leak)", () => {
+    const prose = '[Orc] I\'ll read the thread context first, then answer.';
+    // The whole envelope.
+    expect(stripToolCallMarkup(`${prose}\n\n${DS_OPEN}\n${DS_INVOKE}x${DS_INVOKE_CLOSE}\n${DS_CLOSE}`)).toEqual({ text: prose, stripped: true });
+    // …and the empty wrapper left behind when the inner blocks are gone,
+    // which is what actually reached Slack.
+    expect(stripToolCallMarkup(`${prose}\n\n${DS_OPEN}\n\n${DS_CLOSE}`)).toEqual({ text: prose, stripped: true });
+    expect(hasToolCallMarkup(DS_OPEN)).toBe(true);
+  });
+
+  it('matches a wrapper by shape but leaves an ordinary word ending in "calls" alone', () => {
+    expect(stripToolCallMarkup('a<tool_calls>x</tool_calls>b').text).toBe('ab');
+    expect(stripToolCallMarkup('he <recalls> it').text).toBe('he <recalls> it');
+    expect(hasToolCallMarkup('he <recalls> it')).toBe(false);
+  });
+
   it('keeps the prose and drops the tool-call envelope (the #crewly-support leak)', () => {
     const raw = [
       "[Orc] I'll start by reading the thread context, then survey what exists.",

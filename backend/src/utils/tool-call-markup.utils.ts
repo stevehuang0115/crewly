@@ -15,32 +15,42 @@
  * @module utils/tool-call-markup
  */
 
-/** Tag names that only ever appear in a tool-call envelope. */
-const ENVELOPE_TAGS = ['function_calls', 'invoke', 'parameter'] as const;
+/**
+ * Name patterns of the tags that only ever appear in a tool-call envelope.
+ *
+ * The wrapper is matched by *shape*, not by one literal: models name it
+ * `function_calls`, `tool_calls`, or — as deepseek-chat does — with its own
+ * separators, `<｜｜DSML｜｜ calls>` (U+FF5C pipes, then a space, then
+ * `calls`). The lookbehind keeps an ordinary word ending in "calls" (say
+ * `<recalls>`) out of it.
+ */
+const WRAPPER_NAME = '(?:function_calls|tool_calls|(?<![A-Za-z_])calls)';
+const INVOKE_NAME = 'invoke';
+const PARAM_NAME = 'parameter';
 
 /**
- * A tag like `<invoke …>`, `</invoke>`, `<｜｜antml｜｜invoke>` —
- * any junk/namespace before the name, anything but `<`/`>` after it.
+ * A tag like `<invoke …>`, `</invoke>`, `<｜｜DSML｜｜ calls>` — any
+ * junk/namespace before the name, anything but `<`/`>` after it.
  *
- * @param name - Tag name
+ * @param name - Tag-name pattern
  * @param closing - Match the closing form
  * @returns The pattern source
  */
 function tagSource(name: string, closing: boolean): string {
-  return `<${closing ? '\\s*/' : ''}[^<>]{0,40}?\\b${name}\\b[^<>]*>`;
+  return `<${closing ? '\\s*/' : ''}[^<>]{0,40}?${name}\\b[^<>]*>`;
 }
 
 /** Well-formed `<x>…</x>` blocks for the wrapper tags. */
-const BLOCK_PATTERNS = ['function_calls', 'invoke'].map(
+const BLOCK_PATTERNS = [WRAPPER_NAME, INVOKE_NAME].map(
   (name) => new RegExp(`${tagSource(name, false)}[\\s\\S]*?${tagSource(name, true)}`, 'gi'),
 );
 
 /** An opening wrapper tag with no close — the output was cut off mid-call. */
-const UNCLOSED_PATTERN = new RegExp(`(?:${tagSource('function_calls', false)}|${tagSource('invoke', false)})[\\s\\S]*$`, 'i');
+const UNCLOSED_PATTERN = new RegExp(`(?:${tagSource(WRAPPER_NAME, false)}|${tagSource(INVOKE_NAME, false)})[\\s\\S]*$`, 'i');
 
 /** Any leftover lone tag. */
 const LONE_TAG_PATTERN = new RegExp(
-  ENVELOPE_TAGS.map((name) => `${tagSource(name, false)}|${tagSource(name, true)}`).join('|'),
+  [WRAPPER_NAME, INVOKE_NAME, PARAM_NAME].map((name) => `${tagSource(name, false)}|${tagSource(name, true)}`).join('|'),
   'gi',
 );
 
@@ -59,7 +69,7 @@ export interface StrippedText {
  * @returns True when an `invoke` / `function_calls` tag is present
  */
 export function hasToolCallMarkup(raw: string): boolean {
-  return new RegExp(`${tagSource('function_calls', false)}|${tagSource('invoke', false)}`, 'i').test(raw ?? '');
+  return new RegExp(`${tagSource(WRAPPER_NAME, false)}|${tagSource(INVOKE_NAME, false)}`, 'i').test(raw ?? '');
 }
 
 /**
