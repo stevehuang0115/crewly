@@ -7,7 +7,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { resolveFallbackNotificationChannel } from './slack-notification-fallback.js';
+import { resolveFallbackNotificationChannel, resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
 
 describe('resolveFallbackNotificationChannel', () => {
   let dir: string;
@@ -47,5 +47,24 @@ describe('resolveFallbackNotificationChannel', () => {
     channel('C0TEAM', 10_000);
     fs.mkdirSync(path.join(dir, 'D0EMPTY'));
     expect(resolveFallbackNotificationChannel(dir)).toBe('C0TEAM');
+  });
+});
+
+describe('resolveFallbackNotificationChannels', () => {
+  it('lists DMs first, newest first, and skips excluded (agent-owned) conversations', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'slack-threads-'));
+    const mk = (id: string, ageMs: number) => {
+      fs.mkdirSync(path.join(dir, id), { recursive: true });
+      const f = path.join(dir, id, 't.json');
+      fs.writeFileSync(f, '{}');
+      const t = new Date(Date.now() - ageMs);
+      fs.utimesSync(f, t, t);
+    };
+    mk('C-team', 1000);
+    mk('D-agent', 0);
+    mk('D-owner', 5000);
+    expect(resolveFallbackNotificationChannels(dir, (id) => id === 'D-agent')).toEqual(['D-owner', 'C-team']);
+    expect(resolveFallbackNotificationChannels(path.join(dir, 'nope'))).toEqual([]);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

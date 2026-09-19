@@ -696,6 +696,8 @@ export async function startSlackTeamChannels(): Promise<void> {
       setSlackAgentDmService(agentDm);
     }
     await agentDm.start();
+    // Owner notifications must not target an agent app's own DM (the master bot cannot post there).
+    getSlackService().isAgentOwnedConversation = (channelId) => !!getSlackAgentDmService()?.findBySlackChannelId(channelId);
     // Team-channel threads and agent DMs belong to the agents, not the
     // orchestrator's resume briefing (which otherwise had the orchestrator
     // answering in #team channels).

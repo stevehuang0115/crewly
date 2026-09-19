@@ -34,6 +34,44 @@ const DM_PREFIX = 'D';
  * const channel = notification.channelId ?? config.defaultChannelId ?? resolveFallbackNotificationChannel();
  * ```
  */
+/**
+ * Candidate channels for an owner notification, best first: DMs before
+ * channels, most recently used first. Conversations the master bot cannot
+ * post into are excluded via `exclude` (an agent's own DM belongs to that
+ * agent's app; posting there as the master bot fails with channel_not_found).
+ *
+ * @param threadsDir - Thread store dir (default `<CREWLY_HOME>/slack-threads`)
+ * @param exclude - Channel ids to skip
+ * @returns Ordered candidates (possibly empty)
+ */
+export function resolveFallbackNotificationChannels(threadsDir?: string, exclude: (id: string) => boolean = () => false): string[] {
+  const dir = threadsDir ?? path.join(getCrewlyHomePath(), SLACK_THREAD_CONSTANTS.STORAGE_DIR);
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((e) => e.isDirectory() && !exclude(e.name))
+    .map((e) => {
+      const full = path.join(dir, e.name);
+      let latest = 0;
+      try {
+        for (const f of fs.readdirSync(full)) {
+          const t = fs.statSync(path.join(full, f)).mtimeMs;
+          if (t > latest) latest = t;
+        }
+      } catch {
+        // unreadable channel dir — treat as never used
+      }
+      return { id: e.name, latest, dm: e.name.startsWith(DM_PREFIX) };
+    })
+    .filter((c) => c.latest > 0)
+    .sort((a, b) => (a.dm !== b.dm ? (a.dm ? -1 : 1) : b.latest - a.latest))
+    .map((c) => c.id);
+}
+
 export function resolveFallbackNotificationChannel(threadsDir?: string): string | null {
   const dir = threadsDir ?? path.join(getCrewlyHomePath(), SLACK_THREAD_CONSTANTS.STORAGE_DIR);
   let entries: fs.Dirent[];

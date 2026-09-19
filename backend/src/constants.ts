@@ -640,6 +640,9 @@ export const WIKI_KB_CONSTANTS = {
 /** One of {@link WIKI_KB_CONSTANTS.KEEP_BECAUSE}. */
 export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
 
+/** How many recent thread channels an owner notification tries before giving up when SLACK_DEFAULT_CHANNEL is unset. */
+export const SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES = 4;
+
 export const SLACK_TYPING_CONSTANTS = {
 	/** Placeholder text; `{name}` is the agent's display name */
 	TYPING_TEXT: '💭 {name} is typing…',

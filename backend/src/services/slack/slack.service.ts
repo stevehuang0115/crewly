@@ -27,9 +27,11 @@ import type {
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME,
+  SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES,
+} from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
-import { resolveFallbackNotificationChannel } from './slack-notification-fallback.js';
+import { resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
 
@@ -321,6 +323,8 @@ export class SlackService extends EventEmitter {
   private seenInboundKeys: Map<string, number> = new Map();
   /** Whether an agent session runs on this instance (set by the initializer; agent-to-agent routing). */
   isLocalAgent: ((agentSession: string) => boolean) | null = null;
+  /** Whether a Slack conversation belongs to an agent's own app (the master bot cannot post there). Set by the initializer. */
+  isAgentOwnedConversation: ((channelId: string) => boolean) | null = null;
 
   /** Whether a reconnection attempt is currently in progress */
   private reconnecting = false;
@@ -1330,26 +1334,44 @@ export class SlackService extends EventEmitter {
    * @param notification - Notification to send
    */
   async sendNotification(notification: SlackNotification): Promise<void> {
-    let targetChannelId = notification.channelId || this.config?.defaultChannelId;
-    if (!targetChannelId) {
-      // No SLACK_DEFAULT_CHANNEL: deliver where the owner last talked to us
-      // (only worth trying on a live connection).
-      const fallback = this.isConnected() ? resolveFallbackNotificationChannel() : null;
-      if (!fallback) {
-        this.logger.warn('No channel configured for notification');
-        return;
-      }
-      this.logger.info('No default channel; sending notification to the most recent thread channel', { channelId: fallback });
-      targetChannelId = fallback;
-    }
-
     const blocks = this.formatNotificationBlocks(notification);
-
-    await this.sendMessage({
-      channelId: targetChannelId,
-      text: `${notification.title}: ${notification.message}`,
-      blocks,
-      threadTs: notification.threadTs,
+    const text = `${notification.title}: ${notification.message}`;
+    const explicit = notification.channelId || this.config?.defaultChannelId;
+    if (explicit) {
+      await this.sendMessage({ channelId: explicit, text, blocks, threadTs: notification.threadTs });
+      return;
+    }
+    // No SLACK_DEFAULT_CHANNEL: deliver where the owner last talked to us
+    // (only worth trying on a live connection). Conversations owned by an
+    // agent's own app are skipped — the master bot cannot post there — and
+    // a candidate that still fails (channel_not_found, not_in_channel) is
+    // passed over for the next one.
+    if (!this.isConnected()) {
+      this.logger.warn('No channel configured for notification');
+      return;
+    }
+    const isAgentDm = (id: string) => !!this.isAgentOwnedConversation?.(id);
+    const candidates = resolveFallbackNotificationChannels(undefined, isAgentDm).slice(0, SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES);
+    if (candidates.length === 0) {
+      this.logger.warn('No channel configured for notification');
+      return;
+    }
+    let lastError: unknown = null;
+    for (const channelId of candidates) {
+      try {
+        await this.sendMessage({ channelId, text, blocks, threadTs: notification.threadTs, skipChatV2Mirror: true });
+        this.logger.info('No default channel; notification sent to the most recent reachable thread channel', { channelId });
+        return;
+      } catch (err) {
+        lastError = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        if (!/channel_not_found|not_in_channel|is_archived/.test(msg)) throw err;
+        this.logger.debug('Notification fallback channel unreachable — trying the next one', { channelId, error: msg });
+      }
+    }
+    this.logger.warn('No reachable channel for notification — set SLACK_DEFAULT_CHANNEL or DM the Crewly bot once', {
+      tried: candidates.length,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
     });
   }
 
