@@ -653,6 +653,35 @@ describe('Chat Controller', () => {
       expect(response.body.error).toBe('Message content is required');
     });
 
+    it('records an agent reply on its own chat-v2 DM channel instead of routing it to the orchestrator', async () => {
+      const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+      const chatV2 = getChatV2Service();
+      const { channel } = chatV2.ensureDmChannel({
+        agentSession: 'crewly-marketing-ella-e6a6b8ea',
+        name: 'Ella',
+        principal: { userId: 'dev-user-001', source: 'oss' },
+      });
+      const seen: Array<{ senderType: string; senderId: string; content: string }> = [];
+      chatV2.on('chat_message', (m) => seen.push({ senderType: m.senderType, senderId: m.senderId, content: m.content }));
+      mockMarkPendingDelivery.mockClear();
+
+      const response = await request(app)
+        .post('/api/chat/agent-response')
+        .send({ content: '你好！我是 Ella。', senderName: 'crewly-marketing-ella-e6a6b8ea', senderType: 'agent', conversationId: channel.id });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.messageId).toBeDefined();
+      expect(seen).toEqual([{ senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '你好！我是 Ella。' }]);
+      expect(mockMarkPendingDelivery).not.toHaveBeenCalled();
+
+      // Another agent reporting into that DM is not "the agent replying" — status path as before.
+      const other = await request(app)
+        .post('/api/chat/agent-response')
+        .send({ content: '[DONE] Agent kai: done', senderName: 'kai', senderType: 'agent', conversationId: channel.id });
+      expect(other.status).toBe(201);
+      expect(other.body.data.messageId).toBeUndefined();
+    });
+
     /**
      * Issue #731 — a cron-driven daily task reports completion with no
      * conversationId, so the handler fell back to the globally-current

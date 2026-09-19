@@ -322,6 +322,49 @@ export async function getMessage(
 // =============================================================================
 
 /**
+ * Record an agent's reply on its own chat-v2 DM channel when
+ * `conversationId` names one (the channel is bound to this very agent).
+ * Anything else — an orchestrator thread a sub-agent reports [DONE] into,
+ * a team channel, a legacy conversation — returns null so the caller keeps
+ * the orchestrator status-report path.
+ *
+ * @param channelId - The conversation id the agent replied to
+ * @param senderName - The agent's session name
+ * @param content - Reply text
+ * @returns The persisted message id, or null when not a chat-v2 channel
+ */
+async function recordChatV2AgentReply(channelId: string, senderName: string, content: string): Promise<string | null> {
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(channelId);
+    if (!channel || channel.archivedAt) return null;
+    if (channel.type !== 'dm' || channel.agentSession !== senderName) return null;
+    const { message } = chatV2.recordTurn({
+      channelId,
+      senderType: 'agent',
+      senderId: senderName,
+      content,
+      metadata: { source: 'reply-tool' },
+    });
+    logger.info('Agent reply recorded on chat-v2 channel', {
+      senderName,
+      channelId,
+      channelType: channel.type,
+      messageId: message.id,
+    });
+    return message.id;
+  } catch (err) {
+    logger.warn('Could not record the agent reply on chat-v2 (falling back to the status path)', {
+      channelId,
+      senderName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
  * POST /api/chat/agent-response
  *
  * Store an agent's response message in a chat conversation. Used by
@@ -407,6 +450,19 @@ export async function agentResponse(
     const isOrchestratorSelfReport = isAgentSender && isOrchestratorSender(String(senderName));
 
     let savedMessageId: string | undefined;
+
+    // An agent answering on its own chat-v2 DM channel (the dispatcher
+    // delivered "reply-chat … conversationId=<channel>"): the reply IS the
+    // deliverable. Record it as the agent's turn on that channel — the WS
+    // gateway shows the bubble and the Slack DM bridge mirrors it — instead
+    // of routing it to the orchestrator as a status report.
+    if (isAgentSender && !isOrchestratorSelfReport && conversationIdWasExplicit) {
+      const recorded = await recordChatV2AgentReply(String(resolvedConversationId), String(senderName), String(content));
+      if (recorded) {
+        res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });
+        return;
+      }
+    }
 
     if (!isAgentSender) {
       // Save orchestrator/system messages to the chat conversation
