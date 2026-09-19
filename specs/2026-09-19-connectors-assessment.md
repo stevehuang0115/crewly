@@ -85,6 +85,38 @@ permissions** of their app. For Crewly they belong to the mobile app
 (`crewly-projects/mobile`, Expo: `expo-contacts`, `expo-calendar`) and would
 sync through the relay — a mobile feature, not a Cloud connector.
 
+## Where connectors live in the UI (as of 1.20.32)
+
+`/connections` (sidebar → TOOLS, next to Marketplace) is the one page for
+every external account, in two sections:
+
+- **Messaging** — Slack, WhatsApp, Discord, Telegram, Google Chat
+- **Data & content** — Google Workspace, Canva
+
+They are the same kind of object (external account + credential +
+connect/disconnect), so they sit together; splitting them by history
+("Slack is in Settings, Canva is elsewhere") only made the owner guess.
+
+- `Settings → Integrations` redirects to `/connections`, carrying the query
+  string, so every stored OAuth return URL keeps working — including the
+  legacy `?tab=slack` the Cloud Slack install still sends.
+- **Marketplace** keeps its meaning: things you *install* (skills, roles,
+  MCP tools, models). Its **Connectors** tab is discovery only — a
+  connector is authorised, not installed, so the card links to
+  `/connections?platform=<id>` instead of offering Install.
+- Each data connector card carries a **role allowlist** ("which agents may
+  use this"). A grant is instance-wide, so the default (no allowlist) means
+  every agent; picking roles narrows it. Enforced by
+  `requireConnectorAccess` on the Google / Canva data routes, which reads
+  `X-Agent-Session`; the owner's own calls are never gated, and `orchestrator`
+  is a role like any other, so even the orc can be kept out. Stored in
+  `<CREWLY_HOME>/connector-access.json`.
+
+Catalog lives in `frontend/src/config/connectors.ts` (used by both the page
+and the Marketplace tab) and `GATED_CONNECTORS` in
+`backend/src/services/connector/connector-access.service.ts` — keep the ids
+in step.
+
 ## Recipe: adding a connector (files to touch)
 
 1. **Cloud** `services/auth/src/deps.ts` — `<VENDOR>_CONSTANTS` (auth/token URLs, env client id/secret, callback, scopes), state + grant document types, collection names.
@@ -95,7 +127,7 @@ sync through the relay — a mobile feature, not a Cloud connector.
 6. `backend/src/services/<vendor>/<vendor>-token.service.ts` (copy `google-workspace-token.service.ts`) + `<vendor>.service.ts` (API calls) + tests.
 7. `backend/src/controllers/<vendor>/` controller + routes; mount in `backend/src/routes/api.routes.ts`.
 8. `config/skills/agent/core/<vendor>-<verb>/` — `SKILL.md`, `execute.sh` (use `call`/`api_call`; **never name a flag `--file`**, the runner reserves it), `execute.test.sh` (python stub).
-9. `frontend/src/components/Settings/<Vendor>Tab.tsx` + register in `IntegrationsTab.tsx`.
+9. `frontend/src/components/Settings/<Vendor>Tab.tsx`, then add the connector to `frontend/src/config/connectors.ts` and its panel/icon to `frontend/src/pages/Connections.tsx`; add the id to `GATED_CONNECTORS` and put `requireConnectorAccess('<id>')` in front of the data routes.
 10. Deploy: auth image (`services/auth`, surgical compose tag on both nodes), crewly npm release, env vars on `crewly-auth.env`.
 
 ## Recommended order
