@@ -699,6 +699,8 @@ export interface SlackAgentIdentityRecord {
   /** The agent's own bot token — never leaves this machine except to Slack. */
   botToken?: string;
   installUrl?: string;
+  /** Installed, but the token predates a scope the app now needs; `installUrl` re-authorises it. */
+  reinstall?: boolean;
   error?: string;
   /** Slack channel ids where the install link has been announced. */
   announcedIn: string[];

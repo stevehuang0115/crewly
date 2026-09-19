@@ -144,6 +144,18 @@ describe('provision + cache', () => {
     await service.refreshFromCloud();
     expect(installed).toHaveBeenCalledTimes(1);
 
+    // A scope added later: still installed (token kept) + a re-authorization link, cleared once Cloud drops the flag.
+    fetchMock.mockResolvedValue(
+      jsonResponse({ success: true, data: [{ agentSession: 's', displayName: 'Sam', appId: 'A1', status: 'installed', botUserId: 'USAM', botToken: 'xoxb-sam', teamId: 'T1', reinstall: true, installUrl: 'https://slack/re' }] }),
+    );
+    const flagged = await service.refreshFromCloud();
+    expect(flagged[0]).toMatchObject({ status: 'installed', reinstall: true, installUrl: 'https://slack/re' });
+    expect(service.getInstalled('s')).toEqual({ botUserId: 'USAM', botToken: 'xoxb-sam' });
+    fetchMock.mockResolvedValue(
+      jsonResponse({ success: true, data: [{ agentSession: 's', displayName: 'Sam', appId: 'A1', status: 'installed', botUserId: 'USAM', botToken: 'xoxb-sam', teamId: 'T1' }] }),
+    );
+    expect((await service.refreshFromCloud())[0].reinstall).toBeUndefined();
+
     // Cloud pruned the agent → the local record goes too.
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: [] }));
     expect(await service.refreshFromCloud()).toEqual([]);

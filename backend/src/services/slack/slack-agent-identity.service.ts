@@ -77,6 +77,7 @@ interface CloudAgentView {
   botUserId?: string;
   teamId?: string;
   installUrl?: string;
+  reinstall?: boolean;
   error?: string;
   botToken?: string;
 }
@@ -386,6 +387,8 @@ export class SlackAgentIdentityService {
     if (view.botToken) record.botToken = view.botToken;
     if (view.installUrl) record.installUrl = view.installUrl;
     else if (view.status === 'installed') delete record.installUrl;
+    if (view.reinstall) record.reinstall = true;
+    else delete record.reinstall;
     if (view.error) record.error = view.error;
     else delete record.error;
     await this.save();

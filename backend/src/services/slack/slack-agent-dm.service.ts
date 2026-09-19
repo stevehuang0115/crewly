@@ -187,7 +187,14 @@ export class SlackAgentDmService {
     if (installed) {
       await this.deps.slack
         .addReaction(message.channelId, message.ts, SLACK_AGENT_DM_CONSTANTS.INBOUND_REACTION, installed.botToken)
-        .catch(() => undefined);
+        .catch((err: unknown) => {
+          // Cosmetic; a token from before `reactions:write` was required
+          // lands here until the owner re-authorises the bot.
+          this.logger.warn('Could not add the seen-reaction from the agent bot', {
+            agentSession,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
     }
 
     const dispatcher = this.deps.getDispatcher();

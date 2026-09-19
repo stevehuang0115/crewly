@@ -47,6 +47,20 @@ describe('SlackAgentIdentities', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it('offers a re-authorization link for an installed bot that needs new permissions', async () => {
+    routeFetch({}, {
+      ...basePayload,
+      data: {
+        ...basePayload.data,
+        identities: [{ agentSession: 's', displayName: 'Sam', appId: 'A1', status: 'installed', botUserId: 'USAM', hasToken: true, reinstall: true, installUrl: 'https://slack.com/oauth/v2/authorize?re' }],
+      },
+    });
+    render(<SlackAgentIdentities />);
+    await waitFor(() => expect(screen.getByText('Sam')).toBeInTheDocument());
+    expect(screen.getByText(/new permissions need your re-authorization/)).toBeInTheDocument();
+    expect(screen.getByText('Re-authorize Sam').closest('a')!.getAttribute('href')).toBe('https://slack.com/oauth/v2/authorize?re');
+  });
+
   it('lists identities with status and an install link for pending ones', async () => {
     routeFetch();
     render(<SlackAgentIdentities />);

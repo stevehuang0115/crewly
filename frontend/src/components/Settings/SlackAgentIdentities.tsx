@@ -26,6 +26,8 @@ export interface AgentIdentityRow {
   status: 'pending_install' | 'installed' | 'error';
   botUserId?: string;
   installUrl?: string;
+  /** Installed, but Slack needs a re-authorization for permissions added since. */
+  reinstall?: boolean;
   error?: string;
   hasToken: boolean;
 }
@@ -371,20 +373,21 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
                               {row.displayName}
                             </div>
                             <div className="text-xs text-text-secondary-dark">
-                              {row.status === 'installed' && `Installed · bot ${row.botUserId ?? ''}`}
+                              {row.status === 'installed' && !row.reinstall && `Installed · bot ${row.botUserId ?? ''}`}
+                              {row.status === 'installed' && row.reinstall && 'Installed · new permissions need your re-authorization'}
                               {row.status === 'pending_install' && 'Waiting for your install click'}
                               {row.status === 'error' && `Install failed${row.error ? `: ${row.error}` : ''}`}
                             </div>
                           </div>
                           <div className="flex items-center gap-2">
-                            {row.status !== 'installed' && row.installUrl && (
+                            {(row.status !== 'installed' || row.reinstall) && row.installUrl && (
                               <a
                                 href={row.installUrl}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-sm text-primary hover:underline inline-flex items-center gap-1"
                               >
-                                Install {row.displayName}
+                                {row.status === 'installed' ? 'Re-authorize' : 'Install'} {row.displayName}
                                 <ExternalLink className="w-3 h-3" />
                               </a>
                             )}
