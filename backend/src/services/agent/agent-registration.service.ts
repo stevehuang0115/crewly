@@ -39,6 +39,7 @@ import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
+import { appendIncompleteNotice } from '../../utils/incomplete-turn.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
@@ -3856,6 +3857,7 @@ Loop until done, blocked, or explicitly reassigned:
 							steps: result.steps,
 							toolCalls: result.toolCalls?.length ?? 0,
 							finishReason: result.finishReason,
+							...(result.incomplete ? { incomplete: result.incomplete } : {}),
 							usage: {
 								input: result.usage?.input ?? 0,
 								output: result.usage?.output ?? 0,
@@ -3883,7 +3885,23 @@ Loop until done, blocked, or explicitly reassigned:
 						// `<invoke name="Bash">…`). An answer that is nothing but markup
 						// is not posted at all: the delivery enforcer then nudges the
 						// agent, which beats showing the user the envelope.
-						const { text: replyText, stripped: replyHadMarkup } = stripToolCallMarkup(result.text ?? '');
+						// A turn the runtime could not finish must not read as an answer:
+						// the agent that says "I'll create the team" and gets cut off has
+						// created nothing, and staying silent about that is worse than a
+						// short answer (2026-09-19).
+						if (result.incomplete) {
+							this.logger.warn('In-process agent turn ended incomplete', {
+								sessionName,
+								reason: result.incomplete.reason,
+								finishReason: result.incomplete.finishReason,
+								recoveryAttempts: result.incomplete.recoveryAttempts,
+								textLength: result.text?.length ?? 0,
+							});
+						}
+
+						const { text: replyText, stripped: replyHadMarkup } = stripToolCallMarkup(
+							appendIncompleteNotice(result.text ?? '', result.incomplete),
+						);
 						if (replyHadMarkup) {
 							this.logger.warn('Stripped tool-call markup from in-process agent response', {
 								sessionName,

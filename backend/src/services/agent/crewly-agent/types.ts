@@ -141,6 +141,18 @@ export interface AgentRunResult {
   toolCalls: ToolCallRecord[];
   /** Reason the generation finished */
   finishReason: string;
+  /**
+   * Set by the runtime when the turn did NOT run to a natural end — the
+   * model was cut off, the provider bailed, or the step budget ran out,
+   * and the recovery attempts did not rescue it. `text` is then a fragment,
+   * so it must not be presented to the user as a finished answer.
+   */
+  incomplete?: {
+    reason: 'truncated' | 'abnormal-finish' | 'steps-exhausted' | 'content-filter';
+    detail: string;
+    finishReason: string;
+    recoveryAttempts: number;
+  };
   /** Budget warning message when token usage is approaching limits */
   budgetWarning?: string;
   /**

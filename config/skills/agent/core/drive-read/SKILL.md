@@ -1,6 +1,6 @@
 ---
 name: Drive Read
-description: Read the content of a Google Drive file (via the Google Workspace grant held by Crewly Cloud): Docs → text, Sheets → CSV, Slides → text, other files downloaded (text printed, binaries saved with --out). Read-only.
+description: "Read the content of a Google Drive file (via the Google Workspace grant held by Crewly Cloud) — Docs → text, Sheets → CSV, Slides → text, other files downloaded (text printed, binaries saved with --out). Read-only."
 version: 1.0.0
 category: productivity
 skillType: claude-skill
