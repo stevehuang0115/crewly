@@ -304,6 +304,29 @@ describe('loginCommand — no-browser (mobile) flow', () => {
     expect(body.token).toBe('pasted-token-123');
   });
 
+  it('asks for the refresh token too and stores it (an access token alone expires within the hour)', async () => {
+    const answers = ['pasted-token-123', 'pasted-refresh-456'];
+    mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb(answers.shift() ?? ''));
+    mockAxiosPost.mockResolvedValue({ data: { success: true, data: { tier: 'pro' } } });
+
+    await loginCommand({ browser: false });
+
+    const prompts = mockRlQuestion.mock.calls.map((c) => String(c[0]));
+    expect(prompts[1]).toContain('refresh token');
+    const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
+    expect(written.token).toBe('pasted-token-123');
+    expect(written.refreshToken).toBe('pasted-refresh-456');
+    expect(getOutput()).not.toContain('No refresh token');
+  });
+
+  it('warns when the refresh token is skipped', async () => {
+    const answers = ['pasted-token-123', ''];
+    mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb(answers.shift() ?? ''));
+    mockAxiosPost.mockResolvedValue({ data: { success: true, data: { tier: 'pro' } } });
+    await loginCommand({ browser: false });
+    expect(getOutput()).toContain('No refresh token');
+  });
+
   it('exits when no token is pasted', async () => {
     mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb(''));
 

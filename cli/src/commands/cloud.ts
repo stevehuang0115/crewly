@@ -439,8 +439,9 @@ async function mobileLoginFlow(): Promise<void> {
   console.log('');
   console.log(chalk.cyan(`  ${oauthUrl}`));
   console.log('');
-  console.log(chalk.gray('  After logging in, you\'ll see a token on the page.'));
-  console.log(chalk.gray('  Copy the token and paste it below.'));
+  console.log(chalk.gray('  After logging in, the page shows a token and a refresh token.'));
+  console.log(chalk.gray('  Paste both below — without the refresh token the login expires'));
+  console.log(chalk.gray('  after about an hour and Slack/relay delivery to this machine stops.'));
   console.log('');
 
   const token = await promptForToken(chalk.white('  Paste token here: '));
@@ -450,9 +451,14 @@ async function mobileLoginFlow(): Promise<void> {
     process.exit(1);
   }
 
+  const refreshToken = await promptForToken(chalk.white('  Paste refresh token here (Enter to skip): '));
+  if (!refreshToken) {
+    console.log(chalk.yellow('  ⚠ No refresh token — this login will expire in about an hour.'));
+  }
+
   console.log('');
   console.log(chalk.blue('  Connecting with token...'));
-  await connectWithToken(token);
+  await connectWithToken(token, refreshToken || undefined);
 }
 
 /**
