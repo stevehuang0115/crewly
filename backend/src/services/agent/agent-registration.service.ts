@@ -3695,6 +3695,26 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Whether a member's registration is still pending: its runtime is being
+	 * started or is running but has not called register-self yet. Unknown
+	 * sessions (orchestrator, ad-hoc) report 'unknown' and are not gated.
+	 *
+	 * @param sessionName - Session name
+	 * @returns 'pending' | 'ready' | 'unknown'
+	 */
+	private async registrationStateOf(sessionName: string): Promise<'pending' | 'ready' | 'unknown'> {
+		try {
+			const found = await this.storageService.findMemberBySessionName(sessionName);
+			if (!found) return 'unknown';
+			const status = found.member.agentStatus;
+			if (status === CREWLY_CONSTANTS.AGENT_STATUSES.STARTING || status === CREWLY_CONSTANTS.AGENT_STATUSES.STARTED) return 'pending';
+			return 'ready';
+		} catch {
+			return 'unknown';
+		}
+	}
+
+	/**
 	 * Send a message to any agent session with reliable delivery.
 	 * Uses robust delivery mechanism with retry logic to ensure messages
 	 * are properly delivered to Claude Code's input.
@@ -3897,6 +3917,26 @@ Loop until done, blocked, or explicitly reassigned:
 				return {
 					success: false,
 					error: `Session '${sessionName}' does not exist`,
+				};
+			}
+
+			// Guard: an agent that is still starting/registering has no TUI
+			// ready to take input — text typed now lands in the shell or in
+			// the middle of the init prompt and is lost (steamfun-ops
+			// 2026-09-19: a channel question written 4s after the PTY was
+			// spawned never reached Jordan; only the [TL_REPORT] came back).
+			// Queue it; the register-self handler flushes the queue.
+			const registrationState = await this.registrationStateOf(sessionName);
+			if (registrationState === 'pending') {
+				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				this.logger.info('Agent still registering — message queued until register-self', {
+					sessionName,
+					messageLength: message.length,
+				});
+				return {
+					success: true,
+					queued: true,
+					message: '[AGENT_STARTING] Message queued for delivery once the agent has registered',
 				};
 			}
 

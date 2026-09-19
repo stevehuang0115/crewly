@@ -928,6 +928,26 @@ describe('AgentRegistrationService', () => {
 			};
 		};
 
+		// steamfun-ops 2026-09-19: a channel question written 4s after the
+		// PTY was spawned (agent still registering) never reached Jordan.
+		it('queues the message (does not type into the PTY) while the agent is still registering', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue({
+				team: { id: 't' },
+				member: { agentStatus: 'started', role: 'team-leader' },
+			});
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			const queue = SubAgentMessageQueue.getInstance();
+			const before = queue.hasPending('test-session');
+			const result = await service.sendMessageToAgent('test-session', 'question while booting');
+			expect(result).toMatchObject({ success: true, queued: true });
+			expect(before).toBe(false);
+			expect(queue.hasPending('test-session')).toBe(true);
+			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
+			queue.dequeueAll('test-session');
+			mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue(null);
+		});
+
 		it('should send message and verify processing started (prompt gone)', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			// Call 1: pre-send isClaudeAtPrompt — prompt visible
