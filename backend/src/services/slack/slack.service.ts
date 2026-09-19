@@ -325,6 +325,8 @@ export class SlackService extends EventEmitter {
   isLocalAgent: ((agentSession: string) => boolean) | null = null;
   /** Whether a Slack conversation belongs to an agent's own app (the master bot cannot post there). Set by the initializer. */
   isAgentOwnedConversation: ((channelId: string) => boolean) | null = null;
+  /** Slack user id of the person who installed the app (owner notifications go to their DM). Set by the initializer. */
+  getOwnerUserId: (() => string | null) | null = null;
 
   /** Whether a reconnection attempt is currently in progress */
   private reconnecting = false;
@@ -1350,10 +1352,25 @@ export class SlackService extends EventEmitter {
       this.logger.warn('No channel configured for notification');
       return;
     }
+    // Owner notifications are for the owner: a DM with the master bot, never
+    // a team channel (those belong to the agents and their humans — a boot
+    // banner or an OKR nudge in #course-standardization-team is noise to
+    // everyone there). Candidates: the most recent master-bot DMs, then a
+    // fresh DM opened with the person who installed the app.
     const isAgentDm = (id: string) => !!this.isAgentOwnedConversation?.(id);
-    const candidates = resolveFallbackNotificationChannels(undefined, isAgentDm).slice(0, SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES);
+    const candidates = resolveFallbackNotificationChannels(undefined, (id) => !id.startsWith('D') || isAgentDm(id))
+      .slice(0, SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES);
+    const ownerId = this.getOwnerUserId?.() ?? null;
+    if (ownerId) {
+      try {
+        const dm = await this.openDirectMessage(ownerId);
+        if (!candidates.includes(dm)) candidates.push(dm);
+      } catch (err) {
+        this.logger.debug('Could not open a DM with the workspace owner for the notification', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
     if (candidates.length === 0) {
-      this.logger.warn('No channel configured for notification');
+      this.logger.warn('No channel configured for notification — set SLACK_DEFAULT_CHANNEL or DM the Crewly bot once');
       return;
     }
     let lastError: unknown = null;

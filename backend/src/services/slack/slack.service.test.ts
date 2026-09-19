@@ -149,6 +149,28 @@ describe('SlackService', () => {
       expect(mockRecordTurn).not.toHaveBeenCalled();
     });
 
+    // 2026-09-19: a boot banner and an OKR nudge landed in
+    // #course-standardization-team because the fallback picked "the most
+    // recent thread channel". Owner notifications go to the owner's DM only.
+    it('sendNotification without a default channel goes to a master-bot DM (opened with the owner if needed), never a team channel', async () => {
+      const service = new SlackService();
+      const postMessage = jest.fn().mockResolvedValue({ ts: '1.2' });
+      const open = jest.fn().mockResolvedValue({ channel: { id: 'D-OWNER' } });
+      (service as any).client = { chat: { postMessage }, conversations: { open } };
+      (service as any).status.connected = true;
+      (service as any).config = {};
+      service.getOwnerUserId = () => 'U-OWNER';
+      // Only channels (no DMs) in the thread store → none are eligible.
+      const fallback = await import('./slack-notification-fallback.js');
+      jest.spyOn(fallback, 'resolveFallbackNotificationChannels').mockImplementation((_dir, exclude) => ['C-team', 'D-agent'].filter((id) => !(exclude ?? (() => false))(id)));
+      service.isAgentOwnedConversation = (id) => id === 'D-agent';
+
+      await service.sendNotification({ type: 'system', title: 'Crewly 已重启上线', message: 'v', urgency: 'normal', timestamp: '' } as never);
+      expect(open).toHaveBeenCalledWith(expect.objectContaining({ users: 'U-OWNER' }));
+      expect(postMessage).toHaveBeenCalledTimes(1);
+      expect(postMessage.mock.calls[0][0].channel).toBe('D-OWNER');
+    });
+
     it('passes per-message identity (username + icon) to chat.postMessage', async () => {
       const service = new SlackService();
       const postMessage = jest.fn().mockResolvedValue({ ts: '1.2' });
