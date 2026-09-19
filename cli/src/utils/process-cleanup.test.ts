@@ -12,7 +12,7 @@ jest.mock('child_process', () => ({
 	execSync: (...args: unknown[]) => mockExecSync(...args),
 }));
 
-import { killZombieProcesses } from './process-cleanup.js';
+import { killZombieProcesses, selectOrphanedTestPids } from './process-cleanup.js';
 
 describe('killZombieProcesses', () => {
 	let killSpy: jest.SpyInstance;
@@ -153,5 +153,26 @@ describe('killZombieProcesses', () => {
 
 		expect(consoleSpy).toHaveBeenCalledWith(expect.stringContaining('1 zombie'));
 		consoleSpy.mockRestore();
+	});
+});
+
+describe('selectOrphanedTestPids', () => {
+	it('kills only test runners whose parent is gone, plus their worker pool — never a live pipeline run', () => {
+		// pid 1 owns 500 (orphaned vitest main); 501/502 are its workers.
+		// 700 is `make → npm(699) → vitest`: live parent chain, hands off.
+		// 800's parent is a systemd --user subreaper (adopted orphan).
+		const rows: Array<[number, number]> = [
+			[500, 1],
+			[501, 500],
+			[502, 500],
+			[700, 699],
+			[800, 4242],
+		];
+		const isOrphan = (ppid: number) => ppid === 1 || ppid === 4242;
+		expect(selectOrphanedTestPids(rows, isOrphan).sort()).toEqual([500, 501, 502, 800]);
+	});
+
+	it('returns nothing when every run has a live parent', () => {
+		expect(selectOrphanedTestPids([[700, 699], [701, 700]], () => false)).toEqual([]);
 	});
 });
