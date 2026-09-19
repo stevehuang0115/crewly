@@ -14,6 +14,7 @@ import { getCrewlyHomePath } from './crewly-home.utils.js';
 import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js';
 import { atomicWriteJsonWithGuard } from '../../utils/integrity-guarded-write.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
+import { deriveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import {
   StateInvariantViolation,
   isForceEmptyBootActive,
@@ -667,6 +668,11 @@ export class StorageService {
   /**
    * Find a team member by their session name.
    *
+   * A stopped member has an empty stored `sessionName` (the team controller
+   * clears it on stop), so the name it *would* run under is derived with
+   * the controller's formula as a second pass — otherwise activate-on-send
+   * (Slack DM / @-mention of an idle agent) cannot find the member to start.
+   *
    * @param sessionName - The session name to search for
    * @returns Object with team and member, or null if not found
    */
@@ -680,6 +686,13 @@ export class StorageService {
       for (const team of teams) {
         for (const member of team.members || []) {
           if (member.sessionName === sessionName) {
+            return { team, member };
+          }
+        }
+      }
+      for (const team of teams) {
+        for (const member of team.members || []) {
+          if (!member.sessionName && deriveMemberSessionName(team.name, member.name, member.id) === sessionName) {
             return { team, member };
           }
         }

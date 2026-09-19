@@ -47,6 +47,27 @@ describe('StorageService', () => {
     mockFsPromises.unlink.mockResolvedValue(undefined);
   });
 
+  describe('findMemberBySessionName', () => {
+    test('finds a stopped member (empty stored sessionName) by the name it would run under', async () => {
+      const team: Team = {
+        id: 't1',
+        name: 'Steam Fun Content Team',
+        description: '',
+        projectIds: [],
+        members: [
+          { id: 'a034e012-0000-4000-8000-000000000000', name: 'Max', sessionName: '', role: 'team-leader', systemPrompt: '', agentStatus: 'inactive', workingStatus: 'idle', runtimeType: 'claude-code', createdAt: '', updatedAt: '' },
+          { id: 'dd6a9b2b-0000-4000-8000-000000000000', name: 'Ivy', sessionName: 'steam-fun-content-team-ivy-dd6a9b2b', role: 'developer', systemPrompt: '', agentStatus: 'active', workingStatus: 'idle', runtimeType: 'claude-code', createdAt: '', updatedAt: '' },
+        ],
+        createdAt: '',
+        updatedAt: '',
+      };
+      jest.spyOn(storageService, 'getTeams').mockResolvedValue([team]);
+      expect((await storageService.findMemberBySessionName('steam-fun-content-team-ivy-dd6a9b2b'))?.member.name).toBe('Ivy');
+      expect((await storageService.findMemberBySessionName('steam-fun-content-team-max-a034e012'))?.member.name).toBe('Max');
+      expect(await storageService.findMemberBySessionName('steam-fun-content-team-nobody-12345678')).toBeNull();
+    });
+  });
+
   describe('Team Management', () => {
     test('should save team to directory structure', async () => {
       const testTeam: Team = {
