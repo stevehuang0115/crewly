@@ -114,6 +114,8 @@ export interface SlackTeamChannelServiceDeps {
   identities?: TeamChannelIdentityApi | null;
   /** "Is typing…" placeholders for @-mentioned agents; optional. */
   typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve'> | null;
+  /** Whether an agent session runs on this instance (its own Slack copy is not re-recorded). */
+  isLocalAgent?: (agentSession: string) => boolean;
   /** Mapping store path; defaults to `<CREWLY_HOME>/slack-team-channels.json`. */
   storePath?: string;
   /**
@@ -707,22 +709,43 @@ export class SlackTeamChannelService {
     const senderId = remoteAgent
       ? `${message.authorDisplayName || remoteAgent} (agent)`
       : message.user?.name || message.userId || 'slack-user';
-    const { message: persisted } = this.deps.chat.recordTurn({
+    // An agent running HERE already has its reply in the huddle (it posted
+    // it with reply-channel); its Slack copy only serves to reach the
+    // colleagues it @'d, so it is dispatched from a transient turn and not
+    // recorded a second time.
+    const localAuthor = !!remoteAgent && (this.deps.isLocalAgent?.(remoteAgent) ?? false);
+    const turn = {
       channelId: mapping.chatChannelId,
-      senderType: 'user',
+      senderType: 'user' as const,
       senderId,
       content: message.text ?? '',
       threadId,
       mentions: resolved.mentions,
       metadata: {
-        source: 'slack',
+        source: 'slack' as const,
         slackChannelId: message.channelId,
         slackThreadTs,
         slackTs: message.ts,
         slackUserId: message.userId,
         ...(remoteAgent ? { remoteAgentSession: remoteAgent } : {}),
       },
-    });
+    };
+    const persisted: ChatMessageDTO = localAuthor
+      ? ({
+          id: `slack-echo-${message.channelId}-${message.ts}`,
+          channelId: mapping.chatChannelId,
+          seq: 0,
+          senderType: 'user',
+          senderId,
+          content: turn.content,
+          contentType: 'markdown',
+          createdAt: Date.now(),
+          attachments: [],
+          mentions: resolved.mentions,
+          threadId,
+          metadata: turn.metadata,
+        } as ChatMessageDTO)
+      : this.deps.chat.recordTurn(turn).message;
 
     this.seenInbound.set(seenKey, persisted);
     if (this.seenInbound.size > SLACK_TEAM_CHANNEL_CONSTANTS.SEEN_INBOUND_MAX) {
@@ -757,6 +780,9 @@ export class SlackTeamChannelService {
         threadId: threadId ?? persisted.id,
         replyVia: 'reply-channel',
         ...(roster ? { channelRoster: roster } : {}),
+        // A local agent's own message (fanned out to the colleagues it @'d)
+        // must not come back to its author.
+        ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
       });
     } else {
       this.logger.warn('No chat dispatcher wired — message persisted but not delivered', {

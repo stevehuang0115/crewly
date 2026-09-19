@@ -312,6 +312,7 @@ let identities: FakeIdentities | null;
 let service: SlackTeamChannelService;
 let ownerUserId: string | null = 'UOWNER';
 let typing: { begin: jest.Mock; resolve: jest.Mock } | null = null;
+let isLocal: (s: string) => boolean = () => false;
 
 function makeService() {
   return new SlackTeamChannelService({
@@ -321,6 +322,7 @@ function makeService() {
     getDispatcher: () => dispatcher,
     identities,
     typing,
+    isLocalAgent: (s) => isLocal(s),
     getOwnerUserId: () => ownerUserId,
     storePath: path.join(tmpDir, 'slack-team-channels.json'),
     now: () => new Date('2026-09-12T00:00:00.000Z'),
@@ -634,6 +636,25 @@ describe('routeInbound', () => {
     expect(msg.senderId).toBe('Mia (agent)');
     expect(msg.metadata).toMatchObject({ source: 'slack', remoteAgentSession: 'remote-team-mia' });
     expect(dispatcher!.dispatchMessage).toHaveBeenCalled();
+  });
+
+  it('a local agent\'s own Slack copy is dispatched to the colleagues it @\'d, not recorded again, and not sent back to itself', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    const before = chat.messages.length;
+    const result = await service.routeInbound(
+      inbound({ text: '<@USAM> 你怎么看', ts: '400.1', userId: 'ULEO', authorAgentSession: 'crewly-alpha-leo', authorDisplayName: 'Leo' }),
+    );
+    expect(result).not.toBeNull();
+    expect(chat.messages.length).toBe(before); // reply-channel already stored Leo's turn
+    expect(result!.message.senderId).toBe('Leo (agent)');
+    expect(dispatcher!.dispatchMessage).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ senderId: 'Leo (agent)', content: '<@USAM> 你怎么看' }),
+      expect.objectContaining({ excludeSessions: ['crewly-alpha-leo'] }),
+    );
+    isLocal = () => false;
   });
 
   it('files a Slack thread reply under the matching chat-v2 root', async () => {

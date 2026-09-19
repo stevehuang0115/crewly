@@ -695,6 +695,17 @@ describe('ChatV2DispatcherService', () => {
         expect(calls[0].message).toContain('--thread root-1');
       });
 
+      it('never delivers a message back to a session listed in excludeSessions (the agent that wrote it)', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b', 'sess-c'],
+          threadParticipantsFor: () => ['sess-a', 'sess-b'],
+        });
+        await dispatcher.dispatchMessage(makeHuddle(), makeMessage({ mentions: ['sess-a', 'sess-c'] }), { threadId: 'root-1', excludeSessions: ['sess-a'] });
+        expect(calls.map((c) => c.sessionName).sort()).toEqual(['sess-b', 'sess-c']);
+      });
+
       it('wakes an inactive addressee, retries once, and reports a member that would not start', async () => {
         const up = new Set<string>();
         const sink: AgentMessageSink = {

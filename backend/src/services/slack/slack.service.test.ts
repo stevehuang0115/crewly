@@ -1514,6 +1514,34 @@ describe('SlackService', () => {
       expect(msg).toMatchObject({ agentSession: 'team-kai-1', source: 'cloud', eventId: 'Ev3', channelId: 'D77' });
     });
 
+    it('delivers a local agent\'s own message only when it @\'s another local agent (same-team discussion), never to itself', async () => {
+      const service = new SlackService();
+      await service.initialize(cloudConfig);
+      service.isLocalAgent = (s) => s.startsWith('team-');
+      const env = (over: Record<string, unknown>) => ({
+        eventId: 'e', slackTeamId: 'T1', apiAppId: 'A1', source: 'master' as const,
+        event: { type: 'message', text: '<@UMAX> <@ULEO> 你们怎么看', user: 'UIVY', channel: 'C42', channel_type: 'channel' },
+        receivedAt: '',
+        ...over,
+      });
+      // Ivy (local) @'d Max + Leo (local) → routed so they hear her.
+      const heard = service.handleCloudEnvelope(env({
+        event: { type: 'message', ts: '10.1', text: '<@UMAX> <@ULEO> 你们怎么看', user: 'UIVY', channel: 'C42', channel_type: 'channel' },
+        authorAgentSession: 'team-ivy', authorDisplayName: 'Ivy', mentionedAgentSessions: ['team-max', 'team-leo'],
+      }));
+      expect(heard).toMatchObject({ authorAgentSession: 'team-ivy' });
+      // A local agent's message that @'s only a remote colleague → the remote instance handles it; nothing here.
+      expect(service.handleCloudEnvelope(env({
+        event: { type: 'message', ts: '10.2', text: '<@UREMOTE> hi', user: 'UIVY', channel: 'C42', channel_type: 'channel' },
+        authorAgentSession: 'team-ivy', mentionedAgentSessions: ['other-machine-kai'],
+      }))).toBeNull();
+      // …and one that @'s nobody (or only itself) is not fed back.
+      expect(service.handleCloudEnvelope(env({
+        event: { type: 'message', ts: '10.3', text: 'done', user: 'UIVY', channel: 'C42', channel_type: 'channel' },
+        authorAgentSession: 'team-ivy', mentionedAgentSessions: ['team-ivy'],
+      }))).toBeNull();
+    });
+
     it('routes whichever copy of a channel message arrives first (agent app or master) and drops the rest', async () => {
       const service = new SlackService();
       await service.initialize(cloudConfig);

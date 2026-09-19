@@ -209,6 +209,12 @@ export interface FormatPromptArgs {
  * Forwarded verbatim into {@link FormatPromptArgs}.
  */
 export interface DispatchMessageOptions {
+  /**
+   * Sessions that must not hear this message — the agent that wrote it,
+   * when an agent-authored Slack message is fanned out to the colleagues
+   * it @'d (it is a thread participant itself).
+   */
+  excludeSessions?: readonly string[];
   /** One line naming the channel's members and how to @ them (Slack team channels). */
   channelRoster?: string;
   /** See {@link FormatPromptArgs.threadId}. */
@@ -401,6 +407,7 @@ export class ChatV2DispatcherService {
     //      judges relevance; humans may just be talking to each other).
     // Everyone else is left alone. Inactive targets are woken.
     const memberSet = new Set(members);
+    for (const s of options.excludeSessions ?? []) memberSet.delete(s);
     const mentioned = (Array.isArray(message.mentions) ? message.mentions : []).filter((m) => memberSet.has(m));
     const engaged =
       options.threadId && this.threadParticipantsFor

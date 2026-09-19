@@ -591,11 +591,16 @@ export class SlackService extends EventEmitter {
       return null;
     }
     // A message written by one of the account's agents: Cloud only forwards
-    // these when they @-mention another agent. An agent running HERE already
-    // has its message in chat-v2; one on another machine is a colleague and
-    // is delivered like a human's message.
+    // these when they @-mention another agent. One from another machine is
+    // a colleague and is delivered like a human's message. One written HERE
+    // is delivered too when it @'s another local agent (three agents of one
+    // team discussing in a thread) — the author is excluded downstream;
+    // otherwise the author already has it in chat-v2 and it is dropped.
     if (envelope.authorAgentSession && this.isLocalAgent?.(envelope.authorAgentSession)) {
-      return null;
+      const addressedLocal = (envelope.mentionedAgentSessions ?? []).some(
+        (m) => m !== envelope.authorAgentSession && this.isLocalAgent?.(m),
+      );
+      if (!addressedLocal) return null;
     }
     // A per-agent app sees every channel it is a member of, so a team
     // channel message can reach Cloud once per agent app plus once from the

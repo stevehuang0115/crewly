@@ -654,6 +654,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
         identities,
         typing,
+        isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? false,
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
       });
       setSlackTeamChannelService(service);
