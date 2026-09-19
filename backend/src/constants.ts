@@ -601,6 +601,20 @@ export const SLACK_AGENT_DM_CONSTANTS = {
 	OWNER_USER_ID: 'dev-user-001',
 } as const;
 
+/**
+ * "Agent is typing…" placeholder in Slack. Slack has no typing indicator
+ * for bots, so the agent's bot posts a placeholder the moment a message is
+ * handed to the agent and edits it into the reply.
+ */
+export const SLACK_TYPING_CONSTANTS = {
+	/** Placeholder text; `{name}` is the agent's display name */
+	TYPING_TEXT: '💭 {name} is typing…',
+	/** What the placeholder becomes when the agent has not replied in time */
+	TIMEOUT_TEXT: '⏱ {name} is still working on this — the reply will follow.',
+	/** How long a placeholder waits for the reply before it is edited to TIMEOUT_TEXT */
+	TIMEOUT_MS: 5 * 60 * 1000,
+} as const;
+
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	/** Mapping store filename under CREWLY_HOME */
 	STORE_FILENAME: 'slack-team-channels.json',

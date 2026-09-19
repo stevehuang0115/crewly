@@ -20,6 +20,7 @@ import type { Team } from '../../types/index.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import type { ChatV2DispatcherService, DispatchMessageResult } from '../chat-v2/chat-v2.dispatcher.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
+import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -54,6 +55,8 @@ export interface SlackAgentDmServiceDeps {
   identities: AgentDmIdentityApi;
   /** Whether the agent runs on this instance (Cloud fans DMs out to the owner only, but be safe). */
   isLocalAgent?: (agentSession: string) => boolean;
+  /** "Is typing…" placeholders; optional (replies are posted plainly without it). */
+  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve'> | null;
   /** Link store path; defaults to `<CREWLY_HOME>/slack-agent-dms.json`. */
   storePath?: string;
   now?: () => Date;
@@ -204,6 +207,13 @@ export class SlackAgentDmService {
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }
+    // A reply is now owed: show "is typing…" where it will land.
+    if (dispatch?.dispatched && installed && this.deps.typing) {
+      await this.deps.typing.begin(
+        { agentSession, slackChannelId: message.channelId, ...(message.threadTs ? { threadTs: message.threadTs } : {}) },
+        { botToken: installed.botToken, displayName: member?.name ?? agentSession },
+      );
+    }
 
     this.logger.info('Slack DM routed to agent', {
       agentSession,
@@ -240,6 +250,11 @@ export class SlackAgentDmService {
       if (!installed) {
         this.logger.warn('Agent has no installed Slack bot — DM reply not mirrored', { agentSession: link.agentSession });
         return false;
+      }
+      const key = { agentSession: link.agentSession, slackChannelId: link.slackChannelId, ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}) };
+      if (this.deps.typing) {
+        await this.deps.typing.resolve(key, dto.content, { botToken: installed.botToken });
+        return true;
       }
       await this.deps.slack.sendMessage({
         channelId: link.slackChannelId,

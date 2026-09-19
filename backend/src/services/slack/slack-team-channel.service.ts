@@ -50,6 +50,7 @@ import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
+import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 
 // ---------------------------------------------------------------------------
 // Dependency contracts (narrow so tests can pass plain fakes)
@@ -110,6 +111,8 @@ export interface SlackTeamChannelServiceDeps {
    * without it agents post under the cosmetic username/icon override.
    */
   identities?: TeamChannelIdentityApi | null;
+  /** "Is typing…" placeholders for @-mentioned agents; optional. */
+  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve'> | null;
   /** Mapping store path; defaults to `<CREWLY_HOME>/slack-team-channels.json`. */
   storePath?: string;
   /**
@@ -714,6 +717,20 @@ export class SlackTeamChannelService {
       await this.postUnknownMentionHint(message, resolved.unknown, candidates);
     }
 
+    // @'d agents must reply: show "is typing…" in the thread for each one
+    // that has its own bot (the placeholder is edited into the reply).
+    if (dispatch?.dispatched && this.deps.typing) {
+      for (const session of resolved.mentions) {
+        const installed = this.deps.identities?.getInstalled(session);
+        const member = members.find((m) => m.sessionName === session);
+        if (!installed) continue;
+        await this.deps.typing.begin(
+          { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs },
+          { botToken: installed.botToken, displayName: member?.name ?? session },
+        );
+      }
+    }
+
     this.logger.info('Slack team message routed', {
       teamId: mapping.teamId,
       slackChannel: `#${mapping.slackChannelName}`,
@@ -754,6 +771,15 @@ export class SlackTeamChannelService {
       // username/icon override.
       const installed = this.deps.identities?.getInstalled(dto.senderId) ?? null;
       const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
+
+      if (installed && this.deps.typing) {
+        await this.deps.typing.resolve(
+          { agentSession: dto.senderId, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) },
+          await this.linkAgentMentions(dto.content),
+          { botToken: installed.botToken },
+        );
+        return true;
+      }
 
       await this.deps.slack.sendMessage({
         channelId: mapping.slackChannelId,

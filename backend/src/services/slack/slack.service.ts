@@ -1403,12 +1403,14 @@ export class SlackService extends EventEmitter {
    * @param messageTs - Message timestamp
    * @param text - New text
    * @param blocks - Optional new blocks
+   * @param botToken - Optional per-agent bot token (edit a message that bot posted)
    */
   async updateMessage(
     channelId: string,
     messageTs: string,
     text: string,
-    blocks?: SlackBlock[]
+    blocks?: SlackBlock[],
+    botToken?: string
   ): Promise<void> {
     if (!this.client) {
       throw new Error('Slack client not initialized');
@@ -1419,6 +1421,7 @@ export class SlackService extends EventEmitter {
       ts: messageTs,
       text,
       blocks,
+      ...(botToken ? { token: botToken } : {}),
     });
   }
 

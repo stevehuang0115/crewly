@@ -311,6 +311,7 @@ let dispatcher: { dispatchMessage: jest.Mock } | null;
 let identities: FakeIdentities | null;
 let service: SlackTeamChannelService;
 let ownerUserId: string | null = 'UOWNER';
+let typing: { begin: jest.Mock; resolve: jest.Mock } | null = null;
 
 function makeService() {
   return new SlackTeamChannelService({
@@ -319,6 +320,7 @@ function makeService() {
     storage,
     getDispatcher: () => dispatcher,
     identities,
+    typing,
     getOwnerUserId: () => ownerUserId,
     storePath: path.join(tmpDir, 'slack-team-channels.json'),
     now: () => new Date('2026-09-12T00:00:00.000Z'),
@@ -838,6 +840,31 @@ describe('agent identities', () => {
     });
     expect(slack.sent[1]).toEqual(expect.objectContaining({ username: 'Leo', iconEmoji: ':mag:' }));
     expect(slack.sent[1].botToken).toBeUndefined();
+  });
+
+  it('shows "is typing…" in the thread for an @\'d agent with its own bot, then edits it into the reply', async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited') };
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    const result = await service.routeInbound(inbound({ text: '<@USAM> 看一下', ts: '100.1' }));
+    expect(result!.mentions).toEqual(['crewly-alpha-sam']);
+    expect(typing.begin).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' },
+      { botToken: 'xoxb-sam', displayName: 'Sam' },
+    );
+
+    const root = chat.messages.find((m) => m.metadata?.slackTs === '100.1');
+    await service.mirrorOutbound({
+      id: 'reply-1', channelId: 'huddle-1', seq: 99, senderType: 'agent', senderId: 'crewly-alpha-sam', content: 'done ✅',
+      contentType: 'markdown', createdAt: 1, attachments: [], mentions: [], metadata: { source: 'reply-tool' }, threadId: root!.id,
+    } as ChatMessageDTO);
+    expect(typing.resolve).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' },
+      'done ✅',
+      { botToken: 'xoxb-sam' },
+    );
+    typing = null;
   });
 
   it('resolves a native <@bot> mention to the agent', async () => {

@@ -115,6 +115,24 @@ describe('SlackAgentDmService', () => {
     await fs.rm(deps.storePath as string, { force: true });
   });
 
+  it('shows "is typing…" on dispatch and edits it into the reply when a typing service is wired', async () => {
+    const { deps, sent, emit } = makeDeps();
+    const calls: string[] = [];
+    deps.typing = {
+      begin: async (key, id) => { calls.push(`begin:${key.agentSession}:${key.slackChannelId}:${id.displayName}`); return null; },
+      resolve: async (key, text) => { calls.push(`resolve:${key.slackChannelId}:${text}`); return 'edited' as const; },
+    };
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+    await svc.routeInbound(dm());
+    emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '回复' } as unknown as ChatMessageDTO);
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual(['begin:crewly-marketing-ella-e6a6b8ea:D0C2YLU8F2A:Ella', 'resolve:D0C2YLU8F2A:回复']);
+    expect(sent).toHaveLength(0); // the typing service owns the post/edit
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+
   it('survives a restart: links are persisted and reloaded', async () => {
     const { deps } = makeDeps();
     const svc = new SlackAgentDmService(deps);

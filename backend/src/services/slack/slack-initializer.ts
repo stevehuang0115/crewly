@@ -602,6 +602,7 @@ export async function startSlackTeamChannels(): Promise<void> {
       { SlackAgentIdentityService, getSlackAgentIdentityService, setSlackAgentIdentityService },
       { SlackAgentPostService, getSlackAgentPostService, setSlackAgentPostService },
       { SlackAgentDmService, getSlackAgentDmService, setSlackAgentDmService },
+      { SlackTypingPlaceholderService, getSlackTypingPlaceholderService, setSlackTypingPlaceholderService },
       { getChatV2Service },
       { getChatV2RealtimeDeps },
       { StorageService },
@@ -611,6 +612,7 @@ export async function startSlackTeamChannels(): Promise<void> {
       import('./slack-agent-identity.service.js'),
       import('./slack-agent-post.service.js'),
       import('./slack-agent-dm.service.js'),
+      import('./slack-typing-placeholder.service.js'),
       import('../chat-v2/chat-v2.singleton.js'),
       import('../chat-v2/chat-v2.realtime-holder.js'),
       import('../core/storage.service.js'),
@@ -633,6 +635,12 @@ export async function startSlackTeamChannels(): Promise<void> {
         }),
       );
     }
+    // "Is typing…" placeholders posted by the agents' own bots.
+    let typing = getSlackTypingPlaceholderService();
+    if (!typing) {
+      typing = new SlackTypingPlaceholderService({ slack: getSlackService() });
+      setSlackTypingPlaceholderService(typing);
+    }
     let service = getSlackTeamChannelService();
     if (!service) {
       service = new SlackTeamChannelService({
@@ -641,6 +649,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         storage: StorageService.getInstance(),
         getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
         identities,
+        typing,
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
       });
       setSlackTeamChannelService(service);
@@ -656,6 +665,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
         identities,
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? true,
+        typing,
       });
       setSlackAgentDmService(agentDm);
     }
