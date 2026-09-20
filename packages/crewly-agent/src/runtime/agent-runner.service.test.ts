@@ -55,8 +55,17 @@ describe('AgentRunnerService', () => {
     it('should initialize conversation state with empty messages', () => {
       const state = runner.getState();
       expect(state.messages).toEqual([]);
-      expect(state.systemPrompt).toBe('You are a test agent.');
+      expect(state.systemPrompt).toContain('You are a test agent.');
       expect(state.totalTokens).toEqual({ input: 0, output: 0 });
+    });
+
+    it('appends the harness rules to every role prompt, so a weak model is told how to work', () => {
+      const prompt = runner.getState().systemPrompt;
+      expect(prompt.indexOf('You are a test agent.')).toBeLessThan(prompt.indexOf('## How to work'));
+      expect(prompt).toMatch(/never write a tool invocation as text/i);
+      expect(prompt).toMatch(/do the work in this turn/i);
+      // Naming the markup is what teaches a model to emit it.
+      expect(prompt).not.toMatch(/<\s*\/?\s*(invoke|parameter|function_calls)/i);
     });
   });
 

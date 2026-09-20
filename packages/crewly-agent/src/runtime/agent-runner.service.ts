@@ -15,6 +15,7 @@ import { createTools } from './tool-registry.js';
 import { connectAndLoadMcpTools } from './mcp-tool-bridge.js';
 import { ApprovalQueueService, type PendingApproval } from './approval-queue.service.js';
 import { OutputFilterService } from './output-filter.service.js';
+import { parseTextToolCalls, coerceArgs, type TextToolCall, type SchemaLike } from './text-tool-calls.js';
 import type { ToolDefinition, McpClientLike } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -482,6 +483,25 @@ export class AgentRunnerService {
    * @param modelManager - Optional model manager instance (for testing)
    * @param apiClient - Optional API client instance (for testing)
    */
+  /**
+   * Rules about *how* to work that every role prompt gets, whatever the model.
+   *
+   * These exist because a weaker model fails in ways a strong one does not:
+   * it writes its tool call as prose (so nothing runs and the user sees
+   * markup), or it narrates a plan and stops without carrying it out. The
+   * runtime recovers from both, but saying so plainly costs a few tokens and
+   * prevents most of it. The wording deliberately never shows the markup
+   * syntax — describing it is what teaches a model to emit it.
+   */
+  private static readonly HARNESS_RULES = [
+    '## How to work',
+    '',
+    '- Call tools through the tool-calling mechanism. Never write a tool invocation as text: your text is shown to the user verbatim and executes nothing.',
+    '- Do the work in this turn. If you say you will do something, do it before you finish — a plan with no action is a failed turn.',
+    '- Act, then check. Run the tool, read the result, and continue from what it actually returned rather than from what you expected.',
+    '- If something blocks you, say what blocked you and what you tried. Never report work as done that you did not verify.',
+  ].join('\n');
+
   constructor(
     config: CrewlyAgentConfig,
     modelManager?: ModelManager,
@@ -495,9 +515,10 @@ export class AgentRunnerService {
     );
     this.securityPolicy = { ...CREWLY_AGENT_DEFAULTS.SECURITY_POLICY };
     // In eval mode, strip delegation-first instructions so agent implements directly
-    this.effectiveSystemPrompt = config.evalMode
+    const rolePrompt = config.evalMode
       ? AgentRunnerService.stripDelegationInstructions(config.systemPrompt)
       : config.systemPrompt;
+    this.effectiveSystemPrompt = `${rolePrompt}\n\n${AgentRunnerService.HARNESS_RULES}`;
     // Conversation states are lazy-created on first access via the
     // `state` getter, so we don't need to seed `__default__` here.
     // The first message processed will create whichever conversation
@@ -1188,7 +1209,7 @@ export class AgentRunnerService {
     tools: Record<string, unknown>,
     abortSignal: AbortSignal,
   ): Promise<AgentRunResult> {
-    let result = await this.attemptWithErrorRetries(tools, abortSignal);
+    let result = await this.attemptWithSalvage(tools, abortSignal);
     let outcome = classifyFinish(result.finishReason, result.steps, this.config.maxSteps);
     let recoveryAttempts = 0;
 
@@ -1201,7 +1222,7 @@ export class AgentRunnerService {
       recoveryAttempts++;
       this.streamingCallbacks.onTextChunk?.(`[recover] ${outcome.reason} — continuing (${recoveryAttempts}/${outcome.budget})\n`);
       this.state.messages.push({ role: 'user', content: outcome.nudge });
-      const next = await this.attemptWithErrorRetries(tools, abortSignal);
+      const next = await this.attemptWithSalvage(tools, abortSignal);
       result = mergeRuns(result, next);
       outcome = classifyFinish(next.finishReason, next.steps, this.config.maxSteps);
     }
@@ -1217,6 +1238,157 @@ export class AgentRunnerService {
         recoveryAttempts,
       },
     };
+  }
+
+  /**
+   * Run one turn, then rescue any tool call the model *wrote* instead of called.
+   *
+   * A weak model sometimes emits its call envelope into the text channel:
+   * the provider returns prose, the SDK sees no tool call, and the step ends
+   * having done nothing — the failure mode behind both the markup users saw
+   * in Slack and the turns that promised work and produced none. Rather than
+   * strip the markup and lose the intent, the envelope is parsed, the tools
+   * are executed for real, and the results are handed back so the turn can
+   * carry on.
+   *
+   * Salvaged calls go through the tool's own `execute`, so approval gates and
+   * command blocklists apply exactly as they do to a native call — this
+   * recovers lost work, it does not widen what the agent may do.
+   *
+   * @param tools - The tool registry for this run
+   * @param abortSignal - Cancels the turn and any further rounds
+   * @returns The turn's result, with salvaged calls folded into `toolCalls`
+   */
+  private async attemptWithSalvage(
+    tools: Record<string, unknown>,
+    abortSignal: AbortSignal,
+  ): Promise<AgentRunResult> {
+    let attempt = await this.attemptWithErrorRetries(tools, abortSignal);
+    const salvaged: ToolCallRecord[] = [];
+
+    for (let round = 0; round < CREWLY_AGENT_DEFAULTS.MAX_TEXT_TOOL_SALVAGES; round++) {
+      if (abortSignal.aborted) break;
+      const parsed = parseTextToolCalls(attempt.text ?? '');
+      if (parsed.calls.length === 0) break;
+
+      console.warn('[AgentRunner] Model wrote tool calls as text — executing them:', {
+        round: round + 1,
+        tools: parsed.calls.map(c => c.toolName),
+      });
+      this.streamingCallbacks.onTextChunk?.(
+        `[salvage] running ${parsed.calls.length} tool call(s) the model wrote as text\n`,
+      );
+
+      const { records, report } = await this.runSalvagedCalls(parsed.calls, tools);
+      salvaged.push(...records);
+
+      // Rewrite the turn's own message so the transcript does not keep
+      // teaching the model that writing markup is how a tool gets called.
+      this.replaceLastAssistantMessage(parsed.text || '(I wrote a tool call as text instead of calling the tool.)');
+      this.state.messages.push({ role: 'user', content: report });
+
+      const next = await this.attemptWithErrorRetries(tools, abortSignal);
+      attempt = mergeRuns({ ...attempt, text: parsed.text }, next);
+    }
+
+    return salvaged.length > 0
+      ? { ...attempt, toolCalls: [...attempt.toolCalls, ...salvaged] }
+      : attempt;
+  }
+
+  /**
+   * Execute the tool calls recovered from text and describe the results.
+   *
+   * Unknown tools and arguments the schema rejects are reported back rather
+   * than guessed at: the model gets a specific complaint it can act on, which
+   * is far more useful than silence.
+   *
+   * @param calls - Calls parsed out of the model's text
+   * @param tools - The tool registry for this run
+   * @returns Records for the run ledger, and the message to feed back
+   */
+  private async runSalvagedCalls(
+    calls: TextToolCall[],
+    tools: Record<string, unknown>,
+  ): Promise<{ records: ToolCallRecord[]; report: string }> {
+    const records: ToolCallRecord[] = [];
+    const sections: string[] = [];
+    const registry = tools as Record<string, ToolDefinition | undefined>;
+
+    for (const call of calls.slice(0, CREWLY_AGENT_DEFAULTS.MAX_SALVAGED_CALLS_PER_ROUND)) {
+      const def = registry[call.toolName];
+      if (!def || typeof def.execute !== 'function') {
+        sections.push(`### ${call.toolName}\nThere is no tool with that name. Available tools: ${Object.keys(registry).join(', ')}`);
+        continue;
+      }
+
+      const { args, error } = coerceArgs(call.args, def.inputSchema as unknown as SchemaLike | undefined);
+      if (error) {
+        sections.push(`### ${call.toolName}\nThe arguments were rejected: ${error}`);
+        continue;
+      }
+
+      const startedAt = Date.now();
+      this.streamingCallbacks.onToolCallStart?.(call.toolName, args);
+      let output: unknown;
+      try {
+        output = await def.execute(args);
+      } catch (err) {
+        output = { error: err instanceof Error ? err.message : String(err) };
+      }
+      this.streamingCallbacks.onToolCallFinish?.(call.toolName, args, output, Date.now() - startedAt);
+
+      records.push({ toolName: call.toolName, args, result: output });
+      sections.push(`### ${call.toolName}\n${this.summarizeSalvagedResult(output)}`);
+    }
+
+    const skipped = calls.length - Math.min(calls.length, CREWLY_AGENT_DEFAULTS.MAX_SALVAGED_CALLS_PER_ROUND);
+    const report = [
+      'You wrote your tool calls as text, so the model API never received them. I executed them for you; here is what they returned.',
+      ...sections,
+      skipped > 0 ? `(${skipped} further call(s) were not run — make them yourself.)` : '',
+      'Use the tool-calling mechanism from now on: text in your reply is shown to the user verbatim and executes nothing. Continue the task with these results.',
+    ].filter(Boolean).join('\n\n');
+
+    return { records, report };
+  }
+
+  /**
+   * Render a salvaged tool result small enough to feed back.
+   *
+   * @param output - Whatever the tool returned
+   * @returns A string, truncated with a note when it was long
+   */
+  private summarizeSalvagedResult(output: unknown): string {
+    let rendered: string;
+    try {
+      rendered = typeof output === 'string' ? output : JSON.stringify(output, null, 2) ?? String(output);
+    } catch {
+      rendered = String(output);
+    }
+    const limit = CREWLY_AGENT_DEFAULTS.SALVAGED_RESULT_MAX_CHARS;
+    return rendered.length > limit
+      ? `${rendered.slice(0, limit)}\n… (truncated, ${rendered.length - limit} more characters)`
+      : rendered;
+  }
+
+  /**
+   * Rewrite the assistant message this turn just added to the transcript.
+   *
+   * Stops at the user message that opened the turn, so an earlier, healthy
+   * reply is never touched.
+   *
+   * @param content - Replacement content
+   */
+  private replaceLastAssistantMessage(content: string): void {
+    for (let i = this.state.messages.length - 1; i >= 0; i--) {
+      const message = this.state.messages[i];
+      if (message.role === 'assistant') {
+        this.state.messages[i] = { ...message, content };
+        return;
+      }
+      if (message.role === 'user') return;
+    }
   }
 
   /**

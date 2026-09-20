@@ -556,6 +556,12 @@ export const CREWLY_AGENT_DEFAULTS = {
   MAX_CONTINUATIONS: 3,
   /** Re-runs allowed after the provider ended a turn abnormally. */
   MAX_ABNORMAL_RETRIES: 1,
+  /** Rounds allowed for executing tool calls a model wrote as text instead of calling. */
+  MAX_TEXT_TOOL_SALVAGES: 3,
+  /** Tool calls executed per salvage round, so one confused turn cannot fan out. */
+  MAX_SALVAGED_CALLS_PER_ROUND: 5,
+  /** Characters of a salvaged tool result fed back to the model. */
+  SALVAGED_RESULT_MAX_CHARS: 4000,
   /** Maximum tool calls allowed per single response to prevent polling dead-loops */
   MAX_TOOL_CALLS_PER_RESPONSE: 15,
   /** Consecutive identical tool calls before aborting (loop detection) */
