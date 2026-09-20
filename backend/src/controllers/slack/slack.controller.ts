@@ -8,6 +8,7 @@
  */
 
 import { Router, Request, Response, NextFunction } from 'express';
+import { describeSlackError, isSlackPlatformError } from './slack-error.utils.js';
 import { promises as fs } from 'fs';
 import path from 'path';
 import { getSlackService } from '../../services/slack/slack.service.js';
@@ -56,20 +57,9 @@ const UPLOAD_MARKER_CONTENT_MAX = 500;
  * @returns True if a Slack platform error response was sent
  */
 function handleSlackPlatformError(error: unknown, res: Response): boolean {
-  if (
-    error instanceof Error &&
-    'code' in error &&
-    (error as any).code === 'slack_webapi_platform_error'
-  ) {
-    const slackError = (error as any).data?.error || 'unknown_slack_error';
-    res.status(422).json({
-      success: false,
-      error: `Slack API error: ${slackError}`,
-      slackError,
-    });
-    return true;
-  }
-  return false;
+  if (!isSlackPlatformError(error)) return false;
+  res.status(422).json(describeSlackError(error));
+  return true;
 }
 
 /**

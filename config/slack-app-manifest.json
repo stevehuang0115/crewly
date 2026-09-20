@@ -12,22 +12,29 @@
   "oauth_config": {
     "scopes": {
       "bot": [
-        "chat:write",
-        "files:read",
-        "files:write",
         "app_mentions:read",
         "channels:history",
-        "groups:history",
-        "im:history",
-        "mpim:history",
-        "users:read",
-        "reactions:write",
-        "channels:read",
-        "channels:manage",
         "channels:join",
+        "channels:manage",
+        "channels:read",
+        "chat:write",
         "chat:write.customize",
         "chat:write.public",
-        "im:write"
+        "files:read",
+        "files:write",
+        "groups:history",
+        "groups:read",
+        "groups:write",
+        "im:history",
+        "im:read",
+        "im:write",
+        "mpim:history",
+        "mpim:read",
+        "mpim:write",
+        "reactions:read",
+        "reactions:write",
+        "users:read",
+        "users:read.email"
       ]
     }
   },
