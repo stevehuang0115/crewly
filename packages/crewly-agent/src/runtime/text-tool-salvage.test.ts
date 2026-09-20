@@ -108,8 +108,16 @@ describe('salvaging tool calls the model wrote as text', () => {
     expect(messages().some((m) => m.role === 'assistant' && m.content === 'Checking.')).toBe(true);
   });
 
-  it('reports an unknown tool back to the model instead of failing silently', async () => {
+  it("runs the tool under the name another harness uses — the live failure was 'Bash'", async () => {
     attempts = [runResult({ text: dsml('Bash', 'command', 'ls') }), runResult({ text: 'ok' })];
+    await runLoop();
+    expect(bashExec).toHaveBeenCalledWith({ command: 'ls' });
+    const fedBack = messages().filter((m) => m.role === 'user').pop();
+    expect(fedBack?.content).toContain('bash_exec (you wrote "Bash")');
+  });
+
+  it('reports a name it cannot resolve instead of guessing at a tool', async () => {
+    attempts = [runResult({ text: dsml('deploy_to_prod', 'target', 'live') }), runResult({ text: 'ok' })];
     await runLoop();
     expect(bashExec).not.toHaveBeenCalled();
     const fedBack = messages().filter((m) => m.role === 'user').pop();

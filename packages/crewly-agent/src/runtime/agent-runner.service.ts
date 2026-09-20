@@ -15,7 +15,7 @@ import { createTools } from './tool-registry.js';
 import { connectAndLoadMcpTools } from './mcp-tool-bridge.js';
 import { ApprovalQueueService, type PendingApproval } from './approval-queue.service.js';
 import { OutputFilterService } from './output-filter.service.js';
-import { parseTextToolCalls, coerceArgs, type TextToolCall, type SchemaLike } from './text-tool-calls.js';
+import { parseTextToolCalls, coerceArgs, resolveToolName, type TextToolCall, type SchemaLike } from './text-tool-calls.js';
 import type { ToolDefinition, McpClientLike } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -1316,30 +1316,34 @@ export class AgentRunnerService {
     const registry = tools as Record<string, ToolDefinition | undefined>;
 
     for (const call of calls.slice(0, CREWLY_AGENT_DEFAULTS.MAX_SALVAGED_CALLS_PER_ROUND)) {
-      const def = registry[call.toolName];
-      if (!def || typeof def.execute !== 'function') {
+      // A model that has seen another harness asks for `Bash`, not `bash_exec`.
+      const resolved = resolveToolName(call.toolName, Object.keys(registry));
+      const def = resolved ? registry[resolved] : undefined;
+      if (!resolved || !def || typeof def.execute !== 'function') {
         sections.push(`### ${call.toolName}\nThere is no tool with that name. Available tools: ${Object.keys(registry).join(', ')}`);
         continue;
       }
 
       const { args, error } = coerceArgs(call.args, def.inputSchema as unknown as SchemaLike | undefined);
       if (error) {
-        sections.push(`### ${call.toolName}\nThe arguments were rejected: ${error}`);
+        sections.push(`### ${resolved}\nThe arguments were rejected: ${error}`);
         continue;
       }
 
       const startedAt = Date.now();
-      this.streamingCallbacks.onToolCallStart?.(call.toolName, args);
+      this.streamingCallbacks.onToolCallStart?.(resolved, args);
       let output: unknown;
       try {
         output = await def.execute(args);
       } catch (err) {
         output = { error: err instanceof Error ? err.message : String(err) };
       }
-      this.streamingCallbacks.onToolCallFinish?.(call.toolName, args, output, Date.now() - startedAt);
+      this.streamingCallbacks.onToolCallFinish?.(resolved, args, output, Date.now() - startedAt);
 
-      records.push({ toolName: call.toolName, args, result: output });
-      sections.push(`### ${call.toolName}\n${this.summarizeSalvagedResult(output)}`);
+      records.push({ toolName: resolved, args, result: output });
+      // Name it as the model wrote it when that differed, so it learns the real name.
+      const heading = resolved === call.toolName ? resolved : `${resolved} (you wrote "${call.toolName}")`;
+      sections.push(`### ${heading}\n${this.summarizeSalvagedResult(output)}`);
     }
 
     const skipped = calls.length - Math.min(calls.length, CREWLY_AGENT_DEFAULTS.MAX_SALVAGED_CALLS_PER_ROUND);

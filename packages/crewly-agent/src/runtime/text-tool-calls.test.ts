@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { parseTextToolCalls, hasTextToolCalls, coerceArgs, type SchemaLike } from './text-tool-calls.js';
+import { parseTextToolCalls, hasTextToolCalls, coerceArgs, resolveToolName, type SchemaLike } from './text-tool-calls.js';
 
 /** The exact bytes deepseek-chat emitted, taken from ~/.crewly/chat.db. */
 const DSML = [
@@ -111,5 +111,34 @@ describe('coerceArgs', () => {
 
   it('keeps a value that only looks like JSON', () => {
     expect(coerceArgs({ command: '{ not json' }).args).toEqual({ command: '{ not json' });
+  });
+});
+
+describe('resolveToolName', () => {
+  const available = ['bash_exec', 'read_file', 'write_file', 'edit_file', 'glob', 'grep', 'delegate_task', 'git_status'];
+
+  it('takes an exact name unchanged', () => {
+    expect(resolveToolName('bash_exec', available)).toBe('bash_exec');
+  });
+
+  it('matches across casing and separators, so GitStatus finds git_status', () => {
+    for (const written of ['GitStatus', 'git-status', 'GIT_STATUS', 'gitStatus']) {
+      expect(resolveToolName(written, available)).toBe('git_status');
+    }
+  });
+
+  it("resolves the names another harness uses — the live failure was 'Bash'", () => {
+    expect(resolveToolName('Bash', available)).toBe('bash_exec');
+    expect(resolveToolName('Read', available)).toBe('read_file');
+    expect(resolveToolName('Write', available)).toBe('write_file');
+    expect(resolveToolName('Edit', available)).toBe('edit_file');
+    expect(resolveToolName('Task', available)).toBe('delegate_task');
+    expect(resolveToolName('Search', available)).toBe('grep');
+  });
+
+  it('does not invent a tool the run does not have', () => {
+    expect(resolveToolName('Bash', ['read_file'])).toBeUndefined();
+    expect(resolveToolName('deploy_to_prod', available)).toBeUndefined();
+    expect(resolveToolName('', available)).toBeUndefined();
   });
 });

@@ -203,6 +203,79 @@ export function hasTextToolCalls(raw: string): boolean {
 }
 
 /**
+ * Names other harnesses use for tools Crewly spells differently.
+ *
+ * A model that has seen Claude Code reaches for `Bash` and `Read`; ours are
+ * `bash_exec` and `read_file`. Observed live on the first turn after the
+ * salvage shipped: deepseek-chat wrote `Bash` twice, was told the name did
+ * not exist, and only then used real names (2026-09-19). Resolving the alias
+ * turns that wasted round into a working one. This maps onto tools the agent
+ * already has — it never grants one it does not.
+ */
+const TOOL_ALIASES: Record<string, string> = {
+  bash: 'bash_exec',
+  shell: 'bash_exec',
+  runcommand: 'bash_exec',
+  terminal: 'bash_exec',
+  read: 'read_file',
+  view: 'read_file',
+  cat: 'read_file',
+  write: 'write_file',
+  create: 'write_file',
+  edit: 'edit_file',
+  strreplace: 'edit_file',
+  multiedit: 'edit_file',
+  str_replace_editor: 'edit_file',
+  search: 'grep',
+  ripgrep: 'grep',
+  findfiles: 'glob',
+  find: 'glob',
+  task: 'delegate_task',
+  agent: 'delegate_task',
+  delegate: 'delegate_task',
+  websearch: 'web_search',
+  memory: 'recall_memory',
+};
+
+/**
+ * Reduce a tool name to a comparable form: letters and digits, lower case.
+ *
+ * @param name - A tool name in any casing or separator style
+ * @returns The normalized form, so `GitStatus`, `git_status` and `git-status` all match
+ */
+function normalizeName(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * Match a tool name the model wrote against the tools it actually has.
+ *
+ * Tried in order: the exact name, the same name in any casing or separator
+ * style, then a small table of names other harnesses use. Anything else is
+ * unresolved — the caller reports that back rather than guessing, since
+ * running the wrong tool is worse than saying the name was wrong.
+ *
+ * @param written - The name as the model wrote it
+ * @param available - The tool names in this run's registry
+ * @returns The registry name to call, or undefined when nothing matches
+ *
+ * @example
+ * resolveToolName('Bash', ['bash_exec', 'read_file'])  // → 'bash_exec'
+ */
+export function resolveToolName(written: string, available: string[]): string | undefined {
+  if (available.includes(written)) return written;
+
+  const target = normalizeName(written);
+  if (!target) return undefined;
+
+  const byShape = available.find((name) => normalizeName(name) === target);
+  if (byShape) return byShape;
+
+  const aliased = TOOL_ALIASES[target];
+  return aliased && available.includes(aliased) ? aliased : undefined;
+}
+
+/**
  * Turn the raw string values of a recovered call into arguments the tool accepts.
  *
  * Everything written in text arrives as a string, but a schema may want a
