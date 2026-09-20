@@ -119,6 +119,16 @@ class FakeSlack implements TeamChannelSlackApi {
   async inviteToChannel(channelId: string, userIds: string[]) {
     this.invites.push({ channelId, userIds });
   }
+  renamed: Array<{ channelId: string; name: string }> = [];
+  /** Set to make the next rename fail the way Slack does (name_taken, no scope). */
+  renameFails = false;
+  async renameChannel(channelId: string, name: string): Promise<string | null> {
+    this.renamed.push({ channelId, name });
+    if (this.renameFails) return null;
+    const ch = this.channels.get(channelId);
+    if (ch) ch.name = name;
+    return name;
+  }
 }
 
 /** Scripted stand-in for SlackAgentIdentityService. */
@@ -581,6 +591,76 @@ describe('team lifecycle sync', () => {
       created: false,
     });
     expect([...chat.members.get('huddle-1')!]).toContain('crewly-alpha-mia');
+  });
+
+  it('renames the Slack channel when the team is renamed', async () => {
+    // Renaming a team used to leave #alpha-team on its old name forever, and
+    // the owner had to rename it by hand (2026-09-20, #strategy).
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    expect(slack.created).toEqual(['alpha-team']);
+
+    await storage.emit({ kind: 'team-saved', team: team({ name: 'Crewly Strategy Team' }), created: false });
+
+    expect(slack.renamed).toEqual([{ channelId: 'C1', name: 'crewly-strategy-team' }]);
+    expect((await service.listMappings())[0]).toMatchObject({
+      slackChannelName: 'crewly-strategy-team',
+      derivedName: 'crewly-strategy-team',
+    });
+  });
+
+  it('does not rename on an update that left the name alone', async () => {
+    // team-saved also fires on every status write; those must cost nothing.
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    await storage.emit({ kind: 'team-saved', team: team(), created: false });
+    expect(slack.renamed).toEqual([]);
+  });
+
+  it('leaves a channel the owner renamed themselves, and records their name', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    // The owner renames it in Slack; Crewly's derived name no longer matches.
+    slack.channels.get('C1')!.name = 'war-room';
+
+    await storage.emit({ kind: 'team-saved', team: team({ name: 'Crewly Strategy Team' }), created: false });
+
+    expect(slack.renamed).toEqual([]);
+    expect((await service.listMappings())[0]).toMatchObject({
+      slackChannelName: 'war-room',
+      derivedName: 'war-room',
+    });
+  });
+
+  it('never renames a channel the owner linked rather than Crewly creating it', async () => {
+    await service.start();
+    slack.channels.set('C99', { id: 'C99', name: 'existing-room', isArchived: false, isPrivate: false });
+    await service.ensureTeamChannel(team(), { slackChannelId: 'C99' });
+
+    await storage.emit({ kind: 'team-saved', team: team({ name: 'Renamed Team' }), created: false });
+
+    expect(slack.renamed).toEqual([]);
+    expect((await service.listMappings())[0]!.slackChannelName).toBe('existing-room');
+  });
+
+  it('keeps the team update working when Slack refuses the rename', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    slack.renameFails = true;
+
+    await storage.emit({ kind: 'team-saved', team: team({ name: 'Taken Name' }), created: false });
+
+    expect(slack.renamed).toHaveLength(1);
+    // The old name stands rather than the store claiming a rename that never happened.
+    expect((await service.listMappings())[0]!.slackChannelName).toBe('alpha-team');
+  });
+
+  it('renames again after a team is renamed twice', async () => {
+    await service.start();
+    await storage.emit({ kind: 'team-saved', team: team(), created: true });
+    await storage.emit({ kind: 'team-saved', team: team({ name: 'Second Name' }), created: false });
+    await storage.emit({ kind: 'team-saved', team: team({ name: 'Third Name' }), created: false });
+    expect(slack.renamed.map((r) => r.name)).toEqual(['second-name', 'third-name']);
   });
 
   it('archives both sides when the team is archived or deleted', async () => {

@@ -90,6 +90,8 @@ interface SlackWebClient {
     invite: (args: { channel: string; users: string }) => Promise<unknown>;
     archive: (args: { channel: string }) => Promise<unknown>;
     setPurpose: (args: { channel: string; purpose: string }) => Promise<unknown>;
+    /** Rename a channel. Optional so older test doubles keep compiling. */
+    rename?: (args: { channel: string; name: string }) => Promise<{ channel?: RawSlackChannel }>;
     /** Open (or reuse) a DM channel. `token` posts as another bot user. */
     open: (args: { users: string; token?: string }) => Promise<{ channel?: { id?: string } }>;
     /** Member ids of a channel (paginated). Optional so older test doubles compile. */
@@ -1621,6 +1623,38 @@ export class SlackService extends EventEmitter {
         }
       }
       throw error;
+    }
+  }
+
+  /**
+   * Rename a channel.
+   *
+   * Used to keep an auto-created team channel in step with its Crewly team:
+   * renaming the team used to leave the channel on its old name forever
+   * (2026-09-20).
+   *
+   * Requires the `channels:manage` scope.
+   *
+   * @param channelId - The channel to rename
+   * @param name - New name without `#`, already sanitised by the caller
+   * @returns The channel's name after the call, or null when Slack refused
+   *   for a reason worth living with — the name is already taken, or the bot
+   *   is not allowed to rename this channel. A failed rename must never fail
+   *   the team update that triggered it.
+   */
+  async renameChannel(channelId: string, name: string): Promise<string | null> {
+    const conversations = this.requireConversationsApi();
+    if (!conversations.rename) {
+      this.logger.warn('This Slack client cannot rename channels', { channelId, name });
+      return null;
+    }
+    try {
+      const res = await conversations.rename({ channel: channelId, name });
+      return SlackService.toChannelInfo(res.channel)?.name ?? name;
+    } catch (error) {
+      const code = SlackService.slackErrorCode(error);
+      this.logger.warn('Could not rename the Slack channel', { channelId, name, code });
+      return null;
     }
   }
 

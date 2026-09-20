@@ -61,6 +61,7 @@ import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.s
 export interface TeamChannelSlackApi {
   isConnected(): boolean;
   createChannel(name: string): Promise<SlackChannelInfo>;
+  renameChannel(channelId: string, name: string): Promise<string | null>;
   getChannelInfo(channelId: string): Promise<SlackChannelInfo | null>;
   joinChannel(channelId: string): Promise<void>;
   archiveChannel(channelId: string): Promise<void>;
@@ -499,6 +500,7 @@ export class SlackTeamChannelService {
 
       let channel: SlackChannelInfo;
       let autoCreated: boolean;
+      let derived: string | undefined;
       if (options.slackChannelId) {
         const info = await this.deps.slack.getChannelInfo(options.slackChannelId);
         if (!info) throw new Error(`Slack channel not found: ${options.slackChannelId}`);
@@ -514,7 +516,8 @@ export class SlackTeamChannelService {
         autoCreated = false;
       } else {
         const store = await this.load();
-        channel = await this.deps.slack.createChannel(slackChannelNameFor(team.name, store.channelPrefix));
+        derived = slackChannelNameFor(team.name, store.channelPrefix);
+        channel = await this.deps.slack.createChannel(derived);
         autoCreated = true;
         const owner = this.deps.getOwnerUserId?.() ?? null;
         if (owner) {
@@ -554,6 +557,7 @@ export class SlackTeamChannelService {
         chatChannelId: huddle.id,
         createdAt: (this.deps.now?.() ?? new Date()).toISOString(),
         autoCreated,
+        ...(derived ? { derivedName: derived } : {}),
       };
       const store = await this.load();
       store.mappings.push(mapping);
@@ -608,6 +612,60 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Keep an auto-created channel's name in step with its team's.
+   *
+   * Renaming a team used to leave its Slack channel on the old name for good,
+   * so #strategy stayed #strategy after the team became "crewly-strategy-team"
+   * and the owner had to rename it by hand (2026-09-20).
+   *
+   * Three things it will not do. It never touches a channel Crewly did not
+   * create — that one is the owner's, linked deliberately. It never touches a
+   * channel whose live name has drifted from what Crewly last derived, because
+   * that means the owner renamed it themselves and their choice outranks the
+   * team name. And it never fails the team update: a rename Slack refuses
+   * (the name is taken, the bot lacks the scope) is logged and dropped.
+   *
+   * Costs nothing on the common path: the derived name is compared against the
+   * stored one first, and team-saved events fire on every status write, so
+   * asking Slack each time would hammer the API for nothing.
+   *
+   * @param team - The team, after the change
+   * @param mapping - Its mapping
+   * @returns The new channel name, or null when nothing was renamed
+   */
+  async syncChannelName(team: Team, mapping: SlackTeamChannelMapping): Promise<string | null> {
+    if (!mapping.autoCreated || isAdhocMapping(mapping)) return null;
+    const store = await this.load();
+    const desired = slackChannelNameFor(team.name, store.channelPrefix);
+    const lastDerived = mapping.derivedName ?? mapping.slackChannelName;
+    if (desired === lastDerived) return null;
+    if (!this.deps.slack.isConnected()) return null;
+
+    // Only now, on the rare path, ask Slack — and only to check the owner has
+    // not renamed it out from under us.
+    const live = await this.deps.slack.getChannelInfo(mapping.slackChannelId).catch(() => null);
+    if (live && live.name !== lastDerived) {
+      this.logger.info('Leaving a channel the owner renamed; recording their name instead', {
+        teamId: team.id, ourName: lastDerived, theirName: live.name,
+      });
+      mapping.slackChannelName = live.name;
+      mapping.derivedName = live.name;
+      await this.save();
+      return null;
+    }
+
+    const applied = await this.deps.slack.renameChannel(mapping.slackChannelId, desired);
+    if (!applied) return null;
+    mapping.slackChannelName = applied;
+    mapping.derivedName = desired;
+    await this.save();
+    this.logger.info('Team channel renamed to follow its team', {
+      teamId: team.id, from: lastDerived, to: applied,
+    });
+    return applied;
+  }
+
+  /**
    * Reconcile the huddle roster with the team's current members.
    *
    * @param team - The team
@@ -656,6 +714,7 @@ export class SlackTeamChannelService {
       }
       if (mapping) {
         await this.syncTeamMembers(team, mapping);
+        await this.syncChannelName(team, mapping);
         return;
       }
       // Auto-create only for teams that were just created. Every status

@@ -379,6 +379,16 @@ export interface SlackTeamChannelMapping {
   createdAt: string;
   /** True when Crewly created the Slack channel (vs. linked an existing one) */
   autoCreated: boolean;
+  /**
+   * The channel name Crewly last derived from the team name.
+   *
+   * Kept so a later rename can tell "the team was renamed" (the derived name
+   * changed) from "the owner renamed the channel in Slack" (the live name no
+   * longer matches what we derived) — only the first should move the channel.
+   * Absent on mappings made before 2026-09-20; `slackChannelName` stands in,
+   * which is what those were derived from anyway.
+   */
+  derivedName?: string;
   /** Ad-hoc channels only: the local agents @'d there so far (the huddle roster). */
   members?: string[];
 }
