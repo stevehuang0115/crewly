@@ -41,7 +41,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
-import { teamChannelMembers } from './slack-team-channel.service.js';
+import { agentAppMembers } from './slack-team-channel.service.js';
 
 /** The slice of DeviceIdentityService this service needs. */
 export interface RegistryDeviceIdentity {
@@ -261,7 +261,10 @@ export class SlackInstanceRegistryService {
           teamId: team.id,
           name: team.name,
           ...(channelId ? { channelId } : {}),
-          agents: teamChannelMembers(team).map((m) => m.sessionName),
+          // The orchestrator belongs here too: Cloud routes an agent event to
+          // the instance whose roster lists that session, so leaving the orc
+          // out would strand every DM to its own bot.
+          agents: agentAppMembers(team, deviceName).map((m) => m.sessionName),
         };
       }),
       crewlyVersion: version,
@@ -317,12 +320,16 @@ export class SlackInstanceRegistryService {
     if (!this.isAvailable()) return null;
     try {
       const teams = await this.deps.storage.getTeams();
+      // The orchestrator is named after this machine, so two machines in one
+      // Slack workspace end up with two bots instead of sharing the master
+      // one — see agentAppMembers.
+      const { deviceName } = await this.resolveIdentity();
       // Every member of every team gets a bot (owner's call, 2026-09-18: an
       // agent must be @-able like a colleague even before its team has a
       // channel). Renames and removals follow through on each sync.
       const payload: SlackAgentsSyncPayload = {
         teams: teams.map((team) => {
-          const members = teamChannelMembers(team);
+          const members = agentAppMembers(team, deviceName);
           this.lastRoster.set(team.id, members.map((m) => m.sessionName));
           return {
             teamId: team.id,

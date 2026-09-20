@@ -17,6 +17,7 @@ import {
   slackChannelNameFor,
   slackIdentityFor,
   teamChannelMembers,
+  agentAppMembers,
   getSlackTeamChannelService,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
@@ -386,6 +387,60 @@ describe('teamChannelMembers', () => {
     const got = teamChannelMembers(t);
     expect(got.map((m) => m.name)).toEqual(['Sam', 'Sage']);
     expect(got[1].sessionName).toBe('think-tank-sage-c1d2e3f4');
+  });
+});
+
+describe('agentAppMembers', () => {
+  // Two Crewly accounts in one Slack workspace install the same master app,
+  // so they share one bot user and one DM with the owner — and only one of
+  // them can answer it. The other machine's orchestrator went silent with
+  // nothing in any log (owner, 2026-09-20). Its own app gives it its own
+  // bot and its own DM.
+  it('includes the orchestrator, named after the machine', () => {
+    const t = team({
+      name: 'Orchestrator Team',
+      members: [member('Sam', 'developer'), member('Agentmux Orchestrator', 'orchestrator')],
+    });
+    const got = agentAppMembers(t, 'MacBook Pro');
+    expect(got.map((m) => m.name)).toEqual(['Sam', 'Orc - MacBook Pro']);
+  });
+
+  // Cloud strips a trailing "(...)" before comparing names, so a
+  // parenthesised machine suffix would reduce both machines' orchestrators
+  // to "Orc", collide, and be re-suffixed with their team name — which is
+  // "Orchestrator Team" on both, leaving them identical again.
+  it('does not parenthesise the machine, which Cloud would strip', () => {
+    const t = team({ name: 'Orchestrator Team', members: [member('Orc', 'orchestrator')] });
+    expect(agentAppMembers(t, 'MacBook Air')[0].name).not.toMatch(/\($/);
+    expect(agentAppMembers(t, 'MacBook Air')[0].name).toBe('Orc - MacBook Air');
+  });
+
+  it('keeps the orchestrator session name, which is what Cloud keys its app on', () => {
+    const t = team({
+      name: 'Orchestrator Team',
+      members: [member('Agentmux Orchestrator', 'orchestrator', { sessionName: 'crewly-orc' })],
+    });
+    expect(agentAppMembers(t, 'MacBook Pro')[0].sessionName).toBe('crewly-orc');
+  });
+
+  it('falls back to the channel roster when the machine has no name yet', () => {
+    const t = team({
+      name: 'Orchestrator Team',
+      members: [member('Sam', 'developer'), member('Orc', 'orchestrator')],
+    });
+    expect(agentAppMembers(t, '').map((m) => m.name)).toEqual(['Sam']);
+    expect(agentAppMembers(t, undefined).map((m) => m.name)).toEqual(['Sam']);
+  });
+
+  it('keeps the name inside Slack\'s 35-character app-name limit', () => {
+    const t = team({ name: 'Orchestrator Team', members: [member('Orc', 'orchestrator')] });
+    const got = agentAppMembers(t, 'A Very Long Machine Name That Goes On')[0].name;
+    expect(got.length).toBeLessThanOrEqual(35);
+  });
+
+  it('leaves a team without an orchestrator exactly as the channel roster', () => {
+    const t = team({ name: 'Think Tank', members: [member('Sam', 'developer'), member('Sage', 'qa')] });
+    expect(agentAppMembers(t, 'MacBook Pro')).toEqual(teamChannelMembers(t));
   });
 });
 

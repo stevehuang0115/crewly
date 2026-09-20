@@ -205,6 +205,59 @@ export function isAdhocMapping(mapping: Pick<SlackTeamChannelMapping, 'teamId'>)
  * @param team - The team
  * @returns Members with a (stored or derived) session name, orchestrator excluded
  */
+/**
+ * How long a Slack app name may be.
+ *
+ * Slack's own limit. Cloud shortens a name that does not fit, but it does
+ * that by appending the team — which for the orchestrator would undo the
+ * machine name this function exists to attach.
+ */
+const SLACK_APP_NAME_LIMIT = 35;
+
+/**
+ * The agents that get their own Slack app: the channel members, plus the
+ * orchestrator named after the machine it runs on.
+ *
+ * The orchestrator is left out of {@link teamChannelMembers} because it is
+ * not a huddle participant, and that exclusion also kept it from getting a
+ * Slack identity — it was reachable only through the workspace's master
+ * bot. That works for one machine. Two Crewly accounts sharing a workspace
+ * install the *same* master app, so they share one bot user and one DM with
+ * the owner, and only one of them can answer it: the other orchestrator
+ * goes silent with nothing in any log (owner, 2026-09-20, MacBook Air).
+ *
+ * Giving the orchestrator its own app gives each machine its own bot, its
+ * own DM, and routing by agent session rather than by workspace.
+ *
+ * The name carries the machine, not the team: every machine's orchestrator
+ * team is called "Orchestrator Team", so the team suffix Cloud adds to
+ * duplicates would read the same on both. It is also deliberately not
+ * parenthesised — Cloud strips a trailing `(...)` before comparing names,
+ * so `Orc (MacBook Air)` and `Orc (MacBook Pro)` would both reduce to "Orc",
+ * collide, and be re-suffixed with that identical team name.
+ *
+ * @param team - The team
+ * @param deviceName - This machine's name, from the instance registry
+ * @returns Members with a session name, orchestrator included and renamed
+ */
+export function agentAppMembers(team: Team, deviceName?: string): TeamMember[] {
+  const channel = teamChannelMembers(team);
+  const machine = (deviceName ?? '').trim();
+  if (!machine) return channel;
+  const orcs = (team.members ?? [])
+    .filter((m) => m.role === 'orchestrator' && !!m.id)
+    .map((m) => {
+      const sessionName = m.sessionName || resolveMemberSessionName(team.name, m);
+      const name = `Orc - ${machine}`;
+      return {
+        ...m,
+        sessionName,
+        name: name.length > SLACK_APP_NAME_LIMIT ? name.slice(0, SLACK_APP_NAME_LIMIT).trimEnd() : name,
+      };
+    });
+  return [...channel, ...orcs];
+}
+
 export function teamChannelMembers(team: Team): TeamMember[] {
   return (team.members ?? [])
     .filter((m) => m.role !== 'orchestrator' && !!m.id)

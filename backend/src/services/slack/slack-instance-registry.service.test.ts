@@ -151,7 +151,10 @@ describe('payload', () => {
       relayQueueId: 'queue-abc',
       primary: false,
       teams: [
-        { teamId: 'team-alpha', name: 'Alpha', channelId: 'C-ALPHA', agents: ['alpha-kai-1234', 'alpha-mia-1234'] },
+        // The orchestrator is in the roster on purpose: Cloud routes an agent
+        // event to the instance that lists the session, so without it every
+        // DM to this machine's orc bot would be stranded.
+        { teamId: 'team-alpha', name: 'Alpha', channelId: 'C-ALPHA', agents: ['alpha-kai-1234', 'alpha-mia-1234', 'alpha-orc-1234'] },
         { teamId: 'team-beta', name: 'Beta', agents: ['alpha-zed-1234'] },
       ],
       crewlyVersion: '1.16.0',
@@ -253,6 +256,10 @@ describe('agent sync', () => {
           agents: [
             { agentSession: 'alpha-kai-1234', displayName: 'Kai', avatar: ':computer:' },
             { agentSession: 'alpha-mia-1234', displayName: 'Mia' },
+            // Named after the machine, not the team: every machine calls its
+            // orchestrator team the same thing, so a team suffix would not
+            // tell two machines' orcs apart in the @-picker.
+            { agentSession: 'alpha-orc-1234', displayName: 'Orc - steve-mbp' },
           ],
         },
       ],
@@ -266,7 +273,7 @@ describe('agent sync', () => {
     mappings = {};
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
     await makeService().syncAgents();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).teams[0].agents.map((a: { agentSession: string }) => a.agentSession)).toEqual(['alpha-kai-1234', 'alpha-mia-1234']);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).teams[0].agents.map((a: { agentSession: string }) => a.agentSession)).toEqual(['alpha-kai-1234', 'alpha-mia-1234', 'alpha-orc-1234']);
   });
 
   it('a deleted team loses its agents\' Slack apps (DELETE per session from the last synced roster)', async () => {
@@ -278,6 +285,7 @@ describe('agent sync', () => {
     expect(calls().map((c) => `${c.method} ${c.url.split('/api/cloud/slack')[1]}`)).toEqual([
       'DELETE /agents/alpha-kai-1234',
       'DELETE /agents/alpha-mia-1234',
+      'DELETE /agents/alpha-orc-1234',
     ]);
     fetchMock.mockClear();
     await service.removeTeamAgents('team-alpha'); // already forgotten
@@ -340,8 +348,10 @@ describe('lifecycle', () => {
     fetchMock.mockClear();
     timeouts = [];
     await storageListeners[0]({ kind: 'team-deleted', teamId: 'team-alpha' });
-    // The roster was synced at start → the two agents' apps are deleted, then a heartbeat is scheduled.
-    expect(calls().map((c) => c.method)).toEqual(['DELETE', 'DELETE']);
+    // The roster was synced at start → the team's apps are deleted, then a
+    // heartbeat is scheduled. Three, not two: the orchestrator has its own
+    // app now and goes with the team.
+    expect(calls().map((c) => c.method)).toEqual(['DELETE', 'DELETE', 'DELETE']);
     expect(timeouts).toHaveLength(1);
   });
 });
