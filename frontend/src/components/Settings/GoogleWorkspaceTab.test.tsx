@@ -14,7 +14,6 @@ import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   GoogleWorkspaceTab,
   describeScopes,
-  missingProducts,
   buildConnectRequest,
   type GoogleConnection,
 } from './GoogleWorkspaceTab';
@@ -107,8 +106,78 @@ describe('GoogleWorkspaceTab', () => {
     render(<GoogleWorkspaceTab />);
     await waitFor(() => expect(screen.getByTestId('google-account-a@example.com')).toBeInTheDocument());
     expect(screen.getByTestId('google-account-b@example.com')).toBeInTheDocument();
-    expect(screen.getByText('Gmail · Calendar')).toBeInTheDocument();
     expect(screen.getByText('default')).toBeInTheDocument();
+    // Per account: what it has (Remove) and what it has not (Connect).
+    const a = within(screen.getByTestId('google-account-a@example.com'));
+    expect(a.getByTestId('google-remove-gmail-a@example.com')).toBeInTheDocument();
+    expect(a.getByTestId('google-remove-calendar-a@example.com')).toBeInTheDocument();
+    expect(a.getByTestId('google-add-drive-a@example.com')).toBeInTheDocument();
+  });
+
+  // The regression the owner caught on 2026-09-20: an account holding all
+  // three products showed no per-product control at all, so the granular
+  // connector looked and behaved exactly like the old all-in-one one.
+  it('still offers every product on an account that already has them all', async () => {
+    mockFetch.mockResolvedValueOnce(
+      respond(200, status([connection({ email: 'a@example.com', products: ['gmail', 'calendar', 'drive'] })])),
+    );
+    render(<GoogleWorkspaceTab />);
+    await waitFor(() => expect(screen.getByTestId('google-account-a@example.com')).toBeInTheDocument());
+
+    for (const p of ['gmail', 'calendar', 'drive']) {
+      expect(screen.getByTestId(`google-remove-${p}-a@example.com`)).toBeInTheDocument();
+    }
+  });
+
+  it('removes one product by re-consenting to the rest, and marks it a replacement', async () => {
+    mockFetch
+      .mockResolvedValueOnce(
+        respond(200, status([connection({ email: 'a@example.com', products: ['gmail', 'calendar', 'drive'] })])),
+      )
+      .mockResolvedValueOnce(respond(200, { success: true, data: { url: 'https://accounts.google/x' } }));
+    render(<GoogleWorkspaceTab />);
+    await waitFor(() => expect(screen.getByTestId('google-remove-gmail-a@example.com')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('google-remove-gmail-a@example.com'));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
+    const url = mockFetch.mock.calls[1][0] as string;
+    // The ones that stay, not the one that goes.
+    expect(url).toContain('products=calendar%2Cdrive');
+    expect(url).toContain('replace=1');
+    expect(url).toContain('loginHint=a%40example.com');
+  });
+
+  it('does not start a consent when the removal is declined', async () => {
+    mockConfirm.mockReturnValue(false);
+    mockFetch.mockResolvedValueOnce(
+      respond(200, status([connection({ email: 'a@example.com', products: ['gmail', 'calendar'] })])),
+    );
+    render(<GoogleWorkspaceTab />);
+    await waitFor(() => expect(screen.getByTestId('google-remove-gmail-a@example.com')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('google-remove-gmail-a@example.com'));
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  // Consenting to nothing is not something Google offers, so dropping the
+  // last product has to become a plain disconnect rather than a consent for
+  // an empty scope list.
+  it('turns removing the last product into a disconnect', async () => {
+    mockFetch
+      .mockResolvedValueOnce(respond(200, status([connection({ email: 'a@example.com', products: ['gmail'] })])))
+      .mockResolvedValueOnce(respond(200, { success: true, data: { removed: true } }))
+      .mockResolvedValueOnce(respond(200, status([])));
+    render(<GoogleWorkspaceTab />);
+    await waitFor(() => expect(screen.getByTestId('google-remove-gmail-a@example.com')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('google-remove-gmail-a@example.com'));
+
+    await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(3));
+    const [url, init] = mockFetch.mock.calls[1] as [string, RequestInit];
+    expect(init.method).toBe('DELETE');
+    expect(url).toContain('account=a%40example.com');
   });
 
   it('adds a missing product to the account that lacks it, preselecting that account', async () => {
@@ -126,7 +195,26 @@ describe('GoogleWorkspaceTab', () => {
     expect(url).toContain('loginHint=a%40example.com');
   });
 
-  it('asks Google for the account chooser when adding another account', async () => {
+  // Adding an account used to go straight to consent with no product named,
+  // and Cloud reads "no products" as "every product" — so the second account
+  // got the all-in-one grant this connector exists to avoid (owner,
+  // 2026-09-20). It now picks a service first, like the first account does.
+  it('asks which service a second account starts with instead of requesting all of them', async () => {
+    mockFetch.mockResolvedValueOnce(respond(200, status([connection()])));
+    render(<GoogleWorkspaceTab />);
+    await waitFor(() => expect(screen.getByTestId('google-add-account')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('google-add-account'));
+
+    // Revealing the choice must not have started a consent on its own.
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('google-add-account-products')).toBeInTheDocument();
+    for (const p of ['gmail', 'calendar', 'drive']) {
+      expect(screen.getByTestId(`google-add-account-${p}`)).toBeInTheDocument();
+    }
+  });
+
+  it('requests one product and the account chooser for the second account', async () => {
     mockFetch
       .mockResolvedValueOnce(respond(200, status([connection()])))
       .mockResolvedValueOnce(respond(200, { success: true, data: { url: 'https://accounts.google/x' } }));
@@ -134,11 +222,14 @@ describe('GoogleWorkspaceTab', () => {
     await waitFor(() => expect(screen.getByTestId('google-add-account')).toBeInTheDocument());
 
     fireEvent.click(screen.getByTestId('google-add-account'));
+    fireEvent.click(screen.getByTestId('google-add-account-calendar'));
 
     await waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2));
-    // Without this Google reuses the signed-in session and re-consents the
-    // account that is already connected.
-    expect(mockFetch.mock.calls[1][0] as string).toContain('chooseAccount=1');
+    const url = mockFetch.mock.calls[1][0] as string;
+    expect(url).toContain('products=calendar');
+    // Without the chooser Google reuses the signed-in session and re-consents
+    // the account that is already connected.
+    expect(url).toContain('chooseAccount=1');
   });
 
   it('disconnects one named account rather than everything', async () => {
@@ -194,13 +285,6 @@ describe('describeScopes', () => {
   });
 });
 
-describe('missingProducts', () => {
-  it('lists what an account has not got yet', () => {
-    expect(missingProducts(connection({ products: ['gmail'] })).map((p) => p.id)).toEqual(['calendar', 'drive']);
-    expect(missingProducts(connection({ products: ['gmail', 'calendar', 'drive'] }))).toEqual([]);
-  });
-});
-
 describe('buildConnectRequest', () => {
   it('carries the return URL, and nothing else by default', () => {
     const url = new URL(buildConnectRequest('https://x'), 'https://x');
@@ -217,5 +301,23 @@ describe('buildConnectRequest', () => {
     expect(url.searchParams.get('products')).toBe('gmail,drive');
     expect(url.searchParams.get('loginHint')).toBe('a@b.com');
     expect(url.searchParams.get('chooseAccount')).toBe('1');
+  });
+
+  // Removal rides on the same consent call. Without `replace` the Cloud side
+  // unions the new scopes with the stored ones and sends
+  // `include_granted_scopes`, so a "remove Gmail" round-trip would hand Gmail
+  // straight back.
+  it('marks a narrowing consent so the old scopes are not carried over', () => {
+    const url = new URL(
+      buildConnectRequest('https://x', { products: ['calendar', 'drive'], loginHint: 'a@b.com', replace: true }),
+      'https://x',
+    );
+    expect(url.searchParams.get('products')).toBe('calendar,drive');
+    expect(url.searchParams.get('replace')).toBe('1');
+  });
+
+  it('leaves replace off for an ordinary widening consent', () => {
+    const url = new URL(buildConnectRequest('https://x', { products: ['gmail'] }), 'https://x');
+    expect(url.searchParams.has('replace')).toBe(false);
   });
 });

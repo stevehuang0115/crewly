@@ -15,7 +15,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Unlink, ExternalLink, Plus, Star, ShieldAlert } from 'lucide-react';
+import { RefreshCw, Unlink, ExternalLink, Plus, Minus, Check, Star, ShieldAlert } from 'lucide-react';
 import { LoadingSpinner } from '../UI/LoadingSpinner';
 import { Button } from '../UI/Button';
 import { Card } from '../UI/Card';
@@ -96,16 +96,6 @@ export function describeScopes(scopes: string[] | undefined): string[] {
 }
 
 /**
- * The products a connection has not got yet.
- *
- * @param connection - A connected Google account
- * @returns Products still available to add
- */
-export function missingProducts(connection: GoogleConnection): typeof PRODUCT_META {
-  return PRODUCT_META.filter((p) => !connection.products.includes(p.id));
-}
-
-/**
  * Build the connect-url request for one consent.
  *
  * @param origin - `window.location.origin`
@@ -117,10 +107,11 @@ export function missingProducts(connection: GoogleConnection): typeof PRODUCT_ME
  */
 export function buildConnectRequest(
   origin: string,
-  options: { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean } = {},
+  options: { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } = {},
 ): string {
   const params = new URLSearchParams({ returnUrl: `${origin}${RETURN_PATH}` });
   if (options.products?.length) params.set('products', options.products.join(','));
+  if (options.replace) params.set('replace', '1');
   // A hint preselects an account; the chooser is how a *new* one gets added,
   // because Google otherwise reuses the session the browser is signed in to.
   if (options.loginHint) params.set('loginHint', options.loginHint);
@@ -148,6 +139,7 @@ export const GoogleWorkspaceTab: React.FC = () => {
   });
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [addingAccount, setAddingAccount] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
@@ -191,7 +183,9 @@ export const GoogleWorkspaceTab: React.FC = () => {
    *
    * @param options - Products to ask for, and which account to sign in as
    */
-  const startConnect = async (options: { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean } = {}) => {
+  const startConnect = async (
+    options: { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } = {},
+  ) => {
     setBusy(true);
     setError(null);
     try {
@@ -205,6 +199,39 @@ export const GoogleWorkspaceTab: React.FC = () => {
       setError(err instanceof Error ? err.message : 'Could not start Google sign-in');
       setBusy(false);
     }
+  };
+
+  /**
+   * Take one product away from an account.
+   *
+   * Google cannot strip a single scope from a live token, so this re-runs
+   * consent for the products that remain; the Cloud side then throws the old
+   * credential away. Removing the last one is a plain disconnect, because
+   * consenting to nothing is not a thing Google offers.
+   *
+   * @param connection - The account to narrow
+   * @param product - The product to drop
+   */
+  const handleRemoveProduct = async (connection: GoogleConnection, product: GoogleProduct) => {
+    const remaining = connection.products.filter((p) => p !== product);
+    const label = PRODUCT_META.find((p) => p.id === product)?.name ?? product;
+    if (remaining.length === 0) {
+      await handleDisconnect(connection.email);
+      return;
+    }
+    const keep = PRODUCT_META.filter((p) => remaining.includes(p.id))
+      .map((p) => p.name)
+      .join(' and ');
+    if (
+      !window.confirm(
+        `Remove ${label} from ${connection.email}?\n\n` +
+          `Google cannot drop one permission on its own, so you will be sent to ` +
+          `Google to approve ${keep} again. The old permission is revoked once that finishes.`,
+      )
+    ) {
+      return;
+    }
+    await startConnect({ products: remaining, loginHint: connection.email, replace: true });
   };
 
   /**
@@ -294,6 +321,10 @@ export const GoogleWorkspaceTab: React.FC = () => {
           <p className="text-sm text-text-secondary-dark mb-4">
             Each one is a separate approval — connect only what you need, and add the others later.
           </p>
+          <p className="text-sm text-text-secondary-dark mb-4">
+            Google will show a &ldquo;hasn&rsquo;t verified this app&rdquo; warning for any of these until Crewly passes
+            Google&rsquo;s review; choose <em>Advanced</em> to continue. Connecting fewer services does not remove it.
+          </p>
           <div className="space-y-3">
             {PRODUCT_META.map((product) => (
               <div
@@ -306,7 +337,7 @@ export const GoogleWorkspaceTab: React.FC = () => {
                     {product.restricted && (
                       <span
                         className="inline-flex items-center gap-1 text-xs text-text-secondary-dark"
-                        title="Google treats these as restricted scopes: outside users see an 'unverified app' notice until the app passes Google's review."
+                        title="Google's most guarded tier. Connecting this one puts the app in scope for Google's paid annual security assessment; Calendar alone does not."
                       >
                         <ShieldAlert size={12} /> restricted
                       </span>
@@ -344,13 +375,11 @@ export const GoogleWorkspaceTab: React.FC = () => {
                       </span>
                     )}
                   </div>
-                  <div className="text-xs text-text-secondary-dark mt-1">
-                    {connection.products.length > 0
-                      ? PRODUCT_META.filter((p) => connection.products.includes(p.id))
-                          .map((p) => p.name)
-                          .join(' · ')
-                      : 'Signed in, but no service connected yet'}
-                  </div>
+                  {connection.products.length === 0 && (
+                    <div className="text-xs text-text-secondary-dark mt-1">
+                      Signed in, but no service connected yet
+                    </div>
+                  )}
                   {connection.grantedAt && (
                     <div className="text-xs text-text-secondary-dark mt-1">
                       Connected {new Date(connection.grantedAt).toLocaleString()}
@@ -374,23 +403,61 @@ export const GoogleWorkspaceTab: React.FC = () => {
                 </div>
               </div>
 
-              {missingProducts(connection).length > 0 && (
-                <div className="mt-4 pt-3 border-t border-border-dark flex items-center gap-2 flex-wrap">
-                  <span className="text-xs text-text-secondary-dark">Add:</span>
-                  {missingProducts(connection).map((product) => (
-                    <Button
-                      key={product.id}
-                      variant="secondary"
-                      icon={Plus}
-                      disabled={busy}
-                      onClick={() => startConnect({ products: [product.id], loginHint: connection.email })}
-                      data-testid={`google-add-${product.id}-${connection.email}`}
-                    >
-                      {product.name}
-                    </Button>
-                  ))}
-                </div>
-              )}
+              {/* Every product, every time. Showing only the missing ones made
+                  an account that happened to have all three look exactly like
+                  the old all-in-one connector, with no way to give any of them
+                  back (owner, 2026-09-20). */}
+              <div className="mt-4 pt-3 border-t border-border-dark space-y-2">
+                {PRODUCT_META.map((product) => {
+                  const granted = connection.products.includes(product.id);
+                  return (
+                    <div key={product.id} className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="text-sm flex items-center gap-2">
+                          <span>{product.name}</span>
+                          {granted ? (
+                            <span className="inline-flex items-center gap-1 text-xs text-green-400">
+                              <Check size={12} /> connected
+                            </span>
+                          ) : (
+                            <span className="text-xs text-text-secondary-dark">not connected</span>
+                          )}
+                          {product.restricted && (
+                            <span
+                              className="inline-flex items-center gap-1 text-xs text-text-secondary-dark"
+                              title="Google's most guarded tier. Connecting this one puts the app in scope for Google's paid annual security assessment; Calendar alone does not."
+                            >
+                              <ShieldAlert size={12} /> restricted
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-xs text-text-secondary-dark mt-0.5">{product.blurb}</div>
+                      </div>
+                      {granted ? (
+                        <Button
+                          variant="secondary"
+                          icon={Minus}
+                          disabled={busy}
+                          onClick={() => handleRemoveProduct(connection, product.id)}
+                          data-testid={`google-remove-${product.id}-${connection.email}`}
+                        >
+                          Remove
+                        </Button>
+                      ) : (
+                        <Button
+                          variant="secondary"
+                          icon={Plus}
+                          disabled={busy}
+                          onClick={() => startConnect({ products: [product.id], loginHint: connection.email })}
+                          data-testid={`google-add-${product.id}-${connection.email}`}
+                        >
+                          Connect
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
             </Card>
           ))}
 
@@ -399,7 +466,7 @@ export const GoogleWorkspaceTab: React.FC = () => {
               variant="secondary"
               icon={Plus}
               disabled={busy}
-              onClick={() => startConnect({ chooseAccount: true })}
+              onClick={() => setAddingAccount((v) => !v)}
               data-testid="google-add-account"
             >
               Add another Google account
@@ -408,6 +475,34 @@ export const GoogleWorkspaceTab: React.FC = () => {
               Refresh
             </Button>
           </div>
+
+          {/* A second account starts one product at a time, like the first
+              one does. Going straight to consent with no product named asked
+              Google for all three, which is the all-in-one grant this whole
+              connector exists to avoid (owner, 2026-09-20). */}
+          {addingAccount && (
+            <Card padding="lg" data-testid="google-add-account-products">
+              <div className="text-sm font-medium">Which service should the new account start with?</div>
+              <p className="text-xs text-text-secondary-dark mt-1">
+                You will be asked to pick the Google account, then approve just this one service. Add the others to it
+                afterwards.
+              </p>
+              <div className="mt-3 flex items-center gap-2 flex-wrap">
+                {PRODUCT_META.map((product) => (
+                  <Button
+                    key={product.id}
+                    variant="secondary"
+                    icon={ExternalLink}
+                    disabled={busy}
+                    onClick={() => startConnect({ products: [product.id], chooseAccount: true })}
+                    data-testid={`google-add-account-${product.id}`}
+                  >
+                    {product.name}
+                  </Button>
+                ))}
+              </div>
+            </Card>
+          )}
         </div>
       )}
     </div>

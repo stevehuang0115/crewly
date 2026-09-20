@@ -154,16 +154,18 @@ function connectUrlOrNull(req: Request): string | null {
  * @param req - Incoming request
  * @returns Options for `buildConnectUrl`
  */
-function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean } {
+function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } {
   const raw = typeof req.query.products === 'string' ? req.query.products : '';
   const wanted = new Set(raw.split(',').map((p) => p.trim().toLowerCase()));
   const products = GOOGLE_PRODUCTS.filter((p) => wanted.has(p));
   const hint = typeof req.query.loginHint === 'string' ? req.query.loginHint.trim() : '';
   const chooseAccount = req.query.chooseAccount === '1' || req.query.chooseAccount === 'true';
+  const replace = req.query.replace === '1' || req.query.replace === 'true';
   return {
     ...(products.length ? { products } : {}),
     ...(hint ? { loginHint: hint } : {}),
     ...(chooseAccount ? { chooseAccount } : {}),
+    ...(replace ? { replace } : {}),
   };
 }
 

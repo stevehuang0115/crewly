@@ -327,7 +327,7 @@ export class GoogleWorkspaceTokenService {
    */
   buildConnectUrl(
     returnUrl: string,
-    options: { products?: readonly GoogleProduct[]; loginHint?: string; chooseAccount?: boolean } = {},
+    options: { products?: readonly GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } = {},
   ): string {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
@@ -344,6 +344,8 @@ export class GoogleWorkspaceTokenService {
     // in to, so "add another account" would silently re-consent the same one.
     if (options.loginHint) url.searchParams.set('loginHint', options.loginHint);
     if (options.chooseAccount) url.searchParams.set('chooseAccount', '1');
+    // Narrowing a grant rather than widening it — see the Cloud side.
+    if (options.replace) url.searchParams.set('replace', '1');
     return url.toString();
   }
 
