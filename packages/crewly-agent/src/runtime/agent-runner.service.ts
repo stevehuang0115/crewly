@@ -16,6 +16,7 @@ import { connectAndLoadMcpTools } from './mcp-tool-bridge.js';
 import { ApprovalQueueService, type PendingApproval } from './approval-queue.service.js';
 import { OutputFilterService } from './output-filter.service.js';
 import { parseTextToolCalls, coerceArgs, resolveToolName, type TextToolCall, type SchemaLike } from './text-tool-calls.js';
+import { unverifiedDesktopWork } from './desktop-task.tool.js';
 import type { ToolDefinition, McpClientLike } from './types.js';
 import {
   type CrewlyAgentConfig,
@@ -1227,7 +1228,25 @@ export class AgentRunnerService {
       outcome = classifyFinish(next.finishReason, next.steps, this.config.maxSteps);
     }
 
-    if (outcome.reason === null) return result;
+    if (outcome.reason === null) {
+      // A turn can finish cleanly and still have left the desktop task
+      // half done — the model stopped because it believed it was finished.
+      // That belief is the thing being checked, so the checkpoints get the
+      // last word before the reply goes out.
+      const unverified = unverifiedDesktopWork(this.config.sessionName);
+      if (!unverified) return result;
+      return {
+        ...result,
+        incomplete: {
+          reason: 'desktop-unverified',
+          detail:
+            `The desktop task is not finished — ${unverified.goals.length} subgoal(s) never passed their checkpoint: ` +
+            `${unverified.goals.join('; ')}.\n${unverified.summary}`,
+          finishReason: result.finishReason,
+          recoveryAttempts,
+        },
+      };
+    }
 
     return {
       ...result,

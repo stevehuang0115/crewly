@@ -220,7 +220,16 @@ export type IncompleteReason =
   /** Hit `maxSteps` with work still outstanding. */
   | 'steps-exhausted'
   /** Provider refused on content grounds. */
-  | 'content-filter';
+  | 'content-filter'
+  /**
+   * A desktop task ended with subgoals whose checkpoints never held.
+   *
+   * The turn itself may have finished perfectly well — the model stopped when
+   * it meant to. That is precisely the case worth catching: an agent that
+   * believes it saved the file and says so is indistinguishable, from the
+   * outside, from one that did.
+   */
+  | 'desktop-unverified';
 
 /** Describes a turn that ended early. */
 export interface IncompleteRun {

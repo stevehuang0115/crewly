@@ -20,6 +20,7 @@ import { EnvIsolationService } from './env-isolation.service.js';
 import { OutputFilterService } from './output-filter.service.js';
 import { createWebSearchTool } from './web-search.tool.js';
 import { createComputerTool } from './computer.tool.js';
+import { createDesktopTaskTool } from './desktop-task.tool.js';
 
 /** TTL for delegation idle event subscriptions (minutes) */
 const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
@@ -569,6 +570,9 @@ export const TOOL_SENSITIVITY: Record<string, ToolSensitivity> = {
   web_search: 'safe',
   // Desktop control: it moves the owner's real mouse and keyboard.
   computer: 'destructive',
+  // The task layer only plans and verifies; the acting happens through
+  // `computer`, which carries the destructive rating.
+  desktop_task: 'sensitive',
 };
 
 /**
@@ -712,6 +716,21 @@ function sanitizeArgs(args: Record<string, unknown>): Record<string, unknown> {
  * @param callbacks - Optional callbacks for compaction and audit logging
  * @returns Object of named tools ready to pass to generateText
  */
+/**
+ * Translate a skill-shaped payload into `computer` tool arguments.
+ *
+ * The task layer asks in the skill's vocabulary (`snapshot`, `ocr`); the tool
+ * speaks the Anthropic-aligned one. One small map here beats teaching the
+ * task layer a second vocabulary it has no other use for.
+ *
+ * @param input - Skill payload
+ * @returns Arguments for the computer tool
+ */
+function desktopActionToToolArgs(input: Record<string, unknown>): Record<string, unknown> {
+  const action = String(input['action'] ?? '');
+  return { action, ...(input['app'] ? { app: input['app'] } : {}) };
+}
+
 export function createTools(client: CrewlyApiClient, sessionName: string, projectPath?: string, callbacks?: ToolCallbacks, conversationId?: string, slackContext?: { channelId: string; threadTs?: string }, mcpTools?: Record<string, ToolDefinition>): Record<string, ToolDefinition> {
   // Slack rate-limiting state: throttle messages within a 3-second window
   let lastSlackSendMs = 0;
@@ -2052,6 +2071,25 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     // the safety rails live in one place for every runtime rather than being
     // reimplemented — and kept in step — here.
     computer: createComputerTool(),
+    // The layer above it: subgoals whose completion is decided by a
+    // checkpoint rather than by the agent's own account of what happened.
+    // It plans and verifies; the acting still goes through `computer`, and
+    // so through the one set of safety rails.
+    desktop_task: createDesktopTaskTool(sessionName, {
+      perceive: async (input) => {
+        const computer = createComputerTool();
+        const result = await computer.execute(desktopActionToToolArgs(input));
+        return (result ?? {}) as Record<string, unknown>;
+      },
+      ...(callbacks?.onEnqueueApproval
+        ? {
+            approvals: {
+              enqueue: (_session: string, tool: string, sensitivity: ToolSensitivity, args: Record<string, unknown>) =>
+                ({ id: callbacks.onEnqueueApproval!(tool, sensitivity, args).approvalId }) as never,
+            },
+          }
+        : {}),
+    }),
   };
 
   // Apply sensitivity classifications and audit wrapping

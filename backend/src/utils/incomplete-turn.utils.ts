@@ -15,7 +15,7 @@
 
 /** The runtime's report of a turn that ended early. */
 export interface IncompleteTurn {
-  reason: 'truncated' | 'abnormal-finish' | 'steps-exhausted' | 'content-filter';
+  reason: 'truncated' | 'abnormal-finish' | 'steps-exhausted' | 'content-filter' | 'desktop-unverified';
   detail: string;
   finishReason: string;
   recoveryAttempts: number;
@@ -27,6 +27,10 @@ const NOTICE: Record<IncompleteTurn['reason'], string> = {
   'abnormal-finish': 'my turn was interrupted, so the work above may be unfinished',
   'steps-exhausted': 'I ran out of steps for this turn, so the work above may be unfinished',
   'content-filter': 'the model provider refused to continue this turn',
+  // The turn ended normally; the work did not. Worth its own sentence,
+  // because "I ran out of steps" and "I thought I was done but the file is
+  // not there" call for different things from the reader.
+  'desktop-unverified': 'part of the desktop task could not be verified, so it may not have actually happened',
 };
 
 /**
