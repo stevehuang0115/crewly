@@ -153,9 +153,58 @@ acquire_desktop_lock() {
 # Appended before the action runs, so an action that hangs or crashes the shell
 # still leaves a trace. Screenshots of each step come later (Phase 5).
 # ---------------------------------------------------------------------------
+DESKTOP_SHOTS="${CREWLY_HOME_DIR}/desktop-actions"
+
+# Small enough that a day of them costs a few megabytes, large enough to see
+# which window was in front and whether a dialog was open.
+THUMB_WIDTH="${CREWLY_DESKTOP_THUMB_WIDTH:-480}"
+
+# capture_thumb <label> → path, or empty when it could not be taken
+#
+# Failure is silent and empty: an action must never fail because its evidence
+# could not be recorded.
+capture_thumb() {
+  [ "${CREWLY_DESKTOP_AUDIT_SHOTS:-1}" = "1" ] || return 0
+  case "$ACTION" in
+    click|move|type|key|scroll|drag|focus|focus-app|open-url|click-text|click-ref|fill-ref) ;;
+    *) return 0 ;;
+  esac
+  local day dir file
+  day=$(date -u +%Y-%m-%d)
+  dir="${DESKTOP_SHOTS}/${day}"
+  mkdir -p "$dir" 2>/dev/null || return 0
+  file="${dir}/$(date -u +%H%M%S)-$$-$1.jpg"
+  screencapture -x -t jpg "$file" 2>/dev/null || return 0
+  sips --resampleWidth "$THUMB_WIDTH" "$file" --out "$file" >/dev/null 2>&1 || true
+  printf '%s' "$file"
+}
+
 log_action() {
-  jq -nc --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$HOLDER" --arg a "$ACTION" --argjson i "$INPUT" \
-    '{at:$t, session:$s, action:$a, input:$i}' >> "$DESKTOP_LOG" 2>/dev/null || true
+  local before
+  before=$(capture_thumb before)
+  jq -nc --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$HOLDER" --arg a "$ACTION" \
+    --argjson i "$INPUT" --arg b "$before" \
+    '{at:$t, session:$s, action:$a, input:$i} + (if $b == "" then {} else {before:$b} end)' \
+    >> "$DESKTOP_LOG" 2>/dev/null || true
+  # The "after" shot is taken on the way out, once the action has landed, so
+  # the pair shows cause and effect rather than two pictures of the same
+  # moment. Only for actions that got past every rail — a refusal changed
+  # nothing and a second identical picture is just noise.
+  CU_LOG_BEFORE="$before"
+}
+
+# cu_log_after — called once the action has run.
+cu_log_after() {
+  [ -n "${CU_LOG_BEFORE:-}" ] || return 0
+  local after
+  # Give the UI a moment to actually change; without it the pair is useless.
+  sleep 0.35
+  after=$(capture_thumb after)
+  [ -n "$after" ] || return 0
+  jq -nc --arg t "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --arg s "$HOLDER" --arg a "$ACTION" \
+    --arg b "$CU_LOG_BEFORE" --arg f "$after" \
+    '{at:$t, session:$s, action:$a, phase:"after", before:$b, after:$f}' \
+    >> "$DESKTOP_LOG" 2>/dev/null || true
 }
 
 # ---------------------------------------------------------------------------
@@ -276,6 +325,61 @@ cu_perceive() {
 }
 
 # ---------------------------------------------------------------------------
+# Presence: the banner, the hotkey, and the eye on the owner's own input
+#
+# The browser line has shown a takeover banner since April; the desktop showed
+# nothing, and a pointer that starts moving by itself is the difference
+# between automation and a haunting. The resident process owns no policy — it
+# writes the same desktop.stop / desktop.pause files these rails already read,
+# so it can die without leaving anything un-enforced.
+#
+# Started on demand and refreshed before each action; it exits by itself once
+# the refreshes stop, so a crashed agent cannot leave a banner claiming to be
+# working.
+# ---------------------------------------------------------------------------
+PRESENCE_SRC="${CREWLY_SKILLS_COMMON:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/desktop-presence.swift"
+PRESENCE_BIN="${CREWLY_HOME_DIR}/bin/desktop-presence"
+DESKTOP_PAUSE="${CREWLY_HOME_DIR}/desktop.pause"
+
+cu_presence() {
+  # Never fatal: an agent that cannot show a banner should still be stoppable
+  # by the rails, and failing the action would be worse than a missing banner.
+  [ "${CREWLY_DESKTOP_NO_BANNER:-}" = "1" ] && return 0
+  if [ ! -x "$PRESENCE_BIN" ] || [ "$PRESENCE_SRC" -nt "$PRESENCE_BIN" ]; then
+    command -v swiftc >/dev/null 2>&1 || return 0
+    mkdir -p "$(dirname "$PRESENCE_BIN")"
+    swiftc -O -o "$PRESENCE_BIN" "$PRESENCE_SRC" 2>"${CREWLY_HOME_DIR}/desktop-presence-build.log" || return 0
+  fi
+  "$PRESENCE_BIN" "$@" >/dev/null 2>&1 || true
+}
+
+# Show (or refresh) the banner for this action.
+cu_presence_refresh() {
+  local goal="${CREWLY_AGENT_GOAL:-$ACTION}"
+  cu_presence begin --agent "$HOLDER" --goal "$goal"
+  # The window only exists while a foreground process is running; start one
+  # if none is.
+  pgrep -f "desktop-presence begin .*--foreground" >/dev/null 2>&1 || {
+    nohup "$PRESENCE_BIN" begin --agent "$HOLDER" --goal "$goal" --foreground >/dev/null 2>&1 &
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Paused
+#
+# Distinct from stopped: the owner reached for the mouse, or pressed Pause.
+# The task is not abandoned — it waits, and the same banner resumes it. A
+# refusal rather than a block, because a blocked shell holds the desktop lock
+# and would stop the owner's own agents too.
+# ---------------------------------------------------------------------------
+require_not_paused() {
+  [ -f "$DESKTOP_PAUSE" ] || return 0
+  cu_fail "paused" \
+    "Desktop control is paused — the owner is using the machine. Wait, and try again when they hand it back; the task is not cancelled." \
+    '{"recoverable":true}'
+}
+
+# ---------------------------------------------------------------------------
 # cu_apply_guards
 #
 # Run every rail that applies to $ACTION. Call once, before dispatch.
@@ -304,6 +408,7 @@ cu_apply_guards() {
   esac
 
   # Then the transient conditions, cheapest first.
+  require_not_paused
   require_unlocked
 
   case "$ACTION" in
@@ -340,4 +445,13 @@ cu_apply_guards() {
     jq -n --arg a "$ACTION" '{success:true, action:$a, dryRun:true, wouldRun:true}'
     exit 0
   fi
+
+  # The banner goes up last, and only for actions that will actually move
+  # something. Reading the screen is not taking the machine over, and a dry
+  # run moves nothing at all — raising it for either would cry wolf, and a
+  # banner the owner learns to ignore is worse than none.
+  case "$ACTION" in
+    click|move|type|key|scroll|drag|focus|focus-app|open-url|click-text|click-ref|fill-ref)
+      cu_presence_refresh ;;
+  esac
 }

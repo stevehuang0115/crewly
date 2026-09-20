@@ -893,7 +893,7 @@ do_snapshot() {
   [ -n "$max" ] && flags+=(--max "$max")
   [ "$(printf '%s' "$INPUT" | jq -r '.allWindows // false')" = "true" ] && flags+=(--all-windows)
   [ "$(printf '%s' "$INPUT" | jq -r '.menus // false')" = "true" ] && flags+=(--menus)
-  cu_perceive snapshot "${flags[@]}"
+  cu_perceive snapshot ${flags[@]+"${flags[@]}"}
 }
 
 # ---------------------------------------------------------------------------
@@ -967,7 +967,7 @@ do_ocr() {
   [ -n "$region" ] && flags+=(--region "$region")
   local image; image=$(printf '%s' "$INPUT" | jq -r '.image // empty')
   [ -n "$image" ] && flags+=(--image "$image")
-  cu_perceive ocr "${flags[@]}"
+  cu_perceive ocr ${flags[@]+"${flags[@]}"}
 }
 
 # ---------------------------------------------------------------------------
@@ -1042,7 +1042,14 @@ do_wait_for() {
 
 # ---------------------------------------------------------------------------
 # Action dispatch
+#
+# The "after" audit shot is taken on the way out, so the log holds a pair
+# showing what the action actually changed — the point of keeping evidence at
+# all. It runs on every exit path, including a failure, because a failed
+# action that moved something is exactly what one wants to look at later.
 # ---------------------------------------------------------------------------
+trap 'cu_log_after 2>/dev/null || true' EXIT
+
 case "$ACTION" in
   screenshot)  do_screenshot ;;
   click)       do_click ;;

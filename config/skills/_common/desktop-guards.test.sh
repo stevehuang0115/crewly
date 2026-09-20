@@ -128,11 +128,55 @@ fi
 
 # wait-for must reject a call that says nothing to wait for, rather than
 # blocking for the whole timeout.
+# Captured first, not piped: `set -o pipefail` above makes a pipeline fail
+# when *any* stage does, and this command correctly exits non-zero — so
+# `cmd | grep -q` reported failure even when grep matched.
+WAIT_OUT=$(bash "$SKILL" '{"action":"wait-for"}' 2>&1 || true)
 if skip_if_locked "wait-for demands a condition"; then :
-elif bash "$SKILL" '{"action":"wait-for"}' 2>&1 | grep -q "one of"; then
+elif printf '%s' "$WAIT_OUT" | grep -q "one of"; then
   PASS=$((PASS+1)); echo "  ✓ wait-for demands a condition"
 else
-  FAIL=$((FAIL+1)); echo "  ✗ wait-for accepted an empty condition"
+  FAIL=$((FAIL+1)); echo "  ✗ wait-for accepted an empty condition"; echo "      got: $WAIT_OUT"
+fi
+
+echo "takeover (Phase 5)"
+touch "$CREWLY_HOME/desktop.pause"
+assert_reason "pausing holds a click"  '{"action":"click","x":5,"y":5}' "paused"
+assert_reason "pausing holds a type"   '{"action":"type","text":"x"}'   "paused"
+# A pause is the owner using the machine, not a cancellation — the agent has
+# to be told it can come back.
+# Captured, not piped — see the pipefail note above; the skill exits
+# non-zero on a refusal and would fail the pipeline whatever jq said.
+PAUSE_OUT=$(bash "$SKILL" '{"action":"click","x":5,"y":5}' 2>&1 || true)
+if printf '%s' "$PAUSE_OUT" | jq -e '.recoverable == true' >/dev/null 2>&1; then
+  PASS=$((PASS+1)); echo "  ✓ a pause says the task is not cancelled"
+else
+  FAIL=$((FAIL+1)); echo "  ✗ a pause did not mark itself recoverable"
+fi
+# Permanent refusals still outrank it, or an agent would wait for a resume
+# that will never let ⌘Q through.
+assert_reason "a refusal still wins over a pause" '{"action":"key","key":"command+q"}' "destructive_blocked"
+rm -f "$CREWLY_HOME/desktop.pause"
+# Looking is not taking the machine over, so it must not be paused either.
+skip_if_locked "reading is allowed while paused" || {
+  touch "$CREWLY_HOME/desktop.pause"
+  got=$(bash "$SKILL" '{"action":"displays"}' 2>&1 | jq -r '.reason // "none"' 2>/dev/null)
+  if [ "$got" = "none" ]; then PASS=$((PASS+1)); echo "  ✓ displays still works while paused"
+  else FAIL=$((FAIL+1)); echo "  ✗ displays was blocked by a pause ($got)"; fi
+  rm -f "$CREWLY_HOME/desktop.pause"
+}
+
+# A banner the owner learns to ignore is worse than none, so it must not
+# appear for a dry run (which moves nothing) or for merely looking.
+pkill -f "desktop-presence begin" 2>/dev/null || true
+CREWLY_DESKTOP_DRY_RUN=1 bash "$SKILL" '{"action":"click","x":5,"y":5}' >/dev/null 2>&1 || true
+bash "$SKILL" '{"action":"displays"}' >/dev/null 2>&1 || true
+sleep 0.3
+if pgrep -f "desktop-presence begin" >/dev/null 2>&1; then
+  FAIL=$((FAIL+1)); echo "  ✗ the banner appeared for a dry run or a read"
+  pkill -f "desktop-presence begin" 2>/dev/null || true
+else
+  PASS=$((PASS+1)); echo "  ✓ no banner for a dry run or for looking"
 fi
 
 echo "permissions report"

@@ -297,7 +297,7 @@ agent 要发邮件/删文件/付款
 | **2** ✅ **已完成 2026-09-20** | 单应用任务可靠 | 见 §6.2 | G1 G8 | Swift + AXUIElement + Vision | 实际 1 天 |
 | **3** ✅ **已完成 2026-09-20** | 弱模型能用 | 见 §6.3 | G10 | AI SDK tool + computer-use skill | 实际 1 天 |
 | **4** ✅ **已完成 2026-09-20** | **跨应用复杂任务可靠** | 见 §6.4 | **G11** G3 | 纯模块 + 注入式 IO | 实际 1 天 |
-| **5** | 用户信任 | 横幅、全局中止热键、用户接管即暂停、审计回放 UI、应用范围策略 | G4 G6 | 浏览器 takeover 横幅的模式、audit log | 1–2 周 |
+| **5** ✅ **已完成 2026-09-20** | 用户信任 | 见 §6.5 | G4 G6 | Swift NSPanel + CGEventTap | 实际 1 天 |
 | **6** | 触达 | Helper 上 relay；Linux Xvfb + AT-SPI；真正的人工接管（noVNC，即 `vnc-browser` 原本想做的事）；SOP 沉淀；Windows 排最后 | G7 | browser-proxy 注册模式、wiki | 2–4 周 |
 
 2+3 是分水岭（像素→元素，且弱模型能用）；4 是真正的难点，也是「无人值守」成立与否的分界。
@@ -409,6 +409,34 @@ agent 要发邮件/删文件/付款
 47 项测试。
 
 **未接线**：这三个模块还没接进 `AgentRunnerService` 的主循环，也没接 approval queue / Slack 推送。它们是可用、可测的机制，但要真正生效需要在 runner 里调用 `step()` 并把 `await-confirmation` 接到现有审批通道——那是下一步，也是第 5 期接管体验的自然入口。
+
+### 6.5 第 5 期已交付内容（2026-09-20）
+
+**`config/skills/_common/desktop-presence.swift`** —— 常驻进程，只做「让 owner 知道并能夺回控制权」这一件事。它**不持有任何策略**：写的是 shell 护栏已经在读的那两个文件（`desktop.stop` / `desktop.pause`），所以它挂掉也不会留下没人执行的规则。
+
+| 能力 | 实现 |
+|---|---|
+| 横幅 | 非激活 `NSPanel`，`.statusBar` 层级、`canJoinAllSpaces`——盖在全屏应用之上、切 Space 不会藏起来、**永远不抢焦点**（否则会吃掉 agent 正在发的按键）。显示「谁 + 在干什么」+ Pause / Stop |
+| 全局中止 | ⌃⌥⌘. 从任何地方写 `desktop.stop`。用 `NSEvent.addGlobalMonitorForEvents`，依赖的辅助功能权限桌面控制本来就要，不多要一次授权 |
+| 用户接管即暂停 | `CGEventTap`（**listen-only，绝不吞用户输入**）。区分真假输入靠 `eventSourceStateID == hidSystemState`——agent 用 `CGEventCreateMouseEvent(null,…)` 发的事件不带这个状态。没有这一层，agent 会被自己的第一次点击暂停 |
+| 自动退场 | 45 秒没收到刷新就自己退出——崩掉的 agent 不能留一条横幅继续宣称在工作 |
+
+**暂停和停止是两件事**：停止是拒绝一切直到 owner 删掉文件；暂停是「owner 正在用这台机器」，返回 `recoverable: true` 并明说**任务没有被取消**，等交还就能继续。而且暂停用的是拒绝而不是阻塞——阻塞的 shell 会一直握着桌面锁，把 owner 自己其他 agent 也一起卡住。
+
+**审计回放**（G6）：每个改变状态的动作前后各存一张缩略图（jpg，480 宽，按天分目录），日志里配对记录。「after」那张在退出时用 `trap` 拍，**失败路径也拍**——一个失败但已经动了东西的动作，正是事后最想看的。
+
+**四个实测发现的问题**：
+
+1. **dry-run 和只读动作也把横幅拉起来了。** 横幅移到 dry-run 判断**之后**，且只对真正会动的动作显示。一条 owner 学会无视的横幅比没有更糟。
+2. **bash 3.2 + `set -u` 下空数组展开是错误**：`"${flags[@]}"` 在数组为空时报 unbound variable，导致**所有不带参数的 `snapshot` / `ocr` 直接崩**。改用 `${flags[@]+"${flags[@]}"}`。
+3. **我的测试里两处 `pipefail` 误报**：`cmd | grep -q` 在 `cmd` 正确地以非零退出时，整条管道判失败——哪怕 grep 匹配上了。改成先捕获再判断。
+4. 顺带把永久拒绝（⌘Q）排在暂停之前——否则 agent 会等一个永远不会放行 ⌘Q 的 resume。
+
+**同时补测了第 2 期标注「未验证」的那项**：屏幕解锁后重跑，AX 感知在真实桌面上工作正常——Finder 快照给出 `@e1 AXWindow 'Castle'` 和精确 frame（不再是菜单栏）、`resolve` 正确回指且 `matches: true`、OCR 1 秒内读出菜单栏文字。
+
+**测试**：35 项，**0 失败 0 跳过**（屏幕已解锁，此前跳过的 9 项全部真跑并通过），连跑两遍确认零副作用。
+
+**未做**：审计回放的**前端 UI**（缩略图已落盘并配对记录，但没有页面可以翻看）；team/role 级应用白名单（默认黑名单已在第 1 期）。
 
 ### North star 任务
 
