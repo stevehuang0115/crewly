@@ -232,6 +232,39 @@ whatever moved into that position — take a fresh snapshot.
 Coordinate actions (`click`, `type`, `key`, `drag`) remain for everything with
 no accessibility tree: games, canvases, custom-drawn UI.
 
+## When you need a person
+
+Some things an agent must not do: a CAPTCHA, a two-factor code, a sign-in, a
+judgement the owner has to make. Hand the machine back rather than trying to
+be clever — for a login, "clever" means typing a password that must never be
+typed.
+
+```bash
+bash execute.sh '{"action":"request-human","reason":"needs your 2FA code","detail":"Google sign-in page"}'
+```
+
+It pauses desktop control (it does not cancel the task), captures what you are
+stuck on so the owner can see it from their phone, and puts the reason on the
+banner. The owner resumes with the banner's Resume button. Do not work around
+a pause.
+
+## Reaching this machine from elsewhere
+
+`/api/desktop/*` exposes the same actions over HTTP, and the portal and phone
+reach it over the relay:
+
+| Route | Over relay? |
+|---|---|
+| `GET /api/desktop/status` — usable, busy, paused, stopped | yes |
+| `POST /api/desktop/look` — snapshot, ocr, screenshot, displays | yes |
+| `POST /api/desktop/stop` — halt everything (`{resume:true}` lifts it) | yes |
+| `POST /api/desktop/act` — move the mouse or keyboard | **no** |
+
+Acting is deliberately local-only. Watching a machine and being able to stop
+it are what an owner away from their desk needs, and neither can do harm;
+driving a real keyboard should not be reachable from the internet just
+because the phone app can reach everything else.
+
 ## Which control surface to use
 
 Crewly has three ways to act on a screen. Pick the **lowest** one that can do

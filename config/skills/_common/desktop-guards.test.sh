@@ -23,6 +23,22 @@ PASS=0; FAIL=0; SKIP=0
 # fail on a locked Mac or pass for the wrong reason.
 SCREEN_LOCKED=$(osascript -l JavaScript -e 'ObjC.import("CoreGraphics"); ObjC.bindFunction("CGSessionCopyCurrentDictionary", ["id", []]); var d = $.CGSessionCopyCurrentDictionary(); d && ObjC.unwrap(d.objectForKey("CGSSessionScreenIsLocked")) ? "yes" : "no"' 2>/dev/null)
 
+# assert_output <description> <json-input> <grep pattern>
+#
+# Captures rather than pipes. `set -o pipefail` above makes `cmd | grep` fail
+# whenever cmd exits non-zero — which a correct refusal does — so piping
+# reported failure even when the pattern matched. That caught me three times
+# before this helper existed.
+assert_output() {
+  local desc="$1" input="$2" pattern="$3" out
+  out=$(bash "$SKILL" "$input" 2>&1 || true)
+  if printf '%s' "$out" | grep -q "$pattern"; then
+    PASS=$((PASS+1)); echo "  ✓ $desc"
+  else
+    FAIL=$((FAIL+1)); echo "  ✗ $desc"; echo "      wanted /$pattern/ in: ${out:0:160}"
+  fi
+}
+
 # skip_if_locked <description>
 skip_if_locked() {
   [ "$SCREEN_LOCKED" != "yes" ] && return 1
@@ -131,13 +147,7 @@ fi
 # Captured first, not piped: `set -o pipefail` above makes a pipeline fail
 # when *any* stage does, and this command correctly exits non-zero — so
 # `cmd | grep -q` reported failure even when grep matched.
-WAIT_OUT=$(bash "$SKILL" '{"action":"wait-for"}' 2>&1 || true)
-if skip_if_locked "wait-for demands a condition"; then :
-elif printf '%s' "$WAIT_OUT" | grep -q "one of"; then
-  PASS=$((PASS+1)); echo "  ✓ wait-for demands a condition"
-else
-  FAIL=$((FAIL+1)); echo "  ✗ wait-for accepted an empty condition"; echo "      got: $WAIT_OUT"
-fi
+skip_if_locked "wait-for demands a condition" || assert_output "wait-for demands a condition" '{"action":"wait-for"}' "one of"
 
 echo "takeover (Phase 5)"
 touch "$CREWLY_HOME/desktop.pause"
@@ -178,6 +188,28 @@ if pgrep -f "desktop-presence begin" >/dev/null 2>&1; then
 else
   PASS=$((PASS+1)); echo "  ✓ no banner for a dry run or for looking"
 fi
+
+echo "reach (Phase 6)"
+# Asking for a person is how an agent gets out of being stuck, so it has to
+# work while paused — otherwise the only move left is retrying the thing it
+# already cannot do.
+touch "$CREWLY_HOME/desktop.pause"
+HUMAN_OUT=$(CREWLY_DESKTOP_NO_BANNER=1 bash "$SKILL" '{"action":"request-human","reason":"needs a 2FA code"}' 2>&1 || true)
+if printf '%s' "$HUMAN_OUT" | jq -e '.waiting == true' >/dev/null 2>&1; then
+  PASS=$((PASS+1)); echo "  ✓ request-human works even while paused"
+else
+  FAIL=$((FAIL+1)); echo "  ✗ request-human was refused while paused"
+fi
+# And it leaves the desktop paused, not stopped: the task is waiting, not dead.
+if [ -f "$CREWLY_HOME/desktop.pause" ] && [ ! -f "$CREWLY_HOME/desktop.stop" ]; then
+  PASS=$((PASS+1)); echo "  ✓ handing over pauses rather than cancels"
+else
+  FAIL=$((FAIL+1)); echo "  ✗ handing over left the wrong state"
+fi
+rm -f "$CREWLY_HOME/desktop.pause"
+# It must demand a reason — "a person is needed" with no reason is useless
+# to whoever gets the notification.
+assert_output "request-human demands a reason" '{"action":"request-human"}' "reason"
 
 echo "permissions report"
 if bash "$SKILL" '{"action":"check-permissions"}' 2>&1 | jq -e 'has("screenRecording") and has("accessibility") and has("askingProcess")' >/dev/null 2>&1; then

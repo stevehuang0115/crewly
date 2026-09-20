@@ -93,6 +93,15 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/slack/agent-identities' },
   { method: 'POST', prefix: '/slack/team-channels' },  // create or link
   { method: 'POST', prefix: '/slack/cloud/agents/sync' },
+  // Desktop control, deliberately lopsided. Seeing what a machine is doing
+  // and being able to stop it are exactly what an owner who is not sitting
+  // at it needs, and neither can do harm. Driving the mouse is left off:
+  // `/desktop/act` moves a real keyboard on a real Mac, and that should not
+  // be reachable from the internet just because the phone app can reach
+  // everything else here (2026-09-20).
+  { method: 'GET', prefix: '/desktop/status' },
+  { method: 'POST', prefix: '/desktop/look' },
+  { method: 'POST', prefix: '/desktop/stop' },
   // Mutations — human-in-the-loop actions only.
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject

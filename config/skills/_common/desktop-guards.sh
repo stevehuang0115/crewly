@@ -96,6 +96,23 @@ require_not_stopped() {
 }
 
 # ---------------------------------------------------------------------------
+# Platform
+#
+# Everything here is macOS: screencapture, AppleScript, CoreGraphics event
+# taps, the Accessibility API. On Linux or Windows the commands are simply
+# absent, and the failure an agent saw was `osascript: command not found` —
+# which reads as a broken install rather than an unsupported platform, so it
+# retried. Saying so plainly is the whole fix until the Linux backend of
+# Phase 6 exists.
+# ---------------------------------------------------------------------------
+require_macos() {
+  [ "$(uname -s)" = "Darwin" ] && return 0
+  cu_fail "unsupported_platform" \
+    "Desktop control is macOS-only for now. On $(uname -s) there is no screen to drive from here — use the browser tools for web work, or a skill for anything with an API." \
+    "$(jq -n --arg p "$(uname -s)" '{platform:$p, supported:["Darwin"]}')"
+}
+
+# ---------------------------------------------------------------------------
 # Locked screen
 #
 # Accessibility does not fail while the screen is locked — it answers with
@@ -167,6 +184,9 @@ capture_thumb() {
   [ "${CREWLY_DESKTOP_AUDIT_SHOTS:-1}" = "1" ] || return 0
   case "$ACTION" in
     click|move|type|key|scroll|drag|focus|focus-app|open-url|click-text|click-ref|fill-ref) ;;
+    # Handing over to a person: the picture of what the agent is stuck on is
+    # the most useful thing the owner gets, especially on a phone.
+    request-human) ;;
     *) return 0 ;;
   esac
   local day dir file
@@ -389,10 +409,18 @@ require_not_paused() {
 # action a fork does not have simply never matches.
 # ---------------------------------------------------------------------------
 cu_apply_guards() {
+  # Platform first: on the wrong OS not even "check what permissions I have"
+  # has an answer, and `osascript: command not found` reads as a broken
+  # install rather than an unsupported platform.
+  require_macos
   [ "$ACTION" = "check-permissions" ] && return 0
   [ "$ACTION" = "check-accessibility" ] && return 0
   # Listing screens reads no window and touches nothing.
   [ "$ACTION" = "displays" ] && return 0
+  # Asking for a person is how an agent gets *out* of being stuck, so it must
+  # work while paused — refusing it would leave the agent with nothing to do
+  # but retry the thing it already cannot do.
+  [ "$ACTION" = "request-human" ] && { require_macos; log_action; return 0; }
 
   require_not_stopped
   log_action

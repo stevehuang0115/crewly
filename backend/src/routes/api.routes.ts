@@ -46,6 +46,7 @@ import { createV2WorkspaceRouter } from '../controllers/v2-workspace/workspace.r
 import { createTriggerRouter } from '../controllers/trigger/trigger.routes.js';
 import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
+import { createDesktopRouter } from '../controllers/desktop/desktop.routes.js';
 import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
 import { createConnectorRouter } from '../controllers/connector/connector.routes.js';
 import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
@@ -199,6 +200,8 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Google Workspace (Gmail + Calendar) on the owner's account — Cloud holds
   // the grant, this instance talks to Google. Backs the gmail-*/calendar-* skills.
   router.use('/google', createGoogleRouter());
+  // Desktop control — same shape as /api/browser, one machine's screen.
+  router.use('/desktop', createDesktopRouter());
 
   // Canva Connect on the owner's account — Cloud holds the grant. Backs the canva-* skills.
   router.use('/canva', createCanvaRouter());

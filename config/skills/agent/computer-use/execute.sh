@@ -1041,6 +1041,40 @@ do_wait_for() {
 }
 
 # ---------------------------------------------------------------------------
+# request-human — hand the machine back for something an agent must not do.
+#
+# The deleted `vnc-browser` skill described this and shipped no script. The
+# honest version is smaller than a VNC tunnel and covers the cases that
+# actually arise: a CAPTCHA, a two-factor prompt, a login, a decision the
+# owner has to make. The agent pauses itself, says what it needs and why, and
+# waits — rather than trying to be clever, which for a login means typing a
+# password it must never type.
+#
+# Pausing (not stopping) is the point: the owner deals with it and the task
+# picks up, using the same banner button they already have.
+# ---------------------------------------------------------------------------
+do_request_human() {
+  local reason detail shot
+  reason=$(printf '%s' "$INPUT" | jq -r '.reason // empty')
+  detail=$(printf '%s' "$INPUT" | jq -r '.detail // empty')
+  require_param "reason" "$reason"
+
+  # A picture of what the agent is stuck on is worth more than its
+  # description of it, and the owner may be reading this on a phone.
+  shot=$(capture_thumb handover 2>/dev/null || true)
+
+  # Pause rather than stop: the task is not cancelled, it is waiting.
+  printf 'awaiting-human\n' > "$DESKTOP_PAUSE" 2>/dev/null || true
+  cu_presence begin --agent "$HOLDER" --goal "needs you: $reason"
+
+  jq -n --arg r "$reason" --arg d "$detail" --arg s "$HOLDER" --arg shot "$shot" \
+    '{success:true, action:"request-human", waiting:true, reason:$r,
+      detail:$d, agent:$s,
+      note:"Desktop control is paused until the owner resumes it (banner → Resume, or remove ~/.crewly/desktop.pause). Do not try to work around this."}
+     + (if $shot == "" then {} else {screenshot:$shot} end)'
+}
+
+# ---------------------------------------------------------------------------
 # Action dispatch
 #
 # The "after" audit shot is taken on the way out, so the log holds a pair
@@ -1071,5 +1105,6 @@ case "$ACTION" in
   ocr)         do_ocr ;;
   displays)    do_displays ;;
   wait-for)    do_wait_for ;;
-  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text, check-permissions, snapshot, click-ref, fill-ref, resolve, ocr, displays, wait-for" ;;
+  request-human) do_request_human ;;
+  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text, check-permissions, snapshot, click-ref, fill-ref, resolve, ocr, displays, wait-for, request-human" ;;
 esac
