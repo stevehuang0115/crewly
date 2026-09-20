@@ -2022,12 +2022,16 @@ export class SlackService extends EventEmitter {
    * @returns Object with private download URLs
    * @throws Error if the client is not initialized or API call fails
    */
-  async getFileInfo(fileId: string): Promise<{ url_private: string; url_private_download: string }> {
+  async getFileInfo(fileId: string, botToken?: string): Promise<{ url_private: string; url_private_download: string }> {
     if (!this.client) {
       throw new Error('Slack client not initialized');
     }
 
-    const result = await this.client.files.info({ file: fileId });
+    // A file posted in a private channel is only visible to an app that is
+    // in that channel. When the event reached us through an agent's own
+    // Slack app, that app is the one with access — the workspace bot may
+    // never have been invited (2026-09-20, #steamfun-portal).
+    const result = await this.client.files.info({ file: fileId, ...(botToken ? { token: botToken } : {}) });
     return {
       url_private: result.file?.url_private || '',
       url_private_download: result.file?.url_private_download || '',

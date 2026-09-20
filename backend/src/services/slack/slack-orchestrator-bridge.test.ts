@@ -14,7 +14,7 @@ import {
   suppressFileOnly,
   deriveSlackThreadName,
 } from './slack-orchestrator-bridge.js';
-import { resetSlackService } from './slack.service.js';
+import { resetSlackService, getSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 
@@ -140,6 +140,54 @@ describe('SlackOrchestratorBridge', () => {
       const config = bridge.getConfig();
       expect(config.showTypingIndicator).toBe(true);
       expect(config.enableNotifications).toBe(true);
+    });
+  });
+
+  describe('which token reads a message\'s files', () => {
+    // A file lives in the channel it was posted to, and Slack serves it only
+    // to an app that is in that channel. In a private channel the owner
+    // invites the agent they want, not the workspace bot — so the event
+    // arrives fine through the agent's app while the workspace token gets a
+    // flat 403 on the download. The agent could read the message and not the
+    // image (2026-09-20, #steamfun-portal).
+    const identityModule = '../slack/slack-agent-identity.service.js';
+
+    /** Call the private token picker. */
+    function tokenFor(bridge: SlackOrchestratorBridge, message: Partial<SlackIncomingMessage>): string | undefined {
+      return (bridge as unknown as {
+        fileTokenFor(m: Partial<SlackIncomingMessage>): string | undefined;
+      }).fileTokenFor(message);
+    }
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('uses the agent\'s own token when the event came through its app', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      const identities = await import(identityModule);
+      jest.spyOn(identities, 'getSlackAgentIdentityService').mockReturnValue({
+        getInstalled: () => ({ botToken: 'xoxb-agent', agentSession: 'team-avery' }),
+      } as never);
+
+      expect(tokenFor(bridge, { agentSession: 'team-avery' })).toBe('xoxb-agent');
+    });
+
+    it('falls back to the workspace token when the message names no agent', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      jest.spyOn(getSlackService(), 'getBotToken').mockReturnValue('xoxb-workspace');
+      expect(tokenFor(bridge, {})).toBe('xoxb-workspace');
+    });
+
+    it('falls back when the agent has no installed bot of its own', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      jest.spyOn(getSlackService(), 'getBotToken').mockReturnValue('xoxb-workspace');
+      const identities = await import(identityModule);
+      jest.spyOn(identities, 'getSlackAgentIdentityService').mockReturnValue({
+        getInstalled: () => null,
+      } as never);
+
+      expect(tokenFor(bridge, { agentSession: 'team-avery' })).toBe('xoxb-workspace');
     });
   });
 

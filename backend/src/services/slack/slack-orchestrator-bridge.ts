@@ -15,6 +15,7 @@ import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';
 import { PDFParse } from 'pdf-parse';
 import { getSlackService, SlackService } from './slack.service.js';
+import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
@@ -1311,17 +1312,42 @@ Just type naturally to chat with the orchestrator!`;
   }
 
   /**
+   * The token that can actually read this message's files.
+   *
+   * A file lives in the channel it was posted to, and Slack only serves it
+   * to an app that is in that channel. When an agent's own Slack app is the
+   * one that was invited — which is how a private channel usually works,
+   * since the owner invites the agent they want, not the workspace bot —
+   * the workspace token gets a flat 403 on the download while the event
+   * itself arrives perfectly well through the agent's app. The result was a
+   * message the agent could read but an image it could not
+   * (2026-09-20, #steamfun-portal: "Download failed with status 403").
+   *
+   * @param message - The inbound message
+   * @returns The agent's bot token when the event came through its app,
+   *   otherwise the workspace token
+   */
+  private fileTokenFor(message: SlackIncomingMessage): string | undefined {
+    const workspaceToken = this.slackService.getBotToken() ?? undefined;
+    if (!message.agentSession) return workspaceToken;
+    const installed = getSlackAgentIdentityService()?.getInstalled(message.agentSession);
+    if (!installed?.botToken) return workspaceToken;
+    return installed.botToken;
+  }
+
+  /**
    * Refresh file download URLs via the Slack files.info API.
    * The event payload URLs may not work with just the bot token — the
    * files.info API returns authenticated URLs and validates scope.
    *
    * @param files - Slack file objects to refresh URLs for (mutated in place)
+   * @param botToken - Token with access to these files; see {@link fileTokenFor}
    * @returns true if downloads can proceed, false if scope is missing
    */
-  private async refreshFileUrls(files: SlackFile[]): Promise<boolean> {
+  private async refreshFileUrls(files: SlackFile[], botToken?: string): Promise<boolean> {
     for (const file of files) {
       try {
-        const freshInfo = await this.slackService.getFileInfo(file.id);
+        const freshInfo = await this.slackService.getFileInfo(file.id, botToken);
         if (freshInfo.url_private_download) {
           file.url_private_download = freshInfo.url_private_download;
         }
@@ -1349,7 +1375,7 @@ Just type naturally to chat with the orchestrator!`;
    * @param imageFiles - Pre-filtered list of image files to download
    */
   private async downloadMessageImages(message: SlackIncomingMessage, imageFiles: SlackFile[]): Promise<void> {
-    const botToken = this.slackService.getBotToken();
+    const botToken = this.fileTokenFor(message);
     if (!botToken) {
       this.logger.warn('Cannot download images: no bot token available');
       return;
@@ -1366,7 +1392,7 @@ Just type naturally to chat with the orchestrator!`;
     const rejectionMessages: string[] = [];
 
     // Refresh file URLs via files.info API before downloading.
-    const canProceed = await this.refreshFileUrls(files);
+    const canProceed = await this.refreshFileUrls(files, botToken);
     if (!canProceed) return;
 
     for (let i = 0; i < files.length; i += maxConcurrent) {
@@ -1423,7 +1449,7 @@ Just type naturally to chat with the orchestrator!`;
    * @param nonImageFiles - Non-image SlackFile objects to download
    */
   private async downloadMessageFiles(message: SlackIncomingMessage, nonImageFiles: SlackFile[]): Promise<void> {
-    const botToken = this.slackService.getBotToken();
+    const botToken = this.fileTokenFor(message);
     if (!botToken) {
       this.logger.warn('Cannot download files: no bot token available');
       return;
@@ -1438,7 +1464,7 @@ Just type naturally to chat with the orchestrator!`;
     const maxConcurrent = SLACK_FILE_DOWNLOAD_CONSTANTS.MAX_CONCURRENT_DOWNLOADS;
 
     // Refresh file URLs via files.info API
-    const canProceed = await this.refreshFileUrls(nonImageFiles);
+    const canProceed = await this.refreshFileUrls(nonImageFiles, botToken);
     if (!canProceed) return;
 
     for (let i = 0; i < nonImageFiles.length; i += maxConcurrent) {
