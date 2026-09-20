@@ -1300,6 +1300,10 @@ describe('Slack Controller', () => {
       mockCloudClient.url = 'https://api.crewlyai.com/';
       mockActiveSource = null;
       mockCloudConfig.getConfig.mockReturnValue(null);
+      // `getSourceMode` is declared with an implementation, so a
+      // `mockReturnValue` in one test outlives it and silently changes the
+      // next one. Reset it here with the rest.
+      mockCloudConfig.getSourceMode.mockReturnValue('auto');
       mockCloudConfig.refresh.mockReset();
       mockCloudConfig.load.mockReset();
       mockRegistry.getPendingInstalls.mockReturnValue([]);
@@ -1392,6 +1396,60 @@ describe('Slack Controller', () => {
         expect(mockCloudConfig.refresh).not.toHaveBeenCalled();
       });
 
+      // The Air, 2026-09-20: `workspace.botUserId` is the CLOUD registration
+      // and is returned even while the env source holds the socket. Two
+      // agents in a row read it as "the bot in use", concluded both sources
+      // were the same app, and switched — which silently broke the owner's
+      // DM, because a `D…` channel belongs to one bot user. The response now
+      // has to name the connected identity separately.
+      it('names the bot actually connected, and flags the workspace block as not describing it', async () => {
+        mockCloudConfig.getConfig.mockReturnValue({
+          workspace: { slackTeamId: 'T1', slackTeamName: 'Acme', botUserId: 'U-CLOUD', botToken: 'x', appId: 'A0' },
+          agents: [],
+          transport: 'cloud',
+        });
+        mockCloudConfig.getSourceMode.mockReturnValue('env');
+        mockActiveSource = 'env';
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        jest.spyOn(slackService, 'getTransport').mockReturnValue('socket');
+        jest.spyOn(slackService, 'getBotUserId').mockResolvedValue('U-ENV');
+
+        const response = await request(app).get('/api/slack/cloud/status');
+        expect(response.status).toBe(200);
+        // The token on the wire belongs to a different app than the one the
+        // workspace block describes — which is the whole point.
+        expect(response.body.data.active).toEqual({ botUserId: 'U-ENV' });
+        expect(response.body.data.workspace.botUserId).toBe('U-CLOUD');
+        expect(response.body.data.workspace.describesActiveSource).toBe(false);
+      });
+
+      it('marks the workspace block as authoritative when Cloud is the active source', async () => {
+        mockCloudConfig.getConfig.mockReturnValue({
+          workspace: { slackTeamId: 'T1', slackTeamName: 'Acme', botUserId: 'U-CLOUD', botToken: 'x', appId: 'A0' },
+          agents: [],
+          transport: 'cloud',
+        });
+        mockActiveSource = 'cloud';
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        jest.spyOn(slackService, 'getBotUserId').mockResolvedValue('U-CLOUD');
+
+        const response = await request(app).get('/api/slack/cloud/status');
+        expect(response.body.data.workspace.describesActiveSource).toBe(true);
+        expect(response.body.data.active).toEqual({ botUserId: 'U-CLOUD' });
+      });
+
+      it('reports a null identity rather than failing when auth.test cannot answer', async () => {
+        const slackService = getSlackService();
+        jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+        jest.spyOn(slackService, 'getBotUserId').mockRejectedValue(new Error('ratelimited'));
+
+        const response = await request(app).get('/api/slack/cloud/status');
+        expect(response.status).toBe(200);
+        expect(response.body.data.active).toEqual({ botUserId: null });
+      });
+
       it('with ?refresh=1 re-fetches, connects when a workspace appeared, and redacts tokens', async () => {
         const config = {
           workspace: { slackTeamId: 'T1', slackTeamName: 'Acme', botUserId: 'UBOT', botToken: 'xoxb-secret', appId: 'A0' },
@@ -1410,6 +1468,7 @@ describe('Slack Controller', () => {
           botUserId: 'UBOT',
           appId: 'A0',
           agentIdentities: 1,
+          describesActiveSource: false,
         });
         expect(JSON.stringify(response.body)).not.toContain('xoxb-');
         expect(response.body.data.pendingInstalls).toEqual([{ agentSession: 'alpha-kai-1', url: 'https://slack.com/oauth/kai' }]);

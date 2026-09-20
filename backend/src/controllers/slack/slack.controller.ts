@@ -882,6 +882,20 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
         workspaces = null;
       }
     }
+    // Who is actually holding the socket. `workspace` below describes the
+    // CLOUD registration and is returned whether or not Cloud is the active
+    // source, so reading a bot identity out of it says nothing about the
+    // token currently in use. On an env-pinned instance the two can be
+    // different apps entirely, and believing otherwise is how a switch to
+    // Cloud silently breaks a DM: a `D…` channel belongs to one bot user, so
+    // the other bot gets `channel_not_found` while status still says
+    // "connected" (2026-09-20, the Air). `auth.test` is the only answer that
+    // survives that, so report it next to the registration.
+    let active: { botUserId: string | null } | null = null;
+    if (slackService.isConnected()) {
+      active = { botUserId: await slackService.getBotUserId().catch(() => null) };
+    }
+
     res.json({
       success: true,
       data: {
@@ -890,6 +904,10 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
         activeSource: getActiveSlackSource(),
         connected: slackService.isConnected(),
         transport: slackService.isConnected() ? slackService.getTransport() : null,
+        // The identity of the token in use right now, from `auth.test`.
+        active,
+        // The Cloud-side registration. Present even when `activeSource` is
+        // `env`, in which case it describes an app that is NOT connected.
         workspace: config
           ? {
               slackTeamId: config.workspace.slackTeamId,
@@ -897,6 +915,7 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
               botUserId: config.workspace.botUserId,
               appId: config.workspace.appId,
               agentIdentities: config.agents.length,
+              describesActiveSource: getActiveSlackSource() === 'cloud',
             }
           : null,
         configFetchedAt: configService.getFetchedAt(),
