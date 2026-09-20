@@ -28,6 +28,7 @@ Options:
   --description   Body text
   --attendee      Attendee email (repeat for several)
   --calendar      Calendar id (default: primary)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h     Show this help
 EOF_USAGE
 }
@@ -41,6 +42,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   shift || true
 fi
 
+ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --summary|--title) [ $# -ge 2 ] || error_exit "--summary requires a value";     SUMMARY="$2";     shift 2 ;;
@@ -51,6 +53,7 @@ while [[ $# -gt 0 ]]; do
     --calendar|-c)     [ $# -ge 2 ] || error_exit "--calendar requires a value";    CALENDAR="$2";    shift 2 ;;
     --attendee)        [ $# -ge 2 ] || error_exit "--attendee requires a value"
                        ATTENDEES_JSON=$(jq -cn --argjson arr "$ATTENDEES_JSON" --arg v "$2" '$arr + [$v]'); shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)         print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -67,7 +70,10 @@ if [ -n "$INPUT_JSON" ]; then
   if [ "$(printf '%s' "$ATTENDEES_JSON" | jq 'length')" -eq 0 ]; then
     ATTENDEES_JSON=$(printf '%s' "$INPUT" | jq -c '(.attendees // []) | if type == "string" then split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(. != "")) else . end')
   fi
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 
 require_param "summary (--summary)" "$SUMMARY"
 require_param "start (--start)" "$START"

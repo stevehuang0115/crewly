@@ -24,6 +24,7 @@ Options:
   --to          Upper bound (default: now + 7 days)
   --calendar    Calendar id (default: primary)
   --max         Result cap (default 50, max 250)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -48,12 +49,14 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   shift || true
 fi
 
+ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --from)        [ $# -ge 2 ] || error_exit "--from requires a value";     FROM="$2";     shift 2 ;;
     --to)          [ $# -ge 2 ] || error_exit "--to requires a value";       TO="$2";       shift 2 ;;
     --calendar|-c) [ $# -ge 2 ] || error_exit "--calendar requires a value"; CALENDAR="$2"; shift 2 ;;
     --max|-n)      [ $# -ge 2 ] || error_exit "--max requires a value";      MAX="$2";      shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)     print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -65,7 +68,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$TO" ]       && TO=$(printf '%s' "$INPUT" | jq -r '.to // .timeMax // empty')
   [ -z "$CALENDAR" ] && CALENDAR=$(printf '%s' "$INPUT" | jq -r '.calendarId // .calendar // empty')
   [ -z "$MAX" ]      && MAX=$(printf '%s' "$INPUT" | jq -r '.max // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 
 [ -z "$FROM" ] && FROM=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 [ -z "$TO" ] && TO=$(iso_now_plus_days "$DEFAULT_WINDOW_DAYS")

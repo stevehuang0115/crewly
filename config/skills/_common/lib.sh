@@ -231,6 +231,12 @@ api_call() {
     # Tank: every reply-channel call 404'd for want of this variable).
     echo '{"warning":"CREWLY_SESSION_NAME is not set in this shell — the request is sent without X-Agent-Session; channel replies and heartbeats will not be attributed to you. Prefix the call with CREWLY_SESSION_NAME=<your session name> or restart the agent."}' >&2
   fi
+  # Which connected Google account the call acts as. One Crewly account can
+  # connect several (two Gmail logins, say); without this the backend uses
+  # whichever is the default, which is what a single-account install wants.
+  if [ -n "${CREWLY_GOOGLE_ACCOUNT:-}" ]; then
+    args+=(-H "X-Google-Account: $CREWLY_GOOGLE_ACCOUNT")
+  fi
   [ -n "$body" ] && args+=(-d "$body")
 
   local response

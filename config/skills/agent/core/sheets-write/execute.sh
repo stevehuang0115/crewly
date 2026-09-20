@@ -30,6 +30,7 @@ Options:
   --csv-file    Rows from a CSV file (simple: comma-separated, quotes stripped)
   --range       A1 anchor: the table to append to, or the top-left cell to overwrite (default A1)
   --mode        append (default) | update
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -58,7 +59,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-TITLE=""; SHEET=""; ID=""; ROWS=""; CSV_FILE=""; RANGE=""; MODE=""
+TITLE=""; SHEET=""; ID=""; ROWS=""; CSV_FILE=""; RANGE=""; MODE=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title)    [ $# -ge 2 ] || error_exit "--title requires a value";    TITLE="$2";    shift 2 ;;
@@ -68,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --csv-file) [ $# -ge 2 ] || error_exit "--csv-file requires a value"; CSV_FILE="$2"; shift 2 ;;
     --range)    [ $# -ge 2 ] || error_exit "--range requires a value";    RANGE="$2";    shift 2 ;;
     --mode)     [ $# -ge 2 ] || error_exit "--mode requires a value";     MODE="$2";     shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)  print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -80,7 +82,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$ROWS" ]  && ROWS=$(printf '%s' "$INPUT" | jq -c '.rows // empty')
   [ -z "$RANGE" ] && RANGE=$(printf '%s' "$INPUT" | jq -r '.range // empty')
   [ -z "$MODE" ]  && MODE=$(printf '%s' "$INPUT" | jq -r '.mode // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 if [ -n "$CSV_FILE" ]; then
   [ -f "$CSV_FILE" ] || error_exit "csv file not found: $CSV_FILE"
   ROWS=$(python3 -c 'import csv,json,sys; print(json.dumps(list(csv.reader(open(sys.argv[1], newline="")))))' "$CSV_FILE")

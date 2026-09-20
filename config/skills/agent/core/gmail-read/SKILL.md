@@ -59,3 +59,13 @@ pass `threadId` and `messageId` to `gmail-send`.
 `{"success":false,"reason":"not_connected","hint":"<connect URL>"}` (exit 1)
 when the owner has not connected Google Workspace; `reason` `google_error`
 with a 404 message when the id is unknown.
+
+## Choosing a Google account
+
+Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:
+
+```bash
+bash execute.sh --account work@company.com ...
+```
+
+The account must be connected *for this product* — Google consent is per product (Gmail / Calendar / Drive), so an account connected only for Calendar cannot read Drive.

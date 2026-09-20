@@ -13,7 +13,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { GOOGLE_WORKSPACE_CONSTANTS } from '../../constants.js';
+import { GOOGLE_WORKSPACE_CONSTANTS, GOOGLE_PRODUCTS, type GoogleProduct } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import {
   GoogleWorkspaceTokenService,
@@ -39,7 +39,18 @@ export interface GoogleControllerDeps {
   slides: SlidesService;
 }
 
-let deps: GoogleControllerDeps | null = null;
+/**
+ * A dependency set installed by a test, which then answers every request.
+ *
+ * Kept apart from the lazily-built default: if the two shared a variable,
+ * the first call would populate it and every later request would be served
+ * the default set, silently ignoring the Google account it named.
+ */
+let override: GoogleControllerDeps | null = null;
+/** The lazily-built set for the default Google account. */
+let defaultDeps: GoogleControllerDeps | null = null;
+/** Per-Google-account service sets, built on demand. */
+const byAccount = new Map<string, GoogleControllerDeps>();
 
 /**
  * Lazily build the real services (token service singleton + Gmail/Calendar
@@ -47,20 +58,48 @@ let deps: GoogleControllerDeps | null = null;
  *
  * @returns The active dependency set
  */
+function buildDeps(account?: string): GoogleControllerDeps {
+  const tokens = GoogleWorkspaceTokenService.getInstance();
+  // Each service names the product it needs, so a call made against a grant
+  // that does not cover it fails with "connect Drive" rather than a Google 403.
+  const bind = (product: GoogleProduct) => ({ tokens, product, ...(account ? { account } : {}) });
+  return {
+    tokens,
+    gmail: new GmailService(bind('gmail')),
+    calendar: new CalendarService(bind('calendar')),
+    drive: new DriveService(bind('drive')),
+    docs: new DocsService(bind('drive')),
+    sheets: new SheetsService(bind('drive')),
+    slides: new SlidesService(bind('drive')),
+  };
+}
+
 function getDeps(): GoogleControllerDeps {
-  if (!deps) {
-    const tokens = GoogleWorkspaceTokenService.getInstance();
-    deps = {
-      tokens,
-      gmail: new GmailService({ tokens }),
-      calendar: new CalendarService({ tokens }),
-      drive: new DriveService({ tokens }),
-      docs: new DocsService({ tokens }),
-      sheets: new SheetsService({ tokens }),
-      slides: new SlidesService({ tokens }),
-    };
+  if (override) return override;
+  if (!defaultDeps) defaultDeps = buildDeps();
+  return defaultDeps;
+}
+
+/**
+ * The services for the Google account a request names, or the default set.
+ *
+ * Tests that install their own dependency set keep it whatever the request
+ * asks for — overriding it per account would make them untestable.
+ *
+ * @param req - Incoming request; `account` query or `X-Google-Account` header
+ * @returns The service set to use
+ */
+function depsForRequest(req: Request): GoogleControllerDeps {
+  if (override) return override;
+  const raw = typeof req.query.account === 'string' ? req.query.account : req.get('X-Google-Account') ?? '';
+  const account = raw.trim();
+  if (!account) return getDeps();
+  let set = byAccount.get(account);
+  if (!set) {
+    set = buildDeps(account);
+    byAccount.set(account, set);
   }
-  return deps;
+  return set;
 }
 
 /**
@@ -69,7 +108,9 @@ function getDeps(): GoogleControllerDeps {
  * @param next - Dependency set or null to rebuild lazily
  */
 export function setGoogleControllerDeps(next: GoogleControllerDeps | null): void {
-  deps = next;
+  override = next;
+  defaultDeps = null;
+  byAccount.clear();
 }
 
 /**
@@ -95,10 +136,46 @@ function resolveReturnUrl(req: Request): string {
  */
 function connectUrlOrNull(req: Request): string | null {
   try {
-    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req));
+    return getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectOptions(req));
   } catch {
     return null;
   }
+}
+
+/**
+ * Which products a connect request is for, and which Google account to sign
+ * in as.
+ *
+ * `products` narrows the consent screen to what the caller actually wants —
+ * asking for Calendar must not show "read all your mail". `loginHint` is
+ * what makes adding a *second* Google account possible: without it Google
+ * reuses whichever session the browser is already signed in to.
+ *
+ * @param req - Incoming request
+ * @returns Options for `buildConnectUrl`
+ */
+function connectOptions(req: Request): { products?: GoogleProduct[]; loginHint?: string; chooseAccount?: boolean } {
+  const raw = typeof req.query.products === 'string' ? req.query.products : '';
+  const wanted = new Set(raw.split(',').map((p) => p.trim().toLowerCase()));
+  const products = GOOGLE_PRODUCTS.filter((p) => wanted.has(p));
+  const hint = typeof req.query.loginHint === 'string' ? req.query.loginHint.trim() : '';
+  const chooseAccount = req.query.chooseAccount === '1' || req.query.chooseAccount === 'true';
+  return {
+    ...(products.length ? { products } : {}),
+    ...(hint ? { loginHint: hint } : {}),
+    ...(chooseAccount ? { chooseAccount } : {}),
+  };
+}
+
+/**
+ * The Google account a grant request names, if any.
+ *
+ * @param req - Incoming request
+ * @returns The email, or undefined for "the default connection"
+ */
+function accountOf(req: Request): string | undefined {
+  const raw = typeof req.query.account === 'string' ? req.query.account : req.get('X-Google-Account') ?? '';
+  return raw.trim() || undefined;
 }
 
 /**
@@ -189,7 +266,7 @@ export async function getStatus(req: Request, res: Response): Promise<void> {
  */
 export async function getConnectUrl(req: Request, res: Response): Promise<void> {
   try {
-    const url = getDeps().tokens.buildConnectUrl(resolveReturnUrl(req));
+    const url = getDeps().tokens.buildConnectUrl(resolveReturnUrl(req), connectOptions(req));
     res.json({ success: true, data: { url } });
   } catch (err) {
     sendGoogleError(req, res, err);
@@ -204,7 +281,30 @@ export async function getConnectUrl(req: Request, res: Response): Promise<void> 
  */
 export async function disconnect(req: Request, res: Response): Promise<void> {
   try {
-    const data = await getDeps().tokens.disconnect();
+    const account = accountOf(req);
+    const data = await getDeps().tokens.disconnect({ ...(account ? { account } : {}) });
+    res.json({ success: true, data });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * POST /api/google/default — choose which connected Google account answers
+ * a skill or agent that names none.
+ *
+ * @param req - Body `{ email }`
+ * @param res - Response
+ */
+export async function setDefaultAccount(req: Request, res: Response): Promise<void> {
+  try {
+    const body = (req.body ?? {}) as { email?: unknown };
+    const email = typeof body.email === 'string' ? body.email.trim() : '';
+    if (!email) {
+      res.status(400).json({ success: false, error: 'validation', message: 'email is required' });
+      return;
+    }
+    const data = await getDeps().tokens.setDefaultAccount(email);
     res.json({ success: true, data });
   } catch (err) {
     sendGoogleError(req, res, err);
@@ -223,7 +323,7 @@ export async function gmailSearch(req: Request, res: Response): Promise<void> {
     if (!query) {
       throw new GoogleWorkspaceError(400, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.VALIDATION, '"q" is required');
     }
-    const messages = await getDeps().gmail.search({ query, max: qInt(req, 'max') });
+    const messages = await depsForRequest(req).gmail.search({ query, max: qInt(req, 'max') });
     res.json({ success: true, data: { query, count: messages.length, messages } });
   } catch (err) {
     sendGoogleError(req, res, err);
@@ -238,7 +338,7 @@ export async function gmailSearch(req: Request, res: Response): Promise<void> {
  */
 export async function gmailRead(req: Request, res: Response): Promise<void> {
   try {
-    const message = await getDeps().gmail.read(String(req.params.id ?? ''));
+    const message = await depsForRequest(req).gmail.read(String(req.params.id ?? ''));
     res.json({ success: true, data: message });
   } catch (err) {
     sendGoogleError(req, res, err);
@@ -268,7 +368,7 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
       res.json({ success: true, data: { dryRun: true, raw: buildRfc822(input) } });
       return;
     }
-    const sent = await getDeps().gmail.send(input);
+    const sent = await depsForRequest(req).gmail.send(input);
     logger.info('Gmail message sent', { id: sent.id, threadId: sent.threadId, to: input.to });
     res.json({ success: true, data: sent });
   } catch (err) {
@@ -284,7 +384,7 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
  */
 export async function calendarList(req: Request, res: Response): Promise<void> {
   try {
-    const events = await getDeps().calendar.listEvents({
+    const events = await depsForRequest(req).calendar.listEvents({
       calendarId: q(req, 'calendarId') || undefined,
       timeMin: q(req, 'from') || undefined,
       timeMax: q(req, 'to') || undefined,
@@ -314,7 +414,7 @@ export async function calendarCreate(req: Request, res: Response): Promise<void>
       : typeof body.attendees === 'string'
         ? body.attendees.split(',')
         : [];
-    const event = await getDeps().calendar.createEvent({
+    const event = await depsForRequest(req).calendar.createEvent({
       calendarId: body.calendarId,
       summary: String(body.summary ?? ''),
       start: String(body.start ?? ''),
@@ -341,7 +441,7 @@ export async function calendarCreate(req: Request, res: Response): Promise<void>
  */
 export async function driveSearch(req: Request, res: Response): Promise<void> {
   try {
-    const files = await getDeps().drive.search({
+    const files = await depsForRequest(req).drive.search({
       query: q(req, 'q') || undefined,
       mimeType: q(req, 'mimeType') || undefined,
       folderId: q(req, 'folderId') || undefined,
@@ -361,7 +461,7 @@ export async function driveSearch(req: Request, res: Response): Promise<void> {
  */
 export async function driveGet(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().drive.get(String(req.params.id ?? '')) });
+    res.json({ success: true, data: await depsForRequest(req).drive.get(String(req.params.id ?? '')) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -375,7 +475,7 @@ export async function driveGet(req: Request, res: Response): Promise<void> {
  */
 export async function driveContent(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().drive.readContent(String(req.params.id ?? '')) });
+    res.json({ success: true, data: await depsForRequest(req).drive.readContent(String(req.params.id ?? '')) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -390,7 +490,7 @@ export async function driveContent(req: Request, res: Response): Promise<void> {
 export async function driveUpload(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { name?: string; content?: string; encoding?: string; mimeType?: string; folderId?: string; convertTo?: string };
-    const file = await getDeps().drive.upload({
+    const file = await depsForRequest(req).drive.upload({
       name: String(body.name ?? ''),
       content: typeof body.content === 'string' ? body.content : '',
       encoding: body.encoding === 'base64' ? 'base64' : 'utf8',
@@ -417,7 +517,7 @@ export async function driveUpload(req: Request, res: Response): Promise<void> {
  */
 export async function docsRead(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().docs.read(String(req.params.id ?? '')) });
+    res.json({ success: true, data: await depsForRequest(req).docs.read(String(req.params.id ?? '')) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -432,7 +532,7 @@ export async function docsRead(req: Request, res: Response): Promise<void> {
 export async function docsCreate(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { title?: string; text?: string };
-    const doc = await getDeps().docs.create({ title: String(body.title ?? ''), text: typeof body.text === 'string' ? body.text : undefined });
+    const doc = await depsForRequest(req).docs.create({ title: String(body.title ?? ''), text: typeof body.text === 'string' ? body.text : undefined });
     logger.info('Google Doc created', { id: doc.id, title: doc.title });
     res.json({ success: true, data: doc });
   } catch (err) {
@@ -449,7 +549,7 @@ export async function docsCreate(req: Request, res: Response): Promise<void> {
 export async function docsAppend(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { text?: string };
-    res.json({ success: true, data: await getDeps().docs.append(String(req.params.id ?? ''), String(body.text ?? '')) });
+    res.json({ success: true, data: await depsForRequest(req).docs.append(String(req.params.id ?? ''), String(body.text ?? '')) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -467,7 +567,7 @@ export async function docsAppend(req: Request, res: Response): Promise<void> {
  */
 export async function sheetsInfo(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().sheets.info(String(req.params.id ?? '')) });
+    res.json({ success: true, data: await depsForRequest(req).sheets.info(String(req.params.id ?? '')) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -481,7 +581,7 @@ export async function sheetsInfo(req: Request, res: Response): Promise<void> {
  */
 export async function sheetsRead(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().sheets.read(String(req.params.id ?? ''), q(req, 'range') || undefined) });
+    res.json({ success: true, data: await depsForRequest(req).sheets.read(String(req.params.id ?? ''), q(req, 'range') || undefined) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -496,7 +596,7 @@ export async function sheetsRead(req: Request, res: Response): Promise<void> {
 export async function sheetsCreate(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { title?: string; sheetTitle?: string; rows?: SheetCell[][] };
-    const info = await getDeps().sheets.create({ title: String(body.title ?? ''), sheetTitle: body.sheetTitle, rows: body.rows });
+    const info = await depsForRequest(req).sheets.create({ title: String(body.title ?? ''), sheetTitle: body.sheetTitle, rows: body.rows });
     logger.info('Google Sheet created', { id: info.id, title: info.title });
     res.json({ success: true, data: info });
   } catch (err) {
@@ -515,7 +615,7 @@ export async function sheetsWrite(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { range?: string; rows?: SheetCell[][]; mode?: string };
     const input = { spreadsheetId: String(req.params.id ?? ''), range: body.range, rows: body.rows as SheetCell[][] };
-    const result = body.mode === 'update' ? await getDeps().sheets.update(input) : await getDeps().sheets.append(input);
+    const result = body.mode === 'update' ? await depsForRequest(req).sheets.update(input) : await depsForRequest(req).sheets.append(input);
     res.json({ success: true, data: { mode: body.mode === 'update' ? 'update' : 'append', ...result } });
   } catch (err) {
     sendGoogleError(req, res, err);
@@ -534,7 +634,7 @@ export async function sheetsWrite(req: Request, res: Response): Promise<void> {
  */
 export async function slidesRead(req: Request, res: Response): Promise<void> {
   try {
-    res.json({ success: true, data: await getDeps().slides.read(String(req.params.id ?? '')) });
+    res.json({ success: true, data: await depsForRequest(req).slides.read(String(req.params.id ?? '')) });
   } catch (err) {
     sendGoogleError(req, res, err);
   }
@@ -549,7 +649,7 @@ export async function slidesRead(req: Request, res: Response): Promise<void> {
 export async function slidesCreate(req: Request, res: Response): Promise<void> {
   try {
     const body = (req.body ?? {}) as { title?: string; slides?: SlideOutline[] };
-    const deck = await getDeps().slides.create({ title: String(body.title ?? ''), slides: Array.isArray(body.slides) ? body.slides : [] });
+    const deck = await depsForRequest(req).slides.create({ title: String(body.title ?? ''), slides: Array.isArray(body.slides) ? body.slides : [] });
     logger.info('Google Slides deck created', { id: deck.id, title: deck.title, slides: deck.slideCount });
     res.json({ success: true, data: deck });
   } catch (err) {

@@ -23,6 +23,7 @@ Options:
   --query | -q   Gmail search query (required)
   --max   | -n   Result cap (default 20, max 100)
   --help  | -h   Show this help
+  --account     Which connected Google account to act as (default: your primary)
 EOF_USAGE
 }
 
@@ -35,10 +36,12 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   shift || true
 fi
 
+ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --query|-q) [ $# -ge 2 ] || error_exit "--query requires a value"; QUERY="$2"; shift 2 ;;
     --max|-n)   [ $# -ge 2 ] || error_exit "--max requires a value";   MAX="$2";   shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)  print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -48,7 +51,10 @@ if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$QUERY" ] && QUERY=$(printf '%s' "$INPUT" | jq -r '.query // .q // empty')
   [ -z "$MAX" ] && MAX=$(printf '%s' "$INPUT" | jq -r '.max // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 
 require_param "query (--query)" "$QUERY"
 

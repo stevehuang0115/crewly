@@ -88,8 +88,8 @@ export const CONNECTORS: ConnectorMeta[] = [
   },
   {
     id: 'google-workspace',
-    name: 'Google Workspace',
-    description: 'Let agents read your Gmail and Drive (Docs, Sheets, Slides), send mail, manage your Calendar and create documents.',
+    name: 'Google',
+    description: 'Connect Gmail, Calendar and Drive (Docs, Sheets, Slides) separately — and as many Google accounts as you need.',
     group: 'data',
     roleGated: true,
   },

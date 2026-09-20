@@ -21,6 +21,7 @@ Usage:
 Options:
   --id          Drive file id (required; from drive-search)
   --out         Save the content to this path instead of printing it (binary files are decoded)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -49,11 +50,12 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-ID=""; OUT_PATH=""
+ID=""; OUT_PATH=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --id)      [ $# -ge 2 ] || error_exit "--id requires a value";  ID="$2";       shift 2 ;;
     --out|-o)  [ $# -ge 2 ] || error_exit "--out requires a value"; OUT_PATH="$2"; shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -62,7 +64,10 @@ if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$ID" ]       && ID=$(printf '%s' "$INPUT" | jq -r '.id // .fileId // empty')
   [ -z "$OUT_PATH" ] && OUT_PATH=$(printf '%s' "$INPUT" | jq -r '.out // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 require_param "id (--id)" "$ID"
 RESPONSE=$(call GET "/google/drive/files/$(uri "$ID")/content") || { printf '%s\n' "$RESPONSE"; exit 1; }
 if printf '%s' "$RESPONSE" | jq -e '.truncated == true' >/dev/null 2>&1; then printf '%s\n' "$RESPONSE"; exit 0; fi

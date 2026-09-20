@@ -20,6 +20,7 @@ Usage:
 
 Options:
   --id          Document id (from drive-search or the docs.google.com URL)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -48,10 +49,11 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-ID=""
+ID=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --id)      [ $# -ge 2 ] || error_exit "--id requires a value"; ID="$2"; shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -59,7 +61,10 @@ done
 if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$ID" ] && ID=$(printf '%s' "$INPUT" | jq -r '.id // .documentId // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 # Accept a full docs.google.com URL too.
 ID=$(printf '%s' "$ID" | sed -E 's#.*/document/d/([^/?]+).*#\1#')
 require_param "id (--id)" "$ID"

@@ -1599,18 +1599,34 @@ export const GOOGLE_OAUTH_CONSTANTS = {
  * instance fetches a short-lived access token from Cloud and talks to
  * Google directly so mail content never passes through Cloud.
  */
+/**
+ * Google products a Crewly install connects independently.
+ *
+ * Consent is per product so a user who wants Calendar is not asked for their
+ * whole mailbox, and so an install that never touches mail or files stays out
+ * of Google's *restricted* scope tier (which requires a CASA security
+ * assessment to verify). `drive` covers Docs, Sheets and Slides — those APIs
+ * read through `drive.readonly` and write through `drive.file`.
+ */
+export const GOOGLE_PRODUCTS = ['gmail', 'calendar', 'drive'] as const;
+
+/** One of {@link GOOGLE_PRODUCTS}. */
+export type GoogleProduct = (typeof GOOGLE_PRODUCTS)[number];
+
 export const GOOGLE_WORKSPACE_CONSTANTS = {
 	/** Cloud API prefix for the Workspace grant (appended to the cloud URL) */
 	CLOUD_PATH: '/api/cloud/google/workspace',
 	/** Cloud sub-paths under CLOUD_PATH */
 	CLOUD_ENDPOINTS: {
-		/** GET → { connected, email, scopes, grantedAt } */
+		/** GET → { connected, connections[], email, scopes, grantedAt } */
 		STATUS: '/status',
-		/** GET → { accessToken, expiresAt, scopes, email } */
+		/** GET ?email=&product= → { accessToken, expiresAt, scopes, email, products } */
 		TOKEN: '/token',
-		/** GET ?token=&returnUrl= → 302 to Google consent */
+		/** GET ?token=&returnUrl=&products=&loginHint= → 302 to Google consent */
 		START: '/start',
-		/** DELETE CLOUD_PATH itself → { removed } */
+		/** POST { email } → { updated }; choose the account used when none is named */
+		DEFAULT: '/default',
+		/** DELETE CLOUD_PATH itself, optional ?email= → { removed } */
 		DISCONNECT: '',
 	},
 	/** Re-fetch the access token this long before Cloud's `expiresAt` (ms) */

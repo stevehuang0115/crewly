@@ -15,7 +15,7 @@
 
 import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { GOOGLE_WORKSPACE_CONSTANTS } from '../../constants.js';
+import { GOOGLE_WORKSPACE_CONSTANTS, type GoogleProduct } from '../../constants.js';
 
 /** The slice of CloudClientService this service needs. */
 export interface GoogleWorkspaceCloudClient {
@@ -32,11 +32,25 @@ export interface GoogleWorkspaceTokenServiceDeps {
 }
 
 /** Cloud's `/status` payload, plus whether this instance is signed in to Cloud at all. */
+/** One connected Google account and what it may be used for. */
+export interface GoogleConnection {
+  email: string;
+  /** Products the grant covers, derived by Cloud from the granted scopes. */
+  products: GoogleProduct[];
+  scopes: string[];
+  grantedAt: string;
+  /** True for the account used when a caller names none. */
+  isDefault: boolean;
+}
+
 export interface GoogleWorkspaceStatus {
-  /** True when Cloud holds a live Workspace grant for the signed-in account */
+  /** True when Cloud holds at least one live Workspace grant */
   connected: boolean;
   /** True when this instance is signed in to Crewly Cloud */
   cloudConnected: boolean;
+  /** Every connected Google account; empty when none. */
+  connections: GoogleConnection[];
+  /** The default connection's details — kept for callers written before multi-account. */
   email?: string;
   scopes?: string[];
   grantedAt?: string;
@@ -48,11 +62,13 @@ interface CloudTokenPayload {
   expiresAt: string;
   scopes?: string[];
   email?: string;
+  products?: GoogleProduct[];
 }
 
-/** Cloud's `/status` payload. */
+/** Cloud's `/status` payload. `connections` is absent on an older Cloud. */
 interface CloudStatusPayload {
   connected: boolean;
+  connections?: GoogleConnection[];
   email?: string;
   scopes?: string[];
   grantedAt?: string;
@@ -120,10 +136,19 @@ export class GoogleWorkspaceTokenService {
   private readonly fetchImpl: typeof fetch;
   private readonly nowFn: () => number;
 
-  /** Cached token + absolute expiry (ms since epoch), or null. */
-  private cached: { accessToken: string; expiresAtMs: number; email?: string; scopes?: string[] } | null = null;
-  /** The one refresh currently on the wire, so concurrent callers share it. */
-  private inflight: Promise<string> | null = null;
+  /**
+   * Cached token per Google account (`''` = whichever Cloud calls default).
+   *
+   * Keyed, not single, because one Crewly account may have several Google
+   * accounts connected and their tokens are unrelated — a single slot made
+   * the second account evict the first on every call.
+   */
+  private readonly cached = new Map<
+    string,
+    { accessToken: string; expiresAtMs: number; email?: string; scopes?: string[]; products?: GoogleProduct[] }
+  >();
+  /** The refresh currently on the wire per account, so concurrent callers share it. */
+  private readonly inflight = new Map<string, Promise<string>>();
 
   /**
    * @param deps - Cloud client slice, fetch and clock overrides (tests)
@@ -172,25 +197,51 @@ export class GoogleWorkspaceTokenService {
    * @returns Bearer token for Gmail / Calendar
    * @throws GoogleWorkspaceError — not_logged_in / not_connected / not_configured / google_error / network
    */
-  async getAccessToken(): Promise<string> {
+  async getAccessToken(options: { account?: string; product?: GoogleProduct } = {}): Promise<string> {
+    const key = options.account ?? '';
     const margin = GOOGLE_WORKSPACE_CONSTANTS.TOKEN_REFRESH_MARGIN_MS;
-    if (this.cached && this.cached.expiresAtMs - margin > this.nowFn()) {
-      return this.cached.accessToken;
+    const entry = this.cached.get(key);
+    if (entry && entry.expiresAtMs - margin > this.nowFn()) {
+      // Checked against the cache too, not just on the Cloud round-trip: a
+      // token cached for Calendar would otherwise be handed to a Drive call
+      // and fail at Google with an opaque 403.
+      this.assertProduct(entry.products, options.product, entry.email ?? options.account);
+      return entry.accessToken;
     }
-    if (this.inflight) return this.inflight;
+    const pending = this.inflight.get(key);
+    if (pending) return pending;
 
-    this.inflight = this.refresh().finally(() => {
-      this.inflight = null;
-    });
-    return this.inflight;
+    const task = this.refresh(options).finally(() => this.inflight.delete(key));
+    this.inflight.set(key, task);
+    return task;
   }
 
   /**
-   * Forget the cached token so the next call refreshes (used after Google
-   * answers 401, or when the grant is revoked).
+   * Refuse a token that does not cover the product the caller needs.
+   *
+   * @param granted - Products the grant covers, when Cloud reported them
+   * @param wanted - Product the caller needs, if it named one
+   * @param email - Google account, for the message
+   * @throws GoogleWorkspaceError not_connected, naming what to connect
    */
-  clearCache(): void {
-    this.cached = null;
+  private assertProduct(granted: GoogleProduct[] | undefined, wanted?: GoogleProduct, email?: string): void {
+    if (!wanted || !granted || granted.includes(wanted)) return;
+    throw new GoogleWorkspaceError(
+      404,
+      GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.NOT_CONNECTED,
+      `${email ?? 'This Google account'} is not connected for ${wanted}. Connect ${wanted} on the Connections page.`,
+    );
+  }
+
+  /**
+   * Forget cached tokens so the next call refreshes (used after Google
+   * answers 401, or when a grant is revoked).
+   *
+   * @param account - Only this Google account; omit to clear every one
+   */
+  clearCache(account?: string): void {
+    if (account === undefined) this.cached.clear();
+    else this.cached.delete(account);
   }
 
   /**
@@ -203,7 +254,7 @@ export class GoogleWorkspaceTokenService {
    */
   async status(): Promise<GoogleWorkspaceStatus> {
     if (!this.isCloudAvailable()) {
-      return { connected: false, cloudConnected: false };
+      return { connected: false, cloudConnected: false, connections: [] };
     }
     try {
       const data = await this.cloudRequest<CloudStatusPayload>('GET', GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.STATUS);
@@ -211,6 +262,13 @@ export class GoogleWorkspaceTokenService {
       return {
         connected: !!data.connected,
         cloudConnected: true,
+        // An older Cloud reports no `connections`; synthesise the single one
+        // it does describe so callers only ever handle the list shape.
+        connections:
+          data.connections ??
+          (data.connected && data.email
+            ? [{ email: data.email, products: [], scopes: data.scopes ?? [], grantedAt: data.grantedAt ?? '', isDefault: true }]
+            : []),
         ...(data.email ? { email: data.email } : {}),
         ...(data.scopes ? { scopes: data.scopes } : {}),
         ...(data.grantedAt ? { grantedAt: data.grantedAt } : {}),
@@ -218,7 +276,7 @@ export class GoogleWorkspaceTokenService {
     } catch (err) {
       if (err instanceof GoogleWorkspaceError && err.code === GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.NOT_CONNECTED) {
         this.clearCache();
-        return { connected: false, cloudConnected: true };
+        return { connected: false, cloudConnected: true, connections: [] };
       }
       throw err;
     }
@@ -230,10 +288,32 @@ export class GoogleWorkspaceTokenService {
    * @returns Whether Cloud had a grant to remove
    * @throws GoogleWorkspaceError when not signed in to Cloud or Cloud fails
    */
-  async disconnect(): Promise<{ removed: boolean }> {
-    this.clearCache();
-    const data = await this.cloudRequest<{ removed?: boolean }>('DELETE', GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.DISCONNECT);
+  async disconnect(options: { account?: string } = {}): Promise<{ removed: boolean }> {
+    this.clearCache(options.account);
+    const suffix = options.account
+      ? `${GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.DISCONNECT}?email=${encodeURIComponent(options.account)}`
+      : GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.DISCONNECT;
+    const data = await this.cloudRequest<{ removed?: boolean }>('DELETE', suffix);
     return { removed: !!data.removed };
+  }
+
+  /**
+   * Choose which connected Google account answers a call that names none.
+   *
+   * @param account - The Google account to make default
+   * @returns `{ updated }`
+   * @throws GoogleWorkspaceError when not signed in to Cloud, or no such grant
+   */
+  async setDefaultAccount(account: string): Promise<{ updated: boolean }> {
+    const data = await this.cloudRequest<{ updated?: boolean }>(
+      'POST',
+      GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.DEFAULT,
+      { email: account },
+    );
+    // The default decides which grant an unqualified call lands on, so every
+    // cached token is now potentially for the wrong account.
+    this.clearCache();
+    return { updated: !!data.updated };
   }
 
   /**
@@ -245,7 +325,10 @@ export class GoogleWorkspaceTokenService {
    * @returns Absolute URL to open
    * @throws GoogleWorkspaceError(401, not_logged_in) when not signed in to Cloud
    */
-  buildConnectUrl(returnUrl: string): string {
+  buildConnectUrl(
+    returnUrl: string,
+    options: { products?: readonly GoogleProduct[]; loginHint?: string; chooseAccount?: boolean } = {},
+  ): string {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
     if (!this.isCloudAvailable() || !token || !base) {
@@ -256,6 +339,11 @@ export class GoogleWorkspaceTokenService {
     );
     url.searchParams.set('token', token);
     url.searchParams.set('returnUrl', returnUrl);
+    if (options.products?.length) url.searchParams.set('products', options.products.join(','));
+    // Without a hint Google reuses the session the browser is already signed
+    // in to, so "add another account" would silently re-consent the same one.
+    if (options.loginHint) url.searchParams.set('loginHint', options.loginHint);
+    if (options.chooseAccount) url.searchParams.set('chooseAccount', '1');
     return url.toString();
   }
 
@@ -264,24 +352,34 @@ export class GoogleWorkspaceTokenService {
    *
    * @returns The fresh access token
    */
-  private async refresh(): Promise<string> {
+  private async refresh(options: { account?: string; product?: GoogleProduct } = {}): Promise<string> {
+    const key = options.account ?? '';
+    const query = new URLSearchParams();
+    if (options.account) query.set('email', options.account);
+    // Cloud is the authority on whether the grant covers this product; asking
+    // for it here turns "Google said 403" into "Gmail is not connected".
+    if (options.product) query.set('product', options.product);
+    const suffix = query.size
+      ? `${GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.TOKEN}?${query.toString()}`
+      : GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.TOKEN;
     try {
-      const data = await this.cloudRequest<CloudTokenPayload>('GET', GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.TOKEN);
+      const data = await this.cloudRequest<CloudTokenPayload>('GET', suffix);
       if (!data.accessToken) {
         throw new GoogleWorkspaceError(502, GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES.GOOGLE_ERROR, 'Cloud returned no access token.');
       }
       const expiresAtMs = Date.parse(data.expiresAt);
-      this.cached = {
+      this.cached.set(key, {
         accessToken: data.accessToken,
         // An unparseable expiry is treated as already stale so we refresh next time.
         expiresAtMs: Number.isFinite(expiresAtMs) ? expiresAtMs : this.nowFn(),
         ...(data.email ? { email: data.email } : {}),
         ...(data.scopes ? { scopes: data.scopes } : {}),
-      };
-      this.logger.debug('Google access token refreshed', { expiresAt: data.expiresAt });
+        ...(data.products ? { products: data.products } : {}),
+      });
+      this.logger.debug('Google access token refreshed', { expiresAt: data.expiresAt, account: data.email });
       return data.accessToken;
     } catch (err) {
-      this.cached = null;
+      this.cached.delete(key);
       throw err;
     }
   }
@@ -295,7 +393,7 @@ export class GoogleWorkspaceTokenService {
    * @returns The `data` payload
    * @throws GoogleWorkspaceError mapped via {@link mapCloudFailure}
    */
-  private async cloudRequest<T>(method: 'GET' | 'DELETE', suffix: string): Promise<T> {
+  private async cloudRequest<T>(method: 'GET' | 'DELETE' | 'POST', suffix: string, body?: unknown): Promise<T> {
     const token = this.cloud.getToken();
     const base = this.cloud.getCloudUrl();
     if (!this.isCloudAvailable() || !token || !base) {
@@ -306,7 +404,11 @@ export class GoogleWorkspaceTokenService {
     try {
       res = await this.fetchImpl(url, {
         method,
-        headers: { Authorization: `Bearer ${token}` },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
         signal: AbortSignal.timeout(GOOGLE_WORKSPACE_CONSTANTS.REQUEST_TIMEOUT_MS),
       });
     } catch (err) {

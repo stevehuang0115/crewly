@@ -8,19 +8,36 @@
  * @module services/google/google-api.client
  */
 
-import { GOOGLE_WORKSPACE_CONSTANTS } from '../../constants.js';
+import { GOOGLE_WORKSPACE_CONSTANTS, type GoogleProduct } from '../../constants.js';
 import { GoogleWorkspaceError } from './google-workspace-token.service.js';
 
 /** The slice of GoogleWorkspaceTokenService the Google services need. */
 export interface GoogleTokenProvider {
-  getAccessToken(): Promise<string>;
-  clearCache(): void;
+  getAccessToken(options?: { account?: string; product?: GoogleProduct }): Promise<string>;
+  clearCache(account?: string): void;
 }
 
 /** Shared constructor dependencies for Gmail / Calendar services. */
 export interface GoogleApiDeps {
   tokens: GoogleTokenProvider;
   fetchImpl?: typeof fetch;
+  /**
+   * Which Google product this service speaks to.
+   *
+   * Consent is per product, so a Drive call must not be made with a grant
+   * that only covers Calendar. Naming it here — once, where the service is
+   * built — means every request through {@link googleRequest} is checked
+   * without each method having to remember.
+   */
+  product?: GoogleProduct;
+  /**
+   * Which connected Google account to act as; omit for the default one.
+   *
+   * Bound to the service rather than passed per call: one Crewly account can
+   * have several Google accounts connected, and a service instance belongs
+   * to exactly one of them.
+   */
+  account?: string;
 }
 
 /** Google's error envelope (`{ error: { code, message, status } }`). */
@@ -90,7 +107,10 @@ export interface GoogleRequestInit {
  *   failures → 502 google_error, unreachable → 502 network
  */
 export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: GoogleRequestInit = {}): Promise<T> {
-  const token = await deps.tokens.getAccessToken();
+  const token = await deps.tokens.getAccessToken({
+    ...(deps.account ? { account: deps.account } : {}),
+    ...(deps.product ? { product: deps.product } : {}),
+  });
   const fetchImpl = deps.fetchImpl ?? fetch;
   const CODES = GOOGLE_WORKSPACE_CONSTANTS.ERROR_CODES;
   const wantsText = init.responseType === 'text';
@@ -120,7 +140,7 @@ export async function googleRequest<T>(deps: GoogleApiDeps, url: string, init: G
   if (!res.ok) {
     const message = googleErrorMessage(text) ?? `Google request failed (${res.status})`;
     if (res.status === 401) {
-      deps.tokens.clearCache();
+      deps.tokens.clearCache(deps.account);
       throw new GoogleWorkspaceError(401, CODES.GOOGLE_ERROR, `Google rejected the access token: ${message}`);
     }
     const passthrough = res.status === 403 || res.status === 404 || res.status === 429;

@@ -24,6 +24,7 @@ Options:
   --title         Deck title (required)
   --slides        JSON array of {title, bullets[]}
   --outline-file  Markdown outline: each "# Heading" starts a slide, "-"/"*" lines are its bullets
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -52,12 +53,13 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-TITLE=""; SLIDES=""; OUTLINE_FILE=""
+TITLE=""; SLIDES=""; OUTLINE_FILE=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title)        [ $# -ge 2 ] || error_exit "--title requires a value";        TITLE="$2";        shift 2 ;;
     --slides)       [ $# -ge 2 ] || error_exit "--slides requires a value";       SLIDES="$2";       shift 2 ;;
     --outline-file) [ $# -ge 2 ] || error_exit "--outline-file requires a value"; OUTLINE_FILE="$2"; shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)      print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -66,7 +68,10 @@ if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$TITLE" ]  && TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
   [ -z "$SLIDES" ] && SLIDES=$(printf '%s' "$INPUT" | jq -c '.slides // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 if [ -n "$OUTLINE_FILE" ]; then
   [ -f "$OUTLINE_FILE" ] || error_exit "outline file not found: $OUTLINE_FILE"
   SLIDES=$(python3 - "$OUTLINE_FILE" <<'PY'

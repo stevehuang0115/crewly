@@ -24,6 +24,7 @@ Options:
   --id          Spreadsheet id (or its URL)
   --range       A1 range, e.g. "Q3!A1:D50" (default A1:Z1000 on the first tab)
   --info        Print the title and tab names instead of values
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -52,12 +53,13 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-ID=""; RANGE=""; INFO=""
+ID=""; RANGE=""; INFO=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --id)      [ $# -ge 2 ] || error_exit "--id requires a value";    ID="$2";    shift 2 ;;
     --range)   [ $# -ge 2 ] || error_exit "--range requires a value"; RANGE="$2"; shift 2 ;;
     --info)    INFO=1; shift ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -67,7 +69,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$ID" ]    && ID=$(printf '%s' "$INPUT" | jq -r '.id // .spreadsheetId // empty')
   [ -z "$RANGE" ] && RANGE=$(printf '%s' "$INPUT" | jq -r '.range // empty')
   [ -z "$INFO" ]  && INFO=$(printf '%s' "$INPUT" | jq -r 'if .info == true then "1" else "" end')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 ID=$(printf '%s' "$ID" | sed -E 's#.*/spreadsheets/d/([^/?]+).*#\1#')
 require_param "id (--id)" "$ID"
 if [ -n "$INFO" ]; then

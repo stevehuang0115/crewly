@@ -28,6 +28,7 @@ Options:
   --mime        MIME type override
   --folder      Destination folder id (default: My Drive root)
   --convert     Convert on upload: doc | sheet | slides (e.g. a .docx/.csv/.pptx becomes a Google-native file)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -56,7 +57,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-FILE=""; NAME=""; TEXT=""; MIME=""; FOLDER=""; CONVERT=""
+FILE=""; NAME=""; TEXT=""; MIME=""; FOLDER=""; CONVERT=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --path|-p) [ $# -ge 2 ] || error_exit "--path requires a value";    FILE="$2";    shift 2 ;;
@@ -65,6 +66,7 @@ while [[ $# -gt 0 ]]; do
     --mime)    [ $# -ge 2 ] || error_exit "--mime requires a value";    MIME="$2";    shift 2 ;;
     --folder)  [ $# -ge 2 ] || error_exit "--folder requires a value";  FOLDER="$2";  shift 2 ;;
     --convert) [ $# -ge 2 ] || error_exit "--convert requires a value"; CONVERT="$2"; shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -77,7 +79,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$MIME" ]    && MIME=$(printf '%s' "$INPUT" | jq -r '.mime // .mimeType // empty')
   [ -z "$FOLDER" ]  && FOLDER=$(printf '%s' "$INPUT" | jq -r '.folder // .folderId // empty')
   [ -z "$CONVERT" ] && CONVERT=$(printf '%s' "$INPUT" | jq -r '.convert // .convertTo // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 case "$CONVERT" in
   doc|docs) CONVERT="application/vnd.google-apps.document" ;;
   sheet|sheets) CONVERT="application/vnd.google-apps.spreadsheet" ;;

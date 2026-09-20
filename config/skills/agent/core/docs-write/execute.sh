@@ -27,6 +27,7 @@ Options:
   --id          Append to this document instead (must be one Crewly created, or the grant needs the Docs scope)
   --text        Body text (plain; blank line = new paragraph)
   --text-file   Read the body from a file
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -55,13 +56,14 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-TITLE=""; ID=""; TEXT=""; TEXT_FILE=""
+TITLE=""; ID=""; TEXT=""; TEXT_FILE=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --title)     [ $# -ge 2 ] || error_exit "--title requires a value";     TITLE="$2";     shift 2 ;;
     --id)        [ $# -ge 2 ] || error_exit "--id requires a value";        ID="$2";        shift 2 ;;
     --text)      [ $# -ge 2 ] || error_exit "--text requires a value";      TEXT="$2";      shift 2 ;;
     --text-file) [ $# -ge 2 ] || error_exit "--text-file requires a value"; TEXT_FILE="$2"; shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)   print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -71,7 +73,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$TITLE" ] && TITLE=$(printf '%s' "$INPUT" | jq -r '.title // empty')
   [ -z "$ID" ]    && ID=$(printf '%s' "$INPUT" | jq -r '.id // .documentId // empty')
   [ -z "$TEXT" ]  && TEXT=$(printf '%s' "$INPUT" | jq -r '.text // .body // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 if [ -n "$TEXT_FILE" ]; then
   [ -f "$TEXT_FILE" ] || error_exit "text file not found: $TEXT_FILE"
   TEXT=$(cat "$TEXT_FILE")

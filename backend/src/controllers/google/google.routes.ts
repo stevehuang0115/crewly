@@ -13,6 +13,7 @@ import {
   getStatus,
   getConnectUrl,
   disconnect,
+  setDefaultAccount,
   gmailSearch,
   gmailRead,
   gmailSend,
@@ -39,7 +40,8 @@ import {
  * Routes (everything after /disconnect is behind the connector's role allowlist):
  * - GET    /status                — grant status (connected, email, scopes)
  * - GET    /connect-url           — Cloud consent-start URL for the browser
- * - DELETE /disconnect            — revoke + forget the grant
+ * - POST   /default                — choose the account used when none is named
+ * - DELETE /disconnect            — revoke + forget the grant (optional ?account=)
  * - GET    /gmail/search          — ?q=&max=
  * - GET    /gmail/messages/:id    — read one message
  * - POST   /gmail/send            — { to, cc?, subject, text, threadId?, inReplyTo?, dryRun? }
@@ -66,6 +68,7 @@ export function createGoogleRouter(): Router {
 
   router.get('/status', getStatus);
   router.get('/connect-url', getConnectUrl);
+  router.post('/default', setDefaultAccount);
   router.delete('/disconnect', disconnect);
 
   // Everything below touches the owner's Google data, so it goes through the

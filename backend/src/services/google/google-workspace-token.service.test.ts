@@ -170,10 +170,100 @@ describe('getAccessToken', () => {
   });
 });
 
+describe('multiple Google accounts and per-product grants', () => {
+  /** A Cloud /token payload. */
+  function tokenPayload(over: Record<string, unknown> = {}) {
+    return jsonResponse({
+      success: true,
+      data: {
+        accessToken: 'ya29.default',
+        expiresAt: new Date(T0 + 3_600_000).toISOString(),
+        email: 'first@gmail.com',
+        products: ['gmail', 'calendar', 'drive'],
+        ...over,
+      },
+    });
+  }
+
+  it('caches a token per Google account instead of letting the second evict the first', async () => {
+    fetchMock
+      .mockResolvedValueOnce(tokenPayload({ accessToken: 'tok-first', email: 'first@gmail.com' }))
+      .mockResolvedValueOnce(tokenPayload({ accessToken: 'tok-second', email: 'second@gmail.com' }));
+
+    expect(await service.getAccessToken({ account: 'first@gmail.com' })).toBe('tok-first');
+    expect(await service.getAccessToken({ account: 'second@gmail.com' })).toBe('tok-second');
+    // Both are now cached: neither needs another round-trip.
+    expect(await service.getAccessToken({ account: 'first@gmail.com' })).toBe('tok-first');
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks Cloud for the named account and product', async () => {
+    fetchMock.mockResolvedValueOnce(tokenPayload());
+    await service.getAccessToken({ account: 'second@gmail.com', product: 'drive' });
+    const url = (fetchMock.mock.calls[0] as [string])[0];
+    expect(url).toContain(`${PREFIX}/token?`);
+    expect(url).toContain('email=second%40gmail.com');
+    expect(url).toContain('product=drive');
+  });
+
+  it('sends no query at all for the default account, so an older Cloud still answers', async () => {
+    fetchMock.mockResolvedValueOnce(tokenPayload());
+    await service.getAccessToken();
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe(`${PREFIX}/token`);
+  });
+
+  it('refuses a cached token for a product the grant does not cover', async () => {
+    fetchMock.mockResolvedValueOnce(tokenPayload({ products: ['calendar'] }));
+    expect(await service.getAccessToken({ product: 'calendar' })).toBe('ya29.default');
+    // Served from cache — and still refused, rather than handed to Drive to
+    // fail at Google with an opaque 403.
+    await expect(service.getAccessToken({ product: 'drive' })).rejects.toMatchObject({ code: 'not_connected' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears one account without disturbing the other', async () => {
+    fetchMock
+      .mockResolvedValueOnce(tokenPayload({ accessToken: 'tok-first', email: 'first@gmail.com' }))
+      .mockResolvedValueOnce(tokenPayload({ accessToken: 'tok-second', email: 'second@gmail.com' }))
+      .mockResolvedValueOnce(tokenPayload({ accessToken: 'tok-first-2', email: 'first@gmail.com' }));
+    await service.getAccessToken({ account: 'first@gmail.com' });
+    await service.getAccessToken({ account: 'second@gmail.com' });
+
+    service.clearCache('first@gmail.com');
+    expect(await service.getAccessToken({ account: 'first@gmail.com' })).toBe('tok-first-2');
+    expect(await service.getAccessToken({ account: 'second@gmail.com' })).toBe('tok-second');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('builds a consent URL for just the products asked for, with a login hint', () => {
+    const url = new URL(
+      service.buildConnectUrl('https://dash.example/connections', {
+        products: ['calendar'],
+        loginHint: 'second@gmail.com',
+      }),
+    );
+    expect(url.searchParams.get('products')).toBe('calendar');
+    expect(url.searchParams.get('loginHint')).toBe('second@gmail.com');
+    expect(url.searchParams.get('returnUrl')).toBe('https://dash.example/connections');
+  });
+
+  it('omits products and loginHint when none were given', () => {
+    const url = new URL(service.buildConnectUrl('https://dash.example/connections'));
+    expect(url.searchParams.has('products')).toBe(false);
+    expect(url.searchParams.has('loginHint')).toBe(false);
+  });
+
+  it('disconnects one named account', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ success: true, data: { removed: true } }));
+    await service.disconnect({ account: 'second@gmail.com' });
+    expect((fetchMock.mock.calls[0] as [string])[0]).toBe(`${PREFIX}?email=second%40gmail.com`);
+  });
+});
+
 describe('status', () => {
   it('reports cloudConnected:false without a Cloud round-trip when not signed in', async () => {
     cloud.token = null;
-    await expect(service.status()).resolves.toEqual({ connected: false, cloudConnected: false });
+    await expect(service.status()).resolves.toEqual({ connected: false, cloudConnected: false, connections: [] });
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -185,6 +275,11 @@ describe('status', () => {
     await expect(service.status()).resolves.toEqual({
       connected: true,
       cloudConnected: true,
+      // An older Cloud sends no `connections`; the single grant it does
+      // describe is surfaced as a one-entry list so callers need one shape.
+      connections: [
+        { email: 'owner@example.com', products: [], scopes: ['a'], grantedAt: '2026-09-18T00:00:00.000Z', isDefault: true },
+      ],
       email: 'owner@example.com',
       scopes: ['a'],
       grantedAt: '2026-09-18T00:00:00.000Z',
@@ -194,7 +289,7 @@ describe('status', () => {
 
   it('turns a 404 not_connected into connected:false rather than throwing', async () => {
     fetchMock.mockResolvedValueOnce(jsonResponse({ success: false, error: 'not_connected', code: 'not_connected' }, 404));
-    await expect(service.status()).resolves.toEqual({ connected: false, cloudConnected: true });
+    await expect(service.status()).resolves.toEqual({ connected: false, cloudConnected: true, connections: [] });
   });
 
   it('still throws for a Cloud outage', async () => {

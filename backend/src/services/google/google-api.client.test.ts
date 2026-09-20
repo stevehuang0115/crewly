@@ -97,3 +97,41 @@ describe('googleRequest', () => {
     await expect(googleRequest(deps, 'https://g/x')).rejects.toMatchObject({ status: 502, code: 'google_error' });
   });
 });
+
+describe('account and product plumbing', () => {
+  // A service is bound to one Google account and one product; every request
+  // it makes must carry both, or a Drive call could be served a token that
+  // only covers Calendar and fail at Google with an opaque 403.
+  it('passes the bound account and product to the token service', async () => {
+    const getAccessToken = jest.fn().mockResolvedValue('ya29.tok');
+    const bound = {
+      tokens: { getAccessToken, clearCache: jest.fn() },
+      fetchImpl: jest.fn().mockResolvedValue(response(200, '{}')) as unknown as typeof fetch,
+      product: 'drive' as const,
+      account: 'work@company.com',
+    };
+    await googleRequest(bound, 'https://g/x');
+    expect(getAccessToken).toHaveBeenCalledWith({ account: 'work@company.com', product: 'drive' });
+  });
+
+  it('asks for the default account when none is bound', async () => {
+    const getAccessToken = jest.fn().mockResolvedValue('ya29.tok');
+    const unbound = {
+      tokens: { getAccessToken, clearCache: jest.fn() },
+      fetchImpl: jest.fn().mockResolvedValue(response(200, '{}')) as unknown as typeof fetch,
+    };
+    await googleRequest(unbound, 'https://g/x');
+    expect(getAccessToken).toHaveBeenCalledWith({});
+  });
+
+  it('drops only the bound account\'s cached token on a 401', async () => {
+    const clearOne = jest.fn();
+    const bound = {
+      tokens: { getAccessToken: jest.fn().mockResolvedValue('ya29.tok'), clearCache: clearOne },
+      fetchImpl: jest.fn().mockResolvedValue(response(401, '{}')) as unknown as typeof fetch,
+      account: 'work@company.com',
+    };
+    await expect(googleRequest(bound, 'https://g/x')).rejects.toMatchObject({ status: 401 });
+    expect(clearOne).toHaveBeenCalledWith('work@company.com');
+  });
+});

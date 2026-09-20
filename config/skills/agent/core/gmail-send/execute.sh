@@ -31,6 +31,7 @@ Options:
   --thread-id     Reply inside this Gmail thread
   --in-reply-to   Message-ID being answered (sets In-Reply-To / References)
   --dry-run       Preview only; nothing is sent (also: CREWLY_GMAIL_SEND_DRY_RUN=1)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h     Show this help
 EOF_USAGE
 }
@@ -44,6 +45,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   shift || true
 fi
 
+ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --to)          [ $# -ge 2 ] || error_exit "--to requires a value";          TO="$2";          shift 2 ;;
@@ -54,6 +56,7 @@ while [[ $# -gt 0 ]]; do
     --thread-id)   [ $# -ge 2 ] || error_exit "--thread-id requires a value";   THREAD_ID="$2";   shift 2 ;;
     --in-reply-to) [ $# -ge 2 ] || error_exit "--in-reply-to requires a value"; IN_REPLY_TO="$2"; shift 2 ;;
     --dry-run)     DRY_RUN=1; shift ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)     print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -68,7 +71,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$THREAD_ID" ]   && THREAD_ID=$(printf '%s' "$INPUT" | jq -r '.threadId // empty')
   [ -z "$IN_REPLY_TO" ] && IN_REPLY_TO=$(printf '%s' "$INPUT" | jq -r '.inReplyTo // empty')
   [ -z "$DRY_RUN" ]     && DRY_RUN=$(printf '%s' "$INPUT" | jq -r 'if .dryRun == true then "1" else "" end')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 
 if [ -n "$TEXT_FILE" ]; then
   [ -f "$TEXT_FILE" ] || error_exit "text file not found: $TEXT_FILE"

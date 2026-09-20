@@ -23,6 +23,7 @@ Options:
   --mime        Restrict to a type: doc | sheet | slides | pdf | folder | any MIME type
   --folder      Restrict to a Drive folder id
   --max         Result cap (default 20, max 100)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -51,13 +52,14 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   INPUT_JSON="$1"
   shift || true
 fi
-QUERY=""; MIME=""; FOLDER=""; MAX=""
+QUERY=""; MIME=""; FOLDER=""; MAX=""; ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --query|-q) [ $# -ge 2 ] || error_exit "--query requires a value"; QUERY="$2"; shift 2 ;;
     --mime)     [ $# -ge 2 ] || error_exit "--mime requires a value";  MIME="$2";  shift 2 ;;
     --folder)   [ $# -ge 2 ] || error_exit "--folder requires a value"; FOLDER="$2"; shift 2 ;;
     --max|-n)   [ $# -ge 2 ] || error_exit "--max requires a value";   MAX="$2";   shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h)  print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -68,7 +70,10 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$MIME" ]   && MIME=$(printf '%s' "$INPUT" | jq -r '.mime // .mimeType // empty')
   [ -z "$FOLDER" ] && FOLDER=$(printf '%s' "$INPUT" | jq -r '.folder // .folderId // empty')
   [ -z "$MAX" ]    && MAX=$(printf '%s' "$INPUT" | jq -r '.max // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 case "$MIME" in
   doc|docs) MIME="application/vnd.google-apps.document" ;;
   sheet|sheets) MIME="application/vnd.google-apps.spreadsheet" ;;

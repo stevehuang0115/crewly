@@ -20,6 +20,7 @@ Usage:
 
 Options:
   --id   | -i   Gmail message id (required; from gmail-search)
+  --account     Which connected Google account to act as (default: your primary)
   --help | -h   Show this help
 EOF_USAGE
 }
@@ -32,9 +33,11 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   shift || true
 fi
 
+ACCOUNT=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --id|-i)   [ $# -ge 2 ] || error_exit "--id requires a value"; ID="$2"; shift 2 ;;
+    --account)  [ $# -ge 2 ] || error_exit "--account requires a value"; ACCOUNT="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
@@ -43,7 +46,10 @@ done
 if [ -n "$INPUT_JSON" ]; then
   INPUT=$(read_json_input "$INPUT_JSON")
   [ -z "$ID" ] && ID=$(printf '%s' "$INPUT" | jq -r '.id // .messageId // empty')
+  [ -z "$ACCOUNT" ] && ACCOUNT=$(printf '%s' "$INPUT" | jq -r '.account // empty')
 fi
+# Route the call at one connected Google account; unset means the default.
+[ -n "$ACCOUNT" ] && export CREWLY_GOOGLE_ACCOUNT="$ACCOUNT"
 
 require_param "id (--id)" "$ID"
 

@@ -59,3 +59,13 @@ For designed decks (brand templates, images, video) use the Canva skills.
 when the owner has not connected Google Workspace (Settings → Integrations).
 A `403` with `reason: "google_error"` on a write means the file was not
 created by Crewly — the grant only edits files Crewly made (`drive.file`).
+
+## Choosing a Google account
+
+Several Google accounts can be connected at once. Without `--account` the call uses the default one (the first you connected, or whichever you marked default on the Connections page). Name one explicitly when it matters:
+
+```bash
+bash execute.sh --account work@company.com ...
+```
+
+The account must be connected *for this product* — Google consent is per product (Gmail / Calendar / Drive), so an account connected only for Calendar cannot read Drive.

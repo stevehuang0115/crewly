@@ -44,7 +44,7 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 21 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(21);
+  it('registers exactly 22 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(22);
   });
 });
