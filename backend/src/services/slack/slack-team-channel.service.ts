@@ -970,12 +970,24 @@ export class SlackTeamChannelService {
    */
   async mirrorOutbound(dto: ChatMessageDTO): Promise<boolean> {
     try {
-      if (dto.senderType !== 'agent') return false;
-      if (dto.metadata?.source === 'slack') return false;
+      // Every reason a reply does not reach Slack is logged. Until now all
+      // four were silent `return false`, so an agent could answer, be told
+      // the reply was delivered, and leave the owner staring at an unanswered
+      // thread with nothing in the log to explain it (2026-09-19, #think-tank).
+      const skip = (reason: string): false => {
+        this.logger.info('Agent reply not mirrored to Slack', {
+          reason,
+          channelId: dto.channelId,
+          sender: dto.senderId,
+        });
+        return false;
+      };
+      if (dto.senderType !== 'agent') return skip(`senderType=${dto.senderType}`);
+      if (dto.metadata?.source === 'slack') return skip('inbound-from-slack');
       await this.load();
       const mapping = this.findByChatChannelId(dto.channelId);
-      if (!mapping) return false;
-      if (!this.deps.slack.isConnected()) return false;
+      if (!mapping) return skip('channel-not-mapped-to-slack');
+      if (!this.deps.slack.isConnected()) return skip('slack-not-connected');
 
       const threadTs = this.resolveOutboundThreadTs(mapping, dto);
       const team = (await this.deps.storage.getTeams()).find((t) => t.id === mapping.teamId);
@@ -994,6 +1006,12 @@ export class SlackTeamChannelService {
             ? { botToken: installed.botToken, displayName: member?.name ?? dto.senderId }
             : { displayName: member?.name ?? dto.senderId, ...slackIdentityFor(member, dto.senderId) },
         );
+        this.logger.info('Agent reply mirrored to Slack', {
+          slackChannel: mapping.slackChannelName,
+          sender: dto.senderId,
+          threaded: Boolean(threadTs),
+          via: 'typing-placeholder',
+        });
         return true;
       }
 
@@ -1003,6 +1021,11 @@ export class SlackTeamChannelService {
         threadTs,
         skipChatV2Mirror: true,
         ...identity,
+      });
+      this.logger.info('Agent reply mirrored to Slack', {
+        slackChannel: mapping.slackChannelName,
+        sender: dto.senderId,
+        threaded: Boolean(threadTs),
       });
       return true;
     } catch (err) {

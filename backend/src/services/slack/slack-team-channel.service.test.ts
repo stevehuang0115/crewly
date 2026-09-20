@@ -788,6 +788,39 @@ describe('mirrorOutbound', () => {
     expect(slack.sent).toEqual([]);
   });
 
+  it('names the reason in the log whenever a reply is not mirrored', async () => {
+    // Until 2026-09-19 every skip was a silent `return false`: an agent could
+    // answer, be told the reply was delivered, and leave the owner staring at
+    // an unanswered Slack thread with nothing in the log to explain it.
+    const logged: Array<Record<string, unknown>> = [];
+    (service as unknown as { logger: { info: unknown } }).logger.info = (_m: string, ctx: Record<string, unknown>) => {
+      logged.push(ctx);
+    };
+
+    await service.mirrorOutbound(agentMessage({ senderType: 'user' }));
+    await service.mirrorOutbound(agentMessage({ metadata: { source: 'slack' } }));
+    await service.mirrorOutbound(agentMessage({ channelId: 'huddle-zzz' }));
+    slack.connected = false;
+    await service.mirrorOutbound(agentMessage());
+
+    expect(logged.map((c) => c['reason'])).toEqual([
+      'senderType=user',
+      'inbound-from-slack',
+      'channel-not-mapped-to-slack',
+      'slack-not-connected',
+    ]);
+  });
+
+  it('logs the mirror that did happen, so a missing reply is distinguishable from a silent skip', async () => {
+    const logged: Array<Record<string, unknown>> = [];
+    (service as unknown as { logger: { info: unknown } }).logger.info = (_m: string, ctx: Record<string, unknown>) => {
+      logged.push(ctx);
+    };
+    await service.mirrorOutbound(agentMessage());
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toEqual(expect.objectContaining({ sender: expect.any(String) }));
+  });
+
   it('is driven by the chat-v2 chat_message event once started', async () => {
     chat.emit('chat_message', agentMessage());
     await new Promise((r) => setImmediate(r));
