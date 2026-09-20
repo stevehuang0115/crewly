@@ -64,9 +64,15 @@ get_screen_info() {
 # optionally overlays a grid, optionally crops.
 # ---------------------------------------------------------------------------
 do_screenshot() {
-  local output="${TMPDIR_CU}/screen_$(date +%s%N).png"
+  local output=$(echo "$INPUT" | jq -r '.output // empty')
+  [ -z "$output" ] && output="${TMPDIR_CU}/screen_$(date +%s%N).png"
   local grid=$(echo "$INPUT" | jq -r '.grid // empty')
   local crop_json=$(echo "$INPUT" | jq -r '.crop // empty')
+  # Cap the width the caller wants to reason in. A model's pointing accuracy
+  # falls off on a wide image because it is downsampled before the model sees
+  # it, and one reasoning in the original coordinate space then points at the
+  # wrong place — so the caller asks for the width it will think in.
+  local max_width=$(echo "$INPUT" | jq -r '.maxWidth // empty')
 
   # Capture full screen (silent)
   screencapture -x "$output"
@@ -89,6 +95,15 @@ do_screenshot() {
   img_w=$(sips -g pixelWidth "$output" | tail -1 | awk '{print $2}')
   local img_h
   img_h=$(sips -g pixelHeight "$output" | tail -1 | awk '{print $2}')
+
+  # Then, if asked, shrink further to the caller's reasoning width. Never
+  # enlarge: a small screen is already easier to point at, and scaling up
+  # would invent precision the model does not have.
+  if [ -n "$max_width" ] && [ "$max_width" -gt 0 ] 2>/dev/null && [ "$img_w" -gt "$max_width" ]; then
+    sips --resampleWidth "$max_width" "$output" --out "$output" >/dev/null 2>&1
+    img_w=$(sips -g pixelWidth "$output" | tail -1 | awk '{print $2}')
+    img_h=$(sips -g pixelHeight "$output" | tail -1 | awk '{print $2}')
+  fi
 
   # Crop FIRST, then grid — so grid labels show absolute screen coordinates
   local origin_x=0 origin_y=0

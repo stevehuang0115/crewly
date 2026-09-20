@@ -295,7 +295,7 @@ agent 要发邮件/删文件/付款
 |---|---|---|---|---|---|
 | **1** ✅ **已完成 2026-09-20** | 现有能力变得能交付 | 见 §6.1 | G2 G3 G5 G6 G8 G9 | 共享 `_common/desktop-guards.sh` + `BLOCKED_COMMAND_PATTERNS` | 实际 1 天 |
 | **2** ✅ **已完成 2026-09-20** | 单应用任务可靠 | 见 §6.2 | G1 G8 | Swift + AXUIElement + Vision | 实际 1 天 |
-| **3** | 弱模型能用 | crewly-agent 原生 `computer` 工具（对齐 Anthropic 动作集与缩放坐标，一步一图）+ 10–20 个录制任务的评测集，DeepSeek/Claude/Gemini 各跑基线 | G10 | 今天的 harness、`eval/` 框架 | 1–2 周 |
+| **3** ✅ **已完成 2026-09-20** | 弱模型能用 | 见 §6.3 | G10 | AI SDK tool + computer-use skill | 实际 1 天 |
 | **4** | **跨应用复杂任务可靠** | Task Runtime：子目标 / 检查点 / 选路器 / 恢复库 / 预算；不可逆动作异步确认走 Slack | **G11** G3 | work-item + verify-enforcement + approval queue + Slack | 2–3 周 |
 | **5** | 用户信任 | 横幅、全局中止热键、用户接管即暂停、审计回放 UI、应用范围策略 | G4 G6 | 浏览器 takeover 横幅的模式、audit log | 1–2 周 |
 | **6** | 触达 | Helper 上 relay；Linux Xvfb + AT-SPI；真正的人工接管（noVNC，即 `vnc-browser` 原本想做的事）；SOP 沉淀；Windows 排最后 | G7 | browser-proxy 注册模式、wiki | 2–4 周 |
@@ -353,6 +353,28 @@ agent 要发邮件/删文件/付款
 **测试**：`desktop-guards.test.sh` 扩到 29 项。本机当前 **20 通过 / 0 失败 / 9 跳过**——跳过的是锁屏挡住的那些，明确标为 `⊘` 并提示解锁后重跑，而不是假装通过。
 
 **未验证**：`snapshot` / `click-ref` / `fill-ref` / `ocr` 在**真实解锁桌面**上的输出质量。本机测试期间屏幕一直锁着（`IOConsoleLocked: true`），我只验证了二进制能跑、耗时、以及锁屏守卫本身生效。解锁后需要重跑一次完整套件并实测一个真实应用。
+
+### 6.3 第 3 期已交付内容（2026-09-20）
+
+**`packages/crewly-agent/src/runtime/computer.tool.ts`** —— in-process agent 的原生桌面工具。之前它要绕一大圈：`bash_exec` 跑脚本 → 读 JSON → 再 `read_file` 看截图，**每一步两次工具调用**，而且弱模型得记住一串 shell 命令和一个文件路径才能看一眼屏幕。现在是一次调用，返回结果**和**新截图。
+
+两个刻意的设计决定：
+
+**动作名和坐标约定完全对齐 Anthropic 的 `computer_20250124`。** Claude 系模型训练里见过这个形状，零学习成本；其他模型也有大量公开范例可模仿。自创一套命名是白白损失准确率。Crewly 的元素级动作（`snapshot`/`click_ref`/`fill_ref`/`wait_for`）并列加上——它们在那个规范里没有对应物，而且**正是弱模型该优先用的**，因为点名 `@e12` 不会像坐标那样打偏。
+
+**工具本身不碰鼠标，所有动作都 shell 到 computer-use skill。** 于是护栏（权限、停止开关、桌面锁、破坏性键、密码框、审计）只有**一个执行点**，对所有运行时生效。在这里再实现一遍就是第二份要同步的东西，而护栏恰恰是最不能漂移的部分。
+
+坐标换算：截图缩到 **1280 宽**（超过这个宽度模型指点精度会下降，因为图在送进模型前会被降采样，而模型按原始坐标系推理就会指错地方），模型在缩放空间里思考，工具换算回屏幕点。**每次调用都重新读显示器**——owner 可能中途改了分辨率或换了屏。本机实测：模型空间 1280×827，真实 1728×1117。
+
+顺带给 skill 的 `screenshot` 补了 `output` 和 `maxWidth` 两个参数（原来完全忽略调用方指定的路径和宽度）。
+
+**测试写出来的一个 bug**：`action: 'screenshot'` 原本会截屏两次（一次走动作映射、一次走 capture）——慢，而且两张图可能不一致。测试抓到后修的实现，不是改测试。
+
+**评测集** `src/eval/desktop/desktop-tasks.ts`：10 个任务，按 perception / element-action / coordinate-action / cross-app / recovery 五类，分 basic / intermediate / hard 三档。关键设计是**每个任务的判定看机器状态，不看 agent 自己的说法**——「它说保存了」正是要测的失败模式，所以 `verify` 去 grep 文件内容。两个特别的：`handle-dialog`（点了「保存」算失败，把对话框晾着说完成了也算失败）、`refuse-destructive`（**绕过安全护栏算失败，不管绕得多巧妙**）。
+
+任务定义自己也有 10 项测试（唯一 id、五类覆盖、有产出的任务必须查文件而不能 `verify: true`、建了文件必须清理、`rm` 不得出现在 scratch 目录之外、开了应用必须退出）。这套测试**抓到了 `read-screen` 的判定是坏的**——它 `test -s` 一个 setup 刚建的空文件，永远失败；已改为按回答判定。
+
+**未执行**：真实的基线跑分（DeepSeek/Claude/Gemini 各跑一遍）。需要解锁的屏幕、会占用 owner 的机器、并产生真实模型花费，属于 owner 决定何时做的事。任务和判定脚本已经就绪。
 
 ### North star 任务
 

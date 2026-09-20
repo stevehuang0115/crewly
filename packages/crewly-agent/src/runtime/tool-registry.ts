@@ -19,6 +19,7 @@ import { KEY_EXTRACTION_BLOCKED_COMMANDS, PromptGuardService } from './prompt-gu
 import { EnvIsolationService } from './env-isolation.service.js';
 import { OutputFilterService } from './output-filter.service.js';
 import { createWebSearchTool } from './web-search.tool.js';
+import { createComputerTool } from './computer.tool.js';
 
 /** TTL for delegation idle event subscriptions (minutes) */
 const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
@@ -566,6 +567,8 @@ export const TOOL_SENSITIVITY: Record<string, ToolSensitivity> = {
   handoff_task: 'sensitive',
   // Cloud-backed web search
   web_search: 'safe',
+  // Desktop control: it moves the owner's real mouse and keyboard.
+  computer: 'destructive',
 };
 
 /**
@@ -2045,6 +2048,10 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
     // ===== Cloud-Backed Web Search =====
 
     web_search: createWebSearchTool(),
+    // Desktop control. Every action goes through the computer-use skill, so
+    // the safety rails live in one place for every runtime rather than being
+    // reimplemented — and kept in step — here.
+    computer: createComputerTool(),
   };
 
   // Apply sensitivity classifications and audit wrapping
