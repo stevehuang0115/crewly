@@ -142,3 +142,22 @@ bash execute.sh snapshot --session vscode --interactive
 - `agent-browser` (npm install -g agent-browser && agent-browser install)
 - macOS / Linux / Windows
 - Target apps must be relaunched with `--remote-debugging-port` flag
+
+## Which control surface to use
+
+Crewly has three ways to act on a screen. Pick the **lowest** one that can do
+the job — each step down costs more tokens, breaks more easily, and disturbs
+the user more.
+
+| Need | Use | Why |
+|---|---|---|
+| Anything a Crewly skill or connector already does (mail, Drive, Slack, calendar, git, files) | that skill | No screen at all. Fastest and cannot misclick. |
+| Content of a web page, or acting as the signed-in user in Chrome | `remote-browser` | Real Chrome, real session, per-agent bound tab, and the user sees a takeover banner. |
+| An Electron app (VS Code, Slack, Notion, Figma) | `desktop-app-control` | Accessibility snapshot with element refs — no coordinates. Needs the app started with a debug port. |
+| Native macOS apps, system dialogs, anything the above cannot reach | `computer-use` | Last resort: screen coordinates and pixels. Slowest and most fragile. |
+
+`computer-use` refuses destructive key combos, typing into password fields and
+driving credential apps, holds a machine-wide lock while it works, and logs
+every action to `~/.crewly/desktop-actions.jsonl`. Run
+`{"action":"check-permissions"}` first — without Screen Recording and
+Accessibility every action fails, and the refusal tells you what to grant.

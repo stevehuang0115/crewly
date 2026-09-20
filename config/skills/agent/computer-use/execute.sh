@@ -36,6 +36,14 @@ ACTION=$(echo "$INPUT" | jq -r '.action // empty')
 [ -z "$ACTION" ] && error_exit "Missing required parameter: action"
 
 # ---------------------------------------------------------------------------
+# Safety rails (permissions, stop switch, desktop lock, destructive-key and
+# secure-field refusals, audit) — shared with the marketplace fork.
+# ---------------------------------------------------------------------------
+source "${SCRIPT_DIR}/../../_common/desktop-guards.sh"
+cu_apply_guards
+
+
+# ---------------------------------------------------------------------------
 # Helper: get screen dimensions and scale factor
 # ---------------------------------------------------------------------------
 get_screen_info() {
@@ -289,7 +297,9 @@ do_key() {
   if [ ${#parts[@]} -eq 1 ]; then
     key_name="${parts[0]}"
   else
-    key_name="${parts[-1]}"
+    # macOS ships bash 3.2, which has no negative array indices — using one
+    # here made every modifier combo fail with "bad array subscript".
+    key_name="${parts[$(( ${#parts[@]} - 1 ))]}"
     for ((i=0; i<${#parts[@]}-1; i++)); do
       case "${parts[$i]}" in
         command|cmd)   modifiers="${modifiers}command down, " ;;
@@ -860,5 +870,6 @@ case "$ACTION" in
   list-apps)   do_list_apps ;;
   find)        do_find ;;
   click-text)  do_click_text ;;
-  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text" ;;
+  check-permissions) do_check_permissions ;;
+  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text, check-permissions" ;;
 esac

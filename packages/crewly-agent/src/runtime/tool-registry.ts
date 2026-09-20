@@ -48,6 +48,15 @@ const BLOCKED_COMMAND_PATTERNS: RegExp[] = [
   /\bdd\s+.*of=\/dev\//i,                    // dd of=/dev/...
   /\blaunchctl\b/i,
   /\bsystemctl\b/i,
+  // Desktop-control guards, made untamperable from inside an agent's own
+  // command. The computer-use skill refuses destructive key combos unless
+  // CREWLY_DESKTOP_ALLOW_DESTRUCTIVE is set, and stops entirely while
+  // ~/.crewly/desktop.stop exists — both of which an agent could otherwise
+  // simply set or delete in the same shell line, making the guard theatre.
+  // The owner can still set the variable in the agent's environment, which
+  // is the intended escape hatch (2026-09-20).
+  /\bCREWLY_DESKTOP_ALLOW_DESTRUCTIVE\b/i,
+  /\.crewly\/desktop\.(stop|lock)\b/i,
   // Key extraction protection (from prompt-guard.service.ts)
   ...KEY_EXTRACTION_BLOCKED_COMMANDS,
 ];

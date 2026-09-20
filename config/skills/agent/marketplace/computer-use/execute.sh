@@ -14,6 +14,15 @@ INPUT=$(read_json_input "${1:-}")
 [ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"action\":\"screenshot|move|click|type|list-apps|read-ui|get-text|scroll|focus-app|check-accessibility\", ...}'"
 
 ACTION=$(printf '%s' "$INPUT" | jq -r '.action // empty')
+
+# ---------------------------------------------------------------------------
+# Safety rails shared with config/skills/agent/computer-use — permissions,
+# stop switch, desktop lock, secure-field and denied-app refusals, audit.
+# This fork has no `key` action, so the destructive-combo rail never fires
+# here; the rest apply identically.
+# ---------------------------------------------------------------------------
+source "${SCRIPT_DIR}/../../_common/desktop-guards.sh"
+cu_apply_guards
 require_param "action" "$ACTION"
 
 # -----------------------------------------------------------------------------

@@ -2153,6 +2153,23 @@ describe('Tool Registry', () => {
       validateFn = mod.validateBashCommand;
     });
 
+    it('refuses to let an agent disarm the desktop guards from its own command', () => {
+      // The computer-use skill blocks destructive key combos unless
+      // CREWLY_DESKTOP_ALLOW_DESTRUCTIVE is set, and halts while
+      // ~/.crewly/desktop.stop exists. Both live in the same shell an agent
+      // controls, so without this the guard is theatre (2026-09-20).
+      expect(validateFn('CREWLY_DESKTOP_ALLOW_DESTRUCTIVE=1 bash computer-use/execute.sh \'{"action":"key","key":"command+q"}\'')).toContain('blocked');
+      expect(validateFn('export CREWLY_DESKTOP_ALLOW_DESTRUCTIVE=1')).toContain('blocked');
+      expect(validateFn('rm ~/.crewly/desktop.stop')).toContain('blocked');
+      expect(validateFn('echo x > /Users/me/.crewly/desktop.lock')).toContain('blocked');
+    });
+
+    it('still allows ordinary desktop control', () => {
+      // The guards block tampering, not the skill itself.
+      expect(validateFn('bash config/skills/agent/computer-use/execute.sh \'{"action":"screenshot"}\'')).toBeNull();
+      expect(validateFn('bash config/skills/agent/computer-use/execute.sh \'{"action":"click","x":10,"y":20}\'')).toBeNull();
+    });
+
     it('should allow safe commands', () => {
       expect(validateFn('ls -la')).toBeNull();
       expect(validateFn('npm run build')).toBeNull();
