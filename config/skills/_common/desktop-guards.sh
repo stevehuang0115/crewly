@@ -96,6 +96,35 @@ require_not_stopped() {
 }
 
 # ---------------------------------------------------------------------------
+# Locked screen
+#
+# Accessibility does not fail while the screen is locked — it answers with
+# rubbish. Every window of every app comes back with role AXApplication and no
+# real content, and System Events cannot even name the frontmost process. An
+# agent reading that sees a plausible-looking tree and acts on it, clicking
+# coordinates that belong to nothing (2026-09-20, found while testing the
+# perception layer against a locked Mac).
+#
+# There is also nothing useful to do on a locked screen, so this is a refusal
+# rather than a warning.
+# ---------------------------------------------------------------------------
+screen_is_locked() {
+  osascript -l JavaScript -e '
+    ObjC.import("CoreGraphics");
+    ObjC.bindFunction("CGSessionCopyCurrentDictionary", ["id", []]);
+    var d = $.CGSessionCopyCurrentDictionary();
+    d && ObjC.unwrap(d.objectForKey("CGSSessionScreenIsLocked")) ? "yes" : "no"
+  ' 2>/dev/null
+}
+
+require_unlocked() {
+  [ "$(screen_is_locked)" = "yes" ] || return 0
+  cu_fail "screen_locked" \
+    "The screen is locked. Accessibility answers with placeholder data while it is, so anything read now would be wrong and anything clicked would land on nothing. Wait for the owner to unlock, or ask them to." \
+    '{"recoverable":true}'
+}
+
+# ---------------------------------------------------------------------------
 # Mutual exclusion
 #
 # One machine has one mouse and one keyboard focus, so two agents acting at
@@ -215,6 +244,38 @@ do_check_permissions() {
 }
 
 # ---------------------------------------------------------------------------
+# The perception helper
+#
+# A small Swift binary (AX tree, Vision OCR, display list). Compiled on first
+# use and cached, because shipping a binary in a skill directory means
+# shipping an unsigned one a user cannot verify, and because the source is
+# the thing worth reviewing. Rebuilt whenever the source is newer.
+#
+# Swift rather than JXA: the scripting bridge costs a round trip per
+# attribute, so reading one window took seconds — too slow to do before every
+# action. Raw AXUIElement does it in tens of milliseconds.
+# ---------------------------------------------------------------------------
+PERCEIVE_SRC="${CREWLY_SKILLS_COMMON:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}/desktop-perceive.swift"
+PERCEIVE_BIN="${CREWLY_HOME_DIR}/bin/desktop-perceive"
+
+cu_perceive() {
+  if [ ! -x "$PERCEIVE_BIN" ] || [ "$PERCEIVE_SRC" -nt "$PERCEIVE_BIN" ]; then
+    if ! command -v swiftc >/dev/null 2>&1; then
+      cu_fail "toolchain_missing" \
+        "Element-level perception needs swiftc, which comes with the Xcode Command Line Tools. Install them with: xcode-select --install" \
+        '{"install":"xcode-select --install"}'
+    fi
+    mkdir -p "$(dirname "$PERCEIVE_BIN")"
+    if ! swiftc -O -o "$PERCEIVE_BIN" "$PERCEIVE_SRC" 2>"${CREWLY_HOME_DIR}/desktop-perceive-build.log"; then
+      cu_fail "build_failed" \
+        "Could not build the perception helper. See ${CREWLY_HOME_DIR}/desktop-perceive-build.log." \
+        "$(jq -n --arg l "${CREWLY_HOME_DIR}/desktop-perceive-build.log" '{log:$l}')"
+    fi
+  fi
+  "$PERCEIVE_BIN" "$@"
+}
+
+# ---------------------------------------------------------------------------
 # cu_apply_guards
 #
 # Run every rail that applies to $ACTION. Call once, before dispatch.
@@ -226,25 +287,48 @@ do_check_permissions() {
 cu_apply_guards() {
   [ "$ACTION" = "check-permissions" ] && return 0
   [ "$ACTION" = "check-accessibility" ] && return 0
+  # Listing screens reads no window and touches nothing.
+  [ "$ACTION" = "displays" ] && return 0
 
   require_not_stopped
   log_action
 
-  case "$ACTION" in
-    screenshot|find|click-text) require_screen_recording ;;
-  esac
-  case "$ACTION" in
-    click|move|type|key|scroll|drag|focus|focus-app|open-url|list-apps|click-text|read-ui|get-text)
-      require_accessibility ;;
-  esac
-  case "$ACTION" in
-    click|move|type|key|scroll|drag|focus|focus-app|open-url|click-text)
-      acquire_desktop_lock ;;
-  esac
+  # Permanent policy first, before anything transient. Both "you may not press
+  # ⌘Q" and "the screen is locked" can be true at once, and answering with the
+  # transient one invites the agent to wait and retry something that will never
+  # be allowed. These are pure string checks, so they also work on a locked
+  # screen where reading the UI would not.
   case "$ACTION" in
     key)   guard_destructive_key "$(printf '%s' "$INPUT" | jq -r '.key // empty')" ;;
-    type)  guard_secure_input ;;
     focus|focus-app|open-url) guard_denied_app "$(printf '%s' "$INPUT" | jq -r '.app // empty')" ;;
+  esac
+
+  # Then the transient conditions, cheapest first.
+  require_unlocked
+
+  case "$ACTION" in
+    screenshot|find|click-text|ocr) require_screen_recording ;;
+  esac
+  case "$ACTION" in
+    click|move|type|key|scroll|drag|focus|focus-app|open-url|list-apps|click-text|read-ui|get-text|\
+    snapshot|click-ref|fill-ref|resolve|wait-for)
+      require_accessibility ;;
+  esac
+
+  # Reads the focused element, so it has to come after the lock and permission
+  # checks — on a locked screen the answer would be meaningless.
+  # fill-ref's own secure-field refusal lives in the perception helper, which
+  # reads the target element's role directly instead of guessing from focus.
+  case "$ACTION" in
+    type) guard_secure_input ;;
+  esac
+
+  # Only actions that change something take the lock. Looking (snapshot, ocr,
+  # resolve, wait-for) must stay free: an agent waiting its turn still needs
+  # to see, and two agents reading at once cannot corrupt anything.
+  case "$ACTION" in
+    click|move|type|key|scroll|drag|focus|focus-app|open-url|click-text|click-ref|fill-ref)
+      acquire_desktop_lock ;;
   esac
 
   # Dry run: every rail above has passed, so the action *would* be allowed —

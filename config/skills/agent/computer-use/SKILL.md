@@ -196,6 +196,42 @@ Returns screen coordinates of found elements. Use with click to interact.
 - Accessibility permission for click, type, key, scroll, drag, focus
 - Screen Recording permission for screenshot and find
 
+## Working by element, not by coordinate
+
+Guessing coordinates from a screenshot misses, costs an image every step, and
+breaks whenever the theme, resolution or window position changes. Prefer this
+loop:
+
+```bash
+# 1. See what is there. Refs are @e1, @e2 … with role, name and frame.
+bash execute.sh '{"action":"snapshot","app":"Numbers"}'
+
+# 2. Act on a ref. Goes through the accessibility action, so it reaches a
+#    control that is scrolled out of view or covered by another window.
+bash execute.sh '{"action":"click-ref","ref":"@e12"}'
+bash execute.sh '{"action":"fill-ref","ref":"@e7","text":"hello"}'
+
+# 3. Wait for the result instead of sleeping and hoping.
+bash execute.sh '{"action":"wait-for","text":"Saved"}'
+```
+
+| Action | What it does |
+|---|---|
+| `snapshot` | Elements of an app: `@ref`, role, name, value, frame, enabled. `--app` picks one, `menus:true` includes the menu bar (excluded by default — it would otherwise fill the whole list), `allWindows:true` covers every window. |
+| `click-ref` | Press an element by ref (AXPress, falling back to a click at its centre). |
+| `fill-ref` | Set a field's value directly — no dependence on focus or keyboard layout. Refuses password fields. |
+| `resolve` | What is at a ref now, and whether it still matches the snapshot. |
+| `ocr` | Text on screen with boxes (macOS Vision, local and free, Chinese and English). Covers canvases, PDFs and apps with no accessibility tree. |
+| `wait-for` | Block until an app is frontmost, a ref resolves, text appears, or the screen stops changing. |
+| `displays` | Every screen and its frame, so coordinates are unambiguous. |
+
+Refs come from the last snapshot and are only valid next to it. If the window
+changed, `resolve` says so and `click-ref` refuses rather than clicking
+whatever moved into that position — take a fresh snapshot.
+
+Coordinate actions (`click`, `type`, `key`, `drag`) remain for everything with
+no accessibility tree: games, canvases, custom-drawn UI.
+
 ## Which control surface to use
 
 Crewly has three ways to act on a screen. Pick the **lowest** one that can do

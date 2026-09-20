@@ -294,7 +294,7 @@ agent 要发邮件/删文件/付款
 | 期 | 目标 | 做什么 | 补的缺口 | 建在什么上 | 量级 |
 |---|---|---|---|---|---|
 | **1** ✅ **已完成 2026-09-20** | 现有能力变得能交付 | 见 §6.1 | G2 G3 G5 G6 G8 G9 | 共享 `_common/desktop-guards.sh` + `BLOCKED_COMMAND_PATTERNS` | 实际 1 天 |
-| **2** | 单应用任务可靠 | Helper v0（Swift，本机）：AX 场景图 + OCR + Set-of-Marks + 按引用动作 + 期望态验证 + wait + 帧差 + 多显示器 | G1 G8 | `rednote-reader` 的 AX 代码、`desktop-app-control` 的 ref 约定 | 2–3 周 |
+| **2** ✅ **已完成 2026-09-20** | 单应用任务可靠 | 见 §6.2 | G1 G8 | Swift + AXUIElement + Vision | 实际 1 天 |
 | **3** | 弱模型能用 | crewly-agent 原生 `computer` 工具（对齐 Anthropic 动作集与缩放坐标，一步一图）+ 10–20 个录制任务的评测集，DeepSeek/Claude/Gemini 各跑基线 | G10 | 今天的 harness、`eval/` 框架 | 1–2 周 |
 | **4** | **跨应用复杂任务可靠** | Task Runtime：子目标 / 检查点 / 选路器 / 恢复库 / 预算；不可逆动作异步确认走 Slack | **G11** G3 | work-item + verify-enforcement + approval queue + Slack | 2–3 周 |
 | **5** | 用户信任 | 横幅、全局中止热键、用户接管即暂停、审计回放 UI、应用范围策略 | G4 G6 | 浏览器 takeover 横幅的模式、audit log | 1–2 周 |
@@ -325,6 +325,34 @@ agent 要发邮件/删文件/付款
 **测试**：`config/skills/_common/desktop-guards.test.sh`，21 项全过，连跑两遍确认零副作用。
 
 **本期明确没做**：审批流（第 4 期随 Task Runtime 做异步 Slack 确认，见 §5.8）；`connector-access` 的角色门没加 `desktop`——那个门只拦 HTTP 路由，而桌面控制目前是 bash skill，加了会是一道后面没有东西的门。
+
+### 6.2 第 2 期已交付内容（2026-09-20）
+
+感知核心是一个 Swift 二进制 **`config/skills/_common/desktop-perceive.swift`**，首次使用时编译并缓存到 `~/.crewly/bin/`（源码比二进制新就重编）。选 Swift 不选 JXA 的原因很实在：System Events 脚本桥**每个属性一次往返**，读一个窗口要好几秒，慢到没法在每个动作前都做；原生 AXUIElement 是 **0.12–0.37 秒**读完整棵树。Vision OCR 也在同一个二进制里。
+
+| 动作 | 能力 | 缺口 |
+|---|---|---|
+| `snapshot` | AX 树扁平化成 `@e1/@e2…` + role/name/value/frame/enabled；路径记录用于跨进程重新定位 | G1 |
+| `click-ref` | AXPress 优先（能点到滚动出视野、被遮挡的控件），失败回退到 frame 中心坐标点击 | G1 |
+| `fill-ref` | 直接写 AXValue，不依赖焦点和输入法；密码框在 Swift 侧直接拒绝 | G1 G3 |
+| `resolve` | ref 现在指向什么，以及**是否还和快照一致**（窗口变了会明确报 mismatch，而不是点到移过来的别的东西） | G1 |
+| `ocr` | macOS Vision，本地免费，中英文，带文字框和中心点；覆盖 AX 树没暴露的画布/PDF | G1 |
+| `wait-for` | 等应用到前台 / 等 ref 出现 / 等文字出现 / 等画面静止（连续两帧哈希相同） | G8 |
+| `displays` | 枚举屏幕和 frame；无需任何权限也无需解锁 | G8 |
+
+**三个实测中发现并修掉的问题**：
+
+1. **菜单栏吃光预算。** 第一版默认从 app 根节点遍历，而菜单栏是 app 的第一个子节点且包含每个菜单的全部条目——20 个元素全是「苹果/文件/编辑/显示」，真正的窗口内容一个都到不了。改成**默认只走焦点窗口**，菜单要 `menus:true` 显式要。
+2. **`CGDisplayCreateImage` 在 macOS 15 已废弃。** 没有引入 ScreenCaptureKit（异步且重），改成调 `screencapture` 出图再喂 Vision——和 skill 其余部分用同一条路径，一份 TCC 授权覆盖两者，而且可以直接接受调用方已有的截图（`image` 参数）避免重复抓屏。
+3. **锁屏时 AX 返回的是垃圾而不是失败。** 每个窗口的 role 都报成 `AXApplication`，没有真实内容，`System Events` 连前台进程名都取不到。agent 读到的是一棵**看起来合理但完全错误**的树，然后照着点。新增 `screen_locked` 守卫直接拒绝，标 `recoverable: true`。
+
+**守卫顺序也因此重排**：永久性拒绝（⌘Q、禁用应用——纯字符串判断，锁屏下照样有效）放在临时性拒绝（锁屏、权限）**之前**。两者可能同时成立，而先报临时原因会让 agent 以为「等解锁就能按 ⌘Q」。
+
+**只读动作不占桌面锁**（snapshot / ocr / resolve / wait-for）：排队等待的 agent 仍然需要能看，而两个读操作不会互相破坏。
+
+**测试**：`desktop-guards.test.sh` 扩到 29 项。本机当前 **20 通过 / 0 失败 / 9 跳过**——跳过的是锁屏挡住的那些，明确标为 `⊘` 并提示解锁后重跑，而不是假装通过。
+
+**未验证**：`snapshot` / `click-ref` / `fill-ref` / `ocr` 在**真实解锁桌面**上的输出质量。本机测试期间屏幕一直锁着（`IOConsoleLocked: true`），我只验证了二进制能跑、耗时、以及锁屏守卫本身生效。解锁后需要重跑一次完整套件并实测一个真实应用。
 
 ### North star 任务
 

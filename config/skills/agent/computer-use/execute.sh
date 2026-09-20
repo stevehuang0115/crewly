@@ -854,6 +854,177 @@ do_click_at() {
   " >/dev/null 2>&1
 }
 
+# =============================================================================
+# Element-level perception and action (Phase 2)
+#
+# Everything above works in screen coordinates: the agent takes a screenshot,
+# guesses where a button is, and clicks a point. That misses, costs an image
+# per step, and breaks on a different theme or window position.
+#
+# These work in elements. `snapshot` returns refs (@e1, @e2 …) with roles,
+# names and frames; `click`/`type` accept a ref and go through the
+# accessibility action, which does not care where the window sits or whether
+# something overlaps it.
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# snapshot — the elements of an app, as refs the agent can act on.
+# ---------------------------------------------------------------------------
+do_snapshot() {
+  local app max flags=()
+  app=$(printf '%s' "$INPUT" | jq -r '.app // empty')
+  max=$(printf '%s' "$INPUT" | jq -r '.max // empty')
+  [ -n "$app" ] && flags+=(--app "$app")
+  [ -n "$max" ] && flags+=(--max "$max")
+  [ "$(printf '%s' "$INPUT" | jq -r '.allWindows // false')" = "true" ] && flags+=(--all-windows)
+  [ "$(printf '%s' "$INPUT" | jq -r '.menus // false')" = "true" ] && flags+=(--menus)
+  cu_perceive snapshot "${flags[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# click-ref — press an element by ref.
+#
+# AXPress first: it reaches a button that is scrolled out of view or covered
+# by another window, which a coordinate click cannot. Falls back to clicking
+# the element's centre for the many controls that expose no press action.
+# ---------------------------------------------------------------------------
+do_click_ref() {
+  local ref result ok cx cy
+  ref=$(printf '%s' "$INPUT" | jq -r '.ref // empty')
+  require_param "ref" "$ref"
+
+  result=$(cu_perceive press --ref "$ref" 2>&1) || { printf '%s\n' "$result"; exit 1; }
+  ok=$(printf '%s' "$result" | jq -r '.success // false')
+  if [ "$ok" = "true" ]; then
+    printf '%s' "$result" | jq -c '{success:true, action:"click-ref", ref:.ref, method:"AXPress"}'
+    return 0
+  fi
+
+  # No press action (or it refused) — click where the element is.
+  cx=$(printf '%s' "$result" | jq -r '.center[0] // empty')
+  cy=$(printf '%s' "$result" | jq -r '.center[1] // empty')
+  if [ -z "$cx" ] || [ -z "$cy" ]; then
+    printf '%s\n' "$result"
+    exit 1
+  fi
+  do_click_at "$cx" "$cy"
+  jq -n --arg r "$ref" --argjson x "$cx" --argjson y "$cy" \
+    '{success:true, action:"click-ref", ref:$r, method:"coordinate-fallback", x:$x, y:$y}'
+}
+
+# ---------------------------------------------------------------------------
+# fill-ref — set a field's value directly.
+#
+# More reliable than typing: no dependence on focus, on the keyboard layout,
+# or on an input method being in the right mode.
+# ---------------------------------------------------------------------------
+do_fill_ref() {
+  local ref text
+  ref=$(printf '%s' "$INPUT" | jq -r '.ref // empty')
+  text=$(printf '%s' "$INPUT" | jq -r '.text // empty')
+  require_param "ref" "$ref"
+  require_param "text" "$text"
+  cu_perceive set-value --ref "$ref" --text "$text"
+}
+
+# ---------------------------------------------------------------------------
+# resolve — what is at this ref now.
+#
+# Worth calling after something may have changed the window: it reports
+# whether the element still matches what the snapshot recorded.
+# ---------------------------------------------------------------------------
+do_resolve() {
+  local ref
+  ref=$(printf '%s' "$INPUT" | jq -r '.ref // empty')
+  require_param "ref" "$ref"
+  cu_perceive resolve --ref "$ref"
+}
+
+# ---------------------------------------------------------------------------
+# ocr — the text on screen and where it is.
+#
+# Covers what accessibility does not expose: a canvas, a PDF page, an app
+# that simply does not implement AX. Local and free (macOS Vision).
+# ---------------------------------------------------------------------------
+do_ocr() {
+  local region flags=()
+  region=$(printf '%s' "$INPUT" | jq -r 'if .region then "\(.region.x),\(.region.y),\(.region.w),\(.region.h)" else empty end')
+  [ -n "$region" ] && flags+=(--region "$region")
+  local image; image=$(printf '%s' "$INPUT" | jq -r '.image // empty')
+  [ -n "$image" ] && flags+=(--image "$image")
+  cu_perceive ocr "${flags[@]}"
+}
+
+# ---------------------------------------------------------------------------
+# displays — every screen and its frame, so coordinates are unambiguous.
+# ---------------------------------------------------------------------------
+do_displays() {
+  cu_perceive displays
+}
+
+# ---------------------------------------------------------------------------
+# wait-for — block until the screen is in the expected state.
+#
+# The alternative is sleeping and hoping: an agent that clicks during an
+# animation hits nothing, and one that sleeps long enough to be safe is slow
+# on every step instead.
+#
+#   {"action":"wait-for","app":"Numbers"}        that app is frontmost
+#   {"action":"wait-for","ref":"@e12"}           that element resolves
+#   {"action":"wait-for","text":"Export"}        that text is on screen
+#   {"action":"wait-for","idle":true}            the screen stopped changing
+# ---------------------------------------------------------------------------
+do_wait_for() {
+  local app ref text idle timeout deadline
+  app=$(printf '%s' "$INPUT" | jq -r '.app // empty')
+  ref=$(printf '%s' "$INPUT" | jq -r '.ref // empty')
+  text=$(printf '%s' "$INPUT" | jq -r '.text // empty')
+  idle=$(printf '%s' "$INPUT" | jq -r '.idle // false')
+  timeout=$(printf '%s' "$INPUT" | jq -r '.timeoutMs // 10000')
+  deadline=$(( $(date +%s) + timeout / 1000 ))
+
+  if [ -z "$app" ] && [ -z "$ref" ] && [ -z "$text" ] && [ "$idle" != "true" ]; then
+    error_exit "wait-for needs one of: app, ref, text, idle"
+  fi
+
+  local previous="" current
+  while [ "$(date +%s)" -le "$deadline" ]; do
+    if [ -n "$app" ]; then
+      local front
+      front=$(osascript -e 'tell application "System Events" to get name of first process whose frontmost is true' 2>/dev/null)
+      if [ "$front" = "$app" ]; then
+        jq -n --arg a "$app" '{success:true, action:"wait-for", matched:"app", app:$a}'; return 0
+      fi
+    fi
+    if [ -n "$ref" ]; then
+      if cu_perceive resolve --ref "$ref" 2>/dev/null | jq -e '.success and .matches' >/dev/null 2>&1; then
+        jq -n --arg r "$ref" '{success:true, action:"wait-for", matched:"ref", ref:$r}'; return 0
+      fi
+    fi
+    if [ -n "$text" ]; then
+      if cu_perceive ocr 2>/dev/null | jq -e --arg t "$text" '[.items[]?.text | select(contains($t))] | length > 0' >/dev/null 2>&1; then
+        jq -n --arg t "$text" '{success:true, action:"wait-for", matched:"text", text:$t}'; return 0
+      fi
+    fi
+    if [ "$idle" = "true" ]; then
+      # Two consecutive identical frames mean nothing is animating.
+      local shot="${TMPDIR_CU}/idle-$$.png"
+      screencapture -x -t jpg "$shot" 2>/dev/null
+      current=$(shasum -a 1 "$shot" 2>/dev/null | cut -d' ' -f1)
+      rm -f "$shot"
+      if [ -n "$previous" ] && [ "$current" = "$previous" ]; then
+        jq -n '{success:true, action:"wait-for", matched:"idle"}'; return 0
+      fi
+      previous="$current"
+    fi
+    sleep 0.4
+  done
+
+  cu_fail "wait_timeout" \
+    "Nothing matched within ${timeout}ms. Take a snapshot to see what is actually on screen." \
+    "$(jq -n --argjson t "$timeout" '{timeoutMs:$t}')"
+}
+
 # ---------------------------------------------------------------------------
 # Action dispatch
 # ---------------------------------------------------------------------------
@@ -871,5 +1042,12 @@ case "$ACTION" in
   find)        do_find ;;
   click-text)  do_click_text ;;
   check-permissions) do_check_permissions ;;
-  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text, check-permissions" ;;
+  snapshot)    do_snapshot ;;
+  click-ref)   do_click_ref ;;
+  fill-ref)    do_fill_ref ;;
+  resolve)     do_resolve ;;
+  ocr)         do_ocr ;;
+  displays)    do_displays ;;
+  wait-for)    do_wait_for ;;
+  *)           error_exit "Unknown action: $ACTION. Valid: screenshot, click, move, type, key, scroll, drag, focus, open-url, list-apps, find, click-text, check-permissions, snapshot, click-ref, fill-ref, resolve, ocr, displays, wait-for" ;;
 esac
