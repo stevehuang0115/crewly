@@ -95,6 +95,24 @@ interface AgentDmStore {
 const DM_REPEAT_WINDOW_MS = 30_000;
 
 /**
+ * How long after a reply a turn recorded by the *other* runtime counts as
+ * the same answer told twice.
+ *
+ * One orchestrator turn reaches chat by two recording paths: the terminal
+ * scraper picks up its `[CHAT_RESPONSE]` block (`pty-runtime`) and the
+ * notify handler picks up its `[NOTIFY]` summary (`in-process-runtime`).
+ * Both are agent turns on the DM, so the owner got the answer and then a
+ * condensed restatement of it about a second later. The two texts do not
+ * contain one another — a summary is not a substring — so only the source
+ * tells them apart. Kept short: two renderings of one turn land together,
+ * while a genuine follow-up ("done") comes much later.
+ */
+const DM_CROSS_RUNTIME_WINDOW_MS = 10_000;
+
+/** The runtime whose turns are a restatement of one already recorded. */
+const DM_SUMMARY_SOURCE = 'in-process-runtime';
+
+/**
  * Shortest text the containment rule applies to.
  *
  * Without it a genuine "ok" would be swallowed whenever it appeared inside
@@ -117,7 +135,7 @@ export class SlackAgentDmService {
   private readonly storePath: string;
   private store: AgentDmStore = { links: {} };
   /** What was last posted on each DM, so a repeat is not posted twice. */
-  private readonly lastSent = new Map<string, { text: string; at: number }>();
+  private readonly lastSent = new Map<string, { text: string; at: number; source: string | null }>();
   private loaded = false;
   private started = false;
 
@@ -297,8 +315,23 @@ export class SlackAgentDmService {
    * @param slackChannelId - The DM
    * @param text - What was sent
    */
-  private rememberSent(slackChannelId: string, text: string): void {
-    this.lastSent.set(slackChannelId, { text, at: this.now().getTime() });
+  private rememberSent(slackChannelId: string, text: string, source: string | null): void {
+    this.lastSent.set(slackChannelId, { text, at: this.now().getTime(), source });
+  }
+
+  /**
+   * Whether this turn is the other runtime's restatement of the answer just
+   * sent — see {@link DM_CROSS_RUNTIME_WINDOW_MS}.
+   *
+   * @param slackChannelId - The DM
+   * @param source - `metadata.source` of the turn about to be sent
+   * @returns True when it should not be sent
+   */
+  private isCrossRuntimeRestatement(slackChannelId: string, source: string | null): boolean {
+    if (source !== DM_SUMMARY_SOURCE) return false;
+    const previous = this.lastSent.get(slackChannelId);
+    if (!previous || previous.source === DM_SUMMARY_SOURCE) return false;
+    return this.now().getTime() - previous.at <= DM_CROSS_RUNTIME_WINDOW_MS;
   }
 
   /**
@@ -331,6 +364,7 @@ export class SlackAgentDmService {
       // second prefixed with the agent reporting that it had replied
       // (2026-09-20). Suppressed here rather than in a prompt: this holds
       // whatever the model does.
+      const source = typeof dto.metadata?.source === 'string' ? dto.metadata.source : null;
       if (this.isRepeatOfLastSent(link.slackChannelId, text)) {
         this.logger.info('DM reply suppressed as a repeat of the one just sent', {
           agentSession: link.agentSession,
@@ -338,7 +372,15 @@ export class SlackAgentDmService {
         });
         return false;
       }
-      this.rememberSent(link.slackChannelId, text);
+      if (this.isCrossRuntimeRestatement(link.slackChannelId, source)) {
+        this.logger.info('DM reply suppressed: the other runtime already sent this answer', {
+          agentSession: link.agentSession,
+          slackChannelId: link.slackChannelId,
+          source,
+        });
+        return false;
+      }
+      this.rememberSent(link.slackChannelId, text, source);
       if (this.deps.typing) {
         await this.deps.typing.resolve(key, text, { botToken: installed.botToken, displayName: link.agentSession });
         return true;

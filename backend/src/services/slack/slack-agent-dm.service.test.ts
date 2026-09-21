@@ -138,6 +138,66 @@ describe('SlackAgentDmService', () => {
       await fs.rm(deps.storePath as string, { force: true });
     });
 
+    // One orchestrator turn reaches chat twice: the terminal scraper records
+    // its [CHAT_RESPONSE] as `pty-runtime`, the notify handler records its
+    // [NOTIFY] summary as `in-process-runtime`. The owner got the answer and
+    // then a condensed restatement 1.2s later (2026-09-21). The two texts do
+    // not contain one another, so only the source separates them.
+    it('drops the other runtime\'s restatement of the answer just sent', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'Orchestrator', content: answer, metadata: { source: 'pty-runtime' } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      clock += 1_200;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '已回复。我是 Crewly 编排器，负责把目标拆解、分派并盯进度。', metadata: { source: 'in-process-runtime' } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as { text: string }).text).toBe(answer);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('keeps a genuine later follow-up from that runtime', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'Orchestrator', content: '开始处理了。', metadata: { source: 'pty-runtime' } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      clock += 11_000; // past the cross-runtime window
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '做完了，结果在 wiki。', metadata: { source: 'in-process-runtime' } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(2);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('does not suppress two turns from the same runtime', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'x', content: '第一段。', metadata: { source: 'in-process-runtime' } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      clock += 1_000;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'x', content: '第二段，接着上面。', metadata: { source: 'in-process-runtime' } } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(2);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
     it('lets the same text through once the window has passed', async () => {
       let clock = 1_700_000_000_000;
       const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
