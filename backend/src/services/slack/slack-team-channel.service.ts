@@ -209,8 +209,26 @@ export function isAdhocMapping(mapping: Pick<SlackTeamChannelMapping, 'teamId'>)
 /** What every machine's orchestrator is called before it needs qualifying. */
 export const ORCHESTRATOR_APP_NAME = 'Crewly Orc';
 
-/** The team id the orchestrator's Slack app is filed under. */
+/** The team id the orchestrator's Slack app is filed under, per instance. */
 export const ORCHESTRATOR_SYNC_TEAM_ID = 'orchestrator';
+
+/**
+ * The pseudo-team the orchestrator's app is filed under.
+ *
+ * Qualified by instance for the same reason the session is, and then one
+ * more: Cloud prunes an app whose team appears in a sync but whose session
+ * does not. With both machines filing under a bare `orchestrator`, each
+ * sync would see the other's orchestrator sitting in a team it just synced,
+ * not recognise the session, and delete the app — every time, in both
+ * directions. Their real teams have distinct ids and were never at risk;
+ * this one was hardcoded (spotted by the agent on the Air, 2026-09-21).
+ *
+ * @param instanceId - This instance's id
+ * @returns The team id to file the orchestrator's app under
+ */
+export function orchestratorSyncTeamId(instanceId: string): string {
+  return `${ORCHESTRATOR_SYNC_TEAM_ID}${ORCHESTRATOR_INSTANCE_SEPARATOR}${instanceId}`;
+}
 
 /** Separates the orchestrator's session from the instance it runs on. */
 const ORCHESTRATOR_INSTANCE_SEPARATOR = '@';
@@ -268,7 +286,7 @@ export function orchestratorSyncEntry(
   const instance = (instanceId ?? '').trim();
   if (!machine || !instance) return null;
   return {
-    teamId: ORCHESTRATOR_SYNC_TEAM_ID,
+    teamId: orchestratorSyncTeamId(instance),
     // The machine goes in the *team* name, not the display name. Cloud
     // strips a trailing "(...)" from a display name before comparing and
     // then re-appends the team when two agents share a name — so sending

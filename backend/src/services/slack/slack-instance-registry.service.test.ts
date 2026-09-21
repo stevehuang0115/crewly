@@ -158,7 +158,7 @@ describe('payload', () => {
         // DM to its own bot is stranded.
         // Qualified by instance: two machines on one Cloud account would
         // otherwise share the orchestrator's app, bot and DM.
-        { teamId: 'orchestrator', name: 'steve-mbp', agents: ['crewly-orc@device-1'] },
+        { teamId: 'orchestrator@device-1', name: 'steve-mbp', agents: ['crewly-orc@device-1'] },
       ],
       crewlyVersion: '1.16.0',
     });
@@ -262,7 +262,7 @@ describe('agent sync', () => {
           ],
         },
         {
-          teamId: 'orchestrator',
+          teamId: 'orchestrator@device-1',
           // The machine is the team name: Cloud appends it when two machines'
           // orchestrators collide, giving "Crewly Orc (steve-mbp)".
           name: 'steve-mbp',

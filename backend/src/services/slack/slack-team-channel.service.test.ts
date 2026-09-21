@@ -19,6 +19,7 @@ import {
   teamChannelMembers,
   orchestratorSyncEntry,
   orchestratorSyncSession,
+  orchestratorSyncTeamId,
   localAgentSession,
   getSlackTeamChannelService,
   setSlackTeamChannelService,
@@ -403,7 +404,7 @@ describe('orchestratorSyncEntry', () => {
   // find: the entry has to be synthesised.
   it('files the orchestrator under a team named after the machine', () => {
     expect(orchestratorSyncEntry('macbookpro.lan', 'inst-1')).toEqual({
-      teamId: 'orchestrator',
+      teamId: 'orchestrator@inst-1',
       name: 'macbookpro.lan',
       agentSession: 'crewly-orc@inst-1',
       displayName: 'Crewly Orc',
@@ -418,6 +419,18 @@ describe('orchestratorSyncEntry', () => {
     const a = orchestratorSyncEntry('macbookpro.lan', 'inst-a')!;
     const b = orchestratorSyncEntry('iriss-air.lan', 'inst-b')!;
     expect(a.agentSession).not.toBe(b.agentSession);
+  });
+
+  // Cloud deletes an app whose team is in a sync but whose session is not.
+  // Filing both machines' orchestrators under a bare `orchestrator` meant
+  // each sync would delete the other's app — every time, both directions.
+  // Real teams have distinct ids and were never at risk; this one was
+  // hardcoded (spotted by the agent on the Air, 2026-09-21).
+  it('qualifies the pseudo-team too, so one machine\'s sync cannot prune the other\'s orc', () => {
+    const a = orchestratorSyncEntry('macbookpro.lan', 'inst-a')!;
+    const b = orchestratorSyncEntry('iriss-air.lan', 'inst-b')!;
+    expect(a.teamId).not.toBe(b.teamId);
+    expect(orchestratorSyncTeamId('inst-a')).toBe('orchestrator@inst-a');
   });
 
   it('asks for no app when the instance is not known yet', () => {
