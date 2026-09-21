@@ -17,15 +17,42 @@ INPUT=$(read_json_input "${1:-}" 2>/dev/null || echo '{}')
 PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 
 STATS=$(api_call GET "/task-pool/stats" 2>/dev/null || echo '{"data":{}}')
-ITEMS=$(api_call GET "/task-pool/items" 2>/dev/null || echo '{"data":[]}')
+# /task-pool/items is the whole pool (760 rows / 3.5 MB on 2026-09-21), far over
+# the skill-output cap: plain api_call returned a {"truncated":true} envelope and
+# this skill printed `workItems: []` as if the pool were empty. Fetch the full
+# body, then reduce it HERE: only non-terminal items, compact fields, plus an
+# `examined` count so a reader can tell "empty" from "unknown".
+ITEMS_ERROR=""
+if ! ITEMS=$(api_call_full GET "/task-pool/items" 2>/dev/null); then
+  ITEMS='{"data":null}'
+  ITEMS_ERROR="GET /task-pool/items failed or was replaced by a truncated envelope; workItems is UNKNOWN, not empty"
+fi
 
-jq -n \
+# The items body goes in on stdin, not as --argjson: at 3.5 MB it exceeds
+# the kernel's argument-size limit ("jq: Argument list too long").
+OUT=$(printf '%s' "$ITEMS" | jq \
   --argjson stats "$STATS" \
-  --argjson items "$ITEMS" \
   --arg projectPath "$PROJECT_PATH" \
-  '{
-    success: true,
+  --arg itemsError "$ITEMS_ERROR" \
+  '. as $items
+   | ($items.data // $items.workItems) as $all
+   | (if ($all | type) == "array" then $all else null end) as $rows
+   | ["verified", "done", "cancelled", "failed"] as $terminal
+   | {
+    success: ($rows != null),
     projectPath: (if $projectPath == "" then null else $projectPath end),
     stats: ($stats.data // $stats),
-    workItems: ($items.data // $items.workItems // [])
-  }'
+    examined: (if $rows != null then ($rows | length) else 0 end),
+    error: (if $rows != null then null
+            elif $itemsError != "" then $itemsError
+            else "GET /task-pool/items returned a body whose .data is not an array; workItems is UNKNOWN, not empty" end),
+    workItems: (if $rows == null then [] else
+      $rows
+      | map(select(((.status // "") as $s | $terminal | index($s)) == null))
+      | map({id, type, status, owner, target, title: ((.title // "") | .[0:120]), createdAt, startedAt})
+    end)
+  }
+  | if .error == null then del(.error) else . end')
+printf '%s\n' "$OUT"
+# Exit non-zero when the item list is unknown, so callers cannot mistake it for empty.
+printf '%s' "$OUT" | jq -e '.success' >/dev/null

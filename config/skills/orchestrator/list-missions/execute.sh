@@ -13,7 +13,7 @@ for arg in "$@"; do
   esac
 done
 
-RAW=$(api_call GET "/missions") || exit 1
+RAW=$(api_call_full GET "/missions") || exit 1
 if [ "$FULL" = "true" ]; then printf '%s\n' "$RAW"; exit 0; fi
 
 printf '%s' "$RAW" | jq --arg pending "$PENDING" '

@@ -11,8 +11,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/../../_common/lib.sh"
 
 # Collect status from multiple endpoints (each call updates heartbeat via middleware)
-teams_response=$(api_call GET "/teams" 2>/dev/null) || teams_response='{"error":"unavailable"}'
-projects_response=$(api_call GET "/projects" 2>/dev/null) || projects_response='{"error":"unavailable"}'
+teams_response=$(api_call_full GET "/teams" 2>/dev/null) || teams_response='{"error":"unavailable"}'
+projects_response=$(api_call_full GET "/projects" 2>/dev/null) || projects_response='{"error":"unavailable"}'
 queue_response=$(api_call GET "/messaging/queue/status" 2>/dev/null) || queue_response='{"error":"unavailable"}'
 
 # Parse helpers:

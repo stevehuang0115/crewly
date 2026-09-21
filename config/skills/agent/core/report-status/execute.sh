@@ -259,7 +259,7 @@ if [ "$STATUS" = "done" ]; then
   WI_RESOLUTION="explicit"
 
   if [ -z "$TARGET_WI_ID" ]; then
-    POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
+    POOL_RESP=$(api_call_full GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
     RUNNING_IDS=$(printf '%s' "$POOL_RESP" | jq -r '((.workItems // .data // []) | map(.id)) | .[]' 2>/dev/null || true)
     RUNNING_COUNT=$(printf '%s' "$RUNNING_IDS" | grep -c . || true)
 
