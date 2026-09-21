@@ -22,11 +22,11 @@ jest.mock('axios', () => ({
 
 // Escalation router is dynamically imported; stub it so the recovery
 // test can assert routing decisions without hitting filesystem state.
-const mockRoutePolicyEscalation = jest.fn().mockResolvedValue(null);
+const mockRecordOrphanedWorkItem = jest.fn().mockResolvedValue(null);
 jest.mock('./escalation-router.service.js', () => ({
   EscalationRouterService: {
     getInstance: () => ({
-      routePolicyEscalation: mockRoutePolicyEscalation,
+      recordOrphanedWorkItem: mockRecordOrphanedWorkItem,
     }),
   },
 }));
@@ -246,7 +246,7 @@ describe('AgentAutoClaimService', () => {
     beforeEach(() => {
       mockAxiosGet.mockReset();
       mockAxiosPost.mockReset();
-      mockRoutePolicyEscalation.mockReset().mockResolvedValue(null);
+      mockRecordOrphanedWorkItem.mockReset().mockResolvedValue(null);
       // Default teams response excludes orc — that's how the original
       // bug manifests (orc isn't a "member" of any team in the v3
       // teams.json shape, so the member-id lookup fails).
@@ -290,7 +290,7 @@ describe('AgentAutoClaimService', () => {
 
       await (service as unknown as { recoverPendingTasks: () => Promise<void> }).recoverPendingTasks();
 
-      expect(mockRoutePolicyEscalation).not.toHaveBeenCalled();
+      expect(mockRecordOrphanedWorkItem).not.toHaveBeenCalled();
     });
 
     it('still escalates orphaned NON-orc items normally', async () => {
@@ -306,7 +306,9 @@ describe('AgentAutoClaimService', () => {
 
       await (service as unknown as { recoverPendingTasks: () => Promise<void> }).recoverPendingTasks();
 
-      expect(mockRoutePolicyEscalation).toHaveBeenCalled();
+      expect(mockRecordOrphanedWorkItem).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'wi-alice-1', target: 'alice-the-dev' }),
+      );
     });
   });
 

@@ -48,9 +48,10 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
   },
 }));
 
+const mockSendNotification = jest.fn().mockResolvedValue(undefined);
 jest.mock('../slack/slack-orchestrator-bridge.js', () => ({
   getSlackOrchestratorBridge: () => ({
-    sendNotification: jest.fn().mockResolvedValue(undefined),
+    sendNotification: mockSendNotification,
   }),
 }));
 
@@ -201,6 +202,43 @@ describe('EscalationRouterService', () => {
   // 2026-05-22: workitem_failed escalation — called from
   // v3-data.onTaskFailed once a WI exhausts its retry budget.
   // ─────────────────────────────────────────────────────────────────────
+  describe('recordOrphanedWorkItem', () => {
+    const orphan = { id: 'wi-orphan-1', title: 'RESILIENCE: a Slack auth', target: 'crewly-product-max-358c7cb7' };
+
+    // Orphan recovery borrowed routePolicyEscalation with a fabricated
+    // mission and a scope_change rule, so the record named neither the work
+    // item nor the agent, and notifyHuman fired a second Slack post on top
+    // of the caller's own alert (2026-09-21).
+    it('records the work item and its missing target, and notifies no one', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.recordOrphanedWorkItem(orphan);
+
+      expect(id).not.toBeNull();
+      const [, written] = fileIo.atomicWriteJson.mock.calls[0];
+      expect(written.workItemId).toBe('wi-orphan-1');
+      expect(written.summary).toContain('RESILIENCE: a Slack auth');
+      expect(written.summary).toContain('crewly-product-max-358c7cb7');
+      expect(written.details).toMatchObject({ reason: 'orphaned_target' });
+      expect(mockSendNotification).not.toHaveBeenCalled();
+    });
+
+    // The sweep re-runs; 278 identical records piled up over five months.
+    it('reuses the open record instead of filing another on the next sweep', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const first = await service.recordOrphanedWorkItem(orphan);
+
+      jest.spyOn(service, 'listPending').mockResolvedValue([
+        { id: first as string, status: 'pending', source: 'workitem_failed', target: 'human', summary: 's', details: {}, workItemId: 'wi-orphan-1', raisedBy: 'system', raisedAt: '2026-09-21T00:00:00.000Z' },
+      ] as never);
+      fileIo.atomicWriteJson.mockClear();
+
+      expect(await service.recordOrphanedWorkItem(orphan)).toBe(first);
+      expect(fileIo.atomicWriteJson).not.toHaveBeenCalled();
+    });
+  });
+
   describe('escalateFailedWorkItem', () => {
     function makeFailedWI(overrides: Partial<{
       id: string; title: string; type: string; target: string;

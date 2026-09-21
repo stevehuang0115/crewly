@@ -563,16 +563,14 @@ export class AgentAutoClaimService {
           // Slack not available — fall through
         }
 
-        // Also create a persistent escalation record for tracking
+        // Also create a persistent escalation record for tracking. Record
+        // only — the Slack alert above is the notification; routing these
+        // through the policy path sent a second, contentless one.
         try {
           const { EscalationRouterService } = await import('./escalation-router.service.js');
           const router = EscalationRouterService.getInstance();
           for (const wi of orphanedItems) {
-            await router.routePolicyEscalation(
-              { id: 'system', objective: 'Task Recovery', policy: {} } as any,
-              { condition: 'scope_change', threshold: 0, escalateTo: 'user', action: 'notify' },
-              {},
-            );
+            await router.recordOrphanedWorkItem({ id: wi.id, title: wi.title, target: wi.target });
           }
         } catch {
           // Best-effort

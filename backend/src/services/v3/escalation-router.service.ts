@@ -203,6 +203,45 @@ export class EscalationRouterService {
     return null;
   }
 
+  /**
+   * Record that a queued work item has no reachable target, without notifying
+   * anyone — the caller has already sent its own alert.
+   *
+   * Orphan recovery used to borrow {@link routePolicyEscalation} with a
+   * fabricated mission and a `scope_change` rule, which named neither the
+   * work item nor the agent and fired a second Slack post on top of the
+   * caller's. It re-recorded the same orphan on every sweep, so 278 identical
+   * records piled up over five months (2026-04-14 → 2026-09-21). One pending
+   * record per work item, and nothing is sent.
+   *
+   * @param wi - The orphaned work item
+   * @returns The escalation id — existing or new — or null on failure
+   */
+  async recordOrphanedWorkItem(wi: { id: string; title: string; target?: string | null }): Promise<string | null> {
+    try {
+      const open = (await this.listPending()).find(
+        (e) => e.status === 'pending' && e.source === 'workitem_failed' && e.workItemId === wi.id,
+      );
+      if (open) return open.id;
+
+      const escalation = await this.createPendingEscalation({
+        source: 'workitem_failed',
+        target: 'human',
+        summary: `WorkItem "${wi.title}" is queued for "${wi.target ?? 'unknown'}", an agent that no longer exists`,
+        details: { workItemId: wi.id, title: wi.title, target: wi.target ?? null, reason: 'orphaned_target' },
+        workItemId: wi.id,
+        raisedBy: 'system',
+      });
+      return escalation.id;
+    } catch (err) {
+      this.logger.warn('Could not record an orphaned work item', {
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Route: MissionPolicy EscalationRule
   // ---------------------------------------------------------------------------
