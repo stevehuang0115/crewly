@@ -38,6 +38,7 @@ import type {
   SlackChannelInfo,
 } from '../../types/slack.types.js';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
+import { describeSlackError } from './slack.service.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import type {
   ChatV2DispatcherService,
@@ -1003,9 +1004,20 @@ export class SlackTeamChannelService {
           .map((m) => this.deps.identities?.getInstalled(m)?.botToken)
           .find((t): t is string => !!t)
       : undefined;
+    // Swallowing this outright cost an evening: the owner saw no eyes and no
+    // placeholder and reasonably concluded nothing had arrived, while the
+    // message was in fact routed, dispatched and answered (2026-09-21).
+    // Cosmetic, so still non-fatal — but never again silent.
     await this.deps.slack
       .addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION, reactAs)
-      .catch(() => undefined);
+      .catch((err: unknown) => {
+        this.logger.warn('Could not acknowledge the message with a reaction', {
+          slackChannel: mapping.slackChannelName ?? message.channelId,
+          adhoc: isAdhocMapping(mapping),
+          reactedAs: reactAs ? 'agent-bot' : 'master-bot',
+          error: describeSlackError(err).code,
+        });
+      });
 
     // Ad-hoc channels grow their huddle as new agents get @'d there.
     if (isAdhocMapping(mapping) && resolved.mentions.length > 0) {

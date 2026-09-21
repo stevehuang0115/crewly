@@ -108,3 +108,25 @@ describe('SlackTypingPlaceholderService', () => {
     expect(await off.begin(key, ella)).toBeNull();
   });
 });
+
+describe('SlackTypingPlaceholderService — a placeholder that cannot be posted', () => {
+  // This was logged at debug, and the running log level emits none. A channel
+  // where the placeholder never posts then looked identical to one where the
+  // agent never answered, and the owner had nothing to go on (2026-09-21).
+  it('warns with the reason instead of failing silently, and still returns null', async () => {
+    const { slack, sent } = makeSlack({
+      sendMessage: async () => { throw Object.assign(new Error('An API error occurred'), { data: { error: 'not_in_channel' } }); },
+    });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const warnings: Array<Record<string, unknown>> = [];
+    (svc as unknown as { logger: { warn: unknown } }).logger.warn = (_m: string, ctx: Record<string, unknown>) => {
+      warnings.push(ctx);
+    };
+
+    expect(await svc.begin(key, ella)).toBeNull();
+    expect(sent).toHaveLength(0);
+    expect(svc.pendingCount).toBe(0);
+    expect(warnings).toHaveLength(1);
+    expect(String(warnings[0]!['error'])).toContain('API error');
+  });
+});

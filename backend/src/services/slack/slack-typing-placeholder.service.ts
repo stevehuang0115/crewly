@@ -205,7 +205,13 @@ export class SlackTypingPlaceholderService {
       this.pending.set(k, entry);
       return placeholder;
     } catch (err) {
-      this.logger.debug('Typing placeholder not posted', { key: k, error: err instanceof Error ? err.message : String(err) });
+      // At debug this was invisible — the running log level emits none, so a
+      // channel where the placeholder never posts looks identical to one
+      // where the agent never answered (2026-09-21).
+      this.logger.warn('Typing placeholder not posted — no "working on it" will show', {
+        key: k,
+        error: err instanceof Error ? err.message : String(err),
+      });
       return null;
     }
   }

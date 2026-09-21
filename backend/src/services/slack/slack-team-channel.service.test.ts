@@ -870,6 +870,26 @@ describe('routeInbound', () => {
     expect(slack.sent).toEqual([]); // no hint: mention resolved
   });
 
+  // The reaction is cosmetic, so its failure was swallowed outright. The
+  // owner then saw no eyes and no placeholder and reasonably concluded the
+  // message had not arrived — while it was routed, dispatched and answered
+  // (2026-09-21). Still non-fatal, but it must leave a trace.
+  it('logs the Slack error code when the seen-reaction cannot be added, and still routes', async () => {
+    const warnings: Array<Record<string, unknown>> = [];
+    (service as unknown as { logger: { warn: unknown } }).logger.warn = (_m: string, ctx: Record<string, unknown>) => {
+      warnings.push(ctx);
+    };
+    slack.addReaction = async () => {
+      throw Object.assign(new Error('An API error occurred'), { data: { error: 'not_in_channel' } });
+    };
+
+    const result = await service.routeInbound(inbound({ text: '@sam 看一下', userId: 'U1' }));
+
+    expect(result).not.toBeNull();
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalled();
+    expect(warnings).toContainEqual(expect.objectContaining({ error: 'not_in_channel', reactedAs: 'master-bot' }));
+  });
+
   it('a message written by an agent on another machine is recorded under its name as an outside voice and dispatched', async () => {
     const result = await service.routeInbound(
       inbound({ text: '<@USAM> can you check?', userId: 'UMIA', authorAgentSession: 'remote-team-mia', authorDisplayName: 'Mia' }),
