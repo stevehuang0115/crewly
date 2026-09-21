@@ -695,6 +695,69 @@ describe('ChatV2DispatcherService', () => {
         expect(calls[0].message).toContain('--thread root-1');
       });
 
+      // Every engaged agent used to be 'required'. The owner wrote
+      // "那要不算了？" about one agent's proposal and a second agent, also in
+      // the thread, read it as being about its own daily briefing and rolled
+      // that briefing back (2026-09-21, #daily-info). A bare follow-up
+      // addresses whoever just spoke.
+      it('a bare thread follow-up requires only the last speaker; the others may judge', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b', 'sess-c'],
+          huddleLeaderFor: async () => 'sess-a',
+          threadParticipantsFor: () => ['sess-b', 'sess-c'],
+          lastThreadSpeakerFor: () => 'sess-c',
+        });
+
+        const result = await dispatcher.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ mentions: [] }),
+          { threadId: 'root-1', replyVia: 'reply-channel' },
+        );
+
+        expect(result.huddleOutcomes).toEqual([
+          { sessionName: 'sess-b', responseMode: 'optional', dispatched: true },
+          { sessionName: 'sess-c', responseMode: 'required', dispatched: true },
+        ]);
+        // Neither was named, so neither may act on it.
+        for (const c of calls) expect(c.message).toContain('不要执行任何变更');
+      });
+
+      it('an explicit @ still requires that agent, and carries no action guard', async () => {
+        const { sink, calls } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b', 'sess-c'],
+          threadParticipantsFor: () => ['sess-b', 'sess-c'],
+          lastThreadSpeakerFor: () => 'sess-c',
+        });
+
+        const result = await dispatcher.dispatchMessage(
+          makeHuddle(),
+          makeMessage({ mentions: ['sess-b'] }),
+          { threadId: 'root-1', replyVia: 'reply-channel' },
+        );
+
+        // @'d wins over last-speaker, and everyone engaged is still required
+        // because the message named someone explicitly.
+        expect(result.huddleOutcomes?.find((o) => o.sessionName === 'sess-b')).toMatchObject({ responseMode: 'required' });
+        expect(calls.find((c) => c.sessionName === 'sess-b')!.message).not.toContain('不要执行任何变更');
+        expect(calls.find((c) => c.sessionName === 'sess-c')!.message).toContain('不要执行任何变更');
+      });
+
+      it('falls back to requiring every engaged agent when the last speaker is unknown', async () => {
+        const { sink } = makeSink({ success: true });
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: sink,
+          huddleMembersFor: () => ['sess-a', 'sess-b', 'sess-c'],
+          threadParticipantsFor: () => ['sess-b', 'sess-c'],
+          lastThreadSpeakerFor: () => null,
+        });
+        const result = await dispatcher.dispatchMessage(makeHuddle(), makeMessage({ mentions: [] }), { threadId: 'root-1' });
+        expect(result.huddleOutcomes?.every((o) => o.responseMode === 'required')).toBe(true);
+      });
+
       it('never delivers a message back to a session listed in excludeSessions (the agent that wrote it)', async () => {
         const { sink, calls } = makeSink({ success: true });
         const dispatcher = new ChatV2DispatcherService({

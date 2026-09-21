@@ -1815,6 +1815,9 @@ void (async () => {
 					// without another @.
 					threadParticipantsFor: (channelId, threadId) =>
 						chatService.queryThreadParticipantsForDispatch(channelId, threadId),
+					// …but only the one that spoke last must answer a bare follow-up.
+					lastThreadSpeakerFor: (channelId, threadId) =>
+						chatService.queryLastThreadSpeakerForDispatch(channelId, threadId),
 					// A message that addresses nobody goes to the team leader alone
 					// (optional reply); the team is found by the huddle's roster.
 					huddleLeaderFor: async (channelId) => {

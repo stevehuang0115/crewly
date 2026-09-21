@@ -483,6 +483,32 @@ export class MessageStore {
   }
 
   /**
+   * The agent that spoke last in a thread.
+   *
+   * A bare follow-up in a thread addresses whoever just spoke, the way it
+   * does between people. Treating every engaged agent as required meant an
+   * agent answered — and acted on — a line meant for a colleague: the owner
+   * wrote "那要不算了？" to one agent and a second one rolled back its own
+   * unrelated config (2026-09-21, #daily-info).
+   *
+   * @param channelId - The channel id
+   * @param rootId - The thread root message id
+   * @returns The last agent sender, or null when no agent has posted
+   */
+  lastThreadSpeaker(channelId: string, rootId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT sender_id
+         FROM chat_messages
+         WHERE channel_id = ? AND (id = ? OR thread_id = ?) AND sender_type = 'agent'
+         ORDER BY seq DESC
+         LIMIT 1`,
+      )
+      .get(channelId, rootId, rootId) as { sender_id: string } | undefined;
+    return row?.sender_id ?? null;
+  }
+
+  /**
    * Return the current `MAX(seq)` for a channel, or 0 when empty.
    *
    * @param channelId - The channel id

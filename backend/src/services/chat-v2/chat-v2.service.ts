@@ -699,6 +699,18 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * The agent that spoke last in a thread — the one a bare follow-up is
+   * addressed to.
+   *
+   * @param channelId - The channel id
+   * @param threadId - The thread root message id
+   * @returns The session name, or null when no agent has posted in it
+   */
+  queryLastThreadSpeakerForDispatch(channelId: string, threadId: string): string | null {
+    return this.messages.lastThreadSpeaker(channelId, threadId);
+  }
+
+  /**
    * Replace a huddle's roster with exactly `memberSessions` (insert the
    * missing ones, delete the rest). Used by Slack team channels to keep
    * the huddle in step with the Crewly team's members. No-op on non-huddle

@@ -152,6 +152,8 @@ export interface ChatV2DispatcherOptions {
    * without another @. When omitted, thread follow-ups need an @.
    */
   threadParticipantsFor?: (channelId: string, threadId: string) => readonly string[];
+  /** The agent that spoke last in a thread — a bare follow-up addresses it. */
+  lastThreadSpeakerFor?: (channelId: string, threadId: string) => string | null;
   /**
    * The team leader behind a huddle (team channel). A message that @'s
    * nobody and sits in no agent thread goes to the leader alone, marked
@@ -173,6 +175,15 @@ export interface ChatV2DispatcherOptions {
 export interface FormatPromptArgs {
   /** One line naming the channel's members and how to @ them. */
   channelRoster?: string;
+  /**
+   * Whether this agent was named — an `@` in a channel, or a DM to it.
+   *
+   * A thread follow-up reaches the last speaker without an `@`, so it is
+   * `required` yet unaddressed; that is exactly when an agent should answer
+   * but not act (2026-09-21). Left undefined by callers that only ever
+   * address one agent.
+   */
+  addressedDirectly?: boolean;
   channelId: string;
   channelName: string;
   agentSession: string;
@@ -238,6 +249,15 @@ export interface DispatchMessageOptions {
  */
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
+  // Nobody named this agent, so it may be reading someone else's
+  // conversation. One agent took "那要不算了？" — meant for a colleague's
+  // proposal — as being about its own daily briefing and rolled that
+  // briefing back, then announced it would treat silence as consent
+  // (2026-09-21, #daily-info).
+  const actionGuard =
+    args.addressedDirectly === false
+      ? ' 没有人点名你，所以这条消息可能根本不是对你说的：可以回答、可以反问确认，但**不要执行任何变更**（改配置、停/改定时任务、改投递目标、动别人的工作），也不要把"对方没回我"当成同意。要做变更，先问清楚并等明确答复。'
+      : '';
   const trimmed = content.trim();
   const idHint = clientMessageId ? ` [cmid:${clientMessageId}]` : '';
   // Default to "required" so DM and single-mention channel dispatches
@@ -262,7 +282,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     trimmed,
     ``,
     `---`,
-    replyHint,
+    replyHint + actionGuard,
     ...(channelRoster ? [`本频道成员（可 @ 的同事）: ${channelRoster}`] : []),
   ].join('\n');
 }
@@ -282,6 +302,7 @@ export class ChatV2DispatcherService {
   private readonly mentionResolver?: ChatV2MentionResolver;
   private readonly huddleMembersFor?: (channelId: string) => readonly string[];
   private readonly threadParticipantsFor?: (channelId: string, threadId: string) => readonly string[];
+  private readonly lastThreadSpeakerFor?: (channelId: string, threadId: string) => string | null;
   private readonly huddleLeaderFor?: (channelId: string) => Promise<string | null>;
   private readonly activateAgent?: (agentSession: string) => Promise<boolean>;
   private readonly logger: ComponentLogger;
@@ -292,6 +313,7 @@ export class ChatV2DispatcherService {
     this.mentionResolver = options.mentionResolver;
     this.huddleMembersFor = options.huddleMembersFor;
     this.threadParticipantsFor = options.threadParticipantsFor;
+    this.lastThreadSpeakerFor = options.lastThreadSpeakerFor;
     this.huddleLeaderFor = options.huddleLeaderFor;
     this.activateAgent = options.activateAgent;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
@@ -413,8 +435,24 @@ export class ChatV2DispatcherService {
       options.threadId && this.threadParticipantsFor
         ? this.threadParticipantsFor(channel.id, options.threadId).filter((m) => memberSet.has(m))
         : [];
+    // A bare follow-up in a thread addresses whoever just spoke, the way it
+    // does between people. Requiring every engaged agent to answer meant a
+    // second agent took a line meant for a colleague and acted on it: the
+    // owner wrote "那要不算了？" about one agent's proposal and another
+    // rolled back its own unrelated config (2026-09-21, #daily-info).
+    // Explicit @-mentions always stay required.
+    const lastSpeaker =
+      mentioned.length === 0 && options.threadId && this.lastThreadSpeakerFor
+        ? this.lastThreadSpeakerFor(channel.id, options.threadId)
+        : null;
     const targets = new Map<string, 'required' | 'optional'>();
-    for (const m of [...mentioned, ...engaged]) targets.set(m, 'required');
+    for (const m of mentioned) targets.set(m, 'required');
+    for (const m of engaged) {
+      if (targets.has(m)) continue;
+      // Nobody was @'d: only the last speaker must answer. The others are
+      // still told, and judge for themselves whether it concerns them.
+      targets.set(m, !lastSpeaker || m === lastSpeaker ? 'required' : 'optional');
+    }
     if (targets.size === 0 && this.huddleLeaderFor) {
       const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
       if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
@@ -431,10 +469,12 @@ export class ChatV2DispatcherService {
     const outcomes: HuddleDispatchOutcome[] = [];
     let anyDispatched = false;
 
+    const namedExplicitly = new Set(mentioned);
     const promptFor = (sessionName: string, responseMode: 'required' | 'optional'): string =>
       this.formatPrompt({
         channelId: channel.id,
         channelName: channel.name,
+        addressedDirectly: namedExplicitly.has(sessionName),
         agentSession: sessionName,
         senderId: message.senderId,
         content: message.content,
