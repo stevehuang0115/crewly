@@ -6,6 +6,7 @@
 
 // Jest globals are available automatically
 import {
+  buildLocalAgentRoster,
   isSlackConfigured,
   getSlackConfigFromEnv,
   getSlackConfig,
@@ -577,5 +578,42 @@ describe('Slack Initializer', () => {
 
       await expect(shutdownSlack()).resolves.not.toThrow();
     });
+  });
+});
+
+
+/**
+ * A DM to this machine's own `Crewly Orc` bot was declined by the agent-DM
+ * path because `isLocalAgent('crewly-orc')` was false, so the orchestrator
+ * bridge answered it on the workspace bot — which is not in that
+ * conversation. The reply was written and had nowhere to go (owner,
+ * 2026-09-21).
+ */
+describe('buildLocalAgentRoster', () => {
+  it('includes the orchestrator, which no stored team contains', () => {
+    // The Orchestrator Team is assembled by the teams API for display and
+    // is never stored, so storage alone can never yield the orc.
+    const { sessions } = buildLocalAgentRoster([]);
+    expect(sessions.has('crewly-orc')).toBe(true);
+  });
+
+  it('keeps every stored team member alongside it', () => {
+    const { sessions, names } = buildLocalAgentRoster([
+      { members: [{ sessionName: 'marketing-ella-1234', name: 'Ella' }, { sessionName: 'tt-atlas-5678', name: 'Atlas' }] },
+      { members: [{ sessionName: 'ce-owen-9999', name: 'Owen' }] },
+    ]);
+    expect([...sessions].sort()).toEqual(['ce-owen-9999', 'crewly-orc', 'marketing-ella-1234', 'tt-atlas-5678']);
+    expect(names.get('marketing-ella-1234')).toBe('Ella');
+  });
+
+  it('skips a member with no session name rather than adding an empty one', () => {
+    const { sessions } = buildLocalAgentRoster([{ members: [{ name: 'Idle' }, { sessionName: 'real-1', name: 'Real' }] }]);
+    expect(sessions.has('')).toBe(false);
+    expect([...sessions].sort()).toEqual(['crewly-orc', 'real-1']);
+  });
+
+  it('records no display name for a member that has none', () => {
+    const { names } = buildLocalAgentRoster([{ members: [{ sessionName: 'no-name-1' }] }]);
+    expect(names.has('no-name-1')).toBe(false);
   });
 });

@@ -23,7 +23,7 @@ import {
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
-import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 
@@ -91,19 +91,44 @@ const localAgentSessions = new Set<string>();
 const localAgentNames = new Map<string, string>();
 
 /** Rebuild {@link localAgentSessions} from storage. Never throws. */
+/**
+ * The agent sessions that run on this machine, and their display names.
+ *
+ * The orchestrator is added unconditionally: it plainly runs here, but the
+ * Orchestrator Team is assembled by the teams API for display and is never
+ * stored, so it is absent from `getTeams()`. Without it `isLocalAgent`
+ * answered false for `crewly-orc`, the agent-DM path declined a DM to this
+ * machine's own orchestrator bot, and the orchestrator bridge answered on
+ * the workspace bot — which is not in that conversation. The reply was
+ * written and had nowhere to go (owner, 2026-09-21).
+ *
+ * @param teams - Teams from storage
+ * @returns Session names, and the names to show for them
+ */
+export function buildLocalAgentRoster(
+  teams: Array<{ members?: Array<{ sessionName?: string; name?: string }> }>,
+): { sessions: Set<string>; names: Map<string, string> } {
+  const sessions = new Set<string>([CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME]);
+  const names = new Map<string, string>();
+  for (const team of teams) {
+    for (const m of team.members ?? []) {
+      if (!m.sessionName) continue;
+      sessions.add(m.sessionName);
+      if (m.name) names.set(m.sessionName, m.name);
+    }
+  }
+  return { sessions, names };
+}
+
 async function refreshLocalAgentSessions(): Promise<void> {
   try {
     const { StorageService } = await import('../core/storage.service.js');
     const teams = await StorageService.getInstance().getTeams();
+    const { sessions, names } = buildLocalAgentRoster(teams);
     localAgentSessions.clear();
     localAgentNames.clear();
-    for (const team of teams) {
-      for (const m of team.members ?? []) {
-        if (!m.sessionName) continue;
-        localAgentSessions.add(m.sessionName);
-        if (m.name) localAgentNames.set(m.sessionName, m.name);
-      }
-    }
+    for (const s of sessions) localAgentSessions.add(s);
+    for (const [k, v] of names) localAgentNames.set(k, v);
   } catch {
     // storage unavailable — the live-session check still applies
   }
