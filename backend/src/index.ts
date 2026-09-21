@@ -95,6 +95,7 @@ import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscrib
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
+import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
 import { SlackImageService, setSlackImageService } from './services/slack/slack-image.service.js';
@@ -3011,10 +3012,20 @@ void (async () => {
 					const bootMarker = path.join(this.config.crewlyHome, '.boot-announced');
 					const firstBoot = isFirstBoot(bootMarker);
 					if (firstBoot) markBooted(bootMarker);
+					// Several machines announce into one Slack workspace, so say
+					// which one this is. Best-effort: an unnamed device just
+					// keeps the old wording.
+					let deviceName: string | undefined;
+					try {
+						deviceName = (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceName;
+					} catch {
+						deviceName = undefined;
+					}
 					await sendBootAnnouncement(
 						{
 							version,
 							firstBoot,
+							...(deviceName ? { deviceName } : {}),
 							offlineDurationMs: this.lastOfflineReplay?.offlineDurationMs,
 							replayedCount: this.lastOfflineReplay?.replayedCount,
 						},

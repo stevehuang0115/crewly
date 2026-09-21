@@ -121,3 +121,25 @@ describe('sendBootAnnouncement', () => {
     expect(warn).toHaveBeenCalled();
   });
 });
+
+describe('composeBootAnnouncement — machine name', () => {
+  // Several instances announce into one Slack workspace, so two restarts on
+  // the same version read identically and the owner could not tell which
+  // machine had come back (2026-09-21).
+  it('names the machine in the title and as the first body line', () => {
+    const out = composeBootAnnouncement({ version: '1.20.59', deviceName: 'iriss-air.lan' });
+    expect(out.title).toBe('✅ Crewly 已重启上线（iriss-air.lan）');
+    expect(out.message.split('\n')[0]).toBe('• 机器: iriss-air.lan');
+    expect(out.message).toContain('• 版本: 1.20.59');
+  });
+
+  it('names it on a first boot too', () => {
+    const out = composeBootAnnouncement({ version: '1.20.59', firstBoot: true, deviceName: 'macbookpro.lan' });
+    expect(out.title).toContain('macbookpro.lan');
+  });
+
+  it('keeps the old wording when the device has no usable name', () => {
+    expect(composeBootAnnouncement({ version: '1.20.59' }).title).toBe('✅ Crewly 已重启上线');
+    expect(composeBootAnnouncement({ version: '1.20.59', deviceName: '  ' }).title).toBe('✅ Crewly 已重启上线');
+  });
+});

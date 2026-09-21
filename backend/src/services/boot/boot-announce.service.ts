@@ -25,6 +25,13 @@ import { existsSync, writeFileSync } from 'fs';
 export interface BootAnnounceInfo {
   /** The running Crewly version, e.g. "1.11.3". */
   version: string;
+  /**
+   * Which machine this is, e.g. "macbookpro.lan".
+   *
+   * Several instances share one Slack workspace, so without it two restarts
+   * on the same version are indistinguishable in the channel (2026-09-21).
+   */
+  deviceName?: string;
   /** True on the first-ever boot (welcome) vs a restart (back-online). */
   firstBoot?: boolean;
   /** How long the system was offline before this boot, in ms (optional). */
@@ -72,14 +79,16 @@ function formatDuration(ms: number): string {
 export function composeBootAnnouncement(info: BootAnnounceInfo): BootAnnounceMessage {
   // First-ever boot: a welcome, not a "restarted" message — and offline /
   // replayed lines are meaningless (there was no prior run).
+  const machine = info.deviceName?.trim();
   if (info.firstBoot) {
     return {
-      title: '🎉 欢迎使用 Crewly！',
+      title: machine ? `🎉 欢迎使用 Crewly！（${machine}）` : '🎉 欢迎使用 Crewly！',
       message: `Crewly 已启动并就绪。\n• 版本: ${info.version}`,
     };
   }
 
   const lines: string[] = [`• 版本: ${info.version}`];
+  if (machine) lines.unshift(`• 机器: ${machine}`);
   if (typeof info.offlineDurationMs === 'number' && info.offlineDurationMs > 0) {
     lines.push(`• 离线: ${formatDuration(info.offlineDurationMs)}`);
   }
@@ -87,7 +96,7 @@ export function composeBootAnnouncement(info: BootAnnounceInfo): BootAnnounceMes
     lines.push(`• 已补处理: ${info.replayedCount} 条离线消息`);
   }
   return {
-    title: '✅ Crewly 已重启上线',
+    title: machine ? `✅ Crewly 已重启上线（${machine}）` : '✅ Crewly 已重启上线',
     message: lines.join('\n'),
   };
 }
