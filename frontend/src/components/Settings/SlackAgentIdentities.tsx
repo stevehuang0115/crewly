@@ -267,6 +267,13 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
     ([, a], [, b]) => Number(isOrchestratorGroup(b)) - Number(isOrchestratorGroup(a)),
   );
   const installedTotal = rows.filter((r) => r.status === 'installed').length;
+  // An agent that is installed but missing a newly added permission is not
+  // in the same situation as one that was never set up: the first is
+  // silently broken and one click from working, the second was simply never
+  // wanted. Lumping them into one "waiting to install" list hid two agents
+  // that could not react, and later every agent that could not read a file
+  // (2026-09-21).
+  const needsReauth = rows.filter((r) => r.status === 'installed' && r.reinstall);
 
   return (
     <Card padding="lg">
@@ -382,6 +389,19 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
               <p className="text-xs text-text-secondary-dark">
                 {installedTotal} of {rows.length} agents installed. Installed agents join their team channel by themselves.
               </p>
+              {needsReauth.length > 0 && (
+                <div className="mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                  <p className="text-xs text-amber-300">
+                    <strong>{needsReauth.length} installed {needsReauth.length === 1 ? 'agent needs' : 'agents need'} re-authorization.</strong>{' '}
+                    They are running but a newer permission is missing, so part of what they do fails —
+                    reading an image you send them, for instance. Their rows below carry an
+                    “Authorize” link.
+                  </p>
+                  <p className="mt-1 text-xs text-amber-300/80">
+                    {needsReauth.map((r) => r.displayName || r.agentSession).join(' · ')}
+                  </p>
+                </div>
+              )}
               {orderedGroups.map(([team, members]) => {
                 const installed = members.filter((m) => m.status === 'installed').length;
                 const isOrc = isOrchestratorGroup(members);

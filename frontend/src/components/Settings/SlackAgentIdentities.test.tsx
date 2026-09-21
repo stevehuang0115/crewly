@@ -56,9 +56,38 @@ describe('SlackAgentIdentities', () => {
       },
     });
     render(<SlackAgentIdentities />);
-    await waitFor(() => expect(screen.getByText('Sam')).toBeInTheDocument());
+    // 'Sam' appears twice once it is stale — in its row and in the summary banner above the
+    // team list — so anchor the wait on the row's own link instead.
+    await waitFor(() => expect(screen.getByText('Re-authorize Sam')).toBeInTheDocument());
     expect(screen.getByText(/new permissions need your re-authorization/)).toBeInTheDocument();
     expect(screen.getByText('Re-authorize Sam').closest('a')!.getAttribute('href')).toBe('https://slack.com/oauth/v2/authorize?re');
+  });
+
+  it('summarizes, above the team list, which installed agents are waiting on a re-authorization', async () => {
+    routeFetch({}, {
+      ...basePayload,
+      data: {
+        ...basePayload.data,
+        identities: [
+          { agentSession: 's', displayName: 'Sam', appId: 'A1', status: 'installed', botUserId: 'USAM', hasToken: true, reinstall: true, installUrl: 'https://slack.com/oauth/v2/authorize?re' },
+          { agentSession: 'a', displayName: 'Ada', appId: 'A3', status: 'installed', botUserId: 'UADA', hasToken: true, reinstall: true, installUrl: 'https://slack.com/oauth/v2/authorize?re2' },
+          { agentSession: 'l', displayName: 'Leo', appId: 'A2', status: 'pending_install', installUrl: 'https://slack.com/oauth/v2/authorize?x', hasToken: false },
+        ],
+      },
+    });
+    render(<SlackAgentIdentities />);
+    await waitFor(() => expect(screen.getByText('Sam')).toBeInTheDocument());
+    // The count covers only the installed-but-stale ones: Leo was never installed, so it is not
+    // waiting on anything the owner has to re-click.
+    expect(screen.getByText('2 installed agents need re-authorization.')).toBeInTheDocument();
+    expect(screen.getByText('Sam · Ada')).toBeInTheDocument();
+  });
+
+  it('shows no re-authorization banner when every installed agent is current', async () => {
+    routeFetch();
+    render(<SlackAgentIdentities />);
+    await waitFor(() => expect(screen.getByText('Sam')).toBeInTheDocument());
+    expect(screen.queryByText(/need(s)? re-authorization\./)).not.toBeInTheDocument();
   });
 
   it('lists identities with status and an install link for pending ones', async () => {
