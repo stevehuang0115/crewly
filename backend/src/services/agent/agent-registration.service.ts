@@ -28,6 +28,7 @@ import {
 	RUNTIME_TYPES,
 	RuntimeType,
 	SESSION_COMMAND_DELAYS,
+	SESSION_RECREATION_CONSTANTS,
 	EVENT_DELIVERY_CONSTANTS,
 	TERMINAL_PATTERNS,
 	GEMINI_SHELL_MODE_CONSTANTS,
@@ -1753,7 +1754,10 @@ export class AgentRegistrationService {
 		runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE,
 		runtimeFlags?: string[]
 	): Promise<boolean> {
-		// Kill existing session
+		// Kill existing session. Same D2(a) rule as forceRecreate: a monitor entry
+		// for the old incarnation must not outlive it, or it false-declares the
+		// replacement PTY dead before startMonitoring() below replaces it.
+		RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
 		await (await this.getSessionHelper()).killSession(sessionName);
 
 		// Wait for cleanup
@@ -1793,6 +1797,8 @@ export class AgentRegistrationService {
 				sessionName,
 				projectPath: orchestratorCwd,
 			});
+			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
+			await this.waitForShellReady(sessionName);
 
 			// Initialize runtime for orchestrator using script (always fresh start)
 			const runtimeService = this.createRuntimeService(runtimeType);
@@ -1862,8 +1868,17 @@ export class AgentRegistrationService {
 				{ sessionName, runtimeType }
 			);
 		} else {
-			// For other roles, create basic session and initialize Claude (always fresh start)
-			await (await this.getSessionHelper()).createSession(sessionName, projectPath || process.cwd());
+			// For other roles, create basic session and initialize Claude (always fresh start).
+			// D1 (2026-09-21): spawn with the identity env exactly like the primary
+			// path — this branch used to spawn env-less, so every agent that came
+			// through Step 2 ran without CREWLY_SESSION_NAME (unattributed heartbeats
+			// and channel replies).
+			const recreationCwd = projectPath || process.cwd();
+			await (await this.getSessionHelper()).createSession(sessionName, recreationCwd, {
+				env: this.buildAgentIdentityEnv(sessionName, role, recreationCwd),
+			});
+			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
+			await this.waitForShellReady(sessionName);
 
 			const runtimeService = this.createRuntimeService(runtimeType);
 			const launchedAtMs = Date.now();
@@ -2925,16 +2940,78 @@ Loop until done, blocked, or explicitly reassigned:
 			return;
 		}
 
-		// Create new session for orchestrator
-		await (await this.getSessionHelper()).createSession(
-			config.sessionName,
-			config.projectPath
-			// windowName not used in PTY backend
-		);
+		// Create new session for orchestrator — with the identity env (D1), the
+		// same object the primary path spawns with. windowName not used in PTY backend.
+		await (await this.getSessionHelper()).createSession(config.sessionName, config.projectPath, {
+			env: this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath),
+		});
 
 		this.logger.info('Orchestrator session created successfully', {
 			sessionName: config.sessionName,
 		});
+	}
+
+	/**
+	 * The identity environment every agent PTY is spawned with.
+	 *
+	 * One source of truth for the primary spawn path, the Step-2 full
+	 * recreation path and the orchestrator session: `CREWLY_SESSION_NAME`
+	 * is what every skill sends as `X-Agent-Session`, so a session spawned
+	 * without it produces unattributed heartbeats and channel replies. Passing
+	 * the env at spawn (rather than only typing `export`s afterwards) is what
+	 * makes it survive a shell that is still initialising.
+	 *
+	 * @param sessionName - PTY session name (also the agent's identity)
+	 * @param role - Agent role (orchestrator, developer, …)
+	 * @param cwd - Working directory the PTY is spawned in (exposed as CREWLY_PROJECT_PATH)
+	 * @returns Env map to pass as `createSession(..., { env })`
+	 */
+	private buildAgentIdentityEnv(sessionName: string, role: string, cwd: string): Record<string, string> {
+		return {
+			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
+			[ENV_CONSTANTS.CREWLY_ROLE]: role,
+			[ENV_CONSTANTS.CREWLY_API_URL]: `http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`,
+			[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwd,
+			[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
+		};
+	}
+
+	/**
+	 * Wait — bounded — for a freshly spawned shell to print its prompt before
+	 * anything is written to it.
+	 *
+	 * D3 (2026-09-21): Step 2 full recreation used to write the runtime init
+	 * sequence ~8 ms after spawn. That sequence leads with Ctrl-C, and a zsh that
+	 * young has not installed its interactive SIGINT handling, so the TTY-delivered
+	 * SIGINT ends the shell (exit 0, 11 ms after spawn). The primary path never
+	 * hits this only because it types five `export`s first (~0.5 s).
+	 *
+	 * Checks the buffer first (the prompt may have landed before we subscribe),
+	 * then waits for the first non-whitespace output up to
+	 * `SESSION_RECREATION_CONSTANTS.SHELL_READY_TIMEOUT_MS`. Never throws: on
+	 * timeout it logs a warning and lets the caller proceed, so a silent shell
+	 * degrades to today's behaviour rather than blocking recreation.
+	 *
+	 * @param sessionName - The just-created PTY session
+	 * @returns True when a prompt was seen, false when the window elapsed
+	 */
+	private async waitForShellReady(sessionName: string): Promise<boolean> {
+		const { SHELL_READY_PATTERN, SHELL_READY_TIMEOUT_MS, SHELL_READY_CAPTURE_LINES } = SESSION_RECREATION_CONSTANTS;
+		const helper = await this.getSessionHelper();
+		try {
+			if (SHELL_READY_PATTERN.test(helper.capturePane(sessionName, SHELL_READY_CAPTURE_LINES))) {
+				return true;
+			}
+			await helper.waitForPattern(sessionName, SHELL_READY_PATTERN, SHELL_READY_TIMEOUT_MS);
+			return true;
+		} catch (error) {
+			this.logger.warn('Fresh shell printed nothing within the readiness window — proceeding with runtime init anyway', {
+				sessionName,
+				timeoutMs: SHELL_READY_TIMEOUT_MS,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return false;
+		}
 	}
 
 	/**
@@ -3157,6 +3234,12 @@ Loop until done, blocked, or explicitly reassigned:
 				// Skip recovery, kill immediately (used during server startup for stale sessions)
 				this.logger.info('Session exists but forceRecreate is set, killing for clean restart', { sessionName });
 				try {
+					// D2(a) (2026-09-21): the previous incarnation's RuntimeExitMonitor
+					// entry must go BEFORE the kill. It resolves the child by session
+					// NAME and its 30s poll grace is long expired, so left alive it
+					// judges the seconds-old replacement PTY (no runtime child yet)
+					// dead and force-kills it — Step 1 then fails and Step 2 runs.
+					RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
 					const runtimeService = this.createRuntimeService(runtimeType);
 					runtimeService.clearDetectionCache(sessionName);
 					await (await this.getSessionHelper()).killSession(sessionName);
@@ -3450,14 +3533,9 @@ Loop until done, blocked, or explicitly reassigned:
 				// can be lost, and every skill then runs without
 				// CREWLY_SESSION_NAME — no X-Agent-Session header, and
 				// reply-channel fails with a misleading 404 (Think Tank, 2026-09-18).
+				// Same env object as the Step-2 recreation path (buildAgentIdentityEnv).
 				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse, {
-					env: {
-						[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
-						[ENV_CONSTANTS.CREWLY_ROLE]: role,
-						[ENV_CONSTANTS.CREWLY_API_URL]: `http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`,
-						[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwdToUse,
-						[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
-					},
+					env: this.buildAgentIdentityEnv(sessionName, role, cwdToUse),
 				});
 				this.logger.info('PTY session created successfully', {
 					sessionName,
