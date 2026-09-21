@@ -4,7 +4,9 @@
  * @module services/v3/trigger-engine.service.test
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+// Runner: jest (root jest.config.js). Ported from vitest syntax — the suite
+// could not be collected under CommonJS ("Vitest cannot be imported"), so it
+// had never actually run in CI.
 import { TriggerEngine } from './trigger-engine.service.js';
 import type { CreateTriggerInput, Trigger, TriggerAction } from '../../types/v2/index.js';
 import { DEFAULT_MAX_IDLE_FIRES } from '../../types/v2/index.js';
@@ -13,34 +15,34 @@ import { DEFAULT_MAX_IDLE_FIRES } from '../../types/v2/index.js';
 // Mock dependencies
 // ---------------------------------------------------------------------------
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
-        debug: vi.fn(),
+        info: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
+        debug: jest.fn(),
       }),
     }),
   },
 }));
 
-vi.mock('../../utils/file-io.utils.js', () => ({
-  ensureDir: vi.fn().mockResolvedValue(undefined),
+jest.mock('../../utils/file-io.utils.js', () => ({
+  ensureDir: jest.fn().mockResolvedValue(undefined),
   // atomicWriteJson / safeReadJson no longer used by trigger-engine after B1,
   // but kept here for any indirect imports.
-  atomicWriteJson: vi.fn().mockResolvedValue(undefined),
-  safeReadJson: vi.fn().mockResolvedValue([]),
+  atomicWriteJson: jest.fn().mockResolvedValue(undefined),
+  safeReadJson: jest.fn().mockResolvedValue([]),
 }));
 
 // B1: trigger-engine now uses atomicWriteJsonWithGuard for persistTriggers
 // and reads via fs/promises directly in readTriggersFromDisk. Both are mocked
 // here so unit tests remain pure (real-fs coverage is in
 // trigger-engine-persistence.integration.test.ts).
-vi.mock('../../utils/integrity-guarded-write.utils.js', async () => {
+jest.mock('../../utils/integrity-guarded-write.utils.js', () => {
   return {
-    atomicWriteJsonWithGuard: vi.fn().mockResolvedValue(undefined),
+    atomicWriteJsonWithGuard: jest.fn().mockResolvedValue(undefined),
     IntegrityViolationError: class IntegrityViolationError extends Error {
       readonly path: string;
       readonly prevCount: number;
@@ -58,20 +60,20 @@ vi.mock('../../utils/integrity-guarded-write.utils.js', async () => {
   };
 });
 
-vi.mock('fs/promises', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('fs/promises')>();
+jest.mock('fs/promises', () => {
+  const actual = jest.requireActual<typeof import('fs/promises')>('fs/promises');
   return {
     ...actual,
     // Default: ENOENT (no prior triggers file) so loadTriggers returns []
     // exactly like the prior safeReadJson([]) default. Tests that need the
-    // file to exist override this via vi.mocked(fs.readFile).mockResolvedValue.
-    readFile: vi.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
-    copyFile: vi.fn().mockResolvedValue(undefined),
+    // file to exist override this via jest.mocked(fs.readFile).mockResolvedValue.
+    readFile: jest.fn().mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' })),
+    copyFile: jest.fn().mockResolvedValue(undefined),
   };
 });
 
-vi.mock('../workflow/cron-task.service.js', () => ({
-  getNextRunTime: vi.fn().mockReturnValue(new Date(Date.now() + 60_000).toISOString()),
+jest.mock('../workflow/cron-task.service.js', () => ({
+  getNextRunTime: jest.fn().mockReturnValue(new Date(Date.now() + 60_000).toISOString()),
 }));
 
 // ---------------------------------------------------------------------------
@@ -110,7 +112,7 @@ function makeSignalTriggerInput(overrides?: Partial<CreateTriggerInput>): Create
 function makeMockEventBus() {
   const listeners = new Map<string, Function[]>();
   return {
-    on: vi.fn((event: string, handler: Function) => {
+    on: jest.fn((event: string, handler: Function) => {
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event)!.push(handler);
     }),
@@ -118,7 +120,7 @@ function makeMockEventBus() {
     // calls during teardownSignalListeners(). Without it, every test that
     // set an EventBus and then ran the afterEach resetInstance() would
     // throw on stop. Added here as part of B1 cleanup.
-    off: vi.fn((event: string, handler: Function) => {
+    off: jest.fn((event: string, handler: Function) => {
       const handlers = listeners.get(event);
       if (!handlers) return;
       const idx = handlers.indexOf(handler);
@@ -146,7 +148,7 @@ describe('TriggerEngine', () => {
 
   afterEach(() => {
     TriggerEngine.resetInstance();
-    vi.restoreAllMocks();
+    jest.restoreAllMocks();
   });
 
   // -------------------------------------------------------------------------
@@ -308,7 +310,7 @@ describe('TriggerEngine', () => {
     });
 
     it('calls action handler on fire', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       const trigger = await engine.create(makeCronTriggerInput());
@@ -318,7 +320,7 @@ describe('TriggerEngine', () => {
     });
 
     it('handles action handler errors gracefully', async () => {
-      const handler = vi.fn().mockRejectedValue(new Error('boom'));
+      const handler = jest.fn().mockRejectedValue(new Error('boom'));
       engine.setActionHandler(handler);
 
       const trigger = await engine.create(makeCronTriggerInput());
@@ -378,7 +380,7 @@ describe('TriggerEngine', () => {
 
   describe('handleSignalEvent', () => {
     it('fires matching signal triggers', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       await engine.create(makeSignalTriggerInput());
@@ -393,7 +395,7 @@ describe('TriggerEngine', () => {
     });
 
     it('does not fire non-matching signal triggers', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       await engine.create(makeSignalTriggerInput());
@@ -408,7 +410,7 @@ describe('TriggerEngine', () => {
     });
 
     it('applies signal filter matching', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       await engine.create({
@@ -462,7 +464,7 @@ describe('TriggerEngine', () => {
 
   describe('compound triggers', () => {
     it('fires on OR compound when any signal matches', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       await engine.create({
@@ -488,7 +490,7 @@ describe('TriggerEngine', () => {
     });
 
     it('fires on AND compound when all signal conditions match', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       // AND with two conditions of the same eventType (both match)
@@ -515,7 +517,7 @@ describe('TriggerEngine', () => {
     });
 
     it('does not fire AND compound when not all conditions match', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       engine.setActionHandler(handler);
 
       await engine.create({
@@ -596,7 +598,7 @@ describe('TriggerEngine', () => {
 
     it('fires signal trigger via handleSignalEvent when event matches', async () => {
       const mockBus = makeMockEventBus();
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
 
       engine.setEventBus(mockBus as any);
       engine.setActionHandler(handler);
