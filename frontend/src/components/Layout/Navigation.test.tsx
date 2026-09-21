@@ -9,7 +9,7 @@
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
-import { vi } from 'vitest';
+import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Navigation } from './Navigation';
 import { SidebarProvider } from '../../contexts/SidebarContext';
 
@@ -46,9 +46,22 @@ const renderWithProviders = (component: React.ReactElement) => {
   );
 };
 
+/** `/health` answer for the sidebar's version line. */
+function healthResponse(body: Record<string, unknown>) {
+  return { ok: true, json: () => Promise.resolve(body) } as unknown as Response;
+}
+
 describe('Navigation', () => {
   beforeEach(() => {
     mockPinnedItems.length = 0;
+    // The sidebar asks /health for its version line on mount. Left pending
+    // here so these synchronous tests see no state update after render —
+    // the version-line tests below supply an answer and await it.
+    global.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   // ---------------------------------------------------------------------------
@@ -221,5 +234,45 @@ describe('Navigation', () => {
 
     const link = screen.getByRole('link', { name: /qa team/i });
     expect(link).toHaveAttribute('href', '/teams/team-xyz');
+  });
+});
+
+
+/**
+ * The owner asked for the running version under the wordmark — it is the
+ * thing you look for first when a machine is behaving like an older build,
+ * and tonight that question came up on every restart (2026-09-21).
+ */
+describe('Navigation — version line', () => {
+  beforeEach(() => {
+    mockPinnedItems.length = 0;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('shows the running version under the wordmark', async () => {
+    global.fetch = vi.fn().mockResolvedValue(healthResponse({ version: '1.20.55', updateAvailable: false }));
+    renderWithProviders(<Navigation />);
+    expect(await screen.findByText('v1.20.55')).toBeInTheDocument();
+  });
+
+  it('flags an available update beside it', async () => {
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(healthResponse({ version: '1.20.40', latestVersion: '1.20.55', updateAvailable: true }));
+    renderWithProviders(<Navigation />);
+    expect(await screen.findByText('v1.20.40')).toBeInTheDocument();
+    expect(screen.getByText(/update/)).toBeInTheDocument();
+  });
+
+  // A label is not worth a blank sidebar: the fetch can fail on a backend
+  // that is still starting, which is exactly when someone is looking at it.
+  it('renders the sidebar anyway when /health cannot be reached', async () => {
+    global.fetch = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    renderWithProviders(<Navigation />);
+    expect(screen.getByText('CREWLY')).toBeInTheDocument();
+    expect(screen.queryByText(/^v\d/)).not.toBeInTheDocument();
   });
 });
