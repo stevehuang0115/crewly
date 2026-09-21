@@ -7,7 +7,7 @@
  *
  * @module components/Layout/Navigation
  */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
 import {
 	Home,
@@ -214,7 +214,46 @@ const PinnedFavoritesSection: React.FC<{
  * @param props.isMobileOpen - Whether mobile drawer is open
  * @param props.onMobileClose - Callback to close mobile drawer
  */
+/**
+ * The running Crewly version, for the sidebar.
+ *
+ * `/health` already reports it along with whether a newer one is published,
+ * so this needs no endpoint of its own. A failure is silent: the version is
+ * a label, and a sidebar that will not render because a fetch failed would
+ * be the worse trade.
+ *
+ * @returns The version and whether an update is available
+ */
+function useCrewlyVersion(): { version: string | null; latestVersion: string | null; updateAvailable: boolean } {
+	const [state, setState] = useState<{ version: string | null; latestVersion: string | null; updateAvailable: boolean }>({
+		version: null,
+		latestVersion: null,
+		updateAvailable: false,
+	});
+
+	useEffect(() => {
+		let cancelled = false;
+		fetch('/health')
+			.then((r) => (r.ok ? r.json() : null))
+			.then((body) => {
+				if (cancelled || !body || typeof body.version !== 'string') return;
+				setState({
+					version: body.version,
+					latestVersion: typeof body.latestVersion === 'string' ? body.latestVersion : null,
+					updateAvailable: body.updateAvailable === true,
+				});
+			})
+			.catch(() => undefined);
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	return state;
+}
+
 export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileClose }) => {
+	const { version, latestVersion, updateAvailable } = useCrewlyVersion();
 	const { isCollapsed, toggleSidebar } = useSidebar();
 	const { pinnedItems } = usePinnedFavorites();
 
@@ -237,15 +276,26 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 			'flex flex-col h-screen max-h-screen bg-surface-dark/95 border-r border-border-dark overflow-hidden w-full'
 		)}>
 			{/* Logo Section */}
-			<div className="flex items-center justify-between p-4 border-b border-border-dark">
+			<div className="flex items-center justify-between px-4 py-3 border-b border-border-dark">
 				<div className="flex items-center">
 					<div className="p-1">
-						<img src="/logo/crewly-icon.svg" alt="Crewly" className="h-8 w-8 invert" />
+						<img src="/logo/crewly-icon.svg" alt="Crewly" className="h-6 w-6 invert" />
 					</div>
 					{showLabels && (
-						<span className="ml-3 text-2xl font-extrabold text-text-primary-dark font-logo">
-							CREWLY
-						</span>
+						<div className="ml-2.5 leading-none">
+							<span className="text-lg font-extrabold text-text-primary-dark font-logo">
+								CREWLY
+							</span>
+							{version && (
+								<div
+									className="mt-1 text-[10px] text-text-secondary-dark tabular-nums"
+									title={updateAvailable && latestVersion ? `${latestVersion} is available` : undefined}
+								>
+									v{version}
+									{updateAvailable && <span className="ml-1 text-primary">&bull; update</span>}
+								</div>
+							)}
+						</div>
 					)}
 				</div>
 				{onMobileClose && (
