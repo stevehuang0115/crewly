@@ -19,7 +19,7 @@
 
 import type { Team, TeamTriggerSpec } from '../../types/index.js';
 import type { Trigger, CreateTriggerInput } from '../../types/v2/trigger.types.js';
-import { DEFAULT_MAX_IDLE_FIRES } from '../../types/v2/trigger.types.js';
+import { DEFAULT_MAX_IDLE_FIRES, isSpecManaged } from '../../types/v2/trigger.types.js';
 import type { TriggerEngine } from './trigger-engine.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
@@ -99,15 +99,24 @@ export class TeamTriggerReconciler {
       specsByName.set(spec.name, spec);
     }
 
-    // Pull current engine-side triggers for this team.
+    // Pull the engine-side triggers this reconciler OWNS for this team.
+    // `teamId` + `name` alone are not ownership: agent follow-ups
+    // (schedule-followup, watch-for-event) carry both, and deleting them at
+    // every boot / team save was Request 1b5b879b. Ownership is the explicit
+    // `managedBy: 'team-spec'` marker, plus one migration case: a legacy row
+    // without any marker is adopted when the spec currently names it, so the
+    // first reconcile after upgrade converges instead of duplicating.
     const currentByName = new Map<string, Trigger>();
     for (const trigger of this.engine.list()) {
-      if (trigger.teamId === team.id && trigger.name) {
+      if (trigger.teamId !== team.id || !trigger.name) continue;
+      if (this.ownsTrigger(trigger, specsByName)) {
         currentByName.set(trigger.name, trigger);
       }
     }
 
-    // 1) Delete engine triggers whose name disappeared from the spec.
+    // 1) Delete OWNED triggers whose name disappeared from the spec. Only an
+    //    explicitly marked trigger can be an orphan; an unmarked legacy row is
+    //    never in currentByName unless the spec still names it.
     for (const [name, trigger] of currentByName) {
       if (!specsByName.has(name)) {
         await this.engine.delete(trigger.id);
@@ -182,6 +191,25 @@ export class TeamTriggerReconciler {
   // Helpers
   // -------------------------------------------------------------------------
 
+  /**
+   * Whether this reconciler may manage (replace / delete) the trigger.
+   *
+   * - Explicit `managedBy: 'team-spec'` → yes.
+   * - Explicit `managedBy: 'agent'` → never.
+   * - No marker (row persisted before the field existed) → only while the
+   *   spec still names it, so it converges to a marked row on the next drift
+   *   or stays untouched; it can never be treated as an orphan.
+   *
+   * @param trigger - Engine trigger already filtered to this team + a name
+   * @param specsByName - The team's current spec, keyed by name
+   * @returns True if the reconciler owns the trigger's lifecycle
+   */
+  private ownsTrigger(trigger: Trigger, specsByName: Map<string, TeamTriggerSpec>): boolean {
+    if (isSpecManaged(trigger)) return true;
+    if (trigger.managedBy !== undefined) return false;
+    return trigger.name !== undefined && specsByName.has(trigger.name);
+  }
+
   private toCreateInput(teamId: string, spec: TeamTriggerSpec): CreateTriggerInput {
     return {
       type: spec.config.type,
@@ -192,6 +220,7 @@ export class TeamTriggerReconciler {
       maxIdleFires: spec.maxIdleFires,
       teamId,
       name: spec.name,
+      managedBy: 'team-spec',
     };
   }
 

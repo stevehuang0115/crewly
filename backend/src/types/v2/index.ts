@@ -74,6 +74,8 @@ export type {
   CompoundTriggerConfig,
   TriggerAction,
   CreateTriggerInput,
+  TRIGGER_MANAGED_BY,
+  isSpecManaged,
 } from './trigger.types.js';
 
 export {
@@ -87,6 +89,7 @@ export {
   isValidTriggerAction,
   validateCreateTriggerInput,
   createTrigger,
+  TriggerManagedBy,
 } from './trigger.types.js';
 
 // Reconcile types

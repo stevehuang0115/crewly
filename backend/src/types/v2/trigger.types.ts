@@ -35,6 +35,14 @@ export type TriggerStatus =
   | 'cancelled';
 
 /** All valid TriggerStatus values. */
+/**
+ * Who owns a trigger's lifecycle. See {@link Trigger.managedBy}.
+ */
+export type TriggerManagedBy = 'team-spec' | 'agent';
+
+/** All valid TriggerManagedBy values. */
+export const TRIGGER_MANAGED_BY: readonly TriggerManagedBy[] = ['team-spec', 'agent'] as const;
+
 export const TRIGGER_STATUSES: readonly TriggerStatus[] = [
   'active',
   'paused',
@@ -155,6 +163,24 @@ export interface Trigger {
    * `Team.triggers[].cronExpression` replaces instead of duplicating.
    */
   name?: string;
+  /**
+   * Who owns this trigger's lifecycle — the reconciler's deletion authority.
+   *
+   * - `'team-spec'`: provisioned by the TeamTriggerReconciler from
+   *   `Team.triggers[]`. The reconciler may delete it when its name leaves
+   *   the spec.
+   * - `'agent'`: created by an agent skill (`schedule-followup`,
+   *   `watch-for-event`, `delegate-task`), the API, or a mission. The
+   *   reconciler never deletes these, even when they carry a `teamId` — it
+   *   cannot prove it created them. `createTrigger` stamps this by default.
+   * - absent: a row persisted before this field existed. Treated as
+   *   `'agent'` everywhere, with one exception: the reconciler adopts an
+   *   unmarked row whose name the team spec *currently* lists (otherwise
+   *   the first boot after upgrade would duplicate every spec trigger).
+   *
+   * `teamId` + `name` alone are NOT ownership: agent follow-ups carry both.
+   */
+  managedBy?: TriggerManagedBy;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +199,8 @@ export interface CreateTriggerInput {
   maxIdleFires?: number;
   /** Optional owning team (team-scoped triggers) */
   teamId?: string;
+  /** Lifecycle owner; defaults to `'agent'`. Only the reconciler passes `'team-spec'`. */
+  managedBy?: TriggerManagedBy;
   /** Optional stable name for reconciliation-by-identity */
   name?: string;
 }
@@ -297,6 +325,9 @@ export function validateCreateTriggerInput(input: CreateTriggerInput): string[] 
   if (!input.createdBy) {
     errors.push('createdBy is required');
   }
+  if (input.managedBy !== undefined && !(TRIGGER_MANAGED_BY as readonly string[]).includes(input.managedBy)) {
+    errors.push(`managedBy must be one of: ${TRIGGER_MANAGED_BY.join(', ')}`);
+  }
   if (input.maxFires !== undefined && (input.maxFires < 1 || !Number.isInteger(input.maxFires))) {
     errors.push('maxFires must be a positive integer');
   }
@@ -342,5 +373,20 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
     consecutiveIdleFires: 0,
     teamId: input.teamId,
     name: input.name,
+    managedBy: input.managedBy ?? 'agent',
   };
+}
+
+/**
+ * Whether the TeamTriggerReconciler owns this trigger's lifecycle.
+ *
+ * Only an explicit `'team-spec'` marker counts. A missing marker is a legacy
+ * row and a `'agent'` marker is an agent-created trigger; neither may be
+ * deleted as a spec orphan. Absence of proof is not proof of ownership.
+ *
+ * @param trigger - Any object carrying the optional `managedBy` field
+ * @returns True only when `managedBy === 'team-spec'`
+ */
+export function isSpecManaged(trigger: Pick<Trigger, 'managedBy'>): boolean {
+  return trigger.managedBy === 'team-spec';
 }
