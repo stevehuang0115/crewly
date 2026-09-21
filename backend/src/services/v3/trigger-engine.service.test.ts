@@ -622,6 +622,49 @@ describe('TriggerEngine', () => {
     });
   });
   // -------------------------------------------------------------------------
+  // nextFireAt for one-shot triggers (D-B)
+  // -------------------------------------------------------------------------
+
+  describe('nextFireAt for one-shot triggers', () => {
+    it('delayMs: nextFireAt is createdAt + delayMs (was undefined)', async () => {
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', delayMs: 35_893 * 60_000 },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+      const expected = new Date(new Date(trigger.createdAt).getTime() + 35_893 * 60_000).toISOString();
+      expect(trigger.nextFireAt).toBe(expected);
+    });
+
+    it('fireAt: nextFireAt is exactly the requested time', async () => {
+      const fireAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', fireAt },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+      expect(trigger.nextFireAt).toBe(fireAt);
+      expect(trigger.status).toBe('active');
+    });
+
+    it('resume keeps the createdAt anchor for delayMs (does not re-base on now)', async () => {
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', delayMs: 60_000 },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+      const before = trigger.nextFireAt;
+      expect(before).toBeDefined();
+      await engine.pause(trigger.id);
+      await engine.resume(trigger.id);
+      expect(trigger.nextFireAt).toBe(before);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // One-shot timers beyond the Node timer cap (D-A)
   //
   // Node clamps setTimeout delays above 2^31-1 ms to 1 ms (with a

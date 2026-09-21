@@ -294,7 +294,7 @@ export class TriggerEngine {
 
     // Calculate nextFireAt for time triggers
     if (trigger.config.type === 'time') {
-      trigger.nextFireAt = this.calculateNextFireAt(trigger.config);
+      trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
     }
 
     await this.persistTriggers();
@@ -367,7 +367,7 @@ export class TriggerEngine {
 
     // Recalculate nextFireAt for time triggers
     if (trigger.config.type === 'time') {
-      trigger.nextFireAt = this.calculateNextFireAt(trigger.config);
+      trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
       if (this.running && (trigger.config.delayMs || trigger.config.fireAt)) {
         this.scheduleOneShot(trigger);
       }
@@ -473,7 +473,7 @@ export class TriggerEngine {
       });
     } else if (trigger.config.type === 'time' && trigger.config.cronExpression) {
       // Recalculate next fire for cron triggers
-      trigger.nextFireAt = this.calculateNextFireAt(trigger.config);
+      trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
     }
 
     await this.persistTriggers();
@@ -647,10 +647,16 @@ export class TriggerEngine {
   /**
    * Calculates the next fire time for a time trigger config.
    *
+   * A `delayMs` trigger is anchored to its `createdAt` (the same anchor
+   * scheduleOneShot fires on), so `--in-minutes N` shows the real fire time
+   * instead of nothing.
+   *
    * @param config - Time trigger configuration
-   * @returns ISO string of next fire time, or undefined
+   * @param createdAt - ISO8601 creation time of the trigger; anchors `delayMs`
+   * @returns ISO string of next fire time, or undefined when it cannot be
+   *          computed (invalid cron, unparseable createdAt)
    */
-  private calculateNextFireAt(config: TimeTriggerConfig): string | undefined {
+  private calculateNextFireAt(config: TimeTriggerConfig, createdAt: string): string | undefined {
     if (config.cronExpression) {
       try {
         return getNextRunTime(config.cronExpression, config.timezone || 'UTC');
@@ -661,7 +667,10 @@ export class TriggerEngine {
     if (config.fireAt) {
       return config.fireAt;
     }
-    // delayMs — calculated relative to creation, not useful for nextFireAt
+    if (config.delayMs) {
+      const target = new Date(createdAt).getTime() + config.delayMs;
+      return Number.isNaN(target) ? undefined : new Date(target).toISOString();
+    }
     return undefined;
   }
 
