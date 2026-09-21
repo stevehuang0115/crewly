@@ -396,6 +396,42 @@ export class SlackTeamChannelService {
     void this.reconcileAllTeams().catch((err) => {
       this.logger.warn('Team channel reconcile failed (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
     });
+    void this.rejoinMappedChannels();
+  }
+
+  /**
+   * Make sure the master bot is still a member of every channel we map.
+   *
+   * Reinstalling the workspace app drops the bot out of every channel it
+   * had joined, and nothing put it back: joining only ever happened when a
+   * channel was first linked. A channel the bot has left delivers no
+   * events at all, so a message there reached neither Cloud nor any
+   * instance — the owner saw no reaction, no reply and nothing in any log,
+   * because from Slack's side nothing had happened (`#rednote-team`,
+   * 2026-09-21).
+   *
+   * Best-effort and idempotent: `conversations.join` on a channel we are
+   * already in is a no-op, and a private channel cannot be joined at all —
+   * that one needs a human to invite the bot, so say so.
+   *
+   * @returns When every mapping has been checked
+   */
+  private async rejoinMappedChannels(): Promise<void> {
+    if (!this.deps.slack.isConnected()) return;
+    const mappings = (this.store?.mappings ?? []).filter((m) => !isAdhocMapping(m));
+    let rejoined = 0;
+    for (const mapping of mappings) {
+      try {
+        await this.deps.slack.joinChannel(mapping.slackChannelId);
+        rejoined += 1;
+      } catch (err) {
+        this.logger.warn('Could not rejoin a team channel — invite the bot manually if it is private', {
+          channel: mapping.slackChannelName ?? mapping.slackChannelId,
+          error: describeSlackError(err).code,
+        });
+      }
+    }
+    if (rejoined > 0) this.logger.info('Team channel membership checked', { channels: rejoined });
   }
 
   /**

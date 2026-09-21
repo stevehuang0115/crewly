@@ -714,6 +714,34 @@ describe('team lifecycle sync', () => {
     expect(await service.listMappings()).toEqual([]);
   });
 
+  // Reinstalling the workspace app drops the bot out of every channel it
+  // had joined, and joining only ever happened when a channel was first
+  // linked. A channel the bot has left delivers no events at all, so the
+  // message reached neither Cloud nor any instance and left no trace
+  // anywhere — from Slack's side nothing had happened (#rednote-team,
+  // 2026-09-21).
+  it('start() rejoins every mapped channel, and says which one it could not', async () => {
+    await service.ensureTeamChannel(team());
+    slack.joined.length = 0;
+    const warnings: Array<Record<string, unknown>> = [];
+
+    await service.start();
+    await new Promise((r) => setImmediate(r));
+    expect(slack.joined).toContain('C1');
+
+    // A private channel cannot be joined — the bot must be invited.
+    const again = makeService();
+    (again as unknown as { logger: { warn: unknown } }).logger.warn = (_m: string, ctx: Record<string, unknown>) => {
+      warnings.push(ctx);
+    };
+    slack.joinChannel = async () => {
+      throw Object.assign(new Error('An API error occurred'), { data: { error: 'channel_not_found' } });
+    };
+    await again.start();
+    await new Promise((r) => setImmediate(r));
+    expect(warnings).toContainEqual(expect.objectContaining({ error: 'channel_not_found' }));
+  });
+
   it('does nothing on a new team when autoCreate is off', async () => {
     await service.updateSettings({ autoCreate: false });
     await service.start();
