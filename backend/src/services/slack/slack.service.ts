@@ -8,6 +8,7 @@
  */
 
 import { EventEmitter } from 'events';
+import { localAgentSession } from './slack-team-channel.service.js';
 import { createReadStream } from 'fs';
 import { basename } from 'path';
 import type {
@@ -637,7 +638,13 @@ export class SlackService extends EventEmitter {
       apiAppId: envelope.apiAppId,
       // The agent-session provenance only means "DM to this agent's bot";
       // a channel message seen through an agent app is an ordinary channel message.
-      agentSession: envelope.source === 'agent' && isDm ? envelope.agentSession : undefined,
+      // Stripped back to the local name: the orchestrator is registered with
+      // Cloud under a per-instance session so two machines on one account do
+      // not share an app, and nothing on this side knows that spelling.
+      agentSession:
+        envelope.source === 'agent' && isDm && envelope.agentSession
+          ? localAgentSession(envelope.agentSession)
+          : undefined,
       ...(envelope.authorAgentSession ? { authorAgentSession: envelope.authorAgentSession, authorDisplayName: envelope.authorDisplayName } : {}),
     });
   }

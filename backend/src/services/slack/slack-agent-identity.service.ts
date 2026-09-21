@@ -31,6 +31,7 @@ import type {
   SlackCloudAgentConfig,
 } from '../../types/slack.types.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { CREWLY_CONSTANTS } from '../../constants.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_IDENTITY_CONSTANTS } from '../../constants.js';
@@ -319,9 +320,29 @@ export class SlackAgentIdentityService {
    * @returns `{ botUserId, botToken }` when installed
    */
   getInstalled(agentSession: string): { botUserId: string; botToken: string } | null {
-    const r = this.get(agentSession);
+    const r = this.get(agentSession) ?? this.getOrchestratorRecord(agentSession);
     if (r && r.status === 'installed' && r.botUserId && r.botToken) {
       return { botUserId: r.botUserId, botToken: r.botToken };
+    }
+    return null;
+  }
+
+  /**
+   * The orchestrator's record, looked up by its local name.
+   *
+   * Cloud registers the orchestrator under a per-instance session
+   * (`crewly-orc@<instance>`) so two machines on one account do not share an
+   * app, while everything on this side calls it `crewly-orc`. Only this
+   * lookup needs to know both spellings.
+   *
+   * @param agentSession - The session asked for
+   * @returns The stored record, or null when this is not the orchestrator
+   */
+  private getOrchestratorRecord(agentSession: string): SlackAgentIdentityRecord | null {
+    if (agentSession !== CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) return null;
+    const prefix = `${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME}@`;
+    for (const r of this.store?.identities ?? []) {
+      if (r.agentSession.startsWith(prefix)) return r;
     }
     return null;
   }

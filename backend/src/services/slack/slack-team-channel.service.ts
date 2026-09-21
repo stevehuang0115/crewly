@@ -212,6 +212,41 @@ export const ORCHESTRATOR_APP_NAME = 'Crewly Orc';
 /** The team id the orchestrator's Slack app is filed under. */
 export const ORCHESTRATOR_SYNC_TEAM_ID = 'orchestrator';
 
+/** Separates the orchestrator's session from the instance it runs on. */
+const ORCHESTRATOR_INSTANCE_SEPARATOR = '@';
+
+/**
+ * The session the orchestrator is registered with Cloud under.
+ *
+ * Every machine calls its orchestrator `crewly-orc`, and Cloud keys an
+ * agent's Slack app on `(account, agentSession)` — so two machines on one
+ * Cloud account would collapse into a single app, a single bot and a single
+ * DM, which is the very thing the per-machine app exists to avoid. The
+ * instance id makes the key unique; the suffix is stripped again the moment
+ * an event comes back, so nothing downstream has to know about it.
+ *
+ * @param instanceId - This instance's id from the registry
+ * @returns The session to register with Cloud
+ */
+export function orchestratorSyncSession(instanceId: string): string {
+  return `${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME}${ORCHESTRATOR_INSTANCE_SEPARATOR}${instanceId}`;
+}
+
+/**
+ * The local session name for an inbound agent session.
+ *
+ * Only the orchestrator is qualified, and only towards Cloud. Everything on
+ * this side — dispatch, the local roster, chat channels — knows it as
+ * `crewly-orc`.
+ *
+ * @param agentSession - The session as Cloud sent it
+ * @returns The local session name
+ */
+export function localAgentSession(agentSession: string): string {
+  const orc = CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME;
+  return agentSession.startsWith(`${orc}${ORCHESTRATOR_INSTANCE_SEPARATOR}`) ? orc : agentSession;
+}
+
 /**
  * The orchestrator as an entry for the agent-app roster.
  *
@@ -222,13 +257,16 @@ export const ORCHESTRATOR_SYNC_TEAM_ID = 'orchestrator';
  *
  * @param deviceName - This machine's name; without one there is nothing to
  *   tell two machines' orchestrators apart, so no app is asked for
- * @returns The roster entry, or null when the machine has no name yet
+ * @param instanceId - This instance's id, which keys the app per machine
+ * @returns The roster entry, or null when either is not known yet
  */
 export function orchestratorSyncEntry(
   deviceName?: string,
+  instanceId?: string,
 ): { teamId: string; name: string; agentSession: string; displayName: string } | null {
   const machine = (deviceName ?? '').trim();
-  if (!machine) return null;
+  const instance = (instanceId ?? '').trim();
+  if (!machine || !instance) return null;
   return {
     teamId: ORCHESTRATOR_SYNC_TEAM_ID,
     // The machine goes in the *team* name, not the display name. Cloud
@@ -240,7 +278,7 @@ export function orchestratorSyncEntry(
     // "Crewly Orc" alone while it is the only one, "Crewly Orc
     // (macbookpro.lan)" as soon as a second machine appears.
     name: machine,
-    agentSession: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+    agentSession: orchestratorSyncSession(instance),
     displayName: ORCHESTRATOR_APP_NAME,
   };
 }

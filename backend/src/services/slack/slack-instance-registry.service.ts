@@ -274,7 +274,7 @@ export class SlackInstanceRegistryService {
     // never stored, so it is absent from `getTeams()` and has to be added by
     // hand — without it Cloud has no roster entry for this machine's orc and
     // every DM to its bot is stranded.
-    const orc = orchestratorSyncEntry(deviceName);
+    const orc = orchestratorSyncEntry(deviceName, this.instanceId ?? undefined);
     return {
       deviceName,
       relayQueueId: this.deps.sync.getQueueId() ?? '',
@@ -353,7 +353,7 @@ export class SlackInstanceRegistryService {
       // The orchestrator is named after this machine, so two machines in one
       // Slack workspace get two bots instead of sharing the master one.
       const { deviceName } = await this.resolveIdentity();
-      const orc = orchestratorSyncEntry(deviceName);
+      const orc = orchestratorSyncEntry(deviceName, this.instanceId ?? undefined);
       // Every member of every team gets a bot (owner's call, 2026-09-18: an
       // agent must be @-able like a colleague even before its team has a
       // channel). Renames and removals follow through on each sync.

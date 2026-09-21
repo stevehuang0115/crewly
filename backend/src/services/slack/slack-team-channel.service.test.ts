@@ -18,6 +18,8 @@ import {
   slackIdentityFor,
   teamChannelMembers,
   orchestratorSyncEntry,
+  orchestratorSyncSession,
+  localAgentSession,
   getSlackTeamChannelService,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
@@ -400,12 +402,27 @@ describe('orchestratorSyncEntry', () => {
   // never stored, so `storage.getTeams()` has no orchestrator member to
   // find: the entry has to be synthesised.
   it('files the orchestrator under a team named after the machine', () => {
-    expect(orchestratorSyncEntry('macbookpro.lan')).toEqual({
+    expect(orchestratorSyncEntry('macbookpro.lan', 'inst-1')).toEqual({
       teamId: 'orchestrator',
       name: 'macbookpro.lan',
-      agentSession: 'crewly-orc',
+      agentSession: 'crewly-orc@inst-1',
       displayName: 'Crewly Orc',
     });
+  });
+
+  // Cloud keys an agent's app on (account, agentSession), and every machine
+  // calls its orchestrator `crewly-orc` — so two machines on one Cloud
+  // account would collapse into one app, one bot and one DM, which is the
+  // thing the per-machine app exists to prevent (owner, 2026-09-21).
+  it('qualifies the session per instance so two machines do not share an app', () => {
+    const a = orchestratorSyncEntry('macbookpro.lan', 'inst-a')!;
+    const b = orchestratorSyncEntry('iriss-air.lan', 'inst-b')!;
+    expect(a.agentSession).not.toBe(b.agentSession);
+  });
+
+  it('asks for no app when the instance is not known yet', () => {
+    expect(orchestratorSyncEntry('macbookpro.lan', '')).toBeNull();
+    expect(orchestratorSyncEntry('macbookpro.lan', undefined)).toBeNull();
   });
 
   // Cloud strips a trailing "(...)" from a display name before comparing and
@@ -415,15 +432,34 @@ describe('orchestratorSyncEntry', () => {
   // "Crewly Orc" alone, "Crewly Orc (macbookpro.lan)" once a second machine
   // shows up (owner, 2026-09-21).
   it('keeps the machine out of the display name, where Cloud would strip it', () => {
-    const entry = orchestratorSyncEntry('macbookpro.lan')!;
+    const entry = orchestratorSyncEntry('macbookpro.lan', 'inst-1')!;
     expect(entry.displayName).not.toContain('macbookpro');
     expect(entry.name).toBe('macbookpro.lan');
   });
 
   it('asks for no app when the machine has no name to tell it apart by', () => {
-    expect(orchestratorSyncEntry('')).toBeNull();
-    expect(orchestratorSyncEntry(undefined)).toBeNull();
-    expect(orchestratorSyncEntry('   ')).toBeNull();
+    expect(orchestratorSyncEntry('', 'inst-1')).toBeNull();
+    expect(orchestratorSyncEntry(undefined, 'inst-1')).toBeNull();
+    expect(orchestratorSyncEntry('   ', 'inst-1')).toBeNull();
+  });
+});
+
+describe('localAgentSession', () => {
+  // The qualified spelling exists only between here and Cloud; dispatch,
+  // the local roster and chat channels all know the orchestrator as
+  // `crewly-orc`, so it is stripped the moment an event comes back.
+  it('strips the instance from the orchestrator session', () => {
+    expect(localAgentSession(orchestratorSyncSession('inst-1'))).toBe('crewly-orc');
+    expect(localAgentSession('crewly-orc@2577fec0-d975')).toBe('crewly-orc');
+  });
+
+  it('leaves the unqualified orchestrator alone', () => {
+    expect(localAgentSession('crewly-orc')).toBe('crewly-orc');
+  });
+
+  it('leaves an ordinary agent alone, including one with an @ in it', () => {
+    expect(localAgentSession('marketing-ella-1234')).toBe('marketing-ella-1234');
+    expect(localAgentSession('some-agent@thing')).toBe('some-agent@thing');
   });
 });
 
