@@ -206,25 +206,8 @@ export function isAdhocMapping(mapping: Pick<SlackTeamChannelMapping, 'teamId'>)
  * @param team - The team
  * @returns Members with a (stored or derived) session name, orchestrator excluded
  */
-/**
- * How long a Slack app name may be.
- *
- * Slack's own limit. Cloud shortens a name that does not fit, but it does
- * that by appending the team — which for the orchestrator would undo the
- * machine name this function exists to attach.
- */
-const SLACK_APP_NAME_LIMIT = 35;
-
-/**
- * The Slack app name for a machine's orchestrator.
- *
- * @param deviceName - This machine's name
- * @returns A name within Slack's limit that carries the machine
- */
-export function orchestratorAppName(deviceName: string): string {
-  const name = `Orc - ${deviceName.trim()}`;
-  return name.length > SLACK_APP_NAME_LIMIT ? name.slice(0, SLACK_APP_NAME_LIMIT).trimEnd() : name;
-}
+/** What every machine's orchestrator is called before it needs qualifying. */
+export const ORCHESTRATOR_APP_NAME = 'Crewly Orc';
 
 /** The team id the orchestrator's Slack app is filed under. */
 export const ORCHESTRATOR_SYNC_TEAM_ID = 'orchestrator';
@@ -248,9 +231,17 @@ export function orchestratorSyncEntry(
   if (!machine) return null;
   return {
     teamId: ORCHESTRATOR_SYNC_TEAM_ID,
-    name: 'Orchestrator',
+    // The machine goes in the *team* name, not the display name. Cloud
+    // strips a trailing "(...)" from a display name before comparing and
+    // then re-appends the team when two agents share a name — so sending
+    // "Crewly Orc (macbookpro.lan)" would be reduced back to "Crewly Orc"
+    // and re-qualified with whatever the team is called. Naming the team
+    // after the machine makes Cloud's own suffix the right one:
+    // "Crewly Orc" alone while it is the only one, "Crewly Orc
+    // (macbookpro.lan)" as soon as a second machine appears.
+    name: machine,
     agentSession: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
-    displayName: orchestratorAppName(machine),
+    displayName: ORCHESTRATOR_APP_NAME,
   };
 }
 

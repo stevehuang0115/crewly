@@ -18,7 +18,6 @@ import {
   slackIdentityFor,
   teamChannelMembers,
   orchestratorSyncEntry,
-  orchestratorAppName,
   getSlackTeamChannelService,
   setSlackTeamChannelService,
   type TeamChannelChatApi,
@@ -400,32 +399,31 @@ describe('orchestratorSyncEntry', () => {
   // The Orchestrator Team is assembled by the teams API for display and is
   // never stored, so `storage.getTeams()` has no orchestrator member to
   // find: the entry has to be synthesised.
-  it('names the orchestrator after the machine, under the orchestrator team id', () => {
-    expect(orchestratorSyncEntry('MacBook Pro')).toEqual({
+  it('files the orchestrator under a team named after the machine', () => {
+    expect(orchestratorSyncEntry('macbookpro.lan')).toEqual({
       teamId: 'orchestrator',
-      name: 'Orchestrator',
+      name: 'macbookpro.lan',
       agentSession: 'crewly-orc',
-      displayName: 'Orc - MacBook Pro',
+      displayName: 'Crewly Orc',
     });
   });
 
-  // Cloud strips a trailing "(...)" before comparing names, so a
-  // parenthesised machine would reduce both machines' orchestrators to
-  // "Orc", collide, and be re-suffixed with their team name — identical on
-  // every machine.
-  it('does not parenthesise the machine, which Cloud would strip', () => {
-    expect(orchestratorAppName('MacBook Air')).toBe('Orc - MacBook Air');
-    expect(orchestratorAppName('MacBook Air')).not.toMatch(/\)$/);
+  // Cloud strips a trailing "(...)" from a display name before comparing and
+  // re-appends the *team* when two agents collide. Carrying the machine in
+  // the display name would therefore be stripped and replaced; carrying it
+  // in the team name makes Cloud's own suffix the one we want —
+  // "Crewly Orc" alone, "Crewly Orc (macbookpro.lan)" once a second machine
+  // shows up (owner, 2026-09-21).
+  it('keeps the machine out of the display name, where Cloud would strip it', () => {
+    const entry = orchestratorSyncEntry('macbookpro.lan')!;
+    expect(entry.displayName).not.toContain('macbookpro');
+    expect(entry.name).toBe('macbookpro.lan');
   });
 
   it('asks for no app when the machine has no name to tell it apart by', () => {
     expect(orchestratorSyncEntry('')).toBeNull();
     expect(orchestratorSyncEntry(undefined)).toBeNull();
     expect(orchestratorSyncEntry('   ')).toBeNull();
-  });
-
-  it("keeps the name inside Slack's 35-character app-name limit", () => {
-    expect(orchestratorAppName('A Very Long Machine Name That Goes On').length).toBeLessThanOrEqual(35);
   });
 });
 
