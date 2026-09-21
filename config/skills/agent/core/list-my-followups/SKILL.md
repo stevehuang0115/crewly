@@ -37,7 +37,7 @@ bash execute.sh --name-prefix watch:
 
 ## What you see
 
-Returns `{ success, count, data: [Trigger, ...] }`. Each `Trigger` includes:
+Returns `{ success, examined, count, data: [Trigger, ...] }` — `examined` is the number of triggers fetched before the team filter, `count` the number left after all filters. A truncated or malformed backend response exits 1 with `success:false` and an `error`; it is never reported as `count: 0`. Each `Trigger` includes:
 - `id`, `name`, `status`
 - `config` (cron expression / fireAt / event type)
 - `action` (what it creates when it fires)

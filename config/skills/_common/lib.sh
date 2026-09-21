@@ -262,6 +262,49 @@ api_call() {
 }
 
 # -----------------------------------------------------------------------------
+# api_call_full METHOD endpoint [json_body]
+#
+# api_call for skills that reduce the response THEMSELVES — filter a list to
+# the caller's team, count rows, pick one id — and therefore must see all of
+# it. The output cap in api_call replaces any body over
+# CREWLY_SKILL_MAX_OUTPUT_BYTES with a {"truncated":true,...} envelope, and a
+# skill that runs `.data // []` over that envelope reports an EMPTY list with
+# success:true (2026-09-21: list-my-followups and cancel-followup saw 0 of
+# 335 triggers because GET /triggers was 233 KB). This helper:
+#   1. bypasses the cap for this one call;
+#   2. if an envelope still comes back (api_call swapped for a test double,
+#      or a future cap path), reads the parked file it points at;
+#   3. otherwise prints an error object on stderr and returns 1 — never a
+#      body the caller could mistake for "no rows".
+#
+# The full body must not reach the LLM: callers reduce it before printing.
+# Do not use this from a skill that echoes the response verbatim — that is
+# exactly what the cap exists to prevent.
+#
+# Usage:
+#   if ! RESP=$(api_call_full GET "/triggers"); then error_exit "..."; fi
+# -----------------------------------------------------------------------------
+api_call_full() {
+  local body
+  if ! body=$(CREWLY_SKILL_FULL_OUTPUT=1 api_call "$@"); then
+    return 1
+  fi
+  if printf '%s' "$body" | jq -e 'if type == "object" then .truncated == true else false end' >/dev/null 2>&1; then
+    local file
+    file=$(printf '%s' "$body" | jq -r '.file // empty')
+    if [ -n "$file" ] && [ -r "$file" ]; then
+      cat "$file"
+      echo
+      return 0
+    fi
+    jq -nc --arg m "$1" --arg e "$2" --arg f "$file" \
+      '{error: true, truncated: true, details: ("api_call_full \($m) \($e): the response was replaced by a truncated envelope and its parked file (" + $f + ") is unreadable; refusing to return a body that would parse as an empty list")}' >&2
+    return 1
+  fi
+  printf '%s\n' "$body"
+}
+
+# -----------------------------------------------------------------------------
 # error_exit message
 # Prints a JSON error to stderr and exits with code 1.
 # -----------------------------------------------------------------------------

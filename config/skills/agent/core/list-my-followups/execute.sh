@@ -21,7 +21,10 @@ Options:
   --json   -j     Raw JSON payload (legacy)
   --help   -h     Show this help
 
-Output: JSON object { success, count, data: [Trigger, ...] }
+Output: JSON object { success, examined, count, data: [Trigger, ...] }
+  examined = triggers received from the backend BEFORE the team filter;
+  count    = triggers left after the team/status/prefix filters.
+  A truncated or malformed response is an error (exit 1), never count 0.
 EOF_USAGE
 }
 
@@ -60,7 +63,25 @@ fi
 TEAM_ID=$(resolve_team_id || true)
 [ -z "$TEAM_ID" ] && { echo '{"error":"Cannot resolve owning team from CREWLY_SESSION_NAME"}' >&2; exit 1; }
 
-LIST_RESP=$(api_call GET "/triggers" "")
+# GET /triggers is the whole trigger table (335 rows / 233 KB on 2026-09-21),
+# well over the skill-output cap. Plain api_call would hand back a
+# {"truncated":true} envelope and `.data // []` would turn that into an empty
+# list with success:true. api_call_full returns the real body or fails.
+if ! LIST_RESP=$(api_call_full GET "/triggers" ""); then
+  jq -n '{success:false, examined:0, error:"GET /triggers failed or came back as a truncated envelope; refusing to report an empty follow-up list"}'
+  exit 1
+fi
+
+# A guard must report what it examined, not just its verdict. `.data` has to be
+# an array; an envelope, an error object or anything else is an UNKNOWN result,
+# not "no triggers" — refuse rather than print success with count 0.
+EXAMINED=$(printf '%s' "$LIST_RESP" | jq -r 'if type == "object" then (if (.data | type) == "array" then (.data | length) else "not-an-array" end) else "not-an-object" end' 2>/dev/null || echo "unparseable")
+if ! [ "$EXAMINED" -ge 0 ] 2>/dev/null; then
+  jq -n --arg why "$EXAMINED" --arg head "${LIST_RESP:0:200}" \
+    '{success:false, examined:0, error:("GET /triggers returned a body whose .data is " + $why + "; refusing to report an empty follow-up list"), head:$head}'
+  exit 1
+fi
+
 FILTERED=$(printf '%s' "$LIST_RESP" | jq \
   --arg team "$TEAM_ID" \
   --arg status "$STATUS_FILTER" \
@@ -71,4 +92,5 @@ FILTERED=$(printf '%s' "$LIST_RESP" | jq \
     | (if $prefix != "" then map(select(.name != null and (.name | startswith($prefix)))) else . end)')
 
 COUNT=$(printf '%s' "$FILTERED" | jq 'length')
-printf '%s' "$FILTERED" | jq --arg c "$COUNT" '{success:true, count:($c|tonumber), data:.}'
+printf '%s' "$FILTERED" | jq --arg c "$COUNT" --arg e "$EXAMINED" \
+  '{success:true, examined:($e|tonumber), count:($c|tonumber), data:.}'
