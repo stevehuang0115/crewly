@@ -10,6 +10,7 @@ TMP=$(mktemp -d); trap 'rm -rf "$TMP"' EXIT
 mkdir -p "$TMP/skills/orchestrator/list-missions" "$TMP/skills/orchestrator/_common"
 cp "$HERE/execute.sh" "$TMP/skills/orchestrator/list-missions/execute.sh"
 cat > "$TMP/skills/orchestrator/_common/lib.sh" <<'EOF'
+api_call_full() { api_call "$@"; }
 api_call() {
   cat <<'JSON'
 {"success":true,"data":[
