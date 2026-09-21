@@ -17,7 +17,7 @@ import { Button } from '../UI/Button';
 import { Card } from '../UI/Card';
 import { Alert } from '../UI/Alert';
 import { FormInput } from '../UI/Form';
-import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
+import { isOrchestratorSession, ORCHESTRATOR_LABEL } from '../../utils/team-chat.utils';
 
 /** One identity row as returned by the API (tokens never included). */
 export interface AgentIdentityRow {
@@ -116,7 +116,7 @@ export function buildTeamLookup(
  * @returns True when the orchestrator is among them
  */
 export function isOrchestratorGroup(members: Array<{ agentSession: string }>): boolean {
-  return members.some((m) => m.agentSession === ORCHESTRATOR_SESSION);
+  return members.some((m) => isOrchestratorSession(m.agentSession));
 }
 
 export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pendingInstalls = [] }) => {
@@ -249,7 +249,13 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
   ];
   const groups = new Map<string, AgentIdentityRow[]>();
   for (const row of rows) {
-    const team = teamBySession[row.agentSession]?.teamName ?? 'Other agents';
+    // The orchestrator is in no stored team, so the lookup never has it —
+    // and since it is registered under a per-instance session it does not
+    // even match by name. Without this it landed in "Other agents", below
+    // the teams, unhighlighted (owner, 2026-09-21).
+    const team = isOrchestratorSession(row.agentSession)
+      ? ORCHESTRATOR_LABEL
+      : (teamBySession[row.agentSession]?.teamName ?? 'Other agents');
     if (!groups.has(team)) groups.set(team, []);
     groups.get(team)!.push(row);
   }

@@ -37,6 +37,23 @@ export const ORCHESTRATOR_SESSION = 'crewly-orc';
 export const ORCHESTRATOR_LABEL = 'Orchestrator';
 
 /**
+ * Whether a session is this machine's orchestrator.
+ *
+ * Cloud registers the orchestrator under a per-instance session
+ * (`crewly-orc@<instance>`) so two machines on one account do not share a
+ * Slack app, while locally it stays `crewly-orc`. Surfaces that read a
+ * session straight off a Cloud record therefore see the qualified spelling
+ * — matching on equality alone silently stopped recognising the
+ * orchestrator the moment that shipped (2026-09-21).
+ *
+ * @param agentSession - The session to test
+ * @returns True for either spelling
+ */
+export function isOrchestratorSession(agentSession: string): boolean {
+  return agentSession === ORCHESTRATOR_SESSION || agentSession.startsWith(`${ORCHESTRATOR_SESSION}@`);
+}
+
+/**
  * Synthetic workspace id for the always-present "Direct Messages" entry in
  * the consolidated chat. It is NOT a real team id — `useGroupedChannels`
  * scopes team channels by `teamId`, so no `type='channel'` row matches this
