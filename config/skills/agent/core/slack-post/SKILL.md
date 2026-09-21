@@ -75,6 +75,21 @@ bash .../execute.sh --target "#general" --text-file /tmp/report.md
 echo "..." | bash .../execute.sh --target "@steve"
 ```
 
+## A private message that fails stays unsent
+
+If a DM cannot be delivered, **do not post the same thing to a channel**.
+Team channels are public: everyone in the workspace can read them. Content
+you were about to send to one person — anything out of the owner's mail,
+calendar, files, or notes — does not become postable just because the DM
+failed.
+
+Say that you could not reach them privately, and say it without the
+content. "I could not DM you — the calendar reminder is set, tell me where
+to send the details" is fine. Repeating the details in the channel is not.
+
+`cannot_dm_bot` means you targeted an app, not a person — very likely
+yourself. Look up the person's handle and try that.
+
 ## Target syntax
 
 | Target | Goes to |

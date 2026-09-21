@@ -71,7 +71,13 @@ export interface SlackAgentDmLink {
   agentSession: string;
   /** Slack DM channel id (`D…`). */
   slackChannelId: string;
-  /** Thread the last inbound message sat in, when it was threaded; replies follow it. */
+  /**
+   * Thread the reply belongs in.
+   *
+   * A threaded question keeps its own thread. A top-level DM gets one
+   * rooted at the question itself, so a long conversation with an agent
+   * reads as exchanges rather than one flat column (owner, 2026-09-21).
+   */
   replyThreadTs?: string;
   updatedAt: string;
 }
@@ -221,7 +227,9 @@ export class SlackAgentDmService {
       chatChannelId: channel.id,
       agentSession,
       slackChannelId: message.channelId,
-      ...(message.threadTs ? { replyThreadTs: message.threadTs } : {}),
+      // `ts` when the question was top-level: the answer opens a thread under
+      // it instead of landing beside it.
+      ...(message.threadTs || message.ts ? { replyThreadTs: message.threadTs || message.ts } : {}),
       updatedAt: this.now().toISOString(),
     };
     this.store.links[channel.id] = link;

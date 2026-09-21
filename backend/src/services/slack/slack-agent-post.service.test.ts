@@ -233,6 +233,24 @@ describe('Slack failures get actionable messages', () => {
     });
   });
 
+  // Slack refuses a DM between two apps, and an agent reaching for its own
+  // name lands here. The bare code told it nothing: one agent read it as
+  // "DMs are unavailable" and posted the owner's personal calendar into a
+  // public team channel instead (2026-09-21, #personal-assistant-team).
+  it('says a bot cannot be DMed, and that the content still stays private', async () => {
+    slack.openError = Object.assign(new Error('cannot_dm_bot'), { data: { error: 'cannot_dm_bot' } });
+
+    await expect(service.post({ agentSession: 'a', target: '@steve', text: 'x' })).rejects.toMatchObject({
+      code: 'target_not_found',
+      message: expect.stringContaining('is a bot'),
+    });
+    await expect(service.post({ agentSession: 'a', target: '@steve', text: 'x' })).rejects.toMatchObject({
+      // The instruction matters more than the diagnosis: the fallback an
+      // agent reaches for is exactly the harmful one.
+      message: expect.stringContaining('Do not fall back to a channel'),
+    });
+  });
+
   it('explains a missing scope while resolving a channel name', async () => {
     const lookupFails = new SlackAgentPostService({
       slack: Object.assign(Object.create(Object.getPrototypeOf(slack)), slack, {

@@ -99,7 +99,10 @@ describe('SlackAgentDmService', () => {
     emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '你好，我是 Ella。' } as unknown as ChatMessageDTO);
     await new Promise((r) => setImmediate(r));
     expect(sent).toEqual([expect.objectContaining({ channelId: 'D0C2YLU8F2A', text: '你好，我是 Ella。', botToken: 'xoxb-ella', skipChatV2Mirror: true })]);
-    expect((sent[0] as { threadTs?: string }).threadTs).toBeUndefined();
+    // A top-level DM question opens a thread under itself, so a long
+    // conversation reads as exchanges rather than one flat column
+    // (owner, 2026-09-21).
+    expect((sent[0] as { threadTs?: string }).threadTs).toBe('1789781178.423669');
 
     await svc.routeInbound(dm({ ts: '2.0', threadTs: '1789781178.423669' }));
     emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'in thread' } as unknown as ChatMessageDTO);
@@ -273,6 +276,29 @@ describe('SlackAgentDmService', () => {
       svc.stop();
       await fs.rm(deps.storePath as string, { force: true });
     });
+  });
+
+  it('keeps an already-threaded question in its own thread, and the placeholder with it', async () => {
+    const { deps, sent, emit } = makeDeps();
+    const calls: string[] = [];
+    deps.typing = {
+      begin: async (key) => { calls.push(`begin:${key.threadTs}`); return null; },
+      setPhase: async () => undefined,
+      fail: async () => undefined,
+      resolve: async (key, text) => { calls.push(`resolve:${key.threadTs}`); sent.push({ channelId: key.slackChannelId, text, threadTs: key.threadTs }); return 'posted' as const; },
+    };
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+
+    await svc.routeInbound(dm({ ts: '5.0', threadTs: '1.0' }));
+    emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'in the same thread' } as unknown as ChatMessageDTO);
+    await new Promise((r) => setImmediate(r));
+
+    // The existing thread wins over the message's own ts.
+    expect(calls).toEqual(['begin:1.0', 'resolve:1.0']);
+    expect((sent.at(-1) as { threadTs?: string }).threadTs).toBe('1.0');
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
   });
 
   it('shows "waking up…" for an idle agent BEFORE dispatch, "is working on it…" once it holds the message, then edits in the reply', async () => {

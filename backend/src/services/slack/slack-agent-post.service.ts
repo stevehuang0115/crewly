@@ -255,6 +255,16 @@ export class SlackAgentPostService {
           'Slack refused to open the DM: the app is missing the im:write scope — reinstall it to pick up the new scopes',
         );
       }
+      // Slack refuses a DM between two apps. An agent reaching for "@<its
+      // own name>" lands here, and the raw code told it nothing — one agent
+      // read it as "DMs are unavailable" and posted the owner's personal
+      // calendar into a public team channel instead (2026-09-21).
+      if (/cannot_dm_bot/.test(text)) {
+        throw new SlackAgentPostError(
+          'target_not_found',
+          `${userId} is a bot, and Slack does not allow one app to DM another. Target the person instead (@their-handle). Do not fall back to a channel: whatever you were about to say privately stays private.`,
+        );
+      }
       throw new SlackAgentPostError('slack_error', `Could not open a DM with ${userId}: ${text}`);
     }
   }

@@ -64,3 +64,15 @@ bash config/skills/agent/core/reply-channel/execute.sh \
 On success prints `{"success":true, "messageId":"..."}` to stdout.
 On failure prints `{"success":false, "error":"..."}` to stdout and exits
 with a non-zero code.
+
+
+## What not to put in a channel
+
+A team channel is public — everyone in the workspace can read it. When your
+answer would repeat something personal to the owner (mail, calendar, files,
+health, money, anything from their private accounts), keep it out: say what
+you did, not what it contained. "Reminder set for the 29th" instead of
+naming the appointment.
+
+If the answer cannot be given without that content, say so and ask where to
+send it. Silence is recoverable; a disclosure is not.
