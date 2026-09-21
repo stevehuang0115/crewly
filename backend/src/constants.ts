@@ -1718,6 +1718,15 @@ export const GOOGLE_WORKSPACE_CONSTANTS = {
 		TOKEN: '/token',
 		/** GET ?token=&returnUrl=&products=&loginHint= → 302 to Google consent */
 		START: '/start',
+		/**
+		 * POST { products, slackUserId, slackChannelId, slackThreadTs } →
+		 * `{ url, expiresAt }`.
+		 *
+		 * The URL behind a Slack card's button. Unlike {@link START} it
+		 * carries a single-use ticket rather than the Cloud session token,
+		 * because a message in a channel must not contain a credential.
+		 */
+		CONNECT_TICKET: '/connect-ticket',
 		/** POST { email } → { updated }; choose the account used when none is named */
 		DEFAULT: '/default',
 		/** DELETE CLOUD_PATH itself, optional ?email= → { removed } */

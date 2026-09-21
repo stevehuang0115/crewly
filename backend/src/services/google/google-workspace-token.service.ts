@@ -325,6 +325,38 @@ export class GoogleWorkspaceTokenService {
    * @returns Absolute URL to open
    * @throws GoogleWorkspaceError(401, not_logged_in) when not signed in to Cloud
    */
+  /**
+   * A connect link that is safe to put in a Slack message.
+   *
+   * {@link buildConnectUrl} puts the Cloud session token in the query
+   * string. That is fine for a link the owner opens from their own browser,
+   * but a Slack card is a message: the token would sit in the channel, and
+   * it expires within the hour, leaving a dead button behind. Cloud mints a
+   * single-use ticket instead — no authority of its own, fifteen minutes,
+   * refused on a second click.
+   *
+   * @param options - Products to ask for, and where to confirm in Slack
+   * @returns The button URL and when it stops working
+   * @throws GoogleWorkspaceError not_logged_in / mapped Cloud failures
+   */
+  async buildSlackConnectUrl(options: {
+    products?: readonly GoogleProduct[];
+    slackUserId?: string;
+    slackChannelId?: string;
+    slackThreadTs?: string;
+  } = {}): Promise<{ url: string; expiresAt: string }> {
+    return this.cloudRequest<{ url: string; expiresAt: string }>(
+      'POST',
+      GOOGLE_WORKSPACE_CONSTANTS.CLOUD_ENDPOINTS.CONNECT_TICKET,
+      {
+        ...(options.products?.length ? { products: [...options.products] } : {}),
+        ...(options.slackUserId ? { slackUserId: options.slackUserId } : {}),
+        ...(options.slackChannelId ? { slackChannelId: options.slackChannelId } : {}),
+        ...(options.slackThreadTs ? { slackThreadTs: options.slackThreadTs } : {}),
+      },
+    );
+  }
+
   buildConnectUrl(
     returnUrl: string,
     options: { products?: readonly GoogleProduct[]; loginHint?: string; chooseAccount?: boolean; replace?: boolean } = {},

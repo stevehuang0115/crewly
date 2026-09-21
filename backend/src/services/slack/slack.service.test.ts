@@ -27,7 +27,7 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
 // socket path builds one too, for the bot-token pre-flight before the App.
 const defaultWebClientImpl = () => ({
   auth: { test: jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT' }) },
-  chat: { postMessage: jest.fn().mockResolvedValue({ ts: '9.9' }), update: jest.fn() },
+  chat: { postMessage: jest.fn().mockResolvedValue({ ts: '9.9' }), update: jest.fn(), postEphemeral: jest.fn().mockResolvedValue({ ok: true }) },
   reactions: { add: jest.fn() },
   users: { info: jest.fn() },
   files: { uploadV2: jest.fn(), info: jest.fn() },
@@ -2071,5 +2071,53 @@ describe('SlackService.renameChannel — rejoining', () => {
 
     expect(await service.renameChannel('C1', 'pro-taken')).toBeNull();
     expect(join).not.toHaveBeenCalled();
+  });
+});
+
+describe('SlackService.sendEphemeral', () => {
+  // The Google authorization card must not be visible to a whole channel:
+  // its button is an ordinary link, so whoever opens it connects *their*
+  // Google account into the owner's Crewly account, and Slack cannot tell
+  // us who clicked. Nobody else being shown the card is the defence
+  // (2026-09-21).
+  /**
+   * A service with just enough client for the ephemeral path.
+   *
+   * @param postEphemeral - The stub to install, or omitted for an old client
+   * @returns The service and its fake client
+   */
+  function withClient(postEphemeral?: jest.Mock) {
+    const service = new SlackService();
+    const chat: Record<string, unknown> = { postMessage: jest.fn(), update: jest.fn() };
+    if (postEphemeral) chat['postEphemeral'] = postEphemeral;
+    (service as unknown as { client: unknown }).client = { chat };
+    return { service, chat };
+  }
+
+  it('posts to one user, optionally as an agent bot', async () => {
+    const postEphemeral = jest.fn().mockResolvedValue({ ok: true });
+    const { service } = withClient(postEphemeral);
+
+    await expect(
+      service.sendEphemeral('C1', 'U1', 'Connect Gmail', [{ type: 'section' }], 'xoxb-ella'),
+    ).resolves.toBe(true);
+
+    expect(postEphemeral).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'C1', user: 'U1', text: 'Connect Gmail', token: 'xoxb-ella' }),
+    );
+  });
+
+  it('reports the Slack error code instead of throwing', async () => {
+    const postEphemeral = jest.fn().mockRejectedValue(
+      Object.assign(new Error('An API error occurred'), { data: { error: 'channel_not_found' } }),
+    );
+    const { service } = withClient(postEphemeral);
+
+    await expect(service.sendEphemeral('C-gone', 'U1', 'hi')).resolves.toBe(false);
+  });
+
+  it('says so rather than crashing on a client without the method', async () => {
+    const { service } = withClient();
+    await expect(service.sendEphemeral('C1', 'U1', 'hi')).resolves.toBe(false);
   });
 });

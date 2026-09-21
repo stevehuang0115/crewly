@@ -75,6 +75,8 @@ interface SlackWebClient {
   chat: {
     postMessage: (args: PostMessageArgs) => Promise<{ ts?: string }>;
     update: (args: UpdateMessageArgs) => Promise<void>;
+    /** Visible to one user only; used for the Google authorization card. */
+    postEphemeral?: (args: { channel: string; user: string; text: string; blocks?: unknown[]; token?: string }) => Promise<{ ok?: boolean }>;
   };
   /**
    * Conversations API subset used by Slack team channels. Optional on the
@@ -1280,6 +1282,52 @@ export class SlackService extends EventEmitter {
    * @param message - Message to send
    * @returns Promise with message timestamp (empty string if deduplicated)
    */
+  /**
+   * Post a message only the named user can see.
+   *
+   * An authorization card must not be visible to the rest of a channel: its
+   * button is an ordinary link, so whoever opens it connects *their* Google
+   * account into the owner's Crewly account. Slack cannot tell us who
+   * clicked, so the defence is that nobody else is shown the card
+   * (2026-09-21).
+   *
+   * @param channelId - Channel or DM to post into
+   * @param userId - The only Slack user who will see it
+   * @param text - Fallback text for notifications and screen readers
+   * @param blocks - Block Kit payload
+   * @param botToken - Post as this agent's bot instead of the workspace bot
+   * @returns True when Slack accepted it
+   */
+  async sendEphemeral(
+    channelId: string,
+    userId: string,
+    text: string,
+    blocks?: unknown[],
+    botToken?: string,
+  ): Promise<boolean> {
+    if (!this.client) throw new Error('Slack client not initialized');
+    try {
+      if (!this.client.chat.postEphemeral) {
+        this.logger.warn('This Slack client cannot post ephemeral messages', { channelId });
+        return false;
+      }
+      await this.client.chat.postEphemeral({
+        channel: channelId,
+        user: userId,
+        text,
+        ...(blocks ? { blocks: blocks as never } : {}),
+        ...(botToken ? { token: botToken } : {}),
+      });
+      return true;
+    } catch (error) {
+      this.logger.warn('Could not post the ephemeral message', {
+        channelId,
+        error: describeSlackError(error).code,
+      });
+      return false;
+    }
+  }
+
   async sendMessage(message: SlackOutgoingMessage): Promise<string> {
     if (!this.client) {
       throw new Error('Slack client not initialized');
