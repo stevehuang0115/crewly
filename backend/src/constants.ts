@@ -1379,6 +1379,14 @@ export const SUB_AGENT_QUEUE_CONSTANTS = {
 	MAX_QUEUE_SIZE: 50,
 	/** Delay between flushed messages on registration (ms) */
 	FLUSH_INTER_MESSAGE_DELAY: 2000,
+	/**
+	 * Oldest a restored message may be before it is dropped on load.
+	 *
+	 * The queue survives a restart now, but a message from days ago is
+	 * worse than no message: the person has moved on, and delivering it
+	 * would have an agent answer something nobody is waiting for.
+	 */
+	MAX_AGE_MS: 6 * 60 * 60 * 1000,
 } as const;
 
 /**

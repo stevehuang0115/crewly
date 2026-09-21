@@ -11,8 +11,11 @@
  * @module sub-agent-message-queue
  */
 
+import * as path from 'path';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS } from '../../constants.js';
+import { readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 
 /**
  * A single queued message destined for a sub-agent.
@@ -38,9 +41,72 @@ export class SubAgentMessageQueue {
 	private static instance: SubAgentMessageQueue | null = null;
 	private pendingMessages = new Map<string, QueuedAgentMessage[]>();
 	private logger: ComponentLogger;
+	private readonly storePath: string;
 
-	private constructor() {
+	private constructor(storePath?: string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('SubAgentMessageQueue');
+		this.storePath = storePath ?? path.join(getCrewlyHomePath(), 'sub-agent-message-queue.json');
+		this.load();
+	}
+
+	/**
+	 * Read back anything that was still undelivered when the process ended.
+	 *
+	 * This queue is the only record that a person's message has not reached
+	 * its agent. Holding it in memory alone meant a restart dropped it with
+	 * no trace: the owner had asked for something, seen "working on it", and
+	 * the request simply ceased to exist (2026-09-21).
+	 */
+	private load(): void {
+		type Stored = { queues?: Record<string, QueuedAgentMessage[]> };
+		let stored: Stored | null = null;
+		try {
+			stored = JSON.parse(readFileSync(this.storePath, 'utf-8')) as Stored;
+		} catch {
+			// No file yet, or unreadable — start empty, which is the old behaviour.
+			return;
+		}
+		if (!stored?.queues) return;
+		let restored = 0;
+		for (const [sessionName, messages] of Object.entries(stored.queues)) {
+			const usable = (messages ?? []).filter(
+				(m) =>
+					m &&
+					typeof m.data === 'string' &&
+					typeof m.queuedAt === 'number' &&
+					Date.now() - m.queuedAt <= SUB_AGENT_QUEUE_CONSTANTS.MAX_AGE_MS,
+			);
+			if (usable.length === 0) continue;
+			this.pendingMessages.set(sessionName, usable);
+			restored += usable.length;
+		}
+		if (restored > 0) {
+			this.logger.info('Restored undelivered messages from the previous run', {
+				messages: restored,
+				sessions: this.pendingMessages.size,
+			});
+		}
+	}
+
+	/**
+	 * Write the queue out. Best-effort: a failure must never lose the
+	 * in-memory copy, which is still the live one.
+	 */
+	private save(): void {
+		try {
+			const queues: Record<string, QueuedAgentMessage[]> = {};
+			for (const [k, v] of this.pendingMessages) if (v.length > 0) queues[k] = v;
+			mkdirSync(path.dirname(this.storePath), { recursive: true });
+			// Write-then-rename: a crash mid-write must not leave a truncated
+			// file that the next boot reads as "nothing was pending".
+			const tmp = `${this.storePath}.tmp`;
+			writeFileSync(tmp, JSON.stringify({ queues, savedAt: new Date().toISOString() }, null, 2), 'utf-8');
+			renameSync(tmp, this.storePath);
+		} catch (err) {
+			this.logger.warn('Could not persist the pending-message queue', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
 	}
 
 	/**
@@ -48,9 +114,9 @@ export class SubAgentMessageQueue {
 	 *
 	 * @returns The SubAgentMessageQueue singleton
 	 */
-	static getInstance(): SubAgentMessageQueue {
+	static getInstance(storePath?: string): SubAgentMessageQueue {
 		if (!SubAgentMessageQueue.instance) {
-			SubAgentMessageQueue.instance = new SubAgentMessageQueue();
+			SubAgentMessageQueue.instance = new SubAgentMessageQueue(storePath);
 		}
 		return SubAgentMessageQueue.instance;
 	}
@@ -92,6 +158,8 @@ export class SubAgentMessageQueue {
 			sessionName,
 		});
 
+		this.save();
+
 		this.logger.info('Message queued for sub-agent', {
 			sessionName,
 			queueSize: queue.length,
@@ -114,6 +182,7 @@ export class SubAgentMessageQueue {
 
 		const messages = [...queue];
 		this.pendingMessages.delete(sessionName);
+		this.save();
 
 		this.logger.info('Dequeued all messages for sub-agent', {
 			sessionName,
@@ -201,6 +270,7 @@ export class SubAgentMessageQueue {
 			});
 		}
 		this.pendingMessages.delete(sessionName);
+		this.save();
 	}
 
 	/**

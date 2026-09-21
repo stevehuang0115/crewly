@@ -1,3 +1,6 @@
+import * as os from 'os';
+import * as path from 'path';
+import * as fs from 'fs';
 /**
  * SubAgentMessageQueue Service Tests
  *
@@ -28,6 +31,7 @@ jest.mock('../../constants.js', () => ({
 	SUB_AGENT_QUEUE_CONSTANTS: {
 		MAX_QUEUE_SIZE: 5, // Small size for testing overflow
 		FLUSH_INTER_MESSAGE_DELAY: 2000,
+		MAX_AGE_MS: 6 * 60 * 60 * 1000,
 	},
 }));
 
@@ -36,9 +40,16 @@ import { SubAgentMessageQueue } from './sub-agent-message-queue.service.js';
 describe('SubAgentMessageQueue', () => {
 	let queue: SubAgentMessageQueue;
 
+	let storePath: string;
+
 	beforeEach(() => {
 		SubAgentMessageQueue.resetInstance();
-		queue = SubAgentMessageQueue.getInstance();
+		storePath = path.join(os.tmpdir(), `saq-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+		queue = SubAgentMessageQueue.getInstance(storePath);
+	});
+
+	afterEach(() => {
+		try { fs.rmSync(storePath, { force: true }); } catch { /* nothing to clean */ }
 	});
 
 	describe('getInstance', () => {
@@ -260,5 +271,65 @@ describe('SubAgentMessageQueue', () => {
 			expect(messages[1].data).toBe('queued msg 2');
 			expect(queue.hasPending('busy-agent')).toBe(false);
 		});
+	});
+});
+
+describe('SubAgentMessageQueue — surviving a restart', () => {
+	// The queue is the only record that a person's message has not reached
+	// its agent, and it lived in memory alone: a restart dropped it with no
+	// trace. The owner had asked for something, seen "working on it", and
+	// the request simply ceased to exist (2026-09-21).
+	let storePath: string;
+
+	beforeEach(() => {
+		storePath = path.join(os.tmpdir(), `saq-restart-${process.pid}-${Math.random().toString(36).slice(2)}.json`);
+		SubAgentMessageQueue.resetInstance();
+	});
+	afterEach(() => {
+		try { fs.rmSync(storePath, { force: true }); } catch { /* nothing to clean */ }
+	});
+
+	it('brings undelivered messages back after the process ends', () => {
+		const before = SubAgentMessageQueue.getInstance(storePath);
+		before.enqueue('ella', 'the request nobody answered');
+		expect(before.getQueueSize('ella')).toBe(1);
+
+		SubAgentMessageQueue.resetInstance();
+		const after = SubAgentMessageQueue.getInstance(storePath);
+
+		expect(after.getQueueSize('ella')).toBe(1);
+		expect(after.dequeueAll('ella').map((m) => m.data)).toEqual(['the request nobody answered']);
+	});
+
+	it('does not bring back a message old enough that nobody is waiting for it', () => {
+		fs.writeFileSync(
+			storePath,
+			JSON.stringify({
+				queues: {
+					ella: [
+						{ data: 'from yesterday', queuedAt: Date.now() - 7 * 60 * 60 * 1000, sessionName: 'ella' },
+						{ data: 'from a minute ago', queuedAt: Date.now() - 60_000, sessionName: 'ella' },
+					],
+				},
+			}),
+			'utf-8',
+		);
+
+		const q = SubAgentMessageQueue.getInstance(storePath);
+		expect(q.dequeueAll('ella').map((m) => m.data)).toEqual(['from a minute ago']);
+	});
+
+	it('a drained queue stays drained across a restart', () => {
+		const before = SubAgentMessageQueue.getInstance(storePath);
+		before.enqueue('ella', 'x');
+		before.dequeueAll('ella');
+
+		SubAgentMessageQueue.resetInstance();
+		expect(SubAgentMessageQueue.getInstance(storePath).hasPending('ella')).toBe(false);
+	});
+
+	it('starts empty when the file is corrupt rather than refusing to boot', () => {
+		fs.writeFileSync(storePath, '{ not json', 'utf-8');
+		expect(SubAgentMessageQueue.getInstance(storePath).hasPending('ella')).toBe(false);
 	});
 });
