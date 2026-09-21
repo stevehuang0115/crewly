@@ -400,6 +400,12 @@ export class CrewlyServer {
 		this.apiController.agentRegistrationService.setEventBusService(this.eventBusService);
 
 		this.terminalGateway = new TerminalGateway(this.io);
+		// An orchestrator on the in-process runtime has no PTY; without this
+		// the gateway retried five times and then logged an ERROR saying its
+		// output was lost (2026-09-21).
+		this.terminalGateway.setInProcessRuntimeCheck((sessionName) =>
+			this.apiController.agentRegistrationService.isInProcessRuntimeActive(sessionName),
+		);
 
 		// Set terminal gateway singleton for chat integration
 		setTerminalGateway(this.terminalGateway);

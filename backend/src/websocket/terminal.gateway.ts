@@ -378,7 +378,50 @@ export class TerminalGateway {
 	 *          if a retry was scheduled (caller-visible failure is reserved for
 	 *          terminal failure after all retries, surfaced via ERROR log only).
 	 */
+	/**
+	 * Whether this session is served by the in-process Crewly Agent runtime,
+	 * which has no PTY.
+	 *
+	 * Returns false when nothing has been wired yet: that keeps the old retry
+	 * behaviour rather than silently skipping a session that does have a PTY.
+	 *
+	 * @param sessionName - The session to check
+	 * @returns True when the session runs in-process
+	 */
+	private inProcessRuntimeCheck?: (sessionName: string) => boolean;
+
+	private isInProcessOrchestrator(sessionName: string): boolean {
+		try {
+			return this.inProcessRuntimeCheck?.(sessionName) ?? false;
+		} catch {
+			return false;
+		}
+	}
+
+	/**
+	 * Tell the gateway how to recognise a session with no PTY.
+	 *
+	 * Wired from boot with `AgentRegistrationService.isInProcessRuntimeActive`;
+	 * injected rather than imported because that service is owned by the API
+	 * controller, and because reaching it through a bare `require` inside an
+	 * ESM build fails silently — which would turn this guard into a no-op.
+	 *
+	 * @param check - Predicate answering whether a session runs in-process
+	 */
+	setInProcessRuntimeCheck(check: (sessionName: string) => boolean): void {
+		this.inProcessRuntimeCheck = check;
+	}
+
 	startOrchestratorChatMonitoring(sessionName: string): boolean {
+		// An orchestrator on the in-process runtime has no terminal at all, so
+		// there is nothing to attach to and nothing to stream. Retrying five
+		// times and then logging an ERROR claiming its output is lost was
+		// pure noise — and noise in this log is what kept the real failures
+		// hidden all evening (2026-09-21).
+		if (this.isInProcessOrchestrator(sessionName)) {
+			this.logger.info('Orchestrator runs in-process — no terminal to monitor', { sessionName });
+			return false;
+		}
 		this.logger.info('Starting persistent orchestrator chat monitoring', { sessionName });
 
 		// Cancel any in-flight retry from a previous start call so we don't
@@ -428,14 +471,20 @@ export class TerminalGateway {
 			// persistent flag so a subsequent subscriber-driven attach can
 			// still proceed via the normal subscribeToSession path.
 			const backend = getSessionBackendSync();
-			this.logger.error(
-				'Orchestrator chat monitoring failed after all retries — orc output will not stream until a client subscribes',
-				{
-					sessionName,
-					attempts: schedule.length,
-					availableSessions: backend?.listSessions() ?? [],
-				},
-			);
+			// The runtime can switch to in-process while the retries are in
+			// flight; that is an expected end, not a failure.
+			if (this.isInProcessOrchestrator(sessionName)) {
+				this.logger.info('Orchestrator came up in-process — terminal monitoring not needed', { sessionName });
+			} else {
+				this.logger.error(
+					'Orchestrator chat monitoring failed after all retries — orc output will not stream until a client subscribes',
+					{
+						sessionName,
+						attempts: schedule.length,
+						availableSessions: backend?.listSessions() ?? [],
+					},
+				);
+			}
 			this.persistentMonitoringSessions.delete(sessionName);
 			this.pendingMonitoringRetries.delete(sessionName);
 			return;

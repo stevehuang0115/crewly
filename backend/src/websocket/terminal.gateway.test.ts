@@ -635,6 +635,30 @@ describe('TerminalGateway', () => {
 			jest.useRealTimers();
 		});
 
+		// An orchestrator on the in-process runtime has no terminal, so there
+		// was never anything to attach: the gateway retried five times and
+		// then logged an ERROR claiming its output was lost. Noise in this
+		// log is what kept the evening's real failures hidden (2026-09-21).
+		it('does not attach or retry when the orchestrator runs in-process', () => {
+			mockSessionBackend.getSession.mockReturnValue(null);
+			gateway.setInProcessRuntimeCheck((s) => s === orcSession);
+
+			expect(gateway.startOrchestratorChatMonitoring(orcSession)).toBe(false);
+
+			expect(mockSession.onData).not.toHaveBeenCalled();
+			// No retry was scheduled: running every timer changes nothing.
+			jest.runAllTimers();
+			expect(mockSessionBackend.getSession).not.toHaveBeenCalled();
+		});
+
+		it('still retries for a PTY-backed session when a check is wired', () => {
+			mockSessionBackend.getSession.mockReturnValueOnce(null);
+			gateway.setInProcessRuntimeCheck(() => false);
+
+			expect(gateway.startOrchestratorChatMonitoring(orcSession)).toBe(false);
+			expect(mockSessionBackend.getSession).toHaveBeenCalled();
+		});
+
 		it('attaches synchronously when the PTY is already registered', () => {
 			mockSessionBackend.getSession.mockReturnValue(mockSession);
 
