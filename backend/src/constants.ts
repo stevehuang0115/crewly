@@ -1421,6 +1421,34 @@ export const SLACK_FILE_UPLOAD_CONSTANTS = {
  * sent by users so agents can access them via file-reading tools.
  */
 /**
+ * Message prefix `@slack/web-api` puts on every Slack platform error
+ * (`platformErrorFromResult`), e.g. "An API error occurred: invalid_auth".
+ * Used to recognise a rejection that came out of the Slack SDK rather than
+ * from Crewly's own code.
+ */
+export const SLACK_PLATFORM_ERROR_PREFIX = 'An API error occurred:';
+
+/**
+ * Substrings of unhandled-rejection messages that the backend logs but
+ * does NOT shut down for. Each entry is a rejection a third-party
+ * integration library can raise on its own promise chain (no app frame
+ * to catch it) and which must never take the whole process down.
+ *
+ * Anything not matched here still triggers the graceful shutdown, so a
+ * genuinely unknown rejection is not silently swallowed.
+ */
+export const NON_FATAL_UNHANDLED_REJECTION_PATTERNS = [
+	/** finity state machine inside @slack/socket-mode */
+	'Unhandled event',
+	/** transient network errors */
+	'socket hang up',
+	/** connection reset by peer */
+	'ECONNRESET',
+	/** any Slack platform error (invalid_auth, token_revoked, …) — Slack goes degraded, not the backend */
+	SLACK_PLATFORM_ERROR_PREFIX,
+] as const;
+
+/**
  * Slack Socket Mode reconnection constants.
  * Controls automatic reconnection when network drops cause the WebSocket
  * to die and Bolt's built-in reconnect fails to recover.

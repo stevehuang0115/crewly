@@ -70,7 +70,7 @@ interface SlackApp {
  */
 interface SlackWebClient {
   auth: {
-    test: () => Promise<{ ok?: boolean; team?: string; user?: string; user_id?: string }>;
+    test: () => Promise<{ ok?: boolean; team?: string; user?: string; user_id?: string; bot_id?: string }>;
   };
   chat: {
     postMessage: (args: PostMessageArgs) => Promise<{ ts?: string }>;
@@ -291,6 +291,38 @@ export interface SlackCloudRelayMessage {
 let slackServiceInstance: SlackService | null = null;
 
 /**
+ * Pull the Slack error code and message out of an error thrown by the Slack
+ * SDK (or anything else).
+ *
+ * Platform errors carry the code in `data.error` ("invalid_auth",
+ * "token_revoked", …); request errors carry the network cause in
+ * `original.code` ("ECONNREFUSED", "ETIMEDOUT"); other SDK errors carry a
+ * `code` string. Anything else reports "unknown".
+ *
+ * @param error - The thrown value
+ * @returns The Slack error code (or network code) and the message
+ *
+ * @example
+ * ```typescript
+ * describeSlackError(platformError); // { code: 'invalid_auth', message: 'An API error occurred: invalid_auth' }
+ * ```
+ */
+export function describeSlackError(error: unknown): { code: string; message: string } {
+  const message = error instanceof Error ? error.message : String(error);
+  const shape = error as {
+    code?: unknown;
+    data?: { error?: unknown };
+    original?: { code?: unknown };
+  } | null | undefined;
+  const code =
+    typeof shape?.data?.error === 'string' ? shape.data.error
+    : typeof shape?.original?.code === 'string' ? shape.original.code
+    : typeof shape?.code === 'string' ? shape.code
+    : 'unknown';
+  return { code, message };
+}
+
+/**
  * SlackService class for managing Slack bot operations
  */
 export class SlackService extends EventEmitter {
@@ -385,12 +417,18 @@ export class SlackService extends EventEmitter {
       this.cachedAppConstructor = App;
       this.cachedLogLevelEnum = LogLevel ?? null;
 
+      // Verify the bot token BEFORE constructing the Bolt App — see
+      // preflightBotToken() for why the App must never be built on an
+      // unverified token. Throws into this catch on any failure.
+      const identity = await this.preflightBotToken(config.botToken);
+
       this.app = new App({
         token: config.botToken,
         appToken: config.appToken,
         signingSecret: config.signingSecret,
         socketMode: config.socketMode,
         logLevel: (LogLevel as Record<string, unknown>)?.INFO ?? 'info',
+        ...identity,
       }) as unknown as SlackApp;
 
       this.client = this.app.client;
@@ -407,6 +445,7 @@ export class SlackService extends EventEmitter {
         // Monitor SocketModeClient connection state for logging and status tracking
         this.setupConnectionMonitoring();
 
+        this.clearDegraded();
         this.emit('connected');
         this.logger.info('Connected in Socket Mode');
       }
@@ -432,6 +471,87 @@ export class SlackService extends EventEmitter {
   }
 
   /**
+   * Resolve the `WebClient` constructor from `@slack/web-api`.
+   *
+   * `@slack/web-api` ships with Bolt; the dynamic import keeps the CJS/ESM
+   * interop identical to the Bolt import in {@link initialize}.
+   *
+   * @returns The `WebClient` class
+   */
+  private async loadWebClientConstructor(): Promise<new (token: string) => unknown> {
+    const webApiModule = (await import('@slack/web-api')) as Record<string, unknown>;
+    const defaultExport = webApiModule.default as Record<string, unknown> | undefined;
+    return (webApiModule.WebClient ?? defaultExport?.WebClient) as new (token: string) => unknown;
+  }
+
+  /**
+   * Verify the bot token with `auth.test` BEFORE a Bolt App is built on it.
+   *
+   * Why this exists: `@slack/bolt` 3.x (`tokenVerificationEnabled` defaults
+   * to true) calls `client.auth.test()` eagerly inside the App constructor
+   * (`singleAuthorization` → `runAuthTestForBotToken`) and parks that promise
+   * with no rejection handler until the first inbound event is authorized.
+   * With a dead token the promise rejects a few hundred ms later with no
+   * Crewly frame on its stack — an unhandled rejection that the process-level
+   * handler treats as fatal once signal handlers are armed. Verifying first
+   * means the App is never constructed on a bad token, so the parked promise
+   * never exists. On success the ids are handed to Bolt, which then skips its
+   * own `auth.test`: net API calls are unchanged (one `auth.test` either way).
+   *
+   * ANY failure — `invalid_auth`, `account_inactive`, `token_revoked`, or a
+   * network error reaching Slack — marks the integration degraded and rethrows
+   * so the caller's existing catch (initialize / attemptReconnect) tears down
+   * cleanly. Nothing escapes past `connectSlack`.
+   *
+   * @param botToken - The bot token to verify
+   * @returns Bot identity in the shape Bolt's App constructor accepts; empty
+   *   when Slack omitted either id (Bolt then verifies on its own)
+   * @throws The `auth.test` error, after the integration was marked degraded
+   */
+  private async preflightBotToken(botToken: string): Promise<{ botId?: string; botUserId?: string }> {
+    let result: Awaited<ReturnType<SlackWebClient['auth']['test']>>;
+    try {
+      const WebClient = await this.loadWebClientConstructor();
+      const probe = new WebClient(botToken) as unknown as SlackWebClient;
+      result = await probe.auth.test();
+    } catch (error) {
+      this.markDegraded('auth.test failed before connect', error);
+      throw error;
+    }
+    if (result?.user_id) this.cachedBotUserId = result.user_id;
+    return result?.user_id && result?.bot_id
+      ? { botUserId: result.user_id, botId: result.bot_id }
+      : {};
+  }
+
+  /**
+   * Record that Slack is offline because of a Slack-side failure, and log it
+   * once at WARN. The backend keeps running; only Slack features are off.
+   *
+   * @param label - What was being attempted when Slack failed
+   * @param error - The failure (Slack SDK error or anything thrown)
+   */
+  private markDegraded(label: string, error: unknown): void {
+    const { code, message } = describeSlackError(error);
+    this.status.degraded = true;
+    this.status.degradedReason = code;
+    this.status.lastError = message;
+    this.status.lastErrorAt = new Date().toISOString();
+    this.logger.warn(
+      `Slack integration degraded: ${label} — Slack features are offline, the backend keeps running`,
+      { code, error: message },
+    );
+  }
+
+  /**
+   * Clear the degraded flag after a successful connect.
+   */
+  private clearDegraded(): void {
+    this.status.degraded = false;
+    delete this.status.degradedReason;
+  }
+
+  /**
    * Cloud transport bootstrap: build a bare Web API client from the bot
    * token (no Bolt app, no socket, no reconnect loop). The bot user id from
    * the Cloud config seeds the cache so routing never needs `auth.test`.
@@ -444,18 +564,13 @@ export class SlackService extends EventEmitter {
       if (!config.botToken) {
         throw new Error('Cloud Slack config has no bot token');
       }
-      // `@slack/web-api` ships with Bolt; dynamic import keeps the CJS/ESM
-      // interop identical to the Bolt path above.
-      const webApiModule = (await import('@slack/web-api')) as Record<string, unknown>;
-      const defaultExport = webApiModule.default as Record<string, unknown> | undefined;
-      const WebClient = (webApiModule.WebClient ?? defaultExport?.WebClient) as new (
-        token: string,
-      ) => unknown;
+      const WebClient = await this.loadWebClientConstructor();
       this.app = null;
       this.client = new WebClient(config.botToken) as unknown as SlackWebClient;
       if (config.botUserId) this.cachedBotUserId = config.botUserId;
       this.status.connected = true;
       this.status.socketMode = false;
+      this.clearDegraded();
       this.emit('connected');
       this.logger.info('Connected via Crewly Cloud transport (events arrive over the relay, no Socket Mode)');
     } catch (error) {
@@ -1069,12 +1184,18 @@ export class SlackService extends EventEmitter {
       const App = this.cachedAppConstructor;
       const LogLevel = this.cachedLogLevelEnum;
 
+      // Same pre-flight as initialize(): a token revoked since boot must
+      // surface here as a (fatal) reconnect error, never as Bolt's parked
+      // auth.test rejection escaping to the process.
+      const identity = await this.preflightBotToken(this.config.botToken);
+
       this.app = new App({
         token: this.config.botToken,
         appToken: this.config.appToken,
         signingSecret: this.config.signingSecret,
         socketMode: this.config.socketMode,
         logLevel: (LogLevel as Record<string, unknown>)?.INFO ?? 'info',
+        ...identity,
       }) as unknown as SlackApp;
 
       this.client = this.app.client;
@@ -1089,6 +1210,7 @@ export class SlackService extends EventEmitter {
       this.lastPingAt = Date.now();
 
       this.setupConnectionMonitoring();
+      this.clearDegraded();
       this.emit('connected');
       this.logger.info('Successfully reconnected to Slack Socket Mode');
     } catch (error) {
