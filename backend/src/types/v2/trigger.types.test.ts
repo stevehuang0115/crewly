@@ -16,6 +16,7 @@ import {
   validateCreateTriggerInput,
   createTrigger,
 } from './trigger.types.js';
+import { TRIGGER_MANAGED_BY, isSpecManaged } from './trigger.types.js';
 import type {
   TimeTriggerConfig,
   SignalTriggerConfig,
@@ -190,7 +191,8 @@ describe('Trigger Types', () => {
       expect(isTrigger({ ...validTrigger, status: 'disabled' })).toBe(false);
     });
     it('should return false for missing fireCount', () => {
-      const { fireCount: _, ...incomplete } = validTrigger;
+      const incomplete: Record<string, unknown> = { ...validTrigger };
+      delete incomplete.fireCount;
       expect(isTrigger(incomplete)).toBe(false);
     });
   });
@@ -283,6 +285,48 @@ describe('Trigger Types', () => {
     it('should set ISO8601 createdAt', () => {
       const trigger = createTrigger(input);
       expect(() => new Date(trigger.createdAt)).not.toThrow();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // managedBy — lifecycle ownership marker (Request 1b5b879b)
+  // -----------------------------------------------------------------------
+  describe('managedBy', () => {
+    const input: CreateTriggerInput = {
+      type: 'time',
+      config: { type: 'time', delayMs: 60_000 },
+      action: { createWorkItem: { type: 'check', title: 'Follow up' } },
+      createdBy: 'system',
+      teamId: 'team-abc',
+      name: 'followup:abc',
+    };
+
+    it('createTrigger stamps agent ownership by default (a follow-up is never spec-managed)', () => {
+      expect(createTrigger(input).managedBy).toBe('agent');
+    });
+    it('createTrigger passes an explicit team-spec marker through', () => {
+      expect(createTrigger({ ...input, managedBy: 'team-spec' }).managedBy).toBe('team-spec');
+    });
+    it('validateCreateTriggerInput accepts every listed value and omission', () => {
+      expect(TRIGGER_MANAGED_BY.length).toBe(2); // the set this test examines
+      for (const managedBy of TRIGGER_MANAGED_BY) {
+        expect(validateCreateTriggerInput({ ...input, managedBy })).toEqual([]);
+      }
+      expect(validateCreateTriggerInput(input)).toEqual([]);
+    });
+    it('validateCreateTriggerInput rejects an unknown value', () => {
+      const errors = validateCreateTriggerInput({ ...input, managedBy: 'bogus' as never });
+      expect(errors).toEqual([expect.stringContaining('managedBy must be one of')]);
+    });
+    it('isSpecManaged is true only for the explicit team-spec marker', () => {
+      expect(isSpecManaged({ managedBy: 'team-spec' })).toBe(true);
+      expect(isSpecManaged({ managedBy: 'agent' })).toBe(false);
+      expect(isSpecManaged({})).toBe(false); // legacy row: absence of proof is not proof
+    });
+    it('isTrigger still accepts a legacy row without managedBy', () => {
+      const legacy = { ...createTrigger(input) } as Record<string, unknown>;
+      delete legacy.managedBy;
+      expect(isTrigger(legacy)).toBe(true);
     });
   });
 });

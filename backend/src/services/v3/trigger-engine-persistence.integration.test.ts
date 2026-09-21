@@ -44,6 +44,8 @@ import * as path from 'path';
 import * as os from 'os';
 import { TriggerEngine } from './trigger-engine.service.js';
 import type { CreateTriggerInput, Trigger } from '../../types/v2/index.js';
+import { TeamTriggerReconciler } from './team-trigger-reconciler.service.js';
+import type { Team } from '../../types/index.js';
 
 // ---------------------------------------------------------------------------
 // Test environment helpers
@@ -501,7 +503,7 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
   describe('eval criteria (5): in-memory CRUD shape is preserved post-restart', () => {
     it('list() returns same triggers (by id, status, fireCount) before and after restart', async () => {
       const engine1 = TriggerEngine.getInstance(projectPath);
-      const t1 = await engine1.create(makeDelayTriggerInput(60 * 60_000));
+      await engine1.create(makeDelayTriggerInput(60 * 60_000));
       const t2 = await engine1.create({
         type: 'signal',
         config: { type: 'signal', eventType: 'agent:idle' },
@@ -529,6 +531,77 @@ describe('TriggerEngine — disk persistence (B1 acceptance)', () => {
         expect(a!.fireCount).toBe(b.fireCount);
         expect(a!.type).toBe(b.type);
       }
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Request 1b5b879b: an agent follow-up survives a backend restart even
+  // though the reconciler runs at boot. Real fs, real engine, real reconciler.
+  // -------------------------------------------------------------------------
+  describe('Request 1b5b879b: agent follow-up survives restart + boot-time reconcile', () => {
+    function makeTeamWithSpecs(names: string[]): Team {
+      return {
+        id: 'team-28a4ac10',
+        name: 'Product',
+        members: [],
+        projectIds: [],
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        triggers: names.map((name) => ({
+          name,
+          description: name,
+          config: { type: 'time', cronExpression: '0 17 * * *' },
+          action: { createWorkItem: { title: name, type: 'review', owner: 'agent' } },
+        })),
+      };
+    }
+
+    it('follow-up (teamId + name, no marker in the request) is still there after restart; spec orphan is not', async () => {
+      // --- boot 1: spec provisions two cadences, an agent schedules a follow-up
+      const engine1 = TriggerEngine.getInstance(projectPath);
+      await engine1.start();
+      const team = makeTeamWithSpecs(['daily-eod', 'obsolete']);
+      await new TeamTriggerReconciler(engine1).reconcile(team);
+
+      const followup = await engine1.create({
+        type: 'time',
+        config: { type: 'time', fireAt: new Date(Date.now() + 45 * 60_000).toISOString() },
+        action: { createWorkItem: { type: 'check', title: 'Check back in 45m', owner: 'agent' } },
+        createdBy: 'system',
+        teamId: team.id,
+        name: 'followup:1b5b879b-quinn-45m',
+      });
+      engine1.stop();
+
+      // Simulate a store written before managedBy existed for ONE spec row.
+      const file = triggersFile(projectPath);
+      const rows = JSON.parse(await fs.readFile(file, 'utf-8')) as Trigger[];
+      expect(rows).toHaveLength(3); // what this test examined on disk
+      const legacy = rows.find((r) => r.name === 'daily-eod')!;
+      delete legacy.managedBy;
+      await fs.writeFile(file, JSON.stringify(rows, null, 2));
+
+      // --- boot 2: exactly what index.ts does — load, then reconcile every team.
+      const engine2 = simulateRestart(projectPath);
+      await engine2.start();
+      team.triggers = team.triggers!.filter((t) => t.name !== 'obsolete');
+      const summary = await new TeamTriggerReconciler(engine2).reconcile(team);
+      engine2.stop();
+
+      expect(summary.deleted).toEqual(['obsolete']);
+      expect(summary.created).toEqual([]); // legacy daily-eod adopted, not duplicated
+      const after = engine2.list();
+      const survivor = after.find((t) => t.id === followup.id);
+      expect(survivor).toBeDefined();
+      expect(survivor!.status).toBe('active');
+      expect(survivor!.name).toBe('followup:1b5b879b-quinn-45m');
+      expect(survivor!.teamId).toBe(team.id);
+      expect(after.map((t) => t.name).sort()).toEqual(['daily-eod', 'followup:1b5b879b-quinn-45m']);
+
+      // And it is on disk that way, which is what the next restart will read.
+      const persisted = JSON.parse(await fs.readFile(file, 'utf-8')) as Trigger[];
+      const onDisk = persisted.find((r) => r.id === followup.id);
+      expect(onDisk).toMatchObject({ name: 'followup:1b5b879b-quinn-45m', teamId: team.id, managedBy: 'agent', status: 'active' });
     });
   });
 });

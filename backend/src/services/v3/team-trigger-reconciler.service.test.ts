@@ -208,6 +208,92 @@ describe('TeamTriggerReconciler', () => {
       expect(names).toEqual(['daily-eod', 'other-cron']);
     });
 
+    // ---------------------------------------------------------------------
+    // Ownership (Request 1b5b879b): teamId + name is NOT ownership.
+    // ---------------------------------------------------------------------
+
+    /** Exactly what schedule-followup POSTs: teamId + name, no marker in the body. */
+    function makeAgentFollowupInput(teamId: string, name: string): CreateTriggerInput {
+      return {
+        type: 'time',
+        config: { type: 'time', fireAt: new Date(Date.now() + 60 * 60_000).toISOString() },
+        action: { createWorkItem: { type: 'check', title: 'Check on the thing', owner: 'agent' } },
+        createdBy: 'system',
+        teamId,
+        name,
+      };
+    }
+
+    it('does NOT delete an agent-created follow-up that carries the team id and a non-spec name', async () => {
+      const team = makeTeam([makeSpec({ name: 'daily-eod' })]);
+      await reconciler.reconcile(team);
+      const followup = await engine.create(makeAgentFollowupInput(team.id, 'followup:1b5b879b'));
+      expect(followup.managedBy).toBe('agent');
+
+      // Both a boot-time run and a team-saved storage-event run are just reconcile(team).
+      const summary = await reconciler.reconcile(team);
+      const again = await reconciler.reconcile(team);
+
+      expect(summary.deleted).toEqual([]);
+      expect(again.deleted).toEqual([]);
+      expect(engine.list().map((t) => t.id)).toContain(followup.id);
+      expect(engine.size()).toBe(2);
+    });
+
+    it('marks the triggers it provisions as team-spec and still deletes a marked orphan', async () => {
+      const team = makeTeam([makeSpec({ name: 'daily-eod' }), makeSpec({ name: 'obsolete' })]);
+      await reconciler.reconcile(team);
+      const provisioned = engine.list();
+      expect(provisioned).toHaveLength(2);
+      expect(provisioned.every((t) => t.managedBy === 'team-spec')).toBe(true);
+
+      team.triggers = [makeSpec({ name: 'daily-eod' })];
+      const summary = await reconciler.reconcile(team);
+      expect(summary.deleted).toEqual(['obsolete']);
+      expect(engine.list().map((t) => t.name)).toEqual(['daily-eod']);
+    });
+
+    it('never deletes a legacy row (no marker) whose name is not in the spec', async () => {
+      // A row persisted before managedBy existed. Could be an old spec orphan
+      // or an old follow-up — indistinguishable, so it must survive.
+      const legacy = await engine.create({
+        ...makeAgentFollowupInput('team-abc', 'old-cadence'),
+        createdBy: 'system',
+      });
+      delete (legacy as Partial<Trigger>).managedBy;
+
+      const summary = await reconciler.reconcile(makeTeam([makeSpec({ name: 'daily-eod' })]));
+      expect(summary.deleted).toEqual([]);
+      expect(engine.list().map((t) => t.id)).toContain(legacy.id);
+    });
+
+    it('adopts a legacy row (no marker) that the spec still names instead of duplicating it', async () => {
+      const spec = makeSpec({ name: 'daily-eod' });
+      const team = makeTeam([spec]);
+      await reconciler.reconcile(team);
+      const [row] = engine.list();
+      delete (row as Partial<Trigger>).managedBy; // simulate a pre-upgrade store
+
+      const summary = await reconciler.reconcile(team);
+      expect(summary.unchanged).toEqual(['daily-eod']);
+      expect(summary.created).toEqual([]);
+      expect(engine.size()).toBe(1); // no duplicate cadence after upgrade
+
+      // ...and the disabled-spec branch still removes it.
+      team.triggers = [makeSpec({ name: 'daily-eod', enabled: false })];
+      const disabled = await reconciler.reconcile(team);
+      expect(disabled.deleted).toEqual(['daily-eod']);
+      expect(engine.size()).toBe(0);
+    });
+
+    it('an agent trigger that happens to share a spec name is left alone; the spec gets its own trigger', async () => {
+      const agent = await engine.create(makeAgentFollowupInput('team-abc', 'daily-eod'));
+      const summary = await reconciler.reconcile(makeTeam([makeSpec({ name: 'daily-eod' })]));
+      expect(summary.created).toEqual(['daily-eod']);
+      expect(engine.list().map((t) => t.id)).toContain(agent.id);
+      expect(engine.size()).toBe(2);
+    });
+
     it('warns and skips spec entries with missing name', async () => {
       const team = makeTeam([
         { ...makeSpec(), name: '' } as TeamTriggerSpec,

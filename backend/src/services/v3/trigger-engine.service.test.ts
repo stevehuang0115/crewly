@@ -622,6 +622,29 @@ describe('TriggerEngine', () => {
     });
   });
   // -------------------------------------------------------------------------
+  // managedBy is carried through persistence (Request 1b5b879b)
+  // -------------------------------------------------------------------------
+
+  describe('managedBy persistence', () => {
+    it('persists the explicit marker and the agent default verbatim', async () => {
+      const { atomicWriteJsonWithGuard } = await import('../../utils/integrity-guarded-write.utils.js');
+      const write = jest.mocked(atomicWriteJsonWithGuard);
+      write.mockClear();
+
+      await engine.create({ type: 'time', config: { type: 'time', delayMs: 60_000 }, action: { runReconciler: true }, createdBy: 'system', teamId: 't1', name: 'spec-a', managedBy: 'team-spec' });
+      await engine.create({ type: 'time', config: { type: 'time', delayMs: 60_000 }, action: { runReconciler: true }, createdBy: 'system', teamId: 't1', name: 'followup:x' });
+
+      expect(write).toHaveBeenCalled();
+      const lastCall = write.mock.calls[write.mock.calls.length - 1];
+      const rows = lastCall[1] as Trigger[];
+      expect(rows.map((r) => [r.name, r.managedBy])).toEqual([
+        ['spec-a', 'team-spec'],
+        ['followup:x', 'agent'],
+      ]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // nextFireAt for one-shot triggers (D-B)
   // -------------------------------------------------------------------------
 
