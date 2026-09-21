@@ -633,6 +633,14 @@ export interface SlackServiceStatus {
   lastError?: string;
   messagesSent: number;
   messagesReceived: number;
+  /**
+   * True when the Slack integration is offline because Slack itself refused
+   * the credentials (or could not be reached) — the backend keeps running
+   * without Slack. Cleared on the next successful connect.
+   */
+  degraded?: boolean;
+  /** Why the integration is degraded, e.g. "invalid_auth" or "ECONNREFUSED". */
+  degradedReason?: string;
 }
 
 /**

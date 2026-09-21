@@ -23,14 +23,16 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
   }),
 }));
 
-// Cloud transport builds a bare Web API client (no Bolt app / socket).
-const mockWebClientCtor = jest.fn().mockImplementation(() => ({
+// Cloud transport builds a bare Web API client (no Bolt app / socket); the
+// socket path builds one too, for the bot-token pre-flight before the App.
+const defaultWebClientImpl = () => ({
   auth: { test: jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT' }) },
   chat: { postMessage: jest.fn().mockResolvedValue({ ts: '9.9' }), update: jest.fn() },
   reactions: { add: jest.fn() },
   users: { info: jest.fn() },
   files: { uploadV2: jest.fn(), info: jest.fn() },
-}));
+});
+const mockWebClientCtor = jest.fn().mockImplementation(defaultWebClientImpl);
 jest.mock('@slack/web-api', () => ({ WebClient: mockWebClientCtor }));
 
 jest.mock('@slack/bolt', () => ({
@@ -1044,6 +1046,128 @@ describe('SlackService', () => {
       const service = getSlackService();
       mockBoltStart.mockRejectedValueOnce(new Error('invalid_auth'));
       await expect(service.initialize(mockConfig)).rejects.toThrow();
+    });
+  });
+
+  // A dead bot token must degrade Slack, never the backend. Bolt's App
+  // constructor runs auth.test eagerly and parks the promise un-caught, so
+  // the token is verified BEFORE the App is built (preflightBotToken). The
+  // real-Bolt reproduction lives in slack.service.bolt-preflight.test.ts;
+  // these tests pin the service-level contract against the mocked App.
+  describe('bot token pre-flight (Slack auth failure must never take down the backend)', () => {
+    /** Error shape `@slack/web-api` raises for a Slack platform error. */
+    const platformError = (code: string): Error =>
+      Object.assign(new Error(`An API error occurred: ${code}`), {
+        code: 'slack_webapi_platform_error',
+        data: { ok: false, error: code },
+      });
+
+    /**
+     * Make every WebClient built during the test answer auth.test as given
+     * (the pre-flight probe). Not a one-shot: a one-shot left unconsumed —
+     * as it is on code that never builds the probe — would leak into the
+     * next test. afterEach restores the default double.
+     */
+    const nextAuthTest = (impl: jest.Mock): void => {
+      mockWebClientCtor.mockImplementation(() => ({ auth: { test: impl } }));
+    };
+
+    let AppMock: jest.Mock;
+
+    beforeEach(() => {
+      AppMock = require('@slack/bolt').App as jest.Mock;
+      AppMock.mockClear();
+      mockBoltStart.mockClear();
+    });
+
+    afterEach(() => {
+      mockWebClientCtor.mockImplementation(defaultWebClientImpl);
+    });
+
+    it('auth.test rejecting with invalid_auth: no Bolt App is built, initialize rejects cleanly, Slack is degraded', async () => {
+      nextAuthTest(jest.fn().mockRejectedValue(platformError('invalid_auth')));
+      const service = new SlackService();
+      service.on('error', () => undefined);
+      const warn = jest.spyOn((service as any).logger, 'warn');
+
+      await expect(service.initialize(mockConfig)).rejects.toThrow('An API error occurred: invalid_auth');
+
+      expect(AppMock).not.toHaveBeenCalled();
+      expect(mockBoltStart).not.toHaveBeenCalled();
+      expect(service.isConnected()).toBe(false);
+      expect(service.getStatus()).toMatchObject({ degraded: true, degradedReason: 'invalid_auth' });
+      const degradedLogs = warn.mock.calls.filter(([m]) => String(m).includes('Slack integration degraded'));
+      expect(degradedLogs).toHaveLength(1);
+    });
+
+    it.each([
+      ['token_revoked', platformError('token_revoked')],
+      ['account_inactive', platformError('account_inactive')],
+      ['ECONNREFUSED', Object.assign(new Error('A request error occurred: connect ECONNREFUSED'), {
+        code: 'slack_webapi_request_error',
+        original: { code: 'ECONNREFUSED' },
+      })],
+    ])('any pre-flight failure degrades, not only invalid_auth: %s', async (code, error) => {
+      nextAuthTest(jest.fn().mockRejectedValue(error));
+      const service = new SlackService();
+      service.on('error', () => undefined);
+
+      await expect(service.initialize(mockConfig)).rejects.toThrow();
+
+      expect(AppMock).not.toHaveBeenCalled();
+      expect(service.getStatus()).toMatchObject({ degraded: true, degradedReason: code });
+    });
+
+    it('valid token: Bolt receives botId + botUserId from the pre-flight and the bot-user cache is seeded', async () => {
+      nextAuthTest(jest.fn().mockResolvedValue({ ok: true, user_id: 'UBOT', bot_id: 'BBOT' }));
+      const service = new SlackService();
+
+      await service.initialize(mockConfig);
+
+      expect(AppMock).toHaveBeenCalledTimes(1);
+      expect(AppMock.mock.calls[0][0]).toMatchObject({
+        token: mockConfig.botToken,
+        botId: 'BBOT',
+        botUserId: 'UBOT',
+      });
+      expect(service.getStatus().degraded).toBeFalsy();
+      // The mocked App client has no `auth` at all — resolving the bot user
+      // id here proves it came from the pre-flight seed, not a second call.
+      await expect(service.getBotUserId()).resolves.toBe('UBOT');
+    });
+
+    it('when Slack omits bot_id no ids are passed, so Bolt verifies on its own', async () => {
+      // Default WebClient double resolves with user_id only.
+      const service = new SlackService();
+
+      await service.initialize(mockConfig);
+
+      expect(AppMock).toHaveBeenCalledTimes(1);
+      expect(AppMock.mock.calls[0][0]).not.toHaveProperty('botId');
+      expect(AppMock.mock.calls[0][0]).not.toHaveProperty('botUserId');
+    });
+
+    it('reconnect: a token revoked since boot fails the pre-flight, builds no new App and stops the retry loop', async () => {
+      const service = new SlackService();
+      await service.initialize(mockConfig);
+      AppMock.mockClear();
+
+      nextAuthTest(jest.fn().mockRejectedValue(platformError('token_revoked')));
+      (service as any).status.connected = false;
+      (service as any).reconnecting = false;
+      (service as any).reconnectAttempts = 0;
+      (service as any).intentionalDisconnect = false;
+      const errorHandler = jest.fn();
+      service.on('error', errorHandler);
+
+      await (service as any).attemptReconnect();
+
+      expect(AppMock).not.toHaveBeenCalled();
+      expect(errorHandler).toHaveBeenCalledTimes(1);
+      expect(errorHandler.mock.calls[0][0].message).toContain('token_revoked');
+      // Fatal → loop stopped, integration degraded, backend untouched.
+      expect((service as any).reconnecting).toBe(false);
+      expect(service.getStatus()).toMatchObject({ degraded: true, degradedReason: 'token_revoked' });
     });
   });
 

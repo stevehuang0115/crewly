@@ -58,6 +58,7 @@ import { getSettingsService } from './services/settings/index.js';
 import { MemoryService } from './services/memory/memory.service.js';
 import { getImprovementStartupService } from './services/orchestrator/improvement-startup.service.js';
 import { initializeSlackIfConfigured, shutdownSlack } from './services/slack/index.js';
+import { isNonFatalUnhandledRejection, unhandledRejectionMessage } from './utils/unhandled-rejection.utils.js';
 import { initializeWhatsAppIfConfigured, shutdownWhatsApp } from './services/whatsapp/index.js';
 import { initializeGoogleChatIfConfigured } from './services/messaging/google-chat-initializer.js';
 import { initializeTelegramIfConfigured, shutdownTelegram } from './services/telegram/index.js';
@@ -3424,18 +3425,14 @@ void (async () => {
 		});
 
 		process.on('unhandledRejection', (reason, promise) => {
-			const message = reason instanceof Error ? reason.message : String(reason);
+			const message = unhandledRejectionMessage(reason);
 
-			// Non-fatal rejections from third-party libraries (e.g., Slack Socket Mode
-			// state machine errors) should be logged but not trigger a full shutdown.
-			const nonFatalPatterns = [
-				'Unhandled event',    // finity state machine (Slack Socket Mode)
-				'socket hang up',     // transient network errors
-				'ECONNRESET',         // connection reset by peer
-			];
-			const isNonFatal = nonFatalPatterns.some(p => message.includes(p));
-
-			if (isNonFatal) {
+			// Non-fatal rejections from third-party libraries (Slack Socket Mode
+			// state machine errors, Slack platform errors such as invalid_auth)
+			// are logged but must not trigger a full shutdown — the integration
+			// goes degraded, the backend stays up. The pattern list lives in
+			// NON_FATAL_UNHANDLED_REJECTION_PATTERNS (constants.ts).
+			if (isNonFatalUnhandledRejection(reason)) {
 				this.logger.warn('Non-fatal unhandled rejection (suppressed shutdown)', {
 					reason: message,
 				});
