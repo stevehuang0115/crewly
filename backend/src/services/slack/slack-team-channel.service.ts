@@ -25,6 +25,7 @@
  * @module services/slack/slack-team-channel.service
  */
 
+import { CREWLY_CONSTANTS } from '../../constants.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
@@ -215,47 +216,42 @@ export function isAdhocMapping(mapping: Pick<SlackTeamChannelMapping, 'teamId'>)
 const SLACK_APP_NAME_LIMIT = 35;
 
 /**
- * The agents that get their own Slack app: the channel members, plus the
- * orchestrator named after the machine it runs on.
+ * The Slack app name for a machine's orchestrator.
  *
- * The orchestrator is left out of {@link teamChannelMembers} because it is
- * not a huddle participant, and that exclusion also kept it from getting a
- * Slack identity — it was reachable only through the workspace's master
- * bot. That works for one machine. Two Crewly accounts sharing a workspace
- * install the *same* master app, so they share one bot user and one DM with
- * the owner, and only one of them can answer it: the other orchestrator
- * goes silent with nothing in any log (owner, 2026-09-20, MacBook Air).
- *
- * Giving the orchestrator its own app gives each machine its own bot, its
- * own DM, and routing by agent session rather than by workspace.
- *
- * The name carries the machine, not the team: every machine's orchestrator
- * team is called "Orchestrator Team", so the team suffix Cloud adds to
- * duplicates would read the same on both. It is also deliberately not
- * parenthesised — Cloud strips a trailing `(...)` before comparing names,
- * so `Orc (MacBook Air)` and `Orc (MacBook Pro)` would both reduce to "Orc",
- * collide, and be re-suffixed with that identical team name.
- *
- * @param team - The team
- * @param deviceName - This machine's name, from the instance registry
- * @returns Members with a session name, orchestrator included and renamed
+ * @param deviceName - This machine's name
+ * @returns A name within Slack's limit that carries the machine
  */
-export function agentAppMembers(team: Team, deviceName?: string): TeamMember[] {
-  const channel = teamChannelMembers(team);
+export function orchestratorAppName(deviceName: string): string {
+  const name = `Orc - ${deviceName.trim()}`;
+  return name.length > SLACK_APP_NAME_LIMIT ? name.slice(0, SLACK_APP_NAME_LIMIT).trimEnd() : name;
+}
+
+/** The team id the orchestrator's Slack app is filed under. */
+export const ORCHESTRATOR_SYNC_TEAM_ID = 'orchestrator';
+
+/**
+ * The orchestrator as an entry for the agent-app roster.
+ *
+ * The Orchestrator Team is assembled by the teams API for display; it is
+ * not stored, so `storage.getTeams()` — what the registry syncs from — never
+ * contains it and {@link agentAppMembers} alone would never see an orc.
+ * The registry appends this instead.
+ *
+ * @param deviceName - This machine's name; without one there is nothing to
+ *   tell two machines' orchestrators apart, so no app is asked for
+ * @returns The roster entry, or null when the machine has no name yet
+ */
+export function orchestratorSyncEntry(
+  deviceName?: string,
+): { teamId: string; name: string; agentSession: string; displayName: string } | null {
   const machine = (deviceName ?? '').trim();
-  if (!machine) return channel;
-  const orcs = (team.members ?? [])
-    .filter((m) => m.role === 'orchestrator' && !!m.id)
-    .map((m) => {
-      const sessionName = m.sessionName || resolveMemberSessionName(team.name, m);
-      const name = `Orc - ${machine}`;
-      return {
-        ...m,
-        sessionName,
-        name: name.length > SLACK_APP_NAME_LIMIT ? name.slice(0, SLACK_APP_NAME_LIMIT).trimEnd() : name,
-      };
-    });
-  return [...channel, ...orcs];
+  if (!machine) return null;
+  return {
+    teamId: ORCHESTRATOR_SYNC_TEAM_ID,
+    name: 'Orchestrator',
+    agentSession: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+    displayName: orchestratorAppName(machine),
+  };
 }
 
 export function teamChannelMembers(team: Team): TeamMember[] {

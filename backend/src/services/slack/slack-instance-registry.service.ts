@@ -41,7 +41,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
-import { agentAppMembers } from './slack-team-channel.service.js';
+import { teamChannelMembers, orchestratorSyncEntry } from './slack-team-channel.service.js';
 
 /** The slice of DeviceIdentityService this service needs. */
 export interface RegistryDeviceIdentity {
@@ -250,6 +250,11 @@ export class SlackInstanceRegistryService {
       this.getWorkspaceId(),
     ]);
     const teamChannels = this.deps.getTeamChannels();
+    // The Orchestrator Team is assembled by the teams API for display and is
+    // never stored, so it is absent from `getTeams()` and has to be added by
+    // hand — without it Cloud has no roster entry for this machine's orc and
+    // every DM to its bot is stranded.
+    const orc = orchestratorSyncEntry(deviceName);
     return {
       deviceName,
       relayQueueId: this.deps.sync.getQueueId() ?? '',
@@ -261,12 +266,9 @@ export class SlackInstanceRegistryService {
           teamId: team.id,
           name: team.name,
           ...(channelId ? { channelId } : {}),
-          // The orchestrator belongs here too: Cloud routes an agent event to
-          // the instance whose roster lists that session, so leaving the orc
-          // out would strand every DM to its own bot.
-          agents: agentAppMembers(team, deviceName).map((m) => m.sessionName),
+          agents: teamChannelMembers(team).map((m) => m.sessionName),
         };
-      }),
+      }).concat(orc ? [{ teamId: orc.teamId, name: orc.name, agents: [orc.agentSession] }] : []),
       crewlyVersion: version,
     };
   }
@@ -321,15 +323,15 @@ export class SlackInstanceRegistryService {
     try {
       const teams = await this.deps.storage.getTeams();
       // The orchestrator is named after this machine, so two machines in one
-      // Slack workspace end up with two bots instead of sharing the master
-      // one — see agentAppMembers.
+      // Slack workspace get two bots instead of sharing the master one.
       const { deviceName } = await this.resolveIdentity();
+      const orc = orchestratorSyncEntry(deviceName);
       // Every member of every team gets a bot (owner's call, 2026-09-18: an
       // agent must be @-able like a colleague even before its team has a
       // channel). Renames and removals follow through on each sync.
       const payload: SlackAgentsSyncPayload = {
         teams: teams.map((team) => {
-          const members = agentAppMembers(team, deviceName);
+          const members = teamChannelMembers(team);
           this.lastRoster.set(team.id, members.map((m) => m.sessionName));
           return {
             teamId: team.id,
@@ -340,7 +342,11 @@ export class SlackInstanceRegistryService {
               ...(m.avatar ? { avatar: m.avatar } : {}),
             })),
           };
-        }),
+        }).concat(
+          orc
+            ? [{ teamId: orc.teamId, name: orc.name, agents: [{ agentSession: orc.agentSession, displayName: orc.displayName }] }]
+            : [],
+        ),
         prune: true,
       };
       const slackTeamId = this.deps.getBoundWorkspaceId?.() ?? (await this.getWorkspaceId());
