@@ -224,6 +224,26 @@ export const PTY_CONSTANTS = {
 	ORPHAN_REAPER_INTERVAL_MS: 5 * 60 * 1000,
 } as const;
 
+/**
+ * Session recreation (Step 2 full recreation in AgentRegistrationService).
+ *
+ * D3 (2026-09-21): the runtime init sequence leads with Ctrl-C
+ * (session-command-helper sendCtrlC / clearCurrentCommandLine). Written a few
+ * ms after spawn, before zsh has installed its interactive SIGINT handling,
+ * that Ctrl-C ends the shell (Max's Step-2 shell died 11 ms after spawn). The
+ * primary path is immune only by accident (it types five `export`s first,
+ * ~0.5 s). Step 2 therefore waits — bounded — for the shell's first output
+ * (its prompt) before the first write.
+ */
+export const SESSION_RECREATION_CONSTANTS = {
+	/** Upper bound on waiting for the fresh shell to print its prompt (ms). */
+	SHELL_READY_TIMEOUT_MS: 3_000,
+	/** First non-whitespace byte the shell prints — its prompt, whatever the shell/theme. */
+	SHELL_READY_PATTERN: /\S/,
+	/** Terminal lines to inspect for a prompt that landed before we subscribed. */
+	SHELL_READY_CAPTURE_LINES: 5,
+} as const;
+
 // Session command timing delays (in milliseconds)
 export const SESSION_COMMAND_DELAYS = {
 	/** Delay after sending a message (allows terminal to process bracketed paste) */

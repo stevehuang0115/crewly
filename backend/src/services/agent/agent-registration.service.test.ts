@@ -165,6 +165,7 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
 }));
 
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
+import { SESSION_RECREATION_CONSTANTS } from '../../constants.js';
 
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
@@ -234,6 +235,7 @@ describe('AgentRegistrationService', () => {
 			sendEnter: jest.fn().mockResolvedValue(undefined),
 			capturePane: jest.fn().mockReturnValue('❯ '), // Claude at prompt by default
 			setEnvironmentVariable: jest.fn().mockResolvedValue(undefined),
+			waitForPattern: jest.fn().mockResolvedValue('$ '), // shell prompt seen (D3 readiness wait)
 			getSession: jest.fn().mockReturnValue(mockSession), // For event-driven delivery
 			listSessions: jest.fn().mockReturnValue([]), // For scanForStuckMessages rewind detection
 			writeRaw: jest.fn(), // For rewind mode recovery
@@ -390,6 +392,71 @@ describe('AgentRegistrationService', () => {
 					env: expect.objectContaining({ CREWLY_SESSION_NAME: 'test-session', CREWLY_ROLE: 'orchestrator' }),
 				})
 			);
+		});
+
+		it('Step 2 defers the runtime init write until the fresh shell has printed its prompt (D3)', async () => {
+			mockRuntimeService.waitForRuntimeReady
+				.mockResolvedValueOnce(false) // Step 1 fails
+				.mockResolvedValueOnce(true);  // Step 2 succeeds
+			mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+
+			// A fresh shell: nothing in the buffer at spawn; the prompt only
+			// arrives through the readiness wait.
+			let shellPrompted = false;
+			mockSessionHelper.capturePane.mockImplementation(() => (shellPrompted ? '$ ' : '\n'));
+			mockSessionHelper.waitForPattern.mockImplementation(async () => {
+				shellPrompted = true;
+				return '$ ';
+			});
+			const initSawPrompt: boolean[] = [];
+			mockRuntimeService.executeRuntimeInitScript.mockImplementation(async () => {
+				initSawPrompt.push(shellPrompted);
+			});
+
+			const result = await service.initializeAgentWithRegistration(
+				'test-session',
+				'developer',
+				'/test/path',
+				90000
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.message).toBe('Agent registered successfully after full recreation');
+			expect(mockSessionHelper.waitForPattern).toHaveBeenCalledWith(
+				'test-session',
+				SESSION_RECREATION_CONSTANTS.SHELL_READY_PATTERN,
+				SESSION_RECREATION_CONSTANTS.SHELL_READY_TIMEOUT_MS
+			);
+			// The Step-2 init write (the last one) happened only after the prompt.
+			expect(initSawPrompt.length).toBeGreaterThan(0);
+			expect(initSawPrompt[initSawPrompt.length - 1]).toBe(true);
+			// And it was ordered after the readiness wait, not merely coincident with it.
+			const waitOrder = mockSessionHelper.waitForPattern.mock.invocationCallOrder[0];
+			const initCalls = mockRuntimeService.executeRuntimeInitScript.mock.invocationCallOrder;
+			expect(initCalls[initCalls.length - 1]).toBeGreaterThan(waitOrder);
+		});
+
+		it('Step 2 proceeds with a warning when the shell prints nothing within the bounded readiness window (D3)', async () => {
+			mockRuntimeService.waitForRuntimeReady
+				.mockResolvedValueOnce(false)
+				.mockResolvedValueOnce(true);
+			mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+			mockSessionHelper.capturePane.mockReturnValue('\n');
+			mockSessionHelper.waitForPattern.mockRejectedValue(new Error('Timeout waiting for pattern: /\\S/'));
+			const warn = jest.spyOn((service as any).logger, 'warn');
+
+			const result = await service.initializeAgentWithRegistration(
+				'test-session',
+				'developer',
+				'/test/path',
+				90000
+			);
+
+			// Bounded: a silent shell degrades to the old behaviour instead of blocking.
+			expect(result.success).toBe(true);
+			expect(mockRuntimeService.executeRuntimeInitScript).toHaveBeenCalled();
+			expect(warn.mock.calls.some(([msg]) => String(msg).includes('readiness window'))).toBe(true);
+			warn.mockRestore();
 		});
 
 		it('should fail after all escalation attempts', async () => {

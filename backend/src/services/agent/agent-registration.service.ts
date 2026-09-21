@@ -28,6 +28,7 @@ import {
 	RUNTIME_TYPES,
 	RuntimeType,
 	SESSION_COMMAND_DELAYS,
+	SESSION_RECREATION_CONSTANTS,
 	EVENT_DELIVERY_CONSTANTS,
 	TERMINAL_PATTERNS,
 	GEMINI_SHELL_MODE_CONSTANTS,
@@ -1796,6 +1797,8 @@ export class AgentRegistrationService {
 				sessionName,
 				projectPath: orchestratorCwd,
 			});
+			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
+			await this.waitForShellReady(sessionName);
 
 			// Initialize runtime for orchestrator using script (always fresh start)
 			const runtimeService = this.createRuntimeService(runtimeType);
@@ -1874,6 +1877,8 @@ export class AgentRegistrationService {
 			await (await this.getSessionHelper()).createSession(sessionName, recreationCwd, {
 				env: this.buildAgentIdentityEnv(sessionName, role, recreationCwd),
 			});
+			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
+			await this.waitForShellReady(sessionName);
 
 			const runtimeService = this.createRuntimeService(runtimeType);
 			const launchedAtMs = Date.now();
@@ -2969,6 +2974,44 @@ Loop until done, blocked, or explicitly reassigned:
 			[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwd,
 			[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
 		};
+	}
+
+	/**
+	 * Wait — bounded — for a freshly spawned shell to print its prompt before
+	 * anything is written to it.
+	 *
+	 * D3 (2026-09-21): Step 2 full recreation used to write the runtime init
+	 * sequence ~8 ms after spawn. That sequence leads with Ctrl-C, and a zsh that
+	 * young has not installed its interactive SIGINT handling, so the TTY-delivered
+	 * SIGINT ends the shell (exit 0, 11 ms after spawn). The primary path never
+	 * hits this only because it types five `export`s first (~0.5 s).
+	 *
+	 * Checks the buffer first (the prompt may have landed before we subscribe),
+	 * then waits for the first non-whitespace output up to
+	 * `SESSION_RECREATION_CONSTANTS.SHELL_READY_TIMEOUT_MS`. Never throws: on
+	 * timeout it logs a warning and lets the caller proceed, so a silent shell
+	 * degrades to today's behaviour rather than blocking recreation.
+	 *
+	 * @param sessionName - The just-created PTY session
+	 * @returns True when a prompt was seen, false when the window elapsed
+	 */
+	private async waitForShellReady(sessionName: string): Promise<boolean> {
+		const { SHELL_READY_PATTERN, SHELL_READY_TIMEOUT_MS, SHELL_READY_CAPTURE_LINES } = SESSION_RECREATION_CONSTANTS;
+		const helper = await this.getSessionHelper();
+		try {
+			if (SHELL_READY_PATTERN.test(helper.capturePane(sessionName, SHELL_READY_CAPTURE_LINES))) {
+				return true;
+			}
+			await helper.waitForPattern(sessionName, SHELL_READY_PATTERN, SHELL_READY_TIMEOUT_MS);
+			return true;
+		} catch (error) {
+			this.logger.warn('Fresh shell printed nothing within the readiness window — proceeding with runtime init anyway', {
+				sessionName,
+				timeoutMs: SHELL_READY_TIMEOUT_MS,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return false;
+		}
 	}
 
 	/**
