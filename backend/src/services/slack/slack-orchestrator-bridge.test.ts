@@ -13,6 +13,7 @@ import {
   suppressTrivialOrShort,
   suppressFileOnly,
   deriveSlackThreadName,
+  mentionedBotUserIds,
 } from './slack-orchestrator-bridge.js';
 import { resetSlackService, getSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
@@ -189,6 +190,43 @@ describe('SlackOrchestratorBridge', () => {
 
       expect(tokenFor(bridge, { agentSession: 'team-avery' })).toBe('xoxb-workspace');
     });
+
+    // `agentSession` is only set for a DM. A channel message went straight
+    // to the workspace token, and in a private channel that bot is not a
+    // member: `files.info` said `file_not_found` and the download took a
+    // 403. The agent got the text with no sign an image was attached and
+    // answered about the previous topic (2026-09-21, #daily-info).
+    it('uses an @-mentioned agent\'s token for a channel message', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      jest.spyOn(getSlackService(), 'getBotToken').mockReturnValue('xoxb-workspace');
+      const identities = await import(identityModule);
+      jest.spyOn(identities, 'getSlackAgentIdentityService').mockReturnValue({
+        findByBotUserId: (id: string) => (id === 'U0C2ZK849ND' ? 'think-tank-atlas' : null),
+        getInstalled: (s: string) => (s === 'think-tank-atlas' ? { botToken: 'xoxb-atlas', botUserId: 'U0C2ZK849ND' } : null),
+      } as never);
+
+      expect(tokenFor(bridge, { text: '<@U0C2ZK849ND> 这个可以帮我研究一下吗' })).toBe('xoxb-atlas');
+    });
+
+    it('skips a mentioned human and an agent with no bot, then falls back', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      jest.spyOn(getSlackService(), 'getBotToken').mockReturnValue('xoxb-workspace');
+      const identities = await import(identityModule);
+      jest.spyOn(identities, 'getSlackAgentIdentityService').mockReturnValue({
+        findByBotUserId: (id: string) => (id === 'U-PENDING' ? 'not-installed-yet' : null),
+        getInstalled: () => null,
+      } as never);
+
+      expect(tokenFor(bridge, { text: '<@UHUMAN> and <@U-PENDING> look' })).toBe('xoxb-workspace');
+    });
+  });
+
+  describe('mentionedBotUserIds', () => {
+    it('pulls distinct ids out of Slack mention syntax, including the labelled form', () => {
+      expect(mentionedBotUserIds('<@U01> hi <@W02|atlas> and <@U01> again')).toEqual(['U01', 'W02']);
+      expect(mentionedBotUserIds('no mentions here')).toEqual([]);
+      expect(mentionedBotUserIds(undefined)).toEqual([]);
+    });
   });
 
   describe('parseCommand', () => {
@@ -339,6 +377,47 @@ describe('SlackOrchestratorBridge', () => {
       const enriched = enrichTextWithFiles(message);
       expect(enriched).toContain('Check this');
       expect(enriched).toContain('[Slack Image: /tmp/F001-shot.png (1920x1080), image/png]');
+    });
+
+    // A download that failed left no trace at all: the agent saw "have a
+    // look at this" with nothing to look at, and answered about the previous
+    // topic rather than saying it could not see the image (2026-09-21,
+    // #daily-info, IMG_3956.jpg → files.info file_not_found, download 403).
+    it('says so when an attachment was announced but could not be read', () => {
+      const bridge = new SlackOrchestratorBridge();
+      const enrichTextWithFiles = (bridge as any).enrichTextWithFiles.bind(bridge);
+
+      const message: SlackIncomingMessage = {
+        id: '1', type: 'message', text: '这个可以帮我研究一下吗', userId: 'U1',
+        channelId: 'C1', ts: '1', teamId: 'T1', eventTs: '1',
+        hasFiles: true,
+        files: [{ id: 'F1', name: 'IMG_3956.jpg', mimetype: 'image/jpeg' }],
+        images: [],
+      } as unknown as SlackIncomingMessage;
+
+      const enriched = enrichTextWithFiles(message);
+      expect(enriched).toContain('这个可以帮我研究一下吗');
+      expect(enriched).toContain('1 attachment(s) could not be read');
+      expect(enriched).toContain('IMG_3956.jpg');
+      expect(enriched).toContain('rather than guessing');
+    });
+
+    it('adds no such note when every announced file arrived', () => {
+      const bridge = new SlackOrchestratorBridge();
+      const enrichTextWithFiles = (bridge as any).enrichTextWithFiles.bind(bridge);
+
+      const message: SlackIncomingMessage = {
+        id: '1', type: 'message', text: 'Check this', userId: 'U1',
+        channelId: 'C1', ts: '1', teamId: 'T1', eventTs: '1',
+        hasFiles: true,
+        files: [{ id: 'F001', name: 'shot.png', mimetype: 'image/png' }],
+        images: [{
+          id: 'F001', name: 'shot.png', mimetype: 'image/png',
+          localPath: '/tmp/F001-shot.png', permalink: 'https://slack.com/files/F001',
+        }],
+      } as unknown as SlackIncomingMessage;
+
+      expect(enrichTextWithFiles(message)).not.toContain('could not be read');
     });
 
     it('should return original text when no images', () => {

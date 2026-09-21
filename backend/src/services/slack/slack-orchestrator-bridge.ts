@@ -203,6 +203,25 @@ export function deriveSlackThreadName(content: string | undefined): string {
  * await bridge.notifyTaskCompleted('Fix bug', 'Developer', 'MyProject');
  * ```
  */
+
+/**
+ * The Slack bot user ids a message `@`-mentions, in order.
+ *
+ * @param text - Raw Slack message text
+ * @returns Distinct `Uxxxx` ids
+ * @example
+ * mentionedBotUserIds('<@U01> hi <@U02>') // ['U01', 'U02']
+ */
+export function mentionedBotUserIds(text: string | undefined): string[] {
+  if (!text) return [];
+  const out: string[] = [];
+  for (const m of text.matchAll(/<@([UW][A-Z0-9]+)(?:\|[^>]*)?>/g)) {
+    const id = m[1];
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 export class SlackOrchestratorBridge extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('SlackBridge');
   private slackService: SlackService;
@@ -1323,16 +1342,37 @@ Just type naturally to chat with the orchestrator!`;
    * message the agent could read but an image it could not
    * (2026-09-20, #steamfun-portal: "Download failed with status 403").
    *
+   * `agentSession` is only set for a DM to an agent's own bot. A channel
+   * message has none, so it fell straight through to the workspace token —
+   * and in a private channel the workspace bot is not a member, so
+   * `files.info` answered `file_not_found` and the download took a 403. The
+   * agent got the text with no sign that an image had been attached, and
+   * answered about the previous topic (2026-09-21, #daily-info). An agent
+   * the message @-mentions is in that channel by definition, so its token
+   * can read the file.
+   *
    * @param message - The inbound message
-   * @returns The agent's bot token when the event came through its app,
-   *   otherwise the workspace token
+   * @returns A bot token that can read the file: the agent the DM was for,
+   *   else an @-mentioned agent's, else the workspace token
    */
   private fileTokenFor(message: SlackIncomingMessage): string | undefined {
     const workspaceToken = this.slackService.getBotToken() ?? undefined;
-    if (!message.agentSession) return workspaceToken;
-    const installed = getSlackAgentIdentityService()?.getInstalled(message.agentSession);
-    if (!installed?.botToken) return workspaceToken;
-    return installed.botToken;
+    const identities = getSlackAgentIdentityService();
+    if (!identities) return workspaceToken;
+
+    if (message.agentSession) {
+      const installed = identities.getInstalled(message.agentSession);
+      if (installed?.botToken) return installed.botToken;
+      return workspaceToken;
+    }
+
+    for (const botUserId of mentionedBotUserIds(message.text)) {
+      const session = identities.findByBotUserId(botUserId);
+      if (!session) continue;
+      const installed = identities.getInstalled(session);
+      if (installed?.botToken) return installed.botToken;
+    }
+    return workspaceToken;
   }
 
   /**
@@ -1609,6 +1649,26 @@ Just type naturally to chat with the orchestrator!`;
           text += `\n--- Extracted content from ${file.name} ---\n${file.extractedText}\n--- End of ${file.name} ---`;
         }
       }
+    }
+
+    // A download that failed left no trace in the text at all, so the agent
+    // saw "have a look at this" with nothing to look at and answered about
+    // the previous topic instead of saying it could not see the attachment
+    // (2026-09-21, #daily-info). Name what is missing.
+    const delivered = (message.images?.length ?? 0) + (message.attachments?.length ?? 0);
+    const attached = message.files?.length ?? 0;
+    if (attached > delivered) {
+      const undelivered = (message.files ?? [])
+        .filter((f) => {
+          const name = f.name ?? '';
+          return (
+            !(message.images ?? []).some((i) => i.name === name) &&
+            !(message.attachments ?? []).some((a) => a.name === name)
+          );
+        })
+        .map((f) => f.name || 'unnamed')
+        .join(', ');
+      text += `\n[Slack: ${attached - delivered} attachment(s) could not be read${undelivered ? ` — ${undelivered}` : ''}. Say so rather than guessing what they contained; the owner may need to invite your Slack app to this channel.]`;
     }
 
     return text;
