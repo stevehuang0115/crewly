@@ -380,7 +380,19 @@ export class SlackInstanceRegistryService {
       const slackTeamId = this.deps.getBoundWorkspaceId?.() ?? (await this.getWorkspaceId());
       if (slackTeamId) payload.slackTeamId = slackTeamId;
       const result = await this.cloudRequest<SlackAgentsSyncResult>('POST', SLACK_CLOUD_CONSTANTS.AGENTS_SYNC_PATH, payload);
-      this.syncedOnce = true;
+      // Slack rate-limits app creation, so a roster larger than about a dozen
+      // comes back part-done with the rest reported as errors. Treating that
+      // as finished stranded two agents off Cloud until the next restart
+      // (2026-09-20), so only a clean sync stops the heartbeat retrying.
+      const failures = Array.isArray(result?.errors) ? result.errors : [];
+      this.syncedOnce = failures.length === 0;
+      if (failures.length > 0) {
+        this.logger.warn('Slack agent sync only partly applied — retrying on the next heartbeat', {
+          failed: failures.length,
+          agents: failures.slice(0, 5).map((f) => f.agentSession),
+          firstError: failures[0]?.error,
+        });
+      }
       this.pendingInstalls = Array.isArray(result?.installUrls)
         ? result.installUrls.filter((u) => u && typeof u.agentSession === 'string' && typeof u.url === 'string')
         : [];

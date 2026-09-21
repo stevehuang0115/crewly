@@ -115,6 +115,106 @@ describe('SlackAgentDmService', () => {
     await fs.rm(deps.storePath as string, { force: true });
   });
 
+  describe('duplicate replies', () => {
+    const answer = '你好！我是 Crewly 的编排器（Orchestrator），负责把你的需求拆成任务、派给团队里的 agent，并跟踪进度。';
+
+    it('drops a second agent turn that merely restates the one just sent', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      // The agent reports back that it replied, and repeats the answer.
+      clock += 1_600;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: `已回复该频道。\n\n${answer}` } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(1);
+      expect((sent[0] as { text: string }).text).toBe(answer);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('lets the same text through once the window has passed', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      clock += 31_000;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(2);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('a new question reopens the DM, so an identical answer is sent again', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      clock += 2_000;
+      await svc.routeInbound(dm({ ts: '2.0', text: '再说一遍' }));
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(2);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('keeps a short reply that happens to appear inside the previous one', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '好的，我先看一下日志再回你。' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      clock += 1_000;
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '好的' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(2);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('dedupes per DM, not globally', async () => {
+      let clock = 1_700_000_000_000;
+      const { deps, sent, emit } = makeDeps({ now: () => new Date(clock) });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      // Same agent, a different Slack DM: the link is rewritten, so the reply
+      // must still go out.
+      clock += 1_000;
+      await svc.routeInbound(dm({ ts: '3.0', channelId: 'D-OTHER' }));
+      emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: answer } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+
+      expect(sent).toHaveLength(2);
+      expect((sent[1] as { channelId: string }).channelId).toBe('D-OTHER');
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+  });
+
   it('shows "waking up…" for an idle agent BEFORE dispatch, "is working on it…" once it holds the message, then edits in the reply', async () => {
     const { deps, sent, emit } = makeDeps({ isAgentAwake: () => false });
     const calls: string[] = [];
