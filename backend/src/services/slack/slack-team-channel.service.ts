@@ -439,17 +439,20 @@ export class SlackTeamChannelService {
   async updateSettings(patch: Partial<SlackTeamChannelSettings>): Promise<SlackTeamChannelSettings> {
     const s = await this.load();
     if (typeof patch.autoCreate === 'boolean') s.autoCreate = patch.autoCreate;
-    const before = s.channelPrefix;
-    if (typeof patch.channelPrefix === 'string') s.channelPrefix = patch.channelPrefix.trim();
-    const prefixChanged = s.channelPrefix !== before;
+    const prefixGiven = typeof patch.channelPrefix === 'string';
+    if (prefixGiven) s.channelPrefix = patch.channelPrefix!.trim();
     await this.save();
-    // Changing the prefix is a request to rename, not just a note for the
-    // next channel. The existing channels did follow it eventually, because
-    // any team save runs syncChannelName — but that meant an active team
-    // renamed within minutes and an idle one sat on the old name
-    // indefinitely, with nothing to say which was happening (owner,
-    // 2026-09-21).
-    if (prefixChanged) await this.applyPrefixToExistingChannels();
+    // Saving a prefix is a request to rename, not just a note for the next
+    // channel. The existing channels did follow it eventually, because every
+    // team save runs syncChannelName and status writes arrive as team saves —
+    // so an active team renamed within minutes and an idle one kept the old
+    // name indefinitely (owner, 2026-09-21).
+    //
+    // Reconciled on every save, not only on a change: a prefix saved before
+    // this existed would otherwise be stuck, with no way to ask for it again.
+    // Re-saving the same value costs nothing — syncChannelName returns
+    // without calling Slack when the name already matches.
+    if (prefixGiven) await this.applyPrefixToExistingChannels();
     return this.getSettings();
   }
 

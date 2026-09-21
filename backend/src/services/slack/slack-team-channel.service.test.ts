@@ -543,14 +543,26 @@ describe('ensureTeamChannel', () => {
     expect(slack.renamed.map((r) => r.name)).toEqual(['mbp-alpha-team', 'mbp-beta-team']);
   });
 
-  it('does not touch the channels when the prefix was re-saved unchanged', async () => {
+  // Re-saving the same prefix reconciles rather than doing nothing: a prefix
+  // saved before this feature existed would otherwise have no way to be
+  // applied. It costs nothing when the names already match.
+  it('calls no Slack rename when the channels already match the prefix', async () => {
     storage.teams = [team({ id: 't1', name: 'Alpha Team' })];
     await service.updateSettings({ channelPrefix: 'mbp-' });
     await service.ensureTeamChannel(storage.teams[0]);
     slack.renamed = [];
 
     await service.updateSettings({ channelPrefix: 'mbp-' });
-    await service.updateSettings({ autoCreate: true });
+
+    expect(slack.renamed).toEqual([]);
+  });
+
+  it('does not sweep when only autoCreate was changed', async () => {
+    storage.teams = [team({ id: 't1', name: 'Alpha Team' })];
+    await service.ensureTeamChannel(storage.teams[0]);
+    slack.renamed = [];
+
+    await service.updateSettings({ autoCreate: false });
 
     expect(slack.renamed).toEqual([]);
   });
