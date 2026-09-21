@@ -1898,3 +1898,54 @@ describe('SlackService', () => {
     });
   });
 });
+
+
+/**
+ * Renaming needs channel membership, and the bot is not always in a channel
+ * it created: re-installing the app drops it out of every one. After the
+ * owner re-authorised, thirteen team channels answered `not_in_channel`
+ * where the day before they had answered `invalid_auth` (2026-09-21).
+ */
+describe('SlackService.renameChannel — rejoining', () => {
+  /** A Slack error shaped the way the Web API throws them. */
+  function slackError(code: string) {
+    return Object.assign(new Error(`An API error occurred: ${code}`), { data: { ok: false, error: code } });
+  }
+
+  it('rejoins a public channel it was dropped from, then renames it', async () => {
+    const service = new SlackService();
+    const rename = jest
+      .fn()
+      .mockRejectedValueOnce(slackError('not_in_channel'))
+      .mockResolvedValueOnce({ channel: { id: 'C1', name: 'pro-think-tank' } });
+    const join = jest.fn().mockResolvedValue({ ok: true });
+    (service as any).client = { conversations: { rename, join } };
+
+    const got = await service.renameChannel('C1', 'pro-think-tank');
+
+    expect(got).toBe('pro-think-tank');
+    expect(join).toHaveBeenCalledWith({ channel: 'C1' });
+    expect(rename).toHaveBeenCalledTimes(2);
+  });
+
+  // A private channel cannot be self-joined — the bot has to be invited —
+  // so that stays a refusal rather than a retry loop.
+  it('gives up when it still cannot rename after trying to rejoin', async () => {
+    const service = new SlackService();
+    const rename = jest.fn().mockRejectedValue(slackError('not_in_channel'));
+    const join = jest.fn().mockRejectedValue(slackError('method_not_supported_for_channel_type'));
+    (service as any).client = { conversations: { rename, join } };
+
+    expect(await service.renameChannel('C1', 'pro-secret')).toBeNull();
+  });
+
+  it('does not try to rejoin for an unrelated refusal', async () => {
+    const service = new SlackService();
+    const rename = jest.fn().mockRejectedValue(slackError('name_taken'));
+    const join = jest.fn();
+    (service as any).client = { conversations: { rename, join } };
+
+    expect(await service.renameChannel('C1', 'pro-taken')).toBeNull();
+    expect(join).not.toHaveBeenCalled();
+  });
+});

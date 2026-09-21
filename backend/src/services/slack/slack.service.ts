@@ -1660,6 +1660,26 @@ export class SlackService extends EventEmitter {
       return SlackService.toChannelInfo(res.channel)?.name ?? name;
     } catch (error) {
       const code = SlackService.slackErrorCode(error);
+      // Renaming needs membership, and the bot is not always in a channel it
+      // made: re-installing the app drops it out of every one of them, so
+      // after a reinstall thirteen team channels answered `not_in_channel`
+      // (owner, 2026-09-21). A public channel it may rejoin by itself; a
+      // private one has to be invited, so that case stays a refusal.
+      if (code === 'not_in_channel') {
+        try {
+          await this.joinChannel(channelId);
+          const res = await conversations.rename({ channel: channelId, name });
+          this.logger.info('Rejoined a channel to rename it', { channelId, name });
+          return SlackService.toChannelInfo(res.channel)?.name ?? name;
+        } catch (retryError) {
+          this.logger.warn('Could not rename the Slack channel after rejoining', {
+            channelId,
+            name,
+            code: SlackService.slackErrorCode(retryError),
+          });
+          return null;
+        }
+      }
       this.logger.warn('Could not rename the Slack channel', { channelId, name, code });
       return null;
     }
