@@ -527,6 +527,61 @@ describe('ensureTeamChannel', () => {
     expect(slack.created).toEqual(['crew-alpha-team']);
   });
 
+  // Saving a prefix used to change the setting and nothing else. The
+  // channels did follow it eventually — any team save runs syncChannelName —
+  // so an active team renamed within minutes and an idle one kept the old
+  // name indefinitely, with nothing to tell the two apart (owner,
+  // 2026-09-21).
+  it('renames the channels it already made when the prefix changes', async () => {
+    storage.teams = [team({ id: 't1', name: 'Alpha Team' }), team({ id: 't2', name: 'Beta Team' })];
+    await service.ensureTeamChannel(storage.teams[0]);
+    await service.ensureTeamChannel(storage.teams[1]);
+    slack.renamed = [];
+
+    await service.updateSettings({ channelPrefix: 'mbp-' });
+
+    expect(slack.renamed.map((r) => r.name)).toEqual(['mbp-alpha-team', 'mbp-beta-team']);
+  });
+
+  it('does not touch the channels when the prefix was re-saved unchanged', async () => {
+    storage.teams = [team({ id: 't1', name: 'Alpha Team' })];
+    await service.updateSettings({ channelPrefix: 'mbp-' });
+    await service.ensureTeamChannel(storage.teams[0]);
+    slack.renamed = [];
+
+    await service.updateSettings({ channelPrefix: 'mbp-' });
+    await service.updateSettings({ autoCreate: true });
+
+    expect(slack.renamed).toEqual([]);
+  });
+
+  // syncChannelName leaves a hand-renamed channel alone; the sweep must not
+  // become a way around that.
+  it('leaves a channel the owner renamed by hand', async () => {
+    storage.teams = [team({ id: 't1', name: 'Alpha Team' })];
+    const created = await service.ensureTeamChannel(storage.teams[0]);
+    slack.channels.get(created!.slackChannelId)!.name = 'owner-picked-this';
+    slack.renamed = [];
+
+    await service.updateSettings({ channelPrefix: 'mbp-' });
+
+    expect(slack.renamed).toEqual([]);
+  });
+
+  it('carries on past a channel Slack refuses to rename', async () => {
+    storage.teams = [team({ id: 't1', name: 'Alpha Team' }), team({ id: 't2', name: 'Beta Team' })];
+    await service.ensureTeamChannel(storage.teams[0]);
+    await service.ensureTeamChannel(storage.teams[1]);
+    slack.renamed = [];
+    slack.renameFails = true;
+
+    await service.updateSettings({ channelPrefix: 'mbp-' });
+
+    // Both were attempted even though neither took: one channel Slack
+    // refuses must not strand the rest on the old prefix.
+    expect(slack.renamed.map((r) => r.name)).toEqual(['mbp-alpha-team', 'mbp-beta-team']);
+  });
+
   it('serialises concurrent ensures for the same team into one channel', async () => {
     const [a, b] = await Promise.all([service.ensureTeamChannel(team()), service.ensureTeamChannel(team())]);
     expect(a.slackChannelId).toBe(b.slackChannelId);

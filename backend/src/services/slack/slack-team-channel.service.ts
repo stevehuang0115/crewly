@@ -439,9 +439,53 @@ export class SlackTeamChannelService {
   async updateSettings(patch: Partial<SlackTeamChannelSettings>): Promise<SlackTeamChannelSettings> {
     const s = await this.load();
     if (typeof patch.autoCreate === 'boolean') s.autoCreate = patch.autoCreate;
+    const before = s.channelPrefix;
     if (typeof patch.channelPrefix === 'string') s.channelPrefix = patch.channelPrefix.trim();
+    const prefixChanged = s.channelPrefix !== before;
     await this.save();
+    // Changing the prefix is a request to rename, not just a note for the
+    // next channel. The existing channels did follow it eventually, because
+    // any team save runs syncChannelName — but that meant an active team
+    // renamed within minutes and an idle one sat on the old name
+    // indefinitely, with nothing to say which was happening (owner,
+    // 2026-09-21).
+    if (prefixChanged) await this.applyPrefixToExistingChannels();
     return this.getSettings();
+  }
+
+  /**
+   * Rename every auto-created channel to match the current prefix.
+   *
+   * Each one goes through {@link syncChannelName}, so the protections hold:
+   * a channel Crewly did not create is left alone, and so is one the owner
+   * has renamed by hand. A failure on one channel does not stop the rest —
+   * a half-renamed workspace is still better than stopping at the first
+   * channel Slack refuses.
+   *
+   * @returns The channels renamed, old name → new name
+   */
+  async applyPrefixToExistingChannels(): Promise<Array<{ teamId: string; from: string; to: string }>> {
+    const renamed: Array<{ teamId: string; from: string; to: string }> = [];
+    const teams = await this.deps.storage.getTeams();
+    for (const team of teams) {
+      const mapping = this.findByTeamId(team.id);
+      if (!mapping) continue;
+      const from = mapping.derivedName ?? mapping.slackChannelName;
+      try {
+        const to = await this.syncChannelName(team, mapping);
+        if (to) renamed.push({ teamId: team.id, from, to });
+      } catch (error) {
+        this.logger.warn('Could not rename a team channel for the new prefix', {
+          teamId: team.id,
+          channel: from,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    if (renamed.length > 0) {
+      this.logger.info('Team channels renamed for the new prefix', { count: renamed.length });
+    }
+    return renamed;
   }
 
   /**
