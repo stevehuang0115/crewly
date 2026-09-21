@@ -51,6 +51,8 @@ export interface RegistryDeviceIdentity {
 /** The slice of CloudSyncService this service needs. */
 export interface RegistryCloudSync {
   getQueueId(): string | null;
+  /** Why the relay refused the queue, when it did. */
+  getQueueError?(): string | null;
 }
 
 /** The slice of StorageService this service needs. */
@@ -480,6 +482,22 @@ export class SlackInstanceRegistryService {
   /** @returns Last Cloud failure, if the most recent call failed */
   getLastError(): string | null {
     return this.lastError;
+  }
+
+  /**
+   * The relay queue this instance polls, and why it has none.
+   *
+   * Without a queue id the heartbeat is skipped silently, Cloud marks the
+   * instance stale, and every inbound Slack event is queued instead of
+   * delivered — while the machine reports no error at all (2026-09-21).
+   *
+   * @returns The queue id and the last registration failure
+   */
+  getRelayQueue(): { queueId: string | null; error: string | null } {
+    return {
+      queueId: this.deps.sync.getQueueId(),
+      error: this.deps.sync.getQueueError?.() ?? null,
+    };
   }
 
   /**

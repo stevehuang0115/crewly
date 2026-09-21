@@ -16,6 +16,10 @@
  */
 
 import { EventEmitter } from 'events';
+import { promises as fsp } from 'fs';
+import { homedir } from 'os';
+import { dirname, join } from 'path';
+import { randomUUID } from 'crypto';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
@@ -111,6 +115,9 @@ async function gatherTeamSummaries(): Promise<SyncTeamSummary[]> {
  * sync.on('devices_updated', (devices) => console.log('Devices:', devices));
  * ```
  */
+/** The relay refused a queue id because it belongs to another account. */
+class QueueForbiddenError extends Error {}
+
 export class CloudSyncService extends EventEmitter {
   private static instance: CloudSyncService | null = null;
   private readonly logger: ComponentLogger;
@@ -147,6 +154,8 @@ export class CloudSyncService extends EventEmitter {
   private errorRecoveryAttempts = 0;
   /** Our assigned queue ID from Cloud relay queue registration (for message polling) */
   private queueId: string | null = null;
+  /** Why the last queue registration failed, for /cloud/status. */
+  private queueError: string | null = null;
 
   /**
    * Recently processed message IDs to prevent re-delivery when ackMessages fails.
@@ -220,8 +229,12 @@ export class CloudSyncService extends EventEmitter {
     // This gets us a queueId used for message polling and makes us
     // discoverable by peer devices with the same pairing code.
     this.registerQueue().catch((err) => {
-      this.logger.warn('Queue registration failed (non-fatal, messaging may not work)', {
-        error: err instanceof Error ? err.message : String(err),
+      this.queueError = err instanceof Error ? err.message : String(err);
+      // Not "may not work": without a queue id the Slack instance heartbeat
+      // is skipped, so Cloud marks this machine stale and every inbound
+      // Slack event is queued instead of delivered (2026-09-21).
+      this.logger.error('Queue registration failed — this machine will not receive Cloud or Slack messages', {
+        error: this.queueError,
       });
     });
 
@@ -460,8 +473,6 @@ export class CloudSyncService extends EventEmitter {
   private async registerQueue(): Promise<void> {
     if (!this.config) return;
 
-    const url = `${this.config.cloudUrl}/api/v1/relay/queue/register`;
-
     // Derive deterministic pairing code from JWT user ID
     const pairingCode = await this.derivePairingCode();
     if (!pairingCode) {
@@ -469,11 +480,44 @@ export class CloudSyncService extends EventEmitter {
       return;
     }
 
+    // The relay uses deviceId as the queue id, and refuses to hand a queue to
+    // a different account than the one that created it — correct, but it
+    // strands a machine whose owner signs in under another account: the
+    // queue id is the machine's, and the 403 repeats on every boot. One
+    // MacBook sat deaf to Slack for two hours this way (2026-09-21). Keep
+    // asking for our own id first, and on a 403 take a fresh queue instead
+    // (persisted, so we do not mint one per restart and eat the quota).
+    const own = await this.readFallbackQueueId();
+    const first = own ?? this.config.deviceId;
+    try {
+      await this.registerQueueAs(first, pairingCode);
+      return;
+    } catch (err) {
+      if (!(err instanceof QueueForbiddenError) || own) throw err;
+      this.logger.warn('Relay refused our device-id queue (it belongs to another account) — taking a fresh one', {
+        deviceId: this.config.deviceId,
+      });
+    }
+    const fresh = randomUUID();
+    await this.registerQueueAs(fresh, pairingCode);
+    await this.writeFallbackQueueId(fresh);
+  }
+
+  /**
+   * One registration attempt against a specific queue id.
+   *
+   * @param queueId - The id to claim
+   * @param pairingCode - Deterministic code derived from the signed-in user
+   * @throws {QueueForbiddenError} When the relay says the queue is someone else's
+   */
+  private async registerQueueAs(queueId: string, pairingCode: string): Promise<void> {
+    if (!this.config) return;
+    const url = `${this.config.cloudUrl}/api/v1/relay/queue/register`;
     const response = await fetch(url, {
       method: 'POST',
       headers: this.authHeaders(),
       body: JSON.stringify({
-        deviceId: this.config.deviceId,
+        deviceId: queueId,
         deviceName: this.config.deviceName,
         role: 'orchestrator',
         pairingCode,
@@ -483,16 +527,57 @@ export class CloudSyncService extends EventEmitter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '');
-      throw new Error(`Queue registration failed: ${response.status} ${errorText}`);
+      const message = `Queue registration failed: ${response.status} ${errorText}`;
+      if (response.status === 403) throw new QueueForbiddenError(message);
+      throw new Error(message);
     }
 
     const data = await response.json() as { success: boolean; queueId?: string; peerQueueId?: string | null };
 
     if (data.queueId) {
       this.queueId = data.queueId;
+      this.queueError = null;
       this.logger.info('Registered with Cloud message queue', {
         queueId: this.queueId,
         peerQueueId: data.peerQueueId ?? 'none (waiting for peer)',
+      });
+    }
+  }
+
+  /** Where a queue id taken after a 403 is remembered. */
+  private fallbackQueueFile(): string {
+    return join(process.env['CREWLY_HOME'] ?? join(homedir(), '.crewly'), 'cloud', 'relay-queue.json');
+  }
+
+  /**
+   * The queue id this machine fell back to previously, if any.
+   *
+   * @returns The stored id, or null when we have never needed one
+   */
+  private async readFallbackQueueId(): Promise<string | null> {
+    try {
+      const raw = await fsp.readFile(this.fallbackQueueFile(), 'utf-8');
+      const id = (JSON.parse(raw) as { queueId?: unknown }).queueId;
+      return typeof id === 'string' && id ? id : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Remember a queue id so later boots reuse it rather than minting one each
+   * time — the relay caps queues per user.
+   *
+   * @param queueId - The id that was accepted
+   */
+  private async writeFallbackQueueId(queueId: string): Promise<void> {
+    const file = this.fallbackQueueFile();
+    try {
+      await fsp.mkdir(dirname(file), { recursive: true });
+      await fsp.writeFile(file, JSON.stringify({ queueId, takenAt: new Date().toISOString() }, null, 2), 'utf-8');
+    } catch (err) {
+      this.logger.warn('Could not persist the fallback queue id — a restart will take another', {
+        error: err instanceof Error ? err.message : String(err),
       });
     }
   }
@@ -524,6 +609,19 @@ export class CloudSyncService extends EventEmitter {
    */
   getQueueId(): string | null {
     return this.queueId;
+  }
+
+  /**
+   * Why the last queue registration failed, or null when it succeeded.
+   *
+   * Surfaced in Slack's `/cloud/status`: a missing queue id silently skips
+   * the Slack instance heartbeat, and that machine then looks healthy while
+   * receiving nothing.
+   *
+   * @returns The failure message, or null
+   */
+  getQueueError(): string | null {
+    return this.queueError;
   }
 
   // -------------------------------------------------------------------------

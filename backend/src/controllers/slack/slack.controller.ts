@@ -924,6 +924,10 @@ router.get('/cloud/status', async (req: Request, res: Response, next: NextFuncti
         instanceId: registry?.getInstanceId() ?? null,
         lastHeartbeatAt: registry?.getLastHeartbeatAt() ?? null,
         registryError: registry?.getLastError() ?? null,
+        // No queue id = the heartbeat is skipped, Cloud marks this instance
+        // stale and queues every inbound Slack event. That used to leave no
+        // trace anywhere in this payload (2026-09-21).
+        relayQueue: registry?.getRelayQueue() ?? { queueId: null, error: null },
         pendingInstalls: registry?.getPendingInstalls() ?? [],
         availableWorkspaces: configService.getAvailableWorkspaces(),
         workspaces,

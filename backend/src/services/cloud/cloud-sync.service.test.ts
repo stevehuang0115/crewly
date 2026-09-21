@@ -56,6 +56,10 @@ global.fetch = mockFetch;
 // Helpers
 // ---------------------------------------------------------------------------
 
+import * as os from 'os';
+import * as path from 'path';
+import { promises as fsp } from 'fs';
+
 const CLOUD_URL = 'https://api.crewlyai.com';
 const TOKEN = 'test-jwt-token';
 const DEVICE_ID = 'dev-local-123';
@@ -564,6 +568,103 @@ describe('CloudSyncService', () => {
       );
       expect(registerCall).toBeUndefined();
       expect(service.getQueueId()).toBeNull();
+    });
+  });
+
+  // A machine whose owner signs in under a second Crewly account keeps
+  // asking for a queue named after its deviceId, which the relay still
+  // attributes to the first account. The 403 repeats on every boot, the
+  // Slack heartbeat is skipped for want of a queue id, and Cloud marks the
+  // instance stale — one MacBook sat deaf to Slack for two hours
+  // (owner's MacBook Air, 2026-09-21).
+  describe('registerQueue — the relay refuses our device-id queue', () => {
+    const CREWLY_HOME = path.join(os.tmpdir(), `cloud-sync-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const queueFile = path.join(CREWLY_HOME, 'cloud', 'relay-queue.json');
+
+    beforeEach(() => { process.env['CREWLY_HOME'] = CREWLY_HOME; });
+    afterEach(async () => {
+      delete process.env['CREWLY_HOME'];
+      await fsp.rm(CREWLY_HOME, { recursive: true, force: true });
+    });
+
+    const registerCalls = () => mockFetch.mock.calls.filter(
+      ([url]) => typeof url === 'string' && url.includes('/queue/register'),
+    );
+    /**
+     * Registration reads and writes the fallback file, so it settles over
+     * several turns of the microtask queue — more than one flush.
+     *
+     * @param n - How many register calls to wait for
+     */
+    const untilRegisterCalls = async (n: number): Promise<void> => {
+      for (let i = 0; i < 50 && registerCalls().length < n; i++) await flushPromises();
+    };
+    const claimedId = (i: number) =>
+      JSON.parse(String((registerCalls()[i]?.[1] as { body: string }).body)).deviceId as string;
+
+    it('takes a fresh queue id after a 403 and remembers it', async () => {
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      // Route by URL, not call order: start() also fires a heartbeat and a
+      // device poll, and either can land before registration.
+      let attempt = 0;
+      mockFetch.mockImplementation(async (url) => {
+        if (typeof url === 'string' && url.includes('/queue/register')) {
+          attempt += 1;
+          return attempt === 1
+            ? mockResponse({ success: false, error: 'Not authorized to access this queue' }, 403)
+            : mockResponse({ success: true, queueId: 'q-fresh', peerQueueId: null });
+        }
+        return mockResponse({ success: true });
+      });
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(2);
+
+      expect(claimedId(0)).toBe(DEVICE_ID);          // asked for its own first
+      expect(claimedId(1)).not.toBe(DEVICE_ID);      // then took a new one
+      expect(service.getQueueId()).toBe('q-fresh');
+      expect(service.getQueueError()).toBeNull();
+      for (let i = 0; i < 50; i++) {
+        if (await fsp.stat(queueFile).then(() => true, () => false)) break;
+        await flushPromises();
+      }
+      expect(JSON.parse(await fsp.readFile(queueFile, 'utf-8')).queueId).toBe(claimedId(1));
+    });
+
+    it('reuses the remembered id on the next boot rather than minting another', async () => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      mockFetch.mockImplementation(async (url) =>
+        typeof url === 'string' && url.includes('/queue/register')
+          ? mockResponse({ success: true, queueId: 'q-remembered', peerQueueId: null })
+          : mockResponse({ success: true }),
+      );
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(1);
+      await flushPromises();
+
+      expect(registerCalls()).toHaveLength(1);
+      expect(claimedId(0)).toBe('q-remembered');
+    });
+
+    it('does not retry a non-403 failure, and records why', async () => {
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      mockFetch.mockImplementation(async (url) =>
+        typeof url === 'string' && url.includes('/queue/register')
+          ? mockResponse({ error: 'Internal' }, 500)
+          : mockResponse({ success: true }),
+      );
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(1);
+      await flushPromises();
+
+      // A 500 is not a wrong-owner answer, so there is nothing to retry.
+      expect(registerCalls()).toHaveLength(1);
+      expect(service.getQueueId()).toBeNull();
+      expect(service.getQueueError()).toContain('500');
     });
   });
 
