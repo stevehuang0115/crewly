@@ -151,12 +151,27 @@ export class SlackInstanceRegistryService {
     this.started = true;
     this.unsubscribeStorage = this.deps.storage.onStorageEvent((event) => this.handleStorageEvent(event));
     const setI = this.deps.setInterval ?? setInterval;
-    this.heartbeatTimer = setI(() => {
-      void this.heartbeat();
-    }, SLACK_CLOUD_CONSTANTS.REGISTRY_HEARTBEAT_INTERVAL_MS);
+    this.heartbeatTimer = setI(() => this.tick(), SLACK_CLOUD_CONSTANTS.REGISTRY_HEARTBEAT_INTERVAL_MS);
     (this.heartbeatTimer as { unref?: () => void }).unref?.();
     await this.heartbeat();
     await this.syncAgents();
+  }
+
+  /**
+   * One scheduled round: heartbeat, and the roster sync until it lands.
+   *
+   * Boot races Cloud. `syncAgents` gives up silently when Cloud is not
+   * connected yet, and nothing else ever calls it — a team save does, but a
+   * machine whose teams are quiet never gets one. An instance sat for half
+   * an hour with a healthy heartbeat, no error, and an agent app Cloud had
+   * never been asked to create (owner's MacBook Air, 2026-09-21). The
+   * heartbeat already retried on this timer; the sync now rides along.
+   *
+   * @returns When the round is done
+   */
+  private async tick(): Promise<void> {
+    await this.heartbeat();
+    if (!this.syncedOnce) await this.syncAgents();
   }
 
   /** Undo {@link start}. */
@@ -192,6 +207,11 @@ export class SlackInstanceRegistryService {
     }
     this.scheduleHeartbeat();
   }
+
+  /** Whether a roster sync has reached Cloud since start; see the heartbeat timer. */
+  private syncedOnce = false;
+  /** So the "Cloud not connected yet" note is logged once, not every tick. */
+  private warnedUnavailable = false;
 
   private agentSyncTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -319,7 +339,15 @@ export class SlackInstanceRegistryService {
    * @returns Cloud's answer, or null when skipped / failed
    */
   async syncAgents(): Promise<SlackAgentsSyncResult | null> {
-    if (!this.isAvailable()) return null;
+    if (!this.isAvailable()) {
+      // Said out loud, once: the silence is what made the lost boot sync so
+      // hard to see — a healthy instance with no error and no roster.
+      if (!this.warnedUnavailable) {
+        this.warnedUnavailable = true;
+        this.logger.info('Agent sync skipped: Cloud not connected yet — retrying on the next heartbeat');
+      }
+      return null;
+    }
     try {
       const teams = await this.deps.storage.getTeams();
       // The orchestrator is named after this machine, so two machines in one
@@ -352,6 +380,7 @@ export class SlackInstanceRegistryService {
       const slackTeamId = this.deps.getBoundWorkspaceId?.() ?? (await this.getWorkspaceId());
       if (slackTeamId) payload.slackTeamId = slackTeamId;
       const result = await this.cloudRequest<SlackAgentsSyncResult>('POST', SLACK_CLOUD_CONSTANTS.AGENTS_SYNC_PATH, payload);
+      this.syncedOnce = true;
       this.pendingInstalls = Array.isArray(result?.installUrls)
         ? result.installUrls.filter((u) => u && typeof u.agentSession === 'string' && typeof u.url === 'string')
         : [];

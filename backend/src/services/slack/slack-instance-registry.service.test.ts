@@ -66,7 +66,7 @@ let env: NodeJS.ProcessEnv;
 let teams: Team[];
 let queueId: string | null;
 let storageListeners: Array<(event: StorageEvent) => Promise<void> | void>;
-let intervals: Array<{ fn: () => void; ms: number }>;
+let intervals: Array<{ fn: () => void | Promise<void>; ms: number }>;
 let timeouts: Array<{ fn: () => void; ms: number }>;
 let mappings: Record<string, string>;
 let boundWorkspaceId: string | null = null;
@@ -278,6 +278,38 @@ describe('agent sync', () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
     await makeService().syncAgents();
     expect(JSON.parse(fetchMock.mock.calls[0][1].body).teams[0].agents.map((a: { agentSession: string }) => a.agentSession)).toEqual(['alpha-kai-1234', 'alpha-mia-1234']);
+  });
+
+  // Boot races Cloud: syncAgents gives up silently when Cloud is not
+  // connected yet, and the only other caller is a team save — which a
+  // machine with quiet teams never gets. One instance sat for half an hour
+  // with a healthy heartbeat, no error, and an agent app Cloud had never
+  // been asked to create (owner's MacBook Air, 2026-09-21).
+  it('retries the roster sync on the heartbeat when Cloud was not up at boot', async () => {
+    cloud.connected = false;
+    const service = makeService();
+    await service.start();
+    // Nothing reached Cloud: the boot sync found it unavailable.
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    cloud.connected = true;
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
+    await intervals[0].fn();
+
+    const posted = calls().filter((c) => c.method === 'POST' && c.url.includes('/agents/sync'));
+    expect(posted).toHaveLength(1);
+  });
+
+  it('does not keep re-syncing once one has landed', async () => {
+    const service = makeService();
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
+    await service.start();
+    fetchMock.mockClear();
+
+    await intervals[0].fn();
+
+    // Heartbeat only — the roster already reached Cloud at boot.
+    expect(calls().filter((c) => c.url.includes('/agents/sync'))).toHaveLength(0);
   });
 
   it('a deleted team loses its agents\' Slack apps (DELETE per session from the last synced roster)', async () => {
