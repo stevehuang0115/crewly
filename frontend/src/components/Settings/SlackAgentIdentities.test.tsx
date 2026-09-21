@@ -7,7 +7,7 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { SlackAgentIdentities, buildTeamLookup } from './SlackAgentIdentities';
+import { SlackAgentIdentities, buildTeamLookup, isOrchestratorGroup } from './SlackAgentIdentities';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch;
@@ -179,5 +179,28 @@ describe('buildTeamLookup', () => {
     ]);
     expect(map['think-tank-atlas-b4e166f6']?.teamName).toBe('Think Tank');
     expect(map['think-tank-sage-2ffacc8f']).toEqual({ teamName: 'Think Tank', memberName: 'Sage' });
+  });
+});
+
+
+/**
+ * The orchestrator is the one bot the owner talks to directly, and it
+ * arrives last in the sync payload — so it rendered at the bottom of a list
+ * thirty agents long, below every team (owner, 2026-09-21).
+ */
+describe('isOrchestratorGroup', () => {
+  it('spots the orchestrator by session, not by the team name', () => {
+    expect(isOrchestratorGroup([{ agentSession: 'crewly-orc' }])).toBe(true);
+    // The display name is qualified by machine once a second one appears,
+    // so matching on it would break exactly when two machines exist.
+    expect(isOrchestratorGroup([{ agentSession: 'marketing-ella-1234' }])).toBe(false);
+  });
+
+  it('is false for an empty group', () => {
+    expect(isOrchestratorGroup([])).toBe(false);
+  });
+
+  it('spots it among other members', () => {
+    expect(isOrchestratorGroup([{ agentSession: 'a' }, { agentSession: 'crewly-orc' }])).toBe(true);
   });
 });

@@ -17,6 +17,7 @@ import { Button } from '../UI/Button';
 import { Card } from '../UI/Card';
 import { Alert } from '../UI/Alert';
 import { FormInput } from '../UI/Form';
+import { ORCHESTRATOR_SESSION } from '../../utils/team-chat.utils';
 
 /** One identity row as returned by the API (tokens never included). */
 export interface AgentIdentityRow {
@@ -102,6 +103,20 @@ export function buildTeamLookup(
     }
   }
   return map;
+}
+
+/**
+ * Whether a group is this machine's orchestrator.
+ *
+ * By session, not by the team's name: the name is display text (and is
+ * qualified by machine once a second one appears), while the session is the
+ * stable id Cloud keys the app on.
+ *
+ * @param members - The rows in one group
+ * @returns True when the orchestrator is among them
+ */
+export function isOrchestratorGroup(members: Array<{ agentSession: string }>): boolean {
+  return members.some((m) => m.agentSession === ORCHESTRATOR_SESSION);
 }
 
 export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pendingInstalls = [] }) => {
@@ -238,6 +253,13 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
     if (!groups.has(team)) groups.set(team, []);
     groups.get(team)!.push(row);
   }
+  // The orchestrator is the one bot the owner talks to directly, and it
+  // arrives last in the sync payload — so it landed at the bottom of a list
+  // thirty agents long (owner, 2026-09-21). Identified by session rather
+  // than by its team's name, which is display text and could change.
+  const orderedGroups = [...groups.entries()].sort(
+    ([, a], [, b]) => Number(isOrchestratorGroup(b)) - Number(isOrchestratorGroup(a)),
+  );
   const installedTotal = rows.filter((r) => r.status === 'installed').length;
 
   return (
@@ -354,12 +376,25 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
               <p className="text-xs text-text-secondary-dark">
                 {installedTotal} of {rows.length} agents installed. Installed agents join their team channel by themselves.
               </p>
-              {[...groups.entries()].map(([team, members]) => {
+              {orderedGroups.map(([team, members]) => {
                 const installed = members.filter((m) => m.status === 'installed').length;
+                const isOrc = isOrchestratorGroup(members);
                 return (
-                  <details key={team} open={installed < members.length} className="group">
+                  <details
+                    key={team}
+                    open={installed < members.length}
+                    className={isOrc ? 'group rounded-lg border border-primary/50 bg-primary/5 px-3' : 'group'}
+                    data-testid={isOrc ? 'slack-identity-group-orchestrator' : undefined}
+                  >
                     <summary className="cursor-pointer list-none flex items-center justify-between gap-3 py-2 border-b border-border-dark">
-                      <span className="text-sm font-medium">{team}</span>
+                      <span className="text-sm font-medium flex items-center gap-2">
+                        {team}
+                        {isOrc && (
+                          <span className="text-xs font-normal text-primary border border-primary/50 rounded px-1.5 py-0.5">
+                            talks to this machine
+                          </span>
+                        )}
+                      </span>
                       <span className={`text-xs ${installed === members.length ? 'text-green-400' : 'text-text-secondary-dark'}`}>
                         {installed === members.length ? 'all installed' : `${installed} / ${members.length} installed`}
                       </span>
