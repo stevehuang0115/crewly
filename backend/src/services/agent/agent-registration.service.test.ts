@@ -164,6 +164,8 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
 	})),
 }));
 
+import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
+
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
 		getInstance: jest.fn().mockReturnValue({
@@ -325,6 +327,69 @@ describe('AgentRegistrationService', () => {
 			expect(result.success).toBe(true);
 			expect(result.message).toBe('Agent registered successfully after full recreation');
 			expect(mockSessionHelper.killSession).toHaveBeenCalledWith('test-session');
+		});
+
+		it('Step 2 full recreation spawns the team-member session with the same identity env as the primary path (D1)', async () => {
+			mockRuntimeService.waitForRuntimeReady
+				.mockResolvedValueOnce(false) // Step 1 fails
+				.mockResolvedValueOnce(true);  // Step 2 succeeds
+			mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+			// The exit monitor is the real singleton here (not mocked in this file); spy on it.
+			const stopSpy = jest.spyOn(RuntimeExitMonitorService.getInstance(), 'stopMonitoring');
+
+			const result = await service.initializeAgentWithRegistration(
+				'test-session',
+				'developer',
+				'/test/path',
+				90000
+			);
+
+			expect(result.success).toBe(true);
+			expect(result.message).toBe('Agent registered successfully after full recreation');
+			// The recreated PTY carries the identity at spawn — this is the shell
+			// the agent actually runs in after Step 2, so an env-less spawn here
+			// means unattributed heartbeats and channel replies.
+			expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+				'test-session',
+				'/test/path',
+				expect.objectContaining({
+					env: expect.objectContaining({
+						CREWLY_SESSION_NAME: 'test-session',
+						CREWLY_ROLE: 'developer',
+						CREWLY_PROJECT_PATH: '/test/path',
+						CREWLY_API_URL: expect.stringMatching(/^http:\/\/localhost:\d+$/),
+					}),
+				})
+			);
+			// D2(a) applies to the Step-2 kill as well: monitor stopped before the kill.
+			expect(stopSpy).toHaveBeenCalledWith('test-session');
+			expect(stopSpy.mock.invocationCallOrder[0]).toBeLessThan(
+				mockSessionHelper.killSession.mock.invocationCallOrder[0]
+			);
+			stopSpy.mockRestore();
+		});
+
+		it('Step 2 full recreation spawns the orchestrator session with the identity env too (D1)', async () => {
+			mockRuntimeService.waitForRuntimeReady
+				.mockResolvedValueOnce(false)
+				.mockResolvedValueOnce(true);
+			mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+
+			const result = await service.initializeAgentWithRegistration(
+				'test-session',
+				'orchestrator',
+				'/test/path',
+				90000
+			);
+
+			expect(result.success).toBe(true);
+			expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+				'test-session',
+				'/test/path',
+				expect.objectContaining({
+					env: expect.objectContaining({ CREWLY_SESSION_NAME: 'test-session', CREWLY_ROLE: 'orchestrator' }),
+				})
+			);
 		});
 
 		it('should fail after all escalation attempts', async () => {
@@ -718,6 +783,31 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendCtrlC).not.toHaveBeenCalled();
 
 			expect(result.success).toBe(true);
+		});
+
+		it('stops the previous exit monitor BEFORE the forceRecreate kill, so a stale entry cannot judge the replacement PTY (D2a)', async () => {
+			mockSessionHelper.sessionExists
+				.mockReturnValueOnce(true)  // Initial check: session exists
+				.mockReturnValueOnce(true); // After kill, verify session created
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile.mockResolvedValue('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}');
+			// The exit monitor is the real singleton here (not mocked in this file); spy on it.
+			const stopSpy = jest.spyOn(RuntimeExitMonitorService.getInstance(), 'stopMonitoring');
+
+			const result = await service.createAgentSession({
+				sessionName: 'test-session',
+				role: 'developer',
+				forceRecreate: true,
+			});
+
+			expect(result.success).toBe(true);
+			expect(stopSpy).toHaveBeenCalledWith('test-session');
+			// Order matters: the stale entry polls by session NAME, so it has to be
+			// gone before the old PTY dies and the new one is spawned under that name.
+			const stopOrder = stopSpy.mock.invocationCallOrder[0];
+			const killOrder = mockSessionHelper.killSession.mock.invocationCallOrder[0];
+			expect(stopOrder).toBeLessThan(killOrder);
+			stopSpy.mockRestore();
 		});
 
 		it('should attempt recovery when forceRecreate is not set and session exists', async () => {
