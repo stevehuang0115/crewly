@@ -48,6 +48,11 @@ export interface SlackAgentIdentityServiceDeps {
   cloud: IdentityCloudClient;
   /** The Slack workspace this instance serves; config tokens are per workspace. */
   getWorkspaceId?: () => string | null;
+  /**
+   * This machine's Cloud instance id, so the orchestrator lookup picks
+   * *our* `crewly-orc@<instance>` and not another machine's.
+   */
+  getInstanceId?: () => string | null;
   storePath?: string;
   fetchImpl?: typeof fetch;
   now?: () => number;
@@ -341,10 +346,20 @@ export class SlackAgentIdentityService {
   private getOrchestratorRecord(agentSession: string): SlackAgentIdentityRecord | null {
     if (agentSession !== CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME) return null;
     const prefix = `${CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME}@`;
-    for (const r of this.store?.identities ?? []) {
-      if (r.agentSession.startsWith(prefix)) return r;
+    const orcs = (this.store?.identities ?? []).filter((r) => r.agentSession.startsWith(prefix));
+    if (orcs.length === 0) return null;
+
+    // The store holds the whole account's roster, so on a second machine it
+    // also carries the *other* machine's orchestrator. Taking the first
+    // match handed out that machine's bot token, and the reply went to an
+    // app that cannot see this DM — no reaction, no answer, no error
+    // (owner's MacBook Air, 2026-09-21).
+    const instanceId = this.deps.getInstanceId?.();
+    if (instanceId) {
+      return orcs.find((r) => r.agentSession === `${prefix}${instanceId}`) ?? null;
     }
-    return null;
+    // Instance id unknown: only safe when there is nothing to confuse it with.
+    return orcs.length === 1 ? (orcs[0] ?? null) : null;
   }
 
   /**

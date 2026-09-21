@@ -33,6 +33,7 @@ let cloud: { connected: boolean; token: string | null; url: string | null };
 let service: SlackAgentIdentityService;
 let intervals: Array<() => void>;
 let workspaceId: string | null = null;
+let instanceId: string | null = null;
 
 function makeService() {
   return new SlackAgentIdentityService({
@@ -42,6 +43,7 @@ function makeService() {
       getCloudUrl: () => cloud.url,
     },
     getWorkspaceId: () => workspaceId,
+    getInstanceId: () => instanceId,
     storePath: path.join(tmpDir, 'slack-agent-identities.json'),
     fetchImpl: fetchMock as unknown as typeof fetch,
     now: () => 1_800_000_000_000,
@@ -56,6 +58,7 @@ function makeService() {
 }
 
 beforeEach(async () => {
+  instanceId = null;
   tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-slack-id-'));
   fetchMock = jest.fn();
   cloud = { connected: true, token: 'jwt-1', url: 'https://api.crewlyai.com/' };
@@ -269,5 +272,67 @@ describe('applyCloudConfig (Slack v3 — identities delivered with the Cloud con
       ]),
     ).toBe(0);
     expect(await service.list()).toEqual([]);
+  });
+});
+
+describe('getInstalled for the orchestrator', () => {
+  const AIR = '2577fec0-d975-4c7b-95cc-7ba3c3c4964a';
+  const MAC = 'f4b6f0db-a047-4cd7-8405-cf4a06430fa4';
+
+  /**
+   * Load both machines' orchestrator apps, the other machine's first —
+   * the order Cloud returns them in, oldest created first.
+   *
+   * @returns The loaded service
+   */
+  async function withBothOrcs(): Promise<SlackAgentIdentityService> {
+    const svc = makeService();
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: [
+      { agentSession: `crewly-orc@${MAC}`, displayName: 'Crewly Orc (macbookpro.lan)', appId: 'A-MAC', status: 'installed', botUserId: 'U-MAC', botToken: 'xoxb-mac', teamId: 'T1' },
+      { agentSession: `crewly-orc@${AIR}`, displayName: 'Crewly Orc (iriss-air.lan)', appId: 'A-AIR', status: 'installed', botUserId: 'U-AIR', botToken: 'xoxb-air', teamId: 'T1' },
+    ] }));
+    await svc.refreshFromCloud();
+    return svc;
+  }
+
+  // The store holds the whole account's roster, so a second machine also
+  // carries the first machine's orchestrator. Taking the first `crewly-orc@`
+  // match handed out that machine's bot token; the reaction and the reply
+  // then went to an app that cannot see this DM, so the owner saw nothing
+  // at all and nothing was logged (owner's MacBook Air, 2026-09-21).
+  it('picks this machine\'s orchestrator, not the other machine\'s', async () => {
+    instanceId = AIR;
+    const svc = await withBothOrcs();
+    expect(svc.getInstalled('crewly-orc')).toEqual({ botUserId: 'U-AIR', botToken: 'xoxb-air' });
+  });
+
+  it('picks the other one when run from the other machine', async () => {
+    instanceId = MAC;
+    const svc = await withBothOrcs();
+    expect(svc.getInstalled('crewly-orc')).toEqual({ botUserId: 'U-MAC', botToken: 'xoxb-mac' });
+  });
+
+  // Better no bot than the wrong machine's: a caller that gets null logs
+  // "agent has no installed Slack bot", which is findable.
+  it('refuses to guess when the instance is unknown and two could match', async () => {
+    instanceId = null;
+    const svc = await withBothOrcs();
+    expect(svc.getInstalled('crewly-orc')).toBeNull();
+  });
+
+  it('still resolves with an unknown instance when only one orchestrator exists', async () => {
+    instanceId = null;
+    const svc = makeService();
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: [
+      { agentSession: `crewly-orc@${AIR}`, displayName: 'Crewly Orc (iriss-air.lan)', appId: 'A-AIR', status: 'installed', botUserId: 'U-AIR', botToken: 'xoxb-air', teamId: 'T1' },
+    ] }));
+    await svc.refreshFromCloud();
+    expect(svc.getInstalled('crewly-orc')).toEqual({ botUserId: 'U-AIR', botToken: 'xoxb-air' });
+  });
+
+  it('returns null when this machine has no orchestrator app in the roster', async () => {
+    instanceId = 'some-third-machine';
+    const svc = await withBothOrcs();
+    expect(svc.getInstalled('crewly-orc')).toBeNull();
   });
 });

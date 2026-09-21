@@ -670,6 +670,7 @@ export async function startSlackTeamChannels(): Promise<void> {
       identities = new SlackAgentIdentityService({
         cloud: CloudClientService.getInstance(),
         getWorkspaceId: () => getSlackCloudConfigService()?.getConfig()?.workspace.slackTeamId || null,
+        getInstanceId: () => getSlackInstanceRegistryService()?.getInstanceId() ?? null,
       });
       setSlackAgentIdentityService(identities);
     }
