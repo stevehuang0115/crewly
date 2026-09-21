@@ -453,6 +453,30 @@ describe('MessageStore', () => {
       expect(messages.threadParticipants(channelId, 'nope')).toEqual([]);
     });
 
+    // A bare follow-up addresses whoever just spoke. Requiring every engaged
+    // agent to answer let a second agent take a line meant for a colleague
+    // and act on it (2026-09-21, #daily-info).
+    it('lastThreadSpeaker is the agent that posted most recently, ignoring users and other threads', () => {
+      const root = messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: 'q' }).row;
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-b', content: 'a1', threadId: root.id });
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-c', content: 'a2', threadId: root.id });
+      // A later human turn must not change who spoke last.
+      messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: '那要不算了？', threadId: root.id });
+      // Nor must an agent posting in a different thread.
+      const other = messages.insert({ channelId, senderType: 'user', senderId: 'U1', content: 'unrelated' }).row;
+      messages.insert({ channelId, senderType: 'agent', senderId: 'sess-z', content: 'x', threadId: other.id });
+
+      expect(messages.lastThreadSpeaker(channelId, root.id)).toBe('sess-c');
+      // A thread no agent has spoken in, and an unknown root.
+      expect(messages.lastThreadSpeaker(channelId, other.id)).toBe('sess-z');
+      expect(messages.lastThreadSpeaker(channelId, 'nope')).toBeNull();
+    });
+
+    it('lastThreadSpeaker counts an agent that wrote the thread root', () => {
+      const root = messages.insert({ channelId, senderType: 'agent', senderId: 'sess-ella', content: '早报' }).row;
+      expect(messages.lastThreadSpeaker(channelId, root.id)).toBe('sess-ella');
+    });
+
     it('findLatestSlackRoot returns the newest Slack-origin root only', () => {
       insert(channelId, 'first', { slackThreadTs: '100.1' });
       const second = insert(channelId, 'second', { slackThreadTs: '200.1' });
