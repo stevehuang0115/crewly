@@ -56,6 +56,57 @@ describe('SubAgentMessageQueue', () => {
 		});
 	});
 
+	describe('flush', () => {
+		// `sendMessageToAgent` answers success:true when it only puts the
+		// message back, so both callers logged "Delivered" in the same
+		// millisecond as the re-queue. Reading the log then pointed at the
+		// agent when the message had never reached it (2026-09-21, Ella).
+		it('separates what landed from what went back on the queue', async () => {
+			queue.enqueue('ella', 'first');
+			queue.enqueue('ella', 'second');
+
+			const seen: string[] = [];
+			const outcome = await queue.flush('ella', async (data) => {
+				seen.push(data);
+				return data === 'second' ? { queued: true } : {};
+			});
+
+			expect(seen).toEqual(['first', 'second']);
+			expect(outcome).toEqual({ delivered: 1, deferred: 1, failed: 0 });
+		});
+
+		it('counts a throwing send as failed and still tries the rest', async () => {
+			queue.enqueue('ella', 'a');
+			queue.enqueue('ella', 'b');
+
+			const outcome = await queue.flush('ella', async (data) => {
+				if (data === 'a') throw new Error('pty gone');
+				return {};
+			});
+
+			expect(outcome).toEqual({ delivered: 1, deferred: 0, failed: 1 });
+		});
+
+		it('empties the queue, so a message re-queued during the flush survives it', async () => {
+			queue.enqueue('ella', 'first');
+
+			await queue.flush('ella', async () => {
+				// What sendMessageToAgent does when it finds the agent busy.
+				queue.enqueue('ella', 'second');
+				return { queued: true };
+			});
+
+			// The re-queued one is still there and is the only one left —
+			// that is what the next idle event must pick up.
+			expect(queue.getQueueSize('ella')).toBe(1);
+			expect(queue.dequeueAll('ella').map((m) => m.data)).toEqual(['second']);
+		});
+
+		it('is a no-op on an empty queue', async () => {
+			expect(await queue.flush('nobody', async () => ({}))).toEqual({ delivered: 0, deferred: 0, failed: 0 });
+		});
+	});
+
 	describe('enqueue', () => {
 		it('should add a message to the queue', () => {
 			queue.enqueue('test-session', 'hello');

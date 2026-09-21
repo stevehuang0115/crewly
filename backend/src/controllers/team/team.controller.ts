@@ -2447,27 +2447,19 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     const subAgentQueue = SubAgentMessageQueue.getInstance();
     if (subAgentQueue.hasPending(sessionName)) {
       const runtimeType = (freshTeam?.members.find(m => m.id === targetMemberId)?.runtimeType || RUNTIME_TYPES.CLAUDE_CODE) as RuntimeType;
-      const queuedMessages = subAgentQueue.dequeueAll(sessionName);
-      logger.info('Flushing queued messages', { count: queuedMessages.length, sessionName });
+      logger.info('Flushing queued messages', { count: subAgentQueue.getQueueSize(sessionName), sessionName });
 
-      // Deliver sequentially in the background
-      (async () => {
-        for (let i = 0; i < queuedMessages.length; i++) {
-          const queuedMsg = queuedMessages[i];
-          try {
-            await this.agentRegistrationService.sendMessageToAgent(sessionName, queuedMsg.data, runtimeType);
-            logger.info('Delivered queued message', { sessionName, queuedAt: new Date(queuedMsg.queuedAt).toISOString() });
-          } catch (flushError) {
-            logger.error('Failed to deliver queued message', { sessionName, error: flushError instanceof Error ? flushError.message : String(flushError) });
-          }
-          // Delay between messages to let the agent process each one
-          if (i < queuedMessages.length - 1) {
-            await new Promise(resolve => setTimeout(resolve, SUB_AGENT_QUEUE_CONSTANTS.FLUSH_INTER_MESSAGE_DELAY));
-          }
-        }
-      })().catch(err => {
-        logger.error('Queue flush failed', { sessionName, error: err instanceof Error ? err.message : String(err) });
-      });
+      // Fire-and-forget after the response; the shared loop reports which
+      // messages actually landed and which went back on the queue.
+      void subAgentQueue
+        .flush(
+          sessionName,
+          (data) => this.agentRegistrationService.sendMessageToAgent(sessionName, data, runtimeType),
+          SUB_AGENT_QUEUE_CONSTANTS.FLUSH_INTER_MESSAGE_DELAY,
+        )
+        .catch((err: unknown) => {
+          logger.error('Queue flush failed', { sessionName, error: err instanceof Error ? err.message : String(err) });
+        });
     }
   } catch (error) {
     logger.error('Error in registerMemberStatus', { error: error instanceof Error ? error.message : String(error) });

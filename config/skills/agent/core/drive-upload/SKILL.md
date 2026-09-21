@@ -4,15 +4,6 @@ description: Upload a local file or text to the owner's Google Drive (via the Go
 version: 1.0.0
 category: productivity
 skillType: claude-skill
-assignableRoles:
-  - orchestrator
-  - team-leader
-  - developer
-  - operations
-  - ops
-  - sales
-  - support
-  - generalist
 triggers:
   - upload to drive
   - save to google drive

@@ -4847,3 +4847,57 @@ describe('AgentRegistrationService', () => {
 		});
 	});
 });
+
+describe('AgentRegistrationService — a prompt on screen is not the end of a turn', () => {
+	// Claude Code paints a prompt while waiting on a tool or a long API
+	// call, so "already at prompt" let a message be written into a running
+	// turn; the agent absorbed it, went busy, then idle, and never
+	// answered. ActivityMonitor already knew — Pia was `in_progress` 1.2s
+	// before the write (2026-09-21, #pro-flopost). idle-detection refuses
+	// to suspend on this signal; delivery now refuses to write on it.
+	/** Call the private probe. */
+	const probe = (svc: AgentRegistrationService, session: string): Promise<boolean> =>
+		(svc as unknown as { isBusyByWorkingStatus(s: string): Promise<boolean> }).isBusyByWorkingStatus(session);
+
+	/** The probe touches no storage, so a bare stub is enough. */
+	const makeService = (): AgentRegistrationService =>
+		new AgentRegistrationService(null, '/test/project', { getTeams: async () => [] } as never);
+
+	afterEach(() => jest.restoreAllMocks());
+
+	it('reports busy only when the monitor positively says in_progress', async () => {
+		const svc = makeService();
+		const mod = await import('../monitoring/activity-monitor.service.js');
+		const statuses = ['in_progress', 'idle', undefined] as const;
+		const seen: boolean[] = [];
+		for (const status of statuses) {
+			jest.spyOn(mod.ActivityMonitorService, 'getInstance').mockReturnValue({
+				getWorkingStatusForSession: async () => status,
+			} as never);
+			seen.push(await probe(svc, 'flopost-pia'));
+		}
+		expect(seen).toEqual([true, false, false]);
+	});
+
+	// The monitor has hung before (2026-05-14). Delivery must not wedge
+	// behind it, and a timeout keeps the pre-existing behaviour.
+	it('does not wedge when the monitor never settles', async () => {
+		const svc = makeService();
+		const mod = await import('../monitoring/activity-monitor.service.js');
+		jest.spyOn(mod.ActivityMonitorService, 'getInstance').mockReturnValue({
+			getWorkingStatusForSession: () => new Promise(() => undefined),
+		} as never);
+
+		await expect(probe(svc, 'flopost-pia')).resolves.toBe(false);
+	}, 10_000);
+
+	it('treats a throwing monitor as not busy', async () => {
+		const svc = makeService();
+		const mod = await import('../monitoring/activity-monitor.service.js');
+		jest.spyOn(mod.ActivityMonitorService, 'getInstance').mockImplementation(() => {
+			throw new Error('monitor down');
+		});
+
+		await expect(probe(svc, 'flopost-pia')).resolves.toBe(false);
+	});
+});

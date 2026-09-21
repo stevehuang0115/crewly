@@ -4,15 +4,6 @@ description: "Read the content of a Google Drive file (via the Google Workspace 
 version: 1.0.0
 category: productivity
 skillType: claude-skill
-assignableRoles:
-  - orchestrator
-  - team-leader
-  - developer
-  - operations
-  - ops
-  - sales
-  - support
-  - generalist
 triggers:
   - read drive file
   - open file from drive
@@ -25,7 +16,7 @@ execution:
   script:
     file: execute.sh
     interpreter: bash
-    timeoutMs: 60000
+    timeoutMs: 600000
 ---
 
 # Drive Read

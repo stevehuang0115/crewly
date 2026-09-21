@@ -95,6 +95,8 @@ import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscrib
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
+import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
+import { SUB_AGENT_QUEUE_CONSTANTS } from './constants.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
@@ -1006,6 +1008,15 @@ void (async () => {
 						error: err instanceof Error ? err.message : String(err),
 					});
 				}
+
+				// #236 queued a message "for delivery when the agent becomes
+				// idle", but nothing ever drained on idle: the only flush ran
+				// inside registerMemberStatus, so a message re-queued *after*
+				// that flush waited for the next registration — in practice, a
+				// restart. The owner asked a second question while the agent
+				// was mid-answer and never got a reply; the message was still
+				// in the queue an hour later (2026-09-21, Ella).
+				setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
 
 				// V3: Auto-close open Requests when the orchestrator goes idle
 				// Handles direct responses (no WorkItem delegation)
@@ -3577,6 +3588,32 @@ void (async () => {
 	 *   - gemini-cli / codex-cli: reads from TokenUsageService (fed by PTY parser)
 	 *   - crewly-agent: reads from TokenUsageService (fed by SDK)
 	 */
+	/**
+	 * Deliver anything queued for an agent that has just gone idle.
+	 *
+	 * The queue is written whenever delivery finds the agent busy, but until
+	 * now the only reader ran inside `registerMemberStatus`. A message
+	 * re-queued after that flush therefore waited for the next registration,
+	 * which in practice meant a restart — the owner's second question sat in
+	 * the queue while the agent answered only the first (2026-09-21).
+	 *
+	 * Best-effort and self-limiting: a delivery that finds the agent busy
+	 * again re-queues, and the next idle event picks it up.
+	 *
+	 * @param sessionName - The agent that just went idle
+	 * @returns When every queued message has been attempted
+	 */
+	private async flushQueuedAgentMessages(sessionName: string): Promise<void> {
+		const queue = SubAgentMessageQueue.getInstance();
+		if (!queue.hasPending(sessionName)) return;
+		const outcome = await queue.flush(
+			sessionName,
+			(data) => this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, data),
+			SUB_AGENT_QUEUE_CONSTANTS.FLUSH_INTER_MESSAGE_DELAY,
+		);
+		this.logger.info('Agent went idle — drained its queued messages', { sessionName, ...outcome });
+	}
+
 	private autoCloseOpenRequests(): void {
 		setImmediate(async () => {
 			try {

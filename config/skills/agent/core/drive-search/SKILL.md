@@ -4,15 +4,6 @@ description: Search the owner's Google Drive by text, type or folder (via the Go
 version: 1.0.0
 category: productivity
 skillType: claude-skill
-assignableRoles:
-  - orchestrator
-  - team-leader
-  - developer
-  - operations
-  - ops
-  - sales
-  - support
-  - generalist
 triggers:
   - search drive
   - find file in drive

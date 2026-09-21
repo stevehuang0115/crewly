@@ -262,6 +262,14 @@ export const SESSION_COMMAND_DELAYS = {
 	MESSAGE_PROCESSING_DELAY: 500,
 	/** Max idle time (ms) to consider an agent busy. If PTY output occurred within this window, skip delivery. */
 	AGENT_BUSY_IDLE_THRESHOLD_MS: 5000,
+	/**
+	 * How long delivery waits on ActivityMonitor before assuming "not busy".
+	 *
+	 * `getWorkingStatusForSession` has hung before (2026-05-14); a message
+	 * must not wedge behind it, so the probe is bounded and a timeout keeps
+	 * the pre-existing behaviour.
+	 */
+	WORKING_STATUS_PROBE_TIMEOUT_MS: 2000,
 	/** Progressive re-check intervals for Claude Code delivery verification (ms).
 	 *  Total window: 500ms (processing delay) + 1000 + 2000 + 3000 = 6.5s */
 	CLAUDE_VERIFICATION_INTERVALS: [1000, 2000, 3000] as const,

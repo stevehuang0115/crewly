@@ -4197,8 +4197,15 @@ Loop until done, blocked, or explicitly reassigned:
 		}
 
 		// Quick check - already at prompt?
+		// A prompt on screen does not mean the turn is over: an agent waiting
+		// on a tool or a long API call shows one while still working, and a
+		// message written then is swallowed into that turn — the agent goes
+		// busy, then idle, and never answers. ActivityMonitor knew: Pia was
+		// `in_progress` 1.2s before the write (2026-09-21, #pro-flopost).
+		// idle-detection already refuses to suspend on this signal; delivery
+		// now refuses to write on it.
 		const currentOutput = sessionHelper.capturePane(sessionName);
-		if (this.isClaudeAtPrompt(currentOutput, runtimeType)) {
+		if (this.isClaudeAtPrompt(currentOutput, runtimeType) && !(await this.isBusyByWorkingStatus(sessionName))) {
 			this.logger.debug('Agent already at prompt', { sessionName });
 			return true;
 		}
@@ -4239,10 +4246,13 @@ Loop until done, blocked, or explicitly reassigned:
 				pollCount++;
 				const output = sessionHelper.capturePane(sessionName);
 				if (this.isClaudeAtPrompt(output, runtimeType)) {
-					const elapsedMs = Date.now() - waitStartMs;
-					this.logger.info('Agent ready after polling', { sessionName, pollCount, elapsedMs });
-					cleanup();
-					resolve(true);
+					void this.isBusyByWorkingStatus(sessionName).then((busy) => {
+						if (resolved || busy) return;
+						const elapsedMs = Date.now() - waitStartMs;
+						this.logger.info('Agent ready after polling', { sessionName, pollCount, elapsedMs });
+						cleanup();
+						resolve(true);
+					});
 				}
 			}, pollInterval);
 
@@ -4253,10 +4263,13 @@ Loop until done, blocked, or explicitly reassigned:
 				pollCount++;
 				const output = sessionHelper.capturePane(sessionName, EVENT_DELIVERY_CONSTANTS.DEEP_SCAN_LINES);
 				if (this.isClaudeAtPrompt(output, runtimeType)) {
-					const elapsedMs = Date.now() - waitStartMs;
-					this.logger.info('Agent ready after polling', { sessionName, pollCount, elapsedMs });
-					cleanup();
-					resolve(true);
+					void this.isBusyByWorkingStatus(sessionName).then((busy) => {
+						if (resolved || busy) return;
+						const elapsedMs = Date.now() - waitStartMs;
+						this.logger.info('Agent ready after polling', { sessionName, pollCount, elapsedMs });
+						cleanup();
+						resolve(true);
+					});
 				}
 			}, EVENT_DELIVERY_CONSTANTS.DEEP_SCAN_INTERVAL);
 
@@ -5554,6 +5567,39 @@ Loop until done, blocked, or explicitly reassigned:
 	 * @param runtimeType - The runtime type for pattern selection
 	 * @returns true if the agent appears to be at a prompt
 	 */
+	/**
+	 * Whether ActivityMonitor says this agent is mid-task.
+	 *
+	 * Used to qualify "at the prompt": Claude Code paints one while waiting
+	 * on a tool, and a message written then is absorbed into the running
+	 * turn and never answered. Only a positive answer is trusted — the
+	 * monitor polls on a 30s cadence, so `idle` may merely be stale, while
+	 * `in_progress` is a fact.
+	 *
+	 * Bounded: `getWorkingStatusForSession` has hung before (the 2026-05-14
+	 * incident), and delivery must not wedge behind it. A timeout answers
+	 * "not busy", which is the old behaviour.
+	 *
+	 * @param sessionName - The agent session
+	 * @returns True only when the monitor positively reports in_progress
+	 */
+	private async isBusyByWorkingStatus(sessionName: string): Promise<boolean> {
+		try {
+			const { ActivityMonitorService } = await import('../monitoring/activity-monitor.service.js');
+			const status = await Promise.race([
+				ActivityMonitorService.getInstance().getWorkingStatusForSession(sessionName),
+				new Promise<null>((r) => setTimeout(() => r(null), SESSION_COMMAND_DELAYS.WORKING_STATUS_PROBE_TIMEOUT_MS)),
+			]);
+			if (status === 'in_progress') {
+				this.logger.info('Agent shows a prompt but is still working — holding the message', { sessionName });
+				return true;
+			}
+			return false;
+		} catch {
+			return false;
+		}
+	}
+
 	private isClaudeAtPrompt(terminalOutput: string, runtimeType?: RuntimeType): boolean {
 		// Handle null/undefined/empty input — return false since an empty buffer
 		// may indicate a crashed session or one that hasn't started yet
