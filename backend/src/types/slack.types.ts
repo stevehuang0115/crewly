@@ -193,6 +193,8 @@ export interface SlackPendingInstall {
 /** Response of `POST /api/cloud/slack/agents/sync`. */
 export interface SlackAgentsSyncResult {
   installUrls: SlackPendingInstall[];
+  /** Per-agent failures; a non-empty list means the roster is only partly on Cloud. */
+  errors?: { agentSession: string; code: string; error: string }[];
 }
 
 /**

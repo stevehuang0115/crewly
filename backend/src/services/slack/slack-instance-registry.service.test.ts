@@ -314,6 +314,29 @@ describe('agent sync', () => {
     expect(calls().filter((c) => c.url.includes('/agents/sync'))).toHaveLength(0);
   });
 
+  // Slack rate-limits apps.manifest.create: a 17-agent roster came back with
+  // 10 created and 7 `ratelimited`, and because the HTTP call itself had
+  // succeeded the instance never tried again — two agents stayed off Cloud
+  // until a restart (owner's MacBook Air, 2026-09-20).
+  it('retries on the next heartbeat when Cloud reports per-agent failures', async () => {
+    const service = makeService();
+    fetchMock.mockResolvedValue(jsonResponse({
+      success: true,
+      data: { installUrls: [], errors: [{ agentSession: 'alpha-kai-1234', code: 'rate_limited', error: 'Slack could not create the app: ratelimited' }] },
+    }));
+    await service.start();
+    fetchMock.mockClear();
+
+    fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
+    await intervals[0].fn();
+    expect(calls().filter((c) => c.url.includes('/agents/sync'))).toHaveLength(1);
+
+    // The retry came back clean, so the one after it heartbeats only.
+    fetchMock.mockClear();
+    await intervals[0].fn();
+    expect(calls().filter((c) => c.url.includes('/agents/sync'))).toHaveLength(0);
+  });
+
   it('a deleted team loses its agents\' Slack apps (DELETE per session from the last synced roster)', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ success: true, data: { installUrls: [] } }));
     const service = makeService();

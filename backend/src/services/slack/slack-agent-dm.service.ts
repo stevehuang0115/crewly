@@ -91,10 +91,33 @@ interface AgentDmStore {
  * Routes Slack DMs addressed to an agent's bot into that agent's chat-v2 DM
  * channel and mirrors the agent's replies back.
  */
+/** How long after a post a similar one counts as a repeat. */
+const DM_REPEAT_WINDOW_MS = 30_000;
+
+/**
+ * Shortest text the containment rule applies to.
+ *
+ * Without it a genuine "ok" would be swallowed whenever it appeared inside
+ * the previous reply.
+ */
+const DM_REPEAT_MIN_CHARS = 40;
+
+/**
+ * Text reduced to what a repeat comparison should care about.
+ *
+ * @param text - Message text
+ * @returns Whitespace-collapsed, trimmed text
+ */
+function normaliseForRepeat(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
 export class SlackAgentDmService {
   private readonly logger: ComponentLogger;
   private readonly storePath: string;
   private store: AgentDmStore = { links: {} };
+  /** What was last posted on each DM, so a repeat is not posted twice. */
+  private readonly lastSent = new Map<string, { text: string; at: number }>();
   private loaded = false;
   private started = false;
 
@@ -170,6 +193,9 @@ export class SlackAgentDmService {
       updatedAt: this.now().toISOString(),
     };
     this.store.links[channel.id] = link;
+    // A new question reopens the DM: the next reply is an answer to it, not a
+    // repeat of the previous one, however similar the two happen to read.
+    this.lastSent.delete(message.channelId);
     await this.persist();
 
     const senderId = message.user?.realName || message.user?.name || message.userId || 'slack-user';
@@ -240,6 +266,42 @@ export class SlackAgentDmService {
   // -------------------------------------------------------------------------
 
   /**
+   * Whether this text repeats what was just sent on the same DM.
+   *
+   * Containment, not equality: the duplicate that prompted this was the
+   * same answer with a line of self-report in front of it, so an exact
+   * match would have let it through. The minimum length keeps a genuine
+   * short reply ("ok", "done") from being swallowed because it happens to
+   * appear inside a longer one.
+   *
+   * @param slackChannelId - The DM
+   * @param text - What is about to be sent
+   * @returns True when it should not be sent
+   */
+  private isRepeatOfLastSent(slackChannelId: string, text: string): boolean {
+    const previous = this.lastSent.get(slackChannelId);
+    if (!previous) return false;
+    if (this.now().getTime() - previous.at > DM_REPEAT_WINDOW_MS) return false;
+    const a = normaliseForRepeat(previous.text);
+    const b = normaliseForRepeat(text);
+    if (!a || !b) return false;
+    if (a === b) return true;
+    const [shorter, longer] = a.length <= b.length ? [a, b] : [b, a];
+    if (shorter.length < DM_REPEAT_MIN_CHARS) return false;
+    return longer.includes(shorter);
+  }
+
+  /**
+   * Record what was sent, for {@link isRepeatOfLastSent}.
+   *
+   * @param slackChannelId - The DM
+   * @param text - What was sent
+   */
+  private rememberSent(slackChannelId: string, text: string): void {
+    this.lastSent.set(slackChannelId, { text, at: this.now().getTime() });
+  }
+
+  /**
    * Post an agent's reply on a linked DM channel back into the Slack DM,
    * under the agent's own bot. Ignores anything that is not an agent
    * message on a linked channel.
@@ -263,6 +325,20 @@ export class SlackAgentDmService {
       }
       const key = { agentSession: link.agentSession, slackChannelId: link.slackChannelId, ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}) };
       const text = toSlackMrkdwn(dto.content);
+      // An agent that both posts its answer with a tool and returns the same
+      // answer as its turn text produces two chat turns, and both are agent
+      // messages on the same DM — so the owner saw the reply twice, the
+      // second prefixed with the agent reporting that it had replied
+      // (2026-09-20). Suppressed here rather than in a prompt: this holds
+      // whatever the model does.
+      if (this.isRepeatOfLastSent(link.slackChannelId, text)) {
+        this.logger.info('DM reply suppressed as a repeat of the one just sent', {
+          agentSession: link.agentSession,
+          slackChannelId: link.slackChannelId,
+        });
+        return false;
+      }
+      this.rememberSent(link.slackChannelId, text);
       if (this.deps.typing) {
         await this.deps.typing.resolve(key, text, { botToken: installed.botToken, displayName: link.agentSession });
         return true;
