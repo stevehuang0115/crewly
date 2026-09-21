@@ -44,7 +44,18 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 22 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(22);
+  it('registers exactly 23 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(23);
+  });
+
+  // Asking the owner to authorize is not a Google API call, but it must sit
+  // behind the same connector gate: only an agent allowed to use Google may
+  // post a card that connects the owner's account (2026-09-21).
+  it('puts the authorization card behind the connector gate, like every Google call', () => {
+    const paths = (router.stack as Layer[]).filter((l) => l.route).map((l) => l.route!.path);
+    expect(paths).toContain('/connect-card');
+    // The gate is router-level middleware installed before the routes, so a
+    // new route is covered by construction; assert it is still there.
+    expect((router.stack as Layer[]).some((l) => !l.route)).toBe(true);
   });
 });

@@ -33,6 +33,7 @@ import {
   slidesRead,
   slidesCreate,
 } from './google.controller.js';
+import { postConnectCard } from './google-connect-card.js';
 
 /**
  * Creates the Google Workspace router.
@@ -94,6 +95,9 @@ export function createGoogleRouter(): Router {
   router.post('/sheets/:id/values', sheetsWrite);
   router.get('/slides/:id', slidesRead);
   router.post('/slides', slidesCreate);
+  // Asking the owner to authorize is not itself a Google call, but it needs
+  // the same connector gate: only an agent allowed to use Google may ask.
+  router.post('/connect-card', postConnectCard);
 
   return router;
 }

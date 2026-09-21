@@ -176,6 +176,20 @@ export class SlackAgentDmService {
     return Object.values(this.store.links).find((l) => l.slackChannelId === slackChannelId) ?? null;
   }
 
+  /**
+   * The link for a chat-v2 DM channel — the direction a skill needs.
+   *
+   * An agent only knows the chat channel it was addressed in; posting an
+   * authorization card back into Slack needs the conversation that chat
+   * channel came from.
+   *
+   * @param chatChannelId - chat-v2 channel id
+   * @returns The link or null
+   */
+  findByChatChannelId(chatChannelId: string): SlackAgentDmLink | null {
+    return this.store.links[chatChannelId] ?? null;
+  }
+
   // -------------------------------------------------------------------------
   // Inbound (Slack DM → agent)
   // -------------------------------------------------------------------------

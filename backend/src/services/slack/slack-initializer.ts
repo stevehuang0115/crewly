@@ -23,11 +23,42 @@ import {
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
-import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS } from '../../constants.js';
+import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SlackInitializer');
+
+/**
+ * The Slack user who last spoke in a chat channel.
+ *
+ * An authorization card is shown to one person, and the only record of who
+ * that is lives on the inbound turn we recorded from Slack.
+ *
+ * @param chat - chat-v2 service
+ * @param chatChannelId - chat-v2 channel id
+ * @returns The Slack user id, or null when nobody from Slack has spoken
+ */
+function lastSlackUserIn(
+  chat: { listMessages: (a: never) => { messages: Array<{ senderType: string; metadata?: unknown }> } },
+  chatChannelId: string,
+): string | null {
+  try {
+    const page = chat.listMessages({
+      channelId: chatChannelId,
+      principal: { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' },
+      limit: 30,
+      direction: 'backward',
+    } as never);
+    for (const m of [...page.messages].reverse()) {
+      const id = (m.metadata as { slackUserId?: unknown } | undefined)?.slackUserId;
+      if (m.senderType === 'user' && typeof id === 'string' && id) return id;
+    }
+  } catch {
+    // No chat service yet, or an unreadable channel — no card either way.
+  }
+  return null;
+}
 
 /** Where the active Slack connection's tokens came from. */
 export type SlackSource = 'env' | 'cloud';
@@ -727,6 +758,36 @@ export async function startSlackTeamChannels(): Promise<void> {
     // Owner notifications must not target an agent app's own DM (the master bot cannot post there).
     getSlackService().isAgentOwnedConversation = (channelId) => !!getSlackAgentDmService()?.findBySlackChannelId(channelId);
     getSlackService().getOwnerUserId = () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null;
+    // The Google authorization card needs three things this module owns:
+    // which Slack conversation a chat channel came from, a connect link that
+    // carries a ticket rather than the Cloud token, and a way to post so
+    // only the asker sees it.
+    try {
+      const { setConnectCardDeps } = await import('../../controllers/google/google-connect-card.js');
+      const { GoogleWorkspaceTokenService } = await import('../google/google-workspace-token.service.js');
+      setConnectCardDeps({
+        originFor: async (chatChannelId) => {
+          const dm = getSlackAgentDmService()?.findByChatChannelId(chatChannelId);
+          const slackChannelId = dm?.slackChannelId
+            ?? getSlackTeamChannelService()?.findByChatChannelId(chatChannelId)?.slackChannelId;
+          if (!slackChannelId) return null;
+          const slackUserId = lastSlackUserIn(getChatV2Service(), chatChannelId);
+          if (!slackUserId) return null;
+          const botToken = dm ? identities?.getInstalled(dm.agentSession)?.botToken : undefined;
+          return {
+            slackChannelId,
+            slackUserId,
+            ...(dm?.replyThreadTs ? { threadTs: dm.replyThreadTs } : {}),
+            ...(botToken ? { botToken } : {}),
+          };
+        },
+        connectUrl: (args) => GoogleWorkspaceTokenService.getInstance().buildSlackConnectUrl(args),
+        postEphemeral: (channelId, userId, text, blocks, botToken) =>
+          getSlackService().sendEphemeral(channelId, userId, text, blocks, botToken),
+      });
+    } catch (err) {
+      logger.warn('Google authorization cards unavailable', { error: err instanceof Error ? err.message : String(err) });
+    }
     // Team-channel threads and agent DMs belong to the agents, not the
     // orchestrator's resume briefing (which otherwise had the orchestrator
     // answering in #team channels).
