@@ -889,6 +889,44 @@ export const NOTIFY_RECONCILIATION_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for cron next-run computation (`getNextRunTime`).
+ */
+export const CRON_SCHEDULE_CONSTANTS = {
+	/**
+	 * How far ahead a cron expression is searched for its next match. A
+	 * specific date such as `0 13 16 10 *` can be up to a year away; the old
+	 * 8-day scan fell through to a now+24h fallback for anything further out.
+	 */
+	NEXT_RUN_HORIZON_DAYS: 366,
+	/**
+	 * When skipping a day whose date fields do not match, jump to this many
+	 * minutes before the day's end and finish hour-by-hour. Larger than any
+	 * DST shift, so the jump can never land in (and skip the start of) the
+	 * next day.
+	 */
+	DAY_END_SKIP_BUFFER_MINUTES: 120,
+	/**
+	 * Fallback returned for an expression with no match inside the horizon
+	 * (e.g. `0 0 31 2 *`). Not schedule-aligned; logged at WARN.
+	 */
+	IMPOSSIBLE_EXPRESSION_FALLBACK_MS: 24 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Constants for the V3 TriggerEngine one-shot scheduler.
+ */
+export const TRIGGER_ENGINE_CONSTANTS = {
+	/**
+	 * Largest delay a single Node timer can hold: 2^31 - 1 ms (~24.85 days).
+	 * Above this, `setTimeout` emits TimeoutOverflowWarning and silently
+	 * arms the timer for 1 ms — which is how a `--fire-at` three weeks out
+	 * used to fire the instant it was created. Longer waits are chained in
+	 * hops of at most this size.
+	 */
+	MAX_TIMER_DELAY_MS: 2_147_483_647,
+} as const;
+
+/**
  * Constants for Claude Code session resume via /resume slash command.
  * Used when restarting agents that were previously running before a backend restart.
  */

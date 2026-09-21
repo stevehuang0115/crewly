@@ -14,9 +14,10 @@
 import * as os from 'os';
 import * as path from 'path';
 import { existsSync } from 'fs';
-import { readFile, writeFile, mkdir, readdir, rename } from 'fs/promises';
+import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { CRON_SCHEDULE_CONSTANTS } from '../../constants.js';
 import type {
 	CronTask,
 	CronTaskStore,
@@ -197,6 +198,27 @@ export function parseCronField(spec: string, min: number, max: number): Set<numb
 	return result;
 }
 
+/** Minutes in a calendar day, used for in-day skips. */
+const MINUTES_PER_DAY = 24 * 60;
+
+let cronHelperLogger: ComponentLogger | undefined;
+
+/**
+ * Logger for the module-level cron helpers, created on first use.
+ *
+ * `getNextRunTime` is a free function with no service instance, so it cannot
+ * use `CronTaskService`'s logger. Lazy so importing this module never touches
+ * the logger singleton.
+ *
+ * @returns The shared component logger for cron helpers
+ */
+function helperLogger(): ComponentLogger {
+	if (!cronHelperLogger) {
+		cronHelperLogger = LoggerService.getInstance().createComponentLogger('CronSchedule');
+	}
+	return cronHelperLogger;
+}
+
 /**
  * Parse a cron expression and calculate the next run time.
  * Supports standard 5-field cron: minute hour day-of-month month day-of-week.
@@ -207,10 +229,20 @@ export function parseCronField(spec: string, min: number, max: number): Set<numb
  * "0 9 * * *" in Asia/Shanghai fires at 09:00 Shanghai time regardless of
  * the server's local timezone.
  *
+ * The search covers `CRON_SCHEDULE_CONSTANTS.NEXT_RUN_HORIZON_DAYS` (a full
+ * year) without stepping every minute: a day whose date fields do not match
+ * is skipped in one hop (to just before its end, then hour-by-hour to the
+ * boundary), and an hour that does not match is skipped to the next hour
+ * boundary. Every hop stays inside the unit it is skipping, so no matching
+ * minute can be jumped over — including across DST transitions.
+ *
  * @param cronExpression - Standard 5-field cron expression
  * @param timezone - IANA timezone (e.g. "UTC", "America/New_York")
  * @param after - Calculate next run after this date (defaults to now)
- * @returns ISO string of next run time (always UTC)
+ * @returns ISO string of next run time (always UTC). For an expression with
+ *          no match inside the horizon (e.g. "0 0 31 2 *") returns now+24h,
+ *          which is NOT schedule-aligned, and logs a WARN naming the expression
+ * @throws Error if the expression does not have exactly 5 fields
  */
 export function getNextRunTime(cronExpression: string, timezone: string, after?: Date): string {
 	const now = after || new Date();
@@ -219,7 +251,7 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 		throw new Error(`Invalid cron expression: expected 5 fields, got ${parts.length}`);
 	}
 	// A bad/empty tz must not crash the whole evaluate tick (it would throw
-	// inside the minute scan below); fall back to UTC.
+	// inside the scan below); fall back to UTC.
 	const tz = safeTimezone(timezone);
 
 	const minuteSet = parseCronField(parts[0], 0, 59);
@@ -233,37 +265,60 @@ export function getNextRunTime(cronExpression: string, timezone: string, after?:
 	candidate.setSeconds(0, 0);
 	candidate.setMinutes(candidate.getMinutes() + 1);
 
-	// Try up to 8 days of minutes (covers full week + buffer for day-of-week crons)
-	for (let i = 0; i < 8 * 24 * 60; i++) {
+	const horizonMs = CRON_SCHEDULE_CONSTANTS.NEXT_RUN_HORIZON_DAYS * MINUTES_PER_DAY * 60_000;
+	const limit = now.getTime() + horizonMs;
+	const buffer = CRON_SCHEDULE_CONSTANTS.DAY_END_SKIP_BUFFER_MINUTES;
+	let candidatesExamined = 0;
+
+	while (candidate.getTime() <= limit) {
+		candidatesExamined += 1;
 		// Extract fields in the TARGET timezone, not server-local
 		const tp = getDatePartsInTimezone(candidate, tz);
 
-		const minuteMatch = !minuteSet || minuteSet.has(tp.minute);
-		const hourMatch = !hourSet || hourSet.has(tp.hour);
 		const domMatch = !domSet || domSet.has(tp.dayOfMonth);
 		const monthMatch = !monthSet || monthSet.has(tp.month);
 		const dowMatch = !dowSet || dowSet.has(tp.dayOfWeek);
-
-		if (minuteMatch && hourMatch && domMatch && monthMatch && dowMatch) {
-			return candidate.toISOString();
+		if (!(domMatch && monthMatch && dowMatch)) {
+			// Wrong day: skip to ~buffer minutes before its end, then hour by
+			// hour to the day boundary. Both hops stay inside this day.
+			const minutesLeftInDay = MINUTES_PER_DAY - (tp.hour * 60 + tp.minute);
+			const hop = minutesLeftInDay > buffer ? minutesLeftInDay - buffer : Math.max(1, 60 - tp.minute);
+			candidate.setMinutes(candidate.getMinutes() + hop);
+			continue;
 		}
 
+		const hourMatch = !hourSet || hourSet.has(tp.hour);
+		if (!hourMatch) {
+			// Wrong hour: skip to the next hour boundary (in tz).
+			candidate.setMinutes(candidate.getMinutes() + Math.max(1, 60 - tp.minute));
+			continue;
+		}
+
+		const minuteMatch = !minuteSet || minuteSet.has(tp.minute);
+		if (minuteMatch) {
+			return candidate.toISOString();
+		}
 		candidate.setMinutes(candidate.getMinutes() + 1);
 	}
 
-	// No match in 8 days. With tz validated (UTC fallback) and the midnight
-	// hour normalized, this only happens for a genuinely impossible expression
-	// (e.g. "0 0 31 2 *" — Feb 31) or a DOM/DOW contradiction. ALERT loudly
-	// instead of silently returning a non-cron-aligned now+24h that would drift
-	// the task forever (the #678 fire-time-drift symptom). We still return a
-	// value so the eval loop never throws; the loud log + the resulting daily
-	// WorkItem make the broken expression visible so it can be fixed/disabled.
-	console.error(
-		`[cron] getNextRunTime: no run time within 8 days for "${cronExpression}" (tz ${tz}) — ` +
-		`expression is likely impossible (e.g. an invalid day/month combo). Returning now+24h, which will NOT ` +
-		`align to the schedule. Fix or disable this cron.`,
+	// No match inside a full year. With tz validated (UTC fallback) this only
+	// happens for a genuinely impossible expression (e.g. "0 0 31 2 *" — Feb
+	// 31) or a DOM/DOW contradiction. Warn loudly instead of silently
+	// returning a non-cron-aligned now+24h that would drift the task forever
+	// (the #678 fire-time-drift symptom). We still return a value so the eval
+	// loop never throws; the WARN + the resulting daily WorkItem make the
+	// broken expression visible so it can be fixed/disabled.
+	helperLogger().warn(
+		'getNextRunTime: no run time within the horizon — expression is impossible (e.g. an invalid ' +
+			'day/month combo). Returning now+24h, which will NOT align to the schedule. Fix or disable this cron.',
+		{
+			cronExpression,
+			timezone: tz,
+			horizonDays: CRON_SCHEDULE_CONSTANTS.NEXT_RUN_HORIZON_DAYS,
+			candidatesExamined,
+		},
 	);
-	return new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+	return new Date(now.getTime() + CRON_SCHEDULE_CONSTANTS.IMPOSSIBLE_EXPRESSION_FALLBACK_MS).toISOString();
 }
 
 /**

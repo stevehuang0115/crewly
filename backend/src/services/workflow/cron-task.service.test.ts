@@ -5,6 +5,7 @@
  */
 
 import { CronTaskService, getNextRunTime, getDatePartsInTimezone, parseCronField } from './cron-task.service.js';
+import { LoggerService } from '../core/logger.service.js';
 import type { CronTask } from '../../types/cron-task.types.js';
 
 // Mock logger
@@ -35,14 +36,13 @@ jest.mock('fs', () => ({
 	existsSync: jest.fn().mockReturnValue(false),
 }));
 
-import { readFile, writeFile, readdir, rename } from 'fs/promises';
+import { readFile, writeFile, readdir } from 'fs/promises';
 import { existsSync } from 'fs';
 
 const mockReadFile = jest.mocked(readFile);
 const mockWriteFile = jest.mocked(writeFile);
 const mockReaddir = jest.mocked(readdir);
 const mockExistsSync = jest.mocked(existsSync);
-const mockRename = jest.mocked(rename);
 
 /**
  * Helper: set up mockReaddir to return team directories.
@@ -157,14 +157,69 @@ describe('CronTaskService', () => {
 			expect(d.getUTCDate()).toBe(21); // next midnight, properly aligned
 		});
 
-		it('alerts (does not silently drift) on an impossible expression (Feb 31)', () => {
-			const err = jest.spyOn(console, 'error').mockImplementation(() => {});
+		/** The mocked component logger shared by every createComponentLogger() call. */
+		function mockedLogger(): { warn: jest.Mock } {
+			return LoggerService.getInstance().createComponentLogger('any') as unknown as { warn: jest.Mock };
+		}
+
+		it('alerts at WARN (does not silently drift) on an impossible expression (Feb 31)', () => {
 			const after = new Date('2026-03-20T08:00:00Z');
 			const result = getNextRunTime('0 0 31 2 *', 'UTC', after);
-			expect(err).toHaveBeenCalled(); // loud alert, no silent drift
+			// Loud alert, no silent drift — and the alert says what it examined.
+			expect(mockedLogger().warn).toHaveBeenCalledWith(
+				expect.stringContaining('no run time within the horizon'),
+				expect.objectContaining({ cronExpression: '0 0 31 2 *', horizonDays: 366 }),
+			);
 			// Returns a value (eval loop never throws) — the now+24h fallback.
 			expect(new Date(result).getTime()).toBe(after.getTime() + 24 * 60 * 60 * 1000);
-			err.mockRestore();
+		});
+
+		// Atlas repro 826b3483 (crewly 1.20.67): `0 13 16 10 *` created
+		// 2026-09-21T14:47:50Z persisted nextFireAt = created+24h to the second,
+		// because the old scan gave up after 8 days.
+		it('finds a specific date 25 days out instead of falling back to now+24h', () => {
+			const after = new Date('2026-09-21T14:47:50.838Z');
+			const result = getNextRunTime('0 13 16 10 *', 'UTC', after);
+			expect(result).toBe('2026-10-16T13:00:00.000Z');
+			expect(mockedLogger().warn).not.toHaveBeenCalled();
+		});
+
+		it('finds a once-a-year date ~10 months out, in a non-UTC timezone', () => {
+			// 08:30 on 1 Jan in Shanghai (UTC+8) = 00:30Z
+			const result = getNextRunTime('30 8 1 1 *', 'Asia/Shanghai', new Date('2026-03-20T10:00:00Z'));
+			expect(result).toBe('2027-01-01T00:30:00.000Z');
+		});
+
+		it('finds a monthly date on the 15th from the 20th (skips into next month)', () => {
+			const result = getNextRunTime('0 9 15 * *', 'UTC', new Date('2026-03-20T10:00:00Z'));
+			expect(result).toBe('2026-04-15T09:00:00.000Z');
+		});
+
+		it('day-of-week cron still resolves inside the week', () => {
+			// 2026-03-20 is a Friday; next Monday 09:00Z is 2026-03-23
+			const result = getNextRunTime('0 9 * * 1', 'UTC', new Date('2026-03-20T10:00:00Z'));
+			expect(result).toBe('2026-03-23T09:00:00.000Z');
+		});
+
+		it('does not skip a local midnight across the DST spring-forward (America/New_York)', () => {
+			// 2026-03-08T07:30Z is 03:30 EDT, right after the 02:00->03:00 jump.
+			const result = getNextRunTime('0 0 * * *', 'America/New_York', new Date('2026-03-08T07:30:00Z'));
+			expect(result).toBe('2026-03-09T04:00:00.000Z'); // 00:00 EDT on 9 Mar
+		});
+
+		it('does not skip a local midnight across the DST fall-back (America/New_York)', () => {
+			// 2026-11-01T05:30Z is 01:30 EDT, inside the hour that repeats.
+			const result = getNextRunTime('0 0 * * *', 'America/New_York', new Date('2026-11-01T05:30:00Z'));
+			expect(result).toBe('2026-11-02T05:00:00.000Z'); // 00:00 EST on 2 Nov
+		});
+
+		it('an impossible expression is rejected after a bounded scan, not a minute-by-minute year', () => {
+			getNextRunTime('0 0 30 2 *', 'UTC', new Date('2026-03-20T08:00:00Z'));
+			const call = mockedLogger().warn.mock.calls.find((c) => String(c[0]).includes('no run time'));
+			expect(call).toBeDefined();
+			const examined = (call as unknown[])[1] as { candidatesExamined: number };
+			expect(examined.candidatesExamined).toBeGreaterThan(366); // it really looked at every day
+			expect(examined.candidatesExamined).toBeLessThan(5_000); // ~3 hops/day, not 1440
 		});
 	});
 

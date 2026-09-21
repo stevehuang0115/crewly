@@ -26,18 +26,17 @@ import {
   type Trigger,
   type TriggerStatus,
   type TriggerAction,
-  type TriggerConfig,
   type TimeTriggerConfig,
   type SignalTriggerConfig,
   type CompoundTriggerConfig,
   type CreateTriggerInput,
   createTrigger,
   validateCreateTriggerInput,
-  isValidTriggerConfig,
 } from '../../types/v2/index.js';
 import { getNextRunTime } from '../workflow/cron-task.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
+import { TRIGGER_ENGINE_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -295,7 +294,7 @@ export class TriggerEngine {
 
     // Calculate nextFireAt for time triggers
     if (trigger.config.type === 'time') {
-      trigger.nextFireAt = this.calculateNextFireAt(trigger.config);
+      trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
     }
 
     await this.persistTriggers();
@@ -368,7 +367,7 @@ export class TriggerEngine {
 
     // Recalculate nextFireAt for time triggers
     if (trigger.config.type === 'time') {
-      trigger.nextFireAt = this.calculateNextFireAt(trigger.config);
+      trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
       if (this.running && (trigger.config.delayMs || trigger.config.fireAt)) {
         this.scheduleOneShot(trigger);
       }
@@ -474,7 +473,7 @@ export class TriggerEngine {
       });
     } else if (trigger.config.type === 'time' && trigger.config.cronExpression) {
       // Recalculate next fire for cron triggers
-      trigger.nextFireAt = this.calculateNextFireAt(trigger.config);
+      trigger.nextFireAt = this.calculateNextFireAt(trigger.config, trigger.createdAt);
     }
 
     await this.persistTriggers();
@@ -562,45 +561,74 @@ export class TriggerEngine {
   /**
    * Schedules a one-shot timer for a delay or fireAt trigger.
    *
+   * Node caps a single timer at 2^31 - 1 ms (~24.85 days). A larger delay
+   * overflows: Node emits TimeoutOverflowWarning and arms the timer for 1 ms,
+   * so a `--fire-at` three weeks out fired the moment it was created. The
+   * wait is therefore chained — each hop arms at most MAX_TIMER_DELAY_MS and,
+   * on expiry, re-arms while the target is still in the future. The remaining
+   * time is recomputed from the wall clock on every hop, so chaining does not
+   * accumulate drift. All one-shot paths (create, resume, re-arm on boot) go
+   * through here.
+   *
    * @param trigger - The time trigger to schedule
    */
   private scheduleOneShot(trigger: Trigger): void {
     this.clearOneShotTimer(trigger.id);
 
-    const config = trigger.config as TimeTriggerConfig;
-    let delayMs: number;
-
-    if (config.fireAt) {
-      const fireAtDate = new Date(config.fireAt);
-      delayMs = fireAtDate.getTime() - Date.now();
-      if (delayMs <= 0) {
-        // Already past — fire immediately
-        this.fire(trigger).catch((err) => {
-          this.logger.error('Immediate fire failed', { triggerId: trigger.id, error: String(err) });
-        });
-        return;
-      }
-    } else if (config.delayMs) {
-      const createdAt = new Date(trigger.createdAt).getTime();
-      delayMs = createdAt + config.delayMs - Date.now();
-      if (delayMs <= 0) {
-        this.fire(trigger).catch((err) => {
-          this.logger.error('Immediate fire failed', { triggerId: trigger.id, error: String(err) });
-        });
-        return;
-      }
-    } else {
+    const targetMs = this.resolveOneShotTargetMs(trigger);
+    if (targetMs === undefined) {
       return;
     }
 
+    const remainingMs = targetMs - Date.now();
+    if (remainingMs <= 0) {
+      // Already past — fire immediately
+      this.fire(trigger).catch((err) => {
+        this.logger.error('Immediate fire failed', { triggerId: trigger.id, error: String(err) });
+      });
+      return;
+    }
+
+    const waitMs = Math.min(remainingMs, TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS);
     const timer = setTimeout(() => {
       this.oneShotTimers.delete(trigger.id);
+      if (trigger.status !== 'active') {
+        return;
+      }
+      if (targetMs - Date.now() > 0) {
+        // The full wait did not fit in one timer — arm the next hop.
+        this.scheduleOneShot(trigger);
+        return;
+      }
       this.fire(trigger).catch((err) => {
         this.logger.error('One-shot fire failed', { triggerId: trigger.id, error: String(err) });
       });
-    }, delayMs);
+    }, waitMs);
 
     this.oneShotTimers.set(trigger.id, timer);
+  }
+
+  /**
+   * Resolves the absolute wall-clock time a one-shot trigger should fire.
+   *
+   * `fireAt` wins over `delayMs`; `delayMs` is anchored to the trigger's
+   * `createdAt`, so the target survives a process restart unchanged.
+   *
+   * @param trigger - A time trigger configured with `fireAt` or `delayMs`
+   * @returns Fire time in epoch milliseconds, or undefined for cron configs
+   *          and for an unparseable `fireAt` (which must not fire at all,
+   *          rather than fire immediately)
+   */
+  private resolveOneShotTargetMs(trigger: Trigger): number | undefined {
+    const config = trigger.config as TimeTriggerConfig;
+    if (config.fireAt) {
+      const t = new Date(config.fireAt).getTime();
+      return Number.isNaN(t) ? undefined : t;
+    }
+    if (config.delayMs) {
+      return new Date(trigger.createdAt).getTime() + config.delayMs;
+    }
+    return undefined;
   }
 
   /**
@@ -619,10 +647,16 @@ export class TriggerEngine {
   /**
    * Calculates the next fire time for a time trigger config.
    *
+   * A `delayMs` trigger is anchored to its `createdAt` (the same anchor
+   * scheduleOneShot fires on), so `--in-minutes N` shows the real fire time
+   * instead of nothing.
+   *
    * @param config - Time trigger configuration
-   * @returns ISO string of next fire time, or undefined
+   * @param createdAt - ISO8601 creation time of the trigger; anchors `delayMs`
+   * @returns ISO string of next fire time, or undefined when it cannot be
+   *          computed (invalid cron, unparseable createdAt)
    */
-  private calculateNextFireAt(config: TimeTriggerConfig): string | undefined {
+  private calculateNextFireAt(config: TimeTriggerConfig, createdAt: string): string | undefined {
     if (config.cronExpression) {
       try {
         return getNextRunTime(config.cronExpression, config.timezone || 'UTC');
@@ -633,7 +667,10 @@ export class TriggerEngine {
     if (config.fireAt) {
       return config.fireAt;
     }
-    // delayMs — calculated relative to creation, not useful for nextFireAt
+    if (config.delayMs) {
+      const target = new Date(createdAt).getTime() + config.delayMs;
+      return Number.isNaN(target) ? undefined : new Date(target).toISOString();
+    }
     return undefined;
   }
 
