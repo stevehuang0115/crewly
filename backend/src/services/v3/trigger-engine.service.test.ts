@@ -8,8 +8,10 @@
 // could not be collected under CommonJS ("Vitest cannot be imported"), so it
 // had never actually run in CI.
 import { TriggerEngine } from './trigger-engine.service.js';
-import type { CreateTriggerInput, Trigger, TriggerAction } from '../../types/v2/index.js';
+import type { CreateTriggerInput, Trigger } from '../../types/v2/index.js';
 import { DEFAULT_MAX_IDLE_FIRES } from '../../types/v2/index.js';
+import * as fs from 'fs/promises';
+import { TRIGGER_ENGINE_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
@@ -110,9 +112,10 @@ function makeSignalTriggerInput(overrides?: Partial<CreateTriggerInput>): Create
  * Creates a mock EventBus.
  */
 function makeMockEventBus() {
-  const listeners = new Map<string, Function[]>();
+  type Handler = (...args: unknown[]) => unknown;
+  const listeners = new Map<string, Handler[]>();
   return {
-    on: jest.fn((event: string, handler: Function) => {
+    on: jest.fn((event: string, handler: Handler) => {
       if (!listeners.has(event)) listeners.set(event, []);
       listeners.get(event)!.push(handler);
     }),
@@ -120,7 +123,7 @@ function makeMockEventBus() {
     // calls during teardownSignalListeners(). Without it, every test that
     // set an EventBus and then ran the afterEach resetInstance() would
     // throw on stop. Added here as part of B1 cleanup.
-    off: jest.fn((event: string, handler: Function) => {
+    off: jest.fn((event: string, handler: Handler) => {
       const handlers = listeners.get(event);
       if (!handlers) return;
       const idx = handlers.indexOf(handler);
@@ -616,6 +619,218 @@ describe('TriggerEngine', () => {
 
       expect(results).toHaveLength(1);
       expect(handler).toHaveBeenCalledTimes(1);
+    });
+  });
+  // -------------------------------------------------------------------------
+  // One-shot timers beyond the Node timer cap (D-A)
+  //
+  // Node clamps setTimeout delays above 2^31-1 ms to 1 ms (with a
+  // TimeoutOverflowWarning). Before the fix every --fire-at / --in-minutes
+  // more than ~24.85 days out fired the moment it was created. These tests
+  // pin the chained-timer behaviour on all three scheduling paths.
+  // -------------------------------------------------------------------------
+
+  describe('one-shot timers beyond the Node timer cap', () => {
+    const MAX = TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS;
+    const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+    const T0 = new Date('2026-09-21T00:00:00.000Z');
+    let handler: jest.Mock;
+    /** Every delay handed to setTimeout while fake timers were installed. */
+    let armedDelays: number[];
+    let fakeSetTimeout: typeof setTimeout;
+
+    /** Largest delay handed to setTimeout so far; refuses to answer over an empty set. */
+    function maxArmedDelay(): number {
+      expect(armedDelays.length).toBeGreaterThan(0); // the guard must have examined something
+      return Math.max(...armedDelays);
+    }
+
+    /** Advances fake time and lets the fire() promise chain settle. */
+    async function advance(ms: number): Promise<void> {
+      jest.advanceTimersByTime(ms);
+      await Promise.resolve();
+      await Promise.resolve();
+    }
+
+    beforeEach(async () => {
+      jest.useFakeTimers({ now: T0 });
+      // Record delays with a plain wrapper, NOT jest.spyOn: a spy created
+      // while fake timers are installed saves the *fake* as its original, and
+      // the outer afterEach's restoreAllMocks() re-applies that original after
+      // useRealTimers() has already run — leaving a sinon fake as the global
+      // setTimeout for every later test (they hang on any real timer).
+      armedDelays = [];
+      fakeSetTimeout = global.setTimeout;
+      const recording = ((fn: (...a: unknown[]) => void, ms?: number, ...args: unknown[]) => {
+        if (typeof ms === 'number') armedDelays.push(ms);
+        return fakeSetTimeout(fn, ms, ...args);
+      }) as unknown as typeof setTimeout;
+      global.setTimeout = recording;
+      handler = jest.fn().mockResolvedValue(undefined);
+      engine.setActionHandler(handler);
+      await engine.start();
+    });
+
+    afterEach(() => {
+      engine.stop();
+      global.setTimeout = fakeSetTimeout; // hand the fake back before sinon uninstalls it
+      jest.useRealTimers();
+    });
+
+    it('fireAt 30 days out: no hop above the cap, no fire before target, exactly one fire at target', async () => {
+      const fireAt = new Date(T0.getTime() + THIRTY_DAYS_MS).toISOString();
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', fireAt },
+        action: { runReconciler: true },
+        createdBy: 'user',
+        maxFires: 1,
+      });
+
+      await advance(THIRTY_DAYS_MS - 60_000);
+      expect(trigger.fireCount).toBe(0);
+      expect(trigger.status).toBe('active');
+      expect(handler).not.toHaveBeenCalled();
+
+      await advance(60_000);
+      expect(trigger.fireCount).toBe(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(trigger.status).toBe('exhausted');
+
+      await advance(THIRTY_DAYS_MS);
+      expect(trigger.fireCount).toBe(1);
+
+      expect(maxArmedDelay()).toBeLessThanOrEqual(MAX);
+    });
+
+    it('delayMs 30 days (createdAt-anchored): same guarantees', async () => {
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', delayMs: THIRTY_DAYS_MS },
+        action: { runReconciler: true },
+        createdBy: 'user',
+        maxFires: 1,
+      });
+
+      await advance(THIRTY_DAYS_MS - 60_000);
+      expect(trigger.fireCount).toBe(0);
+
+      await advance(60_000);
+      expect(trigger.fireCount).toBe(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      await advance(THIRTY_DAYS_MS);
+      expect(trigger.fireCount).toBe(1);
+
+      expect(maxArmedDelay()).toBeLessThanOrEqual(MAX);
+    });
+
+    it('re-arms a persisted 30-day trigger on start() (restart path) without overflowing', async () => {
+      const fireAt = new Date(T0.getTime() + THIRTY_DAYS_MS).toISOString();
+      const created = await engine.create({
+        type: 'time',
+        config: { type: 'time', fireAt },
+        action: { runReconciler: true },
+        createdBy: 'user',
+        maxFires: 1,
+      });
+
+      // Simulate a process restart: stop, then boot from the persisted file.
+      engine.stop();
+      jest.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify([created]));
+      armedDelays.length = 0;
+      await engine.start();
+
+      const reloaded = engine.get(created.id) as Trigger;
+      expect(reloaded).toBeDefined();
+      expect(reloaded).not.toBe(created); // a fresh object from disk, not the in-memory one
+
+      await advance(THIRTY_DAYS_MS - 60_000);
+      expect(reloaded.fireCount).toBe(0);
+
+      await advance(60_000);
+      expect(reloaded.fireCount).toBe(1);
+      expect(handler).toHaveBeenCalledTimes(1);
+
+      expect(maxArmedDelay()).toBeLessThanOrEqual(MAX);
+    });
+
+    it('a 90-day wait hops more than once and still fires once, at the target', async () => {
+      const NINETY_DAYS_MS = 3 * THIRTY_DAYS_MS;
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', delayMs: NINETY_DAYS_MS },
+        action: { runReconciler: true },
+        createdBy: 'user',
+        maxFires: 1,
+      });
+
+      await advance(NINETY_DAYS_MS - 1);
+      expect(trigger.fireCount).toBe(0);
+      await advance(1);
+      expect(trigger.fireCount).toBe(1);
+
+      const oneShotArms = armedDelays.filter((d) => d > 60_000);
+      expect(oneShotArms.length).toBeGreaterThanOrEqual(4); // ceil(90d / 24.85d)
+      expect(maxArmedDelay()).toBeLessThanOrEqual(MAX);
+    });
+
+    it('a hop does not re-arm a trigger that was cancelled mid-wait', async () => {
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', delayMs: THIRTY_DAYS_MS },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+
+      await advance(MAX - 1000);
+      await engine.cancel(trigger.id);
+      await advance(THIRTY_DAYS_MS);
+
+      expect(trigger.fireCount).toBe(0);
+      expect(handler).not.toHaveBeenCalled();
+    });
+
+    it('an unparseable fireAt does not fire at all (previously fired after 1 ms)', async () => {
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', fireAt: 'not-a-date' },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+
+      await advance(THIRTY_DAYS_MS);
+      expect(trigger.fireCount).toBe(0);
+    });
+  });
+
+  describe('one-shot timers under REAL timers', () => {
+    afterEach(() => {
+      engine.stop();
+    });
+
+    it('never hands setTimeout a delay Node would overflow', async () => {
+      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+      engine.setActionHandler(jest.fn().mockResolvedValue(undefined));
+      await engine.start();
+
+      const fireAt = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString();
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', fireAt },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+
+      // Give a would-be overflowed 1 ms timer every chance to fire.
+      await new Promise((r) => setTimeout(r, 25));
+
+      expect(trigger.fireCount).toBe(0);
+      const delays = setTimeoutSpy.mock.calls
+        .map((c) => c[1])
+        .filter((d): d is number => typeof d === 'number' && d > 60_000);
+      expect(delays.length).toBe(1); // exactly the one hop for this trigger
+      expect(delays[0]).toBeLessThanOrEqual(TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS);
     });
   });
 });

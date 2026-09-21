@@ -17,6 +17,7 @@ import {
   RUNTIME_INPUT_READY_PATTERNS,
   RUNTIME_TYPES,
   SLACK_CLOUD_CONSTANTS,
+  TRIGGER_ENGINE_CONSTANTS,
 } from './constants.js';
 
 describe('GOOGLE_OAUTH_CONSTANTS', () => {
@@ -211,5 +212,12 @@ describe('SLACK_CLOUD_CONSTANTS (Slack v3 — Cloud owns Slack)', () => {
 
   it('keeps file-share and thread-broadcast subtypes routable and nothing else', () => {
     expect([...SLACK_CLOUD_CONSTANTS.INBOUND_ALLOWED_SUBTYPES]).toEqual(['file_share', 'thread_broadcast']);
+  });
+});
+
+describe('TRIGGER_ENGINE_CONSTANTS', () => {
+  it('caps a single timer hop at exactly the Node 32-bit signed limit', () => {
+    // 2^31 - 1: one more and setTimeout overflows to 1 ms with a warning.
+    expect(TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS).toBe(2 ** 31 - 1);
   });
 });

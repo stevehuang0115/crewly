@@ -889,6 +889,20 @@ export const NOTIFY_RECONCILIATION_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for the V3 TriggerEngine one-shot scheduler.
+ */
+export const TRIGGER_ENGINE_CONSTANTS = {
+	/**
+	 * Largest delay a single Node timer can hold: 2^31 - 1 ms (~24.85 days).
+	 * Above this, `setTimeout` emits TimeoutOverflowWarning and silently
+	 * arms the timer for 1 ms — which is how a `--fire-at` three weeks out
+	 * used to fire the instant it was created. Longer waits are chained in
+	 * hops of at most this size.
+	 */
+	MAX_TIMER_DELAY_MS: 2_147_483_647,
+} as const;
+
+/**
  * Constants for Claude Code session resume via /resume slash command.
  * Used when restarting agents that were previously running before a backend restart.
  */
