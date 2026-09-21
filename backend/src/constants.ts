@@ -889,6 +889,30 @@ export const NOTIFY_RECONCILIATION_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for cron next-run computation (`getNextRunTime`).
+ */
+export const CRON_SCHEDULE_CONSTANTS = {
+	/**
+	 * How far ahead a cron expression is searched for its next match. A
+	 * specific date such as `0 13 16 10 *` can be up to a year away; the old
+	 * 8-day scan fell through to a now+24h fallback for anything further out.
+	 */
+	NEXT_RUN_HORIZON_DAYS: 366,
+	/**
+	 * When skipping a day whose date fields do not match, jump to this many
+	 * minutes before the day's end and finish hour-by-hour. Larger than any
+	 * DST shift, so the jump can never land in (and skip the start of) the
+	 * next day.
+	 */
+	DAY_END_SKIP_BUFFER_MINUTES: 120,
+	/**
+	 * Fallback returned for an expression with no match inside the horizon
+	 * (e.g. `0 0 31 2 *`). Not schedule-aligned; logged at WARN.
+	 */
+	IMPOSSIBLE_EXPRESSION_FALLBACK_MS: 24 * 60 * 60 * 1000,
+} as const;
+
+/**
  * Constants for the V3 TriggerEngine one-shot scheduler.
  */
 export const TRIGGER_ENGINE_CONSTANTS = {

@@ -18,6 +18,7 @@ import {
   RUNTIME_TYPES,
   SLACK_CLOUD_CONSTANTS,
   TRIGGER_ENGINE_CONSTANTS,
+  CRON_SCHEDULE_CONSTANTS,
 } from './constants.js';
 
 describe('GOOGLE_OAUTH_CONSTANTS', () => {
@@ -219,5 +220,20 @@ describe('TRIGGER_ENGINE_CONSTANTS', () => {
   it('caps a single timer hop at exactly the Node 32-bit signed limit', () => {
     // 2^31 - 1: one more and setTimeout overflows to 1 ms with a warning.
     expect(TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS).toBe(2 ** 31 - 1);
+  });
+});
+
+describe('CRON_SCHEDULE_CONSTANTS', () => {
+  it('searches a full year so a once-a-year date is found, not fallen through', () => {
+    expect(CRON_SCHEDULE_CONSTANTS.NEXT_RUN_HORIZON_DAYS).toBe(366);
+  });
+
+  it('keeps the day-skip buffer larger than any DST shift (1 h)', () => {
+    expect(CRON_SCHEDULE_CONSTANTS.DAY_END_SKIP_BUFFER_MINUTES).toBeGreaterThan(60);
+    expect(CRON_SCHEDULE_CONSTANTS.DAY_END_SKIP_BUFFER_MINUTES).toBeLessThan(24 * 60);
+  });
+
+  it('falls back by exactly one day for an impossible expression', () => {
+    expect(CRON_SCHEDULE_CONSTANTS.IMPOSSIBLE_EXPRESSION_FALLBACK_MS).toBe(86_400_000);
   });
 });
