@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { buildTeamLabels, buildMentionables } from './team-chat.utils';
+import { buildTeamLabels, buildMentionables, isOrchestratorSession } from './team-chat.utils';
 import type { Team, TeamMember } from '../types';
 
 /** Build a minimal TeamMember fixture, overriding only what a test cares about. */
@@ -108,5 +108,28 @@ describe('buildMentionables', () => {
     expect(targets).toEqual([
       { id: 't1', kind: 'team', label: 'Alpha', routingHint: 'Routes to the team leader' },
     ]);
+  });
+});
+
+
+/**
+ * Cloud registers the orchestrator under a per-instance session so two
+ * machines on one account do not share a Slack app. Anything reading a
+ * session off a Cloud record sees that spelling; matching on equality alone
+ * silently stopped recognising the orchestrator when it shipped
+ * (2026-09-21).
+ */
+describe('isOrchestratorSession', () => {
+  it('accepts the plain local name', () => {
+    expect(isOrchestratorSession('crewly-orc')).toBe(true);
+  });
+
+  it('accepts the per-instance spelling Cloud registers', () => {
+    expect(isOrchestratorSession('crewly-orc@f4b6f0db-a047-4cd7-8405-cf4a06430fa4')).toBe(true);
+  });
+
+  it('rejects an ordinary agent, including one that merely starts the same way', () => {
+    expect(isOrchestratorSession('marketing-ella-1234')).toBe(false);
+    expect(isOrchestratorSession('crewly-orc-assistant')).toBe(false);
   });
 });

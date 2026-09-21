@@ -191,6 +191,11 @@ describe('buildTeamLookup', () => {
 describe('isOrchestratorGroup', () => {
   it('spots the orchestrator by session, not by the team name', () => {
     expect(isOrchestratorGroup([{ agentSession: 'crewly-orc' }])).toBe(true);
+    // Cloud registers it per instance so two machines do not share an app;
+    // matching on equality alone stopped recognising it the moment that
+    // shipped, and it fell to the bottom of the list under "Other agents"
+    // (owner, 2026-09-21).
+    expect(isOrchestratorGroup([{ agentSession: 'crewly-orc@f4b6f0db-a047' }])).toBe(true);
     // The display name is qualified by machine once a second one appears,
     // so matching on it would break exactly when two machines exist.
     expect(isOrchestratorGroup([{ agentSession: 'marketing-ella-1234' }])).toBe(false);
