@@ -1182,6 +1182,49 @@ export const RUNTIME_EXIT_CONSTANTS = {
  * Frames are owner-surface only: in memory, never persisted, never attached
  * to a chat message or posted to any multi-party surface.
  */
+/**
+ * How much of a conversation an agent is shown when a message is dispatched
+ * to it.
+ *
+ * Until now the answer was none: the prompt carried the one message and
+ * nothing else, so an agent @-mentioned into a channel where a colleague had
+ * just posted ten messages had no idea any of them existed. It also had no
+ * way to check its own account of what was said, which is how one of them
+ * ended up citing an instruction that did not exist.
+ *
+ * The caps are small on purpose. This is paid on *every* dispatch, and a
+ * busy channel would otherwise add thousands of tokens to every wake-up —
+ * the same cost shape that had one agent dragging 726k tokens through each
+ * turn.
+ */
+export const CHAT_CONTEXT_CONSTANTS = {
+	/** Whether preceding messages are included at all */
+	ENABLED: true,
+	/**
+	 * Messages to include from the same thread.
+	 *
+	 * A thread is the cheap, high-value case: everything in it is by
+	 * construction about the same subject, so every line earns its tokens.
+	 */
+	THREAD_MAX: 12,
+	/**
+	 * Messages to include for a top-level channel message.
+	 *
+	 * Lower than the thread cap: a channel's recent traffic is often several
+	 * unrelated conversations, so most of it is noise to the agent being
+	 * asked.
+	 */
+	CHANNEL_MAX: 8,
+	/** Characters kept per message before truncation */
+	PER_MESSAGE_CHARS: 300,
+	/**
+	 * Ignore anything older than this. Yesterday's argument is not context
+	 * for today's question, and including it invites an agent to answer the
+	 * wrong one.
+	 */
+	MAX_AGE_MS: 6 * 60 * 60 * 1000,
+} as const;
+
 export const BROWSER_SESSION_CONSTANTS = {
 	/** How often the capture loop wakes up (ms) */
 	TICK_INTERVAL_MS: 1_500,

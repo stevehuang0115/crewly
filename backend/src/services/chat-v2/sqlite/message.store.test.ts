@@ -285,6 +285,72 @@ describe('MessageStore', () => {
   // listByChannel — cursor pagination
   // -------------------------------------------------------------------------
 
+  describe('recentTurns', () => {
+    /** Insert n messages, returning the ids in order. */
+    function seed(n: number, opts: { threadId?: string } = {}): string[] {
+      const ids: string[] = [];
+      for (let i = 1; i <= n; i++) {
+        ids.push(
+          messages.insert({
+            channelId,
+            senderType: 'user',
+            senderId: `speaker-${i}`,
+            content: `m${i}`,
+            nowMs: 1000 + i,
+            ...(opts.threadId ? { threadId: opts.threadId } : {}),
+          }).row.id,
+        );
+      }
+      return ids;
+    }
+
+    it('returns nothing for an empty channel', () => {
+      expect(messages.recentTurns(channelId, undefined, 5)).toEqual([]);
+    });
+
+    it('returns the newest messages, oldest first', () => {
+      // Newest-first would be the wrong order to read a conversation in.
+      seed(5);
+      const out = messages.recentTurns(channelId, undefined, 3);
+      expect(out.map((r) => r.content)).toEqual(['m3', 'm4', 'm5']);
+    });
+
+    it('never returns more than the limit', () => {
+      seed(30);
+      expect(messages.recentTurns(channelId, undefined, 4)).toHaveLength(4);
+    });
+
+    it('scopes to one thread when given a root', () => {
+      const [rootId] = seed(1);
+      messages.insert({ channelId, senderType: 'user', senderId: 'u', content: 'in-thread', nowMs: 2000, threadId: rootId });
+      messages.insert({ channelId, senderType: 'user', senderId: 'u', content: 'elsewhere', nowMs: 2001 });
+
+      const out = messages.recentTurns(channelId, rootId, 10).map((r) => r.content);
+
+      expect(out).toContain('in-thread');
+      expect(out).toContain('m1'); // the root itself belongs to its thread
+      expect(out).not.toContain('elsewhere');
+    });
+
+    it('does not leak another channel\'s messages', () => {
+      const other = channels.create({ agentSession: 'sess-b', ownerUserId: 'user-a', name: 'Other', nowMs: 100 }).id;
+      messages.insert({ channelId: other, senderType: 'user', senderId: 'u', content: 'not-yours', nowMs: 3000 });
+      seed(2);
+
+      const out = messages.recentTurns(channelId, undefined, 10).map((r) => r.content);
+
+      expect(out).not.toContain('not-yours');
+    });
+
+    it('carries the sender and the time, which is what makes it readable', () => {
+      seed(1);
+      const [row] = messages.recentTurns(channelId, undefined, 1);
+      expect(row.senderId).toBe('speaker-1');
+      expect(row.senderType).toBe('user');
+      expect(row.createdAt).toBe(1001);
+    });
+  });
+
   describe('listByChannel', () => {
     function seed(n: number) {
       for (let i = 1; i <= n; i++) {

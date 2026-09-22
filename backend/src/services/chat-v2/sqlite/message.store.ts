@@ -442,6 +442,57 @@ export class MessageStore {
   }
 
   /**
+   * The most recent messages of a channel, or of one thread within it.
+   *
+   * Used to show an agent what was said before the message it is being woken
+   * for. Without it an agent @-mentioned into a channel sees exactly one
+   * line and nothing else, so it cannot tell whether a colleague already
+   * answered, and cannot check its own account of what it was told.
+   *
+   * Ordered oldest-first, which is the order it will be read in.
+   *
+   * @param channelId - The channel id
+   * @param rootId - Thread root to scope to, or undefined for the channel
+   * @param limit - Maximum messages to return
+   * @returns Rows oldest first, newest last
+   */
+  recentTurns(
+    channelId: string,
+    rootId: string | undefined,
+    limit: number,
+  ): Array<{ senderType: string; senderId: string; content: string; createdAt: number; threadId: string | null }> {
+    const scoped = rootId
+      ? `AND (id = ? OR thread_id = ?)`
+      : '';
+    const params: Array<string | number> = rootId ? [channelId, rootId, rootId, limit] : [channelId, limit];
+    const rows = this.db
+      .prepare(
+        `SELECT sender_type, sender_id, content, created_at, thread_id
+         FROM chat_messages
+         WHERE channel_id = ? ${scoped}
+         ORDER BY seq DESC
+         LIMIT ?`,
+      )
+      .all(...params) as Array<{
+      sender_type: string;
+      sender_id: string;
+      content: string;
+      created_at: number;
+      thread_id: string | null;
+    }>;
+
+    // Query is newest-first so LIMIT takes the newest; hand back the order
+    // a person would read.
+    return rows.reverse().map((r) => ({
+      senderType: r.sender_type,
+      senderId: r.sender_id,
+      content: r.content,
+      createdAt: r.created_at,
+      threadId: r.thread_id,
+    }));
+  }
+
+  /**
    * Agents already engaged in a thread: every agent that posted in it
    * (root or reply) plus every session @-mentioned anywhere in it. A
    * human's follow-up in that thread goes to these agents without another

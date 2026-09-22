@@ -96,7 +96,7 @@ import { setRequestServiceEventBus, RequestService } from './services/v3/request
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS } from './constants.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
@@ -1872,6 +1872,17 @@ void (async () => {
 					// …but only the one that spoke last must answer a bare follow-up.
 					lastThreadSpeakerFor: (channelId, threadId) =>
 						chatService.queryLastThreadSpeakerForDispatch(channelId, threadId),
+					// What was said before this message. Without it an agent
+					// @-mentioned into a channel sees one line and cannot tell
+					// whether a colleague already answered — nor check its own
+					// account of what it was told, which is how one of them
+					// came to cite an instruction that did not exist.
+					recentTurnsFor: (channelId, threadId) =>
+						chatService.queryRecentTurnsForDispatch(
+							channelId,
+							threadId,
+							Math.max(CHAT_CONTEXT_CONSTANTS.THREAD_MAX, CHAT_CONTEXT_CONSTANTS.CHANNEL_MAX),
+						),
 					// A message that addresses nobody goes to the team leader alone
 					// (optional reply); the team is found by the huddle's roster.
 					huddleLeaderFor: async (channelId) => {

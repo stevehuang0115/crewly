@@ -699,6 +699,32 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * What was said before, for the prompt an agent is about to receive.
+   *
+   * Excludes the newest message: that is the one being dispatched, and the
+   * prompt shows it in full directly below. Repeating it as context reads as
+   * if the agent were being asked about it twice.
+   *
+   * @param channelId - The channel id
+   * @param threadId - Thread root to scope to, or undefined for the channel
+   * @param limit - Maximum messages to gather before the newest is dropped
+   * @returns Turns oldest first
+   */
+  queryRecentTurnsForDispatch(
+    channelId: string,
+    threadId: string | undefined,
+    limit: number,
+  ): Array<{ senderId: string; content: string; createdAt: string; inThread: boolean }> {
+    const rows = this.messages.recentTurns(channelId, threadId, limit + 1);
+    return rows.slice(0, Math.max(0, rows.length - 1)).map((r) => ({
+      senderId: r.senderId,
+      content: r.content,
+      createdAt: new Date(r.createdAt).toISOString(),
+      inThread: Boolean(r.threadId),
+    }));
+  }
+
+  /**
    * The agent that spoke last in a thread — the one a bare follow-up is
    * addressed to.
    *
