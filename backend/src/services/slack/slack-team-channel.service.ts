@@ -110,7 +110,8 @@ export interface TeamChannelStorageApi {
 }
 
 /** Dispatcher slice — resolved lazily because it is built after the bridge. */
-export type TeamChannelDispatcherApi = Pick<ChatV2DispatcherService, 'dispatchMessage'>;
+export type TeamChannelDispatcherApi = Pick<ChatV2DispatcherService, 'dispatchMessage'> &
+  Partial<Pick<ChatV2DispatcherService, 'planHuddleTargets'>>;
 
 /** Constructor dependencies. */
 export interface SlackTeamChannelServiceDeps {
@@ -948,6 +949,19 @@ export class SlackTeamChannelService {
     if (!mapping) mapping = await this.ensureAdhocChannel(message);
     if (!mapping) return null;
 
+    // Slack delivers a channel message to every app in the channel, so a copy
+    // that arrived through one of our agents' own apps proves that agent is
+    // in the room — whether or not anyone has ever @'d it there. An ad-hoc
+    // roster used to be "agents that were @'d here", which left an agent the
+    // owner had added to a private channel out of it until someone happened
+    // to address it by name.
+    const receiving = await this.localReceivingAgent(message);
+    if (receiving && isAdhocMapping(mapping) && !(mapping.members ?? []).includes(receiving)) {
+      mapping.members = [...(mapping.members ?? []), receiving];
+      this.deps.chat.setHuddleMembers(mapping.chatChannelId, mapping.members);
+      await this.save();
+    }
+
     // One Slack message can reach us twice with different event types
     // (`app_mention` for an @'d agent's app plus `message.channels`); the
     // team must see it once — a second copy is acknowledged, not dispatched.
@@ -1040,65 +1054,6 @@ export class SlackTeamChannelService {
       if (oldest !== undefined) this.seenInbound.delete(oldest);
     }
 
-    // In an ad-hoc (often private) channel the master bot may not be a
-    // member, so an agent's own bot reacts instead.
-    //
-    // Which agent's, though, has to be found out rather than assumed. This
-    // used to take the first installed bot among the @'d agents and the
-    // huddle roster, on the reasoning that a huddle member's bot is "by
-    // definition in the channel". It is not: the roster grows as agents are
-    // @'d and never shrinks, and a bot can be removed from a private channel
-    // afterwards. Pick one that is not in the channel and Slack answers
-    // `channel_not_found` — the message is routed, dispatched and answered,
-    // and the owner sees no eyes at all (#daily-info, 2026-09-22).
-    //
-    // So try them in turn, @'d agents first since one of them is about to
-    // reply, and fall back to the master bot last.
-    const reactorTokens: Array<string | undefined> = isAdhocMapping(mapping)
-      ? [
-          ...new Set(
-            [...resolved.mentions, ...(mapping.members ?? [])]
-              .map((m) => this.deps.identities?.getInstalled(m)?.botToken)
-              .filter((t): t is string => !!t),
-          ),
-          undefined,
-        ]
-      : [undefined];
-
-    // Swallowing this outright cost an evening: the owner saw no eyes and no
-    // placeholder and reasonably concluded nothing had arrived, while the
-    // message was in fact routed, dispatched and answered (2026-09-21).
-    // Cosmetic, so still non-fatal — but never again silent.
-    let reacted = false;
-    let lastError = '';
-    for (const token of reactorTokens) {
-      try {
-        await this.deps.slack.addReaction(
-          message.channelId,
-          message.ts,
-          SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION,
-          token,
-        );
-        reacted = true;
-        break;
-      } catch (err: unknown) {
-        const code = describeSlackError(err).code;
-        lastError = code;
-        // Only a not-a-member failure is worth trying another identity for.
-        // Anything else (already reacted, rate limit, bad message ts) will
-        // fail identically for every bot.
-        if (code !== 'channel_not_found') break;
-      }
-    }
-    if (!reacted) {
-      this.logger.warn('Could not acknowledge the message with a reaction', {
-        slackChannel: mapping.slackChannelName ?? message.channelId,
-        adhoc: isAdhocMapping(mapping),
-        identitiesTried: reactorTokens.length,
-        error: lastError,
-      });
-    }
-
     // Ad-hoc channels grow their huddle as new agents get @'d there.
     if (isAdhocMapping(mapping) && resolved.mentions.length > 0) {
       const next = [...new Set([...(mapping.members ?? []), ...resolved.mentions])];
@@ -1109,21 +1064,45 @@ export class SlackTeamChannelService {
       }
     }
 
-    // @'d agents must reply: show the honest state in the thread for each
-    // one that has its own bot — "waking up…" for an idle agent (a cold
-    // start is 1–2 minutes), "is working on it…" once it holds the message.
-    // Who will be asked to reply: the @'d members, or (nobody @'d, top-level
-    // message) the team leader alone. Mirrors the dispatcher's targeting so
-    // the placeholder matches who actually gets the message.
-    const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
-    if (this.deps.typing) {
-      let sessions = resolved.mentions;
-      if (sessions.length === 0 && !message.threadTs && team) {
+    // Who will receive this, and who owes a reply — decided by the same rules
+    // delivery uses, but *before* delivery, which can take a minute or two
+    // when an agent has to be cold-started. The owner should not look at an
+    // unacknowledged message for that long.
+    const dispatcherForPlan = this.deps.getDispatcher();
+    const dispatchOptions = {
+      threadId: threadId ?? persisted.id,
+      replyVia: 'reply-channel' as const,
+      // A local agent's own message (fanned out to the colleagues it @'d)
+      // must not come back to its author.
+      ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
+    };
+    const planned: Map<string, 'required' | 'optional'> | null = dispatcherForPlan?.planHuddleTargets
+      ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
+      : null;
+
+    await this.acknowledgeSeen(message, mapping, resolved.mentions, planned);
+
+    // Agents that must reply get a placeholder straight away — "waking up…"
+    // for an idle agent (a cold start is 1–2 minutes), "is working on it…"
+    // once it holds the message. Agents that were only told, and may or may
+    // not decide to answer, get none: a placeholder is a promise of a reply,
+    // and they announce their own with `reply-channel --working` if they
+    // take it on. With a plan this covers the case the old heuristic missed —
+    // a bare follow-up in a thread, which the last speaker must answer.
+    let owing: string[];
+    if (planned) {
+      owing = [...planned].filter(([, mode]) => mode === 'required').map(([session]) => session);
+    } else {
+      owing = resolved.mentions;
+      if (owing.length === 0 && !message.threadTs && team) {
         // Same rule as the dispatcher's huddleLeaderFor: the team leader, else the first member.
         const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead') ?? members[0];
-        if (leader) sessions = [leader.sessionName];
+        if (leader) owing = [leader.sessionName];
       }
-      for (const session of sessions) {
+    }
+    const typingTargets: Array<{ session: string; key: { agentSession: string; slackChannelId: string; threadTs: string } }> = [];
+    if (this.deps.typing) {
+      for (const session of owing) {
         const member = members.find((m) => m.sessionName === session);
         const installed = this.deps.identities?.getInstalled(session);
         // Own bot when installed; otherwise the master bot wearing the agent's
@@ -1152,12 +1131,8 @@ export class SlackTeamChannelService {
           .join(' · ');
       }
       dispatch = await dispatcher.dispatchMessage(channel, persisted, {
-        threadId: threadId ?? persisted.id,
-        replyVia: 'reply-channel',
+        ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
-        // A local agent's own message (fanned out to the colleagues it @'d)
-        // must not come back to its author.
-        ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
       });
     } else {
       this.logger.warn('No chat dispatcher wired — message persisted but not delivered', {
@@ -1193,17 +1168,123 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * The local agent whose own app delivered this copy, if any.
+   *
+   * A direct message is never a room: an agent's DM is handled by the DM
+   * service, and anything that falls through from there belongs to the
+   * orchestrator path, not to an ad-hoc huddle.
+   *
+   * @param message - The inbound message
+   * @returns The agent's session name, or null
+   */
+  private async localReceivingAgent(message: SlackIncomingMessage): Promise<string | null> {
+    const session = message.agentSession;
+    if (!session || message.channelId.startsWith('D')) return null;
+    if (this.deps.isLocalAgent) return this.deps.isLocalAgent(session) ? session : null;
+    const teams = await this.deps.storage.getTeams();
+    return teams.some((t) => teamChannelMembers(t).some((m) => m.sessionName === session)) ? session : null;
+  }
+
+  /**
+   * Put 👀 on the message — one per agent that will receive it.
+   *
+   * It used to be a single reaction meaning "Crewly got this". The owner
+   * reads it as "how many agents saw this", and with several agents in a
+   * room that is the more useful answer: three agents who will each weigh a
+   * message should show three eyes, and an agent that was not handed the
+   * message should show none, so the count is honest rather than "everyone
+   * in the channel". Each agent reacts with its own bot.
+   *
+   * When nobody in particular receives it, or no receiving agent has a bot
+   * of its own, one reaction still goes on so the owner can see the message
+   * arrived — the 2026-09-21 lesson: no eyes reads as nothing arrived.
+   *
+   * @param message - The inbound message
+   * @param mapping - Its channel mapping
+   * @param mentions - Agents @'d in it
+   * @param planned - Who will receive it, from the dispatcher; null when unknown
+   */
+  private async acknowledgeSeen(
+    message: SlackIncomingMessage,
+    mapping: SlackTeamChannelMapping,
+    mentions: readonly string[],
+    planned: Map<string, 'required' | 'optional'> | null,
+  ): Promise<void> {
+    const react = (token?: string) =>
+      this.deps.slack.addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION, token);
+
+    let seen = 0;
+    const absent: string[] = [];
+    for (const session of planned?.keys() ?? []) {
+      const token = this.deps.identities?.getInstalled(session)?.botToken;
+      if (!token) continue;
+      try {
+        await react(token);
+        seen += 1;
+      } catch (err: unknown) {
+        const code = describeSlackError(err).code;
+        if (code === 'channel_not_found' || code === 'not_in_channel') absent.push(session);
+      }
+    }
+    if (absent.length > 0) {
+      // The agent still gets the message; its bot is just not in the room
+      // (removed from a private channel after it joined the roster, say).
+      this.logger.info('Agent bot not in the channel — no eyes from it', {
+        slackChannel: mapping.slackChannelName ?? message.channelId,
+        agents: absent,
+      });
+    }
+    if (seen > 0) return;
+
+    // Nobody in particular, or nobody with a bot of their own. In an ad-hoc
+    // (often private) channel the master bot may not be a member, so try the
+    // agents' bots — @'d ones first — and the master bot last. Only a
+    // not-a-member failure is worth another identity: already-reacted, rate
+    // limits and a bad ts fail identically for every bot.
+    const fallback: Array<string | undefined> = isAdhocMapping(mapping)
+      ? [
+          ...new Set(
+            [...mentions, ...(mapping.members ?? [])]
+              .map((m) => this.deps.identities?.getInstalled(m)?.botToken)
+              .filter((t): t is string => !!t),
+          ),
+          undefined,
+        ]
+      : [undefined];
+    let lastError = '';
+    for (const token of fallback) {
+      try {
+        await react(token);
+        return;
+      } catch (err: unknown) {
+        lastError = describeSlackError(err).code;
+        if (lastError !== 'channel_not_found') break;
+      }
+    }
+    // Swallowing this outright cost an evening (2026-09-21): cosmetic, so
+    // non-fatal, but never silent.
+    this.logger.warn('Could not acknowledge the message with a reaction', {
+      slackChannel: mapping.slackChannelName ?? message.channelId,
+      adhoc: isAdhocMapping(mapping),
+      identitiesTried: fallback.length,
+      error: lastError,
+    });
+  }
+
+  /**
    * Any Slack channel becomes routable the moment a local agent's bot is
-   * @'d in it (the owner invited agents from different teams into a private
-   * channel, say): a huddle is created for the channel with the @'d agents
-   * as members and mapped under the synthetic team id `adhoc:<channel>`.
-   * Messages that @ nobody local are left to the caller (orchestrator path).
+   * @'d in it, or a message reaches us through a local agent's own app
+   * (Slack only delivers to apps that are members, so that proves the bot
+   * is in the channel). The owner invited agents from different teams into
+   * a private channel, say: a huddle is created for the channel with those
+   * agents as members and mapped under the synthetic team id
+   * `adhoc:<channel>`. Anything else is left to the caller (orchestrator
+   * path).
    *
    * @param message - The inbound message
    * @returns The new mapping, or null when no local agent was @'d
    */
   private async ensureAdhocChannel(message: SlackIncomingMessage): Promise<SlackTeamChannelMapping | null> {
-    if (!message.text || !message.text.includes('<@') && !message.text.includes('@')) return null;
     const teams = await this.deps.storage.getTeams();
     const members = teams.flatMap((t) => teamChannelMembers(t));
     if (members.length === 0) return null;
@@ -1216,9 +1297,15 @@ export class SlackTeamChannelService {
     // Only a real Slack mention of an agent's bot user counts here — a bare
     // "@name" in some unrelated channel must not hijack it.
     const botIds = new Set(candidates.map((c) => c.botUserId).filter((id): id is string => !!id));
-    const mentionedBots = [...message.text.matchAll(/<@([A-Z0-9]+)>/g)].map((m) => m[1]).filter((id) => botIds.has(id));
-    if (mentionedBots.length === 0) return null;
+    const text = message.text ?? '';
+    const mentionedBots = [...text.matchAll(/<@([A-Z0-9]+)>/g)].map((m) => m[1]).filter((id) => botIds.has(id));
     const sessions = candidates.filter((c) => c.botUserId && mentionedBots.includes(c.botUserId)).map((c) => c.sessionName);
+    // The copy came through a local agent's own app: that agent's bot is in
+    // this channel, which makes the channel a room it belongs to even if
+    // nobody has addressed it yet.
+    const receiving = await this.localReceivingAgent(message);
+    if (receiving && !sessions.includes(receiving)) sessions.push(receiving);
+    if (sessions.length === 0) return null;
 
     // The master bot is usually not in this channel (private); the name is
     // best-effort and falls back to the id.
@@ -1360,6 +1447,60 @@ export class SlackTeamChannelService {
    * `slackThreadTs`; failing that, the latest Slack-origin root in the
    * huddle; failing that, the channel top level.
    */
+  /**
+   * Show "<agent> is working on it…" in the thread, at the agent's request.
+   *
+   * Agents that must answer get this placeholder the moment the message
+   * arrives. Agents that were only *told* — a message nobody addressed to
+   * them, passed along so they can judge whether it concerns them — get none,
+   * because a placeholder promises a reply and most of them will not send
+   * one. When one of them does decide to answer, it calls this, so the owner
+   * sees who has taken the message on: two agents deciding to answer show two
+   * placeholders, which is exactly the signal the owner asked for.
+   *
+   * The key matches the one the reply is mirrored under, so the agent's
+   * actual answer replaces the placeholder rather than landing beside it.
+   *
+   * @param input - Chat channel and thread the agent is answering in
+   * @returns Whether a placeholder is now showing, or why not
+   */
+  async beginWorkingForAgent(input: {
+    chatChannelId: string;
+    agentSession: string;
+    threadId?: string;
+  }): Promise<{ ok: true; slackChannelId: string; threadTs?: string } | { ok: false; reason: string }> {
+    const mapping = (this.store?.mappings ?? []).find((m) => m.chatChannelId === input.chatChannelId);
+    if (!mapping) return { ok: false, reason: 'not_a_slack_channel' };
+    if (!this.deps.typing) return { ok: false, reason: 'placeholders_unavailable' };
+    if (!this.deps.slack.isConnected()) return { ok: false, reason: 'slack_not_connected' };
+
+    const threadTs = this.resolveOutboundThreadTs(mapping, {
+      channelId: input.chatChannelId,
+      senderId: input.agentSession,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+    } as ChatMessageDTO);
+
+    const team = (await this.deps.storage.getTeams()).find((t) => (t.members ?? []).some((m) => m.sessionName === input.agentSession));
+    const member = team?.members.find((m) => m.sessionName === input.agentSession);
+    const installed = this.deps.identities?.getInstalled(input.agentSession) ?? null;
+    const displayName = member?.name ?? input.agentSession;
+    const identity = installed
+      ? { botToken: installed.botToken, displayName }
+      : { displayName, ...slackIdentityFor(member, input.agentSession) };
+
+    await this.deps.typing.begin(
+      { agentSession: input.agentSession, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) },
+      identity,
+      'typing',
+    );
+    this.logger.info('Agent took a message on', {
+      agentSession: input.agentSession,
+      slackChannel: mapping.slackChannelName,
+      threaded: Boolean(threadTs),
+    });
+    return { ok: true, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) };
+  }
+
   /**
    * Put a file into the Slack channel an agent is replying in.
    *

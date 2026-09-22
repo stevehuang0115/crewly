@@ -52,6 +52,29 @@ bash config/skills/agent/core/reply-channel/execute.sh \
   '{"channelId":"chan-1","content":"hello back","clientMessageId":"cmid-abc"}'
 ```
 
+## Taking a message on: `--working`
+
+Some messages are passed to you only so you can judge whether they concern
+you — nobody @'d you, or a follow-up in a thread was aimed at whoever spoke
+last. Your prompt says so.
+
+If you decide to answer one of those, announce it **before** you start:
+
+```bash
+bash execute.sh --channel <channelId> --thread <messageId> --working
+```
+
+That shows "<your name> is working on it…" in the Slack thread, and your
+reply — same `--channel` and `--thread` — replaces it in place. The owner
+uses these to see who has taken a message on: if two agents decide to answer,
+they should see two.
+
+If the message is not for you, do nothing at all: no `--working`, no reply.
+A placeholder you then never fill is worse than silence.
+
+When you were @'d, or you are the one who must answer, you already have a
+placeholder — `--working` is a harmless no-op and you can skip it.
+
 ## Environment
 
 - `CREWLY_SESSION_NAME` — your agent session id. Auto-set in agent sessions.

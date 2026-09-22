@@ -349,7 +349,7 @@ let tmpDir: string;
 let slack: FakeSlack;
 let chat: FakeChat;
 let storage: FakeStorage;
-let dispatcher: { dispatchMessage: jest.Mock } | null;
+let dispatcher: { dispatchMessage: jest.Mock; planHuddleTargets?: jest.Mock } | null;
 let identities: FakeIdentities | null;
 let service: SlackTeamChannelService;
 let ownerUserId: string | null = 'UOWNER';
@@ -1146,6 +1146,230 @@ describe('mirrorOutbound', () => {
 // ---------------------------------------------------------------------------
 // Real agent identities (Cloud-provisioned bot users)
 // ---------------------------------------------------------------------------
+
+describe('one pair of eyes per agent that receives it', () => {
+  /** A dispatcher whose plan says who will receive the message. */
+  function planning(plan: Array<[string, 'required' | 'optional']>) {
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [] }),
+      planHuddleTargets: jest.fn().mockResolvedValue(new Map(plan)),
+    };
+  }
+
+  beforeEach(async () => {
+    identities = new FakeIdentities();
+    typing = null;
+  });
+
+  it('reacts once with each receiving agent\'s own bot, so the count is how many agents got it', async () => {
+    // The owner reads 👀 as "how many agents saw this". Three agents who
+    // will each weigh a message should show three eyes.
+    planning([['crewly-alpha-sam', 'required'], ['crewly-alpha-leo', 'optional']]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.reactions = [];
+
+    await service.routeInbound(inbound({ text: 'hello team', ts: '500.1' }));
+
+    const eyes = slack.reactions.filter((r) => r.ts === '500.1');
+    expect(eyes.map((r) => r.botToken).sort()).toEqual(['xoxb-leo', 'xoxb-sam']);
+  });
+
+  it('shows no eye from an agent the message is not going to', async () => {
+    // Honest count: not everyone in the room, only those handed the message.
+    planning([['crewly-alpha-sam', 'required']]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.reactions = [];
+
+    await service.routeInbound(inbound({ text: 'hello', ts: '501.1' }));
+
+    expect(slack.reactions.filter((r) => r.ts === '501.1').map((r) => r.botToken)).toEqual(['xoxb-sam']);
+  });
+
+  it('skips an agent whose bot is no longer in the channel, and still shows the others', async () => {
+    planning([['crewly-alpha-sam', 'required'], ['crewly-alpha-leo', 'optional']]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    slack.reactionNotInChannel.add('xoxb-leo');
+    slack.reactions = [];
+
+    await service.routeInbound(inbound({ text: 'hello', ts: '502.1' }));
+
+    expect(slack.reactions.filter((r) => r.ts === '502.1').map((r) => r.botToken)).toEqual(['xoxb-sam']);
+  });
+
+  it('still puts one eye on a message nobody in particular receives', async () => {
+    // The 2026-09-21 lesson: no eyes at all reads as "nothing arrived".
+    planning([]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    slack.reactions = [];
+
+    await service.routeInbound(inbound({ text: 'just chatting', ts: '503.1' }));
+
+    const eyes = slack.reactions.filter((r) => r.ts === '503.1');
+    expect(eyes).toHaveLength(1);
+    expect(eyes[0].botToken).toBeUndefined();
+  });
+
+  it('shows a placeholder only for agents that owe a reply', async () => {
+    // A placeholder is a promise of an answer; an agent only passed the
+    // message to judge announces itself if it takes it on.
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    planning([['crewly-alpha-sam', 'required'], ['crewly-alpha-leo', 'optional']]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+
+    await service.routeInbound(inbound({ text: 'hello', ts: '504.1' }));
+
+    const begun = typing.begin.mock.calls.map((c) => c[0].agentSession);
+    expect(begun).toEqual(['crewly-alpha-sam']);
+    typing = null;
+  });
+
+  it('shows a placeholder for the last speaker on a bare thread follow-up', async () => {
+    // The old heuristic only placed one for @'d agents or a top-level
+    // leader, so a follow-up in a thread with no @ showed nothing at all.
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    planning([['crewly-alpha-sam', 'required']]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    await service.routeInbound(inbound({ text: 'start', ts: '505.1' }));
+    typing.begin.mockClear();
+
+    await service.routeInbound(inbound({ text: 'and one more thing', ts: '505.2', threadTs: '505.1' }));
+
+    expect(typing.begin).toHaveBeenCalledWith(
+      { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '505.1' },
+      expect.anything(),
+      'typing',
+    );
+    typing = null;
+  });
+
+  it('plans with exactly the options it then dispatches with', async () => {
+    planning([['crewly-alpha-sam', 'required']]);
+    service = makeService();
+    await service.ensureTeamChannel(team());
+
+    await service.routeInbound(inbound({ text: 'hello', ts: '506.1' }));
+
+    const planOpts = dispatcher!.planHuddleTargets!.mock.calls[0][2];
+    const sendOpts = dispatcher!.dispatchMessage.mock.calls[0][2];
+    expect(sendOpts).toMatchObject(planOpts);
+  });
+});
+
+describe('the room is whoever\'s bot is in it', () => {
+  beforeEach(async () => {
+    identities = new FakeIdentities();
+    typing = null;
+  });
+
+  it('links a channel when a message arrives through a local agent\'s own app, with nobody @\'d', async () => {
+    // Slack only delivers to apps that are members, so the copy proves the
+    // agent is in the room. The old rule needed someone to @ it first.
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+
+    const result = await service.routeInbound(
+      inbound({ channelId: 'C-new', text: 'just a thought', ts: '600.1', agentSession: 'crewly-alpha-leo' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.mapping.teamId).toBe('adhoc:C-new');
+    expect(result!.mapping.members).toEqual(['crewly-alpha-leo']);
+    isLocal = () => false;
+  });
+
+  it('adds the receiving agent to a room it was never @\'d in', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo' || s === 'crewly-alpha-sam';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USAM> hi', ts: '601.1' }));
+
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: 'morning', ts: '601.2', agentSession: 'crewly-alpha-leo' }));
+
+    expect(service.findBySlackChannelId('C-priv')?.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    isLocal = () => false;
+  });
+
+  it('never turns a DM into a room', async () => {
+    isLocal = () => true;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+
+    expect(
+      await service.routeInbound(inbound({ channelId: 'D0DM', text: 'hi', ts: '602.1', agentSession: 'crewly-alpha-leo' })),
+    ).toBeNull();
+    isLocal = () => false;
+  });
+
+  it('ignores a copy delivered through an agent that does not run here', async () => {
+    isLocal = () => false;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+
+    expect(
+      await service.routeInbound(inbound({ channelId: 'C-elsewhere', text: 'hi', ts: '603.1', agentSession: 'someone-elses-agent' })),
+    ).toBeNull();
+  });
+});
+
+describe('beginWorkingForAgent', () => {
+  it('shows a placeholder that the agent\'s reply then replaces', async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn(), fail: jest.fn() };
+    identities = new FakeIdentities();
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    await service.routeInbound(inbound({ text: 'anyone?', ts: '700.1' }));
+    const root = chat.messages.find((m) => m.metadata?.slackTs === '700.1')!;
+
+    const result = await service.beginWorkingForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-leo',
+      threadId: root.id,
+    });
+
+    const key = { agentSession: 'crewly-alpha-leo', slackChannelId: 'C1', threadTs: '700.1' };
+    expect(result).toMatchObject({ ok: true, threadTs: '700.1' });
+    expect(typing.begin).toHaveBeenCalledWith(key, { botToken: 'xoxb-leo', displayName: 'Leo' }, 'typing');
+
+    // Same key the reply is mirrored under, so it edits the placeholder in
+    // place instead of landing beside it.
+    await service.mirrorOutbound({
+      id: 'reply-9', channelId: 'huddle-1', seq: 99, senderType: 'agent', senderId: 'crewly-alpha-leo', content: 'I can take this',
+      contentType: 'markdown', createdAt: 1, attachments: [], mentions: [], metadata: { source: 'reply-tool' }, threadId: root.id,
+    } as ChatMessageDTO);
+    expect(typing.resolve).toHaveBeenCalledWith(key, 'I can take this', expect.anything());
+    typing = null;
+  });
+
+  it('does nothing for a chat channel that is not mirrored to Slack', async () => {
+    typing = { begin: jest.fn(), resolve: jest.fn(), setPhase: jest.fn(), fail: jest.fn() };
+    service = makeService();
+
+    const result = await service.beginWorkingForAgent({ chatChannelId: 'local-only', agentSession: 'crewly-alpha-leo' });
+
+    expect(result).toEqual({ ok: false, reason: 'not_a_slack_channel' });
+    expect(typing.begin).not.toHaveBeenCalled();
+    typing = null;
+  });
+});
 
 describe('attachFileForAgent', () => {
   beforeEach(async () => {

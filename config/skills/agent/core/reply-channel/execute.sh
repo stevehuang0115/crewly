@@ -30,6 +30,10 @@ Options:
   --thread    | -t   Thread root message id — reply inside that thread
                      (Slack team channels: keeps the reply in the same Slack thread)
   --cmid             Optional client-message-id for idempotency
+  --working          Say you are taking this on, without replying yet: shows
+                     "<you> is working on it…" in the Slack thread, which your
+                     real reply then replaces. Use it when a message was only
+                     passed to you to judge, and you have decided to answer.
   --json      | -j   Raw JSON payload
   --help      | -h   Show this help
 EOF_USAGE
@@ -40,6 +44,7 @@ CHANNEL_ID=""
 CONTENT=""
 CMID=""
 THREAD_ID=""
+WORKING=""
 
 # Detect legacy JSON argument as $1
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -52,6 +57,10 @@ while [[ $# -gt 0 ]]; do
     --channel|-c)
       CHANNEL_ID="$2"
       shift 2
+      ;;
+    --working)
+      WORKING="1"
+      shift
       ;;
     --content|-m)
       CONTENT="$2"
@@ -130,6 +139,25 @@ fi
 if [ -z "$CHANNEL_ID" ]; then
   echo '{"success":false,"error":"--channel is required"}' >&2
   exit 2
+fi
+
+# "I'm taking this on": post the working-on-it placeholder and stop. The
+# reply sent afterwards (same --channel and --thread) replaces it in place.
+if [ -n "$WORKING" ]; then
+  WBODY=$(THREAD_ID="$THREAD_ID" CHANNEL_ID="$CHANNEL_ID" python3 -c '
+import os, json
+p = {"channelId": os.environ["CHANNEL_ID"]}
+t = os.environ.get("THREAD_ID", "")
+if t:
+    p["threadId"] = t
+print(json.dumps(p))
+')
+  if RESPONSE=$(api_call POST "/slack/working" "$WBODY" 2>&1); then
+    echo "$RESPONSE"
+    exit 0
+  fi
+  echo "$RESPONSE" >&2
+  exit 1
 fi
 
 if [ -z "$CONTENT" ]; then

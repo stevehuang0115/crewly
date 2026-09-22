@@ -1523,4 +1523,50 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
   }
 });
 
+/**
+ * POST /api/slack/working — an agent says it has taken a message on.
+ *
+ * Shows "<agent> is working on it…" in the Slack thread; the agent's reply
+ * replaces it. Used by agents that were passed a message to judge rather than
+ * asked to answer, once they decide to answer — see `reply-channel --working`.
+ */
+router.post('/working', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { channelId, threadId } = req.body ?? {};
+    const agentSession =
+      typeof req.headers['x-agent-session'] === 'string' ? (req.headers['x-agent-session'] as string) : '';
+    if (!channelId) {
+      res.status(400).json({ success: false, error: 'channelId is required' });
+      return;
+    }
+    if (!agentSession) {
+      res.status(400).json({ success: false, error: 'X-Agent-Session header is required' });
+      return;
+    }
+
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const result = await getSlackTeamChannelService()?.beginWorkingForAgent({
+      chatChannelId: String(channelId),
+      agentSession,
+      ...(threadId ? { threadId: String(threadId) } : {}),
+    });
+    if (!result) {
+      res.status(503).json({ success: false, error: 'Slack team channels are not running' });
+      return;
+    }
+    if (!result.ok) {
+      // Not a Slack channel (a local chat, say): nothing to show, and nothing
+      // for the agent to fix — answer as normal.
+      res.status(result.reason === 'not_a_slack_channel' ? 200 : 502).json({
+        success: result.reason === 'not_a_slack_channel',
+        data: { shown: false, reason: result.reason },
+      });
+      return;
+    }
+    res.json({ success: true, data: { shown: true, ...result } });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

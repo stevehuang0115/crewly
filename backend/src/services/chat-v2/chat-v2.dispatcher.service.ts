@@ -323,8 +323,16 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
   if (replyVia === 'reply-channel') {
     // Slack team channel: reply as yourself into the channel, in-thread.
     const cmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
+    // Announce first, then answer: the owner asked to see which agents have
+    // taken a message on — two agents deciding to answer should show two
+    // "is working on it" lines. Only agents that were *told* need this; ones
+    // that must answer already have a placeholder.
+    const workingCmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --working`;
+    // Not every optional recipient leads the channel: agents already engaged
+    // in a thread are told about a follow-up that was meant for whoever spoke
+    // last. Claiming leadership unconditionally told them otherwise.
     replyHint = mode === 'optional'
-      ? `回复本频道: 这是团队频道，消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员）。关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与团队的工作相关且你有对应的上下文或知识，用 \`reply-channel\` skill 回复（${cmd}）；若是频道里的人之间在交流、或与你无关，不要回复，也不要为此展开调查。`
+      ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else {
     replyHint = mode === 'optional'
@@ -512,6 +520,53 @@ export class ChatV2DispatcherService {
       };
     }
 
+    const { targets, mentioned } = await this.computeHuddleTargets(channel, message, options, members);
+    return this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned);
+  }
+
+  /**
+   * Who a huddle message will be delivered to, and which of them owe a reply —
+   * without delivering it.
+   *
+   * The Slack bridge needs this *before* delivery: it puts one 👀 on the
+   * message per agent that will receive it, and a "working on it" placeholder
+   * under each agent that must answer. Delivery can take a minute or two when
+   * an agent has to be cold-started, and the owner should not stare at an
+   * unacknowledged message for that long. Planning from the same rules as
+   * delivery is what keeps the eyes honest: one per agent that actually gets
+   * the message, not one per agent in the room.
+   *
+   * @param channel - The huddle
+   * @param message - The message
+   * @param options - Same options {@link dispatchMessage} would receive
+   * @returns Session → whether a reply is required; empty when nobody hears it
+   */
+  async planHuddleTargets(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions = {},
+  ): Promise<Map<string, 'required' | 'optional'>> {
+    if (channel.type !== 'huddle' || !this.huddleMembersFor) return new Map();
+    const members = this.huddleMembersFor(channel.id);
+    if (members.length === 0) return new Map();
+    return (await this.computeHuddleTargets(channel, message, options, members)).targets;
+  }
+
+  /**
+   * The targeting rules for a huddle message, shared by planning and delivery.
+   *
+   * @param channel - The huddle
+   * @param message - The message
+   * @param options - Dispatch options
+   * @param members - The huddle roster
+   * @returns Targets with their reply obligation, and who was @'d
+   */
+  private async computeHuddleTargets(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions,
+    members: readonly string[],
+  ): Promise<{ targets: Map<string, 'required' | 'optional'>; mentioned: string[] }> {
     // Who hears this message. Every agent that hears one spends tokens on
     // it (measured 2026-09-18: one un-addressed "有人吗？" cold-started three
     // Claude Code agents and set off an investigation), so delivery is
@@ -551,6 +606,28 @@ export class ChatV2DispatcherService {
       const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
       if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
     }
+    return { targets, mentioned };
+  }
+
+  /**
+   * Deliver a huddle message to the targets {@link computeHuddleTargets} chose.
+   *
+   * @param channel - The huddle
+   * @param message - The message
+   * @param options - Dispatch options
+   * @param members - The huddle roster (for logging)
+   * @param targets - Who hears it, and whether they must reply
+   * @param mentioned - Who was @'d
+   * @returns The dispatch result
+   */
+  private async deliverToHuddleTargets(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions,
+    members: readonly string[],
+    targets: Map<string, 'required' | 'optional'>,
+    mentioned: readonly string[],
+  ): Promise<DispatchMessageResult> {
     if (targets.size === 0) {
       this.logger.debug('chat-v2 huddle dispatch: nobody addressed — recorded only', {
         channelId: channel.id,

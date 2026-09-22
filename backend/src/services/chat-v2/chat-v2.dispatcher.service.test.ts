@@ -140,6 +140,85 @@ describe('ChatV2DispatcherService', () => {
     });
   });
 
+  describe('planHuddleTargets', () => {
+    /** A huddle with a roster, and a sink that records who was delivered to. */
+    function huddleSetup(opts: {
+      members: string[];
+      participants?: string[];
+      lastSpeaker?: string | null;
+      leader?: string | null;
+    }) {
+      const delivered: string[] = [];
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: {
+          sendMessageToAgent: async (session: string) => {
+            delivered.push(session);
+            return { success: true };
+          },
+        },
+        huddleMembersFor: () => opts.members,
+        threadParticipantsFor: () => opts.participants ?? [],
+        lastThreadSpeakerFor: () => opts.lastSpeaker ?? null,
+        huddleLeaderFor: async () => opts.leader ?? null,
+      });
+      const channel = { id: 'h1', type: 'huddle', name: '#room' } as never;
+      return { dispatcher, delivered, channel };
+    }
+
+    function msg(mentions: string[] = []) {
+      return { id: 'm1', channelId: 'h1', senderType: 'user', senderId: 'owner', content: 'x', mentions, metadata: {} } as never;
+    }
+
+    it('plans exactly who delivery then reaches', async () => {
+      // The eyes and placeholders are drawn from the plan *before* delivery;
+      // if the two ever disagreed, the owner would see eyes from agents that
+      // never got the message.
+      const { dispatcher, delivered, channel } = huddleSetup({
+        members: ['atlas', 'sam', 'ella'],
+        participants: ['atlas', 'sam'],
+        lastSpeaker: 'atlas',
+      });
+
+      const plan = await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1' });
+      await dispatcher.dispatchMessage(channel, msg(), { threadId: 't1' });
+
+      expect([...plan.keys()].sort()).toEqual([...delivered].sort());
+    });
+
+    it('marks the last speaker as owing a reply on a bare thread follow-up', async () => {
+      const { dispatcher, channel } = huddleSetup({
+        members: ['atlas', 'sam'],
+        participants: ['atlas', 'sam'],
+        lastSpeaker: 'atlas',
+      });
+
+      const plan = await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1' });
+
+      expect(plan.get('atlas')).toBe('required');
+      expect(plan.get('sam')).toBe('optional');
+    });
+
+    it('marks every @\'d agent as owing a reply', async () => {
+      const { dispatcher, channel } = huddleSetup({ members: ['atlas', 'sam', 'ella'] });
+      const plan = await dispatcher.planHuddleTargets(channel, msg(['sam', 'ella']));
+      expect(plan.get('sam')).toBe('required');
+      expect(plan.get('ella')).toBe('required');
+      expect(plan.has('atlas')).toBe(false);
+    });
+
+    it('delivers nothing when planning', async () => {
+      const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
+      await dispatcher.planHuddleTargets(channel, msg());
+      expect(delivered).toEqual([]);
+    });
+
+    it('plans nothing for a channel that is not a huddle', async () => {
+      const { dispatcher } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
+      const plan = await dispatcher.planHuddleTargets({ id: 'd1', type: 'dm', name: 'x' } as never, msg());
+      expect(plan.size).toBe(0);
+    });
+  });
+
   describe('context gathering', () => {
     /** A turn n minutes ago. */
     function ago(minutes: number, senderId: string, content: string) {
@@ -263,7 +342,55 @@ describe('ChatV2DispatcherService', () => {
       });
       expect(prompt).toContain('reply-channel');
       expect(prompt).not.toContain('--thread');
-      expect(prompt).toContain('没有 @ 任何人');
+      expect(prompt).toContain('没有 @ 你');
+    });
+
+    it('tells an agent that was only told to announce itself before answering', () => {
+      // The owner asked to see which agents have taken a message on: two
+      // agents deciding to answer should show two "working on it" lines.
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'sess-a',
+        senderId: 'U1',
+        content: 'fyi',
+        replyVia: 'reply-channel',
+        responseMode: 'optional',
+        threadId: 'msg-root',
+      });
+      expect(prompt).toContain('--channel huddle-1 --thread msg-root --working');
+      expect(prompt.indexOf('--working')).toBeLessThan(prompt.indexOf('--content'));
+      // And to do nothing at all when it is not for them.
+      expect(prompt).toContain('不要发 --working');
+    });
+
+    it('does not tell every optional recipient it leads the channel', () => {
+      // Engaged thread members get optional follow-ups meant for whoever
+      // spoke last; telling them they are the leader was simply false.
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'sess-a',
+        senderId: 'U1',
+        content: 'fyi',
+        replyVia: 'reply-channel',
+        responseMode: 'optional',
+      });
+      expect(prompt).not.toContain('你就是本频道的负责人');
+      expect(prompt).toContain('若你是本频道的负责人');
+    });
+
+    it('does not ask an agent that must answer to announce itself — it already has a placeholder', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'sess-a',
+        senderId: 'U1',
+        content: '@sam look',
+        replyVia: 'reply-channel',
+        responseMode: 'required',
+      });
+      expect(prompt).not.toContain('--working');
     });
   });
 
