@@ -87,6 +87,8 @@ class FakeSlack implements TeamChannelSlackApi {
   purposes: Array<{ id: string; purpose: string }> = [];
   sent: SlackOutgoingMessage[] = [];
   reactions: Array<{ channelId: string; ts: string; emoji: string; botToken?: string }> = [];
+  /** Tokens for which addReaction should answer channel_not_found. */
+  reactionNotInChannel = new Set<string | undefined>();
   uploads: Array<{
     channelId: string;
     filePath: string;
@@ -140,6 +142,9 @@ class FakeSlack implements TeamChannelSlackApi {
     return `${++this.seq}.000`;
   }
   async addReaction(channelId: string, ts: string, emoji: string, botToken?: string) {
+    if (this.reactionNotInChannel.has(botToken)) {
+      throw Object.assign(new Error('channel_not_found'), { data: { error: 'channel_not_found' } });
+    }
     this.reactions.push({ channelId, ts, emoji, ...(botToken ? { botToken } : {}) });
   }
   invites: Array<{ channelId: string; userIds: string[] }> = [];
@@ -938,7 +943,7 @@ describe('routeInbound', () => {
 
     expect(result).not.toBeNull();
     expect(dispatcher!.dispatchMessage).toHaveBeenCalled();
-    expect(warnings).toContainEqual(expect.objectContaining({ error: 'not_in_channel', reactedAs: 'master-bot' }));
+    expect(warnings).toContainEqual(expect.objectContaining({ error: 'not_in_channel', identitiesTried: 1 }));
   });
 
   it('a message written by an agent on another machine is recorded under its name as an outside voice and dispatched', async () => {
@@ -1378,6 +1383,66 @@ describe('agent identities', () => {
     expect(again!.message.id).toBe(first!.message.id);
     expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
     expect(chat.messages.filter((m) => m.metadata?.slackTs === '200.1')).toHaveLength(1);
+  });
+
+  it('tries another agent bot when the first one is not in the private channel', async () => {
+    // The huddle roster grows as agents are @'d there and never shrinks, and
+    // a bot can be removed from a private channel afterwards — so "a huddle
+    // member's bot is in the channel" is not something we can assume. Picking
+    // one that is not gave channel_not_found and no eyes at all, while the
+    // message was routed, dispatched and answered (#daily-info, 2026-09-22).
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+
+    // Build the ad-hoc mapping with both in the roster.
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USAM> hi', ts: '400.1' }));
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@ULEO> hi', ts: '400.2' }));
+
+    // Sam's bot has since been removed from the channel.
+    slack.reactionNotInChannel.add('xoxb-sam');
+    slack.reactions = [];
+
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: 'a follow-up with no @', ts: '400.3' }));
+
+    // It fell through to Leo rather than giving up.
+    expect(slack.reactions.at(-1)).toMatchObject({ channelId: 'C-priv', botToken: 'xoxb-leo' });
+  });
+
+  it('falls back to the master bot when no agent bot is in the channel', async () => {
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USAM> hi', ts: '401.1' }));
+
+    slack.reactionNotInChannel.add('xoxb-sam');
+    slack.reactions = [];
+
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: 'follow-up', ts: '401.2' }));
+
+    // Master bot = no token. It may well also fail, but it is worth the try.
+    expect(slack.reactions.at(-1)).toMatchObject({ channelId: 'C-priv' });
+    expect(slack.reactions.at(-1)!.botToken).toBeUndefined();
+  });
+
+  it('does not cycle identities for a failure every bot would share', async () => {
+    // An already-reacted or rate-limited error fails the same for everyone;
+    // retrying it once per agent just multiplies the calls.
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USAM> hi', ts: '402.1' }));
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@ULEO> hi', ts: '402.2' }));
+
+    let calls = 0;
+    const realAdd = slack.addReaction.bind(slack);
+    slack.addReaction = async (...args: Parameters<typeof realAdd>) => {
+      calls += 1;
+      throw Object.assign(new Error('already_reacted'), { data: { error: 'already_reacted' } });
+    };
+
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: 'follow-up', ts: '402.3' }));
+
+    expect(calls).toBe(1);
   });
 
   it('links any channel on the fly when a local agent bot is @\'d there, growing its roster as more agents are @\'d', async () => {

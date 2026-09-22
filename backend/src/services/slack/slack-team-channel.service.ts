@@ -1041,28 +1041,63 @@ export class SlackTeamChannelService {
     }
 
     // In an ad-hoc (often private) channel the master bot may not be a
-    // member; an agent's own bot reacts instead — the first @'d agent, or
-    // (nobody @'d, e.g. "@Crewly who leads content?") any agent already in
-    // the huddle, whose bot is by definition in the channel.
-    const reactAs = isAdhocMapping(mapping)
-      ? [...resolved.mentions, ...(mapping.members ?? [])]
-          .map((m) => this.deps.identities?.getInstalled(m)?.botToken)
-          .find((t): t is string => !!t)
-      : undefined;
+    // member, so an agent's own bot reacts instead.
+    //
+    // Which agent's, though, has to be found out rather than assumed. This
+    // used to take the first installed bot among the @'d agents and the
+    // huddle roster, on the reasoning that a huddle member's bot is "by
+    // definition in the channel". It is not: the roster grows as agents are
+    // @'d and never shrinks, and a bot can be removed from a private channel
+    // afterwards. Pick one that is not in the channel and Slack answers
+    // `channel_not_found` — the message is routed, dispatched and answered,
+    // and the owner sees no eyes at all (#daily-info, 2026-09-22).
+    //
+    // So try them in turn, @'d agents first since one of them is about to
+    // reply, and fall back to the master bot last.
+    const reactorTokens: Array<string | undefined> = isAdhocMapping(mapping)
+      ? [
+          ...new Set(
+            [...resolved.mentions, ...(mapping.members ?? [])]
+              .map((m) => this.deps.identities?.getInstalled(m)?.botToken)
+              .filter((t): t is string => !!t),
+          ),
+          undefined,
+        ]
+      : [undefined];
+
     // Swallowing this outright cost an evening: the owner saw no eyes and no
     // placeholder and reasonably concluded nothing had arrived, while the
     // message was in fact routed, dispatched and answered (2026-09-21).
     // Cosmetic, so still non-fatal — but never again silent.
-    await this.deps.slack
-      .addReaction(message.channelId, message.ts, SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION, reactAs)
-      .catch((err: unknown) => {
-        this.logger.warn('Could not acknowledge the message with a reaction', {
-          slackChannel: mapping.slackChannelName ?? message.channelId,
-          adhoc: isAdhocMapping(mapping),
-          reactedAs: reactAs ? 'agent-bot' : 'master-bot',
-          error: describeSlackError(err).code,
-        });
+    let reacted = false;
+    let lastError = '';
+    for (const token of reactorTokens) {
+      try {
+        await this.deps.slack.addReaction(
+          message.channelId,
+          message.ts,
+          SLACK_TEAM_CHANNEL_CONSTANTS.INBOUND_REACTION,
+          token,
+        );
+        reacted = true;
+        break;
+      } catch (err: unknown) {
+        const code = describeSlackError(err).code;
+        lastError = code;
+        // Only a not-a-member failure is worth trying another identity for.
+        // Anything else (already reacted, rate limit, bad message ts) will
+        // fail identically for every bot.
+        if (code !== 'channel_not_found') break;
+      }
+    }
+    if (!reacted) {
+      this.logger.warn('Could not acknowledge the message with a reaction', {
+        slackChannel: mapping.slackChannelName ?? message.channelId,
+        adhoc: isAdhocMapping(mapping),
+        identitiesTried: reactorTokens.length,
+        error: lastError,
       });
+    }
 
     // Ad-hoc channels grow their huddle as new agents get @'d there.
     if (isAdhocMapping(mapping) && resolved.mentions.length > 0) {
