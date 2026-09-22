@@ -231,12 +231,26 @@ export class ClaudeTranscriptSyncService {
 			if (!this.loaded) await this.loadCursors();
 
 			const sessions = getSessionStatePersistence().getRegisteredSessionsMap();
+
+			// Several agents commonly work in one repo. Count them up front so
+			// transcript resolution knows when a directory cannot identify a
+			// single agent.
+			const perCwd = new Map<string, number>();
+			for (const info of sessions.values()) {
+				if (info.runtimeType !== 'claude-code' || !info.cwd) continue;
+				perCwd.set(info.cwd, (perCwd.get(info.cwd) ?? 0) + 1);
+			}
+
 			for (const [sessionName, info] of sessions) {
 				// Only Claude Code writes the transcripts this service reads.
 				if (info.runtimeType !== 'claude-code') continue;
 				if (!info.cwd) continue;
 
-				const filePath = await this.resolveTranscript(info.cwd, info.claudeSessionId);
+				const filePath = await this.resolveTranscript(
+					info.cwd,
+					info.claudeSessionId,
+					(perCwd.get(info.cwd) ?? 0) > 1,
+				);
 				if (!filePath) {
 					result.sessionsWithoutTranscript += 1;
 					continue;
@@ -283,9 +297,15 @@ export class ClaudeTranscriptSyncService {
 	 *
 	 * @param cwd - The agent's working directory
 	 * @param claudeSessionId - Conversation id, when known
+	 * @param cwdIsShared - Whether another registered session works in the
+	 *                      same directory, which makes newest-wins unsafe
 	 * @returns Absolute path, or null when nothing readable exists
 	 */
-	private async resolveTranscript(cwd: string, claudeSessionId?: string): Promise<string | null> {
+	private async resolveTranscript(
+		cwd: string,
+		claudeSessionId: string | undefined,
+		cwdIsShared: boolean,
+	): Promise<string | null> {
 		const dir = path.join(this.homeDir, '.claude', 'projects', encodeProjectSlug(cwd));
 
 		if (claudeSessionId) {
@@ -300,6 +320,17 @@ export class ClaudeTranscriptSyncService {
 
 		// Newest transcript in the project directory. Covers an agent whose
 		// conversation id Crewly has not captured yet.
+		//
+		// Only safe when this agent is the sole one working in this directory.
+		// Several agents in one repo share a slug directory, so newest-wins
+		// would hand all of them the same transcript and attribute one busy
+		// agent's turns — and its context size — to every one of its
+		// colleagues. Observed exactly that: four agents each reported the
+		// same 726,475 tokens, which was one agent's figure. Waiting for the
+		// conversation id costs a little early data; guessing costs the
+		// dashboard its meaning.
+		if (cwdIsShared) return null;
+
 		let files: string[];
 		try {
 			files = await fs.readdir(dir);

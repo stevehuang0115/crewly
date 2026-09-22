@@ -316,6 +316,36 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect((await service.sync()).sessionsWithoutTranscript).toBe(1);
 	});
 
+	it('never guesses a transcript when several agents share a directory', async () => {
+		// Agents in one repo share a slug directory. Newest-wins would hand
+		// every one of them the busiest agent's transcript and attribute its
+		// turns and its context size to all of them — four agents were
+		// observed each reporting the same 726,475 tokens, which belonged to
+		// one of them.
+		await fs.writeFile(
+			transcriptPath,
+			assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 500, cacheRead: 726_000 }) + '\n',
+		);
+		mockGetRegisteredSessionsMap.mockReturnValue(
+			new Map([
+				// Only the first has its conversation id recorded.
+				[SESSION, { cwd: projectDir, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }],
+				['colleague-a', { cwd: projectDir, runtimeType: 'claude-code' }],
+				['colleague-b', { cwd: projectDir, runtimeType: 'claude-code' }],
+			]),
+		);
+
+		const readings: Array<{ sessionName: string; contextTokens: number }> = [];
+		service.onContextReading((r) => readings.push(r));
+		const result = await service.sync();
+
+		// The one agent we can identify is counted; the other two are reported
+		// as unresolvable rather than handed someone else's numbers.
+		expect(result.turnsCounted).toBe(1);
+		expect(result.sessionsWithoutTranscript).toBe(2);
+		expect(readings.map((r) => r.sessionName)).toEqual([SESSION]);
+	});
+
 	it('falls back to the newest transcript when the recorded id has no file', async () => {
 		await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n');
 		mockGetRegisteredSessionsMap.mockReturnValue(
