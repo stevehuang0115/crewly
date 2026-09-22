@@ -515,7 +515,7 @@ export class TriggerEngine {
       if (!config.cronExpression) continue;
 
       const timezone = config.timezone || 'UTC';
-      if (this.cronMatchesNow(config.cronExpression, timezone, now)) {
+      if (this.cronIsDue(trigger, config.cronExpression, timezone, now)) {
         const result = await this.fire(trigger);
         results.push(result);
       }
@@ -525,22 +525,52 @@ export class TriggerEngine {
   }
 
   /**
-   * Checks if a cron expression matches the current moment.
+   * Decides whether a cron trigger is due at `now`.
    *
+   * The slot a trigger is waiting for is the first cron-aligned minute
+   * strictly after its anchor: `lastFiredAt` once it has fired, `createdAt`
+   * before that. The trigger is due iff that slot is at or before `now`.
+   * Firing moves the anchor to `now`, so one slot can never be seen twice,
+   * and a slot can never be seen before it arrives — whatever phase the 60s
+   * poll happens to have against the minute boundary.
+   *
+   * Why not a proximity window: the previous rule,
+   * `|nextRun(now − 60s) − now| < TIME_CHECK_INTERVAL_MS`, was a 120s-wide
+   * window sampled every 60s. A poll at hh:29:17 saw hh:30:00 as 43s away
+   * and fired early; the poll at hh:30:17 fired again. Every cron trigger
+   * fired twice per slot (2026-09-22: an every-30-minutes follow-up exhausted
+   * its 4 maxFires in 2 real slots; the every-5-minutes `system:escalation`
+   * cron sat at 5 fires for 3 slots).
+   *
+   * Restart catch-up semantics: if the process was down across one or more
+   * slots, the first poll after start finds the anchor's next slot already in
+   * the past and fires ONCE. That fire moves the anchor to `now`, so the other
+   * missed slots are not replayed — at most one catch-up fire per outage,
+   * never one per missed slot. A trigger that has never fired anchors on
+   * `createdAt` and therefore never fires before its first slot after
+   * creation.
+   *
+   * @param trigger - The active cron trigger being evaluated
    * @param cronExpression - Standard 5-field cron expression
    * @param timezone - IANA timezone string
    * @param now - Current time
-   * @returns True if the cron matches
+   * @returns True if the trigger's next slot is at or before `now`
    */
-  private cronMatchesNow(cronExpression: string, timezone: string, now: Date): boolean {
+  private cronIsDue(trigger: Trigger, cronExpression: string, timezone: string, now: Date): boolean {
+    const anchor = new Date(trigger.lastFiredAt ?? trigger.createdAt);
+    if (Number.isNaN(anchor.getTime())) {
+      this.logger.error('Cron trigger has an unparseable anchor timestamp', {
+        triggerId: trigger.id,
+        lastFiredAt: trigger.lastFiredAt,
+        createdAt: trigger.createdAt,
+      });
+      return false;
+    }
     try {
-      // Use getNextRunTime and check if the next run is within the current minute
-      const nextRun = getNextRunTime(cronExpression, timezone, new Date(now.getTime() - 60_000));
-      const nextRunDate = new Date(nextRun);
-      const diffMs = Math.abs(nextRunDate.getTime() - now.getTime());
-      return diffMs < TIME_CHECK_INTERVAL_MS;
+      const nextRun = new Date(getNextRunTime(cronExpression, timezone, anchor));
+      return nextRun.getTime() <= now.getTime();
     } catch {
-      this.logger.error('Invalid cron expression', { cronExpression });
+      this.logger.error('Invalid cron expression', { cronExpression, triggerId: trigger.id });
       return false;
     }
   }
