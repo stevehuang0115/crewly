@@ -561,12 +561,62 @@ export class ContextWindowMonitorService {
 		const ceiling = ceilingTokens ?? getContextTokenCeiling();
 		if (ceiling <= 0) return;
 
+		const state = this.contextStates.get(sessionName) ?? this.adoptMeasuredSession(sessionName);
+		if (!state) return;
+
+		state.contextTokens = contextTokens;
 		const percent = Math.max(0, Math.min(100, Math.round((contextTokens / ceiling) * 100)));
-		const state = this.contextStates.get(sessionName);
-		if (state) {
-			state.contextTokens = contextTokens;
-		}
 		this.updateContextUsage(sessionName, percent);
+	}
+
+	/**
+	 * Begin tracking a session we have a measurement for but were not watching.
+	 *
+	 * {@link startSessionMonitoring} is only reached from agent registration
+	 * paths that carry a teamId and memberId, and the auto-restore path after a
+	 * backend restart does not, so restored agents are never PTY-monitored.
+	 * That was survivable while the only input was PTY output — those agents
+	 * were also not producing readings. It is not survivable now: the
+	 * transcript reader measures every claude-code agent, restored or not, and
+	 * dropping the measurement because nobody happened to call
+	 * `startSessionMonitoring` would waste the one signal that works.
+	 *
+	 * The state created here carries no PTY subscription, which costs nothing:
+	 * the percentage-parsing path it feeds is dead for claude-code anyway. What
+	 * it does get is the runtime type, so the right compact command is sent.
+	 *
+	 * @param sessionName - PTY session name
+	 * @returns The new state, or null when the session is unknown
+	 */
+	private adoptMeasuredSession(sessionName: string): ContextWindowState | null {
+		const meta = getSessionStatePersistence().getSessionMetadata(sessionName);
+		if (!meta) return null;
+
+		const state: ContextWindowState = {
+			sessionName,
+			memberId: meta.memberId ?? '',
+			teamId: meta.teamId ?? '',
+			role: meta.role ?? '',
+			runtimeType: meta.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE,
+			contextPercent: 0,
+			level: 'normal',
+			lastDetectedAt: Date.now(),
+			recoveryTriggered: false,
+			recoveryCount: 0,
+			recoveryTimestamps: [],
+			compactAttempts: 0,
+			compactInProgress: false,
+			lastCompactAt: 0,
+			preCompactPercent: 0,
+			compactWaitTimer: null,
+		};
+		this.contextStates.set(sessionName, state);
+		this.logger.info('Tracking context for a session we were not watching', {
+			sessionName,
+			runtimeType: state.runtimeType,
+			reason: 'measured from transcript; no PTY monitoring was started for it',
+		});
+		return state;
 	}
 
 	/**

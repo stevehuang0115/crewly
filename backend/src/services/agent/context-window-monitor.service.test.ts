@@ -583,11 +583,39 @@ describe('ContextWindowMonitorService', () => {
 			expect(service.getContextState('test-agent')!.contextPercent).toBe(0);
 		});
 
-		it('does nothing for a session that is not monitored', () => {
+		it('does nothing for a session nothing knows about', () => {
 			const { service } = setupTokenMonitored();
+			// Explicit rather than relying on test order: no persisted record.
+			mockGetSessionMetadata.mockReturnValue(undefined);
 
 			expect(() => service.updateContextTokens('unknown-agent', 500_000, 200_000)).not.toThrow();
 			expect(service.getContextState('unknown-agent')).toBeUndefined();
+		});
+
+		it('adopts a persisted session that was never PTY-monitored', () => {
+			// Auto-restore after a backend restart does not carry a teamId or
+			// memberId, so startSessionMonitoring is never called for restored
+			// agents. The transcript reader still measures them, and dropping
+			// that would waste the only signal that works for claude-code.
+			const { service } = setupTokenMonitored();
+			mockGetSessionMetadata.mockReturnValue({
+				name: 'restored-agent',
+				cwd: '/work',
+				command: 'claude',
+				args: [],
+				runtimeType: 'claude-code',
+				role: 'developer',
+			});
+
+			service.updateContextTokens('restored-agent', 400_000, 200_000);
+
+			const state = service.getContextState('restored-agent');
+			expect(state).toBeDefined();
+			expect(state!.level).toBe('critical');
+			expect(state!.runtimeType).toBe('claude-code');
+			// No team wiring is available for a restored session; that must not
+			// stop it being tracked.
+			expect(state!.teamId).toBe('');
 		});
 	});
 
