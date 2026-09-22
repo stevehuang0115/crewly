@@ -35,11 +35,59 @@ export class SkillsReferenceModule implements PromptModule {
 		const communication = this.buildCommunication(config);
 
 		const safeCallGuide = this.buildSafeCallGuide(config);
-		const parts = [coreSkills, capabilities, communication];
+		const connectors = this.buildConnectors(config);
+		const parts = [coreSkills, capabilities, connectors, communication];
 		if (safeCallGuide) {
 			parts.push(safeCallGuide);
 		}
 		return parts.join('\n\n');
+	}
+
+	/**
+	 * Build the connector skills section.
+	 *
+	 * These existed for weeks and no agent knew about them. The prompt
+	 * described `remote-browser` at length as the way to reach anything
+	 * behind the owner's login, and said nothing about Drive, Docs, Sheets,
+	 * Slides, Gmail or Calendar — so an agent asked to read a Drive folder
+	 * reasonably reached for the browser, found the Chrome extension
+	 * disconnected, and reported that it could not do the job. The
+	 * capability was installed and the account was connected the whole time.
+	 *
+	 * Hence the ordering note: for Google content the connector is the
+	 * right tool and the browser is the fallback, not the other way round.
+	 *
+	 * @param config - Module configuration, for the skills path
+	 * @returns The formatted section
+	 */
+	private buildConnectors(config: ModuleConfig): string {
+		const p = `${config.agentSkillsPath}/core`;
+		return [
+			'## Connected accounts (Google Workspace)',
+			'',
+			'The owner can connect Google to Crewly. When they have, these skills read and',
+			'write it directly through that grant — **no browser, no Chrome extension, no login**.',
+			'',
+			`- \`${p}/drive-search\` — find files in Drive by text, type or folder`,
+			`- \`${p}/drive-read\` — read a Drive file's content`,
+			`- \`${p}/drive-upload\` — put a file or text into Drive`,
+			`- \`${p}/docs-read\` / \`docs-write\` — read a Google Doc as text; create one or append to it`,
+			`- \`${p}/sheets-read\` / \`sheets-write\` — read a range as rows; create a sheet or append rows`,
+			`- \`${p}/slides-read\` / \`slides-create\` — read a deck as text; build one from an outline`,
+			`- \`${p}/gmail-search\` / \`gmail-read\` — search and read the owner's mail`,
+			`- \`${p}/gmail-send\` — compose mail. It leaves a **draft**; only the owner sends it`,
+			`- \`${p}/calendar-list\` / \`calendar-create\` — upcoming events; create one`,
+			'',
+			'**For anything in Google, reach for these first.** `remote-browser` is the fallback,',
+			'not the default: it needs the Chrome extension connected, it is slower, and it acts',
+			'inside a real logged-in browser where a stray click has real consequences.',
+			'',
+			`Not connected yet? The call returns \`{"success":false,"reason":"not_connected","hint":"<url>"}\`.`,
+			`Do not report that as "I cannot do this" — run \`${p}/google-connect\` to ask the owner`,
+			'to authorize it, tell them what you are waiting on, and stop there.',
+			'',
+			'Consent is per product, so an account connected for Calendar cannot read Drive.',
+		].join('\n');
 	}
 
 	/**

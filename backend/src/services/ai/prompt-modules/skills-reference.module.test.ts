@@ -127,6 +127,66 @@ describe('SkillsReferenceModule', () => {
 		});
 	});
 
+	describe('connected accounts (Google Workspace)', () => {
+		it('names the Drive skills, which no agent could previously discover', async () => {
+			// These shipped weeks ago and the prompt never mentioned them, so an
+			// agent asked to read a Drive folder reached for the browser, found
+			// the extension disconnected, and reported it could not do the job —
+			// with the capability installed and the account connected.
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('drive-search');
+			expect(out).toContain('drive-read');
+			expect(out).toContain('drive-upload');
+		});
+
+		it('names every connector family, not just Drive', async () => {
+			const out = await module.build(baseConfig);
+
+			for (const skill of ['docs-read', 'sheets-read', 'slides-read', 'gmail-search', 'calendar-list']) {
+				expect(out).toContain(skill);
+			}
+		});
+
+		it('says these come first and the browser is the fallback', async () => {
+			// The ordering is the whole point: the prompt described
+			// remote-browser at length and these not at all, so the browser won
+			// by default for anything behind a login.
+			const out = await module.build(baseConfig);
+
+			expect(out).toMatch(/reach for these first/i);
+			expect(out).toMatch(/fallback/i);
+		});
+
+		it('tells the agent what to do when the account is not connected', async () => {
+			// Otherwise "not_connected" gets reported to the owner as an
+			// incapability, which is what it looks like from the inside.
+			const out = await module.build(baseConfig);
+
+			expect(out).toContain('not_connected');
+			expect(out).toContain('google-connect');
+			expect(out).toMatch(/Do not report that as/i);
+		});
+
+		it('is honest that gmail-send only drafts', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/draft/i);
+			expect(out).toMatch(/only the owner sends it/i);
+		});
+
+		it('warns that consent is per product', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/per product/i);
+		});
+
+		it('shows them to every role, not just developers', async () => {
+			for (const role of ['orchestrator', 'team-leader', 'qa']) {
+				const out = await module.build({ ...baseConfig, role });
+				expect(out).toContain('drive-search');
+			}
+		});
+	});
+
 	describe('Crewly in Chrome documentation', () => {
 		it('should include remote-browser skill documentation for all roles', async () => {
 			const result = await module.build(baseConfig);
