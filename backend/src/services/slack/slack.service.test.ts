@@ -1715,6 +1715,36 @@ describe('SlackService', () => {
       expect(msg).toMatchObject({ agentSession: 'team-kai-1', source: 'cloud', eventId: 'Ev3', channelId: 'D77' });
     });
 
+    it('records which agent\'s app delivered a channel copy — the proof it is in the room', async () => {
+      // 1.20.87 read this from `agentSession`, which is set only for DMs, so
+      // no channel copy ever made its agent a member of a private room.
+      const service = new SlackService();
+      await service.initialize({ ...cloudConfig, allowedUserIds: ['U123'] });
+      const msg = service.handleCloudEnvelope({
+        eventId: 'Ev4', slackTeamId: 'T1', apiAppId: 'A-agent', source: 'agent', agentSession: 'crewly-orc@inst-1',
+        event: { type: 'message', ts: '4.4', text: 'morning', user: 'U123', channel: 'C77', channel_type: 'group' },
+        room: { members: [{ agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'air', deviceName: 'air', awake: true }] },
+        receivedAt: '',
+      });
+      expect(msg).toMatchObject({ receivedVia: 'crewly-orc', room: { members: [expect.objectContaining({ agentSession: 'pa-ella' })] } });
+      // Still a channel message, not a DM to that agent.
+      expect(msg?.agentSession).toBeUndefined();
+    });
+
+    it('delivers a hand-off even though the message was seen before', async () => {
+      const service = new SlackService();
+      await service.initialize({ ...cloudConfig, allowedUserIds: ['U123'] });
+      const event = { type: 'message', ts: '5.5', text: 'draft it', user: 'U123', channel: 'C77' };
+      expect(service.handleCloudEnvelope({ eventId: 'a', slackTeamId: 'T1', apiAppId: 'A', source: 'master', event, receivedAt: '' })).not.toBeNull();
+      expect(service.handleCloudEnvelope({ eventId: 'b', slackTeamId: 'T1', apiAppId: 'A', source: 'master', event, receivedAt: '' })).toBeNull();
+
+      const handed = service.handleCloudEnvelope({
+        eventId: 'handoff:C77:5.5:pa-ella', slackTeamId: 'T1', apiAppId: '', source: 'agent', agentSession: 'pa-ella',
+        handoffTo: 'pa-ella', event, receivedAt: '',
+      });
+      expect(handed).toMatchObject({ handoffTo: 'pa-ella', ts: '5.5' });
+    });
+
     it('delivers a local agent\'s own message only when it @\'s another local agent (same-team discussion), never to itself', async () => {
       const service = new SlackService();
       await service.initialize(cloudConfig);

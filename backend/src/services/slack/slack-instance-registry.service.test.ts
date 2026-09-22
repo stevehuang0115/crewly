@@ -151,8 +151,10 @@ describe('payload', () => {
       relayQueueId: 'queue-abc',
       primary: false,
       teams: [
-        { teamId: 'team-alpha', name: 'Alpha', channelId: 'C-ALPHA', agents: ['alpha-kai-1234', 'alpha-mia-1234'] },
-        { teamId: 'team-beta', name: 'Beta', agents: ['alpha-zed-1234'] },
+        // The leader is who Cloud wakes when nobody in the channel is awake;
+        // without a team-leader role, the first member.
+        { teamId: 'team-alpha', name: 'Alpha', channelId: 'C-ALPHA', agents: ['alpha-kai-1234', 'alpha-mia-1234'], leader: 'alpha-kai-1234' },
+        { teamId: 'team-beta', name: 'Beta', agents: ['alpha-zed-1234'], leader: 'alpha-zed-1234' },
         // Cloud routes an agent event to the instance whose roster lists the
         // session, so this machine's orchestrator has to appear here or every
         // DM to its own bot is stranded.
@@ -162,6 +164,28 @@ describe('payload', () => {
       ],
       crewlyVersion: '1.16.0',
     });
+  });
+
+  it('reports ad-hoc rooms and who is awake, when it can tell', async () => {
+    // Cloud builds each room's roster across machines from these, and leaves
+    // a message nobody @'d to the agents already awake.
+    const service = new SlackInstanceRegistryService({
+      ...(makeService() as unknown as { deps: ConstructorParameters<typeof SlackInstanceRegistryService>[0] }).deps,
+      getTeamChannels: () => ({
+        findByTeamId: () => null,
+        listRooms: async () => [{ channelId: 'C-PRIV', agents: ['alpha-mia-1234'] }],
+      }),
+      isAgentAwake: (s: string) => s === 'alpha-mia-1234',
+    });
+    const payload = await service.buildPayload();
+    expect(payload.rooms).toEqual([{ channelId: 'C-PRIV', agents: ['alpha-mia-1234'] }]);
+    expect(payload.awakeAgents).toEqual(['alpha-mia-1234']);
+  });
+
+  it('says nothing about who is awake when it cannot tell — absent is "unknown", not "nobody"', async () => {
+    const payload = await makeService().buildPayload();
+    expect(payload).not.toHaveProperty('awakeAgents');
+    expect(payload).not.toHaveProperty('rooms');
   });
 
   it('reads the primary flag from CREWLY_SLACK_PRIMARY', async () => {

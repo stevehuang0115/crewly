@@ -1569,4 +1569,45 @@ router.post('/working', async (req: Request, res: Response, next: NextFunction) 
   }
 });
 
+/**
+ * POST /api/slack/handoff — pass a room message to the agent that should answer it.
+ *
+ * For a room's router: the orchestrator of a private channel, woken because
+ * nobody in it was awake. Its bot is usually not in the room, so it cannot @
+ * the agent there; this delivers the message to that agent directly, on this
+ * machine or — through Cloud — on another one.
+ */
+router.post('/handoff', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { channelId, threadId, messageId, name } = req.body ?? {};
+    if (!channelId || !name) {
+      res.status(400).json({ success: false, error: 'channelId and name are required' });
+      return;
+    }
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const service = getSlackTeamChannelService();
+    if (!service) {
+      res.status(503).json({ success: false, error: 'Slack team channels are not running' });
+      return;
+    }
+    const result = await service.handoffForAgent({
+      chatChannelId: String(channelId),
+      name: String(name),
+      ...(threadId ? { threadId: String(threadId) } : {}),
+      ...(messageId ? { messageId: String(messageId) } : {}),
+    });
+    if (!result.ok) {
+      res.status(result.reason === 'unknown_agent' ? 404 : 400).json({
+        success: false,
+        error: result.reason,
+        ...(result.candidates ? { candidates: result.candidates } : {}),
+      });
+      return;
+    }
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

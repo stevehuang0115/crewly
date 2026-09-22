@@ -769,6 +769,8 @@ export const SLACK_CLOUD_CONSTANTS = {
 	AGENTS_SYNC_PATH: '/agents/sync',
 	/** DELETE <AGENTS_PATH>/:agentSession removes one agent's Slack app */
 	AGENTS_PATH: '/agents',
+	/** `POST` — deliver a room message to an agent on another machine */
+	HANDOFF_PATH: '/handoff',
 	/** GET → who is who across the account (instances, teams, agents, bot users) */
 	DIRECTORY_PATH: '/directory',
 	/** Channel rosters are cached this long (users.info is rate-limited) */

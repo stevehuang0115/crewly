@@ -1102,6 +1102,28 @@ describe('Slack Controller', () => {
       fake.unlinkTeam.mockResolvedValueOnce(false);
       expect((await request(app).delete('/api/slack/team-channels/t1')).status).toBe(404);
     });
+
+    it('POST /handoff passes the message to the named agent', async () => {
+      const fake = installFake({
+        handoffForAgent: jest.fn().mockResolvedValue({ ok: true, agentSession: 'pa-ella', displayName: 'Ella', via: 'cloud' }),
+      });
+      const res = await request(app)
+        .post('/api/slack/handoff')
+        .send({ channelId: 'huddle-1', threadId: 'm1', messageId: 'm2', name: 'Ella' });
+      expect(res.status).toBe(200);
+      expect(res.body.data).toMatchObject({ agentSession: 'pa-ella', via: 'cloud' });
+      expect(fake.handoffForAgent).toHaveBeenCalledWith({ chatChannelId: 'huddle-1', name: 'Ella', threadId: 'm1', messageId: 'm2' });
+    });
+
+    it('POST /handoff says who it could have meant, and rejects a request without a channel or name', async () => {
+      installFake({
+        handoffForAgent: jest.fn().mockResolvedValue({ ok: false, reason: 'unknown_agent', candidates: ['Ella', 'Leo'] }),
+      });
+      const unknown = await request(app).post('/api/slack/handoff').send({ channelId: 'huddle-1', name: 'Zoe' });
+      expect(unknown.status).toBe(404);
+      expect(unknown.body.candidates).toEqual(['Ella', 'Leo']);
+      expect((await request(app).post('/api/slack/handoff').send({ name: 'Zoe' })).status).toBe(400);
+    });
   });
 
   describe('agent identities', () => {

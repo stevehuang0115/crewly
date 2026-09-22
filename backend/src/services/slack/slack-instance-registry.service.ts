@@ -64,6 +64,8 @@ export interface RegistryStorage {
 /** The slice of SlackTeamChannelService this service needs. */
 export interface RegistryTeamChannels {
   findByTeamId(teamId: string): SlackTeamChannelMapping | null;
+  /** Ad-hoc rooms and their local members; optional for older wiring and tests. */
+  listRooms?(): Promise<Array<{ channelId: string; agents: string[] }>>;
 }
 
 /** Constructor dependencies. */
@@ -80,6 +82,12 @@ export interface SlackInstanceRegistryServiceDeps {
    * token. Falls back to the saved workspace choice when omitted.
    */
   getBoundWorkspaceId?: () => string | null;
+  /**
+   * Whether an agent is running right now. Reported to Cloud so a room
+   * message that addresses nobody reaches the agents already awake on every
+   * machine, and only one machine wakes someone when nobody is.
+   */
+  isAgentAwake?: (agentSession: string) => boolean;
   /** Crewly version reported to Cloud; read from package.json when omitted. */
   version?: string;
   /** Settings path; defaults to `<CREWLY_HOME>/slack-instance.json`. */
@@ -277,6 +285,11 @@ export class SlackInstanceRegistryService {
     // hand — without it Cloud has no roster entry for this machine's orc and
     // every DM to its bot is stranded.
     const orc = orchestratorSyncEntry(deviceName, this.instanceId ?? undefined);
+    const rooms = teamChannels?.listRooms ? await teamChannels.listRooms().catch(() => undefined) : undefined;
+    const isAwake = this.deps.isAgentAwake;
+    const awakeAgents = isAwake
+      ? [...new Set(teams.flatMap((t) => teamChannelMembers(t).map((m) => m.sessionName)))].filter((s) => isAwake(s))
+      : undefined;
     return {
       deviceName,
       relayQueueId: this.deps.sync.getQueueId() ?? '',
@@ -284,13 +297,18 @@ export class SlackInstanceRegistryService {
       ...(slackTeamId ? { slackTeamId } : {}),
       teams: teams.map((team) => {
         const channelId = teamChannels?.findByTeamId(team.id)?.slackChannelId;
+        const members = teamChannelMembers(team);
+        const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead') ?? members[0];
         return {
           teamId: team.id,
           name: team.name,
           ...(channelId ? { channelId } : {}),
-          agents: teamChannelMembers(team).map((m) => m.sessionName),
+          agents: members.map((m) => m.sessionName),
+          ...(leader ? { leader: leader.sessionName } : {}),
         };
       }).concat(orc ? [{ teamId: orc.teamId, name: orc.name, agents: [orc.agentSession] }] : []),
+      ...(rooms ? { rooms } : {}),
+      ...(awakeAgents ? { awakeAgents } : {}),
       crewlyVersion: version,
     };
   }
@@ -512,6 +530,28 @@ export class SlackInstanceRegistryService {
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
+
+  /**
+   * Tell Cloud about a change soon (debounced), not at the next 5-minute
+   * heartbeat — an ad-hoc room gained a member, say.
+   */
+  requestHeartbeat(): void {
+    this.scheduleHeartbeat();
+  }
+
+  /**
+   * Ask Cloud to deliver a room message to an agent on another machine.
+   *
+   * @param body - The agent and the Slack message
+   * @throws {SlackIdentityCloudError} when Cloud refuses or cannot be reached
+   */
+  async handoff(body: {
+    agentSession: string;
+    event: { channel: string; ts: string; thread_ts?: string; text?: string; user?: string };
+  }): Promise<void> {
+    const slackTeamId = await this.getWorkspaceId();
+    await this.cloudRequest('POST', SLACK_CLOUD_CONSTANTS.HANDOFF_PATH, { ...body, ...(slackTeamId ? { slackTeamId } : {}) });
+  }
 
   private scheduleHeartbeat(): void {
     if (this.debounceTimer) return;

@@ -185,6 +185,86 @@ describe('ChatV2DispatcherService', () => {
       expect([...plan.keys()].sort()).toEqual([...delivered].sort());
     });
 
+    describe('a message nobody @\'d, with room presence (owner\'s rule, 2026-09-22)', () => {
+      // Every agent awake here reads it and decides; nobody asleep is woken —
+      // unless nobody in the room is awake anywhere, and then only the one
+      // agent Cloud named, to route it.
+      it('goes to every agent awake here, each free to decide, and wakes nobody', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas', 'sam', 'ella'], leader: 'atlas' });
+        const room = { awakeHere: ['sam', 'ella'], awakeElsewhere: false, wakeWhenAllAsleep: null };
+
+        const plan = await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1', room });
+        await dispatcher.dispatchMessage(channel, msg(), { threadId: 't1', room });
+
+        expect([...plan]).toEqual([['sam', 'optional'], ['ella', 'optional']]);
+        expect(delivered.sort()).toEqual(['ella', 'sam']);
+      });
+
+      it('leaves it to colleagues on another machine who are awake', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
+        await dispatcher.dispatchMessage(channel, msg(), { room: { awakeHere: [], awakeElsewhere: true, wakeWhenAllAsleep: null } });
+        expect(delivered).toEqual([]);
+      });
+
+      it('wakes the router Cloud named on this machine when nobody anywhere is awake', async () => {
+        const prompts: string[] = [];
+        const dispatcher = new ChatV2DispatcherService({
+          agentSink: { sendMessageToAgent: async (_s: string, p: string) => { prompts.push(p); return { success: true }; } },
+          huddleMembersFor: () => ['sam', 'ella'],
+        });
+        const channel = { id: 'h1', type: 'huddle', name: '#room' } as never;
+        const room = { awakeHere: [], awakeElsewhere: false, wakeWhenAllAsleep: { agentSession: 'crewly-orc', kind: 'orchestrator' as const } };
+
+        const plan = await dispatcher.planHuddleTargets(channel, msg(), { threadId: 't1', replyVia: 'reply-channel', room });
+        await dispatcher.dispatchMessage(channel, msg(), { threadId: 't1', replyVia: 'reply-channel', room, roomPresence: 'Sam（在睡，本机）' });
+
+        expect([...plan]).toEqual([['crewly-orc', 'optional']]);
+        // It routes; it does not answer in a room its bot is not in.
+        expect(prompts[0]).toContain('--handoff');
+        expect(prompts[0]).toContain('--message m1');
+        expect(prompts[0]).toContain('不要**用 reply-channel 回复');
+        expect(prompts[0]).toContain('此刻谁醒着: Sam（在睡，本机）');
+      });
+
+      it('wakes nobody when another machine was named to do it', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
+        await dispatcher.dispatchMessage(channel, msg(), { room: { awakeHere: [], awakeElsewhere: false, wakeWhenAllAsleep: null } });
+        expect(delivered).toEqual([]);
+      });
+
+      it('falls back to the team leader when presence elsewhere is unknown', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas', 'sam'], leader: 'atlas' });
+        await dispatcher.dispatchMessage(channel, msg(), { room: { awakeHere: [], awakeElsewhere: false } });
+        expect(delivered).toEqual(['atlas']);
+      });
+
+      it('keeps the old rule — the team leader alone — without presence', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas', 'sam'], leader: 'atlas' });
+        await dispatcher.dispatchMessage(channel, msg());
+        expect(delivered).toEqual(['atlas']);
+      });
+
+      it('does not change who an @ reaches', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas', 'sam'], leader: 'atlas' });
+        await dispatcher.dispatchMessage(channel, msg(['atlas']), { room: { awakeHere: ['sam'], awakeElsewhere: false, wakeWhenAllAsleep: null } });
+        expect(delivered).toEqual(['atlas']);
+      });
+    });
+
+    it('tells a woken team leader to route, and awake readers how to wake a sleeping colleague', () => {
+      const lead = defaultFormatPrompt({
+        channelId: 'h1', channelName: '#room', agentSession: 'atlas', senderId: 'U1', content: 'x',
+        responseMode: 'optional', replyVia: 'reply-channel', wakeRole: 'team-leader',
+      });
+      expect(lead).toContain('叫醒了你（本频道负责人）来决定该谁回答');
+      const reader = defaultFormatPrompt({
+        channelId: 'h1', channelName: '#room', agentSession: 'sam', senderId: 'U1', content: 'x',
+        responseMode: 'optional', replyVia: 'reply-channel', roomPresence: 'Ella（在睡，iriss-air）',
+      });
+      expect(reader).toContain('正在睡**的同事');
+      expect(reader).toContain('此刻谁醒着: Ella（在睡，iriss-air）');
+    });
+
     it('marks the last speaker as owing a reply on a bare thread follow-up', async () => {
       const { dispatcher, channel } = huddleSetup({
         members: ['atlas', 'sam'],

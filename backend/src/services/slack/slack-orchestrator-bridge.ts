@@ -394,8 +394,9 @@ export class SlackOrchestratorBridge extends EventEmitter {
       // Build enriched text with file references for the agent
       const enrichedText = this.enrichTextWithFiles(message);
 
-      // Store inbound message in thread file (with image metadata)
-      if (this.threadStore) {
+      // Store inbound message in thread file (with image metadata). A
+      // hand-off is a message already stored, passed on to one agent.
+      if (this.threadStore && !message.handoffTo) {
         const threadTs = message.threadTs || message.ts;
         try {
           const userName = message.user?.realName || message.user?.name || message.userId;

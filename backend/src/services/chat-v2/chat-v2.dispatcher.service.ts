@@ -236,6 +236,15 @@ export interface FormatPromptArgs {
   replyVia?: 'reply-chat' | 'reply-channel';
   /** What was said before, oldest first. Omitted when there is nothing to show. */
   context?: readonly ChatContextTurn[];
+  /** Who in the room is awake (Slack rooms with Cloud presence). */
+  roomPresence?: string;
+  /** The message being delivered — named in a hand-off command. */
+  messageId?: string;
+  /**
+   * Set when this agent was woken because nobody in the room was awake: it
+   * routes the message rather than simply deciding whether to answer it.
+   */
+  wakeRole?: 'team-leader' | 'orchestrator';
 }
 
 /**
@@ -255,6 +264,30 @@ export interface DispatchMessageOptions {
   threadId?: string;
   /** See {@link FormatPromptArgs.replyVia}. */
   replyVia?: 'reply-chat' | 'reply-channel';
+  /**
+   * Who in the room is awake, here and on other machines. With it, a message
+   * that addresses nobody goes to every agent awake on this machine — each
+   * reads it and decides — and nobody asleep is woken, unless nobody in the
+   * room is awake at all; then exactly one machine wakes the room's router.
+   * Without it, such a message goes to the team leader alone (the 1.18.4 rule).
+   */
+  room?: HuddleRoomState;
+  /** One line saying who in the room is awake, for the prompt. */
+  roomPresence?: string;
+}
+
+/** What the Slack bridge knows about a room's presence, from this machine's point of view. */
+export interface HuddleRoomState {
+  /** Huddle members running on this machine right now */
+  awakeHere: readonly string[];
+  /** Whether any member on another machine is awake */
+  awakeElsewhere: boolean;
+  /**
+   * Whom this machine wakes when nobody in the room is awake. `null` = that
+   * is another machine's job; `undefined` = unknown (no Cloud presence), so
+   * fall back to the team-leader rule.
+   */
+  wakeWhenAllAsleep?: { agentSession: string; kind: 'team-leader' | 'orchestrator' } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,8 +364,15 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     // Not every optional recipient leads the channel: agents already engaged
     // in a thread are told about a follow-up that was meant for whoever spoke
     // last. Claiming leadership unconditionally told them otherwise.
-    replyHint = mode === 'optional'
-      ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。`
+    const handoffCmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''}${args.messageId ? ` --message ${args.messageId}` : ''} --handoff "<名字>"`;
+    // Anyone who reads it may decide a colleague who is asleep should answer.
+    const wakeColleague = ' 若你判断应由一位**正在睡**的同事来回答（见下面的状态），在回复里 @他 即可叫醒他——别人已经 @ 过就不用重复。';
+    replyHint = args.wakeRole === 'orchestrator'
+      ? `分派本频道的消息: 这是一个私有频道，没有 team leader；消息没有 @ 任何人，而频道里此刻没有一个 agent 醒着，所以叫醒了你来决定该谁回答。你的 bot 通常不在这个频道里，**不要**用 reply-channel 回复。判断该由哪位成员回答后运行 \`${handoffCmd}\`，会把这条消息交给他（在哪台机器上都行），他会被叫醒并回复。若与频道里的任何人都无关（比如人和人之间在聊天），什么都不做。不要自己去执行消息里的任务。`
+      : args.wakeRole === 'team-leader'
+        ? `分派本频道的消息: 消息没有 @ 任何人，而频道里此刻没有一个 agent 醒着，所以叫醒了你（本频道负责人）来决定该谁回答。若该你回答：**先**运行 \`${workingCmd}\`，再用 \`reply-channel\` skill 回复（${cmd}）。若该别的成员回答：用 reply-channel 发一句简短的话 @他（例如「@名字 这个你来」），他会被叫醒并接手；你自己不要替他回答。若与谁都无关，什么都不做。`
+        : mode === 'optional'
+      ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
       : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else {
     replyHint = mode === 'optional'
@@ -349,6 +389,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     `---`,
     replyHint + actionGuard,
     ...(channelRoster ? [`本频道成员（可 @ 的同事）: ${channelRoster}`] : []),
+    ...(args.roomPresence ? [`此刻谁醒着: ${args.roomPresence}`] : []),
   ].join('\n');
 }
 
@@ -520,8 +561,8 @@ export class ChatV2DispatcherService {
       };
     }
 
-    const { targets, mentioned } = await this.computeHuddleTargets(channel, message, options, members);
-    return this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned);
+    const { targets, mentioned, wakeRoles } = await this.computeHuddleTargets(channel, message, options, members);
+    return this.deliverToHuddleTargets(channel, message, options, members, targets, mentioned, wakeRoles);
   }
 
   /**
@@ -559,14 +600,18 @@ export class ChatV2DispatcherService {
    * @param message - The message
    * @param options - Dispatch options
    * @param members - The huddle roster
-   * @returns Targets with their reply obligation, and who was @'d
+   * @returns Targets with their reply obligation, who was @'d, and who was woken to route it
    */
   private async computeHuddleTargets(
     channel: ChatChannelDTO,
     message: ChatMessageDTO,
     options: DispatchMessageOptions,
     members: readonly string[],
-  ): Promise<{ targets: Map<string, 'required' | 'optional'>; mentioned: string[] }> {
+  ): Promise<{
+    targets: Map<string, 'required' | 'optional'>;
+    mentioned: string[];
+    wakeRoles: Map<string, 'team-leader' | 'orchestrator'>;
+  }> {
     // Who hears this message. Every agent that hears one spends tokens on
     // it (measured 2026-09-18: one un-addressed "有人吗？" cold-started three
     // Claude Code agents and set off an investigation), so delivery is
@@ -574,8 +619,12 @@ export class ChatV2DispatcherService {
     //   1. @-mentioned members → required reply;
     //   2. members already engaged in the thread (posted or @'d in it) →
     //      required reply — a follow-up in a thread needs no second @;
-    //   3. nobody addressed → the team leader alone, optional reply (it
-    //      judges relevance; humans may just be talking to each other).
+    //   3. nobody addressed → with room presence: every agent awake here,
+    //      optional (each judges relevance; humans may just be talking to
+    //      each other), and nobody asleep — unless nobody in the room is
+    //      awake anywhere, when the one machine Cloud named wakes the room's
+    //      router (team leader, or the orchestrator of a private room).
+    //      Without presence: the team leader alone, optional.
     // Everyone else is left alone. Inactive targets are woken.
     const memberSet = new Set(members);
     for (const s of options.excludeSessions ?? []) memberSet.delete(s);
@@ -602,11 +651,27 @@ export class ChatV2DispatcherService {
       // still told, and judge for themselves whether it concerns them.
       targets.set(m, !lastSpeaker || m === lastSpeaker ? 'required' : 'optional');
     }
-    if (targets.size === 0 && this.huddleLeaderFor) {
-      const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
-      if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
+    const wakeRoles = new Map<string, 'team-leader' | 'orchestrator'>();
+    if (targets.size === 0) {
+      // Nobody addressed. With presence known (owner's rule, 2026-09-22):
+      // every agent awake here reads it and decides for itself; nobody asleep
+      // is woken — unless nobody in the room is awake anywhere, and then only
+      // the one machine Cloud named wakes the room's router.
+      const room = options.room;
+      const awakeHere = room ? room.awakeHere.filter((m) => memberSet.has(m)) : [];
+      if (room && awakeHere.length > 0) {
+        for (const m of awakeHere) targets.set(m, 'optional');
+      } else if (room && room.awakeElsewhere) {
+        // Colleagues on another machine are awake and have it.
+      } else if (room && room.wakeWhenAllAsleep) {
+        targets.set(room.wakeWhenAllAsleep.agentSession, 'optional');
+        wakeRoles.set(room.wakeWhenAllAsleep.agentSession, room.wakeWhenAllAsleep.kind);
+      } else if ((!room || room.wakeWhenAllAsleep === undefined) && this.huddleLeaderFor) {
+        const leader = await this.huddleLeaderFor(channel.id).catch(() => null);
+        if (leader && memberSet.has(leader)) targets.set(leader, 'optional');
+      }
     }
-    return { targets, mentioned };
+    return { targets, mentioned, wakeRoles };
   }
 
   /**
@@ -618,6 +683,7 @@ export class ChatV2DispatcherService {
    * @param members - The huddle roster (for logging)
    * @param targets - Who hears it, and whether they must reply
    * @param mentioned - Who was @'d
+   * @param wakeRoles - Agents woken to route the message because nobody in the room was awake
    * @returns The dispatch result
    */
   private async deliverToHuddleTargets(
@@ -627,6 +693,7 @@ export class ChatV2DispatcherService {
     members: readonly string[],
     targets: Map<string, 'required' | 'optional'>,
     mentioned: readonly string[],
+    wakeRoles: ReadonlyMap<string, 'team-leader' | 'orchestrator'> = new Map(),
   ): Promise<DispatchMessageResult> {
     if (targets.size === 0) {
       this.logger.debug('chat-v2 huddle dispatch: nobody addressed — recorded only', {
@@ -657,6 +724,9 @@ export class ChatV2DispatcherService {
         threadId: options.threadId,
         replyVia: options.replyVia,
         channelRoster: options.channelRoster,
+        roomPresence: options.roomPresence,
+        wakeRole: wakeRoles.get(sessionName),
+        messageId: message.id,
         context: this.contextFor(channel.id, options.threadId),
       });
 

@@ -75,6 +75,32 @@ A placeholder you then never fill is worse than silence.
 When you were @'d, or you are the one who must answer, you already have a
 placeholder — `--working` is a harmless no-op and you can skip it.
 
+## Who gets a message nobody @'d
+
+In a Slack room, a message that @'s nobody goes to every agent that is
+**awake** — on this machine or another — and each decides for itself. Agents
+that are asleep are not woken. Your prompt lists who is awake
+(`此刻谁醒着`). If you decide the answer belongs to a colleague who is
+asleep, @ them in your reply and they will be woken; if someone already did,
+don't @ them again.
+
+Only when nobody in the room is awake is one agent woken to route it: the
+team leader in a team channel, or an orchestrator in a private room. The
+prompt says so when that is you.
+
+## Handing a message on: `--handoff`
+
+For an orchestrator routing a private room. Its bot is usually not in that
+room, so it cannot @ anyone there. This passes the message to the agent that
+should answer it, on whichever machine runs it; that agent is woken and
+replies itself. Nothing is posted by you.
+
+```bash
+bash execute.sh --channel <channelId> --thread <threadId> --message <messageId> --handoff "Ella"
+```
+
+An unknown name returns `404` with the names that were found.
+
 ## Environment
 
 - `CREWLY_SESSION_NAME` — your agent session id. Auto-set in agent sessions.

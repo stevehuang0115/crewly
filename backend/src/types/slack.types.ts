@@ -75,6 +75,33 @@ export interface SlackInboundMeta {
   /** Set when one of the account's agents (possibly on another machine) wrote the message */
   authorAgentSession?: string;
   authorDisplayName?: string;
+  /** Agent whose own app delivered this channel copy (cloud transport; see SlackIncomingMessage.receivedVia) */
+  receivedVia?: string;
+  /** Who is in the channel across machines, and who is awake (cloud transport) */
+  room?: SlackRoomPresence;
+  /** The agent this message was handed to by whoever routed it (cloud transport) */
+  handoffTo?: string;
+}
+
+/** One agent in a Slack room, on any machine of the account. */
+export interface SlackRoomMember {
+  /** As Cloud knows it (an orchestrator carries `@<instance>`) */
+  agentSession: string;
+  displayName: string;
+  instanceId: string;
+  deviceName: string;
+  /** Running now, as its machine last reported */
+  awake: boolean;
+}
+
+/**
+ * Room roster plus who wakes up when nobody in it is awake — computed by
+ * Cloud from every machine's heartbeat and sent with each channel message.
+ */
+export interface SlackRoomPresence {
+  members: SlackRoomMember[];
+  /** Only when nobody is awake: the one machine that wakes someone, and whom */
+  fallback?: { instanceId: string; agentSession: string; kind: 'team-leader' | 'orchestrator' };
 }
 
 /**
@@ -93,6 +120,10 @@ export interface SlackCloudEventEnvelope {
   authorDisplayName?: string;
   /** Session names of the account's agents @-mentioned in the text */
   mentionedAgentSessions?: string[];
+  /** Channel roster and presence across machines (channel messages, Cloud ≥ auth 1.5.12) */
+  room?: SlackRoomPresence;
+  /** Set on a hand-off: the message is re-delivered, addressed to this agent */
+  handoffTo?: string;
   event: SlackRawInboundEvent;
   receivedAt: string;
 }
@@ -158,6 +189,8 @@ export interface SlackRegistryTeam {
   channelId?: string;
   /** Member session names (orchestrator excluded) */
   agents: string[];
+  /** The team leader's session — whom Cloud wakes when nobody in the team channel is awake */
+  leader?: string;
 }
 
 /** Body of `PUT /api/cloud/slack/instances/:instanceId`. */
@@ -168,6 +201,10 @@ export interface SlackInstanceRegistryPayload {
   /** Workspace this instance serves (omitted = keep Cloud's binding) */
   slackTeamId?: string;
   teams: SlackRegistryTeam[];
+  /** Ad-hoc Slack rooms this instance's agents are in (1.20.88+) */
+  rooms?: Array<{ channelId: string; agents: string[] }>;
+  /** Agents running right now (1.20.88+) */
+  awakeAgents?: string[];
   crewlyVersion: string;
 }
 
@@ -327,6 +364,21 @@ export interface SlackIncomingMessage {
   /** Agent (on any machine of the account) that wrote the message, when a bot did */
   authorAgentSession?: string;
   authorDisplayName?: string;
+  /**
+   * The agent whose own Slack app delivered this copy of a *channel*
+   * message. Slack gives every app in a channel its own copy, so this proves
+   * the agent is in the room. Kept apart from `agentSession`, which means
+   * "a DM to this agent" and routes the message to it.
+   */
+  receivedVia?: string;
+  /** Who is in the channel across machines, and who is awake (cloud transport) */
+  room?: SlackRoomPresence;
+  /**
+   * The local agent this message was handed to: the room's router (its
+   * leader, or an orchestrator) decided it should answer. Delivered as if
+   * that agent had been @'d, even though the message was seen before.
+   */
+  handoffTo?: string;
 }
 
 /**

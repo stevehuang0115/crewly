@@ -621,11 +621,17 @@ export class SlackService extends EventEmitter {
     const config = this.config;
     if (!config) return null;
 
-    const provenance: Pick<SlackIncomingMessage, 'source' | 'eventId' | 'agentSession' | 'authorAgentSession' | 'authorDisplayName'> = {
+    const provenance: Pick<
+      SlackIncomingMessage,
+      'source' | 'eventId' | 'agentSession' | 'authorAgentSession' | 'authorDisplayName' | 'receivedVia' | 'room' | 'handoffTo'
+    > = {
       source: meta.source,
       ...(meta.eventId ? { eventId: meta.eventId } : {}),
       ...(meta.agentSession ? { agentSession: meta.agentSession } : {}),
       ...(meta.authorAgentSession ? { authorAgentSession: meta.authorAgentSession, authorDisplayName: meta.authorDisplayName } : {}),
+      ...(meta.receivedVia ? { receivedVia: meta.receivedVia } : {}),
+      ...(meta.room ? { room: meta.room } : {}),
+      ...(meta.handoffTo ? { handoffTo: meta.handoffTo } : {}),
     };
 
     let incomingMessage: SlackIncomingMessage;
@@ -747,7 +753,11 @@ export class SlackService extends EventEmitter {
     // already discarded the master copy as a duplicate.)
     const isDm = event.channel_type ? event.channel_type === 'im' : !!event.channel?.startsWith('D');
     const ts = typeof event.ts === 'string' ? event.ts : typeof event.event_ts === 'string' ? event.event_ts : '';
-    if (event.channel && ts) {
+    // A hand-off is the same message again on purpose — this machine saw it,
+    // nobody here was awake, and the room's router has now picked one of our
+    // agents to answer it.
+    const handoffTo = envelope.handoffTo ? localAgentSession(envelope.handoffTo) : undefined;
+    if (event.channel && ts && !handoffTo) {
       const key = `${event.channel}:${ts}:${event.type}`;
       if (this.seenInboundKeys.has(key)) {
         this.logger.debug('Dropping repeated copy of an inbound Slack event', { eventId: envelope.eventId, key });
@@ -773,6 +783,14 @@ export class SlackService extends EventEmitter {
           ? localAgentSession(envelope.agentSession)
           : undefined,
       ...(envelope.authorAgentSession ? { authorAgentSession: envelope.authorAgentSession, authorDisplayName: envelope.authorDisplayName } : {}),
+      // A channel copy through an agent's own app: that agent is in the room.
+      // 1.20.87 read this from `agentSession`, which is only ever set for a
+      // DM — so no channel copy ever made its agent a member.
+      ...(envelope.source === 'agent' && !isDm && envelope.agentSession
+        ? { receivedVia: localAgentSession(envelope.agentSession) }
+        : {}),
+      ...(envelope.room && !isDm ? { room: envelope.room } : {}),
+      ...(handoffTo ? { handoffTo } : {}),
     });
   }
 

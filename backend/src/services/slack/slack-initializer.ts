@@ -501,6 +501,7 @@ export async function ensureSlackInstanceRegistry(): Promise<SlackInstanceRegist
       storage: StorageService.getInstance(),
       getTeamChannels: () => getSlackTeamChannelService(),
       getBoundWorkspaceId: () => getSlackCloudConfigService()?.getConfig()?.workspace.slackTeamId || null,
+      isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
     });
     setSlackInstanceRegistryService(registry);
   }
@@ -733,6 +734,13 @@ export async function startSlackTeamChannels(): Promise<void> {
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? false,
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
+        resolveInstanceId: async () => getSlackInstanceRegistryService()?.resolveInstanceId() ?? null,
+        onRoomsChanged: () => getSlackInstanceRegistryService()?.requestHeartbeat(),
+        handoffViaCloud: async (body) => {
+          const registry = getSlackInstanceRegistryService();
+          if (!registry) throw new Error('Not connected to Crewly Cloud');
+          await registry.handoff(body);
+        },
       });
       setSlackTeamChannelService(service);
     }

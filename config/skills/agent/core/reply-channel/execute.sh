@@ -34,6 +34,10 @@ Options:
                      "<you> is working on it…" in the Slack thread, which your
                      real reply then replaces. Use it when a message was only
                      passed to you to judge, and you have decided to answer.
+  --handoff NAME     Pass the message to another agent to answer, wherever it
+                     runs — for a room's router (an orchestrator woken because
+                     nobody in a private channel was awake). Posts nothing.
+  --message ID       With --handoff: the message to pass on (from your prompt)
   --json      | -j   Raw JSON payload
   --help      | -h   Show this help
 EOF_USAGE
@@ -45,6 +49,8 @@ CONTENT=""
 CMID=""
 THREAD_ID=""
 WORKING=""
+HANDOFF=""
+MESSAGE_REF=""
 
 # Detect legacy JSON argument as $1
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -61,6 +67,14 @@ while [[ $# -gt 0 ]]; do
     --working)
       WORKING="1"
       shift
+      ;;
+    --handoff)
+      HANDOFF="$2"
+      shift 2
+      ;;
+    --message)
+      MESSAGE_REF="$2"
+      shift 2
       ;;
     --content|-m)
       CONTENT="$2"
@@ -139,6 +153,25 @@ fi
 if [ -z "$CHANNEL_ID" ]; then
   echo '{"success":false,"error":"--channel is required"}' >&2
   exit 2
+fi
+
+# Hand the message to the agent that should answer it, and stop.
+if [ -n "$HANDOFF" ]; then
+  HBODY=$(THREAD_ID="$THREAD_ID" CHANNEL_ID="$CHANNEL_ID" HANDOFF="$HANDOFF" MESSAGE_REF="$MESSAGE_REF" python3 -c '
+import os, json
+p = {"channelId": os.environ["CHANNEL_ID"], "name": os.environ["HANDOFF"]}
+for env, key in (("THREAD_ID", "threadId"), ("MESSAGE_REF", "messageId")):
+    v = os.environ.get(env, "")
+    if v:
+        p[key] = v
+print(json.dumps(p))
+')
+  if RESPONSE=$(api_call POST "/slack/handoff" "$HBODY" 2>&1); then
+    echo "$RESPONSE"
+    exit 0
+  fi
+  echo "$RESPONSE" >&2
+  exit 1
 fi
 
 # "I'm taking this on": post the working-on-it placeholder and stop. The

@@ -920,7 +920,7 @@ describe('routeInbound', () => {
     expect(dispatcher!.dispatchMessage).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'huddle-1', type: 'huddle' }),
       expect.objectContaining({ id: msg.id }),
-      { threadId: msg.id, replyVia: 'reply-channel' },
+      expect.objectContaining({ threadId: msg.id, replyVia: 'reply-channel' }),
     );
     expect(slack.reactions).toEqual([{ channelId: 'C1', ts: '100.1', emoji: 'eyes' }]);
     expect(slack.sent).toEqual([]); // no hint: mention resolved
@@ -984,7 +984,7 @@ describe('routeInbound', () => {
     expect(dispatcher!.dispatchMessage).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.anything(),
-      { threadId: root!.message.id, replyVia: 'reply-channel' },
+      expect.objectContaining({ threadId: root!.message.id, replyVia: 'reply-channel' }),
     );
   });
 
@@ -1284,7 +1284,7 @@ describe('the room is whoever\'s bot is in it', () => {
     identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
 
     const result = await service.routeInbound(
-      inbound({ channelId: 'C-new', text: 'just a thought', ts: '600.1', agentSession: 'crewly-alpha-leo' }),
+      inbound({ channelId: 'C-new', text: 'just a thought', ts: '600.1', receivedVia: 'crewly-alpha-leo' }),
     );
 
     expect(result).not.toBeNull();
@@ -1301,7 +1301,7 @@ describe('the room is whoever\'s bot is in it', () => {
     identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
     await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@USAM> hi', ts: '601.1' }));
 
-    await service.routeInbound(inbound({ channelId: 'C-priv', text: 'morning', ts: '601.2', agentSession: 'crewly-alpha-leo' }));
+    await service.routeInbound(inbound({ channelId: 'C-priv', text: 'morning', ts: '601.2', receivedVia: 'crewly-alpha-leo' }));
 
     expect(service.findBySlackChannelId('C-priv')?.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
     isLocal = () => false;
@@ -1313,7 +1313,7 @@ describe('the room is whoever\'s bot is in it', () => {
     await service.ensureTeamChannel(team());
 
     expect(
-      await service.routeInbound(inbound({ channelId: 'D0DM', text: 'hi', ts: '602.1', agentSession: 'crewly-alpha-leo' })),
+      await service.routeInbound(inbound({ channelId: 'D0DM', text: 'hi', ts: '602.1', receivedVia: 'crewly-alpha-leo' })),
     ).toBeNull();
     isLocal = () => false;
   });
@@ -1324,8 +1324,200 @@ describe('the room is whoever\'s bot is in it', () => {
     await service.ensureTeamChannel(team());
 
     expect(
-      await service.routeInbound(inbound({ channelId: 'C-elsewhere', text: 'hi', ts: '603.1', agentSession: 'someone-elses-agent' })),
+      await service.routeInbound(inbound({ channelId: 'C-elsewhere', text: 'hi', ts: '603.1', receivedVia: 'someone-elses-agent' })),
     ).toBeNull();
+  });
+});
+
+describe('who in the room is awake', () => {
+  // The owner's rule (2026-09-22): a message nobody @'d reaches every agent
+  // awake, on any machine; each decides. Nobody asleep is woken unless
+  // nobody at all is awake, and then only the one machine Cloud named.
+  const room = (members: Array<[string, string, boolean]>, fallback?: { instanceId: string; agentSession: string; kind: 'team-leader' | 'orchestrator' }) => ({
+    members: members.map(([agentSession, instanceId, isAwake]) => ({
+      agentSession,
+      displayName: agentSession.split('-').pop()!,
+      instanceId,
+      deviceName: instanceId === 'mac' ? 'macbookpro' : 'iriss-air',
+      awake: isAwake,
+    })),
+    ...(fallback ? { fallback } : {}),
+  });
+  const optionsOf = () => dispatcher!.dispatchMessage.mock.calls[0][2];
+
+  function presenceService() {
+    return new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => dispatcher,
+      isAgentAwake: (s) => awake(s),
+      isLocalAgent: (s) => isLocal(s),
+      resolveInstanceId: async () => 'mac',
+      storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    });
+  }
+
+  afterEach(() => {
+    awake = () => true;
+    isLocal = () => false;
+  });
+
+  it('passes the local agents that are awake, and what it knows of the other machines', async () => {
+    awake = (s) => s === 'crewly-alpha-sam';
+    service = presenceService();
+    await service.ensureTeamChannel(team());
+
+    await service.routeInbound(
+      inbound({ ts: '800.1', room: room([['crewly-alpha-sam', 'mac', true], ['crewly-alpha-leo', 'mac', false], ['pa-ella', 'air', true]]) }),
+    );
+
+    expect(optionsOf().room).toEqual({ awakeHere: ['crewly-alpha-sam'], awakeElsewhere: true, wakeWhenAllAsleep: null });
+    expect(optionsOf().roomPresence).toBe('sam（醒着，本机） · leo（在睡，本机） · ella（醒着，iriss-air）');
+  });
+
+  it('judges local agents by what is running here, not by what Cloud last heard', async () => {
+    awake = () => false;
+    service = presenceService();
+    await service.ensureTeamChannel(team());
+
+    // Cloud thinks Sam is awake; Sam has just stopped. Every other machine
+    // believes we have it, so this machine is the only one that can wake the
+    // leader — otherwise nobody answers at all.
+    await service.routeInbound(inbound({ ts: '800.2', room: room([['crewly-alpha-sam', 'mac', true], ['pa-ella', 'air', false]]) }));
+
+    expect(optionsOf().room.awakeHere).toEqual([]);
+    expect(optionsOf().room.wakeWhenAllAsleep).toMatchObject({ kind: 'team-leader' });
+    expect(optionsOf().roomPresence).toContain('sam（在睡，本机）');
+  });
+
+  it('wakes the router only when Cloud named this machine', async () => {
+    awake = () => false;
+    service = presenceService();
+    await service.ensureTeamChannel(team());
+
+    await service.routeInbound(
+      inbound({ ts: '800.3', room: room([['crewly-alpha-sam', 'mac', false]], { instanceId: 'mac', agentSession: 'crewly-orc@mac', kind: 'orchestrator' }) }),
+    );
+    expect(optionsOf().room.wakeWhenAllAsleep).toEqual({ agentSession: 'crewly-orc', kind: 'orchestrator' });
+
+    dispatcher!.dispatchMessage.mockClear();
+    await service.routeInbound(
+      inbound({ ts: '800.4', room: room([['crewly-alpha-sam', 'mac', false]], { instanceId: 'air', agentSession: 'crewly-orc@air', kind: 'orchestrator' }) }),
+    );
+    expect(optionsOf().room.wakeWhenAllAsleep).toBeNull();
+  });
+
+  it('leaves the old rule in charge when Cloud sent no presence', async () => {
+    awake = () => false;
+    service = presenceService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ ts: '800.5' }));
+    expect(optionsOf().room).toEqual({ awakeHere: [], awakeElsewhere: false });
+  });
+
+  it('reports the ad-hoc rooms for the heartbeat', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    const changed = jest.fn();
+    service = new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => dispatcher,
+      isLocalAgent: (s) => isLocal(s),
+      onRoomsChanged: changed,
+      storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    });
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ channelId: 'C-priv', ts: '801.1', receivedVia: 'crewly-alpha-leo' }));
+
+    expect(await service.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-leo'] }]);
+    // Cloud hears about it now, not at the next 5-minute heartbeat.
+    expect(changed).toHaveBeenCalled();
+  });
+});
+
+describe('handoffForAgent', () => {
+  // The orchestrator of a private room routes a message nobody was awake
+  // for. Its bot is usually not in that room, so it cannot @ anyone there.
+  async function seedRoom(handoffViaCloud?: jest.Mock) {
+    isLocal = (s) => s === 'crewly-alpha-leo' || s === 'crewly-alpha-sam';
+    awake = () => false;
+    service = new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => dispatcher,
+      isAgentAwake: (s) => awake(s),
+      isLocalAgent: (s) => isLocal(s),
+      ...(handoffViaCloud ? { handoffViaCloud } : {}),
+      storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    });
+    await service.ensureTeamChannel(team());
+    const routed = await service.routeInbound(
+      inbound({
+        channelId: 'C-priv',
+        text: '帮我起草一封邮件',
+        ts: '900.1',
+        receivedVia: 'crewly-alpha-leo',
+        room: {
+          members: [
+            { agentSession: 'crewly-alpha-leo', displayName: 'Leo', instanceId: 'mac', deviceName: 'mac', awake: false },
+            { agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'air', deviceName: 'iriss-air', awake: false },
+          ],
+        },
+      }),
+    );
+    dispatcher!.dispatchMessage.mockClear();
+    return routed!;
+  }
+
+  afterEach(() => {
+    awake = () => true;
+    isLocal = () => false;
+  });
+
+  it('delivers the same message again to a local agent, as if it had been @\'d', async () => {
+    const routed = await seedRoom();
+    const before = chat.messages.length;
+
+    const result = await service.handoffForAgent({ chatChannelId: routed.mapping.chatChannelId, messageId: routed.message.id, name: '@Leo' });
+
+    expect(result).toMatchObject({ ok: true, agentSession: 'crewly-alpha-leo', via: 'here' });
+    const [, delivered] = dispatcher!.dispatchMessage.mock.calls[0];
+    expect(delivered.id).toBe(routed.message.id);
+    expect(delivered.mentions).toContain('crewly-alpha-leo');
+    // Not recorded a second time.
+    expect(chat.messages.length).toBe(before);
+  });
+
+  it('sends it through Cloud to an agent on another machine', async () => {
+    const cloud = jest.fn().mockResolvedValue(undefined);
+    const routed = await seedRoom(cloud);
+
+    const result = await service.handoffForAgent({ chatChannelId: routed.mapping.chatChannelId, threadId: routed.message.id, name: 'ella' });
+
+    expect(result).toMatchObject({ ok: true, agentSession: 'pa-ella', via: 'cloud' });
+    expect(cloud).toHaveBeenCalledWith({
+      agentSession: 'pa-ella',
+      event: { channel: 'C-priv', ts: '900.1', text: '帮我起草一封邮件', user: 'U1' },
+    });
+  });
+
+  it('names who it could have meant when the name is unknown', async () => {
+    const routed = await seedRoom();
+    const result = await service.handoffForAgent({ chatChannelId: routed.mapping.chatChannelId, messageId: routed.message.id, name: 'Zoe' });
+    expect(result).toMatchObject({ ok: false, reason: 'unknown_agent' });
+    expect((result as { candidates: string[] }).candidates).toEqual(expect.arrayContaining(['Leo', 'Ella']));
+  });
+
+  it('refuses a channel that is not in Slack and a message that did not come from Slack', async () => {
+    const routed = await seedRoom();
+    expect(await service.handoffForAgent({ chatChannelId: 'local-only', name: 'Leo' })).toEqual({ ok: false, reason: 'not_a_slack_channel' });
+    expect(await service.handoffForAgent({ chatChannelId: routed.mapping.chatChannelId, messageId: 'nope', name: 'Leo' })).toEqual({
+      ok: false,
+      reason: 'not_a_slack_message',
+    });
   });
 });
 
