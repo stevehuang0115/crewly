@@ -7,8 +7,8 @@
  * @module services/agent/context-window-monitor.test
  */
 
-import { ContextWindowMonitorService, type ContextLevel, type ContextWindowState } from './context-window-monitor.service.js';
-import { CONTEXT_WINDOW_MONITOR_CONSTANTS, RUNTIME_COMPACT_COMMANDS } from '../../constants.js';
+import { ContextWindowMonitorService, getContextTokenCeiling, type ContextLevel, type ContextWindowState } from './context-window-monitor.service.js';
+import { CONTEXT_WINDOW_MONITOR_CONSTANTS, CLAUDE_TRANSCRIPT_SYNC_CONSTANTS, RUNTIME_COMPACT_COMMANDS } from '../../constants.js';
 
 // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
 // `redeliverTasks` reads from TaskPoolService via dynamic import.
@@ -526,6 +526,95 @@ describe('ContextWindowMonitorService', () => {
 	// =========================================================================
 	// Threshold transitions
 	// =========================================================================
+
+	describe('updateContextTokens', () => {
+		function setupTokenMonitored() {
+			const service = ContextWindowMonitorService.getInstance();
+			const mockSession = createMockSession();
+			const sessions = new Map([['test-agent', mockSession.session]]);
+			const backend = createMockSessionBackend(sessions as any);
+			const eventBus = createMockEventBus();
+			service.setDependencies(
+				backend as any,
+				createMockAgentRegistrationService() as any,
+				{} as any,
+				eventBus as any
+			);
+			service.startSessionMonitoring('test-agent', 'member-1', 'team-1', 'developer');
+			return { service, eventBus };
+		}
+
+		it('scores an absolute token count against the ceiling', () => {
+			const { service } = setupTokenMonitored();
+
+			service.updateContextTokens('test-agent', 150_000, 200_000);
+
+			const state = service.getContextState('test-agent');
+			expect(state!.contextPercent).toBe(75);
+			expect(state!.level).toBe('yellow');
+			expect(state!.contextTokens).toBe(150_000);
+		});
+
+		it('caps a context far past the ceiling at critical rather than overflowing', () => {
+			// Atlas was observed carrying 715k tokens against a 200k ceiling.
+			// That is 357%, which must clamp, not produce a nonsense level.
+			const { service } = setupTokenMonitored();
+
+			service.updateContextTokens('test-agent', 715_000, 200_000);
+
+			const state = service.getContextState('test-agent');
+			expect(state!.contextPercent).toBe(100);
+			expect(state!.level).toBe('critical');
+		});
+
+		it('leaves a small context at normal', () => {
+			const { service } = setupTokenMonitored();
+
+			service.updateContextTokens('test-agent', 10_000, 200_000);
+
+			expect(service.getContextState('test-agent')!.level).toBe('normal');
+		});
+
+		it('ignores a non-positive ceiling instead of dividing by zero', () => {
+			const { service } = setupTokenMonitored();
+
+			service.updateContextTokens('test-agent', 150_000, 0);
+
+			expect(service.getContextState('test-agent')!.contextPercent).toBe(0);
+		});
+
+		it('does nothing for a session that is not monitored', () => {
+			const { service } = setupTokenMonitored();
+
+			expect(() => service.updateContextTokens('unknown-agent', 500_000, 200_000)).not.toThrow();
+			expect(service.getContextState('unknown-agent')).toBeUndefined();
+		});
+	});
+
+	describe('getContextTokenCeiling', () => {
+		const original = process.env.CREWLY_CONTEXT_TOKEN_CEILING;
+		afterEach(() => {
+			if (original === undefined) delete process.env.CREWLY_CONTEXT_TOKEN_CEILING;
+			else process.env.CREWLY_CONTEXT_TOKEN_CEILING = original;
+		});
+
+		it('defaults to the configured ceiling', () => {
+			delete process.env.CREWLY_CONTEXT_TOKEN_CEILING;
+			expect(getContextTokenCeiling()).toBe(CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.CONTEXT_TOKEN_CEILING);
+		});
+
+		it('honours a numeric override so a running backend can be retuned', () => {
+			process.env.CREWLY_CONTEXT_TOKEN_CEILING = '350000';
+			expect(getContextTokenCeiling()).toBe(350_000);
+		});
+
+		it('falls back to the default for a garbage or non-positive override', () => {
+			process.env.CREWLY_CONTEXT_TOKEN_CEILING = 'lots';
+			expect(getContextTokenCeiling()).toBe(CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.CONTEXT_TOKEN_CEILING);
+			process.env.CREWLY_CONTEXT_TOKEN_CEILING = '-5';
+			expect(getContextTokenCeiling()).toBe(CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.CONTEXT_TOKEN_CEILING);
+		});
+	});
 
 	describe('threshold transitions', () => {
 		function setupWithEventBus() {

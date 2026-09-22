@@ -1171,6 +1171,72 @@ export const RUNTIME_EXIT_CONSTANTS = {
  * Used by ContextWindowMonitorService to detect when an agent's Claude Code
  * session is running low on context and trigger proactive warnings or recovery.
  */
+/**
+ * Claude transcript sync — reads Claude Code's own session JSONL files to get
+ * exact per-turn token usage for `claude-code` agents.
+ */
+/**
+ * Live browser view — per-agent browser sessions and the frames that make
+ * them watchable.
+ *
+ * Frames are owner-surface only: in memory, never persisted, never attached
+ * to a chat message or posted to any multi-party surface.
+ */
+export const BROWSER_SESSION_CONSTANTS = {
+	/** How often the capture loop wakes up (ms) */
+	TICK_INTERVAL_MS: 1_500,
+	/**
+	 * A session counts as watched for this long after someone fetched its
+	 * frame. Interest expires on its own, so there is no subscribe call to
+	 * leak and a closed tab stops costing captures within seconds.
+	 */
+	WATCH_WINDOW_MS: 5_000,
+	/** Minimum gap between frames while someone is watching (ms) */
+	WATCHED_FRAME_INTERVAL_MS: 1_500,
+	/**
+	 * Minimum gap between frames when nobody is watching (ms). Only refreshed
+	 * at all when the agent did something — a picture nobody looks at is pure
+	 * cost on the agent's browser.
+	 */
+	IDLE_FRAME_INTERVAL_MS: 10_000,
+	/**
+	 * Frame encoding. A PNG viewport capture on a Retina display runs to
+	 * several hundred kilobytes; half-scale JPEG lands around 30–80 KB, which
+	 * is what makes once-a-second viable over a relay.
+	 */
+	FRAME_FORMAT: 'jpeg',
+	/** JPEG quality for frames (0-100) */
+	FRAME_QUALITY: 55,
+	/** Downscale factor for frames */
+	FRAME_SCALE: 0.5,
+	/** How long a finished session stays listed before being pruned (ms) */
+	RETAIN_FINISHED_MS: 10 * 60 * 1000,
+} as const;
+
+export const CLAUDE_TRANSCRIPT_SYNC_CONSTANTS = {
+	/** How often to read the unread tail of each agent's transcript (ms) */
+	SYNC_INTERVAL_MS: 60_000,
+	/** Cursor file name, kept under CREWLY_HOME */
+	CURSOR_FILE: 'claude-transcript-cursors.json',
+	/**
+	 * How many recent assistant message ids to remember per session for
+	 * exactly-once counting. Only the newest turns can be rewritten in place,
+	 * so a small window is enough and keeps the cursor file small.
+	 */
+	MAX_DEDUPE_IDS: 200,
+	/**
+	 * Context size, in tokens, above which a claude-code agent is asked to
+	 * compact.
+	 *
+	 * Expressed as an absolute ceiling rather than a percentage of the model's
+	 * window on purpose: the window differs per model and is not reported by
+	 * the runtime, whereas the thing worth acting on — "this agent now drags
+	 * N tokens through every single turn" — is directly measurable and is what
+	 * actually drives cost. Override with CREWLY_CONTEXT_TOKEN_CEILING.
+	 */
+	CONTEXT_TOKEN_CEILING: 200_000,
+} as const;
+
 export const CONTEXT_WINDOW_MONITOR_CONSTANTS = {
 	/** Interval for periodic stale detection and cleanup (ms) */
 	CHECK_INTERVAL_MS: 30_000,

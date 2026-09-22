@@ -37,6 +37,7 @@ import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import {
 	CONTEXT_WINDOW_MONITOR_CONSTANTS,
+	CLAUDE_TRANSCRIPT_SYNC_CONSTANTS,
 	RUNTIME_COMPACT_COMMANDS,
 	RUNTIME_TYPES,
 	ORCHESTRATOR_SESSION_NAME,
@@ -75,6 +76,12 @@ export interface ContextWindowState {
 	runtimeType: RuntimeType;
 	/** Last detected context usage percentage (0-100) */
 	contextPercent: number;
+	/**
+	 * Last measured absolute context size in tokens, when a source that can
+	 * measure it (the Claude Code transcript reader) has reported one.
+	 * Absent for runtimes we only observe through PTY percentages.
+	 */
+	contextTokens?: number;
 	/** Current severity level */
 	level: ContextLevel;
 	/** Timestamp of last context % detection */
@@ -145,6 +152,24 @@ const GEMINI_CONTEXT_TOKEN_PATTERNS: RegExp[] = [
  * Conservative estimate: assume 1M tokens max (Gemini 2.0 Flash/Pro).
  */
 const GEMINI_DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000;
+
+/**
+ * Resolves the context-size ceiling, in tokens, above which an agent is asked
+ * to compact.
+ *
+ * Read from the environment on each call rather than cached so an operator can
+ * retune a running backend that is burning through a budget.
+ *
+ * @returns The ceiling in tokens; falls back to the configured default when
+ *          the override is missing or not a positive number
+ */
+export function getContextTokenCeiling(): number {
+	const raw = process.env.CREWLY_CONTEXT_TOKEN_CEILING;
+	const parsed = raw ? Number(raw) : NaN;
+	return Number.isFinite(parsed) && parsed > 0
+		? parsed
+		: CLAUDE_TRANSCRIPT_SYNC_CONSTANTS.CONTEXT_TOKEN_CEILING;
+}
 
 // =============================================================================
 // Service
@@ -507,6 +532,41 @@ export class ContextWindowMonitorService {
 		if (state.level !== previousLevel && state.level !== 'normal') {
 			this.evaluateThresholds(state, previousLevel);
 		}
+	}
+
+	/**
+	 * Update context usage from an absolute token count.
+	 *
+	 * The percentage path above depends on the runtime printing its context
+	 * usage into the terminal. Claude Code does not — its context readout
+	 * lives in a TUI status bar that never reaches PTY scrollback — so for
+	 * claude-code agents that path silently never fires, and an agent can
+	 * drag several hundred thousand tokens through every turn unnoticed.
+	 *
+	 * This entry point takes the measured figure instead, read from Claude
+	 * Code's own transcript by
+	 * {@link module:services/monitoring/claude-transcript-sync}, and scores it
+	 * against an absolute ceiling rather than a fraction of the model's
+	 * window. The window size is model-specific and not reported anywhere we
+	 * can read; the ceiling is a policy we set, and it is the figure that
+	 * actually maps to cost per turn.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param contextTokens - Total input tokens on the agent's latest turn
+	 *                        (fresh + cache reads + cache writes)
+	 * @param ceilingTokens - Ceiling to score against; defaults to the
+	 *                        configured `CONTEXT_TOKEN_CEILING`
+	 */
+	updateContextTokens(sessionName: string, contextTokens: number, ceilingTokens?: number): void {
+		const ceiling = ceilingTokens ?? getContextTokenCeiling();
+		if (ceiling <= 0) return;
+
+		const percent = Math.max(0, Math.min(100, Math.round((contextTokens / ceiling) * 100)));
+		const state = this.contextStates.get(sessionName);
+		if (state) {
+			state.contextTokens = contextTokens;
+		}
+		this.updateContextUsage(sessionName, percent);
 	}
 
 	/**

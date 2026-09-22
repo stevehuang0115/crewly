@@ -80,11 +80,25 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('GET /bindings');
 	});
 
-	it('should have exactly 30 routes', () => {
+	it('registers the live browser view routes', () => {
+		const router = createBrowserRouter();
+		const routePaths = router.stack
+			.filter((layer: any) => layer.route)
+			.map((layer: any) => layer.route)
+			.map((r: any) => `${Object.keys(r.methods)[0].toUpperCase()} ${r.path}`);
+
+		expect(routePaths).toContain('GET /sessions');
+		expect(routePaths).toContain('GET /sessions/:id');
+		expect(routePaths).toContain('GET /sessions/:id/frame');
+		expect(routePaths).toContain('POST /sessions/:id/stop');
+	});
+
+	it('should have exactly 34 routes', () => {
 		// 27 legacy routes (added /select-option) + 3 per-tab dispatch routes
-		// (bind / unbind / bindings).
+		// (bind / unbind / bindings) + 4 live browser view routes
+		// (sessions list / one / frame / stop).
 		const router = createBrowserRouter();
 		const routes = router.stack.filter((layer: any) => layer.route);
-		expect(routes.length).toBe(30);
+		expect(routes.length).toBe(34);
 	});
 });

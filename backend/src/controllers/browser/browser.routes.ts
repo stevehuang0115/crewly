@@ -40,6 +40,10 @@ import {
 	bindTab,
 	unbindTab,
 	getBindings,
+	listBrowserSessions,
+	getBrowserSession,
+	getBrowserSessionFrame,
+	stopBrowserSession,
 } from './browser.controller.js';
 
 /**
@@ -138,6 +142,14 @@ export function createBrowserRouter(): Router {
 	router.post('/unbind', unbindTab);
 	// GET /api/browser/bindings — diagnostic snapshot of all agent→tab bindings
 	router.get('/bindings', getBindings);
+
+	// Live browser view — what each agent is doing, and a recent picture of it.
+	// The frame route returns image bytes for an <img> and is owner-surface
+	// only; see BrowserSessionService for why frames never go anywhere else.
+	router.get('/sessions', listBrowserSessions);
+	router.get('/sessions/:id', getBrowserSession);
+	router.get('/sessions/:id/frame', getBrowserSessionFrame);
+	router.post('/sessions/:id/stop', stopBrowserSession);
 
 	return router;
 }

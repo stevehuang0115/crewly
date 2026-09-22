@@ -45,6 +45,14 @@ export interface TokenUsageEvent {
 export interface TokenUsageDetail {
   cachedInput?: number;
   steps?: number;
+  /**
+   * When the usage actually happened, ISO-8601.
+   *
+   * Backfilled sources (a Claude Code transcript read minutes later) must pass
+   * the turn's own timestamp, otherwise every event lands at import time and
+   * any per-day or per-hour view of the data is wrong.
+   */
+  timestamp?: string;
 }
 
 /**
@@ -291,7 +299,7 @@ export class TokenUsageService {
     const effectiveTaskId = taskId ?? ctx?.taskId ?? undefined;
 
     const event: TokenUsageEvent = {
-      timestamp: new Date().toISOString(),
+      timestamp: detail?.timestamp ?? new Date().toISOString(),
       agentId,
       input,
       output,

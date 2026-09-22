@@ -12,6 +12,7 @@ import type { Request, Response } from 'express';
 import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
+import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
 
 /**
@@ -281,6 +282,7 @@ async function sendToolCommand(
 	if (instance && proxy.isAvailable()) {
 		try {
 			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -296,6 +298,7 @@ async function sendToolCommand(
 			const result = agentSession
 				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName)
 				: await bridge.sendCommand(tool, params, timeoutMs, agentName);
+			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -308,6 +311,7 @@ async function sendToolCommand(
 	if (proxy.isAvailable()) {
 		try {
 			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			res.json(result);
 			return;
 		} catch (err) {
@@ -325,6 +329,44 @@ async function sendToolCommand(
 		error: errorDetail,
 		code: 'NO_BROWSER_CLIENT',
 	});
+}
+
+/**
+ * Fold a successful browser action into the watchable session for its agent.
+ *
+ * Called from all three transport paths rather than from each handler, so a
+ * tool added later is covered without anyone remembering to wire it up.
+ * Deliberately fire-and-forget and never throwing: the agent's command has
+ * already succeeded, and a bookkeeping failure must not turn that into an
+ * error response.
+ *
+ * @param agentSession - Owning agent session, when the caller sent one
+ * @param tool - Tool that was dispatched
+ * @param params - Params it was dispatched with
+ * @param agentName - Display name for the UI, when sent
+ * @param req - Request, read for the agent's stated goal
+ */
+function noteBrowserSessionAction(
+	agentSession: string | undefined,
+	tool: string,
+	params: Record<string, unknown> | undefined,
+	agentName: string | undefined,
+	req: Request,
+): void {
+	if (!agentSession) return;
+	try {
+		const goalHeader = req.headers['x-agent-goal'];
+		getBrowserSessions().noteAction({
+			agentSession,
+			tool,
+			params,
+			...(agentName ? { agentName } : {}),
+			...(typeof goalHeader === 'string' && goalHeader ? { goal: goalHeader } : {}),
+			...(typeof params?.tabId === 'number' ? { tabId: params.tabId } : {}),
+		});
+	} catch {
+		// Never let session bookkeeping affect the agent's command.
+	}
 }
 
 /**
@@ -754,4 +796,91 @@ export function getBindings(_req: Request, res: Response): void {
 			softWarn: BROWSER_BRIDGE_CONSTANTS.TAB_BIND_SOFT_WARN,
 		},
 	});
+}
+
+// =============================================================================
+// Live browser view
+// =============================================================================
+
+/**
+ * GET /api/browser/sessions
+ * List what each agent is doing in the browser right now.
+ *
+ * Returns metadata only. Frame bytes are fetched one at a time from
+ * `/sessions/:id/frame`, so listing costs nothing and so fetching a picture
+ * is an explicit, attributable act.
+ *
+ * @param req - Express request; `?active=1` hides finished sessions
+ * @param res - Express response
+ */
+export function listBrowserSessions(req: Request, res: Response): void {
+	const activeOnly = req.query.active === '1' || req.query.active === 'true';
+	const sessions = getBrowserSessions().listSessions(!activeOnly);
+	res.json({ success: true, data: { sessions } });
+}
+
+/**
+ * GET /api/browser/sessions/:id
+ * One agent's browser session.
+ *
+ * @param req - Express request with `:id` (the agent session name)
+ * @param res - Express response
+ */
+export function getBrowserSession(req: Request, res: Response): void {
+	const session = getBrowserSessions().getSession(req.params.id);
+	if (!session) {
+		res.status(404).json({ success: false, error: 'No browser session for that agent' });
+		return;
+	}
+	res.json({ success: true, data: { session } });
+}
+
+/**
+ * GET /api/browser/sessions/:id/frame
+ * The most recent picture of the page the agent is on.
+ *
+ * Responds with the image itself rather than JSON so a plain `<img>` can
+ * point at it. Fetching also registers the caller as a watcher, which is what
+ * raises the capture rate — there is no separate subscribe call to get out of
+ * sync, and interest expires on its own.
+ *
+ * Frames are owner-surface only: they are never persisted and never leave
+ * this endpoint. Marked no-store so a picture of whatever the owner is logged
+ * into does not linger in a disk cache or an intermediary.
+ *
+ * @param req - Express request with `:id`
+ * @param res - Express response carrying image bytes, or 404
+ */
+export function getBrowserSessionFrame(req: Request, res: Response): void {
+	const frame = getBrowserSessions().getFrame(req.params.id);
+	if (!frame) {
+		res.status(404).json({ success: false, error: 'No frame captured yet' });
+		return;
+	}
+	const body = Buffer.from(frame.base64, 'base64');
+	res.setHeader('Content-Type', frame.mimeType);
+	res.setHeader('Cache-Control', 'no-store, private');
+	res.setHeader('X-Frame-Captured-At', String(frame.capturedAt));
+	res.send(body);
+}
+
+/**
+ * POST /api/browser/sessions/:id/stop
+ * Mark an agent's browser session as stopped by its owner.
+ *
+ * This ends the watchable session and its frames. It does not yet interrupt
+ * the agent itself — taking the wheel away mid-action is a separate change
+ * that needs the agent side to understand being pre-empted.
+ *
+ * @param req - Express request with `:id`
+ * @param res - Express response
+ */
+export function stopBrowserSession(req: Request, res: Response): void {
+	const sessions = getBrowserSessions();
+	if (!sessions.getSession(req.params.id)) {
+		res.status(404).json({ success: false, error: 'No browser session for that agent' });
+		return;
+	}
+	sessions.endSession(req.params.id, 'stopped');
+	res.json({ success: true, data: { session: sessions.getSession(req.params.id) } });
 }

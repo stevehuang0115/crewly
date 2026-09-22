@@ -1772,6 +1772,33 @@ void (async () => {
 				const browserBridge = BrowserBridgeService.getInstance();
 				browserBridge.attach(this.httpServer);
 				this.logger.info('Crewly in Chrome WebSocket bridge started');
+
+				// Live browser view: make each agent's browser work watchable.
+				// The capturer is injected rather than imported by the session
+				// service so transport selection (direct WS vs relay) stays in
+				// one place — here and in the browser controller.
+				const { getBrowserSessions } = await import('./services/browser/browser-session.service.js');
+				const browserSessions = getBrowserSessions();
+				browserSessions.setCapturer(async (agentSession, options) => {
+					const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
+					const proxy = BrowserProxyService.getInstance();
+
+					let response;
+					if (browserBridge.isConnected()) {
+						response = await browserBridge.sendCommandForAgent(agentSession, 'screenshot', options);
+					} else if (proxy.isAvailable()) {
+						response = await proxy.sendCommand('screenshot', options, undefined, undefined, undefined, agentSession);
+					} else {
+						return null;
+					}
+
+					const result = (response as { result?: unknown } | undefined)?.result as
+						| { base64?: string; format?: string; devicePixelRatio?: number }
+						| undefined;
+					return result ?? null;
+				});
+				browserSessions.start();
+				this.logger.info('Live browser view started');
 			} catch (error) {
 				this.logger.warn('Failed to start Crewly in Chrome bridge (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
@@ -2557,11 +2584,18 @@ void (async () => {
 				await tokenUsageService.loadFromDisk();
 				tokenUsageService.startPeriodicFlush();
 
-				// Sync Claude Code session JSONL files → TokenUsageService
-				// so the Usage dashboard has data from claude-code runtime agents
-				const { syncSessionsToTokenUsageService } = await import('./services/monitoring/claude-session-tokens.service.js');
-				const synced = await syncSessionsToTokenUsageService(this.config.crewlyHome, 7);
-				this.logger.info('Token usage tracking initialized', { syncedClaudeSessions: synced });
+				// Read Claude Code's own session transcripts on an interval so
+				// the Usage dashboard reflects claude-code agents, and so the
+				// context monitor gets a real context size for them (Claude
+				// Code never prints one to the PTY, so its percentage-parsing
+				// path can never fire for these agents).
+				const { getClaudeTranscriptSync } = await import('./services/monitoring/claude-transcript-sync.service.js');
+				const transcriptSync = getClaudeTranscriptSync();
+				transcriptSync.onContextReading(({ sessionName, contextTokens }) => {
+					ContextWindowMonitorService.getInstance().updateContextTokens(sessionName, contextTokens);
+				});
+				await transcriptSync.start();
+				this.logger.info('Token usage tracking initialized');
 			} catch (tokenErr) {
 				this.logger.warn('Token usage initialization failed (non-fatal)', {
 					error: tokenErr instanceof Error ? tokenErr.message : String(tokenErr),
@@ -3979,6 +4013,14 @@ void (async () => {
 				BrowserBridgeService.getInstance().stop();
 			} catch {
 				// May not have been initialized
+			}
+
+			// Stop the live browser view capture loop
+			try {
+				const { getBrowserSessions } = await import('./services/browser/browser-session.service.js');
+				getBrowserSessions().stop();
+			} catch {
+				// Never block shutdown on a metrics loop.
 			}
 
 			// Disconnect BrowserProxyService from Cloud Relay

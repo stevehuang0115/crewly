@@ -816,3 +816,101 @@ describe('Browser Controller — per-tab dispatch (M2)', () => {
 		});
 	});
 });
+
+// =============================================================================
+// Live browser view
+// =============================================================================
+
+describe('live browser view endpoints', () => {
+	/** A fresh app with an empty session registry. */
+	function setup() {
+		const app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+		return app;
+	}
+
+	let sessions: import('../../services/browser/browser-session.service.js').BrowserSessionService;
+
+	beforeEach(async () => {
+		const mod = await import('../../services/browser/browser-session.service.js');
+		mod.BrowserSessionService.resetInstance();
+		sessions = mod.BrowserSessionService.getInstance();
+		sessions.clear();
+	});
+
+	afterEach(async () => {
+		const mod = await import('../../services/browser/browser-session.service.js');
+		mod.BrowserSessionService.resetInstance();
+	});
+
+	it('lists nothing before any agent has used the browser', async () => {
+		const res = await request(setup()).get('/api/browser/sessions');
+
+		expect(res.status).toBe(200);
+		expect(res.body.data.sessions).toEqual([]);
+	});
+
+	it('lists a session once an agent has acted', async () => {
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate', params: { url: 'https://x.test' } });
+
+		const res = await request(setup()).get('/api/browser/sessions');
+
+		expect(res.body.data.sessions).toHaveLength(1);
+		expect(res.body.data.sessions[0]).toMatchObject({ id: 'pia', status: 'navigating' });
+	});
+
+	it('can leave out finished sessions', async () => {
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate' });
+		sessions.endSession('pia');
+
+		const res = await request(setup()).get('/api/browser/sessions?active=1');
+
+		expect(res.body.data.sessions).toEqual([]);
+	});
+
+	it('returns one session, or 404 for an agent that has not used the browser', async () => {
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate' });
+
+		const found = await request(setup()).get('/api/browser/sessions/pia');
+		expect(found.status).toBe(200);
+		expect(found.body.data.session.id).toBe('pia');
+
+		const missing = await request(setup()).get('/api/browser/sessions/nobody');
+		expect(missing.status).toBe(404);
+	});
+
+	it('404s for a frame that has not been captured yet', async () => {
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate' });
+
+		const res = await request(setup()).get('/api/browser/sessions/pia/frame');
+
+		expect(res.status).toBe(404);
+	});
+
+	it('serves the frame as image bytes that no cache may keep', async () => {
+		// A frame is a picture of whatever the owner happens to be logged into.
+		// It must not linger in a disk cache or an intermediary.
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate' });
+		sessions.setCapturer(async () => ({ base64: Buffer.from('hello').toString('base64'), format: 'jpeg' }));
+		await sessions.captureFrame('pia');
+
+		const res = await request(setup()).get('/api/browser/sessions/pia/frame');
+
+		expect(res.status).toBe(200);
+		expect(res.headers['content-type']).toContain('image/jpeg');
+		expect(res.headers['cache-control']).toContain('no-store');
+		expect(res.body.toString()).toBe('hello');
+	});
+
+	it('marks a session stopped, and 404s for one that does not exist', async () => {
+		sessions.noteAction({ agentSession: 'pia', tool: 'navigate' });
+
+		const ok = await request(setup()).post('/api/browser/sessions/pia/stop');
+		expect(ok.status).toBe(200);
+		expect(ok.body.data.session.status).toBe('stopped');
+
+		const missing = await request(setup()).post('/api/browser/sessions/nobody/stop');
+		expect(missing.status).toBe(404);
+	});
+});
