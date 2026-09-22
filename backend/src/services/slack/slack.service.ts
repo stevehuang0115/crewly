@@ -2125,18 +2125,30 @@ export class SlackService extends EventEmitter {
     const maxRetries = constants.UPLOAD_MAX_RETRIES;
     const MAX_BACKOFF_MS = 60_000;
 
+    // `files.uploadV2` is a helper that makes several calls of its own
+    // (getUploadURLExternal, then completeUploadExternal), and a `token`
+    // passed in its arguments does not reach all of them — the upload
+    // silently proceeds as the workspace bot. That bot is not a member of an
+    // agent's own DM, so Slack answers `channel_not_found` and it reads like
+    // a bad channel id rather than a wrong identity. Build a client on the
+    // agent's token instead, the same way the auth pre-flight does.
+    let client = this.client;
+    if (options.botToken) {
+      const WebClientCtor = await this.loadWebClientConstructor();
+      client = new WebClientCtor(options.botToken) as unknown as SlackWebClient;
+    }
+
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       const fileStream = createReadStream(options.filePath);
 
       try {
-        const result = await this.client.files.uploadV2({
+        const result = await client.files.uploadV2({
           channel_id: options.channelId,
           file: fileStream,
           filename,
           title: options.title,
           initial_comment: options.initialComment,
           thread_ts: options.threadTs,
-          ...(options.botToken ? { token: options.botToken } : {}),
         });
 
         this.status.messagesSent++;

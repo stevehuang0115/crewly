@@ -674,6 +674,44 @@ describe('SlackService', () => {
         };
       });
 
+      it('uploads through a client built on the agent\'s token, not the workspace one', async () => {
+        // `files.uploadV2` makes several calls of its own and a `token` in
+        // its arguments does not reach all of them, so the upload went out
+        // as the workspace bot — which is not a member of an agent's own DM.
+        // Slack answered `channel_not_found`, which reads like a bad channel
+        // id rather than a wrong identity.
+        const agentUploadV2 = jest.fn().mockResolvedValue({ files: [{ id: 'F-agent' }] });
+        (service as any).loadWebClientConstructor = jest.fn().mockResolvedValue(
+          function FakeWebClient(this: Record<string, unknown>, token: string) {
+            this.token = token;
+            this.files = { uploadV2: agentUploadV2 };
+          },
+        );
+
+        const result = await service.uploadFile({
+          channelId: 'D0C30RHT1DG',
+          filePath: __filename,
+          botToken: 'xoxb-agent',
+        });
+
+        expect(result.fileId).toBe('F-agent');
+        expect(agentUploadV2).toHaveBeenCalledTimes(1);
+        // The workspace client must not have been used at all.
+        expect(mockUploadV2).not.toHaveBeenCalled();
+        // And the token must not be smuggled through the arguments, where it
+        // does nothing.
+        expect(agentUploadV2.mock.calls[0][0].token).toBeUndefined();
+      });
+
+      it('uses the workspace client when no agent token is given', async () => {
+        mockUploadV2.mockResolvedValue({ files: [{ id: 'F-workspace' }] });
+
+        const result = await service.uploadFile({ channelId: 'C123', filePath: __filename });
+
+        expect(result.fileId).toBe('F-workspace');
+        expect(mockUploadV2).toHaveBeenCalledTimes(1);
+      });
+
       it('should succeed on first attempt and return fileId', async () => {
         mockUploadV2.mockResolvedValue({ files: [{ id: 'F100' }] });
 
