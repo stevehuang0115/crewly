@@ -1479,22 +1479,37 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
       return;
     }
 
+    // A chat channel is mirrored to Slack in one of two ways, and an agent
+    // has no idea which it is in: a team channel the whole team shares, or a
+    // one-to-one DM with its own bot. Try both rather than making the agent
+    // guess — the DM case is the one most single-agent conversations use, and
+    // it was the one that sent the owner a Drive link.
     const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
-    const teamChannels = getSlackTeamChannelService();
-    if (!teamChannels) {
-      res.status(503).json({ success: false, error: 'Slack team channels are not running' });
-      return;
-    }
+    const { getSlackAgentDmService } = await import('../../services/slack/slack-agent-dm.service.js');
 
-    const result = await teamChannels.attachFileForAgent({
+    const attach = {
       chatChannelId: String(channelId),
       agentSession,
       filePath: String(filePath),
       ...(filename ? { filename: String(filename) } : {}),
       ...(title ? { title: String(title) } : {}),
       ...(comment ? { comment: String(comment) } : {}),
+    };
+
+    let result = await getSlackTeamChannelService()?.attachFileForAgent({
+      ...attach,
       ...(threadId ? { threadId: String(threadId) } : {}),
     });
+
+    if (!result || (!result.ok && result.reason === 'not_a_slack_channel')) {
+      const viaDm = await getSlackAgentDmService()?.attachFileForAgent(attach);
+      if (viaDm) result = viaDm;
+    }
+
+    if (!result) {
+      res.status(503).json({ success: false, error: 'Slack is not running on this instance' });
+      return;
+    }
 
     if (!result.ok) {
       const status = result.reason === 'not_a_slack_channel' ? 400 : 502;

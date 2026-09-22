@@ -144,15 +144,27 @@ describe('SkillsReferenceModule', () => {
 
 		it('gives the reasons, so it is a judgement and not a rule to route around', async () => {
 			const out = await module.build(baseConfig);
-			expect(out).toMatch(/leave Slack/i);
+			expect(out).toMatch(/makes them leave\s+Slack/i);
 			expect(out).toMatch(/without access to that Drive/i);
 		});
 
-		it('tells the agent which channel id to pass', async () => {
-			// It has a chat channel id, not a Slack one, and no reason to know
-			// the difference matters.
+		it('tells the agent which channel id to pass, and not to ask for a Slack one', async () => {
+			// It has a chat channel id, not a Slack one. Asked for a PDF, an
+			// agent offered to attach it "if you give me the Slack channel ID"
+			// — a question the owner should never be asked.
 			const out = await module.build(baseConfig);
 			expect(out).toMatch(/--channel <the id from your prompt>/);
+			expect(out).toMatch(/not\*{0,2}\s+need a Slack channel id/i);
+		});
+
+		it('covers both reply paths, since the agent cannot tell which it is on', async () => {
+			// A DM routes through reply-chat and a team channel through
+			// reply-channel; naming only one leaves the other case unaddressed,
+			// and the DM is the case that actually came up.
+			const out = await module.build(baseConfig);
+			expect(out).toContain('reply-chat');
+			expect(out).toContain('reply-channel');
+			expect(out).toMatch(/team channel or a\s*\n?\s*one-to-one DM/i);
 		});
 
 		it('is shown to every role', async () => {

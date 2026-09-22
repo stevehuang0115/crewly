@@ -321,13 +321,21 @@ Use bash skills at \`${config.agentSkillsPath}/\` for all team communication. Re
 - \`get-sops\` to request relevant SOPs for your current situation
 - \`core/attach-file\` to put a real file into the Slack channel you are replying in
 
-**When someone asks for a file, send the file.** \`reply-channel\` carries text
-only, so use \`core/attach-file --channel <the id from your prompt> --path <file>\`;
-it lands in the same thread, under your own name. Uploading to Drive and pasting
-a link is not the same thing — it makes them leave Slack, it breaks for anyone
-without access to that Drive, and on a phone it is several taps to something they
-wanted in front of them. Attach the file; add a link too only if they will want
-to edit it.
+**When someone asks for a file, send the file.** Both reply skills
+(\`reply-chat\` and \`reply-channel\`) carry text only, so use
+\`core/attach-file --channel <the id from your prompt> --path <file>\`. It lands in
+the same thread, under your own name.
+
+You do **not** need a Slack channel id, and you do not need to ask for one. Pass
+the chat channel id you already have — the one in \`[CHAT:<id>]\` — and the
+backend works out the rest, whether this conversation is a team channel or a
+one-to-one DM with your bot. You have no way to tell those apart and do not need
+to.
+
+Uploading to Drive and pasting a link is not the same thing — it makes them leave
+Slack, it breaks for anyone without access to that Drive, and on a phone it is
+several taps to something they wanted in front of them. Attach the file; add a
+link too only if they will want to edit it.
 
 **IMPORTANT for memory tools:** When calling \`remember\`, \`recall\`, or \`record-learning\`, you MUST pass:
 - \`agentId\`: Your **Session Name** from the Identity section above

@@ -35,6 +35,15 @@ import { toSlackMrkdwn } from './slack-mrkdwn.js';
 export interface AgentDmSlackApi {
   isConnected(): boolean;
   sendMessage(message: SlackOutgoingMessage): Promise<string>;
+  uploadFile(options: {
+    channelId: string;
+    filePath: string;
+    filename?: string;
+    title?: string;
+    initialComment?: string;
+    threadTs?: string;
+    botToken?: string;
+  }): Promise<{ fileId?: string }>;
   addReaction(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
 }
 
@@ -194,6 +203,68 @@ export class SlackAgentDmService {
    */
   findByChatChannelId(chatChannelId: string): SlackAgentDmLink | null {
     return this.store.links[chatChannelId] ?? null;
+  }
+
+  /**
+   * Put a file into the Slack DM an agent is answering in.
+   *
+   * The team-channel path has the same method for the same reason; an agent
+   * talking to its owner one-to-one needs it at least as much, and this is
+   * the path most conversations with a single agent actually take. Without
+   * it, asked for a PDF, the agent uploads to Drive and sends a link — which
+   * it will then correctly explain is all its reply interface can carry.
+   *
+   * The file goes out under the agent's own bot, into the thread its written
+   * reply would land in, so the attachment and the sentence about it stay
+   * together.
+   *
+   * @param input - Chat channel the agent was given, plus the file
+   * @returns What was uploaded, or why it could not be
+   */
+  async attachFileForAgent(input: {
+    chatChannelId: string;
+    agentSession: string;
+    filePath: string;
+    filename?: string;
+    title?: string;
+    comment?: string;
+  }): Promise<
+    | { ok: true; slackChannelId: string; threadTs?: string; fileId?: string; asAgentBot: boolean }
+    | { ok: false; reason: string }
+  > {
+    const link = this.findByChatChannelId(input.chatChannelId);
+    if (!link) return { ok: false, reason: 'not_a_slack_channel' };
+
+    const installed = this.deps.identities.getInstalled(link.agentSession);
+    if (!installed) return { ok: false, reason: 'agent_has_no_slack_bot' };
+
+    try {
+      const result = await this.deps.slack.uploadFile({
+        channelId: link.slackChannelId,
+        filePath: input.filePath,
+        ...(input.filename ? { filename: input.filename } : {}),
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.comment ? { initialComment: input.comment } : {}),
+        ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}),
+        botToken: installed.botToken,
+      });
+      this.logger.info('Agent attached a file to its Slack DM', {
+        agentSession: link.agentSession,
+        slackChannelId: link.slackChannelId,
+        threaded: Boolean(link.replyThreadTs),
+      });
+      return {
+        ok: true,
+        slackChannelId: link.slackChannelId,
+        ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}),
+        ...(result.fileId ? { fileId: result.fileId } : {}),
+        asAgentBot: true,
+      };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn('Agent DM file attach failed', { agentSession: link.agentSession, reason });
+      return { ok: false, reason };
+    }
   }
 
   // -------------------------------------------------------------------------

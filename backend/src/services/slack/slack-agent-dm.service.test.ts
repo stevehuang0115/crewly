@@ -18,6 +18,8 @@ function makeDeps(overrides: Partial<SlackAgentDmServiceDeps> = {}) {
   const sent: unknown[] = [];
   const reactions: unknown[] = [];
   const recorded: unknown[] = [];
+  const uploads: Array<Record<string, unknown>> = [];
+  let uploadError: string | null = null;
   const dispatched: unknown[] = [];
   const channel = { id: 'chat-ella', type: 'dm', agentSession: 'crewly-marketing-ella-e6a6b8ea', name: 'Ella' } as unknown as ChatChannelDTO;
   const deps: SlackAgentDmServiceDeps = {
@@ -25,6 +27,11 @@ function makeDeps(overrides: Partial<SlackAgentDmServiceDeps> = {}) {
       isConnected: () => true,
       sendMessage: async (m) => { sent.push(m); return '1.2'; },
       addReaction: async (...a) => { reactions.push(a); },
+      uploadFile: async (o: Record<string, unknown>) => {
+        if (uploadError) throw new Error(uploadError);
+        uploads.push(o);
+        return { fileId: `F${uploads.length}` };
+      },
     },
     chat: {
       ensureDmChannel: jest.fn(() => ({ channel, created: true })),
@@ -42,7 +49,7 @@ function makeDeps(overrides: Partial<SlackAgentDmServiceDeps> = {}) {
     storePath: path.join(os.tmpdir(), `agent-dm-${process.pid}-${Math.random().toString(36).slice(2)}.json`),
     ...overrides,
   };
-  return { deps, listeners, sent, reactions, recorded, dispatched, emit: (dto: ChatMessageDTO) => { for (const l of [...listeners]) l(dto); } };
+  return { deps, listeners, sent, reactions, recorded, dispatched, uploads, setUploadError: (e: string | null) => { uploadError = e; }, emit: (dto: ChatMessageDTO) => { for (const l of [...listeners]) l(dto); } };
 }
 
 const dm = (over: Partial<SlackIncomingMessage> = {}): SlackIncomingMessage => ({
@@ -354,5 +361,94 @@ describe('SlackAgentDmService', () => {
     expect(again.findBySlackChannelId('D0C2YLU8F2A')?.chatChannelId).toBe('chat-ella');
     again.stop();
     await fs.rm(deps.storePath as string, { force: true });
+  });
+
+  describe('attachFileForAgent', () => {
+    it('uploads into the Slack DM, as the agent, in the reply thread', async () => {
+      // The DM is the path most single-agent conversations take, and the one
+      // that had an agent sending a Drive link because its reply interface
+      // could only carry text.
+      const { deps, uploads } = makeDeps();
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      const result = await svc.attachFileForAgent({
+        chatChannelId: 'chat-ella',
+        agentSession: 'crewly-marketing-ella-e6a6b8ea',
+        filePath: '/tmp/proposal.pdf',
+        comment: '第 3 节改了',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0]).toMatchObject({
+        channelId: 'D0C2YLU8F2A',
+        filePath: '/tmp/proposal.pdf',
+        initialComment: '第 3 节改了',
+        botToken: 'xoxb-ella',
+      });
+      // Beside its words, not at the bottom of the conversation.
+      expect(uploads[0].threadTs).toBeDefined();
+
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('refuses a chat channel that is not a DM link', async () => {
+      const { deps, uploads } = makeDeps();
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+
+      const result = await svc.attachFileForAgent({
+        chatChannelId: 'some-other-channel',
+        agentSession: 'crewly-marketing-ella-e6a6b8ea',
+        filePath: '/tmp/x.pdf',
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'not_a_slack_channel' });
+      expect(uploads).toHaveLength(0);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('says when the agent has no Slack bot of its own', async () => {
+      // There is no workspace-bot fallback here: a DM with the agent's bot
+      // only exists because that bot exists.
+      const { deps } = makeDeps({
+        identities: { getInstalled: () => null } as unknown as SlackAgentDmServiceDeps['identities'],
+      });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+
+      const result = await svc.attachFileForAgent({
+        chatChannelId: 'chat-ella',
+        agentSession: 'crewly-marketing-ella-e6a6b8ea',
+        filePath: '/tmp/x.pdf',
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'agent_has_no_slack_bot' });
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('surfaces an upload failure instead of throwing', async () => {
+      const { deps, setUploadError } = makeDeps();
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      setUploadError('file too large');
+
+      const result = await svc.attachFileForAgent({
+        chatChannelId: 'chat-ella',
+        agentSession: 'crewly-marketing-ella-e6a6b8ea',
+        filePath: '/tmp/huge.pdf',
+      });
+
+      expect(result).toEqual({ ok: false, reason: 'file too large' });
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
   });
 });
