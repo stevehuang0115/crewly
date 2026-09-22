@@ -23,13 +23,15 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 // Mocks
 // =============================================================================
 
-// Mock LoggerService
+// Mock LoggerService. `warn` is shared across component loggers so a test can
+// assert on what the service reported, not just on what it did.
+const mockLogWarn = jest.fn();
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
 				info: jest.fn(),
-				warn: jest.fn(),
+				warn: mockLogWarn,
 				error: jest.fn(),
 				debug: jest.fn(),
 			}),
@@ -616,6 +618,66 @@ describe('ContextWindowMonitorService', () => {
 			// No team wiring is available for a restored session; that must not
 			// stop it being tracked.
 			expect(state!.teamId).toBe('');
+		});
+	});
+
+	describe('reporting why a critical session is not compacting', () => {
+		/**
+		 * A monitored session with the compaction gate in a known position.
+		 *
+		 * The gate is a singleton field that earlier tests in this file switch
+		 * on, so it must be set explicitly rather than assumed to be at its
+		 * production default.
+		 *
+		 * @param gateOpen - Whether threshold compaction is enabled
+		 * @returns The service, monitoring `test-agent`
+		 */
+		function setupCritical(gateOpen: boolean): ContextWindowMonitorService {
+			mockLogWarn.mockClear();
+			const service = ContextWindowMonitorService.getInstance();
+			const mockSession = createMockSession();
+			service.setDependencies(
+				createMockSessionBackend(new Map([['test-agent', mockSession.session]]) as any) as any,
+				createMockAgentRegistrationService() as any,
+				{} as any,
+				createMockEventBus() as any
+			);
+			service.startSessionMonitoring('test-agent', 'member-1', 'team-1', 'developer');
+			(service as unknown as { thresholdCompactEnabled: boolean }).thresholdCompactEnabled = gateOpen;
+			return service;
+		}
+
+		/** The payload of the "not compacting" warning, if it was logged. */
+		function notCompactingPayload(): Record<string, unknown> | undefined {
+			const call = mockLogWarn.mock.calls.find(
+				(c) => typeof c[0] === 'string' && c[0].includes('not compacting'),
+			);
+			return call?.[1] as Record<string, unknown> | undefined;
+		}
+
+		it('says compaction is switched off rather than claiming it was exhausted', () => {
+			// Threshold compaction is off by default. Printing "exhausted"
+			// reads like the system tried three times and gave up, which is
+			// how this whole area stayed invisible.
+			const service = setupCritical(false);
+
+			service.updateContextTokens('test-agent', 726_475, 200_000);
+
+			const payload = notCompactingPayload();
+			expect(payload).toBeDefined();
+			expect(String(payload!.reason)).toContain('switched off');
+			expect(payload!.compactAttempts).toBe(0);
+			expect(payload!.contextPercent).toBe(100);
+		});
+
+		it('says attempts were exhausted only when they actually were', () => {
+			const service = setupCritical(true);
+			const state = service.getContextState('test-agent')!;
+			state.compactAttempts = CONTEXT_WINDOW_MONITOR_CONSTANTS.MAX_COMPACT_ATTEMPTS;
+
+			service.updateContextTokens('test-agent', 726_475, 200_000);
+
+			expect(String(notCompactingPayload()!.reason)).toContain('exhausted');
 		});
 	});
 

@@ -705,8 +705,17 @@ export class ContextWindowMonitorService {
 			} else if (!CONTEXT_WINDOW_MONITOR_CONSTANTS.AUTO_RECOVERY_ENABLED) {
 				// Auto-recovery disabled — periodic checks will retry compact
 				// after COMPACT_RETRY_COOLDOWN_MS via performCheck()
-				this.logger.warn('Context critical, compact exhausted, auto-recovery disabled. Periodic retry will continue.', {
+				// Distinguish "we tried and ran out of attempts" from "we were
+				// never allowed to try". Both used to print as exhausted,
+				// which reads like the system did what it could.
+				const reason = !this.thresholdCompactEnabled
+					? 'threshold compaction is switched off (settings.general.enableThresholdCompact); nothing was attempted'
+					: state.compactInProgress
+						? 'a compact is already running'
+						: 'compact attempts exhausted';
+				this.logger.warn('Context critical and not compacting. Periodic retry will continue.', {
 					sessionName: state.sessionName,
+					reason,
 					contextPercent: state.contextPercent,
 					compactAttempts: state.compactAttempts,
 				});
