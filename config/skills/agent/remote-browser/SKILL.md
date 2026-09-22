@@ -165,11 +165,53 @@ bash execute.sh -a unbind-tab
   (`bash execute.sh -a status` to confirm)
 - `curl` and `jq` in PATH
 
+## The owner can watch, and take the wheel
+
+Every action you take here appears in the owner's Browser view, with a live
+picture of the page. Send them the link when you start something they will
+want to follow — a form you are filling in on their behalf, a site they have
+to log into, anything where you may need them:
+
+```
+https://crewlyai.com/portal/browser?session=$CREWLY_SESSION_NAME
+```
+
+They can open that on a phone. It shows what you see, and gives them two
+buttons: **Take control**, and **Stop the task**.
+
+The link is safe to paste into a chat or a Slack channel: it is not a
+credential. Whoever clicks it still has to be signed in to the owner's
+account and paired with this machine. Everyone else gets nothing.
+
+While the owner has control **every browser call you make is refused with
+409 `owner_has_control`**. That is not a failure and not something to route
+around — it means they are driving, quite possibly typing a password. Stop,
+say what you are waiting for, and wait. You will be told when control comes
+back, and where the page ended up; look at it again before acting, because
+it will not be where you left it.
+
+## Actions the owner has to approve
+
+Clicks that read as irreversible and outward-facing — send, submit, pay,
+delete, confirm, publish, sign, and Enter — come back **409
+`awaiting_owner`** instead of happening. The owner sees what you wanted to
+do and decides.
+
+When that happens: tell them plainly what is waiting and what it will do.
+Do not retry. Do not look for another control that does the same thing, and
+do not switch to a different tool to get the same effect — the whole point
+is that this one is theirs to decide. An approval covers that one action
+and nothing after it.
+
+If you believe you were told to do it, say which message told you, quoting
+it. Do not paraphrase an instruction into something stronger than it was.
+
 ## Cautions
 
 - **This is the user's real browser.** Actions have real effects under their
   real identity: a click can send a message, place an order, or delete
-  something. Confirm before anything irreversible or outward-facing.
+  something. The guard above catches the obvious ones; it is a backstop, not
+  permission to stop thinking about what a click does.
 - Never enter passwords, card numbers, or other credentials — ask the user to
   do it themselves in their own window.
 - Avoid clicking elements that raise native `alert()` / `confirm()` dialogs:
