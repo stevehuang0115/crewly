@@ -1,6 +1,6 @@
 ---
 type: norm
-version: 1.0.0
+version: 1.1.0
 owner: crewly-product-quinn-47ce967d
 status: active
 triggers:
@@ -120,6 +120,38 @@ point.
 What caught it was the test suite, not me: the run right after went from 21/21
 to 18/3. Re-running the full suite after a mutation check is what turns this
 from lost work into a five-minute detour.
+
+## The revert also STAGES — a cp-restore leaves the base blob in the index
+
+Third trap, found twice in one night (2026-09-21/22, Max on PR #759's
+follow-up and Sam verifying #759). `git checkout <base-ref> -- <path>` does
+not only rewrite the working file — it **stages the base-ref blob**. The
+backup-and-`cp` restore above fixes the working tree and leaves the index
+untouched, so after a textbook mutation cycle you are in this state:
+
+```
+$ git status --short
+MM config/skills/_common/lib.sh     # index = base ref, worktree = your fix
+```
+
+`git diff` (worktree vs index) shows your fix as a *change*; `git diff HEAD`
+is empty; `git commit` (or `git commit --amend`) ships the **reverted** file,
+because commit reads the index, not the worktree. Max's first follow-up commit
+shipped the base-ref skill this way; nothing errored. `git worktree remove`
+also refuses ("contains modified or untracked files") for the same reason.
+
+**Close the cycle by restoring the index too, and prove it before committing:**
+
+```bash
+cp /tmp/fix.bak <path>               # worktree back to your fix
+git add <path>                       # index back to your fix (or: git restore --staged <path> if the fix is already in HEAD)
+git status --short -- <path>         # expect nothing, or ' M' — never 'MM' / 'M '
+git show --stat HEAD                 # after committing: the files you meant, and only those
+```
+
+The detector that catches it every time is `git show --stat HEAD` on the
+commit you are about to push. A mutation check that ends in a commit must end
+in that line.
 
 ## Applies to
 
