@@ -98,7 +98,7 @@ export interface BrowserSession {
  */
 export type FrameCapturer = (
 	agentSession: string,
-	options: { format: string; quality: number; scale: number },
+	options: { format: string; quality: number; scale: number; beyondViewport: boolean },
 ) => Promise<{ base64?: string; format?: string; devicePixelRatio?: number } | null>;
 
 /** Tool names grouped by the activity they represent. */
@@ -452,6 +452,7 @@ export class BrowserSessionService {
 				format: BROWSER_SESSION_CONSTANTS.FRAME_FORMAT,
 				quality: BROWSER_SESSION_CONSTANTS.FRAME_QUALITY,
 				scale: BROWSER_SESSION_CONSTANTS.FRAME_SCALE,
+				beyondViewport: BROWSER_SESSION_CONSTANTS.FRAME_BEYOND_VIEWPORT,
 			});
 
 			if (!shot?.base64) {

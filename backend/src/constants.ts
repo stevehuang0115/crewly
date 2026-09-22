@@ -1209,6 +1209,15 @@ export const BROWSER_SESSION_CONSTANTS = {
 	FRAME_QUALITY: 55,
 	/** Downscale factor for frames */
 	FRAME_SCALE: 0.5,
+	/**
+	 * Force the renderer to paint even when the agent's tab is in the
+	 * background, which it almost always is.
+	 *
+	 * Without it a background tab captures as blank white — measured at 8 KB
+	 * of nothing against 49 KB of real content for the same page in the
+	 * foreground — and the live view silently shows an empty page.
+	 */
+	FRAME_BEYOND_VIEWPORT: true,
 	/** How long a finished session stays listed before being pruned (ms) */
 	RETAIN_FINISHED_MS: 10 * 60 * 1000,
 } as const;
