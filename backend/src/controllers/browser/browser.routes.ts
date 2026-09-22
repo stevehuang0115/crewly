@@ -43,7 +43,11 @@ import {
 	listBrowserSessions,
 	getBrowserSession,
 	getBrowserSessionFrame,
+	getBrowserSessionFrameJson,
 	stopBrowserSession,
+	takeBrowserControl,
+	releaseBrowserControl,
+	resolveBrowserPending,
 } from './browser.controller.js';
 
 /**
@@ -149,7 +153,16 @@ export function createBrowserRouter(): Router {
 	router.get('/sessions', listBrowserSessions);
 	router.get('/sessions/:id', getBrowserSession);
 	router.get('/sessions/:id/frame', getBrowserSessionFrame);
+	// JSON variant for callers reaching this instance over the relay, whose
+	// REST passthrough cannot carry raw bytes.
+	router.get('/sessions/:id/frame.json', getBrowserSessionFrameJson);
 	router.post('/sessions/:id/stop', stopBrowserSession);
+
+	// Taking the wheel. While the owner holds it the agent is refused, so the
+	// two can never drive the same page at once.
+	router.post('/sessions/:id/take-control', takeBrowserControl);
+	router.post('/sessions/:id/release-control', releaseBrowserControl);
+	router.post('/sessions/:id/pending/:pendingId', resolveBrowserPending);
 
 	return router;
 }

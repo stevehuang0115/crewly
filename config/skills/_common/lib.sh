@@ -231,6 +231,18 @@ api_call() {
     # Tank: every reply-channel call 404'd for want of this variable).
     echo '{"warning":"CREWLY_SESSION_NAME is not set in this shell — the request is sent without X-Agent-Session; channel replies and heartbeats will not be attributed to you. Prefix the call with CREWLY_SESSION_NAME=<your session name> or restart the agent."}' >&2
   fi
+  # What the agent says authorizes an irreversible action, recorded at the
+  # moment of the attempt and shown to the owner beside it. Captured here
+  # rather than trusted later: an agent that has already sent something has
+  # every reason to produce an authorization for it, and one produced
+  # afterwards cannot be told apart from one that existed. This one can.
+  # Base64 because headers are Latin-1 and these citations quote what the
+  # owner actually said, which is frequently not ASCII. Sent raw, a Chinese
+  # quote makes curl reject the request outright and the citation is lost —
+  # exactly when it matters most.
+  if [ -n "${CREWLY_AGENT_AUTHORIZATION:-}" ]; then
+    args+=(-H "X-Agent-Authorization: b64:$(printf '%s' "$CREWLY_AGENT_AUTHORIZATION" | base64 | tr -d '\n')")
+  fi
   # Which connected Google account the call acts as. One Crewly account can
   # connect several (two Gmail logins, say); without this the backend uses
   # whichever is the default, which is what a single-account install wants.

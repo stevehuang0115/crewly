@@ -1798,6 +1798,16 @@ void (async () => {
 					return result ?? null;
 				});
 				browserSessions.start();
+
+				// Let the browser controller reach agents, so taking the wheel
+				// and answering a held action actually tell the agent what
+				// happened instead of leaving it retrying into a 409.
+				const { setBrowserControlDeps } = await import('./controllers/browser/browser.controller.js');
+				setBrowserControlDeps({
+					sendMessageToAgent: (sessionName, message) =>
+						this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+				});
+
 				this.logger.info('Live browser view started');
 			} catch (error) {
 				this.logger.warn('Failed to start Crewly in Chrome bridge (non-critical)', {

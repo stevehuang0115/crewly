@@ -13,7 +13,25 @@
  */
 
 /** What an agent is doing with the browser right now. */
-export type BrowserSessionStatus = 'navigating' | 'reading' | 'acting' | 'stopped' | 'done';
+export type BrowserSessionStatus =
+	| 'navigating'
+	| 'reading'
+	| 'acting'
+	| 'waiting_owner'
+	| 'stopped'
+	| 'done';
+
+/** Who is allowed to drive the tab. */
+export type BrowserControl = 'agent' | 'owner';
+
+/** Something the agent wants to do that needs the owner to decide. */
+export interface PendingConfirmation {
+	id: string;
+	tool: string;
+	description: string;
+	matched: string;
+	raisedAt: number;
+}
 
 /** One agent's live browser activity, as the backend reports it. */
 export interface BrowserSession {
@@ -30,6 +48,9 @@ export interface BrowserSession {
 	endedAt?: number;
 	frameAt?: number;
 	frameError?: string;
+	control: BrowserControl;
+	controlTakenAt?: number;
+	pending?: PendingConfirmation;
 }
 
 /**
@@ -62,6 +83,70 @@ export async function fetchBrowserSessions(activeOnly = false): Promise<BrowserS
  */
 export function frameUrl(id: string, frameAt?: number): string {
 	return `/api/browser/sessions/${encodeURIComponent(id)}/frame?t=${frameAt ?? 0}`;
+}
+
+/**
+ * Take the wheel from the agent.
+ *
+ * @param id - Session id
+ * @returns True when the backend accepted it
+ */
+export async function takeBrowserControl(id: string): Promise<boolean> {
+	return postSession(id, 'take-control');
+}
+
+/**
+ * Give the wheel back to the agent.
+ *
+ * @param id - Session id
+ * @returns True when the backend accepted it
+ */
+export async function releaseBrowserControl(id: string): Promise<boolean> {
+	return postSession(id, 'release-control');
+}
+
+/**
+ * Answer an action the agent is held on.
+ *
+ * @param id - Session id
+ * @param pendingId - The hold being answered
+ * @param decision - What the owner chose
+ * @returns True when the backend accepted it
+ */
+export async function resolveBrowserPending(
+	id: string,
+	pendingId: string,
+	decision: 'approve' | 'reject',
+): Promise<boolean> {
+	try {
+		const res = await fetch(
+			`/api/browser/sessions/${encodeURIComponent(id)}/pending/${encodeURIComponent(pendingId)}`,
+			{
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ decision }),
+			},
+		);
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * POST a session sub-resource with no body.
+ *
+ * @param id - Session id
+ * @param action - Path segment under the session
+ * @returns True when the backend accepted it
+ */
+async function postSession(id: string, action: string): Promise<boolean> {
+	try {
+		const res = await fetch(`/api/browser/sessions/${encodeURIComponent(id)}/${action}`, { method: 'POST' });
+		return res.ok;
+	} catch {
+		return false;
+	}
 }
 
 /**

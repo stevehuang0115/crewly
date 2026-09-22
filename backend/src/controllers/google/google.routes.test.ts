@@ -44,8 +44,8 @@ describe('Google Workspace Routes', () => {
     }
   });
 
-  it('registers exactly 23 routes', () => {
-    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(23);
+  it('registers exactly 25 routes', () => {
+    expect((router.stack as Layer[]).filter((l) => l.route)).toHaveLength(25);
   });
 
   // Asking the owner to authorize is not a Google API call, but it must sit

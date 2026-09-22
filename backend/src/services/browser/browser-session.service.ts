@@ -40,8 +40,28 @@ export type BrowserSessionStatus =
 	| 'navigating'
 	| 'reading'
 	| 'acting'
+	/** Blocked on the owner: either they took the wheel, or the agent reached
+	 *  something it is not allowed to do by itself. */
+	| 'waiting_owner'
 	| 'stopped'
 	| 'done';
+
+/** Who is allowed to drive this browser tab right now. */
+export type BrowserControl = 'agent' | 'owner';
+
+/** An action the agent asked to take that needs the owner to decide. */
+export interface PendingConfirmation {
+	/** Stable id the owner's approve/reject refers to */
+	id: string;
+	/** Tool the agent tried to use */
+	tool: string;
+	/** What it was about to do, in words */
+	description: string;
+	/** Why it was held */
+	matched: string;
+	/** When it was raised (epoch ms) */
+	raisedAt: number;
+}
 
 /** A captured picture of the page, held in memory only. */
 export interface BrowserFrame {
@@ -79,6 +99,15 @@ export interface BrowserSession {
 	startedAt: number;
 	/** When the session finished or was stopped (epoch ms) */
 	endedAt?: number;
+	/**
+	 * Who may drive the tab. An agent whose session is under `owner` control
+	 * is refused, so the two can never fight over the same page.
+	 */
+	control: BrowserControl;
+	/** Set while the owner holds the wheel, so the agent can be told why */
+	controlTakenAt?: number;
+	/** An irreversible action the agent is blocked on, awaiting the owner */
+	pending?: PendingConfirmation;
 	/** Capture time of the frame currently held, if any (epoch ms) */
 	frameAt?: number;
 	/** Why the last capture attempt failed, if it did */
@@ -176,6 +205,74 @@ export function describeAction(tool: string, params?: Record<string, unknown>): 
 }
 
 /**
+ * Tools that write into the page. Only these can be irreversible; reading a
+ * page never is.
+ */
+const WRITING_TOOLS = new Set([
+	'click',
+	'pressKey',
+	'selectOption',
+	'setFileInput',
+	'executeJs',
+	'executeScript',
+]);
+
+/**
+ * Words that mark a control as doing something that cannot be undone and that
+ * reaches other people.
+ *
+ * Deliberately matched against the selector and any text the agent passed,
+ * not against the page — we are judging what the agent asked for, which is
+ * the thing we can attribute to it. Kept short and specific: a list that
+ * matches everything trains people to click through it, which is worse than
+ * no list at all.
+ */
+const IRREVERSIBLE_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
+	[/\bsend\b|发送|送信/i, 'sending'],
+	[/\bsubmit\b|提交/i, 'submitting'],
+	[/\bpay\b|\bpurchase\b|\bcheckout\b|\border\b|付款|支付|结[账帐]/i, 'paying'],
+	[/\bdelete\b|\bremove\b|删除/i, 'deleting'],
+	[/\bconfirm\b|\bagree\b|\baccept\b|确认|同意/i, 'confirming'],
+	[/\bpublish\b|\bpost\b|发布/i, 'publishing'],
+	[/\bsign\b|\bsignature\b|签署|签名/i, 'signing'],
+];
+
+/**
+ * Decide whether an action looks irreversible and outward-facing.
+ *
+ * @param tool - Tool the agent wants to use
+ * @param params - Params it wants to use
+ * @returns A short label for what it looks like, or null
+ *
+ * @example
+ * ```typescript
+ * matchIrreversible('click', { selector: 'button[aria-label="Send"]' }); // 'sending'
+ * matchIrreversible('readText', {});                                     // null
+ * ```
+ */
+export function matchIrreversible(tool: string, params?: Record<string, unknown>): string | null {
+	if (!WRITING_TOOLS.has(tool)) return null;
+
+	// `pressKey` is only interesting for the combinations that submit.
+	if (tool === 'pressKey') {
+		const key = String(params?.key ?? '');
+		return /^(Enter|NumpadEnter)$/i.test(key) || /\bMeta\+Enter|Control\+Enter\b/i.test(key)
+			? 'submitting with a keystroke'
+			: null;
+	}
+
+	const haystack = [params?.selector, params?.text, params?.value, params?.code]
+		.filter((v): v is string => typeof v === 'string')
+		.join(' ');
+	if (!haystack) return null;
+
+	for (const [pattern, label] of IRREVERSIBLE_WORDS) {
+		if (pattern.test(haystack)) return label;
+	}
+	return null;
+}
+
+/**
  * Maps a tool to the status it puts the session into.
  *
  * @param tool - Tool name
@@ -211,6 +308,21 @@ export class BrowserSessionService {
 	private readonly dirty: Set<string> = new Set();
 	/** Sessions with a capture in flight, so ticks cannot pile up on a slow page. */
 	private readonly capturing: Set<string> = new Set();
+	/**
+	 * Sessions holding a one-shot approval from the owner.
+	 *
+	 * Consumed by the next matching action, so approving "send this email"
+	 * lets exactly that through rather than opening the gate for good.
+	 */
+	private readonly approvedOnce: Set<string> = new Set();
+	/**
+	 * Whether irreversible actions are held for the owner.
+	 *
+	 * On by default. An owner who wants an agent to work unattended can turn
+	 * it off, but that has to be a decision someone makes, not the state we
+	 * ship in.
+	 */
+	private confirmBeforeIrreversible = true;
 
 	private capturer: FrameCapturer | null = null;
 	private timer: ReturnType<typeof setInterval> | null = null;
@@ -248,6 +360,25 @@ export class BrowserSessionService {
 	 */
 	setCapturer(capturer: FrameCapturer | null): void {
 		this.capturer = capturer;
+	}
+
+	/**
+	 * Turn the irreversible-action hold on or off.
+	 *
+	 * @param enabled - Whether to hold irreversible actions for the owner
+	 */
+	setConfirmBeforeIrreversible(enabled: boolean): void {
+		this.confirmBeforeIrreversible = enabled;
+		this.logger.info('Irreversible-action hold changed', { enabled });
+	}
+
+	/**
+	 * Whether irreversible actions are currently held.
+	 *
+	 * @returns True when the hold is on
+	 */
+	isConfirmBeforeIrreversible(): boolean {
+		return this.confirmBeforeIrreversible;
 	}
 
 	/** Starts the capture loop. Safe to call twice. */
@@ -296,6 +427,7 @@ export class BrowserSessionService {
 				id: agentSession,
 				agentSession,
 				status: 'reading',
+				control: 'agent',
 				lastAction: '',
 				lastActionAt: now,
 				startedAt: now,
@@ -323,6 +455,175 @@ export class BrowserSessionService {
 		if (session.status === 'done') session.endedAt = now;
 
 		this.dirty.add(agentSession);
+	}
+
+	/**
+	 * Decide whether the agent may take this action, and hold it if not.
+	 *
+	 * Two things are checked, in order:
+	 *
+	 * 1. Whether the owner has taken the wheel. If so the agent is refused
+	 *    outright — the two must never drive the same page at once, and the
+	 *    owner is frequently mid-way through typing a password.
+	 * 2. Whether the action looks irreversible and outward-facing. Sending a
+	 *    message, submitting a form, paying, deleting: things that cannot be
+	 *    taken back and that reach other people.
+	 *
+	 * The second check exists because of a real incident. An owner asked for
+	 * an email to be *drafted*; the agent produced one and sent it. Nothing
+	 * in the system could have stopped that, because at the browser layer
+	 * "send an email" is a click on a button, indistinguishable from any
+	 * other click. Every guard we had lived at the skill layer, and driving a
+	 * browser goes around all of them.
+	 *
+	 * A held action is not an error. The agent is told to wait, the owner is
+	 * shown what it wanted to do, and their answer decides.
+	 *
+	 * @param agentSession - Agent asking to act
+	 * @param tool - Tool it wants to use
+	 * @param params - Params it wants to use
+	 * @returns `allow`, or a refusal carrying the reason to hand the agent
+	 */
+	authorize(
+		agentSession: string,
+		tool: string,
+		params?: Record<string, unknown>,
+	): { allow: true } | { allow: false; code: string; reason: string; pendingId?: string } {
+		const session = this.sessions.get(agentSession);
+
+		if (session?.control === 'owner') {
+			return {
+				allow: false,
+				code: 'owner_has_control',
+				reason:
+					'The owner has taken control of this browser. Do not retry — wait, and you will be told when control comes back.',
+			};
+		}
+
+		// An action already held must not be re-attempted under a new id.
+		if (session?.pending) {
+			return {
+				allow: false,
+				code: 'awaiting_owner',
+				reason: `Waiting for the owner to approve: ${session.pending.description}. Do not retry and do not try another way round it.`,
+				pendingId: session.pending.id,
+			};
+		}
+
+		if (!this.confirmBeforeIrreversible) return { allow: true };
+
+		// Spend an approval the owner already gave.
+		if (this.approvedOnce.has(agentSession)) {
+			this.approvedOnce.delete(agentSession);
+			return { allow: true };
+		}
+
+		const matched = matchIrreversible(tool, params);
+		if (!matched) return { allow: true };
+
+		const pending: PendingConfirmation = {
+			id: `${agentSession}:${Date.now()}`,
+			tool,
+			description: describeAction(tool, params),
+			matched,
+			raisedAt: Date.now(),
+		};
+
+		// Raising a hold creates the session if the agent had not acted yet,
+		// so the owner can see the request either way.
+		this.noteAction({ agentSession, tool, params });
+		const target = this.sessions.get(agentSession);
+		if (target) {
+			target.pending = pending;
+			target.status = 'waiting_owner';
+			this.dirty.add(agentSession);
+		}
+
+		this.logger.warn('Held an irreversible browser action for the owner', {
+			agentSession,
+			tool,
+			matched,
+			description: pending.description,
+		});
+
+		return {
+			allow: false,
+			code: 'awaiting_owner',
+			reason: `This looks irreversible (${matched}) and needs the owner to approve it. Stop here and tell the owner what you are waiting on. Do not retry and do not look for another way to do it.`,
+			pendingId: pending.id,
+		};
+	}
+
+	/**
+	 * Hand the wheel to the owner.
+	 *
+	 * @param agentSession - Session to take over
+	 * @returns The updated session, or undefined when there is none
+	 */
+	takeControl(agentSession: string): BrowserSession | undefined {
+		const session = this.sessions.get(agentSession);
+		if (!session) return undefined;
+		session.control = 'owner';
+		session.controlTakenAt = Date.now();
+		session.status = 'waiting_owner';
+		this.dirty.add(agentSession);
+		this.logger.info('Owner took control of a browser session', { agentSession });
+		return { ...session };
+	}
+
+	/**
+	 * Give the wheel back to the agent.
+	 *
+	 * Any action that was held is dropped rather than resumed: the owner has
+	 * been driving, so the page is no longer the one the agent was looking at
+	 * and re-running its click blind would be worse than making it look again.
+	 *
+	 * @param agentSession - Session to release
+	 * @returns The updated session, or undefined when there is none
+	 */
+	releaseControl(agentSession: string): BrowserSession | undefined {
+		const session = this.sessions.get(agentSession);
+		if (!session) return undefined;
+		session.control = 'agent';
+		delete session.controlTakenAt;
+		delete session.pending;
+		session.status = 'reading';
+		this.dirty.add(agentSession);
+		this.logger.info('Owner gave control back to the agent', { agentSession });
+		return { ...session };
+	}
+
+	/**
+	 * Resolve a held action.
+	 *
+	 * Approving clears the hold so the agent's next attempt goes through;
+	 * it deliberately does not replay the action itself, because the agent
+	 * is the one that knows what it was in the middle of.
+	 *
+	 * @param agentSession - Session holding the action
+	 * @param pendingId - The hold being answered
+	 * @param decision - What the owner chose
+	 * @returns The updated session, or undefined when the id does not match
+	 */
+	resolvePending(
+		agentSession: string,
+		pendingId: string,
+		decision: 'approve' | 'reject',
+	): BrowserSession | undefined {
+		const session = this.sessions.get(agentSession);
+		if (!session?.pending || session.pending.id !== pendingId) return undefined;
+
+		if (decision === 'approve') {
+			// Keyed on the session: the agent will retry, and the retry must
+			// get through. Keyed on the hold id it would be held again under a
+			// new id and loop forever.
+			this.approvedOnce.add(agentSession);
+		}
+		delete session.pending;
+		session.status = decision === 'approve' ? 'acting' : 'reading';
+		this.dirty.add(agentSession);
+		this.logger.info('Owner resolved a held browser action', { agentSession, pendingId, decision });
+		return { ...session };
 	}
 
 	/**

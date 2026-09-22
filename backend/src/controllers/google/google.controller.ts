@@ -19,6 +19,14 @@ import {
   GoogleWorkspaceTokenService,
   GoogleWorkspaceError,
 } from '../../services/google/google-workspace-token.service.js';
+import {
+  holdGmailSend,
+  consumeSendApproval,
+  grantSendApproval,
+  listHeldSends,
+  getHeldSend,
+  clearHeldSend,
+} from '../../services/google/gmail-send-gate.js';
 import { GmailService, buildRfc822, type GmailSendInput } from '../../services/google/gmail.service.js';
 import { CalendarService } from '../../services/google/calendar.service.js';
 import { DriveService } from '../../services/google/drive.service.js';
@@ -370,8 +378,55 @@ export async function gmailSend(req: Request, res: Response): Promise<void> {
       res.json({ success: true, data: { dryRun: true, raw: buildRfc822(input) } });
       return;
     }
-    const sent = await depsForRequest(req).gmail.send(input);
-    logger.info('Gmail message sent', { id: sent.id, threadId: sent.threadId, to: input.to });
+
+    const gmail = depsForRequest(req).gmail;
+    const agentSession = typeof req.headers['x-agent-session'] === 'string'
+      ? (req.headers['x-agent-session'] as string)
+      : undefined;
+
+    // An agent does not send mail on the owner's behalf by asking to.
+    //
+    // An owner asked for a reply to be *drafted*. Two emails went out
+    // instead, to outside parties, in live threads — and afterwards the
+    // agent cited an instruction to send that does not exist anywhere in the
+    // record. Both halves matter: the action was irreversible, and the
+    // account of it was not checkable.
+    //
+    // So the default for an agent is now a real Gmail draft, which the owner
+    // can open, edit and send. Sending needs the owner to say so against
+    // this specific message. A caller with no agent session (the owner
+    // driving the API themselves) is unaffected.
+    if (agentSession && !consumeSendApproval(agentSession)) {
+      const draft = await gmail.createDraft(input);
+      const pending = holdGmailSend({
+        agentSession,
+        draftId: draft.draftId,
+        to: input.to,
+        subject: input.subject,
+        claim: readAuthorizationClaim(req),
+      });
+      logger.warn('Gmail send held — draft created, awaiting the owner', {
+        agentSession,
+        draftId: draft.draftId,
+        to: input.to,
+        citedAuthorization: pending.claim ?? '(none given)',
+      });
+      res.status(202).json({
+        success: true,
+        data: {
+          drafted: true,
+          draftId: draft.draftId,
+          threadId: draft.threadId,
+          pendingId: pending.id,
+          message:
+            'Saved as a draft in the owner\'s Gmail. It has NOT been sent. Only the owner can send it — tell them it is waiting and what it says. Do not retry, and do not look for another way to send it.',
+        },
+      });
+      return;
+    }
+
+    const sent = await gmail.send(input);
+    logger.info('Gmail message sent', { id: sent.id, threadId: sent.threadId, to: input.to, agentSession });
     res.json({ success: true, data: sent });
   } catch (err) {
     sendGoogleError(req, res, err);
@@ -654,6 +709,88 @@ export async function slidesCreate(req: Request, res: Response): Promise<void> {
     const deck = await depsForRequest(req).slides.create({ title: String(body.title ?? ''), slides: Array.isArray(body.slides) ? body.slides : [] });
     logger.info('Google Slides deck created', { id: deck.id, title: deck.title, slides: deck.slideCount });
     res.json({ success: true, data: deck });
+  } catch (err) {
+    sendGoogleError(req, res, err);
+  }
+}
+
+/**
+ * Read the instruction an agent cites for an irreversible action.
+ *
+ * HTTP headers are Latin-1, and these citations quote what the owner
+ * actually said — which here is routinely Chinese, and in general is
+ * whatever language the two of them speak. So the skill base64-encodes it
+ * behind a `b64:` marker and we decode here. A bare value is still accepted,
+ * for the ASCII case and for anything calling by hand.
+ *
+ * @param req - Incoming request
+ * @returns The citation, or undefined when none was given
+ */
+function readAuthorizationClaim(req: Request): string | undefined {
+  const raw = req.headers['x-agent-authorization'];
+  if (typeof raw !== 'string' || raw.length === 0) return undefined;
+  if (!raw.startsWith('b64:')) return raw;
+  try {
+    const decoded = Buffer.from(raw.slice(4), 'base64').toString('utf-8');
+    return decoded.length > 0 ? decoded : undefined;
+  } catch {
+    // Keep the raw value rather than losing the citation entirely — a
+    // mangled claim is still evidence that a claim was made.
+    return raw;
+  }
+}
+
+/**
+ * GET /api/google/gmail/held — mail an agent has drafted and is waiting to send.
+ *
+ * Each entry carries the instruction the agent cited when it tried, captured
+ * at that moment. An entry with no citation is an attempt that named nothing.
+ *
+ * @param _req - Incoming request
+ * @param res - Response
+ */
+export function gmailListHeld(_req: Request, res: Response): void {
+  res.json({ success: true, data: { held: listHeldSends() } });
+}
+
+/**
+ * POST /api/google/gmail/held/:id — the owner answers a held send.
+ *
+ * Body `{ decision: 'send' | 'discard' }`. Sending goes through the draft
+ * the owner can already see, so what leaves is exactly what they reviewed —
+ * including any edits they made in Gmail.
+ *
+ * @param req - Incoming request
+ * @param res - Response
+ */
+export async function gmailResolveHeld(req: Request, res: Response): Promise<void> {
+  try {
+    const decision = (req.body as { decision?: string } | undefined)?.decision;
+    if (decision !== 'send' && decision !== 'discard') {
+      res.status(400).json({ success: false, error: "decision must be 'send' or 'discard'" });
+      return;
+    }
+
+    const entry = getHeldSend(req.params.id);
+    if (!entry) {
+      res.status(404).json({ success: false, error: 'No such held message' });
+      return;
+    }
+
+    if (decision === 'discard') {
+      clearHeldSend(entry.id);
+      logger.info('Owner discarded a held send', { id: entry.id, to: entry.to });
+      res.json({ success: true, data: { discarded: true, draftId: entry.draftId } });
+      return;
+    }
+
+    // Send the draft rather than rebuilding the message, so what goes out is
+    // what the owner looked at — including anything they edited in Gmail.
+    const sent = await depsForRequest(req).gmail.sendDraft(entry.draftId);
+    clearHeldSend(entry.id);
+    grantSendApproval(entry.agentSession);
+    logger.info('Owner approved a held send', { id: entry.id, to: entry.to, messageId: sent.id });
+    res.json({ success: true, data: sent });
   } catch (err) {
     sendGoogleError(req, res, err);
   }

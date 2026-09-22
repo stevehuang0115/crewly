@@ -64,6 +64,16 @@ export interface GmailSearchInput {
 }
 
 /** Input to {@link GmailService.send}. */
+/** What `drafts.create` leaves behind in the owner's Drafts. */
+export interface GmailDraftResult {
+  /** Gmail draft id, used to send or discard it later */
+  draftId: string;
+  /** Underlying message id, when Gmail returned one */
+  id?: string;
+  /** Thread the draft sits in */
+  threadId?: string;
+}
+
 export interface GmailSendInput {
   to: string;
   cc?: string;
@@ -402,6 +412,54 @@ export class GmailService {
     if (input.threadId?.trim()) body.threadId = input.threadId.trim();
 
     const sent = await googleRequest<GmailWireMessage>(this.deps, `${this.base}/messages/send`, { method: 'POST', body });
+    return { id: sent.id, threadId: sent.threadId, labelIds: sent.labelIds ?? [] };
+  }
+
+  /**
+   * `drafts.create` — put the message in the owner's Drafts, unsent.
+   *
+   * This is what "draft me an email" has to mean. Until now the closest
+   * thing was a dry run, which prints a preview into a tool result and
+   * leaves nothing behind: the owner could not open it, edit it, or send it
+   * later. So an agent asked to draft had a choice between producing
+   * something nobody could act on and actually sending — and one of them
+   * looks like completing the task.
+   *
+   * A real draft lands in Gmail, in the right thread, and the owner decides.
+   *
+   * @param input - Recipients, subject, text and optional reply threading
+   * @returns The draft id plus the underlying message ids
+   * @throws GoogleWorkspaceError(400, validation) for missing to/subject; auth / Google failures
+   */
+  async createDraft(input: GmailSendInput): Promise<GmailDraftResult> {
+    const raw = base64UrlEncode(buildRfc822(input));
+    const message: { raw: string; threadId?: string } = { raw };
+    if (input.threadId?.trim()) message.threadId = input.threadId.trim();
+
+    const draft = await googleRequest<{ id: string; message?: GmailWireMessage }>(
+      this.deps,
+      `${this.base}/drafts`,
+      { method: 'POST', body: { message } },
+    );
+    return {
+      draftId: draft.id,
+      ...(draft.message?.id ? { id: draft.message.id } : {}),
+      ...(draft.message?.threadId ? { threadId: draft.message.threadId } : {}),
+    };
+  }
+
+  /**
+   * `drafts.send` — send a draft the owner has approved.
+   *
+   * @param draftId - The draft to send
+   * @returns The sent message's id / threadId / labels
+   * @throws GoogleWorkspaceError on auth / Google failures
+   */
+  async sendDraft(draftId: string): Promise<GmailSendResult> {
+    const sent = await googleRequest<GmailWireMessage>(this.deps, `${this.base}/drafts/send`, {
+      method: 'POST',
+      body: { id: draftId },
+    });
     return { id: sent.id, threadId: sent.threadId, labelIds: sent.labelIds ?? [] };
   }
 }

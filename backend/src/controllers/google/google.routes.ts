@@ -17,6 +17,8 @@ import {
   gmailSearch,
   gmailRead,
   gmailSend,
+  gmailListHeld,
+  gmailResolveHeld,
   calendarList,
   calendarCreate,
   driveSearch,
@@ -46,6 +48,9 @@ import { postConnectCard } from './google-connect-card.js';
  * - GET    /gmail/search          — ?q=&max=
  * - GET    /gmail/messages/:id    — read one message
  * - POST   /gmail/send            — { to, cc?, subject, text, threadId?, inReplyTo?, dryRun? }
+ *                                   An agent gets a Gmail draft + a hold, not a send.
+ * - GET    /gmail/held             — mail waiting on the owner
+ * - POST   /gmail/held/:id         — { decision: 'send' | 'discard' }
  * - GET    /calendar/events       — ?from=&to=&calendarId=&max=
  * - POST   /calendar/events       — { calendarId?, summary, start, end, description?, attendees?, timezone? }
  * - GET    /drive/files           — ?q=&mimeType=&folderId=&max=
@@ -80,6 +85,10 @@ export function createGoogleRouter(): Router {
   router.get('/gmail/search', gmailSearch);
   router.get('/gmail/messages/:id', gmailRead);
   router.post('/gmail/send', gmailSend);
+  // Mail an agent drafted and is waiting on the owner to send. The owner
+  // answers here; the agent cannot.
+  router.get('/gmail/held', gmailListHeld);
+  router.post('/gmail/held/:id', gmailResolveHeld);
   router.get('/calendar/events', calendarList);
   router.post('/calendar/events', calendarCreate);
   router.get('/drive/files', driveSearch);

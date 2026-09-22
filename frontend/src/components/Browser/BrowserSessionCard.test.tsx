@@ -11,6 +11,7 @@ import { BrowserSessionCard, hostOf } from './BrowserSessionCard';
 import type { BrowserSession } from '../../services/browser-session.service';
 
 const base: BrowserSession = {
+	control: 'agent',
 	id: 'flopost-pia',
 	agentSession: 'flopost-pia',
 	agentName: 'Pia',
@@ -148,6 +149,51 @@ describe('BrowserSessionCard', () => {
 			/>,
 		);
 		expect(screen.queryByText('Stop')).not.toBeInTheDocument();
+	});
+
+	it('shows what the agent is held on, in words the owner can judge', () => {
+		// The owner needs to see the thing itself, not "action pending".
+		render(
+			<BrowserSessionCard
+				session={{
+					...base,
+					status: 'waiting_owner',
+					pending: {
+						id: 'p1',
+						tool: 'click',
+						description: 'Clicked button[aria-label="Send"]',
+						matched: 'sending',
+						raisedAt: Date.now(),
+					},
+				}}
+				expanded
+				onToggle={() => {}}
+			/>,
+		);
+
+		expect(screen.getByText(/waiting on you/)).toBeInTheDocument();
+		expect(screen.getByText(/sending/)).toBeInTheDocument();
+		expect(screen.getByText('Let it')).toBeInTheDocument();
+		expect(screen.getByText('No')).toBeInTheDocument();
+	});
+
+	it('offers to take the browser while the agent has it', () => {
+		render(<BrowserSessionCard session={base} expanded onToggle={() => {}} />);
+		expect(screen.getByText('Take control of the browser')).toBeInTheDocument();
+	});
+
+	it('says plainly that the agent is locked out once you take it', () => {
+		render(
+			<BrowserSessionCard session={{ ...base, control: 'owner' }} expanded onToggle={() => {}} />,
+		);
+		expect(screen.getByText('You have the browser.')).toBeInTheDocument();
+		expect(screen.getByText('Give control back')).toBeInTheDocument();
+		expect(screen.getByText(/agent is locked out/)).toBeInTheDocument();
+	});
+
+	it('offers no controls on a finished session', () => {
+		render(<BrowserSessionCard session={{ ...base, status: 'done' }} expanded onToggle={() => {}} />);
+		expect(screen.queryByText('Take control of the browser')).not.toBeInTheDocument();
 	});
 
 	it('stops without also toggling the card open', () => {

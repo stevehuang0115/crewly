@@ -275,6 +275,27 @@ async function sendToolCommand(
 		params = { ...(params ?? {}), tabId: tabIdAuth.tabId };
 	}
 
+	// Who holds the wheel, and is this something the agent may do alone?
+	//
+	// This sits ahead of every transport path on purpose. The guards that
+	// decide whether an agent may send a message or submit a form all live at
+	// the skill layer, and driving a browser goes around every one of them —
+	// at this layer "send the email" is a click, shaped exactly like any
+	// other click. An owner asked for an email to be drafted and the agent
+	// sent it; nothing in the system was in a position to notice.
+	if (agentSession) {
+		const verdict = getBrowserSessions().authorize(agentSession, tool, params);
+		if (!verdict.allow) {
+			res.status(409).json({
+				success: false,
+				error: verdict.reason,
+				code: verdict.code,
+				...(verdict.pendingId ? { pendingId: verdict.pendingId } : {}),
+			});
+			return;
+		}
+	}
+
 	// Collect errors from each path for diagnostics if all fail
 	const errors: string[] = [];
 
@@ -865,6 +886,40 @@ export function getBrowserSessionFrame(req: Request, res: Response): void {
 }
 
 /**
+ * GET /api/browser/sessions/:id/frame.json
+ * The same frame, as JSON, for callers that cannot carry image bytes.
+ *
+ * The Cloud portal and the phone app reach this instance over the relay,
+ * whose REST passthrough serialises everything as JSON. They cannot use the
+ * raw-bytes route, so they get the same picture base64-encoded and pay the
+ * ~33% for it — still tens of kilobytes, well inside the relay's frame
+ * limit.
+ *
+ * Fetching registers a watcher exactly as the bytes route does, so a remote
+ * viewer raises the capture rate the same way a local one does.
+ *
+ * @param req - Express request with `:id`
+ * @param res - Express response
+ */
+export function getBrowserSessionFrameJson(req: Request, res: Response): void {
+	const frame = getBrowserSessions().getFrame(req.params.id);
+	if (!frame) {
+		res.status(404).json({ success: false, error: 'No frame captured yet' });
+		return;
+	}
+	res.setHeader('Cache-Control', 'no-store, private');
+	res.json({
+		success: true,
+		data: {
+			base64: frame.base64,
+			mimeType: frame.mimeType,
+			capturedAt: frame.capturedAt,
+			...(frame.devicePixelRatio !== undefined ? { devicePixelRatio: frame.devicePixelRatio } : {}),
+		},
+	});
+}
+
+/**
  * POST /api/browser/sessions/:id/stop
  * Mark an agent's browser session as stopped by its owner.
  *
@@ -883,4 +938,139 @@ export function stopBrowserSession(req: Request, res: Response): void {
 	}
 	sessions.endSession(req.params.id, 'stopped');
 	res.json({ success: true, data: { session: sessions.getSession(req.params.id) } });
+}
+
+/**
+ * POST /api/browser/sessions/:id/take-control
+ * Take the wheel from the agent.
+ *
+ * While the owner holds it every browser call from that agent is refused, so
+ * the two can never drive the same page at once — which matters most in
+ * exactly the situation people take over for: typing a password.
+ *
+ * @param req - Express request with `:id`
+ * @param res - Express response
+ */
+export function takeBrowserControl(req: Request, res: Response): void {
+	const session = getBrowserSessions().takeControl(req.params.id);
+	if (!session) {
+		res.status(404).json({ success: false, error: 'No browser session for that agent' });
+		return;
+	}
+	res.json({ success: true, data: { session } });
+}
+
+/**
+ * POST /api/browser/sessions/:id/release-control
+ * Give the wheel back to the agent.
+ *
+ * Tells the agent where the page ended up, because the owner has been
+ * driving and it can no longer assume the page it last saw.
+ *
+ * @param req - Express request with `:id`
+ * @param res - Express response
+ */
+export async function releaseBrowserControl(req: Request, res: Response): Promise<void> {
+	const sessions = getBrowserSessions();
+	const before = sessions.getSession(req.params.id);
+	if (!before) {
+		res.status(404).json({ success: false, error: 'No browser session for that agent' });
+		return;
+	}
+
+	const session = sessions.releaseControl(req.params.id);
+	await notifyAgentControlReturned(req.params.id, session?.url);
+	res.json({ success: true, data: { session } });
+}
+
+/**
+ * POST /api/browser/sessions/:id/pending/:pendingId
+ * Approve or reject an action the agent was held on.
+ *
+ * Approval is one-shot: it lets the attempt the owner looked at through, and
+ * nothing else. Approving does not replay the action — the agent retries,
+ * because it is the one that knows what it was in the middle of.
+ *
+ * @param req - Express request with `:id`, `:pendingId` and body `{ decision }`
+ * @param res - Express response
+ */
+export async function resolveBrowserPending(req: Request, res: Response): Promise<void> {
+	const decision = (req.body as { decision?: string } | undefined)?.decision;
+	if (decision !== 'approve' && decision !== 'reject') {
+		res.status(400).json({ success: false, error: "decision must be 'approve' or 'reject'" });
+		return;
+	}
+
+	const sessions = getBrowserSessions();
+	const held = sessions.getSession(req.params.id)?.pending;
+	const session = sessions.resolvePending(req.params.id, req.params.pendingId, decision);
+	if (!session) {
+		res.status(404).json({ success: false, error: 'No such pending action' });
+		return;
+	}
+
+	await tellAgent(
+		req.params.id,
+		decision === 'approve'
+			? `[BROWSER] The owner approved: ${held?.description ?? 'the action you were waiting on'}. Go ahead with exactly that, once.`
+			: `[BROWSER] The owner declined: ${held?.description ?? 'the action you were waiting on'}. Do not do it, do not work around it. Say what you will do instead, or ask.`,
+	);
+
+	res.json({ success: true, data: { session } });
+}
+
+/**
+ * Tell an agent that control has come back to it.
+ *
+ * The agent is not told what the owner did — only where the page is now,
+ * which is all it needs and all we can honestly report. The owner may have
+ * been typing a credential, and that is not ours to relay.
+ *
+ * @param agentSession - The agent getting control back
+ * @param url - Where the page ended up, when known
+ */
+async function notifyAgentControlReturned(agentSession: string, url?: string): Promise<void> {
+	await tellAgent(
+		agentSession,
+		`[BROWSER] The owner has finished and given control back to you. The page is now ${url ?? 'possibly somewhere else'}. Look at it before you act — do not assume it is where you left it.`,
+	);
+}
+
+/** How this module reaches an agent to tell it something. */
+export interface BrowserControlDeps {
+	/** Deliver a line into an agent's session */
+	sendMessageToAgent: (sessionName: string, message: string) => Promise<unknown>;
+}
+
+let controlDeps: BrowserControlDeps | null = null;
+
+/**
+ * Provide the way to reach agents.
+ *
+ * Injected from server startup rather than imported, because the agent
+ * registration service is constructed with the server and importing it here
+ * would be a cycle. Unset simply means the nudges are skipped.
+ *
+ * @param next - The dependencies, or null to clear them
+ */
+export function setBrowserControlDeps(next: BrowserControlDeps | null): void {
+	controlDeps = next;
+}
+
+/**
+ * Deliver a line into an agent's session, best-effort.
+ *
+ * Never allowed to throw: the owner's action has already been applied, and
+ * failing to notify the agent must not turn a successful takeover into an
+ * error the owner sees.
+ *
+ * @param agentSession - Target agent
+ * @param message - What to tell it
+ */
+async function tellAgent(agentSession: string, message: string): Promise<void> {
+	try {
+		await controlDeps?.sendMessageToAgent(agentSession, message);
+	} catch {
+		// Best-effort: the UI is the owner's source of truth, not this nudge.
+	}
 }

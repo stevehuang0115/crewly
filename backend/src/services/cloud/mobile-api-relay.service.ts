@@ -93,6 +93,14 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/slack/agent-identities' },
   { method: 'POST', prefix: '/slack/team-channels' },  // create or link
   { method: 'POST', prefix: '/slack/cloud/agents/sync' },
+  // Live browser view. Reads let an owner who is not at this machine see
+  // what an agent is doing in a browser; the writes under /browser/sessions
+  // are the owner-side controls only — stop, take the wheel, give it back,
+  // answer a held action. The driving endpoints (/browser/navigate,
+  // /browser/click, …) are deliberately NOT here: those are how an agent
+  // acts, and nothing on the internet should be able to act as one.
+  { method: 'GET', prefix: '/browser/sessions' },
+  { method: 'POST', prefix: '/browser/sessions' },
   // Desktop control, deliberately lopsided. Seeing what a machine is doing
   // and being able to stop it are exactly what an owner who is not sitting
   // at it needs, and neither can do harm. Driving the mouse is left off:

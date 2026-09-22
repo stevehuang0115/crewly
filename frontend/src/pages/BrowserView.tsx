@@ -93,6 +93,7 @@ export const BrowserView: React.FC = () => {
 						expanded={expandedId === session.id}
 						onToggle={() => handleToggle(session.id)}
 						onStop={handleStop}
+						onChanged={load}
 					/>
 				))}
 			</div>

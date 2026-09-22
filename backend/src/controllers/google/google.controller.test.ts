@@ -13,6 +13,7 @@ import { setGoogleControllerDeps, type GoogleControllerDeps } from './google.con
 import { GoogleWorkspaceError, type GoogleWorkspaceTokenService } from '../../services/google/google-workspace-token.service.js';
 import { base64UrlDecode, type GmailService } from '../../services/google/gmail.service.js';
 import type { CalendarService } from '../../services/google/calendar.service.js';
+import { resetGmailSendGate } from '../../services/google/gmail-send-gate.js';
 
 jest.mock('../../services/core/logger.service.js', () => ({
   LoggerService: {
@@ -26,7 +27,7 @@ const CONNECT_URL = 'https://api.crewlyai.com/api/cloud/google/workspace/start?t
 
 let app: Application;
 let tokens: { status: jest.Mock; disconnect: jest.Mock; buildConnectUrl: jest.Mock };
-let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock };
+let gmail: { search: jest.Mock; read: jest.Mock; send: jest.Mock; createDraft: jest.Mock; sendDraft: jest.Mock };
 let calendar: { listEvents: jest.Mock; createEvent: jest.Mock };
 let drive: { search: jest.Mock; get: jest.Mock; readContent: jest.Mock; upload: jest.Mock };
 let docs: { read: jest.Mock; create: jest.Mock; append: jest.Mock };
@@ -39,7 +40,8 @@ beforeEach(() => {
     disconnect: jest.fn().mockResolvedValue({ removed: true }),
     buildConnectUrl: jest.fn().mockReturnValue(CONNECT_URL),
   };
-  gmail = { search: jest.fn(), read: jest.fn(), send: jest.fn() };
+  gmail = { search: jest.fn(), read: jest.fn(), send: jest.fn(), createDraft: jest.fn(), sendDraft: jest.fn() };
+  resetGmailSendGate();
   calendar = { listEvents: jest.fn(), createEvent: jest.fn() };
   drive = { search: jest.fn(), get: jest.fn(), readContent: jest.fn(), upload: jest.fn() };
   docs = { read: jest.fn(), create: jest.fn(), append: jest.fn() };
@@ -181,6 +183,114 @@ describe('POST /gmail/send', () => {
     expect(res.status).toBe(200);
     expect(gmail.send).toHaveBeenCalledWith({ to: 'a@b.c', subject: 'Hi', text: 'x', cc: 'c@d.e', threadId: 't1', inReplyTo: '<m@x>' });
     expect(res.body).toEqual({ success: true, data: { id: 's1', threadId: 't1', labelIds: ['SENT'] } });
+  });
+
+  it('drafts instead of sending when an agent asks, and says so plainly', async () => {
+    // The incident: an owner asked for a reply to be drafted and two emails
+    // went out. An agent gets a real draft it cannot send.
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9', threadId: 't1' });
+
+    const res = await request(app)
+      .post('/api/google/gmail/send')
+      .set('X-Agent-Session', 'ella')
+      .send({ to: 'kpan@panlawoffice.com', subject: 'Re: closing', text: 'x' });
+
+    expect(res.status).toBe(202);
+    expect(res.body.data).toMatchObject({ drafted: true, draftId: 'r-9' });
+    expect(res.body.data.message).toMatch(/NOT been sent/);
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+
+  it('records the instruction the agent cited, in the language it was said in', async () => {
+    // Headers are Latin-1 and these citations quote the owner, who here
+    // speaks Chinese. Sent raw it is rejected by the HTTP layer and the
+    // citation is lost at exactly the moment it matters.
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    const claim = "owner 14:22 — 「你帮我填好 然后我来做剩下的」";
+
+    await request(app)
+      .post('/api/google/gmail/send')
+      .set('X-Agent-Session', 'ella')
+      .set('X-Agent-Authorization', `b64:${Buffer.from(claim, 'utf-8').toString('base64')}`)
+      .send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+
+    const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
+    expect(listHeldSends()[0].claim).toBe(claim);
+  });
+
+  it('accepts a plain ASCII citation too', async () => {
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    await request(app).post('/api/google/gmail/send')
+      .set('X-Agent-Session', 'ella')
+      .set('X-Agent-Authorization', 'owner 14:22 said send it')
+      .send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+
+    const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
+    expect(listHeldSends()[0].claim).toBe('owner 14:22 said send it');
+  });
+
+  it('still sends for the owner driving the API directly', async () => {
+    // No agent session — this is the owner, and the gate is not about them.
+    gmail.send.mockResolvedValueOnce({ id: 's1', threadId: 't1', labelIds: ['SENT'] });
+    const res = await request(app).post('/api/google/gmail/send').send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+    expect(res.status).toBe(200);
+    expect(gmail.send).toHaveBeenCalled();
+  });
+
+  it('sends the draft the owner reviewed, not a rebuilt copy', async () => {
+    // So any edit the owner made in Gmail is what goes out.
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
+      .send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+
+    const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
+    const held = listHeldSends()[0];
+    gmail.sendDraft.mockResolvedValueOnce({ id: 's1', threadId: 't1', labelIds: ['SENT'] });
+
+    const res = await request(app).post(`/api/google/gmail/held/${encodeURIComponent(held.id)}`).send({ decision: 'send' });
+
+    expect(res.status).toBe(200);
+    expect(gmail.sendDraft).toHaveBeenCalledWith('r-9');
+    expect(gmail.send).not.toHaveBeenCalled();
+  });
+
+  it('lets the approved agent send exactly once more', async () => {
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
+      .send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+    const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
+    gmail.sendDraft.mockResolvedValueOnce({ id: 's1', threadId: 't1', labelIds: [] });
+    await request(app).post(`/api/google/gmail/held/${encodeURIComponent(listHeldSends()[0].id)}`).send({ decision: 'send' });
+
+    // The approval is spent by the next send...
+    gmail.send.mockResolvedValueOnce({ id: 's2', threadId: 't2', labelIds: [] });
+    const first = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
+      .send({ to: 'a@b.c', subject: 'Second', text: 'x' });
+    expect(first.status).toBe(200);
+
+    // ...and the one after that is held again.
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-10' });
+    const second = await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
+      .send({ to: 'a@b.c', subject: 'Third', text: 'x' });
+    expect(second.status).toBe(202);
+  });
+
+  it('discards a held draft without sending it', async () => {
+    gmail.createDraft.mockResolvedValueOnce({ draftId: 'r-9' });
+    await request(app).post('/api/google/gmail/send').set('X-Agent-Session', 'ella')
+      .send({ to: 'a@b.c', subject: 'Hi', text: 'x' });
+    const { listHeldSends } = await import('../../services/google/gmail-send-gate.js');
+
+    const res = await request(app).post(`/api/google/gmail/held/${encodeURIComponent(listHeldSends()[0].id)}`).send({ decision: 'discard' });
+
+    expect(res.status).toBe(200);
+    expect(gmail.sendDraft).not.toHaveBeenCalled();
+    expect(listHeldSends()).toHaveLength(0);
+  });
+
+  it('rejects a decision that is neither send nor discard', async () => {
+    const res = await request(app).post('/api/google/gmail/held/anything').send({ decision: 'maybe' });
+    expect(res.status).toBe(400);
   });
 
   it('dryRun returns the RFC 822 preview and never calls Gmail', async () => {
