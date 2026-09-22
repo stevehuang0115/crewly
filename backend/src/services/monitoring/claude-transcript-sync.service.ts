@@ -262,12 +262,23 @@ export class ClaudeTranscriptSyncService {
 					result.turnsCounted += counted.turns;
 					result.costAdded += counted.cost;
 				} else {
+					const cursor = this.cursors.get(sessionName);
+
 					// No new turns, but the agent is still carrying whatever it
 					// was carrying. Re-announce it so a monitor that started
 					// after the first reading still learns the figure.
-					const known = this.cursors.get(sessionName)?.lastContextTokens;
-					if (known !== undefined) {
-						this.emitContext({ sessionName, contextTokens: known, model: '' });
+					if (cursor?.lastContextTokens !== undefined) {
+						this.emitContext({ sessionName, contextTokens: cursor.lastContextTokens, model: '' });
+					}
+
+					// Re-assert the cache-aware cost too. The override lives in
+					// memory only, so after a restart an agent that has not
+					// taken a turn since would fall back to a cost computed
+					// without the cache split — which for a long-lived agent is
+					// wrong by an order of magnitude, in whichever direction the
+					// cache/output ratio happens to fall.
+					if (cursor && cursor.cost > 0) {
+						TokenUsageService.getInstance().overrideSessionCost(sessionName, cursor.cost);
 					}
 				}
 			}

@@ -277,6 +277,27 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(readings).toEqual([700_500, 700_500]);
 	});
 
+	it('re-asserts the cache-aware cost when a pass finds no new turns', async () => {
+		// The override is in-memory only. After a restart, an agent that has
+		// not taken a turn since would show a cost computed without the cache
+		// split, which for a long-lived agent is wrong by an order of
+		// magnitude.
+		await fs.writeFile(
+			transcriptPath,
+			assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 500, cacheRead: 700_000 }) + '\n',
+		);
+		await service.sync();
+		const cost = service.getCursor(SESSION)!.cost;
+		expect(cost).toBeGreaterThan(0);
+
+		// A fresh TokenUsageService stands in for the post-restart state.
+		TokenUsageService.resetInstance();
+		await service.sync();
+
+		const { getSessionCostOverride } = await import('./token-usage.service.js');
+		expect(getSessionCostOverride(SESSION)).toBeCloseTo(cost, 10);
+	});
+
 	it('says nothing about a session it has never read a turn for', async () => {
 		const readings: number[] = [];
 		service.onContextReading((r) => readings.push(r.contextTokens));
