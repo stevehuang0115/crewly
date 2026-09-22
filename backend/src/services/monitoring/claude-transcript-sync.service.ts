@@ -64,6 +64,16 @@ export interface TranscriptCursor {
 	seenMessageIds: string[];
 	/** Cumulative USD cost attributed to this session so far */
 	cost: number;
+	/**
+	 * Context size of the last turn we parsed, in tokens.
+	 *
+	 * Re-emitted on every pass, not only on passes that found new turns.
+	 * An idle agent produces no turns, but it is still holding that context
+	 * and will drag it through its next one — and the context monitor may not
+	 * have started watching the session yet when the first reading was taken,
+	 * since session restore is staggered over a minute or so after boot.
+	 */
+	lastContextTokens?: number;
 }
 
 /** One agent's context size, as measured from its latest transcript turn. */
@@ -237,6 +247,14 @@ export class ClaudeTranscriptSyncService {
 					result.sessionsUpdated += 1;
 					result.turnsCounted += counted.turns;
 					result.costAdded += counted.cost;
+				} else {
+					// No new turns, but the agent is still carrying whatever it
+					// was carrying. Re-announce it so a monitor that started
+					// after the first reading still learns the figure.
+					const known = this.cursors.get(sessionName)?.lastContextTokens;
+					if (known !== undefined) {
+						this.emitContext({ sessionName, contextTokens: known, model: '' });
+					}
 				}
 			}
 
@@ -386,6 +404,7 @@ export class ClaudeTranscriptSyncService {
 
 		if (latest) {
 			const contextTokens = latest.input + latest.cacheRead + latest.cacheWrite;
+			cursor.lastContextTokens = contextTokens;
 			this.emitContext({ sessionName, contextTokens, model: latest.model });
 		}
 

@@ -2592,7 +2592,18 @@ void (async () => {
 				const { getClaudeTranscriptSync } = await import('./services/monitoring/claude-transcript-sync.service.js');
 				const transcriptSync = getClaudeTranscriptSync();
 				transcriptSync.onContextReading(({ sessionName, contextTokens }) => {
-					ContextWindowMonitorService.getInstance().updateContextTokens(sessionName, contextTokens);
+					const monitor = ContextWindowMonitorService.getInstance();
+					const before = monitor.getContextState(sessionName)?.contextPercent;
+					monitor.updateContextTokens(sessionName, contextTokens);
+					const after = monitor.getContextState(sessionName);
+					if (after && after.contextPercent !== before) {
+						this.logger.info('Agent context size measured', {
+							sessionName,
+							contextTokens,
+							percentOfCeiling: after.contextPercent,
+							level: after.level,
+						});
+					}
 				});
 				await transcriptSync.start();
 				this.logger.info('Token usage tracking initialized');

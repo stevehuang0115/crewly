@@ -234,6 +234,34 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(readings[0].contextTokens).toBe(700_500);
 	});
 
+	it('re-announces the last known context when a pass finds no new turns', async () => {
+		// Session restore is staggered over a minute after boot, so the context
+		// monitor may not have been watching when the first reading went out.
+		// An idle agent produces no turns but is still holding the context.
+		const readings: number[] = [];
+		service.onContextReading((r) => readings.push(r.contextTokens));
+
+		await fs.writeFile(
+			transcriptPath,
+			assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 500, cacheRead: 700_000 }) + '\n',
+		);
+		await service.sync();
+		expect(readings).toEqual([700_500]);
+
+		await service.sync();
+		expect(readings).toEqual([700_500, 700_500]);
+	});
+
+	it('says nothing about a session it has never read a turn for', async () => {
+		const readings: number[] = [];
+		service.onContextReading((r) => readings.push(r.contextTokens));
+
+		await fs.writeFile(transcriptPath, '');
+		await service.sync();
+
+		expect(readings).toEqual([]);
+	});
+
 	it('keeps syncing when one observer throws', async () => {
 		service.onContextReading(() => {
 			throw new Error('observer blew up');
