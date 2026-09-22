@@ -137,6 +137,7 @@ export class SkillsReferenceModule implements PromptModule {
 				'  - `subscribe-event` — subscribe to agent lifecycle events',
 				'  - `reply-slack` / `reply-chat` — respond to user messages',
 				'  - `reply-gchat` — respond to Google Chat messages',
+				'  - `core/attach-file` — put a real file (PDF, image, sheet) into your Slack channel',
 				'  - Colleagues on OTHER machines: talk to them in a shared Slack team channel (@ their name; `list-colleagues` shows who exists). The old `send-to-remote` / `reply-remote` / `list-devices` skills are deprecated — only answer a `[REMOTE:...]` message with `reply-remote`, never start one.',
 				'  - `delegate-task` / `assign-task` — assign work to agents',
 				'  - `get-team-status` / `get-agent-status` — monitor team state',
@@ -318,6 +319,15 @@ Use bash skills at \`${config.agentSkillsPath}/\` for all team communication. Re
 - \`recall\` to retrieve relevant knowledge (always pass your \`agentId\` and \`projectPath\`)
 - \`record-learning\` to record learnings (always pass your \`agentId\` and \`projectPath\`)
 - \`get-sops\` to request relevant SOPs for your current situation
+- \`core/attach-file\` to put a real file into the Slack channel you are replying in
+
+**When someone asks for a file, send the file.** \`reply-channel\` carries text
+only, so use \`core/attach-file --channel <the id from your prompt> --path <file>\`;
+it lands in the same thread, under your own name. Uploading to Drive and pasting
+a link is not the same thing — it makes them leave Slack, it breaks for anyone
+without access to that Drive, and on a phone it is several taps to something they
+wanted in front of them. Attach the file; add a link too only if they will want
+to edit it.
 
 **IMPORTANT for memory tools:** When calling \`remember\`, \`recall\`, or \`record-learning\`, you MUST pass:
 - \`agentId\`: Your **Session Name** from the Identity section above

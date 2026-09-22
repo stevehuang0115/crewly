@@ -71,6 +71,15 @@ export interface TeamChannelSlackApi {
   sendMessage(message: SlackOutgoingMessage): Promise<string>;
   addReaction(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
   inviteToChannel(channelId: string, userIds: string[]): Promise<void>;
+  uploadFile(options: {
+    channelId: string;
+    filePath: string;
+    filename?: string;
+    title?: string;
+    initialComment?: string;
+    threadTs?: string;
+    botToken?: string;
+  }): Promise<{ fileId?: string }>;
 }
 
 /** The slice of SlackAgentIdentityService this service uses (optional). */
@@ -1316,6 +1325,79 @@ export class SlackTeamChannelService {
    * `slackThreadTs`; failing that, the latest Slack-origin root in the
    * huddle; failing that, the channel top level.
    */
+  /**
+   * Put a file into the Slack channel an agent is replying in.
+   *
+   * Agents reply through `reply-channel`, which posts a chat-v2 message that
+   * the outbound mirror turns into Slack text. That path carries words and
+   * nothing else, so an agent asked for a PDF had no way to hand one over:
+   * it uploaded to Drive and pasted a link, and when asked why, correctly
+   * reported that the interface it was told to use only sends text.
+   *
+   * This gives it the other half. The agent names the chat channel it
+   * already knows — it has no reason to know Slack channel ids — and we
+   * resolve the Slack channel, the thread its reply belongs in, and its own
+   * bot token, so the file arrives from the same identity as its words
+   * rather than from the workspace app.
+   *
+   * @param input - Chat channel, agent, file and optional caption/thread
+   * @returns What was uploaded, or why it could not be
+   */
+  async attachFileForAgent(input: {
+    chatChannelId: string;
+    agentSession: string;
+    filePath: string;
+    filename?: string;
+    title?: string;
+    comment?: string;
+    threadId?: string;
+  }): Promise<
+    | { ok: true; slackChannelId: string; threadTs?: string; fileId?: string; asAgentBot: boolean }
+    | { ok: false; reason: string }
+  > {
+    const mapping = (this.store?.mappings ?? []).find((m) => m.chatChannelId === input.chatChannelId);
+    if (!mapping) return { ok: false, reason: 'not_a_slack_channel' };
+    if (!this.deps.slack.isConnected()) return { ok: false, reason: 'slack_not_connected' };
+
+    // Same thread the agent's words go to, so the file lands beside them.
+    const threadTs = this.resolveOutboundThreadTs(mapping, {
+      channelId: input.chatChannelId,
+      senderId: input.agentSession,
+      ...(input.threadId ? { threadId: input.threadId } : {}),
+    } as ChatMessageDTO);
+
+    const installed = this.deps.identities?.getInstalled(input.agentSession) ?? null;
+
+    try {
+      const result = await this.deps.slack.uploadFile({
+        channelId: mapping.slackChannelId,
+        filePath: input.filePath,
+        ...(input.filename ? { filename: input.filename } : {}),
+        ...(input.title ? { title: input.title } : {}),
+        ...(input.comment ? { initialComment: input.comment } : {}),
+        ...(threadTs ? { threadTs } : {}),
+        ...(installed ? { botToken: installed.botToken } : {}),
+      });
+      this.logger.info('Agent attached a file to its Slack channel', {
+        agentSession: input.agentSession,
+        slackChannel: mapping.slackChannelName,
+        threaded: Boolean(threadTs),
+        asAgentBot: Boolean(installed),
+      });
+      return {
+        ok: true,
+        slackChannelId: mapping.slackChannelId,
+        ...(threadTs ? { threadTs } : {}),
+        ...(result.fileId ? { fileId: result.fileId } : {}),
+        asAgentBot: Boolean(installed),
+      };
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.logger.warn('Agent file attach failed', { agentSession: input.agentSession, reason });
+      return { ok: false, reason };
+    }
+  }
+
   private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): string | undefined {
     if (dto.threadId) {
       const root = this.deps.chat.getMessageForBridge(dto.threadId);

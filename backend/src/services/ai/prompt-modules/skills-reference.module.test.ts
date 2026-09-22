@@ -127,6 +127,42 @@ describe('SkillsReferenceModule', () => {
 		});
 	});
 
+	describe('sending files', () => {
+		it('names attach-file, which no agent could previously discover', async () => {
+			// reply-channel carries text only, so an agent asked for a PDF
+			// uploaded it to Drive and pasted a link — then correctly said the
+			// interface it had been told to use could not send attachments.
+			const out = await module.build(baseConfig);
+			expect(out).toContain('attach-file');
+		});
+
+		it('says to send the file rather than a link to it', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/When someone asks for a file, send the file/i);
+			expect(out).toMatch(/pasting\s+\na?\s*link is not the same thing|a link is not the same thing/i);
+		});
+
+		it('gives the reasons, so it is a judgement and not a rule to route around', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/leave Slack/i);
+			expect(out).toMatch(/without access to that Drive/i);
+		});
+
+		it('tells the agent which channel id to pass', async () => {
+			// It has a chat channel id, not a Slack one, and no reason to know
+			// the difference matters.
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/--channel <the id from your prompt>/);
+		});
+
+		it('is shown to every role', async () => {
+			for (const role of ['orchestrator', 'team-leader', 'qa', 'developer']) {
+				const out = await module.build({ ...baseConfig, role });
+				expect(out).toContain('attach-file');
+			}
+		});
+	});
+
 	describe('connected accounts (Google Workspace)', () => {
 		it('names the Drive skills, which no agent could previously discover', async () => {
 			// These shipped weeks ago and the prompt never mentioned them, so an

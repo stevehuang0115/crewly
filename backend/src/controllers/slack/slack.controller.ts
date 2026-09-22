@@ -1444,4 +1444,68 @@ router.post('/post', async (req: Request, res: Response, next: NextFunction) => 
   }
 });
 
+/**
+ * POST /api/slack/attach — an agent puts a file into the channel it is replying in.
+ *
+ * Takes the chat channel the agent already has (`reply-channel` gives it one)
+ * rather than a Slack channel id, which an agent has no reason to know. The
+ * Slack channel, the thread its reply belongs in and its own bot token are
+ * resolved from that, so the file arrives in the right thread, from the same
+ * identity as its words.
+ *
+ * Exists because `reply-channel` carries text only. Asked for a PDF, an agent
+ * uploaded it to Drive and pasted a link — then correctly explained that the
+ * interface it had been told to use could not send binary attachments.
+ */
+router.post('/attach', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { channelId, filePath, filename, title, comment, threadId } = req.body ?? {};
+    const agentSession =
+      typeof req.headers['x-agent-session'] === 'string' ? (req.headers['x-agent-session'] as string) : '';
+
+    if (!channelId || !filePath) {
+      res.status(400).json({ success: false, error: 'channelId and filePath are required' });
+      return;
+    }
+    if (!agentSession) {
+      res.status(400).json({ success: false, error: 'X-Agent-Session header is required' });
+      return;
+    }
+
+    try {
+      await fs.stat(filePath);
+    } catch {
+      res.status(404).json({ success: false, error: `No such file: ${filePath}` });
+      return;
+    }
+
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const teamChannels = getSlackTeamChannelService();
+    if (!teamChannels) {
+      res.status(503).json({ success: false, error: 'Slack team channels are not running' });
+      return;
+    }
+
+    const result = await teamChannels.attachFileForAgent({
+      chatChannelId: String(channelId),
+      agentSession,
+      filePath: String(filePath),
+      ...(filename ? { filename: String(filename) } : {}),
+      ...(title ? { title: String(title) } : {}),
+      ...(comment ? { comment: String(comment) } : {}),
+      ...(threadId ? { threadId: String(threadId) } : {}),
+    });
+
+    if (!result.ok) {
+      const status = result.reason === 'not_a_slack_channel' ? 400 : 502;
+      res.status(status).json({ success: false, error: result.reason });
+      return;
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
 export default router;

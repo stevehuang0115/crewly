@@ -87,12 +87,35 @@ class FakeSlack implements TeamChannelSlackApi {
   purposes: Array<{ id: string; purpose: string }> = [];
   sent: SlackOutgoingMessage[] = [];
   reactions: Array<{ channelId: string; ts: string; emoji: string; botToken?: string }> = [];
+  uploads: Array<{
+    channelId: string;
+    filePath: string;
+    filename?: string;
+    title?: string;
+    initialComment?: string;
+    threadTs?: string;
+    botToken?: string;
+  }> = [];
+  uploadError: string | null = null;
   channels = new Map<string, { id: string; name: string; isArchived: boolean; isPrivate: boolean }>();
   private seq = 0;
   private channelSeq = 0;
 
   isConnected(): boolean {
     return this.connected;
+  }
+  async uploadFile(options: {
+    channelId: string;
+    filePath: string;
+    filename?: string;
+    title?: string;
+    initialComment?: string;
+    threadTs?: string;
+    botToken?: string;
+  }): Promise<{ fileId?: string }> {
+    if (this.uploadError) throw new Error(this.uploadError);
+    this.uploads.push(options);
+    return { fileId: `F${this.uploads.length}` };
   }
   async createChannel(name: string) {
     this.created.push(name);
@@ -1118,6 +1141,132 @@ describe('mirrorOutbound', () => {
 // ---------------------------------------------------------------------------
 // Real agent identities (Cloud-provisioned bot users)
 // ---------------------------------------------------------------------------
+
+describe('attachFileForAgent', () => {
+  beforeEach(async () => {
+    await service.ensureTeamChannel(team());
+    await service.start();
+    slack.uploads = [];
+    slack.uploadError = null;
+  });
+
+  it('uploads to the Slack channel the chat channel maps to', async () => {
+    // The agent knows its chat channel id and has no reason to know a Slack
+    // one; resolving that is the point of this method.
+    const result = await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+    });
+
+    expect(result.ok).toBe(true);
+    expect(slack.uploads).toHaveLength(1);
+    expect(slack.uploads[0].filePath).toBe('/tmp/proposal.pdf');
+    // The Slack channel the mapping points at, not the chat channel id.
+    expect(slack.uploads[0].channelId).toBe('C1');
+    expect(slack.uploads[0].channelId).not.toBe('huddle-1');
+  });
+
+  it('lands in the same thread the agent is replying in', async () => {
+    // Otherwise the file appears at the bottom of the channel while the
+    // conversation about it is somewhere above.
+    const root = await service.routeInbound(inbound({ ts: '200.1', text: '@sam send the pdf' }));
+    expect(root).toBeTruthy();
+
+    await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+    });
+
+    expect(slack.uploads[0].threadTs).toBe('200.1');
+  });
+
+  it('uploads as the agent\'s own bot when it has one', async () => {
+    // So the file comes from the same name as the words next to it.
+    identities = new FakeIdentities();
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.start();
+    slack.uploads = [];
+    identities.records.set('crewly-alpha-sam', {
+      agentSession: 'crewly-alpha-sam', displayName: 'Sam', appId: 'A-sam',
+      status: 'installed', botUserId: 'USAM', botToken: 'xoxb-sam',
+    } as unknown as SlackAgentIdentityRecord);
+
+    const result = await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+    });
+
+    expect(slack.uploads[0].botToken).toBe('xoxb-sam');
+    expect(result.ok && result.asAgentBot).toBe(true);
+  });
+
+  it('still uploads, from the workspace bot, when the agent has no bot yet', async () => {
+    const result = await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+    });
+
+    expect(slack.uploads[0].botToken).toBeUndefined();
+    expect(result.ok && result.asAgentBot).toBe(false);
+  });
+
+  it('passes the caption and title through', async () => {
+    await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+      filename: 'proposal.pdf',
+      title: '课程设计方案',
+      comment: '第 3 节改了',
+    });
+
+    expect(slack.uploads[0]).toMatchObject({
+      filename: 'proposal.pdf',
+      title: '课程设计方案',
+      initialComment: '第 3 节改了',
+    });
+  });
+
+  it('refuses a chat channel that is not mirrored to Slack', async () => {
+    const result = await service.attachFileForAgent({
+      chatChannelId: 'not-a-slack-channel',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'not_a_slack_channel' });
+    expect(slack.uploads).toHaveLength(0);
+  });
+
+  it('reports Slack being down rather than pretending it sent', async () => {
+    slack.connected = false;
+
+    const result = await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/proposal.pdf',
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'slack_not_connected' });
+  });
+
+  it('surfaces an upload failure instead of throwing', async () => {
+    slack.uploadError = 'file too large';
+
+    const result = await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/huge.pdf',
+    });
+
+    expect(result).toEqual({ ok: false, reason: 'file too large' });
+  });
+});
 
 describe('agent identities', () => {
   beforeEach(() => {

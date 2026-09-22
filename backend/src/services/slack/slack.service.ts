@@ -146,6 +146,8 @@ interface UploadFileArgs {
   title?: string;
   initial_comment?: string;
   thread_ts?: string;
+  /** Post as this bot instead of the workspace bot. */
+  token?: string;
 }
 
 /**
@@ -159,6 +161,14 @@ interface FileUploadOptions {
   title?: string;
   initialComment?: string;
   threadTs?: string;
+  /**
+   * Upload as this agent's own bot rather than the workspace bot.
+   *
+   * Without it a file an agent sends arrives from the workspace app while
+   * its words arrive from its own bot — the same reply split across two
+   * identities in one thread.
+   */
+  botToken?: string;
 }
 
 interface PostMessageArgs {
@@ -2126,6 +2136,7 @@ export class SlackService extends EventEmitter {
           title: options.title,
           initial_comment: options.initialComment,
           thread_ts: options.threadTs,
+          ...(options.botToken ? { token: options.botToken } : {}),
         });
 
         this.status.messagesSent++;
