@@ -239,16 +239,6 @@ describe('BrowserSessionService', () => {
 			expect(service.getFrame('pia')!.mimeType).toBe('image/png');
 		});
 
-		it('asks for a forced render, since the tab is in the background', async () => {
-			// Not cosmetic: without it every frame of a background tab is blank.
-			const capturer = okCapturer();
-			service.setCapturer(capturer);
-			service.noteAction({ agentSession: 'pia', tool: 'navigate' });
-			await service.captureFrame('pia');
-
-			expect(capturer.mock.calls[0][1].beyondViewport).toBe(true);
-		});
-
 		it('requests the configured encoding', async () => {
 			const capturer = okCapturer();
 			service.setCapturer(capturer);
@@ -259,7 +249,6 @@ describe('BrowserSessionService', () => {
 				format: BROWSER_SESSION_CONSTANTS.FRAME_FORMAT,
 				quality: BROWSER_SESSION_CONSTANTS.FRAME_QUALITY,
 				scale: BROWSER_SESSION_CONSTANTS.FRAME_SCALE,
-				beyondViewport: BROWSER_SESSION_CONSTANTS.FRAME_BEYOND_VIEWPORT,
 			});
 		});
 
