@@ -234,6 +234,31 @@ describe('ClaudeTranscriptSyncService', () => {
 		expect(readings[0].contextTokens).toBe(700_500);
 	});
 
+	it('ignores the all-zero synthetic entries Claude Code interleaves', async () => {
+		// These are cancellations and tool bookkeeping, not model round-trips.
+		// One landing last made Atlas report a context of 0 while it was in
+		// fact holding 726k tokens.
+		const readings: number[] = [];
+		service.onContextReading((r) => readings.push(r.contextTokens));
+
+		await fs.writeFile(
+			transcriptPath,
+			[
+				assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 32, cacheRead: 723_561, cacheWrite: 2_882, output: 2_749 }),
+				JSON.stringify({
+					type: 'assistant',
+					timestamp: '2026-09-21T10:01:00.000Z',
+					message: { id: 's1', model: '<synthetic>', usage: { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } },
+				}),
+			].join('\n') + '\n',
+		);
+
+		const result = await service.sync();
+
+		expect(result.turnsCounted).toBe(1);
+		expect(readings).toEqual([726_475]);
+	});
+
 	it('re-announces the last known context when a pass finds no new turns', async () => {
 		// Session restore is staggered over a minute after boot, so the context
 		// monitor may not have been watching when the first reading went out.

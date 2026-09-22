@@ -460,6 +460,19 @@ export class ClaudeTranscriptSyncService {
 			const usage = msg?.usage as Record<string, number> | undefined;
 			if (!msg || !usage) continue;
 
+			const input = usage.input_tokens || 0;
+			const output = usage.output_tokens || 0;
+			const cacheRead = usage.cache_read_input_tokens || 0;
+			const cacheWrite = usage.cache_creation_input_tokens || 0;
+
+			// Claude Code writes `<synthetic>` entries — cancellations, tool
+			// bookkeeping — with an all-zero usage block. They are not model
+			// round-trips. Counting them inflates the turn count, and worse,
+			// one landing last makes the agent look like it is carrying no
+			// context at all: Atlas sat behind three of them reporting 0
+			// while actually holding 726k tokens.
+			if (input === 0 && output === 0 && cacheRead === 0 && cacheWrite === 0) continue;
+
 			const messageId = (msg.id as string) || `${entry.timestamp as string}`;
 			if (seen.has(messageId)) continue;
 			seen.add(messageId);
@@ -468,10 +481,10 @@ export class ClaudeTranscriptSyncService {
 				messageId,
 				timestamp: (entry.timestamp as string) || new Date().toISOString(),
 				model: (msg.model as string) || '',
-				input: usage.input_tokens || 0,
-				output: usage.output_tokens || 0,
-				cacheRead: usage.cache_read_input_tokens || 0,
-				cacheWrite: usage.cache_creation_input_tokens || 0,
+				input,
+				output,
+				cacheRead,
+				cacheWrite,
 			});
 		}
 
