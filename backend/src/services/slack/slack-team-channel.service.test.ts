@@ -1367,6 +1367,45 @@ describe('the room is whoever\'s bot is in it', () => {
     isLocal = () => false;
   });
 
+  it('records but does not dispatch a message that @\'s only an agent on another machine', async () => {
+    // Owner @'d Atlas (on the Mac) in #daily-info; the Air resolved no local
+    // mention and broadcast to Ella, who was awake (2026-09-23).
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+
+    const result = await service.routeInbound(
+      inbound({
+        channelId: 'C-daily', text: '<@UATLAS> anything worth a look today?', ts: '603.1',
+        receivedVia: 'crewly-alpha-leo', mentionedAgentSessions: ['think-tank-atlas-b4e166f6'],
+      }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.dispatch).toBeNull();
+    expect(result!.mentions).toEqual([]);
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    isLocal = () => false;
+  });
+
+  it('still dispatches when a local agent is @\'d alongside a remote one', async () => {
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+
+    await service.routeInbound(
+      inbound({
+        channelId: 'C-daily', text: '<@UATLAS> <@ULEO> both of you', ts: '603.2',
+        receivedVia: 'crewly-alpha-leo', mentionedAgentSessions: ['think-tank-atlas-b4e166f6', 'crewly-alpha-leo'],
+      }),
+    );
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalled();
+    isLocal = () => false;
+  });
+
   it('never turns a DM into a room', async () => {
     isLocal = () => true;
     service = makeService();

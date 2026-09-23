@@ -1073,6 +1073,15 @@ export class SlackTeamChannelService {
     }));
     const resolved = resolveSlackMentions(message.text ?? '', candidates);
     if (handoffTo && !resolved.mentions.includes(handoffTo)) resolved.mentions.push(handoffTo);
+    // @-mentions of agents on OTHER machines. The resolver only knows local
+    // agents, so an @ of Atlas (on the Mac) arrived on the Air as "nobody
+    // addressed" and went to Ella, who was awake — the owner asked one agent
+    // and two machines could both answer (2026-09-23, #daily-info). Cloud
+    // lists every agent the message @'s; one addressed only elsewhere is
+    // that machine's to handle.
+    const isLocal = (sess: string) => this.deps.isLocalAgent?.(sess) ?? members.some((m) => m.sessionName === sess);
+    const mentionedElsewhere = (message.mentionedAgentSessions ?? []).filter((sess) => !isLocal(sess));
+    const addressedElsewhereOnly = !handoffTo && resolved.mentions.length === 0 && mentionedElsewhere.length > 0;
 
     // Thread correlation.
     const slackThreadTs = message.threadTs || message.ts;
@@ -1160,6 +1169,17 @@ export class SlackTeamChannelService {
       ...(remoteAgent ? { excludeSessions: [remoteAgent] } : {}),
       ...(presence ? { room: presence.state, ...(presence.line ? { roomPresence: presence.line } : {}) } : {}),
     };
+    if (addressedElsewhereOnly) {
+      // Kept for context (the next question in the thread may be ours), but
+      // no eyes, no placeholder, and nobody here is told.
+      this.logger.info('Slack team message addressed to an agent on another machine — recorded, not dispatched', {
+        teamId: mapping.teamId,
+        slackChannel: `#${mapping.slackChannelName}`,
+        mentionedElsewhere,
+      });
+      return { mapping, message: persisted, mentions: [], dispatch: null };
+    }
+
     const planned: Map<string, 'required' | 'optional'> | null = dispatcherForPlan?.planHuddleTargets
       ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
       : null;
@@ -1256,6 +1276,7 @@ export class SlackTeamChannelService {
       teamId: mapping.teamId,
       slackChannel: `#${mapping.slackChannelName}`,
       mentions: resolved.mentions,
+      ...(mentionedElsewhere.length > 0 ? { mentionedElsewhere } : {}),
       unknown: resolved.unknown.map((u) => u.token),
       strategy: dispatch?.strategy ?? 'none',
       threaded: !!threadId,

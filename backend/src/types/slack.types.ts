@@ -77,6 +77,8 @@ export interface SlackInboundMeta {
   authorDisplayName?: string;
   /** Agent whose own app delivered this channel copy (cloud transport; see SlackIncomingMessage.receivedVia) */
   receivedVia?: string;
+  /** Account agents @-mentioned, on any machine (see SlackIncomingMessage.mentionedAgentSessions) */
+  mentionedAgentSessions?: string[];
   /** Who is in the channel across machines, and who is awake (cloud transport) */
   room?: SlackRoomPresence;
   /** The agent this message was handed to by whoever routed it (cloud transport) */
@@ -371,6 +373,13 @@ export interface SlackIncomingMessage {
    * "a DM to this agent" and routes the message to it.
    */
   receivedVia?: string;
+  /**
+   * Every agent of the account the message @-mentions, on any machine
+   * (cloud transport). The local @-resolver only knows this machine's
+   * agents; without this, an @ of an agent elsewhere read as "nobody
+   * addressed" and the message went to the agents awake here.
+   */
+  mentionedAgentSessions?: string[];
   /** Who is in the channel across machines, and who is awake (cloud transport) */
   room?: SlackRoomPresence;
   /**

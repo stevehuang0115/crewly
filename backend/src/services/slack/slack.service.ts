@@ -624,13 +624,14 @@ export class SlackService extends EventEmitter {
 
     const provenance: Pick<
       SlackIncomingMessage,
-      'source' | 'eventId' | 'agentSession' | 'authorAgentSession' | 'authorDisplayName' | 'receivedVia' | 'room' | 'handoffTo'
+      'source' | 'eventId' | 'agentSession' | 'authorAgentSession' | 'authorDisplayName' | 'receivedVia' | 'mentionedAgentSessions' | 'room' | 'handoffTo'
     > = {
       source: meta.source,
       ...(meta.eventId ? { eventId: meta.eventId } : {}),
       ...(meta.agentSession ? { agentSession: meta.agentSession } : {}),
       ...(meta.authorAgentSession ? { authorAgentSession: meta.authorAgentSession, authorDisplayName: meta.authorDisplayName } : {}),
       ...(meta.receivedVia ? { receivedVia: meta.receivedVia } : {}),
+      ...(meta.mentionedAgentSessions?.length ? { mentionedAgentSessions: meta.mentionedAgentSessions } : {}),
       ...(meta.room ? { room: meta.room } : {}),
       ...(meta.handoffTo ? { handoffTo: meta.handoffTo } : {}),
     };
@@ -789,6 +790,9 @@ export class SlackService extends EventEmitter {
       // DM — so no channel copy ever made its agent a member.
       ...(envelope.source === 'agent' && !isDm && envelope.agentSession
         ? { receivedVia: localAgentSession(envelope.agentSession) }
+        : {}),
+      ...(envelope.mentionedAgentSessions?.length
+        ? { mentionedAgentSessions: envelope.mentionedAgentSessions.map((m) => localAgentSession(m)) }
         : {}),
       ...(envelope.room && !isDm ? { room: envelope.room } : {}),
       ...(handoffTo ? { handoffTo } : {}),
