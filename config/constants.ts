@@ -936,6 +936,12 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	IDLE_STOP_MEMORY_USED_PERCENT: 85,
 	/** See {@link IDLE_STOP_MEMORY_USED_PERCENT}. */
 	IDLE_STOP_MIN_FREE_MB: 1024,
+	/**
+	 * Also tight when this share of swap is in use, or the OS reports memory
+	 * pressure: "free" counts reclaimable pages and stays high while the
+	 * machine swaps itself to a crawl (2026-09-23, load 117).
+	 */
+	IDLE_STOP_SWAP_USED_PERCENT: 75,
 	/** Roles that should never be auto-stopped (always-on) */
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
 	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */

@@ -5,6 +5,8 @@ import {
   MEMORY_PRESSURE_SPAWN_THRESHOLD,
   MEMORY_PRESSURE_MIN_FREE_MB,
   _resetVmStatCacheForTesting,
+  readSwapPressure,
+  _resetSwapCacheForTesting,
 } from './system-health.util.js';
 import * as os from 'os';
 import * as child_process from 'child_process';
@@ -160,6 +162,47 @@ Pages purgeable:                             98.
       mockFreemem.mockReturnValue(1.5 * 1024 * 1024 * 1024);
       expect(getAvailableMemoryBytes()).toBe(1.5 * 1024 * 1024 * 1024);
       expect(mockExecSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('readSwapPressure', () => {
+    beforeEach(() => {
+      _resetSwapCacheForTesting();
+      mockExecSync.mockReset();
+    });
+
+    it('reads swap fill and the pressure level on macOS', () => {
+      mockPlatform.mockReturnValue('darwin');
+      mockExecSync.mockImplementation((cmd: string) =>
+        cmd.includes('swapusage')
+          ? 'total = 12288.00M  used = 10956.00M  free = 1332.00M  (encrypted)'
+          : '2\n',
+      );
+      expect(readSwapPressure()).toEqual({ swapUsedPercent: 89.2, pressureElevated: true });
+    });
+
+    it('treats level 1 as normal and caches the reading', () => {
+      mockPlatform.mockReturnValue('darwin');
+      mockExecSync.mockImplementation((cmd: string) =>
+        cmd.includes('swapusage') ? 'total = 2048.00M  used = 0.00M  free = 2048.00M' : '1\n',
+      );
+      expect(readSwapPressure()).toEqual({ swapUsedPercent: 0, pressureElevated: false });
+      readSwapPressure();
+      expect(mockExecSync).toHaveBeenCalledTimes(2);
+    });
+
+    it('reads /proc/meminfo on Linux', () => {
+      mockPlatform.mockReturnValue('linux');
+      mockExecSync.mockReturnValue('SwapTotal:       4000000 kB\nSwapFree:        1000000 kB\n');
+      expect(readSwapPressure()).toEqual({ swapUsedPercent: 75, pressureElevated: false });
+    });
+
+    it('returns null when the reading fails', () => {
+      mockPlatform.mockReturnValue('darwin');
+      mockExecSync.mockImplementation(() => {
+        throw new Error('no sysctl');
+      });
+      expect(readSwapPressure()).toBeNull();
     });
   });
 });

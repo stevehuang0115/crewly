@@ -229,19 +229,28 @@ export class IdleDetectionService {
 	}
 
 	/** Memory reading, overridable in tests. */
-	memoryStats: () => { usedPercent: number; freeMB: number; totalMB: number } = getMemoryStats;
+	memoryStats: () => {
+		usedPercent: number;
+		freeMB: number;
+		totalMB: number;
+		swapUsedPercent?: number;
+		pressureElevated?: boolean;
+	} = getMemoryStats;
 
 	/**
 	 * Whether memory is tight enough to stop idle agents for it.
 	 *
-	 * @returns True at or above the used-share threshold, or below the free floor
+	 * @returns True at or above the used-share threshold, below the free
+	 *   floor, with swap mostly full, or when the OS reports pressure
 	 */
 	private memoryIsTight(): boolean {
 		const stats = this.memoryStats();
 		if (!stats.totalMB) return false;
 		return (
 			stats.usedPercent >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MEMORY_USED_PERCENT ||
-			stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB
+			stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB ||
+			(stats.swapUsedPercent ?? 0) >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_SWAP_USED_PERCENT ||
+			stats.pressureElevated === true
 		);
 	}
 

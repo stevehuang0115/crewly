@@ -160,14 +160,71 @@ export function isUnderMemoryPressure(): boolean {
  * Get current memory usage stats.
  * @returns Object with totalMB, freeMB, usedPercent
  */
-export function getMemoryStats(): { totalMB: number; freeMB: number; usedPercent: number } {
+export function getMemoryStats(): {
+  totalMB: number;
+  freeMB: number;
+  usedPercent: number;
+  swapUsedPercent?: number;
+  pressureElevated?: boolean;
+} {
   if (cachedTotalMem === 0) return { totalMB: 0, freeMB: 0, usedPercent: 0 };
   const free = getAvailableMemoryBytes();
+  const swap = readSwapPressure();
   return {
     totalMB: Math.round(cachedTotalMem / 1024 / 1024),
     freeMB: Math.round(free / 1024 / 1024),
     usedPercent: Math.round(((cachedTotalMem - free) / cachedTotalMem) * 100 * 10) / 10,
+    ...(swap ?? {}),
   };
+}
+
+const SWAP_CACHE_TTL_MS = 5_000;
+let swapCache: { value: { swapUsedPercent: number; pressureElevated: boolean } | null; at: number } | null = null;
+
+/**
+ * Swap use and the kernel's own pressure verdict.
+ *
+ * "Available" memory counts inactive pages as free, which on macOS stays
+ * in the gigabytes even while the machine is swapping itself to a crawl
+ * (2026-09-23: 10.7 of 12 GB swap, 7 GB compressed, load 117 — and the
+ * idle-stop gate still read "memory is fine"). Swap fill and
+ * `kern.memorystatus_vm_pressure_level` (1 normal, 2 warn, 4 critical)
+ * see that; on Linux, SwapTotal/SwapFree from /proc/meminfo.
+ *
+ * @returns Swap share in use and whether the OS reports pressure, or null if unreadable
+ */
+export function readSwapPressure(): { swapUsedPercent: number; pressureElevated: boolean } | null {
+  const cached = swapCache;
+  if (cached && Date.now() - cached.at < SWAP_CACHE_TTL_MS) return cached.value;
+  let value: { swapUsedPercent: number; pressureElevated: boolean } | null = null;
+  try {
+    if (isDarwin()) {
+      const usage = execSync('sysctl -n vm.swapusage', { timeout: 1_000, encoding: 'utf8' });
+      const total = Number(usage.match(/total = ([\d.]+)M/)?.[1] ?? 0);
+      const used = Number(usage.match(/used = ([\d.]+)M/)?.[1] ?? 0);
+      let level = 1;
+      try {
+        level = Number(execSync('sysctl -n kern.memorystatus_vm_pressure_level', { timeout: 1_000, encoding: 'utf8' }).trim()) || 1;
+      } catch {
+        // Older macOS without the sysctl: swap alone decides.
+      }
+      value = { swapUsedPercent: total > 0 ? Math.round((used / total) * 1000) / 10 : 0, pressureElevated: level >= 2 };
+    } else if (os.platform() === 'linux') {
+      const info = execSync('cat /proc/meminfo', { timeout: 1_000, encoding: 'utf8' });
+      const kb = (k: string) => Number(info.match(new RegExp(`${k}:\\s+(\\d+)`))?.[1] ?? 0);
+      const total = kb('SwapTotal');
+      value = { swapUsedPercent: total > 0 ? Math.round(((total - kb('SwapFree')) / total) * 1000) / 10 : 0, pressureElevated: false };
+    }
+  } catch {
+    value = null;
+  }
+  swapCache = { value, at: Date.now() };
+  return value;
+}
+
+/** Reset the swap reading cache — test affordance. */
+export function _resetSwapCacheForTesting(): void {
+  swapCache = null;
 }
 
 /** Reset the vm_stat cache — test affordance. */

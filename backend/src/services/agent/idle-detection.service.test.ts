@@ -343,6 +343,32 @@ describe('IdleDetectionService', () => {
 			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
 		});
 
+		it('stops it when the machine is swapping, even with "free" memory left', async () => {
+			// 2026-09-23: 4 GB "available" (inactive pages) while 10.7/12 GB of
+			// swap was in use and load was 117 — the gate said memory was fine.
+			idleDev();
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 74, freeMB: 4100, totalMB: 16384, swapUsedPercent: 89 }));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockTerminate).toHaveBeenCalled();
+		});
+
+		it('stops it when the OS reports memory pressure', async () => {
+			idleDev();
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 70, freeMB: 3000, totalMB: 16384, swapUsedPercent: 10, pressureElevated: true }));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockTerminate).toHaveBeenCalled();
+		});
+
 		it('stops it when free memory drops under the floor', async () => {
 			idleDev();
 			mockMemoryStats.mockImplementation(() => ({ usedPercent: 70, freeMB: 500, totalMB: 16384 }));
