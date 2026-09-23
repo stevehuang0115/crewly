@@ -10,7 +10,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread, type PendingTaskInfo } from './session-handoff.service.js';
+import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread, type PendingTaskInfo, awaitsReply } from './session-handoff.service.js';
 import { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 
 describe('SessionHandoffService', () => {
@@ -1097,5 +1097,21 @@ describe('SessionHandoffService', () => {
       expect(content).toContain('Pending Tasks');
       expect(content).toContain('Deploy v2.0');
     });
+  });
+});
+
+describe('what a restart hands the orchestrator', () => {
+  // After every restart the orchestrator posted a status report into its
+  // latest DM thread — one it had answered two days earlier (2026-09-23).
+  it('treats a conversation whose last word is the assistant\'s as answered', () => {
+    expect(awaitsReply(['UG94JLNGK: 这个邮件是谁在处理？', 'Crewly: [Orc] 抱歉 — 这条问题当时漏掉了'])).toBe(false);
+    expect(awaitsReply(['Orchestrator: done'])).toBe(false);
+    expect(awaitsReply(['Steve: [Orc] quoted'])).toBe(false);
+  });
+
+  it('treats one whose last word is a person\'s as waiting', () => {
+    expect(awaitsReply(['Crewly: [Orc] which email?', 'UG94JLNGK: the Sunrun one'])).toBe(true);
+    expect(awaitsReply(['You: 可以再看看Ruflo吗？'])).toBe(true);
+    expect(awaitsReply([])).toBe(false);
   });
 });

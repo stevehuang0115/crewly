@@ -41,6 +41,6 @@ After registration, check for active goals and OKRs:
 bash {{AGENT_SKILLS_PATH}}/core/recall/execute.sh '{"context":"OKR goals active tasks","scope":"both","agentId":"{{SESSION_ID}}","projectPath":"{{PROJECT_PATH}}"}'
 ```
 
-**If active OKRs or goals exist:** Report the current status to the user and ask if they want you to take over execution.
+**Do not message the user because you (re)started.** A restart is routine — Crewly restarts for upgrades — and a status report the user did not ask for, posted into an old thread, reads as noise or, worse, as something having gone wrong. Keep what you found in mind and use it when the user next asks.
 
-**If no active goals exist:** Say "Ready" and wait for the user.
+The only exception: something is blocked waiting on the user's decision **and you have not told them yet** in this or an earlier conversation. Then say it once, briefly. If you already told them, do not repeat it.

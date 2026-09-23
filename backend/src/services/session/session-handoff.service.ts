@@ -661,11 +661,16 @@ export class SessionHandoffService {
     lines.push(`Generated: ${summary.generatedAt}`);
     lines.push('');
 
-    // Active threads section
+    // Active threads section. Each is marked by who spoke last: a thread
+    // whose last word is the orchestrator's has been answered, and listing
+    // it as "active" made the orchestrator post into it again after every
+    // restart — a status report under a question answered two days before
+    // (2026-09-23).
     if (summary.activeThreads.length > 0) {
       lines.push('## Active Conversations');
       for (const thread of summary.activeThreads) {
-        lines.push(`### ${thread.channelType.toUpperCase()} — ${thread.channelId}`);
+        const waiting = awaitsReply(thread.recentMessages);
+        lines.push(`### ${thread.channelType.toUpperCase()} — ${thread.channelId}${waiting ? ' — WAITING FOR A REPLY' : ' — already answered (context only)'}`);
         lines.push(`- File: \`${thread.filePath}\``);
         lines.push(`- Last active: ${thread.lastActiveAt}`);
         if (thread.recentMessages.length > 0) {
@@ -734,7 +739,12 @@ export class SessionHandoffService {
         return;
       }
 
-      const message = `[SESSION_CONTEXT] Previous session context for restart recovery:\n\n${content.trim()}`;
+      const message =
+        `[SESSION_CONTEXT] Crewly restarted. Background from the previous session, for continuity only:\n` +
+        `- Do NOT message anyone because of this restart: no status report, no recap, no "I'm back".\n` +
+        `- Reply only in a conversation marked WAITING FOR A REPLY, and only to what was asked there.\n` +
+        `- Everything marked "already answered" is context. Leave it alone.\n\n` +
+        content.trim();
 
       await agentService.sendMessageToAgent(
         sessionName,
@@ -1105,4 +1115,23 @@ export class SessionHandoffService {
   ): Promise<void> {
     return this.pushResumeNotification(agentService, sessionName);
   }
+}
+
+/** Senders that are the assistant side of a conversation. */
+const ASSISTANT_SENDERS = new Set(['crewly', 'orchestrator', 'crewly-orc', 'assistant', 'agent', 'system']);
+
+/**
+ * Whether a conversation's last message is from a person and still unanswered.
+ *
+ * @param recentMessages - "sender: preview" lines, oldest first
+ * @returns True when the last line is not the assistant's
+ */
+export function awaitsReply(recentMessages: readonly string[]): boolean {
+  const last = recentMessages[recentMessages.length - 1];
+  if (!last) return false;
+  const idx = last.indexOf(':');
+  const sender = (idx >= 0 ? last.slice(0, idx) : last).trim().toLowerCase();
+  const preview = idx >= 0 ? last.slice(idx + 1).trim() : '';
+  if (ASSISTANT_SENDERS.has(sender) || preview.startsWith('[Orc]')) return false;
+  return true;
 }
