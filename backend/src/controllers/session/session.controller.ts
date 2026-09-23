@@ -14,6 +14,8 @@ import { LoggerService } from '../../services/core/logger.service.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
+import { claimsTeam, resolvePersistedSessions } from '../../services/session/session-binding.js';
+import type { ApiContext } from '../types.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SessionController');
 
@@ -272,7 +274,7 @@ export async function killSession(
  * @returns {object} JSON response with previous sessions
  */
 export async function getPreviousSessions(
-	this: unknown,
+	this: Partial<Pick<ApiContext, 'storageService'>> | undefined,
 	req: Request,
 	res: Response
 ): Promise<void> {
@@ -280,6 +282,23 @@ export async function getPreviousSessions(
 		const persistence = getSessionStatePersistence();
 		const sessions = persistence.getRegisteredSessionsMap();
 		const backend = getSessionBackendSync();
+
+		// Only offer names a team member is bound to (or sessions that claim no
+		// team). An entry under a member's old name would resume a second copy
+		// of that member under the stale name.
+		let offerable: Set<string> | null = null;
+		try {
+			const teams = await this?.storageService?.getTeams();
+			if (teams) {
+				const { launchable } = resolvePersistedSessions(Array.from(sessions.values()), teams);
+				offerable = new Set(launchable.map((s) => s.name));
+			}
+		} catch (err) {
+			logger.warn('getPreviousSessions: could not read team bindings; offering only non-team sessions', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+			offerable = new Set(Array.from(sessions.values()).filter((s) => !claimsTeam(s)).map((s) => s.name));
+		}
 
 		// Steve 2026-05-15 dogfood: the Resume Sessions dialog was
 		// listing every previously-running agent (12+ rows on a typical
@@ -327,6 +346,8 @@ export async function getPreviousSessions(
 		}> = [];
 
 		for (const [name, info] of sessions) {
+			// Never offer a stale (unbound) session name.
+			if (offerable && !offerable.has(name)) continue;
 			// Only include sessions that don't have an active PTY
 			if (backend?.sessionExists(name)) continue;
 			// Pool-filter: skip sessions with no active WI targeting them.

@@ -11,7 +11,7 @@ import { CREWLY_CONSTANTS } from '../../constants.js';
 // Mocked below via jest.mock('../../services/session/index.js') (jest hoists
 // the mock above imports) so tests can set its return value without an inline
 // require() — avoids @typescript-eslint/no-var-requires.
-import { getSessionBackendSync } from '../../services/session/index.js';
+import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 
 // Mock dependencies
 jest.mock('../../services/index.js');
@@ -1897,6 +1897,90 @@ describe('Teams Handlers', () => {
           success: true,
         })
       );
+    });
+
+    describe('renamed member (stale session name)', () => {
+      const MEMBER_ID = '45506487-1b63-4f81-a9fd-77053d69e181';
+      const STALE = 'crewly-marketing-self-watch-scribe-45506487';
+      const BOUND = 'crewly-marketing-dana-45506487';
+      let unregisterSession: jest.Mock<any>;
+      let terminateAgentSession: jest.Mock<any>;
+      let createAgentSession: jest.Mock<any>;
+
+      function startWith(memberSessionName: string, staleRunning: boolean) {
+        const team: Team = {
+          id: 'team-mkt',
+          name: 'Crewly Marketing',
+          members: [{
+            id: MEMBER_ID,
+            name: 'Dana',
+            sessionName: memberSessionName,
+            role: 'developer',
+            runtimeType: 'claude-code',
+            systemPrompt: 'p',
+            agentStatus: 'inactive',
+            workingStatus: 'idle',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          }],
+          projectIds: [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+        mockRequest.params = { id: 'team-mkt' };
+        mockRequest.body = { projectId: 'project-1' };
+        mockStorageService.getTeams.mockResolvedValue([team]);
+        mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/project', name: 'P' }]);
+        mockStorageService.saveTeam.mockResolvedValue(undefined);
+        // As in the 2026-09-23 log: startTeamMember's early "already running"
+        // checks did not fire, and it went on to derive the new name.
+        mockTmuxService.listSessions.mockResolvedValue([]);
+
+        unregisterSession = jest.fn<any>();
+        (getSessionStatePersistence as unknown as jest.Mock).mockReturnValue({ updateSessionId: mockUpdateSessionId, unregisterSession });
+        (getSessionBackendSync as unknown as jest.Mock).mockReturnValue({
+          sessionExists: jest.fn((name: string) => staleRunning && name === STALE),
+        });
+        terminateAgentSession = jest.fn<any>().mockResolvedValue({ success: true });
+        createAgentSession = jest.fn<any>().mockResolvedValue({ success: true, sessionName: BOUND });
+        mockApiContext.agentRegistrationService = { createAgentSession, terminateAgentSession } as any;
+        return team;
+      }
+
+      it('launches the member under the name its binding derives, never the stale name, and retires the stale session', async () => {
+        startWith(STALE, true);
+
+        await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(createAgentSession).toHaveBeenCalledTimes(1);
+        expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ sessionName: BOUND, memberId: MEMBER_ID }));
+        expect(createAgentSession).not.toHaveBeenCalledWith(expect.objectContaining({ sessionName: STALE }));
+        expect(terminateAgentSession).toHaveBeenCalledWith(STALE, 'developer');
+        expect(unregisterSession).toHaveBeenCalledWith(STALE);
+        const saved = (mockStorageService.saveTeam.mock.calls as any[]).map((c) => c[0].members[0].sessionName);
+        expect(saved).toContain(BOUND);
+        expect(saved).not.toContain(STALE);
+      });
+
+      it('drops a stale name from persistence even when its session is no longer running', async () => {
+        startWith(STALE, false);
+
+        await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(terminateAgentSession).not.toHaveBeenCalled();
+        expect(unregisterSession).toHaveBeenCalledWith(STALE);
+        expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ sessionName: BOUND }));
+      });
+
+      it('does not retire anything when the member was not renamed', async () => {
+        startWith(BOUND, false);
+
+        await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(terminateAgentSession).not.toHaveBeenCalled();
+        expect(unregisterSession).not.toHaveBeenCalled();
+        expect(createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ sessionName: BOUND }));
+      });
     });
 
     it('should return 404 when team not found', async () => {

@@ -234,6 +234,48 @@ describe('Session Controller - Previous Sessions', () => {
 			expect(jsonCall.data.sessions.map((s) => s.name)).toEqual(['agent-x']);
 		});
 
+		describe('stale (unbound) session names', () => {
+			const TEAM = 'team-mkt';
+			const BOUND = 'crewly-marketing-dana-45506487';
+			const STALE = 'crewly-marketing-self-watch-scribe-45506487';
+			const teams = [{ id: TEAM, members: [{ id: 'dana-id', sessionName: BOUND }] }];
+
+			beforeEach(() => {
+				mockGetAllItems.mockResolvedValue([
+					{ target: BOUND, status: 'queued' },
+					{ target: STALE, status: 'queued' },
+					{ target: 'crewly-orc', status: 'queued' },
+				]);
+				mockPersistence.getRegisteredSessionsMap.mockReturnValue(new Map([
+					[BOUND, { name: BOUND, role: 'content-strategist', teamId: TEAM, memberId: 'dana-id', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+					[STALE, { name: STALE, role: 'content-strategist', teamId: TEAM, runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+					['crewly-orc', { name: 'crewly-orc', role: 'orchestrator', runtimeType: RUNTIME_TYPES.CLAUDE_CODE }],
+				]));
+			});
+
+			it('does not offer a team session whose name no member is bound to', async () => {
+				const res = createMockRes();
+				const ctx = { storageService: { getTeams: jest.fn<any>().mockResolvedValue(teams) } };
+
+				await getPreviousSessions.call(ctx as any, createMockReq(), res);
+
+				const body = (res.json as jest.Mock).mock.calls[0][0] as PreviousSessionsResponse;
+				const names = body.data.sessions.map((s) => s.name);
+				expect(names).not.toContain(STALE);
+				expect(names).toEqual([BOUND, 'crewly-orc']);
+			});
+
+			it('offers only non-team sessions when the team bindings cannot be read', async () => {
+				const res = createMockRes();
+				const ctx = { storageService: { getTeams: jest.fn<any>().mockRejectedValue(new Error('disk')) } };
+
+				await getPreviousSessions.call(ctx as any, createMockReq(), res);
+
+				const body = (res.json as jest.Mock).mock.calls[0][0] as PreviousSessionsResponse;
+				expect(body.data.sessions.map((s) => s.name)).toEqual(['crewly-orc']);
+			});
+		});
+
 		it('should return empty array when no sessions registered', async () => {
 			const req = createMockReq();
 			const res = createMockRes();
