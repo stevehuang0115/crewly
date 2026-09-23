@@ -1220,6 +1220,23 @@ describe('one pair of eyes per agent that receives it', () => {
     expect(eyes.map((r) => r.botToken).sort()).toEqual(['xoxb-leo', 'xoxb-sam']);
   });
 
+  it('shows "waking up" at once for an agent woken to own the message, but not for one merely told', async () => {
+    // Nobody in #pro-crewly-marketing was awake, so Ella — the team leader —
+    // was woken for it. The owner saw eyes and then nothing for two minutes
+    // (2026-09-23). An agent woken for a message owns it; say so straight away.
+    planning([['crewly-alpha-sam', 'optional'], ['crewly-alpha-leo', 'optional']]);
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn(), fail: jest.fn() };
+    awake = (s) => s === 'crewly-alpha-leo';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+
+    await service.routeInbound(inbound({ text: 'who leads this?', ts: '510.1' }));
+
+    const begun = typing.begin.mock.calls.map(([key, , phase]) => [key.agentSession, phase]);
+    expect(begun).toEqual([['crewly-alpha-sam', 'waking']]);
+    awake = () => true;
+  });
+
   it('shows no eye from an agent the message is not going to', async () => {
     // Honest count: not everyone in the room, only those handed the message.
     planning([['crewly-alpha-sam', 'required']]);

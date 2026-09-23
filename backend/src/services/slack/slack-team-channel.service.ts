@@ -1175,7 +1175,20 @@ export class SlackTeamChannelService {
     // a bare follow-up in a thread, which the last speaker must answer.
     let owing: string[];
     if (planned) {
-      owing = [...planned].filter(([, mode]) => mode === 'required').map(([session]) => session);
+      // An agent that is asleep and still gets the message is being woken
+      // for it — the room's leader when nobody was awake — so it owns the
+      // message and the owner should see that at once, not after the one or
+      // two minutes a cold start takes (#pro-crewly-marketing, 2026-09-23).
+      // Awake agents that were only told announce themselves with --working.
+      // The orchestrator is left out: its bot is usually not in the room.
+      const isAwake = this.deps.isAgentAwake;
+      owing = [...planned]
+        .filter(
+          ([session, mode]) =>
+            mode === 'required' ||
+            (isAwake !== undefined && !isAwake(session) && session !== CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME),
+        )
+        .map(([session]) => session);
     } else {
       owing = resolved.mentions;
       if (owing.length === 0 && !message.threadTs && team) {
