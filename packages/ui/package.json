@@ -15,7 +15,8 @@
       "require": "./dist/index.cjs"
     },
     "./theme.css": "./theme.css",
-    "./tailwind-preset": "./tailwind-preset.cjs"
+    "./tailwind-preset": "./tailwind-preset.cjs",
+    "./styles.css": "./dist/styles.css"
   },
   "files": [
     "dist",
@@ -23,7 +24,7 @@
     "tailwind-preset.cjs"
   ],
   "scripts": {
-    "build": "tsup",
+    "build": "tsup && tailwindcss -c tailwind.config.cjs -i src/styles.css -o dist/styles.css --minify",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
@@ -46,6 +47,7 @@
     "tsup": "^8.0.0",
     "typescript": "^5.0.2",
     "vite": "^4.4.5",
-    "vitest": "^3.2.4"
+    "vitest": "^3.2.4",
+    "tailwindcss": "^3.4.19"
   }
 }

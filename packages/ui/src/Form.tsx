@@ -6,7 +6,7 @@ export interface FormProps extends React.FormHTMLAttributes<HTMLFormElement> {
 }
 
 export const Form: React.FC<FormProps> = ({ children, className = '', ...props }) => (
-  <form className={`form ${className}`} {...props}>
+  <form className={`form space-y-6 ${className}`} {...props}>
     {children}
   </form>
 );
@@ -18,7 +18,7 @@ export interface FormGroupProps {
 }
 
 export const FormGroup: React.FC<FormGroupProps> = ({ children, className = '' }) => (
-  <div className={`form-group ${className}`}>
+  <div className={`form-group flex flex-col ${className}`}>
     {children}
   </div>
 );
@@ -30,7 +30,7 @@ export interface FormRowProps {
 }
 
 export const FormRow: React.FC<FormRowProps> = ({ children, className = '' }) => (
-  <div className={`form-row ${className}`}>
+  <div className={`form-row grid grid-cols-1 sm:grid-cols-2 gap-4 ${className}`}>
     {children}
   </div>
 );
@@ -60,7 +60,7 @@ export interface FormHelpProps {
 }
 
 export const FormHelp: React.FC<FormHelpProps> = ({ children, className = '' }) => (
-  <small className={`form-help ${className}`}>
+  <small className={`form-help block text-xs text-text-secondary-dark mt-1.5 ${className}`}>
     {children}
   </small>
 );
@@ -72,7 +72,7 @@ export interface FormErrorProps {
 }
 
 export const FormError: React.FC<FormErrorProps> = ({ children, className = '' }) => (
-  <div className={`form-error ${className}`}>
+  <div className={`form-error text-xs text-red-400 mt-1.5 ${className}`}>
     {children}
   </div>
 );
@@ -149,14 +149,14 @@ export const FormSection: React.FC<FormSectionProps> = ({
   children, 
   className = '' 
 }) => (
-  <div className={`form-section ${className}`}>
+  <div className={`form-section space-y-4 ${className}`}>
     {(title || description) && (
       <div className="form-section-header">
-        {title && <h3 className="form-section-title">{title}</h3>}
-        {description && <p className="form-section-description">{description}</p>}
+        {title && <h3 className="form-section-title text-base font-semibold">{title}</h3>}
+        {description && <p className="form-section-description text-sm text-text-secondary-dark mt-1">{description}</p>}
       </div>
     )}
-    <div className="form-section-content">
+    <div className="form-section-content space-y-4">
       {children}
     </div>
   </div>

@@ -1,3 +1,6 @@
+export { CrewlyRoot } from './CrewlyRoot';
+export type { CrewlyRootProps } from './CrewlyRoot';
+
 export { Button, IconButton } from './Button';
 export type { ButtonProps, IconButtonProps, ButtonVariant, ButtonSize } from './Button';
 

@@ -1,0 +1,143 @@
+{
+  "pkg": "@crewly/ui",
+  "globalName": "CrewlyUI",
+  "shape": "package",
+  "buildCmd": "npm run build",
+  "tsconfig": "tsconfig.json",
+  "cssEntry": "dist/styles.css",
+  "extraFonts": [
+    "../../node_modules/@fontsource/nunito/400.css",
+    "../../node_modules/@fontsource/nunito/500.css",
+    "../../node_modules/@fontsource/nunito/600.css",
+    "../../node_modules/@fontsource/nunito/700.css",
+    "../../node_modules/@fontsource/nunito/800.css"
+  ],
+  "componentSrcMap": {
+    "Icons": null
+  },
+  "docsMap": {
+    "Button": "docs/groups/Actions.md",
+    "IconButton": "docs/groups/Actions.md",
+    "SaveButton": "docs/groups/Actions.md",
+    "Form": "docs/groups/Forms.md",
+    "FormGroup": "docs/groups/Forms.md",
+    "FormRow": "docs/groups/Forms.md",
+    "FormLabel": "docs/groups/Forms.md",
+    "FormHelp": "docs/groups/Forms.md",
+    "FormError": "docs/groups/Forms.md",
+    "FormInput": "docs/groups/Forms.md",
+    "FormTextarea": "docs/groups/Forms.md",
+    "FormSelect": "docs/groups/Forms.md",
+    "FormSection": "docs/groups/Forms.md",
+    "Input": "docs/groups/Forms.md",
+    "Toggle": "docs/groups/Forms.md",
+    "Dropdown": "docs/groups/Forms.md",
+    "FilterPill": "docs/groups/Forms.md",
+    "FilterPillGroup": "docs/groups/Forms.md",
+    "Alert": "docs/groups/Feedback.md",
+    "Badge": "docs/groups/Feedback.md",
+    "StatusBadge": "docs/groups/Feedback.md",
+    "StatusDot": "docs/groups/Feedback.md",
+    "LoadingSpinner": "docs/groups/Feedback.md",
+    "SkeletonRows": "docs/groups/Feedback.md",
+    "ScoreCard": "docs/groups/Feedback.md",
+    "Modal": "docs/groups/Overlays.md",
+    "ModalBody": "docs/groups/Overlays.md",
+    "ModalFooter": "docs/groups/Overlays.md",
+    "Popup": "docs/groups/Overlays.md",
+    "FormPopup": "docs/groups/Overlays.md",
+    "ConfirmPopup": "docs/groups/Overlays.md",
+    "AlertDialog": "docs/groups/Overlays.md",
+    "ConfirmDialog": "docs/groups/Overlays.md",
+    "OverflowMenu": "docs/groups/Overlays.md",
+    "Card": "docs/groups/Layout.md",
+    "Tabs": "docs/groups/Layout.md",
+    "TabList": "docs/groups/Layout.md",
+    "TabTrigger": "docs/groups/Layout.md",
+    "TabContent": "docs/groups/Layout.md",
+    "PageToolbar": "docs/groups/Layout.md",
+    "Avatar": "docs/groups/Identity.md",
+    "AvatarGroup": "docs/groups/Identity.md",
+    "CrewlyRoot": "docs/groups/Layout.md",
+    "ScoreCardGrid": "docs/groups/Feedback.md"
+  },
+  "provider": {
+    "component": "CrewlyRoot",
+    "props": {
+      "className": "p-4 rounded-2xl"
+    }
+  },
+  "overrides": {
+    "Modal": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "ModalBody": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "Popup": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "FormPopup": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "ConfirmPopup": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "AlertDialog": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "ConfirmDialog": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "PageToolbar": {
+      "cardMode": "column"
+    },
+    "ScoreCardGrid": {
+      "cardMode": "column"
+    },
+    "Button": {
+      "cardMode": "column"
+    },
+    "SaveButton": {
+      "cardMode": "column"
+    },
+    "Tabs": {
+      "cardMode": "column"
+    },
+    "Alert": {
+      "cardMode": "column"
+    },
+    "SkeletonRows": {
+      "cardMode": "column"
+    },
+    "StatusBadge": {
+      "cardMode": "column"
+    },
+    "StatusDot": {
+      "cardMode": "column"
+    },
+    "FormTextarea": {
+      "cardMode": "column"
+    },
+    "Input": {
+      "cardMode": "column"
+    },
+    "Toggle": {
+      "cardMode": "column"
+    },
+    "Card": {
+      "cardMode": "column"
+    }
+  },
+  "extraEntries": [
+    "./.design-sync/icons-entry.js"
+  ],
+  "readmeHeader": ".design-sync/conventions.md"
+}
