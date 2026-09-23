@@ -92,3 +92,20 @@ export type { OverflowMenuItem } from './OverflowMenu';
 
 // ConfirmDialog.tsx (the standalone one) shares its name with Dialog's
 // ConfirmDialog; import it by path: '@crewly/ui/ConfirmDialog'.
+
+export { EmptyState } from './EmptyState';
+export type { EmptyStateProps } from './EmptyState';
+
+export { Tooltip } from './Tooltip';
+export type { TooltipProps, TooltipSide } from './Tooltip';
+
+export { SegmentedControl } from './SegmentedControl';
+export type { SegmentedControlProps, SegmentedOption } from './SegmentedControl';
+
+export { Menu } from './Menu';
+export type { MenuProps, MenuItem } from './Menu';
+
+export { Drawer } from './Drawer';
+export type { DrawerProps } from './Drawer';
+
+export { Table, TableHead, TableBody, TableRow, TableHeader, TableCell } from './Table';

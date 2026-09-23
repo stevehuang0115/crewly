@@ -183,13 +183,13 @@ describe('Button Component', () => {
       expect(button).toBeDisabled();
     });
 
-    it('should apply loading text class when loading', () => {
+    it('keeps the label visible next to the spinner when loading', () => {
       render(<Button loading>Loading Button</Button>);
 
       const button = screen.getByRole('button');
       const textSpan = button.querySelector('span');
       expect(textSpan).toBeInTheDocument();
-      expect(textSpan).toHaveClass('opacity-0');
+      expect(textSpan).not.toHaveClass('opacity-0');
       expect(textSpan).toHaveTextContent('Loading Button');
     });
 
