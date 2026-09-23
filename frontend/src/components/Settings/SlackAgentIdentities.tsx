@@ -229,6 +229,25 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
     }
   };
 
+  /**
+   * Take an agent's bot out of the workspace. A free Slack workspace holds
+   * ten apps; this frees one and keeps the app for a later reinstall.
+   *
+   * @param row - The agent
+   */
+  const uninstallIdentity = async (row: AgentIdentityRow) => {
+    if (!window.confirm(`Remove ${row.displayName}'s bot from Slack? You can install it again later.`)) return;
+    try {
+      setError(null);
+      await readJson(
+        await fetch(`/api/slack/agent-identities/${encodeURIComponent(row.agentSession)}/uninstall`, { method: 'POST' }),
+      );
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to uninstall the bot');
+    }
+  };
+
   const configured = !!data?.cloud?.configToken?.configured;
   const tokenInvalid = data?.cloud?.configToken?.status === 'invalid';
   const known = new Set((data?.identities ?? []).map((r) => r.agentSession));
@@ -451,6 +470,11 @@ export const SlackAgentIdentities: React.FC<SlackAgentIdentitiesProps> = ({ pend
                                 {row.status === 'installed' ? 'Re-authorize' : 'Install'} {row.displayName}
                                 <ExternalLink className="w-3 h-3" />
                               </a>
+                            )}
+                            {row.status === 'installed' && (
+                              <Button variant="ghost" size="sm" onClick={() => uninstallIdentity(row)} aria-label={`Uninstall ${row.displayName} from Slack`}>
+                                Uninstall
+                              </Button>
                             )}
                             {row.appId && (
                               <Button variant="danger-ghost" size="sm" icon={Trash2} onClick={() => removeIdentity(row)} aria-label={`Delete identity for ${row.displayName}`}>

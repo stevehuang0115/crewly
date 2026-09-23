@@ -220,6 +220,18 @@ export class SlackAgentIdentityService {
   }
 
   /**
+   * Uninstall an agent's bot from the workspace, keeping its app (Cloud
+   * frees the Slack app slot and hands back a fresh install link).
+   *
+   * @param agentSession - The agent
+   * @returns The record afterwards
+   */
+  async uninstall(agentSession: string): Promise<SlackAgentIdentityRecord> {
+    const view = await this.cloudRequest<CloudAgentView>('POST', `/agents/${encodeURIComponent(agentSession)}/uninstall`);
+    return this.mergeView(view);
+  }
+
+  /**
    * Pull every identity (with tokens) from Cloud into the local cache.
    * Newly installed ones fire {@link onInstalled}.
    *
@@ -436,6 +448,15 @@ export class SlackAgentIdentityService {
     if (view.botUserId) record.botUserId = view.botUserId;
     if (view.teamId) record.teamId = view.teamId;
     if (view.botToken) record.botToken = view.botToken;
+    if (wasInstalled && view.status !== 'installed') {
+      // Uninstalled (to free a Slack app slot, say): the old token is dead,
+      // and Slack took the bot out of every channel — forget both, so a
+      // reinstall invites it back instead of assuming it is still there.
+      delete record.botToken;
+      delete record.botUserId;
+      record.invitedTo = [];
+      record.announcedIn = [];
+    }
     if (view.installUrl) record.installUrl = view.installUrl;
     else if (view.status === 'installed') delete record.installUrl;
     if (view.reinstall) record.reinstall = true;

@@ -138,6 +138,19 @@ describe('SlackAgentIdentities', () => {
     await waitFor(() => expect(screen.getByText('Log in to Crewly Cloud first')).toBeInTheDocument());
   });
 
+  it('uninstalls an installed bot (frees a Slack app slot) but offers nothing of the kind for a pending one', async () => {
+    const uninstall = vi.fn(() => jsonResponse({ success: true, data: { agentSession: 's', status: 'pending_install' } }));
+    routeFetch({ 'POST /api/slack/agent-identities/s/uninstall': uninstall });
+    render(<SlackAgentIdentities />);
+    await waitFor(() => expect(screen.getByLabelText('Uninstall Sam from Slack')).toBeInTheDocument());
+    expect(screen.queryByLabelText('Uninstall Leo from Slack')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Uninstall Sam from Slack'));
+
+    await waitFor(() => expect(uninstall).toHaveBeenCalledTimes(1));
+    expect(mockConfirm).toHaveBeenCalled();
+  });
+
   it('deletes an identity and removes the token after confirmation', async () => {
     const del = vi.fn(() => jsonResponse({ success: true, data: { removed: true } }));
     routeFetch({ 'DELETE /api/slack/agent-identities': del });

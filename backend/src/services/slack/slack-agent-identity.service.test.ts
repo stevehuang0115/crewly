@@ -225,6 +225,28 @@ describe('provision + cache', () => {
   });
 });
 
+describe('uninstall', () => {
+  // A free Slack workspace holds ten apps; the owner needed to free one.
+  it('asks Cloud to uninstall, then forgets the dead token and the channels Slack took the bot out of', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: [{ agentSession: 's', displayName: 'Sam', appId: 'A1', status: 'installed', botUserId: 'USAM', botToken: 'xoxb-sam', teamId: 'T1' }] }),
+    );
+    await service.refreshFromCloud();
+    await service.markChannel('s', { invitedTo: 'C1', announcedIn: 'C1' });
+
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ success: true, data: { agentSession: 's', displayName: 'Sam', appId: 'A1', status: 'pending_install', installUrl: 'https://slack/again' } }),
+    );
+    const rec = await service.uninstall('s');
+
+    expect(fetchMock.mock.calls[1][0]).toBe('https://api.crewlyai.com/api/cloud/slack/agents/s/uninstall');
+    expect(fetchMock.mock.calls[1][1].method).toBe('POST');
+    expect(rec).toMatchObject({ status: 'pending_install', installUrl: 'https://slack/again', invitedTo: [], announcedIn: [] });
+    expect(rec.botToken).toBeUndefined();
+    expect(service.getInstalled('s')).toBeNull();
+  });
+});
+
 describe('singleton', () => {
   it('is null until set', () => {
     expect(getSlackAgentIdentityService()).toBeNull();

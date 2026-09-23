@@ -1366,6 +1366,23 @@ router.post('/agent-identities/provision', async (req: Request, res: Response, n
 });
 
 /**
+ * POST /api/slack/agent-identities/:agentSession/uninstall
+ *
+ * Take the agent's bot out of the Slack workspace (frees one of a free
+ * plan's ten app slots). The app is kept; it can be installed again.
+ */
+router.post('/agent-identities/:agentSession/uninstall', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const service = requireIdentities(res);
+    if (!service) return;
+    const record = await service.uninstall(req.params.agentSession);
+    res.json({ success: true, data: { ...record, botToken: undefined } });
+  } catch (error) {
+    sendIdentityError(error, res, next);
+  }
+});
+
+/**
  * DELETE /api/slack/agent-identities/:agentSession
  *
  * Delete the agent's Slack app on Cloud and forget it locally.
