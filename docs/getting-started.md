@@ -52,10 +52,16 @@ Crewly is an open-source platform that coordinates AI coding agents (Claude Code
   | Runtime | Install Command | Verify | Auth |
   |---------|----------------|--------|------|
   | **Claude Code** (recommended) | `npm install -g @anthropic-ai/claude-code` | `claude --version` | Run `claude` once to authenticate |
-  | **Gemini CLI** | `npm install -g @google/gemini-cli` | `gemini --version` | Set `GEMINI_API_KEY` env variable |
+  | **Gemini CLI** | `npm install -g @google/gemini-cli` | `gemini --version` | Set `GEMINI_API_KEY`, then run `gemini` once and choose **Use Gemini API Key** |
   | **Codex (OpenAI)** | `npm install -g @openai/codex` | `codex --version` | Set OpenAI API key |
 
   > Claude Code is the default runtime. If you don't have a preference, start with Claude Code.
+
+  > **Gemini CLI first run.** A new Gemini agent can stop at two prompts in its terminal. Answer them in the live terminal in the dashboard:
+  > 1. *How would you like to authenticate for this project?* Choose **Use Gemini API Key**.
+  > 2. *Do you trust the following folders being added to this workspace?* (the list includes `/tmp`) Choose **Yes**.
+  >
+  > The agent then continues on its own.
 
 ### Optional
 
@@ -186,7 +192,7 @@ Open your project and assign your team. This connects agents to the codebase the
 
 ### Step 5: Start Your Agents
 
-Once a team is assigned to a project, click **Start** on a team member. Crewly launches the agent's CLI in its own terminal session.
+Once a team is assigned to a project, click **Start** on the **team** (not on an individual member). Crewly launches each agent's CLI in its own terminal session.
 
 You can now:
 - **Watch the live terminal** -- see exactly what each agent is doing in real time
@@ -528,7 +534,7 @@ crewly onboard
 Agents need to be started manually after creating a team. In the dashboard:
 1. Go to **Teams**
 2. Click on your team
-3. Click **Start** next to each agent
+3. Click **Start** on the team (starting a single member on a fresh install is refused with `commitment_requires_owner_approval`)
 
 If an agent keeps going inactive, check:
 - Is the AI CLI installed? (`claude --version`, `gemini --version`)

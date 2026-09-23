@@ -61,7 +61,7 @@ tmux is not required.
 | **Codex (OpenAI)** | `npm install -g @openai/codex` | `codex --version` |
 | **OpenCode** | `npm install -g opencode-ai` | `opencode --version` |
 
-**API keys:** Gemini CLI requires `GEMINI_API_KEY`. Codex requires an OpenAI API key. Claude Code authenticates through its own login flow. OpenCode uses whichever provider you connect via `opencode auth login` (or the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` env vars Crewly already exports to agent sessions).
+**API keys:** Gemini CLI requires `GEMINI_API_KEY`. On a Gemini agent's first run, answer its two terminal prompts: authentication (**Use Gemini API Key**) and folder trust (**Yes**). Codex requires an OpenAI API key. Claude Code authenticates through its own login flow. OpenCode uses whichever provider you connect via `opencode auth login` (or the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` env vars Crewly already exports to agent sessions).
 
 ## Architecture
 

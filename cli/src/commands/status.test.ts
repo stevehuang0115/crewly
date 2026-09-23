@@ -159,7 +159,7 @@ describe('statusCommand', () => {
 	// -----------------------------------------------------------------------
 
 	describe('tmux sessions', () => {
-		it('shows session count when tmux has sessions', async () => {
+		it('reports legacy crewly_ tmux sessions when they exist, without counting unrelated ones', async () => {
 			mockAxiosGet.mockRejectedValue(new Error('not running'));
 
 			mockExecAsync.mockImplementation((cmd: string) => {
@@ -172,21 +172,39 @@ describe('statusCommand', () => {
 			await statusCommand({});
 
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('2 total sessions');
-			expect(output).toContain('Crewly sessions: 1');
+			expect(output).toContain('Legacy tmux sessions (crewly_*): 1');
+			expect(output).not.toContain('total sessions');
 		});
 
-		it('shows no sessions when tmux returns empty', async () => {
+		it('fresh install: prints no tmux reference (the real command returns empty output, it does not throw)', async () => {
 			mockAxiosGet.mockRejectedValue(new Error('not running'));
-			mockExecAsync.mockReturnValue('');
+			// Model the real shell: `tmux list-sessions … 2>/dev/null || echo ""`
+			// prints an empty line when tmux is absent or has no sessions.
+			mockExecAsync.mockImplementation((cmd: string) => {
+				if (cmd.includes('tmux list-sessions') && cmd.includes('|| echo ""')) return '\n';
+				return '';
+			});
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('No sessions running');
+			const output = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+			expect(output).not.toMatch(/tmux/i);
 		});
 
-		it('shows tmux not available when command fails', async () => {
+		it('prints no tmux reference when only unrelated tmux sessions exist', async () => {
+			mockAxiosGet.mockRejectedValue(new Error('not running'));
+			mockExecAsync.mockImplementation((cmd: string) => {
+				if (cmd.includes('tmux list-sessions')) return 'work:1:1700000000\nnotes:0:1700000001\n';
+				return '';
+			});
+
+			await statusCommand({});
+
+			const output = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+			expect(output).not.toMatch(/tmux/i);
+		});
+
+		it('prints no tmux reference when the tmux command fails', async () => {
 			mockAxiosGet.mockRejectedValue(new Error('not running'));
 
 			mockExecAsync.mockImplementation((cmd: string) => {
@@ -199,9 +217,8 @@ describe('statusCommand', () => {
 			await statusCommand({});
 
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Tmux: Not available');
-			// tmux is optional (node-pty backend): status must not tell users to install it.
-			expect(output).not.toContain('Install tmux');
+			// tmux is not used (node-pty backend): no warning, no install advice.
+			expect(output).not.toMatch(/tmux/i);
 		});
 
 		it('shows session details in verbose mode', async () => {
@@ -318,8 +335,8 @@ describe('statusCommand', () => {
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
 			// Backend should show not running
 			expect(output).toContain('Backend Server: Not Running');
-			// Tmux should show not available
-			expect(output).toContain('Tmux: Not available');
+			// tmux is not used: its failure is silent
+			expect(output).not.toMatch(/tmux/i);
 		});
 	});
 });
