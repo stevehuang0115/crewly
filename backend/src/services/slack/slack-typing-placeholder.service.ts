@@ -31,6 +31,7 @@ export interface TypingSlackApi {
     skipChatV2Mirror?: boolean;
   }): Promise<string>;
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: undefined, botToken?: string): Promise<void>;
+  deleteMessage?(channelId: string, messageTs: string, botToken?: string): Promise<void>;
 }
 
 /** What the agent is doing while the reply is owed. */
@@ -233,17 +234,26 @@ export class SlackTypingPlaceholderService {
   }
 
   /**
-   * Edit the pending placeholder into the reply, or post the reply fresh
-   * when there is none. Falls back to a fresh post when the edit fails.
+   * Post the reply as a new message and remove the placeholder.
+   *
+   * The reply used to be edited into the placeholder. Slack does not notify
+   * anyone of an edit — no unread mark, no badge, no push — so once
+   * "working on it…" placeholders became common the owner could no longer
+   * tell that an answer had arrived (2026-09-23). A new message notifies
+   * like any other. The placeholder is deleted after the reply is up, so
+   * the thread never goes without either.
+   *
+   * Without a way to delete (older wiring), the placeholder is edited into
+   * the reply as before.
    *
    * @param key - Agent + conversation (+ thread)
    * @param text - The reply
    * @param identity - The agent's bot token
-   * @returns 'edited' | 'posted'
+   * @returns 'replaced' when a placeholder gave way to a new message, 'edited' when it was edited in place, 'posted' when there was none
    */
-  async resolve(key: TypingKeyParts, text: string, identity: TypingIdentity): Promise<'edited' | 'posted'> {
+  async resolve(key: TypingKeyParts, text: string, identity: TypingIdentity): Promise<'replaced' | 'edited' | 'posted'> {
     const placeholder = this.take(key);
-    if (placeholder) {
+    if (placeholder && !this.deps.slack.deleteMessage) {
       try {
         await this.deps.slack.updateMessage(placeholder.slackChannelId, placeholder.ts, text, undefined, placeholder.botToken);
         return 'edited';
@@ -261,6 +271,18 @@ export class SlackTypingPlaceholderService {
       ...principalOf(identity),
       skipChatV2Mirror: true,
     });
+    if (placeholder && this.deps.slack.deleteMessage) {
+      try {
+        await this.deps.slack.deleteMessage(placeholder.slackChannelId, placeholder.ts, placeholder.botToken);
+      } catch (err) {
+        // The reply is up; a leftover "working on it…" is untidy, not wrong.
+        this.logger.warn('Could not remove the typing placeholder after posting the reply', {
+          key: keyOf(key),
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+      return 'replaced';
+    }
     return 'posted';
   }
 

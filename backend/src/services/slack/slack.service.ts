@@ -75,6 +75,7 @@ interface SlackWebClient {
   chat: {
     postMessage: (args: PostMessageArgs) => Promise<{ ts?: string }>;
     update: (args: UpdateMessageArgs) => Promise<void>;
+    delete: (args: { channel: string; ts: string; token?: string }) => Promise<unknown>;
     /** Visible to one user only; used for the Google authorization card. */
     postEphemeral?: (args: { channel: string; user: string; text: string; blocks?: unknown[]; token?: string }) => Promise<{ ok?: boolean }>;
   };
@@ -1676,6 +1677,24 @@ export class SlackService extends EventEmitter {
       ts: messageTs,
       text,
       blocks,
+      ...(botToken ? { token: botToken } : {}),
+    });
+  }
+
+  /**
+   * Delete a message.
+   *
+   * @param channelId - Channel ID
+   * @param messageTs - Message timestamp
+   * @param botToken - Per-agent bot token when that bot posted it (a bot may delete its own messages)
+   */
+  async deleteMessage(channelId: string, messageTs: string, botToken?: string): Promise<void> {
+    if (!this.client) {
+      throw new Error('Slack client not initialized');
+    }
+    await this.client.chat.delete({
+      channel: channelId,
+      ts: messageTs,
       ...(botToken ? { token: botToken } : {}),
     });
   }

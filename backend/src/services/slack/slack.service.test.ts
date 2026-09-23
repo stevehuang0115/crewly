@@ -252,6 +252,12 @@ describe('SlackService', () => {
       ).rejects.toThrow('Slack client not initialized');
     });
 
+    it('should throw when deleteMessage called without initialization', async () => {
+      const service = new SlackService();
+
+      await expect(service.deleteMessage('C123', '123.456')).rejects.toThrow('Slack client not initialized');
+    });
+
     it('should throw when addReaction called without initialization', async () => {
       const service = new SlackService();
 

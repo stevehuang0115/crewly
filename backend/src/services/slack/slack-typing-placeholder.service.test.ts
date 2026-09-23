@@ -22,7 +22,34 @@ const key = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: undefined
 const ella = { botToken: 'xoxb-ella', displayName: 'Ella' };
 
 describe('SlackTypingPlaceholderService', () => {
-  it('posts a placeholder under the agent bot and edits it into the reply', async () => {
+  it('posts the reply as a new message and removes the placeholder, so Slack notifies the owner', async () => {
+    // An edit raises no unread mark, badge or push: once "working on it…"
+    // placeholders were common, the owner could not tell a reply had come.
+    const deleted: Array<{ channelId: string; ts: string; botToken?: string }> = [];
+    const { slack, sent, updated } = makeSlack({
+      deleteMessage: async (channelId, ts, botToken) => { deleted.push({ channelId, ts, botToken }); },
+    });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    await svc.begin({ ...key, threadTs: '9.9' }, ella);
+
+    expect(await svc.resolve({ ...key, threadTs: '9.9' }, '做好了', ella)).toBe('replaced');
+
+    expect(sent[1]).toMatchObject({ channelId: 'D1', text: '做好了', threadTs: '9.9', botToken: 'xoxb-ella' });
+    expect(updated).toEqual([]);
+    // Removed only after the reply is up, by the bot that posted it.
+    expect(deleted).toEqual([{ channelId: 'D1', ts: 'ts-1', botToken: 'xoxb-ella' }]);
+    expect(svc.pendingCount).toBe(0);
+  });
+
+  it('keeps the reply when the placeholder cannot be removed', async () => {
+    const { slack, sent } = makeSlack({ deleteMessage: async () => { throw new Error('message_not_found'); } });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    await svc.begin(key, ella);
+    expect(await svc.resolve(key, 'reply', ella)).toBe('replaced');
+    expect(sent.map((m) => m.text)).toContain('reply');
+  });
+
+  it('without a way to delete, edits the placeholder into the reply as before', async () => {
     const { slack, sent, updated } = makeSlack();
     const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
     const ph = await svc.begin(key, ella);
