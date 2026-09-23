@@ -25,16 +25,16 @@ import './ThreadPreview.css';
  * Matches the pattern used in TeamMemberModal and TeamsGridCard.
  */
 const ROLE_AVATAR_COLORS: Record<string, string> = {
-  orchestrator: '#3b82f6',
-  developer: '#10b981',
-  pm: '#8b5cf6',
-  'ux-designer': '#ec4899',
-  'product-manager': '#8b5cf6',
-  marketing: '#f59e0b',
-  researcher: '#14b8a6',
-  auditor: '#ef4444',
-  'social-media-ops': '#f59e0b',
-  default: '#6b7280',
+  orchestrator: 'bg-blue-500',
+  developer: 'bg-emerald-500',
+  pm: 'bg-orange-500',
+  'ux-designer': 'bg-pink-500',
+  'product-manager': 'bg-orange-500',
+  marketing: 'bg-amber-500',
+  researcher: 'bg-teal-500',
+  auditor: 'bg-red-500',
+  'social-media-ops': 'bg-amber-500',
+  default: 'bg-border-dark',
 };
 
 // =============================================================================
@@ -63,7 +63,7 @@ function stripMetadata(text: string): string {
  * Get the avatar background color for an agent role.
  *
  * @param role - Agent role string (e.g., 'developer', 'orchestrator')
- * @returns Hex color string
+ * @returns Tailwind background class
  */
 function getAvatarColor(role?: string): string {
   if (!role) return ROLE_AVATAR_COLORS.default;
@@ -162,8 +162,7 @@ export const ThreadPreview: React.FC<ThreadPreviewProps> = ({
     >
       {/* Avatar — spans both rows */}
       <div
-        className="thread-preview-avatar"
-        style={{ backgroundColor: getAvatarColor(senderRole) }}
+        className={`thread-preview-avatar ${getAvatarColor(senderRole)}`}
         aria-hidden="true"
       >
         {getAvatarInitial(senderName)}

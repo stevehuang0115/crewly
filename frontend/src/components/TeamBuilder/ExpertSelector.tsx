@@ -12,7 +12,7 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sparkles, X } from 'lucide-react';
 import { Badge } from '@crewly/ui/Badge';
 import { Card } from '@crewly/ui/Card';
-import { Button } from '@crewly/ui/Button';
+import { IconButton } from '@crewly/ui/Button';
 import { Dropdown } from '@crewly/ui/Dropdown';
 import { apiService } from '@/services/api.service';
 import type { ExpertSummary } from '@/types/expert.types';
@@ -168,15 +168,14 @@ export const ExpertSelector: React.FC<ExpertSelectorProps> = ({
                 {selectedExpert.category}
               </Badge>
               {!disabled && (
-                <Button
+                <IconButton
                   variant="ghost"
                   size="icon"
                   onClick={handleClear}
                   aria-label="Clear expert selection"
                   data-testid="expert-clear-btn"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </Button>
+                  icon={X}
+                />
               )}
             </div>
           </div>

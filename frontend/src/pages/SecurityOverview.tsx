@@ -81,9 +81,11 @@ const CollapsibleSection: React.FC<CollapsibleSectionProps> = ({
   const [isOpen, setIsOpen] = useState(defaultOpen);
 
   return (
-    <div className="border border-border-dark rounded-lg overflow-hidden">
+    <div className="border border-border-dark rounded-2xl overflow-hidden">
+      {/* Disclosure header: a full-width row target, not a styled button */}
       <button
-        className="w-full flex items-center gap-2 px-4 py-3 bg-surface-dark hover:bg-surface-dark/80 transition-colors text-left"
+        type="button"
+        className="w-full flex items-center gap-2 px-4 py-3 bg-surface-dark hover:bg-background-dark transition-colors text-left"
         onClick={() => setIsOpen(!isOpen)}
         aria-expanded={isOpen}
       >
@@ -182,7 +184,7 @@ export const SecurityOverview: React.FC = () => {
         {/* Storage Card */}
         <Card padding="lg" data-testid="card-storage">
           <div className="flex items-center gap-2 mb-3">
-            <HardDrive size={18} className="text-purple-400" aria-hidden="true" />
+            <HardDrive size={18} className="text-primary" aria-hidden="true" />
             <h3 className="text-sm font-semibold text-text-primary-dark">Data Storage</h3>
           </div>
           {storageLoading ? (
@@ -257,7 +259,7 @@ export const SecurityOverview: React.FC = () => {
 
         <CollapsibleSection
           title="Data Sovereignty Report"
-          icon={<HardDrive size={16} className="text-purple-400" />}
+          icon={<HardDrive size={16} className="text-primary" />}
         >
           <DataSovereigntyReport
             entries={storageEntries}

@@ -82,11 +82,11 @@ export const SecurityLandingSection: React.FC = () => {
       <div className="text-center mb-12">
         <h2
           id="security-section-heading"
-          className="text-2xl md:text-3xl font-bold text-zinc-100 mb-3"
+          className="text-2xl md:text-3xl font-bold text-text-primary-dark mb-3"
         >
           Security Isn&apos;t a Feature. It&apos;s the Architecture.
         </h2>
-        <p className="text-zinc-400 text-base md:text-lg max-w-2xl mx-auto">
+        <p className="text-text-secondary-dark text-base md:text-lg max-w-2xl mx-auto">
           Three layers of protection, designed before day one.
         </p>
       </div>
@@ -112,19 +112,19 @@ export const SecurityLandingSection: React.FC = () => {
       </div>
 
       {/* ========================= Comparison Strip ========================= */}
-      <div className="mb-10 py-8 px-6 rounded-xl border border-zinc-800 bg-zinc-900/50">
+      <div className="mb-10 py-8 px-6 rounded-xl border border-border-dark bg-surface-dark/50">
         <ComparisonStrip />
       </div>
 
       {/* ========================= CTA Section ========================= */}
       <div className="text-center py-8" data-testid="security-cta">
-        <h3 className="text-xl font-bold text-zinc-100 mb-4">
+        <h3 className="text-xl font-bold text-text-primary-dark mb-4">
           Get started in one command
         </h3>
 
         {/* Command + Copy */}
-        <Card variant="outlined" padding="none" className="inline-flex items-center gap-2 bg-zinc-900 border-zinc-700 px-4 py-3 mb-6">
-          <span className="text-zinc-500 select-none" aria-hidden="true">$</span>
+        <Card variant="outlined" padding="none" className="inline-flex items-center gap-2 bg-surface-dark border-border-dark px-4 py-3 mb-6">
+          <span className="text-text-secondary-dark select-none" aria-hidden="true">$</span>
           <code className="font-mono text-sm text-emerald-300">npx crewly init</code>
           <Button
             variant="secondary"
@@ -143,16 +143,16 @@ export const SecurityLandingSection: React.FC = () => {
             href={GITHUB_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+            className="text-sm text-text-secondary-dark hover:text-text-primary-dark transition-colors"
           >
             View on GitHub
           </a>
-          <span className="text-zinc-700" aria-hidden="true">|</span>
+          <span className="text-text-secondary-dark/60" aria-hidden="true">|</span>
           <a
             href={DOCS_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="text-sm text-zinc-400 hover:text-zinc-200 transition-colors"
+            className="text-sm text-text-secondary-dark hover:text-text-primary-dark transition-colors"
           >
             Read Docs
           </a>

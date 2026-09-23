@@ -119,7 +119,7 @@ const FlatMemberCard: React.FC<FlatMemberCardProps> = ({ member, onClick }) => {
     member.agentStatus === 'active' || member.agentStatus === 'started'
       ? 'bg-emerald-400'
       : member.agentStatus === 'inactive'
-        ? 'bg-gray-500'
+        ? 'bg-text-secondary-dark'
         : 'bg-yellow-400';
 
   return (
@@ -202,7 +202,7 @@ export const HierarchyDashboard: React.FC<HierarchyDashboardProps> = ({
         {isHierarchical ? (
           <StatCard label="Depth" value={stats.hierarchyDepth} icon={GitBranch} color="bg-primary/10 text-primary" />
         ) : (
-          <StatCard label="Inactive" value={stats.inactive} icon={Users} color="bg-gray-500/10 text-gray-400" />
+          <StatCard label="Inactive" value={stats.inactive} icon={Users} color="bg-text-secondary-dark/10 text-text-secondary-dark" />
         )}
       </div>
 

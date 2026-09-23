@@ -13,7 +13,12 @@
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { Copy, Check, Loader2, AlertCircle, X, QrCode } from 'lucide-react';
+import { Copy, Check, QrCode } from 'lucide-react';
+import { Alert } from '@crewly/ui/Alert';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { FormLabel } from '@crewly/ui/Form';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Modal, ModalFooter } from '@crewly/ui/Modal';
 import { QRCodeSVG } from 'qrcode.react';
 import { CLOUD_TOKEN_KEY } from '../../constants/cloud.constants';
 
@@ -172,135 +177,103 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
   const qrPayload = JSON.stringify({ pairingCode, sharedSecret });
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Invite Device"
-      data-testid="invite-device-modal"
-    >
-      <div
-        className="bg-surface-dark border border-border-dark rounded-xl shadow-2xl w-full max-w-md mx-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border-dark">
-          <h3 className="text-sm font-semibold text-text-primary-dark">Invite Device</h3>
-          <button
-            onClick={onClose}
-            className="p-1 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
-            aria-label="Close"
-            data-testid="invite-modal-close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+    <Modal isOpen={isOpen} onClose={onClose} title="Invite Device" size="md" data-testid="invite-device-modal">
+      <div className="space-y-4">
+        {/* Status indicator */}
+        {connectStatus === 'connecting' && (
+          <LoadingSpinner
+            size="xs"
+            inline
+            centered={false}
+            text="Registering with relay..."
+            data-testid="invite-connecting"
+          />
+        )}
 
-        {/* Body */}
-        <div className="px-5 py-4 space-y-4">
-          {/* Status indicator */}
-          {connectStatus === 'connecting' && (
-            <div className="flex items-center gap-2 text-xs text-text-secondary-dark" data-testid="invite-connecting">
-              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-              Registering with relay...
-            </div>
-          )}
+        {connectStatus === 'error' && (
+          <Alert variant="error" size="sm" data-testid="invite-error">{errorMessage}</Alert>
+        )}
 
-          {connectStatus === 'error' && (
-            <div className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded px-3 py-2" data-testid="invite-error">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              {errorMessage}
-            </div>
-          )}
+        {connectStatus === 'success' && (
+          <Alert variant="success" size="sm" data-testid="invite-success">Waiting for device to join...</Alert>
+        )}
 
-          {connectStatus === 'success' && (
-            <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-3 py-2" data-testid="invite-success">
-              <Check className="w-3.5 h-3.5 shrink-0" />
-              Waiting for device to join...
-            </div>
-          )}
-
-          {/* Pairing Code */}
-          <div>
-            <label className="block text-xs font-medium text-text-secondary-dark mb-1.5">Pairing Code</label>
-            <div className="flex items-center gap-2">
-              <code
-                className="flex-1 px-3 py-2 text-lg font-mono font-bold tracking-widest text-text-primary-dark bg-background-dark border border-border-dark rounded-lg text-center select-all"
-                data-testid="invite-pairing-code"
-              >
-                {pairingCode}
-              </code>
-              <button
-                onClick={() => handleCopy(pairingCode, 'code')}
-                className="p-2 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
-                aria-label="Copy pairing code"
-                data-testid="copy-pairing-code"
-              >
-                {copiedField === 'code' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* Shared Secret */}
-          <div>
-            <label className="block text-xs font-medium text-text-secondary-dark mb-1.5">Shared Secret</label>
-            <div className="flex items-center gap-2">
-              <code
-                className="flex-1 px-3 py-2 text-[11px] font-mono text-text-primary-dark bg-background-dark border border-border-dark rounded-lg break-all select-all"
-                data-testid="invite-shared-secret"
-              >
-                {sharedSecret}
-              </code>
-              <button
-                onClick={() => handleCopy(sharedSecret, 'secret')}
-                className="p-2 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors shrink-0"
-                aria-label="Copy shared secret"
-                data-testid="copy-shared-secret"
-              >
-                {copiedField === 'secret' ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
-              </button>
-            </div>
-          </div>
-
-          {/* QR Code toggle */}
-          <div>
-            <button
-              onClick={() => setShowQr(!showQr)}
-              className="flex items-center gap-1.5 text-xs text-primary hover:text-primary/80 transition-colors"
-              data-testid="toggle-qr-code"
+        {/* Pairing Code */}
+        <div>
+          <FormLabel>Pairing Code</FormLabel>
+          <div className="flex items-center gap-2">
+            <code
+              className="flex-1 px-3 py-2 text-lg font-mono font-bold tracking-widest text-text-primary-dark bg-background-dark border border-border-dark rounded-2xl text-center select-all"
+              data-testid="invite-pairing-code"
             >
-              <QrCode className="w-3.5 h-3.5" />
-              {showQr ? 'Hide QR Code' : 'Show QR Code'}
-            </button>
-
-            {showQr && (
-              <div className="mt-3 flex justify-center" data-testid="qr-code-container">
-                <div className="p-3 bg-white rounded-lg">
-                  <QRCodeSVG value={qrPayload} size={160} level="M" />
-                </div>
-              </div>
-            )}
+              {pairingCode}
+            </code>
+            <IconButton
+              icon={copiedField === 'code' ? Check : Copy}
+              onClick={() => handleCopy(pairingCode, 'code')}
+              className={copiedField === 'code' ? 'text-emerald-400' : ''}
+              aria-label="Copy pairing code"
+              data-testid="copy-pairing-code"
+            />
           </div>
-
-          {/* Instructions */}
-          <p className="text-[11px] text-text-secondary-dark leading-relaxed">
-            Share the pairing code and secret with the device you want to connect.
-            On the other device, click <strong>Join Relay</strong> and enter these values.
-          </p>
         </div>
 
-        {/* Footer */}
-        <div className="px-5 py-3 border-t border-border-dark flex justify-end">
-          <button
-            onClick={onClose}
-            className="px-4 py-1.5 text-xs font-medium text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
+        {/* Shared Secret */}
+        <div>
+          <FormLabel>Shared Secret</FormLabel>
+          <div className="flex items-center gap-2">
+            <code
+              className="flex-1 px-3 py-2 text-xs font-mono text-text-primary-dark bg-background-dark border border-border-dark rounded-2xl break-all select-all"
+              data-testid="invite-shared-secret"
+            >
+              {sharedSecret}
+            </code>
+            <IconButton
+              icon={copiedField === 'secret' ? Check : Copy}
+              onClick={() => handleCopy(sharedSecret, 'secret')}
+              className={`shrink-0 ${copiedField === 'secret' ? 'text-emerald-400' : ''}`}
+              aria-label="Copy shared secret"
+              data-testid="copy-shared-secret"
+            />
+          </div>
+        </div>
+
+        {/* QR Code toggle */}
+        <div>
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={QrCode}
+            onClick={() => setShowQr(!showQr)}
+            className="text-primary hover:text-primary/80"
+            data-testid="toggle-qr-code"
           >
-            Done
-          </button>
+            {showQr ? 'Hide QR Code' : 'Show QR Code'}
+          </Button>
+
+          {showQr && (
+            <div className="mt-3 flex justify-center" data-testid="qr-code-container">
+              {/* QR codes need a white quiet zone to scan. */}
+              <div className="p-3 bg-white rounded-2xl">
+                <QRCodeSVG value={qrPayload} size={160} level="M" />
+              </div>
+            </div>
+          )}
         </div>
+
+        {/* Instructions */}
+        <p className="text-xs text-text-secondary-dark leading-relaxed">
+          Share the pairing code and secret with the device you want to connect.
+          On the other device, click <strong>Join Relay</strong> and enter these values.
+        </p>
+
+        <ModalFooter className="px-0 pb-0 pt-3 border-t border-border-dark">
+          <Button variant="ghost" size="sm" onClick={onClose}>
+            Done
+          </Button>
+        </ModalFooter>
       </div>
-    </div>
+    </Modal>
   );
 };
 

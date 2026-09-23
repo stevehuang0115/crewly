@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from './Button';
 import { focusInitial } from './focus';
+import { useDialogLayer } from './dialogStack';
 
 export interface ModalProps {
   isOpen: boolean;
@@ -44,24 +45,8 @@ export const Modal: React.FC<ModalProps> = ({
   const modalRef = useRef<HTMLDivElement>(null);
   const titleId = React.useId();
 
-  // Handle escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && closable) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape);
-      document.body.style.overflow = 'hidden'; // Prevent background scroll
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-      document.body.style.overflow = 'unset';
-    };
-  }, [isOpen, onClose, closable]);
+  // Escape (topmost dialog only) and background scroll lock
+  useDialogLayer(isOpen, closable ? onClose : undefined);
 
   // Focus management
   useEffect(() => {

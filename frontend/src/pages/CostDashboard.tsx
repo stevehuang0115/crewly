@@ -9,6 +9,8 @@
  */
 
 import React from 'react';
+import { RefreshCw, BarChart3 } from 'lucide-react';
+import { Badge, Button, Card, EmptyState, LoadingSpinner } from '@crewly/ui';
 import { useTokenUsage } from '../hooks/useTokenUsage';
 import { useBudgetConfig } from '../hooks/useBudgetConfig';
 import { TokenSummaryCards } from '../components/Monitoring/TokenSummaryCards';
@@ -68,8 +70,7 @@ export const CostDashboard: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent" />
-        <p className="ml-3 text-text-secondary-dark">Loading cost data...</p>
+        <LoadingSpinner size="md" text="Loading cost data..." />
       </div>
     );
   }
@@ -78,16 +79,13 @@ export const CostDashboard: React.FC = () => {
   if (error && sessions.length === 0) {
     return (
       <div className="max-w-7xl mx-auto" data-testid="cost-dashboard-error">
-        <div className="bg-surface-dark p-8 rounded-lg border border-red-500/50 text-center">
+        <Card padding="none" className="p-8 border-red-500/50 flex flex-col items-center text-center" role="alert">
           <p className="text-red-400 font-medium mb-2">Failed to load cost data</p>
           <p className="text-sm text-text-secondary-dark mb-4">{error}</p>
-          <button
-            onClick={refresh}
-            className="px-4 py-2 text-sm font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
-          >
+          <Button variant="primary" icon={RefreshCw} onClick={refresh}>
             Retry
-          </button>
-        </div>
+          </Button>
+        </Card>
       </div>
     );
   }
@@ -104,37 +102,35 @@ export const CostDashboard: React.FC = () => {
         </div>
         <div className="flex items-center gap-3">
           {isStale && (
-            <span
-              className="px-2 py-1 text-xs font-medium rounded-full bg-yellow-500/20 text-yellow-400"
-              data-testid="stale-badge"
-            >
+            <Badge variant="warning" data-testid="stale-badge">
               Stale
-            </span>
+            </Badge>
           )}
           <span className="text-xs text-text-secondary-dark" data-testid="last-updated">
             Last updated: {formatLastUpdated(lastUpdated)}
           </span>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={RefreshCw}
             onClick={refresh}
-            className="px-3 py-1.5 text-xs font-medium rounded-lg bg-background-dark text-text-secondary-dark hover:text-text-primary-dark transition-colors"
             data-testid="refresh-btn"
           >
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
 
       {/* Empty state */}
       {sessions.length === 0 ? (
-        <div
-          className="bg-surface-dark p-12 rounded-lg border border-border-dark text-center"
-          data-testid="cost-dashboard-empty"
-        >
-          <p className="text-lg font-medium text-text-primary-dark mb-2">No usage data yet</p>
-          <p className="text-sm text-text-secondary-dark">
-            Token usage will appear here once agents start processing tasks.
-          </p>
-        </div>
+        <Card padding="none">
+          <EmptyState
+            icon={BarChart3}
+            title="No usage data yet"
+            description="Token usage will appear here once agents start processing tasks."
+            data-testid="cost-dashboard-empty"
+          />
+        </Card>
       ) : (
         <div className="space-y-6">
           {/* Budget Status */}

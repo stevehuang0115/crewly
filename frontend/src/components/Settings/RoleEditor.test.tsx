@@ -323,7 +323,8 @@ describe('RoleEditor', () => {
     it('should call onClose when X button is clicked', () => {
       render(<RoleEditor roleId={null} onClose={mockOnClose} onSave={mockOnSave} />);
 
-      fireEvent.click(screen.getByLabelText('Close'));
+      // The shared Popup owns the close button (labelled "Close modal").
+      fireEvent.click(screen.getByLabelText('Close modal'));
 
       expect(mockOnClose).toHaveBeenCalled();
     });
@@ -331,10 +332,8 @@ describe('RoleEditor', () => {
     it('should call onClose when clicking overlay', () => {
       render(<RoleEditor roleId={null} onClose={mockOnClose} onSave={mockOnSave} />);
 
-      const overlay = document.querySelector('.role-editor-overlay');
-      if (overlay) {
-        fireEvent.click(overlay);
-      }
+      // The shared Popup's overlay is the role="dialog" element.
+      fireEvent.click(screen.getByRole('dialog'));
 
       expect(mockOnClose).toHaveBeenCalled();
     });

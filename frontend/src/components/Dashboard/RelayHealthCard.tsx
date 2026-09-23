@@ -14,6 +14,10 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Monitor, Cpu, RefreshCw, Shield, Wifi, WifiOff, Activity } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
+import { Alert } from '@crewly/ui/Alert';
+import { Badge, type BadgeVariant } from '@crewly/ui/Badge';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -71,9 +75,9 @@ type CardState = 'loading' | 'disconnected' | 'connected' | 'error';
 const DEVICE_STATE_COLORS: Record<string, string> = {
   waiting: 'bg-yellow-400',
   paired: 'bg-emerald-400',
-  disconnected: 'bg-gray-500',
+  disconnected: 'bg-text-secondary-dark',
   online: 'bg-emerald-400',
-  offline: 'bg-gray-500',
+  offline: 'bg-text-secondary-dark',
 };
 
 /** Map device state to human-readable label. */
@@ -86,12 +90,12 @@ const DEVICE_STATE_LABELS: Record<string, string> = {
 };
 
 /** Map overall relay state to status badge styling. */
-const RELAY_STATUS_BADGES: Record<string, { label: string; className: string }> = {
-  paired: { label: 'Connected', className: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/30' },
-  registered: { label: 'Registered', className: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' },
-  connecting: { label: 'Connecting', className: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30' },
-  disconnected: { label: 'Offline', className: 'bg-gray-500/10 text-gray-400 border-gray-500/30' },
-  error: { label: 'Error', className: 'bg-rose-500/10 text-rose-400 border-rose-500/30' },
+const RELAY_STATUS_BADGES: Record<string, { label: string; variant: BadgeVariant }> = {
+  paired: { label: 'Connected', variant: 'success' },
+  registered: { label: 'Registered', variant: 'warning' },
+  connecting: { label: 'Connecting', variant: 'warning' },
+  disconnected: { label: 'Offline', variant: 'default' },
+  error: { label: 'Error', variant: 'error' },
 };
 
 /**
@@ -124,7 +128,7 @@ async function measureLatency(): Promise<number | null> {
 const DeviceRow: React.FC<{ device: CloudDevice }> = ({ device }) => {
   const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
   const deviceStatus = device.status || device.state || 'disconnected';
-  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-gray-500';
+  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-text-secondary-dark';
   const stateLabel = DEVICE_STATE_LABELS[deviceStatus] ?? deviceStatus;
   const id = device.deviceId || device.sessionId || 'unknown-device';
   const displayName = device.name || device.deviceName || (device.sessionId ? `${device.role || 'device'} (${device.sessionId.slice(0, 8)}...)` : id);
@@ -349,9 +353,9 @@ export const RelayHealthCard: React.FC = () => {
           <div>
             <div className="flex items-center gap-2 flex-wrap">
               <h3 className="text-base font-semibold text-text-primary-dark">Cloud Relay</h3>
-              <span className={`px-2 py-0.5 text-[11px] font-medium rounded-full border ${statusBadge.className}`}>
+              <Badge variant={statusBadge.variant}>
                 {statusBadge.label}
-              </span>
+              </Badge>
             </div>
             <p className="text-sm text-text-secondary-dark mt-1">
               Live device link health, latency, and secure pairing status.
@@ -365,30 +369,29 @@ export const RelayHealthCard: React.FC = () => {
               E2EE
             </div>
           )}
-          <button
+          <IconButton
+            icon={RefreshCw}
+            size="sm"
             onClick={handleRefresh}
-            disabled={refreshing}
-            className="p-2 text-text-secondary-dark hover:text-text-primary-dark rounded-lg hover:bg-background-dark transition-colors disabled:opacity-50"
+            loading={refreshing}
             aria-label="Refresh relay status"
             data-testid="relay-refresh-button"
-          >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          </button>
+          />
         </div>
       </div>
 
       {/* Loading state */}
       {cardState === 'loading' && (
         <div className="flex items-center justify-center py-10" data-testid="relay-loading">
-          <div className="w-5 h-5 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+          <LoadingSpinner size="sm" />
         </div>
       )}
 
       {/* Error state */}
       {cardState === 'error' && error && (
-        <div className="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded px-3 py-2" data-testid="relay-error">
+        <Alert variant="error" size="sm" data-testid="relay-error">
           {error}
-        </div>
+        </Alert>
       )}
 
       {/* Disconnected state */}
@@ -399,14 +402,13 @@ export const RelayHealthCard: React.FC = () => {
           <p className="text-sm text-text-secondary-dark mt-1 mb-4">
             Enable Cloud Relay in Settings → Cloud to link another device.
           </p>
-          <button
+          <Button
             type="button"
             onClick={() => navigate('/settings?tab=cloud')}
-            className="inline-flex items-center justify-center px-4 py-2 rounded-lg bg-primary text-white text-sm font-medium hover:bg-primary/90 transition-colors"
             data-testid="relay-settings-cta"
           >
             Open Cloud Settings
-          </button>
+          </Button>
         </div>
       )}
 
@@ -422,7 +424,7 @@ export const RelayHealthCard: React.FC = () => {
                 Ping{' '}
                 <span className={`font-medium ${
                   latencyMs === null
-                    ? 'text-gray-400'
+                    ? 'text-text-secondary-dark'
                     : latencyMs < 100
                       ? 'text-emerald-400'
                       : latencyMs < 300

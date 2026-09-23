@@ -20,7 +20,6 @@ import {
   Globe,
   Plus,
   RefreshCw,
-  X,
   Save,
   Check,
   Monitor,
@@ -42,7 +41,9 @@ import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Toggle } from '@crewly/ui/Toggle';
 import { FormInput, FormSelect, FormLabel, FormTextarea } from '@crewly/ui/Form';
 import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
 import { Alert } from '@crewly/ui/Alert';
+import { ConfirmPopup, Popup } from '@crewly/ui/Popup';
 
 /**
  * Build category options from the canonical SKILL_CATEGORIES list for consistency.
@@ -78,7 +79,7 @@ const CATEGORY_COLORS: Record<SkillCategory, string> = {
   management: 'bg-orange-500/15 text-orange-400',
   monitoring: 'bg-teal-500/15 text-teal-400',
   memory: 'bg-primary/15 text-primary',
-  system: 'bg-slate-500/15 text-slate-400',
+  system: 'bg-text-secondary-dark/15 text-text-secondary-dark',
   'task-management': 'bg-sky-500/15 text-sky-400',
   quality: 'bg-lime-500/15 text-lime-400',
 };
@@ -358,7 +359,7 @@ export const SkillsTab: React.FC = () => {
           onClick={refresh}
           disabled={loading}
           icon={RefreshCw}
-          className={loading ? 'animate-spin' : ''}
+          loading={loading}
         >
           {loading ? 'Refreshing...' : 'Refresh'}
         </Button>
@@ -524,13 +525,9 @@ const SkillCard: React.FC<SkillCardProps> = ({ skill, onEdit, onDelete }) => {
           {getSkillTypeIcon(skillType)}
           <span>{getSkillTypeLabel(skillType)}</span>
         </span>
-        <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${
-          skill.isEnabled
-            ? 'bg-emerald-500/10 text-emerald-400'
-            : 'bg-gray-500/10 text-gray-400'
-        }`}>
+        <Badge variant={skill.isEnabled ? 'success' : 'default'}>
           {skill.isEnabled ? 'Enabled' : 'Disabled'}
-        </span>
+        </Badge>
       </div>
 
       {/* Notices */}
@@ -660,47 +657,38 @@ const SkillEditorModal: React.FC<SkillEditorModalProps> = ({
     }
   };
 
-  /**
-   * Handle overlay click
-   */
-  const handleOverlayClick = (e: React.MouseEvent): void => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onClose} type="button">
+        Cancel
+      </Button>
+      <Button
+        type="submit"
+        onClick={handleSubmit}
+        disabled={saving}
+        loading={saving}
+      >
+        {saving ? 'Saving...' : 'Save Skill'}
+      </Button>
+    </>
+  );
 
   return (
-    <div
-      className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center z-50"
-      onClick={handleOverlayClick}
+    <Popup
+      isOpen
+      onClose={onClose}
+      title={skill ? 'Edit Skill' : 'Create Skill'}
+      subtitle={skill ? 'Modify skill configuration' : 'Configure a new skill for your agents'}
+      size="lg"
+      footer={footer}
     >
-      <div
-        className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-lg m-4 max-h-[90vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border-dark">
-          <div>
-            <h2 className="text-xl font-semibold text-text-primary-dark">
-              {skill ? 'Edit Skill' : 'Create Skill'}
-            </h2>
-            <p className="text-sm text-text-secondary-dark mt-1">
-              {skill ? 'Modify skill configuration' : 'Configure a new skill for your agents'}
-            </p>
-          </div>
-          <IconButton
-            icon={X}
-            onClick={onClose}
-            variant="ghost"
-            aria-label="Close"
-          />
-        </div>
-
+      {/* Body scrolls on its own so the header and footer stay in view. */}
+      <div className="-m-6 max-h-[65vh] overflow-y-auto">
         {/* Built-in Skill Notice */}
         {isBuiltin && skill && (
-          <div className="mx-6 mt-4 bg-blue-500/10 border border-blue-500/30 text-blue-400 px-4 py-3 rounded-lg text-sm">
+          <Alert variant="info" className="mx-6 mt-4">
             <strong>Built-in Skill:</strong> Changes will be saved as a user override. You can reset to defaults anytime.
-          </div>
+          </Alert>
         )}
 
         {/* Form Error */}
@@ -713,7 +701,7 @@ const SkillEditorModal: React.FC<SkillEditorModalProps> = ({
         )}
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto p-6 space-y-4">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
           <div>
             <FormLabel htmlFor="skill-display-name" required>Display Name</FormLabel>
             <FormInput
@@ -781,23 +769,8 @@ const SkillEditorModal: React.FC<SkillEditorModalProps> = ({
             />
           </div>
         </form>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t border-border-dark bg-background-dark">
-          <Button variant="secondary" onClick={onClose} type="button">
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            onClick={handleSubmit}
-            disabled={saving}
-            loading={saving}
-          >
-            {saving ? 'Saving...' : 'Save Skill'}
-          </Button>
-        </div>
       </div>
-    </div>
+    </Popup>
   );
 };
 
@@ -827,48 +800,21 @@ const DeleteConfirmModal: React.FC<DeleteConfirmModalProps> = ({
   onConfirm,
   onCancel,
 }) => {
-  /**
-   * Handle overlay click
-   */
-  const handleOverlayClick = (e: React.MouseEvent): void => {
-    if (e.target === e.currentTarget) {
-      onCancel();
-    }
-  };
-
   return (
-    <div
-      className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center z-50"
-      onClick={handleOverlayClick}
-    >
-      <div
-        className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-md m-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="p-6 border-b border-border-dark">
-          <h2 className="text-xl font-semibold text-text-primary-dark">Delete Skill</h2>
-        </div>
-
-        {/* Body */}
-        <div className="p-6">
-          <p className="text-text-secondary-dark">
-            Are you sure you want to delete <strong className="text-text-primary-dark">{skillName}</strong>?
-            This action cannot be undone.
-          </p>
-        </div>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t border-border-dark bg-background-dark rounded-b-xl">
-          <Button variant="secondary" onClick={onCancel}>
-            Cancel
-          </Button>
-          <Button variant="danger" onClick={onConfirm}>
-            Delete
-          </Button>
-        </div>
-      </div>
-    </div>
+    <ConfirmPopup
+      isOpen
+      onClose={onCancel}
+      onConfirm={onConfirm}
+      title="Delete Skill"
+      confirmText="Delete"
+      confirmVariant="danger"
+      message={
+        <p className="text-text-secondary-dark">
+          Are you sure you want to delete <strong className="text-text-primary-dark">{skillName}</strong>?
+          This action cannot be undone.
+        </p>
+      }
+    />
   );
 };
 

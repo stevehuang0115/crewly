@@ -7,8 +7,12 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import { X, Download, Check, AlertCircle } from 'lucide-react';
-import './SopCatalogModal.css';
+import { Download, Check } from 'lucide-react';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { EmptyState } from '@crewly/ui/EmptyState';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Modal } from '@crewly/ui/Modal';
 
 /** A catalog entry as returned by GET /api/wiki/sop-catalog. */
 interface CatalogEntry {
@@ -93,71 +97,56 @@ export function SopCatalogModal({ vaultPath, onClose, onChanged }: SopCatalogMod
   const installedCount = entries.filter((e) => e.installed).length;
 
   return (
-    <div className="sop-catalog-backdrop" onClick={onClose} role="presentation">
-      <div
-        className="sop-catalog-modal"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label="SOP catalog"
-        data-testid="sop-catalog-modal"
-      >
-        <div className="sop-catalog-header">
-          <div>
-            <h2>SOP Catalog</h2>
-            <p className="sop-catalog-sub">
-              Install SOPs from the shared catalog into this team. {installedCount} installed.
-            </p>
-          </div>
-          <button type="button" className="sop-catalog-close" onClick={onClose} aria-label="Close">
-            <X size={18} />
-          </button>
-        </div>
+    <Modal isOpen onClose={onClose} title="SOP Catalog" size="xl" data-testid="sop-catalog-modal">
+      <div className="space-y-4">
+        <p className="text-sm text-text-secondary-dark -mt-2">
+          Install SOPs from the shared catalog into this team. {installedCount} installed.
+        </p>
 
         {error && (
-          <div className="sop-catalog-error">
-            <AlertCircle size={14} /> {error}
-          </div>
+          <Alert variant="error" size="sm">
+            {error}
+          </Alert>
         )}
 
-        <div className="sop-catalog-body">
-          {loading && <div className="sop-catalog-loading">Loading catalog…</div>}
+        <div className="max-h-[60vh] overflow-y-auto space-y-4">
+          {loading && <LoadingSpinner size="sm" text="Loading catalog…" className="py-6" />}
           {!loading && entries.length === 0 && (
-            <div className="sop-catalog-empty">No SOPs in the catalog.</div>
+            <EmptyState compact title="No SOPs in the catalog." />
           )}
           {!loading &&
             Object.entries(grouped).map(([category, items]) => (
-              <div key={category} className="sop-catalog-group">
-                <div className="sop-catalog-group-label">{category}</div>
+              <div key={category} className="space-y-1">
+                <div className="text-xs font-semibold uppercase tracking-wide text-text-secondary-dark">{category}</div>
                 {items.map((entry) => (
-                  <div key={entry.path} className="sop-catalog-row" data-testid={`sop-row-${entry.path}`}>
-                    <div className="sop-catalog-row-info">
-                      <span className="sop-catalog-row-title">{entry.title}</span>
-                      <span className="sop-catalog-row-path">{entry.path}</span>
+                  <div
+                    key={entry.path}
+                    className="flex items-center justify-between gap-3 rounded-2xl px-3 py-2 hover:bg-background-dark"
+                    data-testid={`sop-row-${entry.path}`}
+                  >
+                    <div className="min-w-0 flex flex-col">
+                      <span className="text-sm text-text-primary-dark truncate">{entry.title}</span>
+                      <span className="text-xs font-mono text-text-secondary-dark truncate">{entry.path}</span>
                     </div>
-                    <button
+                    <Button
                       type="button"
-                      className={`sop-catalog-btn${entry.installed ? ' installed' : ''}`}
+                      size="xs"
+                      variant={entry.installed ? 'secondary' : 'primary'}
+                      icon={entry.installed ? Check : Download}
+                      className={entry.installed ? 'text-emerald-400' : ''}
                       disabled={busy === entry.path}
                       onClick={() => toggle(entry)}
                       data-testid={`sop-toggle-${entry.path}`}
                     >
-                      {entry.installed ? (
-                        <>
-                          <Check size={13} /> Installed
-                        </>
-                      ) : (
-                        <>
-                          <Download size={13} /> Install
-                        </>
-                      )}
-                    </button>
+                      {entry.installed ? 'Installed' : 'Install'}
+                    </Button>
                   </div>
                 ))}
               </div>
             ))}
         </div>
       </div>
-    </div>
+    </Modal>
   );
 }
 

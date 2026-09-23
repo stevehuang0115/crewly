@@ -22,6 +22,7 @@ import {
   Shield,
   Factory,
 } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,15 +137,16 @@ export const HealthBar: React.FC<HealthBarProps> = ({
       </div>
 
       {/* 3D Factory quick-access button pushed to the right */}
-      <button
+      <Button
         type="button"
+        size="xs"
+        icon={Factory}
         onClick={onFactoryClick}
-        className="ml-auto flex items-center gap-1.5 px-3 py-1 rounded-md bg-primary/10 hover:bg-primary/20 text-primary text-xs font-semibold transition-colors"
+        className="ml-auto"
         data-testid="health-factory-btn"
       >
-        <Factory className="w-4 h-4" />
         Factory
-      </button>
+      </Button>
     </div>
   );
 };

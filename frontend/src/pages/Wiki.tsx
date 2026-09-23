@@ -23,7 +23,6 @@ import {
   FileText,
   Lock,
   RefreshCw,
-  AlertCircle,
   Search as SearchIcon,
   Link as LinkIcon,
   Clock,
@@ -38,10 +37,23 @@ import {
   ChevronRight,
   ChevronDown,
 } from 'lucide-react';
+import { Alert, Badge, Button, EmptyState, IconButton, SegmentedControl } from '@crewly/ui';
+import type { BadgeVariant } from '@crewly/ui';
 import { WikiMarkdown } from '../components/Wiki/WikiMarkdown.js';
 import { SopCatalogModal } from '../components/Wiki/SopCatalogModal.js';
 import { WikiPageEditor, type OverlayFolder } from '../components/Wiki/WikiPageEditor.js';
 import './Wiki.css';
+
+/** Badge colour per vault scope (replaces the old per-scope pill CSS). */
+const SCOPE_BADGE_VARIANT: Record<WikiVault['scope'], BadgeVariant> = {
+  global: 'warning',
+  team: 'success',
+  project: 'info',
+  unknown: 'default',
+};
+
+/** Search scope: the selected vault only, or every vault. */
+type SearchScope = 'this' | 'all';
 
 /** Debounce delay (ms) between keystrokes and firing the search. */
 const SEARCH_DEBOUNCE_MS = 250;
@@ -860,64 +872,39 @@ export function Wiki(): JSX.Element {
                 <X size={14} />
               </button>
             ) : (
-              <div className="wiki-search-scope" role="radiogroup" aria-label="Search scope">
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={!searchAll}
-                  aria-label="Search this vault"
-                  title="This vault"
-                  className={`wiki-search-scope-btn${!searchAll ? ' active' : ''}`}
-                  onClick={() => setSearchAll(false)}
-                >
-                  <Layers size={13} />
-                </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={searchAll}
-                  aria-label="Search all vaults"
-                  title="All vaults"
-                  className={`wiki-search-scope-btn${searchAll ? ' active' : ''}`}
-                  onClick={() => setSearchAll(true)}
-                >
-                  <LayoutGrid size={13} />
-                </button>
-              </div>
+              <SegmentedControl<SearchScope>
+                aria-label="Search scope"
+                size="sm"
+                className="flex-shrink-0"
+                value={searchAll ? 'all' : 'this'}
+                onChange={(v) => setSearchAll(v === 'all')}
+                options={[
+                  { value: 'this', label: 'Search this vault', icon: Layers, iconOnly: true },
+                  { value: 'all', label: 'Search all vaults', icon: LayoutGrid, iconOnly: true },
+                ]}
+              />
             )}
           </div>
 
           {isSearchOpen && searchQuery.trim().length > 0 && (
             <div className="wiki-search-overlay" id="wiki-search-overlay" role="listbox">
-              <div className="wiki-overlay-scope" role="radiogroup" aria-label="Search scope">
+              <div className="wiki-overlay-scope">
                 <span className="wiki-overlay-scope-label">Scope</span>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={!searchAll}
-                  className={`wiki-overlay-scope-btn${!searchAll ? ' active' : ''}`}
-                  onClick={() => setSearchAll(false)}
-                  data-testid="search-scope-this"
-                >
-                  <Layers size={12} /> This vault
-                </button>
-                <button
-                  type="button"
-                  role="radio"
-                  aria-checked={searchAll}
-                  className={`wiki-overlay-scope-btn${searchAll ? ' active' : ''}`}
-                  onClick={() => setSearchAll(true)}
-                  data-testid="search-scope-all"
-                >
-                  <LayoutGrid size={12} /> All vaults
-                </button>
+                <SegmentedControl<SearchScope>
+                  aria-label="Search scope"
+                  size="sm"
+                  value={searchAll ? 'all' : 'this'}
+                  onChange={(v) => setSearchAll(v === 'all')}
+                  options={[
+                    { value: 'this', label: 'This vault', icon: Layers, 'data-testid': 'search-scope-this' },
+                    { value: 'all', label: 'All vaults', icon: LayoutGrid, 'data-testid': 'search-scope-all' },
+                  ]}
+                />
               </div>
 
               <div className="wiki-overlay-body">
                 {searchError && (
-                  <div className="wiki-error">
-                    <AlertCircle size={14} /> {searchError}
-                  </div>
+                  <Alert variant="error" size="sm" className="mx-3 my-2">{searchError}</Alert>
                 )}
                 {searchLoading && <div className="wiki-loading">Searching…</div>}
                 {!searchLoading && searchHits && searchHits.length > 0 && (
@@ -930,9 +917,11 @@ export function Wiki(): JSX.Element {
                   />
                 )}
                 {!searchLoading && searchHits && searchHits.length === 0 && (
-                  <div className="wiki-empty">
-                    No results for <code>{searchQuery}</code>.
-                  </div>
+                  <EmptyState
+                    compact
+                    icon={SearchIcon}
+                    title={<>No results for <code className="rounded bg-background-dark px-1.5 font-mono text-[0.9em]">{searchQuery}</code>.</>}
+                  />
                 )}
               </div>
 
@@ -966,21 +955,17 @@ export function Wiki(): JSX.Element {
         <aside className="wiki-vaults">
           <div className="wiki-pane-header">
             <span>Vaults</span>
-            <button
-              type="button"
-              className="wiki-refresh"
+            <IconButton
+              icon={RefreshCw}
+              size="xs"
               onClick={() => loadVaults()}
               aria-label="Refresh vaults"
-              disabled={vaultsLoading}
-            >
-              <RefreshCw size={14} className={vaultsLoading ? 'spin' : ''} />
-            </button>
+              loading={vaultsLoading}
+            />
           </div>
 
           {vaultsError && (
-            <div className="wiki-error">
-              <AlertCircle size={14} /> {vaultsError}
-            </div>
+            <Alert variant="error" size="sm" className="mx-3 my-2">{vaultsError}</Alert>
           )}
           {vaultsLoading && !vaults.length && <div className="wiki-loading">Loading…</div>}
 
@@ -995,9 +980,12 @@ export function Wiki(): JSX.Element {
                   onClick={() => switchVault(v)}
                 >
                   <div className="wiki-vault-line">
-                    <span className={`wiki-scope-pill scope-${v.scope}`}>
+                    <Badge
+                      variant={SCOPE_BADGE_VARIANT[v.scope]}
+                      className={`wiki-scope-pill scope-${v.scope}`}
+                    >
                       {SCOPE_LABEL[v.scope]}
-                    </span>
+                    </Badge>
                     <span className="wiki-vault-label" title={v.vaultPath}>
                       {v.label}
                     </span>
@@ -1029,9 +1017,7 @@ export function Wiki(): JSX.Element {
             </span>
           </div>
           {treeError && (
-            <div className="wiki-error">
-              <AlertCircle size={14} /> {treeError}
-            </div>
+            <Alert variant="error" size="sm" className="mx-3 my-2">{treeError}</Alert>
           )}
           {treeLoading && <div className="wiki-loading">Loading tree…</div>}
           {tree && canonicalNodes.length > 0 && (
@@ -1041,33 +1027,37 @@ export function Wiki(): JSX.Element {
                   </div>
                   {canonicalNodes.some((n) => n.name === 'sop' || n.name === 'team-norm') && (
                     <div className="wiki-canonical-actions">
-                      <button
+                      <Button
                         type="button"
-                        className="wiki-tree-group-action"
+                        variant="outline"
+                        size="xs"
+                        icon={Download}
                         onClick={() => setCatalogOpen(true)}
                         data-testid="open-sop-catalog"
                         title="Browse the SOP catalog and install SOPs into this team"
                       >
-                        <Download size={11} /> Install SOP
-                      </button>
-                      <button
+                        Install SOP
+                      </Button>
+                      <Button
                         type="button"
-                        className="wiki-tree-group-action"
+                        variant="outline"
+                        size="xs"
                         onClick={() => setEditor({ folder: 'sop', mode: 'create' })}
                         data-testid="new-sop"
                         title="Author a custom SOP for this team"
                       >
                         + SOP
-                      </button>
-                      <button
+                      </Button>
+                      <Button
                         type="button"
-                        className="wiki-tree-group-action"
+                        variant="outline"
+                        size="xs"
                         onClick={() => setEditor({ folder: 'team-norm', mode: 'create' })}
                         data-testid="new-norm"
                         title="Author a team norm"
                       >
                         + Norm
-                      </button>
+                      </Button>
                     </div>
                   )}
                   {allCanonicalFoldersEmpty(canonicalNodes) && (
@@ -1101,10 +1091,12 @@ export function Wiki(): JSX.Element {
                 />
               )}
           {tree && tree.length === 0 && !treeLoading && (
-            <div className="wiki-empty">
-              Empty vault — no <code>.md</code> pages yet. They land here once
-              agents queue + ingest worth-saving content.
-            </div>
+            <EmptyState
+              compact
+              icon={Folder}
+              title={<>Empty vault — no <code className="rounded bg-background-dark px-1.5 font-mono text-[0.9em]">.md</code> pages yet.</>}
+              description="They land here once agents queue + ingest worth-saving content."
+            />
           )}
         </section>
 
@@ -1114,9 +1106,11 @@ export function Wiki(): JSX.Element {
             <span>{selectedPage ?? 'Pick a page'}</span>
             {pageContent && selectedPage &&
               (selectedPage.startsWith('sop/') || selectedPage.startsWith('team-norm/')) && (
-                <button
+                <Button
                   type="button"
-                  className="wiki-tree-group-action"
+                  variant="outline"
+                  size="xs"
+                  icon={Pencil}
                   data-testid="edit-overlay-page"
                   onClick={() =>
                     setEditor({
@@ -1127,8 +1121,8 @@ export function Wiki(): JSX.Element {
                     })
                   }
                 >
-                  <Pencil size={11} /> Edit
-                </button>
+                  Edit
+                </Button>
               )}
             {pageContent && (
               <span className="wiki-page-meta">
@@ -1138,9 +1132,7 @@ export function Wiki(): JSX.Element {
             )}
           </div>
           {pageError && (
-            <div className="wiki-error">
-              <AlertCircle size={14} /> {pageError}
-            </div>
+            <Alert variant="error" size="sm" className="mx-3 my-2">{pageError}</Alert>
           )}
           {pageLoading && <div className="wiki-loading">Loading page…</div>}
           {pageContent && (
@@ -1160,11 +1152,12 @@ export function Wiki(): JSX.Element {
           )}
           {!selectedPage && !pageLoading && !pageError && (
             <div className="wiki-empty-with-recent">
-              <div className="wiki-empty">
-                Click a page on the left to view its markdown content. Frozen
-                folders (sop/, memory/, …) are visible but managed by the OSS
-                code path — not editable here.
-              </div>
+              <EmptyState
+                compact
+                icon={FileText}
+                title="Click a page on the left to view its markdown content."
+                description="Frozen folders (sop/, memory/, …) are visible but managed by the OSS code path — not editable here."
+              />
               {selectedVault && lint && lint.missingConcepts.length > 0 && (
                 <MissingConcepts
                   concepts={lint.missingConcepts}
@@ -1496,14 +1489,12 @@ function MigrationBanner({
               : ''}
             .
           </div>
-          <button
-            type="button"
-            className="wiki-migrate-dismiss"
+          <IconButton
+            icon={X}
+            size="xs"
             onClick={onCloseResult}
             aria-label="Close"
-          >
-            <X size={14} />
-          </button>
+          />
         </div>
       </div>
     );
@@ -1565,34 +1556,35 @@ function MigrationBanner({
             </span>
           ) : null}
         </div>
-        <button
+        <Button
           type="button"
-          className="wiki-migrate-btn"
+          variant="secondary"
+          size="sm"
+          className="flex-shrink-0"
           onClick={onToggle}
         >
           {expanded ? 'Hide preview' : 'Preview'}
-        </button>
-        <button
+        </Button>
+        <Button
           type="button"
-          className="wiki-migrate-btn primary"
+          variant="primary"
+          size="sm"
+          className="flex-shrink-0"
           onClick={onApply}
-          disabled={applying}
+          loading={applying}
         >
           {applying ? 'Migrating…' : 'Migrate now'}
-        </button>
-        <button
-          type="button"
-          className="wiki-migrate-dismiss"
+        </Button>
+        <IconButton
+          icon={X}
+          size="xs"
+          className="flex-shrink-0"
           onClick={onDismiss}
           aria-label="Dismiss for this session"
-        >
-          <X size={14} />
-        </button>
+        />
       </div>
       {error && (
-        <div className="wiki-migrate-error">
-          <AlertCircle size={14} /> {error}
-        </div>
+        <Alert variant="error" size="sm" className="mt-2">{error}</Alert>
       )}
       {expanded && (
         <ul className="wiki-migrate-preview">

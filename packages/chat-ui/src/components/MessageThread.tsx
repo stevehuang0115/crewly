@@ -626,8 +626,8 @@ const AVATAR_COLORS = [
   'bg-emerald-500',
   'bg-teal-500',
   'bg-sky-500',
-  'bg-indigo-500',
-  'bg-violet-500',
+  'bg-primary',
+  'bg-blue-500',
   'bg-fuchsia-500',
 ] as const;
 
@@ -661,7 +661,7 @@ function Avatar({ name, isAgent }: { name: string; isAgent: boolean }): JSX.Elem
       className={`flex h-9 w-9 items-center justify-center rounded-lg text-[12px] font-bold ${
         isAgent
           ? 'bg-primary/20 text-primary'
-          : 'bg-indigo-500/20 text-indigo-300'
+          : 'bg-blue-500/20 text-blue-300'
       }`}
       aria-hidden="true"
     >

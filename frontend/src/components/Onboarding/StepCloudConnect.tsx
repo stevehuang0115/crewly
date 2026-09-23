@@ -9,6 +9,7 @@
 
 import React from 'react';
 import { Cloud, CheckCircle, ArrowRight, SkipForward } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 import { useAuth } from '../../contexts/AuthContext';
 
 // ---------------------------------------------------------------------------
@@ -116,32 +117,23 @@ export const StepCloudConnect: React.FC<StepCloudConnectProps> = ({
       {/* Actions */}
       <div className="flex items-center gap-3">
         {isReady ? (
-          <button
-            onClick={onNext}
-            className="flex items-center gap-2 px-6 py-2.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-medium"
-            data-testid="cloud-next-btn"
-          >
+          <Button icon={ArrowRight} iconPosition="right" onClick={onNext} data-testid="cloud-next-btn">
             Continue
-            <ArrowRight className="w-4 h-4" />
-          </button>
+          </Button>
         ) : (
           <>
-            <button
-              onClick={handleConnect}
-              className="flex items-center gap-2 px-6 py-2.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-medium"
-              data-testid="cloud-connect-btn"
-            >
-              <Cloud className="w-4 h-4" />
+            <Button icon={Cloud} onClick={handleConnect} data-testid="cloud-connect-btn">
               Connect Cloud
-            </button>
-            <button
+            </Button>
+            <Button
+              variant="ghost"
+              icon={SkipForward}
+              iconPosition="right"
               onClick={onSkip}
-              className="flex items-center gap-2 px-4 py-2.5 text-text-secondary-dark hover:text-text-primary-dark transition-colors text-sm"
               data-testid="cloud-skip-btn"
             >
               Skip for now
-              <SkipForward className="w-3.5 h-3.5" />
-            </button>
+            </Button>
           </>
         )}
       </div>

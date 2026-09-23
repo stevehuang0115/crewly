@@ -9,8 +9,10 @@
  */
 
 import React from 'react';
-import { Cloud, LogOut, Loader2 } from 'lucide-react';
-import { Badge } from '@crewly/ui';
+import { Cloud, LogOut } from 'lucide-react';
+import { Badge } from '@crewly/ui/Badge';
+import { IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useAuth } from '../../contexts/AuthContext';
 import type { UserPlan } from '../../types/auth.types';
 
@@ -62,7 +64,7 @@ export const AuthStatusIndicator: React.FC<AuthStatusIndicatorProps> = ({
   if (isLoading) {
     return (
       <div className="flex items-center px-4 py-2 text-text-secondary-dark">
-        <Loader2 className="h-5 w-5 animate-spin flex-shrink-0" />
+        <LoadingSpinner size="sm" centered={false} className="flex-shrink-0" />
         {!isCollapsed && <span className="ml-3 text-sm">Loading...</span>}
       </div>
     );
@@ -88,14 +90,14 @@ export const AuthStatusIndicator: React.FC<AuthStatusIndicatorProps> = ({
             )}
           </div>
           {!isCollapsed && (
-            <button
+            <IconButton
+              icon={LogOut}
+              variant="danger-ghost"
+              size="xs"
               onClick={logout}
-              className="text-text-secondary-dark hover:text-red-400 transition-colors p-1"
               title="Sign out"
               aria-label="Sign out of CrewlyAI Cloud"
-            >
-              <LogOut size={14} />
-            </button>
+            />
           )}
         </div>
       </div>

@@ -9,6 +9,7 @@
  */
 
 import { X } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import type { Toast as ToastItem } from '../hooks/useToast';
 
 /** Props for the ToastContainer component */
@@ -45,16 +46,16 @@ export default function ToastContainer({ toasts, onDismiss }: ToastContainerProp
         <div
           key={toast.id}
           data-testid={`toast-${toast.type}`}
-          className={`flex items-center gap-3 px-4 py-3 rounded-lg border text-sm shadow-lg backdrop-blur-sm ${typeStyles[toast.type]}`}
+          className={`flex items-center gap-3 px-4 py-3 rounded-2xl border text-sm shadow-lg backdrop-blur-sm ${typeStyles[toast.type]}`}
         >
           <span className="flex-1">{toast.message}</span>
-          <button
+          <IconButton
+            icon={X}
+            size="xs"
             onClick={() => onDismiss(toast.id)}
-            className="text-gray-400 hover:text-white transition-colors shrink-0"
+            className="shrink-0"
             aria-label="Dismiss notification"
-          >
-            <X className="w-3.5 h-3.5" />
-          </button>
+          />
         </div>
       ))}
     </div>

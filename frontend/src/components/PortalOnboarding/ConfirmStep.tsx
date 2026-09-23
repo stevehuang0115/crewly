@@ -14,13 +14,13 @@ import {
   Rocket,
   ArrowLeft,
   CheckCircle2,
-  Loader2,
   Sparkles,
   Users,
   Workflow,
   Plug,
 } from 'lucide-react';
 import { Button } from '@crewly/ui';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import type { OnboardingPrefill } from '../../types/onboarding.types';
 
 /** Creation progress stage */
@@ -131,7 +131,7 @@ export const ConfirmStep: React.FC<ConfirmStepProps> = ({
           </>
         ) : (
           <>
-            <Loader2 className="mx-auto h-10 w-10 text-primary animate-spin mb-4" />
+            <LoadingSpinner size="lg" className="mb-4" />
             <h2 className="text-lg font-semibold text-text-primary-dark mb-2">
               {CREATION_LABELS[phase]}
             </h2>
@@ -173,7 +173,7 @@ export const ConfirmStep: React.FC<ConfirmStepProps> = ({
           type="checkbox"
           checked={acknowledged}
           onChange={(e) => setAcknowledged(e.target.checked)}
-          className="mt-0.5 h-4 w-4 rounded border-border-dark bg-background-dark text-primary focus:ring-primary"
+          className="mt-0.5 h-4 w-4 rounded border-border-dark bg-background-dark text-primary accent-primary focus:ring-primary"
         />
         <span className="text-sm text-text-secondary-dark">
           I&apos;ve reviewed the highlighted fields and this looks correct

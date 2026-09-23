@@ -9,6 +9,8 @@
 
 import React from 'react';
 import { Users, ArrowRight, ArrowLeft, User } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
+import { FormInput, FormLabel } from '@crewly/ui/Form';
 import type { TemplateInfo } from './onboarding.types';
 
 // ---------------------------------------------------------------------------
@@ -65,16 +67,15 @@ export const StepReviewTeam: React.FC<StepReviewTeamProps> = ({
 
       {/* Team Name Input */}
       <div className="mb-5">
-        <label htmlFor="team-name" className="block text-xs font-medium text-text-secondary-dark mb-1.5 uppercase tracking-wide">
+        <FormLabel htmlFor="team-name" className="text-xs text-text-secondary-dark mb-1.5 uppercase tracking-wide">
           Team Name
-        </label>
-        <input
+        </FormLabel>
+        <FormInput
           id="team-name"
           type="text"
           value={teamName}
           onChange={(e) => onTeamNameChange(e.target.value)}
           placeholder="Enter a team name..."
-          className="w-full bg-surface-dark border border-border-dark rounded-lg px-4 py-2.5 text-sm focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
           data-testid="team-name-input"
         />
       </div>
@@ -131,23 +132,18 @@ export const StepReviewTeam: React.FC<StepReviewTeamProps> = ({
 
       {/* Actions */}
       <div className="flex items-center justify-between mt-6">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm text-text-secondary-dark hover:text-text-primary-dark transition-colors"
-          data-testid="review-back-btn"
-        >
-          <ArrowLeft className="w-4 h-4" />
+        <Button variant="ghost" icon={ArrowLeft} onClick={onBack} data-testid="review-back-btn">
           Back
-        </button>
-        <button
+        </Button>
+        <Button
+          icon={ArrowRight}
+          iconPosition="right"
           onClick={onNext}
           disabled={!teamName.trim()}
-          className="flex items-center gap-2 px-6 py-2.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
           data-testid="review-next-btn"
         >
           Continue
-          <ArrowRight className="w-4 h-4" />
-        </button>
+        </Button>
       </div>
     </div>
   );

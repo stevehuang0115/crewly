@@ -20,6 +20,7 @@ import { logSilentError } from '@/utils/error-handling';
 import { ScoreCard, ScoreCardGrid } from '@crewly/ui/ScoreCard';
 import { Alert } from '@crewly/ui/Alert';
 import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 
 /**
@@ -230,8 +231,7 @@ export const Dashboard: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center min-h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-2 border-primary border-t-transparent"></div>
-        <p className="ml-3 text-text-secondary-dark">Loading dashboard...</p>
+        <LoadingSpinner size="md" text="Loading dashboard..." />
       </div>
     );
   }

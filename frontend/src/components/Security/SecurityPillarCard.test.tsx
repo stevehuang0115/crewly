@@ -92,7 +92,7 @@ describe('SecurityPillarCard', () => {
   it('should apply default border styles when inactive', () => {
     const { container } = render(<SecurityPillarCard {...makeProps({ isActive: false })} />);
     const card = container.firstElementChild as HTMLElement;
-    expect(card.className).toContain('border-zinc-700');
+    expect(card.className).toContain('border-border-dark');
   });
 
   it('should render all three pillar ids with correct colors', () => {

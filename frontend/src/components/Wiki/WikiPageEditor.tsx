@@ -7,8 +7,11 @@
  */
 
 import { useState, useCallback } from 'react';
-import { X, Save, Trash2, AlertCircle } from 'lucide-react';
-import './WikiPageEditor.css';
+import { Save, Trash2 } from 'lucide-react';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { FormGroup, FormHelp, FormInput, FormLabel, FormTextarea } from '@crewly/ui/Form';
+import { Modal, ModalFooter } from '@crewly/ui/Modal';
 
 /** Which overlay folder the editor targets. */
 export type OverlayFolder = 'sop' | 'team-norm';
@@ -112,91 +115,87 @@ export function WikiPageEditor({
   }, [mode, initialPath, vaultPath, onSaved]);
 
   return (
-    <div className="wiki-editor-backdrop" onClick={onClose} role="presentation">
-      <div
-        className="wiki-editor-modal"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label={`${mode === 'create' ? 'New' : 'Edit'} ${label}`}
-        data-testid="wiki-page-editor"
-      >
-        <div className="wiki-editor-header">
-          <h2>
-            {mode === 'create' ? `New ${label}` : `Edit ${label}`}
-          </h2>
-          <button type="button" className="wiki-editor-close" onClick={onClose} aria-label="Close">
-            <X size={18} />
-          </button>
-        </div>
-
+    <Modal
+      isOpen
+      onClose={onClose}
+      title={mode === 'create' ? `New ${label}` : `Edit ${label}`}
+      size="xxl"
+      data-testid="wiki-page-editor"
+    >
+      <div className="space-y-4">
         {error && (
-          <div className="wiki-editor-error">
-            <AlertCircle size={14} /> {error}
-          </div>
+          <Alert variant="error" size="sm">
+            {error}
+          </Alert>
         )}
 
-        <div className="wiki-editor-body">
-          {mode === 'create' ? (
-            <label className="wiki-editor-field">
-              <span>Name</span>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={folder === 'sop' ? 'e.g. XHS posting checklist' : 'e.g. Code commit norm'}
-                data-testid="wiki-editor-name"
-                autoFocus
-              />
-              {name && <span className="wiki-editor-filename">{folder}/{slugify(name)}.md</span>}
-            </label>
-          ) : (
-            <div className="wiki-editor-field">
-              <span>File</span>
-              <code className="wiki-editor-filename">{initialPath}</code>
-            </div>
-          )}
-
-          <label className="wiki-editor-field grow">
-            <span>Content (markdown)</span>
-            <textarea
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder={`# ${label}\n\nDescribe the ${label.toLowerCase()}…`}
-              data-testid="wiki-editor-content"
-              spellCheck={false}
+        {mode === 'create' ? (
+          <FormGroup>
+            <FormLabel htmlFor="wiki-editor-name">Name</FormLabel>
+            <FormInput
+              id="wiki-editor-name"
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={folder === 'sop' ? 'e.g. XHS posting checklist' : 'e.g. Code commit norm'}
+              data-testid="wiki-editor-name"
+              autoFocus
             />
-          </label>
-        </div>
+            {name && <FormHelp className="font-mono">{folder}/{slugify(name)}.md</FormHelp>}
+          </FormGroup>
+        ) : (
+          <FormGroup>
+            <FormLabel>File</FormLabel>
+            <code className="text-xs font-mono text-text-secondary-dark">{initialPath}</code>
+          </FormGroup>
+        )}
 
-        <div className="wiki-editor-footer">
-          {mode === 'edit' && (
-            <button
-              type="button"
-              className="wiki-editor-delete"
-              onClick={remove}
-              disabled={busy}
-              data-testid="wiki-editor-delete"
-            >
-              <Trash2 size={14} /> Delete
-            </button>
-          )}
-          <div className="wiki-editor-footer-right">
-            <button type="button" className="wiki-editor-cancel" onClick={onClose} disabled={busy}>
+        <FormGroup>
+          <FormLabel htmlFor="wiki-editor-content">Content (markdown)</FormLabel>
+          <FormTextarea
+            id="wiki-editor-content"
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder={`# ${label}\n\nDescribe the ${label.toLowerCase()}…`}
+            rows={16}
+            className="font-mono text-xs"
+            data-testid="wiki-editor-content"
+            spellCheck={false}
+          />
+        </FormGroup>
+
+        <ModalFooter align="space-between" className="px-0 pb-0">
+          <div>
+            {mode === 'edit' && (
+              <Button
+                type="button"
+                variant="danger-ghost"
+                icon={Trash2}
+                onClick={remove}
+                disabled={busy}
+                data-testid="wiki-editor-delete"
+              >
+                Delete
+              </Button>
+            )}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="secondary" onClick={onClose} disabled={busy}>
               Cancel
-            </button>
-            <button
+            </Button>
+            <Button
               type="button"
-              className="wiki-editor-save"
+              icon={Save}
               onClick={save}
-              disabled={busy}
+              loading={busy}
               data-testid="wiki-editor-save"
             >
-              <Save size={14} /> {busy ? 'Saving…' : 'Save'}
-            </button>
+              {busy ? 'Saving…' : 'Save'}
+            </Button>
           </div>
-        </div>
+        </ModalFooter>
       </div>
-    </div>
+    </Modal>
   );
 }
 

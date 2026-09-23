@@ -27,7 +27,9 @@ describe('EmptyTerminalState', () => {
   it('has proper styling classes', () => {
     render(<EmptyTerminalState />);
     
-    const container = screen.getByText('No terminal selected').closest('div');
-    expect(container).toHaveClass('bg-white', 'rounded-lg', 'shadow-md', 'p-8', 'text-center');
+    const emptyState = screen.getByText('No terminal selected').closest('div');
+    expect(emptyState).toHaveClass('text-center');
+    // Wrapped in the shared Card (surface token, rounded, shadow).
+    expect(emptyState?.parentElement).toHaveClass('bg-surface-dark', 'rounded-2xl', 'shadow-md');
   });
 });

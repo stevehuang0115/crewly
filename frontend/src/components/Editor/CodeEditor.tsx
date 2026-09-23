@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Button } from '@crewly/ui/Button';
+import { FormSelect } from '@crewly/ui/Form';
 
 interface CodeEditorProps {
   content: string;
@@ -242,18 +244,20 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
         </div>
         
         <div className="editor-actions">
-          <button
-            className="action-button"
+          <Button
+            variant="secondary"
+            size="xs"
             onClick={formatCode}
             title="Format Code"
             disabled={readOnly}
           >
             Format
-          </button>
+          </Button>
           
           {getSnippets().length > 0 && (
             <div className="snippets-dropdown">
-              <select
+              <FormSelect
+                aria-label="Insert snippet"
                 onChange={(e) => {
                   if (e.target.value) {
                     insertSnippet(e.target.value);
@@ -268,18 +272,18 @@ export const CodeEditor: React.FC<CodeEditorProps> = ({
                     {snippet.label}
                   </option>
                 ))}
-              </select>
+              </FormSelect>
             </div>
           )}
           
           {onSave && (
-            <button
-              className="action-button save-button"
+            <Button
+              size="xs"
               onClick={onSave}
               title="Save (Ctrl+S)"
             >
               Save
-            </button>
+            </Button>
           )}
         </div>
       </div>

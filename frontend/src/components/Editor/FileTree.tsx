@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { RefreshCw } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 
 interface FileNode {
   name: string;
@@ -175,12 +177,13 @@ export const FileTree: React.FC<FileTreeProps> = ({
     <div className="file-tree">
       <div className="file-tree-header">
         <h3>Project Files</h3>
-        <button 
-          className="refresh-button"
+        <IconButton
+          icon={RefreshCw}
+          size="sm"
           onClick={fetchFileTree}
-        >
-          🔄
-        </button>
+          aria-label="Refresh files"
+          title="Refresh files"
+        />
       </div>
       <div className="file-tree-content">
         {fileTree.length > 0 ? (

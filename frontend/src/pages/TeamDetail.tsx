@@ -14,6 +14,8 @@ import { apiService } from '../services/api.service';
 import { assignDefaultAvatars } from '../utils/team.utils';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Card } from '@crewly/ui/Card';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
 import { CronJobPanel } from '@/components/Settings/CronJobPanel';
 
 export const TeamDetail: React.FC = () => {
@@ -681,18 +683,17 @@ export const TeamDetail: React.FC = () => {
             {subTeams.map(subTeam => {
               const hasActive = subTeam.members?.some(m => m.agentStatus === 'active');
               return (
-                <div
+                <Card
                   key={subTeam.id}
-                  className="bg-surface-dark border border-border-dark rounded-xl p-5 hover:border-primary/50 transition-colors cursor-pointer"
+                  padding="lg"
+                  interactive
                   onClick={() => navigate(`/teams/${subTeam.id}`)}
                   data-testid={`sub-team-${subTeam.id}`}
                 >
                   <div className="flex items-center justify-between mb-3">
                     <div className="text-lg font-semibold">{subTeam.name}</div>
                     {hasActive && (
-                      <span className="px-2 py-1 text-xs font-medium rounded-full bg-green-500/10 text-green-400">
-                        Active
-                      </span>
+                      <StatusBadge status="active">Active</StatusBadge>
                     )}
                   </div>
                   {subTeam.description && (
@@ -702,7 +703,7 @@ export const TeamDetail: React.FC = () => {
                     <Users className="w-4 h-4" />
                     <span>{subTeam.members?.length || 0} member{(subTeam.members?.length || 0) !== 1 ? 's' : ''}</span>
                   </div>
-                </div>
+                </Card>
               );
             })}
           </div>

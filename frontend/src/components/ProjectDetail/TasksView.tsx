@@ -10,6 +10,10 @@ import {
   FormTextarea,
   FormHelp
 } from '@crewly/ui';
+import { Alert } from '@crewly/ui/Alert';
+import { IconButton } from '@crewly/ui/Button';
+import { FilterPill } from '@crewly/ui/FilterPill';
+import { FormSelect } from '@crewly/ui/Form';
 import { TasksViewProps, TaskColumnProps, TaskFormData, MilestoneFormData } from './types';
 import { inProgressTasksService } from '../../services/in-progress-tasks.service';
 import { apiService } from '../../services/api.service';
@@ -256,15 +260,9 @@ export const TasksView: React.FC<TasksViewProps> = ({
     <div className="tasks-view">
       {/* Error banner */}
       {errorMessage && (
-        <div className="mb-4 p-3 bg-red-500/10 border border-red-500/30 rounded-lg flex items-center justify-between">
-          <span className="text-red-400 text-sm">{errorMessage}</span>
-          <button
-            onClick={() => setErrorMessage(null)}
-            className="text-red-400 hover:text-red-300 text-sm"
-          >
-            Dismiss
-          </button>
-        </div>
+        <Alert variant="error" size="sm" className="mb-4" onClose={() => setErrorMessage(null)}>
+          {errorMessage}
+        </Alert>
       )}
 
       {/* Milestone filter chips (prototype style) */}
@@ -272,31 +270,28 @@ export const TasksView: React.FC<TasksViewProps> = ({
         <div className="flex items-center gap-2">
           <span className="text-sm text-text-secondary-dark flex-shrink-0">Milestones:</span>
           <div className="flex items-center gap-2 overflow-x-auto scrollbar-hide pb-1">
-            <button
-              className={`chip flex-shrink-0 ${!selectedMilestoneFilter ? 'chip--active' : ''}`}
-              onClick={() => setSelectedMilestoneFilter(null)}
-            >
+            <FilterPill isActive={!selectedMilestoneFilter} onClick={() => setSelectedMilestoneFilter(null)}>
               All
-            </button>
+            </FilterPill>
             {sortedMilestones.map(([milestone, tasks]: [string, any[]]) => {
               const displayName = milestone.replace(/_/g, ' ').replace(/^m\d+\s*/, '').replace(/^\w/, c => c.toUpperCase());
               return (
-                <button
+                <FilterPill
                   key={milestone}
-                  className={`chip flex-shrink-0 ${selectedMilestoneFilter === milestone ? 'chip--active' : ''}`}
+                  isActive={selectedMilestoneFilter === milestone}
                   onClick={() => setSelectedMilestoneFilter(milestone)}
+                  count={tasks.length}
                 >
                   {displayName}
-                  <span className="chip-count">{tasks.length}</span>
-                </button>
+                </FilterPill>
               );
             })}
-            <button
-              className={`chip flex-shrink-0 ${selectedMilestoneFilter === 'Completed' ? 'chip--active' : ''}`}
+            <FilterPill
+              isActive={selectedMilestoneFilter === 'Completed'}
               onClick={() => setSelectedMilestoneFilter('Completed')}
             >
               Completed
-            </button>
+            </FilterPill>
           </div>
         </div>
       </div>
@@ -396,29 +391,29 @@ export const TasksView: React.FC<TasksViewProps> = ({
           <FormRow>
             <div>
               <FormLabel>Status</FormLabel>
-              <select
+              <FormSelect
+                aria-label="Status"
                 value={createTaskForm.status}
                 onChange={(e) => setCreateTaskForm({ ...createTaskForm, status: e.target.value })}
-                className="form-input"
               >
                 <option value="open">Open</option>
                 <option value="in_progress">In Progress</option>
                 <option value="done">Done</option>
                 <option value="blocked">Blocked</option>
-              </select>
+              </FormSelect>
             </div>
             <div>
               <FormLabel>Priority</FormLabel>
-              <select
+              <FormSelect
+                aria-label="Priority"
                 value={createTaskForm.priority}
                 onChange={(e) => setCreateTaskForm({ ...createTaskForm, priority: e.target.value })}
-                className="form-input"
               >
                 <option value="low">Low</option>
                 <option value="medium">Medium</option>
                 <option value="high">High</option>
                 <option value="critical">Critical</option>
-              </select>
+              </FormSelect>
             </div>
           </FormRow>
           <FormRow>
@@ -433,16 +428,16 @@ export const TasksView: React.FC<TasksViewProps> = ({
             </div>
             <div>
               <FormLabel>Milestone</FormLabel>
-              <select
+              <FormSelect
+                aria-label="Milestone"
                 value={createTaskForm.milestone}
                 onChange={(e) => setCreateTaskForm({ ...createTaskForm, milestone: e.target.value })}
-                className="form-input"
               >
                 <option value="">Select milestone</option>
                 {availableMilestones.map(milestone => (
                   <option key={milestone} value={milestone}>{milestone}</option>
                 ))}
-              </select>
+              </FormSelect>
             </div>
           </FormRow>
           <FormRow>
@@ -578,18 +573,20 @@ export const TaskColumn: React.FC<TaskColumnProps> = ({
                   const avatarText = (displayName || sessionName || '•').charAt(0).toUpperCase();
                   return <div className="w-6 h-6 rounded-full bg-surface-dark border border-border-dark flex items-center justify-center text-xs text-text-secondary-dark ring-2 ring-surface-dark" title={displayName || sessionName}>{avatarText}</div>;
                 })()}
-                <button
+                <IconButton
+                  icon={Play}
+                  size="xs"
                   onClick={(e) => {
                     e.stopPropagation();
                     if (onTaskAssign && task.status !== 'done' && task.status !== 'completed') {
                       onTaskAssign(task);
                     }
                   }}
-                  className="w-7 h-7 flex items-center justify-center rounded-full text-text-secondary-dark hover:bg-primary/10 hover:text-primary transition-colors"
+                  className="rounded-full hover:bg-primary/10 hover:text-primary"
                   disabled={taskAssignmentLoading === task.id || task.status === 'done' || task.status === 'completed'}
-                >
-                  <Play className="w-4 h-4" />
-                </button>
+                  aria-label="Start task"
+                  title="Start task"
+                />
               </div>
             </div>
           </div>
@@ -601,7 +598,7 @@ export const TaskColumn: React.FC<TaskColumnProps> = ({
               <h4 className="font-semibold mb-1">No {title} Tasks</h4>
               <p className="text-sm text-text-secondary-dark mb-4">{title === 'Open' ? 'All tasks are in progress or completed.' : `No ${title.toLowerCase()} tasks at the moment.`}</p>
               {onCreateTaskClick && (
-                <button onClick={onCreateTaskClick} className="bg-primary text-white h-9 px-3 rounded-lg text-sm font-semibold hover:bg-primary/90 transition-colors">Create New Task</button>
+                <Button size="sm" onClick={onCreateTaskClick}>Create New Task</Button>
               )}
             </div>
           </div>
@@ -609,9 +606,9 @@ export const TaskColumn: React.FC<TaskColumnProps> = ({
       </div>
       {onLoadMore && (
         <div className="p-4 border-t border-border-dark">
-          <button onClick={onLoadMore} className="w-full h-9 px-3 rounded-lg text-sm font-semibold bg-surface-dark border border-border-dark hover:bg-background-dark text-text-secondary-dark hover:text-primary transition-colors">
+          <Button variant="secondary" size="sm" fullWidth onClick={onLoadMore}>
             Load More
-          </button>
+          </Button>
         </div>
       )}
     </div>

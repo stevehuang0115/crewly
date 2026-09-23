@@ -64,6 +64,8 @@ import {
   NoChannelsEmptyState,
   NoMessagesEmptyState,
 } from './EmptyStates';
+import type { LucideIcon } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import { ChatErrorToast } from './ChatErrorToast';
 import { CreateGroupModal } from './CreateGroupModal';
 import { usePinnedChats } from '../../hooks/usePinnedChats';
@@ -472,16 +474,15 @@ function LiveTeamChatPageBody({
         isPinned={(row) => pinnedChats.isPinned(pinKeyOf(row))}
         onTogglePin={(row) => pinnedChats.toggle(pinKeyOf(row))}
         headerAction={
-          <button
-            type="button"
+          <IconButton
+            icon={Plus}
+            size="xs"
             onClick={() => setShowCreateGroup(true)}
-            className="flex h-6 w-6 items-center justify-center rounded bg-surface-dark text-text-secondary-dark transition hover:text-primary"
+            className="hover:text-primary"
             data-testid="new-group-button"
             title="Create a multi-agent group chat"
             aria-label="Create a multi-agent group chat"
-          >
-            <Plus size={16} />
-          </button>
+          />
         }
         emptyState={
           totalRows === 0 && !channelsLoading ? (
@@ -716,12 +717,8 @@ function ConversationView({
             {/* Header actions. (A "call" affordance was dropped — there's
                 nothing to dial in an agent chat.) Search/info are placeholders
                 for now until wired to in-conversation search + details. */}
-            <HeaderActionButton label="Search">
-              <Search size={18} />
-            </HeaderActionButton>
-            <HeaderActionButton label="Conversation info">
-              <Info size={18} />
-            </HeaderActionButton>
+            <HeaderActionButton label="Search" icon={Search} />
+            <HeaderActionButton label="Conversation info" icon={Info} />
           </div>
         </header>
 
@@ -778,21 +775,12 @@ function ConversationView({
 /** A presentational header action icon button (search / call / info). */
 function HeaderActionButton({
   label,
-  children,
+  icon,
 }: {
   label: string;
-  children: React.ReactNode;
+  icon: LucideIcon;
 }): JSX.Element {
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      className="flex h-9 w-9 items-center justify-center rounded-lg text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
-    >
-      {children}
-    </button>
-  );
+  return <IconButton type="button" icon={icon} aria-label={label} title={label} />;
 }
 
 /**
@@ -841,15 +829,13 @@ function ThreadPanel({
             </p>
           )}
         </div>
-        <button
+        <IconButton
           type="button"
+          icon={X}
           onClick={onClose}
           data-testid="thread-close"
           aria-label="Close thread"
-          className="flex h-8 w-8 items-center justify-center rounded-lg text-text-secondary-dark transition hover:bg-white/5 hover:text-text-primary-dark"
-        >
-          <X size={18} />
-        </button>
+        />
       </header>
 
       <div className="chat-scrollbar flex flex-1 flex-col gap-3 overflow-y-auto px-4 py-4">

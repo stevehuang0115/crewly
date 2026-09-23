@@ -12,6 +12,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search } from 'lucide-react';
 import { Input } from '@crewly/ui';
 import { Badge } from '@crewly/ui';
+import { FilterPill } from '@crewly/ui/FilterPill';
 import type { RequestStatistics, RequestPrimaryFilter, RequestSecondaryFilter } from './request-tracking.types';
 import { getRequestStatusLabel } from './request-tracking.types';
 
@@ -162,18 +163,14 @@ export const RequestFilters: React.FC<RequestFiltersProps> = ({
         {SECONDARY_FILTER_BUTTONS.map(({ label, filter }) => {
           const isActive = activeSecondaryFilters.has(filter);
           return (
-            <button
+            <FilterPill
               key={filter}
+              isActive={isActive}
               onClick={() => onSecondaryFilterToggle(filter)}
-              className={`inline-flex items-center gap-1.5 px-3 py-2.5 rounded-full text-xs font-medium border transition-colors cursor-pointer ${
-                isActive
-                  ? 'bg-primary/10 border-primary/20 text-primary'
-                  : 'border-border-dark text-text-secondary-dark/60 hover:border-primary/50 hover:text-text-secondary-dark'
-              }`}
               data-testid={`request-secondary-${label.toLowerCase().replace(/\s+/g, '-')}`}
             >
               {label}
-            </button>
+            </FilterPill>
           );
         })}
       </div>

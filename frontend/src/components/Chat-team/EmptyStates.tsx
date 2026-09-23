@@ -15,6 +15,7 @@
 
 import type { ReactNode } from 'react';
 import { AlertTriangle } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 
 interface EmptyShellProps {
   headline: string;
@@ -51,12 +52,9 @@ export function NoTeamsEmptyState(): JSX.Element {
       headline="No teams yet."
       body="Chat appears once you create or join a team. Each team becomes a workspace in the rail on the left, with its own channels and direct-message threads."
       cta={
-        <button
-          type="button"
-          className="rounded-lg bg-primary px-3 py-1.5 text-xs font-bold text-white hover:bg-primary/90"
-        >
+        <Button type="button" size="xs">
           Open team builder
-        </button>
+        </Button>
       }
     />
   );
@@ -79,24 +77,15 @@ export function NoChannelsEmptyState({ teamName }: { teamName: string }): JSX.El
       }
       cta={
         <div className="flex flex-wrap items-center justify-center gap-2 text-xs">
-          <button
-            type="button"
-            className="rounded-lg bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-white/5"
-          >
+          <Button type="button" variant="secondary" size="xs">
             Message team lead
-          </button>
-          <button
-            type="button"
-            className="rounded-lg bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-white/5"
-          >
+          </Button>
+          <Button type="button" variant="secondary" size="xs">
             Open project channel
-          </button>
-          <button
-            type="button"
-            className="rounded-lg bg-surface-dark px-3 py-1.5 font-medium text-text-primary-dark ring-1 ring-border-dark hover:bg-white/5"
-          >
+          </Button>
+          <Button type="button" variant="secondary" size="xs">
             Start DM
-          </button>
+          </Button>
         </div>
       }
     />

@@ -1,4 +1,6 @@
 import React from 'react';
+import { Pencil, Trash2 } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import { KanbanTask } from './KanbanBoard';
 
 interface KanbanCardProps {
@@ -16,12 +18,12 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
   onDragStart,
   onDragEnd
 }) => {
-  const getPriorityColor = (priority: KanbanTask['priority']) => {
+  const getPriorityColor = (priority: KanbanTask['priority']): string => {
     switch (priority) {
-      case 'high': return '#ef4444';
-      case 'medium': return '#f59e0b';
-      case 'low': return '#10b981';
-      default: return '#6b7280';
+      case 'high': return 'bg-red-500';
+      case 'medium': return 'bg-amber-500';
+      case 'low': return 'bg-emerald-500';
+      default: return 'bg-text-secondary-dark';
     }
   };
 
@@ -64,27 +66,27 @@ export const KanbanCard: React.FC<KanbanCardProps> = ({
         <div className="card-title">
           <h4>{task.title}</h4>
           <div
-            className="priority-indicator"
-            style={{ backgroundColor: getPriorityColor(task.priority) }}
+            className={`priority-indicator w-2.5 h-2.5 rounded-full ${getPriorityColor(task.priority)}`}
             title={`Priority: ${task.priority}`}
           />
         </div>
         
         <div className="card-actions">
-          <button
-            className="action-button edit-button"
+          <IconButton
+            icon={Pencil}
+            size="xs"
             onClick={onEdit}
             title="Edit task"
-          >
-            ✏️
-          </button>
-          <button
-            className="action-button delete-button"
+            aria-label="Edit task"
+          />
+          <IconButton
+            icon={Trash2}
+            variant="danger-ghost"
+            size="xs"
             onClick={onDelete}
             title="Delete task"
-          >
-            🗑️
-          </button>
+            aria-label="Delete task"
+          />
         </div>
       </div>
 

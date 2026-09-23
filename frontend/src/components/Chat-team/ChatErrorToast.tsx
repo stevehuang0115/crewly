@@ -16,6 +16,8 @@
  */
 
 import type { ReactNode } from 'react';
+import { X } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 
 export interface ChatErrorToastProps {
   /** Headline rendered in the toast. */
@@ -42,7 +44,7 @@ export function ChatErrorToast({
     <div
       role="alert"
       data-testid="chat-error-toast"
-      className="fixed bottom-4 right-4 z-50 flex max-w-md items-start gap-3 rounded-lg border border-rose-300 bg-rose-50 px-4 py-3 text-sm text-rose-800 shadow-lg dark:border-rose-700/40 dark:bg-rose-900/30 dark:text-rose-100"
+      className="fixed bottom-4 right-4 z-50 flex max-w-md items-start gap-3 rounded-2xl border border-rose-700/40 bg-rose-900/30 px-4 py-3 text-sm text-rose-100 shadow-lg backdrop-blur-sm"
     >
       <div className="flex-1">
         <div className="font-medium">{message}</div>
@@ -53,15 +55,14 @@ export function ChatErrorToast({
         )}
       </div>
       {onDismiss && (
-        <button
-          type="button"
+        <IconButton
+          icon={X}
+          size="xs"
           onClick={onDismiss}
           aria-label="Dismiss error"
           data-testid="chat-error-toast-dismiss"
-          className="shrink-0 rounded p-0.5 text-rose-700 hover:bg-rose-100 dark:text-rose-200 dark:hover:bg-rose-800/40"
-        >
-          ×
-        </button>
+          className="shrink-0 text-rose-200 hover:bg-rose-800/40 hover:text-rose-100"
+        />
       )}
     </div>
   );

@@ -11,6 +11,8 @@ import React, { useState } from 'react';
 import { Users, FolderOpen, Play, Square, Clock, Pin, PinOff, Network, GitBranch } from 'lucide-react';
 import { Team } from '@/types';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
+import { Badge } from '@crewly/ui/Badge';
+import { IconButton } from '@crewly/ui/Button';
 import { MemberAvatar } from '@/components/common/MemberAvatar';
 import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 import { formatRelativeTimeCompact } from '@/utils/time';
@@ -77,34 +79,46 @@ export const TeamsGridCard: React.FC<TeamsGridCardProps> = ({
           <div className="flex items-center gap-2 min-w-0">
             <div className="text-lg font-semibold truncate">{team.name}</div>
             {hasActiveMembers ? (
-              <span className="shrink-0 px-2 py-0.5 text-xs font-medium rounded-full bg-green-500/10 text-green-400">Active</span>
+              <Badge variant="success" className="shrink-0">Active</Badge>
             ) : (
-              <span className="shrink-0 px-2 py-0.5 text-xs font-medium rounded-full bg-gray-500/10 text-gray-400">Idle</span>
+              <Badge className="shrink-0">Idle</Badge>
             )}
           </div>
           <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
             {onTogglePin && (
-              <button
+              <IconButton
+                icon={isPinned ? PinOff : Pin}
+                size="xs"
                 onClick={() => onTogglePin()}
-                className={`p-1.5 rounded-lg transition-colors ${isPinned ? 'text-yellow-400 hover:text-yellow-300' : 'text-gray-500 opacity-0 group-hover:opacity-100 hover:text-yellow-400'}`}
+                className={isPinned ? 'text-yellow-400 hover:text-yellow-300' : 'opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-yellow-400'}
                 title={isPinned ? 'Unpin from favorites' : 'Pin to favorites'}
                 aria-label={isPinned ? 'Unpin from favorites' : 'Pin to favorites'}
                 data-testid={`pin-btn-${team.id}`}
-              >
-                {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
-              </button>
+              />
             )}
             {hasActiveMembers ? (
               onStopTeam && (
-                <button onClick={handleStopClick} className="p-1.5 rounded-lg text-red-400 hover:bg-red-500/10 transition-colors" title="Stop team" data-testid={`stop-btn-${team.id}`}>
-                  <Square className="w-4 h-4" />
-                </button>
+                <IconButton
+                  icon={Square}
+                  size="xs"
+                  onClick={handleStopClick}
+                  className="text-red-400 hover:bg-red-500/10 hover:text-red-400"
+                  title="Stop team"
+                  aria-label="Stop team"
+                  data-testid={`stop-btn-${team.id}`}
+                />
               )
             ) : (
               onStartTeam && (
-                <button onClick={handleStart} className="p-1.5 rounded-lg text-green-400 hover:bg-green-500/10 transition-colors" title="Start team" data-testid={`start-btn-${team.id}`}>
-                  <Play className="w-4 h-4" />
-                </button>
+                <IconButton
+                  icon={Play}
+                  size="xs"
+                  onClick={handleStart}
+                  className="text-green-400 hover:bg-green-500/10 hover:text-green-400"
+                  title="Start team"
+                  aria-label="Start team"
+                  data-testid={`start-btn-${team.id}`}
+                />
               )
             )}
             <OverflowMenu align="bottom-right" items={[

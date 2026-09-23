@@ -12,7 +12,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Check, Cloud } from 'lucide-react';
-import { Button } from '@crewly/ui';
+import { Button, Card, Input } from '@crewly/ui';
 import { useAuth } from '../contexts/AuthContext';
 import { buildCloudAuthRedirectUrl } from '../constants/cloud.constants';
 
@@ -76,7 +76,7 @@ export const Auth: React.FC = () => {
   return (
     <div className="flex min-h-screen flex-col items-center justify-center bg-background-dark px-4 py-12">
       {/* Auth card */}
-      <div className="w-full max-w-md rounded-xl border border-border-dark bg-surface-dark p-8">
+      <Card padding="none" className="w-full max-w-md p-8">
         {/* Header */}
         <div className="mb-6 text-center">
           <Cloud className="mx-auto h-10 w-10 text-primary" />
@@ -110,15 +110,16 @@ export const Auth: React.FC = () => {
           <label htmlFor="auth-email" className="mb-1 block text-sm font-medium text-text-secondary-dark">
             Email
           </label>
-          <input
-            id="auth-email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="you@example.com"
-            className="mb-4 w-full rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark placeholder-text-secondary-dark focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
-            data-testid="email-input"
-          />
+          <div className="mb-4">
+            <Input
+              id="auth-email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="you@example.com"
+              data-testid="email-input"
+            />
+          </div>
           <Button
             variant="primary"
             className="w-full"
@@ -141,7 +142,7 @@ export const Auth: React.FC = () => {
             Terms of Service
           </a>
         </p>
-      </div>
+      </Card>
 
       {/* Benefits */}
       <div className="mt-8 w-full max-w-md" data-testid="benefits-list">

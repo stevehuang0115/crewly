@@ -8,7 +8,11 @@
  */
 
 import React from 'react';
-import { Rocket, ArrowLeft, FolderOpen, Loader2, AlertCircle } from 'lucide-react';
+import { Rocket, ArrowLeft, FolderOpen } from 'lucide-react';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { FormInput, FormLabel } from '@crewly/ui/Form';
 
 // ---------------------------------------------------------------------------
 // Props
@@ -62,18 +66,18 @@ export const StepLaunchProject: React.FC<StepLaunchProjectProps> = ({
 
     {/* Project Path Input */}
     <div className="mb-6">
-      <label htmlFor="project-path" className="block text-xs font-medium text-text-secondary-dark mb-1.5 uppercase tracking-wide">
+      <FormLabel htmlFor="project-path" className="text-xs text-text-secondary-dark mb-1.5 uppercase tracking-wide">
         Project Directory (optional)
-      </label>
+      </FormLabel>
       <div className="relative">
         <FolderOpen className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary-dark" />
-        <input
+        <FormInput
           id="project-path"
           type="text"
           value={projectPath}
           onChange={(e) => onProjectPathChange(e.target.value)}
           placeholder="/path/to/your/project"
-          className="w-full bg-surface-dark border border-border-dark rounded-lg pl-10 pr-4 py-2.5 text-sm font-mono focus:outline-none focus:border-primary focus:ring-1 focus:ring-primary transition-colors"
+          className="pl-10 font-mono"
           disabled={isCreating}
           data-testid="project-path-input"
         />
@@ -84,7 +88,7 @@ export const StepLaunchProject: React.FC<StepLaunchProjectProps> = ({
     </div>
 
     {/* Summary Card */}
-    <div className="bg-surface-dark border border-border-dark rounded-lg p-4 mb-6">
+    <Card className="mb-6">
       <p className="text-xs font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
         What will be created
       </p>
@@ -106,45 +110,35 @@ export const StepLaunchProject: React.FC<StepLaunchProjectProps> = ({
           </div>
         )}
       </div>
-    </div>
+    </Card>
 
     {/* Error */}
     {error && (
-      <div className="flex items-start gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/20 mb-4" role="alert" data-testid="launch-error">
-        <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />
-        <p className="text-sm text-red-400">{error}</p>
-      </div>
+      <Alert variant="error" size="sm" className="mb-4" data-testid="launch-error">
+        {error}
+      </Alert>
     )}
 
     {/* Actions */}
     <div className="flex items-center justify-between">
-      <button
+      <Button
+        variant="ghost"
+        icon={ArrowLeft}
         onClick={onBack}
         disabled={isCreating}
-        className="flex items-center gap-1.5 px-4 py-2 text-sm text-text-secondary-dark hover:text-text-primary-dark transition-colors disabled:opacity-50"
         data-testid="launch-back-btn"
       >
-        <ArrowLeft className="w-4 h-4" />
         Back
-      </button>
-      <button
+      </Button>
+      <Button
+        icon={Rocket}
         onClick={onLaunch}
-        disabled={isCreating}
-        className="flex items-center gap-2 px-8 py-3 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-semibold disabled:opacity-60 disabled:cursor-not-allowed"
+        loading={isCreating}
+        className="px-8"
         data-testid="launch-btn"
       >
-        {isCreating ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            Creating...
-          </>
-        ) : (
-          <>
-            <Rocket className="w-4 h-4" />
-            Launch Team
-          </>
-        )}
-      </button>
+        {isCreating ? 'Creating...' : 'Launch Team'}
+      </Button>
     </div>
   </div>
 );

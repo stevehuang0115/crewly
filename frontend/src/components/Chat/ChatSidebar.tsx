@@ -8,7 +8,9 @@
 
 import React, { useState, useCallback } from 'react';
 import { Link } from 'react-router-dom';
-import { Archive, Trash2, FolderOpen, Users, Settings as SettingsIcon, MoreVertical } from 'lucide-react';
+import { Archive, Trash2, FolderOpen, Users, Settings as SettingsIcon, MoreVertical, Plus } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
+import { Input } from '@crewly/ui/Input';
 import { useChat } from '../../contexts/ChatContext';
 import { ChatConversation } from '../../types/chat.types';
 import { formatRelativeTime } from '../../utils/time';
@@ -167,23 +169,25 @@ export const ChatSidebar: React.FC = () => {
     >
       <div className="sidebar-header">
         <h3>Conversations</h3>
-        <button
+        <Button
+          size="xs"
+          icon={Plus}
           className="new-chat-btn"
           onClick={handleNewChat}
           aria-label="Create new conversation"
           data-testid="new-chat-button"
         >
-          + New Chat
-        </button>
+          New Chat
+        </Button>
       </div>
 
       <div className="search-container">
-        <input
+        <Input
           type="text"
           placeholder="Search conversations..."
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          className="search-input"
+          fullWidth
           data-testid="conversation-search"
           aria-label="Search conversations"
         />

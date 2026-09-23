@@ -60,8 +60,8 @@ const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
   online: 'bg-emerald-400',
   busy: 'bg-amber-400',
   idle: 'bg-amber-400',
-  offline: 'bg-gray-500',
-  inactive: 'bg-gray-500',
+  offline: 'bg-text-secondary-dark/50',
+  inactive: 'bg-text-secondary-dark/50',
 };
 
 export function MentionComposer({

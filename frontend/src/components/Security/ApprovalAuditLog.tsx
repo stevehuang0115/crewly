@@ -173,7 +173,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
               {/* Filter Dropdown */}
               {showFilterMenu && (
                 <div
-                  className="absolute right-0 top-full mt-1 w-48 bg-zinc-800 border border-border-dark rounded-md shadow-lg z-10"
+                  className="absolute right-0 top-full mt-1 w-48 bg-background-dark border border-border-dark rounded-md shadow-lg z-10"
                   role="menu"
                   data-testid="filter-menu"
                 >
@@ -182,7 +182,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                     <button
                       type="button"
                       onClick={() => handleFilterAgent(undefined)}
-                      className="w-full text-left px-2 py-1 text-xs text-text-primary-dark hover:bg-zinc-700 rounded"
+                      className="w-full text-left px-2 py-1 text-xs text-text-primary-dark hover:bg-border-dark rounded"
                       role="menuitem"
                     >
                       All Agents
@@ -192,7 +192,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                         key={agent}
                         type="button"
                         onClick={() => handleFilterAgent(agent)}
-                        className={`w-full text-left px-2 py-1 text-xs hover:bg-zinc-700 rounded ${
+                        className={`w-full text-left px-2 py-1 text-xs hover:bg-border-dark rounded ${
                           filter.agent === agent ? 'text-primary' : 'text-text-primary-dark'
                         }`}
                         role="menuitem"
@@ -206,7 +206,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                     <button
                       type="button"
                       onClick={() => handleFilterOutcome(undefined)}
-                      className="w-full text-left px-2 py-1 text-xs text-text-primary-dark hover:bg-zinc-700 rounded"
+                      className="w-full text-left px-2 py-1 text-xs text-text-primary-dark hover:bg-border-dark rounded"
                       role="menuitem"
                     >
                       All Outcomes
@@ -216,7 +216,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                         key={outcome}
                         type="button"
                         onClick={() => handleFilterOutcome(outcome)}
-                        className={`w-full text-left px-2 py-1 text-xs hover:bg-zinc-700 rounded ${
+                        className={`w-full text-left px-2 py-1 text-xs hover:bg-border-dark rounded ${
                           filter.outcome === outcome ? 'text-primary' : 'text-text-primary-dark'
                         }`}
                         role="menuitem"
@@ -270,7 +270,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                       return (
                         <tr
                           key={event.id}
-                          className="border-b border-border-dark/50 hover:bg-zinc-800/30 transition-colors"
+                          className="border-b border-border-dark/50 hover:bg-background-dark/30 transition-colors"
                           data-testid={`audit-row-${event.id}`}
                         >
                           <td className="py-2.5 pr-4 font-mono text-xs text-text-secondary-dark whitespace-nowrap">
@@ -282,7 +282,7 @@ export const ApprovalAuditLog: React.FC<ApprovalAuditLogProps> = ({
                           <td className="py-2.5 pr-4 font-mono text-xs text-text-secondary-dark">
                             {event.toolName}
                             {event.reason && (
-                              <span className="block text-xs text-zinc-500 mt-0.5" title={event.reason}>
+                              <span className="block text-xs text-text-secondary-dark mt-0.5" title={event.reason}>
                                 {event.reason}
                               </span>
                             )}

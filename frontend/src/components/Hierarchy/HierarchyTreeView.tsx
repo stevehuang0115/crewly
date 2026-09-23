@@ -47,7 +47,7 @@ const STATUS_COLORS: Record<string, string> = {
   activating: 'bg-yellow-400',
   idle: 'bg-yellow-400',
   suspended: 'bg-orange-400',
-  inactive: 'bg-gray-500',
+  inactive: 'bg-text-secondary-dark',
 };
 
 /** Map role to display icon */
@@ -107,7 +107,7 @@ export function buildHierarchyTree(members: TeamMember[]): HierarchyNode[] {
  * @returns Tailwind class string
  */
 export function getStatusColor(status: string): string {
-  return STATUS_COLORS[status] ?? 'bg-gray-500';
+  return STATUS_COLORS[status] ?? 'bg-text-secondary-dark';
 }
 
 /**

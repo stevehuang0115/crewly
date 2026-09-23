@@ -1,5 +1,13 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button } from '@crewly/ui';
+import { Alert } from '@crewly/ui/Alert';
+import { Badge, type BadgeVariant } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
+import { EmptyState } from '@crewly/ui/EmptyState';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Modal } from '@crewly/ui/Modal';
+import { StatusDot } from '@crewly/ui/StatusDot';
+import { Tabs, TabList, TabTrigger, TabContent } from '@crewly/ui/Tabs';
+import { Toggle } from '@crewly/ui/Toggle';
 import { TeamMember } from '@/types';
 import { webSocketService } from '@/services/websocket.service';
 
@@ -17,6 +25,12 @@ interface SessionData {
   timestamp: string;
 }
 
+/**
+ * Details dialog for a team member: system prompt and live terminal output.
+ *
+ * @param props - The member, its team id and the close handler
+ * @returns The member dialog
+ */
 export const TeamMemberModal: React.FC<TeamMemberModalProps> = ({ member, teamId, onClose }) => {
   const [sessionData, setSessionData] = useState<SessionData | null>(null);
   const [loading, setLoading] = useState(false);
@@ -213,177 +227,124 @@ export const TeamMemberModal: React.FC<TeamMemberModalProps> = ({ member, teamId
     }
   };
 
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
-  const getRoleColor = (role: string) => {
+  /** Role → text colour class for the role badge. */
+  const getRoleColorClass = (role: string): string => {
     const roleColors: Record<string, string> = {
-      orchestrator: '#2a73ea',
-      pm: '#3b82f6',
-      developer: '#10b981',
-      qa: '#f59e0b',
-      tester: '#ef4444',
-      designer: '#ec4899'
+      orchestrator: 'text-primary',
+      pm: 'text-blue-400',
+      developer: 'text-emerald-400',
+      qa: 'text-amber-400',
+      tester: 'text-red-400',
+      designer: 'text-pink-400',
     };
-    return roleColors[role] || '#6b7280';
+    return roleColors[role] || 'text-text-secondary-dark';
   };
 
-  const getAgentStatusColor = (agentStatus: string) => {
-    const statusColors: Record<string, string> = {
-      inactive: '#6b7280',
-      activating: '#f59e0b', // Orange for activating state
-      active: '#059669' // Bright green for active state
+  /** Agent status → badge variant. */
+  const getAgentStatusVariant = (agentStatus: string): BadgeVariant => {
+    const variants: Record<string, BadgeVariant> = {
+      activating: 'warning',
+      active: 'success',
     };
-    return statusColors[agentStatus] || '#6b7280';
+    return variants[agentStatus] || 'default';
   };
 
-  const getWorkingStatusColor = (workingStatus: string) => {
-    const statusColors: Record<string, string> = {
-      idle: '#6b7280',
-      in_progress: '#10b981'
-    };
-    return statusColors[workingStatus] || '#6b7280';
-  };
+  /** Working status → badge variant. */
+  const getWorkingStatusVariant = (workingStatus: string): BadgeVariant =>
+    workingStatus === 'in_progress' ? 'success' : 'default';
 
   const formatTimestamp = (timestamp: string) => {
     return new Date(timestamp).toLocaleString();
   };
 
+  const title = (
+    <span className="flex flex-col gap-2">
+      <span>{member.name}</span>
+      <span className="flex flex-wrap items-center gap-1.5">
+        <Badge className={getRoleColorClass(member.role)}>{member.role}</Badge>
+        <Badge variant={getAgentStatusVariant(member.agentStatus)}>Agent: {member.agentStatus}</Badge>
+        <Badge variant={getWorkingStatusVariant(member.workingStatus)}>Work: {member.workingStatus}</Badge>
+      </span>
+    </span>
+  );
+
   return (
-    <div className="modal-overlay" onClick={handleOverlayClick}>
-      <div className="modal-content member-modal-content">
-        <div className="modal-header">
-          <div className="member-header-info">
-            <h2>{member.name}</h2>
-            <div className="member-badges">
-              <span 
-                className="role-badge"
-                style={{ backgroundColor: getRoleColor(member.role) }}
-              >
-                {member.role}
+    <Modal isOpen onClose={onClose} title={title} size="xxl">
+      <Tabs value={activeTab} onValueChange={(tab) => setActiveTab(tab as 'prompt' | 'terminal')}>
+        <TabList aria-label="Member details">
+          <TabTrigger value="prompt">System Prompt</TabTrigger>
+          <TabTrigger value="terminal">Terminal Output</TabTrigger>
+        </TabList>
+
+        {/* System Prompt Tab */}
+        <TabContent value="prompt">
+          <pre className="max-h-[55vh] overflow-auto whitespace-pre-wrap rounded-2xl border border-border-dark bg-background-dark p-4 text-xs font-mono text-text-primary-dark">
+            {member.systemPrompt}
+          </pre>
+        </TabContent>
+
+        {/* Terminal Tab */}
+        <TabContent value="terminal" className="space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="text-xs text-text-secondary-dark">
+              {member.sessionName && <span>Session: {member.sessionName}</span>}
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
+                <StatusDot status={isRealTimeConnected ? 'online' : 'offline'} size="sm" />
+                {isRealTimeConnected ? 'Live' : 'Offline'}
               </span>
-              <span 
-                className="status-badge"
-                style={{ backgroundColor: getAgentStatusColor(member.agentStatus) }}
+              <Toggle
+                size="sm"
+                label="Auto-refresh (fallback)"
+                checked={autoRefresh}
+                onChange={(e) => setAutoRefresh(e.target.checked)}
+                disabled={isRealTimeConnected}
+              />
+              <Button
+                onClick={fetchSessionData}
+                disabled={isRealTimeConnected}
+                loading={loading}
+                variant="secondary"
+                size="sm"
               >
-                Agent: {member.agentStatus}
-              </span>
-              <span 
-                className="status-badge"
-                style={{ backgroundColor: getWorkingStatusColor(member.workingStatus) }}
-              >
-                Work: {member.workingStatus}
-              </span>
+                {loading ? 'Loading...' : 'Manual Refresh'}
+              </Button>
             </div>
           </div>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
 
-        {/* Tab Navigation */}
-        <div className="member-tabs">
-          <button 
-            className={`tab-button ${activeTab === 'prompt' ? 'active' : ''}`}
-            onClick={() => setActiveTab('prompt')}
-          >
-            System Prompt
-          </button>
-          <button 
-            className={`tab-button ${activeTab === 'terminal' ? 'active' : ''}`}
-            onClick={() => setActiveTab('terminal')}
-          >
-            Terminal Output
-          </button>
-        </div>
+          {loading && !sessionData && (
+            <LoadingSpinner size="md" text="Loading session data..." className="py-8" />
+          )}
 
-        <div className="member-modal-body">
-          {/* System Prompt Tab */}
-          {activeTab === 'prompt' && (
-            <div className="system-prompt-panel">
-              <div className="system-prompt-content">
-                <pre className="system-prompt-text">
-                  {member.systemPrompt}
-                </pre>
-              </div>
+          {error && (
+            <div className="space-y-2">
+              <Alert variant="error">Error: {error}</Alert>
+              <Button onClick={fetchSessionData} variant="outline" size="sm">
+                Retry
+              </Button>
             </div>
           )}
 
-          {/* Terminal Tab */}
-          {activeTab === 'terminal' && (
-            <div className="terminal-panel">
-              <div className="terminal-header">
-                <div className="terminal-header-left">
-                  {member.sessionName && (
-                    <span className="session-name">Session: {member.sessionName}</span>
-                  )}
-                </div>
-                <div className="terminal-controls">
-                  <div className="connection-status">
-                    <span className={`status-indicator ${isRealTimeConnected ? 'connected' : 'disconnected'}`}>
-                      {isRealTimeConnected ? '🟢 Live' : '🔴 Offline'}
-                    </span>
-                  </div>
-                  <label className="auto-refresh-toggle">
-                    <input
-                      type="checkbox"
-                      checked={autoRefresh}
-                      onChange={(e) => setAutoRefresh(e.target.checked)}
-                      disabled={isRealTimeConnected}
-                    />
-                    Auto-refresh (fallback)
-                  </label>
-                  <Button 
-                    className="refresh-button" 
-                    onClick={fetchSessionData}
-                    disabled={loading || isRealTimeConnected}
-                    variant="secondary"
-                    size="sm"
-                  >
-                    {loading ? 'Loading...' : 'Manual Refresh'}
-                  </Button>
-                </div>
-              </div>
-
-              <div className="terminal-output">
-                {loading && !sessionData && (
-                  <div className="loading-state">
-                    <div className="loading-spinner"></div>
-                    <p>Loading session data...</p>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="error-state">
-                    <p>Error: {error}</p>
-                    <Button onClick={fetchSessionData} className="retry-button" variant="outline" size="sm">
-                      Retry
-                    </Button>
-                  </div>
-                )}
-
-                {sessionData && (
-                  <div className="session-data">
-                    <div className="session-meta">
-                      <span>Last updated: {formatTimestamp(sessionData.timestamp)}</span>
-                    </div>
-                    <pre className="terminal-content" ref={terminalOutputRef}>
-                      {sessionData.output || 'No output available'}
-                    </pre>
-                  </div>
-                )}
-
-                {!loading && !error && !sessionData && (
-                  <div className="empty-state">
-                    <p>No session data available</p>
-                  </div>
-                )}
-              </div>
+          {sessionData && (
+            <div className="space-y-2">
+              <p className="text-xs text-text-secondary-dark">
+                Last updated: {formatTimestamp(sessionData.timestamp)}
+              </p>
+              <pre
+                className="max-h-[50vh] overflow-auto whitespace-pre-wrap rounded-2xl border border-border-dark bg-background-dark p-4 text-xs font-mono text-text-primary-dark"
+                ref={terminalOutputRef}
+              >
+                {sessionData.output || 'No output available'}
+              </pre>
             </div>
           )}
-        </div>
-      </div>
-    </div>
+
+          {!loading && !error && !sessionData && (
+            <EmptyState compact title="No session data available" />
+          )}
+        </TabContent>
+      </Tabs>
+    </Modal>
   );
 };

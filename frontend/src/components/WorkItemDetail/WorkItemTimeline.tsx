@@ -72,7 +72,7 @@ function getEventColor(kind: TimelineEventKind, status?: WorkItemStatus): string
 
   switch (status) {
     case 'queued':
-      return 'text-gray-400';
+      return 'text-text-secondary-dark';
     case 'running':
       return 'text-green-400';
     case 'done':
@@ -80,11 +80,11 @@ function getEventColor(kind: TimelineEventKind, status?: WorkItemStatus): string
     case 'failed':
       return 'text-red-400';
     case 'cancelled':
-      return 'text-gray-500';
+      return 'text-text-secondary-dark';
     case 'blocked':
       return 'text-yellow-400';
     default:
-      return 'text-gray-400';
+      return 'text-text-secondary-dark';
   }
 }
 

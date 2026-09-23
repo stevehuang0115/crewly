@@ -31,7 +31,7 @@ describe('DashboardNavigation', () => {
       />
     );
     
-    const teamsTab = screen.getByText('teams');
+    const teamsTab = screen.getByRole('tab', { name: 'teams' });
     expect(teamsTab).toHaveClass('text-primary', 'border-primary');
   });
 
@@ -55,7 +55,7 @@ describe('DashboardNavigation', () => {
       />
     );
     
-    const teamsTab = screen.getByText('teams');
-    expect(teamsTab).toHaveClass('border-transparent', 'text-gray-500');
+    const teamsTab = screen.getByRole('tab', { name: 'teams' });
+    expect(teamsTab).toHaveClass('border-transparent', 'text-text-secondary-dark');
   });
 });

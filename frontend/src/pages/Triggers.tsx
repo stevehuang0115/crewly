@@ -25,7 +25,33 @@ import {
   Users,
   List,
 } from 'lucide-react';
-import { Button, Modal, ModalBody, ModalFooter, useConfirm, StatusBadge, Alert, PageToolbar } from '@crewly/ui';
+import {
+  Button,
+  IconButton,
+  Modal,
+  ModalBody,
+  ModalFooter,
+  useConfirm,
+  StatusBadge,
+  Alert,
+  PageToolbar,
+  Badge,
+  Card,
+  EmptyState,
+  LoadingSpinner,
+  SegmentedControl,
+  FormGroup,
+  FormLabel,
+  FormHelp,
+  FormInput,
+  FormTextarea,
+  Table,
+  TableHead,
+  TableBody,
+  TableRow,
+  TableHeader,
+  TableCell,
+} from '@crewly/ui';
 import type { StatusType } from '@crewly/ui/StatusBadge';
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
@@ -85,80 +111,74 @@ const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDe
   const teamName = teamMap[teamId] || (teamId ? teamId : '—');
 
   return (
-    <tr className="border-t border-border-dark hover:bg-background-dark/40 transition-colors">
+    <TableRow className="hover:bg-surface-dark/60 transition-colors">
       {/* Type */}
-      <td className="px-4 py-3 whitespace-nowrap">
+      <TableCell className="whitespace-nowrap">
         <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
           <Clock className="w-3.5 h-3.5" />
           Time
         </span>
-      </td>
+      </TableCell>
 
       {/* Team */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px] hidden sm:table-cell">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px] hidden sm:table-cell">
         <span className="truncate block" title={teamName}>{teamName}</span>
-      </td>
+      </TableCell>
 
       {/* Schedule */}
-      <td className="px-4 py-3 text-xs font-mono text-text-primary-dark whitespace-nowrap">
+      <TableCell className="text-xs font-mono whitespace-nowrap">
         {cronExpr}
         {task.timezone && (
           <span className="ml-1.5 text-[10px] text-text-secondary-dark">{task.timezone}</span>
         )}
-      </td>
+      </TableCell>
 
       {/* Task */}
-      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[220px] hidden md:table-cell">
+      <TableCell className="text-sm text-text-secondary-dark max-w-[220px] hidden md:table-cell">
         <div className="flex items-center gap-1.5">
           <Bot className="w-3.5 h-3.5 flex-shrink-0" />
           <span className="truncate" title={desc}>{displayName}</span>
         </div>
-      </td>
+      </TableCell>
 
       {/* Status */}
-      <td className="px-4 py-3 whitespace-nowrap">
+      <TableCell className="whitespace-nowrap">
         <StatusBadge status={task.enabled ? 'active' : 'paused'} />
-      </td>
+      </TableCell>
 
       {/* Next Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(task.nextRunAt)}
-      </td>
+      </TableCell>
 
       {/* Last Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(task.lastRunAt)}
-      </td>
+      </TableCell>
 
       {/* Actions */}
-      <td className="px-4 py-3 whitespace-nowrap">
+      <TableCell className="whitespace-nowrap">
         <div className="flex items-center gap-1">
-          <button
+          <IconButton
+            size="xs"
+            icon={task.enabled ? Pause : Play}
             onClick={handleToggle}
             disabled={busy}
             title={task.enabled ? 'Pause' : 'Resume'}
-            className={`p-1 rounded transition-colors disabled:opacity-40 ${
-              task.enabled
-                ? 'text-text-secondary-dark hover:text-yellow-400 hover:bg-yellow-500/10'
-                : 'text-text-secondary-dark hover:text-green-400 hover:bg-green-500/10'
-            }`}
-          >
-            {task.enabled
-              ? <Pause className="w-3.5 h-3.5" />
-              : <Play className="w-3.5 h-3.5" />
-            }
-          </button>
-          <button
+            aria-label={task.enabled ? 'Pause' : 'Resume'}
+          />
+          <IconButton
+            size="xs"
+            icon={Trash2}
+            variant="danger-ghost"
             onClick={() => onDelete(task.id)}
             disabled={busy}
             title="Delete"
-            className="p-1 rounded text-text-secondary-dark hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+            aria-label="Delete"
+          />
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 };
 
@@ -183,68 +203,56 @@ const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onC
   };
 
   return (
-    <tr className="border-t border-border-dark hover:bg-background-dark/40 transition-colors">
-      <td className="px-4 py-3 whitespace-nowrap">
+    <TableRow className="hover:bg-surface-dark/60 transition-colors">
+      <TableCell className="whitespace-nowrap">
         <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
           {triggerTypeIcon(trigger.type)}
           <span className="capitalize">{trigger.type}</span>
         </span>
-      </td>
+      </TableCell>
 
       {/* Team — V3 triggers show createdBy */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden sm:table-cell">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden sm:table-cell">
         <span className="capitalize">{trigger.createdBy}</span>
-      </td>
+      </TableCell>
 
-      <td className="px-4 py-3 text-xs font-mono text-text-primary-dark max-w-[200px]">
+      <TableCell className="text-xs font-mono max-w-[200px]">
         <span className="truncate block" title={triggerConfigSummary(trigger)}>
           {triggerConfigSummary(trigger)}
         </span>
-      </td>
+      </TableCell>
 
-      <td className="px-4 py-3 text-sm text-text-secondary-dark max-w-[180px] hidden md:table-cell">
+      <TableCell className="text-sm text-text-secondary-dark max-w-[180px] hidden md:table-cell">
         <span className="truncate block">{triggerActionSummary(trigger)}</span>
-      </td>
+      </TableCell>
 
-      <td className="px-4 py-3 whitespace-nowrap">
+      <TableCell className="whitespace-nowrap">
         <StatusBadge status={mapTriggerStatus(trigger.status)}>{trigger.status}</StatusBadge>
-      </td>
+      </TableCell>
 
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(trigger.nextFireAt)}
-      </td>
+      </TableCell>
 
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
         {formatDate(trigger.lastFiredAt)}
-      </td>
+      </TableCell>
 
-      <td className="px-4 py-3 whitespace-nowrap">
+      <TableCell className="whitespace-nowrap">
         <div className="flex items-center gap-1">
           {trigger.status === 'active' && (
-            <button onClick={() => act(() => onPause(trigger.id))} disabled={busy} title="Pause"
-              className="p-1 rounded text-text-secondary-dark hover:text-yellow-400 hover:bg-yellow-500/10 transition-colors disabled:opacity-40">
-              <Pause className="w-3.5 h-3.5" />
-            </button>
+            <IconButton size="xs" icon={Pause} onClick={() => act(() => onPause(trigger.id))} disabled={busy} title="Pause" aria-label="Pause" />
           )}
           {trigger.status === 'paused' && (
-            <button onClick={() => act(() => onResume(trigger.id))} disabled={busy} title="Resume"
-              className="p-1 rounded text-text-secondary-dark hover:text-green-400 hover:bg-green-500/10 transition-colors disabled:opacity-40">
-              <Play className="w-3.5 h-3.5" />
-            </button>
+            <IconButton size="xs" icon={Play} onClick={() => act(() => onResume(trigger.id))} disabled={busy} title="Resume" aria-label="Resume" />
           )}
           {(trigger.status === 'active' || trigger.status === 'paused') && (
-            <button onClick={() => onCancel(trigger.id)} disabled={busy} title="Cancel"
-              className="p-1 rounded text-text-secondary-dark hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40">
-              <XCircle className="w-3.5 h-3.5" />
-            </button>
+            <IconButton size="xs" icon={XCircle} variant="danger-ghost" onClick={() => onCancel(trigger.id)} disabled={busy} title="Cancel" aria-label="Cancel" />
           )}
-          <button onClick={() => onDelete(trigger.id)} disabled={busy} title="Delete"
-            className="p-1 rounded text-text-secondary-dark hover:text-red-400 hover:bg-red-500/10 transition-colors disabled:opacity-40">
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
+          <IconButton size="xs" icon={Trash2} variant="danger-ghost" onClick={() => onDelete(trigger.id)} disabled={busy} title="Delete" aria-label="Delete" />
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 };
 
@@ -261,50 +269,48 @@ const EventSubRow: React.FC<EventSubRowProps> = ({ sub }) => {
   const isSystem = session === '__reconciler__';
 
   return (
-    <tr className="border-t border-border-dark hover:bg-background-dark/40 transition-colors">
+    <TableRow className="hover:bg-surface-dark/60 transition-colors">
       {/* Type */}
-      <td className="px-4 py-3 whitespace-nowrap">
+      <TableCell className="whitespace-nowrap">
         <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
           <Zap className="w-3.5 h-3.5" />
           Signal
         </span>
-      </td>
+      </TableCell>
 
       {/* Team/subscriber */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px]">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px]">
         <span className="truncate block" title={session}>{isSystem ? 'System' : session}</span>
-      </td>
+      </TableCell>
 
       {/* Event type */}
-      <td className="px-4 py-3 text-xs font-mono text-text-primary-dark">
+      <TableCell className="text-xs font-mono">
         {sub.eventType}
-      </td>
+      </TableCell>
 
       {/* Action */}
-      <td className="px-4 py-3 text-sm text-text-secondary-dark">
+      <TableCell className="text-sm text-text-secondary-dark">
         → {session}
-      </td>
+      </TableCell>
 
       {/* Status */}
-      <td className="px-4 py-3 whitespace-nowrap">
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-medium bg-green-500/15 text-green-400 border border-green-500/20">
-          active
-        </span>
-      </td>
+      <TableCell className="whitespace-nowrap">
+        <StatusBadge status="active">active</StatusBadge>
+      </TableCell>
 
       {/* Next Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark">
         {sub.expiresAt ? `Exp ${formatDate(sub.expiresAt)}` : '—'}
-      </td>
+      </TableCell>
 
       {/* Last Fire */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">—</td>
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark">—</TableCell>
 
       {/* Actions (read-only for event subscriptions) */}
-      <td className="px-4 py-3 whitespace-nowrap text-xs text-text-secondary-dark">
-        {sub.oneShot && <span className="text-[10px] text-yellow-400">one-shot</span>}
-      </td>
-    </tr>
+      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark">
+        {sub.oneShot && <Badge variant="warning" size="sm">one-shot</Badge>}
+      </TableCell>
+    </TableRow>
   );
 };
 
@@ -369,68 +375,66 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
     <Modal isOpen={isOpen} onClose={onClose} title="New Trigger" size="md">
       <ModalBody>
         <div className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Trigger Type</label>
-            <div className="flex gap-2">
-              {(['time', 'signal'] as TriggerType[]).map((t) => (
-                <button key={t} onClick={() => setType(t)}
-                  className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm border transition-colors capitalize ${
-                    type === t
-                      ? 'bg-accent-blue/15 border-accent-blue/40 text-accent-blue'
-                      : 'bg-surface-dark border-border-dark text-text-secondary-dark hover:border-border-dark/80'
-                  }`}>
-                  {triggerTypeIcon(t)} {t}
-                </button>
-              ))}
-            </div>
-          </div>
+          <FormGroup>
+            <FormLabel>Trigger Type</FormLabel>
+            <SegmentedControl<TriggerType>
+              aria-label="Trigger type"
+              value={type}
+              onChange={setType}
+              options={[
+                { value: 'time', label: 'Time', icon: Clock },
+                { value: 'signal', label: 'Signal', icon: Zap },
+              ]}
+            />
+          </FormGroup>
 
           {type === 'time' && (
-            <div>
-              <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Cron Expression</label>
-              <input className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+            <FormGroup>
+              <FormLabel htmlFor="trigger-cron">Cron Expression</FormLabel>
+              <FormInput id="trigger-cron" className="font-mono"
                 value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 9 * * 1-5" />
-              <p className="mt-1 text-xs text-text-secondary-dark">Standard 5-field cron (min hour dom month dow)</p>
-            </div>
+              <FormHelp>Standard 5-field cron (min hour dom month dow)</FormHelp>
+            </FormGroup>
           )}
 
           {type === 'signal' && (
-            <div>
-              <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Event Type</label>
-              <input className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+            <FormGroup>
+              <FormLabel htmlFor="trigger-event-type">Event Type</FormLabel>
+              <FormInput id="trigger-event-type" className="font-mono"
                 value={eventType} onChange={(e) => setEventType(e.target.value)} placeholder="agent:idle" />
-              <p className="mt-1 text-xs text-text-secondary-dark">EventBus event type (e.g. agent:idle, task:completed)</p>
-            </div>
+              <FormHelp>EventBus event type (e.g. agent:idle, task:completed)</FormHelp>
+            </FormGroup>
           )}
 
-          <div>
-            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Send Message To</label>
-            <input className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+          <FormGroup>
+            <FormLabel htmlFor="trigger-target">Send Message To</FormLabel>
+            <FormInput id="trigger-target" className="font-mono"
               value={messageTarget} onChange={(e) => setMessageTarget(e.target.value)} placeholder="agent-session or #channel" />
-          </div>
+          </FormGroup>
 
-          <div>
-            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Message</label>
-            <textarea className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark resize-none focus:outline-none focus:border-accent-blue/50"
+          <FormGroup>
+            <FormLabel htmlFor="trigger-message">Message</FormLabel>
+            <FormTextarea id="trigger-message"
               rows={3} value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder="What should the agent do?" />
-          </div>
+          </FormGroup>
 
-          <div>
-            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Max Fires (optional)</label>
-            <input type="number" min="1"
-              className="w-32 bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-accent-blue/50"
-              value={maxFires} onChange={(e) => setMaxFires(e.target.value)} placeholder="∞" />
-            <p className="mt-1 text-xs text-text-secondary-dark">Leave blank for unlimited.</p>
-          </div>
+          <FormGroup>
+            <FormLabel htmlFor="trigger-max-fires">Max Fires (optional)</FormLabel>
+            <div className="w-32">
+              <FormInput id="trigger-max-fires" type="number" min="1"
+                value={maxFires} onChange={(e) => setMaxFires(e.target.value)} placeholder="∞" />
+            </div>
+            <FormHelp>Leave blank for unlimited.</FormHelp>
+          </FormGroup>
 
           {error && (
-            <p className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">{error}</p>
+            <Alert variant="error">{error}</Alert>
           )}
         </div>
       </ModalBody>
       <ModalFooter>
         <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
-        <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting}>
+        <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting} loading={submitting}>
           {submitting ? 'Creating…' : 'Create Trigger'}
         </Button>
       </ModalFooter>
@@ -453,7 +457,7 @@ interface EngineStatusBarProps {
 const EngineStatusBar: React.FC<EngineStatusBarProps> = ({
   running, totalUserTriggers, totalCronTasks, activeCount, pausedCount,
 }) => (
-  <div className="flex items-center gap-4 px-4 py-2.5 bg-surface-dark border border-border-dark rounded-lg text-xs text-text-secondary-dark flex-wrap">
+  <Card padding="none" className="flex items-center gap-4 px-4 py-2.5 text-xs text-text-secondary-dark flex-wrap">
     <span className="flex items-center gap-1.5">
       <Activity className={`w-3 h-3 ${running ? 'text-green-400' : 'text-yellow-400'}`} />
       Engine {running ? 'running' : 'stopped'}
@@ -464,7 +468,7 @@ const EngineStatusBar: React.FC<EngineStatusBarProps> = ({
     <span className="text-border-dark">|</span>
     {activeCount > 0 && <span className="text-green-400">{activeCount} active</span>}
     {pausedCount > 0 && <span className="text-yellow-400">{pausedCount} paused</span>}
-  </div>
+  </Card>
 );
 
 // =============================================================================
@@ -496,20 +500,20 @@ const TriggersTable: React.FC<TriggersTableProps> = ({
 }) => {
   if (cronTasks.length === 0 && triggers.length === 0 && eventSubs.length === 0) return null;
   return (
-    <table className="min-w-full text-sm">
-      <thead className="bg-background-dark/60 border-b border-border-dark">
+    <Table className="min-w-full">
+      <TableHead>
         <tr>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Type</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden sm:table-cell">Team</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Schedule / Event</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden md:table-cell">Task / Action</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Status</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden lg:table-cell">Next Fire</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark hidden lg:table-cell">Last Fire</th>
-          <th className="px-4 py-2.5 text-left text-xs font-medium text-text-secondary-dark">Actions</th>
+          <TableHeader>Type</TableHeader>
+          <TableHeader className="hidden sm:table-cell">Team</TableHeader>
+          <TableHeader>Schedule / Event</TableHeader>
+          <TableHeader className="hidden md:table-cell">Task / Action</TableHeader>
+          <TableHeader>Status</TableHeader>
+          <TableHeader className="hidden lg:table-cell">Next Fire</TableHeader>
+          <TableHeader className="hidden lg:table-cell">Last Fire</TableHeader>
+          <TableHeader>Actions</TableHeader>
         </tr>
-      </thead>
-      <tbody>
+      </TableHead>
+      <TableBody>
         {cronTasks.map((task) => (
           <CronTaskRow key={`cron-${task.id}`} task={task} teamMap={teamMap} onToggle={onToggleCron} onDelete={onDeleteCron} />
         ))}
@@ -526,8 +530,8 @@ const TriggersTable: React.FC<TriggersTableProps> = ({
         {eventSubs.map((sub) => (
           <EventSubRow key={`sub-${sub.id}`} sub={sub} />
         ))}
-      </tbody>
-    </table>
+      </TableBody>
+    </Table>
   );
 };
 
@@ -555,10 +559,13 @@ const TeamGroup: React.FC<TeamGroupProps> = ({ teamName, cronTasks, triggers, ev
   const active = cronTasks.filter((t) => t.enabled).length + triggers.filter((t) => t.status === 'active').length + eventSubs.length;
 
   return (
-    <div className="bg-surface-dark border border-border-dark rounded-lg overflow-hidden">
+    <section className="flex flex-col gap-2">
+      {/* Collapsible group header — a full-width row target, not a styled button */}
       <button
+        type="button"
         onClick={() => setCollapsed(!collapsed)}
-        className="w-full flex items-center justify-between px-4 py-3 bg-background-dark/40 hover:bg-background-dark/60 transition-colors border-b border-border-dark"
+        aria-expanded={!collapsed}
+        className="w-full flex items-center justify-between px-4 py-3 bg-surface-dark border border-border-dark rounded-2xl hover:border-primary/50 transition-colors"
       >
         <div className="flex items-center gap-2">
           <Users className="w-4 h-4 text-text-secondary-dark" />
@@ -568,11 +575,9 @@ const TeamGroup: React.FC<TeamGroupProps> = ({ teamName, cronTasks, triggers, ev
         <span className="text-xs text-text-secondary-dark">{collapsed ? '▶' : '▼'}</span>
       </button>
       {!collapsed && (
-        <div className="overflow-x-auto">
-          <TriggersTable cronTasks={cronTasks} triggers={triggers} eventSubs={eventSubs} {...rest} />
-        </div>
+        <TriggersTable cronTasks={cronTasks} triggers={triggers} eventSubs={eventSubs} {...rest} />
       )}
-    </div>
+    </section>
   );
 };
 
@@ -743,16 +748,15 @@ export const Triggers: React.FC = () => {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
+          <IconButton
+            icon={RefreshCw}
+            variant="outline"
             onClick={handleRefresh}
-            disabled={refreshing}
-            className="p-2 rounded-lg text-text-secondary-dark hover:text-text-primary-dark hover:bg-surface-dark border border-border-dark transition-colors disabled:opacity-40"
+            loading={refreshing}
             title="Refresh"
-          >
-            <RefreshCw className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
-          </button>
-          <Button variant="primary" size="sm" onClick={() => setShowCreateModal(true)}>
-            <Plus className="w-4 h-4 mr-1.5" />
+            aria-label="Refresh"
+          />
+          <Button variant="primary" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>
             New Trigger
           </Button>
         </div>
@@ -795,39 +799,26 @@ export const Triggers: React.FC = () => {
       {/* Content — scrollable */}
       <div className="flex-1 overflow-y-auto min-h-0">
         {isLoading ? (
-          <div className="flex items-center justify-center py-16 text-text-secondary-dark text-sm">
-            Loading triggers…
-          </div>
+          <LoadingSpinner size="md" text="Loading triggers…" className="py-16" />
         ) : totalRows === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 gap-3">
-            <div className="w-12 h-12 rounded-full bg-surface-dark border border-border-dark flex items-center justify-center">
-              <Clock className="w-5 h-5 text-text-secondary-dark" />
-            </div>
-            <p className="text-sm text-text-secondary-dark">
-              {filterTab === 'all' ? 'No triggers yet' : `No ${filterTab} triggers`}
-            </p>
-            {filterTab === 'all' && (
-              <Button variant="outline" size="sm" onClick={() => setShowCreateModal(true)}>
-                <Plus className="w-4 h-4 mr-1.5" />
+          <EmptyState
+            icon={Clock}
+            title={filterTab === 'all' ? 'No triggers yet' : `No ${filterTab} triggers`}
+            action={filterTab === 'all' ? (
+              <Button variant="outline" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>
                 Create your first trigger
               </Button>
-            )}
-          </div>
+            ) : undefined}
+          />
         ) : viewMode === 'list' ? (
-          <div className="bg-surface-dark border border-border-dark rounded-lg overflow-hidden">
-            <div className="overflow-x-auto">
-              <TriggersTable
-                cronTasks={filteredCronTasks}
-                triggers={filteredTriggers}
-                eventSubs={filteredEventSubs}
-                {...sharedProps}
-              />
-            </div>
-          </div>
+          <TriggersTable
+            cronTasks={filteredCronTasks}
+            triggers={filteredTriggers}
+            eventSubs={filteredEventSubs}
+            {...sharedProps}
+          />
         ) : buildTeamGroups().length === 0 ? (
-          <div className="flex items-center justify-center py-16 text-text-secondary-dark text-sm">
-            No groups to display
-          </div>
+          <EmptyState title="No groups to display" compact />
         ) : (
           <div className="flex flex-col gap-4 pb-4">
             {buildTeamGroups().map(({ teamId, teamName, cronTasks: tc, triggers: tt, eventSubs: es }) => (

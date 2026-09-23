@@ -9,6 +9,7 @@
 
 import React, { useState } from 'react';
 import { Eye, EyeOff, ChevronUp, ChevronDown, Users, UserCheck, Car } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import { useFactory } from '../../../contexts/FactoryContext';
 
 /**
@@ -78,15 +79,15 @@ export const VisibilityToggles: React.FC = () => {
     <div className="absolute bottom-6 left-4 z-10">
       {/* Expanded panel */}
       {isExpanded && (
-        <div className="mb-2 bg-gray-900/90 backdrop-blur-sm rounded-lg border border-gray-700 shadow-xl p-3 min-w-[180px]">
-          <div className="flex items-center justify-between mb-3 pb-2 border-b border-gray-700">
+        <div className="mb-2 bg-surface-dark/90 backdrop-blur-sm rounded-2xl border border-border-dark shadow-xl p-3 min-w-[180px]">
+          <div className="flex items-center justify-between mb-3 pb-2 border-b border-border-dark">
             <span className="text-white text-sm font-medium">Visibility</span>
-            <button
+            <IconButton
+              icon={ChevronDown}
+              size="xs"
               onClick={() => setIsExpanded(false)}
-              className="text-gray-400 hover:text-white p-0.5"
-            >
-              <ChevronDown className="w-4 h-4" />
-            </button>
+              aria-label="Collapse panel"
+            />
           </div>
 
           <div className="space-y-2">
@@ -97,9 +98,12 @@ export const VisibilityToggles: React.FC = () => {
               >
                 {/* Toggle switch */}
                 <button
+                  type="button"
+                  role="switch"
+                  aria-checked={toggle.isVisible}
                   onClick={() => toggle.onToggle(!toggle.isVisible)}
                   className={`relative w-10 h-5 rounded-full transition-colors ${
-                    toggle.isVisible ? 'bg-primary' : 'bg-gray-600'
+                    toggle.isVisible ? 'bg-primary' : 'bg-border-dark'
                   }`}
                 >
                   <span
@@ -114,7 +118,7 @@ export const VisibilityToggles: React.FC = () => {
                   className={`flex items-center gap-2 text-sm transition-colors ${
                     toggle.isVisible
                       ? 'text-white'
-                      : 'text-gray-500 group-hover:text-gray-400'
+                      : 'text-text-secondary-dark group-hover:text-text-primary-dark'
                   }`}
                 >
                   {toggle.icon}
@@ -132,7 +136,7 @@ export const VisibilityToggles: React.FC = () => {
         className={`flex items-center gap-2 px-3 py-2 rounded-lg border shadow-lg transition-all ${
           hiddenCount > 0
             ? 'bg-orange-900/90 border-orange-500/50 text-orange-200'
-            : 'bg-gray-800/90 border-gray-600/50 text-gray-200'
+            : 'bg-background-dark/90 border-border-dark/50 text-text-primary-dark'
         }`}
         title="Toggle element visibility"
       >

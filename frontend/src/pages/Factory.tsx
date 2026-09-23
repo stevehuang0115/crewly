@@ -13,6 +13,8 @@ import { useNavigate } from 'react-router-dom';
 import { useSidebar } from '@/contexts/SidebarContext';
 import { ArrowLeft, Smartphone, Monitor, Factory as FactoryIcon, Users, Cpu, Activity } from 'lucide-react';
 import { FactoryScene } from '@/components/Factory3D';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
 
 /**
  * Detects if the current device is a mobile device.
@@ -57,40 +59,34 @@ const MobileFallback: React.FC<{ onTryAnyway: () => void; onGoBack: () => void }
 
       {/* Stats preview */}
       <div className="grid grid-cols-3 gap-4 mb-8">
-        <div className="bg-surface-dark p-4 rounded-lg border border-border-dark">
+        <Card padding="md">
           <Users className="w-6 h-6 text-primary mx-auto mb-2" />
           <p className="text-xs text-text-secondary-dark">Agents</p>
-        </div>
-        <div className="bg-surface-dark p-4 rounded-lg border border-border-dark">
+        </Card>
+        <Card padding="md">
           <Cpu className="w-6 h-6 text-green-500 mx-auto mb-2" />
           <p className="text-xs text-text-secondary-dark">Active</p>
-        </div>
-        <div className="bg-surface-dark p-4 rounded-lg border border-border-dark">
+        </Card>
+        <Card padding="md">
           <Activity className="w-6 h-6 text-blue-500 mx-auto mb-2" />
           <p className="text-xs text-text-secondary-dark">Status</p>
-        </div>
+        </Card>
       </div>
 
       {/* Recommendation */}
-      <div className="flex items-center gap-2 text-sm text-text-secondary-dark bg-surface-dark p-3 rounded-lg mb-6">
+      <div className="flex items-center gap-2 text-sm text-text-secondary-dark bg-surface-dark border border-border-dark p-3 rounded-2xl mb-6">
         <Monitor className="w-5 h-5 text-primary flex-shrink-0" />
         <span>For the best experience, open this page on a desktop computer.</span>
       </div>
 
       {/* Actions */}
       <div className="flex flex-col gap-3">
-        <button
-          onClick={onGoBack}
-          className="w-full px-4 py-3 bg-primary text-white rounded-lg font-medium hover:bg-primary/90 transition-colors"
-        >
+        <Button variant="primary" fullWidth onClick={onGoBack}>
           Back to Dashboard
-        </button>
-        <button
-          onClick={onTryAnyway}
-          className="w-full px-4 py-3 bg-surface-dark text-text-secondary-dark rounded-lg font-medium hover:bg-surface-dark/80 transition-colors border border-border-dark"
-        >
+        </Button>
+        <Button variant="secondary" fullWidth onClick={onTryAnyway}>
           Try Loading Anyway
-        </button>
+        </Button>
       </div>
 
       {/* Warning */}
@@ -153,13 +149,15 @@ export const Factory: React.FC = () => {
   return (
     <div className="fixed inset-0 top-14 md:top-0 md:left-16 bg-background-dark">
       {/* Back button - hidden on mobile since we have the header back button */}
-      <button
+      <Button
+        variant="secondary"
+        size="sm"
+        icon={ArrowLeft}
         onClick={handleBack}
-        className="hidden md:flex absolute top-4 left-4 z-10 items-center gap-2 px-3 py-2 bg-surface-dark/80 backdrop-blur-sm rounded-lg border border-border-dark hover:bg-surface-dark hover:border-primary/50 transition-all"
+        className="hidden md:flex absolute top-4 left-4 z-10 backdrop-blur-sm"
       >
-        <ArrowLeft className="w-4 h-4" />
-        <span className="text-sm font-medium">Back to Dashboard</span>
-      </button>
+        Back to Dashboard
+      </Button>
 
       {/* R3F Factory Scene */}
       <FactoryScene showStats={isDev} className="w-full h-full" />

@@ -10,6 +10,7 @@
 
 import React from 'react';
 import { ExternalLink, X } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import type { PrefillConfidence, PrefillExtractionMethod } from '../../types/onboarding.types';
 import { ConfidencePill } from './ConfidencePill';
 
@@ -66,14 +67,13 @@ export const SourceDrawer: React.FC<SourceDrawerProps> = ({
         <h4 className="text-sm font-medium text-text-primary-dark">
           Why we think this
         </h4>
-        <button
+        <IconButton
+          icon={X}
+          size="xs"
           onClick={onClose}
-          className="rounded-md p-1 text-text-secondary-dark hover:text-text-primary-dark hover:bg-surface-dark transition-colors"
           aria-label="Close source details"
           data-testid="source-drawer-close"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        />
       </div>
 
       <div className="space-y-3">

@@ -640,7 +640,8 @@ describe('Projects Page', () => {
         expect(newProjectButton).toBeInTheDocument();
       });
 
-      const newProjectButton = screen.getByText('New Project');
+      // Library Button wraps its label in a <span>; focus the button itself.
+      const newProjectButton = screen.getByRole('button', { name: /new project/i });
       newProjectButton.focus();
       expect(document.activeElement).toBe(newProjectButton);
     });

@@ -14,6 +14,7 @@ import { Users } from 'lucide-react';
 import { rolesService } from '../../services/roles.service';
 import { updateConnectorAccess } from '../../services/connector.service';
 import { Alert } from '@crewly/ui/Alert';
+import { FilterPill } from '@crewly/ui/FilterPill';
 
 /** Props. */
 export interface ConnectorAccessControlProps {
@@ -99,36 +100,26 @@ export const ConnectorAccessControl: React.FC<ConnectorAccessControlProps> = ({ 
       {error && <Alert variant="error" onClose={() => setError(null)}>{error}</Alert>}
 
       <div className="flex flex-wrap gap-2">
-        <button
-          type="button"
+        <FilterPill
+          isActive={everyAgent}
           onClick={() => !everyAgent && void save([])}
           disabled={busy}
-          className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-            everyAgent
-              ? 'bg-primary/15 text-primary border-primary/40'
-              : 'bg-background-dark text-text-secondary-dark border-border-dark hover:text-text-primary-dark'
-          } ${busy ? 'opacity-50' : ''}`}
           data-testid={`connector-access-${connectorId}-every`}
         >
           Every agent
-        </button>
+        </FilterPill>
         {roles.map((role) => {
           const on = selected.includes(role);
           return (
-            <button
+            <FilterPill
               key={role}
-              type="button"
+              isActive={on}
               onClick={() => toggle(role)}
               disabled={busy}
-              className={`px-2.5 py-1 text-xs rounded-full border transition-colors ${
-                on
-                  ? 'bg-primary/15 text-primary border-primary/40'
-                  : 'bg-background-dark text-text-secondary-dark border-border-dark hover:text-text-primary-dark'
-              } ${busy ? 'opacity-50' : ''}`}
               data-testid={`connector-access-${connectorId}-role-${role}`}
             >
               {role}
-            </button>
+            </FilterPill>
           );
         })}
       </div>

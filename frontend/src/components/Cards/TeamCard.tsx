@@ -2,34 +2,13 @@ import React from 'react';
 import { Users, FolderOpen, User } from 'lucide-react';
 import { Team, TeamMember } from '@/types';
 import { useTerminal } from '@/contexts/TerminalContext';
+import { Card } from '@crewly/ui/Card';
 
 interface TeamCardProps {
   team: Team;
   onMemberClick?: (member: TeamMember) => void;
   onClick?: () => void;
 }
-
-const statusColors = {
-  idle: 'bg-gray-500/10 text-gray-400',
-  working: 'bg-green-500/10 text-green-400',
-  blocked: 'bg-yellow-500/10 text-yellow-400',
-  terminated: 'bg-red-500/10 text-red-400',
-  ready: 'bg-green-500/10 text-green-400',
-  activating: 'bg-orange-500/10 text-orange-400',
-  active: 'bg-emerald-500/10 text-emerald-400',
-  inactive: 'bg-gray-500/10 text-gray-400',
-  completed: 'bg-blue-500/10 text-blue-400'
-};
-
-const roleColors: Record<string, string> = {
-  orchestrator: '#2a73ea',
-  tpm: '#3b82f6',
-  pgm: '#0ea5e9',
-  developer: '#10b981',
-  qa: '#f59e0b',
-  tester: '#ef4444',
-  designer: '#ec4899'
-};
 
 export const TeamCard: React.FC<TeamCardProps> = ({
   team,
@@ -45,7 +24,6 @@ export const TeamCard: React.FC<TeamCardProps> = ({
     
     // If member has active session, open terminal with that session
     if (member.sessionName) {
-      console.log('TeamCard: Opening terminal for session:', member.sessionName);
       openTerminalWithSession(member.sessionName);
     } else if (onMemberClick) {
       // Fallback to existing member click handler if no session
@@ -55,8 +33,10 @@ export const TeamCard: React.FC<TeamCardProps> = ({
 
 
   return (
-    <div
-      className={`bg-surface-dark p-6 rounded-xl border border-border-dark transition-all hover:shadow-lg hover:border-primary/50 flex flex-col h-full ${onClick ? 'cursor-pointer' : ''}`}
+    <Card
+      padding="lg"
+      interactive={!!onClick}
+      className="transition-all hover:shadow-lg hover:border-primary/50 flex flex-col h-full"
       onClick={onClick}
     >
       <div className="flex items-start justify-between mb-4">
@@ -126,6 +106,6 @@ export const TeamCard: React.FC<TeamCardProps> = ({
           </div>
         </div>
       )}
-    </div>
+    </Card>
   );
 };

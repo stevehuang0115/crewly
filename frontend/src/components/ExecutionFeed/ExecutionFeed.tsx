@@ -8,6 +8,7 @@
  */
 
 import React, { useRef, useEffect } from 'react';
+import { Button } from '@crewly/ui/Button';
 import { useExecutionFeed } from './useExecutionFeed';
 import type { ExecutionFeedProps, FeedEvent, FeedEventType } from './types';
 import './ExecutionFeed.css';
@@ -54,7 +55,7 @@ function formatTime(iso: string): string {
 const FeedEntry: React.FC<{ event: FeedEvent }> = ({ event }) => {
 	const isActive =
 		event.agentStatus === 'active' || event.agentStatus === 'busy';
-	const dotColor = DOT_COLOR[event.type] || 'bg-gray-400';
+	const dotColor = DOT_COLOR[event.type] || 'bg-text-secondary-dark';
 
 	return (
 		<div
@@ -155,13 +156,14 @@ export const ExecutionFeed: React.FC<ExecutionFeedProps> = ({
 					)}
 				</div>
 				{events.length > 0 && (
-					<button
+					<Button
+						variant="ghost"
+						size="xs"
 						onClick={clearEvents}
-						className="text-xs text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)] transition-colors"
 						data-testid="feed-clear"
 					>
 						Clear
-					</button>
+					</Button>
 				)}
 			</div>
 

@@ -11,6 +11,8 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { Tabs, TabList, TabTrigger, TabContent } from '@crewly/ui/Tabs';
 import { CronJobPanel } from '@/components/Settings/CronJobPanel';
 import {
   ScheduledMessageCard,
@@ -133,9 +135,9 @@ const ScheduledMessagesTab: React.FC = () => {
         <div className="mt-8">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">Delivery Logs</h3>
-            <button onClick={clearDeliveryLogs} className="text-sm text-text-secondary-dark hover:text-text-primary-dark">
+            <Button variant="ghost" size="sm" onClick={clearDeliveryLogs}>
               Clear Logs
-            </button>
+            </Button>
           </div>
           <DeliveryLogsTable deliveryLogs={deliveryLogs} formatDate={formatDate} onClearLogs={clearDeliveryLogs} />
         </div>
@@ -173,42 +175,22 @@ export const ScheduledCheckins: React.FC = () => {
       </div>
 
       {/* Top-level page tabs: Scheduled Messages | Cron Jobs */}
-      <div className="flex gap-1 border-b border-border-dark mb-6" role="tablist" aria-label="Page sections">
-        <button
-          role="tab"
-          aria-selected={pageTab === 'messages'}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            pageTab === 'messages'
-              ? 'border-primary text-primary font-semibold'
-              : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => setPageTab('messages')}
-        >
-          Scheduled Messages
-        </button>
-        <button
-          role="tab"
-          aria-selected={pageTab === 'cron'}
-          className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
-            pageTab === 'cron'
-              ? 'border-primary text-primary font-semibold'
-              : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => setPageTab('cron')}
-        >
-          Cron Jobs
-        </button>
-      </div>
+      <Tabs value={pageTab} onValueChange={(v) => setPageTab(v as PageTab)}>
+        <TabList aria-label="Page sections">
+          <TabTrigger value="messages">Scheduled Messages</TabTrigger>
+          <TabTrigger value="cron">Cron Jobs</TabTrigger>
+        </TabList>
 
-      {/* Tab 1: Scheduled Messages (isolated component to prevent hook crash) */}
-      {pageTab === 'messages' && <ScheduledMessagesTab />}
+        {/* Tab 1: Scheduled Messages (isolated component to prevent hook crash) */}
+        <TabContent value="messages">
+          <ScheduledMessagesTab />
+        </TabContent>
 
-      {/* Tab 2: Cron Jobs */}
-      {pageTab === 'cron' && (
-        <div className="mb-10">
+        {/* Tab 2: Cron Jobs */}
+        <TabContent value="cron" className="mb-10">
           <CronJobPanel />
-        </div>
-      )}
+        </TabContent>
+      </Tabs>
     </div>
   );
 };

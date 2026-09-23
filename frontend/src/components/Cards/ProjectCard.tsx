@@ -2,6 +2,8 @@ import React from 'react';
 import { FolderOpen, Pin, PinOff } from 'lucide-react';
 import { Project, Team } from '@/types';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
+import { IconButton } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
 
 interface ProjectCardProps {
   project: Project;
@@ -28,10 +30,10 @@ interface ProjectCardProps {
 
 const statusColors = {
   active: { bg: 'bg-green-500/10', text: 'text-green-400', label: 'Running' },
-  paused: { bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'Idle' },
+  paused: { bg: 'bg-text-secondary-dark/10', text: 'text-text-secondary-dark', label: 'Idle' },
   completed: { bg: 'bg-blue-500/10', text: 'text-blue-400', label: 'Completed' },
   blocked: { bg: 'bg-red-500/10', text: 'text-red-400', label: 'Blocked' },
-  stopped: { bg: 'bg-gray-500/10', text: 'text-gray-400', label: 'Idle' },
+  stopped: { bg: 'bg-text-secondary-dark/10', text: 'text-text-secondary-dark', label: 'Idle' },
 };
 
 export const ProjectCard: React.FC<ProjectCardProps> = ({
@@ -67,23 +69,25 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
   const showMenu = onArchive && project.status !== 'completed';
 
   return (
-    <div
-      className={`group bg-surface-dark p-6 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-primary/50 flex flex-col h-full ${onClick ? 'cursor-pointer' : ''}`}
+    <Card
+      padding="lg"
+      interactive={!!onClick}
+      className="group transition-all hover:shadow-lg hover:border-primary/50 flex flex-col h-full"
       onClick={onClick}
     >
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-semibold text-lg">{project.name}</h3>
         <div className="flex items-center gap-2">
           {onTogglePin && (
-            <button
+            <IconButton
+              icon={isPinned ? PinOff : Pin}
+              size="xs"
               onClick={(e) => { e.stopPropagation(); onTogglePin(); }}
-              className={`p-1 rounded transition-colors ${isPinned ? 'text-yellow-400 hover:text-yellow-300' : 'text-gray-500 opacity-0 group-hover:opacity-100 hover:text-yellow-400'}`}
+              className={isPinned ? 'text-yellow-400 hover:text-yellow-300' : 'opacity-0 group-hover:opacity-100 focus:opacity-100 hover:text-yellow-400'}
               title={isPinned ? 'Unpin from favorites' : 'Pin to favorites'}
               aria-label={isPinned ? 'Unpin from favorites' : 'Pin to favorites'}
               data-testid={`pin-btn-${project.id}`}
-            >
-              {isPinned ? <PinOff className="w-4 h-4" /> : <Pin className="w-4 h-4" />}
-            </button>
+            />
           )}
           {showStatus && (
             <span className={`text-xs font-medium px-2 py-1 rounded-full ${statusColor.bg} ${statusColor.text}`}>
@@ -158,6 +162,6 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
           Updated {lastUpdated}
         </p>
       </div>
-    </div>
+    </Card>
   );
 };

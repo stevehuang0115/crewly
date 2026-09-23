@@ -34,7 +34,8 @@ import { StatusBadge } from '@crewly/ui/StatusBadge';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Button } from '@crewly/ui/Button';
 import { Input } from '@crewly/ui/Input';
-import { FormSelect } from '@crewly/ui/Form';
+import { FormSelect, FormTextarea } from '@crewly/ui/Form';
+import { EmptyState } from '@crewly/ui/EmptyState';
 import { Alert } from '@crewly/ui/Alert';
 import { LevelBadge, ApprovalChip } from '../components/Missions/OkrBadges';
 import { ApprovalActions } from '../components/Missions/ApprovalActions';
@@ -305,22 +306,15 @@ export const MissionDetail: React.FC = () => {
   if (error) {
     return (
       <div className="p-6 max-w-[1000px] mx-auto" data-testid="mission-detail-error">
-        <button
-          onClick={() => navigate('/missions')}
-          className="flex items-center gap-1.5 text-sm text-text-secondary-dark hover:text-text-primary-dark mb-6 transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
+        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => navigate('/missions')} className="mb-6">
           Back to Missions
-        </button>
+        </Button>
         <Card variant="default" padding="lg">
-          <div className="text-center py-8">
+          <div className="flex flex-col items-center text-center py-8">
             <p className="text-red-400 mb-2">{error}</p>
-            <button
-              onClick={() => loadMission()}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-            >
+            <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => loadMission()}>
               Retry
-            </button>
+            </Button>
           </div>
         </Card>
       </div>
@@ -330,18 +324,11 @@ export const MissionDetail: React.FC = () => {
   if (!mission) {
     return (
       <div className="p-6 max-w-[1000px] mx-auto">
-        <button
-          onClick={() => navigate('/missions')}
-          className="flex items-center gap-1.5 text-sm text-text-secondary-dark hover:text-text-primary-dark mb-6 transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
+        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => navigate('/missions')} className="mb-6">
           Back to Missions
-        </button>
+        </Button>
         <Card variant="default" padding="lg">
-          <div className="text-center py-8 text-text-secondary-dark">
-            <Target className="h-10 w-10 mx-auto mb-3 opacity-40" />
-            <p>Mission not found.</p>
-          </div>
+          <EmptyState icon={Target} title="Mission not found." compact />
         </Card>
       </div>
     );
@@ -355,14 +342,16 @@ export const MissionDetail: React.FC = () => {
 
   return (
     <div className="p-6 max-w-[1000px] mx-auto" data-testid="mission-detail-page">
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={ArrowLeft}
         onClick={() => navigate('/missions')}
-        className="flex items-center gap-1.5 text-sm text-text-secondary-dark hover:text-text-primary-dark mb-6 transition-colors"
+        className="mb-6"
         data-testid="mission-detail-back"
       >
-        <ArrowLeft className="h-4 w-4" />
         Back to Missions
-      </button>
+      </Button>
 
       {/* Header */}
       <div className="flex items-start justify-between gap-4 mb-6">
@@ -452,8 +441,7 @@ export const MissionDetail: React.FC = () => {
                 size="sm"
                 icon={RefreshCw}
                 onClick={() => loadMission(false)}
-                disabled={refreshing}
-                className={refreshing ? 'animate-spin' : ''}
+                loading={refreshing}
                 aria-label="Refresh mission"
               >
                 Refresh
@@ -482,9 +470,8 @@ export const MissionDetail: React.FC = () => {
               Current Strategy
             </h2>
             {isEditing && draft ? (
-              <textarea
+              <FormTextarea
                 aria-label="Current Strategy"
-                className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark resize-y focus:outline-none focus:border-accent-blue/50"
                 rows={4}
                 value={draft.currentStrategy}
                 onChange={(e) => setField('currentStrategy', e.target.value)}
@@ -504,9 +491,8 @@ export const MissionDetail: React.FC = () => {
               Success Criteria ({mission.successCriteria.length})
             </h2>
             {isEditing && draft ? (
-              <textarea
+              <FormTextarea
                 aria-label="Success Criteria (one per line)"
-                className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark resize-y focus:outline-none focus:border-accent-blue/50"
                 rows={5}
                 placeholder="One criterion per line"
                 value={draft.successCriteriaText}
@@ -647,14 +633,16 @@ export const MissionDetail: React.FC = () => {
                     data-testid="edit-parent"
                   />
                 ) : mission.parentMissionId ? (
-                  <button
+                  <Button
                     type="button"
+                    variant="link"
+                    size="xs"
                     onClick={() => navigate(`/missions/${mission.parentMissionId}`)}
-                    className="text-left text-xs text-primary hover:underline truncate"
+                    className="truncate max-w-full"
                     data-testid="mission-parent-link"
                   >
                     {missionNames.get(mission.parentMissionId) ?? mission.parentMissionId}
-                  </button>
+                  </Button>
                 ) : (
                   <span className="text-text-primary-dark font-mono text-xs">—</span>
                 )}
@@ -670,14 +658,16 @@ export const MissionDetail: React.FC = () => {
               {!isEditing && mission.projectId && (
                 <div className="flex justify-between">
                   <span className="text-text-secondary-dark">Project</span>
-                  <button
+                  <Button
                     type="button"
+                    variant="link"
+                    size="xs"
                     onClick={() => navigate(`/projects/${mission.projectId}`)}
-                    className="text-xs text-primary hover:underline font-mono"
+                    className="font-mono"
                     data-testid="mission-project-link"
                   >
                     {mission.projectId.slice(0, 12)}
-                  </button>
+                  </Button>
                 </div>
               )}
 

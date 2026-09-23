@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
-import { UserPlus, Play, FolderOpen, CheckSquare, FileText, Plus, Trash2, UserMinus, Info, ExternalLink, Square } from 'lucide-react';
+import { UserPlus, Play, FolderOpen, CheckSquare, FileText, Plus, Trash2, UserMinus, Info, ExternalLink, Square, ChevronDown, ChevronRight } from 'lucide-react';
 import { Project, Team, Ticket } from '../types';
 import { apiService } from '../services/api.service';
 import { TeamAssignmentModal } from '../components/Modals/TeamAssignmentModal';
@@ -10,6 +10,7 @@ import { useTerminal } from '../contexts/TerminalContext';
 import { Button, useAlert, useConfirm, Dropdown, FormPopup, FormGroup, FormRow, FormLabel, FormInput, FormTextarea, FormHelp } from '@crewly/ui';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
+import { Tabs, TabList, TabTrigger } from '@crewly/ui/Tabs';
 import { DetailView } from '../components/ProjectDetail/DetailView';
 import { TasksView } from '../components/ProjectDetail/TasksView';
 import { EditorView } from '../components/ProjectDetail/EditorView';
@@ -18,6 +19,9 @@ import { TaskCreateModal } from '../components/ProjectDetail/TaskCreateModal';
 import { inProgressTasksService } from '../services/in-progress-tasks.service';
 import { TaskFlowView } from '../components/Hierarchy';
 import type { TaskFlowItem } from '../components/Hierarchy';
+
+/** Tabs on the project page; mirrored in the URL hash. */
+type ProjectTab = 'detail' | 'editor' | 'tasks' | 'teams';
 
 interface ProjectDetailState {
   project: Project | null;
@@ -45,13 +49,13 @@ export const ProjectDetail: React.FC = () => {
   const getTabFromHash = useCallback(() => {
     const hash = location.hash.replace('#', '');
     const validTabs = ['detail', 'editor', 'tasks', 'teams'];
-    return validTabs.includes(hash) ? hash as 'detail' | 'editor' | 'tasks' | 'teams' : 'detail';
+    return validTabs.includes(hash) ? hash as ProjectTab : 'detail';
   }, [location.hash]);
 
-  const [activeTab, setActiveTab] = useState<'detail' | 'editor' | 'tasks' | 'teams'>(() => {
+  const [activeTab, setActiveTab] = useState<ProjectTab>(() => {
     const hash = location.hash.replace('#', '');
     const validTabs = ['detail', 'editor', 'tasks', 'teams'];
-    return validTabs.includes(hash) ? hash as 'detail' | 'editor' | 'tasks' | 'teams' : 'detail';
+    return validTabs.includes(hash) ? hash as ProjectTab : 'detail';
   });
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [isTeamAssignmentModalOpen, setIsTeamAssignmentModalOpen] = useState(false);
@@ -111,7 +115,7 @@ export const ProjectDetail: React.FC = () => {
   }, [getTabFromHash]);
 
   // Update hash when activeTab changes
-  const updateActiveTab = (tab: 'detail' | 'editor' | 'tasks' | 'teams') => {
+  const updateActiveTab = (tab: ProjectTab) => {
     setActiveTab(tab);
     navigate(`${location.pathname}#${tab}`, { replace: true });
   };
@@ -1434,56 +1438,18 @@ export const ProjectDetail: React.FC = () => {
       </div>
 
 
-      {/* Tabs */}
-      <div className="flex gap-1 mb-6 border-b border-border-dark">
-        <button
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-            activeTab === 'detail'
-              ? 'border-primary text-primary'
-              : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => updateActiveTab('detail')}
-        >
-          <Info className="w-4 h-4" />
-          Detail
-        </button>
-        <button
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-            activeTab === 'editor'
-              ? 'border-primary text-primary'
-              : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => updateActiveTab('editor')}
-        >
-          <FolderOpen className="w-4 h-4" />
-          Editor
-        </button>
-        <button
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-            activeTab === 'tasks'
-              ? 'border-primary text-primary'
-              : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => updateActiveTab('tasks')}
-        >
-          <CheckSquare className="w-4 h-4" />
-          Tasks ({tickets.length})
-        </button>
-        <button
-          className={`flex items-center gap-2 px-4 py-3 text-sm font-medium transition-colors border-b-2 ${
-            activeTab === 'teams'
-              ? 'border-primary text-primary'
-              : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => updateActiveTab('teams')}
-        >
-          <UserPlus className="w-4 h-4" />
-          Teams ({assignedTeams.length})
-        </button>
-      </div>
+      {/* Tabs — controlled so the active tab stays in sync with the URL hash */}
+      <Tabs value={activeTab} onValueChange={(v) => updateActiveTab(v as ProjectTab)}>
+        <TabList aria-label="Project sections">
+          <TabTrigger value="detail" icon={<Info className="w-4 h-4" />}>Detail</TabTrigger>
+          <TabTrigger value="editor" icon={<FolderOpen className="w-4 h-4" />}>Editor</TabTrigger>
+          <TabTrigger value="tasks" icon={<CheckSquare className="w-4 h-4" />}>Tasks ({tickets.length})</TabTrigger>
+          <TabTrigger value="teams" icon={<UserPlus className="w-4 h-4" />}>Teams ({assignedTeams.length})</TabTrigger>
+        </TabList>
+      </Tabs>
 
       {/* Tab Content */}
-      <div>
+      <div role="tabpanel" id={`tabpanel-${activeTab}`} aria-labelledby={`tab-${activeTab}`}>
         {activeTab === 'detail' ? (
           <DetailView 
             project={project} 
@@ -1519,15 +1485,16 @@ export const ProjectDetail: React.FC = () => {
             {/* Task Flow View — hierarchical task delegation tree */}
             {taskFlowItems.length > 0 && (
               <div className="mb-4">
-                <button
-                  className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark hover:text-primary mb-2"
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  icon={showTaskFlow ? ChevronDown : ChevronRight}
+                  className="mb-2"
+                  aria-expanded={showTaskFlow}
                   onClick={() => setShowTaskFlow(!showTaskFlow)}
                 >
-                  <svg className={`w-4 h-4 transition-transform ${showTaskFlow ? 'rotate-90' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
                   Task Flow ({taskFlowItems.length} active)
-                </button>
+                </Button>
                 {showTaskFlow && (
                   <div className="rounded-lg border border-border-dark bg-surface-dark p-3">
                     <TaskFlowView tasks={taskFlowItems} />

@@ -133,12 +133,12 @@ describe('getStatusColor', () => {
     expect(getStatusColor('starting')).toBe('bg-yellow-400');
   });
 
-  it('should return gray for inactive', () => {
-    expect(getStatusColor('inactive')).toBe('bg-gray-500');
+  it('should return the neutral token for inactive', () => {
+    expect(getStatusColor('inactive')).toBe('bg-text-secondary-dark');
   });
 
-  it('should return gray for unknown status', () => {
-    expect(getStatusColor('unknown')).toBe('bg-gray-500');
+  it('should return the neutral token for unknown status', () => {
+    expect(getStatusColor('unknown')).toBe('bg-text-secondary-dark');
   });
 });
 

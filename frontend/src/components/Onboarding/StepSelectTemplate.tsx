@@ -18,10 +18,12 @@ import {
   ShieldCheck,
   ArrowRight,
   ArrowLeft,
-  Loader2,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import clsx from 'clsx';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import type { TemplateInfo } from './onboarding.types';
 
 // ---------------------------------------------------------------------------
@@ -123,10 +125,7 @@ export const StepSelectTemplate: React.FC<StepSelectTemplateProps> = ({
 
       {/* Loading */}
       {loading && (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 text-primary animate-spin" />
-          <span className="ml-2 text-sm text-text-secondary-dark">Loading templates...</span>
-        </div>
+        <LoadingSpinner size="sm" inline text="Loading templates..." className="py-12" />
       )}
 
       {/* Error */}
@@ -171,12 +170,8 @@ export const StepSelectTemplate: React.FC<StepSelectTemplateProps> = ({
                     {template.description}
                   </p>
                   <div className="flex items-center gap-2 mt-1.5">
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-background-dark text-text-secondary-dark">
-                      {template.roles?.length ?? 0} roles
-                    </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-background-dark text-text-secondary-dark capitalize">
-                      {template.category}
-                    </span>
+                    <Badge>{template.roles?.length ?? 0} roles</Badge>
+                    <Badge className="capitalize">{template.category}</Badge>
                   </div>
                 </div>
               </button>
@@ -187,23 +182,18 @@ export const StepSelectTemplate: React.FC<StepSelectTemplateProps> = ({
 
       {/* Actions */}
       <div className="flex items-center justify-between mt-6">
-        <button
-          onClick={onBack}
-          className="flex items-center gap-1.5 px-4 py-2 text-sm text-text-secondary-dark hover:text-text-primary-dark transition-colors"
-          data-testid="template-back-btn"
-        >
-          <ArrowLeft className="w-4 h-4" />
+        <Button variant="ghost" icon={ArrowLeft} onClick={onBack} data-testid="template-back-btn">
           Back
-        </button>
-        <button
+        </Button>
+        <Button
+          icon={ArrowRight}
+          iconPosition="right"
           onClick={onNext}
           disabled={!selected}
-          className="flex items-center gap-2 px-6 py-2.5 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-medium disabled:opacity-40 disabled:cursor-not-allowed"
           data-testid="template-next-btn"
         >
           Continue
-          <ArrowRight className="w-4 h-4" />
-        </button>
+        </Button>
       </div>
     </div>
   );

@@ -13,6 +13,7 @@ import {
 } from '../components/Assignments';
 import { EnhancedAssignmentsList } from '../components/Assignments/EnhancedAssignmentsList';
 import { useAlert, useConfirm } from '@crewly/ui/Dialog';
+import { Button, Card } from '@crewly/ui';
 
 export const Assignments: React.FC = () => {
   const { openTerminalWithSession } = useTerminal();
@@ -252,16 +253,18 @@ export const Assignments: React.FC = () => {
       </div>
 
       {/* Projects & Teams Panel - Full Width */}
-      <div className="bg-surface-dark border border-border-dark rounded-lg">
+      <Card padding="none">
         <div className="flex items-center justify-between p-5 border-b border-border-dark">
           <h3 className="text-xl font-semibold">Active Projects & Teams</h3>
           <div className="flex items-center gap-3">
-            <button
-              className={`px-3 py-2 rounded-lg border text-sm ${viewMode === 'enhanced' ? 'border-primary text-primary' : 'border-border-dark text-text-primary-dark hover:border-primary/50'}`}
+            <Button
+              variant={viewMode === 'enhanced' ? 'primary' : 'outline'}
+              size="sm"
+              aria-pressed={viewMode === 'enhanced'}
               onClick={() => setViewMode('enhanced')}
             >
               Task View
-            </button>
+            </Button>
             <ViewToggle
               viewMode={viewMode === 'enhanced' ? 'projects' : viewMode}
               assignedProjects={assignedProjects}
@@ -304,7 +307,7 @@ export const Assignments: React.FC = () => {
               />
             </div>
           )}
-      </div>
+      </Card>
       <AlertComponent />
       <ConfirmComponent />
     </div>

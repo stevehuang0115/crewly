@@ -189,15 +189,16 @@ export const WorkItems: React.FC = () => {
       <div className="mb-6">
         <div className="flex items-center justify-between mb-2">
           <h1 className="text-2xl font-bold text-text-primary-dark">Work Items</h1>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={RefreshCw}
             onClick={loadItems}
-            disabled={loading}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary-dark hover:text-text-primary-dark bg-surface-dark border border-border-dark rounded-lg transition-colors disabled:opacity-50"
+            loading={loading}
             data-testid="workitems-refresh"
           >
-            <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
             Refresh
-          </button>
+          </Button>
         </div>
         <p className="text-sm text-text-secondary-dark">
           Execution-level view of all system tasks in the task pool.

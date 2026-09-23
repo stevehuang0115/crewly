@@ -1,5 +1,8 @@
 import React from 'react';
 import { Edit, Trash2, Clock, Play, Pause, CheckCircle } from 'lucide-react';
+import { Badge } from '@crewly/ui/Badge';
+import { IconButton } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
 import { ScheduledMessage } from './types';
 
 interface ScheduledMessageCardProps {
@@ -31,53 +34,59 @@ export const ScheduledMessageCard: React.FC<ScheduledMessageCardProps> = ({
   };
 
   return (
-    <div
+    <Card
       onClick={handleCardClick}
-      className={`bg-surface-dark p-5 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-primary/50 flex flex-col justify-between ${onCardClick ? 'cursor-pointer' : ''}`}
+      interactive={!!onCardClick}
+      className="p-5 transition-all hover:shadow-lg hover:border-primary/50 flex flex-col justify-between"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h3 className="font-semibold text-lg truncate">{message.name}</h3>
           <div className="mt-1 flex items-center gap-2 text-xs">
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full ${isActive ? 'bg-green-500/10 text-green-400' : 'bg-zinc-500/10 text-zinc-300'}`}>
+            <Badge variant={isActive ? 'success' : 'default'} className="gap-1">
               <CheckCircle className="w-3.5 h-3.5" />
               {isActive ? 'Active' : 'Completed'}
-            </span>
+            </Badge>
           </div>
         </div>
         <div className="flex items-center gap-1.5" data-actions>
-          <button
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-border-dark text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50"
+          <IconButton
+            icon={isActive ? Pause : Play}
+            variant="outline"
+            size="xs"
             onClick={(e) => { e.stopPropagation(); onToggleActive(message.id, message.isActive); }}
             title={isActive ? 'Disable' : 'Re-activate'}
-          >
-            {isActive ? <Pause className="w-4 h-4" /> : <Play className="w-4 h-4" />}
-          </button>
+            aria-label={isActive ? 'Disable' : 'Re-activate'}
+          />
           {isActive && (
             <>
-              <button
-                className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-border-dark text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50"
+              <IconButton
+                icon={Edit}
+                variant="outline"
+                size="xs"
                 onClick={(e) => { e.stopPropagation(); onEdit(message); }}
                 title="Edit"
-              >
-                <Edit className="w-4 h-4" />
-              </button>
-              <button
-                className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-border-dark text-text-secondary-dark hover:text-text-primary-dark hover:border-primary/50"
+                aria-label="Edit"
+              />
+              <IconButton
+                icon={Play}
+                variant="outline"
+                size="xs"
                 onClick={(e) => { e.stopPropagation(); onRunNow(message.id, message.name); }}
                 title="Run now"
-              >
-                <Play className="w-4 h-4" />
-              </button>
+                aria-label="Run now"
+              />
             </>
           )}
-          <button
-            className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-border-dark text-text-secondary-dark hover:text-red-300 hover:border-red-500/50"
+          <IconButton
+            icon={Trash2}
+            variant="danger-ghost"
+            size="xs"
+            className="border border-border-dark hover:border-red-500/50"
             onClick={(e) => { e.stopPropagation(); onDelete(message.id, message.name); }}
             title="Delete"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+            aria-label="Delete"
+          />
         </div>
       </div>
 
@@ -109,6 +118,6 @@ export const ScheduledMessageCard: React.FC<ScheduledMessageCardProps> = ({
           )}
         </div>
       </div>
-    </div>
+    </Card>
   );
 };

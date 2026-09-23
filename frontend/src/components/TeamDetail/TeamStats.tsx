@@ -1,5 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { ScoreCard, ScoreCardGrid } from '@crewly/ui/ScoreCard';
+import { Button } from '@crewly/ui/Button';
+import { FormSelect } from '@crewly/ui/Form';
 import { TeamStatsProps } from './types';
 
 interface Project {
@@ -67,19 +69,13 @@ export const TeamStats: React.FC<TeamStatsExtendedProps> = ({
   const ProjectField = () => {
     if (isEditingProject) {
       return (
-        <div className="project-edit-container" style={{ minWidth: '200px' }}>
-          <select
+        <div className="project-edit-container min-w-[200px] space-y-1">
+          <FormSelect
+            aria-label="Project"
             value={team?.projectIds?.[0] || ''}
             onChange={(e) => handleProjectSelect(e.target.value || null)}
             disabled={loading}
             autoFocus
-            style={{
-              width: '100%',
-              padding: '4px 8px',
-              border: '1px solid #ccc',
-              borderRadius: '4px',
-              fontSize: '14px'
-            }}
           >
             <option value="">No project</option>
             {projects.map(project => (
@@ -87,34 +83,17 @@ export const TeamStats: React.FC<TeamStatsExtendedProps> = ({
                 {project.name}
               </option>
             ))}
-          </select>
-          <div style={{ marginTop: '4px', fontSize: '12px' }}>
-            <button
-              onClick={handleCancel}
-              style={{
-                padding: '2px 8px',
-                marginLeft: '4px',
-                border: '1px solid #ccc',
-                borderRadius: '3px',
-                fontSize: '12px',
-                cursor: 'pointer',
-                backgroundColor: '#f5f5f5'
-              }}
-            >
-              Cancel
-            </button>
-          </div>
+          </FormSelect>
+          <Button variant="ghost" size="xs" onClick={handleCancel}>
+            Cancel
+          </Button>
         </div>
       );
     }
 
     return (
       <span
-        style={{
-          cursor: onProjectChange ? 'pointer' : 'default',
-          textDecoration: onProjectChange ? 'underline' : 'none',
-          color: onProjectChange ? '#0066cc' : 'inherit'
-        }}
+        className={onProjectChange ? 'cursor-pointer underline text-primary' : ''}
         onClick={handleProjectClick}
         title={onProjectChange ? 'Click to edit project' : undefined}
       >

@@ -1,8 +1,10 @@
 import React, { useState } from 'react';
-import { Play, Square, Loader2, Sparkles } from 'lucide-react';
+import { Play, Square, Sparkles } from 'lucide-react';
 import { TeamMember } from '@/types';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { Badge } from '@crewly/ui/Badge';
+import { IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { SignInNeededChip } from '@/components/SignInNeededChip';
 
 interface TeamMemberRowProps {
@@ -31,7 +33,7 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
   // Determine status display based on agent lifecycle:
   // inactive -> starting -> started -> active
   let statusText = 'Inactive';
-  let statusColor = 'bg-gray-500/10 text-gray-300';
+  let statusColor = 'bg-text-secondary-dark/10 text-text-secondary-dark';
 
   if (isStopping) {
     statusText = 'Stopping...';
@@ -108,44 +110,30 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
           <SignInNeededChip loginRequired={member.loginRequired} agentLabel={member.name} align="right" />
         )}
         <span className={`px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2 ${statusColor}`}>
-          {isLoading && <Loader2 className="w-3 h-3 animate-spin" />}
+          {isLoading && <LoadingSpinner size="xs" centered={false} />}
           {statusText}
         </span>
         <div className="flex items-center gap-2">
           {(isActive || isStarted || isStartingStatus || isStopping) && !isStarting ? (
-            <button
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                isLoading
-                  ? 'opacity-50 cursor-not-allowed'
-                  : 'hover:bg-red-500/20 hover:text-red-400'
-              }`}
+            <IconButton
+              icon={Square}
+              className="rounded-full hover:bg-red-500/20 hover:text-red-400"
               title="Stop"
+              aria-label="Stop"
               onClick={handleStop}
+              loading={isStopping}
               disabled={isLoading}
-            >
-              {isStopping ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Square className="w-4 h-4" />
-              )}
-            </button>
+            />
           ) : (
-            <button
-              className={`w-9 h-9 rounded-full flex items-center justify-center transition-colors ${
-                isLoading
-                  ? 'opacity-50 cursor-not-allowed'
-                  : 'hover:bg-green-500/20 hover:text-green-400'
-              }`}
+            <IconButton
+              icon={Play}
+              className="rounded-full hover:bg-green-500/20 hover:text-green-400"
               title="Start"
+              aria-label="Start"
               onClick={handleStart}
+              loading={isStarting}
               disabled={isLoading}
-            >
-              {isStarting ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Play className="w-4 h-4" />
-              )}
-            </button>
+            />
           )}
           <OverflowMenu
             align="bottom-right"

@@ -16,6 +16,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Globe, AlertTriangle } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 import { Card } from '@crewly/ui/Card';
 import {
 	frameUrl,
@@ -179,26 +180,28 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 								{session.pending.matched}).
 							</p>
 							<div className="mt-2 flex gap-2">
-								<button
+								<Button
 									type="button"
 									onClick={async () => {
 										await resolveBrowserPending(session.id, session.pending!.id, 'approve');
 										onChanged?.();
 									}}
-									className="text-xs px-2 py-1 rounded bg-amber-500/80 text-black font-medium"
+									variant="warning"
+									size="xs"
 								>
 									Let it
-								</button>
-								<button
+								</Button>
+								<Button
 									type="button"
 									onClick={async () => {
 										await resolveBrowserPending(session.id, session.pending!.id, 'reject');
 										onChanged?.();
 									}}
-									className="text-xs px-2 py-1 rounded border border-border-dark text-text-secondary-dark"
+									variant="outline"
+									size="xs"
 								>
 									No
-								</button>
+								</Button>
 							</div>
 						</div>
 					)}
@@ -208,28 +211,30 @@ export const BrowserSessionCard: React.FC<BrowserSessionCardProps> = ({
 							{session.control === 'owner' ? (
 								<>
 									<span className="text-xs text-amber-300">You have the browser.</span>
-									<button
+									<Button
 										type="button"
 										onClick={async () => {
 											await releaseBrowserControl(session.id);
 											onChanged?.();
 										}}
-										className="text-xs px-2 py-1 rounded border border-border-dark text-text-primary-dark"
+										variant="outline"
+										size="xs"
 									>
 										Give control back
-									</button>
+									</Button>
 								</>
 							) : (
-								<button
+								<Button
 									type="button"
 									onClick={async () => {
 										await takeBrowserControl(session.id);
 										onChanged?.();
 									}}
-									className="text-xs px-2 py-1 rounded border border-border-dark text-text-primary-dark"
+									variant="outline"
+									size="xs"
 								>
 									Take control of the browser
-								</button>
+								</Button>
 							)}
 						</div>
 					)}

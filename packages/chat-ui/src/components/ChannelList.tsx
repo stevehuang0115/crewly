@@ -35,15 +35,15 @@ export function ChannelList({
 
   return (
     <aside
-      className={`flex h-full w-64 flex-col border-r border-slate-200 bg-white dark:border-slate-700 dark:bg-slate-900 ${className}`}
+      className={`flex h-full w-64 flex-col border-r border-border-dark bg-surface-dark ${className}`}
       aria-label="Channel list"
     >
-      <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
-        <h2 className="text-sm font-semibold text-slate-700 dark:text-slate-200">Channels</h2>
+      <div className="flex items-center justify-between border-b border-border-dark px-4 py-3">
+        <h2 className="text-sm font-semibold text-text-primary-dark">Channels</h2>
         <button
           type="button"
           onClick={() => void refresh()}
-          className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200"
+          className="text-xs text-text-secondary-dark hover:text-text-primary-dark"
         >
           Refresh
         </button>
@@ -54,24 +54,24 @@ export function ChannelList({
         {error && <ChannelListError onRetry={() => void refresh()} message={error.message} />}
         {!loading && !error && channels.length === 0 && <ChannelListEmpty />}
         {!loading && !error && channels.length > 0 && (
-          <ul role="list" className="divide-y divide-slate-100 dark:divide-slate-800">
+          <ul role="list" className="divide-y divide-border-dark">
             {channels.map((channel) => (
               <li key={channel.id}>
                 <button
                   type="button"
                   onClick={() => onSelectChannel?.(channel)}
-                  className={`flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-slate-50 dark:hover:bg-slate-800 ${
+                  className={`flex w-full items-center gap-3 px-4 py-3 text-left transition hover:bg-background-dark ${
                     activeChannelId === channel.id
-                      ? 'bg-blue-50 dark:bg-blue-900/20'
+                      ? 'bg-primary/10'
                       : ''
                   }`}
                 >
                   <div className="flex-1 overflow-hidden">
-                    <div className="truncate text-sm font-medium text-slate-800 dark:text-slate-100">
+                    <div className="truncate text-sm font-medium text-text-primary-dark">
                       {channel.name}
                     </div>
                     {channel.purpose && (
-                      <div className="truncate text-xs text-slate-500 dark:text-slate-400">
+                      <div className="truncate text-xs text-text-secondary-dark">
                         {channel.purpose}
                       </div>
                     )}
@@ -94,7 +94,7 @@ export function ChannelList({
 
 function ChannelListSkeleton(): JSX.Element {
   return (
-    <div className="p-4 text-sm text-slate-500 dark:text-slate-400" role="status" aria-live="polite">
+    <div className="p-4 text-sm text-text-secondary-dark" role="status" aria-live="polite">
       Loading channels…
     </div>
   );
@@ -102,7 +102,7 @@ function ChannelListSkeleton(): JSX.Element {
 
 function ChannelListEmpty(): JSX.Element {
   return (
-    <div className="p-4 text-sm text-slate-500 dark:text-slate-400">
+    <div className="p-4 text-sm text-text-secondary-dark">
       No channels yet. Bind an agent to start a conversation.
     </div>
   );
@@ -116,7 +116,7 @@ function ChannelListError({
   onRetry: () => void;
 }): JSX.Element {
   return (
-    <div className="p-4 text-sm text-red-600 dark:text-red-400" role="alert">
+    <div className="p-4 text-sm text-red-400" role="alert">
       <div className="mb-2">Failed to load channels: {message}</div>
       <button
         type="button"

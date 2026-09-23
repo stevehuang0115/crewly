@@ -21,13 +21,13 @@ describe('DashboardHeader', () => {
   it('shows connected status when connected', () => {
     render(<DashboardHeader connected={true} selectedProject={null} teamsCount={0} />);
     expect(screen.getByText('Connected')).toBeInTheDocument();
-    expect(screen.getByText('Connected')).toHaveClass('text-green-800');
+    expect(screen.getByText('Connected')).toHaveClass('text-emerald-400');
   });
 
   it('shows disconnected status when not connected', () => {
     render(<DashboardHeader connected={false} selectedProject={null} teamsCount={0} />);
     expect(screen.getByText('Disconnected')).toBeInTheDocument();
-    expect(screen.getByText('Disconnected')).toHaveClass('text-red-800');
+    expect(screen.getByText('Disconnected')).toHaveClass('text-red-400');
   });
 
   it('displays project name when selected', () => {

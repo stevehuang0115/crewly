@@ -70,6 +70,8 @@ const TreeNode: React.FC<{
             onClick={(e) => { e.stopPropagation(); setExpanded(!expanded); }}
             className="p-0.5 text-text-secondary-dark hover:text-text-primary-dark"
             data-testid={`toggle-${team.id}`}
+            aria-label={expanded ? 'Collapse' : 'Expand'}
+            aria-expanded={expanded}
           >
             {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
           </button>

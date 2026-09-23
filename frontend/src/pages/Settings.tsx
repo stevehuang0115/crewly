@@ -10,9 +10,10 @@
  * @module pages/Settings
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
 import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, Lock, LucideIcon } from 'lucide-react';
+import { Tabs, TabList, TabTrigger, TabContent } from '@crewly/ui';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
 import { SkillsTab } from '../components/Settings/SkillsTab';
@@ -62,7 +63,6 @@ export const Settings: React.FC = () => {
   // Slack card lives inside Integrations.
   const initialTab: SettingsTab =
     tabParam === 'slack' ? 'integrations' : tabParam && VALID_TABS.has(tabParam) ? (tabParam as SettingsTab) : 'general';
-  const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab);
 
   const tabs: TabConfig[] = [
     { id: 'general', label: 'General', icon: SettingsIcon },
@@ -74,11 +74,9 @@ export const Settings: React.FC = () => {
     { id: 'system', label: 'System', icon: Monitor },
   ];
 
-  /**
-   * Render the content for the active tab
-   */
-  const renderTabContent = () => {
-    switch (activeTab) {
+  /** Panel content per tab id. */
+  const renderTabContent = (tab: SettingsTab): React.ReactNode => {
+    switch (tab) {
       case 'general':
         return <GeneralTab />;
       case 'roles':
@@ -108,36 +106,21 @@ export const Settings: React.FC = () => {
         </p>
       </div>
 
-      {/* Tab Navigation */}
-      <nav className="flex gap-1 border-b border-border-dark mb-6" role="tablist">
+      {/* Tab Navigation + Content */}
+      <Tabs defaultValue={initialTab}>
+        <TabList className="overflow-x-auto">
+          {tabs.map((tab) => (
+            <TabTrigger key={tab.id} value={tab.id} icon={<tab.icon className="w-4 h-4" />}>
+              <span>{tab.label}</span>
+            </TabTrigger>
+          ))}
+        </TabList>
         {tabs.map((tab) => (
-          <button
-            key={tab.id}
-            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors -mb-px ${
-              activeTab === tab.id
-                ? 'border-primary text-primary'
-                : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark hover:bg-surface-dark'
-            }`}
-            onClick={() => setActiveTab(tab.id)}
-            aria-selected={activeTab === tab.id}
-            role="tab"
-            id={`tab-${tab.id}`}
-            aria-controls={`panel-${tab.id}`}
-          >
-            <tab.icon className="w-4 h-4" />
-            <span>{tab.label}</span>
-          </button>
+          <TabContent key={tab.id} value={tab.id}>
+            {renderTabContent(tab.id)}
+          </TabContent>
         ))}
-      </nav>
-
-      {/* Tab Content */}
-      <main
-        role="tabpanel"
-        id={`panel-${activeTab}`}
-        aria-labelledby={`tab-${activeTab}`}
-      >
-        {renderTabContent()}
-      </main>
+      </Tabs>
     </div>
   );
 };

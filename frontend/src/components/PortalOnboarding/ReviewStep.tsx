@@ -18,6 +18,7 @@ import type {
 } from '../../types/onboarding.types';
 import { REVIEW_CARDS } from '../../types/onboarding.types';
 import { Badge } from '@crewly/ui';
+import { Button } from '@crewly/ui/Button';
 import { ReviewCard } from './ReviewCard';
 
 export interface ReviewStepProps {
@@ -164,14 +165,14 @@ export const ReviewStep: React.FC<ReviewStepProps> = ({
             </>
           )}
         </div>
-        <button
+        <Button
           onClick={onConfirm}
           disabled={hasBlockingFields}
-          className="rounded-lg bg-primary px-6 py-2.5 text-sm font-semibold text-white hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          className="px-6"
           data-testid="continue-to-confirm-btn"
         >
           Continue to confirm
-        </button>
+        </Button>
       </div>
     </div>
   );

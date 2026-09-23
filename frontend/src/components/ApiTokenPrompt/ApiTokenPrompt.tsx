@@ -15,8 +15,14 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { KeyRound } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
+import { Input } from '@crewly/ui/Input';
+import { Modal } from '@crewly/ui/Modal';
 import { API_TOKEN_REQUIRED_EVENT } from '../../constants/api-token.constants';
 import { getApiToken, setApiToken } from '../../services/api-token.service';
+
+/** The prompt cannot be dismissed (the dashboard is unusable without a token). */
+const noop = (): void => undefined;
 
 /** Props for ApiTokenPrompt. */
 export interface ApiTokenPromptProps {
@@ -60,54 +66,50 @@ export const ApiTokenPrompt: React.FC<ApiTokenPromptProps> = ({ onSaved }) => {
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/60"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Access token required"
-      data-testid="api-token-prompt"
-    >
-      <div className="bg-surface-dark border border-border-dark rounded-xl shadow-2xl w-full max-w-md mx-4">
-        <div className="flex items-center gap-2 px-5 py-4 border-b border-border-dark">
-          <KeyRound className="w-4 h-4 text-text-secondary-dark" />
-          <h3 className="text-sm font-semibold text-text-primary-dark">Access token required</h3>
-        </div>
-        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
-          <p className="text-xs text-text-secondary-dark leading-relaxed">
+    // The wrapper lifts the dialog above every other overlay: this prompt is
+    // mounted before the router, so a plain z-50 Modal would sit under them.
+    <div className="relative z-[100]">
+      <Modal
+        isOpen
+        onClose={noop}
+        closable={false}
+        title="Access token required"
+        size="md"
+        data-testid="api-token-prompt"
+      >
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <p className="text-sm text-text-secondary-dark leading-relaxed">
             {hadToken
               ? 'The stored access token was rejected. Paste the current token to continue.'
               : 'This dashboard is being opened from another machine. Paste the access token to continue.'}
             {' '}Run <code className="font-mono">crewly token</code> on the server to print it
             (or <code className="font-mono">crewly token --url</code> for a ready-to-open link).
           </p>
-          <div>
-            <label htmlFor="api-token-input" className="block text-xs font-medium text-text-secondary-dark mb-1.5">
-              Access token
-            </label>
-            <input
-              id="api-token-input"
-              type="password"
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder="paste token"
-              autoComplete="off"
-              autoFocus
-              className="w-full px-3 py-2 text-xs font-mono text-text-primary-dark bg-background-dark border border-border-dark rounded-lg placeholder:text-text-secondary-dark/40 focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50"
-              data-testid="api-token-input"
-            />
-          </div>
+          <Input
+            id="api-token-input"
+            label="Access token"
+            type="password"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            placeholder="paste token"
+            autoComplete="off"
+            autoFocus
+            fullWidth
+            className="font-mono"
+            data-testid="api-token-input"
+          />
           <div className="flex justify-end">
-            <button
+            <Button
               type="submit"
+              icon={KeyRound}
               disabled={!value.trim()}
-              className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-white disabled:opacity-50"
               data-testid="api-token-submit"
             >
               Save and reload
-            </button>
+            </Button>
           </div>
         </form>
-      </div>
+      </Modal>
     </div>
   );
 };

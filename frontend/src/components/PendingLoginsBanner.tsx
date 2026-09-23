@@ -15,6 +15,7 @@
 
 import React, { useMemo, useState } from 'react';
 import { KeyRound, X } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import { usePendingLogins } from '../hooks/usePendingLogins';
 import { SignInNeededChip } from './SignInNeededChip';
 import type { PendingLogin } from '../types';
@@ -66,14 +67,13 @@ export const PendingLoginsBanner: React.FC = () => {
           ))}
         </div>
       </div>
-      <button
-        type="button"
+      <IconButton
+        icon={X}
+        size="xs"
         onClick={() => setDismissedKey(key)}
-        className="shrink-0 p-1 rounded-md text-amber-300 hover:bg-amber-500/20 transition-colors"
+        className="shrink-0 text-amber-300 hover:bg-amber-500/20 hover:text-amber-200"
         aria-label="Dismiss sign-in banner"
-      >
-        <X size={16} />
-      </button>
+      />
     </div>
   );
 };

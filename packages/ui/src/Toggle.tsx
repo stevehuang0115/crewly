@@ -34,7 +34,8 @@ export const Toggle: React.FC<ToggleProps> = ({
   disabled = false,
   ...props
 }) => {
-  const toggleId = id || `toggle-${Math.random().toString(36).substr(2, 9)}`;
+  const generatedId = React.useId();
+  const toggleId = id || `toggle-${generatedId}`;
 
   const toggleContent = (
     <div className={`toggle-container inline-flex items-center gap-3 ${className}`}>

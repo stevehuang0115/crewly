@@ -7,7 +7,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, Check } from 'lucide-react';
+import { Check } from 'lucide-react';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useRole } from '../../hooks/useRole';
 import { useSkills } from '../../hooks/useSkills';
@@ -18,7 +18,10 @@ import {
   ROLE_CATEGORIES,
   ROLE_CATEGORY_DISPLAY_NAMES,
 } from '../../types/role.types';
-import { Button, IconButton } from '@crewly/ui/Button';
+import { Button } from '@crewly/ui/Button';
+import { Alert } from '@crewly/ui/Alert';
+import { Modal } from '@crewly/ui/Modal';
+import { Popup } from '@crewly/ui/Popup';
 import { Toggle } from '@crewly/ui/Toggle';
 import { FormInput, FormLabel, FormSelect, FormTextarea } from '@crewly/ui/Form';
 
@@ -153,76 +156,65 @@ export const RoleEditor: React.FC<RoleEditorProps> = ({
     }
   };
 
-  /**
-   * Handle overlay click (close modal)
-   */
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onClose} type="button">
+        Cancel
+      </Button>
+      <Button
+        type="submit"
+        onClick={handleSubmit}
+        disabled={isSaving}
+        loading={isSaving}
+      >
+        {isSaving
+          ? 'Saving...'
+          : isCreating
+          ? 'Create Role'
+          : 'Save Changes'}
+      </Button>
+    </>
+  );
 
   if (isLoading && roleId) {
     return (
-      <div
-        className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center z-50"
-        onClick={handleOverlayClick}
-      >
-        <div className="bg-surface-dark border border-border-dark rounded-xl shadow-lg p-8">
-          <div className="flex justify-center">
-            <LoadingSpinner text="Loading role..." />
-          </div>
+      <Modal isOpen onClose={onClose} size="sm">
+        <div className="flex justify-center">
+          <LoadingSpinner text="Loading role..." />
         </div>
-      </div>
+      </Modal>
     );
   }
 
   return (
-    <div
-      className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center z-50"
-      onClick={handleOverlayClick}
+    <Popup
+      isOpen
+      onClose={onClose}
+      title={isCreating ? 'Create Role' : 'Edit Role'}
+      subtitle={isCreating ? 'Configure a new agent role' : 'Modify role settings and prompt'}
+      size="xl"
+      className="max-w-2xl"
+      footer={footer}
     >
-      <div
-        className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-2xl m-4 max-h-[90vh] overflow-hidden flex flex-col"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border-dark sticky top-0 bg-surface-dark z-10">
-          <div>
-            <h2 className="text-xl font-semibold text-text-primary-dark">
-              {isCreating ? 'Create Role' : 'Edit Role'}
-            </h2>
-            <p className="text-sm text-text-secondary-dark mt-1">
-              {isCreating
-                ? 'Configure a new agent role'
-                : 'Modify role settings and prompt'}
-            </p>
-          </div>
-          <IconButton
-            icon={X}
-            onClick={onClose}
-            variant="ghost"
-            aria-label="Close"
-          />
-        </div>
-
+      {/* Body scrolls on its own so the header and footer stay in view. */}
+      <div className="-m-6 max-h-[65vh] overflow-y-auto">
         {/* Built-in Role Notice */}
         {isBuiltin && !isCreating && (
-          <div className="mx-6 mt-4 bg-blue-500/10 border border-blue-500/30 text-blue-400 px-4 py-3 rounded-lg text-sm">
+          <Alert variant="info" className="mx-6 mt-4">
             <strong>Built-in Role:</strong> Changes will be saved as a user override. You can reset to defaults anytime.
             {hasOverride && <span className="ml-1">(Currently has user override)</span>}
-          </div>
+          </Alert>
         )}
 
         {/* Error Banner */}
         {error && (
-          <div className="mx-6 mt-4 bg-rose-500/10 border border-rose-500/30 text-rose-400 px-4 py-3 rounded-lg text-sm">
+          <Alert variant="error" className="mx-6 mt-4">
             {error}
-          </div>
+          </Alert>
         )}
 
         {/* Form */}
-        <form onSubmit={handleSubmit} className="flex-1 overflow-y-auto">
+        <form onSubmit={handleSubmit}>
           {/* Basic Information Section */}
           <div className="p-6 border-b border-border-dark space-y-4">
             <h3 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wide">
@@ -331,7 +323,7 @@ export const RoleEditor: React.FC<RoleEditorProps> = ({
               {skills?.map((skill) => (
                 <label
                   key={skill.id}
-                  className={`flex items-start gap-3 p-3 bg-background-dark border border-border-dark rounded-lg cursor-pointer hover:border-primary/50 transition-colors ${
+                  className={`flex items-start gap-3 p-3 bg-background-dark border border-border-dark rounded-2xl cursor-pointer hover:border-primary/50 transition-colors ${
                     formData.assignedSkills.includes(skill.id) ? 'border-primary/50 bg-primary/5' : ''
                   }`}
                 >
@@ -361,27 +353,8 @@ export const RoleEditor: React.FC<RoleEditorProps> = ({
             </div>
           </div>
         </form>
-
-        {/* Footer */}
-        <div className="flex items-center justify-end gap-3 p-6 border-t border-border-dark bg-background-dark sticky bottom-0">
-          <Button variant="secondary" onClick={onClose} type="button">
-            Cancel
-          </Button>
-          <Button
-            type="submit"
-            onClick={handleSubmit}
-            disabled={isSaving}
-            loading={isSaving}
-          >
-            {isSaving
-              ? 'Saving...'
-              : isCreating
-              ? 'Create Role'
-              : 'Save Changes'}
-          </Button>
-        </div>
       </div>
-    </div>
+    </Popup>
   );
 };
 

@@ -31,6 +31,7 @@ import {
   Layers,
 } from 'lucide-react';
 import { Card } from '@crewly/ui/Card';
+import { IconButton } from '@crewly/ui/Button';
 import { Badge } from '@crewly/ui/Badge';
 import { StatusDot } from '@crewly/ui/StatusDot';
 import { RequestStatusPill } from './RequestStatusPill';
@@ -240,16 +241,13 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
 
           {/* Expand indicator — clicking toggles children without navigating */}
           {hasChildren && (
-            <button
+            <IconButton
+              icon={isExpanded ? ChevronDown : ChevronRight}
+              size="xs"
               onClick={handleToggle}
-              className="p-1 rounded hover:bg-surface-dark flex-shrink-0"
+              className="flex-shrink-0"
               aria-label={isExpanded ? 'Collapse work items' : 'Expand work items'}
-            >
-              {isExpanded
-                ? <ChevronDown className="h-4 w-4 text-text-secondary-dark" />
-                : <ChevronRight className="h-4 w-4 text-text-secondary-dark" />
-              }
-            </button>
+            />
           )}
         </div>
 

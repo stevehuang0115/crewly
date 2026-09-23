@@ -79,7 +79,7 @@ export const OrchestratorStatusBanner: React.FC = () => {
           onClick={handleRefresh}
           variant="ghost"
           size="sm"
-          className={isRefreshing ? 'animate-spin' : ''}
+          loading={isRefreshing}
           aria-label="Refresh status"
         />
         <IconButton

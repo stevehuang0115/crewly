@@ -9,7 +9,10 @@
  */
 
 import React, { useState, useCallback } from 'react';
-import { Loader2, AlertCircle, Check, X } from 'lucide-react';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Input } from '@crewly/ui/Input';
+import { Modal, ModalFooter } from '@crewly/ui/Modal';
 import { CLOUD_TOKEN_KEY } from '../../constants/cloud.constants';
 
 // ---------------------------------------------------------------------------
@@ -112,118 +115,71 @@ export const JoinRelayModal: React.FC<JoinRelayModalProps> = ({ isOpen, onClose 
     }
   }, [pairingCode, sharedSecret]);
 
-  if (!isOpen) return null;
-
   const isSubmitting = connectStatus === 'connecting';
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      onClick={(e) => { if (e.target === e.currentTarget) handleClose(); }}
-      role="dialog"
-      aria-modal="true"
-      aria-label="Join Relay"
-      data-testid="join-relay-modal"
-    >
-      <div
-        className="bg-surface-dark border border-border-dark rounded-xl shadow-2xl w-full max-w-md mx-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between px-5 py-4 border-b border-border-dark">
-          <h3 className="text-sm font-semibold text-text-primary-dark">Join Relay</h3>
-          <button
-            onClick={handleClose}
-            className="p-1 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
-            aria-label="Close"
-            data-testid="join-modal-close"
-          >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+    <Modal isOpen={isOpen} onClose={handleClose} title="Join Relay" size="md" data-testid="join-relay-modal">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        {/* Status feedback */}
+        {connectStatus === 'error' && (
+          <Alert variant="error" size="sm" data-testid="join-error">{errorMessage}</Alert>
+        )}
 
-        {/* Body */}
-        <form onSubmit={handleSubmit} className="px-5 py-4 space-y-4">
-          {/* Status feedback */}
-          {connectStatus === 'error' && (
-            <div className="flex items-center gap-2 text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 rounded px-3 py-2" data-testid="join-error">
-              <AlertCircle className="w-3.5 h-3.5 shrink-0" />
-              {errorMessage}
-            </div>
-          )}
+        {connectStatus === 'success' && (
+          <Alert variant="success" size="sm" data-testid="join-success">Connected to relay successfully!</Alert>
+        )}
 
-          {connectStatus === 'success' && (
-            <div className="flex items-center gap-2 text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 rounded px-3 py-2" data-testid="join-success">
-              <Check className="w-3.5 h-3.5 shrink-0" />
-              Connected to relay successfully!
-            </div>
-          )}
+        <Input
+          id="join-pairing-code"
+          label="Pairing Code"
+          type="text"
+          value={pairingCode}
+          onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
+          placeholder="e.g. A3BK7P"
+          disabled={isSubmitting || connectStatus === 'success'}
+          className="font-mono tracking-wider"
+          autoComplete="off"
+          fullWidth
+          data-testid="join-pairing-code-input"
+        />
 
-          {/* Pairing Code input */}
-          <div>
-            <label htmlFor="join-pairing-code" className="block text-xs font-medium text-text-secondary-dark mb-1.5">
-              Pairing Code
-            </label>
-            <input
-              id="join-pairing-code"
-              type="text"
-              value={pairingCode}
-              onChange={(e) => setPairingCode(e.target.value.toUpperCase())}
-              placeholder="e.g. A3BK7P"
-              disabled={isSubmitting || connectStatus === 'success'}
-              className="w-full px-3 py-2 text-sm font-mono tracking-wider text-text-primary-dark bg-background-dark border border-border-dark rounded-lg placeholder:text-text-secondary-dark/40 focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50 disabled:opacity-50"
-              autoComplete="off"
-              data-testid="join-pairing-code-input"
-            />
-          </div>
+        <Input
+          id="join-shared-secret"
+          label="Shared Secret"
+          type="text"
+          value={sharedSecret}
+          onChange={(e) => setSharedSecret(e.target.value)}
+          placeholder="64-character hex string"
+          disabled={isSubmitting || connectStatus === 'success'}
+          className="font-mono text-xs"
+          autoComplete="off"
+          fullWidth
+          data-testid="join-shared-secret-input"
+        />
 
-          {/* Shared Secret input */}
-          <div>
-            <label htmlFor="join-shared-secret" className="block text-xs font-medium text-text-secondary-dark mb-1.5">
-              Shared Secret
-            </label>
-            <input
-              id="join-shared-secret"
-              type="text"
-              value={sharedSecret}
-              onChange={(e) => setSharedSecret(e.target.value)}
-              placeholder="64-character hex string"
-              disabled={isSubmitting || connectStatus === 'success'}
-              className="w-full px-3 py-2 text-xs font-mono text-text-primary-dark bg-background-dark border border-border-dark rounded-lg placeholder:text-text-secondary-dark/40 focus:outline-none focus:ring-1 focus:ring-primary/50 focus:border-primary/50 disabled:opacity-50"
-              autoComplete="off"
-              data-testid="join-shared-secret-input"
-            />
-          </div>
+        {/* Instructions */}
+        <p className="text-xs text-text-secondary-dark leading-relaxed">
+          Enter the pairing code and shared secret from the device that sent the invitation.
+        </p>
 
-          {/* Instructions */}
-          <p className="text-[11px] text-text-secondary-dark leading-relaxed">
-            Enter the pairing code and shared secret from the device that sent the invitation.
-          </p>
-
-          {/* Footer */}
-          <div className="flex justify-end gap-2 pt-2 border-t border-border-dark">
-            <button
-              type="button"
-              onClick={handleClose}
-              className="px-4 py-1.5 text-xs font-medium text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
+        <ModalFooter className="px-0 pb-0 pt-2 border-t border-border-dark">
+          <Button type="button" variant="ghost" size="sm" onClick={handleClose}>
+            {connectStatus === 'success' ? 'Done' : 'Cancel'}
+          </Button>
+          {connectStatus !== 'success' && (
+            <Button
+              type="submit"
+              size="sm"
+              loading={isSubmitting}
+              disabled={!pairingCode.trim() || !sharedSecret.trim()}
+              data-testid="join-submit-button"
             >
-              {connectStatus === 'success' ? 'Done' : 'Cancel'}
-            </button>
-            {connectStatus !== 'success' && (
-              <button
-                type="submit"
-                disabled={isSubmitting || !pairingCode.trim() || !sharedSecret.trim()}
-                className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-medium text-white bg-primary rounded-md hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                data-testid="join-submit-button"
-              >
-                {isSubmitting && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
-                {isSubmitting ? 'Connecting...' : 'Join'}
-              </button>
-            )}
-          </div>
-        </form>
-      </div>
-    </div>
+              {isSubmitting ? 'Connecting...' : 'Join'}
+            </Button>
+          )}
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };
 

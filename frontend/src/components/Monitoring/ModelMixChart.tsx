@@ -21,11 +21,11 @@ interface ModelMixChartProps {
 }
 
 /** Color palette for model segments */
-const MODEL_COLORS: Record<string, string> = {
-  Opus: '#8b5cf6',
-  Sonnet: '#3b82f6',
-  Haiku: '#10b981',
-  Other: '#6b7280',
+const MODEL_COLORS: Record<string, { stroke: string; bg: string }> = {
+  Opus: { stroke: 'stroke-amber-400', bg: 'bg-amber-400' },
+  Sonnet: { stroke: 'stroke-primary', bg: 'bg-primary' },
+  Haiku: { stroke: 'stroke-emerald-400', bg: 'bg-emerald-400' },
+  Other: { stroke: 'stroke-text-secondary-dark', bg: 'bg-text-secondary-dark' },
 };
 
 /** SVG donut chart configuration */
@@ -44,8 +44,8 @@ interface ChartSegment {
   tokens: number;
   /** Percentage of total tokens */
   percent: number;
-  /** Hex color for the segment */
-  color: string;
+  /** Tailwind stroke + background classes for the segment */
+  color: { stroke: string; bg: string };
 }
 
 /**
@@ -166,7 +166,7 @@ export const ModelMixChart: React.FC<ModelMixChartProps> = ({ sessions, totalCos
               cy={CHART_CENTER}
               r={CHART_RADIUS}
               fill="none"
-              stroke={arc.color}
+              className={arc.color.stroke}
               strokeWidth={CHART_STROKE_WIDTH}
               strokeDasharray={arc.dashArray}
               strokeDashoffset={arc.dashOffset}
@@ -197,8 +197,7 @@ export const ModelMixChart: React.FC<ModelMixChartProps> = ({ sessions, totalCos
           {segments.map((seg) => (
             <div key={seg.name} className="flex items-center gap-2">
               <div
-                className="w-3 h-3 rounded-full flex-shrink-0"
-                style={{ backgroundColor: seg.color }}
+                className={`w-3 h-3 rounded-full flex-shrink-0 ${seg.color.bg}`}
               />
               <span className="text-sm text-text-primary-dark">{seg.name}</span>
               <span className="text-xs text-text-secondary-dark">

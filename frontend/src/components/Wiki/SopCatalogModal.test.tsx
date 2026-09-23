@@ -63,7 +63,8 @@ describe('SopCatalogModal', () => {
     const onClose = vi.fn();
     render(<SopCatalogModal vaultPath="/v/wiki" onClose={onClose} onChanged={vi.fn()} />);
     await waitFor(() => expect(screen.getByText('Blocker Handling')).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText('Close'));
+    // The shared Modal owns the close button (labelled "Close modal").
+    fireEvent.click(screen.getByLabelText('Close modal'));
     expect(onClose).toHaveBeenCalled();
   });
 

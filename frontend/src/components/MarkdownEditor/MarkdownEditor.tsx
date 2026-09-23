@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import DOMPurify from 'dompurify';
 import { X, Save, Eye, Edit3, File, FolderOpen } from 'lucide-react';
 import { Button, IconButton } from '@crewly/ui';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 interface MarkdownFile {
   name: string;
@@ -276,7 +277,7 @@ You are a QA Tester AI agent responsible for:
               <div className="file-section">
                 <h3><FolderOpen size={16} /> Available Files</h3>
                 {isLoading ? (
-                  <div className="loading">Loading files...</div>
+                  <LoadingSpinner size="sm" text="Loading files..." className="loading py-4" />
                 ) : availableFiles.length > 0 ? (
                   <ul className="file-list">
                     {availableFiles.map((file, index) => (

@@ -13,6 +13,8 @@ import { Link } from 'react-router-dom';
 import { PageToolbar } from '@crewly/ui/PageToolbar';
 import { CONNECTORS, CONNECTOR_GROUPS } from '../config/connectors';
 import { Dropdown } from '@crewly/ui/Dropdown';
+import { Alert, Badge, Button, Card, EmptyState, LoadingSpinner, SegmentedControl } from '@crewly/ui';
+import type { BadgeVariant } from '@crewly/ui';
 import {
   fetchMarketplaceItems,
   installMarketplaceItem,
@@ -65,11 +67,18 @@ function formatDownloads(n: number): string {
 }
 
 /** CSS class mapping for item type badges */
-const typeBadgeColor: Record<MarketplaceItemType, string> = {
-  skill: 'bg-blue-500/20 text-blue-400',
-  model: 'bg-primary/20 text-primary',
-  role: 'bg-emerald-500/20 text-emerald-400',
-  mcp_tool: 'bg-orange-500/20 text-orange-400',
+const typeBadgeVariant: Record<MarketplaceItemType, BadgeVariant> = {
+  skill: 'info',
+  model: 'primary',
+  role: 'success',
+  mcp_tool: 'warning',
+};
+
+/** Badge colour per submission review status. */
+const submissionBadgeVariant: Record<MarketplaceSubmission['status'], BadgeVariant> = {
+  pending: 'warning',
+  approved: 'success',
+  rejected: 'error',
 };
 
 /**
@@ -238,34 +247,24 @@ export default function Marketplace() {
           <p className="text-sm text-text-secondary-dark">Browse and install skills, models, and tools.</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex gap-1 bg-surface-dark border border-border-dark rounded-lg p-1">
-            <button
-              onClick={() => setViewMode('browse')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'browse' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-            >
-              <Package className="w-3.5 h-3.5" />
-              Browse
-            </button>
-            <button
-              onClick={() => setViewMode('submissions')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
-                viewMode === 'submissions' ? 'bg-primary/10 text-primary' : 'text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-            >
-              <Upload className="w-3.5 h-3.5" />
-              Submissions
-            </button>
-          </div>
-          <button
+          <SegmentedControl<'browse' | 'submissions'>
+            aria-label="Marketplace view"
+            value={viewMode}
+            onChange={setViewMode}
+            options={[
+              { value: 'browse', label: 'Browse', icon: Package },
+              { value: 'submissions', label: 'Submissions', icon: Upload },
+            ]}
+          />
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={RefreshCw}
             onClick={handleRefresh}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-surface-dark hover:bg-background-dark text-text-secondary-dark hover:text-text-primary-dark border border-border-dark rounded-lg transition-colors"
             aria-label="Refresh marketplace"
           >
-            <RefreshCw className="w-4 h-4" />
             Refresh
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -307,49 +306,51 @@ export default function Marketplace() {
                     {CONNECTORS.filter((c) => c.group === group.id)
                       .filter((c) => !searchQuery.trim() || `${c.name} ${c.description}`.toLowerCase().includes(searchQuery.trim().toLowerCase()))
                       .map((connector) => (
-                        <div
+                        <Card
                           key={connector.id}
-                          className="bg-surface-dark border border-border-dark rounded-xl p-5 flex flex-col hover:border-primary/30 transition-colors"
+                          padding="lg"
+                          className="flex flex-col hover:border-primary/30 transition-colors"
                           data-testid={`marketplace-connector-${connector.id}`}
                         >
                           <div className="flex items-center gap-2 mb-3">
                             <Plug className="w-4 h-4 text-primary" />
-                            <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-primary/15 text-primary">connector</span>
+                            <Badge variant="primary">connector</Badge>
                           </div>
                           <h3 className="text-sm font-semibold mb-1">{connector.name}</h3>
                           <p className="text-xs text-text-secondary-dark leading-relaxed flex-1">{connector.description}</p>
                           <Link
                             to={`/connections?platform=${connector.id}`}
-                            className="mt-4 inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-primary/10 text-primary text-xs font-medium hover:bg-primary/20 transition-colors"
+                            className="mt-4 inline-flex items-center justify-center gap-1.5 h-9 px-3 rounded-2xl bg-primary/10 text-primary text-sm font-semibold hover:bg-primary/20 transition-colors"
                           >
                             Connect →
                           </Link>
-                        </div>
+                        </Card>
                       ))}
                   </div>
                 </section>
               ))}
             </div>
           ) : loading ? (
-            <div className="text-center py-16 text-text-secondary-dark" role="status">Loading marketplace...</div>
+            <LoadingSpinner size="md" text="Loading marketplace..." className="py-16" />
           ) : error ? (
-            <div className="text-center py-16 text-red-400" role="alert">{error}</div>
+            <Alert variant="error">{error}</Alert>
           ) : items.length === 0 ? (
-            <div className="text-center py-16 text-text-secondary-dark">No items found.</div>
+            <EmptyState icon={Package} title="No items found." />
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
               {items.map((item) => (
-                <div
+                <Card
                   key={item.id}
-                  className="bg-surface-dark border border-border-dark rounded-xl p-5 hover:border-primary/30 transition-colors"
+                  padding="lg"
+                  className="hover:border-primary/30 transition-colors"
                   data-testid={`marketplace-item-${item.id}`}
                 >
                   {/* Card header */}
                   <div className="flex items-start justify-between mb-3">
                     <div className="flex items-center gap-2">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${typeBadgeColor[item.type]}`}>
+                      <Badge variant={typeBadgeVariant[item.type]}>
                         {item.type}
-                      </span>
+                      </Badge>
                       <span className="text-xs text-text-secondary-dark">v{item.version}</span>
                     </div>
                     {item.installStatus === 'installed' && (
@@ -361,7 +362,7 @@ export default function Marketplace() {
                   </div>
 
                   {/* Card body */}
-                  <h3 className="text-base font-semibold text-white mb-1">{item.name}</h3>
+                  <h3 className="text-base font-semibold text-text-primary-dark mb-1">{item.name}</h3>
                   <p className="text-sm text-text-secondary-dark mb-3 line-clamp-2">{item.description}</p>
 
                   {/* Metadata */}
@@ -382,45 +383,53 @@ export default function Marketplace() {
                   {/* Action buttons */}
                   <div className="flex gap-2">
                     {item.installStatus === 'not_installed' && (
-                      <button
+                      <Button
+                        variant="primary"
+                        size="sm"
+                        icon={Package}
+                        className="flex-1"
                         onClick={() => handleInstall(item.id)}
-                        disabled={operatingOn === item.id}
-                        className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-sm bg-primary hover:bg-primary/90 text-white rounded-lg disabled:opacity-50 transition-colors"
+                        loading={operatingOn === item.id}
                       >
-                        <Package className="w-3 h-3" />
                         {operatingOn === item.id ? 'Installing...' : 'Install'}
-                      </button>
+                      </Button>
                     )}
                     {item.installStatus === 'installed' && (
-                      <button
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 hover:text-rose-400"
                         onClick={() => handleUninstall(item.id)}
-                        disabled={operatingOn === item.id}
-                        className="flex-1 px-3 py-1.5 text-sm bg-background-dark hover:bg-red-900/50 text-text-primary-dark hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
+                        loading={operatingOn === item.id}
                       >
                         {operatingOn === item.id ? 'Removing...' : 'Uninstall'}
-                      </button>
+                      </Button>
                     )}
                     {item.installStatus === 'update_available' && (
                       <>
-                        <button
+                        <Button
+                          variant="warning"
+                          size="sm"
+                          icon={ArrowUp}
+                          className="flex-1"
                           onClick={() => handleUpdate(item.id)}
-                          disabled={operatingOn === item.id}
-                          className="flex-1 flex items-center justify-center gap-1 px-3 py-1.5 text-sm bg-yellow-600 hover:bg-yellow-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+                          loading={operatingOn === item.id}
                         >
-                          <ArrowUp className="w-3 h-3" />
                           {operatingOn === item.id ? 'Updating...' : 'Update'}
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="hover:text-rose-400"
                           onClick={() => handleUninstall(item.id)}
                           disabled={operatingOn === item.id}
-                          className="px-3 py-1.5 text-sm bg-background-dark hover:bg-red-900/50 text-text-primary-dark hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
                         >
                           Remove
-                        </button>
+                        </Button>
                       </>
                     )}
                   </div>
-                </div>
+                </Card>
               ))}
             </div>
           )}
@@ -438,34 +447,31 @@ export default function Marketplace() {
 
           {/* Submissions list */}
           {loading ? (
-            <div className="text-center py-16 text-text-secondary-dark" role="status">Loading submissions...</div>
+            <LoadingSpinner size="md" text="Loading submissions..." className="py-16" />
           ) : error ? (
-            <div className="text-center py-16 text-red-400" role="alert">{error}</div>
+            <Alert variant="error">{error}</Alert>
           ) : submissions.length === 0 ? (
-            <div className="text-center py-16 text-text-secondary-dark">No submissions yet.</div>
+            <EmptyState icon={Upload} title="No submissions yet." />
           ) : (
             <div className="space-y-3">
               {submissions.map((sub) => (
-                <div
+                <Card
                   key={sub.id}
-                  className="bg-surface-dark border border-border-dark rounded-xl p-5 hover:border-primary/30 transition-colors"
+                  padding="lg"
+                  className="hover:border-primary/30 transition-colors"
                   data-testid={`submission-${sub.id}`}
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <h3 className="text-base font-semibold text-white">{sub.name}</h3>
+                        <h3 className="text-base font-semibold text-text-primary-dark">{sub.name}</h3>
                         <span className="text-xs text-text-secondary-dark">v{sub.version}</span>
-                        <span className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${
-                          sub.status === 'pending' ? 'bg-yellow-500/20 text-yellow-400' :
-                          sub.status === 'approved' ? 'bg-green-500/20 text-green-400' :
-                          'bg-red-500/20 text-red-400'
-                        }`}>
+                        <Badge variant={submissionBadgeVariant[sub.status] ?? 'error'} className="gap-1">
                           {sub.status === 'pending' && <Clock className="w-3 h-3" />}
                           {sub.status === 'approved' && <CheckCircle className="w-3 h-3" />}
                           {sub.status === 'rejected' && <XCircle className="w-3 h-3" />}
                           {sub.status}
-                        </span>
+                        </Badge>
                       </div>
                       <p className="text-sm text-text-secondary-dark mb-2">{sub.description}</p>
                       <div className="flex items-center gap-4 text-xs text-text-secondary-dark">
@@ -479,25 +485,28 @@ export default function Marketplace() {
                     </div>
                     {sub.status === 'pending' && (
                       <div className="flex gap-2 ml-4">
-                        <button
+                        <Button
+                          variant="success"
+                          size="sm"
+                          icon={CheckCircle}
                           onClick={() => handleReview(sub.id, 'approve')}
-                          disabled={operatingOn === sub.id}
-                          className="flex items-center gap-1 px-3 py-1.5 text-sm bg-green-600 hover:bg-green-500 text-white rounded-lg disabled:opacity-50 transition-colors"
+                          loading={operatingOn === sub.id}
                         >
-                          <CheckCircle className="w-3 h-3" />
                           {operatingOn === sub.id ? '...' : 'Approve'}
-                        </button>
-                        <button
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="hover:text-rose-400"
                           onClick={() => handleReview(sub.id, 'reject')}
                           disabled={operatingOn === sub.id}
-                          className="px-3 py-1.5 text-sm bg-background-dark hover:bg-red-900/50 text-text-primary-dark hover:text-red-300 rounded-lg disabled:opacity-50 transition-colors"
                         >
                           Reject
-                        </button>
+                        </Button>
                       </div>
                     )}
                   </div>
-                </div>
+                </Card>
               ))}
             </div>
           )}

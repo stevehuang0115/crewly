@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, Plus, Check, X } from 'lucide-react';
+import { ChevronDown, ChevronRight, Plus, Check, X, Trash2 } from 'lucide-react';
 import { FormLabel, FormInput, FormSelect, Button } from '@crewly/ui';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Popup } from '@crewly/ui/Popup';
 import { useAlert } from '@crewly/ui/Dialog';
 import { useRoles } from '../../hooks/useRoles';
 import { useProjects } from '../../hooks/useProjects';
@@ -342,358 +344,338 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
 
   if (!isOpen) return null;
 
+  const footer = (
+    <>
+      <Button variant="secondary" onClick={onClose} type="button">
+        Cancel
+      </Button>
+      <Button
+        variant="primary"
+        type="submit"
+        icon={team ? Check : Plus}
+        onClick={handleFormSubmit}
+        loading={loading}
+        disabled={!formData.name.trim() || members.length === 0 || rolesLoading || projectsLoading || teamsLoading}
+      >
+        {team ? 'Save Changes' : 'Create Team'}
+      </Button>
+    </>
+  );
+
   return (
     <>
-      <div className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center z-50" onClick={onClose}>
-        <div className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-2xl m-4" onClick={(e) => e.stopPropagation()}>
-          <div className="p-6">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-xl font-semibold text-text-primary-dark">
-                  {team ? 'Edit Team' : 'Create New Team'}
-                </h3>
-                <p className="text-sm text-text-secondary-dark mt-1">
-                  {team ? 'Modify team configuration and members' : 'Configure the details for your new AI agent team.'}
-                </p>
-              </div>
-              <button
-                onClick={onClose}
-                className="w-8 h-8 -mt-1 -mr-1 rounded-lg hover:bg-background-dark flex items-center justify-center text-text-secondary-dark hover:text-text-primary-dark"
-              >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                </svg>
-              </button>
-            </div>
-            <form onSubmit={handleFormSubmit} className="mt-6 space-y-6 max-h-[60vh] overflow-y-auto pr-2">
-              <div>
-                <FormLabel htmlFor="team-name">Team Name</FormLabel>
-                <FormInput
-                  id="team-name"
-                  type="text"
-                  value={formData.name}
-                  onChange={handleInputChange}
-                  name="name"
-                  placeholder="e.g., Frontend Wizards"
-                  required
-                />
-              </div>
+      <Popup
+        isOpen={isOpen}
+        onClose={onClose}
+        title={team ? 'Edit Team' : 'Create New Team'}
+        subtitle={team ? 'Modify team configuration and members' : 'Configure the details for your new AI agent team.'}
+        size="xl"
+        className="max-w-2xl"
+        footer={footer}
+      >
+        <form onSubmit={handleFormSubmit} className="space-y-6 max-h-[60vh] overflow-y-auto pr-2">
+          <div>
+            <FormLabel htmlFor="team-name">Team Name</FormLabel>
+            <FormInput
+              id="team-name"
+              type="text"
+              value={formData.name}
+              onChange={handleInputChange}
+              name="name"
+              placeholder="e.g., Frontend Wizards"
+              required
+            />
+          </div>
 
-              <div>
-                <FormLabel htmlFor="project-assignment">Assigned Project</FormLabel>
-                <FormSelect
-                  id="project-assignment"
-                  value={formData.projectPath || ''}
-                  onChange={handleInputChange}
-                  name="projectPath"
-                >
-                  <option value="">No project assigned</option>
-                  {projects.map(project => (
-                    <option key={project.id} value={project.id}>{project.name}</option>
-                  ))}
-                </FormSelect>
-                <p className="text-xs text-text-secondary-dark mt-1">
-                  Optionally assign a project for this team to work on
-                </p>
-              </div>
+          <div>
+            <FormLabel htmlFor="project-assignment">Assigned Project</FormLabel>
+            <FormSelect
+              id="project-assignment"
+              value={formData.projectPath || ''}
+              onChange={handleInputChange}
+              name="projectPath"
+            >
+              <option value="">No project assigned</option>
+              {projects.map(project => (
+                <option key={project.id} value={project.id}>{project.name}</option>
+              ))}
+            </FormSelect>
+            <p className="text-xs text-text-secondary-dark mt-1">
+              Optionally assign a project for this team to work on
+            </p>
+          </div>
 
-              <div>
-                <FormLabel htmlFor="parent-team">Parent Team</FormLabel>
-                <FormSelect
-                  id="parent-team"
-                  value={formData.parentTeamId || ''}
-                  onChange={handleInputChange}
-                  name="parentTeamId"
-                >
-                  <option value="">None (Independent Team)</option>
-                  {allTeams
-                    .filter(t => t.id !== team?.id && t.id !== 'orchestrator')
-                    .map(t => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                </FormSelect>
-                <p className="text-xs text-text-secondary-dark mt-1">
-                  Optionally link this team under a parent team for organization
-                </p>
-              </div>
+          <div>
+            <FormLabel htmlFor="parent-team">Parent Team</FormLabel>
+            <FormSelect
+              id="parent-team"
+              value={formData.parentTeamId || ''}
+              onChange={handleInputChange}
+              name="parentTeamId"
+            >
+              <option value="">None (Independent Team)</option>
+              {allTeams
+                .filter(t => t.id !== team?.id && t.id !== 'orchestrator')
+                .map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+            </FormSelect>
+            <p className="text-xs text-text-secondary-dark mt-1">
+              Optionally link this team under a parent team for organization
+            </p>
+          </div>
 
-              <HierarchyModeConfig
-                config={hierarchyConfig}
-                onChange={setHierarchyConfig}
-                members={members as unknown as AppTeamMember[]}
-              />
+          <HierarchyModeConfig
+            config={hierarchyConfig}
+            onChange={setHierarchyConfig}
+            members={members as unknown as AppTeamMember[]}
+          />
 
-              <div>
-                <FormLabel>Team Members</FormLabel>
-                <div className="space-y-4">
-                  {members.map((member, index) => (
-                    <div key={member.id} className="p-4 border border-border-dark rounded-lg space-y-4 bg-background-dark/50">
-                      <div>
-                        <FormLabel>Avatar</FormLabel>
-                        <div className="flex items-center gap-4">
+          <div>
+            <FormLabel>Team Members</FormLabel>
+            <div className="space-y-4">
+              {members.map((member, index) => (
+                <div key={member.id} className="p-4 border border-border-dark rounded-2xl space-y-4 bg-background-dark/50">
+                  <div>
+                    <FormLabel>Avatar</FormLabel>
+                    <div className="flex items-center gap-4">
+                      <img
+                        src={member.avatar || avatarChoices[0]}
+                        alt="Selected Avatar"
+                        className="w-12 h-12 rounded-full ring-2 ring-primary/50"
+                      />
+                      <div className="flex flex-wrap gap-2 flex-1">
+                        {avatarChoices.map((url) => (
                           <img
-                            src={member.avatar || avatarChoices[0]}
-                            alt="Selected Avatar"
-                            className="w-12 h-12 rounded-full ring-2 ring-primary/50"
+                            key={url}
+                            src={url}
+                            alt="Avatar option"
+                            onClick={() => handleMemberChange(member.id, 'avatar', url)}
+                            className={`w-9 h-9 rounded-full cursor-pointer transition-all ${member.avatar === url ? 'ring-2 ring-primary' : 'ring-2 ring-transparent hover:ring-primary/50'}`}
                           />
-                          <div className="flex flex-wrap gap-2 flex-1">
-                            {avatarChoices.map((url) => (
-                              <img
-                                key={url}
-                                src={url}
-                                alt="Avatar option"
-                                onClick={() => handleMemberChange(member.id, 'avatar', url)}
-                                className={`w-9 h-9 rounded-full cursor-pointer transition-all ${member.avatar === url ? 'ring-2 ring-primary' : 'ring-2 ring-transparent hover:ring-primary/50'}`}
-                              />
-                            ))}
-                          </div>
-                        </div>
+                        ))}
                       </div>
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <div>
-                          <FormLabel htmlFor={`member-name-${index}`}>Agent Name</FormLabel>
-                          <FormInput
-                            id={`member-name-${index}`}
-                            type="text"
-                            value={member.name}
-                            onChange={(e) => handleMemberChange(member.id, 'name', e.target.value)}
-                            placeholder="e.g., Agent Smith"
-                            required
-                          />
-                        </div>
-                        <div>
-                          <FormLabel htmlFor={`member-role-${index}`}>Role</FormLabel>
-                          <FormSelect
-                            id={`member-role-${index}`}
-                            value={member.role}
-                            onChange={(e) => handleMemberChange(member.id, 'role', e.target.value)}
-                            required
-                          >
-                            <option value="">Select role</option>
-                            {availableRoles.filter(r => !r.hidden).map(r => (
-                              <option key={r.key} value={r.key}>{r.displayName}</option>
-                            ))}
-                          </FormSelect>
-                        </div>
-                      </div>
-                      <div>
-                        <FormLabel htmlFor={`runtime-type-${index}`}>Runtime Type</FormLabel>
-                        <FormSelect
-                          id={`runtime-type-${index}`}
-                          value={member.runtimeType}
-                          onChange={(e) => handleMemberChange(member.id, 'runtimeType', e.target.value)}
-                          required
-                        >
-                          <option value="claude-code">Claude CLI</option>
-                          <option value="gemini-cli">Gemini CLI</option>
-                          <option value="codex-cli">Codex CLI</option>
-                          <option value="opencode-cli">OpenCode CLI</option>
-                          <option value="crewly-agent">Crewly Agent</option>
-                        </FormSelect>
-                      </div>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div>
+                      <FormLabel htmlFor={`member-name-${index}`}>Agent Name</FormLabel>
+                      <FormInput
+                        id={`member-name-${index}`}
+                        type="text"
+                        value={member.name}
+                        onChange={(e) => handleMemberChange(member.id, 'name', e.target.value)}
+                        placeholder="e.g., Agent Smith"
+                        required
+                      />
+                    </div>
+                    <div>
+                      <FormLabel htmlFor={`member-role-${index}`}>Role</FormLabel>
+                      <FormSelect
+                        id={`member-role-${index}`}
+                        value={member.role}
+                        onChange={(e) => handleMemberChange(member.id, 'role', e.target.value)}
+                        required
+                      >
+                        <option value="">Select role</option>
+                        {availableRoles.filter(r => !r.hidden).map(r => (
+                          <option key={r.key} value={r.key}>{r.displayName}</option>
+                        ))}
+                      </FormSelect>
+                    </div>
+                  </div>
+                  <div>
+                    <FormLabel htmlFor={`runtime-type-${index}`}>Runtime Type</FormLabel>
+                    <FormSelect
+                      id={`runtime-type-${index}`}
+                      value={member.runtimeType}
+                      onChange={(e) => handleMemberChange(member.id, 'runtimeType', e.target.value)}
+                      required
+                    >
+                      <option value="claude-code">Claude CLI</option>
+                      <option value="gemini-cli">Gemini CLI</option>
+                      <option value="codex-cli">Codex CLI</option>
+                      <option value="opencode-cli">OpenCode CLI</option>
+                      <option value="crewly-agent">Crewly Agent</option>
+                    </FormSelect>
+                  </div>
 
-                      {/* AI Model — crewly-agent picks provider/model; PTY runtimes take the harness's own model name */}
-                      {member.runtimeType === 'crewly-agent' ? (
+                  {/* AI Model — crewly-agent picks provider/model; PTY runtimes take the harness's own model name */}
+                  {member.runtimeType === 'crewly-agent' ? (
+                    <div>
+                      <FormLabel htmlFor={`model-id-${index}`}>AI Model</FormLabel>
+                      <FormSelect
+                        id={`model-id-${index}`}
+                        value={member.modelId || ''}
+                        onChange={(e) => handleMemberChange(member.id, 'modelId', e.target.value)}
+                      >
+                        <option value="">Default</option>
+                        {SUPPORTED_MODELS.map(m => (
+                          <option key={m.id} value={m.id}>{m.label}</option>
+                        ))}
+                      </FormSelect>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <FormLabel htmlFor={`model-id-${index}`}>Model (optional)</FormLabel>
+                        <FormInput
+                          id={`model-id-${index}`}
+                          list={`model-presets-${member.runtimeType}`}
+                          value={member.modelId || ''}
+                          placeholder="Runtime default"
+                          onChange={(e) => handleMemberChange(member.id, 'modelId', e.target.value.trim())}
+                        />
+                        <datalist id={`model-presets-${member.runtimeType}`}>
+                          {(RUNTIME_MODEL_PRESETS[member.runtimeType] || []).map(m => (
+                            <option key={m.id} value={m.id}>{m.label}</option>
+                          ))}
+                        </datalist>
+                        <p className="mt-1 text-xs text-text-secondary-dark">{RUNTIME_MODEL_HINTS[member.runtimeType]}</p>
+                      </div>
+                      {(RUNTIME_EFFORT_LEVELS[member.runtimeType] || []).length > 0 && (
                         <div>
-                          <FormLabel htmlFor={`model-id-${index}`}>AI Model</FormLabel>
+                          <FormLabel htmlFor={`effort-${index}`}>Reasoning effort</FormLabel>
                           <FormSelect
-                            id={`model-id-${index}`}
-                            value={member.modelId || ''}
-                            onChange={(e) => handleMemberChange(member.id, 'modelId', e.target.value)}
+                            id={`effort-${index}`}
+                            value={member.reasoningEffort || ''}
+                            onChange={(e) => handleMemberChange(member.id, 'reasoningEffort', e.target.value)}
                           >
                             <option value="">Default</option>
-                            {SUPPORTED_MODELS.map(m => (
-                              <option key={m.id} value={m.id}>{m.label}</option>
+                            {RUNTIME_EFFORT_LEVELS[member.runtimeType].map(level => (
+                              <option key={level} value={level}>{level}</option>
                             ))}
                           </FormSelect>
                         </div>
-                      ) : (
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                          <div>
-                            <FormLabel htmlFor={`model-id-${index}`}>Model (optional)</FormLabel>
-                            <FormInput
-                              id={`model-id-${index}`}
-                              list={`model-presets-${member.runtimeType}`}
-                              value={member.modelId || ''}
-                              placeholder="Runtime default"
-                              onChange={(e) => handleMemberChange(member.id, 'modelId', e.target.value.trim())}
-                            />
-                            <datalist id={`model-presets-${member.runtimeType}`}>
-                              {(RUNTIME_MODEL_PRESETS[member.runtimeType] || []).map(m => (
-                                <option key={m.id} value={m.id}>{m.label}</option>
-                              ))}
-                            </datalist>
-                            <p className="mt-1 text-xs text-text-secondary-dark">{RUNTIME_MODEL_HINTS[member.runtimeType]}</p>
-                          </div>
-                          {(RUNTIME_EFFORT_LEVELS[member.runtimeType] || []).length > 0 && (
-                            <div>
-                              <FormLabel htmlFor={`effort-${index}`}>Reasoning effort</FormLabel>
-                              <FormSelect
-                                id={`effort-${index}`}
-                                value={member.reasoningEffort || ''}
-                                onChange={(e) => handleMemberChange(member.id, 'reasoningEffort', e.target.value)}
-                              >
-                                <option value="">Default</option>
-                                {RUNTIME_EFFORT_LEVELS[member.runtimeType].map(level => (
-                                  <option key={level} value={level}>{level}</option>
-                                ))}
-                              </FormSelect>
-                            </div>
-                          )}
-                        </div>
                       )}
+                    </div>
+                  )}
 
-                      {/* Skills Section */}
-                      {member.role && (
-                        <div className="border-t border-border-dark pt-3">
-                          <button
-                            type="button"
-                            onClick={() => toggleSkillSection(member.id)}
-                            className="flex items-center gap-2 text-sm font-medium text-text-primary-dark hover:text-primary w-full"
-                          >
-                            {expandedSkills[member.id] ? (
-                              <ChevronDown className="w-4 h-4" />
-                            ) : (
-                              <ChevronRight className="w-4 h-4" />
-                            )}
-                            <span>Skills</span>
-                            <span className="text-xs text-text-secondary-dark ml-1">
-                              ({getEffectiveRoleSkills(member).length} from role
-                              {(member.excludedRoleSkills?.length || 0) > 0 && ` - ${member.excludedRoleSkills?.length} excluded`}
-                              {(member.skillOverrides?.length || 0) > 0 && ` + ${member.skillOverrides?.length} additional`})
-                            </span>
-                          </button>
+                  {/* Skills Section */}
+                  {member.role && (
+                    <div className="border-t border-border-dark pt-3">
+                      <button
+                        type="button"
+                        onClick={() => toggleSkillSection(member.id)}
+                        aria-expanded={!!expandedSkills[member.id]}
+                        className="flex items-center gap-2 text-sm font-medium text-text-primary-dark hover:text-primary w-full"
+                      >
+                        {expandedSkills[member.id] ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
+                        <span>Skills</span>
+                        <span className="text-xs text-text-secondary-dark ml-1">
+                          ({getEffectiveRoleSkills(member).length} from role
+                          {(member.excludedRoleSkills?.length || 0) > 0 && ` - ${member.excludedRoleSkills?.length} excluded`}
+                          {(member.skillOverrides?.length || 0) > 0 && ` + ${member.skillOverrides?.length} additional`})
+                        </span>
+                      </button>
 
-                          {expandedSkills[member.id] && (
-                            <div className="mt-3 space-y-2">
-                              {/* Skills from Role (can be excluded for this member) */}
-                              {getRoleSkills(member.role).length > 0 && (
-                                <div className="space-y-1">
-                                  <p className="text-xs text-text-secondary-dark font-medium uppercase tracking-wide">
-                                    From Role <span className="font-normal">(click to exclude for this member)</span>
-                                  </p>
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {getRoleSkills(member.role).map(skillId => {
-                                      const skill = getSkillById(skillId);
-                                      const isExcluded = member.excludedRoleSkills?.includes(skillId);
-                                      return (
-                                        <button
-                                          key={skillId}
-                                          type="button"
-                                          onClick={() => toggleRoleSkillExclusion(member.id, skillId)}
-                                          className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors cursor-pointer ${
-                                            isExcluded
-                                              ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
-                                              : 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/20'
-                                          }`}
-                                          title={isExcluded ? `Click to re-enable "${skill?.name || skillId}" for this member` : `Click to exclude "${skill?.name || skillId}" for this member`}
-                                        >
-                                          {isExcluded ? <X className="w-3 h-3" /> : <Check className="w-3 h-3" />}
-                                          {skill?.name || skillId}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              )}
-
-                              {/* Additional Skills (can be toggled) */}
-                              <div className="space-y-1">
-                                <p className="text-xs text-text-secondary-dark font-medium uppercase tracking-wide">
-                                  Additional Skills
-                                </p>
-                                {skillsLoading ? (
-                                  <p className="text-xs text-text-secondary-dark">Loading skills...</p>
-                                ) : (
-                                  <div className="flex flex-wrap gap-1.5">
-                                    {allSkills
-                                      .filter(skill => !getRoleSkills(member.role).includes(skill.id))
-                                      .map(skill => {
-                                        const isSelected = member.skillOverrides?.includes(skill.id);
-                                        return (
-                                          <button
-                                            key={skill.id}
-                                            type="button"
-                                            onClick={() => toggleSkillOverride(member.id, skill.id)}
-                                            className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
-                                              isSelected
-                                                ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                                                : 'bg-background-dark border-border-dark text-text-secondary-dark hover:border-primary/50 hover:text-text-primary-dark'
-                                            }`}
-                                            title={skill.description}
-                                          >
-                                            {isSelected ? (
-                                              <Check className="w-3 h-3" />
-                                            ) : (
-                                              <Plus className="w-3 h-3" />
-                                            )}
-                                            {skill.name}
-                                          </button>
-                                        );
-                                      })}
-                                    {allSkills.filter(skill => !getRoleSkills(member.role).includes(skill.id)).length === 0 && (
-                                      <p className="text-xs text-text-secondary-dark">No additional skills available</p>
-                                    )}
-                                  </div>
-                                )}
+                      {expandedSkills[member.id] && (
+                        <div className="mt-3 space-y-2">
+                          {/* Skills from Role (can be excluded for this member) */}
+                          {getRoleSkills(member.role).length > 0 && (
+                            <div className="space-y-1">
+                              <p className="text-xs text-text-secondary-dark font-medium uppercase tracking-wide">
+                                From Role <span className="font-normal">(click to exclude for this member)</span>
+                              </p>
+                              <div className="flex flex-wrap gap-1.5">
+                                {getRoleSkills(member.role).map(skillId => {
+                                  const skill = getSkillById(skillId);
+                                  const isExcluded = member.excludedRoleSkills?.includes(skillId);
+                                  return (
+                                    <button
+                                      key={skillId}
+                                      type="button"
+                                      onClick={() => toggleRoleSkillExclusion(member.id, skillId)}
+                                      className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors cursor-pointer ${
+                                        isExcluded
+                                          ? 'bg-rose-500/10 border-rose-500/30 text-rose-400 hover:bg-rose-500/20'
+                                          : 'bg-primary/10 border-primary/30 text-primary hover:bg-primary/20'
+                                      }`}
+                                      title={isExcluded ? `Click to re-enable "${skill?.name || skillId}" for this member` : `Click to exclude "${skill?.name || skillId}" for this member`}
+                                    >
+                                      {isExcluded ? <X className="w-3 h-3" /> : <Check className="w-3 h-3" />}
+                                      {skill?.name || skillId}
+                                    </button>
+                                  );
+                                })}
                               </div>
                             </div>
                           )}
+
+                          {/* Additional Skills (can be toggled) */}
+                          <div className="space-y-1">
+                            <p className="text-xs text-text-secondary-dark font-medium uppercase tracking-wide">
+                              Additional Skills
+                            </p>
+                            {skillsLoading ? (
+                              <LoadingSpinner size="xs" centered={false} text="Loading skills..." />
+                            ) : (
+                              <div className="flex flex-wrap gap-1.5">
+                                {allSkills
+                                  .filter(skill => !getRoleSkills(member.role).includes(skill.id))
+                                  .map(skill => {
+                                    const isSelected = member.skillOverrides?.includes(skill.id);
+                                    return (
+                                      <button
+                                        key={skill.id}
+                                        type="button"
+                                        onClick={() => toggleSkillOverride(member.id, skill.id)}
+                                        className={`inline-flex items-center gap-1 px-2 py-1 text-xs rounded-md border transition-colors ${
+                                          isSelected
+                                            ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
+                                            : 'bg-background-dark border-border-dark text-text-secondary-dark hover:border-primary/50 hover:text-text-primary-dark'
+                                        }`}
+                                        title={skill.description}
+                                      >
+                                        {isSelected ? (
+                                          <Check className="w-3 h-3" />
+                                        ) : (
+                                          <Plus className="w-3 h-3" />
+                                        )}
+                                        {skill.name}
+                                      </button>
+                                    );
+                                  })}
+                                {allSkills.filter(skill => !getRoleSkills(member.role).includes(skill.id)).length === 0 && (
+                                  <p className="text-xs text-text-secondary-dark">No additional skills available</p>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       )}
-
-                      <div className="flex justify-end">
-                        <button
-                          type="button"
-                          onClick={() => removeMember(member.id)}
-                          className="text-text-secondary-dark hover:text-red-500 h-auto p-0 text-sm flex items-center gap-1"
-                        >
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                          Delete Member
-                        </button>
-                      </div>
                     </div>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={addMember}
-                    className="w-full flex items-center justify-center gap-2 py-2 border-2 border-dashed border-border-dark rounded-lg text-text-secondary-dark hover:text-primary hover:border-primary transition-colors"
-                  >
-                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                    <span>Add Team Member</span>
-                  </button>
+                  )}
+
+                  <div className="flex justify-end">
+                    <Button
+                      type="button"
+                      variant="danger-ghost"
+                      size="sm"
+                      icon={Trash2}
+                      onClick={() => removeMember(member.id)}
+                    >
+                      Delete Member
+                    </Button>
+                  </div>
                 </div>
-              </div>
-            </form>
+              ))}
+              <button
+                type="button"
+                onClick={addMember}
+                className="w-full flex items-center justify-center gap-2 py-2 border-2 border-dashed border-border-dark rounded-2xl text-text-secondary-dark hover:text-primary hover:border-primary transition-colors"
+              >
+                <Plus className="w-4 h-4" />
+                <span>Add Team Member</span>
+              </button>
+            </div>
           </div>
-          <div className="bg-background-dark px-6 py-4 rounded-b-xl border-t border-border-dark flex justify-end gap-3">
-            <Button variant="secondary" onClick={onClose} type="button">
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              type="submit"
-              onClick={handleFormSubmit}
-              disabled={!formData.name.trim() || members.length === 0 || loading || rolesLoading || projectsLoading || teamsLoading}
-            >
-              {loading ? (
-                <div className="animate-spin rounded-full h-4 w-4 border-2 border-current border-t-transparent" />
-              ) : (
-                <span className="inline-flex items-center gap-2">
-                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d={team ? "M5 13l4 4L19 7" : "M12 6v6m0 0v6m0-6h6m-6 0H6"} />
-                  </svg>
-                  {team ? 'Save Changes' : 'Create Team'}
-                </span>
-              )}
-            </Button>
-          </div>
-        </div>
-      </div>
+        </form>
+      </Popup>
       <AlertComponent />
     </>
   );

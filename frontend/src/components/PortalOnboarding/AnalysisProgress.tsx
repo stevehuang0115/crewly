@@ -10,7 +10,8 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle } from 'lucide-react';
+import { CheckCircle2, Circle, AlertCircle } from 'lucide-react';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { ANALYSIS_STAGES } from '../../types/onboarding.types';
 import { Button } from '@crewly/ui';
 
@@ -137,7 +138,7 @@ export const AnalysisProgress: React.FC<AnalysisProgressProps> = ({
                     {isComplete ? (
                       <CheckCircle2 className="h-5 w-5 text-emerald-400 flex-shrink-0" />
                     ) : isCurrent ? (
-                      <Loader2 className="h-5 w-5 text-primary animate-spin flex-shrink-0" />
+                      <LoadingSpinner size="sm" centered={false} className="flex-shrink-0" />
                     ) : (
                       <Circle className="h-5 w-5 text-text-secondary-dark/30 flex-shrink-0" />
                     )}

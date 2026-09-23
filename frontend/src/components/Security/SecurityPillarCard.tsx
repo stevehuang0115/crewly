@@ -35,17 +35,17 @@ export interface SecurityPillarCardProps {
 /** Border color per pillar — matches spec section 5 PTY Border Colors */
 const PILLAR_COLORS: Record<PillarId, { border: string; iconBg: string; activeBorder: string }> = {
   pty: {
-    border: 'border-zinc-700',
+    border: 'border-border-dark',
     iconBg: 'bg-blue-500/10 text-blue-400',
     activeBorder: 'border-blue-500 ring-1 ring-blue-500/30',
   },
   storage: {
-    border: 'border-zinc-700',
-    iconBg: 'bg-purple-500/10 text-purple-400',
-    activeBorder: 'border-purple-500 ring-1 ring-purple-500/30',
+    border: 'border-border-dark',
+    iconBg: 'bg-emerald-500/10 text-emerald-400',
+    activeBorder: 'border-emerald-500 ring-1 ring-emerald-500/30',
   },
   approval: {
-    border: 'border-zinc-700',
+    border: 'border-border-dark',
     iconBg: 'bg-pink-500/10 text-pink-400',
     activeBorder: 'border-pink-500 ring-1 ring-pink-500/30',
   },
@@ -83,7 +83,7 @@ export const SecurityPillarCard: React.FC<SecurityPillarCardProps> = ({
   return (
     <Card
       padding="lg"
-      className={`bg-zinc-900 transition-all duration-200 ${borderClass}`}
+      className={`bg-surface-dark transition-all duration-200 ${borderClass}`}
       data-testid={`pillar-card-${id}`}
     >
       {/* Icon */}
@@ -92,10 +92,10 @@ export const SecurityPillarCard: React.FC<SecurityPillarCardProps> = ({
       </div>
 
       {/* Title */}
-      <h3 className="text-lg font-semibold text-zinc-100 mb-2">{title}</h3>
+      <h3 className="text-lg font-semibold text-text-primary-dark mb-2">{title}</h3>
 
       {/* Description */}
-      <p className="text-sm text-zinc-400 mb-4 leading-relaxed">{description}</p>
+      <p className="text-sm text-text-secondary-dark mb-4 leading-relaxed">{description}</p>
 
       {/* See how link */}
       <Button

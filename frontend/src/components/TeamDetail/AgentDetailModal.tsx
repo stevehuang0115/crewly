@@ -7,7 +7,11 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, User, Briefcase, Wrench, Check } from 'lucide-react';
+import { Briefcase, Wrench, Check } from 'lucide-react';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
+import { FormInput, FormSelect } from '@crewly/ui/Form';
+import { Popup } from '@crewly/ui/Popup';
 import { TeamMember, SUPPORTED_MODELS, RUNTIME_MODEL_PRESETS, RUNTIME_EFFORT_LEVELS, RUNTIME_MODEL_HINTS } from '../../types';
 import { rolesService } from '../../services/roles.service';
 import { RoleWithPrompt, ROLE_CATEGORY_DISPLAY_NAMES } from '../../types/role.types';
@@ -113,318 +117,267 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
   };
 
   /**
-   * Handle overlay click to close
-   */
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
-  /**
    * Render a skill badge
    */
   const renderSkillBadge = (skillId: string, variant: 'role' | 'additional') => {
     const skillInfo = getSkillInfo(skillId);
     const name = skillInfo?.name || skillId;
 
-    const baseClasses = 'inline-flex items-center gap-1.5 px-2.5 py-1 text-sm rounded-md';
-    const variantClasses = variant === 'role'
-      ? 'bg-primary/10 text-primary'
-      : 'bg-emerald-500/10 text-emerald-400';
-
     return (
       <div key={skillId}>
-        <span className={`${baseClasses} ${variantClasses}`}>
+        <Badge variant={variant === 'role' ? 'primary' : 'success'} size="md" className="gap-1.5">
           <Check className="w-3 h-3" />
           {name}
-        </span>
+        </Badge>
       </div>
     );
   };
 
+  /** Persist the edited runtime/model/expert, then close. */
+  const handleSave = async (): Promise<void> => {
+    if (onSave) {
+      const updates: Partial<TeamMember> = {
+        runtimeType: editedRuntime as TeamMember['runtimeType'],
+        expertId: editedExpertId,
+      };
+      // '' clears the override server-side (PUT /members/:id treats '' as "unset").
+      updates.modelId = editedModelId || '';
+      updates.reasoningEffort = editedRuntime === 'crewly-agent' ? '' : (editedEffort || '');
+      await onSave(member.id, updates);
+    }
+    onClose();
+  };
+
+  const footer = isEditable ? (
+    <>
+      <Button variant="secondary" className="flex-1" onClick={onClose}>
+        Cancel
+      </Button>
+      <Button className="flex-1" onClick={handleSave}>
+        Save
+      </Button>
+    </>
+  ) : (
+    <Button fullWidth onClick={onClose}>
+      Close
+    </Button>
+  );
+
   return (
-    <div
-      className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center z-50"
-      onClick={handleOverlayClick}
+    <Popup
+      isOpen
+      onClose={onClose}
+      title={member.name}
+      subtitle={isEditable ? 'Edit Agent' : 'Agent Details'}
+      size="lg"
+      footer={footer}
     >
-      <div
-        className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-lg m-4"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="flex items-center justify-between p-6 border-b border-border-dark">
-          <div className="flex items-center gap-4">
-            <div className="w-12 h-12 rounded-full bg-background-dark border border-border-dark flex items-center justify-center overflow-hidden">
-              {member.avatar ? (
-                member.avatar.startsWith('http') || member.avatar.startsWith('data:') ? (
-                  <img src={member.avatar} alt={member.name} className="w-full h-full object-cover" />
-                ) : (
-                  <span className="text-lg">{member.avatar}</span>
-                )
-              ) : (
-                <User className="w-6 h-6 text-text-secondary-dark" />
-              )}
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-text-primary-dark">{member.name}</h2>
-              <p className="text-sm text-text-secondary-dark">{isEditable ? 'Edit Agent' : 'Agent Details'}</p>
-            </div>
+      {/* Content */}
+      <div className="space-y-6 max-h-[65vh] overflow-y-auto">
+        {/* Role Section */}
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+            <Briefcase className="w-4 h-4" />
+            Role
           </div>
-          <button
-            onClick={onClose}
-            className="w-8 h-8 rounded-lg hover:bg-background-dark flex items-center justify-center text-text-secondary-dark hover:text-text-primary-dark"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          {loadingRole ? (
+            <div className="animate-pulse">
+              <div className="h-6 bg-background-dark rounded w-32 mb-2"></div>
+              <div className="h-4 bg-background-dark rounded w-full"></div>
+            </div>
+          ) : roleDetails ? (
+            <div className="bg-background-dark/50 rounded-lg p-4">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-semibold text-text-primary-dark">{roleDetails.displayName}</span>
+                <Badge variant="primary">
+                  {ROLE_CATEGORY_DISPLAY_NAMES[roleDetails.category] || roleDetails.category}
+                </Badge>
+              </div>
+              <p className="text-sm text-text-secondary-dark">{roleDetails.description}</p>
+            </div>
+          ) : (
+            <p className="text-sm text-text-secondary-dark italic">No role assigned</p>
+          )}
         </div>
 
-        {/* Content */}
-        <div className="p-6 space-y-6">
-          {/* Role Section */}
-          <div>
-            <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
-              <Briefcase className="w-4 h-4" />
-              Role
-            </div>
-            {loadingRole ? (
-              <div className="animate-pulse">
-                <div className="h-6 bg-background-dark rounded w-32 mb-2"></div>
-                <div className="h-4 bg-background-dark rounded w-full"></div>
-              </div>
-            ) : roleDetails ? (
-              <div className="bg-background-dark/50 rounded-lg p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="font-semibold text-text-primary-dark">{roleDetails.displayName}</span>
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-primary/10 text-primary">
-                    {ROLE_CATEGORY_DISPLAY_NAMES[roleDetails.category] || roleDetails.category}
-                  </span>
-                </div>
-                <p className="text-sm text-text-secondary-dark">{roleDetails.description}</p>
-              </div>
-            ) : (
-              <p className="text-sm text-text-secondary-dark italic">No role assigned</p>
-            )}
+        {/* Skills Section */}
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+            <Wrench className="w-4 h-4" />
+            Skills
           </div>
-
-          {/* Skills Section */}
-          <div>
-            <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
-              <Wrench className="w-4 h-4" />
-              Skills
+          {loadingRole ? (
+            <div className="animate-pulse flex flex-wrap gap-2">
+              <div className="h-7 bg-background-dark rounded-md w-24"></div>
+              <div className="h-7 bg-background-dark rounded-md w-32"></div>
+              <div className="h-7 bg-background-dark rounded-md w-28"></div>
             </div>
-            {loadingRole ? (
-              <div className="animate-pulse flex flex-wrap gap-2">
-                <div className="h-7 bg-background-dark rounded-md w-24"></div>
-                <div className="h-7 bg-background-dark rounded-md w-32"></div>
-                <div className="h-7 bg-background-dark rounded-md w-28"></div>
-              </div>
-            ) : (
-              <div className="space-y-3">
-                {/* Skills from Role (excluding member-specific exclusions) */}
-                {roleDetails?.assignedSkills && roleDetails.assignedSkills.length > 0 && (
-                  <div>
-                    <p className="text-xs text-text-secondary-dark mb-2">From Role</p>
-                    <div className="flex flex-wrap gap-2">
-                      {roleDetails.assignedSkills
-                        .filter(skillId => !member.excludedRoleSkills?.includes(skillId))
-                        .map(skillId =>
-                          renderSkillBadge(skillId, 'role')
-                        )}
-                    </div>
-                  </div>
-                )}
-
-                {/* Additional Skills (Overrides) */}
-                {member.skillOverrides && member.skillOverrides.length > 0 && (
-                  <div>
-                    <p className="text-xs text-text-secondary-dark mb-2">Additional Skills</p>
-                    <div className="flex flex-wrap gap-2">
-                      {member.skillOverrides.map(skillId =>
-                        renderSkillBadge(skillId, 'additional')
+          ) : (
+            <div className="space-y-3">
+              {/* Skills from Role (excluding member-specific exclusions) */}
+              {roleDetails?.assignedSkills && roleDetails.assignedSkills.length > 0 && (
+                <div>
+                  <p className="text-xs text-text-secondary-dark mb-2">From Role</p>
+                  <div className="flex flex-wrap gap-2">
+                    {roleDetails.assignedSkills
+                      .filter(skillId => !member.excludedRoleSkills?.includes(skillId))
+                      .map(skillId =>
+                        renderSkillBadge(skillId, 'role')
                       )}
-                    </div>
                   </div>
-                )}
+                </div>
+              )}
 
-                {/* No skills */}
-                {getAllSkillIds().length === 0 && (
-                  <p className="text-sm text-text-secondary-dark italic">No skills assigned</p>
+              {/* Additional Skills (Overrides) */}
+              {member.skillOverrides && member.skillOverrides.length > 0 && (
+                <div>
+                  <p className="text-xs text-text-secondary-dark mb-2">Additional Skills</p>
+                  <div className="flex flex-wrap gap-2">
+                    {member.skillOverrides.map(skillId =>
+                      renderSkillBadge(skillId, 'additional')
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* No skills */}
+              {getAllSkillIds().length === 0 && (
+                <p className="text-sm text-text-secondary-dark italic">No skills assigned</p>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Expert Profile Section */}
+        <div>
+          <ExpertSelector
+            value={editedExpertId}
+            onChange={(id) => {
+              if (isEditable) {
+                setEditedExpertId(id);
+              }
+            }}
+            memberRole={member.role}
+            disabled={!isEditable}
+          />
+        </div>
+
+        {/* Runtime Section */}
+        <div>
+          <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+            Runtime
+          </div>
+          {isEditable ? (
+            <FormSelect
+              aria-label="Runtime"
+              value={editedRuntime}
+              onChange={(e) => setEditedRuntime(e.target.value)}
+            >
+              <option value="claude-code">Claude CLI</option>
+              <option value="gemini-cli">Gemini CLI</option>
+              <option value="codex-cli">Codex CLI</option>
+              <option value="opencode-cli">OpenCode CLI</option>
+              <option value="crewly-agent">Crewly Agent</option>
+            </FormSelect>
+          ) : (
+            <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+              <span className="text-sm text-text-primary-dark">
+                {member.runtimeType === 'claude-code' ? 'Claude CLI' :
+                 member.runtimeType === 'gemini-cli' ? 'Gemini CLI' :
+                 member.runtimeType === 'codex-cli' ? 'Codex CLI' :
+                 member.runtimeType === 'opencode-cli' ? 'OpenCode CLI' :
+                 member.runtimeType === 'crewly-agent' ? 'Crewly Agent' :
+                 member.runtimeType || 'Claude CLI'}
+              </span>
+            </div>
+          )}
+        </div>
+
+        {/* AI Model — PTY runtimes take the harness's own model name (+ optional effort) */}
+        {editedRuntime !== 'crewly-agent' && (
+          <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+                Model
+              </div>
+              {isEditable ? (
+                <>
+                  <FormInput
+                    aria-label="Model"
+                    list="agent-model-presets"
+                    value={editedModelId}
+                    placeholder="Runtime default"
+                    onChange={(e) => setEditedModelId(e.target.value.trim())}
+                  />
+                  <datalist id="agent-model-presets">
+                    {(RUNTIME_MODEL_PRESETS[editedRuntime] || []).map(m => (
+                      <option key={m.id} value={m.id}>{m.label}</option>
+                    ))}
+                  </datalist>
+                  <p className="mt-1 text-xs text-text-secondary-dark">{RUNTIME_MODEL_HINTS[editedRuntime]}</p>
+                </>
+              ) : (
+                <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+                  <span className="text-sm text-text-primary-dark">{member.modelId || 'Runtime default'}</span>
+                </div>
+              )}
+            </div>
+            {(RUNTIME_EFFORT_LEVELS[editedRuntime] || []).length > 0 && (
+              <div>
+                <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
+                  Reasoning effort
+                </div>
+                {isEditable ? (
+                  <FormSelect
+                    aria-label="Reasoning effort"
+                    value={editedEffort}
+                    onChange={(e) => setEditedEffort(e.target.value)}
+                  >
+                    <option value="">Default</option>
+                    {RUNTIME_EFFORT_LEVELS[editedRuntime].map(level => (
+                      <option key={level} value={level}>{level}</option>
+                    ))}
+                  </FormSelect>
+                ) : (
+                  <div className="bg-background-dark/50 rounded-lg px-4 py-2">
+                    <span className="text-sm text-text-primary-dark">{member.reasoningEffort || 'Default'}</span>
+                  </div>
                 )}
               </div>
             )}
           </div>
+        )}
 
-          {/* Expert Profile Section */}
-          <div>
-            <ExpertSelector
-              value={editedExpertId}
-              onChange={(id) => {
-                if (isEditable) {
-                  setEditedExpertId(id);
-                }
-              }}
-              memberRole={member.role}
-              disabled={!isEditable}
-            />
-          </div>
-
-          {/* Runtime Section */}
-          <div>
+        {/* AI Model — crewly-agent picks provider/model */}
+        {editedRuntime === 'crewly-agent' && (
+          <div className="mt-4">
             <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
-              Runtime
+              AI Model
             </div>
             {isEditable ? (
-              <select
-                value={editedRuntime}
-                onChange={(e) => setEditedRuntime(e.target.value)}
-                className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
+              <FormSelect
+                aria-label="AI Model"
+                value={editedModelId}
+                onChange={(e) => setEditedModelId(e.target.value)}
               >
-                <option value="claude-code">Claude CLI</option>
-                <option value="gemini-cli">Gemini CLI</option>
-                <option value="codex-cli">Codex CLI</option>
-                <option value="opencode-cli">OpenCode CLI</option>
-                <option value="crewly-agent">Crewly Agent</option>
-              </select>
+                <option value="">Default</option>
+                {SUPPORTED_MODELS.map(m => (
+                  <option key={m.id} value={m.id}>{m.label}</option>
+                ))}
+              </FormSelect>
             ) : (
               <div className="bg-background-dark/50 rounded-lg px-4 py-2">
                 <span className="text-sm text-text-primary-dark">
-                  {member.runtimeType === 'claude-code' ? 'Claude CLI' :
-                   member.runtimeType === 'gemini-cli' ? 'Gemini CLI' :
-                   member.runtimeType === 'codex-cli' ? 'Codex CLI' :
-                   member.runtimeType === 'opencode-cli' ? 'OpenCode CLI' :
-                   member.runtimeType === 'crewly-agent' ? 'Crewly Agent' :
-                   member.runtimeType || 'Claude CLI'}
+                  {member.modelId
+                    ? SUPPORTED_MODELS.find(m => m.id === member.modelId)?.label || member.modelId
+                    : 'Default'}
                 </span>
               </div>
             )}
           </div>
-
-          {/* AI Model — PTY runtimes take the harness's own model name (+ optional effort) */}
-          {editedRuntime !== 'crewly-agent' && (
-            <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
-                  Model
-                </div>
-                {isEditable ? (
-                  <>
-                    <input
-                      list="agent-model-presets"
-                      value={editedModelId}
-                      placeholder="Runtime default"
-                      onChange={(e) => setEditedModelId(e.target.value.trim())}
-                      className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
-                    />
-                    <datalist id="agent-model-presets">
-                      {(RUNTIME_MODEL_PRESETS[editedRuntime] || []).map(m => (
-                        <option key={m.id} value={m.id}>{m.label}</option>
-                      ))}
-                    </datalist>
-                    <p className="mt-1 text-xs text-text-secondary-dark">{RUNTIME_MODEL_HINTS[editedRuntime]}</p>
-                  </>
-                ) : (
-                  <div className="bg-background-dark/50 rounded-lg px-4 py-2">
-                    <span className="text-sm text-text-primary-dark">{member.modelId || 'Runtime default'}</span>
-                  </div>
-                )}
-              </div>
-              {(RUNTIME_EFFORT_LEVELS[editedRuntime] || []).length > 0 && (
-                <div>
-                  <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
-                    Reasoning effort
-                  </div>
-                  {isEditable ? (
-                    <select
-                      value={editedEffort}
-                      onChange={(e) => setEditedEffort(e.target.value)}
-                      className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
-                    >
-                      <option value="">Default</option>
-                      {RUNTIME_EFFORT_LEVELS[editedRuntime].map(level => (
-                        <option key={level} value={level}>{level}</option>
-                      ))}
-                    </select>
-                  ) : (
-                    <div className="bg-background-dark/50 rounded-lg px-4 py-2">
-                      <span className="text-sm text-text-primary-dark">{member.reasoningEffort || 'Default'}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* AI Model — crewly-agent picks provider/model */}
-          {editedRuntime === 'crewly-agent' && (
-            <div className="mt-4">
-              <div className="flex items-center gap-2 text-sm font-medium text-text-secondary-dark uppercase tracking-wide mb-3">
-                AI Model
-              </div>
-              {isEditable ? (
-                <select
-                  value={editedModelId}
-                  onChange={(e) => setEditedModelId(e.target.value)}
-                  className="w-full bg-background-dark border border-border-dark rounded-lg px-4 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-primary"
-                >
-                  <option value="">Default</option>
-                  {SUPPORTED_MODELS.map(m => (
-                    <option key={m.id} value={m.id}>{m.label}</option>
-                  ))}
-                </select>
-              ) : (
-                <div className="bg-background-dark/50 rounded-lg px-4 py-2">
-                  <span className="text-sm text-text-primary-dark">
-                    {member.modelId
-                      ? SUPPORTED_MODELS.find(m => m.id === member.modelId)?.label || member.modelId
-                      : 'Default'}
-                  </span>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Footer */}
-        <div className="px-6 py-4 border-t border-border-dark bg-background-dark rounded-b-xl">
-          {isEditable ? (
-            <div className="flex gap-3">
-              <button
-                onClick={onClose}
-                className="flex-1 px-4 py-2 border border-border-dark text-text-secondary-dark rounded-lg hover:bg-surface-dark transition-colors font-medium"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={async () => {
-                  if (onSave) {
-                    const updates: Partial<TeamMember> = {
-                      runtimeType: editedRuntime as TeamMember['runtimeType'],
-                      expertId: editedExpertId,
-                    };
-                    // '' clears the override server-side (PUT /members/:id treats '' as "unset").
-                    updates.modelId = editedModelId || '';
-                    updates.reasoningEffort = editedRuntime === 'crewly-agent' ? '' : (editedEffort || '');
-                    await onSave(member.id, updates);
-                  }
-                  onClose();
-                }}
-                className="flex-1 px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-medium"
-              >
-                Save
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={onClose}
-              className="w-full px-4 py-2 bg-primary text-white rounded-lg hover:bg-primary/90 transition-colors font-medium"
-            >
-              Close
-            </button>
-          )}
-        </div>
+        )}
       </div>
-    </div>
+    </Popup>
   );
 };
 

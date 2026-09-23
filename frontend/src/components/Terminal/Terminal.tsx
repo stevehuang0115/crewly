@@ -170,7 +170,7 @@ export const Terminal: React.FC<TerminalProps> = ({
 				return { color: 'bg-red-500', text: 'Error' };
 			case 'disconnected':
 			default:
-				return { color: 'bg-gray-500', text: 'Disconnected' };
+				return { color: 'bg-text-secondary-dark', text: 'Disconnected' };
 		}
 	};
 

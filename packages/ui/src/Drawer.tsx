@@ -8,7 +8,8 @@
  * @module components/UI/Drawer
  */
 
-import React, { useEffect } from 'react';
+import React from 'react';
+import { useDialogLayer } from './dialogStack';
 import { X } from 'lucide-react';
 import { IconButton } from './Button';
 
@@ -55,14 +56,7 @@ export const Drawer: React.FC<DrawerProps> = ({
   bare = false,
   'data-testid': testId,
 }) => {
-  useEffect(() => {
-    if (!isOpen) return;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [isOpen, onClose]);
+  useDialogLayer(isOpen, onClose);
 
   if (!isOpen) return null;
 

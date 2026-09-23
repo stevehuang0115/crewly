@@ -14,11 +14,14 @@ import {
   ArrowLeft,
   RefreshCw,
   ExternalLink,
+  FileQuestion,
 } from 'lucide-react';
 import { Card } from '@crewly/ui/Card';
 import { Badge } from '@crewly/ui/Badge';
 import { StatusBadge } from '@crewly/ui/StatusBadge';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { EmptyState } from '@crewly/ui/EmptyState';
 import {
   WorkItemTimeline,
   WorkItemMetrics,
@@ -124,23 +127,16 @@ export const WorkItemDetail: React.FC = () => {
   if (error) {
     return (
       <div className="p-6" data-testid="workitem-detail-error">
-        <button
-          onClick={handleBack}
-          className="flex items-center gap-2 text-sm text-text-secondary-dark hover:text-text-primary-dark mb-6 transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
+        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={handleBack} className="mb-6">
           Back to WorkItems
-        </button>
+        </Button>
         <Card variant="default" padding="lg">
-          <div className="text-center py-8">
+          <div className="flex flex-col items-center text-center py-8">
             <p className="text-red-400 text-lg font-medium mb-2">Failed to load WorkItem</p>
             <p className="text-text-secondary-dark text-sm mb-4">{error}</p>
-            <button
-              onClick={() => loadWorkItem(true)}
-              className="px-4 py-2 text-sm font-medium rounded-lg bg-primary/10 text-primary hover:bg-primary/20 transition-colors"
-            >
+            <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => loadWorkItem(true)}>
               Retry
-            </button>
+            </Button>
           </div>
         </Card>
       </div>
@@ -154,17 +150,11 @@ export const WorkItemDetail: React.FC = () => {
   if (!item) {
     return (
       <div className="p-6" data-testid="workitem-detail-not-found">
-        <button
-          onClick={handleBack}
-          className="flex items-center gap-2 text-sm text-text-secondary-dark hover:text-text-primary-dark mb-6 transition-colors"
-        >
-          <ArrowLeft className="h-4 w-4" />
+        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={handleBack} className="mb-6">
           Back to WorkItems
-        </button>
+        </Button>
         <Card variant="default" padding="lg">
-          <p className="text-center text-text-secondary-dark py-8">
-            WorkItem not found.
-          </p>
+          <EmptyState icon={FileQuestion} title="WorkItem not found." compact />
         </Card>
       </div>
     );
@@ -183,14 +173,16 @@ export const WorkItemDetail: React.FC = () => {
   return (
     <div className="p-6 max-w-[1400px] mx-auto" data-testid="workitem-detail">
       {/* Back button */}
-      <button
+      <Button
+        variant="ghost"
+        size="sm"
+        icon={ArrowLeft}
         onClick={handleBack}
-        className="flex items-center gap-2 text-sm text-text-secondary-dark hover:text-text-primary-dark mb-4 transition-colors"
+        className="mb-4"
         data-testid="workitem-detail-back"
       >
-        <ArrowLeft className="h-4 w-4" />
         Back to WorkItems
-      </button>
+      </Button>
 
       {/* Header */}
       <div className="mb-6" data-testid="workitem-detail-header">
@@ -200,15 +192,16 @@ export const WorkItemDetail: React.FC = () => {
               WorkItem: {truncateId(item.id)} — {item.title}
             </h1>
           </div>
-          <button
+          <Button
+            variant="secondary"
+            size="sm"
+            icon={RefreshCw}
             onClick={handleRefresh}
-            disabled={refreshing}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary-dark hover:text-text-primary-dark bg-surface-dark border border-border-dark rounded-lg transition-colors disabled:opacity-50"
+            loading={refreshing}
             data-testid="workitem-detail-refresh"
           >
-            <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
             Refresh
-          </button>
+          </Button>
         </div>
 
         {/* Status & metadata badges */}

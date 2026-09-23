@@ -12,6 +12,7 @@ import React from 'react';
 import { Check, Star, Zap } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
 import { Badge } from '@crewly/ui/Badge';
+import { SegmentedControl } from '@crewly/ui/SegmentedControl';
 import type { LimitType, BillingInterval, PlanTier } from '../../types/payment-wall.types';
 import {
   PLAN_FEATURES,
@@ -83,28 +84,16 @@ export const PlanComparisonCard: React.FC<PlanComparisonCardProps> = ({
     <div className="space-y-3">
       {/* Billing Toggle */}
       <div className="flex items-center justify-center gap-2" data-testid="billing-toggle">
-        <button
-          className={`text-xs px-3 py-1.5 rounded ${
-            billingInterval === 'monthly'
-              ? 'bg-primary/20 text-primary'
-              : 'text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => onBillingToggle('monthly')}
-          data-testid="billing-monthly"
-        >
-          Monthly
-        </button>
-        <button
-          className={`text-xs px-3 py-1.5 rounded ${
-            billingInterval === 'yearly'
-              ? 'bg-primary/20 text-primary'
-              : 'text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          onClick={() => onBillingToggle('yearly')}
-          data-testid="billing-yearly"
-        >
-          Yearly
-        </button>
+        <SegmentedControl<BillingInterval>
+          size="sm"
+          aria-label="Billing interval"
+          options={[
+            { value: 'monthly', label: 'Monthly', 'data-testid': 'billing-monthly' },
+            { value: 'yearly', label: 'Yearly', 'data-testid': 'billing-yearly' },
+          ]}
+          value={billingInterval}
+          onChange={onBillingToggle}
+        />
         {billingInterval === 'yearly' && (
           <Badge variant="success" size="sm">
             Save {savingsPercent}%

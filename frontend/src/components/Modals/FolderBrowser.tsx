@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Folder, ChevronRight, ChevronUp, Home, RefreshCw, X, FolderPlus } from 'lucide-react';
+import { Folder, ChevronRight, ChevronUp, Home, RefreshCw, FolderPlus } from 'lucide-react';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Popup } from '@crewly/ui/Popup';
+import { Toggle } from '@crewly/ui/Toggle';
 
 interface DirectoryEntry {
   name: string;
@@ -141,141 +145,127 @@ export const FolderBrowser: React.FC<FolderBrowserProps> = ({
     }
   };
 
-  return (
-    <div className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center p-4 z-[60]">
-      <div className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-2xl max-h-[80vh] flex flex-col">
-        {/* Header */}
-        <div className="p-4 border-b border-border-dark flex items-center justify-between">
-          <h3 className="text-lg font-semibold">{title}</h3>
-          <button
-            className="text-text-secondary-dark hover:text-text-primary-dark transition-colors"
-            onClick={onClose}
-            disabled={creating}
-          >
-            <X className="w-5 h-5" />
-          </button>
-        </div>
+  const footer = (
+    <>
+      <p className="text-xs text-text-secondary-dark">
+        Double-click to {isProjectMode ? 'create project in' : 'select'} a folder
+      </p>
+      <div className="flex gap-2">
+        <Button variant="secondary" onClick={onClose} disabled={creating}>
+          Cancel
+        </Button>
+        <Button
+          icon={FolderPlus}
+          onClick={handleSelectCurrent}
+          loading={creating}
+          disabled={loading}
+        >
+          {creating ? 'Creating...' : buttonText}
+        </Button>
+      </div>
+    </>
+  );
 
-        {/* Toolbar */}
-        <div className="px-4 py-2 border-b border-border-dark flex items-center gap-2">
-          <button
-            className="p-2 hover:bg-border-dark/50 rounded-lg transition-colors disabled:opacity-50"
-            onClick={handleGoUp}
-            disabled={!parentPath || loading}
-            title="Go up"
-          >
-            <ChevronUp className="w-4 h-4" />
-          </button>
-          <button
-            className="p-2 hover:bg-border-dark/50 rounded-lg transition-colors"
-            onClick={handleGoHome}
-            disabled={loading}
-            title="Go to home"
-          >
-            <Home className="w-4 h-4" />
-          </button>
-          <button
-            className="p-2 hover:bg-border-dark/50 rounded-lg transition-colors"
-            onClick={() => loadDirectory(currentPath)}
-            disabled={loading}
-            title="Refresh"
-          >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
-          </button>
-          <div className="flex-1" />
-          <label className="flex items-center gap-2 text-sm text-text-secondary-dark cursor-pointer">
-            <input
-              type="checkbox"
+  return (
+    // z-[60]: the browser opens on top of other dialogs (e.g. project creation).
+    <div className="relative z-[60]">
+      <Popup
+        isOpen
+        onClose={onClose}
+        title={title}
+        size="xl"
+        className="max-w-2xl"
+        closable={!creating}
+        footer={footer}
+        footerAlign="space-between"
+      >
+        <div className="-m-6">
+          {/* Toolbar */}
+          <div className="px-4 py-2 border-b border-border-dark flex items-center gap-1">
+            <IconButton
+              icon={ChevronUp}
+              size="sm"
+              onClick={handleGoUp}
+              disabled={!parentPath || loading}
+              title="Go up"
+              aria-label="Go up"
+            />
+            <IconButton
+              icon={Home}
+              size="sm"
+              onClick={handleGoHome}
+              disabled={loading}
+              title="Go to home"
+              aria-label="Go to home"
+            />
+            <IconButton
+              icon={RefreshCw}
+              size="sm"
+              onClick={() => loadDirectory(currentPath)}
+              loading={loading}
+              title="Refresh"
+              aria-label="Refresh"
+            />
+            <div className="flex-1" />
+            <Toggle
+              size="sm"
+              label="Show hidden"
+              labelPosition="left"
               checked={showHidden}
               onChange={(e) => setShowHidden(e.target.checked)}
-              className="rounded border-border-dark"
             />
-            Show hidden
-          </label>
-        </div>
-
-        {/* Current path */}
-        <div className="px-4 py-2 bg-background-dark/50 border-b border-border-dark">
-          <div className="flex items-center gap-2 text-sm">
-            <span className="text-text-secondary-dark">Path:</span>
-            <code className="bg-background-dark px-2 py-1 rounded text-xs flex-1 overflow-x-auto whitespace-nowrap">
-              {currentPath}
-            </code>
           </div>
-        </div>
 
-        {/* Directory listing */}
-        <div className="flex-1 overflow-y-auto p-2 min-h-[300px]">
-          {loading ? (
-            <div className="flex items-center justify-center h-full">
-              <div className="w-6 h-6 border-2 border-primary/20 border-t-primary rounded-full animate-spin" />
+          {/* Current path */}
+          <div className="px-4 py-2 bg-background-dark/50 border-b border-border-dark">
+            <div className="flex items-center gap-2 text-sm">
+              <span className="text-text-secondary-dark">Path:</span>
+              <code className="bg-background-dark px-2 py-1 rounded text-xs flex-1 overflow-x-auto whitespace-nowrap">
+                {currentPath}
+              </code>
             </div>
-          ) : error ? (
-            <div className="flex items-center justify-center h-full text-red-400 text-sm">
-              {error}
-            </div>
-          ) : entries.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-text-secondary-dark text-sm">
-              Empty directory
-            </div>
-          ) : (
-            <div className="space-y-1">
-              {entries.map((entry) => (
-                <button
-                  key={entry.path}
-                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-left hover:bg-border-dark/50 transition-colors ${
-                    entry.isHidden ? 'opacity-60' : ''
-                  }`}
-                  onClick={() => handleSelectEntry(entry)}
-                  onDoubleClick={() => handleDoubleClick(entry)}
-                >
-                  <Folder className="w-5 h-5 text-blue-400 flex-shrink-0" />
-                  <span className="flex-1 truncate">{entry.name}</span>
-                  <ChevronRight className="w-4 h-4 text-text-secondary-dark" />
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+          </div>
 
-        {/* Footer */}
-        <div className="p-4 border-t border-border-dark flex flex-col gap-3">
+          {/* Directory listing */}
+          <div className="overflow-y-auto p-2 h-[45vh] min-h-[240px]">
+            {loading ? (
+              <div className="flex items-center justify-center h-full">
+                <LoadingSpinner size="sm" />
+              </div>
+            ) : error ? (
+              <div className="flex items-center justify-center h-full text-red-400 text-sm">
+                {error}
+              </div>
+            ) : entries.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-text-secondary-dark text-sm">
+                Empty directory
+              </div>
+            ) : (
+              <div className="space-y-1">
+                {entries.map((entry) => (
+                  // Whole-row click target (click = open, double-click = choose).
+                  <button
+                    key={entry.path}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-2xl text-left hover:bg-border-dark/50 transition-colors ${
+                      entry.isHidden ? 'opacity-60' : ''
+                    }`}
+                    onClick={() => handleSelectEntry(entry)}
+                    onDoubleClick={() => handleDoubleClick(entry)}
+                  >
+                    <Folder className="w-5 h-5 text-blue-400 flex-shrink-0" />
+                    <span className="flex-1 truncate">{entry.name}</span>
+                    <ChevronRight className="w-4 h-4 text-text-secondary-dark" />
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {error && (
-            <p className="text-red-400 text-sm">{error}</p>
+            <p className="px-4 pb-3 text-red-400 text-sm">{error}</p>
           )}
-          <div className="flex items-center justify-between">
-            <p className="text-xs text-text-secondary-dark">
-              Double-click to {isProjectMode ? 'create project in' : 'select'} a folder
-            </p>
-            <div className="flex gap-2">
-              <button
-                className="bg-transparent border border-border-dark text-text-primary-dark font-semibold py-2 px-4 rounded-lg hover:bg-border-dark/50 transition-colors disabled:opacity-50"
-                onClick={onClose}
-                disabled={creating}
-              >
-                Cancel
-              </button>
-              <button
-                className="bg-primary text-white font-semibold py-2 px-4 rounded-lg flex items-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                onClick={handleSelectCurrent}
-                disabled={creating || loading}
-              >
-                {creating ? (
-                  <>
-                    <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                    <span>Creating...</span>
-                  </>
-                ) : (
-                  <>
-                    <FolderPlus className="w-4 h-4" />
-                    <span>{buttonText}</span>
-                  </>
-                )}
-              </button>
-            </div>
-          </div>
         </div>
-      </div>
+      </Popup>
     </div>
   );
 };

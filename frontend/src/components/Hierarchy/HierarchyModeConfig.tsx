@@ -11,7 +11,8 @@
  */
 
 import React, { useCallback } from 'react';
-import { Shield, Users, ChevronRight } from 'lucide-react';
+import { Shield, Users, ChevronRight, Check } from 'lucide-react';
+import { Toggle } from '@crewly/ui/Toggle';
 import type { TeamMember } from '@/types';
 
 // =============================================================================
@@ -129,21 +130,14 @@ export const HierarchyModeConfig: React.FC<HierarchyModeConfigProps> = ({
           </div>
         </div>
 
-        <button
+        <Toggle
+          size="lg"
           role="switch"
           aria-checked={config.hierarchical}
           aria-label="Toggle hierarchical mode"
-          onClick={handleToggle}
-          className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-            config.hierarchical ? 'bg-primary' : 'bg-gray-600'
-          }`}
-        >
-          <span
-            className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-              config.hierarchical ? 'translate-x-6' : 'translate-x-1'
-            }`}
-          />
-        </button>
+          checked={config.hierarchical}
+          onChange={handleToggle}
+        />
       </div>
 
       {/* Leader selection (visible when hierarchical mode is enabled) */}
@@ -179,9 +173,7 @@ export const HierarchyModeConfig: React.FC<HierarchyModeConfigProps> = ({
                     data-testid={`leader-toggle-${m.id}`}
                   >
                     {isSelected && (
-                      <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                      </svg>
+                      <Check className="w-3 h-3" />
                     )}
                     {m.name} ({m.role})
                     {isPrimary && isSelected && (

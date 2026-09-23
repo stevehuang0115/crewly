@@ -47,7 +47,7 @@ export const AppLayout: React.FC = () => {
 
       {/* Mobile Backdrop */}
       <div
-        className={`fixed inset-0 bg-black/60 z-40 md:hidden transition-opacity ${isMobileMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
+        className={`fixed inset-0 bg-background-dark/80 backdrop-blur-sm z-40 md:hidden transition-opacity ${isMobileMenuOpen ? 'opacity-100' : 'opacity-0 pointer-events-none'}`}
         onClick={() => setMobileMenuOpen(false)}
         aria-hidden="true"
       />
@@ -111,7 +111,7 @@ export const AppLayout: React.FC = () => {
       <>
         {isTerminalOpen && (
           <div
-            className="fixed inset-0 bg-black/50 z-30"
+            className="fixed inset-0 bg-background-dark/60 z-30"
             onClick={closeTerminal}
           />
         )}

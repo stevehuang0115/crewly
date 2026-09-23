@@ -16,7 +16,8 @@
  */
 
 import React from 'react';
-import { Cloud, Loader2, AlertCircle, WifiOff, Link2 } from 'lucide-react';
+import { Cloud, AlertCircle, WifiOff, Link2 } from 'lucide-react';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useRelayStatus, type CloudBarState } from '../hooks/useRelayStatus';
 
 // ========================= Style Config =========================
@@ -53,10 +54,10 @@ const STATE_STYLES: Record<CloudBarState, {
     dot: 'bg-red-400',
   },
   offline: {
-    bg: 'bg-zinc-500/10 border-zinc-500/30',
-    text: 'text-zinc-400',
-    icon: 'text-zinc-500',
-    dot: 'bg-zinc-500',
+    bg: 'bg-text-secondary-dark/10 border-border-dark',
+    text: 'text-text-secondary-dark',
+    icon: 'text-text-secondary-dark',
+    dot: 'bg-text-secondary-dark',
   },
 };
 
@@ -64,7 +65,7 @@ const STATE_STYLES: Record<CloudBarState, {
 function StateIcon({ state, className }: { state: CloudBarState; className?: string }) {
   switch (state) {
     case 'connecting':
-      return <Loader2 className={`animate-spin ${className ?? ''}`} size={14} />;
+      return <LoadingSpinner size="xs" centered={false} className={className} />;
     case 'error':
       return <AlertCircle className={className} size={14} />;
     case 'offline':

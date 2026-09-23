@@ -13,6 +13,7 @@ import { Activity, RefreshCw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { useAgentHeartbeat } from '../../hooks/useAgentHeartbeat';
 import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import type { AgentHeartbeatInfo } from '../../hooks/useAgentHeartbeat';
 import type { TeamMember } from '../../types';
@@ -25,7 +26,7 @@ const STATUS_CONFIG: Record<TeamMember['agentStatus'], { label: string; color: s
   started: { label: 'Started', color: 'text-blue-400', bgColor: 'bg-blue-500/10' },
   starting: { label: 'Starting', color: 'text-yellow-400', bgColor: 'bg-yellow-500/10' },
   activating: { label: 'Activating', color: 'text-yellow-400', bgColor: 'bg-yellow-500/10' },
-  inactive: { label: 'Offline', color: 'text-gray-400', bgColor: 'bg-gray-500/10' },
+  inactive: { label: 'Offline', color: 'text-text-secondary-dark', bgColor: 'bg-text-secondary-dark/10' },
   suspended: { label: 'Suspended', color: 'text-red-400', bgColor: 'bg-red-500/10' },
 };
 
@@ -65,11 +66,11 @@ const HeartbeatCard: React.FC<HeartbeatCardProps> = ({ agent }) => {
   const isOnline = agent.agentStatus === 'active' || agent.agentStatus === 'started';
 
   return (
-    <div className="border border-border-dark rounded-lg p-4 hover:bg-surface-dark/30 transition-colors">
+    <Card variant="outlined" className="hover:bg-surface-dark/30 transition-colors">
       {/* Header: name + status badge */}
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2 min-w-0">
-          <div className={`w-2 h-2 rounded-full shrink-0 ${isOnline ? 'bg-green-400' : 'bg-gray-500'}`} />
+          <div className={`w-2 h-2 rounded-full shrink-0 ${isOnline ? 'bg-green-400' : 'bg-text-secondary-dark'}`} />
           <span className="text-sm font-medium text-text-primary-dark truncate">{agent.name}</span>
         </div>
         <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium shrink-0 ${status.bgColor} ${status.color}`}>
@@ -102,7 +103,7 @@ const HeartbeatCard: React.FC<HeartbeatCardProps> = ({ agent }) => {
           {isOnline ? (
             <Wifi className="w-3.5 h-3.5 text-green-400" />
           ) : (
-            <WifiOff className="w-3.5 h-3.5 text-gray-500" />
+            <WifiOff className="w-3.5 h-3.5 text-text-secondary-dark" />
           )}
         </div>
       </div>
@@ -112,7 +113,7 @@ const HeartbeatCard: React.FC<HeartbeatCardProps> = ({ agent }) => {
         <span className="text-text-secondary-dark">Last active</span>
         <span className="text-text-secondary-dark">{formatHeartbeatTime(agent.lastActivityCheck ?? agent.readyAt)}</span>
       </div>
-    </div>
+    </Card>
   );
 };
 

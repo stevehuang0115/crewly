@@ -1,5 +1,6 @@
 import React from 'react';
-import clsx from 'clsx';
+import { Badge } from '@crewly/ui/Badge';
+import { Card } from '@crewly/ui/Card';
 import { ProjectInfoPanelProps } from './types';
 
 export const ProjectInfoPanel: React.FC<ProjectInfoPanelProps> = ({
@@ -8,7 +9,7 @@ export const ProjectInfoPanel: React.FC<ProjectInfoPanelProps> = ({
   totalMembers
 }) => {
   return (
-    <div className="bg-white rounded-lg shadow-md p-6">
+    <Card padding="lg" className="shadow-md">
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center space-x-3">
           <div className="flex-shrink-0">
@@ -24,45 +25,41 @@ export const ProjectInfoPanel: React.FC<ProjectInfoPanelProps> = ({
             </div>
           </div>
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">{project.name}</h3>
-            <p className="text-sm text-gray-600">Project Overview</p>
+            <h3 className="text-lg font-semibold text-text-primary-dark">{project.name}</h3>
+            <p className="text-sm text-text-secondary-dark">Project Overview</p>
           </div>
         </div>
-        <span className={clsx(
-          'inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium',
-          project.status === 'active' ? 'bg-green-100 text-green-800' :
-          project.status === 'paused' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'
-        )}>
+        <Badge variant={project.status === 'active' ? 'success' : project.status === 'paused' ? 'warning' : 'default'}>
           {project.status}
-        </span>
+        </Badge>
       </div>
 
       <div className="space-y-4">
         <div>
-          <label className="block text-sm font-medium text-gray-700">Project Path</label>
-          <code className="mt-1 block w-full text-sm bg-gray-50 rounded border p-2 break-all">
+          <label className="block text-sm font-medium text-text-secondary-dark">Project Path</label>
+          <code className="mt-1 block w-full text-sm bg-background-dark rounded-2xl border border-border-dark p-2 break-all">
             {project.path}
           </code>
         </div>
 
         {project.description && (
           <div>
-            <label className="block text-sm font-medium text-gray-700">Description</label>
-            <p className="mt-1 text-sm text-gray-600">{project.description}</p>
+            <label className="block text-sm font-medium text-text-secondary-dark">Description</label>
+            <p className="mt-1 text-sm text-text-secondary-dark">{project.description}</p>
           </div>
         )}
 
-        <div className="grid grid-cols-2 gap-4 pt-4 border-t border-gray-200">
+        <div className="grid grid-cols-2 gap-4 pt-4 border-t border-border-dark">
           <div>
-            <label className="block text-sm font-medium text-gray-700">Teams</label>
+            <label className="block text-sm font-medium text-text-secondary-dark">Teams</label>
             <p className="text-2xl font-bold text-primary">{teamsCount}</p>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700">Total Members</label>
-            <p className="text-2xl font-bold text-green-600">{totalMembers}</p>
+            <label className="block text-sm font-medium text-text-secondary-dark">Total Members</label>
+            <p className="text-2xl font-bold text-green-400">{totalMembers}</p>
           </div>
         </div>
       </div>
-    </div>
+    </Card>
   );
 };

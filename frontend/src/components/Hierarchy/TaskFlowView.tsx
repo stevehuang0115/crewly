@@ -88,15 +88,15 @@ const STATUS_COLORS: Record<string, string> = {
   verifying: 'text-cyan-400',
   blocked: 'text-orange-400',
   failed: 'text-red-400',
-  cancelled: 'text-gray-500',
-  pending_assignment: 'text-gray-400',
+  cancelled: 'text-text-secondary-dark',
+  pending_assignment: 'text-text-secondary-dark',
 };
 
 /** Map priority to badge color */
 const PRIORITY_COLORS: Record<string, string> = {
   high: 'bg-red-500/10 text-red-400 border-red-500/20',
   medium: 'bg-yellow-500/10 text-yellow-400 border-yellow-500/20',
-  low: 'bg-gray-500/10 text-gray-400 border-gray-500/20',
+  low: 'bg-text-secondary-dark/10 text-text-secondary-dark border-border-dark',
 };
 
 // =============================================================================
@@ -194,7 +194,7 @@ const TaskNode: React.FC<TaskNodeProps> = ({ node, expandedIds, onToggle, onTask
   const hasChildren = children.length > 0;
   const isExpanded = expandedIds.has(task.id);
   const StatusIcon = STATUS_ICONS[task.status] ?? CircleDot;
-  const statusColor = STATUS_COLORS[task.status] ?? 'text-gray-400';
+  const statusColor = STATUS_COLORS[task.status] ?? 'text-text-secondary-dark';
   const statusLabel = getTaskStatusLabel(task.status);
 
   const handleToggle = useCallback(

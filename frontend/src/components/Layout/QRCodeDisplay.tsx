@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { QrCode, X, Smartphone, Wifi, Copy, Check } from 'lucide-react';
+import { QrCode, X, Wifi, Copy, Check } from 'lucide-react';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Popup } from '@crewly/ui/Popup';
 import clsx from 'clsx';
 import axios from 'axios';
 
@@ -118,7 +121,7 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ isCollapsed }) => 
       <button
         onClick={handleOpenModal}
         className={clsx(
-          'group flex items-center w-full px-4 py-2 text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark rounded-lg transition-colors text-sm',
+          'group flex items-center w-full px-4 py-2 text-text-secondary-dark hover:bg-background-dark hover:text-text-primary-dark rounded-2xl transition-colors text-sm',
           isCollapsed ? 'md:justify-center' : ''
         )}
         title="Scan QR code for mobile access"
@@ -128,117 +131,70 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ isCollapsed }) => 
         <span className={clsx('ml-3', isCollapsed ? 'md:hidden' : '')}>Mobile Access</span>
       </button>
 
-      {/* Modal - rendered via portal to ensure proper centering */}
-      {isModalOpen && createPortal(
-        <div
-          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50"
-          onClick={handleCloseModal}
+      {/* Modal - rendered via portal so the sidebar's layout can't affect centering */}
+      {createPortal(
+        <Popup
+          isOpen={isModalOpen}
+          onClose={handleCloseModal}
+          title="Mobile Access"
+          subtitle="Scan with your phone"
+          size="sm"
+          footer={
+            <p className="text-xs text-text-secondary-dark text-center">
+              Make sure your phone is connected to the same WiFi network as this computer
+            </p>
+          }
+          footerAlign="center"
         >
-          <div
-            className="bg-surface-dark border border-border-dark rounded-xl shadow-2xl max-w-sm w-full mx-4 overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Header */}
-            <div className="flex items-center justify-between px-5 py-4 border-b border-border-dark">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-primary/10 rounded-lg">
-                  <Smartphone className="h-5 w-5 text-primary" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-text-primary-dark">
-                    Mobile Access
-                  </h3>
-                  <p className="text-sm text-text-secondary-dark">
-                    Scan with your phone
-                  </p>
+          {isLoading ? (
+            <LoadingSpinner size="md" text="Getting network address..." className="py-8" />
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center py-8">
+              <div className="p-3 bg-red-500/10 rounded-full mb-3">
+                <X className="h-6 w-6 text-red-500" />
+              </div>
+              <p className="text-sm text-red-400">{error}</p>
+              <Button variant="secondary" size="sm" className="mt-4" onClick={fetchLocalIp}>
+                Retry
+              </Button>
+            </div>
+          ) : localUrl ? (
+            <div className="flex flex-col items-center">
+              {/* QR Code — needs a white quiet zone to scan */}
+              <div className="bg-white p-4 rounded-2xl">
+                <QRCodeSVG
+                  value={localUrl}
+                  size={200}
+                  level="M"
+                  includeMargin={false}
+                />
+              </div>
+
+              {/* WiFi Indicator */}
+              <div className="flex items-center gap-2 mt-4 text-sm text-text-secondary-dark">
+                <Wifi className="h-4 w-4 text-green-500" />
+                <span>Same WiFi network required</span>
+              </div>
+
+              {/* URL with Copy Button */}
+              <div className="mt-4 w-full">
+                <div className="flex items-center gap-2 bg-background-dark rounded-2xl p-3">
+                  <code className="flex-1 text-sm text-primary truncate">
+                    {localUrl}
+                  </code>
+                  <IconButton
+                    icon={copied ? Check : Copy}
+                    size="sm"
+                    onClick={handleCopyUrl}
+                    className={copied ? 'text-green-500' : ''}
+                    title={copied ? 'Copied!' : 'Copy URL'}
+                    aria-label={copied ? 'URL copied' : 'Copy URL to clipboard'}
+                  />
                 </div>
               </div>
-              <button
-                onClick={handleCloseModal}
-                className="p-1 text-text-secondary-dark hover:text-text-primary-dark hover:bg-background-dark rounded-lg transition-colors"
-                aria-label="Close modal"
-              >
-                <X className="h-5 w-5" />
-              </button>
             </div>
-
-            {/* Content */}
-            <div className="p-5">
-              {isLoading ? (
-                <div className="flex flex-col items-center justify-center py-8">
-                  <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-                  <p className="mt-3 text-sm text-text-secondary-dark">
-                    Getting network address...
-                  </p>
-                </div>
-              ) : error ? (
-                <div className="flex flex-col items-center justify-center py-8">
-                  <div className="p-3 bg-red-500/10 rounded-full mb-3">
-                    <X className="h-6 w-6 text-red-500" />
-                  </div>
-                  <p className="text-sm text-red-400">{error}</p>
-                  <button
-                    onClick={fetchLocalIp}
-                    className="mt-4 px-4 py-2 bg-primary/10 text-primary rounded-lg hover:bg-primary/20 transition-colors text-sm"
-                  >
-                    Retry
-                  </button>
-                </div>
-              ) : localUrl ? (
-                <div className="flex flex-col items-center">
-                  {/* QR Code */}
-                  <div className="bg-white p-4 rounded-xl">
-                    <QRCodeSVG
-                      value={localUrl}
-                      size={200}
-                      level="M"
-                      includeMargin={false}
-                    />
-                  </div>
-
-                  {/* WiFi Indicator */}
-                  <div className="flex items-center gap-2 mt-4 text-sm text-text-secondary-dark">
-                    <Wifi className="h-4 w-4 text-green-500" />
-                    <span>Same WiFi network required</span>
-                  </div>
-
-                  {/* URL with Copy Button */}
-                  <div className="mt-4 w-full">
-                    <div className="flex items-center gap-2 bg-background-dark rounded-lg p-3">
-                      <code className="flex-1 text-sm text-primary truncate">
-                        {localUrl}
-                      </code>
-                      <button
-                        onClick={handleCopyUrl}
-                        className={clsx(
-                          'p-2 rounded-md transition-colors',
-                          copied
-                            ? 'bg-green-500/10 text-green-500'
-                            : 'hover:bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark'
-                        )}
-                        title={copied ? 'Copied!' : 'Copy URL'}
-                        aria-label={copied ? 'URL copied' : 'Copy URL to clipboard'}
-                      >
-                        {copied ? (
-                          <Check className="h-4 w-4" />
-                        ) : (
-                          <Copy className="h-4 w-4" />
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </div>
-
-            {/* Footer */}
-            <div className="px-5 py-4 bg-background-dark border-t border-border-dark">
-              <p className="text-xs text-text-secondary-dark text-center">
-                Make sure your phone is connected to the same WiFi network as this computer
-              </p>
-            </div>
-          </div>
-        </div>,
+          ) : null}
+        </Popup>,
         document.body
       )}
     </>

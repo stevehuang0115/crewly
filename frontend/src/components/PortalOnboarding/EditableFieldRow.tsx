@@ -10,6 +10,8 @@
 
 import React, { useState, useCallback } from 'react';
 import { Pencil, Check, RotateCcw, Info } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
+import { FormInput } from '@crewly/ui/Form';
 import type { PrefillField, PrefillConfidence, PrefillExtractionMethod } from '../../types/onboarding.types';
 import { ConfidencePill } from './ConfidencePill';
 import { SourceDrawer } from './SourceDrawer';
@@ -106,7 +108,7 @@ export const EditableFieldRow: React.FC<EditableFieldRowProps> = ({
 
           {isEditing ? (
             <div className="flex items-center gap-2">
-              <input
+              <FormInput
                 type="text"
                 value={editValue}
                 onChange={(e) => setEditValue(e.target.value)}
@@ -114,18 +116,18 @@ export const EditableFieldRow: React.FC<EditableFieldRowProps> = ({
                   if (e.key === 'Enter') handleSaveEdit();
                   if (e.key === 'Escape') setIsEditing(false);
                 }}
-                className="flex-1 rounded-lg border border-primary bg-background-dark px-3 py-1.5 text-sm text-text-primary-dark focus:outline-none focus:ring-1 focus:ring-primary"
+                className="flex-1"
                 autoFocus
                 data-testid="field-edit-input"
               />
-              <button
+              <IconButton
+                icon={Check}
+                size="xs"
                 onClick={handleSaveEdit}
-                className="rounded-md p-1.5 text-emerald-400 hover:bg-emerald-500/10 transition-colors"
+                className="text-emerald-400 hover:bg-emerald-500/10 hover:text-emerald-400"
                 aria-label="Save edit"
                 data-testid="field-save-btn"
-              >
-                <Check className="h-4 w-4" />
-              </button>
+              />
             </div>
           ) : (
             <p
@@ -147,34 +149,34 @@ export const EditableFieldRow: React.FC<EditableFieldRowProps> = ({
           {field && !isEditing && (
             <>
               {field.sourceUrls?.length > 0 && (
-                <button
+                <IconButton
+                  icon={Info}
+                  size="xs"
                   onClick={() => setShowSource((prev) => !prev)}
-                  className="rounded-md p-1 text-text-secondary-dark hover:text-primary hover:bg-primary/10 transition-colors"
+                  className="hover:text-primary hover:bg-primary/10"
                   aria-label={`Why we think ${label}`}
                   data-testid="field-source-btn"
-                >
-                  <Info className="h-3.5 w-3.5" />
-                </button>
+                />
               )}
 
-              <button
+              <IconButton
+                icon={Pencil}
+                size="xs"
                 onClick={handleStartEdit}
-                className="rounded-md p-1 text-text-secondary-dark hover:text-primary hover:bg-primary/10 transition-colors"
+                className="hover:text-primary hover:bg-primary/10"
                 aria-label={`Edit ${label}`}
                 data-testid="field-edit-btn"
-              >
-                <Pencil className="h-3.5 w-3.5" />
-              </button>
+              />
 
               {isEdited && onReset && (
-                <button
+                <IconButton
+                  icon={RotateCcw}
+                  size="xs"
                   onClick={onReset}
-                  className="rounded-md p-1 text-text-secondary-dark hover:text-amber-400 hover:bg-amber-500/10 transition-colors"
+                  className="hover:text-amber-400 hover:bg-amber-500/10"
                   aria-label="Reset to AI draft"
                   data-testid="field-reset-btn"
-                >
-                  <RotateCcw className="h-3.5 w-3.5" />
-                </button>
+                />
               )}
             </>
           )}

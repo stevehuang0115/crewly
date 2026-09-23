@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Grid, List, Monitor, RefreshCw, GitBranch } from 'lucide-react';
+import { Plus, Grid, List, Monitor, RefreshCw, GitBranch, Users } from 'lucide-react';
+import { Button, Card, EmptyState, IconButton, StatusDot } from '@crewly/ui';
 import { PageToolbar } from '@crewly/ui/PageToolbar';
 import { Dropdown } from '@crewly/ui/Dropdown';
 import { useAlert } from '@crewly/ui/Dialog';
@@ -242,13 +243,9 @@ export const Teams: React.FC = () => {
           <p className="text-sm text-text-secondary-dark">Manage and organize your development teams</p>
         </div>
 
-        <button
-          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
-          onClick={() => setIsModalOpen(true)}
-        >
-          <Plus className="w-5 h-5" />
+        <Button variant="primary" icon={Plus} onClick={() => setIsModalOpen(true)}>
           New Team
-        </button>
+        </Button>
       </div>
 
       {/* Filter + search + view controls */}
@@ -295,35 +292,37 @@ export const Teams: React.FC = () => {
                 Online Devices ({remoteDevices.length})
               </h3>
             </div>
-            <button
+            <IconButton
+              icon={RefreshCw}
+              size="xs"
               onClick={refreshDevices}
-              className="p-1.5 text-text-secondary-dark hover:text-text-primary-dark rounded-lg hover:bg-surface-dark transition-colors"
               title="Refresh devices"
-            >
-              <RefreshCw className="w-3.5 h-3.5" />
-            </button>
+              aria-label="Refresh devices"
+            />
           </div>
 
           {devicesLoading ? (
-            <div className="bg-surface-dark border border-border-dark rounded-lg p-6 text-center">
+            <Card padding="lg" className="text-center">
               <LoadingSpinner size="sm" text="Discovering devices..." />
-            </div>
+            </Card>
           ) : remoteDevices.length === 0 ? (
-            <div className="bg-surface-dark border border-border-dark rounded-lg p-6 text-center">
-              <p className="text-sm text-text-secondary-dark">No other devices online</p>
-              <p className="text-xs text-text-secondary-dark/70 mt-1">
-                Other Pro users will appear here when they are online
-              </p>
-            </div>
+            <Card padding="none">
+              <EmptyState
+                compact
+                icon={Monitor}
+                title="No other devices online"
+                description="Other Pro users will appear here when they are online"
+              />
+            </Card>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {remoteDevices.map(device => (
-                <div
+                <Card
                   key={device.deviceId}
-                  className="bg-surface-dark border border-border-dark rounded-lg p-4"
+                  padding="md"
                 >
                   <div className="flex items-center gap-2 mb-2">
-                    <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                    <StatusDot status="online" size="sm" pulse />
                     <span className="text-sm font-medium text-text-primary-dark truncate">
                       {device.deviceName}
                     </span>
@@ -349,7 +348,7 @@ export const Teams: React.FC = () => {
                       ))}
                     </div>
                   )}
-                </div>
+                </Card>
               ))}
             </div>
           )}
@@ -429,23 +428,19 @@ export const Teams: React.FC = () => {
       )}
 
       {filteredTeams.length === 0 && !loading && (
-        <div className="text-center py-16">
-          <h3 className="text-lg font-semibold mb-2">No teams found</h3>
-          <p className="text-sm text-text-secondary-dark mb-6">
-            {searchQuery || statusFilter !== 'all'
-              ? 'Try adjusting your search or filters'
-              : 'Create your first team to get started'}
-          </p>
-          {!searchQuery && statusFilter === 'all' && (
-            <button
-              className="bg-primary text-white px-6 py-3 rounded-lg hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
-              onClick={() => setIsModalOpen(true)}
-            >
-              <Plus className="w-5 h-5" />
+        <EmptyState
+          icon={Users}
+          title="No teams found"
+          description={searchQuery || statusFilter !== 'all'
+            ? 'Try adjusting your search or filters'
+            : 'Create your first team to get started'}
+          action={!searchQuery && statusFilter === 'all' ? (
+            <Button variant="primary" icon={Plus} onClick={() => setIsModalOpen(true)}>
               Create Team
-            </button>
-          )}
-        </div>
+            </Button>
+          ) : undefined}
+          className="py-16"
+        />
       )}
 
       <TeamModal

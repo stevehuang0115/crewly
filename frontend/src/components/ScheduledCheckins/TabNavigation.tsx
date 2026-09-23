@@ -1,4 +1,5 @@
 import React from 'react';
+import { Tabs, TabList, TabTrigger } from '@crewly/ui/Tabs';
 import { ActiveTab, ScheduledMessage } from './types';
 
 interface TabNavigationProps {
@@ -8,6 +9,12 @@ interface TabNavigationProps {
   completedMessages: ScheduledMessage[];
 }
 
+/**
+ * Active / Completed tab strip for scheduled messages (controlled by the parent).
+ *
+ * @param props - Active tab, setter and the two lists (for counts)
+ * @returns The tab strip
+ */
 export const TabNavigation: React.FC<TabNavigationProps> = ({
   activeTab,
   setActiveTab,
@@ -15,29 +22,11 @@ export const TabNavigation: React.FC<TabNavigationProps> = ({
   completedMessages
 }) => {
   return (
-    <div className="mb-6 border-b border-border-dark">
-      <nav aria-label="Tabs" className="-mb-px flex space-x-8">
-        <button
-          onClick={() => setActiveTab('active')}
-          className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${
-            activeTab === 'active'
-              ? 'text-primary border-primary'
-              : 'text-text-secondary-dark hover:text-text-primary-dark hover:border-border-dark border-transparent'
-          }`}
-        >
-          Active ({activeMessages.length})
-        </button>
-        <button
-          onClick={() => setActiveTab('completed')}
-          className={`whitespace-nowrap py-4 px-1 border-b-2 font-medium text-sm ${
-            activeTab === 'completed'
-              ? 'text-primary border-primary'
-              : 'text-text-secondary-dark hover:text-text-primary-dark hover:border-border-dark border-transparent'
-          }`}
-        >
-          Completed ({completedMessages.length})
-        </button>
-      </nav>
-    </div>
+    <Tabs value={activeTab} onValueChange={(tab) => setActiveTab(tab as ActiveTab)}>
+      <TabList aria-label="Tabs">
+        <TabTrigger value="active">Active ({activeMessages.length})</TabTrigger>
+        <TabTrigger value="completed">Completed ({completedMessages.length})</TabTrigger>
+      </TabList>
+    </Tabs>
   );
 };

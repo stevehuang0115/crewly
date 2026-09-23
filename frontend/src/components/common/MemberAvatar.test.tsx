@@ -114,12 +114,12 @@ describe('MemberAvatar', () => {
       expect(statusIndicator).toBeInTheDocument();
     });
 
-    it('should show gray for inactive status', () => {
+    it('should show the neutral (secondary-text token) dot for inactive status', () => {
       const { container } = render(
         <MemberAvatar name="Test" showStatus status="inactive" />
       );
 
-      const statusIndicator = container.querySelector('.bg-gray-400');
+      const statusIndicator = container.querySelector('.bg-text-secondary-dark');
       expect(statusIndicator).toBeInTheDocument();
     });
   });

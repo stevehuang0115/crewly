@@ -12,6 +12,7 @@ import { FolderOpen, Edit2 } from 'lucide-react';
 import { MembersList } from './MembersList';
 import { Team, TeamMember } from '../../types';
 import { FormSelect } from '@crewly/ui';
+import { Button, IconButton } from '@crewly/ui/Button';
 import { useProjects } from '../../hooks/useProjects';
 
 /**
@@ -109,17 +110,19 @@ export const TeamOverview: React.FC<TeamOverviewProps> = ({
           <div className="bg-surface-dark border border-border-dark rounded-xl p-6">
             <div className="flex items-center justify-between mb-4">
               <h4 className="text-lg font-semibold">Assigned Project</h4>
-              <button
+              <IconButton
+                icon={Edit2}
+                size="xs"
                 onClick={() => setShowProjectSelector(!showProjectSelector)}
-                className="p-1.5 hover:bg-background-dark rounded-lg transition-colors text-text-secondary-dark hover:text-primary"
+                className="hover:text-primary"
                 title="Change project"
-              >
-                <Edit2 className="h-4 w-4" />
-              </button>
+                aria-label="Change project"
+              />
             </div>
             {showProjectSelector ? (
               <div className="space-y-3">
                 <FormSelect
+                  aria-label="Assigned project"
                   value={selectedProjectId}
                   onChange={(e) => handleProjectSelect(e.target.value)}
                 >
@@ -128,12 +131,9 @@ export const TeamOverview: React.FC<TeamOverviewProps> = ({
                     <option key={project.id} value={project.id}>{project.name}</option>
                   ))}
                 </FormSelect>
-                <button
-                  onClick={() => setShowProjectSelector(false)}
-                  className="text-sm text-text-secondary-dark hover:text-primary"
-                >
+                <Button variant="ghost" size="xs" onClick={() => setShowProjectSelector(false)}>
                   Cancel
-                </button>
+                </Button>
               </div>
             ) : (
               <div

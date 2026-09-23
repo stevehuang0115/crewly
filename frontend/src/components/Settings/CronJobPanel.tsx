@@ -13,7 +13,10 @@ import {
   Plus, Play, Pause, CalendarClock, Timer, X,
 } from 'lucide-react';
 import { useCronTasks } from '../../hooks/useCronTasks';
-import { Button } from '@crewly/ui/Button';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { FilterPill } from '@crewly/ui/FilterPill';
+import { SegmentedControl } from '@crewly/ui/SegmentedControl';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@crewly/ui/Table';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Badge } from '@crewly/ui/Badge';
 import { Modal, ModalFooter } from '@crewly/ui/Modal';
@@ -255,59 +258,57 @@ interface CronJobRowProps {
  */
 const CronJobRow: React.FC<CronJobRowProps> = ({ task, onToggle, onDelete }) => {
   return (
-    <tr className="border-b border-border-dark hover:bg-surface-dark/50 transition-colors">
-      <td className="px-4 py-3">
+    <TableRow className="hover:bg-surface-dark/50 transition-colors">
+      <TableCell>
         <div className="flex flex-col gap-0.5">
           <span className="text-sm font-medium text-text-primary-dark truncate max-w-xs" title={task.taskDescription}>
             {task.taskDescription}
           </span>
           <span className="text-xs text-text-secondary-dark">{task.targetAgent}</span>
         </div>
-      </td>
-      <td className="px-4 py-3">
-        <span className="text-xs text-text-secondary-dark bg-surface-dark px-2 py-0.5 rounded-full">
-          {task.targetTeamId}
-        </span>
-      </td>
-      <td className="px-4 py-3">
+      </TableCell>
+      <TableCell>
+        <Badge>{task.targetTeamId}</Badge>
+      </TableCell>
+      <TableCell>
         <div className="flex flex-col gap-0.5">
           <span className="text-sm text-text-primary-dark">{cronToHuman(task.cronExpression)}</span>
           <code className="text-xs text-text-secondary-dark">{task.cronExpression}</code>
         </div>
-      </td>
-      <td className="px-4 py-3 text-sm text-text-secondary-dark">{task.timezone}</td>
-      <td className="px-4 py-3 text-sm text-text-secondary-dark">{formatTime(task.lastRunAt)}</td>
-      <td className="px-4 py-3">
+      </TableCell>
+      <TableCell className="text-sm text-text-secondary-dark">{task.timezone}</TableCell>
+      <TableCell className="text-sm text-text-secondary-dark">{formatTime(task.lastRunAt)}</TableCell>
+      <TableCell>
         <span className={`text-sm ${task.nextRunAt && new Date(task.nextRunAt).getTime() - Date.now() < 600_000 ? 'text-yellow-400' : 'text-text-secondary-dark'}`}>
           {formatNextRun(task.nextRunAt)}
         </span>
-      </td>
-      <td className="px-4 py-3">
+      </TableCell>
+      <TableCell>
         <Badge variant={task.enabled ? 'success' : 'default'}>
           {task.enabled ? 'Active' : 'Disabled'}
         </Badge>
-      </td>
-      <td className="px-4 py-3">
+      </TableCell>
+      <TableCell>
         <div className="flex items-center gap-1">
-          <button
+          <IconButton
+            icon={task.enabled ? Pause : Play}
+            size="sm"
             onClick={() => onToggle(task.id, !task.enabled)}
-            className="p-1.5 rounded hover:bg-surface-dark transition-colors text-text-secondary-dark hover:text-text-primary-dark"
+            className={task.enabled ? 'text-green-400' : ''}
             aria-label={task.enabled ? 'Disable cron task' : 'Enable cron task'}
             title={task.enabled ? 'Disable' : 'Enable'}
-          >
-            {task.enabled ? <Pause className="w-4 h-4 text-green-400" /> : <Play className="w-4 h-4" />}
-          </button>
-          <button
+          />
+          <IconButton
+            icon={Trash2}
+            variant="danger-ghost"
+            size="sm"
             onClick={() => onDelete(task.id)}
-            className="p-1.5 rounded hover:bg-red-500/10 transition-colors text-text-secondary-dark hover:text-red-400"
             aria-label="Delete cron task"
             title="Delete"
-          >
-            <Trash2 className="w-4 h-4" />
-          </button>
+          />
         </div>
-      </td>
-    </tr>
+      </TableCell>
+    </TableRow>
   );
 };
 
@@ -405,22 +406,17 @@ const CreateCronJobModal: React.FC<CreateCronJobModalProps> = ({ isOpen, onClose
         {/* Schedule */}
         <div>
           <FormLabel required>Schedule</FormLabel>
-          <div className="flex items-center gap-2 mb-2">
-            <button
-              type="button"
-              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${!useCustomCron ? 'bg-primary text-white' : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark'}`}
-              onClick={() => setUseCustomCron(false)}
-            >
-              Presets
-            </button>
-            <button
-              type="button"
-              className={`text-xs px-3 py-1.5 rounded-md transition-colors ${useCustomCron ? 'bg-primary text-white' : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark'}`}
-              onClick={() => setUseCustomCron(true)}
-            >
-              Custom
-            </button>
-          </div>
+          <SegmentedControl
+            size="sm"
+            className="mb-2"
+            aria-label="Schedule input mode"
+            options={[
+              { value: 'presets', label: 'Presets' },
+              { value: 'custom', label: 'Custom' },
+            ]}
+            value={useCustomCron ? 'custom' : 'presets'}
+            onChange={(mode) => setUseCustomCron(mode === 'custom')}
+          />
 
           {useCustomCron ? (
             <Input
@@ -666,28 +662,22 @@ export const CronJobPanel: React.FC<CronJobPanelProps> = ({ teamId: filterTeamId
       {/* Team Filter — hidden when embedded for a specific team */}
       {!filterTeamId && teamIds.length >= 1 && (
         <div className="flex flex-wrap gap-1.5 mb-4">
-          <button
+          <FilterPill
+            isActive={teamFilter === 'all'}
             onClick={() => setTeamFilter('all')}
-            className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-              teamFilter === 'all'
-                ? 'bg-primary text-white'
-                : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark border border-border-dark'
-            }`}
+            count={allTasks.length}
           >
-            All teams ({allTasks.length})
-          </button>
+            All teams
+          </FilterPill>
           {teamIds.map((tid) => (
-            <button
+            <FilterPill
               key={tid}
+              isActive={teamFilter === tid}
               onClick={() => setTeamFilter(tid)}
-              className={`px-2.5 py-1 rounded-full text-xs font-medium transition-colors ${
-                teamFilter === tid
-                  ? 'bg-primary text-white'
-                  : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark border border-border-dark'
-              }`}
+              count={allTasks.filter((t) => t.targetTeamId === tid).length}
             >
-              {tid} ({allTasks.filter((t) => t.targetTeamId === tid).length})
-            </button>
+              {tid}
+            </FilterPill>
           ))}
         </div>
       )}
@@ -725,32 +715,30 @@ export const CronJobPanel: React.FC<CronJobPanelProps> = ({ teamId: filterTeamId
           </div>
 
           {/* Desktop: Table layout */}
-          <div className="hidden md:block overflow-x-auto rounded-lg border border-border-dark">
-            <table className="w-full text-left">
-              <thead>
-                <tr className="border-b border-border-dark bg-surface-dark/50">
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Task</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Team</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Schedule</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Timezone</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Last Run</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Next Run</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Status</th>
-                  <th className="px-4 py-3 text-xs font-medium text-text-secondary-dark uppercase tracking-wider">Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {tasks.map((task) => (
-                  <CronJobRow
-                    key={task.id}
-                    task={task}
-                    onToggle={handleToggle}
-                    onDelete={handleDeleteClick}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
+          <Table containerClassName="hidden md:block">
+            <TableHead>
+              <tr>
+                <TableHeader>Task</TableHeader>
+                <TableHeader>Team</TableHeader>
+                <TableHeader>Schedule</TableHeader>
+                <TableHeader>Timezone</TableHeader>
+                <TableHeader>Last Run</TableHeader>
+                <TableHeader>Next Run</TableHeader>
+                <TableHeader>Status</TableHeader>
+                <TableHeader>Actions</TableHeader>
+              </tr>
+            </TableHead>
+            <TableBody>
+              {tasks.map((task) => (
+                <CronJobRow
+                  key={task.id}
+                  task={task}
+                  onToggle={handleToggle}
+                  onDelete={handleDeleteClick}
+                />
+              ))}
+            </TableBody>
+          </Table>
         </>
       )}
 

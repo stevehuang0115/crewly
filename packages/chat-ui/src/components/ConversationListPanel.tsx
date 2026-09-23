@@ -38,9 +38,9 @@ const COLLAPSED_GROUPS_KEY = 'crewly-chat-collapsed-groups';
  */
 const DM_AVATAR_TINTS = [
   'bg-blue-500/20 text-blue-400',
-  'bg-purple-500/20 text-purple-400',
+  'bg-emerald-500/20 text-emerald-400',
   'bg-cyan-500/20 text-cyan-400',
-  'bg-indigo-500/20 text-indigo-400',
+  'bg-amber-500/20 text-amber-400',
 ] as const;
 
 /** Deterministically map a name to one of the DM avatar tints. */
@@ -143,7 +143,7 @@ export function ConversationListPanel({
 
   return (
     <aside
-      className={`flex h-full w-[240px] flex-col border-r border-border-dark bg-[#232d3b] ${className}`}
+      className={`flex h-full w-[240px] flex-col border-r border-border-dark bg-surface-dark ${className}`}
       aria-label={workspaceName ? `${workspaceName} conversations` : 'Conversations'}
       data-testid="conversation-list-panel"
     >

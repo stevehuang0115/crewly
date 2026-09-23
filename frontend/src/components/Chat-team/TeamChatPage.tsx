@@ -135,7 +135,7 @@ export function TeamChatPage({
   if (workspaces.length === 0) {
     return (
       <div
-        className="flex h-full w-full items-center justify-center bg-slate-50 dark:bg-slate-950"
+        className="flex h-full w-full items-center justify-center bg-background-dark"
         data-testid="team-chat-page"
       >
         <NoTeamsEmptyState />
@@ -146,7 +146,7 @@ export function TeamChatPage({
   return (
     <ChatAPIProvider mode="mock">
       <div
-        className="flex h-full w-full bg-slate-50 dark:bg-slate-950"
+        className="flex h-full w-full bg-background-dark"
         data-testid="team-chat-page"
       >
         <WorkspaceRail
@@ -193,7 +193,7 @@ function ChatTeamRightPanel({
   if (!conversation) {
     return (
       <section
-        className="flex flex-1 items-center justify-center bg-slate-50 text-sm text-slate-500 dark:bg-slate-950"
+        className="flex flex-1 items-center justify-center bg-background-dark text-sm text-text-secondary-dark"
         data-testid="team-chat-right-panel"
         aria-label="Conversation thread"
       >
@@ -218,17 +218,17 @@ function ChatTeamRightPanel({
 
   return (
     <section
-      className="flex flex-1 flex-col bg-white dark:bg-slate-900"
+      className="flex flex-1 flex-col bg-surface-dark"
       data-testid="team-chat-right-panel"
       aria-label={`Conversation with ${conversation.title}`}
     >
-      <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-700">
+      <header className="flex items-center justify-between border-b border-border-dark px-4 py-3">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-slate-800 dark:text-slate-100">
+          <h2 className="truncate text-sm font-semibold text-text-primary-dark">
             {conversation.kind === 'channel' ? `#${conversation.title}` : conversation.title}
           </h2>
           {conversation.subtitle && (
-            <p className="truncate text-xs text-slate-500 dark:text-slate-400">
+            <p className="truncate text-xs text-text-secondary-dark">
               {conversation.subtitle}
             </p>
           )}

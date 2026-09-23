@@ -1,5 +1,6 @@
 import React from 'react';
 import { FolderOpen, Users, Clock, UserMinus, Activity } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import { ProjectCardProps } from './types';
 
 export const ProjectCard: React.FC<ProjectCardProps> = ({
@@ -57,16 +58,18 @@ export const ProjectCard: React.FC<ProjectCardProps> = ({
                   <span className={`status-dot status-${team.members.some(m => m.agentStatus === 'active') ? 'active' : 'inactive'}`}></span>
                   {team.name} ({team.members.length} members)
                 </span>
-                <button
+                <IconButton
+                  icon={UserMinus}
+                  variant="danger-ghost"
+                  size="sm"
                   className="unassign-team-btn small"
                   onClick={(e) => {
                     e.stopPropagation();
                     onUnassignTeam(team.id, team.name, project.id);
                   }}
                   title="Unassign team from project"
-                >
-                  <UserMinus size={12} />
-                </button>
+                  aria-label="Unassign team from project"
+                />
               </div>
               {team.members.length > 0 && (
                 <div className="team-members-tree">

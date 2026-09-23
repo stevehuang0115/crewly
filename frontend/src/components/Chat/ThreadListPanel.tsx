@@ -9,6 +9,7 @@
 
 import React from 'react';
 import { Plus } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 import type { ChatConversation, ChatChannelType } from '../../types/chat.types';
 import { ChannelFilterBar } from './ChannelFilterBar';
 import { ThreadPreview } from './ThreadPreview';
@@ -72,15 +73,16 @@ export const ThreadListPanel: React.FC<ThreadListPanelProps> = ({
           conversations={conversations}
         />
         {onNewChat && (
-          <button
+          <Button
+            size="sm"
+            icon={Plus}
             onClick={onNewChat}
-            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-primary bg-primary/10 hover:bg-primary/20 rounded-lg transition-colors flex-shrink-0"
+            className="flex-shrink-0"
             data-testid="new-chat-button"
             aria-label="Start a new chat"
           >
-            <Plus className="h-4 w-4" />
             New Chat
-          </button>
+          </Button>
         )}
       </div>
 

@@ -4,6 +4,7 @@ import { KanbanTask } from './KanbanBoard';
 
 interface KanbanColumnProps {
   title: string;
+  /** Tailwind background class for the column's colour indicator */
   color: string;
   tasks: KanbanTask[];
   onDragOver: (e: React.DragEvent) => void;
@@ -33,10 +34,7 @@ export const KanbanColumn: React.FC<KanbanColumnProps> = ({
     >
       <div className="column-header">
         <div className="column-title">
-          <div 
-            className="column-indicator"
-            style={{ backgroundColor: color }}
-          />
+          <div className={`column-indicator w-2.5 h-2.5 rounded-full ${color}`} />
           <h3>{title}</h3>
           <span className="task-count">{tasks.length}</span>
         </div>

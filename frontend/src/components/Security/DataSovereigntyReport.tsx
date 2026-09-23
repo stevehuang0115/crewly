@@ -52,7 +52,7 @@ export const DataSovereigntyReport: React.FC<DataSovereigntyReportProps> = ({
           aria-controls="sovereignty-content"
         >
           <h2 id="sovereignty-heading" className="text-lg font-semibold text-text-primary-dark flex items-center gap-2">
-            <Database size={20} aria-hidden="true" className="text-purple-400" />
+            <Database size={20} aria-hidden="true" className="text-emerald-400" />
             Data Sovereignty Report
           </h2>
           {isExpanded ? (
@@ -153,7 +153,7 @@ export const DataSovereigntyReport: React.FC<DataSovereigntyReportProps> = ({
                     {summary.cloudSync}
                   </span>
                 </div>
-                <div className="text-xs text-zinc-500">
+                <div className="text-xs text-text-secondary-dark">
                   Last scan: {new Date(summary.lastScan).toLocaleString()}
                 </div>
               </div>

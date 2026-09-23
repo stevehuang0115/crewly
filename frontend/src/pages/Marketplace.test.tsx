@@ -20,7 +20,10 @@ import Marketplace from './Marketplace';
 import type { MarketplaceItemWithStatus } from '../types/marketplace.types';
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
+// Partial mock: keep every real icon (library components such as Dropdown
+// import their own), and stub the ones these tests look up by test id.
+vi.mock('lucide-react', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('lucide-react')>()),
   Store: () => <svg data-testid="store-icon" />,
   Search: () => <svg data-testid="search-icon" />,
   Download: () => <svg data-testid="download-icon" />,

@@ -101,18 +101,18 @@ describe('ThreadPreview', () => {
     it('applies role-based color to avatar', () => {
       render(<ThreadPreview conversation={mockConversation} isActive={false} onClick={mockOnClick} />);
       const avatar = screen.getByTestId('thread-preview').querySelector('.thread-preview-avatar');
-      // developer = #10b981
-      expect(avatar).toHaveStyle({ backgroundColor: '#10b981' });
+      // developer = emerald
+      expect(avatar).toHaveClass('bg-emerald-500');
     });
 
-    it('uses gray default color when role is unknown', () => {
+    it('uses the neutral (border token) default color when role is unknown', () => {
       const unknownRole: ChatConversation = {
         ...mockConversation,
         lastMessage: { content: 'Hi', timestamp: '2026-03-08T00:00:00Z', from: { type: 'agent', name: 'Zara', role: 'analyst' } },
       };
       render(<ThreadPreview conversation={unknownRole} isActive={false} onClick={mockOnClick} />);
       const avatar = screen.getByTestId('thread-preview').querySelector('.thread-preview-avatar');
-      expect(avatar).toHaveStyle({ backgroundColor: '#6b7280' });
+      expect(avatar).toHaveClass('bg-border-dark');
     });
 
     it('shows ? when no sender at all', () => {

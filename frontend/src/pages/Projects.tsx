@@ -8,6 +8,7 @@ import { apiService } from '@/services/api.service';
 import { Plus, Filter, Folder, Sparkles, ChevronDown, ChevronRight } from 'lucide-react';
 import { PageToolbar } from '@crewly/ui/PageToolbar';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button, EmptyState } from '@crewly/ui';
 import { usePinnedFavorites } from '@/hooks/usePinnedFavorites';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
@@ -175,12 +176,9 @@ export const Projects: React.FC = () => {
     return (
       <div className="flex flex-col items-center justify-center min-h-[400px] text-center">
         <p className="text-red-400 mb-4">{error}</p>
-        <button
-          onClick={loadProjects}
-          className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors"
-        >
+        <Button variant="primary" onClick={loadProjects}>
           Retry
-        </button>
+        </Button>
       </div>
     );
   }
@@ -219,22 +217,18 @@ export const Projects: React.FC = () => {
 
         <div className="flex items-center gap-3">
           {projects.length > 0 && (
-            <button
-              className="bg-gradient-to-r from-primary to-primary/80 text-white px-4 py-2 rounded-lg hover:from-primary/90 hover:to-primary/70 transition-colors flex items-center gap-2"
+            <Button
+              variant="secondary"
+              icon={Sparkles}
               data-testid="generate-tasks-cta"
               onClick={() => navigate('/chat')}
             >
-              <Sparkles className="w-5 h-5" />
               Generate Tasks
-            </button>
+            </Button>
           )}
-          <button
-            className="bg-primary text-white px-4 py-2 rounded-lg hover:bg-primary/90 transition-colors flex items-center gap-2"
-            onClick={() => setShowCreator(true)}
-          >
-            <Plus className="w-5 h-5" />
+          <Button variant="primary" icon={Plus} onClick={() => setShowCreator(true)}>
             New Project
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -265,43 +259,36 @@ export const Projects: React.FC = () => {
             />
           </div>
         ) : completedProjects.length === 0 ? (
-          <div className="text-center py-16">
-            <div className="flex justify-center mb-4">
-              <Folder className="w-12 h-12 text-text-secondary-dark/50" strokeWidth={1.5} />
-            </div>
-            <h3 className="text-lg font-semibold mb-2">
-              {searchTerm || filterStatus !== 'all' ? 'No projects found' : 'No projects yet'}
-            </h3>
-            <p className="text-sm text-text-secondary-dark mb-6">
-              {searchTerm || filterStatus !== 'all'
-                ? 'Try adjusting your search or filter criteria'
-                : 'Create your first project to get started with Crewly'
-              }
-            </p>
-            {!searchTerm && filterStatus === 'all' && (
-              <button
-                className="bg-primary text-white px-6 py-3 rounded-lg hover:bg-primary/90 transition-colors inline-flex items-center gap-2"
-                onClick={() => setShowCreator(true)}
-              >
-                <Plus className="w-5 h-5" />
+          <EmptyState
+            icon={Folder}
+            title={searchTerm || filterStatus !== 'all' ? 'No projects found' : 'No projects yet'}
+            description={searchTerm || filterStatus !== 'all'
+              ? 'Try adjusting your search or filter criteria'
+              : 'Create your first project to get started with Crewly'}
+            action={!searchTerm && filterStatus === 'all' ? (
+              <Button variant="primary" icon={Plus} onClick={() => setShowCreator(true)}>
                 Create Project
-              </button>
-            )}
-          </div>
+              </Button>
+            ) : undefined}
+            className="py-16"
+          />
         ) : null}
       </div>
 
       {/* Completed Projects Section */}
       {completedProjects.length > 0 && (
         <div className="mt-8" data-testid="archived-section">
-          <button
-            className="flex items-center gap-2 text-text-secondary-dark hover:text-text-primary-dark transition-colors mb-4"
+          <Button
+            variant="ghost"
+            size="sm"
+            icon={archivedExpanded ? ChevronDown : ChevronRight}
+            className="mb-4"
             onClick={() => setArchivedExpanded(!archivedExpanded)}
+            aria-expanded={archivedExpanded}
             data-testid="archived-toggle"
           >
-            {archivedExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-            <span className="text-sm font-semibold">Completed Projects ({completedProjects.length})</span>
-          </button>
+            Completed Projects ({completedProjects.length})
+          </Button>
           <div
             className={archivedExpanded ? '' : 'sr-only'}
             data-testid="archived-grid"

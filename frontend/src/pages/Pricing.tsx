@@ -10,7 +10,7 @@
 
 import { useState } from 'react';
 import { Check } from 'lucide-react';
-import { Button } from '@crewly/ui';
+import { Button, SegmentedControl } from '@crewly/ui';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService } from '../services/api.service';
 import type { BillingInterval } from '../types/payment-wall.types';
@@ -184,32 +184,15 @@ export const Pricing: React.FC = () => {
 
       {/* Billing toggle */}
       <div className="mt-8 flex items-center justify-center gap-3">
-        <button
-          type="button"
-          onClick={() => setBillingInterval('monthly')}
-          className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-            billingInterval === 'monthly'
-              ? 'bg-primary text-white'
-              : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          aria-pressed={billingInterval === 'monthly'}
-          data-testid="billing-monthly"
-        >
-          Monthly
-        </button>
-        <button
-          type="button"
-          onClick={() => setBillingInterval('yearly')}
-          className={`rounded-lg px-4 py-2 text-sm font-medium transition-colors ${
-            billingInterval === 'yearly'
-              ? 'bg-primary text-white'
-              : 'bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark'
-          }`}
-          aria-pressed={billingInterval === 'yearly'}
-          data-testid="billing-yearly"
-        >
-          Yearly — Save {savingsPercent}%
-        </button>
+        <SegmentedControl<BillingInterval>
+          aria-label="Billing interval"
+          value={billingInterval}
+          onChange={setBillingInterval}
+          options={[
+            { value: 'monthly', label: 'Monthly', 'data-testid': 'billing-monthly' },
+            { value: 'yearly', label: `Yearly — Save ${savingsPercent}%`, 'data-testid': 'billing-yearly' },
+          ]}
+        />
       </div>
 
       {/* Plan cards */}

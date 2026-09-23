@@ -256,10 +256,11 @@ describe('InviteDeviceModal', () => {
     render(<InviteDeviceModal isOpen={true} onClose={onClose} />);
 
     await waitFor(() => {
-      expect(screen.getByTestId('invite-modal-close')).toBeDefined();
+      expect(screen.getByLabelText('Close modal')).toBeDefined();
     });
 
-    fireEvent.click(screen.getByTestId('invite-modal-close'));
+    // The shared Modal owns the close button (labelled "Close modal").
+    fireEvent.click(screen.getByLabelText('Close modal'));
     expect(onClose).toHaveBeenCalled();
   });
 

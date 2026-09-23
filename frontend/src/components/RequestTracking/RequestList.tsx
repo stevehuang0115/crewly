@@ -20,6 +20,7 @@ import type {
 import { computeRequestStats } from './request-tracking.types';
 import { RequestRow } from './RequestRow';
 import { SkeletonRows } from '@crewly/ui/SkeletonRows';
+import { Button } from '@crewly/ui/Button';
 import { apiService } from '../../services/api.service';
 
 // =============================================================================
@@ -238,12 +239,9 @@ export const RequestList: React.FC<RequestListProps> = ({
     return (
       <div className="flex flex-col items-center justify-center gap-3 py-16 text-text-secondary-dark" data-testid="request-list-error">
         <span className="text-sm text-red-400">{error}</span>
-        <button
-          onClick={loadRequests}
-          className="text-sm text-primary hover:underline"
-        >
+        <Button variant="link" onClick={loadRequests}>
           Retry
-        </button>
+        </Button>
       </div>
     );
   }

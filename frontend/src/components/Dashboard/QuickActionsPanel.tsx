@@ -10,6 +10,7 @@
 import React from 'react';
 import clsx from 'clsx';
 import { Users, Terminal, Settings, ChevronRight } from 'lucide-react';
+import { Card } from '@crewly/ui/Card';
 import { QuickActionsPanelProps } from './types';
 
 /**
@@ -25,7 +26,7 @@ export const QuickActionsPanel: React.FC<QuickActionsPanelProps> = ({
   onProjectSettingsClick
 }) => {
   return (
-    <div className="bg-surface-dark rounded-lg border border-border-dark p-6">
+    <Card padding="lg">
       <h3 className="text-lg font-semibold text-text-primary-dark mb-4">Quick Actions</h3>
       <div className="space-y-3">
         {/* Manage Teams Action */}
@@ -76,6 +77,6 @@ export const QuickActionsPanel: React.FC<QuickActionsPanelProps> = ({
           <ChevronRight className="w-4 h-4 text-text-secondary-dark" />
         </button>
       </div>
-    </div>
+    </Card>
   );
 };

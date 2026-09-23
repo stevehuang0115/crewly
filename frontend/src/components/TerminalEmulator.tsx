@@ -3,6 +3,7 @@ import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { WebLinksAddon } from 'xterm-addon-web-links';
 import 'xterm/css/xterm.css';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { TerminalOutput } from '@/types';
 
 interface TerminalEmulatorProps {
@@ -126,8 +127,8 @@ export const TerminalEmulator: React.FC<TerminalEmulatorProps> = ({
   }, [className]);
 
   return (
-    <div className={`bg-gray-900 rounded-lg overflow-hidden ${className}`}>
-      <div className="bg-gray-800 px-4 py-2 border-b border-gray-700">
+    <div className={`relative bg-background-dark rounded-2xl border border-border-dark overflow-hidden ${className}`}>
+      <div className="bg-surface-dark px-4 py-2 border-b border-border-dark">
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <div className="flex space-x-1">
@@ -135,11 +136,11 @@ export const TerminalEmulator: React.FC<TerminalEmulatorProps> = ({
               <div className="w-3 h-3 bg-yellow-500 rounded-full"></div>
               <div className="w-3 h-3 bg-green-500 rounded-full"></div>
             </div>
-            <span className="text-sm font-medium text-gray-300">
+            <span className="text-sm font-medium text-text-primary-dark">
               {sessionName}
             </span>
           </div>
-          <div className="text-xs text-gray-500">
+          <div className="text-xs text-text-secondary-dark">
             {terminalData.length > 0 && (
               <span>
                 Last update: {new Date(terminalData[terminalData.length - 1]?.timestamp).toLocaleTimeString()}
@@ -156,8 +157,8 @@ export const TerminalEmulator: React.FC<TerminalEmulatorProps> = ({
       />
       
       {!isInitialized && (
-        <div className="absolute inset-0 flex items-center justify-center bg-gray-900 bg-opacity-50">
-          <div className="text-white text-sm">Initializing terminal...</div>
+        <div className="absolute inset-0 flex items-center justify-center bg-background-dark/50">
+          <LoadingSpinner size="sm" inline text="Initializing terminal..." />
         </div>
       )}
     </div>

@@ -8,6 +8,7 @@
 
 import React from 'react';
 import { X } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import { useFactory } from '../../../contexts/FactoryContext';
 import type { PlanStepType } from '../Agents/agentPlanTypes';
 
@@ -96,19 +97,19 @@ export const EntityActionPanel: React.FC = () => {
 
   return (
     <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-10 pointer-events-auto">
-      <div className="bg-gray-900/90 backdrop-blur-sm rounded-lg border border-gray-700 shadow-xl px-4 py-3">
+      <div className="bg-surface-dark/90 backdrop-blur-sm rounded-2xl border border-border-dark shadow-xl px-4 py-3">
         {/* Header with entity name and close button */}
         <div className="flex items-center justify-between mb-2 gap-4">
           <span className="text-white text-sm font-medium truncate max-w-[200px]">
             {entityName}
           </span>
-          <button
+          <IconButton
+            icon={X}
+            size="xs"
             onClick={clearSelection}
-            className="text-gray-400 hover:text-white transition-colors p-0.5 rounded hover:bg-gray-700/50"
             title="Close"
-          >
-            <X className="w-4 h-4" />
-          </button>
+            aria-label="Close"
+          />
         </div>
 
         {/* Action buttons row */}
@@ -119,7 +120,7 @@ export const EntityActionPanel: React.FC = () => {
               onClick={() =>
                 sendEntityCommand(selectedEntityId, { stepType: action.stepType })
               }
-              className="flex flex-col items-center gap-1 px-3 py-2 rounded-md bg-gray-800/80 hover:bg-gray-700 border border-gray-600/50 hover:border-gray-500 transition-all text-gray-200 hover:text-white"
+              className="flex flex-col items-center gap-1 px-3 py-2 rounded-md bg-background-dark/80 hover:bg-border-dark border border-border-dark/50 hover:border-primary/50 transition-all text-text-primary-dark hover:text-white"
               title={action.label}
             >
               <span className="text-base leading-none">{action.icon}</span>

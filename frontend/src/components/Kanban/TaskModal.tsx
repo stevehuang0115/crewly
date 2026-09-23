@@ -1,4 +1,8 @@
 import React, { useState, useEffect } from 'react';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
+import { FormGroup, FormInput, FormLabel, FormRow, FormSelect, FormTextarea } from '@crewly/ui/Form';
+import { Modal, ModalFooter } from '@crewly/ui/Modal';
 import { KanbanTask } from './KanbanBoard';
 
 interface TaskModalProps {
@@ -7,6 +11,12 @@ interface TaskModalProps {
   onClose: () => void;
 }
 
+/**
+ * Create / edit dialog for a Kanban task.
+ *
+ * @param props - The task being edited (if any), submit and close handlers
+ * @returns The task dialog
+ */
 export const TaskModal: React.FC<TaskModalProps> = ({ task, onSubmit, onClose }) => {
   const [formData, setFormData] = useState({
     title: '',
@@ -104,189 +114,144 @@ export const TaskModal: React.FC<TaskModalProps> = ({ task, onSubmit, onClose })
     });
   };
 
-  const handleOverlayClick = (e: React.MouseEvent) => {
-    if (e.target === e.currentTarget) {
-      onClose();
-    }
-  };
-
   return (
-    <div className="modal-overlay" onClick={handleOverlayClick}>
-      <div className="modal-content task-modal">
-        <div className="modal-header">
-          <h2>{task ? 'Edit Task' : 'Create New Task'}</h2>
-          <button className="close-button" onClick={onClose}>×</button>
-        </div>
+    <Modal isOpen onClose={onClose} title={task ? 'Edit Task' : 'Create New Task'} size="lg">
+      <form onSubmit={handleSubmit} className="space-y-4">
+        <FormGroup>
+          <FormLabel htmlFor="title" required>Title</FormLabel>
+          <FormInput
+            type="text"
+            id="title"
+            name="title"
+            value={formData.title}
+            onChange={handleInputChange}
+            placeholder="Task title"
+            required
+          />
+        </FormGroup>
 
-        <form onSubmit={handleSubmit} className="modal-form">
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="title">Title *</label>
-              <input
-                type="text"
-                id="title"
-                name="title"
-                value={formData.title}
-                onChange={handleInputChange}
-                placeholder="Task title"
-                required
-              />
+        <FormGroup>
+          <FormLabel htmlFor="description">Description</FormLabel>
+          <FormTextarea
+            id="description"
+            name="description"
+            value={formData.description}
+            onChange={handleInputChange}
+            placeholder="Task description"
+            rows={4}
+          />
+        </FormGroup>
+
+        <FormRow>
+          <FormGroup>
+            <FormLabel htmlFor="status">Status</FormLabel>
+            <FormSelect id="status" name="status" value={formData.status} onChange={handleInputChange}>
+              <option value="todo">To Do</option>
+              <option value="in-progress">In Progress</option>
+              <option value="review">Review</option>
+              <option value="done">Done</option>
+            </FormSelect>
+          </FormGroup>
+
+          <FormGroup>
+            <FormLabel htmlFor="priority">Priority</FormLabel>
+            <FormSelect id="priority" name="priority" value={formData.priority} onChange={handleInputChange}>
+              <option value="low">Low</option>
+              <option value="medium">Medium</option>
+              <option value="high">High</option>
+            </FormSelect>
+          </FormGroup>
+        </FormRow>
+
+        <FormRow>
+          <FormGroup>
+            <FormLabel htmlFor="assignee">Assignee</FormLabel>
+            <FormSelect id="assignee" name="assignee" value={formData.assignee} onChange={handleInputChange}>
+              <option value="">Unassigned</option>
+              {availableAssignees.map((assignee) => (
+                <option key={assignee} value={assignee}>
+                  {assignee}
+                </option>
+              ))}
+            </FormSelect>
+          </FormGroup>
+
+          <FormGroup>
+            <FormLabel htmlFor="dueDate">Due Date</FormLabel>
+            <FormInput
+              type="date"
+              id="dueDate"
+              name="dueDate"
+              value={formData.dueDate}
+              onChange={handleInputChange}
+            />
+          </FormGroup>
+        </FormRow>
+
+        <FormRow>
+          <FormGroup>
+            <FormLabel htmlFor="teamId">Team</FormLabel>
+            <FormSelect id="teamId" name="teamId" value={formData.teamId} onChange={handleInputChange}>
+              <option value="">Select Team</option>
+              {availableTeams.map((team) => (
+                <option key={team.id} value={team.id}>
+                  {team.name}
+                </option>
+              ))}
+            </FormSelect>
+          </FormGroup>
+
+          <FormGroup>
+            <FormLabel htmlFor="projectId">Project</FormLabel>
+            <FormSelect id="projectId" name="projectId" value={formData.projectId} onChange={handleInputChange}>
+              <option value="">Select Project</option>
+              {availableProjects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))}
+            </FormSelect>
+          </FormGroup>
+        </FormRow>
+
+        <FormGroup>
+          <FormLabel htmlFor="tags">Tags</FormLabel>
+          <FormInput
+            type="text"
+            id="tags"
+            value={tagInput}
+            onChange={(e) => setTagInput(e.target.value)}
+            onKeyDown={handleAddTag}
+            placeholder="Type tag and press Enter"
+          />
+          {formData.tags.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-1.5">
+              {formData.tags.map((tag) => (
+                <Badge key={tag} variant="primary" className="gap-1">
+                  {tag}
+                  <button
+                    type="button"
+                    className="hover:text-text-primary-dark"
+                    onClick={() => handleRemoveTag(tag)}
+                    aria-label={`Remove tag ${tag}`}
+                  >
+                    ×
+                  </button>
+                </Badge>
+              ))}
             </div>
-          </div>
+          )}
+        </FormGroup>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="description">Description</label>
-              <textarea
-                id="description"
-                name="description"
-                value={formData.description}
-                onChange={handleInputChange}
-                placeholder="Task description"
-                rows={4}
-              />
-            </div>
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="status">Status</label>
-              <select
-                id="status"
-                name="status"
-                value={formData.status}
-                onChange={handleInputChange}
-              >
-                <option value="todo">To Do</option>
-                <option value="in-progress">In Progress</option>
-                <option value="review">Review</option>
-                <option value="done">Done</option>
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="priority">Priority</label>
-              <select
-                id="priority"
-                name="priority"
-                value={formData.priority}
-                onChange={handleInputChange}
-              >
-                <option value="low">Low</option>
-                <option value="medium">Medium</option>
-                <option value="high">High</option>
-              </select>
-            </div>
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="assignee">Assignee</label>
-              <select
-                id="assignee"
-                name="assignee"
-                value={formData.assignee}
-                onChange={handleInputChange}
-              >
-                <option value="">Unassigned</option>
-                {availableAssignees.map((assignee) => (
-                  <option key={assignee} value={assignee}>
-                    {assignee}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="dueDate">Due Date</label>
-              <input
-                type="date"
-                id="dueDate"
-                name="dueDate"
-                value={formData.dueDate}
-                onChange={handleInputChange}
-              />
-            </div>
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="teamId">Team</label>
-              <select
-                id="teamId"
-                name="teamId"
-                value={formData.teamId}
-                onChange={handleInputChange}
-              >
-                <option value="">Select Team</option>
-                {availableTeams.map((team) => (
-                  <option key={team.id} value={team.id}>
-                    {team.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label htmlFor="projectId">Project</label>
-              <select
-                id="projectId"
-                name="projectId"
-                value={formData.projectId}
-                onChange={handleInputChange}
-              >
-                <option value="">Select Project</option>
-                {availableProjects.map((project) => (
-                  <option key={project.id} value={project.id}>
-                    {project.name}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="tags">Tags</label>
-              <input
-                type="text"
-                id="tags"
-                value={tagInput}
-                onChange={(e) => setTagInput(e.target.value)}
-                onKeyDown={handleAddTag}
-                placeholder="Type tag and press Enter"
-              />
-              <div className="tags-container">
-                {formData.tags.map((tag) => (
-                  <span key={tag} className="tag-item">
-                    {tag}
-                    <button
-                      type="button"
-                      className="remove-tag"
-                      onClick={() => handleRemoveTag(tag)}
-                    >
-                      ×
-                    </button>
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <div className="modal-actions">
-            <button type="button" className="cancel-button" onClick={onClose}>
-              Cancel
-            </button>
-            <button 
-              type="submit" 
-              className="submit-button"
-              disabled={!formData.title.trim()}
-            >
-              {task ? 'Update Task' : 'Create Task'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+        <ModalFooter className="px-0 pb-0 pt-2">
+          <Button type="button" variant="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button type="submit" disabled={!formData.title.trim()}>
+            {task ? 'Update Task' : 'Create Task'}
+          </Button>
+        </ModalFooter>
+      </form>
+    </Modal>
   );
 };

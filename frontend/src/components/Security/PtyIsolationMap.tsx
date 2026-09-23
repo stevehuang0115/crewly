@@ -122,7 +122,7 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
                     tabIndex={0}
                     onClick={() => handleSessionClick(session.sessionName)}
                     onKeyDown={(e) => handleSessionKeyDown(e, session.sessionName)}
-                    className={`flex items-start gap-4 p-4 rounded-lg border-l-4 bg-zinc-900/50 cursor-pointer hover:bg-zinc-800/50 transition-colors ${AGENT_COLORS[index % AGENT_COLORS.length]}`}
+                    className={`flex items-start gap-4 p-4 rounded-lg border-l-4 bg-surface-dark/50 cursor-pointer hover:bg-background-dark/50 transition-colors ${AGENT_COLORS[index % AGENT_COLORS.length]}`}
                     aria-expanded={expandedSession === session.sessionName}
                     data-testid={`pty-node-${session.sessionName}`}
                   >
@@ -164,7 +164,7 @@ export const PtyIsolationMap: React.FC<PtyIsolationMapProps> = ({ sessions, load
 
                   {/* Expanded session details */}
                   {expandedSession === session.sessionName && (
-                    <div className="ml-4 p-3 bg-zinc-900/30 rounded-b-lg border-l border-border-dark text-xs text-text-secondary-dark font-mono">
+                    <div className="ml-4 p-3 bg-surface-dark/30 rounded-b-lg border-l border-border-dark text-xs text-text-secondary-dark font-mono">
                       <div>Session: {session.sessionName}</div>
                       <div>Process ID: {session.ptyPid ?? 'Not available'}</div>
                       <div>Memory: {formatMemory(session.memoryUsage)}</div>

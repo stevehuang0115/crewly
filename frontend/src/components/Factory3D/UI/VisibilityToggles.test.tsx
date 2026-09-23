@@ -94,10 +94,10 @@ describe('VisibilityToggles', () => {
       const mainButton = screen.getByRole('button', { name: /visibility/i });
       fireEvent.click(mainButton);
 
-      // Each toggle is a button inside the panel
-      const toggles = screen.getAllByRole('button');
-      // Main button + close button + 3 toggle switches = 5 buttons
-      expect(toggles.length).toBe(5);
+      // Each toggle is a switch inside the panel (role="switch")
+      expect(screen.getAllByRole('switch')).toHaveLength(3);
+      // Plus the main button and the collapse button
+      expect(screen.getAllByRole('button')).toHaveLength(2);
     });
   });
 

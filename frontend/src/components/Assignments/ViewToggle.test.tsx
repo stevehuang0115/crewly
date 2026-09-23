@@ -63,8 +63,9 @@ describe('ViewToggle', () => {
     const projectsButton = screen.getByText('Projects (1)').closest('button');
     const teamsButton = screen.getByText('Teams (1)').closest('button');
 
-    expect(projectsButton).toHaveClass('active');
-    expect(teamsButton).not.toHaveClass('active');
+    // SegmentedControl marks the selected option with aria-checked.
+    expect(projectsButton).toHaveAttribute('aria-checked', 'true');
+    expect(teamsButton).toHaveAttribute('aria-checked', 'false');
   });
 
   it('should call onViewModeChange when projects button is clicked', () => {

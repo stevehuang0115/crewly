@@ -8,8 +8,9 @@
  */
 
 import React from 'react';
-import { CheckCircle2, Circle, Loader2, AlertCircle } from 'lucide-react';
+import { CheckCircle2, Circle, AlertCircle } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 // =============================================================================
 // Types
@@ -51,10 +52,7 @@ export const CreationProgressSequence: React.FC<CreationProgressSequenceProps> =
         {hasError ? (
           <AlertCircle className="h-12 w-12 text-red-400" data-testid="creation-error-icon" />
         ) : (
-          <Loader2
-            className="h-12 w-12 text-primary animate-spin"
-            data-testid="creation-spinner"
-          />
+          <LoadingSpinner size="xl" data-testid="creation-spinner" />
         )}
       </div>
 
@@ -72,7 +70,7 @@ export const CreationProgressSequence: React.FC<CreationProgressSequenceProps> =
             Icon = CheckCircle2;
             colorClass = 'text-emerald-400';
           } else if (isCurrent) {
-            Icon = Loader2;
+            // The current stage renders a spinner instead of an icon.
             colorClass = 'text-primary';
           } else if (isFailed) {
             Icon = AlertCircle;
@@ -85,7 +83,11 @@ export const CreationProgressSequence: React.FC<CreationProgressSequenceProps> =
               className={`flex items-center gap-3 text-sm ${colorClass}`}
               data-testid={`creation-stage-${index}`}
             >
-              <Icon className={`h-4 w-4 flex-shrink-0 ${isCurrent ? 'animate-spin' : ''}`} />
+              {isCurrent ? (
+                <LoadingSpinner size="xs" centered={false} className="flex-shrink-0" />
+              ) : (
+                <Icon className="h-4 w-4 flex-shrink-0" />
+              )}
               <span className={isComplete || isCurrent ? 'text-text-primary-dark' : ''}>
                 {stage}
               </span>

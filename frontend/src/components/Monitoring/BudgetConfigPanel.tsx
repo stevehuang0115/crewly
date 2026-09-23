@@ -10,6 +10,9 @@
 
 import React, { useState } from 'react';
 import { ChevronDown, ChevronRight } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { FormInput, FormLabel } from '@crewly/ui/Form';
 import type { BudgetConfig } from '../../types';
 import type { BudgetValidationErrors } from '../../hooks/useBudgetConfig';
 
@@ -123,14 +126,11 @@ export const BudgetConfigPanel: React.FC<BudgetConfigPanelProps> = ({
   };
 
   return (
-    <div
-      className="bg-surface-dark rounded-lg border border-border-dark"
-      data-testid="budget-config-panel"
-    >
+    <Card padding="none" data-testid="budget-config-panel">
       {/* Header / Toggle */}
       <button
         onClick={() => setIsOpen((prev) => !prev)}
-        className="w-full flex items-center justify-between p-4 text-left hover:bg-background-dark/30 transition-colors rounded-lg"
+        className="w-full flex items-center justify-between p-4 text-left hover:bg-background-dark/30 transition-colors rounded-2xl"
         aria-expanded={isOpen}
       >
         <span className="text-sm font-semibold text-text-primary-dark">Budget Configuration</span>
@@ -147,29 +147,17 @@ export const BudgetConfigPanel: React.FC<BudgetConfigPanelProps> = ({
           {/* Action buttons */}
           <div className="flex gap-2 justify-end">
             {!isEditing ? (
-              <button
-                onClick={handleEdit}
-                className="px-3 py-1.5 text-xs font-medium rounded-lg bg-primary text-white hover:bg-primary/90 transition-colors"
-                data-testid="budget-edit-btn"
-              >
+              <Button size="xs" onClick={handleEdit} data-testid="budget-edit-btn">
                 Edit
-              </button>
+              </Button>
             ) : (
               <>
-                <button
-                  onClick={handleCancel}
-                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-background-dark text-text-secondary-dark hover:text-text-primary-dark transition-colors"
-                  data-testid="budget-cancel-btn"
-                >
+                <Button variant="secondary" size="xs" onClick={handleCancel} data-testid="budget-cancel-btn">
                   Cancel
-                </button>
-                <button
-                  onClick={handleSave}
-                  className="px-3 py-1.5 text-xs font-medium rounded-lg bg-green-600 text-white hover:bg-green-700 transition-colors"
-                  data-testid="budget-save-btn"
-                >
+                </Button>
+                <Button variant="success" size="xs" onClick={handleSave} data-testid="budget-save-btn">
                   Save
-                </button>
+                </Button>
               </>
             )}
           </div>
@@ -178,22 +166,19 @@ export const BudgetConfigPanel: React.FC<BudgetConfigPanelProps> = ({
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {FIELDS.map((field) => (
               <div key={field.key}>
-                <label
-                  className="block text-xs font-medium text-text-secondary-dark mb-1"
-                  htmlFor={`budget-${field.key}`}
-                >
+                <FormLabel className="text-xs text-text-secondary-dark mb-1" htmlFor={`budget-${field.key}`}>
                   {field.label}
-                </label>
+                </FormLabel>
                 {isEditing ? (
                   <>
-                    <input
+                    <FormInput
                       id={`budget-${field.key}`}
                       type="number"
                       value={draft[field.key]}
                       step={field.step}
                       min={0}
                       onChange={(e) => updateField(field.key, parseFloat(e.target.value) || 0)}
-                      className="w-full px-3 py-2 text-sm bg-background-dark border border-border-dark rounded-lg text-text-primary-dark focus:outline-none focus:ring-1 focus:ring-primary"
+                      error={Boolean(errors?.[field.key])}
                       data-testid={`budget-input-${field.key}`}
                     />
                     {errors?.[field.key] && (
@@ -217,17 +202,13 @@ export const BudgetConfigPanel: React.FC<BudgetConfigPanelProps> = ({
           {/* Reset button */}
           {!isEditing && (
             <div className="flex justify-end pt-2">
-              <button
-                onClick={onReset}
-                className="text-xs text-text-secondary-dark hover:text-red-400 transition-colors"
-                data-testid="budget-reset-btn"
-              >
+              <Button variant="danger-ghost" size="xs" onClick={onReset} data-testid="budget-reset-btn">
                 Reset to Defaults
-              </button>
+              </Button>
             </div>
           )}
         </div>
       )}
-    </div>
+    </Card>
   );
 };

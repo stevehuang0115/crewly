@@ -186,7 +186,7 @@ export const RolesTab: React.FC = () => {
           onClick={handleRefresh}
           disabled={isLoading || isRefreshing}
           icon={RefreshCw}
-          className={isRefreshing ? 'animate-spin' : ''}
+          loading={isRefreshing}
         >
           {isRefreshing ? 'Refreshing...' : 'Refresh'}
         </Button>

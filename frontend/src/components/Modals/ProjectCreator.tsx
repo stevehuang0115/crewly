@@ -1,5 +1,8 @@
 import React, { useState } from 'react';
-import { FolderOpen, X } from 'lucide-react';
+import { FolderOpen } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
+import { FormError, FormHelp, FormInput, FormLabel } from '@crewly/ui/Form';
+import { Popup } from '@crewly/ui/Popup';
 import { FolderBrowser } from './FolderBrowser';
 
 interface ProjectCreatorProps {
@@ -7,6 +10,12 @@ interface ProjectCreatorProps {
   onClose: () => void;
 }
 
+/**
+ * Dialog for creating a project from a filesystem path (typed or browsed).
+ *
+ * @param props - onSave receives the chosen path; onClose dismisses the dialog
+ * @returns The project-creation dialog
+ */
 export const ProjectCreator: React.FC<ProjectCreatorProps> = ({
   onSave,
   onClose
@@ -51,83 +60,69 @@ export const ProjectCreator: React.FC<ProjectCreatorProps> = ({
     // onSave will handle navigation/closing the parent
   };
 
+  const footer = (
+    <>
+      <Button type="button" variant="secondary" onClick={onClose} disabled={loading}>
+        Cancel
+      </Button>
+      <Button
+        type="submit"
+        onClick={handleSubmit}
+        loading={loading}
+        disabled={!path.trim()}
+      >
+        {loading ? 'Creating...' : 'Create Project'}
+      </Button>
+    </>
+  );
+
   return (
-    <div className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
-      <div className="bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full max-w-md">
-        <div className="p-6">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-xl font-semibold">Create New Project</h3>
-            <button
-              className="text-text-secondary-dark hover:text-text-primary-dark transition-colors"
-              onClick={onClose}
-              disabled={loading}
-            >
-              <X className="w-6 h-6" />
-            </button>
-          </div>
-          <form onSubmit={handleSubmit}>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-text-secondary-dark mb-2" htmlFor="project-path">
-                  Project Path <span className="text-red-400">*</span>
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary focus:border-primary placeholder-text-secondary-dark/50"
-                    id="project-path"
-                    placeholder="/Users/name/my-project"
-                    type="text"
-                    value={path}
-                    onChange={(e) => setPath(e.target.value)}
-                    disabled={loading}
-                    required
-                  />
-                  <button
-                    type="button"
-                    className="bg-background-dark border border-border-dark text-text-secondary-dark font-semibold py-2 px-4 rounded-lg flex items-center gap-2 hover:bg-border-dark/50 hover:text-text-primary-dark transition-colors text-sm whitespace-nowrap"
-                    onClick={handleSelectFolder}
-                    disabled={loading}
-                  >
-                    <FolderOpen className="w-4 h-4" />
-                    <span>Browse</span>
-                  </button>
-                </div>
-                <p className="text-xs text-text-secondary-dark mt-2">
-                  Enter the <strong>full absolute path</strong> to your project directory, or use Browse to navigate to it.
-                </p>
-                {error && (
-                  <p className="text-red-400 text-sm mt-2">{error}</p>
-                )}
+    <>
+      <Popup
+        isOpen
+        onClose={onClose}
+        title="Create New Project"
+        size="md"
+        // Not closable while the folder browser is on top, so Escape only
+        // dismisses the browser.
+        closable={!loading && !showFolderBrowser}
+        footer={footer}
+      >
+        <form onSubmit={handleSubmit}>
+          <div className="space-y-4">
+            <div>
+              <FormLabel htmlFor="project-path" required>
+                Project Path
+              </FormLabel>
+              <div className="flex items-center gap-2">
+                <FormInput
+                  id="project-path"
+                  placeholder="/Users/name/my-project"
+                  type="text"
+                  value={path}
+                  onChange={(e) => setPath(e.target.value)}
+                  disabled={loading}
+                  required
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  icon={FolderOpen}
+                  className="whitespace-nowrap"
+                  onClick={handleSelectFolder}
+                  disabled={loading}
+                >
+                  Browse
+                </Button>
               </div>
+              <FormHelp className="mt-2">
+                Enter the <strong>full absolute path</strong> to your project directory, or use Browse to navigate to it.
+              </FormHelp>
+              {error && <FormError className="text-sm mt-2">{error}</FormError>}
             </div>
-          </form>
-        </div>
-        <div className="bg-background-dark/50 px-6 py-4 border-t border-border-dark flex justify-end gap-3 rounded-b-xl">
-          <button
-            type="button"
-            className="bg-transparent border border-border-dark text-text-primary-dark font-semibold py-2 px-4 rounded-lg hover:bg-border-dark/50 transition-colors"
-            onClick={onClose}
-            disabled={loading}
-          >
-            Cancel
-          </button>
-          <button
-            type="submit"
-            className="bg-primary text-white font-semibold py-2 px-4 rounded-lg flex items-center gap-2 hover:bg-primary/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            onClick={handleSubmit}
-            disabled={loading || !path.trim()}
-          >
-            {loading ? (
-              <>
-                <div className="w-4 h-4 border-2 border-white/20 border-t-white rounded-full animate-spin" />
-                <span>Creating...</span>
-              </>
-            ) : (
-              <span>Create Project</span>
-            )}
-          </button>
-        </div>
-      </div>
+          </div>
+        </form>
+      </Popup>
 
       {/* Folder Browser Modal - Direct project creation mode */}
       {showFolderBrowser && (
@@ -137,6 +132,6 @@ export const ProjectCreator: React.FC<ProjectCreatorProps> = ({
           onClose={() => setShowFolderBrowser(false)}
         />
       )}
-    </div>
+    </>
   );
 };

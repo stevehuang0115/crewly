@@ -2,12 +2,14 @@ import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from './Button';
 import { focusInitial } from './focus';
+import { useDialogLayer } from './dialogStack';
 
 export interface PopupProps {
   isOpen: boolean;
   onClose: () => void;
-  title?: string;
-  subtitle?: string;
+  title?: React.ReactNode;
+  subtitle?: React.ReactNode;
+  'data-testid'?: string;
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'xxl';
   closable?: boolean;
   className?: string;
@@ -28,28 +30,13 @@ export const Popup: React.FC<PopupProps> = ({
   children,
   footer,
   footerAlign = 'right',
-  loading = false
+  loading = false,
+  'data-testid': testId,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
 
-  // Handle escape key
-  useEffect(() => {
-    const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && closable) {
-        onClose();
-      }
-    };
-
-    if (isOpen) {
-      document.addEventListener('keydown', handleEscape);
-      document.body.style.overflow = 'hidden';
-    }
-
-    return () => {
-      document.removeEventListener('keydown', handleEscape);
-      document.body.style.overflow = 'unset';
-    };
-  }, [isOpen, onClose, closable]);
+  // Escape (topmost dialog only) and background scroll lock
+  useDialogLayer(isOpen, closable ? onClose : undefined);
 
   // Focus management
   useEffect(() => {
@@ -80,10 +67,11 @@ export const Popup: React.FC<PopupProps> = ({
       onClick={handleBackdropClick}
       role="dialog"
       aria-modal="true"
+      data-testid={testId}
     >
       <div
         ref={modalRef}
-        className={`bg-surface-dark border border-border-dark rounded-3xl shadow-lg w-full ${sizeClasses[size]} ${loading ? 'pointer-events-none' : ''} ${className}`}
+        className={`relative bg-surface-dark border border-border-dark rounded-3xl shadow-lg w-full max-h-[90vh] overflow-y-auto ${sizeClasses[size]} ${loading ? 'pointer-events-none' : ''} ${className}`}
         onClick={e => e.stopPropagation()}
       >
         {/* Modal Header */}

@@ -17,6 +17,7 @@ import { Button } from '@crewly/ui/Button';
 import { FormInput, FormLabel, FormTextarea } from '@crewly/ui/Form';
 import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
+import { SegmentedControl } from '@crewly/ui/SegmentedControl';
 
 // =============================================================================
 // Types
@@ -360,7 +361,7 @@ export const GoogleChatTab: React.FC = () => {
                   <div className="flex items-center justify-between py-2 border-t border-border-dark">
                     <span className="text-sm text-text-secondary-dark">Pull Loop</span>
                     <span className="flex items-center gap-2">
-                      <span className={`w-2 h-2 rounded-full ${status.pullPaused ? 'bg-amber-400' : status.pullActive ? 'bg-emerald-400 animate-pulse' : 'bg-gray-500'}`} />
+                      <span className={`w-2 h-2 rounded-full ${status.pullPaused ? 'bg-amber-400' : status.pullActive ? 'bg-emerald-400 animate-pulse' : 'bg-text-secondary-dark'}`} />
                       <span className={`text-sm font-medium ${status.pullPaused ? 'text-amber-400' : status.pullActive ? 'text-emerald-400' : 'text-text-secondary-dark'}`}>
                         {status.pullPaused ? 'Paused (errors)' : status.pullActive ? 'Running' : 'Stopped'}
                       </span>
@@ -463,41 +464,16 @@ export const GoogleChatTab: React.FC = () => {
           </Alert>
 
           {/* Connection Mode Toggle */}
-          <div className="flex gap-2">
-            <button
-              className={`px-4 py-2 text-sm rounded-lg border transition-colors ${
-                connectionMode === 'pubsub'
-                  ? 'bg-primary/10 border-primary text-primary'
-                  : 'bg-surface-dark border-border-dark text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-              onClick={() => setConnectionMode('pubsub')}
-              data-testid="mode-pubsub"
-            >
-              Pub/Sub (Recommended)
-            </button>
-            <button
-              className={`px-4 py-2 text-sm rounded-lg border transition-colors ${
-                connectionMode === 'webhook'
-                  ? 'bg-primary/10 border-primary text-primary'
-                  : 'bg-surface-dark border-border-dark text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-              onClick={() => setConnectionMode('webhook')}
-              data-testid="mode-webhook"
-            >
-              Webhook
-            </button>
-            <button
-              className={`px-4 py-2 text-sm rounded-lg border transition-colors ${
-                connectionMode === 'service-account'
-                  ? 'bg-primary/10 border-primary text-primary'
-                  : 'bg-surface-dark border-border-dark text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-              onClick={() => setConnectionMode('service-account')}
-              data-testid="mode-service-account"
-            >
-              Service Account
-            </button>
-          </div>
+          <SegmentedControl<ConnectionMode>
+            aria-label="Connection mode"
+            options={[
+              { value: 'pubsub', label: 'Pub/Sub (Recommended)', 'data-testid': 'mode-pubsub' },
+              { value: 'webhook', label: 'Webhook', 'data-testid': 'mode-webhook' },
+              { value: 'service-account', label: 'Service Account', 'data-testid': 'mode-service-account' },
+            ]}
+            value={connectionMode}
+            onChange={setConnectionMode}
+          />
 
           {/* Setup Instructions */}
           <div className="bg-background-dark border border-border-dark rounded-lg p-5">
@@ -556,32 +532,17 @@ export const GoogleChatTab: React.FC = () => {
                 {/* Auth Mode Selector (for pubsub and service-account modes) */}
                 <div>
                   <FormLabel>Authentication Method</FormLabel>
-                  <div className="flex gap-2 mt-1">
-                    <button
-                      type="button"
-                      className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                        authMode === 'service_account'
-                          ? 'bg-primary/10 border-primary text-primary'
-                          : 'bg-surface-dark border-border-dark text-text-secondary-dark hover:text-text-primary-dark'
-                      }`}
-                      onClick={() => setAuthMode('service_account')}
-                      data-testid="auth-service-account"
-                    >
-                      Service Account Key
-                    </button>
-                    <button
-                      type="button"
-                      className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
-                        authMode === 'adc'
-                          ? 'bg-primary/10 border-primary text-primary'
-                          : 'bg-surface-dark border-border-dark text-text-secondary-dark hover:text-text-primary-dark'
-                      }`}
-                      onClick={() => setAuthMode('adc')}
-                      data-testid="auth-adc"
-                    >
-                      Application Default Credentials
-                    </button>
-                  </div>
+                  <SegmentedControl<AuthMode>
+                    size="sm"
+                    className="mt-1"
+                    aria-label="Authentication method"
+                    options={[
+                      { value: 'service_account', label: 'Service Account Key', 'data-testid': 'auth-service-account' },
+                      { value: 'adc', label: 'Application Default Credentials', 'data-testid': 'auth-adc' },
+                    ]}
+                    value={authMode}
+                    onChange={setAuthMode}
+                  />
                 </div>
 
                 {connectionMode === 'pubsub' && (

@@ -13,6 +13,7 @@ import { Check, X } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
 import { Modal, ModalBody, ModalFooter } from '@crewly/ui/Modal';
 import { Alert } from '@crewly/ui/Alert';
+import { FormLabel, FormTextarea } from '@crewly/ui/Form';
 import { apiService } from '../../services/api.service';
 import type { Mission } from '../../types/mission.types';
 
@@ -101,11 +102,12 @@ export const ApprovalActions: React.FC<ApprovalActionsProps> = ({ missionId, onD
       {rejecting && (
         <Modal isOpen={rejecting} onClose={() => setRejecting(false)} title="Reject proposal" size="sm">
           <ModalBody>
-            <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">
-              Reason <span className="text-red-400">*</span>
-            </label>
-            <textarea
-              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark resize-y focus:outline-none focus:border-accent-blue/50"
+            <FormLabel htmlFor={`reject-reason-input-${missionId}`} required>
+              Reason
+            </FormLabel>
+            <FormTextarea
+              id={`reject-reason-input-${missionId}`}
+              className="resize-y"
               rows={3}
               value={reason}
               onChange={(e) => setReason(e.target.value)}

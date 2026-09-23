@@ -184,9 +184,9 @@ describe('PlanComparisonCard', () => {
       <PlanComparisonCard {...defaultProps} billingInterval="monthly" />,
     );
 
-    const monthlyBtn = screen.getByTestId('billing-monthly');
-    expect(monthlyBtn.className).toContain('bg-primary/20');
-    expect(monthlyBtn.className).toContain('text-primary');
+    // SegmentedControl marks the selected option with aria-checked.
+    expect(screen.getByTestId('billing-monthly')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('billing-yearly')).toHaveAttribute('aria-checked', 'false');
   });
 
   it('highlights Yearly toggle when billingInterval is yearly', () => {
@@ -194,9 +194,8 @@ describe('PlanComparisonCard', () => {
       <PlanComparisonCard {...defaultProps} billingInterval="yearly" />,
     );
 
-    const yearlyBtn = screen.getByTestId('billing-yearly');
-    expect(yearlyBtn.className).toContain('bg-primary/20');
-    expect(yearlyBtn.className).toContain('text-primary');
+    expect(screen.getByTestId('billing-yearly')).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('billing-monthly')).toHaveAttribute('aria-checked', 'false');
   });
 
   it('Pro card has primary border and ring styling', () => {

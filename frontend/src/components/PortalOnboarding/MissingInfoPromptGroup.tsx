@@ -9,6 +9,8 @@
 
 import React from 'react';
 import { AlertCircle } from 'lucide-react';
+import { FilterPill } from '@crewly/ui/FilterPill';
+import { FormInput, FormLabel, FormSelect } from '@crewly/ui/Form';
 
 // =============================================================================
 // Types
@@ -71,34 +73,37 @@ export const MissingInfoPromptGroup: React.FC<MissingInfoPromptGroupProps> = ({
 
           return (
             <div key={prompt.key} data-testid={`prompt-${prompt.key}`}>
-              <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">
+              <FormLabel
+                htmlFor={`prompt-field-${prompt.key}`}
+                required={prompt.required}
+                className="text-text-secondary-dark mb-1.5"
+              >
                 {prompt.label}
-                {prompt.required && <span className="text-red-400 ml-1">*</span>}
-              </label>
+              </FormLabel>
 
               {prompt.type === 'text' && (
-                <input
+                <FormInput
+                  id={`prompt-field-${prompt.key}`}
                   type="text"
                   value={typeof currentValue === 'string' ? currentValue : ''}
                   onChange={(e) => onChange(prompt.key, e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm text-text-primary-dark placeholder:text-text-secondary-dark/50 focus:border-primary focus:outline-none"
                   placeholder={`Enter ${prompt.label.toLowerCase()}`}
                   data-testid={`prompt-input-${prompt.key}`}
                 />
               )}
 
               {prompt.type === 'select' && prompt.options && (
-                <select
+                <FormSelect
+                  id={`prompt-field-${prompt.key}`}
                   value={typeof currentValue === 'string' ? currentValue : ''}
                   onChange={(e) => onChange(prompt.key, e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg bg-background-dark border border-border-dark text-sm text-text-primary-dark focus:border-primary focus:outline-none"
                   data-testid={`prompt-select-${prompt.key}`}
                 >
                   <option value="">Select...</option>
                   {prompt.options.map((opt) => (
                     <option key={opt} value={opt}>{opt}</option>
                   ))}
-                </select>
+                </FormSelect>
               )}
 
               {prompt.type === 'chips' && prompt.options && (
@@ -106,9 +111,9 @@ export const MissingInfoPromptGroup: React.FC<MissingInfoPromptGroupProps> = ({
                   {prompt.options.map((opt) => {
                     const selected = Array.isArray(currentValue) && currentValue.includes(opt);
                     return (
-                      <button
+                      <FilterPill
                         key={opt}
-                        type="button"
+                        isActive={selected}
                         onClick={() => {
                           const current = Array.isArray(currentValue) ? currentValue : [];
                           const updated = selected
@@ -116,15 +121,10 @@ export const MissingInfoPromptGroup: React.FC<MissingInfoPromptGroupProps> = ({
                             : [...current, opt];
                           onChange(prompt.key, updated);
                         }}
-                        className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-colors ${
-                          selected
-                            ? 'bg-primary/10 border-primary text-primary'
-                            : 'bg-background-dark border-border-dark text-text-secondary-dark hover:border-primary/50'
-                        }`}
                         data-testid={`prompt-chip-${opt}`}
                       >
                         {opt}
-                      </button>
+                      </FilterPill>
                     );
                   })}
                 </div>

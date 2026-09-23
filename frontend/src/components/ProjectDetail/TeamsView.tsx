@@ -3,6 +3,8 @@ import { Users, UserPlus, FolderOpen } from 'lucide-react';
 import { Team } from '../../types';
 import { TeamsViewProps } from './types';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
+import { Badge } from '@crewly/ui/Badge';
+import { EmptyState } from '@crewly/ui/EmptyState';
 
 const TeamsView: React.FC<TeamsViewProps> = ({ 
   assignedTeams, 
@@ -45,7 +47,7 @@ const TeamsView: React.FC<TeamsViewProps> = ({
                       )}
                     </div>
                   </div>
-                  <span className={`px-2 py-1 rounded-full text-xs font-medium ${isActive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-gray-500/10 text-gray-300'}`}>{isActive ? 'active' : 'inactive'}</span>
+                  <Badge variant={isActive ? 'success' : 'default'}>{isActive ? 'active' : 'inactive'}</Badge>
                 </div>
                 <div className="mt-4 flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -109,13 +111,12 @@ const TeamsView: React.FC<TeamsViewProps> = ({
           </button>
         </div>
       ) : (
-        <div className="empty-teams">
-          <div className="empty-icon"><Users className="w-6 h-6" /></div>
-          <h4 className="empty-title">No teams assigned</h4>
-          <p className="empty-description">
-            Assign teams to this project to start collaborative development.
-          </p>
-        </div>
+        <EmptyState
+          className="empty-teams"
+          icon={Users}
+          title="No teams assigned"
+          description="Assign teams to this project to start collaborative development."
+        />
       )}
     </div>
   );

@@ -13,6 +13,7 @@
  */
 
 import React, { useCallback, useEffect, useState } from 'react';
+import { Badge, Card } from '@crewly/ui';
 import { ChevronDown, ChevronRight, Hash, Phone, MessageCircle, Send, MessageSquare, Mail, Palette, type LucideIcon } from 'lucide-react';
 import { SlackTab } from '../components/Settings/SlackTab';
 import { WhatsAppTab } from '../components/Settings/WhatsAppTab';
@@ -106,12 +107,16 @@ export const Connections: React.FC = () => {
             const allowedRoles = access[connector.id]?.allowedRoles ?? [];
 
             return (
-              <div
+              <Card
                 key={connector.id}
-                className="bg-surface-dark border border-border-dark rounded-lg overflow-hidden"
+                padding="none"
+                className="overflow-hidden"
                 data-testid={`connector-card-${connector.id}`}
               >
+                {/* Disclosure header: a full-width row target, not a styled button */}
                 <button
+                  type="button"
+                  aria-expanded={isExpanded}
                   className="w-full flex items-center gap-4 p-4 text-left hover:bg-background-dark transition-colors"
                   onClick={() => toggle(connector.id)}
                   data-testid={`connector-toggle-${connector.id}`}
@@ -123,12 +128,12 @@ export const Connections: React.FC = () => {
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-semibold">{connector.name}</span>
                       {connector.roleGated && allowedRoles.length > 0 && (
-                        <span
-                          className="text-[10px] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary border border-primary/30"
+                        <Badge
+                          variant="primary"
                           data-testid={`connector-restricted-${connector.id}`}
                         >
                           {allowedRoles.length} role{allowedRoles.length === 1 ? '' : 's'}
-                        </span>
+                        </Badge>
                       )}
                     </div>
                     <p className="text-xs text-text-secondary-dark mt-0.5 truncate">{connector.description}</p>
@@ -150,7 +155,7 @@ export const Connections: React.FC = () => {
                     )}
                   </div>
                 )}
-              </div>
+              </Card>
             );
           })}
         </section>

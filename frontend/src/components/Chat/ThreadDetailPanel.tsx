@@ -20,6 +20,7 @@ import { ChatErrorState } from './ChatErrorState';
 import { ChatEmptyState } from './ChatEmptyState';
 import { ChatOfflineBanner } from './ChatOfflineBanner';
 import { ArrowLeft, ChevronDown } from 'lucide-react';
+import { IconButton } from '@crewly/ui/Button';
 import type { ChatConversation, ChatMessage as ChatMessageType } from '../../types/chat.types';
 import './ThreadDetailPanel.css';
 
@@ -219,14 +220,15 @@ export const ThreadDetailPanel: React.FC<ThreadDetailPanelProps> = ({
     <div className="thread-detail-panel" data-testid="thread-detail-panel">
       <header className="thread-detail-header">
         {onBack && (
-          <button
-            className="thread-detail-back"
+          <IconButton
+            icon={ArrowLeft}
+            size="sm"
+            // Mobile-only, like the old .thread-detail-back rule (max-width: 768px).
+            className="md:hidden"
             onClick={onBack}
             aria-label="Back to thread list"
             data-testid="thread-detail-back"
-          >
-            <ArrowLeft size={16} />
-          </button>
+          />
         )}
         <div className="thread-detail-header-info">
           <h2>{stripThreadMetadata(conversation.title) || 'Chat with Orchestrator'}</h2>

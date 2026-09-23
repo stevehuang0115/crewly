@@ -80,7 +80,7 @@ function getSenderAvatarClass(message: ChatMessageType): string {
     case 'agent':
       return '!bg-yellow-500 text-white !border-0';
     case 'system':
-      return '!bg-gray-500 text-white !border-0';
+      return '!bg-border-dark text-text-primary-dark !border-0';
     default:
       return '';
   }

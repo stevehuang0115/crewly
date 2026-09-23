@@ -23,7 +23,7 @@ import { PageToolbar } from '@crewly/ui/PageToolbar';
 import { Alert } from '@crewly/ui/Alert';
 import { Modal, ModalBody, ModalFooter } from '@crewly/ui/Modal';
 import { SkeletonRows } from '@crewly/ui/SkeletonRows';
-import { FormSelect } from '@crewly/ui/Form';
+import { FormSelect, FormInput, FormTextarea } from '@crewly/ui/Form';
 import { FilterPillGroup } from '@crewly/ui/FilterPillGroup';
 import { LevelBadge, ApprovalChip, KrStatusCountsRow, ProgressBar } from '../components/Missions/OkrBadges';
 import { ApprovalActions } from '../components/Missions/ApprovalActions';
@@ -150,28 +150,30 @@ const SuccessCriteriaPreview: React.FC<{ criteria: string[] }> = ({ criteria }) 
         </Badge>
       ))}
       {!expanded && hiddenCount > 0 && (
-        <button
+        <Button
           type="button"
+          variant="link"
+          size="xs"
           onClick={(e) => {
             e.stopPropagation();
             setExpanded(true);
           }}
-          className="text-xs text-primary hover:text-primary/80 transition-colors cursor-pointer"
         >
           +{hiddenCount} more
-        </button>
+        </Button>
       )}
       {expanded && criteria.length > 3 && (
-        <button
+        <Button
           type="button"
+          variant="link"
+          size="xs"
           onClick={(e) => {
             e.stopPropagation();
             setExpanded(false);
           }}
-          className="text-xs text-primary hover:text-primary/80 transition-colors cursor-pointer"
         >
           Show less
-        </button>
+        </Button>
       )}
     </div>
   );
@@ -635,15 +637,16 @@ export const Missions: React.FC = () => {
             >
               New Mission
             </Button>
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
+              icon={RefreshCw}
               onClick={loadMissions}
-              disabled={loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-sm text-text-secondary-dark hover:text-text-primary-dark bg-surface-dark border border-border-dark rounded-lg transition-colors disabled:opacity-50"
+              loading={loading}
               data-testid="missions-refresh"
             >
-              <RefreshCw className={`h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
               Refresh
-            </button>
+            </Button>
           </div>
         </div>
         <p className="text-sm text-text-secondary-dark">
@@ -857,8 +860,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({
         <div className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Objective</label>
-            <input
-              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark focus:outline-none focus:border-accent-blue/50"
+            <FormInput
               value={objective}
               onChange={(e) => setObjective(e.target.value)}
               placeholder="What should this team achieve?"
@@ -937,8 +939,8 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({
                 ))}
               </FormSelect>
             ) : (
-              <input
-                className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+              <FormInput
+                className="font-mono"
                 value={ownerTeamId}
                 onChange={(e) => setOwnerTeamId(e.target.value)}
                 placeholder="e.g. crewly-product-leo"
@@ -963,8 +965,8 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({
 
           <div>
             <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Review Cadence (cron)</label>
-            <input
-              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark font-mono focus:outline-none focus:border-accent-blue/50"
+            <FormInput
+              className="font-mono"
               value={cadence}
               onChange={(e) => setCadence(e.target.value)}
               placeholder={DEFAULT_CADENCE}
@@ -974,8 +976,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({
 
           <div>
             <label className="block text-sm font-medium text-text-secondary-dark mb-1.5">Success Criteria (one per line)</label>
-            <textarea
-              className="w-full bg-background-dark border border-border-dark rounded-lg px-3 py-2 text-sm text-text-primary-dark resize-none focus:outline-none focus:border-accent-blue/50"
+            <FormTextarea
               rows={3}
               value={successCriteria}
               onChange={(e) => setSuccessCriteria(e.target.value)}
@@ -992,7 +993,7 @@ const CreateMissionModal: React.FC<CreateMissionModalProps> = ({
       </ModalBody>
       <ModalFooter>
         <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
-        <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting} data-testid="create-mission-submit">
+        <Button variant="primary" size="sm" onClick={handleSubmit} loading={submitting} data-testid="create-mission-submit">
           {submitting ? 'Creating...' : 'Create Mission'}
         </Button>
       </ModalFooter>

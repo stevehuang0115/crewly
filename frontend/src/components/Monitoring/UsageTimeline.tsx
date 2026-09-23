@@ -9,6 +9,8 @@
  */
 
 import React, { useState } from 'react';
+import { Card } from '@crewly/ui/Card';
+import { FilterPill } from '@crewly/ui/FilterPill';
 import type { AgentCostEntry } from '../../types';
 
 /**
@@ -33,8 +35,6 @@ const CHART_PADDING_RIGHT = 20;
 const CHART_PADDING_TOP = 10;
 const CHART_PADDING_BOTTOM = 40;
 
-/** Bar color */
-const BAR_COLOR = '#3b82f6';
 
 /**
  * Formats a USD amount for display on the chart axis.
@@ -92,27 +92,19 @@ export const UsageTimeline: React.FC<UsageTimelineProps> = ({ sessions }) => {
   const barGap = (plotWidth - barWidth * sorted.length) / (sorted.length + 1);
 
   return (
-    <div
-      className="bg-surface-dark p-6 rounded-lg border border-border-dark"
-      data-testid="usage-timeline"
-    >
+    <Card padding="lg" data-testid="usage-timeline">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-semibold text-text-primary-dark">Cost by Agent</h3>
         {/* Time range pills */}
         <div className="flex gap-1" role="group" aria-label="Time range filter">
           {TIME_RANGES.map((range) => (
-            <button
+            <FilterPill
               key={range}
+              isActive={selectedRange === range}
               onClick={() => setSelectedRange(range)}
-              className={`px-2.5 py-1 text-xs rounded-full transition-colors ${
-                selectedRange === range
-                  ? 'bg-primary text-white'
-                  : 'bg-background-dark text-text-secondary-dark hover:text-text-primary-dark'
-              }`}
-              aria-pressed={selectedRange === range}
             >
               {range}
-            </button>
+            </FilterPill>
           ))}
         </div>
       </div>
@@ -163,7 +155,7 @@ export const UsageTimeline: React.FC<UsageTimelineProps> = ({ sessions }) => {
                 y={y}
                 width={barWidth}
                 height={barHeight}
-                fill={BAR_COLOR}
+                className="fill-primary"
                 rx={2}
                 opacity={0.85}
               />
@@ -181,6 +173,6 @@ export const UsageTimeline: React.FC<UsageTimelineProps> = ({ sessions }) => {
           );
         })}
       </svg>
-    </div>
+    </Card>
   );
 };

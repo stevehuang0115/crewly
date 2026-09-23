@@ -38,10 +38,12 @@ import {
   GMAIL_ONLY_SCOPES,
 } from '../../types/credential.types';
 import { Alert } from '@crewly/ui/Alert';
-import { Button } from '@crewly/ui/Button';
+import { Badge } from '@crewly/ui/Badge';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Card } from '@crewly/ui/Card';
 import { Modal } from '@crewly/ui/Modal';
-import { FormInput, FormLabel } from '@crewly/ui/Form';
+import { FormInput, FormLabel, FormSelect, FormTextarea } from '@crewly/ui/Form';
 import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 
 // ============================================================================
@@ -143,8 +145,8 @@ export const CredentialsTab: React.FC = () => {
         <Alert variant="error">
           <div className="flex items-center justify-between">
             <span>Failed to load credentials: {error}</span>
-            <Button variant="secondary" size="sm" onClick={() => refresh()}>
-              <RefreshCw className="w-3 h-3 mr-1" /> Retry
+            <Button variant="secondary" size="sm" onClick={() => refresh()} icon={RefreshCw}>
+              Retry
             </Button>
           </div>
         </Alert>
@@ -161,8 +163,8 @@ export const CredentialsTab: React.FC = () => {
             </span>
           </h3>
           <div className="flex items-center gap-2">
-            <Button variant="primary" size="sm" onClick={() => setOpenModal('addGoogleOAuth')}>
-              <Plus className="w-3 h-3 mr-1" /> Add Google Account
+            <Button variant="primary" size="sm" onClick={() => setOpenModal('addGoogleOAuth')} icon={Plus}>
+              Add Google Account
             </Button>
           </div>
         </div>
@@ -190,13 +192,14 @@ export const CredentialsTab: React.FC = () => {
         <div className="mt-3 flex items-center gap-2 text-xs text-text-secondary-dark">
           <Terminal className="w-3 h-3" />
           <span>Developer option:</span>
-          <button
+          <Button
             type="button"
+            variant="link"
+            size="xs"
             onClick={() => setOpenModal('importGeminiCli')}
-            className="text-primary hover:underline"
           >
             Import from Gemini CLI
-          </button>
+          </Button>
         </div>
       </section>
 
@@ -210,8 +213,8 @@ export const CredentialsTab: React.FC = () => {
               ({apiKeyCreds.length})
             </span>
           </h3>
-          <Button variant="primary" size="sm" onClick={() => setOpenModal('addApiKey')}>
-            <Plus className="w-3 h-3 mr-1" /> Add API Key
+          <Button variant="primary" size="sm" onClick={() => setOpenModal('addApiKey')} icon={Plus}>
+            Add API Key
           </Button>
         </div>
 
@@ -311,16 +314,16 @@ const CredentialRow: React.FC<CredentialRowProps> = ({ cred, onDelete }) => {
           <div className="flex items-center gap-2 mb-1">
             <span className="font-medium">{cred.name}</span>
             {isRevoked && (
-              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-red-500/10 text-red-400">
+              <Badge variant="error" className="gap-1">
                 <AlertCircle className="w-3 h-3" />
                 Revoked
-              </span>
+              </Badge>
             )}
             {!isRevoked && isOAuth && (
-              <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded bg-green-500/10 text-green-400">
+              <Badge variant="success" className="gap-1">
                 <CheckCircle2 className="w-3 h-3" />
                 Active
-              </span>
+              </Badge>
             )}
           </div>
 
@@ -356,9 +359,7 @@ const CredentialRow: React.FC<CredentialRowProps> = ({ cred, onDelete }) => {
           </div>
         </div>
 
-        <Button variant="secondary" size="sm" onClick={onDelete} aria-label="Delete credential">
-          <Trash2 className="w-3 h-3" />
-        </Button>
+        <IconButton variant="secondary" size="sm" onClick={onDelete} aria-label="Delete credential" icon={Trash2} />
       </div>
     </Card>
   );
@@ -416,18 +417,17 @@ const AddApiKeyModal: React.FC<AddApiKeyModalProps> = ({ onClose, onSubmit }) =>
 
         <div>
           <FormLabel htmlFor="cred-apikey-provider">Provider</FormLabel>
-          <select
+          <FormSelect
             id="cred-apikey-provider"
             value={provider}
             onChange={(e) => setProvider(e.target.value)}
-            className="w-full px-3 py-2 bg-surface-dark border border-border-dark rounded text-sm"
           >
             {API_KEY_PROVIDER_OPTIONS.map((opt) => (
               <option key={opt.value} value={opt.value}>
                 {opt.label}
               </option>
             ))}
-          </select>
+          </FormSelect>
         </div>
 
         {provider === 'other' && (
@@ -636,16 +636,15 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
 
           <div>
             <FormLabel htmlFor="cred-goog-scope">Access scope</FormLabel>
-            <select
+            <FormSelect
               id="cred-goog-scope"
               value={scopePreset}
               onChange={(e) => setScopePreset(e.target.value as GoogleScopePreset)}
-              className="w-full px-3 py-2 bg-surface-dark border border-border-dark rounded text-sm"
             >
               <option value="gmail-only">Gmail only (recommended for personal accounts)</option>
               <option value="full-workspace">Full Workspace (Gmail, Drive, Calendar, Photos)</option>
               <option value="custom">Custom — pick scopes manually</option>
-            </select>
+            </FormSelect>
             <p className="text-xs text-text-secondary-dark mt-1">
               If Google blocks the sign-in page, try <strong>Gmail only</strong>{' '}
               first — broader scopes require a Workspace account.
@@ -657,12 +656,12 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
               <FormLabel htmlFor="cred-goog-custom-scopes">
                 Scopes (one per line)
               </FormLabel>
-              <textarea
+              <FormTextarea
                 id="cred-goog-custom-scopes"
                 value={customScopesText}
                 onChange={(e) => setCustomScopesText(e.target.value)}
                 rows={5}
-                className="w-full px-3 py-2 bg-surface-dark border border-border-dark rounded text-xs font-mono"
+                className="text-xs font-mono"
                 spellCheck={false}
               />
               <p className="text-xs text-text-secondary-dark mt-1">
@@ -677,7 +676,7 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
             <Button variant="secondary" onClick={onClose} disabled={generating}>
               Cancel
             </Button>
-            <Button variant="primary" onClick={handleGenerate} disabled={generating}>
+            <Button variant="primary" onClick={handleGenerate} loading={generating}>
               {generating ? 'Generating…' : 'Generate sign-in link'}
             </Button>
           </div>
@@ -706,20 +705,17 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
               href={authUrl}
               target="_blank"
               rel="noreferrer"
-              className="flex-1 inline-flex items-center justify-center gap-2 px-4 py-2 bg-primary text-white rounded-md text-sm hover:opacity-90"
+              className="flex-1 inline-flex items-center justify-center gap-2 h-10 px-4 bg-primary text-white rounded-2xl text-sm font-semibold hover:bg-primary/90 transition-colors"
             >
               <ExternalLink className="w-4 h-4" /> Open sign-in page
             </a>
-            <Button variant="secondary" onClick={handleCopyLink} type="button">
-              {linkCopied ? (
-                <>
-                  <Check className="w-4 h-4 mr-1" /> Copied
-                </>
-              ) : (
-                <>
-                  <Copy className="w-4 h-4 mr-1" /> Copy link
-                </>
-              )}
+            <Button
+              variant="secondary"
+              icon={linkCopied ? Check : Copy}
+              onClick={handleCopyLink}
+              type="button"
+            >
+              {linkCopied ? 'Copied' : 'Copy link'}
             </Button>
           </div>
 
@@ -727,13 +723,13 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
             <FormLabel htmlFor="cred-goog-json">
               After signing in, paste the JSON from the success page here:
             </FormLabel>
-            <textarea
+            <FormTextarea
               id="cred-goog-json"
               value={pastedJson}
               onChange={(e) => setPastedJson(e.target.value)}
               rows={8}
               placeholder={'{\n  "access_token": "...",\n  "refresh_token": "...",\n  ...\n}'}
-              className="w-full px-3 py-2 bg-surface-dark border border-border-dark rounded text-xs font-mono"
+              className="text-xs font-mono"
               spellCheck={false}
             />
             <p className="text-xs text-text-secondary-dark mt-1">
@@ -745,18 +741,19 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
           {error && <Alert variant="error">{error}</Alert>}
 
           <div className="flex justify-between items-center pt-2">
-            <button
+            <Button
               type="button"
+              variant="ghost"
+              size="xs"
               onClick={() => {
                 setStage('configure');
                 setPastedJson('');
                 setError(null);
                 setAuthUrl(null);
               }}
-              className="text-xs text-text-secondary-dark hover:underline"
             >
               ← Back (change scope)
-            </button>
+            </Button>
             <div className="flex gap-2">
               <Button variant="secondary" onClick={onClose}>Cancel</Button>
               <Button variant="primary" onClick={handleSave}>
@@ -768,10 +765,7 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
       )}
 
       {stage === 'saving' && (
-        <div className="flex items-center gap-3 py-8 justify-center">
-          <RefreshCw className="w-4 h-4 animate-spin" />
-          <span className="text-sm">Saving credential…</span>
-        </div>
+        <LoadingSpinner size="xs" inline text="Saving credential…" className="py-8" />
       )}
     </Modal>
   );
@@ -932,10 +926,7 @@ const ImportGeminiCliModal: React.FC<ImportGeminiCliModalProps> = ({
       )}
 
       {stage === 'importing' && (
-        <div className="flex items-center gap-3 py-4">
-          <RefreshCw className="w-4 h-4 animate-spin" />
-          <span className="text-sm">Reading the extension's token file…</span>
-        </div>
+        <LoadingSpinner size="xs" inline centered={false} text="Reading the extension's token file…" className="py-4" />
       )}
 
       {stage === 'done' && (

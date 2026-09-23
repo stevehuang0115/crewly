@@ -7,7 +7,11 @@ import 'xterm/css/xterm.css';
 import { useNavigate } from 'react-router-dom';
 import { useTerminal } from '../../contexts/TerminalContext';
 import { webSocketService } from '../../services/websocket.service';
-import { Button, IconButton } from '@crewly/ui';
+import { Badge } from '@crewly/ui/Badge';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { EmptyState } from '@crewly/ui/EmptyState';
+import { FormSelect } from '@crewly/ui/Form';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 interface TerminalSession {
   id: string;
@@ -832,7 +836,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
       {/* Backdrop overlay for mobile — provides context and tap-to-close */}
       {isOpen && (
         <div
-          className="fixed inset-0 bg-black/50 z-40 sm:hidden"
+          className="fixed inset-0 bg-background-dark/80 backdrop-blur-sm z-40 sm:hidden"
           onClick={onClose}
           aria-hidden="true"
         />
@@ -879,7 +883,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
               <div className={`w-2 h-2 rounded-full ${
                 connectionStatus === 'connected' ? 'bg-green-400' :
                 connectionStatus === 'connecting' || connectionStatus === 'reconnecting' ? 'bg-yellow-400' :
-                connectionStatus === 'error' ? 'bg-red-400' : 'bg-gray-400'
+                connectionStatus === 'error' ? 'bg-red-400' : 'bg-text-secondary-dark'
               }`}></div>
               <span className="text-xs sm:text-sm text-text-secondary-dark">
                 {connectionStatus === 'connected' ? 'Live' :
@@ -890,13 +894,13 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
             </div>
           </div>
 
-          <button
+          <IconButton
+            icon={X}
             onClick={onClose}
-            className="p-2 sm:p-1 text-text-secondary-dark hover:text-text-primary-dark hover:bg-background-dark rounded-lg sm:rounded transition-colors shrink-0 min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0 flex items-center justify-center"
+            size="sm"
+            className="shrink-0 min-w-[44px] min-h-[44px] sm:min-w-0 sm:min-h-0"
             aria-label="Close Terminal"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          />
         </div>
 
         {/* Session selector — taller touch target for the dropdown on mobile */}
@@ -905,23 +909,25 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
             <label htmlFor="session-select" className="text-xs sm:text-sm font-medium text-text-secondary-dark shrink-0">
               Session:
             </label>
-            <select
-              id="session-select"
-              value={selectedSession}
-              onChange={(e) => setSelectedSession(e.target.value)}
-              className="flex-1 min-w-0 px-2 sm:px-3 py-2 sm:py-1 bg-background-dark border border-border-dark rounded-lg sm:rounded text-sm text-text-primary-dark focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent disabled:opacity-50"
-              disabled={connectionStatus !== 'connected'}
-            >
-              {availableSessions.map((session) => (
-                <option key={session.id} value={session.id}>
-                  {session.isInProcess ? `${session.displayName} (Log)` : session.displayName}
-                </option>
-              ))}
-            </select>
+            <div className="flex-1 min-w-0">
+              <FormSelect
+                id="session-select"
+                value={selectedSession}
+                onChange={(e) => setSelectedSession(e.target.value)}
+                className="text-text-primary-dark disabled:opacity-50"
+                disabled={connectionStatus !== 'connected'}
+              >
+                {availableSessions.map((session) => (
+                  <option key={session.id} value={session.id}>
+                    {session.isInProcess ? `${session.displayName} (Log)` : session.displayName}
+                  </option>
+                ))}
+              </FormSelect>
+            </div>
             {isCurrentSessionReadOnly && (
-              <span className="px-2 py-0.5 text-xs font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded shrink-0">
+              <Badge variant="info" className="shrink-0">
                 Read Only
-              </span>
+              </Badge>
             )}
           </div>
         </div>
@@ -940,29 +946,23 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
           <div className="flex-1 overflow-hidden">
             {/* Show empty state when no sessions available */}
             {sessionsLoaded && availableSessions.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center p-6 sm:p-8 text-center">
-                <div className="w-16 h-16 rounded-full bg-surface-dark border border-border-dark flex items-center justify-center mb-4">
-                  <TerminalIcon className="w-8 h-8 text-text-secondary-dark" />
-                </div>
-                <h3 className="text-lg font-medium text-text-primary-dark mb-2">
-                  No Terminal Sessions Available
-                </h3>
-                <p className="text-sm text-text-secondary-dark mb-6 max-w-sm">
-                  The orchestrator is not running. Start the orchestrator to enable terminal sessions for your agents.
-                </p>
-                <Button
-                  onClick={() => {
-                    onClose();
-                    navigate('/teams/orchestrator');
-                  }}
-                  variant="primary"
-                  size="default"
-                  className="flex items-center space-x-2"
-                >
-                  <Play className="w-4 h-4" />
-                  <span>Go to Orchestrator</span>
-                </Button>
-              </div>
+              <EmptyState
+                className="h-full"
+                icon={TerminalIcon}
+                title="No Terminal Sessions Available"
+                description="The orchestrator is not running. Start the orchestrator to enable terminal sessions for your agents."
+                action={
+                  <Button
+                    onClick={() => {
+                      onClose();
+                      navigate('/teams/orchestrator');
+                    }}
+                    icon={Play}
+                  >
+                    Go to Orchestrator
+                  </Button>
+                }
+              />
             ) : (
               <div
                 ref={terminalContainerRef}
@@ -978,7 +978,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({ isOpen, onClose })
               style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}
             >
               <div className="flex items-center space-x-2 text-sm text-text-secondary-dark">
-                <div className="w-3 h-3 border-2 border-primary border-t-transparent rounded-full animate-spin"></div>
+                <LoadingSpinner size="xs" centered={false} />
                 <span>Loading terminal output...</span>
               </div>
             </div>

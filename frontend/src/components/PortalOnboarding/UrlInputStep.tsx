@@ -180,13 +180,9 @@ export const UrlInputStep: React.FC<UrlInputStepProps> = ({
       {/* Manual setup link */}
       {onManualSetup && (
         <div className="mt-4 text-center">
-          <button
-            onClick={onManualSetup}
-            className="text-sm text-text-secondary-dark hover:text-primary underline-offset-2 hover:underline transition-colors"
-            data-testid="manual-setup-link"
-          >
+          <Button variant="link" onClick={onManualSetup} data-testid="manual-setup-link">
             I&apos;d rather set this up manually
-          </button>
+          </Button>
         </div>
       )}
     </div>

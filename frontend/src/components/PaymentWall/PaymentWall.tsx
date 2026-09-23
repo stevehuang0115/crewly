@@ -19,8 +19,9 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { Zap, X, Check, ArrowRight } from 'lucide-react';
 import { Modal } from '@crewly/ui/Modal';
-import { Button } from '@crewly/ui/Button';
+import { Button, IconButton } from '@crewly/ui/Button';
 import { Badge } from '@crewly/ui/Badge';
+import { SegmentedControl } from '@crewly/ui/SegmentedControl';
 import type {
   TrialLimitEvent,
   LimitType,
@@ -101,14 +102,13 @@ export const PaymentWallBanner: React.FC<PaymentWallBannerProps> = ({
         Upgrade
       </Button>
 
-      <button
+      <IconButton
+        icon={X}
+        size="sm"
         onClick={onDismiss}
-        className="text-text-secondary-dark hover:text-text-primary-dark transition-colors p-1"
         aria-label="Dismiss upgrade banner"
         data-testid="banner-dismiss-btn"
-      >
-        <X size={16} />
-      </button>
+      />
     </div>
   );
 };
@@ -391,28 +391,16 @@ export const PaymentWallModal: React.FC<PaymentWallModalProps> = ({
             <div>
               {/* Billing toggle */}
               <div className="flex items-center gap-2 mb-3" data-testid="billing-toggle">
-                <button
-                  className={`text-xs px-2 py-1 rounded ${
-                    billingInterval === 'monthly'
-                      ? 'bg-primary/20 text-primary'
-                      : 'text-text-secondary-dark hover:text-text-primary-dark'
-                  }`}
-                  onClick={() => setBillingInterval('monthly')}
-                  data-testid="billing-monthly"
-                >
-                  Monthly
-                </button>
-                <button
-                  className={`text-xs px-2 py-1 rounded ${
-                    billingInterval === 'yearly'
-                      ? 'bg-primary/20 text-primary'
-                      : 'text-text-secondary-dark hover:text-text-primary-dark'
-                  }`}
-                  onClick={() => setBillingInterval('yearly')}
-                  data-testid="billing-yearly"
-                >
-                  Yearly
-                </button>
+                <SegmentedControl<BillingInterval>
+                  size="sm"
+                  aria-label="Billing interval"
+                  options={[
+                    { value: 'monthly', label: 'Monthly', 'data-testid': 'billing-monthly' },
+                    { value: 'yearly', label: 'Yearly', 'data-testid': 'billing-yearly' },
+                  ]}
+                  value={billingInterval}
+                  onChange={setBillingInterval}
+                />
                 {billingInterval === 'yearly' && (
                   <Badge variant="success" size="sm">
                     Save {savingsPercent}%

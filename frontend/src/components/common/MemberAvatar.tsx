@@ -30,7 +30,7 @@ const sizeClasses = {
 
 const statusColors = {
   active: 'bg-green-500',
-  inactive: 'bg-gray-400',
+  inactive: 'bg-text-secondary-dark',
   activating: 'bg-yellow-500',
 };
 
@@ -105,7 +105,7 @@ export const MemberAvatar: React.FC<MemberAvatarProps> = ({
       {renderAvatar()}
       {showStatus && status && (
         <span
-          className={`absolute bottom-0 right-0 w-3 h-3 ${statusColors[status]} rounded-full border-2 border-white dark:border-gray-800`}
+          className={`absolute bottom-0 right-0 w-3 h-3 ${statusColors[status]} rounded-full border-2 border-surface-dark`}
           title={status}
         />
       )}

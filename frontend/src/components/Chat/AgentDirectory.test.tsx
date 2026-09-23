@@ -146,6 +146,6 @@ describe('AgentDirectory', () => {
     const orcBtn = screen.getByText('Orc').closest('button') as HTMLElement;
     // Tailwind class adds blue background; assert via class string presence
     // rather than rendered styles since jsdom doesn't compute CSS.
-    expect(orcBtn.className).toMatch(/bg-blue-50|bg-blue-900\/20/);
+    expect(orcBtn.className).toMatch(/bg-primary\/10/);
   });
 });

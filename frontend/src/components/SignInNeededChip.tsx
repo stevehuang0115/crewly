@@ -12,6 +12,7 @@
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { KeyRound, Copy, Check, ExternalLink } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 import type { LoginRequiredInfo } from '../types';
 import { SIGN_IN_CONSTANTS } from '../constants/sign-in.constants';
 
@@ -145,17 +146,17 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
           {loginRequired.code ? (
             <div className="flex items-center justify-between gap-2 rounded-lg bg-background-dark border border-border-dark px-2 py-1.5">
               <code className="font-mono tracking-widest text-base" data-testid="sign-in-code">{loginRequired.code}</code>
-              <button
+              <Button
                 type="button"
+                variant="ghost"
+                size="xs"
+                icon={copied ? Check : Copy}
                 onClick={handleCopy}
-                className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-colors ${
-                  copied ? 'bg-green-500/10 text-green-400' : 'hover:bg-surface-dark text-text-secondary-dark hover:text-text-primary-dark'
-                }`}
+                className={copied ? 'bg-green-500/10 text-green-400 hover:text-green-400' : ''}
                 aria-label={copied ? 'Code copied' : 'Copy code to clipboard'}
               >
-                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
                 {copied ? 'Copied' : 'Copy'}
-              </button>
+              </Button>
             </div>
           ) : (
             <div className="text-xs text-text-secondary-dark">No device code — the login completes in the browser.</div>

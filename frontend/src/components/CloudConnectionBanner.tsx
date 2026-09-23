@@ -10,7 +10,7 @@
  */
 
 import React, { useState } from 'react';
-import { Cloud, X, Loader2, LogOut } from 'lucide-react';
+import { Cloud, X, LogOut } from 'lucide-react';
 import { IconButton, Badge, Button } from '@crewly/ui';
 import { useCloudConnection } from '../hooks/useCloudConnection';
 import { buildCloudAuthRedirectUrl } from '../constants/cloud.constants';
@@ -107,14 +107,10 @@ export const CloudConnectionBanner: React.FC = () => {
           <Button
             variant="ghost"
             size="sm"
+            icon={LogOut}
             onClick={handleDisconnect}
-            disabled={isActioning}
+            loading={isActioning}
           >
-            {isActioning ? (
-              <Loader2 className="animate-spin mr-1" size={14} />
-            ) : (
-              <LogOut className="mr-1" size={14} />
-            )}
             Disconnect
           </Button>
           <IconButton
@@ -134,7 +130,7 @@ export const CloudConnectionBanner: React.FC = () => {
     <div className="flex items-center justify-between px-4 py-2 border-b bg-primary/10 border-primary/30">
       <div className="flex items-center gap-3">
         <Cloud className="shrink-0 text-primary" size={18} />
-        <span className="text-sm text-gray-200/80">
+        <span className="text-sm text-text-primary-dark/80">
           Connect to <span className="font-semibold text-primary">CrewlyAI Cloud</span> for premium templates and features.
         </span>
       </div>

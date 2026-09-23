@@ -42,8 +42,8 @@ const PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
   online: 'bg-emerald-400',
   busy: 'bg-amber-400',
   idle: 'bg-amber-400',
-  offline: 'bg-gray-500',
-  inactive: 'bg-gray-500',
+  offline: 'bg-text-secondary-dark/50',
+  inactive: 'bg-text-secondary-dark/50',
 };
 
 /** Caption (prototype) presence dot palette — green online, muted otherwise. */
@@ -51,8 +51,8 @@ const CAPTION_PRESENCE_DOT: Record<ChatPresenceStatus, string> = {
   online: 'bg-emerald-400',
   busy: 'bg-amber-400',
   idle: 'bg-amber-400',
-  offline: 'bg-gray-500',
-  inactive: 'bg-gray-500',
+  offline: 'bg-text-secondary-dark/50',
+  inactive: 'bg-text-secondary-dark/50',
 };
 
 export interface WorkspaceRailProps {
@@ -558,7 +558,7 @@ function WorkspaceRow({
               ? 'bg-surface-dark text-text-primary-dark ring-1 ring-border-dark'
               : isActivity
                 ? 'bg-surface-dark text-text-primary-dark'
-                : 'bg-gradient-to-br from-primary to-[#1e5fc7] text-white',
+                : 'bg-gradient-to-br from-primary to-primary/70 text-white',
           ].join(' ')}
         >
           {workspace.icon ?? workspace.avatar ?? initials}

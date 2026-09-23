@@ -24,6 +24,8 @@ import {
   type KeyResultSummary,
 } from '../../types/mission.types';
 import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { LevelBadge, ApprovalChip, KrStatusCountsRow } from '../Missions/OkrBadges';
 import { TEAM_QUERY_PARAM } from '../../utils/team-chat.utils';
 
@@ -88,17 +90,13 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
         </div>
 
         {loading ? (
-          <p className="text-sm text-text-secondary-dark">Loading…</p>
+          <LoadingSpinner size="xs" inline centered={false} text="Loading…" />
         ) : missions.length === 0 ? (
           <p className="text-sm text-text-secondary-dark">
             No missions own­ed by this team yet.{' '}
-            <button
-              type="button"
-              className="text-primary hover:underline"
-              onClick={() => navigate('/missions')}
-            >
+            <Button type="button" variant="link" onClick={() => navigate('/missions')}>
               Open Missions
-            </button>
+            </Button>
           </p>
         ) : (
           <ul className="space-y-2">

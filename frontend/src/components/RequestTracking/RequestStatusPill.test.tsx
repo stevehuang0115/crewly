@@ -5,7 +5,7 @@
  * Verifies the Dark/Calm palette mapping per Ava's V3 design report:
  *   active                → amber + pulse on the dot only
  *   blocked               → red
- *   waiting_confirmation  → indigo / violet accent
+ *   waiting_confirmation  → primary (brand blue) accent
  *   done                  → green
  *
  * @module components/RequestTracking/RequestStatusPill.test
@@ -21,7 +21,7 @@ import type { RequestStatus } from './request-tracking.types';
 const EXPECTED_TONE: Record<RequestStatus, string> = {
   active: 'amber',
   blocked: 'red',
-  waiting_confirmation: 'indigo',
+  waiting_confirmation: 'primary',
   done: 'green',
 };
 

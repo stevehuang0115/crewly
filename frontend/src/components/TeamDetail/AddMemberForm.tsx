@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
+import { FormInput } from '@crewly/ui/Form';
 import { AddMemberFormProps, NewMember } from './types';
 
 export const AddMemberForm: React.FC<AddMemberFormProps> = ({
@@ -41,26 +42,26 @@ export const AddMemberForm: React.FC<AddMemberFormProps> = ({
       {isVisible && (
         <div className="add-member-form">
           <div className="form-row">
-            <input
+            <FormInput
               type="text"
+              aria-label="Member name"
               placeholder="Member name"
               value={newMember.name}
               onChange={(e) => setNewMember({ ...newMember, name: e.target.value })}
-              className="form-input"
             />
-            <input
+            <FormInput
               type="text"
+              aria-label="Role"
               placeholder="Role (e.g., Developer, PM, QA)"
               value={newMember.role}
               onChange={(e) => setNewMember({ ...newMember, role: e.target.value })}
-              className="form-input"
             />
-            <input
+            <FormInput
               type="text"
+              aria-label="Avatar"
               placeholder="Avatar URL or emoji (optional)"
               value={avatar}
               onChange={(e) => setAvatar(e.target.value)}
-              className="form-input"
             />
             <Button 
               variant="success"

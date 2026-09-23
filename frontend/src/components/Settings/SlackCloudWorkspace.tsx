@@ -18,6 +18,7 @@ import { Button } from '@crewly/ui/Button';
 import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
 import { Toggle } from '@crewly/ui/Toggle';
+import { FormSelect } from '@crewly/ui/Form';
 
 /** One agent app still needing its install click. */
 export interface SlackPendingInstall {
@@ -159,20 +160,21 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
 
   const workspacePicker = (list: SlackCloudWorkspaceSummary[], current: string | null) => (
     <div className="flex items-center gap-2" data-testid="slack-cloud-workspace-picker">
-      <select
-        className="bg-background-dark border border-border-dark rounded px-2 py-1.5 text-sm"
-        value={pick || current || ''}
-        onChange={(e) => setPick(e.target.value)}
-        aria-label="Slack workspace for this instance"
-        disabled={busy !== null}
-      >
-        {!current && !pick && <option value="">Choose a workspace…</option>}
-        {list.map((w) => (
-          <option key={w.slackTeamId} value={w.slackTeamId}>
-            {w.slackTeamName}
-          </option>
-        ))}
-      </select>
+      <div className="min-w-[12rem]">
+        <FormSelect
+          value={pick || current || ''}
+          onChange={(e) => setPick(e.target.value)}
+          aria-label="Slack workspace for this instance"
+          disabled={busy !== null}
+        >
+          {!current && !pick && <option value="">Choose a workspace…</option>}
+          {list.map((w) => (
+            <option key={w.slackTeamId} value={w.slackTeamId}>
+              {w.slackTeamName}
+            </option>
+          ))}
+        </FormSelect>
+      </div>
       <Button
         size="sm"
         onClick={() => useWorkspace(pick || current || '')}

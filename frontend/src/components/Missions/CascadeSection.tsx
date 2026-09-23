@@ -13,6 +13,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GitBranch, ArrowUp } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
 import { LevelBadge, ProgressBar, KrStatusCountsRow } from './OkrBadges';
@@ -95,15 +96,16 @@ export const CascadeSection: React.FC<CascadeSectionProps> = ({
       <div className="mb-3">
         <span className="text-text-secondary-dark text-xs uppercase tracking-wide block mb-1">Parent</span>
         {parentMissionId ? (
-          <button
+          <Button
             type="button"
+            variant="link"
+            icon={ArrowUp}
             onClick={() => navigate(`/missions/${parentMissionId}`)}
-            className="flex items-center gap-1.5 text-sm text-primary hover:underline text-left"
+            className="text-left"
             data-testid="cascade-parent-link"
           >
-            <ArrowUp className="h-3.5 w-3.5" />
             {nameFor(parentMissionId, missionNames)}
-          </button>
+          </Button>
         ) : (
           <span className="text-sm text-text-secondary-dark" data-testid="cascade-parent-none">
             None — this is a {level} root.

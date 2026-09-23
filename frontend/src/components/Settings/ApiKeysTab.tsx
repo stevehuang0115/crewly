@@ -8,7 +8,7 @@
  */
 
 import React, { useEffect, useState, useCallback } from 'react';
-import { Save, RotateCcw, Check, AlertCircle, Eye, EyeOff, ChevronDown, ChevronRight, Zap, Key } from 'lucide-react';
+import { Save, Check, AlertCircle, Eye, EyeOff, ChevronDown, ChevronRight, Zap, Key } from 'lucide-react';
 import { useSettings } from '../../hooks/useSettings';
 import { settingsService } from '../../services/settings.service';
 import {
@@ -21,6 +21,7 @@ import {
 } from '../../types/settings.types';
 import { Alert } from '@crewly/ui/Alert';
 import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Card } from '@crewly/ui/Card';
 import { Toggle } from '@crewly/ui/Toggle';
 import { FormInput, FormLabel } from '@crewly/ui/Form';
@@ -196,7 +197,7 @@ export const ApiKeysTab: React.FC = () => {
   };
 
   if (isLoading) {
-    return <div className="text-text-secondary-dark">Loading settings...</div>;
+    return <LoadingSpinner size="md" text="Loading settings..." />;
   }
 
   if (error) {
@@ -220,15 +221,11 @@ export const ApiKeysTab: React.FC = () => {
             variant="secondary"
             size="sm"
             onClick={handleSave}
-            disabled={!hasChanges || saveStatus === 'saving'}
+            icon={saveStatus === 'saved' ? Check : Save}
+            loading={saveStatus === 'saving'}
+            disabled={!hasChanges}
           >
-            {saveStatus === 'saving' ? (
-              <><RotateCcw className="w-4 h-4 animate-spin" /> Saving...</>
-            ) : saveStatus === 'saved' ? (
-              <><Check className="w-4 h-4" /> Saved</>
-            ) : (
-              <><Save className="w-4 h-4" /> Save Changes</>
-            )}
+            {saveStatus === 'saving' ? 'Saving...' : saveStatus === 'saved' ? 'Saved' : 'Save Changes'}
           </Button>
         </div>
       </div>
@@ -285,8 +282,8 @@ export const ApiKeysTab: React.FC = () => {
                     size="sm"
                     onClick={() => handleTestKey(provider, globalKey, statusKey)}
                     disabled={!globalKey || globalKey.startsWith('••••') || testStatus[statusKey] === 'testing'}
+                    icon={Zap}
                   >
-                    <Zap className="w-4 h-4" />
                     Test
                   </Button>
                 </div>
@@ -318,6 +315,7 @@ export const ApiKeysTab: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => toggleRuntime(runtime)}
+                  aria-expanded={!!isExpanded}
                   className="w-full flex items-center justify-between px-4 py-3 text-sm font-medium hover:bg-surface-dark/50 rounded-lg"
                 >
                   <span>{AI_RUNTIME_DISPLAY_NAMES[runtime]}</span>
@@ -370,6 +368,7 @@ export const ApiKeysTab: React.FC = () => {
                                   type="button"
                                   onClick={() => toggleShowKey(statusKey)}
                                   className="absolute right-2 top-1/2 -translate-y-1/2 text-text-secondary-dark hover:text-text-primary-dark"
+                                  aria-label={showKeys[statusKey] ? 'Hide key' : 'Show key'}
                                 >
                                   {showKeys[statusKey] ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                                 </button>
@@ -379,8 +378,8 @@ export const ApiKeysTab: React.FC = () => {
                                 size="sm"
                                 onClick={() => handleTestKey(provider, overrideKey, statusKey)}
                                 disabled={!overrideKey || overrideKey.startsWith('••••') || testStatus[statusKey] === 'testing'}
+                                icon={Zap}
                               >
-                                <Zap className="w-4 h-4" />
                                 Test
                               </Button>
                             </div>

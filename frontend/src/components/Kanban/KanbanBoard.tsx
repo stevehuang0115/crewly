@@ -1,4 +1,6 @@
 import React, { useState, useEffect } from 'react';
+import { Plus } from 'lucide-react';
+import { Button } from '@crewly/ui/Button';
 import { KanbanColumn } from './KanbanColumn';
 // import { KanbanCard } from './KanbanCard';
 import { TaskModal } from './TaskModal';
@@ -27,10 +29,10 @@ interface KanbanBoardProps {
 }
 
 const columns = [
-  { id: 'todo', title: 'To Do', color: '#6b7280' },
-  { id: 'in-progress', title: 'In Progress', color: '#3b82f6' },
-  { id: 'review', title: 'Review', color: '#f59e0b' },
-  { id: 'done', title: 'Done', color: '#10b981' }
+  { id: 'todo', title: 'To Do', color: 'bg-text-secondary-dark' },
+  { id: 'in-progress', title: 'In Progress', color: 'bg-blue-500' },
+  { id: 'review', title: 'Review', color: 'bg-amber-500' },
+  { id: 'done', title: 'Done', color: 'bg-emerald-500' }
 ];
 
 export const KanbanBoard: React.FC<KanbanBoardProps> = ({
@@ -205,12 +207,9 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
     <div className="kanban-board">
       <div className="kanban-header">
         <h2>Task Board</h2>
-        <button
-          className="add-task-button"
-          onClick={() => setIsModalOpen(true)}
-        >
-          + Add Task
-        </button>
+        <Button size="sm" icon={Plus} onClick={() => setIsModalOpen(true)}>
+          Add Task
+        </Button>
       </div>
 
       <div className="kanban-columns">

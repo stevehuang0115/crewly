@@ -223,7 +223,8 @@ describe('JoinRelayModal', () => {
     const onClose = vi.fn();
     render(<JoinRelayModal isOpen={true} onClose={onClose} />);
 
-    fireEvent.click(screen.getByTestId('join-modal-close'));
+    // The shared Modal owns the close button (labelled "Close modal").
+    fireEvent.click(screen.getByLabelText('Close modal'));
     expect(onClose).toHaveBeenCalled();
   });
 

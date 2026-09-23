@@ -1,5 +1,8 @@
 import React from 'react';
 import { Trash2, Clock, RefreshCw, Timer } from 'lucide-react';
+import { Badge } from '@crewly/ui/Badge';
+import { IconButton } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
 import { ScheduledCheck } from './types';
 
 interface ScheduledCheckCardProps {
@@ -20,7 +23,7 @@ export const ScheduledCheckCard: React.FC<ScheduledCheckCardProps> = ({
   const preview = check.message.length > 120 ? check.message.slice(0, 120) + '...' : check.message;
 
   return (
-    <div className="bg-surface-dark p-5 rounded-lg border border-border-dark transition-all hover:shadow-lg hover:border-amber-500/50 flex flex-col justify-between">
+    <Card className="p-5 transition-all hover:shadow-lg hover:border-amber-500/50 flex flex-col justify-between">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -29,23 +32,21 @@ export const ScheduledCheckCard: React.FC<ScheduledCheckCardProps> = ({
             ) : (
               <Timer className="w-4 h-4 text-blue-400 shrink-0" />
             )}
-            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
-              check.isRecurring
-                ? 'bg-amber-500/10 text-amber-400'
-                : 'bg-blue-500/10 text-blue-400'
-            }`}>
+            <Badge variant={check.isRecurring ? 'warning' : 'info'}>
               {check.isRecurring ? 'Recurring' : 'One-time'}
-            </span>
+            </Badge>
           </div>
           <p className="mt-2 text-sm text-text-secondary-dark">{preview}</p>
         </div>
-        <button
-          className="inline-flex items-center justify-center w-8 h-8 rounded-md border border-border-dark text-text-secondary-dark hover:text-red-300 hover:border-red-500/50 shrink-0"
+        <IconButton
+          icon={Trash2}
+          variant="danger-ghost"
+          size="xs"
+          className="border border-border-dark hover:border-red-500/50 shrink-0"
           onClick={() => onCancel(check.id, check.message)}
           title="Cancel check"
-        >
-          <Trash2 className="w-4 h-4" />
-        </button>
+          aria-label="Cancel check"
+        />
       </div>
 
       <div className="mt-4 space-y-2 text-sm">
@@ -69,6 +70,6 @@ export const ScheduledCheckCard: React.FC<ScheduledCheckCardProps> = ({
           <span className="text-text-secondary-dark text-xs">ID: {check.id.slice(0, 8)}</span>
         </div>
       </div>
-    </div>
+    </Card>
   );
 };

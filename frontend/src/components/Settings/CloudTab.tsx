@@ -20,6 +20,8 @@ import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
 import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
+import { Badge, type BadgeVariant } from '@crewly/ui/Badge';
+import { Button, IconButton } from '@crewly/ui/Button';
 
 /**
  * Cloud API validation endpoint -- proxied through the local OSS backend
@@ -85,9 +87,9 @@ const DEVICE_STATE_LABELS: Record<string, string> = {
 const DEVICE_STATE_COLORS: Record<string, string> = {
   waiting: 'bg-yellow-400',
   paired: 'bg-emerald-400',
-  disconnected: 'bg-gray-500',
+  disconnected: 'bg-text-secondary-dark',
   online: 'bg-emerald-400',
-  offline: 'bg-gray-500',
+  offline: 'bg-text-secondary-dark',
 };
 
 /**
@@ -141,7 +143,7 @@ const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
   const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
   // Prefer cloud sync 'status' over legacy 'state'
   const deviceStatus = device.status || device.state || 'disconnected';
-  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-gray-500';
+  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-text-secondary-dark';
   const stateLabel = DEVICE_STATE_LABELS[deviceStatus] ?? deviceStatus;
   const displayName = device.name || device.deviceName || (device.sessionId ? `${device.role || 'device'} (${device.sessionId.slice(0, 8)}...)` : device.deviceId || 'Unknown');
 
@@ -269,29 +271,22 @@ const DeviceListSection: React.FC = () => {
             ({uniqueDevices.length})
           </span>
           {syncState && (
-            <span
+            <Badge
               data-testid="sync-state-badge"
-              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                syncState === 'syncing'
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : syncState === 'error'
-                  ? 'bg-rose-500/10 text-rose-400'
-                  : 'bg-gray-500/10 text-gray-400'
-              }`}
+              variant={syncState === 'syncing' ? 'success' : syncState === 'error' ? 'error' : 'default'}
             >
               {syncState === 'syncing' ? 'Sync Active' : syncState === 'error' ? 'Sync Error' : 'Sync Off'}
-            </span>
+            </Badge>
           )}
         </div>
-        <button
+        <IconButton
+          icon={RefreshCw}
+          size="sm"
           onClick={fetchDevices}
-          disabled={loading}
-          className="p-1.5 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors disabled:opacity-50"
+          loading={loading}
           aria-label="Refresh devices"
           data-testid="refresh-devices-button"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        />
       </div>
 
       {error && (
@@ -491,16 +486,16 @@ export const CloudTab: React.FC = () => {
   };
 
   /**
-   * Get plan badge color class.
+   * Get the plan badge variant.
    *
    * @param plan - Plan name string
-   * @returns Tailwind CSS class string for the badge
+   * @returns Badge variant for the plan
    */
-  const getPlanBadgeClass = (plan: string): string => {
+  const getPlanBadgeVariant = (plan: string): BadgeVariant => {
     switch (plan) {
-      case 'pro': return 'bg-primary/10 text-primary border-primary/30';
-      case 'enterprise': return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
-      default: return 'bg-gray-500/10 text-gray-400 border-gray-500/30';
+      case 'pro': return 'primary';
+      case 'enterprise': return 'warning';
+      default: return 'default';
     }
   };
 
@@ -537,7 +532,7 @@ export const CloudTab: React.FC = () => {
       {/* Connected State -- show when backend reports connected OR user profile is validated */}
       {(user || backendConnected) ? (
         <>
-          <div className="bg-surface-dark border border-border-dark rounded-lg p-5 space-y-4">
+          <Card className="p-5 space-y-4" padding="none">
             {/* User info and plan badge */}
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
@@ -565,30 +560,32 @@ export const CloudTab: React.FC = () => {
                 </div>
               </div>
 
-              <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(resolvedPlan)}`}>
+              <Badge variant={getPlanBadgeVariant(resolvedPlan)}>
                 {resolvedPlan.charAt(0).toUpperCase() + resolvedPlan.slice(1)}
-              </span>
+              </Badge>
             </div>
 
             {/* Action buttons: Refresh and Disconnect */}
             <div className="flex items-center gap-2 pt-2 border-t border-border-dark">
-              <button
+              <Button
+                variant="ghost"
+                size="xs"
+                icon={RefreshCw}
                 onClick={async () => { await checkBackendStatus(); await validateToken(); }}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors"
               >
-                <RefreshCw className="w-3.5 h-3.5" />
                 Refresh
-              </button>
-              <button
+              </Button>
+              <Button
+                variant="danger-ghost"
+                size="xs"
+                icon={LogOut}
                 onClick={handleDisconnect}
-                className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-rose-400 rounded-md hover:bg-background-dark transition-colors"
                 data-testid="cloud-disconnect-button"
               >
-                <LogOut className="w-3.5 h-3.5" />
                 Disconnect
-              </button>
+              </Button>
             </div>
-          </div>
+          </Card>
 
           {/* Device Discovery List */}
           <DeviceListSection />
@@ -610,14 +607,13 @@ export const CloudTab: React.FC = () => {
             </p>
           </div>
 
-          <button
+          <Button
+            icon={ExternalLink}
             onClick={handleSignIn}
-            className="inline-flex items-center gap-2 px-5 py-2.5 bg-primary text-white rounded-lg font-medium text-sm hover:bg-primary/90 transition-colors"
             data-testid="cloud-sign-in-button"
           >
-            <ExternalLink className="w-4 h-4" />
             Sign in with CrewlyAI
-          </button>
+          </Button>
         </Card>
       )}
     </div>

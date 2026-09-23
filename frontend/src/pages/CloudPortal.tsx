@@ -22,7 +22,6 @@ import {
   Rocket,
   CheckCircle2,
   AlertCircle,
-  Loader2,
   MessageSquare,
   Server,
   Globe,
@@ -35,7 +34,8 @@ import {
   Cpu,
   Wifi,
 } from 'lucide-react';
-import { Button } from '@crewly/ui';
+import { Badge, Button, EmptyState, FormInput, IconButton, StatusDot } from '@crewly/ui';
+import type { BadgeVariant, DotStatus } from '@crewly/ui';
 import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
@@ -141,13 +141,13 @@ const DEVICE_STATE_LABELS: Record<string, string> = {
   offline: 'Offline',
 };
 
-/** Map device state to dot color CSS class. */
-const DEVICE_STATE_COLORS: Record<string, string> = {
-  waiting: 'bg-yellow-400',
-  paired: 'bg-emerald-400',
-  disconnected: 'bg-gray-500',
-  online: 'bg-emerald-400',
-  offline: 'bg-gray-500',
+/** Map device state to the shared StatusDot status. */
+const DEVICE_STATE_DOTS: Record<string, DotStatus> = {
+  waiting: 'waiting',
+  paired: 'paired',
+  disconnected: 'disconnected',
+  online: 'online',
+  offline: 'offline',
 };
 
 /**
@@ -209,16 +209,16 @@ function deduplicateDevices(devices: CloudDevice[]): CloudDevice[] {
 }
 
 /**
- * Get plan badge color class.
+ * Get the plan badge variant.
  *
  * @param plan - Plan name string
- * @returns Tailwind CSS class string for the badge
+ * @returns Badge variant for the plan
  */
-const getPlanBadgeClass = (plan: string): string => {
+const getPlanBadgeVariant = (plan: string): BadgeVariant => {
   switch (plan) {
-    case 'pro': return 'bg-primary/10 text-primary border-primary/30';
-    case 'enterprise': return 'bg-amber-500/10 text-amber-400 border-amber-500/30';
-    default: return 'bg-gray-500/10 text-gray-400 border-gray-500/30';
+    case 'pro': return 'primary';
+    case 'enterprise': return 'warning';
+    default: return 'default';
   }
 };
 
@@ -235,14 +235,14 @@ const getPlanBadgeClass = (plan: string): string => {
 const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
   const Icon = device.role === 'orchestrator' ? Monitor : Cpu;
   const deviceStatus = device.status || device.state || 'disconnected';
-  const stateColor = DEVICE_STATE_COLORS[deviceStatus] ?? 'bg-gray-500';
+  const stateDot = DEVICE_STATE_DOTS[deviceStatus] ?? 'disconnected';
   const stateLabel = DEVICE_STATE_LABELS[deviceStatus] ?? deviceStatus;
   const displayName = device.name || device.deviceName || (device.sessionId ? `${device.role || 'device'} (${device.sessionId.slice(0, 8)}...)` : device.deviceId || 'Unknown');
 
   return (
     <div
       data-testid={`cloud-device-${device.sessionId || device.deviceId}`}
-      className={`flex items-center justify-between p-3 rounded-lg border transition-colors ${
+      className={`flex items-center justify-between p-3 rounded-2xl border transition-colors ${
         device.isLocal
           ? 'border-primary/30 bg-primary/5'
           : 'border-border-dark bg-background-dark hover:border-border-dark/80'
@@ -258,9 +258,9 @@ const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
               {displayName}
             </span>
             {device.isLocal && (
-              <span className="text-[10px] font-medium px-1.5 py-0.5 rounded bg-primary/10 text-primary whitespace-nowrap">
+              <Badge variant="primary" className="whitespace-nowrap">
                 This machine
-              </span>
+              </Badge>
             )}
           </div>
           <span className="text-xs text-text-secondary-dark">
@@ -270,7 +270,7 @@ const DeviceCard: React.FC<{ device: CloudDevice }> = ({ device }) => {
       </div>
 
       <div className="flex items-center gap-1.5 ml-3 whitespace-nowrap">
-        <span className={`h-2 w-2 rounded-full ${stateColor}`} />
+        <StatusDot status={stateDot} size="sm" pulse={false} />
         <span className="text-xs text-text-secondary-dark">{stateLabel}</span>
       </div>
     </div>
@@ -357,7 +357,7 @@ const DeviceListSection: React.FC = () => {
   );
 
   return (
-    <div className="bg-surface-dark border border-border-dark rounded-xl p-6 space-y-3" data-testid="cloud-device-list-section">
+    <Card padding="lg" className="space-y-3" data-testid="cloud-device-list-section">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Wifi className="w-4 h-4 text-text-secondary-dark" />
@@ -366,29 +366,22 @@ const DeviceListSection: React.FC = () => {
             ({uniqueDevices.length})
           </span>
           {syncState && (
-            <span
+            <Badge
               data-testid="sync-state-badge"
-              className={`text-[10px] font-medium px-1.5 py-0.5 rounded ${
-                syncState === 'syncing'
-                  ? 'bg-emerald-500/10 text-emerald-400'
-                  : syncState === 'error'
-                  ? 'bg-rose-500/10 text-rose-400'
-                  : 'bg-gray-500/10 text-gray-400'
-              }`}
+              variant={syncState === 'syncing' ? 'success' : syncState === 'error' ? 'error' : 'default'}
             >
               {syncState === 'syncing' ? 'Sync Active' : syncState === 'error' ? 'Sync Error' : 'Sync Off'}
-            </span>
+            </Badge>
           )}
         </div>
-        <button
+        <IconButton
+          icon={RefreshCw}
+          size="xs"
           onClick={fetchDevices}
-          disabled={loading}
-          className="p-1.5 text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors disabled:opacity-50"
+          loading={loading}
           aria-label="Refresh devices"
           data-testid="refresh-devices-button"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+        />
       </div>
 
       {error && (
@@ -404,13 +397,12 @@ const DeviceListSection: React.FC = () => {
       )}
 
       {!loading && !error && !tokenExpired && uniqueDevices.length === 0 && (
-        <div className="text-center py-6">
-          <Monitor className="w-8 h-8 text-text-secondary-dark/30 mx-auto mb-2" />
-          <p className="text-xs text-text-secondary-dark">No devices connected yet</p>
-          <p className="text-[11px] text-text-secondary-dark/60 mt-0.5">
-            Connect from another machine using <code className="text-primary/80">crewly cloud connect</code>
-          </p>
-        </div>
+        <EmptyState
+          compact
+          icon={Monitor}
+          title="No devices connected yet"
+          description={<>Connect from another machine using <code className="text-primary/80">crewly cloud connect</code></>}
+        />
       )}
 
       {uniqueDevices.length > 0 && (
@@ -420,7 +412,7 @@ const DeviceListSection: React.FC = () => {
           ))}
         </div>
       )}
-    </div>
+    </Card>
   );
 };
 
@@ -472,7 +464,7 @@ const BROWSER_INSTANCE_STATUS_STYLES: Record<
   },
   offline: {
     textClass: 'text-text-secondary-dark',
-    dotClass: 'bg-gray-500',
+    dotClass: 'bg-text-secondary-dark/50',
     label: 'Offline',
   },
 };
@@ -526,8 +518,8 @@ const BrowserExtensionsSection: React.FC = () => {
   }, [fetchInstances]);
 
   return (
-    <div
-      className="rounded-xl border border-border-dark bg-surface-dark p-5"
+    <Card
+      padding="lg"
       data-testid="browser-extensions-section"
     >
       <div className="flex items-center justify-between mb-4">
@@ -536,48 +528,39 @@ const BrowserExtensionsSection: React.FC = () => {
           <h3 className="text-sm font-semibold text-text-primary-dark">
             Browser Extensions
           </h3>
-          <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium ${
-            proxyConnected
-              ? 'bg-emerald-500/10 text-emerald-400'
-              : 'bg-amber-500/10 text-amber-400'
-          }`}>
+          <Badge variant={proxyConnected ? 'success' : 'warning'}>
             {proxyConnected ? 'Relay Connected' : 'Relay Offline'}
-          </span>
+          </Badge>
         </div>
-        <button
+        <IconButton
+          icon={RefreshCw}
+          size="xs"
           onClick={() => { setLoading(true); fetchInstances(); }}
-          className="text-text-secondary-dark hover:text-text-primary-dark p-1 rounded hover:bg-background-dark transition-colors"
+          loading={loading}
           title="Refresh"
-        >
-          <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-        </button>
+          aria-label="Refresh"
+        />
       </div>
 
       {loading ? (
-        <div className="flex items-center gap-2 text-text-secondary-dark py-3">
-          <Loader2 className="h-4 w-4 animate-spin" />
-          <span className="text-xs">Loading...</span>
-        </div>
+        <LoadingSpinner size="xs" text="Loading..." centered={false} className="py-3" />
       ) : instances.length === 0 ? (
-        <div className="text-center py-6">
-          <Monitor className="h-8 w-8 text-text-secondary-dark mx-auto mb-2 opacity-40" />
-          <p className="text-xs text-text-secondary-dark">
-            No browser extensions connected
-          </p>
-          <p className="text-[10px] text-text-secondary-dark mt-1 opacity-60">
-            Install Crewly in Chrome and sign in to connect
-          </p>
-        </div>
+        <EmptyState
+          compact
+          icon={Monitor}
+          title="No browser extensions connected"
+          description="Install Crewly in Chrome and sign in to connect"
+        />
       ) : (
         <div className="space-y-2">
           {instances.map((inst) => (
             <div
               key={inst.instanceId}
-              className="flex items-center justify-between rounded-lg border border-border-dark bg-background-dark px-4 py-3"
+              className="flex items-center justify-between rounded-2xl border border-border-dark bg-background-dark px-4 py-3"
             >
               <div className="flex items-center gap-3">
-                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-indigo-500/10">
-                  <Globe className="h-4 w-4 text-indigo-400" />
+                <div className="flex items-center justify-center w-8 h-8 rounded-full bg-primary/10">
+                  <Globe className="h-4 w-4 text-primary" />
                 </div>
                 <div>
                   <p className="text-sm font-medium text-text-primary-dark">
@@ -600,7 +583,7 @@ const BrowserExtensionsSection: React.FC = () => {
           ))}
         </div>
       )}
-    </div>
+    </Card>
   );
 };
 
@@ -969,14 +952,14 @@ export const CloudPortal: React.FC = () => {
               </p>
             </div>
 
-            <button
+            <Button
+              variant="primary"
+              icon={ExternalLink}
               onClick={handleSignIn}
-              className="inline-flex items-center gap-2 px-6 py-3 bg-primary text-white rounded-lg font-medium text-sm hover:bg-primary/90 transition-colors"
               data-testid="cloud-sign-in-button"
             >
-              <ExternalLink className="w-4 h-4" />
               Sign in with CrewlyAI
-            </button>
+            </Button>
           </Card>
         )}
 
@@ -986,8 +969,9 @@ export const CloudPortal: React.FC = () => {
         {isConnected && (
           <>
             {/* Connection Status + User Info Card */}
-            <div
-              className="mb-6 rounded-xl border border-border-dark bg-surface-dark p-6"
+            <Card
+              padding="lg"
+              className="mb-6"
               data-testid="connection-card"
             >
               <div className="flex items-center justify-between">
@@ -1011,9 +995,9 @@ export const CloudPortal: React.FC = () => {
                         {cloudUser ? (cloudUser.name || cloudUser.email) : 'CrewlyAI Cloud'}
                       </span>
                       <Check className="w-4 h-4 text-emerald-400" />
-                      <span className={`px-2 py-0.5 text-xs font-medium rounded border ${getPlanBadgeClass(resolvedPlan)} capitalize`}>
+                      <Badge variant={getPlanBadgeVariant(resolvedPlan)} className="capitalize">
                         {resolvedPlan}
-                      </span>
+                      </Badge>
                     </div>
                     <span className="text-xs text-text-secondary-dark">
                       {cloudUser ? cloudUser.email : 'Connected via backend'}
@@ -1040,25 +1024,27 @@ export const CloudPortal: React.FC = () => {
 
               {/* Action buttons */}
               <div className="flex items-center gap-2 pt-4 mt-4 border-t border-border-dark">
-                <button
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  icon={RefreshCw}
                   onClick={handleRefresh}
-                  disabled={isLoading}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-text-primary-dark rounded-md hover:bg-background-dark transition-colors disabled:opacity-50"
+                  loading={isLoading}
                   data-testid="refresh-connection-button"
                 >
-                  <RefreshCw className={`w-3.5 h-3.5 ${isLoading ? 'animate-spin' : ''}`} />
                   Refresh
-                </button>
-                <button
+                </Button>
+                <Button
+                  variant="danger-ghost"
+                  size="xs"
+                  icon={LogOut}
                   onClick={handleDisconnect}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-text-secondary-dark hover:text-rose-400 rounded-md hover:bg-background-dark transition-colors"
                   data-testid="cloud-disconnect-button"
                 >
-                  <LogOut className="w-3.5 h-3.5" />
                   Disconnect
-                </button>
+                </Button>
               </div>
-            </div>
+            </Card>
 
             {/* Connected Devices */}
             <div className="mb-6">
@@ -1097,13 +1083,12 @@ export const CloudPortal: React.FC = () => {
                       >
                         Team Name
                       </label>
-                      <input
+                      <FormInput
                         id="team-name"
                         type="text"
                         value={teamName}
                         onChange={(e) => setTeamName(e.target.value)}
                         placeholder="e.g. marketing-team"
-                        className="w-full rounded-lg border border-border-dark bg-background-dark px-3 py-2 text-sm text-text-primary-dark placeholder:text-text-secondary-dark focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary"
                         data-testid="team-name-input"
                       />
                     </div>
@@ -1119,17 +1104,17 @@ export const CloudPortal: React.FC = () => {
 
                     <Button
                       variant="primary"
+                      icon={Rocket}
                       onClick={handleDeploy}
                       disabled={!teamName.trim()}
                       data-testid="deploy-btn"
                     >
-                      <Rocket className="mr-2 h-4 w-4" />
                       Deploy Team
                     </Button>
                   </div>
                 ) : deployPhase === 'deploying' ? (
                   <div className="flex flex-col items-center py-8" data-testid="deploying-state">
-                    <Loader2 className="h-10 w-10 animate-spin text-primary mb-4" />
+                    <LoadingSpinner size="lg" className="mb-4" />
                     <h3 className="text-lg font-semibold text-text-primary-dark">
                       Deploying your team...
                     </h3>
@@ -1155,10 +1140,10 @@ export const CloudPortal: React.FC = () => {
                     <Button
                       variant="primary"
                       className="mt-4"
+                      icon={MessageSquare}
                       onClick={() => navigate('/chat')}
                       data-testid="open-chat-btn"
                     >
-                      <MessageSquare className="mr-2 h-4 w-4" />
                       Open Team Chat
                     </Button>
                   </div>
@@ -1195,10 +1180,7 @@ export const CloudPortal: React.FC = () => {
               </h2>
 
               {deploymentsLoading ? (
-                <div className="flex items-center gap-2 text-text-secondary-dark py-4">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Loading deployments...
-                </div>
+                <LoadingSpinner size="xs" text="Loading deployments..." centered={false} className="py-4" />
               ) : readyDeployments.length === 0 ? (
                 <p className="text-sm text-text-secondary-dark py-4">
                   No deployed teams yet. {isPaid ? 'Deploy your first team above!' : 'Upgrade to a paid plan to deploy teams.'}
@@ -1226,9 +1208,9 @@ export const CloudPortal: React.FC = () => {
                         variant="primary"
                         size="sm"
                         onClick={() => navigate('/chat')}
+                        icon={MessageSquare}
                         data-testid={`chat-btn-${dep.deploymentId}`}
                       >
-                        <MessageSquare className="mr-1 h-3 w-3" />
                         Chat
                       </Button>
                     </div>

@@ -124,11 +124,11 @@ describe('CloudBar', () => {
     expect(bar.className).toContain('red');
   });
 
-  it('should apply grey/zinc styling for offline state', () => {
+  it('should apply neutral (secondary-text token) styling for offline state', () => {
     setRelayState('offline');
     render(<CloudBar />);
     const bar = screen.getByTestId('cloud-bar');
-    expect(bar.className).toContain('zinc');
+    expect(bar.className).toContain('text-secondary-dark');
   });
 
   it('should apply pulse animation for paired state dot', () => {

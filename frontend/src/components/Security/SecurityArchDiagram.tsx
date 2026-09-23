@@ -35,7 +35,7 @@ const PILLAR_TABS = [
 /** Tab active color per pillar */
 const TAB_COLORS: Record<PillarId, { active: string; indicator: string }> = {
   pty: { active: 'border-blue-500 text-blue-400', indicator: 'bg-blue-500' },
-  storage: { active: 'border-purple-500 text-purple-400', indicator: 'bg-purple-500' },
+  storage: { active: 'border-emerald-500 text-emerald-400', indicator: 'bg-emerald-500' },
   approval: { active: 'border-pink-500 text-pink-400', indicator: 'bg-pink-500' },
 };
 
@@ -44,7 +44,7 @@ const TAB_COLORS: Record<PillarId, { active: string; indicator: string }> = {
 /** Agent data for PTY isolation visualization */
 const PTY_AGENTS = [
   { name: 'Sam', role: 'TL', fs: '/sam', pid: 201, color: 'border-blue-500 bg-blue-500/5' },
-  { name: 'Leo', role: 'Dev', fs: '/leo', pid: 202, color: 'border-purple-500 bg-purple-500/5' },
+  { name: 'Leo', role: 'Dev', fs: '/leo', pid: 202, color: 'border-emerald-500 bg-emerald-500/5' },
   { name: 'Ava', role: 'UX', fs: '/ava', pid: 203, color: 'border-pink-500 bg-pink-500/5' },
 ] as const;
 
@@ -70,19 +70,19 @@ const PtyIsolationDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
           className={`rounded-lg border-2 p-4 ${agent.color} transition-all duration-300`}
           data-testid={`pty-agent-${agent.name.toLowerCase()}`}
         >
-          <div className="font-mono text-sm text-zinc-300 mb-2">
+          <div className="font-mono text-sm text-text-primary-dark mb-2">
             PTY #{agent.pid}
           </div>
           <div className="flex items-center gap-2 mb-3">
-            <div className="w-8 h-8 rounded-full bg-zinc-700 flex items-center justify-center text-xs font-bold text-zinc-200">
+            <div className="w-8 h-8 rounded-full bg-border-dark flex items-center justify-center text-xs font-bold text-text-primary-dark">
               {agent.name[0]}
             </div>
             <div>
-              <div className="text-sm font-semibold text-zinc-200">{agent.name}</div>
-              <div className="text-xs text-zinc-500">({agent.role})</div>
+              <div className="text-sm font-semibold text-text-primary-dark">{agent.name}</div>
+              <div className="text-xs text-text-secondary-dark">({agent.role})</div>
             </div>
           </div>
-          <div className="space-y-1 font-mono text-xs text-zinc-500">
+          <div className="space-y-1 font-mono text-xs text-text-secondary-dark">
             <div>fs: {agent.fs}</div>
             <div>pid: {agent.pid}</div>
           </div>
@@ -108,7 +108,7 @@ const PtyIsolationDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
 const STORAGE_CATEGORIES = [
   { label: 'Agent Memory', color: 'bg-emerald-500/10 border-emerald-500/30' },
   { label: 'Conversations', color: 'bg-blue-500/10 border-blue-500/30' },
-  { label: 'Project Knowl.', color: 'bg-purple-500/10 border-purple-500/30' },
+  { label: 'Project Knowl.', color: 'bg-amber-500/10 border-amber-500/30' },
 ] as const;
 
 /**
@@ -119,11 +119,11 @@ const LocalStorageDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
   <div className={`space-y-4 transition-opacity duration-300 ${isTransitioning ? 'opacity-0' : 'opacity-100'}`}>
     {/* Data flow label */}
     <div className="flex items-center gap-2 mb-2">
-      <div className="h-px flex-1 bg-gradient-to-r from-purple-500/50 to-transparent" />
-      <span className="text-xs font-mono text-purple-400 uppercase tracking-wider" data-testid="flow-label-storage">
+      <div className="h-px flex-1 bg-gradient-to-r from-emerald-500/50 to-transparent" />
+      <span className="text-xs font-mono text-emerald-400 uppercase tracking-wider" data-testid="flow-label-storage">
         Data Sovereignty Flow
       </span>
-      <div className="h-px flex-1 bg-gradient-to-l from-purple-500/50 to-transparent" />
+      <div className="h-px flex-1 bg-gradient-to-l from-emerald-500/50 to-transparent" />
     </div>
 
     <div className="rounded-lg border-2 border-emerald-500/30 bg-emerald-500/5 p-6">
@@ -134,24 +134,24 @@ const LocalStorageDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
         {STORAGE_CATEGORIES.map((cat) => (
           <div
             key={cat.label}
-            className={`rounded border p-3 text-center text-sm text-zinc-300 ${cat.color}`}
+            className={`rounded border p-3 text-center text-sm text-text-primary-dark ${cat.color}`}
           >
             {cat.label}
           </div>
         ))}
       </div>
-      <div className="space-y-1 text-xs text-zinc-400">
+      <div className="space-y-1 text-xs text-text-secondary-dark">
         <div>All data encrypted at rest</div>
         <div>Zero cloud dependencies</div>
       </div>
     </div>
-    <div className="flex items-center justify-center gap-3 py-2 px-4 rounded bg-zinc-800 border border-zinc-700">
-      <span className="text-zinc-500 text-lg" aria-hidden="true">&#9729;</span>
-      <span className="text-sm text-zinc-400">Cloud</span>
-      <span className="text-xs text-zinc-600 font-mono">&larr; NO CONNECTION &rarr;</span>
+    <div className="flex items-center justify-center gap-3 py-2 px-4 rounded bg-background-dark border border-border-dark">
+      <span className="text-text-secondary-dark text-lg" aria-hidden="true">&#9729;</span>
+      <span className="text-sm text-text-secondary-dark">Cloud</span>
+      <span className="text-xs text-text-secondary-dark/60 font-mono">&larr; NO CONNECTION &rarr;</span>
       <span className="text-red-400" aria-hidden="true">&#10007;</span>
     </div>
-    <p className="text-sm text-zinc-400 text-center italic">
+    <p className="text-sm text-text-secondary-dark text-center italic">
       &ldquo;Your conversations, agent memory, and project knowledge never leave this machine.&rdquo;
     </p>
   </div>
@@ -201,24 +201,24 @@ const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
       </div>
 
       {/* Approval prompt */}
-      <Card variant="outlined" padding="lg" className="bg-zinc-900">
-        <div className="text-sm text-zinc-400 mb-3">
+      <Card variant="outlined" padding="lg" className="bg-surface-dark">
+        <div className="text-sm text-text-secondary-dark mb-3">
           Agent &ldquo;Sam&rdquo; wants to execute:
         </div>
-        <div className="font-mono text-sm text-zinc-200 bg-zinc-800 rounded px-3 py-2 mb-3">
+        <div className="font-mono text-sm text-text-primary-dark bg-background-dark rounded px-3 py-2 mb-3">
           $ git push --force origin main
         </div>
         <div className="flex items-center gap-2 mb-3">
           <span className="text-xs font-medium uppercase tracking-wide text-red-400">
             Risk Level:
           </span>
-          <div className="flex-1 h-2 rounded-full bg-zinc-700 overflow-hidden">
+          <div className="flex-1 h-2 rounded-full bg-border-dark overflow-hidden">
             <div className="h-full w-full bg-red-500 rounded-full" />
           </div>
           <span className="text-xs font-bold text-red-400">HIGH</span>
         </div>
-        <div className="text-xs text-zinc-400 mb-4 space-y-1">
-          <div className="font-medium text-zinc-300">Why flagged:</div>
+        <div className="text-xs text-text-secondary-dark mb-4 space-y-1">
+          <div className="font-medium text-text-primary-dark">Why flagged:</div>
           <div>&bull; Destructive operation (--force)</div>
           <div>&bull; Targets protected branch (main)</div>
           <div>&bull; Cannot be undone</div>
@@ -255,18 +255,18 @@ const ToolApprovalDiagram: React.FC<{ isTransitioning: boolean }> = ({ isTransit
       </Card>
 
       {/* Permission matrix */}
-      <Card variant="outlined" padding="md" className="bg-zinc-900">
-        <div className="text-sm font-semibold text-zinc-300 mb-3">Permission Matrix:</div>
+      <Card variant="outlined" padding="md" className="bg-surface-dark">
+        <div className="text-sm font-semibold text-text-primary-dark mb-3">Permission Matrix:</div>
         <div className="space-y-2" role="list" aria-label="Permission matrix">
           {PERMISSION_ROWS.map((row) => (
             <div
               key={row.tool}
-              className="flex items-center justify-between text-sm py-1 px-2 rounded hover:bg-zinc-800 transition-colors"
+              className="flex items-center justify-between text-sm py-1 px-2 rounded hover:bg-background-dark transition-colors"
               role="listitem"
             >
-              <span className="font-mono text-zinc-400">{row.tool}</span>
+              <span className="font-mono text-text-secondary-dark">{row.tool}</span>
               <span className="flex items-center gap-2 text-xs">
-                <span className="text-zinc-600" aria-hidden="true">
+                <span className="text-text-secondary-dark/60" aria-hidden="true">
                   {'·'.repeat(12)}
                 </span>
                 <span className={`flex items-center gap-1 ${row.color}`}>
@@ -338,13 +338,13 @@ export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ active
       data-testid="security-arch-diagram"
     >
       {/* Machine boundary header */}
-      <div className="text-xs font-mono text-zinc-500 mb-4 uppercase tracking-wider">
+      <div className="text-xs font-mono text-text-secondary-dark mb-4 uppercase tracking-wider">
         Your Machine
       </div>
 
       {/* Interactive pillar tabs */}
       <div
-        className="flex gap-1 mb-6 border-b border-zinc-800 -mx-2 px-2"
+        className="flex gap-1 mb-6 border-b border-border-dark -mx-2 px-2"
         role="tablist"
         aria-label="Security pillar selector"
         data-testid="pillar-tabs"
@@ -363,7 +363,7 @@ export const SecurityArchDiagram: React.FC<SecurityArchDiagramProps> = ({ active
               className={`flex items-center gap-1.5 px-3 py-2 text-xs font-medium border-b-2 transition-colors ${
                 isActive
                   ? colors.active
-                  : 'border-transparent text-zinc-500 hover:text-zinc-300'
+                  : 'border-transparent text-text-secondary-dark hover:text-text-primary-dark'
               }`}
               data-testid={`tab-${id}`}
             >

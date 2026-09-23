@@ -49,7 +49,7 @@ const COMPARISONS: ComparisonItem[] = [
 export const ComparisonStrip: React.FC = () => {
   return (
     <div
-      className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-0 md:divide-x md:divide-zinc-700"
+      className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-0 md:divide-x md:divide-border-dark"
       data-testid="comparison-strip"
       role="list"
       aria-label="Security comparison: Crewly vs traditional platforms"
@@ -62,16 +62,16 @@ export const ComparisonStrip: React.FC = () => {
         >
           <Card variant="outlined" padding="md" className="md:rounded-none md:border-0 md:bg-transparent md:p-0">
             {/* Category header */}
-            <div className="text-sm font-semibold text-zinc-200 mb-3">
+            <div className="text-sm font-semibold text-text-primary-dark mb-3">
               {item.category}
             </div>
 
             {/* Others (traditional) */}
             <div className="flex items-start gap-2 mb-2">
-              <span className="text-zinc-600 text-xs mt-0.5" aria-hidden="true">&#9679;</span>
+              <span className="text-text-secondary-dark/60 text-xs mt-0.5" aria-hidden="true">&#9679;</span>
               <div>
-                <span className="text-xs text-zinc-500 uppercase tracking-wide">Others: </span>
-                <span className="text-sm text-zinc-400">{item.others}</span>
+                <span className="text-xs text-text-secondary-dark uppercase tracking-wide">Others: </span>
+                <span className="text-sm text-text-secondary-dark">{item.others}</span>
               </div>
             </div>
 
