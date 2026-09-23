@@ -150,6 +150,12 @@ export const BROWSER_BRIDGE_CONSTANTS = {
 	TAB_BIND_SWEEP_MS: 5 * 60 * 1000,
 	/** Default tabId on a 503 retry hint (milliseconds the skill should back off). */
 	TAB_BIND_RETRY_AFTER_MS: 30000,
+	/**
+	 * Logged reason when tab-inventory reconcile closes a tab: this backend
+	 * created it and no agent has it bound any more. Reconcile never closes a
+	 * Crewly tab this backend did not create (it may be another client's).
+	 */
+	RECONCILE_CLOSE_REASON_OWN_UNBOUND: 'own_unbound_tab',
 } as const;
 
 /**
