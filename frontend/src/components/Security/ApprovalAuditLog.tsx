@@ -19,10 +19,10 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import type { ApprovalEvent, ApprovalOutcome, ApprovalLogFilter } from '../../hooks/useApprovalLog';
-import { Card } from '../UI/Card';
-import { Button } from '../UI/Button';
-import { Badge } from '../UI/Badge';
-import type { BadgeVariant } from '../UI/Badge';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
+import { Badge } from '@crewly/ui/Badge';
+import type { BadgeVariant } from '@crewly/ui/Badge';
 
 /** Props for ApprovalAuditLog */
 export interface ApprovalAuditLogProps {

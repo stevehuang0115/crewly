@@ -18,9 +18,9 @@
 
 import React, { useState, useCallback, useMemo } from 'react';
 import { Zap, X, Check, ArrowRight } from 'lucide-react';
-import { Modal } from '../UI/Modal.js';
-import { Button } from '../UI/Button.js';
-import { Badge } from '../UI/Badge.js';
+import { Modal } from '@crewly/ui/Modal';
+import { Button } from '@crewly/ui/Button';
+import { Badge } from '@crewly/ui/Badge';
 import type {
   TrialLimitEvent,
   LimitType,

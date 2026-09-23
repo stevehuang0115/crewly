@@ -5,7 +5,7 @@ import { Project } from '../../types';
 import { FileTreeNode } from './types';
 
 // Mock the Button component
-vi.mock('../UI', () => ({
+vi.mock('@crewly/ui', () => ({
   Button: ({ children, onClick, icon: Icon, ...props }: any) => (
     <button onClick={onClick} data-testid="mock-button" {...props}>
       {Icon && <span data-testid="button-icon" />}

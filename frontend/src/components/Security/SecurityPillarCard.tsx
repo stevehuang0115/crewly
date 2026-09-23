@@ -10,8 +10,8 @@
 
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Button } from '../UI/Button';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
 
 /** Pillar identifier for the three security pillars */
 export type PillarId = 'pty' | 'storage' | 'approval';

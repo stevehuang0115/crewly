@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { useAlert } from '../UI/Dialog';
-import { FormPopup, FormGroup, FormLabel, FormInput, FormTextarea, FormRow, Dropdown } from '../UI';
+import { useAlert } from '@crewly/ui/Dialog';
+import { FormPopup, FormGroup, FormLabel, FormInput, FormTextarea, FormRow, Dropdown } from '@crewly/ui';
 import { TaskCreateModalProps, TaskCreateFormData } from './types';
 
 const TaskCreateModal: React.FC<TaskCreateModalProps> = ({ onClose, onSubmit }) => {

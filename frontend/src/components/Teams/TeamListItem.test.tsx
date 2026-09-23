@@ -11,7 +11,7 @@ import { TeamListItem } from './TeamListItem';
 import type { Team } from '@/types';
 
 // Render the overflow menu items as buttons so item wiring is testable.
-vi.mock('@/components/UI/OverflowMenu', () => ({
+vi.mock('@crewly/ui/OverflowMenu', () => ({
   OverflowMenu: ({ items = [] }: { items?: Array<{ label: string; onClick?: () => void }> }) => (
     <div data-testid="overflow-menu">
       {items.map((item) => (

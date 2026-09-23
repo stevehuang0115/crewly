@@ -20,7 +20,7 @@ vi.mock('lucide-react', () => ({
 
 // Mock OverflowMenu to capture items
 let capturedMenuItems: any[] = [];
-vi.mock('@/components/UI/OverflowMenu', () => ({
+vi.mock('@crewly/ui/OverflowMenu', () => ({
   OverflowMenu: ({ items }: any) => {
     capturedMenuItems = items;
     return (

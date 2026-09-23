@@ -9,8 +9,8 @@
 
 import React from 'react';
 import { CheckCircle2, Circle, ArrowRight } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Button } from '../UI/Button';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
 
 // =============================================================================
 // Types

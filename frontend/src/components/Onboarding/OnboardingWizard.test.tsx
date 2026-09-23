@@ -46,7 +46,7 @@ vi.mock('./StepLaunchProject', () => ({
 }));
 
 // Mock Modal to render children directly
-vi.mock('../UI/Modal', () => ({
+vi.mock('@crewly/ui/Modal', () => ({
   Modal: ({ isOpen, children }: any) => isOpen ? <div data-testid="mock-modal">{children}</div> : null,
 }));
 

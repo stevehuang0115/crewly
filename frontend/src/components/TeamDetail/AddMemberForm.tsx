@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
-import { Button } from '../UI/Button';
+import { Button } from '@crewly/ui/Button';
 import { AddMemberFormProps, NewMember } from './types';
 
 export const AddMemberForm: React.FC<AddMemberFormProps> = ({

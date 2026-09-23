@@ -7,7 +7,7 @@ import 'xterm/css/xterm.css';
 import { useNavigate } from 'react-router-dom';
 import { useTerminal } from '../../contexts/TerminalContext';
 import { webSocketService } from '../../services/websocket.service';
-import { Button, IconButton } from '../UI';
+import { Button, IconButton } from '@crewly/ui';
 
 interface TerminalSession {
   id: string;

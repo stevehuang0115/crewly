@@ -11,7 +11,7 @@
 import React, { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { CLOUD_TOKEN_KEY } from '../constants/cloud.constants';
-import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 /**
  * AuthCallback component that processes the OAuth redirect.

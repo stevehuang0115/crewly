@@ -19,7 +19,7 @@ import type {
 } from './request-tracking.types';
 import { computeRequestStats } from './request-tracking.types';
 import { RequestRow } from './RequestRow';
-import { SkeletonRows } from '../UI/SkeletonRows';
+import { SkeletonRows } from '@crewly/ui/SkeletonRows';
 import { apiService } from '../../services/api.service';
 
 // =============================================================================

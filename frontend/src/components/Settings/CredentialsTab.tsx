@@ -37,12 +37,12 @@ import {
   GoogleScopePreset,
   GMAIL_ONLY_SCOPES,
 } from '../../types/credential.types';
-import { Alert } from '../UI/Alert';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Modal } from '../UI/Modal';
-import { FormInput, FormLabel } from '../UI/Form';
-import { ConfirmDialog } from '../UI/ConfirmDialog';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Modal } from '@crewly/ui/Modal';
+import { FormInput, FormLabel } from '@crewly/ui/Form';
+import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 
 // ============================================================================
 // Types

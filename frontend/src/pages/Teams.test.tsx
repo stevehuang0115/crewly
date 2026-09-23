@@ -36,7 +36,7 @@ vi.mock('../services/websocket.service', () => ({
 }));
 
 // Mock useAlert
-vi.mock('../components/UI/Dialog', () => ({
+vi.mock('@crewly/ui/Dialog', () => ({
   useAlert: () => ({
     showError: vi.fn(),
     AlertComponent: () => null,

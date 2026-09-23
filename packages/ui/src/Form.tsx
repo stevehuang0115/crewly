@@ -88,7 +88,7 @@ export const FormInput: React.FC<FormInputProps> = ({
   ...props
 }) => (
   <input
-    className={`w-full bg-background-dark border border-border-dark rounded-lg shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 px-3 text-sm ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
+    className={`w-full bg-background-dark border border-border-dark rounded-2xl shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 px-3 text-sm ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
     {...props}
   />
 );
@@ -104,7 +104,7 @@ export const FormTextarea: React.FC<FormTextareaProps> = ({
   ...props
 }) => (
   <textarea
-    className={`w-full bg-background-dark border border-border-dark rounded-lg shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 px-3 text-sm resize-vertical ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
+    className={`w-full bg-background-dark border border-border-dark rounded-2xl shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 px-3 text-sm resize-vertical ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
     {...props}
   />
 );
@@ -122,7 +122,7 @@ export const FormSelect: React.FC<FormSelectProps> = ({
 }) => (
   <div className="relative w-full">
     <select
-      className={`w-full appearance-none bg-background-dark border border-border-dark rounded-lg shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 pl-3 pr-8 text-sm ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
+      className={`w-full appearance-none bg-background-dark border border-border-dark rounded-2xl shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 pl-3 pr-8 text-sm ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
       {...props}
     >
       {children}

@@ -114,7 +114,7 @@ const DebouncedSearch: React.FC<{
       <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-text-secondary-dark pointer-events-none" />
       <input
         type="text"
-        className="w-full bg-background-dark border border-border-dark rounded-lg pl-9 pr-3 py-2 text-sm text-text-primary-dark placeholder-text-secondary-dark focus:outline-none focus:border-accent-blue/50"
+        className="w-full bg-background-dark border border-border-dark rounded-2xl pl-9 pr-3 py-2 text-sm text-text-primary-dark placeholder-text-secondary-dark focus:outline-none focus:border-accent-blue/50"
         placeholder={placeholder}
         value={local}
         onChange={handleChange}
@@ -208,7 +208,7 @@ export const PageToolbar: React.FC<PageToolbarProps> = ({
                     title={mode.label}
                     onClick={() => onViewModeChange?.(mode.value)}
                     className={[
-                      'p-1.5 rounded transition-colors',
+                      'p-1.5 rounded-[0.5rem] transition-colors',
                       isActive
                         ? 'text-primary bg-primary/10'
                         : 'text-text-secondary-dark hover:text-text-primary-dark',

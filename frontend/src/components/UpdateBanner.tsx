@@ -9,7 +9,7 @@
 
 import React, { useState } from 'react';
 import { ArrowUpCircle, X } from 'lucide-react';
-import { IconButton } from './UI';
+import { IconButton } from '@crewly/ui';
 import { useVersionCheck } from '../hooks/useVersionCheck';
 
 /**

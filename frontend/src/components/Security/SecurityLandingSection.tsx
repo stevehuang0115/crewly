@@ -12,8 +12,8 @@ import { Shield, Database, CheckSquare } from 'lucide-react';
 import { SecurityPillarCard, type PillarId } from './SecurityPillarCard';
 import { SecurityArchDiagram } from './SecurityArchDiagram';
 import { ComparisonStrip } from './ComparisonStrip';
-import { Card } from '../UI/Card';
-import { Button } from '../UI/Button';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
 
 /** Pillar definitions matching spec section 2.1 */
 const PILLARS = [

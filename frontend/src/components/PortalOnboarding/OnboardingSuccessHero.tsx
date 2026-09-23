@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { CheckCircle2 } from 'lucide-react';
-import { Badge } from '../UI/Badge';
+import { Badge } from '@crewly/ui/Badge';
 
 // =============================================================================
 // Types

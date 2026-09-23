@@ -1,7 +1,7 @@
 import React from 'react';
 import { FolderOpen, Pin, PinOff } from 'lucide-react';
 import { Project, Team } from '@/types';
-import { OverflowMenu } from '@/components/UI/OverflowMenu';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 
 interface ProjectCardProps {
   project: Project;

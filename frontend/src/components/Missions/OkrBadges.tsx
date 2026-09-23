@@ -7,7 +7,7 @@
  */
 
 import React from 'react';
-import { Badge } from '../UI/Badge';
+import { Badge } from '@crewly/ui/Badge';
 import {
   LEVEL_LABEL,
   LEVEL_VARIANT,

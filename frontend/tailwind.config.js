@@ -1,3 +1,5 @@
+import crewlyPreset from "../packages/ui/tailwind-preset.cjs";
+
 /** @type {import('tailwindcss').Config} */
 export default {
   content: [
@@ -6,7 +8,11 @@ export default {
     // Shared chat-ui package (Max, Week 2) — utility classes live in source
     // files, not compiled CSS, so Tailwind must scan them to emit the classes.
     "../packages/chat-ui/src/**/*.{ts,tsx}",
+    // Shared design system (@crewly/ui) — same reason.
+    "../packages/ui/src/**/*.{ts,tsx}",
   ],
+  // Crewly's colors live in @crewly/ui so the Cloud portal uses the same ones.
+  presets: [crewlyPreset],
   darkMode: "class",
   theme: {
     fontFamily: {
@@ -16,14 +22,6 @@ export default {
       "mono": ["SFMono-Regular", "Menlo", "Monaco", "Consolas", "Liberation Mono", "Courier New", "monospace"]
     },
     extend: {
-      colors: {
-        "primary": "#2a73ea",
-        "background-dark": "#111721",
-        "surface-dark": "#1a222c",
-        "text-primary-dark": "#f6f7f8",
-        "text-secondary-dark": "#9ab0d9",
-        "border-dark": "#313a48",
-      },
       borderRadius: {
         "DEFAULT": "0.5rem",
         "lg": "1rem",

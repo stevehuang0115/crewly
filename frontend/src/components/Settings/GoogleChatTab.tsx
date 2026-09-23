@@ -12,11 +12,11 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Download, RefreshCw, Send, Unlink } from 'lucide-react';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Button } from '../UI/Button';
-import { FormInput, FormLabel, FormTextarea } from '../UI/Form';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { FormInput, FormLabel, FormTextarea } from '@crewly/ui/Form';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
 
 // =============================================================================
 // Types

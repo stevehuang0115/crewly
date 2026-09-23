@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 // =============================================================================
 // Types

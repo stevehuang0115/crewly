@@ -12,7 +12,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Check, Cloud } from 'lucide-react';
-import { Button } from '../components/UI';
+import { Button } from '@crewly/ui';
 import { useAuth } from '../contexts/AuthContext';
 import { buildCloudAuthRedirectUrl } from '../constants/cloud.constants';
 

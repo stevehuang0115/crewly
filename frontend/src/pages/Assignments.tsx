@@ -12,7 +12,7 @@ import {
   EnhancedTeamMember
 } from '../components/Assignments';
 import { EnhancedAssignmentsList } from '../components/Assignments/EnhancedAssignmentsList';
-import { useAlert, useConfirm } from '../components/UI/Dialog';
+import { useAlert, useConfirm } from '@crewly/ui/Dialog';
 
 export const Assignments: React.FC = () => {
   const { openTerminalWithSession } = useTerminal();

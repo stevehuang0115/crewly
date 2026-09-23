@@ -12,8 +12,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Inbox } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Badge } from '../UI/Badge';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
 import { LevelBadge } from './OkrBadges';
 import { ApprovalActions } from './ApprovalActions';
 import { apiService } from '../../services/api.service';

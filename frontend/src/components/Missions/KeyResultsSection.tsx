@@ -15,13 +15,13 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { BarChart3, Plus, Pencil, Trash2, Ruler, X, Save } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Badge } from '../UI/Badge';
-import { Button } from '../UI/Button';
-import { Input } from '../UI/Input';
-import { FormSelect } from '../UI/Form';
-import { Alert } from '../UI/Alert';
-import { ConfirmDialog } from '../UI/ConfirmDialog';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
+import { Input } from '@crewly/ui/Input';
+import { FormSelect } from '@crewly/ui/Form';
+import { Alert } from '@crewly/ui/Alert';
+import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 import { ProgressBar } from './OkrBadges';
 import { apiService } from '../../services/api.service';
 import {

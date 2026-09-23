@@ -17,10 +17,10 @@ import { PtyIsolationMap } from '../components/Security/PtyIsolationMap';
 import { ApprovalAuditLog } from '../components/Security/ApprovalAuditLog';
 import { DataSovereigntyReport } from '../components/Security/DataSovereigntyReport';
 import { SecurityScoreWidget } from '../components/Security/SecurityScoreWidget';
-import { Card } from '../components/UI/Card';
-import { StatusDot } from '../components/UI/StatusDot';
-import { LoadingSpinner } from '../components/UI/LoadingSpinner';
-import type { DotStatus } from '../components/UI/StatusDot';
+import { Card } from '@crewly/ui/Card';
+import { StatusDot } from '@crewly/ui/StatusDot';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import type { DotStatus } from '@crewly/ui/StatusDot';
 
 /** Status indicator labels */
 const STATUS_LABELS: Record<string, string> = {

@@ -58,7 +58,7 @@ vi.mock('@/components/Settings/CronJobPanel', () => ({
 }));
 
 // Mock LoadingSpinner
-vi.mock('@/components/UI/LoadingSpinner', () => ({
+vi.mock('@crewly/ui/LoadingSpinner', () => ({
   LoadingSpinner: ({ text }: { text: string }) => <div data-testid="loading">{text}</div>,
 }));
 

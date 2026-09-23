@@ -35,10 +35,10 @@ import {
   Cpu,
   Wifi,
 } from 'lucide-react';
-import { Button } from '../components/UI';
-import { Card } from '../components/UI/Card';
-import { Alert } from '../components/UI/Alert';
-import { LoadingSpinner } from '../components/UI/LoadingSpinner';
+import { Button } from '@crewly/ui';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService } from '../services/api.service';
 import { formatRelativeTimeCompact } from '../utils/time';

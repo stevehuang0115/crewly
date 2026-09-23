@@ -14,10 +14,10 @@
 
 import React, { useState } from 'react';
 import { Cloud, ExternalLink, RefreshCw, Unlink } from 'lucide-react';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
-import { Toggle } from '../UI/Toggle';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
+import { Toggle } from '@crewly/ui/Toggle';
 
 /** One agent app still needing its install click. */
 export interface SlackPendingInstall {

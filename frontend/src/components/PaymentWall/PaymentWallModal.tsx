@@ -11,8 +11,8 @@
 import React, { useState, useCallback } from 'react';
 import { Zap } from 'lucide-react';
 import axios from 'axios';
-import { Modal } from '../UI/Modal';
-import { Button } from '../UI/Button';
+import { Modal } from '@crewly/ui/Modal';
+import { Button } from '@crewly/ui/Button';
 import { UsageProgressBar } from './UsageProgressBar';
 import { PlanComparisonCard } from './PlanComparisonCard';
 import type { TrialLimitEvent, BillingInterval } from '../../types/payment-wall.types';

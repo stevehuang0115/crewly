@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useAlert, useConfirm } from '../../UI/Dialog';
+import { useAlert, useConfirm } from '@crewly/ui/Dialog';
 import { ScheduledMessage, ScheduledMessageFormData, MessageDeliveryLog, TeamOption, ScheduledCheck, DEFAULT_FORM_DATA } from '../types';
 
 export const useScheduledMessages = () => {

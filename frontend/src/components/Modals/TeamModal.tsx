@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { ChevronDown, ChevronRight, Plus, Check, X } from 'lucide-react';
-import { FormLabel, FormInput, FormSelect, Button } from '../UI';
-import { useAlert } from '../UI/Dialog';
+import { FormLabel, FormInput, FormSelect, Button } from '@crewly/ui';
+import { useAlert } from '@crewly/ui/Dialog';
 import { useRoles } from '../../hooks/useRoles';
 import { useProjects } from '../../hooks/useProjects';
 import { useTeams } from '../../hooks/useTeams';

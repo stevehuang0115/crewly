@@ -2,7 +2,7 @@ import React from 'react';
 import { Users, UserPlus, FolderOpen } from 'lucide-react';
 import { Team } from '../../types';
 import { TeamsViewProps } from './types';
-import { OverflowMenu } from '../UI/OverflowMenu';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 
 const TeamsView: React.FC<TeamsViewProps> = ({ 
   assignedTeams, 

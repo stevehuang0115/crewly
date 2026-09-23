@@ -8,8 +8,8 @@
  */
 
 import React from 'react';
-import { Alert } from '../UI/Alert';
-import { Button } from '../UI/Button';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
 import { useNavigate } from 'react-router-dom';
 
 // =============================================================================

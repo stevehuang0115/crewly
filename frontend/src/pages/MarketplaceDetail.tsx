@@ -16,7 +16,7 @@ import { fetchMarketplaceItem, installMarketplaceItem, uninstallMarketplaceItem 
 import type { MarketplaceItemWithStatus, MarketplaceItemType } from '../types/marketplace.types';
 import { useToast } from '../hooks/useToast';
 import ToastContainer from '../components/Toast';
-import { ConfirmDialog } from '../components/UI/ConfirmDialog';
+import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 
 /** CSS class mapping for item type badges */
 const typeBadgeColor: Record<MarketplaceItemType, string> = {

@@ -13,11 +13,11 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Hash, Link2, Unlink, RefreshCw } from 'lucide-react';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
-import { FormInput } from '../UI/Form';
-import { Toggle } from '../UI/Toggle';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
+import { FormInput } from '@crewly/ui/Form';
+import { Toggle } from '@crewly/ui/Toggle';
 
 /** One team row as returned by `GET /api/slack/team-channels`. */
 export interface SlackTeamChannelRow {

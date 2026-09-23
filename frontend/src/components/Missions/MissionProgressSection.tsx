@@ -7,8 +7,8 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Activity } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
 import { ProgressBar } from './OkrBadges';
 import { apiService } from '../../services/api.service';
 import type { MissionProgress } from '../../types/mission.types';

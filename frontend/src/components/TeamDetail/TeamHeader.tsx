@@ -1,7 +1,7 @@
 import React from 'react';
 import { Terminal, Play, Square, MessageSquare, BookOpen } from 'lucide-react';
-import { Button } from '../UI/Button';
-import { OverflowMenu } from '../UI/OverflowMenu';
+import { Button } from '@crewly/ui/Button';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { TeamHeaderProps } from './types';
 
 export const TeamHeader: React.FC<TeamHeaderProps> = ({

@@ -6,8 +6,8 @@
  * @module components/RequestTracking/request-tracking.types
  */
 
-import type { StatusType } from '../UI/StatusBadge';
-import type { BadgeVariant } from '../UI/Badge';
+import type { StatusType } from '@crewly/ui/StatusBadge';
+import type { BadgeVariant } from '@crewly/ui/Badge';
 
 // =============================================================================
 // Constants

@@ -1,0 +1,21 @@
+/*
+ * Crewly design tokens for Tailwind v4 hosts (the Cloud portal).
+ *
+ *   @import "tailwindcss";
+ *   @import "@crewly/ui/theme.css";
+ *
+ * Same names and values as tailwind-preset.cjs (Tailwind v3, OSS frontend) —
+ * change one, change both. Radii are not overridden: the components use
+ * rounded-2xl / rounded-3xl / rounded-[0.5rem], which mean the same size
+ * under either Tailwind.
+ */
+@source "./dist";
+
+@theme {
+  --color-primary: #2a73ea;
+  --color-background-dark: #111721;
+  --color-surface-dark: #1a222c;
+  --color-text-primary-dark: #f6f7f8;
+  --color-text-secondary-dark: #9ab0d9;
+  --color-border-dark: #313a48;
+}

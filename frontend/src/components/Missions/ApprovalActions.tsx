@@ -10,9 +10,9 @@
 
 import React, { useState } from 'react';
 import { Check, X } from 'lucide-react';
-import { Button } from '../UI/Button';
-import { Modal, ModalBody, ModalFooter } from '../UI/Modal';
-import { Alert } from '../UI/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Modal, ModalBody, ModalFooter } from '@crewly/ui/Modal';
+import { Alert } from '@crewly/ui/Alert';
 import { apiService } from '../../services/api.service';
 import type { Mission } from '../../types/mission.types';
 

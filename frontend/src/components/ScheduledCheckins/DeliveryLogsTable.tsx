@@ -1,5 +1,5 @@
 import React from 'react';
-import { Button, useConfirm } from '../UI';
+import { Button, useConfirm } from '@crewly/ui';
 import { MessageDeliveryLog } from './types';
 import { EmptyState } from './EmptyState';
 

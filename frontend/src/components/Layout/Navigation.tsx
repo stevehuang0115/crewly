@@ -32,7 +32,7 @@ import {
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
-import { IconButton } from '../UI';
+import { IconButton } from '@crewly/ui';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { AuthStatusIndicator } from '../Auth/AuthStatusIndicator';
 import { usePinnedFavorites, type PinnedItem } from '../../hooks/usePinnedFavorites';

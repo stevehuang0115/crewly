@@ -17,7 +17,7 @@ import {
   User,
   Target,
 } from 'lucide-react';
-import { Card } from '../UI/Card';
+import { Card } from '@crewly/ui/Card';
 import type { WorkItem } from './workitem-detail.types';
 import {
   formatCost,

@@ -28,14 +28,14 @@ import {
   Save,
   X,
 } from 'lucide-react';
-import { Card } from '../components/UI/Card';
-import { Badge } from '../components/UI/Badge';
-import { StatusBadge } from '../components/UI/StatusBadge';
-import { LoadingSpinner } from '../components/UI/LoadingSpinner';
-import { Button } from '../components/UI/Button';
-import { Input } from '../components/UI/Input';
-import { FormSelect } from '../components/UI/Form';
-import { Alert } from '../components/UI/Alert';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { Input } from '@crewly/ui/Input';
+import { FormSelect } from '@crewly/ui/Form';
+import { Alert } from '@crewly/ui/Alert';
 import { LevelBadge, ApprovalChip } from '../components/Missions/OkrBadges';
 import { ApprovalActions } from '../components/Missions/ApprovalActions';
 import { KeyResultsSection } from '../components/Missions/KeyResultsSection';

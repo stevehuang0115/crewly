@@ -64,3 +64,28 @@ export type { AvatarProps, AvatarGroupProps, AvatarSize } from './Avatar';
 
 export { PageToolbar } from './PageToolbar';
 export type { PageToolbarProps, FilterTab, ViewMode, SecondaryFilter } from './PageToolbar';
+export { LoadingSpinner } from './LoadingSpinner';
+export type { LoadingSpinnerProps } from './LoadingSpinner';
+
+export { StatusDot } from './StatusDot';
+export type { StatusDotProps, DotStatus, DotSize } from './StatusDot';
+
+export { FilterPill } from './FilterPill';
+export type { FilterPillProps } from './FilterPill';
+
+export { FilterPillGroup } from './FilterPillGroup';
+export type { FilterPillGroupProps, FilterPillOption } from './FilterPillGroup';
+
+export { SaveButton } from './SaveButton';
+export type { SaveButtonProps, SaveStatus } from './SaveButton';
+
+export { ScoreCard, ScoreCardGrid } from './ScoreCard';
+export type { ScoreCardProps, ScoreCardGridProps } from './ScoreCard';
+
+export { SkeletonRows } from './SkeletonRows';
+
+export { OverflowMenu } from './OverflowMenu';
+export type { OverflowMenuItem } from './OverflowMenu';
+
+// ConfirmDialog.tsx (the standalone one) shares its name with Dialog's
+// ConfirmDialog; import it by path: '@crewly/ui/ConfirmDialog'.

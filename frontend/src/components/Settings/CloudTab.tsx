@@ -16,10 +16,10 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Cloud, LogOut, RefreshCw, Check, ExternalLink, Zap, Monitor, Cpu, Wifi } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { CLOUD_TOKEN_KEY, buildCloudAuthRedirectUrl } from '../../constants/cloud.constants';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
 
 /**
  * Cloud API validation endpoint -- proxied through the local OSS backend

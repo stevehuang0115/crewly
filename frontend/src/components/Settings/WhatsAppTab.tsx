@@ -10,9 +10,9 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, QrCode } from 'lucide-react';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Button } from '../UI/Button';
-import { Alert } from '../UI/Alert';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { Alert } from '@crewly/ui/Alert';
 
 // =============================================================================
 // Types

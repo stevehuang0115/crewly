@@ -21,7 +21,7 @@ describe('Input', () => {
       const input = container.querySelector('input');
       expect(input).toHaveClass('bg-background-dark');
       expect(input).toHaveClass('border-border-dark');
-      expect(input).toHaveClass('rounded-lg');
+      expect(input).toHaveClass('rounded-2xl');
     });
   });
 

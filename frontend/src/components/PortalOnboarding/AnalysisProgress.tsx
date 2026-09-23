@@ -12,7 +12,7 @@
 import React, { useState, useEffect } from 'react';
 import { CheckCircle2, Circle, Loader2, AlertCircle } from 'lucide-react';
 import { ANALYSIS_STAGES } from '../../types/onboarding.types';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 
 export interface AnalysisProgressProps {
   /** Whether analysis has failed */

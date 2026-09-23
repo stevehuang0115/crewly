@@ -10,7 +10,7 @@
 
 import React, { useState } from 'react';
 import { Plus } from 'lucide-react';
-import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { CronJobPanel } from '@/components/Settings/CronJobPanel';
 import {
   ScheduledMessageCard,

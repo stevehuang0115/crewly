@@ -19,11 +19,11 @@ import {
   AI_RUNTIME_DISPLAY_NAMES,
   ApiKeyConfig,
 } from '../../types/settings.types';
-import { Alert } from '../UI/Alert';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Toggle } from '../UI/Toggle';
-import { FormInput, FormLabel } from '../UI/Form';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Toggle } from '@crewly/ui/Toggle';
+import { FormInput, FormLabel } from '@crewly/ui/Form';
 
 /**
  * Display name for each provider

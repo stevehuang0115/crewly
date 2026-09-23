@@ -13,10 +13,10 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { ExternalLink, KeyRound, RefreshCw, Trash2 } from 'lucide-react';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
-import { FormInput } from '../UI/Form';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
+import { FormInput } from '@crewly/ui/Form';
 import { isOrchestratorSession, ORCHESTRATOR_LABEL } from '../../utils/team-chat.utils';
 
 /** One identity row as returned by the API (tokens never included). */

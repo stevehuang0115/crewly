@@ -10,10 +10,10 @@
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { Sparkles, X } from 'lucide-react';
-import { Badge } from '@/components/UI/Badge';
-import { Card } from '@/components/UI/Card';
-import { Button } from '@/components/UI/Button';
-import { Dropdown } from '@/components/UI/Dropdown';
+import { Badge } from '@crewly/ui/Badge';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
+import { Dropdown } from '@crewly/ui/Dropdown';
 import { apiService } from '@/services/api.service';
 import type { ExpertSummary } from '@/types/expert.types';
 

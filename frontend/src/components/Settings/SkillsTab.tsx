@@ -37,12 +37,12 @@ import type {
 import type { CrewlySettings } from '../../types/settings.types';
 import type { CreateSkillInput } from '../../services/skills.service';
 import { getSkillCategoryLabel, getSkillTypeLabel, SKILL_CATEGORIES } from '../../types/skill.types';
-import { Button, IconButton } from '../UI/Button';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Toggle } from '../UI/Toggle';
-import { FormInput, FormSelect, FormLabel, FormTextarea } from '../UI/Form';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Toggle } from '@crewly/ui/Toggle';
+import { FormInput, FormSelect, FormLabel, FormTextarea } from '@crewly/ui/Form';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
 
 /**
  * Build category options from the canonical SKILL_CATEGORIES list for consistency.

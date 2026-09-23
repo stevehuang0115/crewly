@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ScoreCard, ScoreCardGrid } from '../UI/ScoreCard';
+import { ScoreCard, ScoreCardGrid } from '@crewly/ui/ScoreCard';
 import { TeamStatsProps } from './types';
 
 interface Project {

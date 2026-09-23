@@ -9,9 +9,9 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Play, Monitor } from 'lucide-react';
-import { Popup } from './UI/Popup';
-import { Button } from './UI/Button';
-import { Badge } from './UI/Badge';
+import { Popup } from '@crewly/ui/Popup';
+import { Button } from '@crewly/ui/Button';
+import { Badge } from '@crewly/ui/Badge';
 import { apiService } from '../services/api.service';
 import { settingsService } from '../services/settings.service';
 import type { PreviousSession } from '../types';

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Users } from 'lucide-react';
 import { Team } from '@/types';
-import { OverflowMenu } from '@/components/UI/OverflowMenu';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { MemberAvatar } from '@/components/common/MemberAvatar';
 
 interface TeamListItemProps {

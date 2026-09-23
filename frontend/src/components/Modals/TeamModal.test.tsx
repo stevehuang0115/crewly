@@ -13,7 +13,7 @@ Object.defineProperty(window, 'alert', {
 });
 
 // Mock UI components to simplify testing
-vi.mock('../UI', () => ({
+vi.mock('@crewly/ui', () => ({
   FormPopup: ({ isOpen, onClose, onSubmit, title, subtitle, size, submitText, submitDisabled, loading, children }: any) => (
     isOpen ? (
       <div data-testid="form-popup">
@@ -92,7 +92,7 @@ vi.mock('../../services/roles.service', () => ({
   rolesService: { getRole: vi.fn() },
 }));
 
-vi.mock('../UI/Dialog', () => ({
+vi.mock('@crewly/ui/Dialog', () => ({
   useAlert: () => ({
     showWarning: vi.fn(),
     AlertComponent: () => null,

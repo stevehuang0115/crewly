@@ -25,11 +25,11 @@ import {
   Layers,
   CheckCircle2,
 } from 'lucide-react';
-import { Card } from '../components/UI/Card';
-import { Button } from '../components/UI/Button';
-import { Badge } from '../components/UI/Badge';
-import { StatusBadge } from '../components/UI/StatusBadge';
-import { LoadingSpinner } from '../components/UI/LoadingSpinner';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
+import { Badge } from '@crewly/ui/Badge';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import type { WorkItem } from '../components/WorkItemDetail';
 import {
   getWorkItemStatusType,

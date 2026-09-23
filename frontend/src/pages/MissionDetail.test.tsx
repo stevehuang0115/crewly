@@ -30,7 +30,7 @@ vi.mock('../services/api.service', () => ({
 }));
 
 // Mock UI components
-vi.mock('../components/UI/LoadingSpinner', () => ({
+vi.mock('@crewly/ui/LoadingSpinner', () => ({
   LoadingSpinner: ({ text }: { text?: string }) => (
     <div data-testid="loading-spinner">{text || 'Loading...'}</div>
   ),

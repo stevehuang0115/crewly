@@ -8,7 +8,7 @@
  */
 import React, { useMemo } from 'react';
 import { Shield } from 'lucide-react';
-import { Card } from '../UI/Card';
+import { Card } from '@crewly/ui/Card';
 
 export interface SecurityScoreInput {
   /** PTY status: healthy = all isolated, partial = some shared */

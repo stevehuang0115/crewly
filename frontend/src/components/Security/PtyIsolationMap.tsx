@@ -11,10 +11,10 @@
 import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Monitor, X as XIcon } from 'lucide-react';
 import type { PtySessionInfo } from '../../hooks/usePtyStatus';
-import { Card } from '../UI/Card';
-import { StatusDot } from '../UI/StatusDot';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import type { DotStatus } from '../UI/StatusDot';
+import { Card } from '@crewly/ui/Card';
+import { StatusDot } from '@crewly/ui/StatusDot';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import type { DotStatus } from '@crewly/ui/StatusDot';
 
 /** Props for PtyIsolationMap */
 export interface PtyIsolationMapProps {

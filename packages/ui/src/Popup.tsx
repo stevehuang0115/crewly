@@ -88,7 +88,7 @@ export const Popup: React.FC<PopupProps> = ({
     >
       <div
         ref={modalRef}
-        className={`bg-surface-dark border border-border-dark rounded-xl shadow-lg w-full ${sizeClasses[size]} ${loading ? 'pointer-events-none' : ''} ${className}`}
+        className={`bg-surface-dark border border-border-dark rounded-3xl shadow-lg w-full ${sizeClasses[size]} ${loading ? 'pointer-events-none' : ''} ${className}`}
         onClick={e => e.stopPropagation()}
       >
         {/* Modal Header */}
@@ -133,7 +133,7 @@ export const Popup: React.FC<PopupProps> = ({
 
         {/* Loading Overlay */}
         {loading && (
-          <div className="absolute inset-0 bg-surface-dark/50 flex items-center justify-center rounded-xl">
+          <div className="absolute inset-0 bg-surface-dark/50 flex items-center justify-center rounded-3xl">
             <div className="w-8 h-8 border-4 border-primary/20 border-t-primary rounded-full animate-spin" />
           </div>
         )}
@@ -188,7 +188,7 @@ export const FormPopup: React.FC<FormPopupProps> = ({
         variant={submitVariant}
         loading={loading}
         disabled={submitDisabled || loading}
-        className="bg-primary hover:bg-primary/90 text-white font-medium px-6 py-2.5 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+        className="bg-primary hover:bg-primary/90 text-white font-medium px-6 py-2.5 rounded-2xl transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         onClick={(e) => {
           // For submit buttons, let the form handle the submission
           if (!loading && !submitDisabled) {

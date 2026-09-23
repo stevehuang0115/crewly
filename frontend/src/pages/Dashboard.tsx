@@ -17,9 +17,9 @@ import { apiService } from '@/services/api.service';
 import { HealthBar } from '@/components/Dashboard/HealthBar';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
-import { ScoreCard, ScoreCardGrid } from '@/components/UI/ScoreCard';
-import { Alert } from '@/components/UI/Alert';
-import { Button } from '@/components/UI/Button';
+import { ScoreCard, ScoreCardGrid } from '@crewly/ui/ScoreCard';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
 
 
 /**

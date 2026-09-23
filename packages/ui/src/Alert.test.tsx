@@ -97,10 +97,10 @@ describe('Alert', () => {
   });
 
   describe('Styling', () => {
-    it('should have rounded border', () => {
+    it('should have a rounded border', () => {
       render(<Alert>Message</Alert>);
       const alert = screen.getByRole('alert');
-      expect(alert).toHaveClass('rounded-lg');
+      expect(alert).toHaveClass('rounded-2xl');
     });
 
     it('should have proper padding', () => {
@@ -122,7 +122,7 @@ describe('Alert', () => {
       render(<Alert className="custom-alert">Message</Alert>);
       const alert = screen.getByRole('alert');
       expect(alert).toHaveClass('custom-alert');
-      expect(alert).toHaveClass('rounded-lg');
+      expect(alert).toHaveClass('rounded-2xl');
     });
   });
 

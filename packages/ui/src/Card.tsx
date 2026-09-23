@@ -71,7 +71,7 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
       : '';
 
     const combinedClassName = [
-      'rounded-lg',
+      'rounded-2xl',
       variantClasses[variant],
       paddingClasses[padding],
       interactiveClass,

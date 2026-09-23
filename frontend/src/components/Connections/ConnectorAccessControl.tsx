@@ -13,7 +13,7 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Users } from 'lucide-react';
 import { rolesService } from '../../services/roles.service';
 import { updateConnectorAccess } from '../../services/connector.service';
-import { Alert } from '../UI/Alert';
+import { Alert } from '@crewly/ui/Alert';
 
 /** Props. */
 export interface ConnectorAccessControlProps {

@@ -37,7 +37,7 @@ const mockShowSuccess = vi.fn();
 const mockShowError = vi.fn();
 const mockShowWarning = vi.fn();
 const mockShowConfirm = vi.fn();
-vi.mock('../components/UI/Dialog', () => ({
+vi.mock('@crewly/ui/Dialog', () => ({
   useAlert: () => ({
     showSuccess: mockShowSuccess,
     showError: mockShowError,

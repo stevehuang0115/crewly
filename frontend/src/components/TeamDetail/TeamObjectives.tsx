@@ -23,7 +23,7 @@ import {
   type ProposalState,
   type KeyResultSummary,
 } from '../../types/mission.types';
-import { StatusBadge } from '../UI/StatusBadge';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
 import { LevelBadge, ApprovalChip, KrStatusCountsRow } from '../Missions/OkrBadges';
 import { TEAM_QUERY_PARAM } from '../../utils/team-chat.utils';
 

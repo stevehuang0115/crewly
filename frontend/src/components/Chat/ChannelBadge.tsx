@@ -8,7 +8,7 @@
 
 import React from 'react';
 import type { ChatChannelType } from '../../types/chat.types';
-import { Badge } from '../UI/Badge';
+import { Badge } from '@crewly/ui/Badge';
 import { CHANNEL_CONFIG } from './channel-config';
 import './ChannelBadge.css';
 

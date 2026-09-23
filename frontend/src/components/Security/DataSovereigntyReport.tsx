@@ -11,8 +11,8 @@ import React, { useState } from 'react';
 import { ChevronDown, ChevronUp, Database, CheckCircle, XCircle } from 'lucide-react';
 import type { StorageEntry, DataSovereigntySummary } from '../../hooks/useDataSovereignty';
 import { formatBytes } from '../../hooks/useDataSovereignty';
-import { Card } from '../UI/Card';
-import { Badge } from '../UI/Badge';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
 
 /** Props for DataSovereigntyReport */
 export interface DataSovereigntyReportProps {

@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { Globe } from 'lucide-react';
-import { Badge } from '../UI/Badge';
+import { Badge } from '@crewly/ui/Badge';
 
 // =============================================================================
 // Types

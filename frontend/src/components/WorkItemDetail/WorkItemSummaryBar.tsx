@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { ScoreCard, ScoreCardGrid } from '../UI/ScoreCard';
+import { ScoreCard, ScoreCardGrid } from '@crewly/ui/ScoreCard';
 
 // =============================================================================
 // Types

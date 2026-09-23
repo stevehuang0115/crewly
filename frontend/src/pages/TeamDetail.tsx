@@ -8,12 +8,12 @@ import { TeamModal } from '../components/Modals/TeamModal';
 import { TeamHeader, TeamOverview, TeamStatus, AgentDetailModal, TeamObjectives } from '../components/TeamDetail';
 import { HierarchyDashboard } from '../components/Hierarchy';
 import { ExecutionFeed } from '../components/ExecutionFeed';
-import { useAlert, useConfirm } from '../components/UI/Dialog';
+import { useAlert, useConfirm } from '@crewly/ui/Dialog';
 import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
 import { assignDefaultAvatars } from '../utils/team.utils';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
-import { LoadingSpinner } from '@/components/UI/LoadingSpinner';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { CronJobPanel } from '@/components/Settings/CronJobPanel';
 
 export const TeamDetail: React.FC = () => {

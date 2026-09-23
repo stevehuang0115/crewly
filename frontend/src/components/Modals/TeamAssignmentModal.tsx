@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 import { X, Users, Check } from 'lucide-react';
 import { Team, Project } from '@/types';
 import { apiService } from '@/services/api.service';

@@ -1,6 +1,6 @@
 import React from 'react';
 import { X, MoreHorizontal, CheckCircle, Clock, AlertCircle, Circle, Edit } from 'lucide-react';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 
 interface TaskDetailModalProps {
   isOpen: boolean;

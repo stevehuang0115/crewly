@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { CheckCircle2, Circle, Loader2, AlertCircle } from 'lucide-react';
-import { Button } from '../UI/Button';
+import { Button } from '@crewly/ui/Button';
 
 // =============================================================================
 // Types

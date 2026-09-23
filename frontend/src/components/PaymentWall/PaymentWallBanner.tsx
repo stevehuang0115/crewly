@@ -10,7 +10,7 @@
 
 import React from 'react';
 import { Zap, X } from 'lucide-react';
-import { Button, IconButton } from '../UI/Button';
+import { Button, IconButton } from '@crewly/ui/Button';
 import type { TrialLimitEvent } from '../../types/payment-wall.types';
 import { LIMIT_COPY } from '../../types/payment-wall.types';
 

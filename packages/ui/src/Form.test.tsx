@@ -270,7 +270,7 @@ describe('FormInput Component', () => {
       render(<FormInput placeholder="Test input" />);
 
       const input = screen.getByPlaceholderText('Test input');
-      expect(input).toHaveClass('w-full', 'bg-background-dark', 'border', 'border-border-dark', 'rounded-lg');
+      expect(input).toHaveClass('w-full', 'bg-background-dark', 'border', 'border-border-dark', 'rounded-2xl');
     });
 
     it('should apply custom className', () => {
@@ -367,7 +367,7 @@ describe('FormTextarea Component', () => {
       render(<FormTextarea placeholder="Test textarea" />);
 
       const textarea = screen.getByPlaceholderText('Test textarea');
-      expect(textarea).toHaveClass('w-full', 'bg-background-dark', 'border', 'border-border-dark', 'rounded-lg');
+      expect(textarea).toHaveClass('w-full', 'bg-background-dark', 'border', 'border-border-dark', 'rounded-2xl');
     });
 
     it('should apply custom className', () => {

@@ -10,9 +10,9 @@
 import React, { useState } from 'react';
 import { Users, FolderOpen, Play, Square, Clock, Pin, PinOff, Network, GitBranch } from 'lucide-react';
 import { Team } from '@/types';
-import { OverflowMenu } from '@/components/UI/OverflowMenu';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { MemberAvatar } from '@/components/common/MemberAvatar';
-import { ConfirmDialog } from '@/components/UI/ConfirmDialog';
+import { ConfirmDialog } from '@crewly/ui/ConfirmDialog';
 import { formatRelativeTimeCompact } from '@/utils/time';
 import { SignInNeededChip } from '@/components/SignInNeededChip';
 

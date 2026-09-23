@@ -14,7 +14,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Modal } from '../UI/Modal';
+import { Modal } from '@crewly/ui/Modal';
 import { StepIndicator } from './StepIndicator';
 import { StepCloudConnect } from './StepCloudConnect';
 import { StepSelectTemplate } from './StepSelectTemplate';

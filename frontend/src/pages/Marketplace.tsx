@@ -10,9 +10,9 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Download, Star, RefreshCw, Package, Check, ArrowUp, Upload, Clock, CheckCircle, XCircle, Plug } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { PageToolbar } from '../components/UI/PageToolbar';
+import { PageToolbar } from '@crewly/ui/PageToolbar';
 import { CONNECTORS, CONNECTOR_GROUPS } from '../config/connectors';
-import { Dropdown } from '../components/UI/Dropdown';
+import { Dropdown } from '@crewly/ui/Dropdown';
 import {
   fetchMarketplaceItems,
   installMarketplaceItem,

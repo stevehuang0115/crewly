@@ -9,7 +9,7 @@ import {
   FormInput,
   FormTextarea,
   FormHelp
-} from '../UI';
+} from '@crewly/ui';
 import { TasksViewProps, TaskColumnProps, TaskFormData, MilestoneFormData } from './types';
 import { inProgressTasksService } from '../../services/in-progress-tasks.service';
 import { apiService } from '../../services/api.service';

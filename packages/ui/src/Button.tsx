@@ -28,9 +28,9 @@ const variantClasses: Record<ButtonVariant, string> = {
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
-  default: "h-10 px-4 rounded-lg text-sm",
-  sm: "h-9 px-3 rounded-lg text-sm",
-  icon: "h-10 w-10 rounded-lg",
+  default: "h-10 px-4 rounded-2xl text-sm",
+  sm: "h-9 px-3 rounded-2xl text-sm",
+  icon: "h-10 w-10 rounded-2xl",
 };
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(

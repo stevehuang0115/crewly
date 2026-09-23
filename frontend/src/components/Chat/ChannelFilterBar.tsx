@@ -8,8 +8,8 @@
 
 import React from 'react';
 import type { ChatChannelType, ChatConversation } from '../../types/chat.types';
-import { Badge } from '../UI/Badge';
-import { Button } from '../UI/Button';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
 import { CHANNEL_CONFIG } from './channel-config';
 import './ChannelFilterBar.css';
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { FileText } from 'lucide-react';
 import { Project } from '../../types';
 import { FileTreeNode, EditorViewProps, FileTreeViewProps } from './types';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 
 // File Tree View Component
 const FileTreeView: React.FC<FileTreeViewProps> = ({ 

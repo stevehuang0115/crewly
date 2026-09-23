@@ -8,7 +8,7 @@ global.fetch = vi.fn();
 
 // Mock showWarning from useAlert hook
 const mockShowWarning = vi.fn();
-vi.mock('./UI/Dialog', () => ({
+vi.mock('@crewly/ui/Dialog', () => ({
   useAlert: () => ({
     showWarning: mockShowWarning,
     AlertComponent: () => null
@@ -16,7 +16,7 @@ vi.mock('./UI/Dialog', () => ({
 }));
 
 // Mock UI components to simplify testing
-vi.mock('./UI', () => ({
+vi.mock('@crewly/ui', () => ({
   FormPopup: ({ isOpen, onClose, onSubmit, title, subtitle, size, submitText, submitDisabled, loading, children }: any) => (
     isOpen ? (
       <div data-testid="form-popup">

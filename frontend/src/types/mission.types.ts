@@ -12,8 +12,8 @@
  * boundary).
  */
 
-import type { BadgeVariant } from '../components/UI/Badge';
-import type { StatusType } from '../components/UI/StatusBadge';
+import type { BadgeVariant } from '@crewly/ui/Badge';
+import type { StatusType } from '@crewly/ui/StatusBadge';
 
 /** Mission lifecycle statuses (mirrors backend). */
 export type MissionStatus = 'active' | 'paused' | 'completed' | 'cancelled';

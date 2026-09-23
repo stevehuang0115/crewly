@@ -7,8 +7,8 @@
  * @module components/WorkItemDetail/workitem-detail.types
  */
 
-import type { StatusType } from '../UI/StatusBadge';
-import type { BadgeVariant } from '../UI/Badge';
+import type { StatusType } from '@crewly/ui/StatusBadge';
+import type { BadgeVariant } from '@crewly/ui/Badge';
 
 // =============================================================================
 // WorkItem Core Types (mirrors backend/src/types/v2/work-item.types.ts)

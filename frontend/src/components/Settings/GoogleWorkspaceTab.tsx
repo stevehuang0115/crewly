@@ -16,10 +16,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, ExternalLink, Plus, Minus, Check, Star, ShieldAlert } from 'lucide-react';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
 
 // ---------------------------------------------------------------------------
 // Types

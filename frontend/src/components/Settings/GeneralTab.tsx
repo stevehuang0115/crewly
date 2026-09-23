@@ -11,12 +11,12 @@ import React, { useEffect, useState } from 'react';
 import { Save, RotateCcw, Check } from 'lucide-react';
 import { useSettings } from '../../hooks/useSettings';
 import { CrewlySettings, AIRuntime, AI_RUNTIMES, AI_RUNTIME_DISPLAY_NAMES } from '../../types/settings.types';
-import { Alert } from '../UI/Alert';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Toggle } from '../UI/Toggle';
-import { FormInput, FormLabel, FormSelect } from '../UI/Form';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Toggle } from '@crewly/ui/Toggle';
+import { FormInput, FormLabel, FormSelect } from '@crewly/ui/Form';
 
 /**
  * Save status states

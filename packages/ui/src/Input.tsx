@@ -52,7 +52,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
     const inputClassName = [
       'w-full px-3 py-2',
       'bg-background-dark',
-      'border rounded-lg',
+      'border rounded-2xl',
       'text-text-primary-dark text-sm',
       'placeholder:text-text-secondary-dark/50',
       'focus:outline-none focus:ring-1',

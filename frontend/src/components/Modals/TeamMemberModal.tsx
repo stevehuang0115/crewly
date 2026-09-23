@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 import { TeamMember } from '@/types';
 import { webSocketService } from '@/services/websocket.service';
 

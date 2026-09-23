@@ -11,7 +11,7 @@
 
 import React, { useState } from 'react';
 import { Cloud, X, Loader2, LogOut } from 'lucide-react';
-import { IconButton, Badge, Button } from './UI';
+import { IconButton, Badge, Button } from '@crewly/ui';
 import { useCloudConnection } from '../hooks/useCloudConnection';
 import { buildCloudAuthRedirectUrl } from '../constants/cloud.constants';
 import type { CloudTier } from '../types';

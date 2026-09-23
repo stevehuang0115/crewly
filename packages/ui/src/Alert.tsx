@@ -81,7 +81,7 @@ export const Alert: React.FC<AlertProps> = ({
 
   const combinedClassName = [
     'flex items-start gap-3',
-    'p-4 rounded-lg border',
+    'p-4 rounded-2xl border',
     classes,
     className,
   ]
@@ -99,7 +99,7 @@ export const Alert: React.FC<AlertProps> = ({
         <button
           type="button"
           onClick={onClose}
-          className="flex-shrink-0 p-1 -m-1 hover:opacity-70 transition-opacity focus:outline-none focus:ring-2 focus:ring-current focus:ring-offset-2 focus:ring-offset-background-dark rounded"
+          className="flex-shrink-0 p-1 -m-1 hover:opacity-70 transition-opacity focus:outline-none focus:ring-2 focus:ring-current focus:ring-offset-2 focus:ring-offset-background-dark rounded-[0.5rem]"
           aria-label="Dismiss alert"
         >
           <X className="w-4 h-4" />

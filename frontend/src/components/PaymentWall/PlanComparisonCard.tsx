@@ -10,8 +10,8 @@
 
 import React from 'react';
 import { Check, Star, Zap } from 'lucide-react';
-import { Button } from '../UI/Button';
-import { Badge } from '../UI/Badge';
+import { Button } from '@crewly/ui/Button';
+import { Badge } from '@crewly/ui/Badge';
 import type { LimitType, BillingInterval, PlanTier } from '../../types/payment-wall.types';
 import {
   PLAN_FEATURES,

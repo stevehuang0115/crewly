@@ -10,7 +10,7 @@ import { SessionResumePopup } from '../SessionResumePopup';
 import { TeamsRestorePopup } from '../TeamsRestorePopup';
 import { useTerminal } from '../../contexts/TerminalContext';
 import { useSidebar } from '../../contexts/SidebarContext';
-import { IconButton } from '../UI';
+import { IconButton } from '@crewly/ui';
 import { PaymentWallModal } from '../PaymentWall/PaymentWall';
 import { usePaymentWall } from '../../contexts/PaymentWallContext';
 import { apiService } from '../../services/api.service';

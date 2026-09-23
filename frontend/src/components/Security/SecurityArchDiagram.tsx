@@ -14,8 +14,8 @@
 import React, { useState, useEffect } from 'react';
 import { Shield, Database, CheckSquare, CheckCircle, AlertTriangle, XOctagon } from 'lucide-react';
 import type { PillarId } from './SecurityPillarCard';
-import { Card } from '../UI/Card';
-import { Button } from '../UI/Button';
+import { Card } from '@crewly/ui/Card';
+import { Button } from '@crewly/ui/Button';
 
 /** Props for SecurityArchDiagram */
 export interface SecurityArchDiagramProps {

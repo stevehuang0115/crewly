@@ -13,11 +13,11 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { RefreshCw, Unlink, ExternalLink } from 'lucide-react';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Button } from '../UI/Button';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
-import { FormInput, FormLabel } from '../UI/Form';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
+import { FormInput, FormLabel } from '@crewly/ui/Form';
 import { SlackTeamChannels } from './SlackTeamChannels';
 import { SlackAgentIdentities } from './SlackAgentIdentities';
 import { SlackCloudWorkspace, type SlackCloudStatus } from './SlackCloudWorkspace';

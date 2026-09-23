@@ -109,7 +109,7 @@ describe('Card', () => {
       );
       const card = container.firstChild as HTMLElement;
       expect(card).toHaveClass('custom-class');
-      expect(card).toHaveClass('rounded-lg');
+      expect(card).toHaveClass('rounded-2xl');
     });
   });
 

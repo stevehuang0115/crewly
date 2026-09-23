@@ -9,8 +9,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { RotateCcw } from 'lucide-react';
-import { Popup } from './UI/Popup';
-import { Button } from './UI/Button';
+import { Popup } from '@crewly/ui/Popup';
+import { Button } from '@crewly/ui/Button';
 import { apiService } from '../services/api.service';
 import type { TeamsBackupStatus } from '../types';
 

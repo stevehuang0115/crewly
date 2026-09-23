@@ -9,7 +9,7 @@
 
 import React, { useState } from 'react';
 import { AlertTriangle, RefreshCw, X } from 'lucide-react';
-import { IconButton } from './UI';
+import { IconButton } from '@crewly/ui';
 import { useOrchestratorStatus } from '../hooks/useOrchestratorStatus';
 import { SignInNeededChip } from './SignInNeededChip';
 

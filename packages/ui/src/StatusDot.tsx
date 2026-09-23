@@ -87,7 +87,7 @@ const DEFAULT_PULSE_STATUSES: ReadonlySet<DotStatus> = new Set([
  * Small colored dot representing a status.
  *
  * @param props - {@link StatusDotProps}
- * @returns A `<span>` element styled as a rounded dot
+ * @returns A `<span>` element styled as a round dot
  *
  * @example
  * ```tsx

@@ -1,8 +1,8 @@
 import React, { useState } from 'react';
 import { Play, Square, Loader2, Sparkles } from 'lucide-react';
 import { TeamMember } from '@/types';
-import { OverflowMenu } from '@/components/UI/OverflowMenu';
-import { Badge } from '@/components/UI/Badge';
+import { OverflowMenu } from '@crewly/ui/OverflowMenu';
+import { Badge } from '@crewly/ui/Badge';
 import { SignInNeededChip } from '@/components/SignInNeededChip';
 
 interface TeamMemberRowProps {

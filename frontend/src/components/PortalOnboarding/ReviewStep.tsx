@@ -17,7 +17,7 @@ import type {
   PrefillField,
 } from '../../types/onboarding.types';
 import { REVIEW_CARDS } from '../../types/onboarding.types';
-import { Badge } from '../UI';
+import { Badge } from '@crewly/ui';
 import { ReviewCard } from './ReviewCard';
 
 export interface ReviewStepProps {

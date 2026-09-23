@@ -16,7 +16,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { Globe, AlertTriangle } from 'lucide-react';
-import { Card } from '../UI/Card';
+import { Card } from '@crewly/ui/Card';
 import {
 	frameUrl,
 	takeBrowserControl,

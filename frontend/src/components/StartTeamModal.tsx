@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { useAlert } from './UI/Dialog';
-import { FormPopup, FormSection, FormGroup, FormLabel, Dropdown } from './UI';
+import { useAlert } from '@crewly/ui/Dialog';
+import { FormPopup, FormSection, FormGroup, FormLabel, Dropdown } from '@crewly/ui';
 
 interface Project {
 	id: string;

@@ -8,7 +8,7 @@
  */
 
 import React from 'react';
-import { Card } from '../UI/Card';
+import { Card } from '@crewly/ui/Card';
 
 /** Single comparison item data */
 interface ComparisonItem {

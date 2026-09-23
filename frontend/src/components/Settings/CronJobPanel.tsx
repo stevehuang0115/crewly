@@ -13,12 +13,12 @@ import {
   Plus, Play, Pause, CalendarClock, Timer, X,
 } from 'lucide-react';
 import { useCronTasks } from '../../hooks/useCronTasks';
-import { Button } from '../UI/Button';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
-import { Badge } from '../UI/Badge';
-import { Modal, ModalFooter } from '../UI/Modal';
-import { Input } from '../UI/Input';
-import { FormLabel, FormSelect } from '../UI/Form';
+import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
+import { Badge } from '@crewly/ui/Badge';
+import { Modal, ModalFooter } from '@crewly/ui/Modal';
+import { Input } from '@crewly/ui/Input';
+import { FormLabel, FormSelect } from '@crewly/ui/Form';
 import type { CronTask, CreateCronTaskRequest } from '../../types/cron-task.types';
 
 // ========================= Cron Expression Helpers =========================

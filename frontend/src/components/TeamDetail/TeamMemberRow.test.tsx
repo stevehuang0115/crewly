@@ -21,7 +21,7 @@ vi.mock('lucide-react', () => ({
 }));
 
 // Mock OverflowMenu component
-vi.mock('@/components/UI/OverflowMenu', () => ({
+vi.mock('@crewly/ui/OverflowMenu', () => ({
   OverflowMenu: ({ items }: { items: Array<{ label: string; onClick: () => void }> }) => (
     <div data-testid="overflow-menu">
       {items.map((item, index) => (

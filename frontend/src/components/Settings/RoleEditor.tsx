@@ -8,7 +8,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { X, Check } from 'lucide-react';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useRole } from '../../hooks/useRole';
 import { useSkills } from '../../hooks/useSkills';
 import {
@@ -18,9 +18,9 @@ import {
   ROLE_CATEGORIES,
   ROLE_CATEGORY_DISPLAY_NAMES,
 } from '../../types/role.types';
-import { Button, IconButton } from '../UI/Button';
-import { Toggle } from '../UI/Toggle';
-import { FormInput, FormLabel, FormSelect, FormTextarea } from '../UI/Form';
+import { Button, IconButton } from '@crewly/ui/Button';
+import { Toggle } from '@crewly/ui/Toggle';
+import { FormInput, FormLabel, FormSelect, FormTextarea } from '@crewly/ui/Form';
 
 /**
  * Props for RoleEditor component

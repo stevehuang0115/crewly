@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import DOMPurify from 'dompurify';
 import { X, Save, Eye, Edit3, File, FolderOpen } from 'lucide-react';
-import { Button, IconButton } from '../UI';
+import { Button, IconButton } from '@crewly/ui';
 
 interface MarkdownFile {
   name: string;

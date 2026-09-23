@@ -11,8 +11,8 @@
 import React, { useState, useCallback, useMemo } from 'react';
 import { RequestSummaryBar } from '../components/RequestTracking/RequestSummaryBar';
 import { RequestList } from '../components/RequestTracking/RequestList';
-import { PageToolbar } from '../components/UI/PageToolbar';
-import type { FilterTab, SecondaryFilter } from '../components/UI/PageToolbar';
+import { PageToolbar } from '@crewly/ui/PageToolbar';
+import type { FilterTab, SecondaryFilter } from '@crewly/ui/PageToolbar';
 import type { RequestStatistics, RequestPrimaryFilter, RequestSecondaryFilter } from '../components/RequestTracking/request-tracking.types';
 
 // =============================================================================

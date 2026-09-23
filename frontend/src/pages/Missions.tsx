@@ -15,16 +15,16 @@ import {
   Target,
   Plus,
 } from 'lucide-react';
-import { Button } from '../components/UI/Button';
-import { Card } from '../components/UI/Card';
-import { Badge } from '../components/UI/Badge';
-import { StatusBadge } from '../components/UI/StatusBadge';
-import { PageToolbar } from '../components/UI/PageToolbar';
-import { Alert } from '../components/UI/Alert';
-import { Modal, ModalBody, ModalFooter } from '../components/UI/Modal';
-import { SkeletonRows } from '../components/UI/SkeletonRows';
-import { FormSelect } from '../components/UI/Form';
-import { FilterPillGroup } from '../components/UI/FilterPillGroup';
+import { Button } from '@crewly/ui/Button';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { PageToolbar } from '@crewly/ui/PageToolbar';
+import { Alert } from '@crewly/ui/Alert';
+import { Modal, ModalBody, ModalFooter } from '@crewly/ui/Modal';
+import { SkeletonRows } from '@crewly/ui/SkeletonRows';
+import { FormSelect } from '@crewly/ui/Form';
+import { FilterPillGroup } from '@crewly/ui/FilterPillGroup';
 import { LevelBadge, ApprovalChip, KrStatusCountsRow, ProgressBar } from '../components/Missions/OkrBadges';
 import { ApprovalActions } from '../components/Missions/ApprovalActions';
 import { apiService } from '../services/api.service';

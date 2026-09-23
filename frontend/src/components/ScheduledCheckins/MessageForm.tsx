@@ -1,5 +1,5 @@
 import React from 'react';
-import { FormLabel, FormInput, FormTextarea, FormSelect } from '../UI';
+import { FormLabel, FormInput, FormTextarea, FormSelect } from '@crewly/ui';
 import { ScheduledMessage, ScheduledMessageFormData, TeamOption } from './types';
 
 interface MessageFormProps {

@@ -10,7 +10,7 @@
 
 import React, { useState, useCallback, useMemo } from 'react';
 import { Globe, ArrowRight, Shield, Edit3, Clock } from 'lucide-react';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 
 export interface UrlInputStepProps {
   /** Called when the user submits a valid URL */

@@ -19,7 +19,9 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
-      "@crewly/chat-ui": ["../packages/chat-ui/src/index.ts"]
+      "@crewly/chat-ui": ["../packages/chat-ui/src/index.ts"],
+      "@crewly/ui": ["../packages/ui/src/index.ts"],
+      "@crewly/ui/*": ["../packages/ui/src/*"]
     }
   },
   "include": ["src"],

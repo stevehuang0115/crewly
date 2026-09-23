@@ -9,7 +9,7 @@
 
 import React from 'react';
 import { Sparkles, Layout, Users, Zap, Link2 } from 'lucide-react';
-import { Card } from '../UI/Card';
+import { Card } from '@crewly/ui/Card';
 
 // =============================================================================
 // Types

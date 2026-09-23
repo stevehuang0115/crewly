@@ -13,8 +13,8 @@ import { apiService } from '../../services/api.service';
 import { webSocketService } from '../../services/websocket.service';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { Clock, ChevronDown } from 'lucide-react';
-import { Badge } from '../UI/Badge';
-import { Button } from '../UI/Button';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
 import type { QueueStatus, QueuedMessage } from '../../types';
 import './QueueStatusBar.css';
 

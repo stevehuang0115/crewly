@@ -27,7 +27,7 @@ vi.mock('lucide-react', () => ({
 }));
 
 // Mock OverflowMenu — render the items as buttons so item wiring is testable.
-vi.mock('@/components/UI/OverflowMenu', () => ({
+vi.mock('@crewly/ui/OverflowMenu', () => ({
   OverflowMenu: ({ items = [] }: { items?: Array<{ label: string; onClick?: () => void }> }) => (
     <div data-testid="overflow-menu">
       {items.map((item) => (
@@ -49,7 +49,7 @@ vi.mock('@/components/common/MemberAvatar', () => ({
 }));
 
 // Mock ConfirmDialog
-vi.mock('@/components/UI/ConfirmDialog', () => ({
+vi.mock('@crewly/ui/ConfirmDialog', () => ({
   ConfirmDialog: ({ isOpen, onCancel, onConfirm, title, message }: any) =>
     isOpen ? (
       <div data-testid="confirm-dialog">

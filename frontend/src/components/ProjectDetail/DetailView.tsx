@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { useAlert } from '../../components/UI/Dialog';
+import { useAlert } from '@crewly/ui/Dialog';
 import { FileText } from 'lucide-react';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 import { apiService } from '../../services/api.service';
 import { DetailViewProps } from './types';
 

@@ -25,8 +25,8 @@ import {
   Users,
   List,
 } from 'lucide-react';
-import { Button, Modal, ModalBody, ModalFooter, useConfirm, StatusBadge, Alert, PageToolbar } from '../components/UI';
-import type { StatusType } from '../components/UI/StatusBadge';
+import { Button, Modal, ModalBody, ModalFooter, useConfirm, StatusBadge, Alert, PageToolbar } from '@crewly/ui';
+import type { StatusType } from '@crewly/ui/StatusBadge';
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
 import { apiService } from '../services/api.service';

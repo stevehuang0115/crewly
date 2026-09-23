@@ -10,9 +10,9 @@ import React, { useState } from 'react';
 import { ChatMessage as ChatMessageType } from '../../types/chat.types';
 import { formatRelativeTime } from '../../utils/time';
 import { segmentSensitiveData, REDACTED_CLASS } from '../../utils/security';
-import { Avatar } from '../UI/Avatar';
-import { Badge } from '../UI/Badge';
-import { Button } from '../UI/Button';
+import { Avatar } from '@crewly/ui/Avatar';
+import { Badge } from '@crewly/ui/Badge';
+import { Button } from '@crewly/ui/Button';
 import './ChatMessage.css';
 
 // =============================================================================

@@ -8,8 +8,8 @@
 
 import React, { useState, useMemo } from 'react';
 import { Plus, Trash2, User, RefreshCw } from 'lucide-react';
-import { Alert } from '../UI/Alert';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { Alert } from '@crewly/ui/Alert';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { useRoles } from '../../hooks/useRoles';
 import {
   RoleSummary,
@@ -17,8 +17,8 @@ import {
   ROLE_CATEGORY_DISPLAY_NAMES,
 } from '../../types/role.types';
 import { RoleEditor } from './RoleEditor';
-import { Button } from '../UI/Button';
-import { FormInput, FormLabel, FormSelect } from '../UI/Form';
+import { Button } from '@crewly/ui/Button';
+import { FormInput, FormLabel, FormSelect } from '@crewly/ui/Form';
 
 /**
  * Role category badge color mapping

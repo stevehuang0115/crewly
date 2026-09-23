@@ -26,7 +26,7 @@ vi.mock('../services/api.service', () => ({
 }));
 
 // Mock UI components to simplify rendering
-vi.mock('../components/UI/LoadingSpinner', () => ({
+vi.mock('@crewly/ui/LoadingSpinner', () => ({
   LoadingSpinner: () => <div data-testid="loading-spinner">Loading...</div>,
 }));
 

@@ -40,14 +40,14 @@ export const OverflowMenu: React.FC<OverflowMenuProps> = ({
       </button>
       {open && (
         <div
-          className={`absolute z-10 w-44 bg-surface-dark border border-border-dark rounded-lg shadow-lg p-1 ${
+          className={`absolute z-10 w-44 bg-surface-dark border border-border-dark rounded-2xl shadow-lg p-1 ${
             align === 'bottom-right' ? 'right-0 top-8' : 'right-0 bottom-8'
           } ${menuClassName}`}
         >
           {items.map((item, idx) => (
             <button
               key={idx}
-              className={`w-full text-left px-3 py-2 text-sm rounded hover:bg-background-dark ${item.danger ? 'text-red-300' : ''}`}
+              className={`w-full text-left px-3 py-2 text-sm rounded-[0.5rem] hover:bg-background-dark ${item.danger ? 'text-red-300' : ''}`}
               onClick={() => {
                 setOpen(false);
                 item.onClick();

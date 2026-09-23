@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 import TaskCreateModal from './TaskCreateModal';
 
 // Mock the UI components
-vi.mock('../UI', () => ({
+vi.mock('@crewly/ui', () => ({
   FormPopup: ({ isOpen, onClose, title, subtitle, onSubmit, submitText, size, children }: any) => (
     <div data-testid="form-popup" data-size={size}>
       <h1>{title}</h1>

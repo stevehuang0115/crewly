@@ -15,10 +15,10 @@ import {
   RefreshCw,
   ExternalLink,
 } from 'lucide-react';
-import { Card } from '../components/UI/Card';
-import { Badge } from '../components/UI/Badge';
-import { StatusBadge } from '../components/UI/StatusBadge';
-import { LoadingSpinner } from '../components/UI/LoadingSpinner';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import {
   WorkItemTimeline,
   WorkItemMetrics,

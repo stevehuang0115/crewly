@@ -12,8 +12,8 @@ import React from 'react';
 import { Activity, RefreshCw, AlertCircle, Wifi, WifiOff } from 'lucide-react';
 import { formatRelativeTimeCompact } from '../../utils/time';
 import { useAgentHeartbeat } from '../../hooks/useAgentHeartbeat';
-import { Button } from '../UI/Button';
-import { LoadingSpinner } from '../UI/LoadingSpinner';
+import { Button } from '@crewly/ui/Button';
+import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import type { AgentHeartbeatInfo } from '../../hooks/useAgentHeartbeat';
 import type { TeamMember } from '../../types';
 

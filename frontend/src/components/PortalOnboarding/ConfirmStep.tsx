@@ -20,7 +20,7 @@ import {
   Workflow,
   Plug,
 } from 'lucide-react';
-import { Button } from '../UI';
+import { Button } from '@crewly/ui';
 import type { OnboardingPrefill } from '../../types/onboarding.types';
 
 /** Creation progress stage */

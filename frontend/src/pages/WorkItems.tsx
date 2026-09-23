@@ -13,13 +13,13 @@ import {
   RefreshCw,
   Inbox,
 } from 'lucide-react';
-import { Card } from '../components/UI/Card';
-import { Badge } from '../components/UI/Badge';
-import { StatusBadge } from '../components/UI/StatusBadge';
-import { PageToolbar } from '../components/UI/PageToolbar';
-import { Alert } from '../components/UI/Alert';
-import { Button } from '../components/UI/Button';
-import { SkeletonRows } from '../components/UI/SkeletonRows';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
+import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { PageToolbar } from '@crewly/ui/PageToolbar';
+import { Alert } from '@crewly/ui/Alert';
+import { Button } from '@crewly/ui/Button';
+import { SkeletonRows } from '@crewly/ui/SkeletonRows';
 import type { WorkItem, WorkItemStatus } from '../components/WorkItemDetail';
 import {
   getWorkItemStatusType,

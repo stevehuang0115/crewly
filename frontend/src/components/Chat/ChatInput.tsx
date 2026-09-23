@@ -9,8 +9,8 @@
 import React, { useState, useRef, useEffect, KeyboardEvent } from 'react';
 import { Send } from 'lucide-react';
 import { useChat } from '../../contexts/ChatContext';
-import { Button } from '../UI/Button';
-import { Alert } from '../UI/Alert';
+import { Button } from '@crewly/ui/Button';
+import { Alert } from '@crewly/ui/Alert';
 import './ChatInput.css';
 
 // =============================================================================

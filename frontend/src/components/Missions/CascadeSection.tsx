@@ -13,8 +13,8 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { GitBranch, ArrowUp } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Alert } from '../UI/Alert';
+import { Card } from '@crewly/ui/Card';
+import { Alert } from '@crewly/ui/Alert';
 import { LevelBadge, ProgressBar, KrStatusCountsRow } from './OkrBadges';
 import { apiService } from '../../services/api.service';
 import {

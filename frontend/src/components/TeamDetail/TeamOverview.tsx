@@ -11,7 +11,7 @@ import React, { useState, useEffect } from 'react';
 import { FolderOpen, Edit2 } from 'lucide-react';
 import { MembersList } from './MembersList';
 import { Team, TeamMember } from '../../types';
-import { FormSelect } from '../UI';
+import { FormSelect } from '@crewly/ui';
 import { useProjects } from '../../hooks/useProjects';
 
 /**

@@ -30,9 +30,9 @@ import {
   Inbox,
   Layers,
 } from 'lucide-react';
-import { Card } from '../UI/Card';
-import { Badge } from '../UI/Badge';
-import { StatusDot } from '../UI/StatusDot';
+import { Card } from '@crewly/ui/Card';
+import { Badge } from '@crewly/ui/Badge';
+import { StatusDot } from '@crewly/ui/StatusDot';
 import { RequestStatusPill } from './RequestStatusPill';
 import type { RequestItem, RequestChildItem, RequestSource } from './request-tracking.types';
 import {

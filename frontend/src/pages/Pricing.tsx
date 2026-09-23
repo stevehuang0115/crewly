@@ -10,7 +10,7 @@
 
 import { useState } from 'react';
 import { Check } from 'lucide-react';
-import { Button } from '../components/UI';
+import { Button } from '@crewly/ui';
 import { useAuth } from '../contexts/AuthContext';
 import { apiService } from '../services/api.service';
 import type { BillingInterval } from '../types/payment-wall.types';

@@ -182,7 +182,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
         onKeyDown={handleKeyDown}
         className={[
           'flex items-center justify-between gap-2 w-full',
-          'bg-background-dark border rounded-lg px-3 py-2 text-sm',
+          'bg-background-dark border rounded-2xl px-3 py-2 text-sm',
           'transition-colors cursor-pointer',
           'focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary/50',
           error
@@ -207,7 +207,7 @@ export const Dropdown: React.FC<DropdownProps> = ({
           ref={menuRef}
           role="listbox"
           aria-activedescendant={focusedIndex >= 0 ? `dropdown-opt-${focusedIndex}` : undefined}
-          className="absolute z-50 mt-1 w-full min-w-[160px] bg-surface-dark border border-border-dark rounded-lg shadow-xl overflow-hidden"
+          className="absolute z-50 mt-1 w-full min-w-[160px] bg-surface-dark border border-border-dark rounded-2xl shadow-xl overflow-hidden"
           style={popoverMinWidth ? { minWidth: popoverMinWidth } : undefined}
         >
           <div className="max-h-[240px] overflow-y-auto py-1">

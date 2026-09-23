@@ -26,7 +26,7 @@ describe('Button Component', () => {
       const button = screen.getByRole('button');
       // Default variant is primary, default size is default
       expect(button).toHaveClass('bg-primary', 'text-white');
-      expect(button).toHaveClass('h-10', 'px-4', 'rounded-lg');
+      expect(button).toHaveClass('h-10', 'px-4', 'rounded-2xl');
     });
 
     it('should apply custom className', () => {
@@ -100,21 +100,21 @@ describe('Button Component', () => {
       render(<Button size="default">Default Size Button</Button>);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('h-10', 'px-4', 'rounded-lg', 'text-sm');
+      expect(button).toHaveClass('h-10', 'px-4', 'rounded-2xl', 'text-sm');
     });
 
     it('should render sm size correctly', () => {
       render(<Button size="sm">Small Button</Button>);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('h-9', 'px-3', 'rounded-lg', 'text-sm');
+      expect(button).toHaveClass('h-9', 'px-3', 'rounded-2xl', 'text-sm');
     });
 
     it('should render icon size correctly', () => {
       render(<Button size="icon">Icon Size Button</Button>);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('h-10', 'w-10', 'rounded-lg');
+      expect(button).toHaveClass('h-10', 'w-10', 'rounded-2xl');
     });
   });
 
@@ -387,7 +387,7 @@ describe('IconButton Component', () => {
       render(<IconButton icon={Plus} aria-label="Add item" />);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('h-10', 'w-10', 'rounded-lg');
+      expect(button).toHaveClass('h-10', 'w-10', 'rounded-2xl');
     });
 
     it('should apply custom size', () => {

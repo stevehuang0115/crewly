@@ -10,8 +10,8 @@
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Search } from 'lucide-react';
-import { Input } from '../UI';
-import { Badge } from '../UI';
+import { Input } from '@crewly/ui';
+import { Badge } from '@crewly/ui';
 import type { RequestStatistics, RequestPrimaryFilter, RequestSecondaryFilter } from './request-tracking.types';
 import { getRequestStatusLabel } from './request-tracking.types';
 
