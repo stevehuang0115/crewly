@@ -27,15 +27,6 @@ crewly init
 crewly start
 ```
 
-**Try it without installing:** use `npx` for **both** commands.
-
-```bash
-npx crewly init
-npx crewly start
-```
-
-Running `npx crewly init` and then a bare `crewly start` fails, because nothing was installed on your `PATH`.
-
 The `init` command walks you through provider selection, installs agent skills, and scaffolds a `.crewly/` directory. Then `crewly start` launches the backend server and opens the web dashboard. From there:
 
 1. Create a **team** with agents assigned to roles

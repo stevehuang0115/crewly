@@ -79,17 +79,6 @@ crewly init
 crewly start
 ```
 
-### Try it without installing
-
-Use `npx` for **both** commands:
-
-```bash
-npx crewly init
-npx crewly start
-```
-
-Running `npx crewly init` and then a bare `crewly start` fails, because nothing was installed on your `PATH`.
-
 `crewly init` (alias: `crewly onboard`) walks you through a 4-step setup:
 
 1. **Choose your AI provider** -- Claude Code, Gemini CLI, or both

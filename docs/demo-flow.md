@@ -27,15 +27,7 @@ This demo shows the 8-step journey of using Crewly:
 
 ## Step 1: Install Crewly
 
-### Option A: Try without installing (recommended for demos)
-
-```bash
-npx crewly init
-```
-
-This downloads Crewly temporarily and runs the setup wizard immediately.
-
-### Option B: Install globally
+### Install globally
 
 ```bash
 npm install -g crewly
