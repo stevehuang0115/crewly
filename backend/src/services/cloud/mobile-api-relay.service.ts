@@ -101,6 +101,11 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // acts, and nothing on the internet should be able to act as one.
   { method: 'GET', prefix: '/browser/sessions' },
   { method: 'POST', prefix: '/browser/sessions' },
+  // "Back up now" from the portal: start a cloud backup of this machine and
+  // watch it finish. Restoring is left to the machine itself — overwriting a
+  // workspace should need someone at it.
+  { method: 'GET', prefix: '/backup/push' },
+  { method: 'POST', prefix: '/backup/push' },
   // Desktop control, deliberately lopsided. Seeing what a machine is doing
   // and being able to stop it are exactly what an owner who is not sitting
   // at it needs, and neither can do harm. Driving the mouse is left off:

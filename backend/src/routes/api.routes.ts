@@ -15,6 +15,7 @@ import { createFactoryRoutes } from './factory.routes.js';
 import { selfImprovementRouter } from '../controllers/self-improvement/index.js';
 import { createMessagingRouter } from '../controllers/messaging/messaging.routes.js';
 import { createTeamsBackupRouter } from '../controllers/teams-backup/teams-backup.routes.js';
+import { createBackupRouter } from '../controllers/backup/backup.routes.js';
 import { createEventBusRouter } from '../controllers/event-bus/event-bus.routes.js';
 import { createSlackThreadRouter } from '../controllers/slack/slack-thread.routes.js';
 import { createMemoryRouter } from '../controllers/memory/memory.routes.js';
@@ -100,6 +101,8 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Teams backup and restore routes
   router.use('/teams/backup', createTeamsBackupRouter());
+  // Workspace cloud backup, startable remotely (portal / phone over the relay).
+  router.use('/backup', createBackupRouter());
 
   // Event bus subscription routes
   router.use('/events', createEventBusRouter());
