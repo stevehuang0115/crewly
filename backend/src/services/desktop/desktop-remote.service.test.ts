@@ -82,6 +82,9 @@ describe('DesktopRemoteService', () => {
   it('maps keys, typing and scrolling, and rejects malformed input', async () => {
     const svc = service();
     expect(await svc.toSkillPayload({ type: 'key', key: 'cmd+R' })).toEqual({ action: 'key', key: 'cmd+r' });
+    // Mouse mode moves the real pointer, so hover states show.
+    expect(await svc.toSkillPayload({ type: 'move', x: 0.5, y: 0.5 })).toEqual({ action: 'move', x: 864, y: 559 });
+    expect(await svc.toSkillPayload({ type: 'move', x: -1, y: 0 })).toMatchObject({ success: false, reason: 'validation' });
     expect(await svc.toSkillPayload({ type: 'type', text: 'hello' })).toEqual({ action: 'type', text: 'hello' });
     // A swipe further down the page is a negative CoreGraphics scroll.
     expect(await svc.toSkillPayload({ type: 'scroll', x: 0, y: 0, dy: 3 })).toMatchObject({ action: 'scroll', dy: -3 });

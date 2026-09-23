@@ -46,6 +46,7 @@ export interface DesktopFrame {
 /** One input from the owner. Coordinates are 0..1 across the picture. */
 export type DesktopRemoteInput =
   | { type: 'click'; x: number; y: number; button?: 'left' | 'right'; double?: boolean }
+  | { type: 'move'; x: number; y: number }
   | { type: 'type'; text: string }
   | { type: 'key'; key: string }
   | { type: 'scroll'; x: number; y: number; dy: number };
@@ -185,6 +186,12 @@ export class DesktopRemoteService {
         const p = await at(input.x, input.y);
         return { action: 'click', ...p, button: input.button === 'right' ? 'right' : input.double ? 'double' : 'left' };
       }
+      case 'move': {
+        // Mouse mode: the pointer follows the owner's finger, so hover
+        // states (menus, tooltips) show before anything is clicked.
+        if (!isFraction(input.x) || !isFraction(input.y)) return bad('move needs x and y between 0 and 1');
+        return { action: 'move', ...(await at(input.x, input.y)) };
+      }
       case 'type':
         if (typeof input.text !== 'string' || !input.text) return bad('type needs text');
         return { action: 'type', text: input.text.slice(0, DESKTOP_REMOTE_CONSTANTS.MAX_TYPE_CHARS) };
@@ -200,7 +207,7 @@ export class DesktopRemoteService {
         return { action: 'scroll', ...p, dy: input.dy > 0 ? -lines : lines };
       }
       default:
-        return bad('type must be click, type, key or scroll');
+        return bad('type must be click, move, type, key or scroll');
     }
   }
 
