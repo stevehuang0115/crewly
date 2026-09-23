@@ -200,6 +200,8 @@ describe('statusCommand', () => {
 
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
 			expect(output).toContain('Tmux: Not available');
+			// tmux is optional (node-pty backend): status must not tell users to install it.
+			expect(output).not.toContain('Install tmux');
 		});
 
 		it('shows session details in verbose mode', async () => {

@@ -109,8 +109,8 @@ async function checkTmuxSessions(verbose: boolean = false): Promise<void> {
     }
 
   } catch (error) {
-    console.log(chalk.red('❌ Tmux: Not available'));
-    console.log(chalk.gray('   Install tmux to use Crewly session management'));
+    // tmux is optional: agent sessions run on the built-in node-pty backend.
+    console.log(chalk.gray('   Tmux: Not available (optional; agent sessions use the built-in terminal backend)'));
   }
 }
 

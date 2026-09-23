@@ -203,6 +203,70 @@ interface ToolInfo {
   npmPackage: string;
 }
 
+/** A system (non-npm) tool the Crewly agent runtime cannot work without. */
+export interface SystemToolInfo {
+  displayName: string;
+  command: string;
+  /** Flag that prints the version */
+  versionFlag: string;
+  /** Why Crewly needs it, shown when it is missing */
+  reason: string;
+  /** Install command per platform */
+  install: { macos: string; linux: string };
+}
+
+/**
+ * System tools required before setup can continue.
+ *
+ * tmux is deliberately NOT here: agent sessions run on the built-in node-pty
+ * backend (session-backend.factory.ts), and a clean-machine run reached an
+ * active agent with no tmux installed. jq IS here: the agent skills parse JSON
+ * with jq (188 of 203 skill scripts), and register-self fails with
+ * "jq: not found" (exit 127) without it.
+ */
+export const REQUIRED_SYSTEM_TOOLS: readonly SystemToolInfo[] = [
+  {
+    displayName: 'jq',
+    command: 'jq',
+    versionFlag: '--version',
+    reason: 'Agent skills use jq to read and write JSON; agents cannot register without it.',
+    install: { macos: 'brew install jq', linux: 'sudo apt-get install -y jq   (Fedora: sudo dnf install -y jq)' },
+  },
+];
+
+/**
+ * Check the required system tools. Missing tools are listed with install
+ * commands, and setup stops: continuing would only fail later, when the
+ * first agent tries to register.
+ *
+ * @returns Number of system tools checked
+ */
+export function ensureSystemTools(): number {
+  let checked = 0;
+  const missing: SystemToolInfo[] = [];
+  for (const tool of REQUIRED_SYSTEM_TOOLS) {
+    checked += 1;
+    if (checkToolInstalled(tool.command)) {
+      const version = getToolVersion(tool.command, tool.versionFlag);
+      console.log(chalk.green(`  ✓ ${tool.displayName} detected${version ? ` (${version})` : ''}`));
+    } else {
+      missing.push(tool);
+    }
+  }
+  if (missing.length > 0) {
+    for (const tool of missing) {
+      console.log(chalk.red(`  ✖ ${tool.displayName} not found.`));
+      console.log(chalk.yellow(`    ${tool.reason}`));
+      console.log(chalk.gray(`    macOS: ${tool.install.macos}`));
+      console.log(chalk.gray(`    Linux: ${tool.install.linux}`));
+    }
+    console.log(chalk.gray('    Install the tool(s) above, then run `crewly onboard` again.\n'));
+    process.exit(1);
+  }
+  console.log(chalk.gray(`  ${checked} system tool(s) checked.`));
+  return checked;
+}
+
 /** Map of provider choices to the tools they require */
 const PROVIDER_TOOLS: Record<string, ToolInfo[]> = {
   claude: [
@@ -240,18 +304,8 @@ const PROVIDER_TOOLS: Record<string, ToolInfo[]> = {
 export async function ensureTools(rl: ReadlineInterface, provider: ProviderChoice, autoYes = false): Promise<void> {
   console.log(chalk.bold('  Step 2/5: Tool Installation'));
 
-  // Check for tmux (required for agent PTY sessions)
-  if (checkToolInstalled('tmux')) {
-    const tmuxVersion = getToolVersion('tmux', '-V');
-    const versionStr = tmuxVersion ? ` (${tmuxVersion})` : '';
-    console.log(chalk.green(`  ✓ tmux detected${versionStr}`));
-  } else {
-    console.log(chalk.red('  ✖ tmux not found!'));
-    console.log(chalk.yellow('    tmux is required to manage agent terminal sessions.'));
-    console.log(chalk.gray('    Install: brew install tmux (macOS) or sudo apt install tmux (Linux)'));
-    console.log(chalk.gray('    Setup cannot continue without tmux.\n'));
-    process.exit(1);
-  }
+  // Required system tools (jq). tmux is not required: sessions use node-pty.
+  ensureSystemTools();
 
   const tools = PROVIDER_TOOLS[provider] || [];
 

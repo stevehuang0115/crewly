@@ -22,16 +22,19 @@ Crewly is an open-source multi-agent orchestration platform that coordinates AI 
 ## Quick Start
 
 ```bash
-# Initialize Crewly in your project (no global install needed)
-npx crewly init
-
-# Or install globally first
 npm install -g crewly
 crewly init
-
-# Start the platform
 crewly start
 ```
+
+**Try it without installing:** use `npx` for **both** commands.
+
+```bash
+npx crewly init
+npx crewly start
+```
+
+Running `npx crewly init` and then a bare `crewly start` fails, because nothing was installed on your `PATH`.
 
 The `init` command walks you through provider selection, installs agent skills, and scaffolds a `.crewly/` directory. Then `crewly start` launches the backend server and opens the web dashboard. From there:
 
@@ -39,10 +42,17 @@ The `init` command walks you through provider selection, installs agent skills, 
 2. Assign the team to a **project** (any local code directory)
 3. Watch agents work in real time through live terminal streams
 
-## Prerequisites
+## Requirements
 
-- **Node.js** v20+ and **npm** v9+
-- **At least one** AI coding CLI installed:
+- **Node.js 20 or later** (with npm)
+- **A C/C++ build toolchain**, used during install to compile the `node-pty` terminal backend:
+  - macOS: Xcode Command Line Tools (`xcode-select --install`)
+  - Linux: `python3`, `make` and `g++` (Debian/Ubuntu: `sudo apt-get install -y python3 make g++`)
+- **jq** (`brew install jq` on macOS, `sudo apt-get install -y jq` on Debian/Ubuntu). Agent skills use it, and `crewly init` stops if it is missing.
+- **curl**
+- **One AI coding CLI, installed and logged in**: Claude Code (`claude`), Gemini CLI (`gemini`) or Codex (`codex`). OpenCode also works.
+
+tmux is not required.
 
 | Runtime | Install | Verify |
 |---------|---------|--------|

@@ -4,7 +4,7 @@
 > Every command in this document is executable against the current codebase.
 >
 > **Estimated time:** 10-15 minutes (including agent execution time)
-> **Prerequisites:** Node.js v20+, npm v9+, tmux, at least one AI CLI authenticated (Claude Code recommended)
+> **Prerequisites:** Node.js v20+, npm v9+, jq, a C++ build toolchain for node-pty (Xcode Command Line Tools on macOS; python3, make, g++ on Linux), and at least one AI CLI authenticated (Claude Code recommended)
 
 ---
 
@@ -86,7 +86,7 @@ Step 1/5: AI Provider Selection
     Skip
 
 Step 2/5: Tool Detection
-  tmux ............ v3.4 ✓
+  jq .............. v1.7.1 ✓
   Claude Code ..... v1.x ✓
 
 Step 3/5: Installing Skills
@@ -257,8 +257,8 @@ The dashboard opens automatically. From there, start your team as described abov
 
 When you start a team:
 
-1. **Orchestrator session** (`crewly-orc`) is created in tmux — this is the coordinator agent
-2. **Each team member** gets their own tmux session running their chosen AI CLI (Claude Code, Gemini CLI, etc.)
+1. **Orchestrator session** (`crewly-orc`) is created as a terminal session — this is the coordinator agent
+2. **Each team member** gets their own terminal session running their chosen AI CLI (Claude Code, Gemini CLI, etc.)
 3. **System prompts** are injected based on role — each agent knows their responsibilities
 4. **Agent skills** (22 bash scripts) become available for inter-agent communication
 5. **WebSocket connections** stream live terminal output to the dashboard
@@ -568,7 +568,7 @@ crewly search "keyword"        # Search skill marketplace
 
 3. **Gemini CLI trust** — If using Gemini CLI agents, ensure the project folder is trusted in `~/.gemini/trustedFolders.json` to avoid interactive prompts blocking the agent.
 
-4. **tmux required** — Crewly uses tmux for agent session management. Install with `brew install tmux` (macOS) or `apt install tmux` (Linux).
+4. **jq required** — agent skills parse JSON with jq. Install with `brew install jq` (macOS) or `sudo apt-get install -y jq` (Linux). tmux is not required.
 
 5. **Port conflicts** — Default port is 8787. Use `crewly start -p 9090` if the port is taken.
 
