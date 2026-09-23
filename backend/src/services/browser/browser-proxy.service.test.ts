@@ -328,10 +328,13 @@ describe('BrowserProxyService', () => {
           }),
         );
 
-        expect(inventorySpy).toHaveBeenCalledWith([
-          { tabId: 1, crewlyOwned: false },
-          { tabId: 9, crewlyOwned: true },
-        ]);
+        expect(inventorySpy).toHaveBeenCalledWith(
+          [
+            { tabId: 1, crewlyOwned: false },
+            { tabId: 9, crewlyOwned: true },
+          ],
+          'inst-a',
+        );
         // The orphan the bridge reported is closed on the browser that owns it.
         const frames = latestMockWs!.send.mock.calls.map((c) => JSON.parse(c[0] as string) as Record<string, unknown>);
         const relayTo = frames.find((f) => f.type === 'relay_to');
@@ -363,7 +366,7 @@ describe('BrowserProxyService', () => {
           }),
         );
 
-        expect(inventorySpy).toHaveBeenCalledWith([{ tabId: 3 }]);
+        expect(inventorySpy).toHaveBeenCalledWith([{ tabId: 3 }], 'inst-b');
       });
 
       it('hands tab_removed to the bridge', async () => {
@@ -440,6 +443,43 @@ describe('BrowserProxyService', () => {
       const result = await cmdPromise;
       expect(result.success).toBe(true);
       expect(result.id).toBe(cmdId);
+    });
+
+    it('sends this backend device id as clientId and reports which browser answered', async () => {
+      connectAndRegister();
+      const proxy = BrowserProxyService.getInstance();
+      // deviceId resolves asynchronously during connect (dynamic import), which
+      // needs real macrotask turns — same pattern as the register-frame test.
+      jest.useRealTimers();
+      await new Promise((r) => setTimeout(r, 0));
+      await new Promise((r) => setTimeout(r, 0));
+      jest.useFakeTimers();
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'browser_list',
+          instances: [{ instanceId: 'id-1', instanceName: 'Chrome', sessionId: 'bs-1' }],
+        }),
+      );
+
+      const cmdPromise = proxy.sendCommand('bindTab', {});
+      // If an assertion below fails, teardown rejects this pending command;
+      // handle it so the failure reports as a test failure, not a crash.
+      cmdPromise.catch(() => undefined);
+      const sentMsg = JSON.parse(latestMockWs!.send.mock.lastCall![0] as string);
+      const payload = JSON.parse(sentMsg.payload as string);
+      expect(payload.clientId).toBe('device-macbookpro');
+
+      latestMockWs!._trigger(
+        'message',
+        JSON.stringify({
+          type: 'relay',
+          payload: JSON.stringify({ id: payload.id, success: true, result: { tabId: 42 } }),
+        }),
+      );
+
+      const result = await cmdPromise;
+      expect(result.instanceId).toBe('id-1');
     });
 
     it('updates lastSeenAt on the matching instance when a relay carries senderSessionId', () => {

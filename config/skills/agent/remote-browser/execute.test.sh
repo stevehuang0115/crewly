@@ -318,6 +318,26 @@ assert_contains "first request had stale tabId:100" "$first_body" '"tabId":100'
   || pass "cache purged on 404"
 scenario_teardown
 
+# Scenario 6b: an explicit --tab-id that 404s is NOT retried on another tab
+scenario_init "scenario 6b: explicit --tab-id 404 fails without retry"
+mkdir -p "${RUNTIME_DIR}/agent-6b"
+echo "55" > "${RUNTIME_DIR}/agent-6b/browser-tab-id"
+queue_response '404|{"id":"x","success":false,"error":"Tab 100 no longer exists. Bind a new tab instead of reusing this tabId.","code":"tab_not_found"}'
+queue_response '{"success":true,"data":{"text":"some other tab"}}'
+start_stub
+export CREWLY_SESSION_NAME="agent-6b"
+set +e
+"$SKILL" --action read-text --tab-id 100 > /dev/null 2>&1
+rc=$?
+set -e
+total_reqs=$(wc -l < "$LOG_FILE")
+assert_eq "stub received exactly 1 request" "1" "$(printf '%s' "$total_reqs" | tr -d ' ')"
+[ "$rc" -ne 0 ] && pass "explicit --tab-id 404 exits non-zero" || fail "explicit --tab-id 404 exits non-zero" "rc=$rc"
+[ -f "${RUNTIME_DIR}/agent-6b/browser-tab-id" ] \
+  && pass "cached tab left alone for an explicit --tab-id failure" \
+  || fail "cached tab left alone" "cache was purged"
+scenario_teardown
+
 # Scenario 7: bind-tab with --active sends active:true
 scenario_init "scenario 7: bind-tab --active forwards foreground flag"
 queue_response '{"success":true,"data":{"tabId":7}}'

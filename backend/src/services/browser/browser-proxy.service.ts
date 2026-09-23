@@ -56,6 +56,8 @@ interface PendingProxyCommand {
   reject: (reason: Error) => void;
   /** Timeout timer handle */
   timer: ReturnType<typeof setTimeout>;
+  /** Browser instance the command was addressed to */
+  instanceId?: string;
 }
 
 /** Connection state of the proxy to the cloud relay. */
@@ -559,11 +561,16 @@ export class BrowserProxyService {
     }
 
     const id = `proxy-${++this.commandCounter}-${Date.now()}`;
+    // The extension records this as the owner of tabs we bind, and refuses
+    // another backend's commands on them (extension >= 0.4.20). Resolved at
+    // relay registration; read synchronously so sending stays synchronous.
+    if (!this.deviceId) void this.ensureDeviceId();
     const payload = JSON.stringify({
       id,
       tool,
       params: resolvedParams,
       agentName,
+      ...(this.deviceId ? { clientId: this.deviceId } : {}),
     });
 
     return new Promise<BrowserCommandResponse>((resolve, reject) => {
@@ -572,7 +579,7 @@ export class BrowserProxyService {
         reject(new Error(`Browser command '${tool}' timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      this.pendingCommands.set(id, { resolve, reject, timer });
+      this.pendingCommands.set(id, { resolve, reject, timer, instanceId: targetInstance.instanceId });
 
       this.sendRaw({
         type: 'relay_to',
@@ -856,7 +863,10 @@ export class BrowserProxyService {
    *   that never started the bridge)
    */
   private resolveBridge(): {
-    handleTabInventory: (tabs: Array<{ tabId: number; crewlyOwned?: boolean }>) => { orphans: number[] };
+    handleTabInventory: (
+      tabs: Array<{ tabId: number; crewlyOwned?: boolean }>,
+      instanceId?: string,
+    ) => { orphans: number[] };
     handleTabRemoved: (tabId: number) => void;
   } | null {
     return getRegisteredBridge();
@@ -950,7 +960,7 @@ export class BrowserProxyService {
           (t): t is { tabId: number; crewlyOwned?: boolean } =>
             typeof t === 'object' && t !== null && typeof (t as { tabId?: unknown }).tabId === 'number',
         );
-        const { orphans } = bridge.handleTabInventory(tabs);
+        const { orphans } = bridge.handleTabInventory(tabs, instanceId);
         // Same sweep the bridge performs on the direct path, addressed to the
         // browser that reported the inventory. Best-effort: a failure only means
         // the tab lingers, and the user can close it.
@@ -995,7 +1005,8 @@ export class BrowserProxyService {
     if (pending) {
       clearTimeout(pending.timer);
       this.pendingCommands.delete(response.id);
-      pending.resolve(response);
+      // Tell the caller which browser answered, so a binding can be tied to it.
+      pending.resolve(pending.instanceId ? { ...response, instanceId: pending.instanceId } : response);
       this.logger.debug('Command response received', {
         id: response.id,
         success: response.success,
