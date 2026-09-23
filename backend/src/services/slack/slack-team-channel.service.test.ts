@@ -528,6 +528,49 @@ describe('slackIdentityFor', () => {
 // Store + create/link/unlink
 // ---------------------------------------------------------------------------
 
+describe('the owner is put into every channel Crewly created', () => {
+  // At boot the owner's Slack id arrives with the Cloud config a moment after
+  // the first channel of a batch can be created. #crewly-marketing was made
+  // with nobody to invite and sat for four days with only bots in it.
+  afterEach(() => {
+    ownerUserId = 'UOWNER';
+  });
+
+  it('retries an invite that could not happen at creation, then stops', async () => {
+    ownerUserId = null;
+    service = makeService();
+    const mapping = await service.ensureTeamChannel(team());
+    expect(slack.invites).toEqual([]);
+    expect(mapping.ownerInvited).toBeUndefined();
+
+    ownerUserId = 'UOWNER';
+    await service.inviteOwnerWhereMissing();
+    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['UOWNER'] }]);
+    expect(service.findBySlackChannelId('C1')?.ownerInvited).toBe(true);
+
+    // Once in, never again — a channel the owner chose to leave stays left.
+    await service.inviteOwnerWhereMissing();
+    expect(slack.invites).toHaveLength(1);
+  });
+
+  it('counts "already in the channel" as done', async () => {
+    ownerUserId = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    ownerUserId = 'UOWNER';
+    slack.inviteToChannel = async () => {
+      throw Object.assign(new Error('An API error occurred: already_in_channel'), { data: { error: 'already_in_channel' } });
+    };
+    await service.inviteOwnerWhereMissing();
+    expect(service.findBySlackChannelId('C1')?.ownerInvited).toBe(true);
+  });
+
+  it('marks a channel created with the owner invited straight away', async () => {
+    const mapping = await service.ensureTeamChannel(team());
+    expect(mapping.ownerInvited).toBe(true);
+  });
+});
+
 describe('ensureTeamChannel', () => {
   it('creates a Slack channel, a huddle with the members, persists the mapping and posts a welcome', async () => {
     const mapping = await service.ensureTeamChannel(team());

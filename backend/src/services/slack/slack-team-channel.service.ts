@@ -460,6 +460,60 @@ export class SlackTeamChannelService {
       }
     }
     if (rejoined > 0) this.logger.info('Team channel membership checked', { channels: rejoined });
+    await this.inviteOwnerWhereMissing();
+  }
+
+  /**
+   * Invite the workspace owner into a channel.
+   *
+   * @param channelId - Slack channel id
+   * @param channelName - For the log
+   * @returns True when the owner is now in it (invited, or already there)
+   */
+  private async inviteOwner(channelId: string, channelName: string): Promise<boolean> {
+    const owner = this.deps.getOwnerUserId?.() ?? null;
+    if (!owner) {
+      this.logger.info('No owner id known yet to invite into a team channel — will retry', { channel: channelName });
+      return false;
+    }
+    try {
+      await this.deps.slack.inviteToChannel(channelId, [owner]);
+      this.logger.info('Owner invited into a team channel', { channel: channelName });
+      return true;
+    } catch (err) {
+      const code = describeSlackError(err).code;
+      if (code === 'already_in_channel') return true;
+      this.logger.warn('Could not invite the owner into a team channel — search for it in Slack and join', {
+        channel: channelName,
+        error: code,
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Put the owner into every channel Crewly created that they never got into.
+   *
+   * The invite used to happen once, when the channel was created. At boot the
+   * owner's Slack id arrives with the Cloud config a moment after the first
+   * channels can already be created, and the first one of a batch was made
+   * with no one to invite: `#crewly-marketing` existed for four days with
+   * only bots in it, invisible in the owner's sidebar (2026-09-19 → 09-23).
+   * Retried on every (re)connect until it lands; once it has, never again.
+   *
+   * @returns When every such channel has been tried
+   */
+  async inviteOwnerWhereMissing(): Promise<void> {
+    if (!this.deps.slack.isConnected() || !this.deps.getOwnerUserId?.()) return;
+    const pending = (this.store?.mappings ?? []).filter((m) => m.autoCreated && !m.ownerInvited && !isAdhocMapping(m));
+    let changed = false;
+    for (const mapping of pending) {
+      if (await this.inviteOwner(mapping.slackChannelId, mapping.slackChannelName)) {
+        mapping.ownerInvited = true;
+        changed = true;
+      }
+    }
+    if (changed) await this.save();
   }
 
   /**
@@ -473,6 +527,8 @@ export class SlackTeamChannelService {
   async reconcileAllTeams(): Promise<{ created: string[]; skipped: number }> {
     const settings = await this.getSettings();
     const result = { created: [] as string[], skipped: 0 };
+    // Runs on every (re)connect, when the owner's id is usually known.
+    await this.inviteOwnerWhereMissing().catch(() => undefined);
     if (!settings.autoCreate || !this.deps.slack.isConnected()) return result;
     for (const team of await this.deps.storage.getTeams()) {
       if (this.findByTeamId(team.id)) continue;
@@ -709,6 +765,7 @@ export class SlackTeamChannelService {
       let channel: SlackChannelInfo;
       let autoCreated: boolean;
       let derived: string | undefined;
+      let ownerInvited = false;
       if (options.slackChannelId) {
         const info = await this.deps.slack.getChannelInfo(options.slackChannelId);
         if (!info) throw new Error(`Slack channel not found: ${options.slackChannelId}`);
@@ -727,19 +784,7 @@ export class SlackTeamChannelService {
         derived = slackChannelNameFor(team.name, store.channelPrefix);
         channel = await this.deps.slack.createChannel(derived);
         autoCreated = true;
-        const owner = this.deps.getOwnerUserId?.() ?? null;
-        if (owner) {
-          await this.deps.slack.inviteToChannel(channel.id, [owner]).catch((err: unknown) => {
-            this.logger.warn('Could not invite the owner into the new channel — search for it in Slack and join', {
-              channel: channel.name,
-              error: err instanceof Error ? err.message : String(err),
-            });
-          });
-        } else {
-          this.logger.info('New channel created; no owner id known to invite — search for it in Slack and join', {
-            channel: channel.name,
-          });
-        }
+        ownerInvited = await this.inviteOwner(channel.id, channel.name);
         const purpose = team.description?.trim() || `Crewly team "${team.name}"`;
         await this.deps.slack.setChannelPurpose(channel.id, purpose).catch((err: unknown) => {
           this.logger.debug('setPurpose failed (non-critical)', {
@@ -766,6 +811,7 @@ export class SlackTeamChannelService {
         createdAt: (this.deps.now?.() ?? new Date()).toISOString(),
         autoCreated,
         ...(derived ? { derivedName: derived } : {}),
+        ...(ownerInvited ? { ownerInvited: true } : {}),
       };
       const store = await this.load();
       store.mappings.push(mapping);

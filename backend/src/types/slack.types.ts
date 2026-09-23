@@ -445,6 +445,14 @@ export interface SlackTeamChannelMapping {
   derivedName?: string;
   /** Ad-hoc channels only: the local agents @'d there so far (the huddle roster). */
   members?: string[];
+  /**
+   * True once the workspace owner was invited into this channel (or found
+   * already in it). A channel Crewly creates is invisible to people until
+   * they are in it; an invite that could not happen at creation — no owner
+   * id known yet at boot — is retried until this is set, and never after,
+   * so a channel the owner chose to leave stays left.
+   */
+  ownerInvited?: boolean;
 }
 
 /**
