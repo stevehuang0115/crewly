@@ -10,7 +10,7 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread, type PendingTaskInfo, awaitsReply } from './session-handoff.service.js';
+import { SessionHandoffService, type TeamDataReader, type AgentMessageSender, type ResumeThread, type PendingTaskInfo, awaitsReply, relabelStaleWaiting } from './session-handoff.service.js';
 import { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 
 describe('SessionHandoffService', () => {
@@ -1113,5 +1113,68 @@ describe('what a restart hands the orchestrator', () => {
     expect(awaitsReply(['Crewly: [Orc] which email?', 'UG94JLNGK: the Sunrun one'])).toBe(true);
     expect(awaitsReply(['You: 可以再看看Ruflo吗？'])).toBe(true);
     expect(awaitsReply([])).toBe(false);
+  });
+});
+
+describe('how the restart summary labels conversations', () => {
+  const thread = (id: string, lastActiveAt: string, recentMessages: string[]) => ({
+    channelType: 'slack' as const, channelId: id, filePath: `/t/${id}.md`, lastActiveAt, recentMessages,
+  });
+
+  it('asks for a reply only on a recent unanswered message', () => {
+    const md = SessionHandoffService.getInstance().formatSummaryMarkdown({
+      generatedAt: '2026-09-23T04:00:00.000Z',
+      activeThreads: [
+        thread('ANSWERED', '2026-09-23T03:00:00.000Z', ['UG94: ?', 'Crewly: [Orc] done']),
+        thread('RECENT', '2026-09-23T03:30:00.000Z', ['UG94: 这个邮件是谁在处理？']),
+        thread('OLD', '2026-09-21T01:38:00.000Z', ['UG94: hi']),
+      ],
+      activeAgents: [],
+      pendingTasks: [],
+    } as never);
+
+    expect(md).toContain('ANSWERED — already answered (context only)');
+    expect(md).toContain('RECENT — WAITING FOR A REPLY');
+    // A "hi" from two days ago is not something to answer after a restart.
+    expect(md).toContain('OLD — unanswered but old (context only, do not reply now)');
+  });
+});
+
+describe('relabelStaleWaiting (at push time, whatever wrote the file)', () => {
+  const md = [
+    '## Active Conversations',
+    '### SLACK — D1 — WAITING FOR A REPLY',
+    '- File: `/t/d1.md`',
+    '- Last active: 2026-09-21T01:38:41.410Z',
+    '- Recent:',
+    '  - UG94JLNGK: hi',
+    '',
+    '### CHAT-UI — c-may',
+    '- File: `/t/c.json`',
+    '- Last active: 2026-05-14T20:45:54.201Z',
+    '- Recent:',
+    '  - You: 可以让战略团队看看这个吗',
+    '',
+    '### SLACK — D2',
+    '- File: `/t/d2.md`',
+    '- Last active: 2026-09-23T03:03:07.385Z',
+    '- Recent:',
+    '  - Crewly: [Orc] Atlas is blocked',
+    '',
+    '### SLACK — D3',
+    '- File: `/t/d3.md`',
+    '- Last active: 2026-09-23T03:50:00.000Z',
+    '- Recent:',
+    '  - UG94JLNGK: 谁是TL',
+  ].join('\n');
+
+  it('keeps only a recent unanswered message as waiting', () => {
+    // A May request ("have the strategy team look at this") must not be acted
+    // on four months later just because Crewly restarted.
+    const out = relabelStaleWaiting(md, Date.parse('2026-09-23T04:00:00.000Z'));
+    expect(out).toContain('### SLACK — D1 — unanswered but old (context only, do not reply now)');
+    expect(out).toContain('### CHAT-UI — c-may — unanswered but old (context only, do not reply now)');
+    expect(out).toContain('### SLACK — D2 — already answered (context only)');
+    expect(out).toContain('### SLACK — D3 — WAITING FOR A REPLY');
   });
 });

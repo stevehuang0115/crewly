@@ -234,6 +234,9 @@ export class SessionHandoffService {
 
   private constructor() {}
 
+  /** Clock, overridable in tests. */
+  now: () => number = () => Date.now();
+
   /**
    * Install a predicate that marks channels to leave out of the resume
    * briefing (true = exclude).
@@ -669,8 +672,15 @@ export class SessionHandoffService {
     if (summary.activeThreads.length > 0) {
       lines.push('## Active Conversations');
       for (const thread of summary.activeThreads) {
-        const waiting = awaitsReply(thread.recentMessages);
-        lines.push(`### ${thread.channelType.toUpperCase()} — ${thread.channelId}${waiting ? ' — WAITING FOR A REPLY' : ' — already answered (context only)'}`);
+        // Only a recent unanswered message is still waiting. A "hi" from two
+        // days ago or a thread from May is not something to answer now.
+        const recent = Date.parse(summary.generatedAt) - Date.parse(thread.lastActiveAt) <= RESUME_MAX_AGE_MS;
+        const label = !awaitsReply(thread.recentMessages)
+          ? ' — already answered (context only)'
+          : recent
+            ? ' — WAITING FOR A REPLY'
+            : ' — unanswered but old (context only, do not reply now)';
+        lines.push(`### ${thread.channelType.toUpperCase()} — ${thread.channelId}${label}`);
         lines.push(`- File: \`${thread.filePath}\``);
         lines.push(`- Last active: ${thread.lastActiveAt}`);
         if (thread.recentMessages.length > 0) {
@@ -739,12 +749,16 @@ export class SessionHandoffService {
         return;
       }
 
+      // Labels are re-checked against the clock here: the file was written
+      // at shutdown, possibly by an older Crewly, and a restart can come
+      // long after it.
+      const labelled = relabelStaleWaiting(content, this.now());
       const message =
         `[SESSION_CONTEXT] Crewly restarted. Background from the previous session, for continuity only:\n` +
         `- Do NOT message anyone because of this restart: no status report, no recap, no "I'm back".\n` +
         `- Reply only in a conversation marked WAITING FOR A REPLY, and only to what was asked there.\n` +
-        `- Everything marked "already answered" is context. Leave it alone.\n\n` +
-        content.trim();
+        `- Everything marked "already answered" or "old" is context. Leave it alone.\n\n` +
+        labelled.trim();
 
       await agentService.sendMessageToAgent(
         sessionName,
@@ -1134,4 +1148,40 @@ export function awaitsReply(recentMessages: readonly string[]): boolean {
   const preview = idx >= 0 ? last.slice(idx + 1).trim() : '';
   if (ASSISTANT_SENDERS.has(sender) || preview.startsWith('[Orc]')) return false;
   return true;
+}
+
+/**
+ * Turn "WAITING FOR A REPLY" into "old" for a conversation last active more
+ * than a day before `nowMs`, and add the answered/waiting label to headings
+ * written by a Crewly that did not label them — treating an unlabelled one
+ * as old unless it is recent.
+ *
+ * @param markdown - The summary as written at shutdown
+ * @param nowMs - Now
+ * @returns The summary with labels that hold now
+ */
+export function relabelStaleWaiting(markdown: string, nowMs: number): string {
+  const lines = markdown.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^### (SLACK|GCHAT|CHAT-UI) — (\S+)(.*)$/);
+    if (!m) continue;
+    const labelled = m[3].trim();
+    if (labelled.includes('already answered')) continue;
+    let last = NaN;
+    const said: string[] = [];
+    for (let j = i + 1; j < lines.length && !lines[j].startsWith('#'); j++) {
+      const t = lines[j].match(/^- Last active: (\S+)/);
+      if (t) last = Date.parse(t[1]);
+      const r = lines[j].match(/^ {2}- (.*)$/);
+      if (r) said.push(r[1]);
+    }
+    if (!awaitsReply(said)) {
+      lines[i] = `### ${m[1]} — ${m[2]} — already answered (context only)`;
+      continue;
+    }
+    const recent = Number.isFinite(last) && nowMs - last <= RESUME_MAX_AGE_MS;
+    const label = recent ? ' — WAITING FOR A REPLY' : ' — unanswered but old (context only, do not reply now)';
+    lines[i] = `### ${m[1]} — ${m[2]}${label}`;
+  }
+  return lines.join('\n');
 }
