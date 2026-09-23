@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { cn } from './cn';
 
 export type CardVariant = 'default' | 'outlined' | 'elevated';
 export type CardPadding = 'none' | 'sm' | 'md' | 'lg';
@@ -70,15 +71,7 @@ export const Card = React.forwardRef<HTMLDivElement, CardProps>(
       ? 'cursor-pointer hover:border-primary/50 transition-colors'
       : '';
 
-    const combinedClassName = [
-      'rounded-2xl',
-      variantClasses[variant],
-      paddingClasses[padding],
-      interactiveClass,
-      className,
-    ]
-      .filter(Boolean)
-      .join(' ');
+    const combinedClassName = cn('rounded-2xl', variantClasses[variant], paddingClasses[padding], interactiveClass, className);
 
     return (
       <div ref={ref} className={combinedClassName} {...props}>

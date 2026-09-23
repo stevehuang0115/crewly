@@ -75,7 +75,7 @@ export const Menu: React.FC<MenuProps> = ({ trigger, items, align = 'end', defau
   });
 
   return (
-    <div ref={ref} className={`relative inline-flex ${className}`}>
+    <div ref={ref} className={`relative inline-flex h-fit ${className}`}>
       {triggerEl}
       {open && (
         <div

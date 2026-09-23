@@ -12,7 +12,7 @@ import { AlertCircle, CheckCircle, Info, AlertTriangle, X, LucideIcon } from 'lu
 
 export type AlertVariant = 'info' | 'success' | 'warning' | 'error';
 
-export interface AlertProps {
+export interface AlertProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title' | 'children'> {
   /** Alert type/color variant */
   variant?: AlertVariant;
   /** Optional title displayed above the message */
@@ -23,6 +23,10 @@ export interface AlertProps {
   onClose?: () => void;
   /** Additional CSS classes */
   className?: string;
+  /** Replace the variant's icon (e.g. a lucide icon) */
+  icon?: React.ComponentType<{ className?: string }>;
+  /** Tighter padding for inline notices */
+  size?: 'md' | 'sm';
 }
 
 interface VariantConfig {
@@ -76,12 +80,16 @@ export const Alert: React.FC<AlertProps> = ({
   children,
   onClose,
   className = '',
+  icon,
+  size = 'md',
+  ...rest
 }) => {
-  const { classes, icon: Icon } = variantConfig[variant];
+  const { classes, icon: VariantIcon } = variantConfig[variant];
+  const Icon = icon ?? VariantIcon;
 
   const combinedClassName = [
     'flex items-start gap-3',
-    'p-4 rounded-2xl border',
+    size === 'sm' ? 'px-3 py-2 rounded-2xl border' : 'p-4 rounded-2xl border',
     classes,
     className,
   ]
@@ -89,7 +97,7 @@ export const Alert: React.FC<AlertProps> = ({
     .join(' ');
 
   return (
-    <div className={combinedClassName} role="alert">
+    <div {...rest} className={combinedClassName} role="alert">
       <Icon className="w-5 h-5 flex-shrink-0 mt-0.5" aria-hidden="true" />
       <div className="flex-1 min-w-0">
         {title && <h4 className="font-medium mb-1">{title}</h4>}

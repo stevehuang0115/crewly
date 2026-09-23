@@ -78,50 +78,58 @@ export const FormError: React.FC<FormErrorProps> = ({ children, className = '' }
 );
 
 // Form Input
-export interface FormInputProps extends React.InputHTMLAttributes<HTMLInputElement> {
+export interface FormInputProps extends Omit<React.InputHTMLAttributes<HTMLInputElement>, 'size'> {
   error?: boolean;
+  /** `sm` for compact filters and inline fields */
+  size?: 'md' | 'sm';
 }
 
-export const FormInput: React.FC<FormInputProps> = ({
+export const FormInput = React.forwardRef<HTMLInputElement, FormInputProps>(({
   error = false,
+  size = 'md',
   className = '',
   ...props
-}) => (
+}, ref) => (
   <input
-    className={`w-full bg-background-dark border border-border-dark rounded-2xl shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 px-3 text-sm ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
+    ref={ref}
+    className={`w-full bg-background-dark border border-border-dark shadow-sm focus:ring-1 focus:ring-primary focus:border-primary ${size === 'sm' ? 'rounded-[0.75rem] py-1 px-2.5 text-xs' : 'rounded-2xl py-2 px-3 text-sm'} ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
     {...props}
   />
-);
+));
+FormInput.displayName = 'FormInput';
 
 // Form Textarea
 export interface FormTextareaProps extends React.TextareaHTMLAttributes<HTMLTextAreaElement> {
   error?: boolean;
 }
 
-export const FormTextarea: React.FC<FormTextareaProps> = ({
+export const FormTextarea = React.forwardRef<HTMLTextAreaElement, FormTextareaProps>(({
   error = false,
   className = '',
   ...props
-}) => (
+}, ref) => (
   <textarea
+    ref={ref}
     className={`w-full bg-background-dark border border-border-dark rounded-2xl shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 px-3 text-sm resize-vertical ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
     {...props}
   />
-);
+));
+FormTextarea.displayName = 'FormTextarea';
 
 // Form Select
 export interface FormSelectProps extends React.SelectHTMLAttributes<HTMLSelectElement> {
   error?: boolean;
 }
 
-export const FormSelect: React.FC<FormSelectProps> = ({
+export const FormSelect = React.forwardRef<HTMLSelectElement, FormSelectProps>(({
   error = false,
   className = '',
   children,
   ...props
-}) => (
+}, ref) => (
   <div className="relative w-full">
     <select
+      ref={ref}
       className={`w-full appearance-none bg-background-dark border border-border-dark rounded-2xl shadow-sm focus:ring-1 focus:ring-primary focus:border-primary py-2 pl-3 pr-8 text-sm ${error ? 'border-red-500 focus:border-red-500 focus:ring-red-500' : ''} ${className}`}
       {...props}
     >
@@ -133,7 +141,8 @@ export const FormSelect: React.FC<FormSelectProps> = ({
       </svg>
     </div>
   </div>
-);
+));
+FormSelect.displayName = 'FormSelect';
 
 // Form Section (for grouping related form elements)
 export interface FormSectionProps {

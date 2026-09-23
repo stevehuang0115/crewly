@@ -25,7 +25,9 @@ export type DotStatus =
   | 'disconnected'
   | 'online'
   | 'offline'
-  | 'error';
+  | 'error'
+  | 'working'
+  | 'warning';
 
 export type DotSize = 'sm' | 'md' | 'lg';
 
@@ -38,6 +40,8 @@ export interface StatusDotProps {
   pulse?: boolean;
   /** Additional CSS classes */
   className?: string;
+  /** Overrides the default test id ("status-dot") */
+  'data-testid'?: string;
 }
 
 // =============================================================================
@@ -50,7 +54,9 @@ export interface StatusDotProps {
  * Groups:
  *  - green  (emerald-400): active, online, paired
  *  - yellow (yellow-400):  waiting, connecting
- *  - gray   (gray-500):    inactive, disconnected, offline
+ *  - muted  (secondary text): inactive, disconnected, offline
+ *  - blue   (blue-400):    working
+ *  - orange (orange-400):  warning
  *  - red    (rose-400):    error
  */
 const STATUS_COLOR_MAP: Record<DotStatus, string> = {
@@ -59,10 +65,12 @@ const STATUS_COLOR_MAP: Record<DotStatus, string> = {
   paired: 'bg-emerald-400',
   waiting: 'bg-yellow-400',
   connecting: 'bg-yellow-400',
-  inactive: 'bg-gray-500',
-  disconnected: 'bg-gray-500',
-  offline: 'bg-gray-500',
+  inactive: 'bg-text-secondary-dark/50',
+  disconnected: 'bg-text-secondary-dark/50',
+  offline: 'bg-text-secondary-dark/50',
   error: 'bg-rose-400',
+  working: 'bg-blue-400',
+  warning: 'bg-orange-400',
 };
 
 /** Size → Tailwind dimension class */
@@ -100,9 +108,10 @@ export const StatusDot: React.FC<StatusDotProps> = ({
   size = 'md',
   pulse,
   className = '',
+  'data-testid': testId = 'status-dot',
 }) => {
   const shouldPulse = pulse ?? DEFAULT_PULSE_STATUSES.has(status);
-  const color = STATUS_COLOR_MAP[status] ?? 'bg-gray-500';
+  const color = STATUS_COLOR_MAP[status] ?? 'bg-text-secondary-dark/50';
 
   const combinedClassName = [
     'inline-block rounded-full',
@@ -119,7 +128,7 @@ export const StatusDot: React.FC<StatusDotProps> = ({
       className={combinedClassName}
       role="status"
       aria-label={status}
-      data-testid="status-dot"
+      data-testid={testId}
     />
   );
 };

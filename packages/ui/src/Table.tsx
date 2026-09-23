@@ -23,8 +23,13 @@ type Props<T> = T & { className?: string; children?: React.ReactNode };
  * </Table>
  * ```
  */
-export const Table: React.FC<Props<React.TableHTMLAttributes<HTMLTableElement>>> = ({ className = '', children, ...rest }) => (
-  <div className="w-full overflow-x-auto rounded-2xl border border-border-dark">
+export const Table: React.FC<Props<React.TableHTMLAttributes<HTMLTableElement> & {
+  /** Draw the rounded outer border (off when the table sits inside a Card) */
+  bordered?: boolean;
+  /** Classes for the scroll container */
+  containerClassName?: string;
+}>> = ({ className = '', bordered = true, containerClassName = '', children, ...rest }) => (
+  <div className={`w-full overflow-x-auto ${bordered ? 'rounded-2xl border border-border-dark' : ''} ${containerClassName}`}>
     <table className={`w-full text-sm ${className}`} {...rest}>
       {children}
     </table>

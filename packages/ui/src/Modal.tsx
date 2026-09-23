@@ -1,15 +1,17 @@
 import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from './Button';
+import { focusInitial } from './focus';
 
 export interface ModalProps {
   isOpen: boolean;
   onClose: () => void;
-  title?: string;
+  title?: React.ReactNode;
   size?: 'sm' | 'md' | 'lg' | 'xl' | 'xxl';
   closable?: boolean;
   children: React.ReactNode;
   className?: string;
+  'data-testid'?: string;
 }
 
 // Styled inline (not via global CSS) so the modal looks the same wherever
@@ -36,9 +38,11 @@ export const Modal: React.FC<ModalProps> = ({
   size = 'md',
   closable = true,
   children,
-  className = ''
+  className = '',
+  'data-testid': testId,
 }) => {
   const modalRef = useRef<HTMLDivElement>(null);
+  const titleId = React.useId();
 
   // Handle escape key
   useEffect(() => {
@@ -62,13 +66,7 @@ export const Modal: React.FC<ModalProps> = ({
   // Focus management
   useEffect(() => {
     if (isOpen && modalRef.current) {
-      const focusableElements = modalRef.current.querySelectorAll(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-      const firstFocusable = focusableElements[0] as HTMLElement;
-      if (firstFocusable) {
-        firstFocusable.focus();
-      }
+      focusInitial(modalRef.current, (el) => el.classList.contains('modal-close-btn'));
     }
   }, [isOpen]);
 
@@ -86,6 +84,8 @@ export const Modal: React.FC<ModalProps> = ({
       onClick={handleBackdropClick}
       role="dialog"
       aria-modal="true"
+      aria-labelledby={title ? titleId : undefined}
+      data-testid={testId}
     >
       <div 
         ref={modalRef}
@@ -94,7 +94,7 @@ export const Modal: React.FC<ModalProps> = ({
       >
         {(title || closable) && (
           <div className="modal-header flex items-center justify-between p-6 pb-0">
-            {title && <h2 className="modal-title text-xl font-semibold">{title}</h2>}
+            {title && <h2 id={titleId} className="modal-title text-xl font-semibold">{title}</h2>}
             {closable && (
               <IconButton
                 icon={X}

@@ -16,6 +16,9 @@ export interface SegmentedOption<T extends string> {
   label: string;
   icon?: LucideIcon;
   disabled?: boolean;
+  /** Show only the icon; the label becomes the accessible name and tooltip */
+  iconOnly?: boolean;
+  'data-testid'?: string;
 }
 
 export interface SegmentedControlProps<T extends string> {
@@ -66,12 +69,15 @@ export function SegmentedControl<T extends string>({
             aria-checked={active}
             disabled={opt.disabled}
             onClick={() => onChange(opt.value)}
+            aria-label={opt.iconOnly ? opt.label : undefined}
+            title={opt.iconOnly ? opt.label : undefined}
+            data-testid={opt['data-testid']}
             className={`${fullWidth ? 'flex-1' : ''} inline-flex items-center justify-center gap-1.5 rounded-[0.75rem] font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed ${
               size === 'sm' ? 'px-2.5 py-1 text-xs' : 'px-3 py-1.5 text-sm'
             } ${active ? 'bg-surface-dark text-text-primary-dark shadow-sm' : 'text-text-secondary-dark hover:text-text-primary-dark'}`}
           >
             {Icon && <Icon className={size === 'sm' ? 'w-3.5 h-3.5' : 'w-4 h-4'} />}
-            {opt.label}
+            {!(opt.iconOnly && Icon) && opt.label}
           </button>
         );
       })}

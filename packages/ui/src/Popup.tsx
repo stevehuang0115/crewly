@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { X } from 'lucide-react';
 import { Button, IconButton } from './Button';
+import { focusInitial } from './focus';
 
 export interface PopupProps {
   isOpen: boolean;
@@ -53,13 +54,7 @@ export const Popup: React.FC<PopupProps> = ({
   // Focus management
   useEffect(() => {
     if (isOpen && modalRef.current) {
-      const focusableElements = modalRef.current.querySelectorAll(
-        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
-      );
-      const firstFocusable = focusableElements[0] as HTMLElement;
-      if (firstFocusable) {
-        firstFocusable.focus();
-      }
+      focusInitial(modalRef.current, (el) => el.getAttribute('aria-label') === 'Close modal');
     }
   }, [isOpen]);
 

@@ -11,11 +11,11 @@
 import React from 'react';
 import type { LucideIcon } from 'lucide-react';
 
-export interface EmptyStateProps {
+export interface EmptyStateProps extends Omit<React.HTMLAttributes<HTMLDivElement>, 'title'> {
   /** Icon shown above the title */
   icon?: LucideIcon;
-  /** What is missing, e.g. "No teams yet" */
-  title: string;
+  /** What is missing, e.g. "No teams yet" (may contain <code> etc.) */
+  title: React.ReactNode;
   /** One or two sentences on why, or what to do */
   description?: React.ReactNode;
   /** The action that fills the empty space (usually a Button) */
@@ -36,8 +36,8 @@ export interface EmptyStateProps {
  * <EmptyState icon={Users} title="No teams yet" description="Create a team to start." action={<Button>New team</Button>} />
  * ```
  */
-export const EmptyState: React.FC<EmptyStateProps> = ({ icon: Icon, title, description, action, compact = false, className = '' }) => (
-  <div className={`flex flex-col items-center justify-center text-center ${compact ? 'py-6 px-4' : 'py-12 px-6'} ${className}`}>
+export const EmptyState: React.FC<EmptyStateProps> = ({ icon: Icon, title, description, action, compact = false, className = '', ...rest }) => (
+  <div {...rest} className={`flex flex-col items-center justify-center text-center ${compact ? 'py-6 px-4' : 'py-12 px-6'} ${className}`}>
     {Icon && (
       <div className={`flex items-center justify-center rounded-full bg-surface-dark border border-border-dark text-text-secondary-dark ${compact ? 'w-10 h-10 mb-3' : 'w-12 h-12 mb-4'}`}>
         <Icon className={compact ? 'w-5 h-5' : 'w-6 h-6'} />

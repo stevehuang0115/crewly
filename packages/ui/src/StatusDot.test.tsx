@@ -30,9 +30,9 @@ describe('StatusDot', () => {
       expect(screen.getByTestId('status-dot')).toHaveClass('bg-yellow-400');
     });
 
-    it.each(grayStatuses)('maps "%s" to gray-500', (status) => {
+    it.each(grayStatuses)('maps "%s" to the muted token', (status) => {
       render(<StatusDot status={status} />);
-      expect(screen.getByTestId('status-dot')).toHaveClass('bg-gray-500');
+      expect(screen.getByTestId('status-dot')).toHaveClass('bg-text-secondary-dark/50');
     });
 
     it('maps "error" to rose-400', () => {

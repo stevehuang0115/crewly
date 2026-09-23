@@ -28,6 +28,10 @@ export interface LoadingSpinnerProps {
   className?: string;
   /** Center the spinner horizontally (adds mx-auto). @default true */
   centered?: boolean;
+  /** Test id for the wrapper (the spinner itself keeps "loading-spinner") */
+  'data-testid'?: string;
+  /** Put the text beside the spinner instead of under it */
+  inline?: boolean;
 }
 
 /**
@@ -49,21 +53,24 @@ export const LoadingSpinner: React.FC<LoadingSpinnerProps> = ({
   text,
   className = '',
   centered = true,
+  'data-testid': testId,
+  inline = false,
 }) => {
   const sizeClasses = SPINNER_SIZES[size];
 
   return (
     <div
-      className={`${centered ? 'flex flex-col items-center' : 'inline-flex flex-col items-center'} ${className}`}
+      className={`${centered ? 'flex' : 'inline-flex'} ${inline ? 'flex-row gap-2' : 'flex-col'} items-center ${centered && inline ? 'justify-center' : ''} ${className}`}
       role="status"
       aria-label={text || 'Loading'}
+      data-testid={testId}
     >
       <div
         className={`${sizeClasses} border-primary/20 border-t-primary rounded-full animate-spin`}
         data-testid="loading-spinner"
       />
       {text && (
-        <p className="mt-3 text-sm text-text-secondary-dark">{text}</p>
+        <p className={`${inline ? '' : 'mt-3'} text-sm text-text-secondary-dark`}>{text}</p>
       )}
     </div>
   );

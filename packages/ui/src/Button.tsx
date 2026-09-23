@@ -1,8 +1,9 @@
 import React from 'react';
 import { LucideIcon } from 'lucide-react';
+import { cn } from './cn';
 
-export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'danger-ghost' | 'success' | 'warning' | 'outline';
-export type ButtonSize = 'default' | 'sm' | 'icon';
+export type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost' | 'danger-ghost' | 'success' | 'warning' | 'outline' | 'link';
+export type ButtonSize = 'default' | 'sm' | 'xs' | 'icon';
 
 export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: ButtonVariant;
@@ -14,7 +15,7 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
   children?: React.ReactNode;
 }
 
-const baseClasses = "font-semibold flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
+const baseClasses = "font-semibold inline-flex items-center justify-center gap-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed";
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary: "bg-primary text-white hover:bg-primary/90",
@@ -25,11 +26,14 @@ const variantClasses: Record<ButtonVariant, string> = {
   success: "bg-emerald-600 text-white hover:bg-emerald-500",
   warning: "bg-yellow-500 text-black hover:bg-yellow-400",
   outline: "border border-border-dark text-text-secondary-dark hover:bg-surface-dark hover:text-text-primary-dark",
+  // Inline text action ("Clear", "Switch", "3 replies"): no box, just the accent
+  link: "text-primary hover:underline underline-offset-2",
 };
 
 const sizeClasses: Record<ButtonSize, string> = {
   default: "h-10 px-4 rounded-2xl text-sm",
   sm: "h-9 px-3 rounded-2xl text-sm",
+  xs: "h-7 px-2 rounded-[0.75rem] text-xs",
   icon: "h-10 w-10 rounded-2xl",
 };
 
@@ -47,13 +51,15 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
     ...props
   }, ref) => {
     const isDisabled = disabled || loading;
-    const finalClassName = [
+    // A link is inline text: no height or padding, just the text size.
+    const sizeClass = variant === 'link' ? (size === 'xs' ? 'text-xs' : 'text-sm') : sizeClasses[size];
+    const finalClassName = cn(
       baseClasses,
       variantClasses[variant],
-      sizeClasses[size],
+      sizeClass,
       fullWidth && 'w-full',
       className
-    ].filter(Boolean).join(' ');
+    );
 
     return (
       <button

@@ -35,8 +35,10 @@ const useTabsContext = (): TabsContextValue => {
 // ============ Tabs (Container) ============
 
 export interface TabsProps {
-  /** Default active tab value */
-  defaultValue: string;
+  /** Initial active tab (uncontrolled) */
+  defaultValue?: string;
+  /** Active tab when the parent owns it (e.g. from the URL hash) */
+  value?: string;
   /** Tab contents (TabList and TabContent components) */
   children: React.ReactNode;
   /** Additional CSS classes */
@@ -67,19 +69,22 @@ export interface TabsProps {
  * ```
  */
 export const Tabs: React.FC<TabsProps> = ({
-  defaultValue,
+  defaultValue = '',
+  value,
   children,
   className = '',
   onValueChange,
 }) => {
-  const [activeTab, setActiveTabState] = useState(defaultValue);
+  const [internalTab, setActiveTabState] = useState(defaultValue);
+  const controlled = value !== undefined;
+  const activeTab = controlled ? value : internalTab;
 
   const setActiveTab = useCallback(
     (tab: string) => {
-      setActiveTabState(tab);
+      if (!controlled) setActiveTabState(tab);
       onValueChange?.(tab);
     },
-    [onValueChange]
+    [controlled, onValueChange]
   );
 
   return (
@@ -98,6 +103,8 @@ export interface TabListProps {
   children: React.ReactNode;
   /** Additional CSS classes */
   className?: string;
+  /** Accessible name for the tab strip */
+  'aria-label'?: string;
 }
 
 /**
@@ -107,7 +114,7 @@ export interface TabListProps {
  * @param className - Additional CSS classes
  * @returns Tab list container
  */
-export const TabList: React.FC<TabListProps> = ({ children, className = '' }) => {
+export const TabList: React.FC<TabListProps> = ({ children, className = '', 'aria-label': ariaLabel }) => {
   const combinedClassName = [
     'flex gap-1 border-b border-border-dark pb-0 mb-6',
     className,
@@ -142,7 +149,7 @@ export const TabList: React.FC<TabListProps> = ({ children, className = '' }) =>
   };
 
   return (
-    <div className={combinedClassName} role="tablist" onKeyDown={handleKeyDown}>
+    <div className={combinedClassName} role="tablist" aria-label={ariaLabel} onKeyDown={handleKeyDown}>
       {children}
     </div>
   );

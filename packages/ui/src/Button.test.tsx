@@ -40,7 +40,7 @@ describe('Button Component', () => {
       render(<Button>Base Classes Button</Button>);
 
       const button = screen.getByRole('button');
-      expect(button).toHaveClass('font-semibold', 'flex', 'items-center', 'justify-center', 'gap-2');
+      expect(button).toHaveClass('font-semibold', 'inline-flex', 'items-center', 'justify-center', 'gap-2');
     });
   });
 

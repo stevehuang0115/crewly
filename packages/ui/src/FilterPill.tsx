@@ -16,7 +16,8 @@ export interface FilterPillProps {
   /** Whether this pill is currently selected. */
   isActive: boolean;
   /** Click handler. */
-  onClick: () => void;
+  /** Omit for display-only pills */
+  onClick?: () => void;
   /** Optional count rendered after the label (e.g. filter match count). */
   count?: number;
   /** Disable interaction and dim the pill. */

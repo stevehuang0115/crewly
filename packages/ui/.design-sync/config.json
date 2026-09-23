@@ -14,7 +14,12 @@
     "../../node_modules/@fontsource/nunito/800.css"
   ],
   "componentSrcMap": {
-    "Icons": null
+    "Icons": null,
+    "TableHead": null,
+    "TableBody": null,
+    "TableRow": null,
+    "TableHeader": null,
+    "TableCell": null
   },
   "docsMap": {
     "Button": "docs/groups/Actions.md",
@@ -60,7 +65,18 @@
     "Avatar": "docs/groups/Identity.md",
     "AvatarGroup": "docs/groups/Identity.md",
     "CrewlyRoot": "docs/groups/Layout.md",
-    "ScoreCardGrid": "docs/groups/Feedback.md"
+    "ScoreCardGrid": "docs/groups/Feedback.md",
+    "EmptyState": "docs/groups/Feedback.md",
+    "Tooltip": "docs/groups/Overlays.md",
+    "SegmentedControl": "docs/groups/Forms.md",
+    "Menu": "docs/groups/Overlays.md",
+    "Drawer": "docs/groups/Overlays.md",
+    "Table": "docs/groups/Layout.md",
+    "TableHead": "docs/groups/Layout.md",
+    "TableBody": "docs/groups/Layout.md",
+    "TableRow": "docs/groups/Layout.md",
+    "TableHeader": "docs/groups/Layout.md",
+    "TableCell": "docs/groups/Layout.md"
   },
   "provider": {
     "component": "CrewlyRoot",
@@ -134,6 +150,19 @@
       "cardMode": "column"
     },
     "Card": {
+      "cardMode": "column"
+    },
+    "Drawer": {
+      "cardMode": "single",
+      "viewport": "720x520"
+    },
+    "Table": {
+      "cardMode": "column"
+    },
+    "EmptyState": {
+      "cardMode": "column"
+    },
+    "SegmentedControl": {
       "cardMode": "column"
     }
   },
