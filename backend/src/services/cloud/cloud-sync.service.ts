@@ -139,6 +139,8 @@ export class CloudSyncService extends EventEmitter {
   private messagePollTimer: ReturnType<typeof setTimeout> | null = null;
   /** Guards against overlapping self-scheduled message-poll cycles. */
   private messagePollRunning = false;
+  /** When the last message-poll cycle finished (watchdog input). */
+  private lastMessagePollAt = 0;
   /** Queue re-register timer handle (lets relay evict stale Portal pairs). */
   private registerTimer: ReturnType<typeof setInterval> | null = null;
   /** Peer reported by the last registration, so a repeat is not logged at info. */
@@ -246,7 +248,10 @@ export class CloudSyncService extends EventEmitter {
 
     // Start periodic timers
     this.heartbeatTimer = setInterval(
-      () => { this.sendHeartbeat().catch(() => {}); },
+      () => {
+        this.sendHeartbeat().catch(() => {});
+        this.checkMessagePollAlive();
+      },
       CLOUD_SYNC_CONSTANTS.HEARTBEAT_INTERVAL_MS
     );
     this.devicePollTimer = setInterval(
@@ -1020,6 +1025,7 @@ export class CloudSyncService extends EventEmitter {
       count = -1;
     } finally {
       this.messagePollRunning = false;
+      this.lastMessagePollAt = Date.now();
     }
 
     // `stop()` may have run during the await — re-read the (widened) state.
@@ -1035,6 +1041,36 @@ export class CloudSyncService extends EventEmitter {
         : CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_INTERVAL_MS;
     }
     this.scheduleNextMessagePoll(gap);
+  }
+
+  /**
+   * Restart the message-poll loop if it has stopped completing cycles.
+   *
+   * 2026-09-23: the loop went silent for ~50 minutes while heartbeats and
+   * queue re-registration carried on, so Cloud kept pushing Slack events
+   * into this machine's relay queue and nothing picked them up — agents
+   * "didn't reply". A cycle ends within the long-poll timeout; one that
+   * hasn't in {@link CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_STALL_MS} is stuck
+   * (a hung request or a lost timer), so start a fresh loop.
+   *
+   * @returns True when the loop was restarted
+   */
+  checkMessagePollAlive(now: number = Date.now()): boolean {
+    if (this.state !== 'syncing' || !this.config || this.lastMessagePollAt === 0) return false;
+    const idleMs = now - this.lastMessagePollAt;
+    if (idleMs < CLOUD_SYNC_CONSTANTS.MESSAGE_POLL_STALL_MS) return false;
+    this.logger.warn('Message poll loop stalled — restarting it', {
+      idleMs,
+      inFlight: this.messagePollRunning,
+    });
+    if (this.messagePollTimer) {
+      clearTimeout(this.messagePollTimer);
+      this.messagePollTimer = null;
+    }
+    this.messagePollRunning = false;
+    this.lastMessagePollAt = now;
+    this.scheduleNextMessagePoll(0);
+    return true;
   }
 
   /**

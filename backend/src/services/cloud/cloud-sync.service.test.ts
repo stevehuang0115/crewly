@@ -191,6 +191,35 @@ describe('CloudSyncService', () => {
     });
   });
 
+  // ----- Message-poll watchdog ----------------------------------------------
+
+  describe('checkMessagePollAlive (2026-09-23: loop went silent for ~50 min)', () => {
+    it('leaves a loop alone that finished a cycle recently', () => {
+      service.start(testConfig);
+      (service as any).lastMessagePollAt = 1_000_000;
+      expect(service.checkMessagePollAlive(1_000_000 + 30_000)).toBe(false);
+    });
+
+    it('restarts a loop that has not finished a cycle for too long, even if one is marked in flight', () => {
+      service.start(testConfig);
+      (service as any).lastMessagePollAt = 1_000_000;
+      (service as any).messagePollRunning = true;
+      const schedule = jest.spyOn(service as any, 'scheduleNextMessagePoll');
+
+      expect(service.checkMessagePollAlive(1_000_000 + 120_000)).toBe(true);
+      expect((service as any).messagePollRunning).toBe(false);
+      expect(schedule).toHaveBeenCalledWith(0);
+    });
+
+    it('does nothing when stopped or before the first cycle', () => {
+      service.start(testConfig);
+      expect(service.checkMessagePollAlive(Date.now() + 10 * 60_000)).toBe(false);
+      (service as any).lastMessagePollAt = 1;
+      service.stop();
+      expect(service.checkMessagePollAlive(10 * 60_000)).toBe(false);
+    });
+  });
+
   // ----- Heartbeat ----------------------------------------------------------
 
   describe('sendHeartbeat', () => {

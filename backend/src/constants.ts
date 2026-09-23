@@ -2082,6 +2082,12 @@ export const CLOUD_SYNC_CONSTANTS = {
 	 */
 	MESSAGE_POLL_INTERVAL_MS: 5_000,
 	/**
+	 * A message-poll cycle that hasn't finished for this long is stuck; the
+	 * heartbeat restarts the loop (see CloudSyncService.checkMessagePollAlive).
+	 * Comfortably above MESSAGE_LONGPOLL_TIMEOUT_MS.
+	 */
+	MESSAGE_POLL_STALL_MS: 90_000,
+	/**
 	 * Long-poll hold time (ms) sent to the relay as `?wait=`. The relay holds
 	 * `/queue/poll` open until a message arrives (or this deadline), so the OSS
 	 * picks up Portal `chat_request`s near-instantly instead of on the old 5s
