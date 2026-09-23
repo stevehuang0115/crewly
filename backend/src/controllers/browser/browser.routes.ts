@@ -17,6 +17,7 @@ import {
 	screenshot,
 	readText,
 	getTabs,
+	reloadExtension,
 	execute,
 	executeJs,
 	click,
@@ -69,6 +70,9 @@ export function createBrowserRouter(): Router {
 
 	// GET /api/browser/tabs — list open tabs
 	router.get('/tabs', getTabs);
+
+	// Reload the Chrome extension from the build on disk (applies an update remotely)
+	router.post('/extension/reload', reloadExtension);
 
 	// GET /api/browser/cookies — get cookies (optional ?domain=)
 	router.get('/cookies', getCookies);

@@ -26,6 +26,7 @@ import { spawn } from 'child_process';
 import * as path from 'path';
 import type { Request, Response } from 'express';
 import { LoggerService, type ComponentLogger } from '../../services/core/logger.service.js';
+import { DesktopRemoteService, type DesktopRemoteInput } from '../../services/desktop/desktop-remote.service.js';
 
 let logger: ComponentLogger | null = null;
 function log(): ComponentLogger {
@@ -288,4 +289,84 @@ async function readPresence(): Promise<Record<string, unknown>> {
     paused: await exists('desktop.pause'),
     stopped: await exists('desktop.stop'),
   };
+}
+
+/** The remote desktop service, wired to this controller's skill runner. */
+function remote(): DesktopRemoteService {
+  return DesktopRemoteService.getInstance(runDesktopAction);
+}
+
+/**
+ * Whether a request came from this machine itself.
+ *
+ * @param req - Request
+ * @returns True for a loopback caller
+ */
+export function isLocalRequest(req: Request): boolean {
+  const addr = req.socket?.remoteAddress ?? '';
+  // Anything forwarded (a proxy, the relay adapter) is not "at the machine".
+  if (req.get('X-Forwarded-For')) return false;
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+/**
+ * GET /api/desktop/remote — is remote control allowed on this machine.
+ *
+ * @param _req - Unused
+ * @param res - `{ enabled }`
+ */
+export async function desktopRemoteGet(_req: Request, res: Response): Promise<void> {
+  res.json({ success: true, data: { enabled: await remote().isEnabled() } });
+}
+
+/**
+ * PUT /api/desktop/remote — allow or forbid remote control.
+ *
+ * Only from the machine itself: someone at the Mac says yes before its
+ * screen can be watched and its mouse moved from the internet. This route is
+ * not on the relay allowlist either; the loopback check is the second lock.
+ *
+ * @param req - Body `{ enabled: boolean }`
+ * @param res - `{ enabled }`
+ */
+export async function desktopRemoteSet(req: Request, res: Response): Promise<void> {
+  if (!isLocalRequest(req)) {
+    res.status(403).json({ success: false, reason: 'local_only', message: 'Remote control can only be switched on at the machine itself.' });
+    return;
+  }
+  const enabled = ((req.body ?? {}) as { enabled?: unknown }).enabled === true;
+  await remote().setEnabled(enabled);
+  res.json({ success: true, data: { enabled } });
+}
+
+/**
+ * POST /api/desktop/remote/frame — the owner's live view.
+ *
+ * @param req - Body `{ maxWidth? }`
+ * @param res - `{ data: { base64, mimeType, width, height, capturedAt } }`, or a refusal
+ */
+export async function desktopRemoteFrame(req: Request, res: Response): Promise<void> {
+  const maxWidth = Number(((req.body ?? {}) as { maxWidth?: unknown }).maxWidth) || undefined;
+  const frame = await remote().frame(maxWidth);
+  if ('success' in frame && frame.success === false) {
+    res.status(frame.reason === 'remote_disabled' ? 403 : 409).json(frame);
+    return;
+  }
+  res.json({ success: true, data: frame });
+}
+
+/**
+ * POST /api/desktop/remote/input — the owner's click, typing, key or scroll.
+ *
+ * @param req - Body: a {@link DesktopRemoteInput}
+ * @param res - The skill's answer, or a refusal
+ */
+export async function desktopRemoteInput(req: Request, res: Response): Promise<void> {
+  const result = await remote().input((req.body ?? {}) as DesktopRemoteInput);
+  if (result['success'] === false) {
+    const reason = String(result['reason'] ?? '');
+    res.status(reason === 'remote_disabled' ? 403 : reason === 'validation' ? 400 : 409).json(result);
+    return;
+  }
+  res.json({ success: true, data: result });
 }

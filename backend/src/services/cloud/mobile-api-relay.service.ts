@@ -113,6 +113,14 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // be reachable from the internet just because the phone app can reach
   // everything else here (2026-09-20).
   { method: 'GET', prefix: '/desktop/status' },
+  // The owner's live view and hands on this machine. Both refuse unless
+  // remote control was switched on AT the machine (PUT /desktop/remote,
+  // loopback only, and deliberately not listed here).
+  { method: 'GET', prefix: '/desktop/remote' },
+  { method: 'POST', prefix: '/desktop/remote/frame' },
+  { method: 'POST', prefix: '/desktop/remote/input' },
+  // Load the extension build on disk, so an update applies from the phone.
+  { method: 'POST', prefix: '/browser/extension/reload' },
   { method: 'POST', prefix: '/desktop/look' },
   { method: 'POST', prefix: '/desktop/stop' },
   // Mutations — human-in-the-loop actions only.

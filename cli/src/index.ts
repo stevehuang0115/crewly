@@ -17,6 +17,7 @@ import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
 import { backupCommandAndExit } from './commands/backup.js';
+import { desktopCommand } from './commands/desktop.js';
 import { doctorCommand } from './commands/doctor.js';
 import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
@@ -140,6 +141,13 @@ program
   .option('-n, --lines <number>', 'Number of log lines to show (default: 50)')
   .option('-f, --follow', 'Follow log output in real-time (logs action)')
   .action(serviceCommand);
+
+program
+  .command('desktop <area> [action]')
+  .description('Remote desktop: `crewly desktop remote on|off|status` — allow watching and driving this machine from crewlyai.com and the phone (run it on the machine)')
+  .action(async (area: string, action: string | undefined) => {
+    process.exitCode = await desktopCommand(area, action);
+  });
 
 program
   .command('backup <action> [target]')

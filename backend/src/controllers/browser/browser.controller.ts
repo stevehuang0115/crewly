@@ -435,6 +435,22 @@ export async function getTabs(req: Request, res: Response): Promise<void> {
 }
 
 /**
+ * POST /api/browser/extension/reload
+ *
+ * Make the Chrome extension load the build on disk. An unpacked extension
+ * keeps running the code it was loaded with until reloaded, so without this
+ * an update waited for someone to be at chrome://extensions. The extension
+ * answers first, then reloads and reconnects on its own. Needs extension
+ * 0.4.18+; an older one answers "unknown tool".
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export async function reloadExtension(req: Request, res: Response): Promise<void> {
+	await sendToolCommand(req, res, 'reloadExtension');
+}
+
+/**
  * POST /api/browser/execute
  * Execute a safe predefined operation on the active tab.
  * Supports: querySelectorAll, getTitle, getUrl, getSelection, getScrollPosition.

@@ -106,12 +106,12 @@ describe('createBrowserRouter', () => {
 		expect(routePaths).toContain('POST /sessions/:id/pending/:pendingId');
 	});
 
-	it('should have exactly 38 routes', () => {
+	it('should have exactly 39 routes', () => {
 		// 27 legacy routes (added /select-option) + 3 per-tab dispatch routes
 		// (bind / unbind / bindings) + 8 live browser view routes (sessions
 		// list / one / frame / frame.json / stop / take / release / pending).
 		const router = createBrowserRouter();
 		const routes = router.stack.filter((layer: any) => layer.route);
-		expect(routes.length).toBe(38);
+		expect(routes.length).toBe(39);
 	});
 });

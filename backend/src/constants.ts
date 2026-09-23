@@ -1217,6 +1217,18 @@ export const RUNTIME_EXIT_CONSTANTS = {
  * holding the tail of the old one. Its real state (tasks, teams, OKRs, wiki)
  * lives in Crewly and is read back at startup anyway.
  */
+/** Remote desktop — the owner watching and driving this machine from the portal / phone. */
+export const DESKTOP_REMOTE_CONSTANTS = {
+	/** Under CREWLY_HOME; `{ enabled }`, switchable only on the machine */
+	SETTINGS_FILE: 'desktop-remote.json',
+	/** Widest frame sent over the relay, in pixels */
+	FRAME_MAX_WIDTH: 1200,
+	/** sips JPEG quality (0-100) */
+	JPEG_QUALITY: 60,
+	/** Longest text typed in one input */
+	MAX_TYPE_CHARS: 2000,
+} as const;
+
 export const ORC_CONVERSATION_CONSTANTS = {
 	/** Start fresh at a restart when the last turn carried at least this many tokens. Env: CREWLY_ORC_FRESH_CONTEXT_TOKENS */
 	FRESH_CONTEXT_TOKENS: 300_000,

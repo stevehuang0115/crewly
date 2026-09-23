@@ -7,7 +7,7 @@
  * at all.
  */
 
-import { checkAction, parseSkillJson, DESKTOP_READ_ACTIONS, DESKTOP_ACT_ACTIONS } from './desktop.controller';
+import { checkAction, parseSkillJson, DESKTOP_READ_ACTIONS, DESKTOP_ACT_ACTIONS, isLocalRequest } from './desktop.controller';
 import { isAllowedMobileApiCall } from '../../services/cloud/mobile-api-relay.service';
 
 describe('action allowlist', () => {
@@ -83,5 +83,28 @@ describe('parseSkillJson', () => {
   it('describes the failure rather than throwing on junk', () => {
     expect(parseSkillJson('bash: not found')).toMatchObject({ success: false, reason: 'unparsable' });
     expect(parseSkillJson('')).toMatchObject({ reason: 'unparsable' });
+  });
+});
+
+describe('isLocalRequest — remote control is switched on at the machine only', () => {
+  const req = (addr: string, forwarded?: string) =>
+    ({ socket: { remoteAddress: addr }, get: (h: string) => (h === 'X-Forwarded-For' ? forwarded : undefined) }) as never;
+
+  it('accepts loopback and nothing else', () => {
+    expect(isLocalRequest(req('127.0.0.1'))).toBe(true);
+    expect(isLocalRequest(req('::1'))).toBe(true);
+    expect(isLocalRequest(req('::ffff:127.0.0.1'))).toBe(true);
+    expect(isLocalRequest(req('192.168.1.20'))).toBe(false);
+    expect(isLocalRequest(req('127.0.0.1', '8.8.8.8'))).toBe(false);
+  });
+});
+
+describe('the relay reaches the remote view and hands, never the on-switch', () => {
+  it('allows the frame, input and status, and refuses PUT /desktop/remote', () => {
+    expect(isAllowedMobileApiCall('POST', '/desktop/remote/frame')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/desktop/remote/input')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/desktop/remote')).toBe(true);
+    expect(isAllowedMobileApiCall('PUT', '/desktop/remote')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/browser/extension/reload')).toBe(true);
   });
 });
