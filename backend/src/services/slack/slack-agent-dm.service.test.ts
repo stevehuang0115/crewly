@@ -285,6 +285,30 @@ describe('SlackAgentDmService', () => {
     });
   });
 
+  it('puts the placeholder for a new top-level DM in the thread the reply goes to, so the reply replaces it', async () => {
+    // The placeholder used to sit at the top level while the reply went into
+    // the message's thread under another key: never replaced, and later
+    // turned into "still working on this" next to an answered thread.
+    const { deps, sent, emit } = makeDeps();
+    const calls: string[] = [];
+    deps.typing = {
+      begin: async (key) => { calls.push(`begin:${key.threadTs}`); return null; },
+      setPhase: async () => undefined,
+      fail: async () => undefined,
+      resolve: async (key, text) => { calls.push(`resolve:${key.threadTs}`); sent.push({ channelId: key.slackChannelId, text, threadTs: key.threadTs }); return 'replaced' as const; },
+    };
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+
+    await svc.routeInbound(dm({ ts: '7.0' }));
+    emit({ id: 'm3', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'done' } as unknown as ChatMessageDTO);
+    await new Promise((r) => setImmediate(r));
+
+    expect(calls).toEqual(['begin:7.0', 'resolve:7.0']);
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+
   it('keeps an already-threaded question in its own thread, and the placeholder with it', async () => {
     const { deps, sent, emit } = makeDeps();
     const calls: string[] = [];

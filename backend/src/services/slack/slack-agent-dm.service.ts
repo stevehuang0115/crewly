@@ -343,7 +343,13 @@ export class SlackAgentDmService {
     // A reply is now owed: show the honest state where it will land —
     // "waking up…" while an idle agent is started and registered (a cold
     // start is 1–2 minutes), "is working on it…" once it holds the message.
-    const typingKey = { agentSession, slackChannelId: message.channelId, ...(message.threadTs ? { threadTs: message.threadTs } : {}) };
+    // The placeholder goes where the reply will go — the message's thread,
+    // started by the message itself when it has none (see replyThreadTs).
+    // Keyed on message.threadTs alone, a top-level DM got its placeholder at
+    // the top level while the reply went into the thread under a different
+    // key: the placeholder was never replaced, and ten minutes later turned
+    // into "still working on this" next to an answered thread (2026-09-23).
+    const typingKey = { agentSession, slackChannelId: message.channelId, threadTs: message.threadTs || message.ts };
     const typing = installed && this.deps.typing ? this.deps.typing : null;
     if (typing) {
       const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(agentSession) : true;
