@@ -475,7 +475,7 @@ describe('cli/utils/marketplace', () => {
       expect(result.success).toBe(true);
     });
 
-    it('fails if skill.json returns 404 for GitHub-sourced skills', async () => {
+    it('fails loudly, naming both manifests, when a GitHub skill has neither SKILL.md nor skill.json', async () => {
       const item = makeFakeItem({
         id: 'github-skill-missing',
         assets: { archive: 'config/skills/agent/core/github-skill-missing' },
@@ -487,8 +487,10 @@ describe('cli/utils/marketplace', () => {
 
       const result = await downloadAndInstall(item);
       expect(result.success).toBe(false);
-      expect(result.message).toContain('Download failed for skill.json');
-      expect(result.message).toContain('404');
+      expect(result.message).toContain('No skill manifest');
+      expect(result.message).toContain('config/skills/agent/core/github-skill-missing');
+      expect(result.message).toContain('SKILL.md: 404');
+      expect(result.message).toContain('skill.json: 404');
     });
 
     it('returns error for items with no downloadable asset', async () => {
@@ -588,11 +590,11 @@ describe('cli/utils/marketplace', () => {
         });
 
       const progress: Array<{ name: string; index: number; total: number }> = [];
-      const count = await installAllSkills((name, index, total) => {
+      const result = await installAllSkills((name, index, total) => {
         progress.push({ name, index, total });
       });
 
-      expect(count).toBe(2);
+      expect(result).toEqual({ total: 2, installed: 2, failed: [] });
       expect(progress).toHaveLength(2);
       expect(progress[0]).toEqual({ name: 'Skill A', index: 1, total: 2 });
       expect(progress[1]).toEqual({ name: 'Skill B', index: 2, total: 2 });
@@ -609,9 +611,12 @@ describe('cli/utils/marketplace', () => {
         .mockResolvedValueOnce(registryResponse);
 
       const progress: string[] = [];
-      const count = await installAllSkills((name) => { progress.push(name); });
+      const result = await installAllSkills((name) => { progress.push(name); });
 
-      expect(count).toBe(0);
+      expect(result.installed).toBe(0);
+      expect(result.failed).toEqual([
+        { id: 'skill-fail', name: 'Fail Skill', message: 'No downloadable asset for skill-fail' },
+      ]);
       expect(progress).toEqual(['Fail Skill']);
     });
   });
@@ -624,3 +629,134 @@ describe('cli/utils/marketplace', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Skill manifests and loud failures (29 of 31 marketplace skills 404'd:
+// the CLI required skill.json after skills moved to SKILL.md, premium
+// archives were missing, and the wizard hid every failure).
+// ---------------------------------------------------------------------------
+
+describe('marketplace skill installs: SKILL.md, skill.json, fallback, loud failures', () => {
+  const CDN = 'https://raw.githubusercontent.com/stevehuang0115/crewly/main';
+
+  /** Serve these URL -> body pairs; everything else is a 404. Records every URL asked. */
+  function serve(files: Record<string, string>): string[] {
+    const asked: string[] = [];
+    global.fetch = jest.fn().mockImplementation(async (url: string) => {
+      asked.push(url);
+      if (url in files) {
+        const buf = Buffer.from(files[url]);
+        return { ok: true, status: 200, statusText: 'OK', arrayBuffer: () => Promise.resolve(buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)) };
+      }
+      return { ok: false, status: 404, statusText: 'Not Found' };
+    });
+    return asked;
+  }
+
+  async function installedFiles(id: string): Promise<string[]> {
+    return (await readdir(getInstallPath('skill', id))).sort();
+  }
+
+  it('installs a skill that ships SKILL.md and no skill.json (agent-send-pdf-to-slack shape)', async () => {
+    const dir = 'config/skills/agent/send-pdf-to-slack';
+    serve({ [`${CDN}/${dir}/SKILL.md`]: '# Send PDF', [`${CDN}/${dir}/execute.sh`]: '#!/bin/bash' });
+
+    const result = await downloadAndInstall(makeFakeItem({ id: 'agent-send-pdf-to-slack', assets: { archive: dir } }));
+
+    expect(result.success).toBe(true);
+    expect(await installedFiles('agent-send-pdf-to-slack')).toEqual(['SKILL.md', 'execute.sh']);
+  });
+
+  it('still installs an older skill that ships only skill.json', async () => {
+    const dir = 'config/skills/agent/legacy-skill';
+    serve({ [`${CDN}/${dir}/skill.json`]: '{"id":"legacy-skill"}', [`${CDN}/${dir}/instructions.md`]: 'do it' });
+
+    const result = await downloadAndInstall(makeFakeItem({ id: 'legacy-skill', assets: { archive: dir } }));
+
+    expect(result.success).toBe(true);
+    expect(await installedFiles('legacy-skill')).toEqual(['instructions.md', 'skill.json']);
+  });
+
+  it('installs from SKILL.md even when the entry lists stale files (ai-studio shape)', async () => {
+    const dir = 'config/skills/agent/ai-studio';
+    serve({ [`${CDN}/${dir}/SKILL.md`]: '# AI Studio' });
+
+    const result = await downloadAndInstall(
+      makeFakeItem({ id: 'ai-studio', assets: { archive: dir }, metadata: { files: ['skill.json', 'instructions.md'] } }),
+    );
+
+    expect(result.success).toBe(true);
+    expect(await installedFiles('ai-studio')).toEqual(['SKILL.md']);
+  });
+
+  it('falls back to the public copy when the premium archive 404s, and says so', async () => {
+    const dir = 'config/skills/agent/code-review';
+    const publicItem = makeFakeItem({ id: 'code-review', name: 'Code Review', assets: { archive: dir } });
+    const premiumItem = makeFakeItem({ id: 'code-review', name: 'Code Review', assets: { archive: 'skills/code-review/code-review-1.0.0.tar.gz' } });
+
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(makeRegistryResponse([publicItem]))
+      .mockResolvedValueOnce(makeRegistryResponse([premiumItem]));
+    const registry = await fetchRegistry();
+    const merged = registry.items.find((i) => i.id === 'code-review')!;
+    expect(merged.assets.archive).toBe('skills/code-review/code-review-1.0.0.tar.gz');
+    expect(merged.fallback?.assets.archive).toBe(dir);
+
+    serve({ [`${CDN}/${dir}/SKILL.md`]: '# Code review', [`${CDN}/${dir}/execute.sh`]: '#!/bin/bash' });
+    const result = await downloadAndInstall(merged);
+
+    expect(result.success).toBe(true);
+    expect(result.message).toContain('from the public registry');
+    expect(result.message).toContain('premium source failed: Download failed: 404');
+    expect(await installedFiles('code-review')).toEqual(['SKILL.md', 'execute.sh']);
+  });
+
+  it('does not attach a fallback that points at the same source', async () => {
+    const item = makeFakeItem({ id: 'dup', assets: { archive: 'config/skills/agent/dup' } });
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(makeRegistryResponse([item]))
+      .mockResolvedValueOnce(makeRegistryResponse([item]));
+
+    const registry = await fetchRegistry();
+
+    expect(registry.items.find((i) => i.id === 'dup')?.fallback).toBeUndefined();
+  });
+
+  it('fails with the URL when a premium-only archive is missing', async () => {
+    serve({});
+    const result = await downloadAndInstall(
+      makeFakeItem({ id: 'skill-nano-banana', assets: { archive: 'skills/nano-banana/nano-banana-1.1.0.tar.gz' } }),
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain('404');
+    expect(result.message).toContain('skills/nano-banana/nano-banana-1.1.0.tar.gz');
+  });
+
+  it('reports every failed skill by name from installAllSkills instead of only counting successes', async () => {
+    const ok = makeFakeItem({ id: 'good-skill', name: 'Good Skill', assets: { archive: 'config/skills/agent/good-skill' } });
+    const missing = makeFakeItem({ id: 'gone-skill', name: 'Gone Skill', assets: { archive: 'config/skills/agent/gone-skill' } });
+    const premiumOnly = makeFakeItem({ id: 'paid-skill', name: 'Paid Skill', assets: { archive: 'skills/paid/paid-1.0.0.tar.gz' } });
+    const files: Record<string, string> = { [`${CDN}/config/skills/agent/good-skill/SKILL.md`]: '# ok' };
+    const body = (text: string) => {
+      const buf = Buffer.from(text);
+      return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    };
+    global.fetch = jest.fn()
+      .mockResolvedValueOnce(makeRegistryResponse([ok, missing, premiumOnly]))
+      .mockResolvedValueOnce(makeRegistryResponse([]))
+      .mockImplementation(async (url: string) => (url in files
+        ? { ok: true, status: 200, statusText: 'OK', arrayBuffer: () => Promise.resolve(body(files[url])) }
+        : { ok: false, status: 404, statusText: 'Not Found' }));
+
+    const result = await installAllSkills();
+
+    // Guard: the run must actually have exercised skills.
+    expect(result.total).toBe(3);
+    expect(result.installed).toBe(1);
+    expect(result.failed.map((f) => f.name)).toEqual(['Gone Skill', 'Paid Skill']);
+    expect(result.failed[0].message).toContain('No skill manifest');
+    expect(result.failed[1].message).toContain('404');
+  });
+});
+

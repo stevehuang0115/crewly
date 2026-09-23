@@ -468,11 +468,29 @@ describe('onboard command', () => {
 
     it('installs missing skills', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 0, total: 5 });
-      mockInstallAllSkills.mockResolvedValue(5);
+      mockInstallAllSkills.mockResolvedValue({ total: 5, installed: 5, failed: [] });
       await ensureSkills();
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('Installing 5 agent skills');
       expect(output).toContain('5 skills installed');
+    });
+
+    it('names every skill that failed instead of reporting only the successes', async () => {
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 0, total: 31 });
+      mockInstallAllSkills.mockResolvedValue({
+        total: 31,
+        installed: 29,
+        failed: [
+          { id: 'skill-nano-banana', name: 'Nano Banana', message: 'Download failed: 404 Not Found (https://crewlyai.com/api/assets/skills/nano-banana/nano-banana-1.1.0.tar.gz)' },
+          { id: 'gone', name: 'Gone Skill', message: 'No skill manifest at x (SKILL.md: 404, skill.json: 404)' },
+        ],
+      });
+      await ensureSkills();
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('✗ Nano Banana: Download failed: 404');
+      expect(output).toContain('✗ Gone Skill: No skill manifest');
+      expect(output).toContain('29 of 31 skills installed, 2 failed');
+      expect(output).not.toContain('✓ 29 skills installed');
     });
 
     it('shows bundled skills when marketplace has zero', async () => {

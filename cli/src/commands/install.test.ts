@@ -151,4 +151,35 @@ describe('installCommand', () => {
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('0 installed'));
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('1 failed'));
   });
+
+  it('exits non-zero when any skill in --all fails', async () => {
+    const items = [makeFakeItem('skill-a', 'Skill A'), makeFakeItem('skill-b', 'Skill B')];
+    mockFetchRegistry.mockResolvedValue({ schemaVersion: 1, lastUpdated: '2025-01-01', cdnBaseUrl: '', items });
+    mockDownloadAndInstall
+      .mockResolvedValueOnce({ success: true, message: 'ok' })
+      .mockResolvedValueOnce({ success: false, message: 'Download failed: 404 Not Found' });
+    const before = process.exitCode;
+    try {
+      await installCommand(undefined, { all: true });
+      expect(mockDownloadAndInstall).toHaveBeenCalledTimes(2);
+      expect(process.exitCode).toBe(1);
+      expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Skill B: Download failed: 404'));
+    } finally {
+      process.exitCode = before;
+    }
+  });
+
+  it('exits zero when every skill in --all installs', async () => {
+    const items = [makeFakeItem('skill-a', 'Skill A')];
+    mockFetchRegistry.mockResolvedValue({ schemaVersion: 1, lastUpdated: '2025-01-01', cdnBaseUrl: '', items });
+    mockDownloadAndInstall.mockResolvedValue({ success: true, message: 'ok' });
+    const before = process.exitCode;
+    try {
+      process.exitCode = undefined;
+      await installCommand(undefined, { all: true });
+      expect(process.exitCode).toBeUndefined();
+    } finally {
+      process.exitCode = before;
+    }
+  });
 });

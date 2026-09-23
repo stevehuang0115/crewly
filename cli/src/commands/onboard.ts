@@ -370,11 +370,21 @@ export async function ensureSkills(): Promise<void> {
 
     console.log(chalk.blue(`  Installing ${total} agent skills from marketplace...`));
 
-    const count = await installAllSkills((name, index, skillTotal) => {
+    const result = await installAllSkills((name, index, skillTotal) => {
       console.log(chalk.gray(`  [${index}/${skillTotal}] ${name}`));
     });
 
-    console.log(chalk.green(`  ✓ ${count} skills installed\n`));
+    // Report failures by name. Printing only the success count hid 29 of 31
+    // skills failing ("✓ 2 skills installed" after "Installing 31...").
+    if (result.failed.length === 0) {
+      console.log(chalk.green(`  ✓ ${result.installed} skills installed\n`));
+    } else {
+      for (const f of result.failed) {
+        console.log(chalk.red(`  ✗ ${f.name}: ${f.message}`));
+      }
+      console.log(chalk.yellow(`  ⚠ ${result.installed} of ${result.total} skills installed, ${result.failed.length} failed.`));
+      console.log(chalk.gray('  Setup continues; retry with \'crewly install --all\' and report persistent failures.\n'));
+    }
   } catch (error) {
     // Offline fallback: count bundled skills
     const bundled = countBundledSkills();
