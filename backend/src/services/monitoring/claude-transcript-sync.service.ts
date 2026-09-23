@@ -74,6 +74,15 @@ export interface TranscriptCursor {
 	 * since session restore is staggered over a minute or so after boot.
 	 */
 	lastContextTokens?: number;
+	/**
+	 * `2` once `cost` has been recomputed from this cursor's own transcript.
+	 *
+	 * Before the shared-cwd guard (2026-09-22), several agents' cursors were
+	 * pointed at one foreign transcript and each accumulated its whole cost —
+	 * Atlas and Max each showed ~$300. Cursors without this mark are recounted
+	 * once on load.
+	 */
+	costBasis?: 2;
 }
 
 /** One agent's context size, as measured from its latest transcript turn. */
@@ -381,7 +390,7 @@ export class ClaudeTranscriptSyncService {
 		// (a fresh session id, not a resume). Start its cursor over, but keep
 		// the cost so the dashboard shows the agent's lifetime spend.
 		if (!cursor || cursor.filePath !== filePath) {
-			cursor = { filePath, offset: 0, seenMessageIds: [], cost: cursor?.cost ?? 0 };
+			cursor = { filePath, offset: 0, seenMessageIds: [], cost: cursor?.cost ?? 0, costBasis: 2 };
 			this.cursors.set(sessionName, cursor);
 		}
 
@@ -430,6 +439,7 @@ export class ClaudeTranscriptSyncService {
 			// and are what make the cost figure meaningful.
 			tokenSvc.recordUsage(sessionName, sessionName, turn.input, turn.output, turn.model, undefined, {
 				cachedInput: turn.cacheRead + turn.cacheWrite,
+				cacheWrite: turn.cacheWrite,
 				timestamp: turn.timestamp,
 			});
 
@@ -559,9 +569,50 @@ export class ClaudeTranscriptSyncService {
 			const parsed = JSON.parse(raw) as Record<string, TranscriptCursor>;
 			this.cursors = new Map(Object.entries(parsed));
 			this.logger.debug('Loaded transcript cursors', { sessions: this.cursors.size });
+			await this.recountLegacyCosts();
 		} catch {
 			this.cursors = new Map();
 		}
+	}
+
+	/**
+	 * Recount, once, the cost of every cursor written before the shared-cwd
+	 * guard, from its own transcript alone.
+	 *
+	 * Only the current transcript is counted, so an agent that was given a
+	 * fresh conversation at some point loses the cost of the earlier one. That
+	 * is the honest direction to be wrong in: the old figure included other
+	 * agents' spending.
+	 */
+	private async recountLegacyCosts(): Promise<void> {
+		let changed = false;
+		for (const [sessionName, cursor] of this.cursors) {
+			if (cursor.costBasis === 2) continue;
+			let text: string;
+			try {
+				text = await fs.readFile(cursor.filePath, 'utf-8');
+			} catch {
+				continue;
+			}
+			let cost = 0;
+			for (const turn of this.parseTurns(text, new Set())) {
+				cost += calculateCost(
+					{ input: turn.input, output: turn.output, cacheRead: turn.cacheRead, cacheWrite: turn.cacheWrite },
+					turn.model,
+				).cost;
+			}
+			if (Math.abs(cost - cursor.cost) > 0.01) {
+				this.logger.info('Recounted session cost from its own transcript', {
+					sessionName,
+					was: Math.round(cursor.cost * 100) / 100,
+					now: Math.round(cost * 100) / 100,
+				});
+			}
+			cursor.cost = cost;
+			cursor.costBasis = 2;
+			changed = true;
+		}
+		if (changed) await this.saveCursors();
 	}
 
 	/** Writes cursors atomically so a crash mid-write cannot corrupt them. */

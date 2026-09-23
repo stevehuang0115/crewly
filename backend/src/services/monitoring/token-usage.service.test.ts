@@ -5,7 +5,7 @@
  * @module services/monitoring/token-usage.service.test
  */
 
-import { TokenUsageService, calculateCost } from './token-usage.service.js';
+import { TokenUsageService, calculateCost, dropCrossSessionDuplicates } from './token-usage.service.js';
 
 describe('TokenUsageService', () => {
   let service: TokenUsageService;
@@ -224,6 +224,31 @@ describe('TokenUsageService', () => {
       expect(sessions).toHaveLength(1);
       expect(sessions[0].sessionName).toBe('session-1');
       expect(sessions[0].totalInput).toBe(100);
+    });
+
+    it('drops turns that were booked to several agents at once, and recomputes their totals', () => {
+      // Before the shared-cwd guard, one foreign transcript was booked to
+      // five agents; the same turn cannot belong to two of them.
+      const shared = { timestamp: '2026-09-21T13:55:34.388Z', agentId: 'x', input: 32, output: 3252, model: 'claude-fable-5-1', cachedInput: 302_168 };
+      const own = { timestamp: '2026-09-22T22:31:54.358Z', agentId: 'atlas', input: 32, output: 620, model: 'claude-fable-5-1', cachedInput: 301_194 };
+      const records = [
+        { sessionName: 'atlas', agentId: 'atlas', totalInput: 96, totalOutput: 10376, eventCount: 3, totalCachedInput: 905_530, events: [shared, { ...shared }, own] },
+        { sessionName: 'max', agentId: 'max', totalInput: 32, totalOutput: 3252, eventCount: 1, events: [{ ...shared }] },
+      ];
+
+      expect(dropCrossSessionDuplicates(records)).toBe(3);
+
+      expect(records[0].events).toEqual([own]);
+      expect(records[0]).toMatchObject({ eventCount: 1, totalInput: 32, totalOutput: 620, totalCachedInput: 301_194 });
+      expect(records[1].events).toEqual([]);
+    });
+
+    it('leaves a clean ledger untouched', () => {
+      const records = [
+        { sessionName: 'a', agentId: 'a', totalInput: 1, totalOutput: 1, eventCount: 1, events: [{ timestamp: 't1', agentId: 'a', input: 1, output: 1, model: 'm' }] },
+        { sessionName: 'b', agentId: 'b', totalInput: 1, totalOutput: 1, eventCount: 1, events: [{ timestamp: 't2', agentId: 'b', input: 1, output: 1, model: 'm' }] },
+      ];
+      expect(dropCrossSessionDuplicates(records)).toBe(0);
     });
 
     it('should not fail when loading from non-existent file', async () => {

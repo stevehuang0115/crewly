@@ -39,11 +39,18 @@ export interface TokenUsageEvent {
   cachedInput?: number;
   /** Model round-trips the run took (agentic steps). Absent when unknown. */
   steps?: number;
+  /**
+   * Of `cachedInput`, the tokens written to the cache (billed above the input
+   * rate) rather than read from it. Claude only; absent when unknown.
+   */
+  cacheWrite?: number;
 }
 
 /** Optional per-event detail beyond the raw input/output counts. */
 export interface TokenUsageDetail {
   cachedInput?: number;
+  /** See {@link TokenUsageEvent.cacheWrite}. */
+  cacheWrite?: number;
   steps?: number;
   /**
    * When the usage actually happened, ISO-8601.
@@ -307,6 +314,7 @@ export class TokenUsageService {
       taskId: effectiveTaskId,
       ...(detail?.cachedInput !== undefined ? { cachedInput: detail.cachedInput } : {}),
       ...(detail?.steps !== undefined ? { steps: detail.steps } : {}),
+      ...(detail?.cacheWrite ? { cacheWrite: detail.cacheWrite } : {}),
     };
 
     record.events.push(event);
@@ -572,6 +580,7 @@ export class TokenUsageService {
     try {
       const raw = await fs.readFile(filePath, 'utf-8');
       const records: SessionUsageRecord[] = JSON.parse(raw);
+      dropCrossSessionDuplicates(records);
       for (const record of records) {
         if (!this.sessions.has(record.sessionName)) {
           this.sessions.set(record.sessionName, record);
@@ -590,4 +599,50 @@ export class TokenUsageService {
   getSessionCount(): number {
     return this.sessions.size;
   }
+}
+
+/**
+ * Remove usage events that appear in more than one session's record.
+ *
+ * Two agents cannot produce the same usage at the same millisecond. Before the
+ * shared-cwd guard (2026-09-22) the transcript sync pointed several agents at
+ * one foreign transcript, so each of them was booked every one of its turns —
+ * about 130 turns copied into five records. Every copy is dropped: the turns
+ * belonged to none of them. Totals are recomputed for records that changed.
+ *
+ * @param records - Records as loaded from disk; modified in place
+ * @returns How many events were removed
+ */
+export function dropCrossSessionDuplicates(records: SessionUsageRecord[]): number {
+  const key = (e: TokenUsageEvent) => `${e.timestamp}|${e.input}|${e.cachedInput ?? ''}|${e.output}|${e.model}`;
+  const owners = new Map<string, Set<string>>();
+  for (const r of records) {
+    for (const e of r.events ?? []) {
+      const k = key(e);
+      const set = owners.get(k) ?? new Set<string>();
+      set.add(r.sessionName);
+      owners.set(k, set);
+    }
+  }
+  let removed = 0;
+  for (const r of records) {
+    const before = (r.events ?? []).length;
+    const seen = new Set<string>();
+    r.events = (r.events ?? []).filter((e) => {
+      const k = key(e);
+      // Shared with another session: not this one's. Repeated within this
+      // session (the same turn booked on several passes): keep one.
+      if ((owners.get(k)?.size ?? 0) > 1 || seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    if (r.events.length === before) continue;
+    removed += before - r.events.length;
+    r.eventCount = r.events.length;
+    r.totalInput = r.events.reduce((n, e) => n + e.input, 0);
+    r.totalOutput = r.events.reduce((n, e) => n + e.output, 0);
+    const cached = r.events.reduce((n, e) => n + (e.cachedInput ?? 0), 0);
+    if (r.totalCachedInput !== undefined || cached > 0) r.totalCachedInput = cached;
+  }
+  return removed;
 }

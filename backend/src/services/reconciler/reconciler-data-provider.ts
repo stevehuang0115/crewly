@@ -1170,7 +1170,10 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
     // pressure gate; otherwise the very stuckness the pressure gate is
     // designed to prevent would block its own primary remediation path.
     if (strategy === 'redeliver') {
-      this.logger.info('Executing wake action', {
+      // Debug, not info: the fast loop asks every ~10s and the backoff below
+      // turns nearly all of them away — 236 of these a day for 15 real
+      // redeliveries, which are logged on their own when they happen.
+      this.logger.debug('Executing wake action', {
         agent: agentSessionName,
         strategy,
         workItemId: action.workItemId,

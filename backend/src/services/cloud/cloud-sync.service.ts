@@ -141,6 +141,8 @@ export class CloudSyncService extends EventEmitter {
   private messagePollRunning = false;
   /** Queue re-register timer handle (lets relay evict stale Portal pairs). */
   private registerTimer: ReturnType<typeof setInterval> | null = null;
+  /** Peer reported by the last registration, so a repeat is not logged at info. */
+  private lastLoggedPeer: string | null = null;
 
   /** Consecutive heartbeat failure count */
   private heartbeatFailures = 0;
@@ -535,11 +537,16 @@ export class CloudSyncService extends EventEmitter {
     const data = await response.json() as { success: boolean; queueId?: string; peerQueueId?: string | null };
 
     if (data.queueId) {
+      // Re-registered every minute to keep the queue alive; only a change is
+      // worth an info line (it was 1,442 identical lines a day).
+      const peer = data.peerQueueId ?? 'none (waiting for peer)';
+      const changed = data.queueId !== this.queueId || peer !== this.lastLoggedPeer || this.queueError !== null;
       this.queueId = data.queueId;
       this.queueError = null;
-      this.logger.info('Registered with Cloud message queue', {
+      this.lastLoggedPeer = peer;
+      this.logger[changed ? 'info' : 'debug']('Registered with Cloud message queue', {
         queueId: this.queueId,
-        peerQueueId: data.peerQueueId ?? 'none (waiting for peer)',
+        peerQueueId: peer,
       });
     }
   }

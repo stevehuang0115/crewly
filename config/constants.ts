@@ -926,6 +926,16 @@ export const AGENT_SUSPEND_CONSTANTS = {
 	EXEMPT_ROLES: ['orchestrator'] as const,
 	/** Idle timeout for agents stuck in 'started' status (minutes) */
 	STARTED_AGENT_IDLE_TIMEOUT_MINUTES: 15,
+	/**
+	 * An idle agent is stopped only when memory is tight — at or above this
+	 * share of RAM in use, or below {@link IDLE_STOP_MIN_FREE_MB} free. An
+	 * idle agent costs no tokens; stopping it costs a full cold start (init
+	 * prompt plus rebuilding a context that is often 200k+ tokens) the next
+	 * time anyone speaks to it (owner, 2026-09-22).
+	 */
+	IDLE_STOP_MEMORY_USED_PERCENT: 85,
+	/** See {@link IDLE_STOP_MEMORY_USED_PERCENT}. */
+	IDLE_STOP_MIN_FREE_MB: 1024,
 	/** Roles that should never be auto-stopped (always-on) */
 	ALWAYS_ON_ROLES: ['orchestrator', 'auditor'] as const,
 	/** Idle timeout in ms before a worker agent is stopped (default 30 min) */

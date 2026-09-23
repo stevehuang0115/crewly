@@ -7,6 +7,14 @@
 import { AGENT_SUSPEND_CONSTANTS } from '../../constants.js';
 
 // Mock LoggerService
+// Memory is tight by default, so the stop paths below run; the tests at the
+// end flip it to show an idle agent is left alone when memory is fine.
+const mockMemoryStats = jest.fn(() => ({ usedPercent: 95, freeMB: 200, totalMB: 16384 }));
+jest.mock('../core/system-health.util.js', () => ({
+	getMemoryStats: () => mockMemoryStats(),
+	isUnderMemoryPressure: () => false,
+}));
+
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
@@ -296,6 +304,58 @@ describe('IdleDetectionService', () => {
 	// 2026-09-16 token-burn fix: a 15-minute cron under a 10-minute idle
 	// timeout paid a full cold start (init prompt + registration + recall)
 	// on every single run.
+	describe('stopping idle agents only when memory is tight (owner, 2026-09-22)', () => {
+		const idleDev = () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [{ id: 'dev1', sessionName: 'agent-dev', role: 'developer', agentStatus: 'active' }],
+			}]);
+			mockIsIdleFor.mockReturnValue(true);
+		};
+
+		afterEach(() => {
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 95, freeMB: 200, totalMB: 16384 }));
+		});
+
+		it('leaves an idle agent running when the machine has memory to spare', async () => {
+			// An idle agent spends no tokens; stopping it costs a cold start and a
+			// rebuilt context the next time anyone speaks to it.
+			idleDev();
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 60, freeMB: 6000, totalMB: 16384 }));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockTerminate).not.toHaveBeenCalled();
+		});
+
+		it('stops it when too much of the RAM is in use', async () => {
+			idleDev();
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 88, freeMB: 2000, totalMB: 16384 }));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
+		});
+
+		it('stops it when free memory drops under the floor', async () => {
+			idleDev();
+			mockMemoryStats.mockImplementation(() => ({ usedPercent: 70, freeMB: 500, totalMB: 16384 }));
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+
+			await service.performCheck();
+
+			expect(mockTerminate).toHaveBeenCalled();
+		});
+	});
+
 	describe('cron keep-alive', () => {
 		const idleDev = () => {
 			mockGetTeams.mockResolvedValue([{

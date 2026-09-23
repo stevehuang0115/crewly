@@ -21,7 +21,7 @@ jest.mock('../session/session-state-persistence.js', () => ({
 }));
 
 import { ClaudeTranscriptSyncService } from './claude-transcript-sync.service.js';
-import { TokenUsageService } from './token-usage.service.js';
+import { TokenUsageService, calculateCost } from './token-usage.service.js';
 import { encodeProjectSlug } from './claude-session-tokens.service.js';
 
 /** Builds one assistant transcript line with the usage block Claude Code writes. */
@@ -191,6 +191,46 @@ describe('ClaudeTranscriptSyncService', () => {
 		revived.stop();
 
 		expect(result.turnsCounted).toBe(0);
+	});
+
+	it('recounts, once, a cost written before the shared-cwd guard, from the agent\'s own transcript', async () => {
+		// Several agents' cursors once pointed at one foreign transcript and
+		// each banked all of it: Atlas and Max each showed about $300.
+		await fs.writeFile(
+			transcriptPath,
+			assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 1_000_000, output: 0 }) + '\n',
+		);
+		const expected = calculateCost({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, 'claude-opus-5').cost;
+		await fs.writeFile(
+			cursorFile,
+			JSON.stringify({ [SESSION]: { filePath: transcriptPath, offset: 999_999, seenMessageIds: ['m1'], cost: 304.73 } }),
+		);
+
+		const revived = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+		await revived.sync();
+		revived.stop();
+
+		const saved = JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION];
+		expect(saved.cost).toBeCloseTo(expected, 6);
+		expect(saved.costBasis).toBe(2);
+
+		// Already recounted: a later load leaves it alone.
+		saved.cost = 1.23;
+		await fs.writeFile(cursorFile, JSON.stringify({ [SESSION]: saved }));
+		const again = new ClaudeTranscriptSyncService(cursorFile, tmpRoot);
+		await again.sync();
+		again.stop();
+		expect(JSON.parse(await fs.readFile(cursorFile, 'utf-8'))[SESSION].cost).toBeCloseTo(1.23, 6);
+	});
+
+	it('keeps cache writes apart from cache reads in the ledger', async () => {
+		await fs.writeFile(
+			transcriptPath,
+			assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', cacheRead: 200_000, cacheWrite: 50_000 }) + '\n',
+		);
+		await service.sync();
+		const record = TokenUsageService.getInstance().getUsageBySessions().find((s) => s.sessionName === SESSION)!;
+		expect(record.events[0]).toMatchObject({ cachedInput: 250_000, cacheWrite: 50_000 });
 	});
 
 	it('re-reads from the top when the transcript shrinks', async () => {

@@ -17,6 +17,7 @@ import { ActivityMonitorService } from '../monitoring/activity-monitor.service.j
 import { getSettingsService } from '../settings/index.js';
 import { getSessionBackendSync } from '../session/index.js';
 import { CronTaskService } from '../workflow/cron-task.service.js';
+import { getMemoryStats } from '../core/system-health.util.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 
 /**
@@ -227,6 +228,23 @@ export class IdleDetectionService {
 		return this.timer !== null;
 	}
 
+	/** Memory reading, overridable in tests. */
+	memoryStats: () => { usedPercent: number; freeMB: number; totalMB: number } = getMemoryStats;
+
+	/**
+	 * Whether memory is tight enough to stop idle agents for it.
+	 *
+	 * @returns True at or above the used-share threshold, or below the free floor
+	 */
+	private memoryIsTight(): boolean {
+		const stats = this.memoryStats();
+		if (!stats.totalMB) return false;
+		return (
+			stats.usedPercent >= AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MEMORY_USED_PERCENT ||
+			stats.freeMB < AGENT_SUSPEND_CONSTANTS.IDLE_STOP_MIN_FREE_MB
+		);
+	}
+
 	/**
 	 * Perform a single idle check across all active agents.
 	 * Reads the timeout setting, iterates active members, and
@@ -366,6 +384,16 @@ export class IdleDetectionService {
 							});
 						}
 					} else {
+						// Only when the machine needs the memory. An idle agent
+						// spends nothing; stopping it means a cold start — and a
+						// rebuilt context — the next time it is spoken to.
+						if (!this.memoryIsTight()) {
+							this.logger.debug('Agent idle but memory is fine, keeping alive', {
+								sessionName: member.sessionName,
+								role: member.role,
+							});
+							continue;
+						}
 						// Auto-stop: terminate idle agents to free resources
 						if (this.agentRegistrationService) {
 							this.logger.info('Agent idle timeout reached, stopping', {
