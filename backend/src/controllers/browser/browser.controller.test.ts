@@ -12,8 +12,10 @@ import express from 'express';
 import request from 'supertest';
 import { createBrowserRouter } from './browser.routes.js';
 import { classifyExtensionFailure } from './browser.controller.js';
+import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import {
 	BrowserBridgeService,
+	ExtensionOutdatedError,
 	type BrowserCommandResponse,
 } from '../../services/browser/browser-bridge.service.js';
 
@@ -1124,5 +1126,88 @@ describe('Browser Controller — dispatch log', () => {
 		expect(dispatchLines()).toEqual([
 			expect.objectContaining({ path: 'none', outcome: 'no browser connected' }),
 		]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// EXTENSION_OUTDATED: an extension without bindTab fails clearly (HTTP 426)
+// and never falls back to the user's active tab through the proxy path.
+// ---------------------------------------------------------------------------
+
+describe('Browser Controller — outdated extension (EXTENSION_OUTDATED)', () => {
+	let app: express.Application;
+
+	beforeEach(() => {
+		BrowserBridgeService.resetInstance();
+		jest.restoreAllMocks();
+		app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+	});
+
+	afterEach(() => {
+		BrowserBridgeService.resetInstance();
+		jest.restoreAllMocks();
+	});
+
+	it('POST /bind maps EXTENSION_OUTDATED to 426 with the message verbatim', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		jest.spyOn(bridge, 'isConnected').mockReturnValue(true);
+		const err = new ExtensionOutdatedError('0.4.12');
+		jest.spyOn(bridge, 'bindAgentTab').mockRejectedValue(err);
+
+		const res = await request(app).post('/api/browser/bind').set('X-Agent-Session', 'agent-A').send({});
+
+		expect(res.status).toBe(426);
+		expect(res.body).toEqual({
+			success: false,
+			error: err.message,
+			code: 'EXTENSION_OUTDATED',
+			minVersion: '0.4.14',
+			reportedVersion: '0.4.12',
+		});
+		expect(res.body.error).toMatch(/needs 0\.4\.14 or newer.*Chrome Web Store/);
+	});
+
+	it('an agent command returns 426 and does NOT fall through to the proxy (no active-tab fallback)', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		jest.spyOn(bridge, 'isConnected').mockReturnValue(true);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockRejectedValue(new ExtensionOutdatedError());
+		const proxy = BrowserProxyService.getInstance();
+		jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+		const proxySend = jest
+			.spyOn(proxy, 'sendCommand')
+			.mockResolvedValue({ id: 'p1', success: true, result: { url: 'https://user-front-tab.example' } });
+
+		const res = await request(app)
+			.post('/api/browser/navigate')
+			.set('X-Agent-Session', 'agent-A')
+			.send({ url: 'https://example.com' });
+
+		expect(res.status).toBe(426);
+		expect(res.body.code).toBe('EXTENSION_OUTDATED');
+		expect(res.body.error).toContain('Update Crewly in Chrome from the Chrome Web Store');
+		expect(proxySend).not.toHaveBeenCalled();
+	});
+
+	it('other bind failures on an agent command keep today\'s behaviour (fall through to the proxy)', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		jest.spyOn(bridge, 'isConnected').mockReturnValue(true);
+		jest
+			.spyOn(bridge, 'sendCommandForAgent')
+			.mockRejectedValue(new Error('Extension refused bindTab: permission_denied'));
+		const proxy = BrowserProxyService.getInstance();
+		jest.spyOn(proxy, 'isAvailable').mockReturnValue(true);
+		const proxySend = jest
+			.spyOn(proxy, 'sendCommand')
+			.mockResolvedValue({ id: 'p1', success: true, result: { ok: true } } as BrowserCommandResponse);
+
+		const res = await request(app)
+			.post('/api/browser/navigate')
+			.set('X-Agent-Session', 'agent-A')
+			.send({ url: 'https://example.com' });
+
+		expect(res.status).toBe(200);
+		expect(proxySend).toHaveBeenCalledTimes(1);
 	});
 });

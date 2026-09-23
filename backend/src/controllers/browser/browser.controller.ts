@@ -9,7 +9,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { BrowserBridgeService, type BrowserCommandResponse } from '../../services/browser/browser-bridge.service.js';
+import { BrowserBridgeService, isExtensionOutdatedError, type BrowserCommandResponse, type ExtensionOutdatedError } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
@@ -439,6 +439,14 @@ async function sendToolCommand(
 			return;
 		} catch (err) {
 			logPath('direct-ws', (err as Error).message);
+			// An extension too old for per-agent tabs must stop here. Falling
+			// through to the proxy path would send the command without a
+			// bound tabId, and the old extension would run it on the user's
+			// active tab.
+			if (isExtensionOutdatedError(err)) {
+				sendExtensionOutdated(res, err);
+				return;
+			}
 			errors.push(`direct-ws: ${(err as Error).message}`);
 			// Fall through to try proxy path
 		}
@@ -468,6 +476,26 @@ async function sendToolCommand(
 		success: false,
 		error: errorDetail,
 		code: 'NO_BROWSER_CLIENT',
+	});
+}
+
+/**
+ * Respond with EXTENSION_OUTDATED (HTTP 426).
+ *
+ * `error` carries the full human-readable message (minimum version and how to
+ * update) so the remote-browser skill, which prints the response body, shows
+ * it to the agent verbatim.
+ *
+ * @param res - Express response
+ * @param err - The ExtensionOutdatedError raised by the bridge
+ */
+function sendExtensionOutdated(res: Response, err: ExtensionOutdatedError): void {
+	res.status(BROWSER_BRIDGE_CONSTANTS.EXTENSION_OUTDATED_HTTP_STATUS).json({
+		success: false,
+		error: err.message,
+		code: BROWSER_BRIDGE_CONSTANTS.EXTENSION_OUTDATED_CODE,
+		minVersion: err.minVersion,
+		reportedVersion: err.reportedVersion ?? null,
 	});
 }
 
@@ -841,6 +869,8 @@ export async function selectOption(req: Request, res: Response): Promise<void> {
  *   - 503 `{ success: false, error: 'tab_pool_full', retryAfterMs }` when
  *     the hard cap (`CREWLY_TAB_BIND_MAX`, default 50) has been reached.
  *   - 503 `NO_BROWSER_CLIENT` when no Extension is connected.
+ *   - 426 `{ success: false, error: <message>, code: 'EXTENSION_OUTDATED',
+ *     minVersion, reportedVersion }` when the Extension predates `bindTab`.
  */
 export async function bindTab(req: Request, res: Response): Promise<void> {
 	const bridge = BrowserBridgeService.getInstance();
@@ -877,6 +907,10 @@ export async function bindTab(req: Request, res: Response): Promise<void> {
 			},
 		});
 	} catch (err) {
+		if (isExtensionOutdatedError(err)) {
+			sendExtensionOutdated(res, err);
+			return;
+		}
 		const code = (err as Error & { code?: string }).code;
 		if (code === 'tab_pool_full') {
 			res.status(503).json({

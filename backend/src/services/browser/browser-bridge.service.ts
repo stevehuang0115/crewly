@@ -40,6 +40,81 @@ export interface BrowserClient {
 	connectedAt: Date;
 	/** User-agent header from the connection */
 	userAgent?: string;
+	/**
+	 * Extension version from its `identity` / `identity:update` message, when
+	 * one has been received. Absent until then, and on the relay path (the
+	 * relay's register frame carries no version).
+	 */
+	extensionVersion?: string;
+}
+
+/**
+ * Thrown when the connected Crewly in Chrome extension is too old to support
+ * per-agent tabs: it answered `bindTab` with "Unknown tool: bindTab".
+ *
+ * There is deliberately no fallback to the user's active tab. On an old
+ * extension that would make an agent act on whatever tab the user has in
+ * front, in their signed-in browser.
+ */
+export class ExtensionOutdatedError extends Error {
+	/** Stable machine-readable code (EXTENSION_OUTDATED). */
+	readonly code: string = BROWSER_BRIDGE_CONSTANTS.EXTENSION_OUTDATED_CODE;
+	/** Minimum extension version that supports the failed feature. */
+	readonly minVersion: string;
+	/** Version the extension reported, when known. */
+	readonly reportedVersion?: string;
+
+	/**
+	 * @param reportedVersion - Version from the extension's identity message, if known
+	 * @param minVersion - Minimum required version (defaults to the per-tab minimum)
+	 */
+	constructor(
+		reportedVersion?: string,
+		minVersion: string = BROWSER_BRIDGE_CONSTANTS.MIN_EXTENSION_VERSION_PER_TAB
+	) {
+		const found = reportedVersion
+			? `it reports version ${reportedVersion}`
+			: 'it did not report its version';
+		super(
+			`Crewly in Chrome is too old for per-agent browser tabs (${found}; needs ${minVersion} or newer). ` +
+				'Update Crewly in Chrome from the Chrome Web Store, then try again.'
+		);
+		this.name = 'ExtensionOutdatedError';
+		this.minVersion = minVersion;
+		this.reportedVersion = reportedVersion;
+	}
+}
+
+/**
+ * Type guard for {@link ExtensionOutdatedError}. Also matches errors that
+ * carry the code but crossed a module boundary as a plain Error.
+ *
+ * @param err - Anything caught
+ * @returns True when the error is an EXTENSION_OUTDATED error
+ */
+export function isExtensionOutdatedError(err: unknown): err is ExtensionOutdatedError {
+	return (
+		err instanceof ExtensionOutdatedError ||
+		(err instanceof Error &&
+			(err as Error & { code?: unknown }).code === BROWSER_BRIDGE_CONSTANTS.EXTENSION_OUTDATED_CODE)
+	);
+}
+
+/**
+ * True when an extension reply means "I do not implement this tool", which
+ * is exactly `Unknown tool: <tool>`. Any other failure text (permission
+ * errors, timeouts, a tool that failed while running) returns false, so only
+ * a genuinely missing tool is treated as an outdated extension.
+ *
+ * @param error - The `error` field of the extension's response
+ * @param tool - The tool that was sent
+ * @returns True only for the exact unknown-tool reply for `tool`
+ */
+export function isUnknownToolReply(error: unknown, tool: string): boolean {
+	return (
+		typeof error === 'string' &&
+		error.trim() === `${BROWSER_BRIDGE_CONSTANTS.UNKNOWN_TOOL_REPLY_PREFIX}${tool}`
+	);
 }
 
 /** Pending command waiting for a response from the Chrome Extension */
@@ -349,6 +424,22 @@ export class BrowserBridgeService {
 				return;
 			}
 
+			// Record the extension's self-reported version (sent right after the
+			// WS handshake, and again on rename) so version-dependent errors can
+			// name it.
+			if (msg.type === 'identity' || msg.type === 'identity:update') {
+				const client = this.clients.get(clientId);
+				if (
+					client &&
+					typeof msg.version === 'string' &&
+					msg.version.trim() !== '' &&
+					msg.version.length <= BROWSER_BRIDGE_CONSTANTS.MAX_EXTENSION_VERSION_LENGTH
+				) {
+					client.extensionVersion = msg.version.trim();
+				}
+				return;
+			}
+
 			// Handle tab-removed event from the Extension (per-tab dispatch §4.3).
 			// User manually closed a Crewly tab, or Chrome reaped it — clear the binding.
 			if (msg.type === 'tabRemoved' && typeof msg.tabId === 'number') {
@@ -572,6 +663,15 @@ export class BrowserBridgeService {
 		);
 
 		if (!response.success) {
+			if (isUnknownToolReply(response.error, 'bindTab')) {
+				const outdated = new ExtensionOutdatedError(this.getReportedExtensionVersion());
+				this.logger.warn('Extension too old for per-agent tabs; refusing to fall back to the active tab', {
+					agentSession,
+					reportedVersion: outdated.reportedVersion ?? null,
+					minVersion: outdated.minVersion,
+				});
+				throw outdated;
+			}
 			throw new Error(`Extension refused bindTab: ${response.error ?? 'unknown error'}`);
 		}
 
@@ -985,6 +1085,16 @@ export class BrowserBridgeService {
 		} catch {
 			return false;
 		}
+	}
+
+	/**
+	 * Version reported by the directly connected extension, if any.
+	 *
+	 * @returns The version from the active direct client's identity message,
+	 *   or undefined (no direct client, no identity yet, or relay path)
+	 */
+	getReportedExtensionVersion(): string | undefined {
+		return this.getActiveClient()?.extensionVersion;
 	}
 
 	/**
