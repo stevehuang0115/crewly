@@ -481,6 +481,18 @@ export class BrowserProxyService {
   }
 
   /**
+   * Get the session id the relay assigned this backend, when registered.
+   *
+   * Observability only — logged with each browser dispatch so a relay
+   * re-registration can be lined up against the commands around it.
+   *
+   * @returns The relay session id, or null while not registered
+   */
+  getSessionId(): string | null {
+    return this.sessionId;
+  }
+
+  /**
    * Send a browser command to a specific instance (or the only connected one).
    *
    * Routes via relay_to addressed messaging. The command is forwarded by the

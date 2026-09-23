@@ -14,6 +14,68 @@ import { BrowserProxyService } from '../../services/browser/browser-proxy.servic
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
+import { LoggerService } from '../../services/core/logger.service.js';
+
+const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
+
+/** Transport a browser command went out on, as named in the dispatch log. */
+type DispatchPath = 'proxy-instance' | 'direct-ws' | 'proxy-relay' | 'none';
+
+/**
+ * Log one browser command dispatch: which agent asked, which tab it named,
+ * and which tab the command was actually sent for.
+ *
+ * Every page command is logged, not only failures — the 2026-09-23 incident
+ * (read-text returning another agent's tab) could not be confirmed from the
+ * log because only navigate and bind left a trace. `dispatchedTabId` is the
+ * tab the backend sent: the explicit tabId, else the agent's binding after the
+ * call. `null` means none was sent and the extension picked a tab itself.
+ *
+ * @param path - Transport the command went out on
+ * @param tool - Extension tool name
+ * @param agentSession - Calling agent session, if any
+ * @param requestedTabId - tabId the caller put in the request body, if any
+ * @param dispatchedTabId - tabId the command was sent with, or null
+ * @param outcome - 'ok', or the error message when the path failed
+ */
+function logDispatch(
+	path: DispatchPath,
+	tool: string,
+	agentSession: string | undefined,
+	requestedTabId: number | undefined,
+	dispatchedTabId: number | null,
+	outcome: string,
+): void {
+	logger.info('Browser command dispatched', {
+		tool,
+		path,
+		agentSession: agentSession ?? null,
+		requestedTabId: requestedTabId ?? null,
+		dispatchedTabId,
+		relaySessionId: BrowserProxyService.getInstance().getSessionId(),
+		outcome,
+	});
+}
+
+/**
+ * The tab a dispatched command was sent for: the explicit tabId in params,
+ * else the calling agent's binding (read after the call, since the bridge
+ * auto-binds on first use), else null.
+ *
+ * @param bridge - Bridge that owns agent→tab bindings
+ * @param params - Params the command was sent with
+ * @param agentSession - Calling agent session, if any
+ * @returns The tab id sent, or null when the extension chose
+ */
+function dispatchedTabIdOf(
+	bridge: BrowserBridgeService,
+	params: Record<string, unknown> | undefined,
+	agentSession: string | undefined,
+): number | null {
+	if (typeof params?.tabId === 'number') return params.tabId;
+	if (agentSession) return bridge.getBinding(agentSession)?.tabId ?? null;
+	return null;
+}
 
 /**
  * GET /api/browser/status
@@ -345,15 +407,20 @@ async function sendToolCommand(
 
 	// Collect errors from each path for diagnostics if all fail
 	const errors: string[] = [];
+	const requestedTabId = tabIdAuth.tabId;
+	const logPath = (path: DispatchPath, outcome: string): void =>
+		logDispatch(path, tool, agentSession, requestedTabId, dispatchedTabIdOf(bridge, params, agentSession), outcome);
 
 	// Path 1: If a specific instance is requested AND proxy is available, use proxy
 	if (instance && proxy.isAvailable()) {
 		try {
 			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			logPath('proxy-instance', 'ok');
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			sendExtensionResult(res, result);
 			return;
 		} catch (err) {
+			logPath('proxy-instance', (err as Error).message);
 			errors.push(`proxy(instance=${instance}): ${(err as Error).message}`);
 			// Fall through to try other paths
 		}
@@ -366,10 +433,12 @@ async function sendToolCommand(
 			const result = agentSession
 				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName)
 				: await bridge.sendCommand(tool, params, timeoutMs, agentName);
+			logPath('direct-ws', 'ok');
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			sendExtensionResult(res, result);
 			return;
 		} catch (err) {
+			logPath('direct-ws', (err as Error).message);
 			errors.push(`direct-ws: ${(err as Error).message}`);
 			// Fall through to try proxy path
 		}
@@ -379,16 +448,19 @@ async function sendToolCommand(
 	if (proxy.isAvailable()) {
 		try {
 			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			logPath('proxy-relay', 'ok');
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			sendExtensionResult(res, result);
 			return;
 		} catch (err) {
+			logPath('proxy-relay', (err as Error).message);
 			errors.push(`proxy-relay: ${(err as Error).message}`);
 			// Fall through to error response
 		}
 	}
 
 	// No path available or all paths failed
+	if (errors.length === 0) logPath('none', 'no browser connected');
 	const errorDetail = errors.length > 0
 		? `All connection paths failed: ${errors.join('; ')}`
 		: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.';

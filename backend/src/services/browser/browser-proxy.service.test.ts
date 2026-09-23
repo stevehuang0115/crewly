@@ -235,6 +235,13 @@ describe('BrowserProxyService', () => {
       expect(proxy.getState()).toBe('connected');
     });
 
+    it('exposes the relay-assigned session id once registered', () => {
+      const proxy = BrowserProxyService.getInstance();
+      expect(proxy.getSessionId()).toBeNull();
+      connectAndRegister();
+      expect(proxy.getSessionId()).toBe('sess-123');
+    });
+
     it('should handle browser_list and populate instances', () => {
       connectAndRegister();
       const proxy = BrowserProxyService.getInstance();

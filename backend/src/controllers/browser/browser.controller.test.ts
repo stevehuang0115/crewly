@@ -17,12 +17,13 @@ import {
 	type BrowserCommandResponse,
 } from '../../services/browser/browser-bridge.service.js';
 
-// Mock logger
+// Mock logger. `info` is shared so the dispatch log line can be asserted.
+const mockLogInfo = jest.fn();
 jest.mock('../../services/core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
 			createComponentLogger: () => ({
-				info: jest.fn(),
+				info: (...args: unknown[]) => mockLogInfo(...args),
 				warn: jest.fn(),
 				error: jest.fn(),
 				debug: jest.fn(),
@@ -1011,5 +1012,117 @@ describe('Browser Controller — extension refusal statuses', () => {
 
 		expect(res.status).toBe(200);
 		expect(res.body.success).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Dispatch log (incident 2026-09-23): every page command leaves a line naming
+// the agent, the tab it asked for, and the tab it was sent for.
+// ---------------------------------------------------------------------------
+
+describe('Browser Controller — dispatch log', () => {
+	let app: express.Application;
+	const ok: BrowserCommandResponse = { id: 'r', success: true, result: { text: 'x' } };
+
+	/** The dispatch log entries written so far. */
+	const dispatchLines = (): Array<Record<string, unknown>> =>
+		mockLogInfo.mock.calls
+			.filter((c) => c[0] === 'Browser command dispatched')
+			.map((c) => c[1] as Record<string, unknown>);
+
+	beforeEach(() => {
+		jest.restoreAllMocks();
+		mockLogInfo.mockReset();
+		BrowserBridgeService.resetInstance();
+		app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+	});
+
+	afterEach(() => {
+		BrowserBridgeService.resetInstance();
+	});
+
+	it('logs read-text with the requested and dispatched tabId', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockResolvedValue(ok);
+
+		await request(app)
+			.post('/api/browser/read-text')
+			.set('X-Agent-Session', 'agent-lyra')
+			.send({ tabId: 1383674346 });
+
+		expect(dispatchLines()).toEqual([
+			expect.objectContaining({
+				tool: 'readText',
+				path: 'direct-ws',
+				agentSession: 'agent-lyra',
+				requestedTabId: 1383674346,
+				dispatchedTabId: 1383674346,
+				outcome: 'ok',
+			}),
+		]);
+		expect(dispatchLines()[0]).toHaveProperty('relaySessionId');
+	});
+
+	it('logs the bound tab as dispatched when execute-js names none', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockResolvedValue(ok);
+		jest.spyOn(bridge, 'getBinding').mockReturnValue({
+			agentSession: 'agent-lyra',
+			tabId: 1383674343,
+			boundAt: new Date(),
+			lastActivityAt: new Date(),
+		});
+
+		await request(app)
+			.post('/api/browser/execute-js')
+			.set('X-Agent-Session', 'agent-lyra')
+			.send({ code: 'location.href' });
+
+		expect(dispatchLines()).toEqual([
+			expect.objectContaining({
+				tool: 'executeJs',
+				requestedTabId: null,
+				dispatchedTabId: 1383674343,
+			}),
+		]);
+	});
+
+	it('logs a null dispatched tab when the extension is left to choose', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		jest.spyOn(bridge, 'sendCommand').mockResolvedValue(ok);
+
+		await request(app).post('/api/browser/read-text').send({});
+
+		expect(dispatchLines()).toEqual([
+			expect.objectContaining({ tool: 'readText', agentSession: null, dispatchedTabId: null }),
+		]);
+	});
+
+	it('logs a failed path with its error, not only successes', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		markBridgeConnected(bridge);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockRejectedValue(new Error('Detached while handling command.'));
+
+		await request(app)
+			.post('/api/browser/read-text')
+			.set('X-Agent-Session', 'agent-lyra')
+			.send({ tabId: 7 });
+
+		expect(dispatchLines()[0]).toEqual(
+			expect.objectContaining({ path: 'direct-ws', outcome: 'Detached while handling command.' }),
+		);
+	});
+
+	it('logs when no browser is connected at all', async () => {
+		await request(app).post('/api/browser/read-text').send({});
+
+		expect(dispatchLines()).toEqual([
+			expect.objectContaining({ path: 'none', outcome: 'no browser connected' }),
+		]);
 	});
 });
