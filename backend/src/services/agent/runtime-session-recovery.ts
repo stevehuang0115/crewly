@@ -27,7 +27,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { RUNTIME_TYPES } from '../../constants.js';
+import { RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS } from '../../constants.js';
 
 /**
  * Env vars set by a running Claude Code session for its children. An agent
@@ -327,4 +327,132 @@ export function conversationExists(args: {
     return false;
   }
   return true;
+}
+
+/**
+ * Where Claude Code keeps a conversation's transcript.
+ *
+ * @param args - Conversation id, the agent's cwd, optional Claude home
+ * @returns Absolute path of `<home>/projects/<cwd slug>/<id>.jsonl`
+ */
+export function claudeTranscriptPath(args: { sessionId: string; cwd: string; claudeHome?: string }): string {
+  const home = args.claudeHome ?? path.join(os.homedir(), '.claude');
+  const slug = path.resolve(args.cwd).replace(/[\/.]/g, '-');
+  return path.join(home, 'projects', slug, `${args.sessionId}.jsonl`);
+}
+
+/**
+ * The context the conversation's last real turn carried: fresh input plus
+ * cache reads plus cache writes. Only the end of the file is read.
+ *
+ * @param filePath - Transcript path
+ * @returns Tokens, or null when unreadable or no turn is found
+ */
+export function lastTurnContextTokens(filePath: string): number | null {
+  let text: string;
+  try {
+    const size = fs.statSync(filePath).size;
+    const start = Math.max(0, size - ORC_CONVERSATION_CONSTANTS.TAIL_BYTES);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+  const lines = text.split('\n');
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line.includes('"assistant"') || !line.includes('"usage"')) continue;
+    try {
+      const entry = JSON.parse(line) as { type?: string; message?: { usage?: Record<string, number> } };
+      const u = entry.type === 'assistant' ? entry.message?.usage : undefined;
+      if (!u) continue;
+      const total = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+      // `<synthetic>` bookkeeping entries carry an all-zero usage block.
+      if (total > 0) return total;
+    } catch {
+      // a partial first line from the tail cut, or a malformed one
+    }
+  }
+  return null;
+}
+
+/**
+ * The plain words at the end of a conversation — what was said to the agent
+ * and what it answered, without tool calls or tool output — for the file a
+ * fresh conversation starts from.
+ *
+ * @param filePath - Transcript path
+ * @returns Markdown, newest last; empty when nothing readable was found
+ */
+export function buildHandoverSummary(filePath: string): string {
+  let text: string;
+  try {
+    const size = fs.statSync(filePath).size;
+    const start = Math.max(0, size - ORC_CONVERSATION_CONSTANTS.TAIL_BYTES);
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf-8');
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return '';
+  }
+  const said: Array<{ who: string; when: string; text: string }> = [];
+  for (const line of text.split('\n')) {
+    if (!line.trim()) continue;
+    let entry: { type?: string; timestamp?: string; isMeta?: boolean; message?: { content?: unknown } };
+    try {
+      entry = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if ((entry.type !== 'user' && entry.type !== 'assistant') || entry.isMeta) continue;
+    const content = entry.message?.content;
+    const parts: string[] = [];
+    if (typeof content === 'string') parts.push(content);
+    else if (Array.isArray(content)) {
+      for (const block of content as Array<{ type?: string; text?: string }>) {
+        if (block?.type === 'text' && typeof block.text === 'string') parts.push(block.text);
+      }
+    }
+    const joined = parts.join('\n').trim();
+    // System reminders and command wrappers are not conversation.
+    if (!joined || joined.startsWith('<')) continue;
+    const clip = ORC_CONVERSATION_CONSTANTS.HANDOVER_MESSAGE_CHARS;
+    said.push({
+      who: entry.type === 'user' ? 'Delivered to you' : 'You',
+      when: entry.timestamp ?? '',
+      text: joined.length > clip ? `${joined.slice(0, clip)}…` : joined,
+    });
+  }
+  const kept = said.slice(-ORC_CONVERSATION_CONSTANTS.HANDOVER_MESSAGES);
+  const blocks: string[] = [];
+  let total = 0;
+  for (let i = kept.length - 1; i >= 0; i--) {
+    const b = `### ${kept[i].who} — ${kept[i].when}\n${kept[i].text}`;
+    if (total + b.length > ORC_CONVERSATION_CONSTANTS.HANDOVER_MAX_CHARS) break;
+    blocks.unshift(b);
+    total += b.length;
+  }
+  return blocks.join('\n\n');
+}
+
+/**
+ * The threshold at which the orchestrator starts a fresh conversation.
+ *
+ * @param env - Environment (tests)
+ * @returns Tokens
+ */
+export function orcFreshContextTokens(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env['CREWLY_ORC_FRESH_CONTEXT_TOKENS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : ORC_CONVERSATION_CONSTANTS.FRESH_CONTEXT_TOKENS;
 }

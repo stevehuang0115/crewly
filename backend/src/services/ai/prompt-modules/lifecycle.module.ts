@@ -1,3 +1,4 @@
+import * as path from 'path';
 import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
 
 /**
@@ -43,7 +44,14 @@ export class LifecycleModule implements PromptModule {
 		if (isOrchestrator) {
 			const fragment = loadRoleFragment(config.projectRoot, config.role, 'lifecycle');
 			if (fragment) {
-				return fragment;
+				// Resolved like the recovery fragment; returned as-is, the orc
+				// was handed the literal `{{ORCHESTRATOR_SKILLS_PATH}}` to run.
+				return fragment
+					.replace(/\{\{ORCHESTRATOR_SKILLS_PATH\}\}/g, path.join(config.projectRoot, 'config', 'skills', 'orchestrator'))
+					.replace(/\{\{AGENT_SKILLS_PATH\}\}/g, config.agentSkillsPath)
+					.replace(/\{\{SESSION_ID\}\}/g, config.sessionName)
+					.replace(/\{\{SESSION_NAME\}\}/g, config.sessionName)
+					.replace(/\{\{PROJECT_PATH\}\}/g, config.projectPath || config.projectRoot);
 			}
 		}
 		if (isOrchestrator || isTL) {

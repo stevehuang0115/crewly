@@ -37,7 +37,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
-import { setMessageQueueService } from './chat.controller.js';
+import { setMessageQueueService, clipForOrchestrator } from './chat.controller.js';
 
 // =============================================================================
 // Test Setup
@@ -950,5 +950,22 @@ describe('Chat Controller', () => {
       );
       expect(src).not.toMatch(/RequestTracker\.getInstance\(\)\.setActiveRequest/);
     });
+  });
+});
+
+describe('clipForOrchestrator', () => {
+  // Every character forwarded stays in the orchestrator's conversation and is
+  // re-read on every later turn; a [DONE] report can run to thousands.
+  it('passes a short status through unchanged', () => {
+    expect(clipForOrchestrator('[DONE] fixed the build', 'conv-1')).toBe('[DONE] fixed the build');
+  });
+
+  it('clips a long one and says where the rest is', () => {
+    const long = '[DONE] ' + 'x'.repeat(3000);
+    const clipped = clipForOrchestrator(long, 'conv-1');
+    expect(clipped.length).toBeLessThan(700);
+    expect(clipped.startsWith('[DONE] xxx')).toBe(true);
+    expect(clipped).toContain(`${long.length - 600} more characters`);
+    expect(clipped).toContain('conversation conv-1');
   });
 });

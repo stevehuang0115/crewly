@@ -186,4 +186,33 @@ describe('LifecycleModule', () => {
 			expect(result).toContain('## Lifecycle Management');
 		});
 	});
+
+	describe('orchestrator fragment from the real config', () => {
+		// The orc was handed the literal `{{ORCHESTRATOR_SKILLS_PATH}}` to run.
+		const repoRoot = require('path').resolve(__dirname, '../../../../..');
+
+		it('resolves every placeholder in the fragment', async () => {
+			const realFs = jest.requireActual('fs');
+			const mockedFs = require('fs');
+			mockedFs.existsSync.mockImplementation((p: string) => realFs.existsSync(p));
+			mockedFs.readFileSync.mockImplementation((p: string, enc: string) => realFs.readFileSync(p, enc));
+			const result = await module.build({ ...baseConfig, role: 'orchestrator', projectRoot: repoRoot });
+			mockedFs.existsSync.mockReturnValue(false);
+			mockedFs.readFileSync.mockReturnValue('');
+			expect(result).not.toMatch(/\{\{[A-Z_]+\}\}/);
+			expect(result).toContain(`${repoRoot}/config/skills/orchestrator/get-team-status/execute.sh`);
+		});
+	});
+
+	describe('orchestrator recovery fragment', () => {
+		const fs = jest.requireActual('fs');
+		const repoRoot = require('path').resolve(__dirname, '../../../../..');
+		const text: string = fs.readFileSync(`${repoRoot}/config/roles/orchestrator/fragments/recovery.md`, 'utf-8');
+
+		it('never tells the orc to read the whole skills catalog', () => {
+			// 48KB read into the conversation at every start, then re-read every turn.
+			expect(text).not.toMatch(/^cat ~\/\.crewly\/skills\/SKILLS_CATALOG\.md$/m);
+			expect(text).toContain('grep -n -A12');
+		});
+	});
 });

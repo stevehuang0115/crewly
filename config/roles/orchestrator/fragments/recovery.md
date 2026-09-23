@@ -11,20 +11,19 @@ bash {{ORCHESTRATOR_SKILLS_PATH}}/get-team-status/execute.sh
 bash {{ORCHESTRATOR_SKILLS_PATH}}/get-project-overview/execute.sh
 ```
 
-### Step 2 — Read the skills catalog
+### Step 2 — Know where the skills are (do not read the whole catalog)
+
+Your skills are listed in your instructions. The full catalog, `~/.crewly/skills/SKILLS_CATALOG.md`, is about 50KB: **never `cat` it.** Everything you read stays in your conversation and is re-read on every turn after. When you need the details of one skill, look it up:
 
 ```bash
-cat ~/.crewly/skills/SKILLS_CATALOG.md
+grep -n -A12 "<skill-name>" ~/.crewly/skills/SKILLS_CATALOG.md
 ```
 
-Study the results carefully. **This is your knowledge base.** You must know:
+From Step 1 you must know:
 
 - Which teams already exist and who their members are
 - Which agents are already running (active) vs. stopped (inactive)
 - Which projects exist and what they're about
-- What skills are available to you
-
-**Never skip this step.**
 
 ### Step 3 — Register yourself (LAST)
 

@@ -9,6 +9,10 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+  buildHandoverSummary,
+  claudeTranscriptPath,
+  lastTurnContextTokens,
+  orcFreshContextTokens,
   conversationExists,
   discoverCodexSessionId,
   planRuntimeSessionFlags,
@@ -149,5 +153,81 @@ describe('discoverCodexSessionId', () => {
     expect(found?.sessionId).toBe('late');
     const none = await waitForCodexSessionId({ codexHome: home, cwd: '/never', notBeforeMs: T0, timeoutMs: 0, intervalMs: 1, sleep: async () => undefined });
     expect(none).toBeNull();
+  });
+});
+
+describe('an orchestrator conversation too big to carry on', () => {
+  // One machine's orc re-read 612k tokens every turn, 0.1% of it new, and the
+  // history grew ~64k a day because it was resumed across every restart.
+  let dir: string;
+  const line = (o: unknown) => JSON.stringify(o);
+  const turn = (id: string, read: number, write = 0) =>
+    line({ type: 'assistant', timestamp: 't', message: { id, content: [{ type: 'text', text: `answer ${id}` }], usage: { input_tokens: 5, output_tokens: 10, cache_read_input_tokens: read, cache_creation_input_tokens: write } } });
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'orc-convo-'));
+  });
+  afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  it('reads the size of the last real turn, skipping zero-usage bookkeeping', () => {
+    const file = path.join(dir, 'c.jsonl');
+    fs.writeFileSync(file, [
+      turn('m1', 100_000),
+      turn('m2', 611_575, 730),
+      line({ type: 'assistant', message: { model: '<synthetic>', usage: { input_tokens: 0, output_tokens: 0 } } }),
+      '',
+    ].join('\n'));
+    expect(lastTurnContextTokens(file)).toBe(5 + 611_575 + 730);
+  });
+
+  it('knows nothing about a missing or empty transcript', () => {
+    expect(lastTurnContextTokens(path.join(dir, 'missing.jsonl'))).toBeNull();
+    fs.writeFileSync(path.join(dir, 'empty.jsonl'), '');
+    expect(lastTurnContextTokens(path.join(dir, 'empty.jsonl'))).toBeNull();
+  });
+
+  it('hands over what was said, not the tool traffic or system reminders', () => {
+    const file = path.join(dir, 'c.jsonl');
+    fs.writeFileSync(file, [
+      line({ type: 'user', timestamp: 't1', message: { content: 'Slack: please draft the Sunrun email' } }),
+      line({ type: 'user', timestamp: 't1', message: { content: '<system-reminder>ignore me</system-reminder>' } }),
+      line({ type: 'user', timestamp: 't2', message: { content: [{ type: 'tool_result', content: 'x'.repeat(5000) }] } }),
+      line({ type: 'assistant', timestamp: 't3', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'cat big' } }, { type: 'text', text: 'Drafted, not sent.' }] } }),
+      '',
+    ].join('\n'));
+
+    const summary = buildHandoverSummary(file);
+
+    expect(summary).toContain('please draft the Sunrun email');
+    expect(summary).toContain('Drafted, not sent.');
+    expect(summary).not.toContain('ignore me');
+    expect(summary).not.toContain('xxxxx');
+    expect(summary).not.toContain('cat big');
+  });
+
+  it('keeps the handover short however long the conversation was', () => {
+    const file = path.join(dir, 'c.jsonl');
+    const lines: string[] = [];
+    for (let i = 0; i < 500; i++) lines.push(line({ type: 'user', timestamp: `t${i}`, message: { content: `message ${i} ` + 'y'.repeat(2000) } }));
+    fs.writeFileSync(file, lines.join('\n'));
+
+    const summary = buildHandoverSummary(file);
+
+    expect(summary.length).toBeLessThanOrEqual(16_000 + 200);
+    // Newest last: the end of the conversation is what survives.
+    expect(summary).toContain('message 499');
+    expect(summary).not.toContain('message 0 ');
+  });
+
+  it('finds the transcript where Claude Code keeps it', () => {
+    expect(claudeTranscriptPath({ sessionId: 'abc', cwd: '/Users/me/proj.x', claudeHome: '/h/.claude' })).toBe(
+      '/h/.claude/projects/-Users-me-proj-x/abc.jsonl',
+    );
+  });
+
+  it('starts fresh above 300k unless the environment says otherwise', () => {
+    expect(orcFreshContextTokens({})).toBe(300_000);
+    expect(orcFreshContextTokens({ CREWLY_ORC_FRESH_CONTEXT_TOKENS: '500000' })).toBe(500_000);
+    expect(orcFreshContextTokens({ CREWLY_ORC_FRESH_CONTEXT_TOKENS: 'nope' })).toBe(300_000);
   });
 });

@@ -597,7 +597,7 @@ export async function agentResponse(
           });
         } else {
           messageQueueService.enqueue({
-            content: `Agent status: ${content}`,
+            content: `Agent status: ${clipForOrchestrator(content, resolvedConversationId)}`,
             conversationId: resolvedConversationId,
             source: 'system_event',
           });
@@ -1161,4 +1161,17 @@ export async function handleGetHighlights(
   } catch (error) {
     next(error);
   }
+}
+
+/**
+ * Shorten an agent status for the orchestrator, keeping where the rest is.
+ *
+ * @param content - The status as the agent posted it
+ * @param conversationId - Conversation holding the full text
+ * @returns The status, clipped to {@link ORC_STATUS_FORWARDING.MAX_FORWARD_CHARS}
+ */
+export function clipForOrchestrator(content: string, conversationId: string): string {
+  const max = ORC_STATUS_FORWARDING.MAX_FORWARD_CHARS;
+  if (content.length <= max) return content;
+  return `${content.slice(0, max)}… [${content.length - max} more characters — full report in conversation ${conversationId}]`;
 }

@@ -1,6 +1,7 @@
 import * as path from 'path';
 import * as os from 'os';
 import { readFile, readdir, stat, mkdir, writeFile, access } from 'fs/promises';
+import * as fsSync from 'fs';
 import { existsSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import {
@@ -35,6 +36,7 @@ import {
 	GEMINI_STUCK_CONNECTIVITY_PATTERN,
 	GEMINI_ERROR_STATE_CONSTANTS,
 	REGISTRATION_DELIVERY_CONSTANTS,
+	ORC_CONVERSATION_CONSTANTS,
 } from '../../constants.js';
 import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
@@ -79,7 +81,16 @@ import {
 } from '../../utils/terminal-string-ops.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import { synthesizeSlackConversationId } from '../chat-v2/legacy-dto.utils.js';
-import { conversationExists, planRuntimeSessionFlags, waitForCodexSessionId, type RuntimeSessionPlan } from './runtime-session-recovery.js';
+import {
+	buildHandoverSummary,
+	claudeTranscriptPath,
+	conversationExists,
+	lastTurnContextTokens,
+	orcFreshContextTokens,
+	planRuntimeSessionFlags,
+	waitForCodexSessionId,
+	type RuntimeSessionPlan,
+} from './runtime-session-recovery.js';
 
 /**
  * Whether a file exists (readable).
@@ -825,11 +836,17 @@ export class AgentRegistrationService {
 			});
 		}
 		const storedSessionId = persistence?.getSessionId(sessionName) ?? null;
+		// An orchestrator whose conversation has grown too big starts over here,
+		// at a restart, rather than re-reading it on every turn.
+		const freshInstead =
+			autoResume && storedSessionId && cwd
+				? this.closeOversizedOrcConversation(sessionName, runtimeType, storedSessionId, cwd)
+				: false;
 		const plan = planRuntimeSessionFlags({
 			runtimeType,
 			isRestored: persistence?.isRestoredSession(sessionName) ?? false,
 			storedSessionId,
-			autoResume,
+			autoResume: autoResume && !freshInstead,
 			conversationExists:
 				storedSessionId && cwd ? conversationExists({ runtimeType, sessionId: storedSessionId, cwd }) : undefined,
 		});
@@ -851,6 +868,68 @@ export class AgentRegistrationService {
 			sessionId: plan.presetSessionId ?? plan.resumeSessionId ?? null,
 		});
 		return plan;
+	}
+
+	/**
+	 * Decide whether the orchestrator's stored conversation is too big to
+	 * resume, and if so write the handover file its fresh one will read.
+	 *
+	 * Only the orchestrator, only Claude Code, and only here — at a launch —
+	 * so a conversation is never cut in the middle of anything. Its real
+	 * state (tasks, teams, OKRs, wiki) lives in Crewly and is read back at
+	 * startup; the handover keeps the tail of what was said.
+	 *
+	 * @param sessionName - Session being launched
+	 * @param runtimeType - Its runtime
+	 * @param storedSessionId - The conversation it would resume
+	 * @param cwd - Its working directory
+	 * @returns True when it should start fresh instead
+	 */
+	private closeOversizedOrcConversation(
+		sessionName: string,
+		runtimeType: string,
+		storedSessionId: string,
+		cwd: string,
+	): boolean {
+		if (sessionName !== ORCHESTRATOR_SESSION_NAME || runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return false;
+		const transcript = claudeTranscriptPath({ sessionId: storedSessionId, cwd });
+		const tokens = lastTurnContextTokens(transcript);
+		const threshold = orcFreshContextTokens();
+		if (tokens === null || tokens < threshold) return false;
+		try {
+			const dir = path.join(getCrewlyHomePath(), ORC_CONVERSATION_CONSTANTS.HANDOVER_DIR);
+			fsSync.mkdirSync(dir, { recursive: true });
+			const file = path.join(dir, `${sessionName}-${new Date().toISOString().replace(/[:.]/g, '-')}.md`);
+			const body = buildHandoverSummary(transcript);
+			fsSync.writeFileSync(
+				file,
+				[
+					`# Handover from your previous conversation`,
+					``,
+					`Your previous conversation (${storedSessionId}) had grown to ${tokens.toLocaleString('en-US')} tokens per turn and was closed at a restart.`,
+					`Everything Crewly tracks — tasks, teams, OKRs, wiki — is still there; this file keeps only the end of what was said.`,
+					`The full transcript: ${transcript}`,
+					``,
+					body || '_Nothing readable was found at the end of the old conversation._',
+					``,
+				].join('\n'),
+				'utf-8',
+			);
+			this.pendingHandovers.set(sessionName, { path: file, tokens });
+			this.logger.info('Orchestrator conversation too big to resume — starting fresh with a handover', {
+				sessionName,
+				tokens,
+				threshold,
+				handover: file,
+			});
+			return true;
+		} catch (err) {
+			this.logger.warn('Could not write the orchestrator handover — resuming the old conversation', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return false;
+		}
 	}
 
 	/**
@@ -1017,6 +1096,8 @@ export class AgentRegistrationService {
 	 * Such sessions get an explicit register-self kickoff instead.
 	 */
 	private readonly resumedSessions = new Map<string, string>();
+	/** Handover file for an orchestrator that was just given a fresh conversation, by session. */
+	private readonly pendingHandovers = new Map<string, { path: string; tokens: number }>();
 
 	/**
 	 * Assemble the orchestrator prompt at the *other* profile and log the
@@ -5881,8 +5962,13 @@ Loop until done, blocked, or explicitly reassigned:
 		// Gemini CLI / other runtimes: need the file-read instruction since the prompt
 		// was NOT loaded via system prompt.
 		const resumedRole = this.resumedSessions.get(sessionName);
+		const handover = this.pendingHandovers.get(sessionName);
+		if (handover) this.pendingHandovers.delete(sessionName);
 		const messageToSend = isClaudeCode
-			? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.'
+			? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.' +
+				(handover
+					? ` This is a fresh conversation: your previous one had grown to ${handover.tokens} tokens and was closed. After registering, read ${handover.path} once — it holds the end of what was said before.`
+					: '')
 			: resumedRole
 				? this.resumedKickoff(sessionName, resumedRole, promptFilePath)
 				: `Read the file at ${promptFilePath} and follow all instructions in it.`;

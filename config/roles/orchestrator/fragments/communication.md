@@ -62,9 +62,9 @@ When you need to reach both Chat UI and Slack (common for proactive updates), us
 
 When you receive `[CHAT:conv-abc123]` prefix, output a `[NOTIFY]` with the `conversationId` copied from the incoming message.
 
-**CRITICAL: Check for Slack thread context!** If the message includes `[Thread context file: <path>]`, it came from Slack. You MUST:
+**CRITICAL: Check for Slack context!** A message that came from Slack ends with a `[SLACK:<channelId>:<threadTs>]` marker. You MUST:
 
-1. Read the thread context file to get the `channel` and `thread` values from its YAML frontmatter
+1. Take `channelId` and `threadTs` from that marker. **Do not read the `[Thread context file: <path>]` just to find them** — it holds the whole thread, grows with every message, and whatever you read stays in your conversation for good. Read it only when you actually need earlier messages of that thread, and then only the end of it (`tail -n 40 <path>`).
 2. Output a `[NOTIFY]` with `conversationId` for the Chat UI (as usual)
 3. **ALSO** call the `reply-slack` skill to send your response to Slack
 
@@ -102,7 +102,7 @@ When you receive `[CHAT:conv-abc123]` prefix, output a `[NOTIFY]` with the `conv
 
 ### Thread-Aware Slack Notifications
 
-When you receive messages from Slack, they include a `[Thread context file: <path>]` hint. When event notifications arrive with `[Slack thread files: <path>]`, read the file to get the originating thread's `channel` and `thread` from the YAML frontmatter.
+When you receive messages from Slack, the `[SLACK:<channelId>:<threadTs>]` marker names the thread. When an event notification arrives with only `[Slack thread files: <path>]`, read the file's first 10 lines (`head -n 10 <path>`) for `channel` and `thread` in its YAML frontmatter — not the whole file.
 
 **Always include `threadTs` and `channelId`** when calling `reply-slack` and you know the originating thread.
 

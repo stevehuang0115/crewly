@@ -812,6 +812,13 @@ export const SLACK_CLOUD_CONSTANTS = {
  */
 export const ORC_STATUS_FORWARDING = {
 	/**
+	 * Longest agent status forwarded to the orchestrator in full. A [DONE]
+	 * report can run to several thousand characters, and every character
+	 * stays in the orchestrator's conversation, re-read on every later turn.
+	 * The full report is still in the conversation it was posted to.
+	 */
+	MAX_FORWARD_CHARS: 600,
+	/**
 	 * Markers that only say "still going" or "I am up" — not forwarded.
 	 * [READY]/[ONLINE] joined the list on 2026-09-18: an agent woken by a
 	 * Slack message announced itself and the orchestrator spent a full
@@ -1199,6 +1206,32 @@ export const RUNTIME_EXIT_CONSTANTS = {
  * the same cost shape that had one agent dragging 726k tokens through each
  * turn.
  */
+/**
+ * When the orchestrator's conversation is too big to carry on.
+ *
+ * On a 1M-window model Claude Code only compacts near the window, so an orc
+ * that is resumed across every restart re-reads its whole history on every
+ * turn — 612k tokens per turn on one machine (2026-09-23), growing ~64k a day,
+ * with 0.1% of each turn new. At a restart (never mid-conversation) a history
+ * above the threshold is closed and the orc starts fresh with a handover file
+ * holding the tail of the old one. Its real state (tasks, teams, OKRs, wiki)
+ * lives in Crewly and is read back at startup anyway.
+ */
+export const ORC_CONVERSATION_CONSTANTS = {
+	/** Start fresh at a restart when the last turn carried at least this many tokens. Env: CREWLY_ORC_FRESH_CONTEXT_TOKENS */
+	FRESH_CONTEXT_TOKENS: 300_000,
+	/** How much of the old transcript's end is read to find the last turn's size */
+	TAIL_BYTES: 2 * 1024 * 1024,
+	/** Messages kept in the handover file, newest last */
+	HANDOVER_MESSAGES: 40,
+	/** Characters kept per handover message */
+	HANDOVER_MESSAGE_CHARS: 800,
+	/** Total cap on the handover file's body */
+	HANDOVER_MAX_CHARS: 16_000,
+	/** Directory under CREWLY_HOME for handover files */
+	HANDOVER_DIR: 'handover',
+} as const;
+
 export const CHAT_CONTEXT_CONSTANTS = {
 	/** Whether preceding messages are included at all */
 	ENABLED: true,
