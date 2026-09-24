@@ -249,6 +249,14 @@ api_call() {
   if [ -n "${CREWLY_GOOGLE_ACCOUNT:-}" ]; then
     args+=(-H "X-Google-Account: $CREWLY_GOOGLE_ACCOUNT")
   fi
+  # What the agent is trying to accomplish, shown in the owner's Chrome
+  # takeover banner and the live browser view. Callers export
+  # CREWLY_AGENT_GOAL, or pass remote-browser's --goal. Base64 for the same
+  # reason as the authorization above: goals are often not ASCII, and a raw
+  # newline would end the header.
+  if [ -n "${CREWLY_AGENT_GOAL:-}" ]; then
+    args+=(-H "X-Agent-Goal: b64:$(printf '%s' "$CREWLY_AGENT_GOAL" | base64 | tr -d '\n')")
+  fi
   [ -n "$body" ] && args+=(-d "$body")
 
   local response

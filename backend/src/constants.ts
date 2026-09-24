@@ -177,6 +177,8 @@ export const BROWSER_BRIDGE_CONSTANTS = {
 	UNKNOWN_TOOL_REPLY_PREFIX: 'Unknown tool: ',
 	/** Longest extension version string recorded from an identity message. */
 	MAX_EXTENSION_VERSION_LENGTH: 32,
+	/** Longest agent goal forwarded to the extension banner and the live view. */
+	MAX_AGENT_GOAL_LENGTH: 200,
 } as const;
 
 /**

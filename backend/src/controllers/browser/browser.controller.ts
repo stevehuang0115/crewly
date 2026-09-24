@@ -13,6 +13,7 @@ import { BrowserBridgeService, isExtensionOutdatedError, type BrowserCommandResp
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
+import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
@@ -250,6 +251,68 @@ function extractAgentSession(req: Request): string | undefined {
 }
 
 /**
+ * Read the agent's stated goal from the `X-Agent-Goal` header.
+ *
+ * The skill library sends it as `b64:<base64 of UTF-8>`, because goals are
+ * often not ASCII and header values are Latin-1. A plain value is accepted
+ * as-is. The result is trimmed and capped at MAX_AGENT_GOAL_LENGTH.
+ *
+ * @param req - Express request
+ * @returns The goal, or undefined when none was sent
+ */
+export function readAgentGoalHeader(req: Request): string | undefined {
+	const raw = req.headers['x-agent-goal'];
+	if (typeof raw !== 'string' || raw.length === 0) return undefined;
+	let goal = raw;
+	if (raw.startsWith('b64:')) {
+		goal = Buffer.from(raw.slice(4), 'base64').toString('utf-8');
+	}
+	goal = goal.trim();
+	return goal ? goal.slice(0, BROWSER_BRIDGE_CONSTANTS.MAX_AGENT_GOAL_LENGTH) : undefined;
+}
+
+/**
+ * Extract the agent's goal/objective from request headers or body.
+ *
+ * Shown as a secondary line in the extension takeover banner so the user
+ * knows *what* the agent is trying to accomplish, not just which tool ran.
+ *
+ * Resolution order ("both" model):
+ *   1. Explicit override — `X-Agent-Goal` header or `agentGoal` body field
+ *      (the remote-browser skill's `--goal`). Always wins; most accurate.
+ *   2. Auto — the title of the agent's currently-claimed work item, looked
+ *      up by `agentSession`. Lets the banner show intent with zero agent
+ *      effort. Best-effort: any miss/error yields `undefined` (banner falls
+ *      back to a generic title).
+ *
+ * @param req - Express request
+ * @returns Goal string or undefined when none can be determined
+ */
+async function extractAgentGoal(req: Request): Promise<string | undefined> {
+	const fromHeader = readAgentGoalHeader(req);
+	if (fromHeader) return fromHeader;
+	const fromBody = (req.body as { agentGoal?: unknown } | undefined)?.agentGoal;
+	if (typeof fromBody === 'string' && fromBody.trim().length > 0) {
+		return fromBody.trim().slice(0, BROWSER_BRIDGE_CONSTANTS.MAX_AGENT_GOAL_LENGTH);
+	}
+
+	// Auto-derive from the agent's active work item (no override supplied).
+	const agentSession = extractAgentSession(req);
+	if (!agentSession) return undefined;
+	try {
+		const pool = TaskPoolService.getInstance();
+		const claim = await pool.getClaimService().getActiveClaimByAgent(agentSession);
+		if (!claim) return undefined;
+		const workItem = await pool.findWorkItem(claim.workItemId);
+		const title = workItem?.title?.trim();
+		return title ? title : undefined;
+	} catch {
+		// Task pool unavailable / lookup failed — banner just omits the goal.
+		return undefined;
+	}
+}
+
+/**
  * Cross-agent ownership guard for the explicit `tabId` override path.
  *
  * Per spec §13.5: if a request supplies an explicit `tabId` that is bound
@@ -373,6 +436,7 @@ async function sendToolCommand(
 	const instance = resolveInstanceParam(req);
 	const agentName = extractAgentName(req);
 	const agentSession = extractAgentSession(req);
+	const agentGoal = await extractAgentGoal(req);
 
 	// Per-tab ownership: explicit `tabId` in body must belong to this agent.
 	// When the check passes and a tabId was present, fold it into params so
@@ -414,7 +478,7 @@ async function sendToolCommand(
 	// Path 1: If a specific instance is requested AND proxy is available, use proxy
 	if (instance && proxy.isAvailable()) {
 		try {
-			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession, agentGoal);
 			logPath('proxy-instance', 'ok');
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			sendExtensionResult(res, result);
@@ -431,8 +495,8 @@ async function sendToolCommand(
 	if (bridge.isConnected()) {
 		try {
 			const result = agentSession
-				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName)
-				: await bridge.sendCommand(tool, params, timeoutMs, agentName);
+				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName, agentGoal)
+				: await bridge.sendCommand(tool, params, timeoutMs, agentName, agentGoal);
 			logPath('direct-ws', 'ok');
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			sendExtensionResult(res, result);
@@ -455,7 +519,7 @@ async function sendToolCommand(
 	// Path 3: Proxy relay (relay_to addressed messaging)
 	if (proxy.isAvailable()) {
 		try {
-			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
+			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession, agentGoal);
 			logPath('proxy-relay', 'ok');
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
 			sendExtensionResult(res, result);
@@ -523,13 +587,13 @@ function noteBrowserSessionAction(
 ): void {
 	if (!agentSession) return;
 	try {
-		const goalHeader = req.headers['x-agent-goal'];
+		const goalHeader = readAgentGoalHeader(req);
 		getBrowserSessions().noteAction({
 			agentSession,
 			tool,
 			params,
 			...(agentName ? { agentName } : {}),
-			...(typeof goalHeader === 'string' && goalHeader ? { goal: goalHeader } : {}),
+			...(goalHeader ? { goal: goalHeader } : {}),
 			...(typeof params?.tabId === 'number' ? { tabId: params.tabId } : {}),
 		});
 	} catch {

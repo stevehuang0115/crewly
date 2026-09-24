@@ -42,6 +42,11 @@
 #                       call (drops the X-Agent-Session header).
 #   --active            Only meaningful with `bind-tab`: foreground
 #                       the new tab on creation.
+#   --goal <text>       What you're trying to accomplish. Sent as the
+#                       X-Agent-Goal header so the user's Chrome takeover
+#                       banner shows your objective (e.g. "Verify DMARC
+#                       setup"), not just the current tool. Overrides any
+#                       inherited CREWLY_AGENT_GOAL for this call.
 #
 # Supported actions and their parameters:
 #   status              — connection status (no params)
@@ -86,6 +91,9 @@ EXTRA_PARAMS=""
 TAB_ID=""        # --tab-id <N>: explicit override
 NO_BIND="false"  # --no-bind: drop X-Agent-Session for this call
 FOREGROUND="false" # --active: only meaningful with bind-tab
+GOAL=""          # --goal <text>: what the agent is trying to accomplish
+                 # (shown in the Chrome takeover banner). Overrides any
+                 # inherited CREWLY_AGENT_GOAL for this call.
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -119,6 +127,10 @@ while [[ $# -gt 0 ]]; do
       CODE="$2"
       shift 2
       ;;
+    --goal|-g)
+      GOAL="$2"
+      shift 2
+      ;;
     --params|-P)
       EXTRA_PARAMS="$2"
       shift 2
@@ -142,6 +154,11 @@ while [[ $# -gt 0 ]]; do
     --help|-h)
       echo "Usage: execute.sh --action navigate --url https://example.com"
       echo "       execute.sh '{\"action\":\"screenshot\"}'"
+      echo "       execute.sh --action navigate --url https://x.com --goal 'Check pricing'"
+      echo ""
+      echo "  --goal <text>  What you're trying to accomplish; shown in the"
+      echo "                 user's Chrome takeover banner. Recommended on the"
+      echo "                 first action of a browser task."
       echo ""
       echo "Actions: status, navigate, screenshot, read-text, click, fill, type,"
       echo "         scroll, hover, press-key, get-element, wait-for-selector,"
@@ -184,6 +201,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$VALUE" ] && VALUE=$(printf '%s' "$INPUT" | jq -r '.value // empty')
   [ -z "$TEXT" ] && TEXT=$(printf '%s' "$INPUT" | jq -r '.text // empty')
   [ -z "$CODE" ] && CODE=$(printf '%s' "$INPUT" | jq -r '.code // empty')
+  [ -z "$GOAL" ] && GOAL=$(printf '%s' "$INPUT" | jq -r '.goal // empty')
   # Per-tab dispatch fields surfaced in JSON input. CLI flags win over JSON
   # (CLI is more explicit). Empty string = "not provided".
   if [ -z "$TAB_ID" ]; then
@@ -200,7 +218,7 @@ if [ -n "$INPUT_JSON" ]; then
   # Capture all extra fields from JSON input as pass-through params (strip
   # per-tab fields too — they're handled by the dedicated branches below).
   if [ -z "$EXTRA_PARAMS" ]; then
-    EXTRA_PARAMS=$(printf '%s' "$INPUT" | jq -c 'del(.action, .url, .selector, .value, .text, .code, .tabId, .noBind, .active) | if length == 0 then empty else . end' 2>/dev/null || true)
+    EXTRA_PARAMS=$(printf '%s' "$INPUT" | jq -c 'del(.action, .url, .selector, .value, .text, .code, .goal, .tabId, .noBind, .active) | if length == 0 then empty else . end' 2>/dev/null || true)
   fi
 fi
 
@@ -492,6 +510,15 @@ esac
 # `--no-bind` short-circuits backend per-tab routing by stripping the
 # X-Agent-Session header for this single call (api_call reads it from the
 # env). Using a subshell to scope the unset.
+
+# An explicit --goal (or JSON `goal`) overrides any inherited CREWLY_AGENT_GOAL
+# for this call. lib.sh::api_call reads CREWLY_AGENT_GOAL and forwards it as the
+# X-Agent-Goal header, which the backend stamps onto the browser command so the
+# Chrome takeover banner shows what the agent is doing. When --goal is absent we
+# leave CREWLY_AGENT_GOAL untouched (auto path).
+if [ -n "$GOAL" ]; then
+  export CREWLY_AGENT_GOAL="$GOAL"
+fi
 
 run_api_call() {
   if [ "$METHOD" = "GET" ]; then
