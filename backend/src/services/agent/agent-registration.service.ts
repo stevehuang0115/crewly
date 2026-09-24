@@ -183,7 +183,7 @@ export class AgentRegistrationService {
 	private promptCache = new Map<string, string>();
 
 	// Session creation locks to prevent concurrent createAgentSession calls for the same session
-	private sessionCreationLocks = new Map<string, Promise<{ success: boolean; sessionName?: string; message?: string; error?: string; errorCode?: string }>>();
+	private sessionCreationLocks = new Map<string, Promise<{ success: boolean; sessionName?: string; message?: string; error?: string; errorCode?: string; errorReason?: string }>>();
 
 	// AbortControllers for pending registration prompts (keyed by session name)
 	private registrationAbortControllers = new Map<string, AbortController>();
@@ -1201,7 +1201,7 @@ export class AgentRegistrationService {
 		message?: string;
 		error?: string;
 		/** Set to RUNTIME_STARTUP_BLOCKED when retrying cannot help. */
-		errorCode?: string;
+		errorCode?: string; errorReason?: string;
 	}> {
 		const startTime = Date.now();
 
@@ -1252,7 +1252,7 @@ export class AgentRegistrationService {
 					reason: error.reason,
 					error: error.message,
 				});
-				return { success: false, error: error.message, errorCode: error.code };
+				return { success: false, error: error.message, errorCode: error.code, errorReason: error.reason };
 			}
 			this.logger.warn('Step 1 (cleanup + reinit) failed', {
 				sessionName,
@@ -1286,7 +1286,7 @@ export class AgentRegistrationService {
 						reason: error.reason,
 						error: error.message,
 					});
-					return { success: false, error: error.message, errorCode: error.code };
+					return { success: false, error: error.message, errorCode: error.code, errorReason: error.reason };
 				}
 				this.logger.warn('Step 2 (full recreation) failed', {
 					sessionName,
@@ -3157,7 +3157,7 @@ Loop until done, blocked, or explicitly reassigned:
 		message?: string;
 		error?: string;
 		/** Set to RUNTIME_STARTUP_BLOCKED when retrying cannot help. */
-		errorCode?: string;
+		errorCode?: string; errorReason?: string;
 	}> {
 		// Fail fast if role is unusable. Without this guard, an undefined role
 		// flows through the entire pipeline, gets stringified to "undefined" in
@@ -3229,7 +3229,7 @@ Loop until done, blocked, or explicitly reassigned:
 		message?: string;
 		error?: string;
 		/** Set to RUNTIME_STARTUP_BLOCKED when retrying cannot help. */
-		errorCode?: string;
+		errorCode?: string; errorReason?: string;
 	}> {
 		const { sessionName, role, windowName, memberId } = config;
 		// The orchestrator's cwd is resolved deterministically (env > first
@@ -3786,6 +3786,7 @@ Loop until done, blocked, or explicitly reassigned:
 					sessionName,
 					error: initResult.error || 'Failed to initialize and register agent',
 					...(initResult.errorCode && { errorCode: initResult.errorCode }),
+					...(initResult.errorReason && { errorReason: initResult.errorReason }),
 				};
 			}
 
