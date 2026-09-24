@@ -111,6 +111,28 @@ describe('materializeTeam — REAL provisioning (integration)', () => {
     expect(ambientTeams).not.toContain(result.teamId);
   });
 
+  /**
+   * Issue #729 follow-up — honouring the injected root must not be done by
+   * re-pointing the process-wide StorageService singleton. In a running
+   * backend that would silently move the live server's storage to a
+   * verification run's scratch dir.
+   */
+  it('does not swap the process-wide StorageService singleton for an injected root', async () => {
+    const before = StorageService.getInstance();
+    const scratchHome = path.join(TMP_HOME, 'injected-root-singleton');
+
+    const result = await materializeTeam(softwareRec, {
+      teamsDir: path.join(scratchHome, 'teams'),
+      projectFlagPath: path.join(scratchHome, 'onboarding-complete.json'),
+    });
+    expect(result.provisioned).toBe(true);
+
+    expect(StorageService.getInstance()).toBe(before);
+    expect(before.getCrewlyHome()).toBe(TMP_HOME);
+    const entries = await fs.readdir(path.join(scratchHome, 'teams'));
+    expect(entries).toContain(result.teamId);
+  });
+
   it('flips the onboarding flag with the live team id', async () => {
     const flagPath = path.join(TMP_HOME, 'flag-2.json');
     const result = await materializeTeam(softwareRec, {
