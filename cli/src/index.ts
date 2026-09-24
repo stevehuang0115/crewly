@@ -129,8 +129,8 @@ program
 
 program
   .command('doctor')
-  .description('Check this install: package root, node, native modules, build toolchain, service environment')
-  .action(doctorCommand);
+  .description('Check this install: package root, node, jq/curl, native modules, build toolchain, AI runtime login, marketplace, service environment')
+  .action(() => doctorCommand());
 
 program
   .command('service <action>')
