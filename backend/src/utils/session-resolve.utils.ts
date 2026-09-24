@@ -52,18 +52,19 @@ export function memberSuffixOf(session: string): string | null {
 export function resolveCurrentSession(session: string, teams: readonly Team[]): ResolvedSession | null {
   if (!session) return null;
   for (const t of teams) {
-    const m = (t.members ?? []).find((x) => x.sessionName === session);
-    if (m?.sessionName) return { sessionName: m.sessionName, teamId: t.id, memberId: m.id, renamed: false };
+    const m = (t.members ?? []).find((x) => x.sessionName === session || x.agentId === session);
+    const current = m?.agentId || m?.sessionName;
+    if (m && current) return { sessionName: current, teamId: t.id, memberId: m.id, renamed: current !== session };
   }
   const suffix = memberSuffixOf(session);
   if (!suffix) return null;
   const hits: Array<{ team: Team; member: TeamMember }> = [];
   for (const t of teams) {
     for (const m of t.members ?? []) {
-      if (m.sessionName && m.id.toLowerCase().startsWith(suffix)) hits.push({ team: t, member: m });
+      if ((m.agentId || m.sessionName) && m.id.toLowerCase().startsWith(suffix)) hits.push({ team: t, member: m });
     }
   }
   if (hits.length !== 1) return null;
   const { team, member } = hits[0];
-  return { sessionName: member.sessionName as string, teamId: team.id, memberId: member.id, renamed: true };
+  return { sessionName: (member.agentId || member.sessionName) as string, teamId: team.id, memberId: member.id, renamed: true };
 }
