@@ -49,6 +49,12 @@ describe('isOwnerDashboardRequest', () => {
     ).toBe(false);
   });
 
+  it('treats a request without a headers object as not the dashboard (no throw)', () => {
+    const bare = {} as unknown as Request;
+    expect(readAgentSessionHeader(bare)).toBeUndefined();
+    expect(isOwnerDashboardRequest(bare)).toBe(false);
+  });
+
   it('is false for any other caller value', () => {
     expect(isOwnerDashboardRequest(req({ 'x-crewly-caller': 'cli' }))).toBe(false);
   });

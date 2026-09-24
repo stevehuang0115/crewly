@@ -45,9 +45,10 @@ export async function resolveAgentCaller(req: Request): Promise<AgentCaller> {
  * @returns The trimmed `X-Agent-Session` value, or undefined when absent/blank
  */
 export function readAgentSessionHeader(req: Pick<Request, 'headers'>): string | undefined {
+  const headers = req.headers ?? {};
   const hdr =
-    req.headers[API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER] ??
-    req.headers[API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER_LEGACY];
+    headers[API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER] ??
+    headers[API_SECURITY_CONSTANTS.AGENT_SESSION_HEADER_LEGACY];
   const value = Array.isArray(hdr) ? hdr[0] : hdr;
   return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -72,7 +73,7 @@ export function readAgentSessionHeader(req: Pick<Request, 'headers'>): string | 
  */
 export function isOwnerDashboardRequest(req: Pick<Request, 'headers'>): boolean {
   if (readAgentSessionHeader(req)) return false;
-  const hdr = req.headers[API_SECURITY_CONSTANTS.CALLER_HEADER];
+  const hdr = (req.headers ?? {})[API_SECURITY_CONSTANTS.CALLER_HEADER];
   const value = Array.isArray(hdr) ? hdr[0] : hdr;
   return typeof value === 'string' && value.trim().toLowerCase() === API_SECURITY_CONSTANTS.DASHBOARD_CALLER;
 }
