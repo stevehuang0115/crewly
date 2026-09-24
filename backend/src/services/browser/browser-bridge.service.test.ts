@@ -889,3 +889,99 @@ describe('BrowserBridgeService — per-tab dispatch', () => {
 		});
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Outdated extension: "Unknown tool: bindTab" → EXTENSION_OUTDATED.
+// Extensions older than 0.4.14 (e.g. store 0.4.12) do not implement bindTab.
+// ---------------------------------------------------------------------------
+
+/** Minimal view of the bridge internals needed to simulate a direct client. */
+interface BridgeInternals {
+	clients: Map<string, { id: string; ws: { readyState: number; send: jest.Mock }; connectedAt: Date }>;
+	handleMessage: (clientId: string, data: unknown) => void;
+}
+
+/** Attach a fake OPEN direct client and deliver messages as if it sent them. */
+function attachDirectClient(bridge: BrowserBridgeService, clientId = 'c1'): (msg: object) => void {
+	const internals = bridge as unknown as BridgeInternals;
+	internals.clients.set(clientId, {
+		id: clientId,
+		ws: { readyState: 1, send: jest.fn() },
+		connectedAt: new Date(),
+	});
+	return (msg: object) => internals.handleMessage(clientId, JSON.stringify(msg));
+}
+
+describe('bindAgentTab on an extension without bindTab', () => {
+	beforeEach(() => {
+		BrowserBridgeService.resetInstance();
+	});
+
+	afterEach(() => {
+		BrowserBridgeService.resetInstance();
+		jest.restoreAllMocks();
+	});
+
+	it('throws EXTENSION_OUTDATED naming the minimum version and the fix on an "Unknown tool: bindTab" reply', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		stubSendCommand(bridge, [{ id: 'b1', success: false, error: 'Unknown tool: bindTab' }]);
+
+		const err = await bridge.bindAgentTab('agent-A').catch((e: unknown) => e);
+
+		expect((err as Error & { code?: string }).code).toBe('EXTENSION_OUTDATED');
+		expect((err as Error).message).toContain(`needs ${BROWSER_BRIDGE_CONSTANTS.MIN_EXTENSION_VERSION_PER_TAB} or newer`);
+		expect((err as Error).message).toContain('Update Crewly in Chrome from the Chrome Web Store');
+		expect((err as Error).message).toContain('did not report its version');
+		expect(bridge.getBinding('agent-A')).toBeUndefined();
+	});
+
+	it('names the version the extension reported in its identity message (direct path)', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		const send = attachDirectClient(bridge);
+		send({ type: 'identity', instanceId: 'i1', version: '0.4.12' });
+		stubSendCommand(bridge, [{ id: 'b1', success: false, error: 'Unknown tool: bindTab' }]);
+
+		const err = await bridge.bindAgentTab('agent-A').catch((e: unknown) => e);
+
+		expect((err as Error & { code?: string }).code).toBe('EXTENSION_OUTDATED');
+		expect((err as Error).message).toContain('it reports version 0.4.12');
+		expect((err as Error & { reportedVersion?: string }).reportedVersion).toBe('0.4.12');
+	});
+
+	it('records the version from identity:update too, and ignores a non-string version', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		const send = attachDirectClient(bridge);
+		send({ type: 'identity', version: 42 });
+		send({ type: 'identity:update', version: '0.4.13' });
+		stubSendCommand(bridge, [{ id: 'b1', success: false, error: 'Unknown tool: bindTab' }]);
+
+		const err = await bridge.bindAgentTab('agent-A').catch((e: unknown) => e);
+
+		expect((err as Error).message).toContain('it reports version 0.4.13');
+	});
+
+	it('keeps the existing error for any other bind failure', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		stubSendCommand(bridge, [{ id: 'b1', success: false, error: 'permission_denied' }]);
+
+		const err = await bridge.bindAgentTab('agent-A').catch((e: unknown) => e);
+
+		expect((err as Error).message).toBe('Extension refused bindTab: permission_denied');
+		expect((err as Error & { code?: string }).code).toBeUndefined();
+	});
+
+	it('does not treat a different unknown tool or a near-miss message as outdated', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		stubSendCommand(bridge, [
+			{ id: 'b1', success: false, error: 'Unknown tool: navigate' },
+			{ id: 'b2', success: false, error: 'Unknown tool: bindTabs' },
+		]);
+
+		const first = await bridge.bindAgentTab('agent-A').catch((e: unknown) => e);
+		const second = await bridge.bindAgentTab('agent-A').catch((e: unknown) => e);
+
+		expect((first as Error & { code?: string }).code).toBeUndefined();
+		expect((second as Error & { code?: string }).code).toBeUndefined();
+		expect((first as Error).message).toBe('Extension refused bindTab: Unknown tool: navigate');
+	});
+});
