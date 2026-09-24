@@ -14,7 +14,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Badge, Card } from '@crewly/ui';
-import { ChevronDown, ChevronRight, Hash, Phone, MessageCircle, Send, MessageSquare, Mail, Palette, type LucideIcon } from 'lucide-react';
+import { ChevronDown, ChevronRight, Hash, Phone, MessageCircle, Send, MessageSquare, Mail, Palette, ListChecks, type LucideIcon } from 'lucide-react';
 import { SlackTab } from '../components/Settings/SlackTab';
 import { WhatsAppTab } from '../components/Settings/WhatsAppTab';
 import { DiscordTab } from '../components/Settings/DiscordTab';
@@ -22,6 +22,7 @@ import { TelegramTab } from '../components/Settings/TelegramTab';
 import { GoogleChatTab } from '../components/Settings/GoogleChatTab';
 import { GoogleWorkspaceTab } from '../components/Settings/GoogleWorkspaceTab';
 import { CanvaTab } from '../components/Settings/CanvaTab';
+import { MicrosoftTodoTab } from '../components/Settings/MicrosoftTodoTab';
 import { ConnectorAccessControl } from '../components/Connections/ConnectorAccessControl';
 import { CONNECTORS, CONNECTOR_GROUPS, findConnector, type ConnectorId } from '../config/connectors';
 import { fetchConnectorAccess, type ConnectorAccessMap } from '../services/connector.service';
@@ -35,6 +36,7 @@ const ICONS: Record<ConnectorId, LucideIcon> = {
   'google-chat': MessageSquare,
   'google-workspace': Mail,
   canva: Palette,
+  'microsoft-todo': ListChecks,
 };
 
 /** Connect/disconnect UI per connector. */
@@ -46,6 +48,7 @@ const PANELS: Record<ConnectorId, React.FC> = {
   'google-chat': GoogleChatTab,
   'google-workspace': GoogleWorkspaceTab,
   canva: CanvaTab,
+  'microsoft-todo': MicrosoftTodoTab,
 };
 
 /**

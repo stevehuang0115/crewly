@@ -49,6 +49,7 @@ import { createGrowthRouter } from '../controllers/growth/growth.routes.js';
 import { createGoogleRouter } from '../controllers/google/google.routes.js';
 import { createDesktopRouter } from '../controllers/desktop/desktop.routes.js';
 import { createCanvaRouter } from '../controllers/canva/canva.routes.js';
+import { createMicrosoftTodoRouter } from '../controllers/microsoft/microsoft-todo.routes.js';
 import { createConnectorRouter } from '../controllers/connector/connector.routes.js';
 import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
@@ -208,6 +209,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Canva Connect on the owner's account — Cloud holds the grant. Backs the canva-* skills.
   router.use('/canva', createCanvaRouter());
+
+  // Microsoft To Do on the owner's account — Cloud holds the `microsoft` grant. Backs the todo-* skills.
+  router.use('/microsoft-todo', createMicrosoftTodoRouter());
 
   // Which agent roles may use each connected account.
   router.use('/connectors', createConnectorRouter());

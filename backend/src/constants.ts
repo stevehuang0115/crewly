@@ -2010,6 +2010,72 @@ export const CANVA_CONSTANTS = {
 } as const;
 
 /**
+ * Microsoft To Do on the owner's account — Cloud holds the grant (see
+ * services/auth microsoft.service; the grant is keyed `microsoft` so Outlook
+ * mail / calendar can reuse it later), this instance talks to Microsoft
+ * Graph directly. Backs the todo-* skills.
+ */
+export const MICROSOFT_TODO_CONSTANTS = {
+	/** Connector id (role allowlist key, frontend catalog id) */
+	CONNECTOR_ID: 'microsoft-todo',
+	/** Cloud API prefix for the Microsoft grant (appended to the cloud URL) */
+	CLOUD_PATH: '/api/cloud/microsoft',
+	CLOUD_ENDPOINTS: {
+		/** GET → { connected, microsoftUserId, displayName, email, scopes, grantedAt } */
+		STATUS: '/status',
+		/** GET → { accessToken, expiresAt, scopes, microsoftUserId, displayName?, email? } */
+		TOKEN: '/token',
+		/** GET ?token=&returnUrl= → 302 to Microsoft consent */
+		START: '/start',
+		/** DELETE CLOUD_PATH itself → { removed } */
+		DISCONNECT: '',
+	},
+	/** Microsoft Graph v1.0 base */
+	GRAPH_BASE: 'https://graph.microsoft.com/v1.0',
+	TOKEN_REFRESH_MARGIN_MS: 60_000,
+	REQUEST_TIMEOUT_MS: 20_000,
+	/** Default / ceiling for tasks listed per call (`$top`) */
+	TASKS_DEFAULT_LIMIT: 50,
+	TASKS_LIMIT_CEILING: 100,
+	/** Longest `Retry-After` (s) a 429 is waited out in-process before it is returned */
+	RETRY_AFTER_MAX_WAIT_S: 10,
+	/** Task / list title cap (characters) */
+	TITLE_MAX_LENGTH: 255,
+	/** Task note cap (characters) */
+	NOTE_MAX_LENGTH: 4000,
+	/** Note text shown per task in list output (characters) */
+	NOTE_PREVIEW_LENGTH: 200,
+	/** Accepted `importance` values */
+	IMPORTANCE_VALUES: ['low', 'normal', 'high'] as readonly string[],
+	/**
+	 * Time zone written with a due date. To Do stores due *dates*; midnight
+	 * in UTC is what Microsoft's own samples send and reads back unchanged.
+	 */
+	DUE_TIME_ZONE: 'UTC',
+	/** `wellknownListName` of the list that answers when no list is named */
+	DEFAULT_LIST_WELLKNOWN: 'defaultList',
+	/** Dashboard path the Cloud consent flow returns to */
+	SETTINGS_RETURN_PATH: '/connections?platform=microsoft-todo',
+	/** Error codes shared between the token service, controller and skills */
+	ERROR_CODES: {
+		NOT_LOGGED_IN: 'not_logged_in',
+		NOT_CONNECTED: 'not_connected',
+		NOT_CONFIGURED: 'not_configured',
+		/** Graph rejected the token even after a fresh one */
+		UNAUTHORIZED: 'unauthorized',
+		/** Graph 403 — no access (e.g. account without an Exchange Online mailbox) */
+		FORBIDDEN: 'forbidden',
+		/** List or task not found */
+		NOT_FOUND: 'not_found',
+		/** Graph 429 with a `Retry-After` beyond what we wait out */
+		RATE_LIMITED: 'rate_limited',
+		MICROSOFT_ERROR: 'microsoft_error',
+		NETWORK: 'network',
+		VALIDATION: 'validation',
+	},
+} as const;
+
+/**
  * Constants for CrewlyAI Cloud integration.
  * Used by CloudClientService and CloudAuthMiddleware to connect
  * the open-source Crewly instance to CrewlyAI Cloud for premium features.

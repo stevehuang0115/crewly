@@ -1,7 +1,7 @@
 /**
  * Which agents may use a connected account.
  *
- * A connector (Google Workspace, Canva, …) is one grant for the whole
+ * A connector (Google Workspace, Canva, Microsoft To Do, …) is one grant for the whole
  * instance, so without this every agent can read the owner's mail the
  * moment the owner connects it. Skills carry `X-Agent-Session`, so the
  * backend can tell which role is calling and refuse.
@@ -32,7 +32,7 @@ export interface ConnectorAccess {
 export type ConnectorAccessMap = Record<string, ConnectorAccess>;
 
 /** Connector ids the backend gates (must match the frontend catalog). */
-export const GATED_CONNECTORS = ['google-workspace', 'canva'] as const;
+export const GATED_CONNECTORS = ['google-workspace', 'canva', 'microsoft-todo'] as const;
 
 /** One of {@link GATED_CONNECTORS}. */
 export type GatedConnectorId = (typeof GATED_CONNECTORS)[number];

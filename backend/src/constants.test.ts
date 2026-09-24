@@ -13,6 +13,7 @@ import {
   GOOGLE_OAUTH_CONSTANTS,
   GOOGLE_WORKSPACE_CONSTANTS,
   LOGIN_REQUIRED_PATTERN_SETS,
+  MICROSOFT_TODO_CONSTANTS,
   RUNTIME_COMPACT_COMMANDS,
   RUNTIME_INPUT_READY_PATTERNS,
   RUNTIME_TYPES,
@@ -235,5 +236,15 @@ describe('CRON_SCHEDULE_CONSTANTS', () => {
 
   it('falls back by exactly one day for an impossible expression', () => {
     expect(CRON_SCHEDULE_CONSTANTS.IMPOSSIBLE_EXPRESSION_FALLBACK_MS).toBe(86_400_000);
+  });
+});
+
+describe('MICROSOFT_TODO_CONSTANTS', () => {
+  it('points at the Cloud `microsoft` grant and Graph v1.0, and returns to its Connections card', () => {
+    expect(MICROSOFT_TODO_CONSTANTS.CONNECTOR_ID).toBe('microsoft-todo');
+    expect(MICROSOFT_TODO_CONSTANTS.CLOUD_PATH).toBe('/api/cloud/microsoft');
+    expect(MICROSOFT_TODO_CONSTANTS.GRAPH_BASE).toBe('https://graph.microsoft.com/v1.0');
+    expect(MICROSOFT_TODO_CONSTANTS.SETTINGS_RETURN_PATH).toBe('/connections?platform=microsoft-todo');
+    expect(MICROSOFT_TODO_CONSTANTS.TASKS_DEFAULT_LIMIT).toBeLessThanOrEqual(MICROSOFT_TODO_CONSTANTS.TASKS_LIMIT_CEILING);
   });
 });

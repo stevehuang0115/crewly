@@ -17,7 +17,8 @@ export type ConnectorId =
   | 'telegram'
   | 'google-chat'
   | 'google-workspace'
-  | 'canva';
+  | 'canva'
+  | 'microsoft-todo';
 
 /** Which section a connector belongs to. */
 export type ConnectorGroup = 'messaging' | 'data';
@@ -97,6 +98,13 @@ export const CONNECTORS: ConnectorMeta[] = [
     id: 'canva',
     name: 'Canva',
     description: 'Let agents find, create, upload to and export your Canva designs (posters, stories, decks, videos).',
+    group: 'data',
+    roleGated: true,
+  },
+  {
+    id: 'microsoft-todo',
+    name: 'Microsoft To Do',
+    description: 'Let agents read your To Do lists, add tasks with due dates, and complete or tidy them — personal and work accounts.',
     group: 'data',
     roleGated: true,
   },

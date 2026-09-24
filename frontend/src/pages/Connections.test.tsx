@@ -18,6 +18,7 @@ vi.mock('../components/Settings/TelegramTab', () => ({ TelegramTab: () => <div d
 vi.mock('../components/Settings/GoogleChatTab', () => ({ GoogleChatTab: () => <div data-testid="google-chat-panel" /> }));
 vi.mock('../components/Settings/GoogleWorkspaceTab', () => ({ GoogleWorkspaceTab: () => <div data-testid="google-workspace-panel" /> }));
 vi.mock('../components/Settings/CanvaTab', () => ({ CanvaTab: () => <div data-testid="canva-panel" /> }));
+vi.mock('../components/Settings/MicrosoftTodoTab', () => ({ MicrosoftTodoTab: () => <div data-testid="microsoft-todo-panel" /> }));
 vi.mock('../components/Connections/ConnectorAccessControl', () => ({
   ConnectorAccessControl: ({ connectorId }: { connectorId: string }) => <div data-testid={`access-${connectorId}`} />,
 }));
@@ -51,6 +52,7 @@ describe('Connections', () => {
     expect(data).toContainElement(screen.getByTestId('connector-card-google-workspace'));
     expect(data).toContainElement(screen.getByTestId('connector-card-canva'));
     expect(messaging).not.toContainElement(screen.getByTestId('connector-card-canva'));
+    expect(data).toContainElement(screen.getByTestId('connector-card-microsoft-todo'));
   });
 
   it('opens the card named by ?platform= (where every OAuth flow returns)', () => {
@@ -59,6 +61,13 @@ describe('Connections', () => {
     expect(screen.getByTestId('connector-content-canva')).toBeInTheDocument();
     expect(screen.getByTestId('canva-panel')).toBeInTheDocument();
     expect(screen.queryByTestId('connector-content-slack')).not.toBeInTheDocument();
+  });
+
+  it('opens the Microsoft To Do card with its role allowlist on ?platform=microsoft-todo', () => {
+    window.history.replaceState({}, '', '/connections?platform=microsoft-todo&microsoft=connected');
+    renderPage();
+    expect(screen.getByTestId('microsoft-todo-panel')).toBeInTheDocument();
+    expect(screen.getByTestId('access-microsoft-todo')).toBeInTheDocument();
   });
 
   it('still understands the legacy ?tab=slack return, and ignores unknown ids', () => {

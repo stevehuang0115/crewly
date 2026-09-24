@@ -44,7 +44,7 @@ describe('GET /api/connectors/access', () => {
   it('always lists the gated connectors, defaulting to an empty (open) allowlist', async () => {
     const res = await request(app).get('/api/connectors/access');
     expect(res.status).toBe(200);
-    expect(res.body.data).toEqual({ 'google-workspace': { allowedRoles: [] }, canva: { allowedRoles: [] } });
+    expect(res.body.data).toEqual({ 'google-workspace': { allowedRoles: [] }, canva: { allowedRoles: [] }, 'microsoft-todo': { allowedRoles: [] } });
   });
 
   it('returns stored rules, including for connectors outside the gated list', async () => {
@@ -53,6 +53,7 @@ describe('GET /api/connectors/access', () => {
     expect(res.body.data).toEqual({
       'google-workspace': { allowedRoles: [] },
       canva: { allowedRoles: ['ops'] },
+      'microsoft-todo': { allowedRoles: [] },
       notion: { allowedRoles: ['support'] },
     });
   });

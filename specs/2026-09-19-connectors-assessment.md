@@ -35,6 +35,7 @@ same code + weeks of waiting.**
 | Google Docs | new | docs-read / docs-write (create, append) |
 | Google Sheets | new | sheets-read / sheets-write (create, append, update) |
 | Google Slides | new | slides-read / slides-create (outline → deck) |
+| Microsoft To Do | **new (unreleased, 2026-09-23)** — Cloud grant keyed `microsoft` + OSS `/api/microsoft-todo/*` + Connections card | todo-lists / todo-tasks / todo-add / todo-update |
 | Discord / Telegram / WhatsApp / Google Chat | messaging bridges (owner-provided tokens) | — |
 | Browser (Chrome extension) | live via relay | remote-browser |
 
@@ -68,7 +69,7 @@ blocks it beyond writing code.
 
 | Connector | Difficulty | Gate |
 |---|---|---|
-| **Outlook Mail / Calendar / Contacts** (Microsoft Graph) | 2 days for all three (one grant) | Azure app registration (multi-tenant), publisher verification for external tenants; admin consent in many orgs |
+| **Outlook Mail / Calendar / Contacts** (Microsoft Graph) | 1–1½ days now: the `microsoft` grant, Azure app and token plumbing exist (To Do); add scopes to `MICROSOFT_CONSTANTS.SCOPES` + a Graph service per product, owner reconnects once | Azure app registration (multi-tenant), publisher verification for external tenants; admin consent in many orgs |
 | **Instagram Messages / Messenger / Threads / Facebook** (Meta) | 2–3 days | Meta App Review + Business Verification for `instagram_manage_messages`, `pages_messaging`; weeks; DM automation policy limits (24 h window). Posting is partly covered by the `social-media-post` marketplace skill already |
 | **Granola** | — | No public API today (export only) — skip |
 
@@ -91,7 +92,7 @@ sync through the relay — a mobile feature, not a Cloud connector.
 every external account, in two sections:
 
 - **Messaging** — Slack, WhatsApp, Discord, Telegram, Google Chat
-- **Data & content** — Google Workspace, Canva
+- **Data & content** — Google Workspace, Canva, Microsoft To Do
 
 They are the same kind of object (external account + credential +
 connect/disconnect), so they sit together; splitting them by history
@@ -137,6 +138,70 @@ in step.
    `CANVA_CLIENT_ID` / `CANVA_CLIENT_SECRET` to `crewly-auth.env` on both
    nodes, then submit for public review (the long pole). Until the env is
    set, Connect answers `not_configured` (503) and the card explains it.
-3. Notion.
-4. Google Contacts/Tasks/Forms + the three edit scopes in one re-consent.
-5. Outlook when an enterprise customer asks.
+3. Microsoft To Do — done in code (2026-09-23). Owner steps below.
+4. Notion.
+5. Google Contacts/Tasks/Forms + the three edit scopes in one re-consent.
+6. Outlook when an enterprise customer asks (reuses the `microsoft` grant).
+
+## Microsoft To Do (2026-09-23)
+
+**Shape.** Same as Canva. Cloud: `services/auth/src/microsoft.service.ts` +
+`microsoft.controller.ts`, routes `/api/cloud/microsoft/{start,callback,status,token}`
+and `DELETE /api/cloud/microsoft`, Mongo `microsoft_states` (TTL 10 min) and
+`microsoft_grants` (unique per account). OSS: `MICROSOFT_TODO_CONSTANTS`,
+`backend/src/services/microsoft/{microsoft-token,microsoft-todo}.service.ts`,
+`/api/microsoft-todo/{status,connect-url,disconnect,lists,tasks,tasks/:taskId}`
+(data routes behind `requireConnectorAccess('microsoft-todo')`), skills
+`todo-lists` / `todo-tasks` / `todo-add` / `todo-update`, card
+`frontend/src/components/Settings/MicrosoftTodoTab.tsx`.
+
+**Grant keyed `microsoft`, connector id `microsoft-todo`.** The Cloud grant is
+per vendor so Outlook mail / calendar can reuse it: add their scopes to
+`MICROSOFT_CONSTANTS.SCOPES`, write a Graph service per product, and the owner
+reconnects once. The connector id (role allowlist, catalog) is per product.
+
+**OAuth.** `common` tenant (personal + work/school), authorization code with
+client secret in the form body **and** PKCE S256, `response_mode=query`,
+`prompt=select_account`. Scopes `offline_access User.Read Tasks.ReadWrite`
+(all user-consentable). Access tokens ≈ 1 h; refresh tokens rotate — a new one
+replaces the stored one, none returned keeps the old. `invalid_grant`,
+`interaction_required`, `consent_required` on refresh delete the grant
+(`grant_revoked` → OSS `not_connected`). Microsoft has no per-app refresh-token
+revoke endpoint, so Disconnect only forgets the grant; the user can remove the
+consent at account.live.com/consent/Manage (personal) or myapps.microsoft.com
+(work/school). Identity from `GET /v1.0/me` (`id`, `displayName`, `mail` else
+`userPrincipalName`).
+
+**Graph behaviour on the OSS side.** Lists are named by id or display name
+(case-insensitive; none / `default` = the `defaultList` "Tasks"); each call
+resolves the name with `GET /me/todo/lists`. Tasks default to
+`$filter=status ne 'completed'`, `$top` 50 (max 100). Due dates are written as
+`{dateTime:'YYYY-MM-DDT00:00:00', timeZone:'UTC'}`. 401 → refetch token and
+retry once, then `unauthorized`; 429 → wait out `Retry-After` ≤ 10 s once,
+else `rate_limited` + `retryAfter`; 403 → `forbidden` (typical cause: work
+account without an Exchange Online mailbox); 404 → `not_found`.
+
+**Owner steps (Azure, once).**
+
+1. portal.azure.com → Microsoft Entra ID → App registrations → New registration.
+   - Name: `Crewly`
+   - Supported account types: **Accounts in any organizational directory (Any
+     Microsoft Entra ID tenant — Multitenant) and personal Microsoft accounts
+     (e.g. Skype, Xbox)**
+   - Redirect URI: platform **Web**, `https://api.crewlyai.com/api/cloud/microsoft/callback`
+2. Overview → copy **Application (client) ID** → `MICROSOFT_CLIENT_ID`.
+3. Certificates & secrets → New client secret (24 months max) → copy the
+   **Value** (not the Secret ID) → `MICROSOFT_CLIENT_SECRET`. Put a calendar
+   reminder before it expires: an expired secret fails every refresh with
+   `invalid_client` / AADSTS7000222.
+4. API permissions → Add → Microsoft Graph → **Delegated**: `offline_access`,
+   `User.Read`, `Tasks.ReadWrite`. No admin consent needed.
+5. Branding & properties: publisher domain / logo / terms + privacy URLs.
+   **Publisher verification** (Microsoft Partner Network ID) removes the
+   "unverified" warning; without it, many work/school tenants block user
+   consent for multitenant apps and users see "Need admin approval".
+   Personal accounts work without it.
+6. Put both values in `crewly-auth.env` on both nodes (and optionally
+   `MICROSOFT_RETURN_URL`), redeploy the auth image. Until then `/start` answers
+   `not_configured` (503) and the card says so.
+
