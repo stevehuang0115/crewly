@@ -125,3 +125,15 @@ naming the appointment.
 
 If the answer cannot be given without that content, say so and ask where to
 send it. Silence is recoverable; a disclosure is not.
+
+## Long jobs: say what you'll do first (`--interim`)
+
+Before you start, decide how big the job is:
+- **Quick** (a lookup, a short answer, one small change): do it and reply once.
+- **Longer** (several steps, running commands, driving a browser, a lot of reading, or more than about 3 minutes): first send one or two lines with `--interim`. Say what you understood, how you'll do it, roughly how long it will take, and ask anything you need confirmed. Then do the work and send the final reply.
+
+```bash
+bash execute.sh --channel <id> --thread <root> --interim --content "Got it: re-filling the Sunrun form with the saved details (~5 min). I'll stop before Submit for you to check."
+```
+
+The interim note goes to Slack, and the "is working on it…" line reappears under it. Your final reply replaces that line. Don't post progress updates in between unless you're blocked or the plan changed.

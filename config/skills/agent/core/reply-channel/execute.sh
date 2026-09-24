@@ -30,6 +30,11 @@ Options:
   --thread    | -t   Thread root message id — reply inside that thread
                      (Slack team channels: keeps the reply in the same Slack thread)
   --cmid             Optional client-message-id for idempotency
+  --interim          This is a short note before the real answer (what you
+                     understood, how you'll do it, roughly how long). It is
+                     posted, the "working on it…" line comes back under it,
+                     and your final reply replaces that line. Use it for jobs
+                     that take more than a few minutes; skip it for quick ones.
   --working          Say you are taking this on, without replying yet: shows
                      "<you> is working on it…" in the Slack thread, which your
                      real reply then replaces. Use it when a message was only
@@ -66,6 +71,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --working)
       WORKING="1"
+      shift
+      ;;
+    --interim)
+      INTERIM="1"
       shift
       ;;
     --handoff)
@@ -126,6 +135,7 @@ except Exception as e:
 print('CHANNEL=' + str(d.get('channelId', '')))
 print('CMID=' + str(d.get('clientMessageId', '')))
 print('THREAD=' + str(d.get('threadId', '')))
+print('INTERIM=' + ('1' if d.get('interim') is True else ''))
 # content is multi-line safe — use base64
 import base64
 c = d.get('content', '')
@@ -141,6 +151,7 @@ PY
         CHANNEL=*) [ -z "$CHANNEL_ID" ] && CHANNEL_ID="${line#CHANNEL=}";;
         CMID=*) [ -z "$CMID" ] && CMID="${line#CMID=}";;
         THREAD=*) [ -z "$THREAD_ID" ] && THREAD_ID="${line#THREAD=}";;
+        INTERIM=*) [ -z "${INTERIM:-}" ] && INTERIM="${line#INTERIM=}";;
         CONTENT_B64=*) [ -z "$CONTENT" ] && CONTENT="$(echo "${line#CONTENT_B64=}" | base64 -d 2>/dev/null)";;
       esac
     done <<< "$EXTRACTED"
@@ -201,9 +212,11 @@ fi
 # Build JSON body. Export CONTENT/CMID so python can read them safely without
 # quoting the values through the shell (avoids escaping hell for multi-line
 # content with quotes, backslashes, backticks, etc.).
-BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" python3 -c '
+BODY=$(CONTENT="$CONTENT" CMID="$CMID" THREAD_ID="$THREAD_ID" INTERIM="${INTERIM:-}" python3 -c '
 import os, json
 p = {"content": os.environ["CONTENT"], "contentType": "markdown"}
+if os.environ.get("INTERIM"):
+    p["interim"] = True
 cmid = os.environ.get("CMID", "")
 if cmid:
     p["clientMessageId"] = cmid

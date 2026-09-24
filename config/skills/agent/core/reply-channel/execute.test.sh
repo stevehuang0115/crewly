@@ -136,6 +136,25 @@ else
 fi
 assert_contains "content-required error surfaces" "$OUT" '--content is required'
 
+# --- Test 6: --interim flags the message (flag and JSON forms) ---
+echo "test 6: --interim"
+: > "$STUB_LOG"
+OUT=$(run_skill --channel chan-xyz --interim --content "got it, plan: …" 2>&1 </dev/null || true)
+LOG=$(cat "$STUB_LOG" 2>/dev/null || echo '{}')
+assert_contains "interim flag sent" "$LOG" 'interim'
+: > "$STUB_LOG"
+OUT=$(run_skill '{"channelId":"chan-xyz","content":"plan","interim":true}' 2>&1 </dev/null || true)
+LOG=$(cat "$STUB_LOG" 2>/dev/null || echo '{}')
+assert_contains "interim flag sent (json form)" "$LOG" 'interim'
+: > "$STUB_LOG"
+OUT=$(run_skill --channel chan-xyz --content "final answer" 2>&1 </dev/null || true)
+LOG=$(cat "$STUB_LOG" 2>/dev/null || echo '{}')
+if printf '%s' "$LOG" | grep -q '"interim"'; then
+  FAIL=$((FAIL + 1)); echo "  ✗ plain reply must not carry interim"
+else
+  PASS=$((PASS + 1)); echo "  ✓ plain reply carries no interim flag"
+fi
+
 echo
 echo "========================================"
 echo "reply-channel skill: PASS=$PASS  FAIL=$FAIL"

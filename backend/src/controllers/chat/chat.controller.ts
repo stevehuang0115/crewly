@@ -21,7 +21,7 @@ import {
 // architecture, only the import surface.
 import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
-import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import {
@@ -374,6 +374,7 @@ async function recordChatV2AgentReply(
   senderName: string,
   content: string,
   headerSession?: string,
+  interim = false,
 ): Promise<string | null> {
   try {
     const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
@@ -394,7 +395,7 @@ async function recordChatV2AgentReply(
       senderType: 'agent',
       senderId: channel.agentSession,
       content,
-      metadata: { source: 'reply-tool' },
+      metadata: { source: 'reply-tool', ...(interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}) },
     });
     logger.info('Agent reply recorded on chat-v2 channel', {
       senderName,
@@ -513,6 +514,7 @@ export async function agentResponse(
         String(senderName),
         String(content),
         typeof hdr === 'string' && hdr.length > 0 ? hdr : undefined,
+        req.body?.interim === true,
       );
       if (recorded) {
         res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });

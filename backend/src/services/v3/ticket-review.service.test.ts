@@ -131,6 +131,12 @@ describe('onChatMessage — answer detection', () => {
     expect((await requests.getById(t.id))?.reply).toBeUndefined();
   });
 
+  it('an interim note ("got it, plan: …") is not the answer', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    expect(await review.onChatMessage({ ...agentMsg('ch1', 'atlas', 'got it, plan: …', 'm1'), metadata: { interim: true } })).toBeNull();
+    expect((await requests.getById(t.id))?.reply).toBeUndefined();
+  });
+
   it('caps the excerpt', async () => {
     const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
     await review.onChatMessage(agentMsg('ch1', 'atlas', 'x'.repeat(5000), 'm1'));

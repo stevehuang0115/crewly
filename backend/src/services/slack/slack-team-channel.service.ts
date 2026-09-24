@@ -29,6 +29,7 @@ import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
 import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
+import { isInterim } from './slack-typing-placeholder.service.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
@@ -1723,13 +1724,15 @@ export class SlackTeamChannelService {
 
       const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content));
       if (this.deps.typing) {
-        await this.deps.typing.resolve(
-          { agentSession: dto.senderId, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) },
-          text,
-          installed
-            ? { botToken: installed.botToken, displayName: member?.name ?? dto.senderId }
-            : { displayName: member?.name ?? dto.senderId, ...slackIdentityFor(member, dto.senderId) },
-        );
+        const typingKey = { agentSession: dto.senderId, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) };
+        const typingIdentity = installed
+          ? { botToken: installed.botToken, displayName: member?.name ?? dto.senderId }
+          : { displayName: member?.name ?? dto.senderId, ...slackIdentityFor(member, dto.senderId) };
+        await this.deps.typing.resolve(typingKey, text, typingIdentity);
+        // An interim note ("got it — here is the plan"): the agent is still
+        // working, so the working-on-it placeholder goes back under it and
+        // the real answer replaces that one (owner, 2026-09-24).
+        if (isInterim(dto)) await this.deps.typing.begin(typingKey, typingIdentity, 'typing');
         this.logger.info('Agent reply mirrored to Slack', {
           slackChannel: mapping.slackChannelName,
           sender: dto.senderId,

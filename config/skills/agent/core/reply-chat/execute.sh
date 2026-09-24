@@ -23,6 +23,7 @@ while [[ $# -gt 0 ]]; do
     --text-file) TEXT="$(cat "$2")"; shift 2 ;;
     --sender|-s) SENDER_NAME="$2"; shift 2 ;;
     --sender-type) SENDER_TYPE="$2"; shift 2 ;;
+    --interim) INTERIM="true"; shift ;;
     --json|-j) INPUT_JSON="$2"; shift 2 ;;
     --) shift; break ;;
     *) if [[ -z "$INPUT_JSON" && ${1:0:1} == '{' ]]; then INPUT_JSON="$1"; shift; else error_exit "Unknown argument: $1"; fi ;;
@@ -40,6 +41,7 @@ if [ -n "$INPUT_JSON" ]; then
   TEXT=${TEXT:-$(echo "$INPUT_JSON" | jq -r '.content // .text // empty')}
   SENDER_NAME=${SENDER_NAME:-$(echo "$INPUT_JSON" | jq -r '.senderName // empty')}
   SENDER_TYPE=${SENDER_TYPE:-$(echo "$INPUT_JSON" | jq -r '.senderType // "agent"')}
+  INTERIM=${INTERIM:-$(echo "$INPUT_JSON" | jq -r 'if .interim == true then "true" else empty end')}
 fi
 
 require_param "content" "$TEXT"
@@ -53,7 +55,9 @@ BODY=$(jq -n \
   --arg senderName "$SENDER_NAME" \
   --arg senderType "$SENDER_TYPE" \
   --arg conversationId "$CONVERSATION_ID" \
+  --arg interim "${INTERIM:-}" \
   '{content: $content, senderName: $senderName, senderType: $senderType} +
-   (if $conversationId != "" then {conversationId: $conversationId} else {} end)')
+   (if $conversationId != "" then {conversationId: $conversationId} else {} end) +
+   (if $interim == "true" then {interim: true} else {} end)')
 
 api_call POST "/chat/agent-response" "$BODY"

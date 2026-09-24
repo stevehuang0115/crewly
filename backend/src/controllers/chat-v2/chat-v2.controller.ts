@@ -443,6 +443,7 @@ export function createChatV2Controller(
           // the service which validates and persists them.
           mentions: body.mentions,
           threadId: body.threadId,
+          interim: body.interim === true,
         });
         res.status(201).json({ success: true, data: message });
         persisted = message;

@@ -17,6 +17,17 @@
 import { SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
+/**
+ * Whether an agent message is an interim note ("got it — here is my plan")
+ * rather than the answer: the mirror posts it and puts the placeholder back.
+ *
+ * @param message - Anything carrying chat-v2 metadata
+ * @returns True when flagged interim
+ */
+export function isInterim(message: { metadata?: Record<string, unknown> }): boolean {
+  return message.metadata?.[SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY] === true;
+}
+
 /** The slice of SlackService this service uses. */
 export interface TypingSlackApi {
   isConnected(): boolean;
