@@ -49,6 +49,15 @@ describe('ensureGeminiApiKeyAuthSelected', () => {
 		expect(await read()).toEqual(mine);
 	});
 
+	it('never overrides a method saved in the older top-level format', async () => {
+		await fsPromises.mkdir(path.dirname(settingsPath), { recursive: true });
+		const legacy = { selectedAuthType: 'oauth-personal' };
+		await fsPromises.writeFile(settingsPath, JSON.stringify(legacy));
+
+		await expect(ensureGeminiApiKeyAuthSelected(undefined, settingsPath)).resolves.toBe('kept');
+		expect(await read()).toEqual(legacy);
+	});
+
 	it('leaves a settings file with comments untouched rather than rewriting it', async () => {
 		await fsPromises.mkdir(path.dirname(settingsPath), { recursive: true });
 		const jsonc = '{\n  // my theme\n  "ui": { "theme": "Dracula" }\n}\n';

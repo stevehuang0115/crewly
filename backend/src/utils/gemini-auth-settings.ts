@@ -24,6 +24,9 @@ import * as path from 'path';
 /** Gemini CLI's value for "Use Gemini API Key". */
 export const GEMINI_API_KEY_AUTH_TYPE = 'gemini-api-key';
 
+/** Top-level key older Gemini CLI settings (v1 schema) used for the auth method. */
+export const LEGACY_AUTH_TYPE_KEY = 'selectedAuthType';
+
 /** What {@link ensureGeminiApiKeyAuthSelected} did. */
 export type GeminiAuthSeedResult =
 	/** No method was saved; "Use Gemini API Key" is now selected. */
@@ -98,6 +101,11 @@ export async function ensureGeminiApiKeyAuthSelected(
 	const security = (settings.security ?? {}) as Record<string, unknown>;
 	const auth = (security.auth ?? {}) as Record<string, unknown>;
 	if (typeof auth.selectedType === 'string' && auth.selectedType.length > 0) {
+		return 'kept';
+	}
+	// Older Gemini CLI versions saved the choice at the top level. Gemini
+	// migrates it on load, so adding the new key next to it would override it.
+	if (typeof settings[LEGACY_AUTH_TYPE_KEY] === 'string' && (settings[LEGACY_AUTH_TYPE_KEY] as string).length > 0) {
 		return 'kept';
 	}
 
