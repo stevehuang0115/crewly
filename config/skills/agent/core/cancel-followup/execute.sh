@@ -73,7 +73,22 @@ if [ -z "$TRIGGER_ID" ]; then
   TEAM_ID=$(resolve_team_id || true)
   [ -z "$TEAM_ID" ] && { echo '{"error":"Cannot resolve owning team — cannot scope name lookup"}' >&2; exit 1; }
 
-  LIST_RESP=$(api_call GET "/triggers" "" 2>/dev/null || echo '{"data":[]}')
+  # The whole trigger table is needed to resolve a name (335 rows / 233 KB on
+  # 2026-09-21 — over the skill-output cap). Plain api_call would return a
+  # {"truncated":true} envelope and every name lookup would miss. A truncated
+  # or non-array body must fail loudly, or "not found" is reported for a
+  # trigger that exists.
+  if ! LIST_RESP=$(api_call_full GET "/triggers" ""); then
+    jq -n --arg n "$TRIGGER_NAME" \
+      '{success:false, name:$n, error:"GET /triggers failed or came back as a truncated envelope; cannot resolve the trigger by name (it may well exist)"}'
+    exit 1
+  fi
+  EXAMINED=$(printf '%s' "$LIST_RESP" | jq -r 'if type == "object" then (if (.data | type) == "array" then (.data | length) else "not-an-array" end) else "not-an-object" end' 2>/dev/null || echo "unparseable")
+  if ! [ "$EXAMINED" -ge 0 ] 2>/dev/null; then
+    jq -n --arg n "$TRIGGER_NAME" --arg why "$EXAMINED" \
+      '{success:false, name:$n, error:("GET /triggers returned a body whose .data is " + $why + "; cannot resolve the trigger by name")}'
+    exit 1
+  fi
   TRIGGER_ID=$(printf '%s' "$LIST_RESP" | jq -r \
     --arg team "$TEAM_ID" \
     --arg name "$TRIGGER_NAME" \
@@ -82,8 +97,8 @@ if [ -z "$TRIGGER_ID" ]; then
        | .id) // empty' | head -1)
 
   if [ -z "$TRIGGER_ID" ]; then
-    echo "$(jq -n --arg n "$TRIGGER_NAME" --arg team "$TEAM_ID" \
-      '{success:false, error:"No active trigger found with name", name:$n, teamId:$team}')"
+    jq -n --arg n "$TRIGGER_NAME" --arg team "$TEAM_ID" --arg e "$EXAMINED" \
+      '{success:false, error:"No active trigger found with name", name:$n, teamId:$team, examined:($e|tonumber)}'
     exit 0
   fi
 fi

@@ -50,4 +50,10 @@ The whole pool can be several MB.
 
 ## Output
 
-JSON with team task progress including assigned, completed, and blocked tasks.
+`{ success, stats, examined, matched, shown, workItems, hint }`.
+
+- `stats` — the pool's `/task-pool/stats` aggregate (totals by type/status).
+- `examined` — number of pool rows fetched before filtering (the whole pool).
+- `matched` / `shown` — rows that passed the filters, and how many of them are listed (`limit`).
+- `workItems` — the compact items described above.
+- If the item list could not be fetched or was not a list, the skill prints `success:false` with an `error` and exits 1 — an unknown list is never reported as an empty one.

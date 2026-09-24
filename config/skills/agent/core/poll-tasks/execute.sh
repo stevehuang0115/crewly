@@ -77,9 +77,9 @@ fi
 
 QUERY_PARAMS="?types=${TYPES}&owner=agent"
 
-AVAILABLE_RESPONSE=$(api_call GET "/task-pool${QUERY_PARAMS}" 2>&1) || {
+AVAILABLE_RESPONSE=$(api_call_full GET "/task-pool${QUERY_PARAMS}" 2>&1) || {
   # Also try without owner filter — some items may target specific agents
-  AVAILABLE_RESPONSE=$(api_call GET "/task-pool?types=${TYPES}&target=${SESSION_NAME}" 2>&1) || {
+  AVAILABLE_RESPONSE=$(api_call_full GET "/task-pool?types=${TYPES}&target=${SESSION_NAME}" 2>&1) || {
     error_exit "Failed to query Task Pool: ${AVAILABLE_RESPONSE}"
   }
 }
@@ -93,7 +93,7 @@ AVAILABLE_COUNT=$(printf '%s' "$AVAILABLE_RESPONSE" | jq -r '.count // 0')
 # picker filters owner=agent and would otherwise ignore these items).
 TARGET_PINNED_ID=""
 if [ "$AVAILABLE_COUNT" -eq 0 ]; then
-  TARGET_RESPONSE=$(api_call GET "/task-pool?types=${TYPES}&target=${SESSION_NAME}" 2>&1) || TARGET_RESPONSE=""
+  TARGET_RESPONSE=$(api_call_full GET "/task-pool?types=${TYPES}&target=${SESSION_NAME}" 2>&1) || TARGET_RESPONSE=""
   TARGET_COUNT=$(printf '%s' "$TARGET_RESPONSE" | jq -r '.count // 0' 2>/dev/null || echo 0)
   if [ "$TARGET_COUNT" -gt 0 ]; then
     AVAILABLE_RESPONSE="$TARGET_RESPONSE"

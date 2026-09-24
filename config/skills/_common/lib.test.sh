@@ -252,6 +252,54 @@ assert_eq "api_call: prune runs even when the body is small" '{"ok":true}' "$RES
 assert_eq "api_call: stale parked output is deleted" "missing" "$([ -f "$CAP_DIR/old-skill-stale.json" ] && echo present || echo missing)"
 assert_eq "api_call: fresh parked output is kept" "present" "$([ -f "$CAP_DIR/fresh-skill-recent.json" ] && echo present || echo missing)"
 
+# =============================================================================
+# api_call_full — callers that reduce the body themselves must see all of it
+# (2026-09-21: list-my-followups saw 0 of 335 triggers via the envelope).
+# =============================================================================
+mkdir -p "$TEMP_DIR/skills/fake-full"
+cat > "$TEMP_DIR/skills/fake-full/execute.sh" << 'SKILL_EOF'
+#!/bin/bash
+set -euo pipefail
+source "$LIB_PATH"
+curl() {
+  printf '%s\n%s' "$MOCK_BODY" "${MOCK_CODE:-200}"
+}
+# MOCK_ENVELOPE, when set, swaps api_call for a double that always hands back a
+# truncated envelope pointing at that path — what an api_call that ignored the
+# bypass (or a future cap path) would do.
+if [ -n "${MOCK_ENVELOPE:-}" ]; then
+  api_call() { printf '{"truncated":true,"bytes":9,"file":"%s","head":"","hint":"x"}' "$MOCK_ENVELOPE"; }
+fi
+api_call_full GET "/anything"
+SKILL_EOF
+chmod +x "$TEMP_DIR/skills/fake-full/execute.sh"
+
+# ---- Test 24: an oversized body comes back whole, and nothing is parked ----
+export MOCK_BODY="$BIG"; unset MOCK_ENVELOPE MOCK_CODE
+RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=1000 bash "$TEMP_DIR/skills/fake-full/execute.sh")
+assert_eq "api_call_full: oversized body returned whole" "$BIG" "$RESULT"
+assert_eq "api_call_full: nothing parked on disk" "0" "$(find "$CAP_DIR" -name 'fake-full-*' 2>/dev/null | wc -l | tr -d ' ')"
+
+# ---- Test 25: an envelope that still arrives is resolved from its parked file ----
+printf '%s' '{"data":[1,2,3]}' > "$TEMP_DIR/parked.json"
+RESULT=$(MOCK_ENVELOPE="$TEMP_DIR/parked.json" bash "$TEMP_DIR/skills/fake-full/execute.sh")
+assert_eq "api_call_full: envelope resolved from its parked file" '{"data":[1,2,3]}' "$RESULT"
+
+# ---- Test 26: an envelope whose parked file is unreadable fails loudly ----
+FULL_CODE=0
+RESULT=$(MOCK_ENVELOPE="$TEMP_DIR/missing.json" bash "$TEMP_DIR/skills/fake-full/execute.sh" 2>&1) || FULL_CODE=$?
+assert_eq "api_call_full: unreadable parked file -> exit 1" "1" "$FULL_CODE"
+assert_contains "api_call_full: the error names the truncation" '"truncated":true' "$RESULT"
+assert_eq "api_call_full: no body on stdout for the caller to mistake for empty" "" \
+  "$(MOCK_ENVELOPE="$TEMP_DIR/missing.json" bash "$TEMP_DIR/skills/fake-full/execute.sh" 2>/dev/null || true)"
+
+# ---- Test 27: HTTP errors still propagate as a non-zero return ----
+export MOCK_BODY='{"error":"nope"}' MOCK_CODE=500; unset MOCK_ENVELOPE
+FULL_CODE=0
+bash "$TEMP_DIR/skills/fake-full/execute.sh" >/dev/null 2>&1 || FULL_CODE=$?
+assert_eq "api_call_full: non-2xx returns 1" "1" "$FULL_CODE"
+unset MOCK_BODY MOCK_CODE
+
 # ---- Test 23: error responses are untouched by the cap ----
 export MOCK_BODY='{"error":"nope"}' MOCK_CODE=500
 RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=5 bash "$TEMP_DIR/skills/fake-skill/execute.sh" 2>&1 || true)

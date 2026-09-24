@@ -56,7 +56,7 @@ TIMESTAMP="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 # --- Step 0: Resolve target WorkItem if not supplied ---
 # Resolve order: explicit workItemId > the agent's currently-running claim.
 if [ -z "$WORK_ITEM_ID" ]; then
-  POOL_RESP=$(api_call GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
+  POOL_RESP=$(api_call_full GET "/task-pool/items?status=running&target=${SESSION_NAME}" 2>/dev/null || echo '{}')
   WORK_ITEM_ID=$(echo "$POOL_RESP" | jq -r '.workItems[0].id // .data[0].id // empty' 2>/dev/null || true)
 fi
 
