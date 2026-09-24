@@ -28,6 +28,7 @@ import type { RuntimeType } from '../../constants.js';
 import { CREWLY_CONSTANTS, AGENT_TIMEOUTS } from '../../constants.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
+import { removeCrewlyAgentFile } from '../../services/session/session-binding.js';
 import { getSettingsService } from '../../services/settings/settings.service.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { ActivityMonitorService } from '../../services/monitoring/activity-monitor.service.js';
@@ -786,6 +787,16 @@ async function _startTeamMemberCore(
       };
     }
 
+    // The name is derived from the member's display name, so a rename changes
+    // it. Retire the session under the previous binding before rebinding:
+    // left alone it keeps running and stays persisted under a name no member
+    // is bound to, and restarts relaunch it (2026-09-23: Dana ran as both
+    // crewly-marketing-dana-45506487 and crewly-marketing-self-watch-scribe-45506487).
+    const previousSessionName = currentMember.sessionName;
+    if (previousSessionName && previousSessionName !== sessionName) {
+      await retirePreviousMemberSession(context, previousSessionName, currentMember.role, projectPath);
+    }
+
     // Set sessionName in team member BEFORE creating session to avoid race condition
     // Use fresh team data to preserve any concurrent agentStatus updates
     currentMember.sessionName = sessionName;
@@ -959,6 +970,53 @@ async function _startTeamMemberCore(
       error: error instanceof Error ? error.message : 'Unknown error'
     };
   }
+}
+
+/**
+ * Retire a member's session that is no longer its binding (the member was
+ * renamed, so its derived session name changed).
+ *
+ * Kills the session if it is running, drops it from session-state
+ * persistence (so neither startup auto-restore nor the Resume dialog offers
+ * it), and removes the Claude Code agent file Crewly generated for it (so it
+ * is no longer listed as a launchable agent). Never throws: a failed cleanup
+ * is logged and must not block starting the member under its new name.
+ *
+ * @param context - API context
+ * @param sessionName - The member's previous (now unbound) session name
+ * @param role - Member role (for terminateAgentSession)
+ * @param projectPath - Project the member ran in (where its agent file lives)
+ */
+async function retirePreviousMemberSession(
+  context: ApiContext,
+  sessionName: string,
+  role: string,
+  projectPath?: string,
+): Promise<void> {
+  logger.info('Member session name changed; retiring the previous session', { sessionName });
+  try {
+    const running = getSessionBackendSync()?.sessionExists(sessionName) ?? false;
+    if (running) {
+      const result = await context.agentRegistrationService.terminateAgentSession(sessionName, role);
+      if (!result.success) {
+        logger.warn('Could not stop the previous session', { sessionName, error: result.error });
+      }
+    }
+  } catch (error) {
+    logger.warn('Error stopping the previous session', {
+      sessionName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  try {
+    getSessionStatePersistence().unregisterSession(sessionName);
+  } catch (error) {
+    logger.warn('Could not drop the previous session from persistence', {
+      sessionName,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+  await removeCrewlyAgentFile(projectPath, sessionName);
 }
 
 /**

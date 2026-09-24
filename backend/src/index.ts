@@ -35,6 +35,8 @@ import {
 	PtySessionBackend,
 } from './services/session/index.js';
 import { RuntimePidRegistry } from './services/session/runtime-pid-registry.service.js';
+import { removeCrewlyAgentFile, resolvePersistedSessions, selectAutoRestoreSessions } from './services/session/session-binding.js';
+import type { PersistedSessionInfo } from './services/session/session-state-persistence.js';
 import { ApiController } from './controllers/api.controller.js';
 import { createApiRoutes } from './routes/api.routes.js';
 import { TerminalGateway, setTerminalGateway } from './websocket/terminal.gateway.js';
@@ -1575,7 +1577,7 @@ void (async () => {
 							command: sessionInfo.command,
 							args: sessionInfo.args,
 							env: sessionInfo.env,
-						}, sessionInfo.runtimeType, sessionInfo.role, sessionInfo.teamId);
+						}, sessionInfo.runtimeType, sessionInfo.role, sessionInfo.teamId, sessionInfo.memberId);
 						if (sessionInfo.claudeSessionId) {
 							persistence.updateSessionId(sessionInfo.name, sessionInfo.claudeSessionId);
 						}
@@ -1584,6 +1586,7 @@ void (async () => {
 						count: savedState.sessions.length,
 						sessionsWithResumeId: savedState.sessions.filter(s => s.claudeSessionId).length,
 					});
+					await this.pruneUnboundPersistedSessions(savedState.sessions);
 				}
 			} catch (loadError) {
 				this.logger.debug('No persisted session state to load (first run or cleared)', {
@@ -3182,6 +3185,41 @@ void (async () => {
 	}
 
 	/**
+	 * Drop persisted team sessions whose name no team member is bound to.
+	 *
+	 * session-state.json caches what was running; the team config is the
+	 * source of truth for each member's session name. An entry left under a
+	 * member's old name (it was renamed) would otherwise stay in the Resume
+	 * dialog and could be relaunched, running the member twice. Each unbound
+	 * entry is unregistered (rewriting the state file without it) and its
+	 * generated Claude Code agent file is removed. Failure to read the teams,
+	 * or an empty team list, prunes nothing.
+	 *
+	 * @param sessions - Entries loaded from session-state.json.
+	 */
+	private async pruneUnboundPersistedSessions(sessions: ReadonlyArray<PersistedSessionInfo>): Promise<void> {
+		try {
+			const teams = await this.storageService.getTeams();
+			// No teams at all is indistinguishable from a failed read: prune
+			// nothing rather than drop every member's resume entry.
+			if (teams.length === 0) return;
+			const { unbound, rebound } = resolvePersistedSessions(sessions, teams);
+			if (unbound.length === 0) return;
+			const persistence = getSessionStatePersistence();
+			const byName = new Map(sessions.map((s) => [s.name, s]));
+			for (const name of unbound) {
+				persistence.unregisterSession(name);
+				await removeCrewlyAgentFile(byName.get(name)?.cwd, name);
+			}
+			this.logger.warn('Pruned persisted sessions whose name no team member is bound to', { unbound, rebound });
+		} catch (error) {
+			this.logger.warn('Could not check persisted sessions against team bindings (nothing pruned)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * Auto-restore agent sessions that were running before the last shutdown.
 	 * Loads persisted session state and calls createAgentSession() for each
 	 * non-orchestrator session. Gated by the autoResumeOnRestart setting.
@@ -3217,50 +3255,58 @@ void (async () => {
 				}
 			);
 
-			// 2026-05-17 — gate by task-pool work. Pre-fix the boot path
-			// blindly resurrected every persisted session even when none had
-			// pending work, defeating the wake-gate philosophy (PR #574/#585)
-			// and bloating RAM until IdleDetection eventually drained them
-			// back. Now: only restore a session if the pool has at least one
-			// non-terminal WorkItem with `target === sessionName`. Idle
-			// agents stay dead until orc dispatches new work, at which point
-			// the dispatcher / wake path raises them on demand.
+			// Relaunch team members only under the session name the team config
+			// binds them to: a persisted entry under a stale name (the member was
+			// renamed) is rebound through its memberId or dropped, never launched
+			// under the stale name. Then gate by task-pool work.
 			//
-			// Safety valve: if the pool lookup throws (e.g. SQLite not yet
-			// open during early boot), preserve the legacy behaviour rather
-			// than block all restores — better to over-restore than to
-			// silently strand work.
-			let agentSessions = baselineSessions;
+			// Work gate: only restore a session with work in hand (see
+			// restore-filter) or whose turn the last restart cut off. Idle agents
+			// stay down until work or a message wakes them (PR #574/#585).
+			// Safety valve: if the pool lookup throws (e.g. SQLite not yet open
+			// during early boot), skip the gate rather than strand work.
+			let teams: Awaited<ReturnType<StorageService['getTeams']>> | null = null;
 			try {
-				const pool = TaskPoolService.getInstance();
-				const allItems = await pool.getAllItems();
+				teams = await this.storageService.getTeams();
+			} catch (bindErr) {
+				this.logger.warn('Auto-restore could not read team bindings; restoring only non-team sessions', {
+					error: bindErr instanceof Error ? bindErr.message : String(bindErr),
+				});
+			}
+			let targets: Set<string> | null = null;
+			try {
+				const allItems = await TaskPoolService.getInstance().getAllItems();
 				// Work in hand only: active statuses, touched recently (see restore-filter),
 				// plus agents whose turn the last restart cut off.
-				const targetedSessions = sessionsToRestore(
+				targets = sessionsToRestore(
 					allItems as RestoreWorkItem[],
 					this.interruptedTurnsAtBoot.map((t) => t.sessionName),
 				);
-				const filtered = baselineSessions.filter((s) => targetedSessions.has(s.name));
-				const skipped = baselineSessions
-					.filter((s) => !targetedSessions.has(s.name))
-					.map((s) => s.name);
-				if (skipped.length > 0) {
-					this.logger.info(
-						'Skipping auto-restore for sessions with no work in hand (idle agents stay down until work or a message wakes them)',
-						{
-							skippedCount: skipped.length,
-							skipped: skipped.slice(0, 20),
-							truncated: skipped.length > 20,
-						},
-					);
-				}
-				agentSessions = filtered;
 			} catch (poolErr) {
 				this.logger.warn(
 					'Auto-restore could not query task pool; falling back to restoring every persisted session',
 					{ error: poolErr instanceof Error ? poolErr.message : String(poolErr) },
 				);
 			}
+
+			const selection = selectAutoRestoreSessions({ sessions: baselineSessions, teams, targets });
+			if (selection.unbound.length > 0) {
+				this.logger.warn('Not auto-restoring sessions whose name no team member is bound to', {
+					unbound: selection.unbound,
+					rebound: selection.rebound,
+				});
+			}
+			if (selection.skippedNoWork.length > 0) {
+				this.logger.info(
+					'Skipping auto-restore for sessions with no work in hand (idle agents stay down until work or a message wakes them)',
+					{
+						skippedCount: selection.skippedNoWork.length,
+						skipped: selection.skippedNoWork.slice(0, 20),
+						truncated: selection.skippedNoWork.length > 20,
+					},
+				);
+			}
+			const agentSessions = selection.sessions;
 
 			if (agentSessions.length === 0) {
 				this.logger.info('No persisted agent sessions to restore (all idle, no pending WorkItems)');

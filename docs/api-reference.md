@@ -842,6 +842,8 @@ GET /api/sessions/:name/output
 
 Returns sessions from a previous Crewly run that can be resumed.
 
+A team member's session is offered only under the session name the team config binds that member to. An entry left under a member's old name (for example after a rename) is never offered, and neither startup auto-restore nor a relaunch uses it.
+
 ```
 GET /api/sessions/previous
 ```
