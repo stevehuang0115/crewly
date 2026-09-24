@@ -246,6 +246,19 @@ export class SubAgentMessageQueue {
 	}
 
 	/**
+	 * Sessions that still have messages waiting for them. A restart must bring
+	 * these agents back: a message queued for an agent is work in hand even
+	 * when no WorkItem records it (2026-09-24: Atlas was left down after a
+	 * restart with the owner's message queued, and answered four hours later
+	 * only because the owner wrote again).
+	 *
+	 * @returns Session names with at least one queued message
+	 */
+	sessionsWithPending(): string[] {
+		return [...this.pendingMessages.entries()].filter(([, q]) => q.length > 0).map(([name]) => name);
+	}
+
+	/**
 	 * Check if there are pending messages for a session.
 	 *
 	 * @param sessionName - The agent session name

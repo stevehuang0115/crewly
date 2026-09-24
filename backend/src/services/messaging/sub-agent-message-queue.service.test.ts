@@ -204,6 +204,15 @@ describe('SubAgentMessageQueue', () => {
 		});
 	});
 
+	describe('sessionsWithPending', () => {
+		it('lists sessions that still have messages waiting (restart restore / wake on down)', () => {
+			queue.enqueue('atlas', 'owner question');
+			queue.enqueue('ella', 'x');
+			queue.clear('ella');
+			expect(queue.sessionsWithPending()).toEqual(['atlas']);
+		});
+	});
+
 	describe('hasPending', () => {
 		it('should return false for unknown session', () => {
 			expect(queue.hasPending('nonexistent')).toBe(false);

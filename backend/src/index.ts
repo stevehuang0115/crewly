@@ -1149,6 +1149,9 @@ void (async () => {
 
 		// Wire agent:idle events to thread status queue for delegation completion
 		this.eventBusService.on('eventPublished', (event: { type: string; sessionName?: string }) => {
+			if (event.type === 'agent:inactive' && event.sessionName) {
+				this.wakeIfMessagesQueued(event.sessionName);
+			}
 			if (event.type === 'agent:idle' && event.sessionName) {
 				try {
 					const waitingThreads = this.threadStatusQueueService.getByStatus('replied_waiting_actions');
@@ -3436,7 +3439,12 @@ void (async () => {
 				// plus agents whose turn the last restart cut off.
 				targets = sessionsToRestore(
 					allItems as RestoreWorkItem[],
-					this.interruptedTurnsAtBoot.map((t) => t.sessionName),
+					[
+						...this.interruptedTurnsAtBoot.map((t) => t.sessionName),
+						// Agents with messages still waiting for them (restored from
+						// disk by the queue) — someone is owed an answer.
+						...SubAgentMessageQueue.getInstance().sessionsWithPending(),
+					],
 				);
 			} catch (poolErr) {
 				this.logger.warn(
@@ -4074,6 +4082,44 @@ void (async () => {
 	 * @param sessionName - The agent that just went idle
 	 * @returns When every queued message has been attempted
 	 */
+	/** Last time a session was woken for queued messages (loop guard). */
+	private readonly queuedWakeAt = new Map<string, number>();
+
+	/**
+	 * An agent went down with messages still queued for it: start it again so
+	 * they are delivered (registration drains the queue). Without this the
+	 * messages waited for the next message someone happened to send — four
+	 * hours for the owner's question to Atlas on 2026-09-24. At most once per
+	 * session per QUEUED_WAKE_COOLDOWN_MS, so a crashing agent is not relaunched
+	 * in a loop.
+	 *
+	 * @param sessionName - The agent that became inactive
+	 */
+	private wakeIfMessagesQueued(sessionName: string): void {
+		if (sessionName === ORCHESTRATOR_SESSION_NAME) return;
+		if (!SubAgentMessageQueue.getInstance().hasPending(sessionName)) return;
+		const last = this.queuedWakeAt.get(sessionName) ?? 0;
+		if (Date.now() - last < SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_COOLDOWN_MS) return;
+		this.queuedWakeAt.set(sessionName, Date.now());
+		setTimeout(() => {
+			void (async () => {
+				try {
+					const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+					const res = await activateAgentBySession(this.apiController, sessionName);
+					this.logger.info('Woke an agent that went down with messages queued for it', {
+						sessionName,
+						success: res.success,
+					});
+				} catch (err) {
+					this.logger.warn('Could not wake an agent with queued messages', {
+						sessionName,
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
+			})();
+		}, SUB_AGENT_QUEUE_CONSTANTS.QUEUED_WAKE_DELAY_MS);
+	}
+
 	private async flushQueuedAgentMessages(sessionName: string): Promise<void> {
 		const queue = SubAgentMessageQueue.getInstance();
 		if (!queue.hasPending(sessionName)) return;

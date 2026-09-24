@@ -1642,6 +1642,10 @@ export const REGISTRATION_DELIVERY_CONSTANTS = {
  * completed initialization (status !== 'active') yet.
  */
 export const SUB_AGENT_QUEUE_CONSTANTS = {
+	/** Wait this long after an agent goes down before waking it for its queued messages (ms) */
+	QUEUED_WAKE_DELAY_MS: 5_000,
+	/** At most one such wake per agent in this window, so a crashing agent is not relaunched in a loop (ms) */
+	QUEUED_WAKE_COOLDOWN_MS: 10 * 60 * 1000,
 	/** Maximum messages per agent before dropping oldest */
 	MAX_QUEUE_SIZE: 50,
 	/** Delay between flushed messages on registration (ms) */
