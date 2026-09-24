@@ -6,6 +6,7 @@ import { SessionCommandHelper } from '../session/index.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { addGeminiTrustedFolders } from '../../utils/gemini-trusted-folders.js';
+import { ensureGeminiApiKeyAuthSelected } from '../../utils/gemini-auth-settings.js';
 import { getSettingsService } from '../settings/settings.service.js';
 
 /**
@@ -15,6 +16,78 @@ import { getSettingsService } from '../settings/settings.service.js';
 export class GeminiRuntimeService extends RuntimeAgentService {
 	constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
 		super(sessionHelper, projectRoot);
+	}
+
+	/**
+	 * Launch Gemini CLI, after making sure it will not stop on a dialog.
+	 *
+	 * Two dialogs used to hold a fresh install at startup until the readiness
+	 * window ran out ("Failed to initialize agent" after ~207s, 0 sessions):
+	 * - The auth dialog. Interactive Gemini reads its auth method only from
+	 *   settings, so with a key but no saved method it asks every time. It is
+	 *   pre-answered here when a Gemini API key is configured.
+	 * - The workspace trust dialog. Gemini reads its trusted-folder list once,
+	 *   at startup, so folders trusted after launch still prompt when
+	 *   postInitialize runs `/directory add`. They are trusted here, first.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param targetPath - Working directory for the session
+	 * @param runtimeFlags - Optional CLI flags
+	 * @param promptFilePath - Optional prompt file path
+	 * @param agentName - Optional agent name
+	 * @param resumeSessionId - Optional conversation to resume
+	 */
+	async executeRuntimeInitScript(
+		sessionName: string,
+		targetPath?: string,
+		runtimeFlags?: string[],
+		promptFilePath?: string,
+		agentName?: string,
+		resumeSessionId?: string,
+	): Promise<void> {
+		await this.prepareGeminiLaunch(targetPath);
+		return super.executeRuntimeInitScript(sessionName, targetPath, runtimeFlags, promptFilePath, agentName, resumeSessionId);
+	}
+
+	/**
+	 * Pre-answer Gemini's startup dialogs. Never throws: a failure here only
+	 * means the dialog may appear, which readiness still handles or reports.
+	 *
+	 * @param targetPath - Working directory the session will use
+	 */
+	async prepareGeminiLaunch(targetPath?: string): Promise<void> {
+		try {
+			const apiKey = await getSettingsService().getApiKey('gemini', { runtime: RUNTIME_TYPES.GEMINI_CLI });
+			if (apiKey) {
+				await ensureGeminiApiKeyAuthSelected(this.logger);
+			} else {
+				this.logger.info('No Gemini API key configured; Gemini may ask how to authenticate at startup');
+			}
+		} catch (error) {
+			this.logger.warn('Could not pre-select Gemini auth (non-fatal)', { error: String(error) });
+		}
+
+		await this.ensureGeminiTrustedFolders(this.getStartupTrustedPaths(targetPath));
+	}
+
+	/**
+	 * Folders postInitialize adds to the Gemini workspace, which must already be
+	 * trusted when Gemini starts: Gemini reads its trusted-folder list only at
+	 * startup, so a folder trusted later raises a trust dialog when it is added.
+	 *
+	 * Includes the system temp directory: skills write screenshots and other
+	 * artifacts there (remote-browser, screenshot-compare, transcribe-audio,
+	 * ...), and Gemini's file tools can only read workspace folders. Other
+	 * runtimes read /tmp without any setup, so Gemini must not be the exception.
+	 *
+	 * @param targetPath - The session's project path, if different from the root
+	 * @returns Absolute folder paths
+	 */
+	getStartupTrustedPaths(targetPath?: string): string[] {
+		const crewlyHome = path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME);
+		const paths = [crewlyHome, this.projectRoot, os.tmpdir()];
+		if (targetPath && targetPath !== this.projectRoot) paths.push(targetPath);
+		return paths;
 	}
 
 	/**
@@ -29,6 +102,7 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 	): Promise<boolean> {
 		const startTime = Date.now();
 		let trustPromptAttempts = 0;
+		let authDialogReported = false;
 
 		this.logger.info('Waiting for runtime to be ready', {
 			sessionName,
@@ -53,6 +127,17 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 					await this.sessionHelper.sendEnter(sessionName);
 					await delay(1000);
 					continue;
+				}
+
+				if (!authDialogReported && this.isGeminiAuthDialog(output)) {
+					// Not answered automatically: which method is right is the user's
+					// choice (e.g. Login with Google). With a configured key it is
+					// pre-answered before launch, so reaching here means no key.
+					authDialogReported = true;
+					this.logger.warn(
+						'Gemini is asking how to authenticate. Set a Gemini API key in Crewly settings, or answer it in the agent terminal',
+						{ sessionName },
+					);
 				}
 
 				const readyPatterns = this.getRuntimeReadyPatterns();
@@ -176,9 +261,38 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 		return RUNTIME_INPUT_READY_PATTERNS.GEMINI_CLI.NOT_READY_MARKERS;
 	}
 
-	private isGeminiTrustPrompt(output: string): boolean {
-		return /Do you trust this folder\?/i.test(output)
+	/**
+	 * Gemini's startup folder-trust dialog. Wording varies by version:
+	 * "Do you trust this folder?" (older) and "Do you trust the files in this
+	 * folder?" (0.61). Option 1, "Trust folder", is selected by default.
+	 *
+	 * @param output - Captured terminal output
+	 * @returns True when the dialog is on screen
+	 */
+	isGeminiTrustPrompt(output: string): boolean {
+		return /Do you trust (?:the files in )?this folder\?/i.test(output)
 			&& /Trust folder/i.test(output);
+	}
+
+	/**
+	 * Gemini's dialog for folders added with `/directory add` that were not
+	 * trusted at startup. Option 1, "Yes", is selected by default.
+	 *
+	 * @param output - Captured terminal output
+	 * @returns True when the dialog is on screen
+	 */
+	isGeminiWorkspaceTrustPrompt(output: string): boolean {
+		return /Do you trust the following folders being added to this workspace\?/i.test(output);
+	}
+
+	/**
+	 * Gemini's "How would you like to authenticate" dialog.
+	 *
+	 * @param output - Captured terminal output
+	 * @returns True when the dialog is on screen
+	 */
+	isGeminiAuthDialog(output: string): boolean {
+		return /How would you like to authenticate|Existing API key detected/i.test(output);
 	}
 
 	/**
@@ -244,14 +358,9 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 		// Ensure GEMINI_API_KEY is in the project .env file
 		await this.ensureGeminiEnvFile(effectiveProjectPath);
 
-		// Ensure required paths are trusted by Gemini CLI before /directory add.
-		// Include the system temp directory so agents can read temp files
-		// (e.g. screenshots saved to /tmp by skills like rednote-reader).
-		const tempDir = os.tmpdir();
-		const pathsToAdd = [crewlyHome, this.projectRoot, tempDir];
-		if (effectiveProjectPath !== this.projectRoot) {
-			pathsToAdd.push(effectiveProjectPath);
-		}
+		// Every one of these was trusted before launch (prepareGeminiLaunch), so
+		// adding them no longer raises a trust dialog in each new session.
+		const pathsToAdd = this.getStartupTrustedPaths(effectiveProjectPath);
 
 		// Merge additional paths (e.g. orchestrator's existing project paths)
 		// so ALL /directory add commands run before the registration prompt.
@@ -525,7 +634,16 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 				await delay(2000);
 
 				// Verify: check if output changed (slash commands produce confirmation)
-				const afterOutput = this.sessionHelper.capturePane(sessionName, 100);
+				let afterOutput = this.sessionHelper.capturePane(sessionName, 100);
+
+				// A folder that was not trusted at startup raises a trust dialog here
+				// (e.g. extra paths passed in by the caller). Accept the default "Yes".
+				if (this.isGeminiWorkspaceTrustPrompt(afterOutput)) {
+					this.logger.info('Gemini workspace trust dialog after /directory add, accepting', { sessionName, projectPath });
+					await this.sessionHelper.sendEnter(sessionName);
+					await delay(1500);
+					afterOutput = this.sessionHelper.capturePane(sessionName, 100);
+				}
 				const outputChanged = beforeOutput !== afterOutput;
 				// Do not treat the literal "/directory add ..." input text as confirmation.
 				// "directory" alone is too broad and causes false positives when the
