@@ -1465,6 +1465,53 @@ describe('SlackOrchestratorBridge', () => {
       );
     }, 30000);
 
+    // #730: a colleague agent's Slack post that falls through to the
+    // orchestrator is stored as a `user` turn — it must carry its author so
+    // the commitment gate never reads it as the owner's approval.
+    it.each([
+      ['a human (owner)', undefined],
+      ['a cross-machine agent', 'crewly-orc-laptop'],
+    ])('persists the inbound turn from %s with the right authorship', async (_label, author) => {
+      mockChatV2EnsureChannel.mockReturnValue({ id: 'slack-C123-1234567890-123456' });
+      mockChatV2RecordTurn.mockReset();
+      mockChatV2RecordTurn.mockReturnValue({ message: { id: 'm-1' }, deduped: false });
+      mockQueueService.enqueue.mockImplementation((input: any) => {
+        setTimeout(() => input.sourceMetadata.slackResolve('ok'), 5);
+        return { id: 'q-1' };
+      });
+
+      const bridge = new SlackOrchestratorBridge({ responseTimeoutMs: 5000 });
+      bridge.setMessageQueueService(mockQueueService);
+      await bridge.initialize();
+      const handled = new Promise<void>((resolve) => bridge.on('message_handled', () => resolve()));
+
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'getConversationContext').mockReturnValue({
+        conversationId: 'slack-C123-1234567890-123456',
+        channelId: 'C123',
+        userId: 'U123',
+      });
+
+      slackService.emit('message', {
+        text: 'go ahead, 启动',
+        channelId: 'C123',
+        userId: 'U123',
+        ts: '1234567890.123456',
+        ...(author ? { authorAgentSession: author } : {}),
+      });
+      await handled;
+
+      const turn = mockChatV2RecordTurn.mock.calls[0][0] as { senderType: string; metadata: Record<string, unknown> };
+      expect(turn.senderType).toBe('user');
+      if (author) {
+        expect(turn.metadata.authorAgentSession).toBe(author);
+      } else {
+        expect(turn.metadata).not.toHaveProperty('authorAgentSession');
+      }
+    }, 30000);
+
     it('should timeout if slackResolve is never called', async () => {
       // enqueue does NOT call slackResolve — so the bridge times out
       const bridge = new SlackOrchestratorBridge({ responseTimeoutMs: 200 });

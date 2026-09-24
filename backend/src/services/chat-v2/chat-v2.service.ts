@@ -15,6 +15,7 @@ import { ChannelStore } from './sqlite/channel.store.js';
 import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
+import { OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
@@ -212,6 +213,10 @@ export const RECORD_TURN_SOURCES = [
   'in-process-runtime',
   'reply-tool',
   'system',
+  // Owner messages from the messenger bridges (#730) — recorded so an
+  // approval given on these surfaces is visible to the commitment gate.
+  'telegram',
+  'google-chat',
 ] as const;
 
 /** Union type of the values in {@link RECORD_TURN_SOURCES}. */
@@ -1361,20 +1366,41 @@ export class ChatV2Service extends EventEmitter {
    * per-channel authorization) used only server-side by the guard; it returns
    * message TEXT only, never agent/system messages.
    *
+   * Channel-agnostic on purpose (#730): every surface that carries the owner's
+   * words to the orchestrator — Chat UI, Slack DM / thread / team channel,
+   * WhatsApp, Telegram, Google Chat, portal/mobile relay — records a `user`
+   * row, so an approval given on any of them counts. What it filters on is
+   * AUTHORSHIP, from the row's source metadata: a `user` row an agent wrote
+   * (a colleague's Slack post, an agent-session API write, an agent-reply
+   * source tag — see {@link OWNER_EVIDENCE_METADATA}) is excluded, as is a
+   * row whose metadata cannot be parsed. Filtering happens in SQL so agent
+   * chatter cannot push the owner's approval past `limit`.
+   *
    * @param sinceMs - Unix epoch ms; only messages created at/after this are returned.
    * @param limit - Max messages to return (default 100, capped at 500).
    * @returns Owner message contents, newest first.
    */
   getRecentOwnerMessageContents(sinceMs: number, limit = 100): string[] {
     const capped = Math.min(Math.max(1, Math.floor(limit)), 500);
+    const replySources = OWNER_EVIDENCE_METADATA.AGENT_REPLY_SOURCES;
+    const replySourcePlaceholders = replySources.map(() => '?').join(', ');
     const rows = this.db
       .prepare(
         `SELECT content FROM chat_messages
          WHERE sender_type = 'user' AND created_at >= ?
+           AND (
+             metadata IS NULL
+             OR (
+               json_valid(metadata)
+               AND json_extract(metadata, '$.${OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION}') IS NULL
+               AND json_extract(metadata, '$.${OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION}') IS NULL
+               AND COALESCE(json_extract(metadata, '$.source'), '') NOT IN (${replySourcePlaceholders})
+             )
+           )
          ORDER BY created_at DESC
          LIMIT ?`,
       )
-      .all(sinceMs, capped) as Array<{ content: string }>;
+      .all(sinceMs, ...replySources, capped) as Array<{ content: string }>;
     return rows.map((r) => r.content);
   }
 
@@ -1463,6 +1489,12 @@ export class ChatV2Service extends EventEmitter {
     // and contains UX confusion if the FE composes against a stale id.
     const threadId = this.validateThreadId(args.threadId, args.channelId);
 
+    // An agent principal writing into a channel it is not bound to resolves
+    // to the channel owner's `user` identity (resolveSender). Keep that, but
+    // record who really wrote it so the row can never pass as the owner
+    // speaking — the commitment-approval gate reads `user` rows (#730).
+    const agentAuthoredAsUser = senderType === 'user' && !!args.principal.agentSession;
+
     const { row: persisted } = this.messages.insert({
       channelId: args.channelId,
       senderType,
@@ -1473,6 +1505,9 @@ export class ChatV2Service extends EventEmitter {
       mentions,
       threadId,
       nowMs: this.now(),
+      ...(agentAuthoredAsUser
+        ? { metadata: { [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: args.principal.agentSession } }
+        : {}),
     });
 
     const dto = this.toMessageDTO(persisted, args.attachments ?? []);

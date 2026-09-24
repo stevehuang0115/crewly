@@ -72,6 +72,15 @@ jest.mock('../../utils/format-error.js', () => ({
   formatError: (e: any) => String(e),
 }));
 
+const mockEnsureChannel = jest.fn((args: { conversationId: string }) => ({ id: args.conversationId }));
+const mockRecordTurn = jest.fn<(input: unknown) => unknown>(() => ({ message: { id: 'm1' }, deduped: false }));
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: () => ({
+    ensureChannelForLegacyConversation: mockEnsureChannel,
+    recordTurn: mockRecordTurn,
+  }),
+}));
+
 import { initializeGoogleChatIfConfigured } from './google-chat-initializer.js';
 import { GoogleChatMessengerAdapter } from './adapters/google-chat-messenger.adapter.js';
 import { CREWLY_CONSTANTS, MESSAGE_SOURCES } from '../../constants.js';
@@ -244,6 +253,46 @@ describe('GoogleChatInitializer', () => {
           }),
         }),
       );
+    });
+
+    // #730: an approval the owner gives in Google Chat must reach the
+    // commitment gate, which reads chat-v2 `user` rows.
+    it('callback records the owner message in chat-v2 as a google-chat user turn', async () => {
+      mockRecordTurn.mockClear();
+      await initializeGoogleChatIfConfigured({ messageQueueService: mockQueueService });
+      const callback = (mockAdapterInitialize.mock.calls[0][0] as any).onIncomingMessage;
+
+      callback({
+        text: 'go ahead',
+        channelId: 'spaces/abc',
+        userId: 'Steve',
+        threadId: 'threads/456',
+        conversationId: 'spaces/abc',
+        source: 'google-chat',
+      });
+
+      expect(mockRecordTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channelId: 'gchat-spaces-abc',
+          senderType: 'user',
+          senderId: 'Steve',
+          content: 'go ahead',
+          metadata: expect.objectContaining({ source: 'google-chat', gchatSpace: 'spaces/abc' }),
+        }),
+      );
+    });
+
+    it('callback still enqueues when recording fails', async () => {
+      mockEnqueue.mockClear();
+      mockRecordTurn.mockImplementationOnce(() => {
+        throw new Error('db locked');
+      });
+      await initializeGoogleChatIfConfigured({ messageQueueService: mockQueueService });
+      const callback = (mockAdapterInitialize.mock.calls[0][0] as any).onIncomingMessage;
+
+      callback({ text: 'Hello', channelId: 'spaces/abc', conversationId: 'conv-9', source: 'google-chat' });
+
+      expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ content: 'Hello' }));
     });
 
     it('callback should add 👀 reaction when messageName is present', async () => {

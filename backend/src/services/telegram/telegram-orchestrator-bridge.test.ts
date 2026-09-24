@@ -54,6 +54,15 @@ jest.mock('../../utils/format-error.js', () => ({
 	formatError: (e: unknown) => String(e),
 }));
 
+const mockEnsureChannel = jest.fn((args: { conversationId: string }) => ({ id: args.conversationId }));
+const mockRecordTurn = jest.fn<(input: unknown) => unknown>(() => ({ message: { id: 'm1' }, deduped: false }));
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+	getChatV2Service: () => ({
+		ensureChannelForLegacyConversation: mockEnsureChannel,
+		recordTurn: mockRecordTurn,
+	}),
+}));
+
 import { isOrchestratorActive } from '../orchestrator/index.js';
 import { TelegramOrchestratorBridge, resetTelegramOrchestratorBridge } from './telegram-orchestrator-bridge.js';
 
@@ -129,6 +138,38 @@ describe('TelegramOrchestratorBridge', () => {
 			await new Promise(resolve => setTimeout(resolve, 10));
 
 			expect(mockThreadStore.appendUserMessage).toHaveBeenCalledWith('12345', 'Alice', 'Hello team');
+		});
+
+		// #730: an approval the owner gives on Telegram must reach the
+		// commitment gate, which reads chat-v2 `user` rows.
+		it('records the owner message in chat-v2 as a telegram user turn', async () => {
+			await bridge.initialize();
+
+			mockTelegramService.emit('message', testMessage);
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			expect(mockEnsureChannel).toHaveBeenCalledWith({ conversationId: 'telegram-12345', agentSession: 'crewly-orc' });
+			expect(mockRecordTurn).toHaveBeenCalledWith(
+				expect.objectContaining({
+					channelId: 'telegram-12345',
+					senderType: 'user',
+					senderId: 'Alice',
+					content: 'Hello team',
+					metadata: expect.objectContaining({ source: 'telegram', telegramChatId: '12345' }),
+				}),
+			);
+		});
+
+		it('still delivers to the orchestrator when recording fails', async () => {
+			mockRecordTurn.mockImplementationOnce(() => {
+				throw new Error('db locked');
+			});
+			await bridge.initialize();
+
+			mockTelegramService.emit('message', testMessage);
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			expect(mockQueueService.enqueue).toHaveBeenCalled();
 		});
 
 		it('should send offline message when orchestrator is inactive', async () => {

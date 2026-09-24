@@ -361,6 +361,10 @@ export const CHAT_ROUTING_CONSTANTS = {
 	MESSAGE_PREFIX: 'CHAT',
 	/** Message format prefix for Google Chat routing (distinguishes from Slack) */
 	GOOGLE_CHAT_PREFIX: 'GCHAT',
+	/** chat-v2 channel id prefix for recorded Google Chat conversations */
+	GOOGLE_CHAT_CHANNEL_PREFIX: 'gchat',
+	/** chat-v2 channel id prefix for recorded Telegram conversations */
+	TELEGRAM_CHANNEL_PREFIX: 'telegram',
 } as const;
 
 /**
@@ -1800,6 +1804,26 @@ export const SLACK_FILE_DOWNLOAD_CONSTANTS = {
  * Message source identifiers for the queue processor.
  * Determines delivery strategy (timeouts, retry behavior).
  */
+/**
+ * What makes a `sender_type='user'` chat-v2 row count as the OWNER speaking
+ * (commitment-approval gate, issues #730 / 2026-06-02 incident).
+ *
+ * Every surface that carries the owner's words to the orchestrator records
+ * them as a `user` turn (Chat UI, legacy chat, Slack DM/thread/team channel,
+ * WhatsApp, Telegram, Google Chat, portal/mobile relay). A few paths also
+ * store text an AGENT wrote as a `user` turn, so it reaches colleagues the way
+ * a human's message does; those rows carry one of the markers below and are
+ * never owner evidence.
+ */
+export const OWNER_EVIDENCE_METADATA = {
+	/** Local agent session that authored the row (agent-session API caller, cross-machine Slack post). */
+	AUTHOR_AGENT_SESSION: 'authorAgentSession',
+	/** Colleague agent on another machine whose Slack post was recorded here (slack-team-channel). */
+	REMOTE_AGENT_SESSION: 'remoteAgentSession',
+	/** `metadata.source` values that only agent replies carry — never an owner turn. */
+	AGENT_REPLY_SOURCES: ['pty-runtime', 'in-process-runtime', 'reply-tool'],
+} as const;
+
 export const MESSAGE_SOURCES = {
 	SLACK: 'slack',
 	WHATSAPP: 'whatsapp',

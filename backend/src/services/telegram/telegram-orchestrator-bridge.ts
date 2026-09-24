@@ -22,9 +22,11 @@ import {
 } from './telegram-thread-store.service.js';
 import { isOrchestratorActive, getOrchestratorOfflineMessage } from '../orchestrator/index.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
-import { TELEGRAM_CONSTANTS, MESSAGE_QUEUE_CONSTANTS } from '../../constants.js';
+import { TELEGRAM_CONSTANTS, MESSAGE_QUEUE_CONSTANTS, CHAT_ROUTING_CONSTANTS } from '../../constants.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { formatError } from '../../utils/format-error.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
+import { messengerConversationId, recordMessengerOwnerTurn } from '../chat-v2/owner-inbound.utils.js';
 
 /**
  * TelegramOrchestratorBridge routes incoming Telegram messages to the
@@ -92,6 +94,10 @@ export class TelegramOrchestratorBridge {
 		// Store the message in the thread file
 		await this.threadStore.appendUserMessage(msg.chatId, msg.userName, msg.text);
 
+		// Record it in chat-v2 too, like every other owner surface, so an
+		// approval the owner gives here is visible to the commitment gate (#730).
+		this.recordOwnerMessage(msg);
+
 		// Check if orchestrator is active
 		if (!(await isOrchestratorActive())) {
 			const offlineMsg = getOrchestratorOfflineMessage();
@@ -113,6 +119,32 @@ export class TelegramOrchestratorBridge {
 				'Message queue is not available. Please try again later.',
 				msg.messageId
 			);
+		}
+	}
+
+	/**
+	 * Record an incoming Telegram message as an owner turn in chat-v2.
+	 * Best-effort: a failure is logged and delivery continues.
+	 *
+	 * @param msg - The incoming Telegram message
+	 */
+	private recordOwnerMessage(msg: TelegramIncomingMessage): void {
+		try {
+			const recorded = recordMessengerOwnerTurn(getChatV2Service(), {
+				conversationId: messengerConversationId(CHAT_ROUTING_CONSTANTS.TELEGRAM_CHANNEL_PREFIX, msg.chatId),
+				content: msg.text,
+				senderId: msg.userName || msg.userId,
+				source: 'telegram',
+				metadata: { telegramChatId: msg.chatId, telegramMessageId: msg.messageId },
+			});
+			if (!recorded) {
+				this.logger.warn('Could not record Telegram message in chat history', { chatId: msg.chatId });
+			}
+		} catch (error) {
+			this.logger.warn('Could not record Telegram message in chat history', {
+				chatId: msg.chatId,
+				error: formatError(error),
+			});
 		}
 	}
 

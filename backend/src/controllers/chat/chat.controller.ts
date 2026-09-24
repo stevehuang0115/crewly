@@ -21,7 +21,8 @@ import {
 // architecture, only the import surface.
 import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
-import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA } from '../../constants.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { getSessionBackendSync } from '../../services/session/session-backend.factory.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
 import type { MessageQueueService } from '../../services/messaging/message-queue.service.js';
@@ -95,10 +96,21 @@ export async function sendMessage(
       return;
     }
 
+    // This endpoint records a `user` turn. When an agent session calls it,
+    // keep the message but mark who wrote it: the commitment-approval gate
+    // treats `user` rows as the owner's words and must never be satisfied by
+    // text an agent posted (#730 / 2026-06-02 incident).
+    const agentSession = readAgentSessionHeader(req);
+    const callerMetadata =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>)
+        : undefined;
     const input: SendMessageInput = {
       content,
       conversationId,
-      metadata,
+      metadata: agentSession
+        ? { ...(callerMetadata ?? {}), [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: agentSession }
+        : metadata,
     };
 
     const chatService = getChatService();
