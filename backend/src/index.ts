@@ -96,7 +96,7 @@ import { setRequestServiceEventBus, RequestService } from './services/v3/request
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import { createPtyTurnProbe } from './services/restart/turn-probe.js';
@@ -3064,6 +3064,9 @@ void (async () => {
 					maxAttempts: MAX_AUTOSTART_ATTEMPTS,
 					backoffMs: AUTOSTART_BACKOFF_MS,
 					isSuccess: r => r.success,
+					// A start-up blocked on the user (Claude Code as root, or never
+					// set up) cannot succeed on retry: stop and report it once.
+					shouldStop: r => r.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE,
 					onRetry: ({ attempt, maxAttempts, retryInMs, result: r }) => {
 						this.logger.warn('Auto-start orchestrator failed to create session — retrying', {
 							error: r.error,
@@ -3081,10 +3084,16 @@ void (async () => {
 				// a benign skip. The orchestrator stays inactive; recovery now
 				// falls to the reconciler's hybrid-wake on the next queued
 				// inbound WorkItem (#679 routing fix).
-				this.logger.error('Auto-start orchestrator FAILED after all retries — orchestrator is INACTIVE', {
-					error: result.error,
-					attempts: MAX_AUTOSTART_ATTEMPTS,
-				});
+				this.logger.error(
+					result.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE
+						? 'Auto-start orchestrator BLOCKED — needs user action; orchestrator is INACTIVE'
+						: 'Auto-start orchestrator FAILED after all retries — orchestrator is INACTIVE',
+					{
+						error: result.error,
+						errorCode: result.errorCode,
+						attempts: MAX_AUTOSTART_ATTEMPTS,
+					},
+				);
 				return;
 			}
 

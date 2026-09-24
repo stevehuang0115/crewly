@@ -149,6 +149,56 @@ describe('collectDoctorChecks', () => {
 	});
 });
 
+describe('collectDoctorChecks — Claude fresh install', () => {
+	const base = () => ({ packageRoot: tmp, tryLoad: () => undefined, platform: 'darwin' as const, homeDir: home });
+
+	it('fails the user check as root when claude is installed, with the run-as-a-normal-user hint', async () => {
+		const checks = await collectDoctorChecks({ ...base(), which: whichOf('claude'), getuid: () => 0, env: {} });
+		expect(byName(checks, 'user')).toMatchObject({ status: 'fail', hint: 'Run Crewly as a normal (non-root) user.' });
+	});
+
+	it('only warns about root when claude is not installed (other runtimes run as root)', async () => {
+		const checks = await collectDoctorChecks({ ...base(), which: whichOf('codex'), getuid: () => 0, env: {} });
+		expect(byName(checks, 'user')).toMatchObject({ status: 'warn' });
+	});
+
+	it('passes the user check as root when IS_SANDBOX=1, and as a normal user', async () => {
+		const sandboxed = await collectDoctorChecks({ ...base(), which: whichOf(), getuid: () => 0, env: { IS_SANDBOX: '1' } });
+		expect(byName(sandboxed, 'user')).toMatchObject({ status: 'ok' });
+		const normal = await collectDoctorChecks({ ...base(), which: whichOf(), getuid: () => 501, env: {} });
+		expect(byName(normal, 'user')).toMatchObject({ status: 'ok', detail: 'not root' });
+	});
+
+	it('warns when claude is installed but never set up (no config / onboarding not finished)', async () => {
+		const missing = await collectDoctorChecks({ ...base(), which: whichOf('claude'), getuid: () => 501, env: {} });
+		expect(byName(missing, 'claude')).toMatchObject({
+			status: 'warn',
+			hint: 'Run `claude` once in a terminal, choose a theme and log in, then start the team.',
+		});
+		fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: false }));
+		const unfinished = await collectDoctorChecks({ ...base(), which: whichOf('claude'), getuid: () => 501, env: {} });
+		expect(byName(unfinished, 'claude')).toMatchObject({ status: 'warn' });
+	});
+
+	it('passes the claude check once first-run setup is done (honouring CLAUDE_CONFIG_DIR)', async () => {
+		fs.writeFileSync(path.join(home, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true }));
+		const done = await collectDoctorChecks({ ...base(), which: whichOf('claude'), getuid: () => 501, env: {} });
+		expect(byName(done, 'claude')).toMatchObject({ status: 'ok' });
+
+		const alt = path.join(tmp, 'claude-cfg');
+		fs.mkdirSync(alt);
+		fs.writeFileSync(path.join(alt, '.claude.json'), JSON.stringify({ hasCompletedOnboarding: true }));
+		fs.rmSync(path.join(home, '.claude.json'));
+		const relocated = await collectDoctorChecks({ ...base(), which: whichOf('claude'), getuid: () => 501, env: { CLAUDE_CONFIG_DIR: alt } });
+		expect(byName(relocated, 'claude')).toMatchObject({ status: 'ok' });
+	});
+
+	it('skips the claude check when claude is not installed (another runtime is fine)', async () => {
+		const checks = await collectDoctorChecks({ ...base(), which: whichOf('gemini'), getuid: () => 501, env: {} });
+		expect(byName(checks, 'claude')).toBeUndefined();
+	});
+});
+
 describe('formatDoctorCheck', () => {
 	it('renders the icon, name, detail and indented hint', () => {
 		const lines = formatDoctorCheck({ name: 'toolchain', status: 'warn', detail: 'missing g++', hint: 'apt-get install g++' });

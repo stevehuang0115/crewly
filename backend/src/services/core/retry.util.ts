@@ -28,6 +28,11 @@ export interface RetryWithBackoffOptions<T> {
 	backoffMs: number;
 	/** Predicate deciding whether a result counts as success (stops retrying). */
 	isSuccess: (result: T) => boolean;
+	/**
+	 * Optional predicate: a failed result for which retrying cannot help (for
+	 * example a start-up blocked on the user). Returned immediately.
+	 */
+	shouldStop?: (result: T) => boolean;
 	/** Optional hook invoked before each backoff sleep (for logging). */
 	onRetry?: (info: { attempt: number; maxAttempts: number; retryInMs: number; result: T }) => void;
 	/**
@@ -69,7 +74,7 @@ export async function retryWithBackoff<T>(
 	operation: (attempt: number) => Promise<T>,
 	options: RetryWithBackoffOptions<T>,
 ): Promise<T> {
-	const { maxAttempts, backoffMs, isSuccess, onRetry } = options;
+	const { maxAttempts, backoffMs, isSuccess, shouldStop, onRetry } = options;
 	if (maxAttempts < 1) {
 		throw new RangeError(`maxAttempts must be >= 1, got ${maxAttempts}`);
 	}
@@ -78,7 +83,7 @@ export async function retryWithBackoff<T>(
 	let result!: T;
 	for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 		result = await operation(attempt);
-		if (isSuccess(result)) {
+		if (isSuccess(result) || shouldStop?.(result)) {
 			return result;
 		}
 		if (attempt < maxAttempts) {

@@ -24,6 +24,23 @@ describe('retryWithBackoff', () => {
 		};
 	}
 
+	it('stops at once, without sleeping, when shouldStop matches a failed result', async () => {
+		const { sleep, delays } = makeSleepSpy();
+		const op = jest.fn(async () => ({ success: false, errorCode: 'RUNTIME_STARTUP_BLOCKED' }) as Result & { errorCode: string });
+
+		const result = await retryWithBackoff(op, {
+			maxAttempts: 5,
+			backoffMs: 1000,
+			isSuccess: r => r.success,
+			shouldStop: r => r.errorCode === 'RUNTIME_STARTUP_BLOCKED',
+			sleep,
+		});
+
+		expect(result.success).toBe(false);
+		expect(op).toHaveBeenCalledTimes(1);
+		expect(delays).toEqual([]);
+	});
+
 	it('returns immediately on first success without sleeping', async () => {
 		const { sleep, delays } = makeSleepSpy();
 		const op = jest.fn(async () => ({ success: true }) as Result);

@@ -1115,6 +1115,33 @@ export const GEMINI_FORCE_RESTART_PATTERNS: RegExp[] = [
 ];
 
 /**
+ * Claude Code start-up states that cannot resolve without the user, so the
+ * agent start must fail fast with an actionable error instead of waiting out
+ * the readiness timeout and every fallback (about 5 minutes before this).
+ */
+export const CLAUDE_STARTUP_CONSTANTS = {
+	/** Error code on RuntimeStartupBlockedError and on the session result. */
+	BLOCKED_ERROR_CODE: 'RUNTIME_STARTUP_BLOCKED',
+	/** Claude refuses --dangerously-skip-permissions as root; this is its message. */
+	ROOT_REFUSAL_MARKER: 'cannot be used with root/sudo privileges',
+	/**
+	 * Claude honours IS_SANDBOX=1 as "running in a sandbox" and then allows the
+	 * skip-permissions flag as root (containers). Only then is root allowed.
+	 */
+	SANDBOX_ENV: 'IS_SANDBOX',
+	/**
+	 * Claude Code's first-run onboarding (theme picker), shown when `claude`
+	 * has never been run on this machine. It precedes sign-in and nothing in
+	 * Crewly can complete it.
+	 */
+	FIRST_RUN_MARKERS: ['Choose the text style'] as readonly string[],
+	MESSAGES: {
+		ROOT: 'Crewly agents cannot run as root: Claude Code refuses --dangerously-skip-permissions under root/sudo. Run Crewly as a normal (non-root) user, then start the team again.',
+		FIRST_RUN: 'Claude Code has not been set up on this machine yet. Run `claude` once in a terminal, choose a theme and log in, then start the team again.',
+	},
+} as const;
+
+/**
  * Claude Code fatal error patterns that indicate the CLI is stuck in an
  * unrecoverable state. Unlike transient API errors, these require an
  * immediate restart — no retry will resolve them.

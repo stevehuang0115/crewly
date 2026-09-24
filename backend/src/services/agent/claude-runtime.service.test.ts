@@ -2,7 +2,8 @@ import * as path from 'path';
 import { promises as fs, existsSync } from 'fs';
 import { ClaudeRuntimeService } from './claude-runtime.service.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RUNTIME_TYPES } from '../../constants.js';
+import { RUNTIME_TYPES, CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
+import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
@@ -457,4 +458,94 @@ describe('ClaudeRuntimeService', () => {
 		});
 	});
 
+
+	// ---------------------------------------------------------------------
+	// Fresh-install fail-fast (Mia's pre-validation, Claude Code 2.1.197)
+	// ---------------------------------------------------------------------
+
+	describe('fresh install: fail fast instead of a 5-minute hang', () => {
+		const SANDBOX = CLAUDE_STARTUP_CONSTANTS.SANDBOX_ENV;
+		let savedSandbox: string | undefined;
+
+		beforeEach(() => {
+			savedSandbox = process.env[SANDBOX];
+			delete process.env[SANDBOX];
+		});
+
+		afterEach(() => {
+			if (savedSandbox !== undefined) process.env[SANDBOX] = savedSandbox;
+			else delete process.env[SANDBOX];
+			jest.restoreAllMocks();
+		});
+
+		it('as root: refuses to launch Claude with the actionable root error, before running the init script', async () => {
+			jest.spyOn(process, 'getuid').mockReturnValue(0);
+			const superInit = jest
+				.spyOn(RuntimeAgentService.prototype, 'executeRuntimeInitScript')
+				.mockResolvedValue(undefined);
+
+			const err = await service.executeRuntimeInitScript('s1', '/proj').catch((e: unknown) => e);
+
+			expect((err as { code?: string }).code).toBe('RUNTIME_STARTUP_BLOCKED');
+			expect((err as { reason?: string }).reason).toBe('root_user');
+			expect((err as Error).message).toBe(CLAUDE_STARTUP_CONSTANTS.MESSAGES.ROOT);
+			expect((err as Error).message).toMatch(/cannot run as root.*normal \(non-root\) user/);
+			expect(superInit).not.toHaveBeenCalled();
+		});
+
+		it('as root with IS_SANDBOX=1 (Claude allows the flag then): launches normally', async () => {
+			jest.spyOn(process, 'getuid').mockReturnValue(0);
+			process.env[SANDBOX] = '1';
+			const superInit = jest
+				.spyOn(RuntimeAgentService.prototype, 'executeRuntimeInitScript')
+				.mockResolvedValue(undefined);
+
+			await expect(service.executeRuntimeInitScript('s1', '/proj')).resolves.toBeUndefined();
+			expect(superInit).toHaveBeenCalledTimes(1);
+		});
+
+		it('as a normal user: launches normally', async () => {
+			jest.spyOn(process, 'getuid').mockReturnValue(501);
+			const superInit = jest
+				.spyOn(RuntimeAgentService.prototype, 'executeRuntimeInitScript')
+				.mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('s1', '/proj');
+			expect(superInit).toHaveBeenCalledTimes(1);
+		});
+
+		it('readiness: Claude refusing root in the terminal fails fast with the root error (not a timeout)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue(
+				'$ claude --dangerously-skip-permissions\n--dangerously-skip-permissions cannot be used with root/sudo privileges for security reasons\n$ ',
+			);
+			const started = Date.now();
+
+			const err = await service.waitForRuntimeReady('s1', 300000, 10).catch((e: unknown) => e);
+
+			expect((err as { reason?: string }).reason).toBe('root_user');
+			expect((err as Error).message).toBe(CLAUDE_STARTUP_CONSTANTS.MESSAGES.ROOT);
+			expect(Date.now() - started).toBeLessThan(2000);
+		});
+
+		it('readiness: the first-run theme picker fails fast with "run claude once" (checked before ready patterns)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue(
+				'✻ Welcome to Claude Code v2.1.197\n\nLet’s get started.\n\nChoose the text style that looks best with your terminal\n ❯ 1. Auto\n   2. Dark mode ✔\n   3. Light mode',
+			);
+			const started = Date.now();
+
+			const err = await service.waitForRuntimeReady('s1', 300000, 10).catch((e: unknown) => e);
+
+			expect((err as { reason?: string }).reason).toBe('first_run_setup');
+			expect((err as Error).message).toBe(CLAUDE_STARTUP_CONSTANTS.MESSAGES.FIRST_RUN);
+			expect((err as Error).message).toMatch(/Run `claude` once.*choose a theme and log in/);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled(); // never auto-answers the picker
+			expect(Date.now() - started).toBeLessThan(2000);
+		});
+
+		it('readiness: a set-up, logged-in Claude still reaches ready', async () => {
+			mockSessionHelper.capturePane.mockReturnValue('✻ Welcome to Claude Code!\n\n/help for help, /status for your current setup\n\ncwd: /proj');
+
+			await expect(service.waitForRuntimeReady('s1', 5000, 10)).resolves.toBe(true);
+		});
+	});
 });

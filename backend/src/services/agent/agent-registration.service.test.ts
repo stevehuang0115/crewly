@@ -311,6 +311,25 @@ describe('AgentRegistrationService', () => {
 			expect(mockRuntimeService.clearDetectionCache).toHaveBeenCalledWith('test-session');
 		});
 
+		it('stops on a start-up blocked on the user: returns its message and does NOT try full recreation', async () => {
+			const { RuntimeStartupBlockedError } = await import('./runtime-startup-blocked.error.js');
+			mockRuntimeService.waitForRuntimeReady.mockRejectedValue(
+				new RuntimeStartupBlockedError('first_run_setup', 'Run `claude` once, choose a theme and log in.'),
+			);
+			mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+
+			const result = await service.initializeAgentWithRegistration('test-session', 'developer', '/test/path', 90000);
+
+			expect(result).toEqual({
+				success: false,
+				error: 'Run `claude` once, choose a theme and log in.',
+				errorCode: 'RUNTIME_STARTUP_BLOCKED',
+			});
+			// Step 2 (full recreation) kills the session first; it must not run.
+			expect(mockSessionHelper.killSession).not.toHaveBeenCalled();
+			expect(mockRuntimeService.waitForRuntimeReady).toHaveBeenCalledTimes(1);
+		});
+
 		it('should attempt full recreation if cleanup and reinit fails', async () => {
 			// Mock Step 1 failure (reinit doesn't work)
 			mockRuntimeService.waitForRuntimeReady
