@@ -7,78 +7,105 @@
 import { execSync } from 'child_process';
 
 /**
- * Kill any zombie backend processes from previous runs that are still holding
- * the port or consuming resources. Uses lsof to find processes on the port
- * and also searches for any stale crewly backend node processes.
- *
- * @param port - The port to check for zombie processes.
- * @param logFn - Logging function for status messages.
+ * A process is treated as a Crewly backend only when its command line runs
+ * the backend entrypoint: the compiled `dist/backend/backend/src/index.js`
+ * (what `crewly start` spawns) or `backend/src/index.ts` (dev via tsx).
  */
-export function killZombieProcesses(port: number, logFn: (msg: string) => void = console.log): void {
-	const myPid = process.pid;
+export const CREWLY_BACKEND_COMMAND_PATTERN = /backend\/src\/index\.(js|ts)\b/;
 
-	// Find processes holding the port
+/**
+ * Command that lists the pids LISTENING on a TCP port.
+ *
+ * `-sTCP:LISTEN` matters: a plain `lsof -ti :<port>` also returns every
+ * client connected to the port (browsers, agents, curl), which must never be
+ * signalled.
+ *
+ * @param port - TCP port
+ * @returns Shell command
+ */
+export function listListenersCommand(port: number): string {
+	return `lsof -nP -ti tcp:${port} -sTCP:LISTEN`;
+}
+
+/**
+ * Replace a stale Crewly backend that still holds THIS start's port, and
+ * nothing else.
+ *
+ * `crewly start` calls this only after the health check on `port` failed, so
+ * a listener on `port` is a dead or wedged instance of this same Crewly. Scope:
+ * - only processes LISTENING on `port`, never clients connected to it;
+ * - only if the listener's command line is a Crewly backend
+ *   ({@link CREWLY_BACKEND_COMMAND_PATTERN}). Anything else on the port is
+ *   reported and left alone;
+ * - SIGTERM first, SIGKILL only for stragglers after a short grace period.
+ *
+ * Crewly backends of other projects run on other ports and are never touched.
+ * An earlier version also SIGKILLed every process on the machine matching
+ * `dist/backend/backend/src/index.js`, which took down every other project's
+ * backend and its agents on each `crewly start`. That sweep is gone.
+ *
+ * Orphaned test runners are still cleaned up ({@link killOrphanedTestProcesses}).
+ *
+ * @param port - The port this `crewly start` will bind
+ * @param logFn - Logging function for status messages
+ * @returns The pids that were signalled
+ */
+export function killZombieProcesses(port: number, logFn: (msg: string) => void = console.log): number[] {
+	const myPid = process.pid;
+	const signalled: number[] = [];
+
+	let listeners: number[] = [];
 	try {
-		const portPids = execSync(`lsof -ti :${port}`, { encoding: 'utf8', timeout: 5000 })
+		listeners = execSync(listListenersCommand(port), { encoding: 'utf8', timeout: 5000 })
 			.trim()
 			.split('\n')
-			.filter(p => p && parseInt(p) !== myPid);
-
-		if (portPids.length > 0) {
-			logFn(`Found ${portPids.length} zombie process(es) on port ${port}, killing...`);
-			for (const pid of portPids) {
-				try {
-					process.kill(parseInt(pid), 'SIGTERM');
-				} catch {
-					// Already dead
-				}
-			}
-			// Give SIGTERM a moment, then SIGKILL stragglers
-			try {
-				execSync('sleep 1', { timeout: 3000 });
-			} catch { /* ignore */ }
-			for (const pid of portPids) {
-				try {
-					process.kill(parseInt(pid), 'SIGKILL');
-				} catch {
-					// Already dead
-				}
-			}
-		}
+			.map((p) => parseInt(p, 10))
+			.filter((pid) => !isNaN(pid) && pid !== myPid);
 	} catch {
-		// lsof returns exit code 1 if no processes found — that's fine
+		// lsof exits 1 when nothing listens on the port: nothing to replace
 	}
 
-	// Also kill any stale crewly backend node processes
-	try {
-		const result = execSync(
-			'ps -eo pid,command | grep "dist/backend/backend/src/index.js" | grep -v grep',
-			{ encoding: 'utf8', timeout: 5000 }
-		).trim();
+	const stale: number[] = [];
+	for (const pid of listeners) {
+		let command = '';
+		try {
+			command = execSync(`ps -o command= -p ${pid}`, { encoding: 'utf8', timeout: 2000 }).trim();
+		} catch {
+			continue; // already gone
+		}
+		if (CREWLY_BACKEND_COMMAND_PATTERN.test(command)) {
+			stale.push(pid);
+		} else {
+			logFn(`Port ${port} is held by pid ${pid} (${command.slice(0, 80)}), which is not a Crewly backend; leaving it alone.`);
+		}
+	}
 
-		if (result) {
-			const stalePids = result
-				.split('\n')
-				.map(line => parseInt(line.trim()))
-				.filter(pid => !isNaN(pid) && pid !== myPid);
-
-			if (stalePids.length > 0) {
-				logFn(`Found ${stalePids.length} stale backend process(es), killing...`);
-				for (const pid of stalePids) {
-					try {
-						process.kill(pid, 'SIGKILL');
-					} catch {
-						// Already dead
-					}
-				}
+	if (stale.length > 0) {
+		logFn(`Replacing ${stale.length} stale Crewly backend(s) on port ${port} (pid ${stale.join(', ')})...`);
+		for (const pid of stale) {
+			try {
+				process.kill(pid, 'SIGTERM');
+				signalled.push(pid);
+			} catch {
+				// Already dead
 			}
 		}
-	} catch {
-		// No stale processes found
+		// Give SIGTERM a moment, then SIGKILL stragglers
+		try {
+			execSync('sleep 1', { timeout: 3000 });
+		} catch { /* ignore */ }
+		for (const pid of stale) {
+			try {
+				process.kill(pid, 'SIGKILL');
+			} catch {
+				// Already dead
+			}
+		}
 	}
 
 	// Kill orphaned vitest/test runner processes from previous agent sessions
 	killOrphanedTestProcesses(myPid, logFn);
+	return signalled;
 }
 
 /**
