@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-24T19:40:56.903Z",
+  "lastUpdated": "2026-09-24T19:55:44.195Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -23,7 +23,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/send-pdf-to-slack",
       "assets": {
         "archive": "config/skills/agent/marketplace/send-pdf-to-slack",
@@ -52,6 +52,10 @@
           "pdf to slack",
           "markdown to pdf",
           "export pdf"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -75,7 +79,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-27T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/ai-studio",
       "assets": {
         "archive": "config/skills/agent/marketplace/ai-studio",
@@ -90,6 +94,9 @@
           "build app",
           "react prototype",
           "gemini app"
+        ],
+        "files": [
+          "SKILL.md"
         ]
       }
     },
@@ -113,7 +120,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-28T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/browse-stealth",
       "assets": {
         "archive": "config/skills/agent/browse-stealth",
@@ -142,6 +149,12 @@
           "patchright",
           "cdp browse",
           "stealth scrape"
+        ],
+        "files": [
+          "execute.sh",
+          "launch-chrome-cdp.sh",
+          "SKILL.md",
+          "stealth-browse.py"
         ]
       }
     },
@@ -165,7 +178,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/bug-triage",
       "assets": {
         "archive": "config/skills/agent/marketplace/bug-triage",
@@ -188,6 +201,10 @@
           "classify bug",
           "prioritize bug",
           "analyze bug"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -210,7 +227,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/chrome-browser",
       "assets": {
         "archive": "config/skills/agent/marketplace/chrome-browser",
@@ -227,6 +244,10 @@
           "click",
           "fill form",
           "navigate"
+        ],
+        "files": [
+          "skill.json",
+          "SKILL.md"
         ]
       }
     },
@@ -250,7 +271,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/code-review",
       "assets": {
         "archive": "config/skills/agent/marketplace/code-review",
@@ -274,6 +295,10 @@
           "review changes",
           "review PR",
           "review diff"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -299,7 +324,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/computer-use",
       "assets": {
         "archive": "config/skills/agent/marketplace/computer-use",
@@ -324,6 +349,10 @@
           "scroll",
           "accessibility",
           "ui elements"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -347,7 +376,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/daily-standup-report",
       "assets": {
         "archive": "config/skills/agent/marketplace/daily-standup-report",
@@ -368,6 +397,10 @@
           "daily standup",
           "standup report",
           "what did we do yesterday"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -391,7 +424,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-05-30T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/orchestrator/decompose-okr",
       "assets": {
         "archive": "config/skills/orchestrator/decompose-okr",
@@ -410,6 +443,10 @@
           "propose child okrs",
           "break okr into team okrs",
           "okr decomposition"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -432,7 +469,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/dep-updater",
       "assets": {
         "archive": "config/skills/agent/marketplace/dep-updater",
@@ -454,6 +491,10 @@
           "update deps",
           "dependency check",
           "npm outdated"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -476,7 +517,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/email-responder",
       "assets": {
         "archive": "config/skills/agent/marketplace/email-responder",
@@ -496,6 +537,10 @@
           "email response",
           "draft email",
           "respond to email"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -519,7 +564,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/env-setup-checker",
       "assets": {
         "archive": "config/skills/agent/marketplace/env-setup-checker",
@@ -542,6 +587,10 @@
           "setup check",
           "verify setup",
           "health check"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -564,7 +613,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/feedback-analyzer",
       "assets": {
         "archive": "config/skills/agent/marketplace/feedback-analyzer",
@@ -584,6 +633,10 @@
           "customer feedback",
           "feedback analysis",
           "sentiment analysis"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -608,7 +661,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-28T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/gemini-video",
       "assets": {
         "archive": "config/skills/agent/marketplace/gemini-video",
@@ -628,6 +681,10 @@
           "youtube analysis",
           "video understanding",
           "gemini video"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -649,7 +706,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/git-commit-helper",
       "assets": {
         "archive": "config/skills/agent/marketplace/git-commit-helper",
@@ -670,6 +727,10 @@
           "git commit",
           "conventional commit",
           "commit changes"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -695,7 +756,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-04-25T00:15:10.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/gmail",
       "assets": {
         "archive": "config/skills/agent/marketplace/gmail",
@@ -721,6 +782,12 @@
           "add label to email",
           "remove label from email",
           "list gmail labels"
+        ],
+        "files": [
+          "execute.sh",
+          "instructions.md",
+          "skill.json",
+          "SKILL.md"
         ]
       }
     },
@@ -742,7 +809,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-09-24T19:40:56.903Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/gmail-reader",
       "assets": {
         "archive": "config/skills/agent/marketplace/gmail-reader",
@@ -761,6 +828,10 @@
           "check inbox",
           "list emails",
           "my unread messages"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -783,7 +854,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/marketplace-publish",
       "assets": {
         "archive": "config/skills/agent/marketplace/marketplace-publish",
@@ -805,6 +876,10 @@
           "marketplace publish",
           "package skill",
           "share skill"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -828,7 +903,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/nano-banana-image",
       "assets": {
         "archive": "config/skills/agent/marketplace/nano-banana-image",
@@ -846,6 +921,11 @@
           "nano banana",
           "gemini image",
           "ai image"
+        ],
+        "files": [
+          ".env.example",
+          "generate.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -869,7 +949,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-28T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/notebooklm",
       "assets": {
         "archive": "config/skills/agent/marketplace/notebooklm",
@@ -892,6 +972,10 @@
           "create notebook",
           "audio overview",
           "research notebook"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -916,7 +1000,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/playwright-chrome-browser",
       "assets": {
         "archive": "config/skills/agent/marketplace/playwright-chrome-browser",
@@ -934,6 +1018,9 @@
           "fill form",
           "navigate",
           "headless"
+        ],
+        "files": [
+          "SKILL.md"
         ]
       }
     },
@@ -955,7 +1042,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/readme-generator",
       "assets": {
         "archive": "config/skills/agent/marketplace/readme-generator",
@@ -977,6 +1064,10 @@
           "create readme",
           "readme",
           "project docs"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -1001,7 +1092,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/rednote-reader",
       "assets": {
         "archive": "config/skills/agent/marketplace/rednote-reader",
@@ -1021,6 +1112,10 @@
           "red note",
           "discover app",
           "read rednote"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -1045,7 +1140,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-28T00:00:00.000Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/remotion-video",
       "assets": {
         "archive": "config/skills/agent/marketplace/remotion-video",
@@ -1069,6 +1164,10 @@
           "launch video",
           "promo video",
           "video animation"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -1091,7 +1190,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/seo-blog-writer",
       "assets": {
         "archive": "config/skills/agent/marketplace/seo-blog-writer",
@@ -1112,6 +1211,10 @@
           "seo blog",
           "content writing",
           "blog outline"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -1135,7 +1238,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/social-media-post",
       "assets": {
         "archive": "config/skills/agent/marketplace/social-media-post",
@@ -1156,6 +1259,10 @@
           "linkedin post",
           "social post",
           "create post"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -1179,7 +1286,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/test-runner",
       "assets": {
         "archive": "config/skills/agent/marketplace/test-runner",
@@ -1203,6 +1310,10 @@
           "test runner",
           "execute tests",
           "check tests"
+        ],
+        "files": [
+          "execute.sh",
+          "SKILL.md"
         ]
       }
     },
@@ -1227,7 +1338,7 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-09-24T19:40:56.903Z",
-      "updatedAt": "2026-09-24T19:40:56.903Z",
+      "updatedAt": "2026-09-24T19:55:44.195Z",
       "source": "config/skills/agent/marketplace/xhs-downloader",
       "assets": {
         "archive": "config/skills/agent/marketplace/xhs-downloader",
@@ -1247,6 +1358,12 @@
           "xhs download",
           "save rednote note",
           "保存小红书笔记"
+        ],
+        "files": [
+          "download.py",
+          "execute.sh",
+          "instructions.md",
+          "skill.json"
         ]
       }
     }

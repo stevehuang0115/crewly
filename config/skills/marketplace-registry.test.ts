@@ -3,6 +3,8 @@ import os from 'os';
 import path from 'path';
 import {
 	buildRegistry,
+	listSkillFiles,
+	SKILL_FILE_EXCLUDES,
 	MARKETPLACE_SKILLS_REL_DIR,
 	parseFrontmatter,
 	readSkillManifest,
@@ -40,6 +42,25 @@ describe('parseFrontmatter / readSkillManifest', () => {
 				version: '1.2.0',
 				category: 'quality',
 			});
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('listSkillFiles', () => {
+	it('lists flat files only, sorted, without tests, mocks or .crewlyignore', () => {
+		const root = fixture({
+			'x/SKILL.md': '---\nname: X\n---\n',
+			'x/generate.sh': 'echo\n',
+			'x/.env.example': 'KEY=\n',
+			'x/execute.test.sh': 'test\n',
+			'x/mock-server.py': 'mock\n',
+			'x/.crewlyignore': 'static/\n',
+			'x/templates/A.tsx': 'nested\n',
+		});
+		try {
+			expect(listSkillFiles(path.join(root, 'x'))).toEqual(['.env.example', 'generate.sh', 'SKILL.md']);
 		} finally {
 			rmSync(root, { recursive: true, force: true });
 		}
@@ -138,6 +159,32 @@ describe('committed config/skills/registry.json', () => {
 		for (const d of dirs) {
 			expect(committed.items.filter((i) => i.source === `${M}/${d.name}`)).toHaveLength(1);
 		}
+	});
+
+	it(`lists, for every source dir, exactly its flat files minus exclusions (${committed.items.length} dir(s) examined)`, () => {
+		// Recomputed independently of the builder: the dir's regular files,
+		// minus *.test.*, mock-* and .crewlyignore. Subdirectories never count.
+		expect(committed.items.length).toBeGreaterThan(0);
+		const mismatches: string[] = [];
+		for (const item of committed.items) {
+			const dir = path.join(repoRoot, item.source);
+			const expected = readdirSync(dir, { withFileTypes: true })
+				.filter((e) => e.isFile())
+				.map((e) => e.name)
+				.filter((n) => !n.includes('.test.') && !n.startsWith('mock-') && n !== '.crewlyignore')
+				.sort((a, b) => a.localeCompare(b));
+			const listed = item.metadata.files ?? [];
+			if (JSON.stringify(listed) !== JSON.stringify(expected)) {
+				mismatches.push(`${item.id}: listed ${JSON.stringify(listed)} expected ${JSON.stringify(expected)}`);
+			}
+		}
+		expect(mismatches).toEqual([]);
+		expect(SKILL_FILE_EXCLUDES.length).toBe(3);
+	});
+
+	it('never lists a nested path (older CLIs cannot create subdirectories)', () => {
+		const nested = committed.items.flatMap((i) => (i.metadata.files ?? []).filter((f) => f.includes('/')).map((f) => `${i.id}: ${f}`));
+		expect(nested).toEqual([]);
 	});
 
 	it('keeps the ids published docs tell users to install', () => {

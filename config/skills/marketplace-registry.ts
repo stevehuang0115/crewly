@@ -49,7 +49,7 @@ export interface RegistryItem {
 	updatedAt: string;
 	source: string;
 	assets: { archive: string; checksum: string; sizeBytes: number };
-	metadata: { skillType?: string; assignableRoles?: string[]; triggers?: string[] };
+	metadata: { skillType?: string; assignableRoles?: string[]; triggers?: string[]; files: string[] };
 }
 
 /** The public registry document. */
@@ -94,6 +94,37 @@ export function readSkillManifest(skillDir: string): SkillManifest | null {
 	const fromJson = existsSync(jsonPath) ? (JSON.parse(readFileSync(jsonPath, 'utf-8')) as Record<string, unknown>) : null;
 	if (!fromMd && !fromJson) return null;
 	return { ...(fromJson ?? {}), ...(fromMd ?? {}) } as SkillManifest;
+}
+
+/**
+ * Files a skill must not ship: tests (`*.test.*`), test fixtures (`mock-*`)
+ * and packaging hints (`.crewlyignore`).
+ */
+export const SKILL_FILE_EXCLUDES: ReadonlyArray<RegExp> = [/\.test\./, /^mock-/, /^\.crewlyignore$/];
+
+/**
+ * The files the CLI should download for a skill: every regular file directly
+ * in the directory, minus SKILL_FILE_EXCLUDES, sorted.
+ *
+ * The CLI fetches `metadata.files` (plus SKILL.md and skill.json) from GitHub
+ * raw content; without the list it fetches only SKILL.md, execute.sh,
+ * skill.json and instructions.md, so e.g. nano-banana-image's generate.sh was
+ * never installed.
+ *
+ * Deliberately FLAT: files in subdirectories (e.g. remotion-video/templates/)
+ * are not listed. The shipped CLI writes each listed file without creating
+ * parent directories, so a nested path would fail the whole install on every
+ * CLI released so far. List them only after the CLI creates parent dirs AND
+ * the older CLIs are no longer in use.
+ *
+ * @param skillDir - Absolute skill directory
+ * @returns File names relative to the skill directory
+ */
+export function listSkillFiles(skillDir: string): string[] {
+	return readdirSync(skillDir, { withFileTypes: true })
+		.filter((e) => e.isFile() && !SKILL_FILE_EXCLUDES.some((re) => re.test(e.name)))
+		.map((e) => e.name)
+		.sort((a, b) => a.localeCompare(b));
 }
 
 /** Total size in bytes of the regular files directly inside a directory. */
@@ -194,6 +225,7 @@ export function buildRegistry(
 				skillType: manifest.skillType,
 				assignableRoles: manifest.assignableRoles,
 				triggers: manifest.triggers,
+				files: listSkillFiles(skillDir),
 			},
 		};
 		if (prior) {
