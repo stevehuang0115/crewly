@@ -451,6 +451,9 @@ export class RequestService {
     if (submitted) {
       request.submittedAt = new Date().toISOString();
       request.submitCount = (request.submitCount ?? 0) + 1;
+      // A fresh answer starts the follow-up clock again.
+      request.nudgeCount = 0;
+      request.lastNudgeAt = undefined;
     }
 
     // Apply other updates
@@ -477,6 +480,8 @@ export class RequestService {
     if (updates.submittedAt !== undefined) request.submittedAt = updates.submittedAt;
     if (updates.chatRef !== undefined) request.chatRef = updates.chatRef;
     if (updates.reply !== undefined) request.reply = updates.reply;
+    if (updates.nudgeCount !== undefined) request.nudgeCount = updates.nudgeCount;
+    if (updates.lastNudgeAt !== undefined) request.lastNudgeAt = updates.lastNudgeAt;
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);

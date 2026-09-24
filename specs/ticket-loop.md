@@ -272,6 +272,28 @@ the relay REST allowlist): columns 想法 / 待处理 / 进行中 / 阻塞 / 待
 card → detail with acceptance, answer excerpt, discussion, 验过了 / 打回
 (reason required), priority edit. No push notifications (owner constraint).
 
+## Revision — tickets are Crewly's own record (owner, 2026-09-24 evening)
+
+Owner, looking at six tickets sitting in 待验收: "I don't know what to accept —
+no agent asked me anything." Decision: the ticket is Crewly's internal record;
+the owner never sees ticket mechanics.
+
+- **No receipts.** `TICKET_CONSTANTS.RECEIPT.ENABLED = false`: no 🎫 / ✅, no
+  「已记成 TKT-…」 note (`receiptsEnabled` on the intake overrides, for tests).
+- **The agent asks.** The delivered ticket line tells the agent: it is an
+  internal record — never mention tickets / numbers / 验收 to the person;
+  their "todo" / "ticket" means their own things. When done, if the result
+  needs the person's OK (deliverable, change, decision), ask in its own words
+  in the final reply; a plain answer needs no question.
+- **OK = a plain acknowledgement.** In a 待验收 thread, 「好的」「可以」「行」
+  (`REVIEW.ACK_PATTERN`) accepts; top-level (DMs) only while the question is
+  recent (< `NUDGE_AFTER_MS` since submit / last nudge). 验过了 / 打回 still work.
+- **Silence.** The sweep nudges the answering agent (`nudgeAgent` →
+  `sendMessageToAgent`, `nudgeText`) `NUDGE_AFTER_MS` (24 h) after the answer
+  and again 24 h later (`MAX_NUDGES` = 2), each time telling it to ask once
+  more in the original thread if the result needs an OK; 24 h after the last
+  nudge the ticket is accepted (`auto_accepted`). A new answer resets the count.
+
 ## Phase 3 — self-claim, review routing, archive (2026-09-24)
 
 Measured before starting (code survey): no claim path ordered by priority

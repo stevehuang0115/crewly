@@ -310,6 +310,8 @@ export interface TicketIntakeServiceDeps {
   /** WorkItem lookup for the derived board column (optional) */
   findWorkItem?: (id: string) => Promise<BoardWorkItemView | null | undefined>;
   now?: () => Date;
+  /** Post receipts (default {@link TICKET_CONSTANTS.RECEIPT.ENABLED}, i.e. off) */
+  receiptsEnabled?: boolean;
 }
 
 /** Counter file shape. */
@@ -433,6 +435,9 @@ export class TicketIntakeService {
     // A follow-up in a thread that already has a ticket.
     const threadTicket = this.findThreadTicket(all, message);
     const review = parseReviewReply(text);
+    // The agent asked "is this OK?" in its own words; a plain 「好的」「可以」
+    // back is the OK (2026-09-24).
+    const ack = TICKET_CONSTANTS.REVIEW.ACK_PATTERN.test(text);
     if (threadTicket) {
       if (TERMINAL_REQUEST_STATUSES.has(threadTicket.status)) {
         // Only a dismissed thread stays quiet; a finished one may open a new ticket.
@@ -441,6 +446,7 @@ export class TicketIntakeService {
         }
       } else if (threadTicket.status === 'waiting_confirmation' && this.review) {
         if (review) return this.applyReview(threadTicket, review);
+        if (ack) return this.applyReview(threadTicket, { action: 'verify' });
         // Anything else from the owner: the agent is back on it.
         await this.review.reopenOnFollowUp(threadTicket.id);
         return this.appendToTicket(threadTicket, message, text);
@@ -451,12 +457,18 @@ export class TicketIntakeService {
 
     // 验过了 / 打回 outside a thread (DMs, where every message is top-level):
     // the newest 待验收 ticket of this conversation.
-    if (review && this.review && message.conversationRef) {
+    if ((review || ack) && this.review && message.conversationRef) {
       const conversation = message.conversationRef;
       const inReview = all.find(
         (r) => r.status === 'waiting_confirmation' && typeof r.ticketNumber === 'number' && this.conversationMatches(r, conversation),
       );
-      if (inReview) return this.applyReview(inReview, review);
+      // A bare 「好的」 only counts while the agent's question is recent — the
+      // owner says 「好的」 to plenty of other things in a DM.
+      const recent =
+        inReview &&
+        this.now().getTime() - Date.parse(inReview.lastNudgeAt ?? inReview.submittedAt ?? inReview.updatedAt) <
+          TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS;
+      if (inReview && (review || recent)) return this.applyReview(inReview, review ?? { action: 'verify' });
     }
 
     const trivial = suppressTrivialOrShort(text);
@@ -641,6 +653,8 @@ export class TicketIntakeService {
    * @param target - Where to post
    */
   private async postReceipt(ticket: Request, target: ReceiptTarget): Promise<void> {
+    // Tickets are Crewly's own record; the owner sees no receipt (2026-09-24).
+    if (!(this.deps.receiptsEnabled ?? TICKET_CONSTANTS.RECEIPT.ENABLED)) return;
     const sink = this.sinks[target.kind];
     if (!sink) {
       this.logger.debug('No receipt sink for surface', { kind: target.kind, id: ticket.id });
@@ -805,7 +819,11 @@ export class TicketIntakeService {
       completedAt: r.completedAt ?? null,
       autoAcceptAt:
         r.status === 'waiting_confirmation' && r.submittedAt && ticketNeedsReview(r)
-          ? new Date(Date.parse(r.submittedAt) + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS).toISOString()
+          ? new Date(
+              Date.parse(r.lastNudgeAt ?? r.submittedAt) +
+                TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS *
+                  (TICKET_CONSTANTS.REVIEW.MAX_NUDGES - (r.nudgeCount ?? 0) + 1),
+            ).toISOString()
           : null,
     };
   }

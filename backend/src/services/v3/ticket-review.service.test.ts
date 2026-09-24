@@ -9,7 +9,7 @@ import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
 import { RequestService } from './request.service.js';
-import { TicketReviewService, type ReworkInput } from './ticket-review.service.js';
+import { TicketReviewService, nudgeText, type ReworkInput } from './ticket-review.service.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { TicketOriginChannel } from '../../types/v2/ticket.types.js';
@@ -302,5 +302,52 @@ describe('acceptance, self-check, patch', () => {
     });
     expect(await review.patch(t.id, { priority: 'asap' as never })).toMatchObject({ ok: false, reason: 'invalid' });
     expect(await review.patch(t.id, { title: ' ' })).toMatchObject({ ok: false, reason: 'invalid' });
+  });
+});
+
+describe('follow-up by the agent (owner, 2026-09-24)', () => {
+  it('nudges the answering agent twice, a day apart, then accepts', async () => {
+    const nudges: Array<[string, string]> = [];
+    const r = new TicketReviewService({
+      requests,
+      fallbackAgent: 'crewly-orc',
+      now: () => new Date(clock),
+      nudgeAgent: async (agent, text) => void nudges.push([agent, text]),
+    });
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    await r.noteChatTurn(t.id, { id: 'm1', channelId: 'ch1' });
+    await r.onChatMessage(agentMsg('ch1', 'atlas', 'done: report', 'm1'));
+    await r.onAgentIdle('atlas');
+    const day = TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS;
+
+    clock += day - 60_000;
+    await r.sweep();
+    expect(nudges).toHaveLength(0);
+
+    clock += 120_000;
+    await r.sweep();
+    expect(nudges).toHaveLength(1);
+    expect(nudges[0][0]).toBe('atlas');
+    expect((await requests.getById(t.id))?.nudgeCount).toBe(1);
+
+    clock += day + 60_000;
+    await r.sweep();
+    expect(nudges).toHaveLength(2);
+    expect((await requests.getById(t.id))?.status).toBe('waiting_confirmation');
+
+    clock += day + 60_000;
+    await r.sweep();
+    const after = await requests.getById(t.id);
+    expect(after?.status).toBe('done');
+    expect(after?.tags).toContain(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG);
+    expect(nudges).toHaveLength(2);
+  });
+
+  it('the nudge speaks to the agent, points at the thread, and forbids ticket words toward the owner', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    const text = nudgeText({ ...t, submittedAt: new Date(clock - 25 * 3_600_000).toISOString() }, clock);
+    expect(text).toContain('--channel ch1 --thread m1');
+    expect(text).toContain('不要提工单');
+    expect(text).toContain('约 25 小时');
   });
 });

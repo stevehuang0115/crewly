@@ -127,7 +127,7 @@ beforeEach(async () => {
   dir = await fs.mkdtemp(path.join(os.tmpdir(), 'ticket-intake-'));
   store = new FakeStore(dir);
   sink = fakeSink();
-  svc = new TicketIntakeService({ requests: store });
+  svc = new TicketIntakeService({ requests: store, receiptsEnabled: true });
   svc.setReceiptSink('slack', sink);
   svc.setReceiptSink('chat-v2', sink);
 });
@@ -344,6 +344,32 @@ describe('intake — review replies (Phase 2)', () => {
     const v = await svc.intakeWithOutcome(msg({ ts: '500.1', text: 'lgtm' }));
     expect(v.action).toBe('verified');
     expect(review.calls).toEqual([`verify:${t!.id}`]);
+  });
+
+  it('a plain 「好的」 in the thread is the OK the agent asked for', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation', submittedAt: new Date().toISOString() });
+    expect((await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '好的' }))).action).toBe('verified');
+  });
+
+  it('a top-level 「可以」 counts only while the question is recent', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation', submittedAt: new Date(Date.now() - 2 * TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS).toISOString() });
+    expect((await svc.intakeWithOutcome(msg({ ts: '600.1', text: '可以' }))).action).not.toBe('verified');
+    await store.update(t!.id, { lastNudgeAt: new Date().toISOString() });
+    expect((await svc.intakeWithOutcome(msg({ ts: '600.2', text: '可以' }))).action).toBe('verified');
+  });
+
+  it('posts no receipt by default (tickets are Crewly\'s own record)', async () => {
+    const quiet = new TicketIntakeService({ requests: store });
+    quiet.setReceiptSink('slack', sink);
+    await quiet.intake(msg({ ts: '700.1' }));
+    await flush();
+    expect(sink.posted).toHaveLength(0);
   });
 
   it('without a review handler 验过了 is just a (trivial) follow-up', async () => {

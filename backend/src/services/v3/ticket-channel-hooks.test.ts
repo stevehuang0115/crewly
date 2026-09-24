@@ -383,3 +383,12 @@ describe('slackIntakeMessage', () => {
     expect(slackIntakeMessage({ ...base, hasFiles: true }, 'agent-dm').attachments).toHaveLength(1);
   });
 });
+
+describe('ticket line for the agent (owner, 2026-09-24)', () => {
+  it('keeps ticket words away from the owner and asks the agent to check with them itself', () => {
+    const line = ticketDeliveryLine(ticket());
+    expect(line).toContain('不要向对方提工单');
+    expect(line).toContain('用自己的话问一句这样行不行');
+    expect(line).toContain(`--request-id ${ID}`);
+  });
+});

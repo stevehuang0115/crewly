@@ -2616,6 +2616,11 @@ export const TICKET_CONSTANTS = {
 		REACTION: 'ticket',
 		/** Slack: the 🎫 becomes this once the ticket is accepted */
 		DONE_REACTION: 'white_check_mark',
+		/**
+		 * Receipts are off (owner, 2026-09-24): tickets are Crewly's own record
+		 * of the work — no 🎫 / ✅ / 「已记成 TKT-…」 in the owner's conversations.
+		 */
+		ENABLED: false,
 	},
 	/** Done / cancelled tickets leave the board after this long (Phase 3) */
 	ARCHIVE: {
@@ -2634,6 +2639,19 @@ export const TICKET_CONSTANTS = {
 		AUTO_ACCEPTED_TAG: 'auto_accepted',
 		/** 待验收 this long with no word from the owner → accepted (ms) */
 		AUTO_ACCEPT_MS: 72 * 60 * 60 * 1000,
+		/**
+		 * The agent that answered asks the owner itself (owner, 2026-09-24):
+		 * with no word from the owner this long after the answer (or the last
+		 * nudge), the agent is nudged to follow up once more in the thread.
+		 */
+		NUDGE_AFTER_MS: 24 * 60 * 60 * 1000,
+		/** Nudges before silence counts as acceptance */
+		MAX_NUDGES: 2,
+		/**
+		 * A plain acknowledgement from the owner in a ticket's thread while the
+		 * agent is waiting for their OK counts as the OK (「好的」「可以」「行」).
+		 */
+		ACK_PATTERN: /^\s*(好的?|好滴|行|可以|可以的|ok|okay|okk|收到|嗯+|对|没问题|谢谢|thanks?|thx|👍|✅|nice|great|perfect)\s*[。.!！~～👍✅]*\s*$/iu,
 		/** An agent reply must be this old, with the agent idle, before it counts as the answer (ms) */
 		SUBMIT_SETTLE_MS: 60 * 1000,
 		/** Sweep for settled answers and auto-accepts (ms) */

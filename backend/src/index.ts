@@ -581,6 +581,10 @@ export class CrewlyServer {
 					return wi.id;
 				},
 				markReceiptDone: (ticket) => ticketIntake.markReceiptDone(ticket),
+				// The agent that answered follows up with the owner itself.
+				nudgeAgent: async (agentSession, text) => {
+					await this.apiController.agentRegistrationService.sendMessageToAgent(agentSession, text);
+				},
 			});
 			setTicketReviewService(ticketReview);
 			ticketIntake.setReviewHandler(ticketReview);

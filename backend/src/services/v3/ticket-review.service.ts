@@ -86,6 +86,11 @@ export interface TicketReviewServiceDeps {
   createRework?: (input: ReworkInput) => Promise<string | null>;
   /** Swap the receipt to "done" (🎫 → ✅) */
   markReceiptDone?: (ticket: Request) => Promise<void>;
+  /**
+   * Deliver a note to the agent that answered, asking it to follow up with
+   * the owner itself. Absent → silence accepts after AUTO_ACCEPT_MS.
+   */
+  nudgeAgent?: (agentSession: string, text: string) => Promise<void>;
   /** Session the rework goes to when nobody answered (the orchestrator) */
   fallbackAgent: string;
   now?: () => Date;
@@ -218,17 +223,40 @@ export class TicketReviewService {
     return this.serial(async () => {
       const settleBefore = this.now().getTime() - TICKET_CONSTANTS.REVIEW.SUBMIT_SETTLE_MS;
       const submitted = await this.submitAnswered((t) => !!t.reply && Date.parse(t.reply.at) <= settleBefore);
-      const acceptBefore = this.now().getTime() - TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS;
+      const now = this.now().getTime();
       let autoAccepted = 0;
+      let nudged = 0;
       for (const t of await this.deps.requests.listAll()) {
-        if (t.status !== 'waiting_confirmation' || !ticketNeedsReview(t)) continue;
-        if (!t.submittedAt || Date.parse(t.submittedAt) > acceptBefore) continue;
+        if (t.status !== 'waiting_confirmation' || !ticketNeedsReview(t) || !t.submittedAt) continue;
+        const agent = t.reply?.by ?? t.assignee;
+        if (this.deps.nudgeAgent && agent) {
+          // The agent asks the owner itself; silence gets it to ask again, up
+          // to MAX_NUDGES times, and only then counts as acceptance.
+          const since = Date.parse(t.lastNudgeAt ?? t.submittedAt);
+          if (now - since < TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS) continue;
+          if ((t.nudgeCount ?? 0) < TICKET_CONSTANTS.REVIEW.MAX_NUDGES) {
+            const ok = await this.deps
+              .nudgeAgent(agent, nudgeText(t, now))
+              .then(() => true)
+              .catch((err: unknown) => {
+                this.logger.debug('Nudge could not be delivered', { id: t.id, error: errText(err) });
+                return false;
+              });
+            if (ok) {
+              await this.deps.requests.update(t.id, { nudgeCount: (t.nudgeCount ?? 0) + 1, lastNudgeAt: new Date(now).toISOString() });
+              nudged += 1;
+            }
+            continue;
+          }
+        } else if (now - Date.parse(t.submittedAt) < TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS) {
+          continue;
+        }
         const tags = [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG])];
         const r = await this.accept(t, tags);
         if (r.ok) autoAccepted += 1;
       }
-      if (submitted.length > 0 || autoAccepted > 0) {
-        this.logger.info('Ticket review sweep', { submitted: submitted.length, autoAccepted });
+      if (submitted.length > 0 || autoAccepted > 0 || nudged > 0) {
+        this.logger.info('Ticket review sweep', { submitted: submitted.length, autoAccepted, nudged });
       }
       return { submitted: submitted.length, autoAccepted };
     });
@@ -486,6 +514,28 @@ export class TicketReviewService {
   private now(): Date {
     return this.deps.now ? this.deps.now() : new Date();
   }
+}
+
+/**
+ * The note an agent gets when the owner has not answered its question yet.
+ * Written for the agent, not the owner: it must not say "ticket" to them.
+ *
+ * @param t - The ticket
+ * @param now - Current time (ms)
+ * @returns Message text
+ */
+export function nudgeText(t: Request, now: number): string {
+  const hours = Math.max(1, Math.round((now - Date.parse(t.lastNudgeAt ?? t.submittedAt ?? t.updatedAt)) / 3_600_000));
+  const marker = typeof t.ticketNumber === 'number' ? `[TICKET:${formatTicketNumber(t.ticketNumber)} ${t.id}] ` : '';
+  const cmd = t.chatRef
+    ? ` 回复命令: bash config/skills/agent/core/reply-channel/execute.sh --channel ${t.chatRef.channelId} --thread ${t.chatRef.threadRootId} --content "<一两句>"`
+    : '';
+  return (
+    `${marker}你之前回答的「${t.title}」已经过了约 ${hours} 小时，对方还没回应。` +
+    `如果这件事需要对方确认结果（交付物、改动、需要拍板的），在原来的对话里用一两句自然的话问一下这样行不行——不要提工单、编号或"验收"这类词；` +
+    `如果只是回答了问题、不需要确认，什么都不用做。` +
+    cmd
+  );
 }
 
 /**

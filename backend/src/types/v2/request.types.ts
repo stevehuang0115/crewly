@@ -195,6 +195,10 @@ export interface Request {
   reply?: TicketReply;
   /** When it last went to 待验收 (ISO-8601) */
   submittedAt?: string;
+  /** Times the answering agent was nudged to ask the owner again */
+  nudgeCount?: number;
+  /** When it was last nudged (ISO-8601) */
+  lastNudgeAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -255,6 +259,8 @@ export interface UpdateRequestInput {
   submittedAt?: string;
   chatRef?: TicketChatRef;
   reply?: TicketReply;
+  nudgeCount?: number;
+  lastNudgeAt?: string;
   /**
    * The owner accepted it (or it was auto-accepted). Without this a ticket
    * that needs review cannot become `done`: the update is turned into
