@@ -35,10 +35,9 @@ The `init` command walks you through provider selection, installs agent skills, 
 
 ## Requirements
 
-- **Node.js 20 or later** (with npm)
-- **No C/C++ toolchain on macOS (x64/arm64) or glibc Linux (x64/arm64) with Node 22+.** The native modules install from prebuilt binaries there. You do need `python3`, `make` and `g++` (Xcode Command Line Tools on macOS) in these cases:
+- **Node.js 22 or later** (with npm). Node 20 is end-of-life and its `better-sqlite3` has no prebuilt binary.
+- **No C/C++ toolchain on macOS (x64/arm64) or glibc Linux (x64/arm64).** The native modules install from prebuilt binaries there. You do need `python3`, `make` and `g++` (Xcode Command Line Tools on macOS) in these cases:
   - Alpine/musl, glibc older than 2.28, or other architectures, where `node-pty` compiles from source
-  - Node 20, where `better-sqlite3` has no prebuilt binary
 
   On Debian/Ubuntu, install the toolchain with `sudo apt-get install -y python3 make g++`. `crewly doctor` tells you whether you need it.
 - **jq** (`brew install jq` on macOS, `sudo apt-get install -y jq` on Debian/Ubuntu). Agent skills use it, and `crewly init` stops if it is missing.

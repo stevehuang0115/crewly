@@ -6,7 +6,7 @@
 #
 # What it does:
 #   1. Detects OS (macOS / Linux only)
-#   2. Ensures Node.js >= 18 is available (offers nvm install if missing)
+#   2. Ensures Node.js >= 22 is available (offers nvm install if missing)
 #   3. Installs crewly globally via npm
 #   4. Runs `crewly onboard` to complete interactive setup
 #
@@ -70,7 +70,7 @@ has_tty() {
 
 # ========================= Node.js Check =========================
 
-MIN_NODE_VERSION=18
+MIN_NODE_VERSION=22
 
 check_node() {
   if command -v node &>/dev/null; then

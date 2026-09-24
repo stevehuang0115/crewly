@@ -175,6 +175,6 @@
     "@whiskeysockets/baileys": "^7.0.0-rc.9"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=22.0.0"
   }
 }
