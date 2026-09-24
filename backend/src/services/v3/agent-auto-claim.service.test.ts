@@ -122,8 +122,8 @@ describe('AgentAutoClaimService', () => {
       const service = AgentAutoClaimService.getInstance();
 
       const items = [
-        { id: 'wi-1', title: 'Task 1', type: 'delegate', status: 'queued', createdAt: new Date().toISOString() },
-        { id: 'wi-2', title: 'Task 2', type: 'delegate', status: 'queued', createdAt: new Date().toISOString() },
+        { id: 'wi-1', title: 'Task 1', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: new Date().toISOString() },
+        { id: 'wi-2', title: 'Task 2', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: new Date().toISOString() },
       ];
       mockGetAvailableItems.mockResolvedValueOnce(items);
       mockClaimSpecificItem.mockResolvedValueOnce({
@@ -155,8 +155,9 @@ describe('AgentAutoClaimService', () => {
       const old = new Date(Date.now() - 20 * 60 * 1000).toISOString();
       mockGetAvailableItems.mockResolvedValueOnce([
         { id: 'wi-other', title: 'For someone else', type: 'delegate', status: 'queued', target: 'agent-2', createdAt: old },
-        { id: 'wi-a', title: 'Task A', type: 'delegate', status: 'queued', createdAt: old },
-        { id: 'wi-b', title: 'Task B', type: 'delegate', status: 'queued', createdAt: old },
+        { id: 'wi-a', title: 'Task A', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: old },
+        { id: 'wi-b', title: 'Task B', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: old },
+        { id: 'wi-free', title: 'Unassigned — for a decider, not for whoever is idle', type: 'delegate', status: 'queued', createdAt: old },
       ]);
       mockClaimSpecificItem.mockReset();
       mockClaimSpecificItem

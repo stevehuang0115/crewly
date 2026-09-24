@@ -98,7 +98,7 @@ import { setRequestServiceEventBus, RequestService } from './services/v3/request
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -108,6 +108,7 @@ import {
 } from './services/v3/ticket-intake.service.js';
 import { createChatV2ReceiptSink } from './services/v3/ticket-channel-hooks.js';
 import { TicketReviewService, setTicketReviewService, getTicketReviewService } from './services/v3/ticket-review.service.js';
+import { initialDecider, nextDecider } from './services/task-pool/untargeted-router.js';
 import { activeAcceptance, formatTicketMarker, formatTicketNumber } from './types/v2/ticket.types.js';
 import type { RequestPriority } from './types/v2/request.types.js';
 import { createWorkItem, TERMINAL_WORK_ITEM_STATUSES } from './types/v2/work-item.types.js';
@@ -588,6 +589,46 @@ export class CrewlyServer {
 			});
 			setTicketReviewService(ticketReview);
 			ticketIntake.setReviewHandler(ticketReview);
+
+			// Unassigned work goes to a decider, and one level up when not taken
+			// (owner, 2026-09-24): ticket owner → team lead → creator's lead → orc.
+			{
+				const teamsNow = () => this.storageService.getTeams().catch(() => []);
+				TaskPoolService.getInstance().setUntargetedRouter({
+					decide: async (wi, creatorSession) => {
+						let ticketAssignee: string | undefined;
+						if (wi.requestId) {
+							const r = await RequestService.getInstance().getById(wi.requestId).catch(() => null);
+							if (r && typeof r.ticketNumber === 'number' && r.assignee) ticketAssignee = r.assignee;
+						}
+						const teamId = typeof wi.metadata?.teamId === 'string' ? (wi.metadata.teamId as string) : undefined;
+						return initialDecider({
+							teams: await teamsNow(),
+							orchestrator: ORCHESTRATOR_SESSION_NAME,
+							...(creatorSession ? { creatorSession } : {}),
+							...(ticketAssignee ? { ticketAssignee } : {}),
+							...(teamId ? { teamId } : {}),
+						});
+					},
+					next: async (current) => nextDecider(current, await teamsNow(), ORCHESTRATOR_SESSION_NAME),
+				});
+				const routeSweep = setInterval(() => {
+					void (async () => {
+						const moved = await TaskPoolService.getInstance().escalateUnassigned(UNASSIGNED_ROUTE_CONSTANTS.ESCALATE_AFTER_MS);
+						if (moved.length === 0) return;
+						const { WorkItemDispatchSubscriber } = await import('./services/v3/workitem-dispatch.subscriber.js');
+						for (const m of moved) {
+							const wi = await TaskPoolService.getInstance().findWorkItem(m.id);
+							if (wi) await WorkItemDispatchSubscriber.getInstance().dispatchTo(wi).catch(() => false);
+						}
+					})().catch((routeErr: unknown) => {
+						this.logger.warn('Unassigned-work sweep failed', {
+							error: routeErr instanceof Error ? routeErr.message : String(routeErr),
+						});
+					});
+				}, UNASSIGNED_ROUTE_CONSTANTS.SWEEP_INTERVAL_MS);
+				routeSweep.unref?.();
+			}
 
 			// Phase 3: claim order (own rejected → own unblocked → queue
 			// rejected → P0..P3) and one ticket per agent, for every claim path.

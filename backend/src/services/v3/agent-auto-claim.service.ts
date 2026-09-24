@@ -275,9 +275,12 @@ export class AgentAutoClaimService {
     // → own unblocked → queue rejected → P0..P3, one ticket per agent);
     // score breaks nothing but the threshold.
     const scoreOf = new Map(scored.map((s) => [s.workItem.id, s.score]));
+    // Only work given to this agent. Unassigned work is routed to a decider
+    // (lead → orchestrator) rather than taken by whoever is idle: Think Tank
+    // spent hours on the product team's items that way (2026-09-24).
     const claimable = scored
       .map((s) => s.workItem)
-      .filter((wi) => !wi.target || wi.target === agentSessionName);
+      .filter((wi) => wi.target === agentSessionName);
     const ordered = await taskPool.orderClaimCandidates(agentSessionName, claimable);
 
     let result: Awaited<ReturnType<TaskPoolService['claimSpecificItem']>> = null;

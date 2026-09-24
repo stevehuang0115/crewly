@@ -302,6 +302,24 @@ Review items duplicated that work (TKT-009's "Plan:" item was auto-claimed
 and revoked for no heartbeat for three hours while Ella answered in Slack).
 The decompose → ticket-acceptance copy is gone with it.
 
+## Unassigned work goes up, not to whoever is idle (owner, 2026-09-24)
+
+Log: Think Tank's Atlas and Sage auto-claimed the product team's untargeted
+"Design approach" / "Implement" items and spent hours on them while the
+owner's questions waited. Owner: "没指定人的任务 可以escalate到上一级去判断
+（最后escalate到Orc）".
+
+- `services/task-pool/untargeted-router.ts`: first decider = ticket owner →
+  item team's lead (`metadata.teamId`) → creator's lead (a lead decides for
+  its own team) → orchestrator; `nextDecider`: member → lead → orchestrator
+  → none.
+- `TaskPoolService.addToPool` routes an item with no target to its decider
+  (`targetSource: 'escalated'`, `metadata.routedAt / routeLevel / createdBy`,
+  a 「交给你决定」 note on the description). `escalateUnassigned` (every
+  5 min) moves an item its decider has not taken for 30 min one level up and
+  routes any untargeted leftovers; moved items are re-dispatched.
+- AutoClaim only claims items targeted at the agent.
+
 ## Phase 3 — self-claim, review routing, archive (2026-09-24)
 
 Measured before starting (code survey): no claim path ordered by priority

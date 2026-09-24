@@ -204,6 +204,19 @@ export interface AddToPoolOptions {
 /**
  * Options for {@link TaskPoolService.releaseBack}.
  */
+/** Note put on an unassigned item when it is routed to a decider. */
+export const UNASSIGNED_ROUTE_NOTE =
+  '[没有指定执行人，交给你决定] 适合你就自己做；更适合别人就用 delegate-task 派给他（带上原内容），然后取消这一条。' +
+  '一段时间没人接会交给再上一级。';
+
+/** Who decides unassigned work (owner, 2026-09-24). */
+export interface UntargetedRouterDeps {
+  /** First decider for an unassigned item */
+  decide(workItem: WorkItem, creatorSession?: string): Promise<string | null>;
+  /** One level up from the current decider; null at the top */
+  next(current: string): Promise<string | null>;
+}
+
 /** Ticket claim policy wiring (ticket loop Phase 3). */
 export interface TicketClaimPolicyDeps {
   /** Current tickets by Request id */
@@ -309,6 +322,9 @@ export class TaskPoolService {
   /** Ticket claim order + lock (ticket loop Phase 3); null = plain FIFO */
   private ticketClaimPolicy: TicketClaimPolicyDeps | null = null;
 
+  /** Routes unassigned work to a decider; null = legacy broadcast pool */
+  private untargetedRouter: UntargetedRouterDeps | null = null;
+
   /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
@@ -397,6 +413,77 @@ export class TaskPoolService {
    */
   setTicketClaimPolicy(policy: TicketClaimPolicyDeps | null): void {
     this.ticketClaimPolicy = policy;
+  }
+
+  /**
+   * Wire the unassigned-work router: an item added with no target goes to
+   * someone who decides (ticket owner → team lead → creator's lead →
+   * orchestrator) instead of whoever is idle.
+   *
+   * @param router - The router, or null for the old broadcast pool
+   */
+  setUntargetedRouter(router: UntargetedRouterDeps | null): void {
+    this.untargetedRouter = router;
+  }
+
+  /**
+   * Give an unassigned item its decider (in place, before it is stored).
+   *
+   * @param wi - The item
+   * @param creatorSession - Who created it
+   */
+  private async routeUntargeted(wi: WorkItem, creatorSession?: string): Promise<void> {
+    if (wi.target || !this.untargetedRouter || wi.id.endsWith(':respond_to_user')) return;
+    const decider = await this.untargetedRouter.decide(wi, creatorSession).catch(() => null);
+    if (!decider) return;
+    wi.target = decider;
+    wi.targetSource = 'escalated';
+    wi.metadata = { ...(wi.metadata ?? {}), routedAt: new Date().toISOString(), routeLevel: 0, ...(creatorSession ? { createdBy: creatorSession } : {}) };
+    wi.description = `${UNASSIGNED_ROUTE_NOTE}\n\n${wi.description ?? ''}`.trim();
+    this.logger.info('Unassigned WorkItem routed to a decider', { workItemId: wi.id, decider, creatorSession });
+  }
+
+  /**
+   * Move routed items nobody took one level up (member → lead →
+   * orchestrator), and route any unassigned queued item left from before.
+   *
+   * @param maxAgeMs - How long a decider has before it moves up
+   * @returns Items that moved, with their new target
+   */
+  async escalateUnassigned(maxAgeMs: number): Promise<Array<{ id: string; to: string }>> {
+    const router = this.untargetedRouter;
+    if (!router) return [];
+    const moved: Array<{ id: string; to: string }> = [];
+    const claims = await this.storage.getClaims();
+    const claimed = new Set(claims.filter((c) => c.status === 'active').map((c) => c.workItemId));
+    const now = Date.now();
+    for (const wi of await this.storage.getWorkItems()) {
+      if (wi.status !== 'queued' || claimed.has(wi.id) || wi.id.endsWith(':respond_to_user')) continue;
+      let to: string | null = null;
+      let level = typeof wi.metadata?.routeLevel === 'number' ? (wi.metadata.routeLevel as number) : 0;
+      if (!wi.target) {
+        to = await router.decide(wi).catch(() => null);
+      } else if (wi.targetSource === 'escalated') {
+        const at = Date.parse(String(wi.metadata?.routedAt ?? wi.createdAt));
+        if (now - at < maxAgeMs) continue;
+        to = await router.next(wi.target).catch(() => null);
+        level += 1;
+      }
+      if (!to || to === wi.target) continue;
+      const ok = await this.storage.updateWorkItem(wi.id, (item) => {
+        const first = !item.target;
+        item.target = to as string;
+        item.targetSource = 'escalated';
+        item.metadata = { ...(item.metadata ?? {}), routedAt: new Date(now).toISOString(), routeLevel: level };
+        if (first) item.description = `${UNASSIGNED_ROUTE_NOTE}\n\n${item.description ?? ''}`.trim();
+      });
+      if (ok) {
+        moved.push({ id: wi.id, to });
+        this.logger.info('Unassigned WorkItem moved up to the next decider', { workItemId: wi.id, from: wi.target ?? null, to, level });
+      }
+    }
+    if (moved.length > 0) await this.storage.flush();
+    return moved;
   }
 
   /**
@@ -510,6 +597,7 @@ export class TaskPoolService {
     }
 
     this.inferRequestIdFromTurn(workItem, options.creatorSession);
+    await this.routeUntargeted(workItem, options.creatorSession);
 
     await this.storage.addWorkItem(workItem);
     await this.storage.flush();

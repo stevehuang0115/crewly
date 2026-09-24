@@ -746,6 +746,14 @@ export const CHAT_REPLY_PACING_HINT =
 	'要花更久的（多个步骤、要跑命令/开浏览器/查很多资料、预计超过约 3 分钟）→ **先**用一两句话回复（{cmd}）：你理解的需求、打算怎么做、大概多久，有要对方确认的就一并问；' +
 	'发完再开始做，做完发最终回复。中间不要刷进度，除非遇到阻塞或计划变了。';
 
+/** Unassigned work goes to a decider and moves up when not taken (owner, 2026-09-24). */
+export const UNASSIGNED_ROUTE_CONSTANTS = {
+	/** A decider has this long to take an item before it moves one level up (ms) */
+	ESCALATE_AFTER_MS: 30 * 60 * 1000,
+	/** How often routed items are checked (ms) */
+	SWEEP_INTERVAL_MS: 5 * 60 * 1000,
+} as const;
+
 export const SLACK_TYPING_CONSTANTS = {
 	/** Placeholder text once the agent holds the message. "working on it", not "typing": an agent that has the message is usually reading files, running commands or looking things up — typing is the last step. */
 	TYPING_TEXT: '⚙️ {name} is working on it…',

@@ -455,7 +455,8 @@ export interface WorkItem {
    * The distinction exists because "preserve the target on release" is
    * correct for an assignment and actively harmful for a claim stamp.
    */
-  targetSource?: 'assigned' | 'claim';
+  /** `escalated`: routed to someone who decides (unassigned work, 2026-09-24) — kept on release like `assigned` */
+  targetSource?: 'assigned' | 'claim' | 'escalated';
   /** Trigger ID that created or will wake this WorkItem */
   triggerId?: string;
   /** Link to ProjectTask (for durable project work) */

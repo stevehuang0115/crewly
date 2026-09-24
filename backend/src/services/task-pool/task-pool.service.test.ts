@@ -668,6 +668,36 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('unassigned work routing (owner, 2026-09-24)', () => {
+    afterEach(() => service.setUntargetedRouter(null));
+
+    it('an item added with no target goes to the decider, with a note', async () => {
+      service.setUntargetedRouter({ decide: async (_wi, creator) => (creator === 'leo' ? 'sam' : 'crewly-orc'), next: async () => 'crewly-orc' });
+      const wi = makeWorkItem({ title: 'unowned', description: 'do x' });
+      await service.addToPool(wi, { creatorSession: 'leo' });
+      const stored = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(stored).toMatchObject({ target: 'sam', targetSource: 'escalated', metadata: expect.objectContaining({ routeLevel: 0, createdBy: 'leo' }) });
+      expect(stored.description).toContain('交给你决定');
+      // A targeted item is left alone.
+      const own = makeWorkItem({ title: 'mine', target: 'max' });
+      await service.addToPool(own);
+      expect((await service.getAllItems()).find((w) => w.id === own.id)?.targetSource).toBeUndefined();
+    });
+
+    it('moves an item nobody took one level up, and routes leftovers', async () => {
+      const legacy = makeWorkItem({ title: 'left over from before' });
+      await service.addToPool(legacy);
+      service.setUntargetedRouter({ decide: async () => 'sam', next: async (cur) => (cur === 'sam' ? 'crewly-orc' : null) });
+      expect(await service.escalateUnassigned(30 * 60_000)).toEqual([{ id: legacy.id, to: 'sam' }]);
+      // Not old enough yet.
+      expect(await service.escalateUnassigned(30 * 60_000)).toEqual([]);
+      // Old enough → orchestrator; then nowhere further.
+      expect(await service.escalateUnassigned(-1)).toEqual([{ id: legacy.id, to: 'crewly-orc' }]);
+      expect(await service.escalateUnassigned(-1)).toEqual([]);
+      expect((await service.getAllItems()).find((w) => w.id === legacy.id)?.metadata?.routeLevel).toBe(1);
+    });
+  });
+
   describe('claimFromPool', () => {
     it('claims the oldest available item (FIFO)', async () => {
       const wi1 = makeWorkItem({ title: 'First' });
