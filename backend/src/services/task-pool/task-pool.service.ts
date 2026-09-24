@@ -2209,6 +2209,29 @@ export class TaskPoolService {
   }
 
   /**
+   * Re-point a queued WorkItem at another agent (its target went stale).
+   * Only `queued` items move: running work belongs to whoever holds it.
+   *
+   * @param workItemId - WorkItem id
+   * @param target - New target session
+   * @param reason - Why (kept in metadata.retargetedFrom / retargetReason)
+   * @returns The updated item, or null when not found / not queued
+   */
+  async retargetQueuedItem(workItemId: string, target: string, reason: string): Promise<WorkItem | null> {
+    const current = await this.storage.findWorkItem(workItemId);
+    if (!current || current.status !== 'queued') return null;
+    const from = current.target;
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.target = target;
+      wi.metadata = { ...(wi.metadata ?? {}), retargetedFrom: from, retargetReason: reason };
+    });
+    if (!ok) return null;
+    await this.storage.flush();
+    this.logger.info('Queued WorkItem retargeted', { workItemId, from, to: target, reason });
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
    * Records an auditor quality score on a WorkItem.
    *
    * Backs `POST /api/tasks/score` (auditor `score-task` skill). The score

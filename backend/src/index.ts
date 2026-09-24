@@ -2474,12 +2474,26 @@ void (async () => {
 							const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
 							const { createWorkItem } = await import('./types/v2/work-item.types.js');
 							const template = action.createWorkItem;
+							// A stored target can go stale when its member is renamed (the
+							// session name carries the name, the member id stays): map it to
+							// the member's current session and fix the trigger, instead of
+							// creating work for nobody every time it fires (2026-09-24).
+							let target = template.target;
+							if (target) {
+								const { resolveCurrentSession } = await import('./utils/session-resolve.utils.js');
+								const teams = await this.storageService.getTeams().catch(() => []);
+								const resolved = resolveCurrentSession(target, teams);
+								if (resolved?.renamed) {
+									target = resolved.sessionName;
+									await triggerEngine.retargetWorkItemAction(trigger.id, target).catch(() => false);
+								}
+							}
 							const workItem = createWorkItem({
 								title: template.title || `Triggered task (${trigger.id})`,
 								description: template.description || `Auto-created by trigger ${trigger.id}`,
 								type: template.type ?? 'delegate',
 								owner: template.owner ?? 'orchestrator',
-								target: template.target,
+								target,
 								triggerId,
 								requestId: template.requestId,
 							});

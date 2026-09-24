@@ -353,6 +353,25 @@ export class TriggerEngine {
   }
 
   /**
+   * Point a trigger's createWorkItem action at another session (the old one
+   * went stale after a rename). No-op when unchanged.
+   *
+   * @param id - Trigger UUID
+   * @param target - Current session name
+   * @returns True when the trigger was updated
+   */
+  public async retargetWorkItemAction(id: string, target: string): Promise<boolean> {
+    const trigger = this.triggers.get(id);
+    const action = trigger?.action?.createWorkItem;
+    if (!trigger || !action || action.target === target) return false;
+    const from = action.target;
+    action.target = target;
+    await this.persistTriggers();
+    this.logger.info('Trigger retargeted to the member\'s current session', { id, from, to: target });
+    return true;
+  }
+
+  /**
    * Resumes a paused trigger.
    *
    * @param id - Trigger UUID

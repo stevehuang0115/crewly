@@ -657,6 +657,17 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('retargetQueuedItem', () => {
+    it('moves a queued item and records where it came from; leaves running work alone', async () => {
+      const wi = makeWorkItem({ title: 'metrics', target: 'old-scribe-45506487' });
+      await service.addToPool(wi);
+      const moved = await service.retargetQueuedItem(wi.id, 'crewly-marketing-dana-45506487', 'renamed_member');
+      expect(moved).toMatchObject({ target: 'crewly-marketing-dana-45506487', metadata: { retargetedFrom: 'old-scribe-45506487', retargetReason: 'renamed_member' } });
+      await service.claimFromPool('crewly-marketing-dana-45506487');
+      expect(await service.retargetQueuedItem(wi.id, 'someone-else', 'x')).toBeNull();
+    });
+  });
+
   describe('claimFromPool', () => {
     it('claims the oldest available item (FIFO)', async () => {
       const wi1 = makeWorkItem({ title: 'First' });

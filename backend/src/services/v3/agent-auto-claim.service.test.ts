@@ -38,6 +38,17 @@ jest.mock('./escalation-router.service.js', () => ({
 const mockGetAvailableItems = jest.fn().mockResolvedValue([]);
 const mockClaimSpecificItem = jest.fn().mockResolvedValue(null);
 const mockGetAllItems = jest.fn().mockResolvedValue([]);
+const mockRetargetQueuedItem = jest.fn(async (id: string, target: string) => ({ id, target }));
+const mockGetTeams = jest.fn().mockResolvedValue([]);
+const mockTriggerGet = jest.fn();
+const mockRetargetWorkItemAction = jest.fn().mockResolvedValue(true);
+
+jest.mock('../core/storage.service.js', () => ({
+  StorageService: { getInstance: () => ({ getTeams: mockGetTeams }) },
+}));
+jest.mock('./trigger-engine.service.js', () => ({
+  TriggerEngine: { getInstance: () => ({ get: mockTriggerGet, retargetWorkItemAction: mockRetargetWorkItemAction }) },
+}));
 
 jest.mock('../task-pool/task-pool.service.js', () => ({
   TaskPoolService: {
@@ -46,6 +57,7 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
       claimSpecificItem: mockClaimSpecificItem,
       orderClaimCandidates: async (_agent: string, items: unknown[]) => items,
       getAllItems: mockGetAllItems,
+      retargetQueuedItem: mockRetargetQueuedItem,
     }),
   },
 }));
@@ -348,5 +360,49 @@ describe('AgentAutoClaimService', () => {
 
       service.stop();
     });
+  });
+});
+
+describe('AgentAutoClaimService.healOrphans (2026-09-24 metrics trigger)', () => {
+  const teams = [
+    {
+      id: 'mkt',
+      name: 'Crewly Marketing',
+      members: [
+        { id: '45506487-1b63', name: 'Dana', sessionName: 'crewly-marketing-dana-45506487' },
+        { id: 'e6a6b8ea-9a3f', name: 'Ella', sessionName: 'crewly-marketing-ella-e6a6b8ea', canDelegate: true, hierarchyLevel: 1 },
+      ],
+    },
+  ];
+
+  beforeEach(() => {
+    mockGetTeams.mockResolvedValue(teams);
+    mockRetargetQueuedItem.mockClear();
+    mockRetargetWorkItemAction.mockClear();
+    mockTriggerGet.mockReset();
+  });
+
+  it('re-points a renamed member\'s task at its current session and fixes the trigger', async () => {
+    const placed = await AgentAutoClaimService.getInstance().healOrphans([
+      { id: 'wi-1', target: 'crewly-marketing-self-watch-scribe-45506487', triggerId: 'trg-1' } as never,
+    ]);
+    expect(placed.get('wi-1')).toBe('crewly-marketing-dana-45506487');
+    expect(mockRetargetQueuedItem).toHaveBeenCalledWith('wi-1', 'crewly-marketing-dana-45506487', 'renamed_member');
+    expect(mockRetargetWorkItemAction).toHaveBeenCalledWith('trg-1', 'crewly-marketing-dana-45506487');
+  });
+
+  it('falls back to the lead of the trigger\'s team (without rewriting the trigger)', async () => {
+    mockTriggerGet.mockReturnValue({ id: 'trg-2', teamId: 'mkt' });
+    const placed = await AgentAutoClaimService.getInstance().healOrphans([
+      { id: 'wi-2', target: 'someone-gone-deadbeef', triggerId: 'trg-2' } as never,
+    ]);
+    expect(placed.get('wi-2')).toBe('crewly-marketing-ella-e6a6b8ea');
+    expect(mockRetargetWorkItemAction).not.toHaveBeenCalled();
+  });
+
+  it('leaves what it cannot place for the owner', async () => {
+    const placed = await AgentAutoClaimService.getInstance().healOrphans([{ id: 'wi-3', target: 'nobody-deadbeef' } as never]);
+    expect(placed.size).toBe(0);
+    expect(mockRetargetQueuedItem).not.toHaveBeenCalled();
   });
 });

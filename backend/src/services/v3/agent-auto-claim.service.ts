@@ -23,6 +23,9 @@ import { computeAgentScore, type AgentHealth } from '../reconciler/reconcile-rul
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
+import { resolveCurrentSession } from '../../utils/session-resolve.utils.js';
+import { pickTeamLead } from '../../utils/team.utils.js';
+import type { Team } from '../../types/index.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /**
@@ -328,6 +331,63 @@ export class AgentAutoClaimService {
   }
 
   /**
+   * Re-point orphaned queued items at an agent that exists: the member's
+   * current session (matched by member-id suffix), else the lead of the team
+   * whose trigger created the item. The trigger is fixed too, so the next
+   * fire is right from the start.
+   *
+   * @param orphans - Queued items whose target is unknown
+   * @returns Item id → new target session, for the items that were placed
+   */
+  async healOrphans(orphans: readonly WorkItem[]): Promise<Map<string, string>> {
+    const placed = new Map<string, string>();
+    let teams: Team[] = [];
+    try {
+      const { StorageService } = await import('../core/storage.service.js');
+      teams = await StorageService.getInstance().getTeams();
+    } catch {
+      return placed;
+    }
+    const taskPool = TaskPoolService.getInstance();
+    const { TriggerEngine } = await import('./trigger-engine.service.js');
+    const engine = (() => {
+      try {
+        return TriggerEngine.getInstance();
+      } catch {
+        return null;
+      }
+    })();
+    for (const wi of orphans) {
+      if (!wi.target) continue;
+      let next: string | null = null;
+      let reason = '';
+      const resolved = resolveCurrentSession(wi.target, teams);
+      if (resolved?.renamed) {
+        next = resolved.sessionName;
+        reason = 'renamed_member';
+      } else if (wi.triggerId && engine) {
+        const trigger = engine.get(wi.triggerId);
+        const team = trigger?.teamId ? teams.find((t) => t.id === trigger.teamId) : undefined;
+        const lead = team ? pickTeamLead(team) : null;
+        if (lead?.sessionName) {
+          next = lead.sessionName;
+          reason = 'team_lead_of_trigger';
+        }
+      }
+      if (!next) continue;
+      const moved = await taskPool.retargetQueuedItem(wi.id, next, reason).catch(() => null);
+      if (!moved) continue;
+      placed.set(wi.id, next);
+      // Fix the source only for a rename — a lead fallback is a stand-in.
+      if (reason === 'renamed_member' && wi.triggerId && engine) {
+        await engine.retargetWorkItemAction(wi.triggerId, next).catch(() => false);
+      }
+      this.logger.info('Orphaned task re-assigned without asking the owner', { workItemId: wi.id, from: wi.target, to: next, reason });
+    }
+    return placed;
+  }
+
+  /**
    * Scan all idle agents and try auto-claiming for each.
    * Polling backup for when events are missed.
    */
@@ -453,6 +513,30 @@ export class AgentAutoClaimService {
       }
     }
 
+    // Self-heal before asking anyone: a target that is "unknown" is usually a
+    // member whose session name changed (rename), still identifiable by the
+    // member-id suffix; failing that, the lead of the team the item's trigger
+    // belongs to takes it. Only what cannot be placed goes to the owner
+    // (2026-09-24: the daily metrics task was escalated every morning because
+    // its trigger still named the member's old session).
+    if (orphanedItems.length > 0) {
+      const healed = await this.healOrphans(orphanedItems);
+      orphanedItems = orphanedItems.filter((wi) => !healed.has(wi.id));
+      for (const [, session] of healed) {
+        if (activeSessions.has(session)) continue;
+        agentsToWake.add(session);
+      }
+      if (healed.size > 0) {
+        const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
+        const dispatcher = WorkItemDispatchSubscriber.getInstance();
+        for (const [id, session] of healed) {
+          if (!activeSessions.has(session)) continue;
+          const wi = await taskPool.findWorkItem(id);
+          if (wi) await dispatcher.dispatchTo(wi).catch(() => false);
+        }
+      }
+    }
+
     // Dispatch to active targets. Best-effort, non-fatal — the
     // WorkItemDispatchSubscriber will also rerun via its own startup
     // backfill ~10s after this returns, so a transient failure here
@@ -552,7 +636,7 @@ export class AgentAutoClaimService {
           .join('\n');
 
         const message = [
-          `[RECOVERY] ${orphanedItems.length} queued task(s) have target agents that no longer exist or could not be woken.`,
+          `[RECOVERY] ${orphanedItems.length} queued task(s) point at an agent that no longer exists or could not be started, and no current member or team lead could be found to take them over automatically.`,
           '',
           orphanSummary,
           '',
