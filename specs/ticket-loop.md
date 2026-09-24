@@ -272,10 +272,56 @@ the relay REST allowlist): columns 想法 / 待处理 / 进行中 / 阻塞 / 待
 card → detail with acceptance, answer excerpt, discussion, 验过了 / 打回
 (reason required), priority edit. No push notifications (owner constraint).
 
-## Phases 3–4 (summary; specced when started)
+## Phase 3 — self-claim, review routing, archive (2026-09-24)
 
-3. Agents self-claim by priority (own rejected → own unblocked → queue rejected → P0..P3),
-   one ticket per agent with a lock; review routing (self-check → team lead → owner),
-   orc stops reviewing every WorkItem; 30-day archive of done tickets.
+Measured before starting (code survey): no claim path ordered by priority
+(FIFO or an unwired score); AutoClaim gave up when its top pick was targeted
+at someone else; every review WorkItem went to `crewly-orc` because worker
+items carry no `metadata.teamId`; completing a review always meant
+"verified" (no reviewer could send work back); and the hourly purge deleted
+every finished Request — tickets included — 24 h after it closed.
+
+### Claim order and lock (`services/task-pool/ticket-claim-policy.ts`)
+
+One pure policy used by `claimFromPool`, `claimSpecificItem` and AutoClaim
+(`TaskPoolService.setTicketClaimPolicy`, wired in `index.ts` with a snapshot
+of open tickets):
+
+- **Order:** own rejected (ticket rework / reviewer retry targeted at me) →
+  own unblocked (`metadata.unblockedAt`, stamped on blocked → queued) → queue
+  rejected (untargeted rework) → P0..P3 (ticket priority; non-ticket items use
+  `metadata.priority`) → oldest.
+- **Lock, one ticket per agent:** an untargeted item of a ticket with an
+  assignee is only for that assignee; an agent with open work (queued /
+  running / blocked / rejected, targeted at it) on one ticket does not
+  self-claim an untargeted item of another. Targeted items are never held
+  back. Self-claiming an untargeted item of an unassigned ticket makes the
+  claimer its assignee.
+- AutoClaim filters out items targeted at others and tries up to 5 candidates
+  in policy order (a race no longer ends the attempt).
+
+### Review routing (self-check → lead → owner)
+
+`EventToWorkItemBridge.resolveReviewer`: the worker's team comes from
+`metadata.teamId` or, failing that, the team whose member has the worker's
+session. The reviewer is the worker's parent member, else the team lead —
+never the worker itself. **No separate reviewer → the item is verified
+directly** (for a ticket, the owner's 待验收 is the review); the orchestrator
+is used only when teams cannot be listed at all. Review items explain how to
+send back: complete with `{verdict:'rejected', feedback}` (`complete-task`
+accepts `verdict` / `feedback`); `completeSimpleItem` then rejects the source
+with the feedback, and the bridge's retry carries it ("Sent back by the
+reviewer: …"). Self-check: `ticket-check` (Phase 2) before answering.
+
+### Archive
+
+The hourly purge no longer deletes tickets. Done / cancelled tickets stay on
+the board for `TICKET_CONSTANTS.ARCHIVE.AFTER_MS` (30 days), then
+`RequestService.archive` moves the file to `requests/archive/` (never
+deleted; `listAll` reads only the top level). Non-ticket Requests keep the
+24 h purge.
+
+## Phase 4 (summary; specced when started)
+
 4. Per-project delivery hooks (PR / preview / release commands), 🐛 screenshot button in
    dashboard + portal, `ticket-idea` skill.

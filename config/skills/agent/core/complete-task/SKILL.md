@@ -120,3 +120,14 @@ JSON confirmation of task completion status. If validation fails:
   "message": "Output validation failed. 1 retries remaining."
 }
 ```
+
+## Reviewing someone else's work (`Verify: …` items)
+
+When the item you're completing is a review of another agent's work:
+
+- **Accept:** complete it normally with a summary.
+- **Send it back:** add `"verdict":"rejected"` and `"feedback":"<what is wrong>"`. The worker gets a retry that includes your feedback. Feedback is required when you reject.
+
+```bash
+bash execute.sh '{"workItemId":"<verify item id>","sessionName":"<you>","summary":"Header row missing","verdict":"rejected","feedback":"Add the header row and re-run the export"}'
+```

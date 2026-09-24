@@ -564,6 +564,99 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('ticket claim policy (ticket-loop Phase 3)', () => {
+    afterEach(() => service.setTicketClaimPolicy(null));
+
+    it('claims by priority instead of FIFO and stamps the self-claimer as assignee', async () => {
+      const claimed: Array<[string, string]> = [];
+      service.setTicketClaimPolicy({
+        snapshot: async () =>
+          new Map([
+            ['r-low', { id: 'r-low', priority: 'low' as const }],
+            ['r-urgent', { id: 'r-urgent', priority: 'urgent' as const }],
+          ]),
+        onSelfClaimed: async (requestId, agentId) => void claimed.push([requestId, agentId]),
+      });
+      const low = makeWorkItem({ title: 'low', requestId: 'r-low' });
+      low.createdAt = new Date(Date.now() - 60_000).toISOString();
+      const urgent = makeWorkItem({ title: 'urgent', requestId: 'r-urgent' });
+      await service.addToPool(low);
+      await service.addToPool(urgent);
+      const res = await service.claimFromPool('ann');
+      expect(res?.workItem.title).toBe('urgent');
+      expect(claimed).toEqual([['r-urgent', 'ann']]);
+    });
+
+    it('holds back another ticket while the agent has open work, in both claim paths', async () => {
+      service.setTicketClaimPolicy({
+        snapshot: async () =>
+          new Map([
+            ['rA', { id: 'rA', priority: 'normal' as const }],
+            ['rB', { id: 'rB', priority: 'urgent' as const }],
+          ]),
+      });
+      // Blocked on a dependency: open work on ticket A.
+      const blockedA = makeWorkItem({ title: 'A part 2', requestId: 'rA', target: 'ann', dependsOn: ['elsewhere'] });
+      await service.addToPool(blockedA);
+      const b = makeWorkItem({ title: 'B', requestId: 'rB' });
+      await service.addToPool(b);
+      expect(await service.claimFromPool('ann')).toBeNull();
+      expect(await service.claimSpecificItem('ann', b.id)).toBeNull();
+      // Someone free takes it.
+      expect((await service.claimFromPool('bob'))?.workItem.title).toBe('B');
+    });
+
+    it('marks items that come back from blocked so their owner resumes them first', async () => {
+      const item = makeWorkItem({ title: 'resume me', target: 'ann', dependsOn: ['elsewhere'] });
+      await service.addToPool(item);
+      await service.transitionStatus(item.id, 'queued', 'system');
+      const after = (await service.getAllItems()).find((w) => w.id === item.id);
+      expect(after?.metadata?.unblockedAt).toEqual(expect.any(String));
+    });
+
+    it('falls back to FIFO when the snapshot fails', async () => {
+      service.setTicketClaimPolicy({ snapshot: async () => { throw new Error('disk'); } });
+      const first = makeWorkItem({ title: 'first' });
+      first.createdAt = new Date(Date.now() - 60_000).toISOString();
+      await service.addToPool(makeWorkItem({ title: 'second' }));
+      await service.addToPool(first);
+      expect((await service.claimFromPool('ann'))?.workItem.title).toBe('first');
+    });
+  });
+
+  describe('review verdict (ticket-loop Phase 3)', () => {
+    /**
+     * A source item in done_by_worker plus its review item.
+     *
+     * @returns Ids
+     */
+    async function reviewPair(): Promise<{ sourceId: string; reviewId: string }> {
+      const source = makeWorkItem({ title: 'work', target: 'ann' });
+      await service.addToPool(source);
+      await service.claimFromPool('ann');
+      await service.transitionStatus(source.id, 'done_by_worker', 'system');
+      await service.releaseClaim(source.id, 'completed');
+      const review = makeWorkItem({ type: 'review', title: 'Verify: work', target: 'sam', metadata: { verifyOf: source.id } });
+      await service.addToPool(review);
+      await service.claimFromPool('sam');
+      return { sourceId: source.id, reviewId: review.id };
+    }
+
+    it('completing a review normally verifies the source', async () => {
+      const { sourceId, reviewId } = await reviewPair();
+      await service.completeSimpleItem(reviewId, 'agent', { summary: 'looks right' });
+      expect((await service.getAllItems()).find((w) => w.id === sourceId)?.status).toBe('verified');
+    });
+
+    it('verdict rejected sends the source back with the feedback', async () => {
+      const { sourceId, reviewId } = await reviewPair();
+      await service.completeSimpleItem(reviewId, 'agent', { summary: 'no', verdict: 'rejected', feedback: 'header row missing' });
+      const src = (await service.getAllItems()).find((w) => w.id === sourceId);
+      expect(src?.status).toBe('rejected');
+      expect(src?.error).toBe('header row missing');
+    });
+  });
+
   describe('claimFromPool', () => {
     it('claims the oldest available item (FIFO)', async () => {
       const wi1 = makeWorkItem({ title: 'First' });

@@ -782,3 +782,91 @@ describe('EventToWorkItemBridge', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// Ticket loop Phase 3 — review routing without metadata.teamId
+// ---------------------------------------------------------------------------
+
+describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () => {
+  /**
+   * Team member fixture.
+   *
+   * @param id - Member id
+   * @param sessionName - Session
+   * @param extra - More fields
+   * @returns Member
+   */
+  function member(id: string, sessionName: string, extra: Record<string, unknown> = {}) {
+    return { id, name: id, sessionName, role: 'developer', systemPrompt: '', agentStatus: 'active', workingStatus: 'idle', runtimeType: 'claude-code', createdAt: '', updatedAt: '', ...extra } as Team['members'][number];
+  }
+
+  /**
+   * Bridge with a listable team set and a pool that records verdicts.
+   *
+   * @param teams - Teams
+   * @param source - The finished item
+   * @returns Bridge, bus, pool
+   */
+  function setup(teams: Team[], source: WorkItem) {
+    const taskPool = { ...buildFakeTaskPool([source]), verifyItem: jest.fn(async () => null) };
+    const bus = new EventBusService();
+    const bridge = new EventToWorkItemBridge({
+      eventBus: bus,
+      taskPool: taskPool as unknown as import('../task-pool/task-pool.service.js').TaskPoolService,
+      loadMission: async () => null,
+      loadTeam: async (id) => teams.find((t) => t.id === id) ?? null,
+      loadTeams: async () => teams,
+    });
+    bridge.start();
+    return { bridge, bus, taskPool };
+  }
+
+  const worker = buildWorkItem({ target: 'dev-ann', metadata: { triggerSource: 'event' }, requestId: 'ticket-1' });
+
+  it('routes to the worker’s parent member, found from its session', async () => {
+    const team = buildTeam({
+      members: [member('tl', 'tl-sam', { canDelegate: true, hierarchyLevel: 1 }), member('lead-b', 'lead-bo', { canDelegate: true }), member('ann', 'dev-ann', { parentMemberId: 'lead-b' })],
+    });
+    const { bridge, bus, taskPool } = setup([team], worker);
+    bus.publish(buildEvent());
+    await bridge.flushPending();
+    expect(taskPool.addCalls).toHaveLength(1);
+    expect(taskPool.addCalls[0]).toMatchObject({ type: 'review', target: 'lead-bo' });
+    expect(taskPool.addCalls[0].description).toContain('"verdict":"rejected"');
+    expect(taskPool.verifyItem).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the team lead when the worker has no parent', async () => {
+    const team = buildTeam({ members: [member('tl', 'tl-sam', { canDelegate: true, hierarchyLevel: 1 }), member('ann', 'dev-ann')] });
+    const { bridge, bus, taskPool } = setup([team], worker);
+    bus.publish(buildEvent());
+    await bridge.flushPending();
+    expect(taskPool.addCalls[0]).toMatchObject({ target: 'tl-sam' });
+  });
+
+  it('verifies directly when the worker is its own lead or in no team (no review on the orc)', async () => {
+    const solo = buildTeam({ members: [member('ann', 'dev-ann', { canDelegate: true, hierarchyLevel: 1 })] });
+    const a = setup([solo], worker);
+    a.bus.publish(buildEvent());
+    await a.bridge.flushPending();
+    expect(a.taskPool.addCalls).toHaveLength(0);
+    expect(a.taskPool.verifyItem).toHaveBeenCalledWith(worker.id, 'system', 'verified');
+
+    const b = setup([], worker);
+    b.bus.publish(buildEvent());
+    await b.bridge.flushPending();
+    expect(b.taskPool.addCalls).toHaveLength(0);
+    expect(b.taskPool.verifyItem).toHaveBeenCalledTimes(1);
+  });
+
+  it('a retry carries the reviewer’s feedback', async () => {
+    const rejected = buildWorkItem({ status: 'rejected', error: 'the header row is missing', description: 'export csv' });
+    const taskPool = buildFakeTaskPool([rejected]);
+    const { bridge, bus } = buildBridge({ taskPool });
+    bridge.start();
+    bus.publish(buildEvent({ type: 'task:rejected', newValue: 'rejected' }));
+    await bridge.flushPending();
+    const retry = taskPool.addCalls.find((w) => w.id.includes(':retry:'));
+    expect(retry?.description).toBe('export csv\n\nSent back by the reviewer: the header row is missing');
+  });
+});

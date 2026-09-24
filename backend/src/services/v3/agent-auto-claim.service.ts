@@ -50,6 +50,9 @@ const DEFAULT_POLLING_INTERVAL_MINUTES = 5;
 /** Minimum score threshold — don't auto-claim poor matches */
 const MIN_SCORE_THRESHOLD = 15;
 
+/** Candidates tried per idle event before giving up (one may be claimed by a racing agent). */
+const MAX_CLAIM_ATTEMPTS = 5;
+
 /** Per-agent debounce window to avoid rapid re-trigger (ms) */
 const DEBOUNCE_MS = 3_000;
 
@@ -263,20 +266,29 @@ export class AgentAutoClaimService {
 
     if (scored.length === 0) return null;
 
-    // Sort by score descending, pick best
-    scored.sort((a, b) => b.score - a.score);
-    const best = scored[0];
+    // Items this agent may take at all (a target set to someone else can
+    // never be claimed — picking one used to end the attempt and starve the
+    // agent), in the ticket policy's order (ticket loop Phase 3: own rejected
+    // → own unblocked → queue rejected → P0..P3, one ticket per agent);
+    // score breaks nothing but the threshold.
+    const scoreOf = new Map(scored.map((s) => [s.workItem.id, s.score]));
+    const claimable = scored
+      .map((s) => s.workItem)
+      .filter((wi) => !wi.target || wi.target === agentSessionName);
+    const ordered = await taskPool.orderClaimCandidates(agentSessionName, claimable);
 
-    // Claim the specific item
-    const result = await taskPool.claimSpecificItem(agentSessionName, best.workItem.id);
-    if (!result) {
-      // Race condition: item was claimed by someone else
-      this.logger.debug('Auto-claim race: item already claimed', {
-        workItemId: best.workItem.id,
-        agentSessionName,
-      });
-      return null;
+    let result: Awaited<ReturnType<TaskPoolService['claimSpecificItem']>> = null;
+    let best: { workItem: WorkItem; score: number } | null = null;
+    for (const wi of ordered.slice(0, MAX_CLAIM_ATTEMPTS)) {
+      result = await taskPool.claimSpecificItem(agentSessionName, wi.id);
+      if (result) {
+        best = { workItem: wi, score: scoreOf.get(wi.id) ?? 0 };
+        break;
+      }
+      // Race: claimed by someone else between read and claim — try the next.
+      this.logger.debug('Auto-claim race: item already claimed', { workItemId: wi.id, agentSessionName });
     }
+    if (!result || !best) return null;
 
     this.logger.info('Auto-claimed WorkItem for idle agent', {
       workItemId: best.workItem.id,

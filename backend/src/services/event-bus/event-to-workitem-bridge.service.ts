@@ -201,6 +201,12 @@ export interface BridgeDependencies {
   loadMission: (missionId: string) => Promise<Mission | null>;
   /** Loads a team by id. Returns null if missing. */
   loadTeam: (teamId: string) => Promise<Team | null>;
+  /**
+   * Loads every team — used to find a worker's team from its session when
+   * the WorkItem carries no `metadata.teamId` (ticket loop Phase 3). Optional
+   * so older callers keep the orchestrator fallback.
+   */
+  loadTeams?: () => Promise<Team[]>;
   /** Optional logger override (defaults to component logger). */
   logger?: ComponentLogger;
 }
@@ -225,6 +231,7 @@ export class EventToWorkItemBridge {
   private readonly taskPool: TaskPoolService;
   private readonly loadMission: (missionId: string) => Promise<Mission | null>;
   private readonly loadTeam: (teamId: string) => Promise<Team | null>;
+  private readonly loadTeams: (() => Promise<Team[]>) | null;
   private readonly logger: ComponentLogger;
   private unsubscribers: InProcessUnsubscribe[] = [];
   private started = false;
@@ -241,6 +248,7 @@ export class EventToWorkItemBridge {
     this.taskPool = deps.taskPool;
     this.loadMission = deps.loadMission;
     this.loadTeam = deps.loadTeam;
+    this.loadTeams = deps.loadTeams ?? null;
     this.logger =
       deps.logger ?? LoggerService.getInstance().createComponentLogger('EventToWorkItemBridge');
   }
@@ -276,6 +284,7 @@ export class EventToWorkItemBridge {
         const teams = await storage.getTeams();
         return teams.find((t) => t.id === teamId) ?? null;
       },
+      loadTeams: () => storage.getTeams(),
     });
   }
 
@@ -411,7 +420,23 @@ export class EventToWorkItemBridge {
       return;
     }
 
-    const target = await this.resolveTeamLeadSession(sourceWI);
+    // Ticket loop Phase 3 — review goes to the worker's own lead (its parent,
+    // else the team's lead), never to someone reviewing their own work, and
+    // no longer to the orchestrator by default: 82 of 82 review items in a
+    // week landed on crewly-orc because worker items carry no teamId. With
+    // no separate lead the work is verified here; for a ticket, the owner's
+    // 待验收 is the review.
+    const reviewer = await this.resolveReviewer(sourceWI);
+    if (!reviewer) {
+      await this.taskPool.verifyItem(sourceWI.id, 'system', 'verified');
+      this.logger.info('No separate reviewer — work verified without a review item', {
+        sourceWorkItemId: sourceWI.id,
+        worker: sourceWI.target,
+        requestId: sourceWI.requestId,
+      });
+      return;
+    }
+    const target = reviewer;
     const verifyId = `${sourceWI.id}:verify:${sourceWI.id}`;
 
     const verifyWI: WorkItem = this.buildAutoWorkItem({
@@ -420,7 +445,11 @@ export class EventToWorkItemBridge {
       owner: 'team_lead',
       target,
       title: `Verify: ${sourceWI.title}`,
-      description: `Worker reported done on ${sourceWI.id}. Verify the deliverable.`,
+      description:
+        `Worker ${sourceWI.target ?? '(unknown)'} reported done on ${sourceWI.id}. Verify the deliverable.\n` +
+        `Accept: complete this item normally. Send it back: complete it with ` +
+        `output {"verdict":"rejected","feedback":"<what is wrong>"} — the worker gets a retry with your feedback.` +
+        (sourceWI.requestId ? `\nIt belongs to ticket ${sourceWI.requestId}: ticket-check --ticket ${sourceWI.requestId} shows its acceptance criteria.` : ''),
       sourceWI,
       missionId: sourceWI.missionId,
       requestId: sourceWI.requestId,
@@ -515,7 +544,11 @@ export class EventToWorkItemBridge {
       owner: sourceWI.owner,
       target: sourceWI.target,
       title: `Retry ${retryAttempt}/${cap}: ${sourceWI.title}`,
-      description: sourceWI.description,
+      // The reviewer's verdict comment lands on the source's `error`; without
+      // it the retry is the same brief again and the worker repeats itself.
+      description: sourceWI.error
+        ? `${sourceWI.description ?? ''}\n\nSent back by the reviewer: ${sourceWI.error}`.trim()
+        : sourceWI.description,
       sourceWI,
       missionId: sourceWI.missionId,
       requestId: sourceWI.requestId,
@@ -875,6 +908,10 @@ export class EventToWorkItemBridge {
   private async resolveTeamLeadSession(sourceWI: WorkItem): Promise<string> {
     const teamId = (sourceWI.metadata?.['teamId'] as string | undefined) ?? null;
     if (!teamId) {
+      // Phase 3: find the worker's team from its session before giving up.
+      const byWorker = await this.teamOfWorker(sourceWI.target);
+      const lead = byWorker ? pickTeamLead(byWorker) : null;
+      if (lead?.sessionName) return lead.sessionName;
       // No team metadata on the WI — last-resort orchestrator routing keeps
       // the escalation visible. We log a warn so this surface is auditable
       // when a team-aware producer arrives.
@@ -901,6 +938,56 @@ export class EventToWorkItemBridge {
       );
     }
     return lead.sessionName;
+  }
+
+  /**
+   * The team a worker session belongs to, when teams can be listed.
+   *
+   * @param session - Worker session (the WorkItem's target)
+   * @returns The team, or null
+   */
+  private async teamOfWorker(session: string | undefined): Promise<Team | null> {
+    if (!session || !this.loadTeams) return null;
+    try {
+      const teams = await this.loadTeams();
+      return teams.find((t) => (t.members ?? []).some((m) => m.sessionName === session)) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Who reviews a worker's finished item (ticket loop Phase 3): the worker's
+   * parent member, else its team's lead — as long as that is someone other
+   * than the worker. `metadata.teamId` wins when present; otherwise the team
+   * is found from the worker's session.
+   *
+   * @param sourceWI - The finished item
+   * @returns The reviewer's session, or null when there is no separate reviewer
+   */
+  private async resolveReviewer(sourceWI: WorkItem): Promise<string | null> {
+    const worker = sourceWI.target;
+    const teamId = (sourceWI.metadata?.['teamId'] as string | undefined) ?? null;
+    const team = teamId ? await this.loadTeam(teamId) : await this.teamOfWorker(worker);
+    if (!team) {
+      if (teamId) {
+        throw new BridgeTeamLeadResolutionError(
+          `BRIDGE-1: cannot resolve team ${teamId} for source WorkItem ${sourceWI.id}`,
+        );
+      }
+      // No team known: keep the old orchestrator route only when teams cannot
+      // be listed (older wiring); with teams listed, a worker in no team has
+      // no lead to review it.
+      return this.loadTeams ? null : ORCHESTRATOR_SESSION_NAME;
+    }
+    const members = team.members ?? [];
+    const self = members.find((m) => m.sessionName === worker);
+    const parent = self?.parentMemberId ? members.find((m) => m.id === self.parentMemberId) : undefined;
+    const candidates = [parent, pickTeamLead(team)];
+    for (const c of candidates) {
+      if (c?.sessionName && c.sessionName !== worker) return c.sessionName;
+    }
+    return null;
   }
 
   /**

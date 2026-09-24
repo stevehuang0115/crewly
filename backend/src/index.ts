@@ -109,6 +109,7 @@ import {
 import { createChatV2ReceiptSink } from './services/v3/ticket-channel-hooks.js';
 import { TicketReviewService, setTicketReviewService, getTicketReviewService } from './services/v3/ticket-review.service.js';
 import { activeAcceptance, formatTicketMarker, formatTicketNumber } from './types/v2/ticket.types.js';
+import type { RequestPriority } from './types/v2/request.types.js';
 import { createWorkItem, TERMINAL_WORK_ITEM_STATUSES } from './types/v2/work-item.types.js';
 import type { ChatMessageDTO } from './services/chat-v2/types.js';
 import { runPoolArchiveMigration } from './services/task-pool/pool-archive-migration.js';
@@ -583,6 +584,25 @@ export class CrewlyServer {
 			});
 			setTicketReviewService(ticketReview);
 			ticketIntake.setReviewHandler(ticketReview);
+
+			// Phase 3: claim order (own rejected → own unblocked → queue
+			// rejected → P0..P3) and one ticket per agent, for every claim path.
+			TaskPoolService.getInstance().setTicketClaimPolicy({
+				snapshot: async () => {
+					const out = new Map<string, { id: string; priority: RequestPriority; assignee?: string }>();
+					for (const r of await RequestService.getInstance().listAll()) {
+						if (typeof r.ticketNumber !== 'number' || r.status === 'done' || r.status === 'cancelled') continue;
+						out.set(r.id, { id: r.id, priority: r.priority, ...(r.assignee ? { assignee: r.assignee } : {}) });
+					}
+					return out;
+				},
+				onSelfClaimed: async (requestId, agentId) => {
+					const r = await RequestService.getInstance().getById(requestId);
+					if (r && typeof r.ticketNumber === 'number' && !r.assignee) {
+						await RequestService.getInstance().update(requestId, { assignee: agentId });
+					}
+				},
+			});
 			getChatV2Service().on('chat_message', (dto: ChatMessageDTO) => {
 				void ticketReview.onChatMessage(dto).catch(() => undefined);
 			});
@@ -3946,18 +3966,28 @@ void (async () => {
 				const svc = RequestService.getInstance();
 				const all = await svc.listAll();
 				let purgedRequests = 0;
+				const ticketCutoff = Date.now() - TICKET_CONSTANTS.ARCHIVE.AFTER_MS;
+				let archivedTickets = 0;
 				for (const req of all) {
 					if (req.status !== 'done' && req.status !== 'cancelled') continue;
 					const completedAt = req.completedAt ? new Date(req.completedAt).getTime() : 0;
 					const createdAt = new Date(req.createdAt).getTime();
 					const age = completedAt || createdAt;
+					// Tickets are the owner's record of what they asked for: they
+					// stay on the board for 30 days, then move to requests/archive/
+					// — never deleted (ticket loop Phase 3). Before this, every
+					// accepted ticket was deleted a day after it closed.
+					if (typeof req.ticketNumber === 'number') {
+						if (age < ticketCutoff && (await svc.archive(req.id))) archivedTickets++;
+						continue;
+					}
 					if (age < cutoff) {
 						await svc.delete(req.id);
 						purgedRequests++;
 					}
 				}
-				if (purgedRequests > 0) {
-					this.logger.info('Purged old completed Requests', { count: purgedRequests });
+				if (purgedRequests > 0 || archivedTickets > 0) {
+					this.logger.info('Purged old completed Requests', { count: purgedRequests, archivedTickets });
 				}
 			} catch (err) {
 				this.logger.warn('Request purge failed (non-critical)', {

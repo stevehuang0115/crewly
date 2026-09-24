@@ -44,6 +44,7 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
     getInstance: () => ({
       getAvailableItems: mockGetAvailableItems,
       claimSpecificItem: mockClaimSpecificItem,
+      orderClaimCandidates: async (_agent: string, items: unknown[]) => items,
       getAllItems: mockGetAllItems,
     }),
   },
@@ -135,6 +136,23 @@ describe('AgentAutoClaimService', () => {
 
       const result = await service.tryAutoClaimForAgent('agent-1');
       expect(result).toBeNull();
+    });
+
+    it('tries the next candidate when the first is lost to a race, and skips items targeted at others', async () => {
+      const service = AgentAutoClaimService.getInstance();
+      const old = new Date(Date.now() - 20 * 60 * 1000).toISOString();
+      mockGetAvailableItems.mockResolvedValueOnce([
+        { id: 'wi-other', title: 'For someone else', type: 'delegate', status: 'queued', target: 'agent-2', createdAt: old },
+        { id: 'wi-a', title: 'Task A', type: 'delegate', status: 'queued', createdAt: old },
+        { id: 'wi-b', title: 'Task B', type: 'delegate', status: 'queued', createdAt: old },
+      ]);
+      mockClaimSpecificItem.mockReset();
+      mockClaimSpecificItem
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({ workItem: { id: 'wi-b', target: 'agent-1' }, claim: { id: 'c' } });
+      const result = await service.tryAutoClaimForAgent('agent-1');
+      expect(result?.workItemId).toBe('wi-b');
+      expect(mockClaimSpecificItem.mock.calls.map((c) => c[1])).toEqual(['wi-a', 'wi-b']);
     });
 
     // 2026-05-12 dogfood regression: AutoClaim happily claimed
