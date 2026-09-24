@@ -145,7 +145,8 @@ also refuses ("contains modified or untracked files") for the same reason.
 ```bash
 cp /tmp/fix.bak <path>               # worktree back to your fix
 git add <path>                       # index back to your fix (or: git restore --staged <path> if the fix is already in HEAD)
-git status --short -- <path>         # expect nothing, or ' M' — never 'MM' / 'M '
+git status --short -- <path>         # never 'MM'. Fix already in HEAD: expect nothing. Fix not committed yet: expect 'M '
+git diff --cached -- <path>          # must show your fix being added, never the fix being removed
 git show --stat HEAD                 # after committing: the files you meant, and only those
 ```
 
