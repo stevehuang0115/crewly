@@ -118,6 +118,25 @@ export function suppressFileOnly(rawText: string, hasAttachments = false): strin
 }
 
 /**
+ * Text a ticket title is made from: Slack's raw `<@U0C2ZK849ND>` mention codes
+ * and `<https://…|label>` links read as noise on the board (2026-09-24:
+ * "[Message] <@U0C2ZK849ND> 看看这个"), so mentions go and links keep their
+ * label (or the bare URL).
+ *
+ * @param text - Message text
+ * @returns Cleaned text (the ticket description keeps the original)
+ */
+export function titleText(text: string): string {
+  const cleaned = text
+    .replace(/<@[A-Z0-9]+(\|[^>]*)?>/g, '')
+    .replace(/<(https?:[^>|]+)\|([^>]+)>/g, '$2')
+    .replace(/<(https?:[^>]+)>/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return cleaned || text.trim();
+}
+
+/**
  * Whether a message is the "don't track" action.
  *
  * @param text - Message text
@@ -456,7 +475,7 @@ export class TicketIntakeService {
     const tags = [...new Set([TICKET_CONSTANTS.TAG, message.origin.channel, ...(message.tags ?? [])])];
     const ticket = await this.deps.requests.create({
       sourceConversationItemId: message.origin.ref,
-      title: generateRequestTitle(text, intentCategory),
+      title: generateRequestTitle(titleText(text), intentCategory),
       description: text,
       priority: 'normal',
       tags,

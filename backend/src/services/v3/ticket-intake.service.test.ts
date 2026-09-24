@@ -11,6 +11,7 @@ import {
   suppressFileOnly,
   weightedTextLength,
   isDismissText,
+  titleText,
   resolveTicketIdForSession,
   setTicketIntakeService,
   getTicketIntakeService,
@@ -515,5 +516,13 @@ describe('with the real RequestService', () => {
     expect(published).toEqual([expect.objectContaining({ type: 'request:created', requestId: t!.id })]);
     // The counter file lives next to the Request files but is never read as one.
     expect((await requests.listAll()).map((r) => r.id)).toEqual([t!.id]);
+  });
+});
+
+describe('titleText', () => {
+  it('drops Slack mention codes and keeps link labels', () => {
+    expect(titleText('<@U0C2ZK849ND> 看看这个 <https://example.com/a|这篇文章>')).toBe('看看这个 这篇文章');
+    expect(titleText('see <https://example.com/x>')).toBe('see https://example.com/x');
+    expect(titleText('<@U0C2ZK849ND>')).toBe('<@U0C2ZK849ND>');
   });
 });
