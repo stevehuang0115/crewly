@@ -325,6 +325,19 @@ export const API_SECURITY_CONSTANTS = {
 	},
 	/** Actor recorded on approvals performed with the owner token */
 	OWNER_ACTOR: 'owner',
+	/**
+	 * Header the dashboard sets on owner-initiated actions (e.g. the per-member
+	 * Start button). Paired with the ABSENCE of `X-Agent-Session`, it marks a
+	 * request as a human action rather than an agent skill or an internal
+	 * server-to-server call, which send neither (issue #775).
+	 */
+	CALLER_HEADER: 'x-crewly-caller',
+	/** Value of {@link CALLER_HEADER} sent by the dashboard. */
+	DASHBOARD_CALLER: 'dashboard',
+	/** Header skills send to identify the calling agent session. */
+	AGENT_SESSION_HEADER: 'x-agent-session',
+	/** Legacy alias of {@link AGENT_SESSION_HEADER} still accepted by the backend. */
+	AGENT_SESSION_HEADER_LEGACY: 'x-crewly-agent-session',
 	/** Hint appended to 401 responses */
 	UNAUTHORIZED_HINT:
 		'Non-loopback callers must send the API token: `Authorization: Bearer <token>`, `X-Crewly-Token: <token>` or a `crewly_token` cookie. Run `crewly token` on the server to print it.',

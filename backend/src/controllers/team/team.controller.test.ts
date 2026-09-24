@@ -4251,4 +4251,133 @@ describe('Teams Handlers', () => {
       expect(got400).toBe(false);
     });
   });
+  // ---------------------------------------------------------------------
+  // Issue #775: a human clicking Start in the dashboard is not gated; the
+  // orchestrator (and header-less internal wakers) still are.
+  // ---------------------------------------------------------------------
+  describe('startTeamMember caller distinction (#775)', () => {
+    const dormantTeam = (sessionName: string): Team => ({
+      id: 'team-775',
+      name: 'Dormant Team',
+      description: 'Test',
+      members: [{
+        id: 'member-775',
+        name: 'Sleeper',
+        sessionName,
+        role: 'developer',
+        systemPrompt: 'Test',
+        agentStatus: 'inactive' as TeamMember['agentStatus'],
+        workingStatus: 'idle',
+        runtimeType: 'claude-code',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }],
+      projectIds: [],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    const getRecentOwnerMessageContents = jest.fn<any>();
+
+    beforeEach(() => {
+      jest.resetModules();
+      getRecentOwnerMessageContents.mockReset();
+      // A fresh install: no owner chat at all.
+      getRecentOwnerMessageContents.mockReturnValue([]);
+      jest.doMock('../../services/chat-v2/chat-v2.singleton.js', () => ({
+        getChatV2Service: () => ({ getRecentOwnerMessageContents }),
+      }));
+      jest.doMock('../../services/task-pool/task-pool.service.js', () => ({
+        TaskPoolService: {
+          getInstance: () => ({
+            getAllItems: jest.fn<any>().mockResolvedValue([]),
+            findWorkItem: jest.fn<any>().mockResolvedValue(null),
+          }),
+        },
+      }));
+      mockResponse = responseMock as any;
+      mockStorageService.getProjects.mockResolvedValue([]);
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'crewly-dormant-sleeper' }),
+        isInProcessRuntimeActive: jest.fn<any>().mockReturnValue(false),
+      } as any;
+    });
+
+    afterEach(() => {
+      jest.dontMock('../../services/chat-v2/chat-v2.singleton.js');
+      jest.dontMock('../../services/task-pool/task-pool.service.js');
+    });
+
+    const call = async (headers: Record<string, string>, sessionName = ''): Promise<void> => {
+      mockStorageService.getTeams.mockResolvedValue([dormantTeam(sessionName)]);
+      mockRequest = {
+        params: { teamId: 'team-775', memberId: 'member-775' },
+        body: {},
+        headers,
+      };
+      const { startTeamMember } = await import('./team.controller.js');
+      await startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+    };
+
+    const statuses = (): number[] => responseMock.status.mock.calls.map((c: any[]) => c[0]);
+
+    it('lets the owner start a dormant member from the dashboard with no prior chat', async () => {
+      await call({ 'x-crewly-caller': 'dashboard' });
+
+      expect(statuses()).not.toContain(403);
+      expect(statuses()).not.toContain(400);
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalled();
+      // The approval lookup is not even consulted for a human click.
+      expect(getRecentOwnerMessageContents).not.toHaveBeenCalled();
+    });
+
+    it('does not apply the pool wake gate to a dashboard start either', async () => {
+      // A member with a leftover sessionName and no pool work would 400 for an agent.
+      await call({ 'x-crewly-caller': 'dashboard' }, 'crewly-dormant-sleeper');
+
+      expect(statuses()).not.toContain(400);
+      expect(statuses()).not.toContain(403);
+    });
+
+    it('still blocks the orchestrator skill (X-Agent-Session) with 403 when no owner approval exists', async () => {
+      await call({ 'x-agent-session': 'crewly-orc' });
+
+      expect(responseMock.status).toHaveBeenCalledWith(403);
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ code: 'commitment_requires_owner_approval' }),
+      );
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+    });
+
+    it('still blocks an agent that also sends the dashboard marker', async () => {
+      await call({ 'x-agent-session': 'crewly-orc', 'x-crewly-caller': 'dashboard' });
+
+      expect(responseMock.status).toHaveBeenCalledWith(403);
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+    });
+
+    it('still blocks a header-less internal caller (reconciler / auto-claim wake)', async () => {
+      await call({});
+
+      expect(responseMock.status).toHaveBeenCalledWith(403);
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).not.toHaveBeenCalled();
+    });
+
+    it('still keeps the pool wake gate for agent callers', async () => {
+      await call({ 'x-agent-session': 'crewly-orc' }, 'crewly-dormant-sleeper');
+
+      expect(responseMock.status).toHaveBeenCalledWith(400);
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ code: 'wake_gate_no_pool_work' }),
+      );
+    });
+
+    it('lets an agent through once the owner has approved in chat', async () => {
+      getRecentOwnerMessageContents.mockReturnValue(['go ahead and start the team']);
+      await call({ 'x-agent-session': 'crewly-orc' });
+
+      expect(statuses()).not.toContain(403);
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalled();
+    });
+  });
 });

@@ -13,6 +13,7 @@ import { webSocketService } from '../services/websocket.service';
 import { apiService } from '../services/api.service';
 import { assignDefaultAvatars } from '../utils/team.utils';
 import { TEAM_QUERY_PARAM } from '../utils/team-chat.utils';
+import { DASHBOARD_CALLER_HEADERS } from '../constants/caller.constants';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Card } from '@crewly/ui/Card';
 import { StatusBadge } from '@crewly/ui/StatusBadge';
@@ -497,11 +498,14 @@ export const TeamDetail: React.FC = () => {
           showError(result.error || 'Failed to setup orchestrator');
         }
       } else {
-        // Regular team member start
+        // Regular team member start. Marked as a dashboard action so the
+        // backend knows the owner asked for it (not the orchestrator), and
+        // does not hold it for chat approval (#775).
         const response = await fetch(`/api/teams/${id}/members/${memberId}/start`, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
+            ...DASHBOARD_CALLER_HEADERS,
           },
         });
 

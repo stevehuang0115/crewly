@@ -183,7 +183,7 @@ Open your project and assign your team. This connects agents to the codebase the
 
 ### Step 5: Start Your Agents
 
-Once a team is assigned to a project, click **Start** on the **team** (not on an individual member). Crewly launches each agent's CLI in its own terminal session.
+Once a team is assigned to a project, click **Start** on the **team** to launch every member, or **Start** on an individual member to launch just that agent. Crewly launches each agent's CLI in its own terminal session.
 
 You can now:
 - **Watch the live terminal** -- see exactly what each agent is doing in real time

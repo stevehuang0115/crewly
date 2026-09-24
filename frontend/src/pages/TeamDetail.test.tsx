@@ -103,6 +103,7 @@ vi.mock('../components/TeamDetail', () => ({
     );
   },
   AgentDetailModal: () => null,
+  TeamObjectives: () => null,
 }));
 
 // Mock HierarchyDashboard
@@ -538,6 +539,30 @@ describe('TeamDetail Page', () => {
 
       // Test member delete
       fireEvent.click(screen.getAllByText('Delete')[0]);
+    });
+
+    it('marks the per-member Start as a dashboard (owner) action (#775)', async () => {
+      render(
+        <TestWrapper>
+          <TeamDetail />
+        </TestWrapper>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('member-card-member-1')).toBeInTheDocument();
+      });
+
+      fireEvent.click(screen.getAllByText('Start')[0]);
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith('/api/teams/team-1/members/member-1/start', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Crewly-Caller': 'dashboard',
+          },
+        });
+      });
     });
   });
 
