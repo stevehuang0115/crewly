@@ -32,6 +32,10 @@ import {
   getTemplatesDir,
   type TeamTemplate,
 } from '../utils/templates.js';
+import { CLI_CONSTANTS } from '../constants.js';
+
+/** Process exit codes used by the wizard. */
+const CLI_EXIT_CODES = CLI_CONSTANTS.EXIT_CODES;
 
 /** Provider choice returned by the selection step */
 export type ProviderChoice = 'claude' | 'gemini' | 'codex' | 'opencode' | 'both' | 'skip';
@@ -76,18 +80,72 @@ export function createReadlineInterface(): ReadlineInterface {
 }
 
 /**
+ * Thrown when the wizard's input closes before a question was answered
+ * (EOF, e.g. stdin is an exhausted pipe or the user pressed Ctrl+D).
+ *
+ * Without this, a closed input left the pending question unresolved, the
+ * event loop drained and the process exited 0 with nothing set up (#772).
+ */
+export class WizardInputClosedError extends Error {
+  constructor() {
+    super('The setup wizard\'s input closed before the question was answered');
+    this.name = 'WizardInputClosedError';
+  }
+}
+
+/**
  * Prompts the user with a question and returns their answer.
  *
  * @param rl - Readline interface
  * @param question - The prompt text
  * @returns The user's response string
+ * @throws {WizardInputClosedError} When the input closes before an answer arrives
  */
 function ask(rl: ReadlineInterface, question: string): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
+    const onClose = (): void => reject(new WizardInputClosedError());
+    rl.on('close', onClose);
     rl.question(question, (answer) => {
+      rl.removeListener('close', onClose);
       resolve(answer.trim());
     });
   });
+}
+
+/**
+ * Whether the wizard can prompt: stdin must be a terminal.
+ *
+ * `curl ... | bash` hands the wizard the script's pipe as stdin, so every
+ * prompt would read EOF (#772). The installer redirects from /dev/tty when a
+ * terminal exists; otherwise the wizard must refuse instead of "finishing".
+ *
+ * @param stdin - Input stream to check (defaults to process.stdin)
+ * @returns True when stdin is a TTY
+ */
+export function isInteractiveInput(stdin: { isTTY?: boolean } = process.stdin): boolean {
+  return stdin.isTTY === true;
+}
+
+/**
+ * Explain that the wizard cannot run without a terminal and name the exact
+ * command to run next. Sets a non-zero exit code; never reports success.
+ *
+ * @param reason - What went wrong (printed first)
+ * @param startedSetup - True when the input closed mid-wizard (some steps may have run)
+ */
+export function reportNonInteractiveInput(reason: string, startedSetup = false): void {
+  console.log(chalk.red(`  ✖ ${reason}`));
+  if (startedSetup) {
+    console.log(chalk.yellow('    Setup did not finish.\n'));
+  } else {
+    console.log(chalk.yellow('    Nothing was set up. This happens when the wizard\'s input is a pipe or a file,'));
+    console.log(chalk.yellow('    for example `curl -fsSL https://crewlyai.com/install.sh | bash` without a terminal.\n'));
+  }
+  console.log('    Run the wizard from a terminal:');
+  console.log(chalk.cyan('      crewly onboard\n'));
+  console.log('    Or set up with the defaults, no prompts (CI, scripts):');
+  console.log(chalk.cyan('      crewly init --yes\n'));
+  process.exitCode = CLI_EXIT_CODES.ERROR;
 }
 
 // ========================= Step 1: Provider selection =========================
@@ -665,6 +723,11 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
  * - First available template (or --template flag)
  * - Scaffold .crewly/ directory
  *
+ * Interactive mode requires stdin to be a terminal. When it is not (a pipe,
+ * as under `curl ... | bash` without `< /dev/tty`), or when the input closes
+ * mid-wizard, it prints the command to run next and sets exit code 1 instead
+ * of finishing with nothing set up (#772).
+ *
  * @param options - Command options from Commander.js
  */
 export async function onboardCommand(options: OnboardOptions = {}): Promise<void> {
@@ -687,6 +750,12 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
     }
   }
 
+  // Interactive mode needs a terminal to read answers from (#772).
+  if (!autoYes && !isInteractiveInput()) {
+    reportNonInteractiveInput('The setup wizard needs a terminal, but its input is not one.');
+    return;
+  }
+
   if (autoYes) {
     // Non-interactive mode: use defaults
     const provider: ProviderChoice = 'claude';
@@ -696,8 +765,14 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
     console.log(chalk.bold('  Step 1/5: AI Provider'));
     console.log(chalk.green(`  ✓ Using default: Claude Code\n`));
 
-    // Step 2: Auto-install tools
-    await ensureTools(createReadlineInterface(), provider, true);
+    // Step 2: Auto-install tools (autoYes never prompts; close the interface
+    // so an open stdin cannot keep the process alive)
+    const autoRl = createReadlineInterface();
+    try {
+      await ensureTools(autoRl, provider, true);
+    } finally {
+      autoRl.close();
+    }
 
     // Step 3: Skills
     await ensureSkills();
@@ -759,6 +834,13 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
 
     // Step 5: Summary
     printSummary(selectedTemplate);
+  } catch (error) {
+    if (error instanceof WizardInputClosedError) {
+      console.log('');
+      reportNonInteractiveInput('The setup wizard\'s input closed before setup finished.', true);
+      return;
+    }
+    throw error;
   } finally {
     rl.close();
   }

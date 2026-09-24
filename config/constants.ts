@@ -246,6 +246,10 @@ export const WEB_CONSTANTS = {
 		ORCHESTRATOR: '/api/orchestrator',
 		/** Terminal operations endpoints */
 		TERMINAL: '/api/terminal',
+		/** Live agent sessions (PTY): name, pid, cwd */
+		SESSIONS: '/api/sessions',
+		/** Live terminal sessions including in-process (no PTY) agents */
+		TERMINAL_SESSIONS: '/api/terminal/sessions',
 		/** Task management endpoints */
 		TASKS: '/api/tasks',
 		/** Factory SSE endpoint */

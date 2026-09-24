@@ -1,8 +1,11 @@
 /**
  * Tests for the CLI stop command.
  *
- * Validates graceful shutdown, force shutdown, tmux session cleanup,
- * and backend process termination.
+ * Validates that stop drains the Crewly backend on the port (safe restart),
+ * force-kills it and its children with --force, reports exactly what it
+ * stopped, never claims success when it found nothing (#776), leaves
+ * non-Crewly listeners and its own ancestors alone, and cleans up legacy tmux
+ * sessions.
  */
 
 // ---------------------------------------------------------------------------
@@ -53,24 +56,95 @@ jest.mock('axios', () => ({
 	},
 }));
 
+const mockWaitForPidExit = jest.fn();
+jest.mock('../utils/safe-shutdown.js', () => {
+	const actual = jest.requireActual('../utils/safe-shutdown.js');
+	return {
+		...actual,
+		waitForPidExit: (...args: unknown[]) => mockWaitForPidExit(...args),
+	};
+});
+
 import { stopCommand } from './stop.js';
+
+const actualWaitForPidExit = jest.requireActual('../utils/safe-shutdown.js').waitForPidExit;
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Configure mockExecAsync to return specific results based on command pattern. */
-function setupExecMock(
-	responses: Record<string, string | Error>,
-): void {
+/** Backend routes for the axios mock: path → body. */
+type Routes = Record<string, unknown>;
+
+/** Serve `routes` from the axios mock; anything else is ECONNREFUSED. */
+function mockBackend(routes: Routes): void {
+	mockAxiosGet.mockImplementation(async (url: string) => {
+		const body = routes[new URL(url).pathname];
+		if (body === undefined) throw new Error('connect ECONNREFUSED');
+		return { status: 200, data: body };
+	});
+}
+
+/** A healthy backend with two agents, one mid-turn. */
+const HEALTHY: Routes = {
+	'/health': { status: 'healthy', version: '1.20.99', uptime: 60 },
+	'/api/sessions': {
+		sessions: [
+			{ sessionName: 'crewly-orc', pid: 5001, cwd: '/p' },
+			{ sessionName: 'web-alice-1a2b', pid: 5002, cwd: '/p' },
+		],
+	},
+	'/api/teams': { success: true, data: [{ name: 'Web Team', members: [{ name: 'Alice', sessionName: 'web-alice-1a2b' }] }] },
+	'/api/system/restart-readiness': {
+		safe: false,
+		busyAgents: [{ session: 'web-alice-1a2b', since: '2026-09-23T10:00:00Z', messagePreview: 'Build the login page' }],
+		queued: 0,
+	},
+};
+
+/** Process table: backend 4242 on the port with two agent runtimes under it. */
+const BACKEND_TABLE = [
+	'4242 1 node /usr/lib/node_modules/crewly/dist/backend/backend/src/index.js',
+	'5001 4242 claude --dangerously-skip-permissions',
+	'5002 4242 codex --yolo',
+].join('\n');
+
+/**
+ * Exec mock. `alive` lists pids that `kill -0` reports alive (each entry is
+ * consumed per check when given as a count: pid → number of "alive" answers).
+ */
+function mockExec(options: {
+	lsof?: string;
+	ps?: string;
+	tmux?: string | Error;
+	alive?: Record<number, number>;
+} = {}): void {
+	const alive = { ...(options.alive ?? {}) };
 	mockExecAsync.mockImplementation((cmd: string) => {
-		for (const [pattern, response] of Object.entries(responses)) {
-			if (cmd.includes(pattern)) {
-				return response;
+		if (cmd.includes('lsof')) return options.lsof ?? '';
+		if (cmd.includes('ps -A')) return options.ps ?? '';
+		if (cmd.includes('tmux list-sessions')) return options.tmux ?? '';
+		const zero = cmd.match(/^kill -0 (\d+)$/);
+		if (zero) {
+			const pid = Number(zero[1]);
+			if ((alive[pid] ?? 0) > 0) {
+				alive[pid] -= 1;
+				return '';
 			}
+			return new Error('ESRCH');
 		}
 		return '';
 	});
+}
+
+/** Commands run through the exec mock, in order. */
+function commands(): string[] {
+	return mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
+}
+
+/** Everything printed via console.log. */
+function printed(spy: jest.SpyInstance): string {
+	return spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
 }
 
 // ---------------------------------------------------------------------------
@@ -89,303 +163,214 @@ describe('stopCommand', () => {
 			.spyOn(process, 'exit')
 			.mockImplementation(() => undefined as never);
 		jest.clearAllMocks();
+		// Real polling, but fast: poll every 1ms.
+		mockWaitForPidExit.mockImplementation((pid: number, timeoutMs: number, deps: Record<string, unknown>) =>
+			actualWaitForPidExit(pid, timeoutMs, { ...deps, pollMs: 1 }),
+		);
+		process.exitCode = 0;
 	});
 
 	afterEach(() => {
 		logSpy.mockRestore();
 		errorSpy.mockRestore();
 		exitSpy.mockRestore();
+		process.exitCode = 0;
 	});
 
-	// -----------------------------------------------------------------------
-	// Graceful shutdown flow (non-force)
-	// -----------------------------------------------------------------------
-
-	describe('graceful shutdown', () => {
-		it('attempts graceful shutdown, kills sessions, and kills backend processes', async () => {
-			// Server health check succeeds
-			mockAxiosGet.mockResolvedValue({ status: 200 });
-
-			setupExecMock({
-				'tmux list-sessions': 'crewly_agent1\ncrewly_agent2\n',
-				'tmux kill-session': '',
-				'ps aux': '',
-			});
+	describe('graceful stop (safe-restart drain kept)', () => {
+		it('lists the agents and who is mid-turn, SIGTERMs the backend alone, waits for it, and reports what it stopped', async () => {
+			mockBackend(HEALTHY);
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE, alive: { 4242: 1 } });
 
 			await stopCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Attempting graceful shutdown');
-			expect(output).toContain('Crewly stopped successfully');
-		});
-
-		it('SIGTERMs the backend alone first and waits for it to drain before the sweep', async () => {
-			mockAxiosGet.mockResolvedValue({ status: 200 });
-			setupExecMock({
-				'lsof -iTCP': '4242\n',
-				'kill -0 4242': new Error('ESRCH'),
-				'tmux list-sessions': '',
-				'ps aux': '',
-			});
-
-			await stopCommand({});
-
-			const cmds = mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
+			const cmds = commands();
 			const term = cmds.indexOf('kill -TERM 4242');
 			expect(term).toBeGreaterThanOrEqual(0);
-			expect(cmds.indexOf('kill -0 4242')).toBeGreaterThan(term);
-			expect(cmds.findIndex((c) => c.includes('ps aux'))).toBeGreaterThan(term);
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(cmds.lastIndexOf('kill -0 4242')).toBeGreaterThan(term);
+			// The agents ended with the backend: never signalled individually
+			expect(cmds).not.toContain('kill -TERM 5001');
+			expect(cmds.some((c) => c.startsWith('kill -KILL'))).toBe(false);
+
+			const output = printed(logSpy);
+			expect(output).toContain('2 agent(s) running: crewly-orc, web-alice-1a2b');
+			expect(output).toContain('1 agent(s) are mid-turn');
+			expect(output).toContain('web-alice-1a2b (since 2026-09-23T10:00:00Z): Build the login page');
 			expect(output).toContain('finish in-flight agent turns');
+			expect(output).toContain('✓ backend PID 4242 (port 8787)');
+			expect(output).toContain('✓ 2 agent session(s): crewly-orc, web-alice-1a2b (Alice, Web Team)');
+			expect(output).toContain('Crewly stopped');
+			expect(process.exitCode).toBe(0);
 		});
 
-		it('does not look for a backend to drain with --force', async () => {
-			setupExecMock({ 'tmux list-sessions': '', 'ps aux': '' });
-			await stopCommand({ force: true });
-			const cmds = mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
-			expect(cmds.some((c) => c.includes('lsof -iTCP'))).toBe(false);
-		});
-
-		it('proceeds when server is not responding during graceful shutdown', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('ECONNREFUSED'));
-
-			setupExecMock({
-				'tmux list-sessions': '',
-				'ps aux': '',
-			});
+		it('terminates an agent process that outlived the backend and reports it', async () => {
+			mockBackend(HEALTHY);
+			// 5001 is alive once (after the backend exited), then gone after SIGTERM
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE, alive: { 5001: 1 } });
 
 			await stopCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Server not responding');
-			expect(output).toContain('Crewly stopped successfully');
+			expect(commands()).toContain('kill -TERM 5001');
+			expect(printed(logSpy)).toContain('✓ PID 5001, left running by the backend (claude --dangerously-skip-permissions)');
+		});
+
+		it('fails, and does not claim success, when the backend does not exit within the drain budget', async () => {
+			mockBackend(HEALTHY);
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE });
+			mockWaitForPidExit.mockResolvedValueOnce(false);
+
+			await stopCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('Still running:');
+			expect(output).toContain('backend PID 4242 did not exit within');
+			expect(output).toContain('crewly stop --force');
+			expect(output).not.toContain('Crewly stopped');
+			expect(process.exitCode).toBe(1);
+		});
+
+		it('still stops a wedged Crewly backend that holds the port but does not answer /health', async () => {
+			mockBackend({});
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE });
+
+			await stopCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('Server not responding on port 8787');
+			expect(commands()).toContain('kill -TERM 4242');
+			expect(output).toContain('✓ backend PID 4242 (port 8787)');
 		});
 	});
 
-	// -----------------------------------------------------------------------
-	// Force shutdown
-	// -----------------------------------------------------------------------
+	describe('nothing to stop (#776: never report success after finding nothing)', () => {
+		it('says there was nothing to stop, and not "stopped"', async () => {
+			mockBackend({});
+			mockExec({ lsof: '' });
 
-	describe('force shutdown', () => {
-		it('skips graceful shutdown when force is true', async () => {
-			setupExecMock({
-				'tmux list-sessions': '',
-				'ps aux': '',
-			});
+			await stopCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('Nothing to stop: no Crewly backend is listening on port 8787');
+			expect(output).toContain('crewly service stop');
+			expect(output).not.toContain('Crewly stopped');
+			expect(output).not.toContain('Stopped:');
+			expect(commands().some((c) => c.startsWith('kill -TERM') || c.startsWith('kill -KILL'))).toBe(false);
+		});
+
+		it('leaves a non-Crewly process on the port alone and says so', async () => {
+			mockBackend({});
+			mockExec({ lsof: '777\n', ps: '777 1 python3 -m http.server 8787' });
+
+			await stopCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('Left alone: PID 777 holds port 8787 but is not a Crewly backend (python3 -m http.server 8787)');
+			expect(output).toContain('Nothing to stop');
+			expect(commands()).not.toContain('kill -TERM 777');
+		});
+
+		it('never runs the old machine-wide `ps aux | grep crewly|backend` sweep', async () => {
+			mockBackend(HEALTHY);
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE });
+
+			await stopCommand({});
+
+			expect(commands().some((c) => c.includes('ps aux'))).toBe(false);
+		});
+	});
+
+	describe('--force', () => {
+		it('skips the API and the drain, SIGKILLs the backend and every process under it, and lists them', async () => {
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE });
 
 			await stopCommand({ force: true });
 
 			expect(mockAxiosGet).not.toHaveBeenCalled();
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			const cmds = commands();
+			expect(cmds).toEqual(expect.arrayContaining(['kill -KILL 4242', 'kill -KILL 5001', 'kill -KILL 5002']));
+			expect(cmds).not.toContain('kill -TERM 4242');
+			const output = printed(logSpy);
 			expect(output).not.toContain('Attempting graceful shutdown');
-			expect(output).toContain('Crewly stopped successfully');
+			expect(output).toContain('✓ backend PID 4242 (port 8787, SIGKILL)');
+			expect(output).toContain('✓ 2 process(es) under the backend: 5001 claude --dangerously-skip-permissions; 5002 codex --yolo');
+			expect(output).toContain('Crewly stopped');
 		});
 
-		it('uses SIGKILL when force is true for backend processes', async () => {
-			setupExecMock({
-				'tmux list-sessions': '',
-				'ps aux': 'user 1234 0.0 0.0 crewly-backend\n',
-				'kill': '',
-			});
+		it('reports a process that survived SIGKILL and fails', async () => {
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE, alive: { 5002: 99 } });
 
 			await stopCommand({ force: true });
 
-			expect(mockExecAsync).toHaveBeenCalledWith(
-				expect.stringContaining('SIGKILL'),
-			);
+			expect(printed(logSpy)).toContain('✗ PID 5002 (codex --yolo) survived SIGKILL');
+			expect(process.exitCode).toBe(1);
+		});
+
+		it('never signals itself or its ancestors (stop run from an agent shell under the backend)', async () => {
+			const me = process.pid;
+			const table = [
+				'4242 1 node /x/dist/backend/backend/src/index.js',
+				'5001 4242 /bin/zsh',
+				`${me} 5001 node crewly stop --force`,
+				'5002 4242 codex --yolo',
+			].join('\n');
+			mockExec({ lsof: '4242\n', ps: table });
+
+			await stopCommand({ force: true });
+
+			const cmds = commands();
+			expect(cmds).toContain('kill -KILL 5002');
+			expect(cmds).not.toContain('kill -KILL 5001');
+			expect(cmds).not.toContain(`kill -KILL ${me}`);
 		});
 	});
 
-	// -----------------------------------------------------------------------
-	// Session cleanup
-	// -----------------------------------------------------------------------
-
-	describe('tmux session cleanup', () => {
-		it('kills all crewly_ prefixed sessions', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			setupExecMock({
-				'tmux list-sessions':
-					'crewly_agent1\ncrewly_agent2\nother-session\n',
-				'tmux kill-session': '',
-				'ps aux': '',
-			});
+	describe('legacy tmux sessions', () => {
+		it('kills crewly_* sessions and reports each one', async () => {
+			mockBackend({});
+			mockExec({ tmux: 'crewly_agent1\ncrewly_agent2\nother-session\n' });
 
 			await stopCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Found 2 Crewly sessions');
+			const cmds = commands();
+			expect(cmds).toContain('tmux kill-session -t "crewly_agent1"');
+			expect(cmds).not.toContain('tmux kill-session -t "other-session"');
+			const output = printed(logSpy);
+			expect(output).toContain('✓ legacy tmux session crewly_agent1');
+			expect(output).toContain('✓ legacy tmux session crewly_agent2');
+			expect(output).toContain('Crewly stopped');
 		});
 
-		it('handles no crewly sessions found', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			setupExecMock({
-				'tmux list-sessions': 'other-session\n',
-				'ps aux': '',
-			});
+		it('says nothing about tmux when it is absent', async () => {
+			mockBackend({});
+			mockExec({ tmux: new Error('tmux: command not found') });
 
 			await stopCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('No Crewly sessions found');
-		});
-
-		it('handles tmux not available', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			mockExecAsync.mockImplementation((cmd: string) => {
-				if (cmd.includes('tmux')) {
-					throw new Error('tmux not found');
-				}
-				return '';
-			});
-
-			await stopCommand({});
-
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('tmux not available');
-		});
-
-		it('handles individual session kill failure gracefully', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			let killCallCount = 0;
-			mockExecAsync.mockImplementation((cmd: string) => {
-				if (cmd.includes('tmux list-sessions')) {
-					return 'crewly_agent1\ncrewly_agent2\n';
-				}
-				if (cmd.includes('tmux kill-session')) {
-					killCallCount++;
-					if (killCallCount === 1) {
-						throw new Error('session gone');
-					}
-					return '';
-				}
-				if (cmd.includes('ps aux')) {
-					return '';
-				}
-				return '';
-			});
-
-			await stopCommand({});
-
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('already terminated');
+			expect(printed(logSpy)).not.toMatch(/tmux:/);
 		});
 	});
-
-	// -----------------------------------------------------------------------
-	// Backend process cleanup
-	// -----------------------------------------------------------------------
-
-	describe('backend process cleanup', () => {
-		it('finds and kills backend processes with SIGTERM', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			setupExecMock({
-				'tmux list-sessions': '',
-				'ps aux':
-					'user  5678  0.0  0.0 ... crewly-backend\nuser  9012  0.0  0.0 ... backend/dist\n',
-				'kill': '',
-			});
-
-			await stopCommand({});
-
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Found 2 backend processes');
-		});
-
-		it('handles no backend processes found', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			setupExecMock({
-				'tmux list-sessions': '',
-				'ps aux': '',
-			});
-
-			await stopCommand({});
-
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('No backend processes found');
-		});
-
-		it('handles backend kill error and throws', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			mockExecAsync.mockImplementation((cmd: string) => {
-				if (cmd.includes('tmux')) return '';
-				if (cmd.includes('ps aux')) {
-					throw new Error('permission denied');
-				}
-				return '';
-			});
-
-			await stopCommand({});
-
-			expect(exitSpy).toHaveBeenCalledWith(1);
-		});
-	});
-
-	// -----------------------------------------------------------------------
-	// Error handling
-	// -----------------------------------------------------------------------
 
 	describe('error handling', () => {
-		it('exits with code 1 on unexpected error', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			mockExecAsync.mockImplementation(() => {
-				throw new Error('catastrophic failure');
-			});
+		it('exits 1 and suggests --force on an unexpected error', async () => {
+			mockBackend(HEALTHY);
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE });
+			mockWaitForPidExit.mockRejectedValueOnce(new Error('catastrophic failure'));
 
 			await stopCommand({});
 
 			expect(exitSpy).toHaveBeenCalledWith(1);
-			const output = errorSpy.mock.calls
-				.map((c: unknown[]) => c[0])
-				.join('\n');
-			expect(output).toContain('Error stopping Crewly');
-		});
-
-		it('suggests --force flag on non-force failure', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			mockExecAsync.mockImplementation(() => {
-				throw new Error('unexpected error');
-			});
-
-			await stopCommand({});
-
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('--force');
+			expect(errorSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n')).toContain('Error stopping Crewly');
+			expect(printed(logSpy)).toContain('--force');
 		});
 
 		it('does not suggest --force when already using force', async () => {
-			mockExecAsync.mockImplementation(() => {
-				throw new Error('unexpected error');
-			});
+			mockExec({ lsof: '4242\n', ps: BACKEND_TABLE });
+			mockWaitForPidExit.mockRejectedValueOnce(new Error('catastrophic failure'));
 
 			await stopCommand({ force: true });
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).not.toContain('--force');
-		});
-
-		it('handles non-Error objects in catch block', async () => {
-			mockAxiosGet.mockRejectedValue('string error');
-
-			mockExecAsync.mockImplementation((cmd: string) => {
-				if (cmd.includes('tmux')) return '';
-				if (cmd.includes('ps aux')) {
-					throw 'raw string error';
-				}
-				return '';
-			});
-
-			await stopCommand({});
-
 			expect(exitSpy).toHaveBeenCalledWith(1);
+			expect(printed(logSpy)).not.toContain('--force');
 		});
 	});
 });

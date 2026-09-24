@@ -7,6 +7,12 @@
  * rebuild them is present (server-install finding 11), and — on Linux — whether
  * the user service will survive logout.
  *
+ * It also checks what agents need to do anything at all (#779): the jq and
+ * curl the skills call, at least one AI runtime (Claude Code / Codex / Gemini
+ * CLI) that is installed AND logged in, and that the skill marketplace the
+ * installer uses is reachable. Every failure names the command that fixes it,
+ * and any failure makes the command exit non-zero instead of claiming a pass.
+ *
  * @module cli/commands/doctor
  */
 
@@ -16,10 +22,12 @@ import * as path from 'path';
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import chalk from 'chalk';
-import { CREWLY_CONSTANTS } from '../../../config/index.js';
+import { CREWLY_CONSTANTS, MARKETPLACE_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
 import { checkNativeToolchain, isOnPath } from '../utils/native-toolchain.js';
+import { checkRuntimeAuth, type RuntimeAuthStatus } from '../utils/runtime-auth.js';
 import { getLingerState } from './service.js';
+import { REQUIRED_SYSTEM_TOOLS, type SystemToolInfo } from './onboard.js';
 
 /** Severity of a doctor line. */
 export type DoctorStatus = 'ok' | 'warn' | 'fail';
@@ -53,24 +61,55 @@ export interface DoctorDeps {
 	getuid?: () => number;
 	/** Environment override (defaults to `process.env`). */
 	env?: NodeJS.ProcessEnv;
+	/** Reachability probe for the marketplace check (defaults to an HTTPS GET). */
+	probeUrl?: UrlProbe;
 }
+
+/** Result of probing one URL. */
+export interface UrlProbeResult {
+	ok: boolean;
+	/** `HTTP 200`, `ENOTFOUND`, `timeout`, ... */
+	detail: string;
+}
+
+/** Fetches a URL and reports whether it answered 2xx. Never throws. */
+export type UrlProbe = (url: string, timeoutMs: number) => Promise<UrlProbeResult>;
+
+/** Timeout for each marketplace reachability probe (ms). */
+const MARKETPLACE_PROBE_TIMEOUT_MS = 5_000;
+
+/**
+ * Marketplace sources the installer and `crewly install` fetch skills from
+ * (see `fetchRegistry` in utils/marketplace.ts).
+ */
+const MARKETPLACE_SOURCES = [
+	{ label: 'GitHub skills registry', url: MARKETPLACE_CONSTANTS.PUBLIC_REGISTRY_URL },
+	{ label: 'crewlyai.com registry', url: `${MARKETPLACE_CONSTANTS.PREMIUM_BASE_URL}${MARKETPLACE_CONSTANTS.PREMIUM_REGISTRY_ENDPOINT}` },
+] as const;
+
+/**
+ * System tools the agent skills call. jq comes from onboarding's required
+ * list (#768); curl is how every skill reaches the Crewly API.
+ */
+export const DOCTOR_SYSTEM_TOOLS: readonly SystemToolInfo[] = [
+	...REQUIRED_SYSTEM_TOOLS,
+	{
+		displayName: 'curl',
+		command: 'curl',
+		versionFlag: '--version',
+		reason: 'Agent skills call the Crewly API with curl.',
+		install: { macos: 'brew install curl', linux: 'sudo apt-get install -y curl   (Fedora: sudo dnf install -y curl)' },
+	},
+];
 
 /**
  * Fresh-install checks for the Claude Code runtime (Mia's pre-validation,
  * 2026-09-23): Claude refuses `--dangerously-skip-permissions` as root unless
- * `IS_SANDBOX=1`, and a never-run Claude stops agents at its theme picker and
- * login screens. Claude records the finished first run as
- * `hasCompletedOnboarding: true` in its config file.
+ * `IS_SANDBOX=1`. Its first-run / login check lives in utils/runtime-auth.ts.
  */
 const CLAUDE_SETUP = {
 	/** Env var that lets Claude accept the permissions flag under root. */
 	SANDBOX_ENV: 'IS_SANDBOX',
-	/** Env var that relocates Claude's config directory. */
-	CONFIG_DIR_ENV: 'CLAUDE_CONFIG_DIR',
-	/** Claude's global config file name (in $HOME, or in CLAUDE_CONFIG_DIR). */
-	CONFIG_FILE: '.claude.json',
-	/** Flag Claude writes once the theme + login first run is done. */
-	ONBOARDED_KEY: 'hasCompletedOnboarding',
 	BIN: 'claude',
 } as const;
 
@@ -90,18 +129,91 @@ function defaultTryLoad(moduleName: string, packageRoot: string): void {
 }
 
 /**
- * Whether Claude Code has finished its first run (theme + login).
+ * Default URL probe: HTTPS GET with a timeout; the body is discarded.
  *
- * @param configFile - Path to Claude's global config file
- * @returns True only when the file parses and records a completed onboarding
+ * @param url - URL to fetch
+ * @param timeoutMs - Timeout
+ * @returns Whether it answered 2xx, and why not
  */
-function isClaudeOnboarded(configFile: string): boolean {
+export async function defaultProbeUrl(url: string, timeoutMs: number): Promise<UrlProbeResult> {
 	try {
-		const config = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
-		return config[CLAUDE_SETUP.ONBOARDED_KEY] === true;
-	} catch {
-		return false;
+		const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+		await res.body?.cancel().catch(() => undefined);
+		return { ok: res.ok, detail: `HTTP ${res.status}` };
+	} catch (error) {
+		const err = error as { name?: string; message?: string; cause?: { code?: string } };
+		if (err?.name === 'TimeoutError' || err?.name === 'AbortError') return { ok: false, detail: `timeout after ${Math.round(timeoutMs / 1000)}s` };
+		return { ok: false, detail: err?.cause?.code ?? err?.message ?? String(error) };
 	}
+}
+
+/**
+ * Checks for the runtimes: one line per installed runtime, plus a `runtime`
+ * line that fails when none is installed and logged in.
+ *
+ * @param statuses - Claude, Codex, Gemini login state
+ * @returns Checks
+ */
+export function runtimeChecks(statuses: readonly RuntimeAuthStatus[]): DoctorCheck[] {
+	const checks: DoctorCheck[] = [];
+	for (const rt of statuses) {
+		if (!rt.installed) continue;
+		if (rt.loggedIn) {
+			checks.push({ name: rt.id, status: 'ok', detail: rt.detail });
+		} else if (rt.id === 'claude' && rt.detail.startsWith('installed but never set up')) {
+			// Wording from #782, kept so the first-run hint stays recognisable.
+			checks.push({
+				name: rt.id,
+				status: 'warn',
+				detail: 'installed but never set up — Claude agents will stop at its theme and login screens',
+				hint: 'Run `claude` once in a terminal, choose a theme and log in, then start the team.',
+			});
+		} else {
+			checks.push({ name: rt.id, status: 'warn', detail: rt.detail, hint: rt.fix });
+		}
+	}
+	const ready = statuses.filter((rt) => rt.loggedIn);
+	if (ready.length > 0) {
+		checks.push({ name: 'runtime', status: 'ok', detail: `ready: ${ready.map((rt) => rt.displayName).join(', ')}` });
+	} else {
+		// Installed-but-logged-out first: finishing a login is the shortest fix.
+		const ordered = [...statuses].sort((a, b) => Number(b.installed) - Number(a.installed));
+		checks.push({
+			name: 'runtime',
+			status: 'fail',
+			detail: `no AI runtime is installed and logged in — agents cannot start (${statuses.map((rt) => `${rt.displayName}: ${rt.detail}`).join('; ')})`,
+			hint: `Set up one: ${ordered.map((rt) => `${rt.displayName}: ${rt.fix}`).join('  |  ')}`,
+		});
+	}
+	return checks;
+}
+
+/**
+ * Marketplace reachability check.
+ *
+ * @param probe - URL probe
+ * @returns One check: ok (all sources), warn (some), fail (none)
+ */
+export async function marketplaceCheck(probe: UrlProbe): Promise<DoctorCheck> {
+	const results = await Promise.all(
+		MARKETPLACE_SOURCES.map(async (source) => ({ ...source, result: await probe(source.url, MARKETPLACE_PROBE_TIMEOUT_MS) })),
+	);
+	const up = results.filter((r) => r.result.ok);
+	const down = results.filter((r) => !r.result.ok);
+	const describe = (list: typeof results): string => list.map((r) => `${r.label} ${r.url}: ${r.result.detail}`).join('; ');
+	if (down.length === 0) {
+		return { name: 'marketplace', status: 'ok', detail: `reachable (${up.map((r) => r.label).join(', ')})` };
+	}
+	const fixHint = `Check the network / proxy / firewall, then test with: curl -fsSI ${down[0].url}  — and retry: crewly install --all`;
+	if (up.length === 0) {
+		return {
+			name: 'marketplace',
+			status: 'fail',
+			detail: `unreachable — skills cannot be installed or updated (${describe(down)})`,
+			hint: fixHint,
+		};
+	}
+	return { name: 'marketplace', status: 'warn', detail: `partly reachable — ${describe(down)}`, hint: fixHint };
 }
 
 /**
@@ -155,6 +267,20 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 		checks.push({ name: 'user', status: 'ok', detail: uid === 0 ? `root, allowed by ${CLAUDE_SETUP.SANDBOX_ENV}=1` : 'not root' });
 	}
 
+	// 2c. System tools the skills call (jq, curl)
+	for (const tool of DOCTOR_SYSTEM_TOOLS) {
+		if (which(tool.command)) {
+			checks.push({ name: tool.displayName, status: 'ok', detail: 'found' });
+		} else {
+			checks.push({
+				name: tool.displayName,
+				status: 'fail',
+				detail: `not found — ${tool.reason}`,
+				hint: platform === 'darwin' ? tool.install.macos : tool.install.linux,
+			});
+		}
+	}
+
 	// 3. Native modules
 	const tryLoad = deps.tryLoad ?? defaultTryLoad;
 	for (const mod of NATIVE_MODULES) {
@@ -186,21 +312,12 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 		});
 	}
 
-	// 4b. Claude Code first run (only when claude is installed; other runtimes are fine)
-	if (claudeInstalled) {
-		const configDir = env[CLAUDE_SETUP.CONFIG_DIR_ENV] || homeDir;
-		const configFile = path.join(configDir, CLAUDE_SETUP.CONFIG_FILE);
-		if (isClaudeOnboarded(configFile)) {
-			checks.push({ name: 'claude', status: 'ok', detail: 'first-run setup done' });
-		} else {
-			checks.push({
-				name: 'claude',
-				status: 'warn',
-				detail: 'installed but never set up — Claude agents will stop at its theme and login screens',
-				hint: 'Run `claude` once in a terminal, choose a theme and log in, then start the team.',
-			});
-		}
-	}
+	// 4b. AI runtimes: at least one installed AND logged in. Claude's first-run
+	// check (#782) is part of its login check.
+	checks.push(...runtimeChecks(checkRuntimeAuth({ which, homeDir, env })));
+
+	// 4c. Marketplace the installer and `crewly install` fetch skills from
+	checks.push(await marketplaceCheck(deps.probeUrl ?? defaultProbeUrl));
 
 	// 5. Service environment
 	const serviceEnv = path.join(homeDir, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'service.env');
@@ -245,13 +362,16 @@ export function formatDoctorCheck(check: DoctorCheck): string[] {
 
 /**
  * `crewly doctor` entry point. Prints the report and sets a non-zero exit
- * code when any check failed.
+ * code when any check failed; "All checks passed" only when nothing failed
+ * or warned.
+ *
+ * @param deps - Injection points (tests); the CLI passes none
  */
-export async function doctorCommand(): Promise<void> {
+export async function doctorCommand(deps: DoctorDeps = {}): Promise<void> {
 	console.log(chalk.blue('Crewly Doctor'));
 	console.log(chalk.gray('='.repeat(50)));
 
-	const checks = await collectDoctorChecks();
+	const checks = await collectDoctorChecks(deps);
 	for (const check of checks) {
 		for (const line of formatDoctorCheck(check)) console.log(line);
 	}

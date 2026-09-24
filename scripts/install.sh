@@ -9,6 +9,11 @@
 #   2. Ensures Node.js >= 18 is available (offers nvm install if missing)
 #   3. Installs crewly globally via npm
 #   4. Runs `crewly onboard` to complete interactive setup
+#
+# Under `curl ... | bash` this script arrives on stdin, so nothing here may
+# read answers from stdin: prompts read from the terminal (/dev/tty). With no
+# terminal at all the script stops with a non-zero exit and the command to
+# run next, rather than "finishing" with nothing set up (#772).
 
 set -euo pipefail
 
@@ -55,6 +60,14 @@ case "$OS" in
     ;;
 esac
 
+# ========================= Terminal =========================
+
+# True when a terminal can be opened for prompts. `[ -t 0 ]` is not enough:
+# under `curl | bash` stdin is the pipe even when a terminal is present.
+has_tty() {
+  ( : </dev/tty ) 2>/dev/null
+}
+
 # ========================= Node.js Check =========================
 
 MIN_NODE_VERSION=18
@@ -99,8 +112,14 @@ install_node_via_nvm() {
 if ! check_node; then
   echo ""
   echo -e "  Node.js >= ${MIN_NODE_VERSION} is required."
+  if ! has_tty; then
+    echo -e "${RED}  ✗ No terminal to ask whether to install Node.js via nvm.${NC}"
+    echo -e "  Install Node.js >= ${MIN_NODE_VERSION} from https://nodejs.org, then run this installer again."
+    exit 1
+  fi
   echo -e "  Would you like to install Node.js via nvm? [Y/n] "
-  read -r REPLY
+  # Read from the terminal: stdin is this script when piped from curl.
+  read -r REPLY </dev/tty || REPLY=""
   REPLY="${REPLY:-Y}"
 
   if [[ "$REPLY" =~ ^[Yy]$ ]] || [[ -z "$REPLY" ]]; then
@@ -137,7 +156,20 @@ echo ""
 
 # ========================= Run Onboarding =========================
 
-echo -e "${BLUE}  Launching setup wizard...${NC}"
-echo ""
-
-crewly onboard
+# The wizard must read answers from the terminal, not from stdin: under
+# `curl | bash` stdin is the rest of this script, every prompt got EOF and the
+# install exited 0 with nothing configured (#772).
+if [ -t 0 ]; then
+  echo -e "${BLUE}  Launching setup wizard...${NC}"
+  echo ""
+  crewly onboard
+elif has_tty; then
+  echo -e "${BLUE}  Launching setup wizard...${NC}"
+  echo ""
+  crewly onboard </dev/tty
+else
+  echo -e "${RED}  ✗ Crewly is installed, but setup did not run: no terminal is available for the setup wizard.${NC}"
+  echo -e "  Run the wizard from a terminal:            ${CYAN}crewly onboard${NC}"
+  echo -e "  Or set up with defaults, no prompts:       ${CYAN}crewly init --yes${NC}"
+  exit 1
+fi
