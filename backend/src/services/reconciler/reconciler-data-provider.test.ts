@@ -156,6 +156,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
 import type { WakeAction } from '../../types/v2/reconcile.types.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
 
 // Access mock instances via type assertions
 const mockPool = (TaskPoolService as any)._mockInstance;
@@ -1067,6 +1068,31 @@ describe('LiveReconcilerDataProvider', () => {
       expect(JSON.parse(bodyArg)).toMatchObject({ sessionName: 'agent-idle', workItemId: 'wi-1' });
 
       globalThis.fetch = originalFetch;
+    });
+
+    // #777: the wake goes to THIS instance. It used to read process.env.PORT
+    // (never set by Crewly), so a non-default instance woke agents through
+    // whatever answered on 8787.
+    it('wakes through the port this instance runs on', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+      setLocalApiPort(8797);
+      try {
+        const result = await provider.executeWakeAction({
+          workItemId: 'wi-port',
+          agentSessionName: 'agent-idle',
+          strategy: 'start',
+          score: 60,
+          scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+          triggeredAt: new Date().toISOString(),
+        });
+        expect(result).toBe(true);
+        const url = (globalThis.fetch as jest.Mock).mock.calls[0][0] as string;
+        expect(url.startsWith('http://localhost:8797/api/')).toBe(true);
+      } finally {
+        resetLocalApiPortForTesting();
+        globalThis.fetch = originalFetch;
+      }
     });
 
     // The commitment-approval gate refuses a cold launch of a dormant team

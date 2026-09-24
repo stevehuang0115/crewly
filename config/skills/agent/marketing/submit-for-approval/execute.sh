@@ -28,7 +28,7 @@ TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // ""')
 PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // ""')
 
 # Crewly API base URL
-API_BASE="${CREWLY_API_URL:-http://localhost:3000}"
+API_BASE="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
 
 case "$ACTION" in
   submit)

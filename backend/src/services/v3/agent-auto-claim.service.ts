@@ -23,6 +23,7 @@ import { computeAgentScore, type AgentHealth } from '../reconciler/reconcile-rul
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /**
  * The orchestrator's own session name. Used to short-circuit the wake +
@@ -397,7 +398,7 @@ export class AgentAutoClaimService {
       // Fallback: load teams from API
       try {
         const axios = (await import('axios')).default;
-        const response = await axios.get('http://localhost:8787/api/teams');
+        const response = await axios.get(`${getLocalApiBaseUrl()}/api/teams`);
         for (const team of response.data?.data ?? []) {
           for (const member of team.members ?? []) {
             knownSessions.add(member.sessionName);
@@ -486,7 +487,7 @@ export class AgentAutoClaimService {
       try {
         // Find team and member ID for this session
         const axios = (await import('axios')).default;
-        const teamsResp = await axios.get('http://localhost:8787/api/teams');
+        const teamsResp = await axios.get(`${getLocalApiBaseUrl()}/api/teams`);
         let teamId: string | null = null;
         let memberId: string | null = null;
 
@@ -500,7 +501,7 @@ export class AgentAutoClaimService {
         }
 
         if (teamId && memberId) {
-          await axios.post(`http://localhost:8787/api/teams/${teamId}/members/${memberId}/start`);
+          await axios.post(`${getLocalApiBaseUrl()}/api/teams/${teamId}/members/${memberId}/start`);
           this.logger.info('Waking offline agent for pending tasks', { sessionName: session, teamId, memberId });
         } else {
           // Agent session exists in health map but not found in teams — treat as orphan

@@ -34,6 +34,7 @@ import {
   RUNTIME_TYPES,
   type RuntimeType,
 } from '../../../constants.js';
+import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
 
 /** Handlers for one in-flight run, awaiting the child's reply. */
 interface PendingRun {
@@ -136,7 +137,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       model: config?.model || CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL,
       maxSteps: config?.maxSteps || CREWLY_AGENT_DEFAULTS.MAX_STEPS,
       sessionName,
-      apiBaseUrl: config?.apiBaseUrl || CREWLY_AGENT_DEFAULTS.API_BASE_URL,
+      apiBaseUrl: config?.apiBaseUrl || getLocalApiBaseUrl(),
       systemPrompt: config?.systemPrompt || systemPrompt,
       maxHistoryMessages: config?.maxHistoryMessages || CREWLY_AGENT_DEFAULTS.MAX_HISTORY_MESSAGES,
       compactionThreshold: config?.compactionThreshold || CREWLY_AGENT_DEFAULTS.COMPACTION_THRESHOLD,

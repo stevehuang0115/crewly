@@ -50,7 +50,7 @@ fi
 # ── API key resolution ─────────────────────────────────────────────────────────
 if [ -z "${GEMINI_API_KEY:-}" ]; then
   # Try loading from settings via Crewly API
-  GEMINI_API_KEY=$(curl -sf "http://localhost:8787/api/settings" 2>/dev/null | jq -r '.data.apiKeys.global.gemini // empty' 2>/dev/null || true)
+  GEMINI_API_KEY=$(curl -sf "${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings" 2>/dev/null | jq -r '.data.apiKeys.global.gemini // empty' 2>/dev/null || true)
 fi
 
 if [ -z "${GEMINI_API_KEY:-}" ]; then

@@ -98,7 +98,7 @@ import { setRequestServiceEventBus, RequestService } from './services/v3/request
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import { createPtyTurnProbe } from './services/restart/turn-probe.js';
@@ -145,6 +145,7 @@ import { ContextWindowMonitorService } from './services/agent/context-window-mon
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { findPackageRoot } from './utils/package-root.js';
+import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
 import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
@@ -294,7 +295,7 @@ export class CrewlyServer {
 			config?.crewlyHome || process.env.CREWLY_HOME || '~/.crewly';
 
 		this.config = {
-			webPort: config?.webPort || parseIntWithFallback(process.env.WEB_PORT, 8787, 'WEB_PORT'),
+			webPort: config?.webPort || parseIntWithFallback(process.env.WEB_PORT, WEB_CONSTANTS.PORTS.BACKEND, 'WEB_PORT'),
 			crewlyHome: resolveHomePath(defaultAgentmuxHome),
 			defaultCheckInterval:
 				config?.defaultCheckInterval ||
@@ -307,6 +308,9 @@ export class CrewlyServer {
 				process.env[API_SECURITY_CONSTANTS.ENV.BIND_HOST] ||
 				API_SECURITY_CONSTANTS.DEFAULT_BIND_HOST,
 		};
+		// Single source of truth for "where is this instance's API": agents get
+		// it as CREWLY_API_URL and internal self-calls use it (#777).
+		setLocalApiPort(this.config.webPort);
 
 		this.app = express();
 		this.httpServer = createServer(this.app);
@@ -1263,7 +1267,7 @@ void (async () => {
 		// CORS — allow Cloud Console frontend and localhost OSS instances
 		const CORS_ALLOWED_ORIGINS = process.env['CORS_ALLOWED_ORIGINS']
 			? process.env['CORS_ALLOWED_ORIGINS'].split(',')
-			: ['https://crewlyai.com', 'https://www.crewlyai.com', 'http://localhost:8787', 'http://localhost:3000'];
+			: ['https://crewlyai.com', 'https://www.crewlyai.com', getLocalApiBaseUrl(), 'http://localhost:3000'];
 		this.app.use(
 			cors({
 				origin: process.env.NODE_ENV === 'production'

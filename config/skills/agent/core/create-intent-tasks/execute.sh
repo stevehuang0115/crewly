@@ -67,7 +67,7 @@ BODY=$(jq -n \
 # ---------------------------------------------------------------------------
 # Call backend API
 # ---------------------------------------------------------------------------
-CREWLY_PORT="${CREWLY_PORT:-8787}"
+CREWLY_PORT="${CREWLY_PORT:-${WEB_PORT:-8787}}"
 API_URL="${CREWLY_API_URL:-http://localhost:${CREWLY_PORT}}"
 
 RESPONSE=$(curl -s -w "\n%{http_code}" \

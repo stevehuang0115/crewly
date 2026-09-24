@@ -106,7 +106,7 @@ An unknown name returns `404` with the names that were found.
 - `CREWLY_SESSION_NAME` — your agent session id. Auto-set in agent sessions.
   The skill attaches it as `X-Agent-Session` so the backend routes the
   reply as `senderType:"agent"`.
-- `CREWLY_API_URL` — defaults to `http://localhost:8787`.
+- `CREWLY_API_URL` — set by Crewly to the running instance (e.g. `http://localhost:8797` when started with `-p 8797`); falls back to `http://localhost:${WEB_PORT:-8787}`.
 
 ## Success / failure
 

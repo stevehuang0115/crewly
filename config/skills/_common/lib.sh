@@ -4,8 +4,10 @@
 # Provides common utilities for all bash skills (agent and orchestrator).
 # =============================================================================
 
-# Base URL for the Crewly backend API
-CREWLY_API_URL="${CREWLY_API_URL:-http://localhost:8787}"
+# Base URL for the Crewly backend API. The backend sets CREWLY_API_URL on
+# every agent to the port it actually runs on (#777); without it, fall back to
+# the WEB_PORT the server was started with, then the default port.
+CREWLY_API_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
 
 # -----------------------------------------------------------------------------
 # Skill output cap (context-cost control)

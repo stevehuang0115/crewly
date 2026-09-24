@@ -37,6 +37,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -46,7 +47,6 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 const SERVICE_NAME = 'WorkItemDispatch';
 
 /** Loopback API used by {@link tl-auto-verify.service.ts} et al. */
-const API_BASE = 'http://localhost:8787';
 
 /**
  * SLA tracker WIs use a deterministic id pattern `request:<rid>:respond_to_user`
@@ -231,7 +231,7 @@ export class WorkItemDispatchSubscriber {
 
     try {
       await axios.post(
-        `${API_BASE}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
+        `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(workItem.target)}/write`,
         { data: message, mode: 'message' },
         {
           headers: { 'X-Agent-Session': SERVICE_NAME },
@@ -304,7 +304,7 @@ export class WorkItemDispatchSubscriber {
     const message = this.buildBatchDispatchMessage(batch, target);
     try {
       await axios.post(
-        `${API_BASE}/api/terminal/${encodeURIComponent(target)}/write`,
+        `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(target)}/write`,
         { data: message, mode: 'message' },
         {
           headers: { 'X-Agent-Session': SERVICE_NAME },

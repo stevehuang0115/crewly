@@ -502,8 +502,6 @@ export const CREWLY_AGENT_DEFAULTS = {
   LOOP_DETECTION_THRESHOLD: 3,
   /** Consecutive error responses (404, 4xx, 5xx) from the same tool before aborting */
   ERROR_LOOP_THRESHOLD: 3,
-  /** Default API base URL */
-  API_BASE_URL: 'http://localhost:8787',
   /** Default max history messages before compaction */
   MAX_HISTORY_MESSAGES: 100,
   /** Default compaction threshold (80% of context window) */

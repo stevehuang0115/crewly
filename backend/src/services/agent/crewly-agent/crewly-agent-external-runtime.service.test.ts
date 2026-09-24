@@ -25,6 +25,7 @@ jest.mock('../../settings/settings.service.js', () => ({
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
 import { CREWLY_AGENT_MANAGED_COMMAND } from '../../../constants.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
+import { setLocalApiPort, resetLocalApiPortForTesting } from '../../../utils/local-api-url.utils.js';
 
 // Pull the private allow-list regex via a typed escape hatch so we
 // can pin its behavior. Keeping it private on the class is the right
@@ -650,5 +651,52 @@ describe('CrewlyAgentExternalRuntimeService — concurrent run correlation', () 
     expect(() =>
       inner.handleWorkerMessage({ type: 'result', runId: 'ghost', data: result('orphan') }),
     ).not.toThrow();
+  });
+});
+
+/**
+ * #777 — the in-process runtime (and every skill it runs, via CREWLY_API_URL
+ * in the child env) must reach the instance that started it, not port 8787.
+ */
+describe('CrewlyAgentExternalRuntimeService.initializeInProcess — API URL (#777)', () => {
+  type Internals = {
+    buildEnhancedSystemPrompt: (role: string) => Promise<string>;
+    spawnAgentProcess: (config: unknown) => Promise<void>;
+    startHeartbeat: (session: string) => void;
+    storedConfig: { apiBaseUrl: string } | null;
+  };
+
+  afterEach(() => {
+    resetLocalApiPortForTesting();
+  });
+
+  function stubbed(): { svc: CrewlyAgentExternalRuntimeService; inner: Internals } {
+    const svc = new CrewlyAgentExternalRuntimeService({} as never, '/tmp/project');
+    const inner = svc as unknown as Internals;
+    inner.buildEnhancedSystemPrompt = jest.fn(async () => 'prompt') as Internals['buildEnhancedSystemPrompt'];
+    inner.spawnAgentProcess = jest.fn(async () => undefined) as Internals['spawnAgentProcess'];
+    inner.startHeartbeat = jest.fn() as Internals['startHeartbeat'];
+    return { svc, inner };
+  }
+
+  it('defaults apiBaseUrl to the port this instance runs on', async () => {
+    setLocalApiPort(8797);
+    const { svc, inner } = stubbed();
+
+    await svc.initializeInProcess('crewly-orc');
+
+    expect(inner.storedConfig?.apiBaseUrl).toBe('http://localhost:8797');
+    expect(inner.spawnAgentProcess).toHaveBeenCalledWith(
+      expect.objectContaining({ apiBaseUrl: 'http://localhost:8797' }),
+    );
+  });
+
+  it('keeps an explicitly configured apiBaseUrl', async () => {
+    setLocalApiPort(8797);
+    const { svc, inner } = stubbed();
+
+    await svc.initializeInProcess('crewly-orc', { apiBaseUrl: 'http://127.0.0.1:9999' });
+
+    expect(inner.storedConfig?.apiBaseUrl).toBe('http://127.0.0.1:9999');
   });
 });

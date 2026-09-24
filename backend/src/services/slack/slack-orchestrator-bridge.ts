@@ -51,6 +51,7 @@ import { getSlackAgentDmService } from './slack-agent-dm.service.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/request.types.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /**
  * Bridge configuration
@@ -2235,7 +2236,7 @@ Just type naturally to chat with the orchestrator!`;
       // placeholder with fromOrcReply=false so the SLA cascade does NOT
       // close on this.
       const { default: fetch } = await import('node-fetch' as any).catch(() => ({ default: globalThis.fetch }));
-      const apiUrl = process.env.CREWLY_API_URL || 'http://localhost:8787';
+      const apiUrl = getLocalApiBaseUrl();
       await fetch(`${apiUrl}/api/terminal/${sessionName}/deliver`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -166,6 +166,7 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
 
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { SESSION_RECREATION_CONSTANTS } from '../../constants.js';
+import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
 
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
@@ -662,6 +663,44 @@ describe('AgentRegistrationService', () => {
 				'CREWLY_ROLE',
 				'developer'
 			);
+		});
+
+		// #777: agents must reach the instance that launched them, whatever
+		// port it runs on — not the default 8787.
+		it('hands the agent CREWLY_API_URL for the port this instance runs on (spawn env + export)', async () => {
+			setLocalApiPort(8797);
+			try {
+				mockSessionHelper.sessionExists
+					.mockReturnValueOnce(false)
+					.mockReturnValueOnce(true);
+				mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+				mockReadFile
+					.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+					.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+				const result = await service.createAgentSession({ sessionName: 'test-session', role: 'developer' });
+
+				expect(result.success).toBe(true);
+				expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+					'test-session',
+					expect.anything(),
+					expect.objectContaining({
+						env: expect.objectContaining({ CREWLY_API_URL: 'http://localhost:8797' }),
+					}),
+				);
+				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith(
+					'test-session',
+					'CREWLY_API_URL',
+					'http://localhost:8797'
+				);
+				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
+					'test-session',
+					'CREWLY_API_URL',
+					'http://localhost:8787'
+				);
+			} finally {
+				resetLocalApiPortForTesting();
+			}
 		});
 
 		it('should set CLAUDE_CODE_ENABLE_TELEMETRY when tokenTracking is enabled for claude-code runtime', async () => {

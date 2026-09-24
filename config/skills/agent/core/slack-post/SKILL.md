@@ -117,7 +117,7 @@ two are told apart. Write ids exactly as Slack shows them.
 
 - `CREWLY_SESSION_NAME` — your agent session, attached automatically. The post
   is sent under that agent's identity, so this must be set.
-- `CREWLY_API_URL` — defaults to `http://localhost:8787`.
+- `CREWLY_API_URL` — set by Crewly to the running instance (e.g. `http://localhost:8797` when started with `-p 8797`); falls back to `http://localhost:${WEB_PORT:-8787}`.
 
 ## Output
 
