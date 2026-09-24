@@ -7,6 +7,9 @@
  * @module services/observability/observability-db.test
  */
 
+import * as os from 'node:os';
+import * as path from 'node:path';
+
 import {
   defaultObservabilityDbPath,
   openObservabilityDatabase,
@@ -16,10 +19,23 @@ import {
 
 describe('observability-db', () => {
   describe('defaultObservabilityDbPath', () => {
-    it('returns an absolute path ending in .crewly/observability.db', () => {
+    const originalCrewlyHome = process.env.CREWLY_HOME;
+
+    afterEach(() => {
+      if (originalCrewlyHome === undefined) delete process.env.CREWLY_HOME;
+      else process.env.CREWLY_HOME = originalCrewlyHome;
+    });
+
+    it('returns an absolute path ending in .crewly/observability.db when CREWLY_HOME is unset', () => {
+      delete process.env.CREWLY_HOME;
       const p = defaultObservabilityDbPath();
-      expect(typeof p).toBe('string');
+      expect(p).toBe(path.join(os.homedir(), '.crewly', 'observability.db'));
       expect(p).toMatch(/\.crewly[\\/]observability\.db$/);
+    });
+
+    it('lives under CREWLY_HOME when it is set', () => {
+      process.env.CREWLY_HOME = path.join(os.tmpdir(), 'obs-home');
+      expect(defaultObservabilityDbPath()).toBe(path.join(os.tmpdir(), 'obs-home', 'observability.db'));
     });
   });
 

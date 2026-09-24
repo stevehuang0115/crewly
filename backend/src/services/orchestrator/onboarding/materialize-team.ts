@@ -264,6 +264,7 @@ async function defaultProvisionTeam(
 ): Promise<ProvisionedTeam | null> {
   const { TemplateService } = await import('../../template/template.service.js');
   const { StorageService } = await import('../../core/storage.service.js');
+  const { getCrewlyHomePath } = await import('../../core/crewly-home.utils.js');
 
   const result = TemplateService.getInstance().createTeamFromTemplate(
     recommendation.templateId,
@@ -284,7 +285,17 @@ async function defaultProvisionTeam(
 
   // Explicit home — see the binding comment in materializeTeam. A bare
   // getInstance() here would silently re-resolve the ambient CREWLY_HOME.
-  await StorageService.getInstance(storageHome).saveTeam(result.team);
+  //
+  // Only the process's own home goes through the singleton. For any other
+  // root use a private instance: `getInstance(otherHome)` REPLACES the
+  // process-wide singleton, so a verification call against a running backend
+  // that injected a scratch `teamsDir` would have re-pointed the live server's
+  // storage at the scratch dir until the next bare `getInstance()` call.
+  const storage =
+    path.resolve(storageHome) === path.resolve(getCrewlyHomePath())
+      ? StorageService.getInstance()
+      : new StorageService(storageHome);
+  await storage.saveTeam(result.team);
 
   return { teamId: result.team.id, memberCount: result.memberCount };
 }
