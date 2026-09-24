@@ -488,6 +488,48 @@ total_reqs=$(wc -l < "$LOG_FILE" | tr -d ' ')
 assert_eq "stub received 0 requests" "0" "$total_reqs"
 scenario_teardown
 
+# The goal header is sent as b64:<base64 of UTF-8>; decode it for comparison.
+decode_goal() {
+  case "$1" in
+    b64:*) printf '%s' "${1#b64:}" | base64 --decode 2>/dev/null || printf '%s' "${1#b64:}" | base64 -D ;;
+    *) printf 'NOT-B64:%s' "$1" ;;
+  esac
+}
+
+# Scenario 20: --goal forwards the X-Agent-Goal header (takeover banner)
+scenario_init "scenario 20: --goal forwards X-Agent-Goal"
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+unset CREWLY_AGENT_GOAL 2>/dev/null || true
+"$SKILL" --action navigate --url https://x.com --goal "Verify DMARC setup" > /dev/null 2>&1 || true
+assert_eq "X-Agent-Goal from --goal" "Verify DMARC setup" "$(decode_goal "$(request_field 0 headers.X-Agent-Goal)")"
+scenario_teardown
+
+# Scenario 21: CREWLY_AGENT_GOAL env auto-forwards; --goal overrides it
+scenario_init "scenario 21: CREWLY_AGENT_GOAL auto-forwards + --goal override"
+queue_response '{"success":true,"data":{}}'
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+export CREWLY_AGENT_GOAL="Goal from env"
+"$SKILL" --action navigate --url https://x.com > /dev/null 2>&1 || true
+assert_eq "auto X-Agent-Goal from env" "Goal from env" "$(decode_goal "$(request_field 0 headers.X-Agent-Goal)")"
+"$SKILL" --action navigate --url https://y.com --goal "Override goal" > /dev/null 2>&1 || true
+assert_eq "--goal overrides env" "Override goal" "$(decode_goal "$(request_field 1 headers.X-Agent-Goal)")"
+unset CREWLY_AGENT_GOAL
+scenario_teardown
+
+# Scenario 22: a non-ASCII goal survives the header (base64-encoded)
+scenario_init "scenario 22: non-ASCII --goal round-trips"
+queue_response '{"success":true,"data":{}}'
+start_stub
+unset CREWLY_SESSION_NAME
+unset CREWLY_AGENT_GOAL 2>/dev/null || true
+"$SKILL" --action navigate --url https://x.com --goal "核对 DMARC 设置" > /dev/null 2>&1 || true
+assert_eq "non-ASCII goal decoded" "核对 DMARC 设置" "$(decode_goal "$(request_field 0 headers.X-Agent-Goal)")"
+scenario_teardown
+
 # ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
