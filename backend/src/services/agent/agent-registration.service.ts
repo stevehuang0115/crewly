@@ -50,6 +50,8 @@ import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { ContextWindowMonitorService } from './context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
+import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import {
 	PromptBuilderService,
@@ -241,9 +243,15 @@ export class AgentRegistrationService {
 				this.cancelPendingRegistration(sessionName);
 				this.unregisterTuiSession(sessionName);
 				// Preserve queued messages for suspended agents (they'll be delivered on rehydrate)
-				if (!AgentSuspendService.getInstance().isSuspended(sessionName)) {
+				// and during shutdown: runtimes exit because the backend is stopping,
+				// and messages held back by the restart drain must survive it.
+				if (
+					!AgentSuspendService.getInstance().isSuspended(sessionName) &&
+					!RestartDrainService.getInstance().isDeliveryPaused()
+				) {
 					SubAgentMessageQueue.getInstance().clear(sessionName);
 				}
+				InFlightTurnTracker.getInstance().markTurnComplete(sessionName, 'runtime exited');
 			}
 		);
 	}
@@ -3962,6 +3970,23 @@ Loop until done, blocked, or explicitly reassigned:
 				};
 			}
 
+			// Safe restart: once shutdown has begun nothing new is written into an
+			// agent. Writing now would start a turn the drain then has to wait for
+			// (or cut off). The persistent queue carries it across the restart and
+			// register-self flushes it on the next boot.
+			if (RestartDrainService.getInstance().isDeliveryPaused()) {
+				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				this.logger.info('Shutdown in progress — message queued for delivery after restart', {
+					sessionName,
+					messageLength: message.length,
+				});
+				return {
+					success: true,
+					queued: true,
+					message: '[RESTART_DRAIN] Message queued for delivery after the restart',
+				};
+			}
+
 			// Auto-resolve runtime type if not provided.
 			// CRITICAL: defaulting to CLAUDE_CODE is dangerous because
 			// Ctrl+C cleanup (Claude Code behavior) triggers /quit on Gemini CLI.
@@ -4001,6 +4026,10 @@ Loop until done, blocked, or explicitly reassigned:
 					slackMetadata = { channelId: slackPrefixMatch[1] };
 					if (slackPrefixMatch[2]) slackMetadata.threadTs = slackPrefixMatch[2];
 				}
+
+				// In-process turns end exactly when handleMessage settles; the
+				// restart drain waits on this record until then.
+				const inFlight = InFlightTurnTracker.getInstance().recordDelivery(sessionName, message, 'in-process');
 
 				// Process message asynchronously — don't block the caller
 				crewlyRuntime.handleMessage(message, slackMetadata)
@@ -4127,6 +4156,9 @@ Loop until done, blocked, or explicitly reassigned:
 								error: statusError instanceof Error ? statusError.message : String(statusError),
 							});
 						}
+					})
+					.finally(() => {
+						InFlightTurnTracker.getInstance().completeMessage(sessionName, inFlight);
 					});
 
 				this.logger.info('Message dispatched to in-process Crewly Agent', {
@@ -4190,7 +4222,14 @@ Loop until done, blocked, or explicitly reassigned:
 			// issues (Tab+Enter recovery). Previously set to 1 which caused
 			// Google Chat messages to fail permanently on first TUI hiccup.
 			const maxDeliveryAttempts = runtimeType === RUNTIME_TYPES.GEMINI_CLI ? 2 : 3;
+			// Settle before writing: a resting agent's earlier deliveries belong to
+			// a finished turn. After the write the echo makes it look busy.
+			const turnTracker = InFlightTurnTracker.getInstance();
+			turnTracker.settle(sessionName);
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
+			if (delivered) {
+				turnTracker.recordDelivery(sessionName, message, 'pty');
+			}
 
 			if (!delivered) {
 				// Check if the agent is actively processing (busy) — queue for later delivery.

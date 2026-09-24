@@ -67,6 +67,19 @@ jest.mock('../../../config/index.js', () => ({
 	},
 }));
 
+// Safe-shutdown helpers: no network, no real waits.
+const mockFetchReadiness = jest.fn().mockResolvedValue(null);
+const mockWaitForPidExit = jest.fn().mockResolvedValue(true);
+jest.mock('../utils/safe-shutdown.js', () => ({
+	SKIP_DRAIN_SIGNAL_GAP_MS: 0,
+	describeReadiness: jest.fn(() => ['1 agent(s) are mid-turn']),
+	fetchRestartReadiness: (...args: unknown[]) => mockFetchReadiness(...args),
+	isPidAlive: jest.fn(() => false),
+	resolveRestartDrainMs: jest.fn(() => 120_000),
+	resolveShutdownBudgetMs: jest.fn(() => 150_000),
+	waitForPidExit: (...args: unknown[]) => mockWaitForPidExit(...args),
+}));
+
 const mockExistsSync = jest.fn();
 const mockWriteFileSync = jest.fn();
 const mockReadFileSync = jest.fn();
@@ -324,6 +337,108 @@ describe('serviceCommand', () => {
 			expect(exitSpy).toHaveBeenCalledWith(1);
 			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
 			expect(output).toContain('not installed');
+		});
+	});
+
+	describe('restart / stop — safe restart', () => {
+		beforeEach(() => {
+			mockFetchReadiness.mockReset().mockResolvedValue(null);
+			mockWaitForPidExit.mockReset().mockResolvedValue(true);
+		});
+
+		afterEach(() => {
+			// Do not leak implementations into the tests that follow.
+			mockExecAsync.mockReset();
+			mockExistsSync.mockReset();
+			mockReadFileSync.mockReset();
+			Object.defineProperty(process, 'platform', { value: originalPlatform });
+		});
+
+		it('macOS restart with a wrapper: SIGTERM once, waits for the drain, lets the wrapper restart', async () => {
+			Object.defineProperty(process, 'platform', { value: 'darwin' });
+			mockExistsSync.mockImplementation((p: string) => p.includes('crewly.pid'));
+			mockReadFileSync.mockReturnValue('12345');
+			mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('ps -o ppid=') ? '777' : ''));
+			mockFetchReadiness.mockResolvedValue({ safe: false, busyAgents: [{ session: 'ella', since: 'x', messagePreview: 'y' }], queued: 0 });
+			const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+			try {
+				await serviceCommand('restart', {});
+				const terms = killSpy.mock.calls.filter((c) => c[0] === 12345 && c[1] === 'SIGTERM');
+				expect(terms).toHaveLength(1);
+				expect(mockWaitForPidExit).toHaveBeenCalledWith(12345, 150_000, expect.any(Object));
+				const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+				expect(output).toContain('mid-turn');
+				expect(output).toContain('auto-restart');
+			} finally {
+				killSpy.mockRestore();
+			}
+		});
+
+		it('macOS restart --now sends a second SIGTERM so the backend skips the drain', async () => {
+			Object.defineProperty(process, 'platform', { value: 'darwin' });
+			mockExistsSync.mockImplementation((p: string) => p.includes('crewly.pid'));
+			mockReadFileSync.mockReturnValue('12345');
+			mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('ps -o ppid=') ? '777' : ''));
+			const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+			try {
+				await serviceCommand('restart', { now: true });
+				const terms = killSpy.mock.calls.filter((c) => c[0] === 12345 && c[1] === 'SIGTERM');
+				expect(terms).toHaveLength(2);
+			} finally {
+				killSpy.mockRestore();
+			}
+		});
+
+		it('macOS restart without a wrapper does not re-launch while the old process is still draining', async () => {
+			Object.defineProperty(process, 'platform', { value: 'darwin' });
+			mockExistsSync.mockImplementation((p: string) => p.includes('crewly.pid') || p.includes('crewly-start.command'));
+			mockReadFileSync.mockReturnValue('12345');
+			mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('ps -o ppid=') ? '1' : ''));
+			mockWaitForPidExit.mockResolvedValue(false);
+			const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+			try {
+				await serviceCommand('restart', {});
+				expect(mockExecAsync).not.toHaveBeenCalledWith(expect.stringContaining('open "'));
+				const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+				expect(output).toContain('Not re-launching');
+			} finally {
+				killSpy.mockRestore();
+			}
+		});
+
+		it('macOS stop stops the wrapper and waits for the node process to drain', async () => {
+			Object.defineProperty(process, 'platform', { value: 'darwin' });
+			mockExistsSync.mockImplementation((p: string) => p.includes('crewly.pid'));
+			mockReadFileSync.mockReturnValue('12345');
+			mockExecAsync.mockImplementation((cmd: string) => (cmd.includes('ps -o ppid=') ? '777' : ''));
+			const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => true);
+			try {
+				await serviceCommand('stop', {});
+				expect(killSpy).toHaveBeenCalledWith(777, 'SIGTERM');
+				expect(killSpy).toHaveBeenCalledWith(12345, 'SIGTERM');
+				expect(mockWaitForPidExit).toHaveBeenCalledWith(12345, 150_000, expect.any(Object));
+			} finally {
+				killSpy.mockRestore();
+			}
+		});
+
+		it('Linux restart --now asks the unit to skip its drain before systemctl restart', async () => {
+			Object.defineProperty(process, 'platform', { value: 'linux' });
+			mockExecAsync.mockReturnValue('');
+			await serviceCommand('restart', { now: true });
+			const cmds = mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
+			const kills = cmds.filter((c) => c.includes('systemctl --user kill --kill-whom=main --signal=SIGTERM'));
+			expect(kills).toHaveLength(2);
+			expect(cmds.indexOf(kills[0])).toBeLessThan(cmds.findIndex((c) => c.includes('systemctl --user restart')));
+		});
+
+		it('Linux restart without --now leaves the drain to systemd', async () => {
+			Object.defineProperty(process, 'platform', { value: 'linux' });
+			mockExecAsync.mockReturnValue('');
+			await serviceCommand('restart', {});
+			const cmds = mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
+			expect(cmds.some((c) => c.includes('systemctl --user kill'))).toBe(false);
+			expect(cmds.some((c) => c.includes('systemctl --user restart'))).toBe(true);
 		});
 	});
 
@@ -820,6 +935,12 @@ describe('generateSystemdUnit', () => {
 	it('targets default.target for user services', () => {
 		const content = generateSystemdUnit('/any/path');
 		expect(content).toContain('WantedBy=default.target');
+	});
+
+	it('lets the backend drain: SIGTERM to the main process only, SIGKILL after the drain budget', () => {
+		const content = generateSystemdUnit('/any/path');
+		expect(content).toContain('KillMode=mixed');
+		expect(content).toContain('TimeoutStopSec=150');
 	});
 });
 

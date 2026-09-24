@@ -1,4 +1,4 @@
-import { RESTORE_MAX_ITEM_AGE_MS, sessionsWithWorkInHand } from './restore-filter.js';
+import { RESTORE_MAX_ITEM_AGE_MS, sessionsToRestore, sessionsWithWorkInHand } from './restore-filter.js';
 
 const NOW = Date.parse('2026-09-23T23:00:00Z');
 const recent = new Date(NOW - 60 * 60 * 1000).toISOString();
@@ -36,5 +36,21 @@ describe('sessionsWithWorkInHand', () => {
 
   it('keeps an item with no timestamps (cannot prove it is stale)', () => {
     expect([...sessionsWithWorkInHand([{ status: 'proposed', target: 'x' }], NOW)]).toEqual(['x']);
+  });
+});
+
+describe('sessionsToRestore', () => {
+  it('adds sessions with an interrupted turn even when they have no work item', () => {
+    const got = sessionsToRestore([{ status: 'running', target: 'a', updatedAt: recent }], ['ella', 'a'], NOW);
+    expect([...got].sort()).toEqual(['a', 'ella']);
+  });
+
+  it('ignores empty names and behaves like sessionsWithWorkInHand without interruptions', () => {
+    const items = [
+      { status: 'queued', target: 'b', updatedAt: recent },
+      { status: 'verified', target: 'c', updatedAt: recent },
+    ];
+    expect([...sessionsToRestore(items, [''], NOW)]).toEqual(['b']);
+    expect([...sessionsToRestore(items, [], NOW)]).toEqual([...sessionsWithWorkInHand(items, NOW)]);
   });
 });

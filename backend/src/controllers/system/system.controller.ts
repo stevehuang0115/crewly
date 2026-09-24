@@ -8,6 +8,7 @@ import { getSessionBackendSync, getSessionStatePersistence } from '../../service
 import { ApiResponse } from '../../types/index.js';
 import { SOPService } from '../../services/sop/sop.service.js';
 import { PROCESS_EXIT_CODES } from '../../constants.js';
+import { RestartDrainService } from '../../services/restart/restart-drain.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SystemController');
 
@@ -301,9 +302,11 @@ export async function browseDirectories(
 /**
  * Gracefully restart the Crewly backend server.
  *
- * Saves PTY session state, responds to the caller, then exits with code 0.
- * The external process manager (nodemon, systemd, ECS, ProcessRecovery) is
- * responsible for restarting the process after exit.
+ * Saves PTY session state and responds to the caller. Then, when the server
+ * has registered its graceful shutdown, runs it (drain in-flight agent turns,
+ * persist interrupted ones, save state) and exits with RESTART_REQUESTED so
+ * the CLI parent respawns the backend. Without a registered handler it falls
+ * back to the old immediate exit.
  *
  * @param req - Express request object
  * @param res - Express response object
@@ -340,6 +343,23 @@ export async function restartServer(
     // In dev mode (tsx watch), touching a source file triggers file-watcher restart.
     setTimeout(async () => {
       logger.info('Restarting Crewly server', { exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED });
+
+      // Safe restart: run the server's full shutdown — drain agents that are
+      // mid-turn, persist the ones that do not finish, save state — and exit
+      // with RESTART_REQUESTED so the CLI parent respawns us. A bare
+      // process.exit here used to kill every agent's PTY mid-turn.
+      try {
+        if (RestartDrainService.getInstance().requestGracefulShutdown({
+          reason: 'POST /api/system/restart',
+          exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED,
+        })) {
+          return;
+        }
+      } catch (drainError) {
+        logger.warn('Graceful restart unavailable; falling back to immediate exit', {
+          error: drainError instanceof Error ? drainError.message : String(drainError),
+        });
+      }
 
       // Try tsx watch restart first (dev mode): touch the entry file
       const entryFile = path.resolve(process.cwd(), 'backend/src/index.ts');

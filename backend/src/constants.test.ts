@@ -248,3 +248,15 @@ describe('MICROSOFT_TODO_CONSTANTS', () => {
     expect(MICROSOFT_TODO_CONSTANTS.TASKS_DEFAULT_LIMIT).toBeLessThanOrEqual(MICROSOFT_TODO_CONSTANTS.TASKS_LIMIT_CEILING);
   });
 });
+
+describe('SAFE_RESTART', () => {
+  it('extends the shared budget with backend-only drain settings', async () => {
+    const { SAFE_RESTART } = await import('./constants.js');
+    expect(SAFE_RESTART.DRAIN_TIMEOUT_MS).toBe(120_000);
+    expect(SAFE_RESTART.DRAIN_ENV_VAR).toBe('CREWLY_RESTART_DRAIN_MS');
+    expect(SAFE_RESTART.TURN_QUIET_MS).toBeGreaterThan(SAFE_RESTART.TURN_START_GRACE_MS);
+    expect(SAFE_RESTART.DRAIN_POLL_INTERVAL_MS).toBeLessThan(SAFE_RESTART.DRAIN_TIMEOUT_MS);
+    expect(SAFE_RESTART.INTERRUPTED_TURNS_FILE).toBe('interrupted-turns.json');
+    expect(SAFE_RESTART.RESUME_NOTICE).toMatch(/^\[CREWLY\] You were interrupted by a restart/);
+  });
+});

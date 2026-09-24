@@ -20,12 +20,53 @@ import {
   ADDON_CONSTANTS as CONFIG_ADDON_CONSTANTS,
   AUDITOR_CONSTANTS as CONFIG_AUDITOR_CONSTANTS,
   PROCESS_EXIT_CODES as CONFIG_PROCESS_EXIT_CODES,
+  SAFE_RESTART_CONSTANTS as CONFIG_SAFE_RESTART_CONSTANTS,
   WEB_CONSTANTS as CONFIG_WEB_CONSTANTS,
   API_SECURITY_CONSTANTS as CONFIG_API_SECURITY_CONSTANTS,
 } from '../../config/constants.js';
 
 // Re-export the cross-domain constants for backend use
 export const PROCESS_EXIT_CODES = CONFIG_PROCESS_EXIT_CODES;
+
+/**
+ * Safe restart: drain in-flight agent turns before a shutdown kills the PTYs,
+ * and resume the ones that were cut off after the next boot.
+ *
+ * The shared budget (drain timeout, env override, supervisor margin) lives in
+ * `config/constants.ts` so the CLI and the systemd unit read the same numbers;
+ * the rest is backend-only.
+ */
+export const SAFE_RESTART = {
+	...CONFIG_SAFE_RESTART_CONSTANTS,
+	/** How often the drain re-checks whether any agent is still mid-turn (ms) */
+	DRAIN_POLL_INTERVAL_MS: 2_000,
+	/** How often the drain repeats its "still waiting on …" log line (ms) */
+	DRAIN_LOG_INTERVAL_MS: 15_000,
+	/**
+	 * A turn is over once the PTY has been quiet this long and shows no
+	 * "esc to interrupt" status bar (ms). Claude Code and Codex repaint a
+	 * ticking timer while working, so a quiet screen means a resting agent.
+	 */
+	TURN_QUIET_MS: 15_000,
+	/** A delivery younger than this is always treated as in progress (ms) */
+	TURN_START_GRACE_MS: 5_000,
+	/** Trailing screen lines inspected for the busy status bar */
+	PROBE_TAIL_LINES: 15,
+	/** Open messages kept per session (oldest dropped beyond this) */
+	MAX_OPEN_MESSAGES_PER_SESSION: 5,
+	/** Characters of the delivered text kept as a preview */
+	PREVIEW_CHARS: 160,
+	/** File under CREWLY_HOME holding turns cut off by the last shutdown */
+	INTERRUPTED_TURNS_FILE: 'interrupted-turns.json',
+	/** Interrupted turns older than this are not resumed (ms) */
+	INTERRUPTED_TURN_MAX_AGE_MS: 6 * 60 * 60 * 1000,
+	/** How long the resumer waits for the orchestrator to become active (ms) */
+	RESUME_ORC_READY_TIMEOUT_MS: 10 * 60 * 1000,
+	/** Poll interval while waiting for the orchestrator to become active (ms) */
+	RESUME_ORC_POLL_MS: 5_000,
+	/** Prefix of the notice re-delivered with an interrupted message */
+	RESUME_NOTICE: '[CREWLY] You were interrupted by a restart while handling this message; pick it up again:',
+} as const;
 export const AGENT_IDENTITY_CONSTANTS = CONFIG_AGENT_IDENTITY_CONSTANTS;
 export const TIMING_CONSTANTS = CONFIG_TIMING_CONSTANTS;
 export const MEMORY_CONSTANTS = CONFIG_MEMORY_CONSTANTS;

@@ -33,6 +33,8 @@ import {
   type RuntimeType,
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { StorageService } from '../core/storage.service.js';
 import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
 
@@ -75,6 +77,27 @@ export interface PendingAckEntry {
   retryCount: number;
   /** The original queued message (for markCompleted / markFailed / routeResponse) */
   originalMessage: import('../../types/messaging.types.js').QueuedMessage;
+}
+
+/**
+ * Keep only the JSON-safe scalar fields of a message's source metadata
+ * (channelId, threadTs, userId, …). Callbacks such as `slackResolve` cannot
+ * outlive the process and are dropped.
+ *
+ * @param metadata - Source metadata of a queued message
+ * @returns Scalar fields, or undefined when there are none
+ */
+export function serializableSourceMetadata(
+  metadata: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean> | undefined {
+  if (!metadata) return undefined;
+  const out: Record<string, string | number | boolean> = {};
+  for (const [key, value] of Object.entries(metadata)) {
+    if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+      out[key] = value;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 export class QueueProcessorService extends EventEmitter {
@@ -248,6 +271,12 @@ export class QueueProcessorService extends EventEmitter {
    */
   private async processNext(): Promise<void> {
     if (!this.running || this.processing) {
+      return;
+    }
+
+    // Safe restart: shutdown has begun — leave everything on the persistent
+    // queue. It is flushed to disk during shutdown and delivered after boot.
+    if (RestartDrainService.getInstance().isDeliveryPaused()) {
       return;
     }
 
@@ -603,11 +632,42 @@ export class QueueProcessorService extends EventEmitter {
         return;
       }
 
+      // Safe restart: shutdown may have begun while we waited for the agent to
+      // be ready. Put the message(s) back so they survive the restart with
+      // their source metadata, instead of starting a turn the drain must wait for.
+      if (RestartDrainService.getInstance().isDeliveryPaused()) {
+        this.logger.info('Shutdown in progress — message left on the queue for after the restart', {
+          messageId: message.id,
+          targetSession,
+        });
+        this.queueService.requeue(message);
+        for (const batchedMsg of batchedMessages) {
+          this.queueService.requeue(batchedMsg);
+        }
+        this.nextAlreadyScheduled = true;
+        clearInterval(keepaliveInterval);
+        return;
+      }
+
       const deliveryResult = await this.agentRegistrationService.sendMessageToAgent(
         targetSession,
         deliveryContent,
         deliveryRuntimeType
       );
+
+      // Safe restart: tell the in-flight tracker where this message came from,
+      // so a turn cut off by a restart can be re-enqueued with its original
+      // source (Slack thread, chat conversation) after boot.
+      if (deliveryResult.success && !deliveryResult.queued) {
+        InFlightTurnTracker.getInstance().annotate(targetSession, deliveryContent, {
+          messageId: message.id,
+          source: message.source,
+          conversationId: message.conversationId,
+          originalContent: message.content,
+          sourceMetadata: serializableSourceMetadata(message.sourceMetadata),
+          systemEvent: isSystemEvent,
+        });
+      }
 
       // Record delivery timestamp for ACK detection
       message.deliveredAt = new Date().toISOString();

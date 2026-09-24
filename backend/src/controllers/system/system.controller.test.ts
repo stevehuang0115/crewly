@@ -7,6 +7,20 @@ import type { ApiContext } from '../types.js';
 // Mock os module
 jest.mock('os');
 
+// Restart drain: controllable graceful-shutdown hook (the real service needs a real logger).
+let mockGracefulHandler: ((request: { reason: string; exitCode?: number }) => Promise<void>) | null = null;
+jest.mock('../../services/restart/restart-drain.service.js', () => ({
+  RestartDrainService: {
+    getInstance: () => ({
+      requestGracefulShutdown: (request: { reason: string; exitCode?: number }) => {
+        if (!mockGracefulHandler) return false;
+        void mockGracefulHandler(request);
+        return true;
+      },
+    }),
+  },
+}));
+
 // Mock fs/promises so utimes resolves immediately under fake timers
 jest.mock('fs/promises', () => ({
   utimes: jest.fn<any>().mockResolvedValue(undefined),
@@ -785,6 +799,23 @@ describe('System Handlers', () => {
       // then advance past inner setTimeout (2000ms)
       await jest.advanceTimersByTimeAsync(4000);
       expect(process.exit).toHaveBeenCalledWith(120);
+    });
+
+    it('should run the graceful (drained) shutdown when the server registered one', async () => {
+      const handler = jest.fn(async () => undefined);
+      mockGracefulHandler = handler;
+      try {
+        await systemHandlers.restartServer.call(
+          mockApiContext as ApiContext,
+          mockRequest as Request,
+          mockResponse as Response
+        );
+        await jest.advanceTimersByTimeAsync(4000);
+        expect(handler).toHaveBeenCalledWith({ reason: 'POST /api/system/restart', exitCode: 120 });
+        expect(process.exit).not.toHaveBeenCalled();
+      } finally {
+        mockGracefulHandler = null;
+      }
     });
 
     it('should handle missing session backend gracefully', async () => {

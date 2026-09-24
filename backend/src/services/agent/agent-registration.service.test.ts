@@ -1105,6 +1105,47 @@ describe('AgentRegistrationService', () => {
 			mockStorageService.findMemberBySessionName = jest.fn().mockResolvedValue(null);
 		});
 
+		// Safe restart (2026-09-24): once shutdown has begun, nothing new is
+		// typed into an agent — it goes on the persistent queue instead.
+		it('queues instead of writing into the PTY while shutdown has paused delivery', async () => {
+			const { RestartDrainService } = await import('../restart/restart-drain.service.js');
+			const { SubAgentMessageQueue } = await import('../messaging/sub-agent-message-queue.service.js');
+			RestartDrainService.resetInstance();
+			RestartDrainService.getInstance().pauseDelivery('test');
+			try {
+				mockSessionHelper.sessionExists.mockReturnValue(true);
+				const result = await service.sendMessageToAgent('test-session', 'late message');
+				expect(result).toMatchObject({ success: true, queued: true });
+				expect(result.message).toContain('[RESTART_DRAIN]');
+				expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
+				expect(SubAgentMessageQueue.getInstance().hasPending('test-session')).toBe(true);
+			} finally {
+				SubAgentMessageQueue.getInstance().dequeueAll('test-session');
+				RestartDrainService.resetInstance();
+			}
+		});
+
+		it('records a successful PTY delivery as an in-flight turn', async () => {
+			const { InFlightTurnTracker } = await import('../restart/in-flight-turn-tracker.service.js');
+			InFlightTurnTracker.resetInstance();
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockSessionHelper.capturePane
+				.mockReturnValueOnce('❯ \n')
+				.mockReturnValueOnce('❯ \n')
+				.mockReturnValueOnce('❯ \n')
+				.mockReturnValueOnce('⏺ Processing...\n');
+
+			const resultPromise = service.sendMessageToAgent('test-session', 'check my To Do');
+			await jest.advanceTimersByTimeAsync(60000);
+			expect((await resultPromise).success).toBe(true);
+
+			const turns = InFlightTurnTracker.getInstance().snapshot();
+			expect(turns).toHaveLength(1);
+			expect(turns[0]).toMatchObject({ sessionName: 'test-session', runtime: 'pty' });
+			expect(turns[0].messages[0].text).toBe('check my To Do');
+			InFlightTurnTracker.resetInstance();
+		});
+
 		it('should send message and verify processing started (prompt gone)', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			// Call 1: pre-send isClaudeAtPrompt — prompt visible

@@ -140,6 +140,7 @@ program
   .option('--app', 'Tail today\'s app log (logs action)')
   .option('-n, --lines <number>', 'Number of log lines to show (default: 50)')
   .option('-f, --follow', 'Follow log output in real-time (logs action)')
+  .option('--now', 'restart/stop/upgrade: do not wait for agents to finish their current turn (they resume after the restart)')
   .action(serviceCommand);
 
 program

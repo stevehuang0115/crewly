@@ -55,3 +55,26 @@ export function sessionsWithWorkInHand(items: readonly RestoreWorkItem[], now: n
   }
   return out;
 }
+
+/**
+ * Sessions to bring back after a restart: those with work in hand plus those
+ * whose turn was cut off by the restart itself. An interrupted turn is work
+ * in hand even when no WorkItem records it — a DM to an agent never touches
+ * the task pool (2026-09-24, Ella).
+ *
+ * @param items - Every WorkItem in the pool
+ * @param interruptedSessions - Sessions listed in interrupted-turns.json
+ * @param now - Current time (ms)
+ * @returns Session names worth restoring
+ */
+export function sessionsToRestore(
+  items: readonly RestoreWorkItem[],
+  interruptedSessions: Iterable<string>,
+  now: number = Date.now(),
+): Set<string> {
+  const out = sessionsWithWorkInHand(items, now);
+  for (const name of interruptedSessions) {
+    if (typeof name === 'string' && name.length > 0) out.add(name);
+  }
+  return out;
+}

@@ -16,6 +16,7 @@ import {
 } from '../constants.js';
 import { checkForUpdate, printUpdateNotification } from '../utils/version-check.js';
 import { killZombieProcesses } from '../utils/process-cleanup.js';
+import { createChildShutdownHandler, resolveShutdownBudgetMs } from '../utils/safe-shutdown.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -384,100 +385,36 @@ async function waitForServer(port: number, maxAttempts: number = 30): Promise<vo
  * Set up signal handlers for graceful shutdown.
  * Uses a mutable array so the restart loop can update the active process.
  *
- * The parent process must outlive its children long enough for the SIGKILL
- * escalation timer to actually fire. The previous implementation exited
- * the parent after a fixed 1s while scheduling SIGKILL at 5s — when the
- * parent exited, the timer died with it and any backend that hadn't
- * fully shut down in 1s was left as an orphan with PPID=1 still
- * consuming resources. We now await each child's 'exit' event and only
- * exit the parent once every child is gone (or 8s elapsed, whichever
- * comes first).
- *
- * Re-entry: once cleanup runs, repeated signals are ignored. Without
- * this guard, a second SIGINT during shutdown would re-run the
- * already-in-flight kill sequence and call `process.exit(0)` twice.
+ * The parent must outlive its children long enough for them to shut down
+ * properly. The backend now drains in-flight agent turns before it stops
+ * (up to CREWLY_RESTART_DRAIN_MS, default 120s), so the SIGKILL escalation
+ * waits for the drain plus a margin instead of the old fixed 5s — which
+ * killed agents mid-turn on every restart (2026-09-24). A repeated signal is
+ * forwarded so the backend can skip the drain on request.
  *
  * @param activeProcesses - Mutable array of processes to kill on shutdown
  */
 function setupShutdownHandlers(activeProcesses: ChildProcess[]): void {
-	let cleaningUp = false;
-
-	const cleanup = (): void => {
-		if (cleaningUp) {
-			return;
+	const budgetMs = resolveShutdownBudgetMs(process.env);
+	const cleanup = createChildShutdownHandler(() => activeProcesses, {
+		budgetMs,
+		log: (message) => console.log(chalk.gray(message)),
+		exit: () => {
+			console.log(chalk.green('✅ Crewly stopped'));
+			process.exit(0);
+		},
+	});
+	let announced = false;
+	const onSignal = (): void => {
+		if (!announced) {
+			announced = true;
+			console.log(chalk.yellow('\n🛑 Shutting down Crewly...'));
 		}
-		cleaningUp = true;
-		console.log(chalk.yellow('\n🛑 Shutting down Crewly...'));
-
-		const waits: Promise<void>[] = [];
-		for (const proc of activeProcesses) {
-			if (!proc || proc.killed || proc.exitCode !== null) {
-				continue;
-			}
-			console.log(chalk.gray(`Stopping Backend server...`));
-
-			waits.push(
-				new Promise<void>((resolve) => {
-					let settled = false;
-					// Timers are declared in the outer closure so the
-					// single `exit` listener can clear them. Avoids the
-					// earlier double `proc.once('exit', ...)` registration
-					// pattern (follow-up #7 from PR #543 review).
-					let sigkillTimer: ReturnType<typeof setTimeout> | null = null;
-					let hardTimer: ReturnType<typeof setTimeout> | null = null;
-
-					const done = (): void => {
-						if (settled) return;
-						settled = true;
-						if (sigkillTimer) clearTimeout(sigkillTimer);
-						if (hardTimer) clearTimeout(hardTimer);
-						resolve();
-					};
-
-					proc.once('exit', done);
-
-					try {
-						proc.kill('SIGTERM');
-					} catch {
-						// Child already gone — fine.
-						done();
-						return;
-					}
-
-					// Escalate to SIGKILL after 5s if SIGTERM didn't take.
-					sigkillTimer = setTimeout(() => {
-						if (!proc.killed && proc.exitCode === null) {
-							try {
-								proc.kill('SIGKILL');
-							} catch {
-								/* already dead */
-							}
-						}
-					}, 5000);
-
-					// Hard cap on the wait so parent always exits eventually.
-					hardTimer = setTimeout(() => {
-						console.warn(
-							chalk.red('Backend did not exit within 8s of SIGTERM; exiting parent anyway'),
-						);
-						done();
-					}, 8000);
-				}),
-			);
-		}
-
-		Promise.all(waits)
-			.catch(() => {
-				/* individual exits resolve, never reject */
-			})
-			.finally(() => {
-				console.log(chalk.green('✅ Crewly stopped'));
-				process.exit(0);
-			});
+		cleanup();
 	};
 
-	process.on('SIGTERM', cleanup);
-	process.on('SIGINT', cleanup);
-	process.on('SIGUSR1', cleanup);
-	process.on('SIGUSR2', cleanup);
+	process.on('SIGTERM', onSignal);
+	process.on('SIGINT', onSignal);
+	process.on('SIGUSR1', onSignal);
+	process.on('SIGUSR2', onSignal);
 }

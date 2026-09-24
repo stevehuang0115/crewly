@@ -283,4 +283,16 @@ export class SubAgentMessageQueue {
 		const queue = this.pendingMessages.get(sessionName);
 		return queue ? queue.length : 0;
 	}
+
+	/**
+	 * Total number of messages waiting across every session. Used by restart
+	 * readiness to report how much is held on this (persistent) queue.
+	 *
+	 * @returns Number of queued messages
+	 */
+	getTotalQueued(): number {
+		let total = 0;
+		for (const queue of this.pendingMessages.values()) total += queue.length;
+		return total;
+	}
 }

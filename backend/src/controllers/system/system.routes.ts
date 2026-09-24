@@ -5,6 +5,7 @@ import {
   getSystemMetrics,
   getSystemConfiguration
 } from './system.controller.js';
+import { getRestartReadiness } from './restart-readiness.controller.js';
 
 /**
  * Creates system router with all system-related endpoints
@@ -18,6 +19,9 @@ export function createSystemRouter(context: ApiContext): Router {
   router.get('/health', getSystemHealth.bind(context));
   router.get('/metrics', getSystemMetrics.bind(context));
   router.get('/configuration', getSystemConfiguration.bind(context));
+
+  // Safe restart: is any agent mid-turn right now?
+  router.get('/restart-readiness', getRestartReadiness);
 
   return router;
 }

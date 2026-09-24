@@ -5,7 +5,7 @@
  */
 
 import { EventEmitter } from 'events';
-import { QueueProcessorService } from './queue-processor.service.js';
+import { QueueProcessorService, serializableSourceMetadata } from './queue-processor.service.js';
 import { MessageQueueService } from './message-queue.service.js';
 import { ResponseRouterService } from './response-router.service.js';
 
@@ -20,6 +20,20 @@ jest.mock('../agent/pty-activity-tracker.service.js', () => ({
       recordApiActivity: mockRecordApiActivity,
       getIdleTimeMs: jest.fn().mockImplementation(() => mockIdleTimeMs),
     }),
+  },
+}));
+
+// Safe restart: controllable delivery pause and a spy on the in-flight tracker.
+let mockDeliveryPaused = false;
+const mockAnnotate = jest.fn();
+jest.mock('../restart/restart-drain.service.js', () => ({
+  RestartDrainService: {
+    getInstance: () => ({ isDeliveryPaused: () => mockDeliveryPaused }),
+  },
+}));
+jest.mock('../restart/in-flight-turn-tracker.service.js', () => ({
+  InFlightTurnTracker: {
+    getInstance: () => ({ annotate: mockAnnotate }),
   },
 }));
 
@@ -2284,5 +2298,94 @@ describe('QueueProcessorService', () => {
         'claude-code'
       );
     });
+  });
+});
+
+describe('QueueProcessorService — safe restart', () => {
+  let queueService: MessageQueueService;
+  let mockAgentRegistrationService: any;
+  let processor: QueueProcessorService;
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    mockDeliveryPaused = false;
+    mockAnnotate.mockReset();
+    mockOrchestratorStatus = { agentStatus: 'active', runtimeType: 'claude-code' };
+    queueService = new MessageQueueService();
+    mockAgentRegistrationService = {
+      sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }),
+      waitForAgentReady: jest.fn().mockResolvedValue(true),
+      captureAgentOutput: jest.fn().mockResolvedValue(''),
+    };
+    processor = new QueueProcessorService(queueService, new ResponseRouterService(), mockAgentRegistrationService);
+  });
+
+  afterEach(() => {
+    processor.stop();
+    mockDeliveryPaused = false;
+    jest.useRealTimers();
+  });
+
+  it('leaves messages on the queue once shutdown has paused delivery', async () => {
+    mockDeliveryPaused = true;
+    processor.start();
+    queueService.enqueue({ content: 'check my To Do', conversationId: 'conv-1', source: 'slack', targetSession: 'ella' });
+    jest.advanceTimersByTime(0);
+    await flushPromises();
+    expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+    expect(queueService.pendingCount).toBe(1);
+  });
+
+  it('puts the message back when shutdown starts while waiting for the agent', async () => {
+    mockAgentRegistrationService.waitForAgentReady.mockImplementation(async () => {
+      mockDeliveryPaused = true;
+      return true;
+    });
+    processor.start();
+    queueService.enqueue({ content: 'check my To Do', conversationId: 'conv-1', source: 'slack', targetSession: 'ella' });
+    jest.advanceTimersByTime(0);
+    await flushPromises();
+    expect(mockAgentRegistrationService.sendMessageToAgent).not.toHaveBeenCalled();
+    expect(queueService.pendingCount).toBe(1);
+    expect(processor.isProcessingMessage()).toBe(false);
+  });
+
+  it('annotates the in-flight turn with the original source after delivery', async () => {
+    processor.start();
+    queueService.enqueue({
+      content: 'check my To Do',
+      conversationId: 'conv-1',
+      source: 'slack',
+      targetSession: 'ella',
+      sourceMetadata: { channelId: 'D1', threadTs: '111.2', slackResolve: () => undefined },
+    });
+    jest.advanceTimersByTime(0);
+    await flushPromises();
+    const delivered = mockAgentRegistrationService.sendMessageToAgent.mock.calls[0][1];
+    expect(mockAnnotate).toHaveBeenCalledWith('ella', delivered, expect.objectContaining({
+      source: 'slack',
+      conversationId: 'conv-1',
+      originalContent: 'check my To Do',
+      sourceMetadata: { channelId: 'D1', threadTs: '111.2' },
+      systemEvent: false,
+    }));
+  });
+
+  it('does not annotate a delivery that was only queued', async () => {
+    mockAgentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: true, queued: true });
+    processor.start();
+    queueService.enqueue({ content: 'hi', conversationId: 'conv-2', source: 'web_chat' });
+    jest.advanceTimersByTime(0);
+    await flushPromises();
+    expect(mockAnnotate).not.toHaveBeenCalled();
+  });
+});
+
+describe('serializableSourceMetadata', () => {
+  it('keeps scalar fields and drops callbacks and objects', () => {
+    expect(serializableSourceMetadata({ channelId: 'C1', n: 2, ok: true, slackResolve: () => undefined, nested: {} }))
+      .toEqual({ channelId: 'C1', n: 2, ok: true });
+    expect(serializableSourceMetadata({ slackResolve: () => undefined })).toBeUndefined();
+    expect(serializableSourceMetadata(undefined)).toBeUndefined();
   });
 });

@@ -96,7 +96,19 @@ import { setRequestServiceEventBus, RequestService } from './services/v3/request
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES } from './constants.js';
+import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
+import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
+import { createPtyTurnProbe } from './services/restart/turn-probe.js';
+import { RestartDrainService, resolveRestartDrainMs, type GracefulShutdownRequest } from './services/restart/restart-drain.service.js';
+import {
+	interruptedTurnsPath,
+	loadInterruptedTurns,
+	saveInterruptedTurns,
+	writeInterruptedTurns,
+	resumeInterruptedTurns,
+	type InterruptedTurnEntry,
+} from './services/restart/interrupted-turns.js';
 import { DeviceIdentityService } from './services/cloud/device-identity.service.js';
 import { SlackThreadStoreService, setSlackThreadStore, getSlackThreadStore } from './services/slack/slack-thread-store.service.js';
 import { GoogleChatThreadStoreService, setGchatThreadStore } from './services/messaging/gchat-thread-store.service.js';
@@ -146,7 +158,7 @@ import { FissionGuardService, type FissionDataProvider, type BudgetChecker, crea
 import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
-import { sessionsWithWorkInHand, type RestoreWorkItem } from './services/agent/restore-filter.js';
+import { sessionsToRestore, type RestoreWorkItem } from './services/agent/restore-filter.js';
 import { ProjectMemoryService } from './services/memory/project-memory.service.js';
 import { TaskHistorySubscriber } from './services/memory/task-history.subscriber.js';
 import {
@@ -258,6 +270,10 @@ export class CrewlyServer {
 
 	// Shutdown state
 	private isShuttingDown = false;
+	/** Epoch ms of the last shutdown signal acted on (dedups process-group delivery) */
+	private lastShutdownSignalAt = 0;
+	/** Interrupted turns loaded at boot, resumed once their agents are back */
+	private interruptedTurnsAtBoot: InterruptedTurnEntry[] = [];
 	private healthMonitoringInterval: NodeJS.Timeout | null = null;
 
 	constructor(config?: Partial<StartupConfig>) {
@@ -1026,6 +1042,8 @@ void (async () => {
 				}
 			}
 		});
+
+		this.wireSafeRestart();
 
 		// Shared LiveReconcilerDataProvider instance used by both the
 		// Reconciler service and the TeamHealthWatchdog data provider.
@@ -2721,11 +2739,19 @@ void (async () => {
 				});
 			}
 
+			// Turns a previous shutdown cut off (see services/restart). Loaded
+			// before restore so their agents count as having work in hand.
+			this.loadInterruptedTurnsAtBoot();
+
 			// Auto-start orchestrator if enabled in settings
 			await this.autoStartOrchestratorIfEnabled();
 
 			// Auto-restore agent sessions that were running before the last shutdown
 			await this.autoRestoreAgentSessionsIfEnabled();
+
+			// Re-deliver interrupted turns now that their agents are coming back.
+			// Background: the orchestrator may take minutes to register.
+			void this.resumeInterruptedTurnsAfterBoot();
 
 			// #166: Auto-recover in-progress tasks after restart.
 			// #196: Skip tasks older than 1 hour to avoid re-sending stale work.
@@ -3199,8 +3225,12 @@ void (async () => {
 			try {
 				const pool = TaskPoolService.getInstance();
 				const allItems = await pool.getAllItems();
-				// Work in hand only: active statuses, touched recently (see restore-filter).
-				const targetedSessions = sessionsWithWorkInHand(allItems as RestoreWorkItem[]);
+				// Work in hand only: active statuses, touched recently (see restore-filter),
+				// plus agents whose turn the last restart cut off.
+				const targetedSessions = sessionsToRestore(
+					allItems as RestoreWorkItem[],
+					this.interruptedTurnsAtBoot.map((t) => t.sessionName),
+				);
 				const filtered = baselineSessions.filter((s) => targetedSessions.has(s.name));
 				const skipped = baselineSessions
 					.filter((s) => !targetedSessions.has(s.name))
@@ -3496,26 +3526,15 @@ void (async () => {
 	private registerSignalHandlers(): void {
 		this.logger.info('Registering signal handlers...');
 
-		process.on('SIGTERM', () => {
-			this.logger.info('Received SIGTERM signal');
-			this.shutdown();
-		});
-
-		process.on('SIGINT', () => {
-			this.sigintCount++;
-			if (this.sigintCount === 1) {
-				this.logger.info('Received SIGINT signal (Ctrl+C) - shutting down gracefully. Press Ctrl+C again to force exit.');
-				this.shutdown();
-			} else {
-				this.logger.info('Received second SIGINT - forcing immediate exit');
-				process.exit(1);
-			}
-		});
+		process.on('SIGTERM', () => this.handleShutdownSignal('SIGTERM'));
+		process.on('SIGINT', () => this.handleShutdownSignal('SIGINT'));
 
 		process.on('uncaughtException', (error) => {
 			this.logger.error('Uncaught exception', { error: error.message, stack: error.stack });
 			this.logMemoryUsage();
-			this.shutdown();
+			// A crashing process should not linger for the drain; its in-flight
+			// turns are still persisted and resumed after the restart.
+			this.shutdown({ reason: 'uncaughtException', drain: false });
 		});
 
 		process.on('unhandledRejection', (reason, promise) => {
@@ -3538,8 +3557,176 @@ void (async () => {
 				stack: reason instanceof Error ? reason.stack : undefined
 			});
 			this.logMemoryUsage();
-			this.shutdown();
+			this.shutdown({ reason: 'unhandledRejection', drain: false });
 		});
+	}
+
+	/**
+	 * Handle SIGTERM / SIGINT with safe-restart semantics.
+	 *
+	 * - First signal: graceful shutdown, which first drains in-flight agent turns.
+	 * - A repeat within SIGNAL_DEDUP_WINDOW_MS is the same request arriving twice
+	 *   (Ctrl+C reaches the whole process group, and the CLI parent forwards it
+	 *   too) and is ignored.
+	 * - A later repeat during the drain skips the wait; interrupted turns are
+	 *   persisted and resumed after the restart.
+	 * - A later SIGINT after the drain forces an immediate exit, as before.
+	 *
+	 * @param signal - The signal received
+	 */
+	private handleShutdownSignal(signal: 'SIGTERM' | 'SIGINT'): void {
+		const now = Date.now();
+		if (!this.isShuttingDown) {
+			this.lastShutdownSignalAt = now;
+			this.logger.info(`Received ${signal} — shutting down; in-flight agent turns are drained first. Send ${signal} again to stop waiting.`);
+			void this.shutdown({ reason: signal });
+			return;
+		}
+		if (now - this.lastShutdownSignalAt < SAFE_RESTART.SIGNAL_DEDUP_WINDOW_MS) {
+			this.logger.debug(`Duplicate ${signal} ignored (same shutdown request)`);
+			return;
+		}
+		this.lastShutdownSignalAt = now;
+		if (RestartDrainService.getInstance().requestSkip(`second ${signal}`)) {
+			return;
+		}
+		if (signal === 'SIGINT') {
+			this.sigintCount++;
+			this.logger.info('Received another SIGINT after the drain - forcing immediate exit');
+			process.exit(1);
+		}
+		this.logger.info(`Received ${signal} while shutdown is already past the drain; continuing`);
+	}
+
+	/**
+	 * Wire the safe-restart pieces: the turn probe, idle-event re-probing,
+	 * readiness queue counting, and the graceful-shutdown hook used by
+	 * POST /api/system/restart.
+	 */
+	private wireSafeRestart(): void {
+		const tracker = InFlightTurnTracker.getInstance();
+		const activity = PtyActivityTrackerService.getInstance();
+		tracker.setProbe(
+			createPtyTurnProbe({
+				getBackend: () => getSessionBackendSync(),
+				getIdleTimeMs: (sessionName) => (activity.hasActivity(sessionName) ? activity.getIdleTimeMs(sessionName) : null),
+			}),
+		);
+		tracker.attachEventSource(this.eventBusService);
+
+		const drain = RestartDrainService.getInstance();
+		drain.setQueueCounter(
+			() => this.messageQueueService.pendingCount + SubAgentMessageQueue.getInstance().getTotalQueued(),
+		);
+		drain.setShutdownHandler((request: GracefulShutdownRequest) =>
+			this.shutdown({ reason: request.reason, exitCode: request.exitCode }),
+		);
+	}
+
+	/**
+	 * Load interrupted turns left by the previous shutdown (fresh ones only).
+	 */
+	private loadInterruptedTurnsAtBoot(): void {
+		try {
+			const file = interruptedTurnsPath(this.config.crewlyHome);
+			const { fresh, dropped } = loadInterruptedTurns(file);
+			this.interruptedTurnsAtBoot = fresh;
+			if (dropped > 0) {
+				this.logger.info('Dropped stale interrupted turns from the previous run', { dropped });
+			}
+			if (fresh.length > 0) {
+				this.logger.info('Found turns interrupted by the last restart; their agents will be restored and resumed', {
+					count: fresh.length,
+					sessions: [...new Set(fresh.map((t) => t.sessionName))],
+				});
+			} else if (dropped > 0) {
+				writeInterruptedTurns(file, []);
+			}
+		} catch (error) {
+			this.logger.warn('Could not read interrupted turns (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
+	 * Re-deliver the turns the previous shutdown cut off, then clear the file.
+	 * The file is rewritten after each entry so a restart during this pass
+	 * neither loses nor repeats work.
+	 */
+	private async resumeInterruptedTurnsAfterBoot(): Promise<void> {
+		const entries = this.interruptedTurnsAtBoot;
+		if (entries.length === 0) return;
+		this.interruptedTurnsAtBoot = [];
+		const file = interruptedTurnsPath(this.config.crewlyHome);
+		const registration = this.apiController.agentRegistrationService;
+		try {
+			const summary = await resumeInterruptedTurns(entries, {
+				orchestratorSession: ORCHESTRATOR_SESSION_NAME,
+				isSessionRunning: (name) =>
+					Boolean(getSessionBackendSync()?.sessionExists(name)) || Boolean(registration.getInProcessRuntime(name)),
+				enqueue: (input) => {
+					this.messageQueueService.enqueue(input);
+				},
+				sendMessageToAgent: (name, text) => registration.sendMessageToAgent(name, text),
+				waitForOrchestratorActive: async () => {
+					const deadline = Date.now() + SAFE_RESTART.RESUME_ORC_READY_TIMEOUT_MS;
+					while (Date.now() < deadline) {
+						if (this.isShuttingDown) return false;
+						const status = await this.storageService.getOrchestratorStatus().catch(() => null);
+						if (status?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE) return true;
+						await new Promise((resolve) => setTimeout(resolve, SAFE_RESTART.RESUME_ORC_POLL_MS));
+					}
+					return false;
+				},
+				onEntryHandled: (_entry, remaining) => {
+					try {
+						writeInterruptedTurns(file, remaining);
+					} catch {
+						// Best-effort bookkeeping; the in-memory pass continues.
+					}
+				},
+				logger: this.logger,
+			});
+			this.logger.info('Interrupted-turn resume complete', { ...summary });
+		} catch (error) {
+			this.logger.warn('Interrupted-turn resume failed (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
+	 * Drain in-flight agent turns before the rest of shutdown, and persist
+	 * whatever is still mid-turn when the drain ends.
+	 *
+	 * @param reason - Why we are shutting down (signal or caller)
+	 * @param drainEnabled - False to skip the wait (crash paths)
+	 */
+	private async drainInFlightTurns(reason: string, drainEnabled: boolean): Promise<void> {
+		try {
+			const drain = RestartDrainService.getInstance();
+			drain.pauseDelivery(reason);
+			const timeoutMs = drainEnabled ? resolveRestartDrainMs(process.env) : 0;
+			const result = await drain.drain({ timeoutMs });
+			if (result.remaining.length > 0) {
+				const saved = saveInterruptedTurns(
+					interruptedTurnsPath(this.config.crewlyHome),
+					result.remaining,
+					`${reason}: ${result.outcome}`,
+				);
+				this.logger.warn('Persisted interrupted agent turns for resume after restart', {
+					outcome: result.outcome,
+					sessions: result.remaining.map((t) => t.sessionName),
+					entries: saved,
+				});
+			}
+		} catch (error) {
+			// Never let the drain block shutdown.
+			this.logger.error('Restart drain failed; continuing shutdown', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
 	private startHealthMonitoring(): void {
@@ -3808,14 +3995,28 @@ void (async () => {
 		}
 	}
 
-	async shutdown(): Promise<void> {
+	/**
+	 * Gracefully shut the server down.
+	 *
+	 * Drains in-flight agent turns first (see services/restart), while the
+	 * HTTP API is still up so agents can finish and reply; everything after
+	 * that runs under the hard force-exit timer.
+	 *
+	 * @param options - reason (for logs), drain=false to skip the wait, exitCode for process.exit
+	 */
+	async shutdown(options: { reason?: string; drain?: boolean; exitCode?: number } = {}): Promise<void> {
 		// Prevent double shutdown
 		if (this.isShuttingDown) {
 			this.logger.info('Shutdown already in progress, skipping...');
 			return;
 		}
 		this.isShuttingDown = true;
-		this.logger.info('Shutting down Crewly server...');
+		const exitCode = options.exitCode ?? PROCESS_EXIT_CODES.SUCCESS;
+		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
+
+		// Safe restart: stop delivering, wait for agents mid-turn, persist the rest.
+		// Runs before the force-exit timer below, which only bounds the teardown.
+		await this.drainInFlightTurns(options.reason ?? 'shutdown', options.drain !== false);
 
 		// Set a hard timeout to force exit if graceful shutdown takes too long.
 		// Use SIGKILL on self as the ultimate fallback — this is uncatchable and
@@ -4141,7 +4342,7 @@ void (async () => {
 			});
 
 			clearTimeout(forceExitTimeout);
-			process.exit(0);
+			process.exit(exitCode);
 		} catch (error) {
 			this.logger.error('Error during shutdown', { error: error instanceof Error ? error.message : String(error) });
 			clearTimeout(forceExitTimeout);

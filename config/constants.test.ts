@@ -527,3 +527,19 @@ describe('config/index re-exports (CommonJS emit regression)', () => {
     expect(index.CREWLY_CONSTANTS.PATHS.CREWLY_HOME).toBe('.crewly');
   });
 });
+
+describe('SAFE_RESTART_CONSTANTS', () => {
+  it('gives supervisors a budget longer than the drain and the backend teardown', async () => {
+    const { SAFE_RESTART_CONSTANTS } = await import('./constants.js');
+    expect(SAFE_RESTART_CONSTANTS.DRAIN_TIMEOUT_MS).toBe(120_000);
+    expect(SAFE_RESTART_CONSTANTS.DRAIN_ENV_VAR).toBe('CREWLY_RESTART_DRAIN_MS');
+    // The backend's post-drain force-exit timer is 10s in production.
+    expect(SAFE_RESTART_CONSTANTS.SHUTDOWN_MARGIN_MS).toBeGreaterThan(10_000);
+    expect(SAFE_RESTART_CONSTANTS.READINESS_ENDPOINT).toBe('/api/system/restart-readiness');
+  });
+
+  it('is exported from the config index', async () => {
+    const index = await import('./index.js');
+    expect(index.SAFE_RESTART_CONSTANTS.SIGNAL_DEDUP_WINDOW_MS).toBeGreaterThan(0);
+  });
+});

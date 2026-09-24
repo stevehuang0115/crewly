@@ -254,6 +254,18 @@ describe('SubAgentMessageQueue', () => {
 		});
 	});
 
+	describe('getTotalQueued', () => {
+		it('should sum messages across sessions', () => {
+			expect(queue.getTotalQueued()).toBe(0);
+			queue.enqueue('session-a', 'a');
+			queue.enqueue('session-a', 'b');
+			queue.enqueue('session-b', 'c');
+			expect(queue.getTotalQueued()).toBe(3);
+			queue.clear('session-a');
+			expect(queue.getTotalQueued()).toBe(1);
+		});
+	});
+
 	describe('#236: AGENT_BUSY queuing', () => {
 		it('should accept messages queued for busy agents', () => {
 			queue.enqueue('busy-agent', 'message while busy');

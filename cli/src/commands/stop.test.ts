@@ -119,6 +119,33 @@ describe('stopCommand', () => {
 			expect(output).toContain('Crewly stopped successfully');
 		});
 
+		it('SIGTERMs the backend alone first and waits for it to drain before the sweep', async () => {
+			mockAxiosGet.mockResolvedValue({ status: 200 });
+			setupExecMock({
+				'lsof -iTCP': '4242\n',
+				'kill -0 4242': new Error('ESRCH'),
+				'tmux list-sessions': '',
+				'ps aux': '',
+			});
+
+			await stopCommand({});
+
+			const cmds = mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
+			const term = cmds.indexOf('kill -TERM 4242');
+			expect(term).toBeGreaterThanOrEqual(0);
+			expect(cmds.indexOf('kill -0 4242')).toBeGreaterThan(term);
+			expect(cmds.findIndex((c) => c.includes('ps aux'))).toBeGreaterThan(term);
+			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+			expect(output).toContain('finish in-flight agent turns');
+		});
+
+		it('does not look for a backend to drain with --force', async () => {
+			setupExecMock({ 'tmux list-sessions': '', 'ps aux': '' });
+			await stopCommand({ force: true });
+			const cmds = mockExecAsync.mock.calls.map((c: unknown[]) => c[0] as string);
+			expect(cmds.some((c) => c.includes('lsof -iTCP'))).toBe(false);
+		});
+
 		it('proceeds when server is not responding during graceful shutdown', async () => {
 			mockAxiosGet.mockRejectedValue(new Error('ECONNREFUSED'));
 

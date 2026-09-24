@@ -25,6 +25,15 @@ import * as os from 'os';
 import chalk from 'chalk';
 import { CREWLY_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
+import {
+	SKIP_DRAIN_SIGNAL_GAP_MS,
+	describeReadiness,
+	fetchRestartReadiness,
+	isPidAlive,
+	resolveRestartDrainMs,
+	resolveShutdownBudgetMs,
+	waitForPidExit,
+} from '../utils/safe-shutdown.js';
 
 const execAsync = promisify(exec);
 
@@ -203,6 +212,12 @@ interface ServiceOptions {
 	follow?: boolean;
 	/** Target version for upgrade (e.g. "1.4.48" or "latest") */
 	version?: string;
+	/**
+	 * restart/stop/upgrade: do not wait for agents mid-turn — send a second
+	 * SIGTERM so the backend skips its drain (interrupted turns are resumed
+	 * after the next start).
+	 */
+	now?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -233,10 +248,10 @@ export async function serviceCommand(
 			await serviceStatus();
 			break;
 		case 'restart':
-			await restartService();
+			await restartService(options);
 			break;
 		case 'stop':
-			await stopService();
+			await stopService(options);
 			break;
 		case 'start':
 			await startService();
@@ -643,6 +658,13 @@ ExecStart=${SYSTEMD_WRAPPER_PATH}
 WorkingDirectory=${projectRoot}
 Restart=on-failure
 RestartSec=5
+# Safe restart: SIGTERM only the main process (the crewly CLI, which forwards
+# it to the backend) instead of the whole cgroup — the default would kill
+# every agent runtime at once, before the backend can drain their turns.
+KillMode=mixed
+# The backend waits up to CREWLY_RESTART_DRAIN_MS for agents mid-turn; do not
+# SIGKILL before that plus the shutdown margin.
+TimeoutStopSec=${Math.ceil(resolveShutdownBudgetMs(process.env) / 1000)}
 Environment=NODE_ENV=development
 EnvironmentFile=-%h/${CREWLY_CONSTANTS.PATHS.CREWLY_HOME}/${SERVICE_ENV_FILE_NAME}
 
@@ -972,19 +994,103 @@ async function migrateLegacyLaunchAgent(): Promise<void> {
 // ===========================================================================
 
 /**
- * Restarts the Crewly service by killing the node process and re-launching.
+ * Print who is mid-turn before stopping, so the operator knows why the stop
+ * may take a while (the backend drains in-flight agent turns first).
+ */
+async function printRestartReadiness(): Promise<void> {
+	const readiness = await fetchRestartReadiness();
+	if (!readiness) return;
+	for (const line of describeReadiness(readiness, resolveRestartDrainMs(process.env))) {
+		console.log(chalk.gray(`  ${line}`));
+	}
+}
+
+/**
+ * Send SIGTERM to a pid; with `skipDrain`, send a second one after the
+ * backend's dedup window so it stops waiting for agents.
+ *
+ * @param pid - Process to signal
+ * @param skipDrain - Also send the "stop waiting" signal
+ * @returns False if the process could not be signalled
+ */
+async function signalStop(pid: number, skipDrain: boolean): Promise<boolean> {
+	try {
+		process.kill(pid, 'SIGTERM');
+	} catch {
+		return false;
+	}
+	if (skipDrain) {
+		await new Promise((r) => setTimeout(r, SKIP_DRAIN_SIGNAL_GAP_MS));
+		try {
+			process.kill(pid, 'SIGTERM');
+			console.log(chalk.yellow('  --now: asked the backend not to wait for agents mid-turn'));
+		} catch {
+			// Already gone.
+		}
+	}
+	return true;
+}
+
+/**
+ * Wait for a stopped process to exit, within the drain budget.
+ *
+ * @param pid - Process id
+ * @returns True if it exited
+ */
+async function waitForStopped(pid: number): Promise<boolean> {
+	const budgetMs = resolveShutdownBudgetMs(process.env);
+	console.log(chalk.gray(`  Waiting for agents to finish their current turn (up to ${Math.round(budgetMs / 1000)}s; --now skips)...`));
+	const exited = await waitForPidExit(pid, budgetMs, {
+		isAlive: isPidAlive,
+		onProgress: (waitedMs) => console.log(chalk.gray(`  ...still draining (${Math.round(waitedMs / 1000)}s)`)),
+	});
+	if (!exited) {
+		console.log(chalk.yellow(`  Process ${pid} is still running after ${Math.round(budgetMs / 1000)}s.`));
+	}
+	return exited;
+}
+
+/**
+ * On Linux with --now, ask the running unit to skip its drain before
+ * systemctl stops it: two SIGTERMs to the main process (the CLI forwards
+ * both; the backend reads the second as "stop waiting").
+ */
+async function skipDrainLinux(): Promise<void> {
+	const cmd = `systemctl --user kill --kill-whom=main --signal=SIGTERM ${SYSTEMD_UNIT_NAME}`;
+	try {
+		await execAsync(cmd);
+		await new Promise((r) => setTimeout(r, SKIP_DRAIN_SIGNAL_GAP_MS));
+		await execAsync(cmd);
+		console.log(chalk.yellow('  --now: asked the backend not to wait for agents mid-turn'));
+	} catch {
+		// Not running — systemctl below reports the state.
+	}
+}
+
+/**
+ * Restarts the Crewly service.
+ *
+ * The backend drains in-flight agent turns on SIGTERM (up to
+ * CREWLY_RESTART_DRAIN_MS, default 120s), so this waits for the old process
+ * to exit before reporting or re-launching. `--now` skips the drain; turns
+ * cut off are resumed after the restart.
  *
  * On macOS, checks whether the service wrapper (while-true loop) is the
  * parent of the running node process. If so, the wrapper auto-restarts.
  * If the process was started via `npm run dev` or another method (parent is
  * PID 1 / launchd), kills it and launches via the .command wrapper directly.
  *
- * On Linux, uses `systemctl --user restart`.
+ * On Linux, uses `systemctl --user restart` (blocks until stopped; the unit's
+ * TimeoutStopSec covers the drain).
+ *
+ * @param options - `now` to skip the drain
  */
-async function restartService(): Promise<void> {
+async function restartService(options: ServiceOptions = {}): Promise<void> {
 	assertSupportedPlatform();
+	await printRestartReadiness();
 
 	if (process.platform === 'linux') {
+		if (options.now) await skipDrainLinux();
 		try {
 			await execAsync(`systemctl --user restart ${SYSTEMD_UNIT_NAME}`);
 			console.log(chalk.green('Crewly service restarted.'));
@@ -1013,31 +1119,23 @@ async function restartService(): Promise<void> {
 		// Could not determine parent
 	}
 
-	try {
-		process.kill(pid, 'SIGTERM');
-		console.log(chalk.green(`Sent SIGTERM to node process (PID ${pid}).`));
-	} catch {
+	if (!(await signalStop(pid, options.now === true))) {
 		console.log(chalk.red('Failed to send signal to the process.'));
 		return;
 	}
+	console.log(chalk.green(`Sent SIGTERM to node process (PID ${pid}).`));
+
+	const exited = await waitForStopped(pid);
 
 	if (hasWrapper) {
-		console.log(chalk.gray('The service wrapper will auto-restart in ~5 seconds.'));
-	} else {
-		// No wrapper — wait for process to die, then start via .command or directly
+		console.log(chalk.gray(exited
+			? 'The service wrapper will auto-restart in ~5 seconds.'
+			: 'The service wrapper restarts it once it exits.'));
+	} else if (exited) {
 		console.log(chalk.gray('No service wrapper detected. Re-launching...'));
-
-		// Wait up to 10s for the process to exit
-		for (let i = 0; i < 20; i++) {
-			try {
-				process.kill(pid, 0); // Check if still alive
-				await new Promise(r => setTimeout(r, 500));
-			} catch {
-				break; // Process exited
-			}
-		}
-
 		await startService();
+	} else {
+		console.log(chalk.yellow('Not re-launching while the old process is still running. Run "crewly service start" once it exits.'));
 	}
 }
 
@@ -1048,14 +1146,22 @@ async function restartService(): Promise<void> {
 /**
  * Stops the Crewly service completely, including the restart wrapper.
  *
+ * Waits for the backend to drain in-flight agent turns (see restartService);
+ * `--now` skips the drain.
+ *
  * On macOS, kills both the node process and its parent bash wrapper
- * (the `while true` loop) to prevent automatic restart.
+ * (the `while true` loop) to prevent automatic restart. The wrapper only
+ * waits on the node process, so stopping it does not cut the drain short.
  * On Linux, uses `systemctl --user stop`.
+ *
+ * @param options - `now` to skip the drain
  */
-async function stopService(): Promise<void> {
+async function stopService(options: ServiceOptions = {}): Promise<void> {
 	assertSupportedPlatform();
+	await printRestartReadiness();
 
 	if (process.platform === 'linux') {
+		if (options.now) await skipDrainLinux();
 		try {
 			await execAsync(`systemctl --user stop ${SYSTEMD_UNIT_NAME}`);
 			console.log(chalk.green('Crewly service stopped.'));
@@ -1088,15 +1194,8 @@ async function stopService(): Promise<void> {
 		// Could not determine parent — will just kill node process
 	}
 
-	// Kill the node process first
-	try {
-		process.kill(pid, 'SIGTERM');
-		console.log(chalk.green(`  Stopped node process (PID ${pid})`));
-	} catch {
-		console.log(chalk.gray('  Node process was already stopped'));
-	}
-
-	// Kill the parent wrapper to prevent restart
+	// Kill the parent wrapper first so it cannot restart the process once it
+	// exits. The wrapper is only waiting on node; the drain carries on.
 	if (parentPid) {
 		try {
 			process.kill(parentPid, 'SIGTERM');
@@ -1107,6 +1206,13 @@ async function stopService(): Promise<void> {
 	} else {
 		console.log(chalk.yellow('  Could not find wrapper process. The service may auto-restart.'));
 		console.log(chalk.gray('  To fully stop, close the Terminal.app tab running crewly-start.command'));
+	}
+
+	if (await signalStop(pid, options.now === true)) {
+		console.log(chalk.green(`  Stopping node process (PID ${pid})`));
+		await waitForStopped(pid);
+	} else {
+		console.log(chalk.gray('  Node process was already stopped'));
 	}
 
 	// Clean up PID file
@@ -1198,9 +1304,11 @@ async function upgradeService(options: ServiceOptions): Promise<void> {
 
 	console.log(chalk.blue(`Upgrading Crewly to ${targetVersion}...`));
 
-	// 1. Stop the service
+	// 1. Stop the service — and wait for it: npm must not replace the files
+	// under a backend that is still draining agent turns, and startService
+	// refuses to start while the old process is alive.
 	console.log(chalk.gray('  Stopping service...'));
-	await stopService();
+	await stopService(options);
 
 	// 2. Run npm install -g
 	console.log(chalk.gray(`  Installing crewly@${targetVersion}...`));

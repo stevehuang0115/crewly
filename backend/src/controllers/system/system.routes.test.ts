@@ -8,6 +8,10 @@ jest.mock('./system.controller.js', () => ({
   getSystemConfiguration: jest.fn((_req: any, res: any) => res.json({ ok: true })),
 }));
 
+jest.mock('./restart-readiness.controller.js', () => ({
+  getRestartReadiness: jest.fn((_req: any, res: any) => res.json({ safe: true })),
+}));
+
 const { createSystemRouter } = require('./system.routes.js');
 
 describe('System Routes', () => {
@@ -53,5 +57,12 @@ describe('System Routes', () => {
       layer.route && layer.route.path === '/configuration' && (layer.route as any).methods.get
     );
     expect(configRoute).toBeDefined();
+  });
+
+  it('should have GET route for restart readiness', () => {
+    const readinessRoute = router.stack.find(layer =>
+      layer.route && layer.route.path === '/restart-readiness' && (layer.route as any).methods.get
+    );
+    expect(readinessRoute).toBeDefined();
   });
 });

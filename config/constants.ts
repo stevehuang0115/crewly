@@ -188,6 +188,32 @@ export const PROCESS_EXIT_CODES = {
 	RESTART_REQUESTED: 120,
 } as const;
 
+// ========================= SAFE RESTART CONSTANTS =========================
+
+/**
+ * Safe-restart budget shared by the backend (which drains in-flight agent
+ * turns on SIGTERM/SIGINT) and every supervisor that stops it (CLI `start`
+ * parent, `crewly stop`, `crewly service`, the systemd unit). A supervisor
+ * that escalates to SIGKILL sooner than the drain plus a margin would cut
+ * off the very turns the drain is waiting for.
+ */
+export const SAFE_RESTART_CONSTANTS = {
+	/** Default time the backend waits for agents to finish their current turn (ms) */
+	DRAIN_TIMEOUT_MS: 120_000,
+	/** Env var overriding DRAIN_TIMEOUT_MS; `0` disables the wait */
+	DRAIN_ENV_VAR: 'CREWLY_RESTART_DRAIN_MS',
+	/**
+	 * Time allowed after the drain for the rest of the shutdown (session state
+	 * save, PTY teardown, queue flush) before a supervisor may SIGKILL (ms).
+	 * Must exceed the backend's own post-drain force-exit timer (10s).
+	 */
+	SHUTDOWN_MARGIN_MS: 30_000,
+	/** Two signals closer together than this count as one (tty process-group delivery) */
+	SIGNAL_DEDUP_WINDOW_MS: 1_000,
+	/** REST path an operator (or the CLI) polls before restarting */
+	READINESS_ENDPOINT: '/api/system/restart-readiness',
+} as const;
+
 // ========================= WEB SERVER CONSTANTS =========================
 
 /**

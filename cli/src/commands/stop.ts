@@ -4,6 +4,13 @@ import chalk from 'chalk';
 import axios from 'axios';
 import { WEB_CONSTANTS, TIMING_CONSTANTS } from '../../../config/index.js';
 import { killOrphanedTestProcesses } from '../utils/process-cleanup.js';
+import {
+  describeReadiness,
+  fetchRestartReadiness,
+  resolveRestartDrainMs,
+  resolveShutdownBudgetMs,
+  waitForPidExit,
+} from '../utils/safe-shutdown.js';
 
 const execAsync = promisify(exec);
 
@@ -19,9 +26,13 @@ export async function stopCommand(options: StopOptions) {
   console.log(chalk.yellow('🛑 Stopping Crewly...'));
 
   try {
-    // 1. Try graceful shutdown via API
+    // 1. Try graceful shutdown via API, then let the backend drain: it
+    //    finishes in-flight agent turns before it kills their PTYs. Signalling
+    //    the backend alone first matters — the broad sweep below also hits
+    //    agent runtimes whose command line mentions crewly.
     if (!options.force) {
       await attemptGracefulShutdown();
+      await drainBackend();
     }
 
     // 2. Kill Crewly tmux sessions
@@ -57,12 +68,65 @@ async function attemptGracefulShutdown(): Promise<void> {
     );
 
     if (response.status === 200) {
-      // Server is running, attempt graceful shutdown
-      // Note: In a real implementation, you'd have a shutdown endpoint
       console.log(chalk.green('Server is running, proceeding with shutdown'));
+      // Tell the operator who is mid-turn; the backend drains them on SIGTERM.
+      const readiness = await fetchRestartReadiness(BACKEND_PORT);
+      if (readiness) {
+        for (const line of describeReadiness(readiness, resolveRestartDrainMs(process.env))) {
+          console.log(chalk.gray(line));
+        }
+      }
     }
   } catch (error) {
     console.log(chalk.gray('Server not responding, proceeding with force shutdown'));
+  }
+}
+
+/**
+ * SIGTERM the process listening on the backend port and wait for it to exit,
+ * for up to the drain budget (CREWLY_RESTART_DRAIN_MS + margin).
+ *
+ * All process operations go through the shell (`lsof`, `kill`), matching the
+ * rest of this command.
+ */
+async function drainBackend(): Promise<void> {
+  let pids: number[] = [];
+  try {
+    const { stdout } = await execAsync(`lsof -iTCP:${BACKEND_PORT} -sTCP:LISTEN -t 2>/dev/null || echo ""`);
+    pids = stdout
+      .split('\n')
+      .map((line) => parseInt(line.trim(), 10))
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+  } catch {
+    return;
+  }
+  if (pids.length === 0) return;
+
+  const budgetMs = resolveShutdownBudgetMs(process.env);
+  console.log(chalk.blue(`⏳ Letting the backend finish in-flight agent turns (up to ${Math.round(budgetMs / 1000)}s)...`));
+  for (const pid of pids) {
+    try {
+      await execAsync(`kill -TERM ${pid}`);
+    } catch {
+      // Already gone.
+    }
+  }
+  for (const pid of pids) {
+    const exited = await waitForPidExit(pid, budgetMs, {
+      isAlive: async (p) => {
+        try {
+          await execAsync(`kill -0 ${p}`);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      onProgress: (waitedMs) =>
+        console.log(chalk.gray(`  still waiting for PID ${pid} (${Math.round(waitedMs / 1000)}s) — Ctrl+C then \`crewly stop --force\` to stop now`)),
+    });
+    if (!exited) {
+      console.log(chalk.yellow(`⚠️  Backend PID ${pid} did not exit within the drain budget`));
+    }
   }
 }
 
