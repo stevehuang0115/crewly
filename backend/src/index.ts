@@ -1799,26 +1799,18 @@ void (async () => {
 				// The capturer is injected rather than imported by the session
 				// service so transport selection (direct WS vs relay) stays in
 				// one place — here and in the browser controller.
-				const { getBrowserSessions } = await import('./services/browser/browser-session.service.js');
+				const { getBrowserSessions, createBoundTabCapturer } = await import('./services/browser/browser-session.service.js');
 				const browserSessions = getBrowserSessions();
-				browserSessions.setCapturer(async (agentSession, options) => {
-					const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
-					const proxy = BrowserProxyService.getInstance();
-
-					let response;
-					if (browserBridge.isConnected()) {
-						response = await browserBridge.sendCommandForAgent(agentSession, 'screenshot', options);
-					} else if (proxy.isAvailable()) {
-						response = await proxy.sendCommand('screenshot', options, undefined, undefined, undefined, agentSession);
-					} else {
+				browserSessions.setCapturer(createBoundTabCapturer({
+					getBoundTabId: (agentSession) => browserBridge.getBinding(agentSession)?.tabId,
+					sendScreenshot: async (params) => {
+						const { BrowserProxyService } = await import('./services/browser/browser-proxy.service.js');
+						const proxy = BrowserProxyService.getInstance();
+						if (browserBridge.isConnected()) return browserBridge.sendCommand('screenshot', params);
+						if (proxy.isAvailable()) return proxy.sendCommand('screenshot', params);
 						return null;
-					}
-
-					const result = (response as { result?: unknown } | undefined)?.result as
-						| { base64?: string; format?: string; devicePixelRatio?: number }
-						| undefined;
-					return result ?? null;
-				});
+					},
+				}));
 				browserSessions.start();
 
 				// Let the browser controller reach agents, so taking the wheel

@@ -130,6 +130,58 @@ export type FrameCapturer = (
 	options: { format: string; quality: number; scale: number },
 ) => Promise<{ base64?: string; format?: string; devicePixelRatio?: number } | null>;
 
+/** Frame-capture error recorded when the agent holds no tab. */
+export const NO_BOUND_TAB_FRAME_ERROR = 'No tab is bound to this agent';
+
+/**
+ * What a {@link createBoundTabCapturer} needs from the transport layer.
+ */
+export interface BoundTabCapturerDeps {
+	/** The tab bound to an agent, if it holds one. */
+	getBoundTabId: (agentSession: string) => number | undefined;
+	/**
+	 * Send one `screenshot` command with exactly these params over whichever
+	 * transport is up. Resolves to the extension's response, or null when no
+	 * transport is available.
+	 */
+	sendScreenshot: (params: Record<string, unknown>) => Promise<unknown>;
+}
+
+/**
+ * Build a capturer that only ever pictures the agent's own bound tab.
+ *
+ * A capture without a tabId lets the extension pick a tab itself, and its
+ * pick is the tab navigated last by anyone, so an agent whose binding had
+ * lapsed showed another agent's page in the live view. With no bound tab
+ * this throws instead, which leaves the session with no frame and a
+ * readable `frameError`. It also never auto-binds: watching an agent must
+ * not open a tab for it.
+ *
+ * @param deps - Binding lookup and transport
+ * @returns A {@link FrameCapturer}
+ * @throws From the returned capturer, when the agent has no bound tab
+ *
+ * @example
+ * ```typescript
+ * sessions.setCapturer(createBoundTabCapturer({
+ *   getBoundTabId: (s) => bridge.getBinding(s)?.tabId,
+ *   sendScreenshot: (params) => bridge.sendCommand('screenshot', params),
+ * }));
+ * ```
+ */
+export function createBoundTabCapturer(deps: BoundTabCapturerDeps): FrameCapturer {
+	return async (agentSession, options) => {
+		const tabId = deps.getBoundTabId(agentSession);
+		if (typeof tabId !== 'number') throw new Error(NO_BOUND_TAB_FRAME_ERROR);
+
+		const response = await deps.sendScreenshot({ ...options, tabId });
+		const result = (response as { result?: unknown } | null | undefined)?.result as
+			| { base64?: string; format?: string; devicePixelRatio?: number }
+			| undefined;
+		return result ?? null;
+	};
+}
+
 /** Tool names grouped by the activity they represent. */
 const NAVIGATION_TOOLS = new Set(['navigate']);
 const READ_TOOLS = new Set([

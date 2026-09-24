@@ -6,6 +6,8 @@
 
 import {
 	BrowserSessionService,
+	createBoundTabCapturer,
+	NO_BOUND_TAB_FRAME_ERROR,
 	describeAction,
 	matchIrreversible,
 	statusForTool,
@@ -474,5 +476,48 @@ describe('BrowserSessionService', () => {
 			service.noteAction({ agentSession: 'pia', tool: 'navigate' });
 			expect(service.prune(Date.now() + 10 * BROWSER_SESSION_CONSTANTS.RETAIN_FINISHED_MS)).toBe(0);
 		});
+	});
+});
+
+describe('createBoundTabCapturer', () => {
+	const options = { format: 'jpeg', quality: 50, scale: 0.5 };
+
+	it('captures the bound tab by explicit tabId', async () => {
+		const sendScreenshot = jest.fn(async () => ({ result: { base64: 'AAA', format: 'jpeg' } }));
+		const capture = createBoundTabCapturer({ getBoundTabId: () => 42, sendScreenshot });
+
+		await expect(capture('pia', options)).resolves.toEqual({ base64: 'AAA', format: 'jpeg' });
+		expect(sendScreenshot).toHaveBeenCalledWith({ ...options, tabId: 42 });
+	});
+
+	it('sends nothing and shows no frame when the agent holds no tab', async () => {
+		// Without a tabId the extension pictures the tab navigated last by
+		// anyone — another agent's page in this agent's live view.
+		const sendScreenshot = jest.fn(async () => ({ result: { base64: 'OTHER' } }));
+		const capture = createBoundTabCapturer({ getBoundTabId: () => undefined, sendScreenshot });
+
+		await expect(capture('pia', options)).rejects.toThrow(NO_BOUND_TAB_FRAME_ERROR);
+		expect(sendScreenshot).not.toHaveBeenCalled();
+	});
+
+	it('leaves the session frameless with a readable reason when unbound', async () => {
+		BrowserSessionService.resetInstance();
+		const service = BrowserSessionService.getInstance();
+		service.setCapturer(
+			createBoundTabCapturer({
+				getBoundTabId: () => undefined,
+				sendScreenshot: async () => ({ result: { base64: 'OTHER' } }),
+			}),
+		);
+		service.noteAction({ agentSession: 'pia', tool: 'navigate' });
+
+		await expect(service.captureFrame('pia')).resolves.toBe(false);
+		expect(service.getSession('pia')!.frameError).toBe(NO_BOUND_TAB_FRAME_ERROR);
+		BrowserSessionService.resetInstance();
+	});
+
+	it('returns null when no transport is up', async () => {
+		const capture = createBoundTabCapturer({ getBoundTabId: () => 42, sendScreenshot: async () => null });
+		await expect(capture('pia', options)).resolves.toBeNull();
 	});
 });
