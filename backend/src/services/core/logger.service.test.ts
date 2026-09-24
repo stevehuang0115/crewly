@@ -1,9 +1,12 @@
+import * as fsPromises from 'fs/promises';
+import * as fsSync from 'fs';
 import { LoggerService, ComponentLogger, RequestLogger } from './logger.service';
 
 // Mock fs and config service
 jest.mock('fs/promises');
 jest.mock('fs', () => ({
-  existsSync: jest.fn()
+  existsSync: jest.fn(),
+  appendFileSync: jest.fn(),
 }));
 
 jest.mock('./config.service', () => ({
@@ -413,5 +416,78 @@ describe('LoggerService', () => {
         expect.stringContaining('Unhandled promise rejection')
       );
     });
+  });
+});
+
+describe('LoggerService file log across a stop signal (restart forensics)', () => {
+  const FILE_LOGGING = { level: 'info', format: 'simple', enableFileLogging: true, logDir: '/tmp/logs', maxFiles: 5 };
+  let logger: LoggerService;
+  let consoleSpies: jest.SpyInstance[];
+  let listenersBefore: Record<'SIGTERM' | 'SIGINT' | 'exit', Function[]>;
+
+  /** Text of every async append made so far. */
+  const appended = (): string =>
+    (fsPromises.appendFile as unknown as jest.Mock).mock.calls.map((call) => String(call[1])).join('');
+
+  /** Invoke only the handlers this logger registered, not other test files' or jest's own. */
+  const fire = (event: 'SIGTERM' | 'SIGINT' | 'exit'): void => {
+    const added = process.listeners(event as NodeJS.Signals).filter((l) => !listenersBefore[event].includes(l));
+    expect(added.length).toBeGreaterThan(0);
+    for (const listener of added) (listener as (arg?: unknown) => void)(event === 'exit' ? 0 : event);
+  };
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    consoleSpies = (['error', 'warn', 'info', 'debug'] as const).map((m) => jest.spyOn(console, m).mockImplementation());
+    (fsPromises.appendFile as unknown as jest.Mock).mockResolvedValue(undefined);
+    (fsPromises.readdir as unknown as jest.Mock).mockResolvedValue([]);
+    listenersBefore = {
+      SIGTERM: [...process.listeners('SIGTERM')],
+      SIGINT: [...process.listeners('SIGINT')],
+      exit: [...process.listeners('exit')],
+    };
+    (LoggerService as any).instance = undefined;
+    logger = LoggerService.getInstance();
+    (logger as any).config = { get: (section: string) => (section === 'logging' ? FILE_LOGGING : {}) };
+  });
+
+  afterEach(async () => {
+    for (const event of ['SIGTERM', 'SIGINT', 'exit'] as const) {
+      for (const l of process.listeners(event as NodeJS.Signals)) {
+        if (!listenersBefore[event].includes(l)) process.removeListener(event, l as (...args: unknown[]) => void);
+      }
+    }
+    await logger.shutdown();
+    consoleSpies.forEach((spy) => spy.mockRestore());
+    jest.useRealTimers();
+    jest.clearAllMocks();
+  });
+
+  test.each(['SIGTERM', 'SIGINT'] as const)(
+    'keeps flushing to the daily log after %s, so the drain and shutdown lines are recorded',
+    async (signal) => {
+      fire(signal);
+      logger.info('Restart drain: waiting for agents to finish their current turn');
+
+      await jest.advanceTimersByTimeAsync(5000);
+
+      expect(appended()).toContain('Restart drain: waiting for agents to finish their current turn');
+    },
+  );
+
+  test('writes entries still queued at exit synchronously, even after a stop signal', () => {
+    fire('SIGTERM');
+    logger.info('Server shut down gracefully');
+
+    fire('exit');
+
+    const written = (fsSync.appendFileSync as unknown as jest.Mock).mock.calls.map((call) => String(call[1])).join('');
+    expect(written).toContain('Server shut down gracefully');
+    expect(String((fsSync.appendFileSync as unknown as jest.Mock).mock.calls[0][0])).toMatch(/\/tmp\/logs\/crewly-\d{4}-\d{2}-\d{2}\.log$/);
+  });
+
+  test('exit with an empty queue writes nothing', () => {
+    fire('exit');
+    expect(fsSync.appendFileSync).not.toHaveBeenCalled();
   });
 });
