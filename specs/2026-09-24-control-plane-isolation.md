@@ -82,6 +82,12 @@ This covers the Claude Code runtime, which runs every agent in the default templ
 
 **What it does not block:** a determined agent that obfuscates a Bash write, runs an interpreter one-liner, or calls the loopback API. A guard's coverage has to be stated in the guard's own output (team norm), so the hook prints what it matched and this section says the limits plainly.
 
+Specific gaps, each confirmed against the hook (exit codes as observed):
+- **A write after `cd` into a protected directory:** `cd ~/.crewly/teams/<id> && echo x > config.json` → exit 0. The hook resolves relative paths against the call's `cwd`, not against a `cd` earlier in the same command.
+- **An interpreter one-liner:** `python3 -c "open('~/.crewly/teams/<id>/config.json','w')"` → exit 0. The same applies to `node -e`, `perl -e` without `-i`, `ruby -e`, and so on.
+- **A missing or empty paths file, or `jq` not on PATH** → exit 1 (`NO PATHS CHECKED` / `jq not found — 0 protected path(s) checked`). Claude Code treats exit 1 as a non-blocking error, so the Bash call proceeds. The guard fails open, but loudly: it never reports a pass it did not check.
+- **Side effect:** the orchestrator's direct edits of `~/.crewly/teams/*/config.json` for hierarchy changes (`parentMemberId` / `subordinateIds`, which the update-team API does not yet support) are now blocked, by both the Edit deny and the hook. Until the API supports hierarchy, such a change goes through the owner, or through the owner setting `CREWLY_CONTROL_PLANE_GUARD=0` for the backend.
+
 **Other runtimes:** there is no equivalent in this pass. Codex `workspace-write` already confines writes to the working directory, which excludes `~/.crewly`. Gemini and OpenCode are unguarded. Each runtime's status is listed in the launch log line.
 
 ## Part 4 — Full isolation (proposal, not built)
@@ -91,6 +97,8 @@ Real enforcement means the agent cannot write the control plane at all, however 
 1. **Separate OS identity:** agents run as an unprivileged user or in a container. `~/.crewly` and the install directory are owned by the backend user and are read-only or invisible to agents.
 2. **Per-session API tokens** issued by the backend at launch. They replace the self-asserted `X-Agent-Session`, and the `api-token` file is no longer readable by agents.
 3. **API authorization:** control endpoints (stop/start/config/schedule) check the caller's role against its target. A worker cannot start or reconfigure a peer, and a stop issued by the owner or orchestrator cannot be reversed by a subordinate.
+
+**Fail closed in multi-instance.** Part 3 fails open. If the settings file cannot be written, the agent launches unguarded with an ERROR, and a hook that cannot check exits 1, which is non-blocking. That is accepted for single-user OSS only. Any multi-instance or client deployment must fail closed: an agent does not launch without its guard, and a guard that cannot check blocks the call.
 
 **Placement:** these are deployment and multi-tenant concerns. Items 1 and 2 belong in `desktop/deploy` (VPS / client instances), plus crewly-pro for multi-instance. Item 3 is OSS core, because authorization lives in the backend.
 
