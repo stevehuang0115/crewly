@@ -1,14 +1,17 @@
 /**
  * Native-module build toolchain preflight.
  *
- * `node-pty` (and `better-sqlite3` on platforms without a prebuild) compile
- * through node-gyp, which needs a C++ compiler, `make` and `python3`. When one
+ * `node-pty` ships prebuilt binaries for macOS (x64/arm64) and glibc Linux
+ * (x64/arm64, glibc >= 2.28), so on those platforms no compiler is needed
+ * (#778). Elsewhere — Alpine/musl, older glibc, 32-bit ARM — it (and
+ * `better-sqlite3` without a prebuild) compiles through node-gyp, which needs
+ * a C++ compiler, `make` and `python3`. When one
  * is missing the operator sees forty lines of gyp output ending in
  * `make: g++: No such file or directory` (server-install finding 11). This
  * module answers three questions with no dependencies beyond node builtins
  * — it runs from `preinstall`, before any dependency exists:
  *
- *   1. Is node-pty already built (or prebuilt) for this platform?
+ *   1. Is node-pty already built (or has a usable prebuild) for this platform?
  *   2. Which build tools are missing?
  *   3. What is the one-line package-manager command that installs them?
  *
@@ -50,8 +53,86 @@ const GENERIC_INSTALL_HINT = 'install a C++ compiler (g++ or clang++), make and 
 /** Relative path of node-pty's compiled binding inside a package root. */
 const NODE_PTY_BINDING = path.join('node_modules', 'node-pty', 'build', 'Release', 'pty.node');
 
-/** Relative path of node-pty's prebuilds directory (absent in node-pty 1.x). */
+/** Relative path of node-pty's prebuilds directory (`prebuilds/<platform>-<arch>/`). */
 const NODE_PTY_PREBUILDS = path.join('node_modules', 'node-pty', 'prebuilds');
+
+/**
+ * Oldest glibc node-pty's Linux prebuilds run on. node-pty 1.2.0-beta.15's
+ * `prebuilds/linux-{x64,arm64}/pty.node` reference `GLIBC_2.28` symbols
+ * (Debian 10+, Ubuntu 18.10+, RHEL 8+).
+ */
+export const NODE_PTY_PREBUILD_MIN_GLIBC = '2.28';
+
+/**
+ * `<platform>-<arch>` targets node-pty's npm tarball ships prebuilds for.
+ * Used at `preinstall`, before node-pty is on disk to look at.
+ */
+export const NODE_PTY_PREBUILT_TARGETS: readonly string[] = [
+	'darwin-arm64',
+	'darwin-x64',
+	'linux-arm64',
+	'linux-x64',
+	'win32-arm64',
+	'win32-x64',
+];
+
+/** C library of a Linux host; null when not Linux or unknown. */
+export type LinuxLibc = { family: 'glibc'; version: string } | { family: 'musl' } | null;
+
+/**
+ * Detect the running Linux host's C library from Node's diagnostic report
+ * (`header.glibcVersionRuntime` is only set on glibc).
+ *
+ * @param platform - Platform tag (defaults to the current one)
+ * @returns glibc + version, musl, or null off Linux / when the report is unavailable
+ */
+export function detectLinuxLibc(platform: string = process.platform): LinuxLibc {
+	if (platform !== 'linux' || process.platform !== 'linux') return null;
+	try {
+		const report = process.report as (NodeJS.ProcessReport & { excludeNetwork?: boolean }) | undefined;
+		if (!report) return null;
+		const previous = report.excludeNetwork;
+		report.excludeNetwork = true;
+		const header = (report.getReport() as { header?: { glibcVersionRuntime?: string } }).header;
+		report.excludeNetwork = previous;
+		return header?.glibcVersionRuntime
+			? { family: 'glibc', version: header.glibcVersionRuntime }
+			: { family: 'musl' };
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Compare dotted numeric versions.
+ *
+ * @returns negative, 0 or positive like `Array#sort` comparators
+ */
+function compareDotted(a: string, b: string): number {
+	const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+	const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const diff = (pa[i] ?? 0) - (pb[i] ?? 0);
+		if (diff !== 0) return diff;
+	}
+	return 0;
+}
+
+/**
+ * Why node-pty's prebuild cannot run on this libc, if it cannot.
+ *
+ * @param platform - Platform tag
+ * @param libc - Detected libc (null = unknown, assumed compatible)
+ * @returns A short reason, or null when the prebuild is usable
+ */
+export function prebuildLibcProblem(platform: string, libc: LinuxLibc): string | null {
+	if (platform !== 'linux' || libc === null) return null;
+	if (libc.family === 'musl') return 'musl libc (e.g. Alpine) — the prebuilds target glibc';
+	if (compareDotted(libc.version, NODE_PTY_PREBUILD_MIN_GLIBC) < 0) {
+		return `glibc ${libc.version} is older than the ${NODE_PTY_PREBUILD_MIN_GLIBC} the prebuilds need`;
+	}
+	return null;
+}
 
 /**
  * Check whether an executable is on PATH without spawning a shell.
@@ -102,29 +183,40 @@ export function toolchainInstallHint(which: (bin: string) => boolean = isOnPath)
 
 /** Whether node-pty is usable without compiling. */
 export interface NodePtyBuildStatus {
-	/** `build/Release/pty.node` exists (compiled or copied from a prebuild). */
+	/** `build/Release/pty.node` exists (compiled from source). */
 	built: boolean;
-	/** A `prebuilds/<platform>-<arch>` directory exists for this platform. */
+	/** A `prebuilds/<platform>-<arch>` directory exists AND its binary can run on this libc. */
 	prebuilt: boolean;
+	/** Set when a prebuild directory exists but cannot run here (musl, old glibc). */
+	prebuildProblem?: string;
 }
 
 /**
- * Inspect node-pty's install state under a package root.
+ * Inspect node-pty's install state under a package root. Before node-pty is
+ * installed (the `preinstall` preflight) the prebuild answer comes from
+ * {@link NODE_PTY_PREBUILT_TARGETS} instead of the filesystem.
  *
  * @param packageRoot - Directory containing `node_modules/`
  * @param platform - Platform tag (defaults to the current one)
  * @param arch - Arch tag (defaults to the current one)
+ * @param libc - Host libc (defaults to detection; null = unknown, assumed compatible)
  * @returns Build/prebuild status
  */
 export function nodePtyBuildStatus(
 	packageRoot: string,
 	platform: string = process.platform,
 	arch: string = process.arch,
+	libc: LinuxLibc = detectLinuxLibc(platform),
 ): NodePtyBuildStatus {
-	return {
-		built: fs.existsSync(path.join(packageRoot, NODE_PTY_BINDING)),
-		prebuilt: fs.existsSync(path.join(packageRoot, NODE_PTY_PREBUILDS, `${platform}-${arch}`)),
-	};
+	const built = fs.existsSync(path.join(packageRoot, NODE_PTY_BINDING));
+	const installed = fs.existsSync(path.join(packageRoot, 'node_modules', 'node-pty'));
+	const hasPrebuildDir = installed
+		? fs.existsSync(path.join(packageRoot, NODE_PTY_PREBUILDS, `${platform}-${arch}`))
+		: NODE_PTY_PREBUILT_TARGETS.includes(`${platform}-${arch}`);
+	const problem = hasPrebuildDir ? prebuildLibcProblem(platform, libc) : null;
+	return problem
+		? { built, prebuilt: false, prebuildProblem: problem }
+		: { built, prebuilt: hasPrebuildDir };
 }
 
 /** Outcome of the preflight. */
@@ -151,6 +243,7 @@ export interface ToolchainCheckResult {
  * @param options.which - PATH lookup
  * @param options.platform - Platform tag for prebuild detection
  * @param options.arch - Arch tag for prebuild detection
+ * @param options.libc - Host libc for prebuild detection (defaults to detection)
  * @param options.force - Report missing tools even when node-pty is already built (doctor mode)
  * @returns The check result
  */
@@ -159,10 +252,16 @@ export function checkNativeToolchain(options: {
 	which?: (bin: string) => boolean;
 	platform?: string;
 	arch?: string;
+	libc?: LinuxLibc;
 	force?: boolean;
 }): ToolchainCheckResult {
 	const which = options.which ?? isOnPath;
-	const nodePty = nodePtyBuildStatus(options.packageRoot, options.platform, options.arch);
+	const nodePty = nodePtyBuildStatus(
+		options.packageRoot,
+		options.platform,
+		options.arch,
+		options.libc === undefined ? detectLinuxLibc(options.platform) : options.libc,
+	);
 	const missing = detectMissingBuildTools(which);
 	const installHint = toolchainInstallHint(which);
 	const needsBuild = !nodePty.built && !nodePty.prebuilt;
@@ -171,7 +270,7 @@ export function checkNativeToolchain(options: {
 		return { ok: true, missing, installHint, nodePty, message: '' };
 	}
 
-	const message = formatToolchainMessage(missing, installHint, needsBuild);
+	const message = formatToolchainMessage(missing, installHint, needsBuild, nodePty.prebuildProblem);
 	return { ok: false, missing, installHint, nodePty, message };
 }
 
@@ -181,13 +280,22 @@ export function checkNativeToolchain(options: {
  * @param missing - Missing tool labels
  * @param installHint - Install command
  * @param needsBuild - Whether node-pty still has to be compiled
+ * @param prebuildProblem - Why the shipped prebuild cannot be used here, if that is the reason
  * @returns Multi-line message
  */
-export function formatToolchainMessage(missing: string[], installHint: string, needsBuild: boolean): string {
+export function formatToolchainMessage(
+	missing: string[],
+	installHint: string,
+	needsBuild: boolean,
+	prebuildProblem?: string,
+): string {
 	const tools = missing.join(', ');
+	const noPrebuild = prebuildProblem
+		? `node-pty's prebuilt binary cannot run here (${prebuildProblem})`
+		: 'node-pty has no prebuilt binary for this platform';
 	const consequence = needsBuild
-		? 'node-pty has no prebuilt binary for this platform and must be compiled, so `npm install` will fail in node-gyp.'
-		: 'node-pty is currently built, but the next `npm rebuild` / upgrade will fail in node-gyp.';
+		? `${noPrebuild} and must be compiled, so \`npm install\` will fail in node-gyp.`
+		: 'node-pty is currently built from source, but the next `npm rebuild` / upgrade will fail in node-gyp.';
 	return [
 		`[crewly] Missing native build tool${missing.length > 1 ? 's' : ''}: ${tools}.`,
 		`[crewly] ${consequence}`,

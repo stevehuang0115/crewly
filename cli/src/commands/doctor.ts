@@ -24,7 +24,12 @@ import { pathToFileURL } from 'url';
 import chalk from 'chalk';
 import { CREWLY_CONSTANTS, MARKETPLACE_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
-import { checkNativeToolchain, isOnPath } from '../utils/native-toolchain.js';
+import { checkNativeToolchain, detectLinuxLibc, isOnPath, prebuildLibcProblem } from '../utils/native-toolchain.js';
+import {
+	nodePtyNativeDirs,
+	resolveNodePtyDir,
+	SPAWN_HELPER_NAME,
+} from '../../../backend/src/services/session/pty/node-pty-install.utils.js';
 import { checkRuntimeAuth, type RuntimeAuthStatus } from '../utils/runtime-auth.js';
 import { getLingerState } from './service.js';
 import { REQUIRED_SYSTEM_TOOLS, type SystemToolInfo } from './onboard.js';
@@ -63,6 +68,11 @@ export interface DoctorDeps {
 	env?: NodeJS.ProcessEnv;
 	/** Reachability probe for the marketplace check (defaults to an HTTPS GET). */
 	probeUrl?: UrlProbe;
+	/**
+	 * Returns the path of a node-pty `spawn-helper` that exists but is not
+	 * executable (every PTY spawn then fails with `posix_spawnp failed`), or null.
+	 */
+	findBrokenSpawnHelper?: (packageRoot: string) => string | null;
 }
 
 /** Result of probing one URL. */
@@ -126,6 +136,52 @@ const NATIVE_MODULES = ['node-pty', 'better-sqlite3'] as const;
 function defaultTryLoad(moduleName: string, packageRoot: string): void {
 	const req = createRequire(pathToFileURL(path.join(packageRoot, 'package.json')).href);
 	req(moduleName);
+}
+
+/**
+ * Default spawn-helper check: look in every directory node-pty loads its
+ * binding from for a `spawn-helper` without the exec bit.
+ *
+ * @param packageRoot - Crewly package root
+ * @returns The non-executable helper, or null
+ */
+function defaultFindBrokenSpawnHelper(packageRoot: string): string | null {
+	if (process.platform === 'win32') return null;
+	const req = createRequire(pathToFileURL(path.join(packageRoot, 'package.json')).href);
+	const dir = resolveNodePtyDir((request) => req.resolve(request));
+	if (!dir) return null;
+	for (const nativeDir of nodePtyNativeDirs(dir)) {
+		const helper = path.join(nativeDir, SPAWN_HELPER_NAME);
+		if (!fs.existsSync(helper)) continue;
+		try {
+			fs.accessSync(helper, fs.constants.X_OK);
+		} catch {
+			return helper;
+		}
+	}
+	return null;
+}
+
+/**
+ * Fix hint for a native module that does not load.
+ *
+ * node-pty normally loads a prebuilt binary (#778); when it does not, either
+ * the install is incomplete (reinstall) or this platform has no usable
+ * prebuild (musl, glibc < 2.28, 32-bit ARM) and it has to be compiled.
+ *
+ * @param mod - Module name
+ * @param packageRoot - Crewly package root
+ * @param prebuildProblem - Why the prebuild cannot run on this host, if known
+ * @returns One-line hint
+ */
+export function nativeModuleHint(mod: string, packageRoot: string, prebuildProblem: string | null = null): string {
+	if (mod === 'node-pty') {
+		const compile = `install a C++ compiler, make and python3, then: cd ${packageRoot} && npm rebuild node-pty --build-from-source`;
+		return prebuildProblem
+			? `No usable prebuilt binary here (${prebuildProblem}) — ${compile}`
+			: `Reinstall (npm i -g crewly) to restore the prebuilt binary. On platforms without one (Alpine/musl, glibc < 2.28), ${compile}`;
+	}
+	return `Rebuild with: cd ${packageRoot} && npm rebuild ${mod}`;
 }
 
 /**
@@ -286,15 +342,28 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 	for (const mod of NATIVE_MODULES) {
 		try {
 			tryLoad(mod, packageRoot);
-			checks.push({ name: mod, status: 'ok', detail: 'loads' });
 		} catch (error) {
 			const reason = error instanceof Error ? error.message.split('\n')[0] : String(error);
 			checks.push({
 				name: mod,
 				status: 'fail',
 				detail: `cannot load — ${reason}`,
-				hint: `Rebuild with: cd ${packageRoot} && npm rebuild ${mod}`,
+				hint: nativeModuleHint(mod, packageRoot, prebuildLibcProblem(process.platform, detectLinuxLibc())),
 			});
+			continue;
+		}
+		const brokenHelper = mod === 'node-pty'
+			? (deps.findBrokenSpawnHelper ?? defaultFindBrokenSpawnHelper)(packageRoot)
+			: null;
+		if (brokenHelper) {
+			checks.push({
+				name: mod,
+				status: 'fail',
+				detail: 'loads, but its spawn-helper is not executable — every agent terminal will fail with "posix_spawnp failed"',
+				hint: `chmod +x ${brokenHelper}`,
+			});
+		} else {
+			checks.push({ name: mod, status: 'ok', detail: 'loads' });
 		}
 	}
 
@@ -302,12 +371,19 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 	const toolchain = checkNativeToolchain({ packageRoot, which: deps.which, force: true });
 	if (toolchain.missing.length === 0) {
 		checks.push({ name: 'toolchain', status: 'ok', detail: 'g++, make, python3 available for native rebuilds' });
+	} else if (toolchain.nodePty.prebuilt && !toolchain.nodePty.built) {
+		// node-pty runs from its prebuilt binary; upgrades fetch a new one.
+		checks.push({
+			name: 'toolchain',
+			status: 'ok',
+			detail: `not needed — node-pty uses its prebuilt ${process.platform}-${process.arch} binary (missing ${toolchain.missing.join(', ')})`,
+		});
 	} else {
 		const needsBuild = !toolchain.nodePty.built && !toolchain.nodePty.prebuilt;
 		checks.push({
 			name: 'toolchain',
 			status: needsBuild ? 'fail' : 'warn',
-			detail: `missing ${toolchain.missing.join(', ')} — node-pty ${needsBuild ? 'cannot be compiled' : 'cannot be rebuilt on upgrade'}`,
+			detail: `missing ${toolchain.missing.join(', ')} — node-pty ${needsBuild ? `cannot be compiled${toolchain.nodePty.prebuildProblem ? ` (its prebuild cannot run here: ${toolchain.nodePty.prebuildProblem})` : ''}` : 'cannot be rebuilt on upgrade'}`,
 			hint: toolchain.installHint,
 		});
 	}

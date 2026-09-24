@@ -38,7 +38,7 @@ Crewly is an open-source platform that coordinates AI coding agents (Claude Code
   sudo dnf install -y jq          # Fedora
   ```
 
-- **A C++ build toolchain** -- `npm install -g crewly` compiles the `node-pty` terminal backend.
+- **A C++ build toolchain: only on some platforms.** On macOS (x64/arm64) and glibc Linux (x64/arm64) with Node 22+, `node-pty` and `better-sqlite3` install from prebuilt binaries, so you don't need a compiler. You do need one on Alpine/musl, on glibc older than 2.28, on other architectures, and on Node 20, where `better-sqlite3` has no prebuilt binary:
   ```bash
   xcode-select --install                        # macOS (Xcode Command Line Tools)
   sudo apt-get install -y python3 make g++      # Debian/Ubuntu
@@ -573,7 +573,7 @@ If an agent seems unresponsive:
 
 ### Build Errors on Installation
 
-If `npm install -g crewly` fails with native module errors (usually `node-pty`):
+If `npm install -g crewly` fails with native module errors, your platform has no usable prebuilt binary (Alpine/musl, glibc < 2.28, Node 20 for `better-sqlite3`). Install a toolchain and retry. `crewly doctor` shows which module is affected:
 
 ```bash
 # macOS: Install Xcode command line tools

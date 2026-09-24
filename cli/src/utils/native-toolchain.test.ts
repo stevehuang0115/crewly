@@ -11,6 +11,7 @@ import {
 	formatToolchainMessage,
 	isOnPath,
 	nodePtyBuildStatus,
+	prebuildLibcProblem,
 	toolchainInstallHint,
 } from './native-toolchain.js';
 
@@ -86,8 +87,16 @@ describe('toolchainInstallHint', () => {
 });
 
 describe('nodePtyBuildStatus', () => {
-	it('reports not built / not prebuilt on an empty root', () => {
-		expect(nodePtyBuildStatus(tmp, 'linux', 'x64')).toEqual({ built: false, prebuilt: false });
+	it('before node-pty is installed (preinstall), infers the prebuild from the known targets', () => {
+		expect(nodePtyBuildStatus(tmp, 'linux', 'x64', null)).toEqual({ built: false, prebuilt: true });
+		expect(nodePtyBuildStatus(tmp, 'darwin', 'arm64', null)).toEqual({ built: false, prebuilt: true });
+		expect(nodePtyBuildStatus(tmp, 'linux', 'arm', null)).toEqual({ built: false, prebuilt: false });
+		expect(nodePtyBuildStatus(tmp, 'linux', 'x64', { family: 'musl' }).prebuilt).toBe(false);
+	});
+
+	it('reports not prebuilt when installed node-pty has no prebuild for the platform', () => {
+		fs.mkdirSync(path.join(tmp, 'node_modules', 'node-pty'), { recursive: true });
+		expect(nodePtyBuildStatus(tmp, 'linux', 'x64', null)).toEqual({ built: false, prebuilt: false });
 	});
 
 	it('detects a compiled pty.node', () => {
@@ -102,6 +111,27 @@ describe('nodePtyBuildStatus', () => {
 		expect(nodePtyBuildStatus(tmp, 'linux', 'x64').prebuilt).toBe(true);
 		expect(nodePtyBuildStatus(tmp, 'linux', 'arm64').prebuilt).toBe(false);
 	});
+
+	it('does not count a glibc prebuild as usable on musl or glibc < 2.28 (#778)', () => {
+		fs.mkdirSync(path.join(tmp, 'node_modules', 'node-pty', 'prebuilds', 'linux-x64'), { recursive: true });
+		expect(nodePtyBuildStatus(tmp, 'linux', 'x64', { family: 'glibc', version: '2.39' })).toEqual({ built: false, prebuilt: true });
+		expect(nodePtyBuildStatus(tmp, 'linux', 'x64', { family: 'glibc', version: '2.28' }).prebuilt).toBe(true);
+		const musl = nodePtyBuildStatus(tmp, 'linux', 'x64', { family: 'musl' });
+		expect(musl.prebuilt).toBe(false);
+		expect(musl.prebuildProblem).toContain('musl');
+		const old = nodePtyBuildStatus(tmp, 'linux', 'x64', { family: 'glibc', version: '2.17' });
+		expect(old.prebuilt).toBe(false);
+		expect(old.prebuildProblem).toContain('glibc 2.17');
+	});
+});
+
+describe('prebuildLibcProblem', () => {
+	it('only applies to Linux with a known libc', () => {
+		expect(prebuildLibcProblem('darwin', { family: 'musl' })).toBeNull();
+		expect(prebuildLibcProblem('linux', null)).toBeNull();
+		expect(prebuildLibcProblem('linux', { family: 'glibc', version: '2.31' })).toBeNull();
+		expect(prebuildLibcProblem('linux', { family: 'glibc', version: '2.27' })).toContain('older than');
+	});
 });
 
 describe('checkNativeToolchain', () => {
@@ -112,7 +142,7 @@ describe('checkNativeToolchain', () => {
 	});
 
 	it('produces ONE message naming the missing tool and the apt line when node-pty must be built', () => {
-		const res = checkNativeToolchain({ packageRoot: tmp, which: whichOf('make', 'python3', 'apt-get'), platform: 'linux', arch: 'x64' });
+		const res = checkNativeToolchain({ packageRoot: tmp, which: whichOf('make', 'python3', 'apt-get'), platform: 'linux', arch: 'arm' });
 		expect(res.ok).toBe(false);
 		expect(res.missing).toEqual(['g++']);
 		expect(res.message).toContain('Missing native build tool: g++.');
@@ -137,6 +167,20 @@ describe('checkNativeToolchain', () => {
 		fs.mkdirSync(path.join(tmp, 'node_modules', 'node-pty', 'prebuilds', 'linux-arm64'), { recursive: true });
 		const res = checkNativeToolchain({ packageRoot: tmp, which: whichOf(), platform: 'linux', arch: 'arm64' });
 		expect(res.ok).toBe(true);
+	});
+
+	it('warns on musl even though a (glibc) prebuild directory exists', () => {
+		fs.mkdirSync(path.join(tmp, 'node_modules', 'node-pty', 'prebuilds', 'linux-x64'), { recursive: true });
+		const res = checkNativeToolchain({
+			packageRoot: tmp,
+			which: whichOf('apk'),
+			platform: 'linux',
+			arch: 'x64',
+			libc: { family: 'musl' },
+		});
+		expect(res.ok).toBe(false);
+		expect(res.message).toContain('cannot run here (musl libc');
+		expect(res.message).toContain('apk add --no-cache build-base python3');
 	});
 });
 

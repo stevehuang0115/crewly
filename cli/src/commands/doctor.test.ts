@@ -21,7 +21,7 @@ jest.mock('chalk', () => ({
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { collectDoctorChecks, formatDoctorCheck, doctorCommand, marketplaceCheck, runtimeChecks, type UrlProbe } from './doctor.js';
+import { collectDoctorChecks, formatDoctorCheck, doctorCommand, marketplaceCheck, nativeModuleHint, runtimeChecks, type UrlProbe } from './doctor.js';
 import type { RuntimeAuthStatus } from '../utils/runtime-auth.js';
 
 let tmp: string;
@@ -97,6 +97,8 @@ describe('collectDoctorChecks', () => {
 	});
 
 	it('reports the missing tool with the apt command (finding 11) — fail when unbuilt, warn when built', async () => {
+		// node-pty installed without a prebuild for this host, not compiled yet.
+		fs.mkdirSync(path.join(tmp, 'node_modules', 'node-pty'), { recursive: true });
 		const unbuilt = await collectDoctorChecks({
 			packageRoot: tmp,
 			tryLoad: () => undefined,
@@ -125,6 +127,52 @@ describe('collectDoctorChecks', () => {
 			lingerState: async () => 'yes',
 		});
 		expect(byName(built, 'toolchain')).toMatchObject({ status: 'warn' });
+	});
+
+	it('toolchain is ok without build tools when node-pty uses its prebuild (#778)', async () => {
+		fs.mkdirSync(path.join(tmp, 'node_modules', 'node-pty', 'prebuilds', `${process.platform}-${process.arch}`), { recursive: true });
+		const checks = await collectDoctorChecks({
+			packageRoot: tmp,
+			tryLoad: () => undefined,
+			which: whichOf('apt-get'),
+			platform: 'darwin',
+			homeDir: home,
+			probeUrl: okProbe,
+		});
+		const toolchain = byName(checks, 'toolchain');
+		if (process.platform === 'linux' && process.report?.getReport && !(process.report.getReport() as { header?: { glibcVersionRuntime?: string } }).header?.glibcVersionRuntime) {
+			// musl host: the glibc prebuild does not count.
+			expect(toolchain).toMatchObject({ status: 'fail' });
+		} else {
+			expect(toolchain).toMatchObject({ status: 'ok', detail: expect.stringContaining('not needed') });
+		}
+	});
+
+	it('fails node-pty when its spawn-helper is not executable, with a chmod hint', async () => {
+		const checks = await collectDoctorChecks({
+			packageRoot: tmp,
+			tryLoad: () => undefined,
+			findBrokenSpawnHelper: () => '/pkg/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper',
+			which: whichOf('g++', 'make', 'python3'),
+			platform: 'darwin',
+			homeDir: home,
+			probeUrl: okProbe,
+		});
+		expect(byName(checks, 'node-pty')).toMatchObject({
+			status: 'fail',
+			detail: expect.stringContaining('posix_spawnp'),
+			hint: 'chmod +x /pkg/node_modules/node-pty/prebuilds/darwin-arm64/spawn-helper',
+		});
+		expect(byName(checks, 'better-sqlite3')).toMatchObject({ status: 'ok' });
+	});
+
+	it('node-pty hint skips "reinstall" when the host cannot run the prebuild (musl)', () => {
+		const hint = nativeModuleHint('node-pty', '/pkg', 'musl libc (e.g. Alpine) — the prebuilds target glibc');
+		expect(hint).toContain('musl');
+		expect(hint).toContain('cd /pkg && npm rebuild node-pty --build-from-source');
+		expect(hint).not.toContain('Reinstall');
+		expect(nativeModuleHint('node-pty', '/pkg')).toContain('Reinstall');
+		expect(nativeModuleHint('better-sqlite3', '/pkg')).toBe('Rebuild with: cd /pkg && npm rebuild better-sqlite3');
 	});
 
 	it('reports service.env presence and linger on Linux', async () => {

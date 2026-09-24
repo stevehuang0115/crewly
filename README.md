@@ -36,9 +36,11 @@ The `init` command walks you through provider selection, installs agent skills, 
 ## Requirements
 
 - **Node.js 20 or later** (with npm)
-- **A C/C++ build toolchain**, used during install to compile the `node-pty` terminal backend:
-  - macOS: Xcode Command Line Tools (`xcode-select --install`)
-  - Linux: `python3`, `make` and `g++` (Debian/Ubuntu: `sudo apt-get install -y python3 make g++`)
+- **No C/C++ toolchain on macOS (x64/arm64) or glibc Linux (x64/arm64) with Node 22+.** The native modules install from prebuilt binaries there. You do need `python3`, `make` and `g++` (Xcode Command Line Tools on macOS) in these cases:
+  - Alpine/musl, glibc older than 2.28, or other architectures, where `node-pty` compiles from source
+  - Node 20, where `better-sqlite3` has no prebuilt binary
+
+  On Debian/Ubuntu, install the toolchain with `sudo apt-get install -y python3 make g++`. `crewly doctor` tells you whether you need it.
 - **jq** (`brew install jq` on macOS, `sudo apt-get install -y jq` on Debian/Ubuntu). Agent skills use it, and `crewly init` stops if it is missing.
 - **curl**
 - **One AI coding CLI, installed and logged in**: Claude Code (`claude`), Gemini CLI (`gemini`) or Codex (`codex`). OpenCode also works.

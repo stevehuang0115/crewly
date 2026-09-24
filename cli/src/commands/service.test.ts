@@ -887,6 +887,12 @@ describe('generateCommandFile', () => {
 		expect(content).toContain('Architecture mismatch');
 	});
 
+	it('prefers the matching node-pty prebuild over rebuilding on arch mismatch (#778)', () => {
+		const content = generateCommandFile('/any/path');
+		expect(content).toContain('$PTY_DIR/prebuilds/$NODE_PLATFORM_ARCH/pty.node');
+		expect(content).toContain('rm -rf "$PTY_DIR/build"');
+	});
+
 	it('#244: has cd INSIDE the while loop (not before it)', () => {
 		const content = generateCommandFile('/any/path');
 		const whilePos = content.indexOf('while true');

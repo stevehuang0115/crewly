@@ -178,25 +178,31 @@ fi`;
 
 /**
  * Shell snippet embedded in wrapper scripts that detects architecture
- * mismatches between the running node binary and native modules (e.g.
- * node-pty). If a mismatch is found, runs `npm rebuild` automatically
- * before starting the backend — preventing the ERR_DLOPEN_FAILED crash
- * that occurs when node-pty was compiled for x86_64 but node is arm64
- * (or vice versa).
+ * mismatches between the running node binary and a from-source node-pty
+ * build (`build/Release/pty.node`), preventing the ERR_DLOPEN_FAILED crash
+ * when it was compiled for x86_64 but node is arm64 (or vice versa).
+ *
+ * node-pty ships prebuilds per `<platform>-<arch>` (#778) and loads
+ * `build/Release` before them, so a stale build is removed when a matching
+ * prebuild exists; only when there is none is node-pty rebuilt.
  */
-const NATIVE_MODULE_CHECK = `# Auto-rebuild native modules if node arch doesn't match compiled binaries
-PTY_NODE="node_modules/node-pty/build/Release/pty.node"
+const NATIVE_MODULE_CHECK = `# Fix native modules if node arch doesn't match a from-source node-pty build
+PTY_DIR="node_modules/node-pty"
+PTY_NODE="$PTY_DIR/build/Release/pty.node"
 if [ -f "$PTY_NODE" ]; then
-  NODE_ARCH=$("\${NODE_BIN:-node}" -p "process.arch")
+  NODE_PLATFORM_ARCH=$("\${NODE_BIN:-node}" -p "process.platform + '-' + process.arch")
+  NODE_ARCH="\${NODE_PLATFORM_ARCH##*-}"
   PTY_ARCH=$(file "$PTY_NODE" | grep -o 'arm64\\|x86_64' | head -1)
   # Normalize: node uses "x64", file uses "x86_64"
   if [ "$NODE_ARCH" = "x64" ]; then NODE_ARCH="x86_64"; fi
-  if [ "$NODE_ARCH" = "arm64" ] && [ "$PTY_ARCH" = "x86_64" ]; then
-    echo "$(date): Architecture mismatch (node=arm64, pty.node=x86_64). Rebuilding..." | tee -a "$LOG_DIR/service.log" 2>/dev/null
-    npm rebuild node-pty 2>&1 | tee -a "$LOG_DIR/service.log" 2>/dev/null
-  elif [ "$NODE_ARCH" = "x86_64" ] && [ "$PTY_ARCH" = "arm64" ]; then
-    echo "$(date): Architecture mismatch (node=x86_64, pty.node=arm64). Rebuilding..." | tee -a "$LOG_DIR/service.log" 2>/dev/null
-    npm rebuild node-pty 2>&1 | tee -a "$LOG_DIR/service.log" 2>/dev/null
+  if [ -n "$PTY_ARCH" ] && [ "$NODE_ARCH" != "$PTY_ARCH" ] && { [ "$NODE_ARCH" = "arm64" ] || [ "$NODE_ARCH" = "x86_64" ]; }; then
+    if [ -f "$PTY_DIR/prebuilds/$NODE_PLATFORM_ARCH/pty.node" ]; then
+      echo "$(date): Architecture mismatch (node=$NODE_ARCH, pty.node=$PTY_ARCH). Removing the stale build; using the $NODE_PLATFORM_ARCH prebuild." | tee -a "$LOG_DIR/service.log" 2>/dev/null
+      rm -rf "$PTY_DIR/build"
+    else
+      echo "$(date): Architecture mismatch (node=$NODE_ARCH, pty.node=$PTY_ARCH). Rebuilding..." | tee -a "$LOG_DIR/service.log" 2>/dev/null
+      npm rebuild node-pty 2>&1 | tee -a "$LOG_DIR/service.log" 2>/dev/null
+    fi
   fi
 fi`;
 
