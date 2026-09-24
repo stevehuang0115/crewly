@@ -31,3 +31,10 @@ describe('global test setup — CREWLY_HOME isolation (#729)', () => {
     expect(getCrewlyHomePath().startsWith(`${realHome}${path.sep}`)).toBe(false);
   });
 });
+
+describe('global test setup — project store isolation (2026-09-24 OKR leak)', () => {
+  it('does not inherit CREWLY_PROJECT_PATH / CREWLY_MISSIONS_DIR from the shell', () => {
+    expect(process.env.CREWLY_PROJECT_PATH).toBeUndefined();
+    expect(process.env.CREWLY_MISSIONS_DIR).toBeUndefined();
+  });
+});

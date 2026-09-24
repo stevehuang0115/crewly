@@ -42,6 +42,18 @@ const isolatedHome = path.join(
 
 process.env.CREWLY_HOME = isolatedHome;
 
+// The project store must not be inherited either. Shells Crewly starts for
+// its agents export CREWLY_PROJECT_PATH (the owner's project — here, this
+// very repo), and the mission store resolves CREWLY_MISSIONS_DIR → project
+// path → cwd. Tests isolate themselves by pointing cwd at a temp dir, which
+// the inherited project path silently overrode: when an agent ran the suite,
+// fixture OKRs ("Team OKR alpha", "Pending team", "P") landed in the live
+// `<repo>/.crewly/missions` and the running backend asked the owner to approve
+// every one of them (24 Slack alerts, 2026-09-24). Tests that want either
+// variable set it themselves.
+delete process.env.CREWLY_PROJECT_PATH;
+delete process.env.CREWLY_MISSIONS_DIR;
+
 afterAll(() => {
   rmSync(isolatedHome, { recursive: true, force: true });
 });
