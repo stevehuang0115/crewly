@@ -1104,6 +1104,18 @@ describe('mirrorOutbound', () => {
     expect(await service.linkAgentMentions('no mentions')).toBe('no mentions');
   });
 
+  it('turns @Owner Name (multi-word) into a real mention of the owner, and remembers people who spoke', async () => {
+    ownerUserId = 'UOWNER';
+    (slack as unknown as { getUserInfo: (id: string) => Promise<{ name: string; realName: string }> }).getUserInfo = async (id) =>
+      id === 'UOWNER' ? { name: 'steve', realName: 'Steve Huang' } : { name: id, realName: id };
+    service = makeService();
+    expect(await service.linkAgentMentions('@Steve Huang 两件事：')).toBe('<@UOWNER> 两件事：');
+    expect(await service.linkAgentMentions('cc @steve, thanks')).toBe('cc <@UOWNER>, thanks');
+    service.rememberHuman('UANN', ['Ann Lee']);
+    expect(await service.linkAgentMentions('@Ann Lee and @Ann Leeway')).toBe('<@UANN> and @Ann Leeway');
+    expect(await service.linkAgentMentions('mail a@steve.com')).toBe('mail a@steve.com');
+  });
+
   it('posts an agent reply into the Slack thread of its chat-v2 thread root, as the agent', async () => {
     const root = await service.routeInbound(inbound({ ts: '100.1', text: '@sam go' }));
     slack.sent = [];

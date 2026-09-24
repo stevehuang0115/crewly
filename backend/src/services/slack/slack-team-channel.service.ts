@@ -77,6 +77,8 @@ export interface TeamChannelSlackApi {
   sendMessage(message: SlackOutgoingMessage): Promise<string>;
   addReaction(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
   inviteToChannel(channelId: string, userIds: string[]): Promise<void>;
+  /** Names of a Slack user (for turning `@Their Name` into a mention). Optional. */
+  getUserInfo?(userId: string): Promise<{ name: string; realName: string }>;
   uploadFile(options: {
     channelId: string;
     filePath: string;
@@ -382,6 +384,10 @@ export class SlackTeamChannelService {
   private readonly seenInbound = new Map<string, ChatMessageDTO>();
   /** The last room presence Cloud sent per Slack channel — names for a hand-off. */
   private readonly lastRooms = new Map<string, SlackRoomPresence>();
+  /** People (not agents) by lower-cased name → Slack user id, for `@Name` in agent replies. */
+  private readonly humanNames = new Map<string, string>();
+  /** Whether the owner's names were looked up yet. */
+  private ownerNamesLoaded = false;
 
   private readonly onChatMessage = (dto: ChatMessageDTO): void => {
     void this.mirrorOutbound(dto);
@@ -1013,6 +1019,9 @@ export class SlackTeamChannelService {
    */
   async routeInbound(message: SlackIncomingMessage): Promise<RouteInboundResult | null> {
     await this.load();
+    if (message.userId && !message.authorAgentSession) {
+      this.rememberHuman(message.userId, [message.user?.realName, message.user?.name]);
+    }
     let mapping = this.findBySlackChannelId(message.channelId);
     if (!mapping) mapping = await this.ensureAdhocChannel(message);
     if (!mapping) return null;
@@ -1775,7 +1784,9 @@ export class SlackTeamChannelService {
    * @returns Text with `<@Uxxx>` mentions
    */
   async linkAgentMentions(text: string): Promise<string> {
-    if (!text || !text.includes('@') || !this.deps.identities) return text;
+    if (!text || !text.includes('@')) return text;
+    text = await this.linkHumanMentions(text);
+    if (!this.deps.identities) return text;
     const store = await this.deps.identities.load();
     const byName = new Map<string, string>();
     for (const r of store.identities) {
@@ -1786,6 +1797,54 @@ export class SlackTeamChannelService {
       const id = byName.get(name.replace(/[.-]+$/u, '').toLowerCase());
       return id ? `<@${id}>` : whole;
     });
+  }
+
+  /**
+   * Remember a person's names so an agent writing `@Their Name` reaches them.
+   *
+   * @param userId - Slack user id
+   * @param names - Real name, handle, … (blanks ignored)
+   */
+  rememberHuman(userId: string, names: ReadonlyArray<string | undefined>): void {
+    for (const n of names) {
+      const key = (n ?? '').trim().toLowerCase();
+      if (key && key !== userId.toLowerCase()) this.humanNames.set(key, userId);
+    }
+  }
+
+  /**
+   * Turn `@Steve Huang` (a person, possibly a multi-word name) into a real
+   * Slack mention. Agents wrote the owner's name and Slack showed plain text —
+   * no notification — because only agent bots were ever linked, and only
+   * single-word names (2026-09-24). The owner's names are looked up once; any
+   * other person is known once they have spoken in a mapped channel.
+   *
+   * @param text - Reply text
+   * @returns Text with `<@Uxxx>` for known people
+   */
+  private async linkHumanMentions(text: string): Promise<string> {
+    if (!this.ownerNamesLoaded) {
+      this.ownerNamesLoaded = true;
+      const owner = this.deps.getOwnerUserId?.() ?? null;
+      if (owner && this.deps.slack.getUserInfo) {
+        try {
+          const info = await this.deps.slack.getUserInfo(owner);
+          this.rememberHuman(owner, [info.realName, info.name]);
+        } catch {
+          this.ownerNamesLoaded = false; // try again next reply
+        }
+      }
+    }
+    if (this.humanNames.size === 0) return text;
+    // Longest names first, so "Steve Huang" wins over a person called "Steve".
+    const names = [...this.humanNames.keys()].sort((a, b) => b.length - a.length);
+    let out = text;
+    for (const name of names) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(`(?<![\\w<@])@${escaped}(?![\\p{L}\\p{N}_])`, 'giu');
+      out = out.replace(re, `<@${this.humanNames.get(name)}>`);
+    }
+    return out;
   }
 
   /**
