@@ -28,6 +28,7 @@ import {
 import { classifyIntent, planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { ticketNeedsReview } from '../../types/v2/ticket.types.js';
+import { TICKET_CONSTANTS } from '../../constants.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /** Directory name under .crewly for request storage. */
@@ -549,6 +550,28 @@ export class RequestService {
    *
    * @param id - The Request ID to delete
    */
+  /**
+   * Move a Request file into `requests/archive/` (ticket loop Phase 3: done
+   * tickets leave the board after 30 days but are never deleted). `listAll`
+   * reads only the top-level directory, so archived tickets drop out of every
+   * list while staying on disk.
+   *
+   * @param id - Request id
+   * @returns True when a file was moved
+   */
+  public async archive(id: string): Promise<boolean> {
+    const from = this.getFilePath(id);
+    const dir = path.join(this.getRequestsDir(), TICKET_CONSTANTS.ARCHIVE.DIRNAME);
+    try {
+      await ensureDir(dir);
+      await fs.rename(from, path.join(dir, path.basename(from)));
+      this.logger.debug('Request archived', { id });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   public async delete(id: string): Promise<void> {
     const filePath = this.getFilePath(id);
     try {

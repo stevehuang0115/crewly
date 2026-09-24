@@ -39,6 +39,7 @@ import {
   type CreateClaimInput,
 } from '../../types/v2/claim.types.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
+import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js';
 
 /**
  * Narrow Request-link contract consumed by {@link TaskPoolService.addToPool}.
@@ -203,6 +204,14 @@ export interface AddToPoolOptions {
 /**
  * Options for {@link TaskPoolService.releaseBack}.
  */
+/** Ticket claim policy wiring (ticket loop Phase 3). */
+export interface TicketClaimPolicyDeps {
+  /** Current tickets by Request id */
+  snapshot(): Promise<ClaimTicketLookup>;
+  /** An agent self-claimed an untargeted item of this ticket */
+  onSelfClaimed?(requestId: string, agentId: string): Promise<void>;
+}
+
 export interface ReleaseBackOptions {
   /**
    * When true, clear the item's `target` as well, returning it to the
@@ -297,6 +306,9 @@ export class TaskPoolService {
    */
   private ticketResolver: ((sessionName: string) => string | null) | null = null;
 
+  /** Ticket claim order + lock (ticket loop Phase 3); null = plain FIFO */
+  private ticketClaimPolicy: TicketClaimPolicyDeps | null = null;
+
   /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
@@ -374,6 +386,57 @@ export class TaskPoolService {
    */
   setTicketResolver(resolver: ((sessionName: string) => string | null) | null): void {
     this.ticketResolver = resolver;
+  }
+
+  /**
+   * Wire the ticket claim policy (specs/ticket-loop.md Phase 3): claim order
+   * (own rejected → own unblocked → queue rejected → P0..P3) and the
+   * one-ticket-per-agent lock, for every claim path.
+   *
+   * @param policy - Ticket snapshot + self-claim hook, or null for FIFO
+   */
+  setTicketClaimPolicy(policy: TicketClaimPolicyDeps | null): void {
+    this.ticketClaimPolicy = policy;
+  }
+
+  /**
+   * Order claim candidates for an agent under the ticket policy (FIFO
+   * without one). Used by claimFromPool and by AutoClaim.
+   *
+   * @param agentId - The claiming agent
+   * @param candidates - Queued, unclaimed, target-respecting items
+   * @returns Candidates in claim order, lock applied
+   */
+  async orderClaimCandidates(agentId: string, candidates: WorkItem[]): Promise<WorkItem[]> {
+    const fifo = [...candidates].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+    if (!this.ticketClaimPolicy) return fifo;
+    try {
+      const tickets = await this.ticketClaimPolicy.snapshot();
+      return orderForAgent(fifo, agentId, await this.storage.getWorkItems(), tickets);
+    } catch (err) {
+      this.logger.warn('Ticket claim policy failed — falling back to FIFO', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return fifo;
+    }
+  }
+
+  /**
+   * After a broadcast claim: an untargeted ticket item makes its claimer the
+   * ticket's assignee when it has none (the lock). Best-effort.
+   *
+   * @param item - The claimed item
+   * @param agentId - The claimer
+   */
+  private async noteTicketSelfClaim(item: WorkItem, agentId: string): Promise<void> {
+    if (!this.ticketClaimPolicy?.onSelfClaimed || !item.requestId || item.targetSource !== 'claim') return;
+    await this.ticketClaimPolicy.onSelfClaimed(item.requestId, agentId).catch((err: unknown) => {
+      this.logger.debug('Ticket self-claim hook failed (non-fatal)', {
+        workItemId: item.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   /**
@@ -940,10 +1003,11 @@ export class TaskPoolService {
         .filter((wi) => wi.status === 'queued' && !claimedIds.has(wi.id))
         .filter((wi) => !wi.target || wi.target === agentId);
 
-      // Find first matching unclaimed queued item (FIFO by createdAt)
-      const candidates = targetRespectingCandidates
-        .filter((wi) => matchesFilters(wi, filters))
-        .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+      // Claim order: FIFO, or the ticket policy's order + lock when wired.
+      const candidates = await this.orderClaimCandidates(
+        agentId,
+        targetRespectingCandidates.filter((wi) => matchesFilters(wi, filters)),
+      );
 
       if (candidates.length === 0) {
         return null;
@@ -999,6 +1063,7 @@ export class TaskPoolService {
         claimId: claim.id,
         title: selected.title,
       });
+      await this.noteTicketSelfClaim(claimedItem, agentId);
 
       return {
         workItem: claimedItem,
@@ -1059,6 +1124,15 @@ export class TaskPoolService {
       const claims = await this.storage.getClaims();
       if (claims.some((c) => c.workItemId === workItemId && c.status === 'active')) return null;
 
+      // Ticket lock (Phase 3): same rule as claimFromPool's ordering.
+      if (!workItem.target && this.ticketClaimPolicy) {
+        const allowed = await this.orderClaimCandidates(agentId, [workItem]);
+        if (allowed.length === 0) {
+          this.logger.debug('claimSpecificItem refused — ticket lock', { workItemId, agentId });
+          return null;
+        }
+      }
+
       // TRANS-2: route the queued → running flip through transitionStatus
       // (mirrors claimFromPool — same V3 + state-machine gates).
       // Hygiene #3 defensive: only assign target when it's currently
@@ -1084,6 +1158,7 @@ export class TaskPoolService {
       await this.storage.flush();
 
       this.logger.info('WorkItem claimed (specific)', { workItemId, agentId, claimId: claim.id });
+      await this.noteTicketSelfClaim(claimedItem, agentId);
 
       return { workItem: claimedItem, claim };
     });
@@ -1377,11 +1452,22 @@ export class TaskPoolService {
       try {
         const source = await this.storage.findWorkItem(verifyOf);
         if (source && source.status === 'done_by_worker') {
-          await this.verifyItem(verifyOf, 'system', 'verified');
+          // Ticket loop Phase 3: a reviewer can send work back by completing
+          // the review with `verdict: 'rejected'` (+ feedback). Before this,
+          // completing a review always meant "verified" and the bridge's
+          // retry path was unreachable from a reviewer.
+          const rejected = result?.verdict === 'rejected';
+          const feedback =
+            typeof result?.feedback === 'string' && result.feedback.trim()
+              ? result.feedback.trim()
+              : typeof result?.summary === 'string'
+                ? result.summary
+                : undefined;
+          await this.verifyItem(verifyOf, 'system', rejected ? 'rejected' : 'verified', rejected ? feedback : undefined);
           this.logger.info('Verify WI complete → propagated to source', {
             verifyWorkItemId: workItemId,
             sourceWorkItemId: verifyOf,
-            verdict: 'verified',
+            verdict: rejected ? 'rejected' : 'verified',
           });
         }
       } catch (err) {
@@ -2441,6 +2527,11 @@ export class TaskPoolService {
       if (newStatus === 'blocked' && typeof reason === 'string' && reason.length > 0) {
         wi.blockedReason = reason;
       }
+      // Ticket loop Phase 3: an agent picks its own unblocked work back up
+      // before new work, so remember that this item was blocked.
+      if (fromStatus === 'blocked' && newStatus === 'queued') {
+        wi.metadata = { ...(wi.metadata ?? {}), unblockedAt: new Date().toISOString() };
+      }
     });
 
     this.logger.info('Work item status updated', {
@@ -2611,6 +2702,11 @@ export class TaskPoolService {
       }
       if (newStatus === 'blocked' && typeof cancelReason === 'string' && cancelReason.length > 0) {
         wi.blockedReason = cancelReason;
+      }
+      // Ticket loop Phase 3: an agent picks its own unblocked work back up
+      // before new work, so remember that this item was blocked.
+      if (fromStatus === 'blocked' && newStatus === 'queued') {
+        wi.metadata = { ...(wi.metadata ?? {}), unblockedAt: new Date().toISOString() };
       }
       if (mutator) mutator(wi);
     });

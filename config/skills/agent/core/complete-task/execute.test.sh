@@ -203,6 +203,25 @@ assert_contains "legacy in_progress shortcut only runs on the legacy path" \
   'if [ -n "$ABSOLUTE_TASK_PATH" ] && echo "$ABSOLUTE_TASK_PATH" | grep -q' "$SRC"
 
 # Cleanup
+echo ""
+echo "--- Reviewer verdict (ticket-loop Phase 3) ---"
+
+run_skill '{"workItemId":"wi-verify","sessionName":"tl-1","summary":"Header row missing","verdict":"rejected","feedback":"add the header row"}'
+VERDICT_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_contains "verdict lands in result" '"verdict": "rejected"' "$VERDICT_BODY"
+assert_contains "feedback lands in result" '"feedback": "add the header row"' "$VERDICT_BODY"
+
+run_skill '{"workItemId":"wi-verify","sessionName":"tl-1","summary":"nope","verdict":"rejected"}'
+assert_contains "rejected without feedback is refused" "needs feedback" "$OUT"
+assert_not_contains "no request sent without feedback" "/task-pool/complete" "$REQUESTS"
+
+run_skill '{"workItemId":"wi-verify","sessionName":"tl-1","summary":"x","verdict":"maybe"}'
+assert_contains "unknown verdict is refused" "verdict must be" "$OUT"
+
+run_skill '{"workItemId":"wi-plain","sessionName":"dev-1","summary":"done"}'
+PLAIN_BODY="$(printf '%s' "$BODIES" | grep 'agentId' | head -1 || true)"
+assert_not_contains "no verdict key when none given" '"verdict"' "$PLAIN_BODY"
+
 rm -rf "$STUB_DIR"
 
 echo ""

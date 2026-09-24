@@ -41,6 +41,17 @@ if [ -n "$SKIP_GATES" ]; then
   error_exit "skipGates is not supported by complete-task and never was — it was accepted and silently discarded. POST /task-pool/complete runs no quality gates, so there is nothing here to skip. Quality gates live behind the 'check-quality-gates' skill (POST /quality-gates/check); run or skip them there. Remove skipGates from this call."
 fi
 OUTPUT_JSON=$(printf '%s' "$INPUT" | jq -c '.output // empty')
+# Reviewing someone's work (a "Verify: …" item): `verdict: "rejected"` plus
+# `feedback` sends it back — the worker gets a retry carrying the feedback.
+# Anything else (or nothing) accepts it.
+VERDICT=$(printf '%s' "$INPUT" | jq -r '.verdict // empty')
+FEEDBACK=$(printf '%s' "$INPUT" | jq -r '.feedback // empty')
+if [ -n "$VERDICT" ] && [ "$VERDICT" != "rejected" ] && [ "$VERDICT" != "verified" ]; then
+  error_exit "verdict must be \"rejected\" or \"verified\" (got \"${VERDICT}\")"
+fi
+if [ "$VERDICT" = "rejected" ] && [ -z "$FEEDBACK" ]; then
+  error_exit "verdict \"rejected\" needs feedback: say what is wrong so the retry can fix it"
+fi
 require_param "sessionName" "$SESSION_NAME"
 require_param "summary" "$SUMMARY"
 
@@ -133,12 +144,16 @@ BODY=$(jq -n \
   --arg agentId "$SESSION_NAME" \
   --arg summary "$SUMMARY" \
   --argjson output "${OUTPUT_JSON:-null}" \
+  --arg verdict "$VERDICT" \
+  --arg feedback "$FEEDBACK" \
   '{
     agentId: $agentId,
     result: ({summary: $summary}
               + (if $output != null and ($output | type) == "object"
                  then $output
-                 else {} end))
+                 else {} end)
+              + (if $verdict != "" then {verdict: $verdict} else {} end)
+              + (if $feedback != "" then {feedback: $feedback} else {} end))
   }')
 
 api_call POST "/task-pool/complete/${WORK_ITEM_ID}" "$BODY"

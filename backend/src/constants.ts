@@ -2599,6 +2599,12 @@ export const TICKET_CONSTANTS = {
 		/** Slack: the 🎫 becomes this once the ticket is accepted */
 		DONE_REACTION: 'white_check_mark',
 	},
+	/** Done / cancelled tickets leave the board after this long (Phase 3) */
+	ARCHIVE: {
+		AFTER_MS: 30 * 24 * 60 * 60 * 1000,
+		/** Subdirectory of the requests dir the files move to (never deleted) */
+		DIRNAME: 'archive',
+	},
 	/**
 	 * Review (Phase 2): an agent's answer puts a ticket in 待验收; the owner
 	 * accepts (验过了) or sends it back (打回 + reason). Silence accepts.

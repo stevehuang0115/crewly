@@ -27,6 +27,12 @@ jest.mock('fs/promises', () => ({
     }
     return entries;
   }),
+  rename: jest.fn().mockImplementation(async (from: string, to: string) => {
+    const content = mockFiles.get(from);
+    if (content === undefined) throw new Error('ENOENT');
+    mockFiles.delete(from);
+    mockFiles.set(to, content);
+  }),
 }));
 
 jest.mock('../../utils/file-io.utils.js', () => ({
@@ -108,6 +114,15 @@ describe('RequestService — ticket review gate (ticket-loop Phase 2)', () => {
     expect((await service.update(cron.id, { status: 'done' })).status).toBe('done');
     const plain = await service.create({ sourceConversationItemId: 'p', title: 'x', description: 'y', intentLevel: 'L1', intentCategory: 'other' });
     expect((await service.update(plain.id, { status: 'done' })).status).toBe('done');
+  });
+
+  it('archive moves the file into requests/archive/ so listAll no longer returns it (Phase 3)', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const t = await makeTicket();
+    expect(await service.archive(t.id)).toBe(true);
+    expect(await service.getById(t.id)).toBeNull();
+    expect([...mockFiles.keys()].some((k) => k.includes('/archive/') && k.endsWith(`${t.id}.json`))).toBe(true);
+    expect(await service.archive('missing')).toBe(false);
   });
 
   it('persists the Phase 2 fields', async () => {
