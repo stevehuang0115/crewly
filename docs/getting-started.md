@@ -47,11 +47,13 @@ Crewly is an open-source platform that coordinates AI coding agents (Claude Code
 
 - **curl**
 
+- **A normal user account, not root.** Run Crewly as a normal user, not with `sudo` or as root. Claude Code refuses to start its agents under root.
+
 - **One AI coding CLI**, installed and logged in:
 
   | Runtime | Install Command | Verify | Auth |
   |---------|----------------|--------|------|
-  | **Claude Code** (recommended) | `npm install -g @anthropic-ai/claude-code` | `claude --version` | Run `claude` once to authenticate |
+  | **Claude Code** (recommended) | `npm install -g @anthropic-ai/claude-code` | `claude --version` | Run `claude` once, choose a theme **and** log in, before starting a team |
   | **Gemini CLI** | `npm install -g @google/gemini-cli` | `gemini --version` | Set `GEMINI_API_KEY`, then run `gemini` once and choose **Use Gemini API Key** |
   | **Codex (OpenAI)** | `npm install -g @openai/codex` | `codex --version` | Set OpenAI API key |
 
@@ -589,7 +591,7 @@ npm install -g crewly
 ```bash
 # Verify Claude Code is authenticated
 claude --version
-claude  # Run once to complete login flow
+claude  # Run once: choose a theme and log in (a fresh install stops at these screens)
 
 # Verify Gemini CLI has API key
 echo $GEMINI_API_KEY  # Should print your key

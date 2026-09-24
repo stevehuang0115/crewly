@@ -42,6 +42,7 @@ The `init` command walks you through provider selection, installs agent skills, 
 - **jq** (`brew install jq` on macOS, `sudo apt-get install -y jq` on Debian/Ubuntu). Agent skills use it, and `crewly init` stops if it is missing.
 - **curl**
 - **One AI coding CLI, installed and logged in**: Claude Code (`claude`), Gemini CLI (`gemini`) or Codex (`codex`). OpenCode also works.
+- **A normal user account, not root.** Run Crewly as a normal user, not with `sudo` or as root. Claude Code refuses to start its agents under root.
 
 tmux is not required.
 
@@ -52,7 +53,7 @@ tmux is not required.
 | **Codex (OpenAI)** | `npm install -g @openai/codex` | `codex --version` |
 | **OpenCode** | `npm install -g opencode-ai` | `opencode --version` |
 
-**API keys:** Gemini CLI requires `GEMINI_API_KEY`. On a Gemini agent's first run, answer its two terminal prompts: authentication (**Use Gemini API Key**) and folder trust (**Yes**). Codex requires an OpenAI API key. Claude Code authenticates through its own login flow. OpenCode uses whichever provider you connect via `opencode auth login` (or the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` env vars Crewly already exports to agent sessions).
+**API keys:** Gemini CLI requires `GEMINI_API_KEY`. On a Gemini agent's first run, answer its two terminal prompts: authentication (**Use Gemini API Key**) and folder trust (**Yes**). Codex requires an OpenAI API key. Claude Code: run `claude` once in a terminal, finish its first-run setup (choose a theme) **and** log in before you start a team. A Claude agent cannot get past those screens on its own. OpenCode uses whichever provider you connect via `opencode auth login` (or the `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` / `GEMINI_API_KEY` env vars Crewly already exports to agent sessions).
 
 ## Architecture
 
