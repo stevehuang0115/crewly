@@ -17,6 +17,11 @@ import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import {
+	prepareControlPlaneGuard,
+	applyControlPlaneSettingsFlag,
+} from './control-plane-guard.service.js';
 
 /**
  * Environment variable that stops OpenCode from self-upgrading on launch
@@ -92,6 +97,55 @@ export abstract class RuntimeAgentService {
 	 */
 	getExitPatterns(): RegExp[] {
 		return this.getRuntimeExitPatterns();
+	}
+
+	/**
+	 * Apply the control-plane guard to the launch commands (Request 72c9427a).
+	 *
+	 * For Claude Code, writes the per-session settings file (deny rules plus a
+	 * PreToolUse Bash hook) and appends `--settings <file>`. Every runtime logs
+	 * one line saying whether it is guarded, so the coverage is visible at
+	 * launch. If the files cannot be written, the session still launches, but
+	 * unguarded and with an ERROR. Blocking agent start on the guard would turn
+	 * a disk error into an outage.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param commands - Launch commands built so far
+	 * @param targetPath - Agent working directory, whose `.claude/agents` is protected
+	 * @returns The commands, with `--settings` appended when the guard applies
+	 */
+	protected async applyControlPlaneGuard(sessionName: string, commands: string[], targetPath?: string): Promise<string[]> {
+		const runtimeType = this.getRuntimeType();
+		if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) {
+			this.logger.info('Control-plane guard: not available for this runtime (unguarded)', { sessionName, runtimeType });
+			return commands;
+		}
+		try {
+			const guard = await prepareControlPlaneGuard(sessionName, {
+				crewlyHome: getCrewlyHomePath(),
+				installRoot: this.projectRoot,
+				projectPath: targetPath,
+			});
+			if (!guard.enabled) {
+				this.logger.warn('Control-plane guard: disabled by kill switch (unguarded)', { sessionName, reason: guard.reason });
+				return commands;
+			}
+			const updated = commands.map((cmd) => applyControlPlaneSettingsFlag(cmd, guard.settingsPath));
+			const applied = updated.some((cmd, i) => cmd !== commands[i]);
+			this.logger.info(
+				applied
+					? 'Control-plane guard: active (deny rules + Bash hook via --settings)'
+					: 'Control-plane guard: settings written but not injected (command has its own --settings or no --dangerously-skip-permissions)',
+				{ sessionName, runtimeType, settingsPath: guard.settingsPath, protectedPaths: guard.protectedCount },
+			);
+			return updated;
+		} catch (error) {
+			this.logger.error('Control-plane guard: could not write settings — launching unguarded', {
+				sessionName,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return commands;
+		}
 	}
 
 	/**
@@ -195,6 +249,9 @@ export abstract class RuntimeAgentService {
 				});
 				this.logger.info('Injected --disallowedTools for plan mode prevention', { sessionName });
 			}
+
+			// Request 72c9427a: control-plane guard (spec 2026-09-24 Part 3).
+			finalCommands = await this.applyControlPlaneGuard(sessionName, finalCommands, targetPath);
 
 			// #229: Suppress Gemini CLI auto-updates that kill agent mid-task
 			if (this.getRuntimeType() === 'gemini-cli') {

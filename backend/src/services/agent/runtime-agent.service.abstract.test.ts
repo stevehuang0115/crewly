@@ -49,8 +49,18 @@ class TestRuntimeService extends RuntimeAgentService {
 describe('RuntimeAgentService (Abstract)', () => {
 	let service: TestRuntimeService;
 	let mockSessionHelper: jest.Mocked<SessionCommandHelper>;
+	const guardEnvBefore = process.env.CREWLY_CONTROL_PLANE_GUARD;
+
+	afterAll(() => {
+		if (guardEnvBefore === undefined) delete process.env.CREWLY_CONTROL_PLANE_GUARD;
+		else process.env.CREWLY_CONTROL_PLANE_GUARD = guardEnvBefore;
+	});
 
 	beforeEach(() => {
+		// The launch-command tests below assert exact command lines and are not
+		// about the control-plane guard; it is switched on explicitly in its own
+		// describe ('control-plane guard injection').
+		process.env.CREWLY_CONTROL_PLANE_GUARD = '0';
 		mockSessionHelper = {
 			capturePane: jest.fn(),
 			sendKey: jest.fn(),
@@ -377,6 +387,75 @@ echo "second command"
 			const commands = await testService['loadInitScript']('test_script.sh');
 
 			expect(commands).toEqual(['echo "first command"', 'echo "second command"']);
+		});
+	});
+
+	describe('control-plane guard injection (Request 72c9427a)', () => {
+		/** Stub the init script and capture the launched commands. */
+		function stubLaunch(svc: RuntimeAgentService, command: string): jest.SpyInstance {
+			jest.spyOn(svc as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_claude.sh',
+				displayName: 'Claude Code',
+				welcomeMessage: 'Welcome',
+				timeout: 120000,
+				description: 'Claude Code CLI',
+			});
+			jest.spyOn(svc as any, 'loadInitScript').mockResolvedValue([command]);
+			return jest.spyOn(svc as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+		}
+
+		beforeEach(() => {
+			delete process.env.CREWLY_CONTROL_PLANE_GUARD;
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockImplementation(() => {
+				throw new Error('settings unavailable');
+			});
+		});
+
+		it('appends --settings <per-session file> after --disallowedTools for Claude Code', async () => {
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-session', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands).toHaveLength(1);
+			expect(commands[0]).toMatch(
+				/^claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode --settings ".*\/runtime\/control-plane\/cpg-session\.settings\.json"$/,
+			);
+		});
+
+		it('the injected settings file exists and holds the deny rules and the Bash hook', async () => {
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-file', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			const settingsPath = /--settings "([^"]+)"/.exec(commands[0])![1];
+			const realFs = jest.requireActual('fs') as typeof import('fs');
+			const settings = JSON.parse(realFs.readFileSync(settingsPath, 'utf-8'));
+			expect(settings.permissions.deny).toEqual(expect.arrayContaining([expect.stringMatching(/^Edit\(\/\/.*\/teams\/\*\*\)$/)]));
+			expect(settings.permissions.deny).toContain('Edit(//test/path/.claude/agents/**)');
+			expect(settings.hooks.PreToolUse[0].matcher).toBe('Bash');
+		});
+
+		it('does not inject when the kill switch CREWLY_CONTROL_PLANE_GUARD=0 is set on the backend', async () => {
+			process.env.CREWLY_CONTROL_PLANE_GUARD = '0';
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-off', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands[0]).not.toContain('--settings');
+		});
+
+		it('keeps an owner-configured --settings instead of adding a second one', async () => {
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions --settings /mine.json');
+			await service.executeRuntimeInitScript('cpg-own', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands[0].match(/--settings/g)).toHaveLength(1);
+			expect(commands[0]).toContain('--settings /mine.json');
+		});
+
+		it('launches unguarded (not blocked) when the settings file cannot be written', async () => {
+			const guard = await import('./control-plane-guard.service.js');
+			jest.spyOn(guard, 'prepareControlPlaneGuard').mockRejectedValueOnce(new Error('EACCES'));
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-err', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands[0]).toBe('claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode');
 		});
 	});
 

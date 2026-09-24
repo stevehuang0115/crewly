@@ -274,6 +274,64 @@ export const PTY_CONSTANTS = {
 } as const;
 
 /**
+ * Control-plane guard for Claude Code agent sessions (Request 72c9427a,
+ * specs/2026-09-24-control-plane-isolation.md Part 3).
+ *
+ * The backend writes a per-session settings file (permissions.deny + a
+ * PreToolUse Bash hook) and passes it with `--settings`, so an agent cannot
+ * edit the files that stop, start and configure agents. All paths are
+ * relative to the root named by the group: CREWLY_HOME (`~/.crewly`), the
+ * install root (the Crewly package / checkout), or the agent's project path.
+ */
+export const CONTROL_PLANE_GUARD_CONSTANTS = {
+	/** Backend env var; `0` turns the guard off for every session launched by this backend. */
+	KILL_SWITCH_ENV: 'CREWLY_CONTROL_PLANE_GUARD',
+	/** Value of KILL_SWITCH_ENV that disables the guard. Any other value (or unset) keeps it on. */
+	KILL_SWITCH_OFF_VALUE: '0',
+	/** Directory under CREWLY_HOME that holds the generated per-session files. */
+	RUNTIME_DIR: 'runtime/control-plane',
+	/** Suffix of the generated Claude Code settings file (`<session><suffix>`). */
+	SETTINGS_FILE_SUFFIX: '.settings.json',
+	/** Suffix of the protected-paths list the Bash hook reads (`<session><suffix>`). */
+	PATHS_FILE_SUFFIX: '.paths',
+	/** The PreToolUse Bash hook, relative to the install root. */
+	HOOK_SCRIPT: 'config/hooks/control-plane-guard/pretooluse-bash.sh',
+	/** CLI flag the settings file is passed with. */
+	SETTINGS_FLAG: '--settings',
+	/** Claude Code tool the PreToolUse hook is attached to. */
+	HOOK_TOOL_MATCHER: 'Bash',
+	/** Write-protected directories under CREWLY_HOME (whole subtree). */
+	CREWLY_HOME_DIRS: ['teams', 'triggers', 'runtime/control-plane'],
+	/** Write-protected files under CREWLY_HOME. */
+	CREWLY_HOME_FILES: [
+		'recurring-checks.json',
+		'one-time-checks.json',
+		'scheduled-messages.json',
+		'settings.json',
+		'runtime-pids.json',
+		'session-state.json',
+		'api-token',
+	],
+	/** Files under CREWLY_HOME that agents must not read with the built-in tools either. */
+	CREWLY_HOME_READ_DENIED_FILES: ['api-token'],
+	/** Write-protected directories under the install root (whole subtree). */
+	INSTALL_DIRS: [
+		'config/skills/orchestrator/stop-agent',
+		'config/skills/orchestrator/start-agent',
+		'config/skills/orchestrator/terminate-agent',
+		'config/skills/orchestrator/stop-team',
+		'config/skills/orchestrator/start-team',
+		'config/skills/orchestrator/restart-crewly',
+		'config/hooks/control-plane-guard',
+		'dist',
+	],
+	/** Write-protected files under the install root. */
+	INSTALL_FILES: ['config/skills/_common/lib.sh'],
+	/** Write-protected directories under the agent's project path (whole subtree). */
+	PROJECT_DIRS: ['.claude/agents', '.crewly/triggers'],
+} as const;
+
+/**
  * Session recreation (Step 2 full recreation in AgentRegistrationService).
  *
  * D3 (2026-09-21): the runtime init sequence leads with Ctrl-C
