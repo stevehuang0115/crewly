@@ -628,27 +628,108 @@ describe('BrowserBridgeService — per-tab dispatch', () => {
 			expect(bridge.getBinding('agent-C')).toBeDefined();
 		});
 
-		it('returns Crewly-owned tabs without bindings as orphans', async () => {
+		it('closes a Crewly tab this backend created and no longer has bound (own orphan)', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 } },
+			]);
+			await bridge.bindAgentTab('agent-A');
+			// Release the binding but leave the tab open (as a failed close would).
+			await bridge.unbindAgentTab('agent-A', { closeTab: false });
+
+			const { orphans } = bridge.handleTabInventory([{ tabId: 42, crewlyOwned: true }]);
+
+			expect(orphans).toEqual([42]);
+		});
+
+		it('does NOT close a Crewly tab in the inventory that this backend never created or bound', async () => {
 			const bridge = BrowserBridgeService.getInstance();
 			stubSendCommand(bridge, [
 				{ id: 'b1', success: true, result: { tabId: 42 } },
 			]);
 			await bridge.bindAgentTab('agent-A');
 
+			// 1383674334 is another client's agent tab in the shared Crewly group,
+			// delivered to us by the relay's account-wide inventory broadcast.
 			const tabs: ExtensionTabDescriptor[] = [
-				{ tabId: 42, crewlyOwned: true }, // bound
-				{ tabId: 50, crewlyOwned: true }, // orphan
-				{ tabId: 51, crewlyOwned: false }, // user's own tab — never close
+				{ tabId: 42, crewlyOwned: true }, // ours, bound
+				{ tabId: 1383674334, crewlyOwned: true, url: 'https://x.com/' }, // not ours
+				{ tabId: 51, crewlyOwned: false }, // user's own tab
 			];
 			const { orphans } = bridge.handleTabInventory(tabs);
 
-			expect(orphans).toEqual([50]);
-			// Bindings unaffected.
+			expect(orphans).toEqual([]);
 			expect(bridge.listBindings()).toHaveLength(1);
 		});
 
-		it('ignores entries without a numeric tabId', () => {
+		it('does not close its own tab while an agent still has it bound', async () => {
 			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 } },
+			]);
+			await bridge.bindAgentTab('agent-A');
+
+			const { orphans } = bridge.handleTabInventory([{ tabId: 42, crewlyOwned: true }]);
+
+			expect(orphans).toEqual([]);
+			expect(bridge.getBinding('agent-A')?.tabId).toBe(42);
+		});
+
+		it('closes only its own orphan when own and foreign unbound Crewly tabs are mixed', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 } },
+				{ id: 'b2', success: true, result: { tabId: 43 } },
+			]);
+			await bridge.bindAgentTab('agent-A');
+			await bridge.bindAgentTab('agent-B');
+			await bridge.unbindAgentTab('agent-B', { closeTab: false });
+
+			const { orphans } = bridge.handleTabInventory([
+				{ tabId: 42, crewlyOwned: true },
+				{ tabId: 43, crewlyOwned: true },
+				{ tabId: 1383674346, crewlyOwned: true },
+				{ tabId: 1383674337, crewlyOwned: true },
+			]);
+
+			expect(orphans).toEqual([43]);
+		});
+
+		it('forgets an owned tab once the Extension reports it removed', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 } },
+			]);
+			await bridge.bindAgentTab('agent-A');
+			await bridge.unbindAgentTab('agent-A', { closeTab: false });
+			bridge.handleTabRemoved(42);
+
+			// Chrome may reuse ids across profiles/sessions: a later tab 42 is not ours.
+			const { orphans } = bridge.handleTabInventory([{ tabId: 42, crewlyOwned: true }]);
+
+			expect(orphans).toEqual([]);
+		});
+
+		it('forgets owned tabs on stop(), so a restarted bridge closes nothing', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 } },
+			]);
+			await bridge.bindAgentTab('agent-A');
+			bridge.stop();
+
+			const { orphans } = bridge.handleTabInventory([{ tabId: 42, crewlyOwned: true }]);
+
+			expect(orphans).toEqual([]);
+		});
+
+		it('ignores entries without a numeric tabId', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 7 } },
+			]);
+			await bridge.bindAgentTab('agent-A');
+			await bridge.unbindAgentTab('agent-A', { closeTab: false });
 			const tabs = [
 				{ url: 'no-id' } as ExtensionTabDescriptor,
 				{ tabId: 7, crewlyOwned: true },

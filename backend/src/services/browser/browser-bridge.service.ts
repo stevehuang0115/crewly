@@ -157,6 +157,20 @@ export class BrowserBridgeService {
 	 */
 	private agentTabBindings: Map<string, AgentTabBinding> = new Map();
 
+	/**
+	 * Tab ids THIS backend created via `bindTab`, kept after the binding is
+	 * released and only forgotten when the Extension reports the tab removed
+	 * (or on shutdown). Orphan reconcile may close only these tabs.
+	 *
+	 * Why this set exists: every client on an account shares one "Crewly" tab
+	 * group, and the relay broadcasts each browser's tab inventory to every
+	 * backend on the account. `crewlyOwned` therefore means "some Crewly
+	 * client's tab", not "ours". Closing every unbound Crewly tab made each
+	 * backend close the other backends' agent tabs (tab-isolation incident,
+	 * 2026-09-23). A tab we cannot attribute to this backend is left open.
+	 */
+	private ownedTabIds: Set<number> = new Set();
+
 	/** Periodic timer that evicts idle bindings (§4.2). Only running while attached. */
 	private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -525,6 +539,7 @@ export class BrowserBridgeService {
 			lastActivityAt: new Date(),
 		};
 		this.agentTabBindings.set(agentSession, binding);
+		this.ownedTabIds.add(binding.tabId);
 
 		this.maybeWarnSoftCap();
 
@@ -645,6 +660,8 @@ export class BrowserBridgeService {
 	 * Idempotent: tabs not in any binding are ignored.
 	 */
 	handleTabRemoved(tabId: number): void {
+		// The tab is gone, so it can no longer be ours to close.
+		this.ownedTabIds.delete(tabId);
 		for (const [agentSession, binding] of this.agentTabBindings) {
 			if (binding.tabId === tabId) {
 				this.agentTabBindings.delete(agentSession);
@@ -666,8 +683,14 @@ export class BrowserBridgeService {
 	 *
 	 * - For each backend binding whose tabId no longer exists in the
 	 *   Extension → drop the binding (`reconcile_extension_missing`).
-	 * - For each Extension tab that is Crewly-owned but unknown to any
-	 *   binding → ask the Extension to close it (orphan cleanup).
+	 * - For each Extension tab that is Crewly-owned, not currently bound,
+	 *   AND was created by this backend (`ownedTabIds`) → ask the Extension
+	 *   to close it (orphan cleanup).
+	 * - A Crewly-owned tab this backend never created is left open and
+	 *   logged at debug: it may belong to another Crewly client on the same
+	 *   account (the relay broadcasts inventories to every backend, and all
+	 *   clients share one Crewly tab group). After a backend restart this
+	 *   leaves our own stray tabs open, which is the safe direction.
 	 *
 	 * Caller is responsible for actually sending the close commands; this
 	 * method returns the orphan list rather than firing `unbindTab` itself
@@ -695,20 +718,29 @@ export class BrowserBridgeService {
 			}
 		}
 
-		// Identify Crewly-owned orphans (tabs in Crewly group with no binding).
+		// Identify orphans: Crewly-group tabs that THIS backend created and no
+		// longer has bound. Unattributable tabs are never closed.
 		const orphans: number[] = [];
+		const unattributed: number[] = [];
 		for (const tab of extensionTabs) {
 			if (typeof tab.tabId !== 'number') continue;
 			if (!tab.crewlyOwned) continue; // never auto-close user's regular tabs
-			if (!boundTabIds.has(tab.tabId)) {
-				orphans.push(tab.tabId);
+			if (boundTabIds.has(tab.tabId)) continue; // still in use by one of our agents
+			if (!this.ownedTabIds.has(tab.tabId)) {
+				unattributed.push(tab.tabId);
+				continue;
 			}
+			orphans.push(tab.tabId);
+			this.logger.info('Reconcile closing orphan tab', {
+				tabId: tab.tabId,
+				reason: BROWSER_BRIDGE_CONSTANTS.RECONCILE_CLOSE_REASON_OWN_UNBOUND,
+			});
 		}
 
-		if (orphans.length > 0) {
-			this.logger.info('Reconcile found Crewly-owned orphan tabs', {
-				orphanCount: orphans.length,
-				orphanTabIds: orphans,
+		if (unattributed.length > 0) {
+			this.logger.debug('Reconcile left unattributed Crewly tabs open (not created by this backend)', {
+				count: unattributed.length,
+				tabIds: unattributed,
 			});
 		}
 
@@ -927,6 +959,7 @@ export class BrowserBridgeService {
 			});
 			this.agentTabBindings.clear();
 		}
+		this.ownedTabIds.clear();
 
 		// Clear all pending commands
 		for (const [id, pending] of this.pendingCommands) {
