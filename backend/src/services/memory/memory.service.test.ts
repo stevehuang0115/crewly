@@ -365,12 +365,23 @@ describe('MemoryService', () => {
       })).rejects.toThrow('projectPath is required');
     });
 
-    it('should throw error for invalid category', async () => {
-      await expect(service.remember({
+    it('keeps an agent-only category sent with project scope by storing it in agent scope (2026-09-24)', async () => {
+      const id = await service.remember({
         agentId: testAgentId,
         projectPath: testProjectPath,
         content: 'Some content',
         category: 'fact', // not valid for project scope
+        scope: 'project',
+      });
+      expect(typeof id).toBe('string');
+    });
+
+    it('still refuses an agent-only category for project scope when there is no agent to hold it', async () => {
+      await expect(service.remember({
+        agentId: '',
+        projectPath: testProjectPath,
+        content: 'Some content',
+        category: 'fact',
         scope: 'project',
       })).rejects.toThrow('not valid for project scope');
     });

@@ -85,7 +85,6 @@ import { RequestService } from './request.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 import type { Request, IntentCategory } from '../../types/v2/request.types.js';
-import type { TicketAcceptance } from '../../types/v2/ticket.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import type { PlannedTask } from './v3-data.service.js';
@@ -428,13 +427,6 @@ export class RequestDecomposeSubscriber {
       }
     }
 
-    // Ticket loop Phase 2 (#763): the plan's criteria become the ticket's
-    // acceptance list, marked as coming from decomposition and checkable by
-    // a build/test ('auto'); owner-written and 打回 criteria stay alongside.
-    if (typeof request.ticketNumber === 'number') {
-      await this.appendTicketAcceptance(request, plan.tasks);
-    }
-
     this.logger.info('Request auto-decomposed', {
       requestId,
       strategy: plan.strategy,
@@ -453,10 +445,21 @@ export class RequestDecomposeSubscriber {
    * @returns True if this subscriber should plan + addToPool for this Request.
    */
   private shouldDecompose(request: Request): boolean {
-    // Ticket loop: a ticket addressed to one agent (a DM, an @) is that
-    // agent's to plan. Auto-decomposing it would put orchestrator-owned,
-    // unassigned WorkItems in the pool — exactly the orc pile-up the ticket
-    // loop exists to remove.
+    // Ticket loop: a ticket is said in a conversation, and the agents in that
+    // conversation answer it — they create WorkItems themselves (with
+    // --request-id) when the work needs splitting. Auto-decomposing it as
+    // well produced generic Plan/Execute/Review items nobody was working on:
+    // TKT-009 was answered by Ella in the thread while its "Plan:" item was
+    // auto-claimed by her and revoked for no heartbeat, over and over, for
+    // three hours (2026-09-24).
+    if (typeof request.ticketNumber === 'number') {
+      this.logger.debug('skip auto-decompose — tickets are planned by the agents answering them', {
+        requestId: request.id,
+      });
+      return false;
+    }
+
+    // A Request addressed to one agent (a DM, an @) is that agent's to plan.
     if (request.assignee && request.assignee !== ORCHESTRATOR_SESSION_NAME) {
       this.logger.debug('skip auto-decompose — ticket is assigned to an agent', {
         requestId: request.id,
@@ -511,38 +514,6 @@ export class RequestDecomposeSubscriber {
     }
 
     return true;
-  }
-
-  /**
-   * Add the planned tasks' acceptance criteria to a ticket (de-duplicated
-   * against what it already has). Best-effort.
-   *
-   * @param request - The ticket
-   * @param tasks - The planned tasks
-   */
-  private async appendTicketAcceptance(request: Request, tasks: readonly PlannedTask[]): Promise<void> {
-    try {
-      const current = (await this.requestService.getById(request.id)) ?? request;
-      const existing = current.acceptance ?? [];
-      const seen = new Set(existing.filter((a) => !a.removedAt).map((a) => a.text));
-      const addedAt = new Date().toISOString();
-      const additions: TicketAcceptance[] = [];
-      for (const task of tasks) {
-        for (const text of task.acceptanceCriteria ?? []) {
-          const t = text.trim();
-          if (!t || seen.has(t)) continue;
-          seen.add(t);
-          additions.push({ text: t, source: 'decompose', check: 'auto', addedAt });
-        }
-      }
-      if (additions.length === 0) return;
-      await this.requestService.update(request.id, { acceptance: [...existing, ...additions] });
-    } catch (err) {
-      this.logger.debug('Ticket acceptance could not be recorded (non-fatal)', {
-        requestId: request.id,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
   }
 
   /**

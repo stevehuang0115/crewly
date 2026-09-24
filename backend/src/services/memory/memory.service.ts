@@ -911,6 +911,17 @@ export class MemoryService implements IMemoryService {
         });
 
       default:
+        // The mirror of the agent-scope coercion above: agents store agent-only
+        // categories (`fact`, `best-practice`, …) with scope=project, and the
+        // throw here dropped the memory (10× on 2026-09-24). Keep the content —
+        // record it in the agent's own scope under the category it asked for.
+        if (params.agentId) {
+          this.logger.warn('Coerced agent-only category to agent scope (was project scope)', {
+            agentId: params.agentId,
+            category: params.category,
+          });
+          return this.rememberForAgent({ ...params, scope: 'agent' });
+        }
         throw new Error(
           `Category '${params.category}' is not valid for project scope. Use 'pattern', 'decision', 'gotcha', 'relationship', or 'user_preference'.`
         );
@@ -1185,8 +1196,10 @@ export class MemoryService implements IMemoryService {
       }
     );
 
-    // Also add to agent knowledge if it's role-relevant
-    if (this.isRoleRelevant(params.learning)) {
+    // Also add to agent knowledge if it's role-relevant. System-event
+    // learnings (AutoLearning) carry no real agent — there is no agent memory
+    // to add to, which logged "Failed to add learning" 185× a day.
+    if (params.agentId && this.isRoleRelevant(params.learning)) {
       try {
         await this.agentMemory.addRoleKnowledge(params.agentId, {
           category: 'best-practice',
@@ -1196,8 +1209,14 @@ export class MemoryService implements IMemoryService {
         });
         this.logger.debug('Also added to agent knowledge', { agentId: params.agentId });
       } catch (error) {
-        // Don't fail if agent memory write fails
-        this.logger.warn('Failed to add learning to agent memory', { error });
+        // Don't fail if agent memory write fails. An agent that has never
+        // registered has no memory yet — expected, not worth a warning.
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not initialized/.test(message)) {
+          this.logger.debug('Agent has no memory yet — learning kept in project learnings only', { agentId: params.agentId });
+        } else {
+          this.logger.warn('Failed to add learning to agent memory', { agentId: params.agentId, error: message });
+        }
       }
     }
 

@@ -294,6 +294,14 @@ the owner never sees ticket mechanics.
   more in the original thread if the result needs an OK; 24 h after the last
   nudge the ticket is accepted (`auto_accepted`). A new answer resets the count.
 
+**No auto-decomposition for tickets** (2026-09-24 log review):
+`RequestDecomposeSubscriber.shouldDecompose` skips any Request with a
+`ticketNumber`. The agents answering in the conversation own the ticket and
+create WorkItems themselves (`--request-id`); the generic Plan / Execute /
+Review items duplicated that work (TKT-009's "Plan:" item was auto-claimed
+and revoked for no heartbeat for three hours while Ella answered in Slack).
+The decompose → ticket-acceptance copy is gone with it.
+
 ## Phase 3 — self-claim, review routing, archive (2026-09-24)
 
 Measured before starting (code survey): no claim path ordered by priority
