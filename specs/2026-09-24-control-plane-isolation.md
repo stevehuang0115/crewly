@@ -1,6 +1,6 @@
 # Control-Plane Isolation and Shutdown Safety
 
-**Status:** design, minimal enforcement in progress · **Date:** 2026-09-24 · **Owner:** crewly-product-team (Sam, TL)
+**Status:** Part 1 shipped (PR 1); Part 3 enforcement follows in PR 2 · **Date:** 2026-09-24 · **Owner:** crewly-product-team (Sam, TL)
 **Request:** 72c9427a · **Evidence:** arXiv 2609.28274 "Shutdown Sabotage Propensities in Multi-Agent Systems"
 
 ## Why
@@ -48,7 +48,13 @@ Stopping, restarting and reconfiguring agents — including your own session and
 - the loopback API accepts calls without a token, and `X-Agent-Session` is asserted by the caller, so any agent can call any stop or start endpoint as anyone;
 - an agent can edit the files in the table above directly.
 
-## Part 3 — Minimal enforcement (this change, ≤ 1 day, OSS)
+## Part 3 — Minimal enforcement (PR 2, ≤ 1 day, OSS)
+
+> **Status (2026-09-24):** Part 1 (prompt rule) ships in PR 1. The enforcement below **is not in PR 1**; it follows in PR 2 on a separate branch.
+> **Verification status:** whether Claude Code enforces `permissions.deny` under `--dangerously-skip-permissions` is **UNVERIFIED so far**. The nested `claude -p` check was declined at a permission prompt and was not retried. PR 2 therefore does not rely on deny rules alone: the PreToolUse Bash hook is tested directly, by piping PreToolUse JSON to the script on stdin. That covers a write to the team config (blocked), a write to `stop-agent/execute.sh` (blocked), a `cat` of the team config (allowed) and an unrelated write (allowed). The hook prints what it matched and how many paths it checked. The live failed-write demo from a real Crewly-launched agent is done by the TL after PR 2 review, and its transcript will be added here.
+>
+> **Verified in PR 1:** the built prompt for orchestrator, team-leader and developer (full and lite profiles, and under a 1-token budget) contains `## Stopping and Restarting Agents`. The static `config/roles/{orchestrator,team-leader}/prompt.md` copies are byte-identical to the module output. Revert check against `origin/main`: all 18 new tests fail and the pre-existing tests stay green.
+
 
 This covers the Claude Code runtime, which runs every agent in the default template.
 
