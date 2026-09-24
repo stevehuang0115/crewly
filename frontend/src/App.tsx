@@ -28,6 +28,7 @@ import { Pricing } from './pages/Pricing';
 import { CloudPortal } from './pages/CloudPortal';
 import { Missions } from './pages/Missions';
 import { MissionDetail } from './pages/MissionDetail';
+import { Tickets } from './pages/Tickets';
 import { WorkItems } from './pages/WorkItems';
 import { WorkItemDetail } from './pages/WorkItemDetail';
 import { RequestsPage } from './pages/RequestsPage';
@@ -100,6 +101,8 @@ function App() {
               <Route path="requests/:id" element={<NavigateToTask />} />
               <Route path="missions" element={<Missions />} />
               <Route path="missions/:id" element={<MissionDetail />} />
+              {/* Ticket board (specs/ticket-loop.md Phase 2): every owner ask as a TKT card. */}
+              <Route path="tickets" element={<Tickets />} />
               <Route path="workitems" element={<WorkItems />} />
               <Route path="workitems/:id" element={<WorkItemDetail />} />
 

@@ -37,6 +37,7 @@ vi.mock('./pages/WorkItems', () => ({ WorkItems: () => <div>WorkItems Page</div>
 vi.mock('./pages/WorkItemDetail', () => ({ WorkItemDetail: () => <div>WorkItem Detail Page</div> }));
 vi.mock('./pages/Missions', () => ({ Missions: () => <div>Missions Page</div> }));
 vi.mock('./pages/MissionDetail', () => ({ MissionDetail: () => <div>Mission Detail Page</div> }));
+vi.mock('./pages/Tickets', () => ({ Tickets: () => <div>Tickets Page</div> }));
 vi.mock('./pages/RequestDetail', () => ({ RequestDetail: () => <div>Request Detail Page</div> }));
 
 // Global sign-in banner — rendered on every route; its polling is covered
@@ -104,6 +105,14 @@ describe('App routes', () => {
 
     expect(await screen.findByText('WorkItem Detail Page')).toBeInTheDocument();
     expect(screen.queryByText('WorkItems Page')).not.toBeInTheDocument();
+  });
+
+  it('mounts the ticket board at /tickets', async () => {
+    window.history.pushState({}, '', '/tickets');
+
+    render(<App />);
+
+    expect(await screen.findByText('Tickets Page')).toBeInTheDocument();
   });
 
   it('still mounts the WorkItems list at /workitems (no id)', async () => {

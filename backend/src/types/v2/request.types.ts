@@ -15,6 +15,8 @@ import type {
   TicketAcceptance,
   TicketReceipt,
   TicketDiscussionEntry,
+  TicketChatRef,
+  TicketReply,
 } from './ticket.types.js';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +28,8 @@ import type {
  *
  * State machine:
  *   open → ready                  (planner created WorkItems)
+ *   open/ready → running          (ticket being worked on directly)
+ *   open/ready → waiting_confirmation (ticket answered directly, owner to accept)
  *   open → cancelled              (user cancelled before planning)
  *   ready → running               (first WorkItem started)
  *   running → blocked             (all active WorkItems blocked/failed)
@@ -185,6 +189,12 @@ export interface Request {
   receipt?: TicketReceipt;
   /** Follow-ups in the ticket's thread */
   discussion?: TicketDiscussionEntry[];
+  /** The chat-v2 turn that opened it (Phase 2: matches agent answers) */
+  chatRef?: TicketChatRef;
+  /** Latest agent answer in its thread (Phase 2) */
+  reply?: TicketReply;
+  /** When it last went to 待验收 (ISO-8601) */
+  submittedAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -239,6 +249,18 @@ export interface UpdateRequestInput {
   assignee?: string;
   receipt?: TicketReceipt;
   discussion?: TicketDiscussionEntry[];
+  acceptance?: TicketAcceptance[];
+  rejectCount?: number;
+  submitCount?: number;
+  submittedAt?: string;
+  chatRef?: TicketChatRef;
+  reply?: TicketReply;
+  /**
+   * The owner accepted it (or it was auto-accepted). Without this a ticket
+   * that needs review cannot become `done`: the update is turned into
+   * `waiting_confirmation` instead. Not stored.
+   */
+  accepted?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -250,8 +272,9 @@ export interface UpdateRequestInput {
  * Key = current status, Value = set of allowed next statuses.
  */
 export const REQUEST_TRANSITIONS: Record<RequestStatus, ReadonlySet<RequestStatus>> = {
-  open: new Set(['ready', 'done', 'cancelled']),
-  ready: new Set(['running', 'cancelled']),
+  // → waiting_confirmation: a ticket answered directly, now with the owner.
+  open: new Set(['ready', 'running', 'waiting_confirmation', 'done', 'cancelled']),
+  ready: new Set(['running', 'waiting_confirmation', 'cancelled']),
   running: new Set(['blocked', 'waiting_confirmation', 'done', 'cancelled']),
   blocked: new Set(['running', 'cancelled']),
   waiting_confirmation: new Set(['done', 'running', 'cancelled']),

@@ -16,6 +16,7 @@
  */
 
 import { ORCHESTRATOR_SESSION_NAME, OWNER_EVIDENCE_METADATA, TICKET_CONSTANTS } from '../../constants.js';
+import { getTicketReviewService } from './ticket-review.service.js';
 import type { Request } from '../../types/v2/request.types.js';
 import {
   formatTicketMarker,
@@ -115,9 +116,7 @@ export function isOwnerChatMessage(message: Pick<ChatMessageDTO, 'senderType' | 
  */
 export function ticketOfOutcome(outcome: IntakeOutcome | null): Request | null {
   if (!outcome) return null;
-  return outcome.action === 'created' || outcome.action === 'appended' || outcome.action === 'duplicate'
-    ? outcome.ticket
-    : null;
+  return outcome.action === 'ignored' || outcome.action === 'dismissed' ? null : outcome.ticket;
 }
 
 /**
@@ -132,7 +131,10 @@ export function ticketDeliveryLine(ticket: Pick<Request, 'id' | 'ticketNumber'> 
   const marker = formatTicketMarker(ticket);
   if (!marker) return '';
   const tkt = formatTicketNumber(ticket.ticketNumber as number);
-  return `${marker} 这条消息已记为工单 ${tkt}。为它创建 WorkItem（delegate-task / create-task / decompose-goal）时加上 --request-id ${ticket.id}。`;
+  return (
+    `${marker} 这条消息已记为工单 ${tkt}。为它创建 WorkItem（delegate-task / create-task / decompose-goal）时加上 --request-id ${ticket.id}。` +
+    `回答前用 ticket-check --ticket ${tkt} 看验收标准（有「打回」来源的先查）。`
+  );
 }
 
 /**
@@ -163,6 +165,24 @@ export function withTicketMarker(message: ChatMessageDTO, ticket: Pick<Request, 
     ...message,
     metadata: { ...(message.metadata ?? {}), [TICKET_CONSTANTS.MESSAGE_MARKER_METADATA_KEY]: line },
   };
+}
+
+/**
+ * {@link withTicketMarker}, and remember that this chat-v2 turn opened the
+ * ticket, so the agent's answer in the same thread can be matched to it
+ * (Phase 2 review). The link is fire-and-forget; delivery never waits on it.
+ *
+ * @param message - The persisted owner message about to be dispatched
+ * @param ticket - The ticket it belongs to, or null
+ * @returns The message to dispatch (see {@link withTicketMarker})
+ */
+export function markAndLinkTicket(message: ChatMessageDTO, ticket: Pick<Request, 'id' | 'ticketNumber'> | null): ChatMessageDTO {
+  if (ticket && typeof ticket.ticketNumber === 'number') {
+    void getTicketReviewService()
+      ?.noteChatTurn(ticket.id, message)
+      .catch(() => undefined);
+  }
+  return withTicketMarker(message, ticket);
 }
 
 /**
@@ -229,6 +249,16 @@ export function dismissedReceiptText(ticket: Pick<Request, 'ticketNumber'>): str
   return TICKET_CONSTANTS.RECEIPT.DISMISSED(formatTicketNumber(ticket.ticketNumber ?? 0));
 }
 
+/**
+ * Receipt text once the ticket is accepted.
+ *
+ * @param ticket - The ticket
+ * @returns `TKT-123 已完成`
+ */
+export function doneReceiptText(ticket: Pick<Request, 'ticketNumber'>): string {
+  return TICKET_CONSTANTS.RECEIPT.DONE(formatTicketNumber(ticket.ticketNumber ?? 0));
+}
+
 // ---------------------------------------------------------------------------
 // Slack receipt sink
 // ---------------------------------------------------------------------------
@@ -289,6 +319,13 @@ export function createSlackReceiptSink(deps: SlackReceiptSinkDeps): TicketReceip
       }
       // `blocks: []` drops the button; Slack keeps old blocks when omitted.
       await deps.slack.updateMessage(receipt.slackChannelId, receipt.ts, dismissedReceiptText(ticket), [], tokenFor(receipt.postedAs));
+    },
+    async markDone(_ticket: Request, receipt: TicketReceipt): Promise<void> {
+      // Only reaction receipts change: 🎫 → ✅, still no message.
+      if (receipt.kind !== 'slack' || !receipt.reaction) return;
+      const token = tokenFor(receipt.postedAs);
+      await deps.slack.removeReaction?.(receipt.slackChannelId, receipt.ts, receipt.reaction, token).catch(() => undefined);
+      await deps.slack.addReaction?.(receipt.slackChannelId, receipt.ts, TICKET_CONSTANTS.RECEIPT.DONE_REACTION, token);
     },
   };
 }
@@ -357,6 +394,17 @@ export function createChatV2ReceiptSink(deps: ChatV2ReceiptSinkDeps): TicketRece
           ticketId: ticket.id,
           tkt: formatTicketNumber(ticket.ticketNumber ?? 0),
           status: 'dismissed',
+        },
+      });
+      if (updated) deps.broadcast?.(updated);
+    },
+    async markDone(ticket: Request, receipt: TicketReceipt): Promise<void> {
+      if (receipt.kind !== 'chat-v2') return;
+      const updated = deps.chat.updateSystemMessage(receipt.messageId, doneReceiptText(ticket), {
+        [TICKET_CONSTANTS.RECEIPT_METADATA_KEY]: {
+          ticketId: ticket.id,
+          tkt: formatTicketNumber(ticket.ticketNumber ?? 0),
+          status: 'done',
         },
       });
       if (updated) deps.broadcast?.(updated);
@@ -461,7 +509,7 @@ export async function intakeChatV2OwnerMessage(
     const intakeMessage = chatV2IntakeMessage(channel, message, origin);
     if (!intakeMessage) return message;
     const outcome = await intakeWithin(intake, intakeMessage);
-    return withTicketMarker(message, ticketOfOutcome(outcome));
+    return markAndLinkTicket(message, ticketOfOutcome(outcome));
   } catch {
     // Ticket intake must never stop a message from being delivered.
     return message;

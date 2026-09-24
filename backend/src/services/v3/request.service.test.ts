@@ -54,6 +54,76 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
+describe('RequestService — ticket review gate (ticket-loop Phase 2)', () => {
+  beforeEach(() => {
+    RequestService.resetInstance();
+    mockFiles.clear();
+  });
+
+  /**
+   * Create a ticket.
+   *
+   * @param extra - Overrides
+   * @returns The ticket
+   */
+  async function makeTicket(extra: Record<string, unknown> = {}) {
+    return RequestService.getInstance('/tmp/test-project').create({
+      sourceConversationItemId: `t-${Math.random()}`,
+      title: 'Add CSV export',
+      description: 'add csv export',
+      intentLevel: 'L1',
+      intentCategory: 'code_change',
+      ticketNumber: 7,
+      origin: { channel: 'slack-dm', ref: 'r', author: 'U' },
+      requiresConfirmation: true,
+      ...extra,
+    });
+  }
+
+  it('turns done into 待验收 and stamps submittedAt / submitCount', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const t = await makeTicket();
+    const after = await service.update(t.id, { status: 'done' });
+    expect(after.status).toBe('waiting_confirmation');
+    expect(after.submitCount).toBe(1);
+    expect(after.submittedAt).toEqual(expect.any(String));
+    expect(after.completedAt).toBeUndefined();
+    // Another close attempt while in review changes nothing.
+    const again = await service.update(t.id, { status: 'done' });
+    expect(again).toMatchObject({ status: 'waiting_confirmation', submitCount: 1 });
+  });
+
+  it('accepted passes the gate', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const t = await makeTicket();
+    await service.update(t.id, { status: 'done' });
+    const done = await service.update(t.id, { status: 'done', accepted: true });
+    expect(done.status).toBe('done');
+    expect(done.completedAt).toEqual(expect.any(String));
+  });
+
+  it('cron tickets and plain Requests close directly', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const cron = await makeTicket({ origin: { channel: 'cron', ref: 'c', author: 'system' } });
+    expect((await service.update(cron.id, { status: 'done' })).status).toBe('done');
+    const plain = await service.create({ sourceConversationItemId: 'p', title: 'x', description: 'y', intentLevel: 'L1', intentCategory: 'other' });
+    expect((await service.update(plain.id, { status: 'done' })).status).toBe('done');
+  });
+
+  it('persists the Phase 2 fields', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const t = await makeTicket();
+    const after = await service.update(t.id, {
+      acceptance: [{ text: 'has a header row', source: 'owner' }],
+      rejectCount: 2,
+      chatRef: { channelId: 'c', messageId: 'm', threadRootId: 'm' },
+      reply: { at: 'now', by: 'ella', messageId: 'a', excerpt: 'done' },
+    });
+    expect(after).toMatchObject({ rejectCount: 2, chatRef: { channelId: 'c' }, reply: { by: 'ella' } });
+    expect(after.acceptance).toHaveLength(1);
+  });
+});
+
 describe('RequestService', () => {
   beforeEach(() => {
     RequestService.resetInstance();

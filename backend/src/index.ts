@@ -98,7 +98,7 @@ import { setRequestServiceEventBus, RequestService } from './services/v3/request
 import { getSlackService } from './services/slack/slack.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -107,6 +107,10 @@ import {
 	resolveTicketIdForSession,
 } from './services/v3/ticket-intake.service.js';
 import { createChatV2ReceiptSink } from './services/v3/ticket-channel-hooks.js';
+import { TicketReviewService, setTicketReviewService, getTicketReviewService } from './services/v3/ticket-review.service.js';
+import { activeAcceptance, formatTicketMarker, formatTicketNumber } from './types/v2/ticket.types.js';
+import { createWorkItem, TERMINAL_WORK_ITEM_STATUSES } from './types/v2/work-item.types.js';
+import type { ChatMessageDTO } from './services/chat-v2/types.js';
 import { runPoolArchiveMigration } from './services/task-pool/pool-archive-migration.js';
 import { createPtyTurnProbe } from './services/restart/turn-probe.js';
 import { RestartDrainService, resolveRestartDrainMs, type GracefulShutdownRequest } from './services/restart/restart-drain.service.js';
@@ -546,6 +550,50 @@ export class CrewlyServer {
 			TaskPoolService.getInstance().setTicketResolver((sessionName) =>
 				resolveTicketIdForSession(InFlightTurnTracker.getInstance(), sessionName),
 			);
+
+			// Phase 2: answered → 待验收 → 验过了 / 打回 / silence accepts.
+			const ticketReview = new TicketReviewService({
+				requests: RequestService.getInstance(),
+				fallbackAgent: ORCHESTRATOR_SESSION_NAME,
+				openWorkItemCount: async (requestId) =>
+					(await TaskPoolService.getInstance().getAllItems()).filter(
+						(wi) => wi.requestId === requestId && !TERMINAL_WORK_ITEM_STATUSES.has(wi.status),
+					).length,
+				createRework: async ({ ticket, reason, target }) => {
+					const tkt = formatTicketNumber(ticket.ticketNumber ?? 0);
+					const criteria = activeAcceptance(ticket.acceptance).map((a) => `- ${a.text}`).join('\n');
+					const wi = createWorkItem({
+						type: 'delegate',
+						owner: 'system',
+						target,
+						requestId: ticket.id,
+						title: TICKET_CONSTANTS.REVIEW.REWORK_TITLE(tkt),
+						description:
+							`${formatTicketMarker(ticket)} The owner sent ${tkt} back: ${reason}\n\n` +
+							`Original ask: ${ticket.description}\n` +
+							(ticket.reply ? `Your last answer: ${ticket.reply.excerpt}\n` : '') +
+							(criteria ? `\nAcceptance criteria:\n${criteria}\n` : '') +
+							`\nFix it and answer in the ticket's conversation.`,
+						metadata: { ticketRework: true },
+					});
+					await TaskPoolService.getInstance().addToPool(wi);
+					return wi.id;
+				},
+				markReceiptDone: (ticket) => ticketIntake.markReceiptDone(ticket),
+			});
+			setTicketReviewService(ticketReview);
+			ticketIntake.setReviewHandler(ticketReview);
+			getChatV2Service().on('chat_message', (dto: ChatMessageDTO) => {
+				void ticketReview.onChatMessage(dto).catch(() => undefined);
+			});
+			const reviewSweep = setInterval(() => {
+				void ticketReview.sweep().catch((sweepErr: unknown) => {
+					this.logger.warn('Ticket review sweep failed', {
+						error: sweepErr instanceof Error ? sweepErr.message : String(sweepErr),
+					});
+				});
+			}, TICKET_CONSTANTS.REVIEW.SWEEP_INTERVAL_MS);
+			reviewSweep.unref?.();
 		} catch (ticketBootErr) {
 			this.logger.error('Ticket intake boot failed — messages are still delivered, no tickets filed', {
 				error: ticketBootErr instanceof Error ? ticketBootErr.message : String(ticketBootErr),
@@ -1100,6 +1148,12 @@ void (async () => {
 				// was mid-answer and never got a reply; the message was still
 				// in the queue an hour later (2026-09-21, Ella).
 				setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
+
+				// Ticket loop Phase 2: an agent that finished its turn has answered
+				// the tickets it replied in — submit them (待验收 or done).
+				void getTicketReviewService()
+					?.onAgentIdle(event.sessionName)
+					.catch(() => undefined);
 
 				// V3: Auto-close open Requests when the orchestrator goes idle
 				// Handles direct responses (no WorkItem delegation)
@@ -3995,6 +4049,9 @@ void (async () => {
 
 				for (const req of all) {
 					if (req.status !== 'open') continue;
+					// Tickets matched to their chat turn close when their answer
+					// settles (TicketReviewService), not on a timer.
+					if (req.chatRef) continue;
 					const reqAge = Date.now() - new Date(req.createdAt).getTime();
 					if (reqAge > 10 * 60 * 1000) continue; // older than 10 min — skip
 					if (reqAge < minAgeMs) continue; // too young — orchestrator may still be delegating

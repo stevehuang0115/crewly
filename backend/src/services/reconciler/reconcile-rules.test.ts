@@ -319,6 +319,13 @@ describe('detectExpiredClaims', () => {
 // reconcileRequestStatus
 // ---------------------------------------------------------------------------
 describe('reconcileRequestStatus', () => {
+  it('leaves a ticket in 待验收 and a ticket with no WorkItems alone (Phase 2)', () => {
+    expect(reconcileRequestStatus(makeRequest({ status: 'waiting_confirmation', ticketNumber: 3, workItemIds: [] }), [])).toBeNull();
+    expect(reconcileRequestStatus(makeRequest({ status: 'running', ticketNumber: 3, workItemIds: [] }), [])).toBeNull();
+    const inReview = makeRequest({ status: 'waiting_confirmation', ticketNumber: 3, workItemIds: ['wi-1'] });
+    expect(reconcileRequestStatus(inReview, [makeWorkItem({ id: 'wi-1', status: 'done' })])).toBeNull();
+  });
+
   it('should transition running request to done when all WorkItems done', () => {
     const request = makeRequest({ status: 'running', workItemIds: ['wi-1', 'wi-2'] });
     const workItems = [

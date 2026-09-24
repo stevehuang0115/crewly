@@ -281,6 +281,86 @@ describe('intake — threads', () => {
   });
 });
 
+describe('intake — review replies (Phase 2)', () => {
+  /** Review handler that records calls and applies them to the store. */
+  function fakeReview() {
+    const calls: string[] = [];
+    return {
+      calls,
+      async verify(ref: string) {
+        calls.push(`verify:${ref}`);
+        return { ok: true, ticket: await store.update(ref, { status: 'done' }) };
+      },
+      async reject(ref: string, reason: string, via: 'thread') {
+        calls.push(`reject:${ref}:${reason}:${via}`);
+        return { ok: true, ticket: await store.update(ref, { status: 'running' }) };
+      },
+      async reopenOnFollowUp(id: string) {
+        calls.push(`reopen:${id}`);
+        return store.update(id, { status: 'running' });
+      },
+    };
+  }
+
+  it('new tickets need review; cron / mission ones do not', async () => {
+    const t = await svc.intake(msg());
+    expect(t?.requiresConfirmation).toBe(true);
+    const cron = await svc.intake(msg({ ts: '200.1', origin: { channel: 'cron', ref: 'cron-1', threadRef: 'slack:C1:200.1', author: 'U-owner' } }));
+    expect(cron?.requiresConfirmation).toBe(false);
+  });
+
+  it('验过了 in a 待验收 thread accepts; 打回 + reason sends back', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation' });
+    const v = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '验过了' }));
+    expect(v.action).toBe('verified');
+
+    const t2 = await svc.intake(msg({ ts: '300.1', text: 'please export the weekly report as csv' }));
+    await store.update(t2!.id, { status: 'waiting_confirmation' });
+    const r = await svc.intakeWithOutcome(msg({ ts: '300.2', thread: '300.1', text: '打回：少了表头' }));
+    expect(r.action).toBe('rejected');
+    expect(review.calls).toEqual([`verify:${t!.id}`, `reject:${t2!.id}:少了表头:thread`]);
+  });
+
+  it('any other owner message in a 待验收 thread reopens it and is appended', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation' });
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
+    expect(o.action).toBe('appended');
+    expect(review.calls).toEqual([`reopen:${t!.id}`]);
+    expect((await store.getById(t!.id))?.status).toBe('running');
+  });
+
+  it('a top-level 验过了 (DMs) accepts the newest 待验收 ticket of the conversation', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation' });
+    const v = await svc.intakeWithOutcome(msg({ ts: '500.1', text: 'lgtm' }));
+    expect(v.action).toBe('verified');
+    expect(review.calls).toEqual([`verify:${t!.id}`]);
+  });
+
+  it('without a review handler 验过了 is just a (trivial) follow-up', async () => {
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation' });
+    expect((await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '验过了' }))).action).toBe('appended');
+  });
+
+  it('markReceiptDone hands the receipt to its sink', async () => {
+    const done: string[] = [];
+    svc.setReceiptSink('slack', { ...sink, markDone: async (t) => void done.push(t.id) });
+    const t = await svc.intake(msg());
+    await flush();
+    await svc.markReceiptDone((await store.getById(t!.id))!);
+    expect(done).toEqual([t!.id]);
+  });
+});
+
 describe('dismiss ("不用记")', () => {
   it('a 不用记 reply in the thread cancels the ticket, tags it and edits the receipt', async () => {
     const created = await svc.intake(msg());

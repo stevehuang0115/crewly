@@ -59,7 +59,7 @@ P3/P2/P1; add `urgent` → P0.
 | 待验收 To review | all WorkItems terminal-success and `requiresConfirmation` (Phase 2 sets it) |
 | 已完成 Done | `done` (`cancelled` hidden, searchable) |
 
-## Phase 1 — intake and linking (this PR)
+## Phase 1 — intake and linking (PR #790)
 
 ### 1. `TicketIntakeService` (new, `services/v3/ticket-intake.service.ts`)
 
@@ -199,10 +199,81 @@ receipt sinks, per-channel intake builders), `types/v2/ticket.types.ts`,
 Board UI, acceptance editing, verify/reject, agent self-claiming, review routing,
 bug button, delivery hooks (Phases 2–4).
 
-## Phases 2–4 (summary; specced when started)
+## Phase 2 — answered, 待验收, 验过了 / 打回 (2026-09-24)
 
-2. Board (Crewly dashboard, portal, mobile), acceptance criteria, 验过了 / 打回 with a
-   required reason, review in the Slack thread, push with the two actions.
+Measured before starting: both real tickets (TKT-001/002) were closed `done`
+by `autoCloseOpenRequests` 3 minutes after they were filed — a blind timer
+that closes any open Request 3–10 min old when the orc goes idle, attributed
+to the orc although Atlas was the assignee. Nobody had checked anything.
+
+Owner constraint (2026-09-24): keep ticket UX out of the conversation — no
+per-message prompts. So review costs the owner nothing unless they object.
+
+### Lifecycle
+
+1. **Answered.** `markAndLinkTicket` (the three dispatch sites: team channel,
+   agent DM, chat-v2) records `ticket.chatRef` = the chat-v2 turn that opened
+   it. `TicketReviewService.onChatMessage` records an agent message in that
+   thread (or a top-level agent message in that channel — newest open ticket
+   the agent could be answering) as `ticket.reply` and moves open/ready →
+   running.
+2. **Submitted.** On `agent:idle` of the replying agent, or after
+   `REVIEW.SUBMIT_SETTLE_MS` (sweep every 2 min), a ticket whose reply is newer
+   than its last submit and which has no open WorkItems is submitted:
+   `update({status:'done'})`. The **gate in `RequestService.update`** turns
+   that into `waiting_confirmation` (sets `submittedAt`, `submitCount++`) for
+   any ticket with `requiresConfirmation` (intake sets it; cron/mission
+   origins do not). Every other close path (cascade, SLA, reconciler, legacy
+   auto-close) hits the same gate, so no ticket reaches done without
+   `accepted: true`.
+3. **Owner.** 验过了 (thread reply, a top-level reply in the same
+   conversation, or `POST /:id/verify`) → done. 打回 + reason (thread or
+   `POST /:id/reject {reason}`, reason required) → running, `rejectCount++`,
+   reason appended as an acceptance criterion (`source:'reject'`,
+   `check:'judgment'`); from the board a rework WorkItem (`打回 TKT-…`) is
+   queued for whoever answered (else assignee / orc). Any other owner message
+   in a 待验收 thread → running (no reject counted).
+4. **Silence accepts.** 待验收 for `REVIEW.AUTO_ACCEPT_MS` (72 h) → done,
+   tag `auto_accepted`. No ping.
+5. **Receipts.** Slack 🎫 → ✅ when done (no message). chat-v2 note →
+   「TKT-… 已完成」.
+
+Guards added so old paths do not fight the review: SLA `maybeCloseRequest`
+and orphan-cancel skip tickets with `chatRef` (a "收到" reply is not an
+answer, and must never cancel the ticket's WorkItems); the reconciler leaves
+tickets in 待验收 and tickets with no WorkItems alone; `autoCloseOpenRequests`
+skips tickets with `chatRef`. Transitions added: open → running /
+waiting_confirmation, ready → waiting_confirmation.
+
+### Acceptance (#763, first slice)
+
+`TicketAcceptance` gains `source` (owner / decompose / reject / agent),
+`check` (`auto` = a build/test/scan can show it; `judgment` = needs a person),
+`addedAt`, `removedAt` (soft delete keeps history). Decomposition copies the
+plan's criteria (`decompose`, `auto`); 打回 reasons add `reject`/`judgment`
+ones — criteria grow from real review instead of being fixed up front.
+Agents record self-checks per live criterion (`POST /:id/self-check`); a
+self-check can only speak for `auto` criteria. Not in this slice: the TL
+error-discovery pass and worker-proposed criteria (#763 a, d).
+
+### API additions
+
+`POST /:id/verify`, `POST /:id/reject {reason}`, `PUT /:id/acceptance
+{items:[{text,check?}]}`, `POST /:id/self-check {index,result,evidence?}`
+(agents allowed), `PATCH /:id {title,priority,kind,assignee}`. Owner-only
+calls refuse `X-Agent-Session` (403). List rows add `acceptance` (live),
+`reply`, `rejectCount`, `submitCount`, `submittedAt`, `completedAt`,
+`autoAcceptAt`.
+
+### Surfaces
+
+Board in the Crewly dashboard (`/tickets`), the portal and the phone (both via
+the relay REST allowlist): columns 想法 / 待处理 / 进行中 / 阻塞 / 待验收 / 已完成,
+card → detail with acceptance, answer excerpt, discussion, 验过了 / 打回
+(reason required), priority edit. No push notifications (owner constraint).
+
+## Phases 3–4 (summary; specced when started)
+
 3. Agents self-claim by priority (own rejected → own unblocked → queue rejected → P0..P3),
    one ticket per agent with a lock; review routing (self-check → team lead → owner),
    orc stops reviewing every WorkItem; 30-day archive of done tickets.

@@ -1479,6 +1479,41 @@ describe('RequestSlaSubscriber', () => {
       });
     });
 
+    describe('tickets matched to their chat turn (ticket-loop Phase 2)', () => {
+      it('a chat-v2 reply neither cancels a ticket’s WorkItems nor closes it', async () => {
+        const r = buildRequest({
+          status: 'ready',
+          tags: ['chat-v2'],
+          sourceConversationItemId: 'chatv2-TCHAN__123',
+          ticketNumber: 5,
+          chatRef: { channelId: 'TCHAN', messageId: '123', threadRootId: '123' },
+        });
+        svc.registry.set(r.id, r);
+        pool.taskPool.addToPool({
+          id: 'wi-ticket-work',
+          requestId: r.id,
+          type: 'delegate',
+          owner: 'orchestrator',
+          status: 'queued',
+          title: 'Work',
+          description: 'work',
+          createdAt: new Date().toISOString(),
+          retryCount: 0,
+          maxRetries: 3,
+          inputTokens: 0,
+          outputTokens: 0,
+          cost: 0,
+        } as unknown as WorkItem);
+
+        await sub.markResolvedByChatV2('TCHAN');
+        jest.advanceTimersByTime(MARK_RESOLVED_RETRY_MS + 1);
+        for (let i = 0; i < 20; i += 1) await Promise.resolve();
+
+        expect(pool.transitionCalls.filter((c) => c.id === 'wi-ticket-work')).toHaveLength(0);
+        expect(svc.registry.get(r.id)?.status).toBe('ready');
+      });
+    });
+
     // -------------------------------------------------------------------------
     // Pipeline-#4 fix (Patch E) — orc_reply grace window
     // -------------------------------------------------------------------------

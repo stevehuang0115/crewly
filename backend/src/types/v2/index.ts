@@ -34,6 +34,11 @@ export type {
   TicketBoardColumn,
   TicketPriorityLabel,
   TicketMarkerRef,
+  TicketAcceptanceSource,
+  TicketAcceptanceCheck,
+  TicketChatRef,
+  TicketReply,
+  ReviewReply,
 } from './ticket.types.js';
 
 export {

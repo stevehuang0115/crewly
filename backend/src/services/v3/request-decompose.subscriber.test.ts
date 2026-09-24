@@ -130,6 +130,8 @@ function makeRequest(overrides: Partial<Request> = {}): Request {
     totalOutputTokens: 0,
     totalCost: 0,
     ...(overrides.assignee ? { assignee: overrides.assignee } : {}),
+    ...(overrides.ticketNumber !== undefined ? { ticketNumber: overrides.ticketNumber } : {}),
+    ...(overrides.acceptance ? { acceptance: overrides.acceptance } : {}),
   };
 }
 
@@ -288,6 +290,36 @@ describe('RequestDecomposeSubscriber', () => {
       const queued = (taskPool as unknown as { queued: WorkItem[] }).queued;
       expect(queued[0].description).toContain('Acceptance criteria:');
       expect(queued[0].description).toContain('- A done');
+    });
+
+    it('copies the plan criteria onto a ticket as decompose/auto acceptance (ticket-loop Phase 2)', async () => {
+      const r = makeRequest({ ticketNumber: 4, acceptance: [{ text: 'A done', source: 'owner' }] });
+      seed.set(r.id, r);
+      const updates: Array<{ id: string; patch: Partial<Request> }> = [];
+      (requestService as unknown as { update: unknown }).update = async (id: string, patch: Partial<Request>) => {
+        updates.push({ id, patch });
+        return { ...r, ...patch };
+      };
+      subscriber.start();
+      await deliverRequestCreated(bus, r.id);
+      await subscriber.flushPending();
+
+      expect(updates).toHaveLength(1);
+      const list = updates[0].patch.acceptance!;
+      // 'A done' already there (owner's); only 'B done' is added.
+      expect(list.map((a) => a.text)).toEqual(['A done', 'B done']);
+      expect(list[1]).toMatchObject({ source: 'decompose', check: 'auto' });
+    });
+
+    it('does not touch acceptance on a plain (non-ticket) Request', async () => {
+      const r = makeRequest();
+      seed.set(r.id, r);
+      const update = jest.fn();
+      (requestService as unknown as { update: unknown }).update = update;
+      subscriber.start();
+      await deliverRequestCreated(bus, r.id);
+      await subscriber.flushPending();
+      expect(update).not.toHaveBeenCalled();
     });
 
     it('stamps autoDecomposed=true on the WorkItem metadata', async () => {

@@ -47,11 +47,55 @@ export interface TicketOrigin {
   authorName?: string;
 }
 
-/** One acceptance criterion (Phase 2 surfaces it). */
+/**
+ * Where an acceptance criterion came from. Criteria grow from real review
+ * (#763): a 打回 reason becomes a criterion, so the next attempt is judged
+ * against what the owner actually objected to.
+ */
+export type TicketAcceptanceSource = 'owner' | 'decompose' | 'reject' | 'agent';
+
+/**
+ * How a criterion is checked (#763): `auto` = something a build, test or
+ * scan can show; `judgment` = needs a person (tone, fit, "is this what I
+ * meant"). A ticket's self-check can only speak for the `auto` ones.
+ */
+export type TicketAcceptanceCheck = 'auto' | 'judgment';
+
+/** One acceptance criterion. */
 export interface TicketAcceptance {
   text: string;
   selfCheck?: 'pass' | 'fail';
   evidence?: string;
+  /** Who added it (absent on Phase 1 data = owner) */
+  source?: TicketAcceptanceSource;
+  /** How it is checked (absent = judgment) */
+  check?: TicketAcceptanceCheck;
+  /** ISO-8601 */
+  addedAt?: string;
+  /** Set when the owner removed it; kept so the history stays readable */
+  removedAt?: string;
+}
+
+/** The chat-v2 turn a ticket was opened by — how agent answers are matched to it. */
+export interface TicketChatRef {
+  /** chat-v2 channel the owner's message was recorded in */
+  channelId: string;
+  /** The owner's message */
+  messageId: string;
+  /** Root of the thread it sits in (the message itself when top-level) */
+  threadRootId: string;
+}
+
+/** The latest agent answer seen in a ticket's thread. */
+export interface TicketReply {
+  /** ISO-8601 */
+  at: string;
+  /** Agent session */
+  by: string;
+  /** chat-v2 message id */
+  messageId: string;
+  /** Start of the answer (shown on the board as the result) */
+  excerpt: string;
 }
 
 /**
@@ -270,6 +314,10 @@ export function deriveBoardColumn(
   ) {
     return 'to_review';
   }
+  // Answered directly (no WorkItems) and handed to the owner.
+  if (request.status === 'waiting_confirmation' && request.requiresConfirmation && workItems.length === 0) {
+    return 'to_review';
+  }
   switch (request.status) {
     case 'blocked':
     case 'waiting_confirmation':
@@ -281,6 +329,45 @@ export function deriveBoardColumn(
     default:
       return 'todo';
   }
+}
+
+/**
+ * Whether a ticket waits for the owner before it is done. Tickets from cron
+ * and missions close on their own; so does anything filed before Phase 2
+ * (`requiresConfirmation` was false then).
+ *
+ * @param request - The Request
+ * @returns True when `done` needs the owner's accept (or the auto-accept)
+ */
+export function ticketNeedsReview(request: Pick<Request, 'ticketNumber' | 'requiresConfirmation' | 'origin'>): boolean {
+  if (typeof request.ticketNumber !== 'number' || !request.requiresConfirmation) return false;
+  return !TICKET_CONSTANTS.REVIEW.NO_REVIEW_ORIGINS.includes(request.origin?.channel ?? '');
+}
+
+/**
+ * Criteria still in force (not removed).
+ *
+ * @param acceptance - All criteria, removed ones included
+ * @returns The live ones, in order
+ */
+export function activeAcceptance(acceptance: readonly TicketAcceptance[] | undefined): TicketAcceptance[] {
+  return (acceptance ?? []).filter((a) => !a.removedAt);
+}
+
+/** What an owner message in a 待验收 ticket's thread means. */
+export type ReviewReply = { action: 'verify' } | { action: 'reject'; reason: string } | null;
+
+/**
+ * Read a 验过了 / 打回 reply.
+ *
+ * @param text - The owner's message
+ * @returns The action, or null for anything else
+ */
+export function parseReviewReply(text: string): ReviewReply {
+  if (TICKET_CONSTANTS.REVIEW.VERIFY_PATTERN.test(text)) return { action: 'verify' };
+  const m = TICKET_CONSTANTS.REVIEW.REJECT_PATTERN.exec(text);
+  if (m) return { action: 'reject', reason: (m[3] ?? '').trim() || TICKET_CONSTANTS.REVIEW.REJECT_NO_REASON };
+  return null;
 }
 
 /**

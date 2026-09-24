@@ -126,8 +126,14 @@ describe('Request Types', () => {
         expect(isValidRequestTransition('cancelled', status)).toBe(false);
       }
     });
-    it('should disallow open → running (must go through ready)', () => {
-      expect(isValidRequestTransition('open', 'running')).toBe(false);
+    it('should allow open → running and open/ready → waiting_confirmation (tickets answered directly)', () => {
+      expect(isValidRequestTransition('open', 'running')).toBe(true);
+      expect(isValidRequestTransition('open', 'waiting_confirmation')).toBe(true);
+      expect(isValidRequestTransition('ready', 'waiting_confirmation')).toBe(true);
+    });
+
+    it('should still disallow blocked → waiting_confirmation', () => {
+      expect(isValidRequestTransition('blocked', 'waiting_confirmation')).toBe(false);
     });
   });
 

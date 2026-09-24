@@ -29,6 +29,7 @@ import {
 	Inbox,
 	Cloud,
 	BookOpen, Plug, Globe,
+	Ticket,
 } from 'lucide-react';
 import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
@@ -68,6 +69,8 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Projects', href: '/projects', icon: FolderOpen },
 			{ name: 'Teams', href: '/teams', icon: Users },
 			{ name: 'Missions', href: '/missions', icon: Target },
+			// Ticket board: every "please do X" the owner says (specs/ticket-loop.md).
+			{ name: 'Tickets', href: '/tickets', icon: Ticket },
 			// Consolidated chat: one page for the orchestrator, agent DMs, and
 			// team channels. (Former separate /chat + /agents now redirect here.)
 			{ name: 'Chat', href: '/team-chat', icon: MessageSquare },

@@ -241,6 +241,11 @@ export function reconcileRequestStatus(
 ): ReconcileCorrection | null {
   if (TERMINAL_REQUEST_STATUSES.has(request.status)) return null;
   if (workItems.length === 0 && request.status === 'open') return null;
+  // Tickets (specs/ticket-loop.md Phase 2): 待验收 is the owner's call, and a
+  // ticket with no WorkItems is being answered directly — not dangling.
+  if (typeof request.ticketNumber === 'number') {
+    if (request.status === 'waiting_confirmation' || workItems.length === 0) return null;
+  }
 
   // Dangling request: non-open status but no WorkItems left — close it.
   // Try 'done' first (valid from running, waiting_confirmation).

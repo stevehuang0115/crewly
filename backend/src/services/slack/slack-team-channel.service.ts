@@ -26,7 +26,7 @@
  */
 
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
-import { intakeWithin, slackIntakeMessage, ticketOfOutcome, withTicketMarker } from '../v3/ticket-channel-hooks.js';
+import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
@@ -1259,7 +1259,7 @@ export class SlackTeamChannelService {
           .join(' · ');
       }
       const ticket = await ticketPromise;
-      dispatch = await dispatcher.dispatchMessage(channel, withTicketMarker(persisted, ticket), {
+      dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
         ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
       });

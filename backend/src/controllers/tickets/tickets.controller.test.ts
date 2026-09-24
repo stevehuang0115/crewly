@@ -10,10 +10,12 @@ import * as path from 'path';
 import { createTicketsRouter } from './tickets.routes.js';
 import { TicketIntakeService, setTicketIntakeService, type IntakeMessage } from '../../services/v3/ticket-intake.service.js';
 import { RequestService } from '../../services/v3/request.service.js';
+import { TicketReviewService, setTicketReviewService } from '../../services/v3/ticket-review.service.js';
 
 let dir: string;
 let svc: TicketIntakeService;
 let requests: RequestService;
+let reworks: Array<{ reason: string; target: string }>;
 const app = express();
 app.use(express.json());
 app.use('/api/tickets', createTicketsRouter());
@@ -40,10 +42,22 @@ beforeEach(async () => {
   requests = RequestService.getInstance(dir);
   svc = new TicketIntakeService({ requests });
   setTicketIntakeService(svc);
+  reworks = [];
+  const review = new TicketReviewService({
+    requests,
+    fallbackAgent: 'crewly-orc',
+    createRework: async ({ reason, target }) => {
+      reworks.push({ reason, target });
+      return 'wi-1';
+    },
+  });
+  setTicketReviewService(review);
+  svc.setReviewHandler(review);
 });
 
 afterEach(async () => {
   setTicketIntakeService(null);
+  setTicketReviewService(null);
   RequestService.resetInstance();
   await fs.rm(dir, { recursive: true, force: true });
 });
@@ -115,9 +129,103 @@ describe('POST /api/tickets/:id/dismiss', () => {
   it('404 unknown, 409 done', async () => {
     expect((await request(app).post('/api/tickets/TKT-9/dismiss')).status).toBe(404);
     const t = await svc.intake(msg('1.0', 'implement csv export'));
-    await requests.update(t!.id, { status: 'done' });
+    await requests.update(t!.id, { status: 'done', accepted: true });
     const res = await request(app).post(`/api/tickets/${t!.id}/dismiss`);
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('already_done');
+  });
+});
+
+describe('Phase 2 review endpoints', () => {
+  /**
+   * A ticket that the agent answered (now 待验收).
+   *
+   * @returns The ticket id
+   */
+  async function inReview(): Promise<string> {
+    const t = await svc.intake(msg('1.0', 'implement csv export'));
+    await requests.update(t!.id, { status: 'done', reply: { at: new Date().toISOString(), by: 'ella', messageId: 'm1', excerpt: 'done: csv export' } });
+    expect((await requests.getById(t!.id))?.status).toBe('waiting_confirmation');
+    return t!.id;
+  }
+
+  it('lists a 待验收 ticket in to_review with the answer and the auto-accept time', async () => {
+    await inReview();
+    const res = await request(app).get('/api/tickets?column=to_review');
+    expect(res.body.count).toBe(1);
+    expect(res.body.data.tickets[0]).toMatchObject({ column: 'to_review', submitCount: 1, reply: { excerpt: 'done: csv export' } });
+    expect(res.body.data.tickets[0].autoAcceptAt).toEqual(expect.any(String));
+  });
+
+  it('verify → done; a second verify is 409 already_done', async () => {
+    const id = await inReview();
+    const res = await request(app).post(`/api/tickets/${id}/verify`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.status).toBe('done');
+    const again = await request(app).post(`/api/tickets/${id}/verify`);
+    expect(again.status).toBe(409);
+    expect(again.body.code).toBe('already_done');
+  });
+
+  it('reject needs a reason, reopens, records it as a criterion and queues rework for whoever answered', async () => {
+    const id = await inReview();
+    expect((await request(app).post(`/api/tickets/${id}/reject`).send({ reason: '  ' })).status).toBe(400);
+    const res = await request(app).post(`/api/tickets/${id}/reject`).send({ reason: 'the header row is missing' });
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ status: 'running', rejectCount: 1 });
+    expect(res.body.data.acceptance).toEqual([expect.objectContaining({ text: 'the header row is missing', source: 'reject', check: 'judgment' })]);
+    expect(reworks).toEqual([{ reason: 'the header row is missing', target: 'ella' }]);
+    // Not in review any more.
+    expect((await request(app).post(`/api/tickets/${id}/reject`).send({ reason: 'again' })).body.code).toBe('not_in_review');
+  });
+
+  it('owner-only actions refuse agents; self-check is open to agents', async () => {
+    const id = await inReview();
+    for (const [method, url] of [
+      ['post', `/api/tickets/${id}/verify`],
+      ['post', `/api/tickets/${id}/reject`],
+      ['put', `/api/tickets/${id}/acceptance`],
+      ['patch', `/api/tickets/${id}`],
+    ] as const) {
+      const res = await request(app)[method](url).set('X-Agent-Session', 'ella').send({ reason: 'x', items: [], priority: 'high' });
+      expect(res.status).toBe(403);
+    }
+    await request(app).put(`/api/tickets/${id}/acceptance`).send({ items: [{ text: 'has a header row', check: 'auto' }] });
+    const sc = await request(app)
+      .post(`/api/tickets/${id}/self-check`)
+      .set('X-Agent-Session', 'ella')
+      .send({ index: 0, result: 'pass', evidence: 'ran the export' });
+    expect(sc.status).toBe(200);
+    expect(sc.body.data.acceptance[0]).toMatchObject({ selfCheck: 'pass', evidence: 'ran the export' });
+    expect((await request(app).post(`/api/tickets/${id}/self-check`).send({ index: 5, result: 'pass' })).status).toBe(400);
+  });
+
+  it('acceptance PUT replaces the live list (removed ones kept with removedAt); POST twin works', async () => {
+    const id = await inReview();
+    await request(app).put(`/api/tickets/${id}/acceptance`).send({ items: ['a', { text: 'b', check: 'auto' }] });
+    const res = await request(app).post(`/api/tickets/${id}/acceptance`).send({ items: ['b'] });
+    expect(res.status).toBe(200);
+    const all = res.body.data.acceptance as Array<{ text: string; removedAt?: string; check?: string }>;
+    expect(all.find((a) => a.text === 'a')?.removedAt).toEqual(expect.any(String));
+    expect(all.find((a) => a.text === 'b')).toMatchObject({ check: 'auto' });
+    const board = (await request(app).get(`/api/tickets/${id}`)).body.data.board;
+    expect(board.acceptance.map((a: { text: string }) => a.text)).toEqual(['b']);
+    expect((await request(app).put(`/api/tickets/${id}/acceptance`).send({ items: 'nope' })).status).toBe(400);
+  });
+
+  it('PATCH and its POST twin edit priority / title; bad values are 400', async () => {
+    const id = await inReview();
+    expect((await request(app).patch(`/api/tickets/${id}`).send({ priority: 'urgent', title: 'CSV export' })).body.data).toMatchObject({
+      priority: 'urgent',
+      title: 'CSV export',
+    });
+    expect((await request(app).post(`/api/tickets/${id}/update`).send({ kind: 'issue' })).body.data.kind).toBe('issue');
+    expect((await request(app).patch(`/api/tickets/${id}`).send({ priority: 'asap' })).status).toBe(400);
+    expect((await request(app).patch(`/api/tickets/${id}`).send({})).status).toBe(400);
+  });
+
+  it('503 when review is not wired', async () => {
+    setTicketReviewService(null);
+    expect((await request(app).post('/api/tickets/TKT-001/verify')).status).toBe(503);
   });
 });
