@@ -306,6 +306,24 @@ describe('AgentAutoClaimService', () => {
       expect(startCalls).toHaveLength(0);
     });
 
+    it('names the scheduled work item when waking, so the dormant-team gate can exempt it', async () => {
+      const service = AgentAutoClaimService.getInstance();
+      service.initialize({ on: jest.fn() } as never, async () => {
+        const map = new Map();
+        map.set('alice', { sessionName: 'alice', status: 'inactive' });
+        return map;
+      });
+      const wi = { ...orcTargetedWi('wi-cron-1'), target: 'alice', triggerId: 'trg-daily' };
+      mockGetAvailableItems.mockResolvedValue([wi]);
+      mockAxiosPost.mockResolvedValue({ data: { success: true } });
+
+      await (service as unknown as { recoverPendingTasks: () => Promise<void> }).recoverPendingTasks();
+
+      const start = mockAxiosPost.mock.calls.find((c) => String(c[0]).endsWith('/members/m1/start'));
+      expect(start?.[1]).toEqual({ workItemId: 'wi-cron-1' });
+      mockGetAvailableItems.mockResolvedValue([]);
+    });
+
     it('does NOT escalate orc-targeted items even if they fall through to the orphan list', async () => {
       // Defense-in-depth: even if a future code path adds an
       // orc-targeted WI directly to `orphanedItems`, the final

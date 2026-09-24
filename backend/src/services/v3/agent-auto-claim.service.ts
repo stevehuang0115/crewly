@@ -375,6 +375,7 @@ export class AgentAutoClaimService {
         }
       }
       if (!next) continue;
+      const from = wi.target;
       const moved = await taskPool.retargetQueuedItem(wi.id, next, reason).catch(() => null);
       if (!moved) continue;
       placed.set(wi.id, next);
@@ -382,7 +383,7 @@ export class AgentAutoClaimService {
       if (reason === 'renamed_member' && wi.triggerId && engine) {
         await engine.retargetWorkItemAction(wi.triggerId, next).catch(() => false);
       }
-      this.logger.info('Orphaned task re-assigned without asking the owner', { workItemId: wi.id, from: wi.target, to: next, reason });
+      this.logger.info('Orphaned task re-assigned without asking the owner', { workItemId: wi.id, from, to: next, reason });
     }
     return placed;
   }
@@ -597,7 +598,17 @@ export class AgentAutoClaimService {
         }
 
         if (teamId && memberId) {
-          await axios.post(`${getLocalApiBaseUrl()}/api/teams/${teamId}/members/${memberId}/start`);
+          // Name the work this wake is for. A dormant team needs the owner's
+          // approval to cold-launch — except for work a real schedule created
+          // (the schedule IS the approval), which the start endpoint can only
+          // verify when it is told which item the wake is for. Without this the
+          // renamed-member heal above was refused for a daily cron (2026-09-24).
+          const forSession = (await taskPool.getAvailableItems()).filter((wi) => wi.target === session);
+          const reason = forSession.find((wi) => wi.triggerId) ?? forSession[0];
+          await axios.post(
+            `${getLocalApiBaseUrl()}/api/teams/${teamId}/members/${memberId}/start`,
+            reason ? { workItemId: reason.id } : undefined,
+          );
           this.logger.info('Waking offline agent for pending tasks', { sessionName: session, teamId, memberId });
         } else {
           // Agent session exists in health map but not found in teams — treat as orphan
