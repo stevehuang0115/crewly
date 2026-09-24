@@ -69,20 +69,30 @@ async function checkBackendStatus(): Promise<void> {
   }
 }
 
+/**
+ * Report legacy tmux sessions left by older Crewly versions.
+ *
+ * Agent sessions run on the built-in node-pty backend, so tmux is not part of
+ * a normal install. This prints nothing unless `crewly_*` tmux sessions
+ * actually exist. Note the command's `|| echo ""`: when tmux is absent or has
+ * no sessions it yields empty output rather than throwing, so the empty case
+ * must stay silent too.
+ *
+ * @param verbose - Also print per-session details
+ */
 async function checkTmuxSessions(verbose: boolean = false): Promise<void> {
   try {
     const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}:#{session_attached}:#{session_created}" 2>/dev/null || echo ""');
 
-    if (!stdout.trim()) {
-      console.log(chalk.yellow('⚠️  Tmux: No sessions running'));
+    const sessions = stdout.trim() ? stdout.trim().split('\n') : [];
+    const agentMuxSessions = sessions.filter(s => s.includes('crewly_'));
+
+    // No Crewly tmux sessions (the normal case): say nothing about tmux.
+    if (agentMuxSessions.length === 0) {
       return;
     }
 
-    const sessions = stdout.trim().split('\n');
-    const agentMuxSessions = sessions.filter(s => s.includes('crewly_'));
-
-    console.log(chalk.green(`✅ Tmux: ${sessions.length} total sessions`));
-    console.log(chalk.gray(`   Crewly sessions: ${agentMuxSessions.length}`));
+    console.log(chalk.gray(`   Legacy tmux sessions (crewly_*): ${agentMuxSessions.length}`));
 
     if (verbose && agentMuxSessions.length > 0) {
       console.log(chalk.gray('\n   Crewly Sessions:'));
@@ -108,9 +118,8 @@ async function checkTmuxSessions(verbose: boolean = false): Promise<void> {
       }
     }
 
-  } catch (error) {
-    console.log(chalk.red('❌ Tmux: Not available'));
-    console.log(chalk.gray('   Install tmux to use Crewly session management'));
+  } catch {
+    // tmux absent or failing: it is not used (node-pty backend), so say nothing.
   }
 }
 

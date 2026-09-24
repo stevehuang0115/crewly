@@ -10,7 +10,7 @@ Crewly is an open-source platform that coordinates AI coding agents (Claude Code
 
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
-- [Quick Start (5 Minutes)](#quick-start-5-minutes)
+- [Quick Start](#quick-start)
 - [Core Concepts](#core-concepts)
 - [Common Tasks](#common-tasks)
 - [Configuration](#configuration)
@@ -31,49 +31,65 @@ Crewly is an open-source platform that coordinates AI coding agents (Claude Code
   npm --version    # Should print 9.x or higher
   ```
 
-- **At least one AI coding CLI** installed and authenticated:
+- **jq** -- agent skills use it to read and write JSON. Agents cannot register without it, so `crewly init` stops if it is missing.
+  ```bash
+  brew install jq                 # macOS
+  sudo apt-get install -y jq      # Debian/Ubuntu
+  sudo dnf install -y jq          # Fedora
+  ```
+
+- **A C++ build toolchain** -- `npm install -g crewly` compiles the `node-pty` terminal backend.
+  ```bash
+  xcode-select --install                        # macOS (Xcode Command Line Tools)
+  sudo apt-get install -y python3 make g++      # Debian/Ubuntu
+  sudo dnf install -y python3 make gcc-c++      # Fedora
+  ```
+
+- **curl**
+
+- **A normal user account, not root.** Run Crewly as a normal user, not with `sudo` or as root. Claude Code refuses to start its agents under root.
+
+- **One AI coding CLI**, installed and logged in:
 
   | Runtime | Install Command | Verify | Auth |
   |---------|----------------|--------|------|
-  | **Claude Code** (recommended) | `npm install -g @anthropic-ai/claude-code` | `claude --version` | Run `claude` once to authenticate |
-  | **Gemini CLI** | `npm install -g @google/gemini-cli` | `gemini --version` | Set `GEMINI_API_KEY` env variable |
+  | **Claude Code** (recommended) | `npm install -g @anthropic-ai/claude-code` | `claude --version` | Run `claude` once, choose a theme **and** log in, before starting a team |
+  | **Gemini CLI** | `npm install -g @google/gemini-cli` | `gemini --version` | Set `GEMINI_API_KEY`, then run `gemini` once and choose **Use Gemini API Key** |
   | **Codex (OpenAI)** | `npm install -g @openai/codex` | `codex --version` | Set OpenAI API key |
 
   > Claude Code is the default runtime. If you don't have a preference, start with Claude Code.
 
+  > **Gemini CLI first run.** A new Gemini agent can stop at two prompts in its terminal. Answer them in the live terminal in the dashboard:
+  > 1. *How would you like to authenticate for this project?* Choose **Use Gemini API Key**.
+  > 2. *Do you trust the following folders being added to this workspace?* (the list includes `/tmp`) Choose **Yes**.
+  >
+  > The agent then continues on its own.
+
 ### Optional
 
-- **tmux** -- Crewly uses tmux for agent session management. It's usually pre-installed on macOS and Linux. Check with `tmux -V`.
 - **Slack app** -- For two-way Slack notifications. See [Configuration](#configuration) for setup.
 
 ---
 
 ## Installation
 
-### Option A: Try instantly (no global install)
-
-```bash
-npx crewly onboard
-```
-
-This downloads Crewly temporarily and runs the setup wizard.
-
-### Option B: Install globally (recommended)
+### Install globally (recommended)
 
 ```bash
 npm install -g crewly
-crewly onboard
+crewly init
+crewly start
 ```
 
-The `onboard` command walks you through a 4-step setup:
+`crewly init` (alias: `crewly onboard`) walks you through a 4-step setup:
 
 1. **Choose your AI provider** -- Claude Code, Gemini CLI, or both
-2. **Install tools** -- Crewly checks if your chosen CLI is installed and offers to install it
+2. **Install tools** -- Crewly checks for jq (it stops with install commands if jq is missing), then checks whether your chosen CLI is installed and offers to install it
 3. **Install agent skills** -- Downloads the skill pack that agents use to communicate, report status, and manage tasks
 4. **Done** -- You're ready to start
 
 ```
-$ crewly onboard
+$ crewly init
 
 Welcome to Crewly! Let's get you set up.
 
@@ -84,6 +100,8 @@ Step 1/4: Which AI coding assistant do you use?
     Skip
 
 Step 2/4: Installing tools...
+  ✓ jq detected (1.7.1)
+  1 system tool(s) checked.
   ✓ Claude Code v1.0.x detected
 
 Step 3/4: Installing agent skills...
@@ -100,7 +118,7 @@ Step 4/4: You're all set!
 
 ---
 
-## Quick Start (5 Minutes)
+## Quick Start
 
 ### Step 1: Start Crewly
 
@@ -165,7 +183,7 @@ Open your project and assign your team. This connects agents to the codebase the
 
 ### Step 5: Start Your Agents
 
-Once a team is assigned to a project, click **Start** on a team member. Crewly launches the agent's CLI in its own terminal session.
+Once a team is assigned to a project, click **Start** on the **team** (not on an individual member). Crewly launches each agent's CLI in its own terminal session.
 
 You can now:
 - **Watch the live terminal** -- see exactly what each agent is doing in real time
@@ -194,7 +212,7 @@ Teams are stored in `~/.crewly/teams.json`.
 An **agent** is an AI coding assistant running in its own terminal session. Each agent has:
 - A **role** (developer, QA, PM, etc.) that shapes its behavior via a system prompt
 - A **runtime** (Claude Code, Gemini CLI, or Codex) that determines which AI model powers it
-- A **session** (a tmux terminal) where it executes commands
+- A **session** (a terminal run by Crewly's built-in node-pty backend) where it executes commands
 - Access to **skills** (bash scripts for communication and coordination)
 - **Memory** that persists across sessions
 
@@ -507,7 +525,7 @@ crewly onboard
 Agents need to be started manually after creating a team. In the dashboard:
 1. Go to **Teams**
 2. Click on your team
-3. Click **Start** next to each agent
+3. Click **Start** on the team (starting a single member on a fresh install is refused with `commitment_requires_owner_approval`)
 
 If an agent keeps going inactive, check:
 - Is the AI CLI installed? (`claude --version`, `gemini --version`)
@@ -527,20 +545,22 @@ crewly status
 crewly start --no-browser
 ```
 
-### "tmux not found"
+### "jq not found" (or an agent fails with `jq: not found`, exit 127)
 
-Install tmux:
+Agent skills need jq. Install it, then run `crewly onboard` again:
 
 ```bash
 # macOS
-brew install tmux
+brew install jq
 
 # Ubuntu/Debian
-sudo apt install tmux
+sudo apt-get install -y jq
 
 # Fedora
-sudo dnf install tmux
+sudo dnf install -y jq
 ```
+
+tmux is **not** required: Crewly runs agent sessions on its built-in node-pty backend.
 
 ### Agent Appears Stuck
 
@@ -560,7 +580,7 @@ If `npm install -g crewly` fails with native module errors (usually `node-pty`):
 xcode-select --install
 
 # Linux: Install build essentials
-sudo apt install build-essential python3
+sudo apt-get install -y python3 make g++
 
 # Then retry
 npm install -g crewly
@@ -571,7 +591,7 @@ npm install -g crewly
 ```bash
 # Verify Claude Code is authenticated
 claude --version
-claude  # Run once to complete login flow
+claude  # Run once: choose a theme and log in (a fresh install stops at these screens)
 
 # Verify Gemini CLI has API key
 echo $GEMINI_API_KEY  # Should print your key
