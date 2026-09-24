@@ -12,6 +12,7 @@ import type { CreateTriggerInput, Trigger } from '../../types/v2/index.js';
 import { DEFAULT_MAX_IDLE_FIRES } from '../../types/v2/index.js';
 import * as fs from 'fs/promises';
 import { TRIGGER_ENGINE_CONSTANTS } from '../../constants.js';
+import { getNextRunTime } from '../workflow/cron-task.service.js';
 
 // ---------------------------------------------------------------------------
 // Mock dependencies
@@ -695,7 +696,6 @@ describe('TriggerEngine', () => {
   // more than ~24.85 days out fired the moment it was created. These tests
   // pin the chained-timer behaviour on all three scheduling paths.
   // -------------------------------------------------------------------------
-
   describe('one-shot timers beyond the Node timer cap', () => {
     const MAX = TRIGGER_ENGINE_CONSTANTS.MAX_TIMER_DELAY_MS;
     const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -869,6 +869,174 @@ describe('TriggerEngine', () => {
       expect(trigger.fireCount).toBe(0);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Cron polling: exactly one fire per slot (TL Sam -> Max, 2026-09-22)
+  // -------------------------------------------------------------------------
+
+  describe('cron polling fires exactly once per slot', () => {
+    const POLL_MS = 60_000;
+    const EVERY_30_MIN = '*/30 * * * *';
+    /** The real cron scanner — this block tests the engine against real slot arithmetic. */
+    const realCron = jest.requireActual<typeof import('../workflow/cron-task.service.js')>(
+      '../workflow/cron-task.service.js',
+    );
+    let handler: jest.Mock;
+    /** ISO timestamp (fake clock) of every action-handler call, in order. */
+    let firedAt: string[];
+
+    beforeEach(() => {
+      jest.mocked(getNextRunTime).mockImplementation(realCron.getNextRunTime);
+      firedAt = [];
+      handler = jest.fn(async () => {
+        firedAt.push(new Date().toISOString());
+      });
+    });
+
+    afterEach(() => {
+      engine.stop();
+      jest.useRealTimers();
+      // Hand the file-wide default back (a fixed "+60s" stub) so later blocks
+      // are not silently running against the real scanner.
+      jest.mocked(getNextRunTime).mockImplementation(() => new Date(Date.now() + 60_000).toISOString());
+    });
+
+    /**
+     * Runs the engine's 60s poll loop for `polls` ticks starting from `t0`
+     * and returns how many polls were examined (so a zero-poll run can never
+     * masquerade as "no over-firing").
+     */
+    async function runPolls(polls: number): Promise<number> {
+      for (let i = 0; i < polls; i++) {
+        await jest.advanceTimersByTimeAsync(POLL_MS);
+      }
+      return polls;
+    }
+
+    /** Minute-of-hour and second-of-minute of an ISO timestamp, for slot assertions. */
+    function minSec(iso: string): { minute: number; second: number } {
+      const d = new Date(iso);
+      return { minute: d.getUTCMinutes(), second: d.getUTCSeconds() };
+    }
+
+    it('Eval 1: */30 over a 65-min window polled every 60s at a 17s phase fires EXACTLY twice, at :00 and :30, never early', async () => {
+      // Poll phase 17s reproduces the field evidence (00:29:17 + 00:30:17).
+      // 65 polls from 11:35 span 11:36..12:40: exactly two */30 slots (12:00, 12:30).
+      const t0 = new Date('2026-09-22T11:35:17.000Z');
+      jest.useFakeTimers({ now: t0 });
+      engine.setActionHandler(handler);
+      await engine.start(); // start BEFORE create: start() reloads the trigger map from disk
+      const trigger = await engine.create(makeCronTriggerInput({
+        config: { type: 'time', cronExpression: EVERY_30_MIN },
+      }));
+      expect(trigger.createdAt).toBe(t0.toISOString());
+
+      const polls = await runPolls(65);
+
+      expect(polls).toBe(65);
+      expect(firedAt).toEqual(['2026-09-22T12:00:17.000Z', '2026-09-22T12:30:17.000Z']);
+      expect(trigger.fireCount).toBe(2);
+      // Never before the slot: each fire lands in a :00/:30 minute, i.e. at or after the boundary.
+      for (const iso of firedAt) {
+        expect([0, 30]).toContain(minSec(iso).minute);
+      }
+    });
+
+    it.each([0, 17, 53])(
+      'Eval 2: poll phase offset %ds -> exactly 1 fire per slot (2 slots in 65 min)',
+      async (offsetSec) => {
+        const t0 = new Date(Date.UTC(2026, 8, 22, 11, 35, offsetSec));
+        jest.useFakeTimers({ now: t0 });
+        engine.setActionHandler(handler);
+        await engine.start(); // start BEFORE create: start() reloads the trigger map from disk
+        const trigger = await engine.create(makeCronTriggerInput({
+          config: { type: 'time', cronExpression: EVERY_30_MIN },
+        }));
+
+        const polls = await runPolls(65);
+
+        expect(polls).toBe(65);
+        expect(firedAt).toHaveLength(2);
+        expect(trigger.fireCount).toBe(2);
+        const slots = firedAt.map((iso) => minSec(iso));
+        expect(slots.map((s) => s.minute)).toEqual([0, 30]);
+        // The fire happens on the first poll at/after the boundary, i.e. carries the poll phase.
+        expect(slots.map((s) => s.second)).toEqual([offsetSec, offsetSec]);
+      },
+    );
+
+    it('Eval 3: restart with lastFiredAt 2 slots in the past -> ONE catch-up fire on the first poll, then once per slot', async () => {
+      // Persisted state: last fired 11:00; the process was down across 11:30 and 12:00.
+      const t0 = new Date('2026-09-22T12:10:00.000Z');
+      const persisted: Trigger = {
+        id: 'restart-catchup-trigger',
+        type: 'time',
+        config: { type: 'time', cronExpression: EVERY_30_MIN },
+        action: { runReconciler: true },
+        status: 'active',
+        createdBy: 'system',
+        createdAt: '2026-09-22T09:00:00.000Z',
+        lastFiredAt: '2026-09-22T11:00:00.000Z',
+        fireCount: 4,
+        maxIdleFires: DEFAULT_MAX_IDLE_FIRES,
+        consecutiveIdleFires: 0,
+        managedBy: 'agent',
+      };
+      jest.mocked(fs.readFile).mockResolvedValueOnce(JSON.stringify([persisted]));
+
+      jest.useFakeTimers({ now: t0 });
+      engine.setActionHandler(handler);
+      await engine.start();
+      const loaded = engine.get(persisted.id);
+      expect(loaded).toBeDefined();
+
+      // Polls at 12:11 ... 12:40 (30 polls). Expect: catch-up at 12:11:00, slot fire at 12:30:00.
+      const polls = await runPolls(30);
+
+      expect(polls).toBe(30);
+      expect(firedAt).toEqual(['2026-09-22T12:11:00.000Z', '2026-09-22T12:30:00.000Z']);
+      expect(loaded!.fireCount).toBe(6); // 4 persisted + 1 catch-up + 1 on-slot
+      expect(loaded!.lastFiredAt).toBe('2026-09-22T12:30:00.000Z');
+    });
+
+    it('a trigger that has never fired anchors on createdAt and does not fire before its first slot', async () => {
+      // Created at 12:00:30 — the 12:00 slot has just passed; first fire must be 12:30, not 12:00.
+      const t0 = new Date('2026-09-22T12:00:30.000Z');
+      jest.useFakeTimers({ now: t0 });
+      engine.setActionHandler(handler);
+      await engine.start(); // start BEFORE create: start() reloads the trigger map from disk
+      const trigger = await engine.create(makeCronTriggerInput({
+        config: { type: 'time', cronExpression: EVERY_30_MIN },
+      }));
+
+      const polls = await runPolls(31); // 12:01:30 ... 12:31:30
+
+      expect(polls).toBe(31);
+      expect(firedAt).toEqual(['2026-09-22T12:30:30.000Z']);
+      expect(trigger.fireCount).toBe(1);
+    });
+
+    it('a delay one-shot trigger is untouched by the cron poll (fires exactly once at its own target)', async () => {
+      const t0 = new Date('2026-09-22T11:57:17.000Z');
+      jest.useFakeTimers({ now: t0 });
+      engine.setActionHandler(handler);
+      await engine.start();
+      const trigger = await engine.create({
+        type: 'time',
+        config: { type: 'time', delayMs: 90_000 },
+        action: { runReconciler: true },
+        createdBy: 'user',
+      });
+
+      const polls = await runPolls(10);
+
+      expect(polls).toBe(10);
+      expect(firedAt).toEqual(['2026-09-22T11:58:47.000Z']);
+      expect(trigger.fireCount).toBe(1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
 
   describe('one-shot timers under REAL timers', () => {
     afterEach(() => {
