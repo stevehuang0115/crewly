@@ -1716,6 +1716,25 @@ describe('beginWorkingForAgent', () => {
     typing = null;
   });
 
+  it('an interim reply puts the placeholder back under it; the final reply does not', async () => {
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn().mockResolvedValue('edited'), setPhase: jest.fn(), fail: jest.fn() };
+    identities = new FakeIdentities();
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities!.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    await service.routeInbound(inbound({ text: 'big job', ts: '710.1' }));
+    const root = chat.messages.find((m) => m.metadata?.slackTs === '710.1')!;
+    const base = { channelId: 'huddle-1', seq: 1, senderType: 'agent', senderId: 'crewly-alpha-leo', contentType: 'markdown', createdAt: 1, attachments: [], mentions: [], threadId: root.id };
+    typing.begin.mockClear();
+    await service.mirrorOutbound({ ...base, id: 'i-1', content: 'Got it — plan: …', metadata: { source: 'reply-tool', interim: true } } as ChatMessageDTO);
+    const key = { agentSession: 'crewly-alpha-leo', slackChannelId: 'C1', threadTs: '710.1' };
+    expect(typing.begin).toHaveBeenCalledWith(key, { botToken: 'xoxb-leo', displayName: 'Leo' }, 'typing');
+    typing.begin.mockClear();
+    await service.mirrorOutbound({ ...base, id: 'f-1', content: 'Done', metadata: { source: 'reply-tool' } } as ChatMessageDTO);
+    expect(typing.begin).not.toHaveBeenCalled();
+    typing = null;
+  });
+
   it('does nothing for a chat channel that is not mirrored to Slack', async () => {
     typing = { begin: jest.fn(), resolve: jest.fn(), setPhase: jest.fn(), fail: jest.fn() };
     service = makeService();

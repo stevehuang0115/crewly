@@ -347,6 +347,27 @@ describe('SlackAgentDmService', () => {
     await fs.rm(deps.storePath as string, { force: true });
   });
 
+  it('an interim note is posted and the working placeholder comes back under it (owner, 2026-09-24)', async () => {
+    const { deps, emit } = makeDeps();
+    const calls: string[] = [];
+    deps.typing = {
+      begin: async (key, _id, phase) => { calls.push(`begin:${key.threadTs}:${phase}`); return null; },
+      setPhase: async () => undefined,
+      fail: async () => undefined,
+      resolve: async (key, text) => { calls.push(`resolve:${key.threadTs}:${text}`); return 'replaced' as const; },
+    };
+    const svc = new SlackAgentDmService(deps);
+    await svc.start();
+    await svc.routeInbound(dm({ ts: '8.0' }));
+    emit({ id: 'i1', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '收到，计划：…', metadata: { interim: true } } as unknown as ChatMessageDTO);
+    await new Promise((r) => setImmediate(r));
+    emit({ id: 'f1', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '做好了' } as unknown as ChatMessageDTO);
+    await new Promise((r) => setImmediate(r));
+    expect(calls).toEqual(['begin:8.0:typing', 'resolve:8.0:收到，计划：…', 'begin:8.0:typing', 'resolve:8.0:做好了']);
+    svc.stop();
+    await fs.rm(deps.storePath as string, { force: true });
+  });
+
   it('keeps an already-threaded question in its own thread, and the placeholder with it', async () => {
     const { deps, sent, emit } = makeDeps();
     const calls: string[] = [];

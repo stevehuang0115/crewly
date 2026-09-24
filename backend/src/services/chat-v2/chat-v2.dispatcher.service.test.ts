@@ -109,6 +109,23 @@ describe('renderChatContext', () => {
 });
 
 describe('ChatV2DispatcherService', () => {
+  describe('defaultFormatPrompt — reply pacing (owner, 2026-09-24)', () => {
+    const base = { channelId: 'c-1', channelName: '#x', agentSession: 'sess', senderId: 'U1', content: '把表单重新填一下' };
+
+    it('tells an answering agent to size the job and send an interim note first for long ones', () => {
+      const viaChannel = defaultFormatPrompt({ ...base, replyVia: 'reply-channel' });
+      expect(viaChannel).toContain('回复节奏');
+      expect(viaChannel).toContain('--interim');
+      const viaChat = defaultFormatPrompt(base);
+      expect(viaChat).toContain('reply-chat … --interim');
+    });
+
+    it('is left out of the orchestrator’s routing turn', () => {
+      const prompt = defaultFormatPrompt({ ...base, replyVia: 'reply-channel', wakeRole: 'orchestrator' });
+      expect(prompt).not.toContain('回复节奏');
+    });
+  });
+
   describe('defaultFormatPrompt — context block', () => {
     it('puts what was said before above the message being asked about', () => {
       const prompt = defaultFormatPrompt({

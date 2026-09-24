@@ -735,6 +735,17 @@ export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
 /** How many recent thread channels an owner notification tries before giving up when SLACK_DEFAULT_CHANNEL is unset. */
 export const SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES = 4;
 
+/**
+ * Appended to every reply instruction an agent gets (owner, 2026-09-24): size
+ * the job first; a long one gets a short interim note (understanding + plan)
+ * before the work, so the owner is not left with only "is working on it…".
+ * `{cmd}` is the interim form of the agent's reply skill.
+ */
+export const CHAT_REPLY_PACING_HINT =
+	'回复节奏: 动手前先判断工作量。一两分钟内能做完的（查一下、答一句、改一处）→ 直接做，做完一次性回复。' +
+	'要花更久的（多个步骤、要跑命令/开浏览器/查很多资料、预计超过约 3 分钟）→ **先**用一两句话回复（{cmd}）：你理解的需求、打算怎么做、大概多久，有要对方确认的就一并问；' +
+	'发完再开始做，做完发最终回复。中间不要刷进度，除非遇到阻塞或计划变了。';
+
 export const SLACK_TYPING_CONSTANTS = {
 	/** Placeholder text once the agent holds the message. "working on it", not "typing": an agent that has the message is usually reading files, running commands or looking things up — typing is the last step. */
 	TYPING_TEXT: '⚙️ {name} is working on it…',
@@ -749,6 +760,13 @@ export const SLACK_TYPING_CONSTANTS = {
 	TIMEOUT_TEXT: '⏱ {name} is still working on this — the reply will follow.',
 	/** How long a placeholder waits for the reply before it is edited to TIMEOUT_TEXT */
 	TIMEOUT_MS: 5 * 60 * 1000,
+	/**
+	 * Metadata flag on an agent message that is an interim note ("got it —
+	 * here is my plan") rather than the answer: the Slack mirror posts it and
+	 * puts the working-on-it placeholder back under it, and the ticket loop
+	 * does not count it as the answer (owner, 2026-09-24).
+	 */
+	INTERIM_METADATA_KEY: 'interim',
 } as const;
 
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {

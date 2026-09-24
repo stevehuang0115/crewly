@@ -15,7 +15,7 @@ import { ChannelStore } from './sqlite/channel.store.js';
 import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
-import { OWNER_EVIDENCE_METADATA } from '../../constants.js';
+import { OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
@@ -160,6 +160,11 @@ export interface SendMessageArgs {
   channelId: string;
   principal: ChatPrincipal;
   content: string;
+  /**
+   * An agent's interim note (plan / "got it") before the real answer. Only
+   * honoured for agent senders; stored as `metadata.interim`.
+   */
+  interim?: boolean;
   contentType?: ChatContentType;
   clientMessageId?: string;
   /** Attachment hooks — the store is added in a later step, so pre-resolved DTOs are accepted. */
@@ -1533,7 +1538,9 @@ export class ChatV2Service extends EventEmitter {
       nowMs: this.now(),
       ...(agentAuthoredAsUser
         ? { metadata: { [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: args.principal.agentSession } }
-        : {}),
+        : args.interim && senderType === 'agent'
+          ? { metadata: { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } }
+          : {}),
     });
 
     const dto = this.toMessageDTO(persisted, args.attachments ?? []);

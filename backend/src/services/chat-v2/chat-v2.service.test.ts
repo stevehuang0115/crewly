@@ -583,6 +583,16 @@ describe('ChatV2Service', () => {
       expect(msg.senderId).toBe('sess-a');
     });
 
+    it('flags an agent interim note in metadata; a user cannot flag one', () => {
+      const ch = createSam();
+      const note = service.sendMessage({ channelId: ch.id, principal: agentPrincipal, content: 'got it, plan: …', interim: true });
+      expect(note.metadata?.interim).toBe(true);
+      const answer = service.sendMessage({ channelId: ch.id, principal: agentPrincipal, content: 'done' });
+      expect(answer.metadata?.interim).toBeUndefined();
+      const user = service.sendMessage({ channelId: ch.id, principal: owner, content: 'hi', interim: true });
+      expect(user.metadata?.interim).toBeUndefined();
+    });
+
     it('rejects messages exceeding the byte cap with payload_too_large', () => {
       const ch = createSam();
       const oversize = 'a'.repeat(40000);

@@ -25,6 +25,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
+import { isInterim } from './slack-typing-placeholder.service.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
 import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
@@ -491,7 +492,10 @@ export class SlackAgentDmService {
       }
       this.rememberSent(link.slackChannelId, text, source);
       if (this.deps.typing) {
-        await this.deps.typing.resolve(key, text, { botToken: installed.botToken, displayName: link.agentSession });
+        const identity = { botToken: installed.botToken, displayName: link.agentSession };
+        await this.deps.typing.resolve(key, text, identity);
+        // Interim note → still working: put the placeholder back under it.
+        if (isInterim(dto)) await this.deps.typing.begin(key, identity, 'typing');
         return true;
       }
       await this.deps.slack.sendMessage({

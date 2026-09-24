@@ -28,6 +28,7 @@
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
+import { isInterim } from '../slack/slack-typing-placeholder.service.js';
 import {
   type Request,
   type RequestPriority,
@@ -65,6 +66,7 @@ export interface ReviewChatMessage {
   senderId: string;
   content: string;
   threadId?: string;
+  metadata?: Record<string, unknown>;
 }
 
 /** A rework request for {@link TicketReviewServiceDeps.createRework}. */
@@ -170,6 +172,8 @@ export class TicketReviewService {
    */
   async onChatMessage(message: ReviewChatMessage): Promise<Request | null> {
     if (message.senderType !== 'agent') return null;
+    // "Got it — here is my plan" is not the answer.
+    if (isInterim(message)) return null;
     return this.serial(async () => {
       const all = await this.deps.requests.listAll();
       const inChannel = all.filter(

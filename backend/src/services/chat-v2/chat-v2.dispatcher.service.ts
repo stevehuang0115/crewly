@@ -27,7 +27,7 @@ import type {
   MentionTarget,
 } from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { CHAT_CONTEXT_CONSTANTS } from '../../constants.js';
+import { CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 
 // ---------------------------------------------------------------------------
@@ -385,6 +385,16 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     replyHint = mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员），关于团队本身的问题由你来答。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
+  }
+  // Size the job before starting (owner, 2026-09-24): a long job answered
+  // only at the end leaves "is working on it…" as the whole story for
+  // minutes. Not for the orchestrator's routing turn — it answers nothing.
+  if (args.wakeRole !== 'orchestrator') {
+    const interimCmd =
+      replyVia === 'reply-channel'
+        ? `reply-channel … --interim --content "<一两句>"`
+        : `reply-chat … --interim`;
+    replyHint += ' ' + CHAT_REPLY_PACING_HINT.replace('{cmd}', interimCmd);
   }
   const contextBlock = renderChatContext(args.context ?? []);
   return [
