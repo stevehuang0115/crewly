@@ -240,6 +240,8 @@ describe('Crewly Cross-Domain Constants', () => {
         expect(WEB_CONSTANTS.ENDPOINTS.ORCHESTRATOR).toBe('/api/orchestrator');
         expect(WEB_CONSTANTS.ENDPOINTS.TERMINAL).toBe('/api/terminal');
         expect(WEB_CONSTANTS.ENDPOINTS.TASKS).toBe('/api/tasks');
+        expect(WEB_CONSTANTS.ENDPOINTS.SESSIONS).toBe('/api/sessions');
+        expect(WEB_CONSTANTS.ENDPOINTS.TERMINAL_SESSIONS).toBe('/api/terminal/sessions');
       });
 
       test('all endpoints should start with forward slash', () => {

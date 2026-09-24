@@ -1,8 +1,9 @@
 /**
  * Tests for the CLI status command.
  *
- * Validates backend health checking, tmux session listing,
- * verbose process information, and error handling.
+ * Validates the backend block (pid, port, version, health), the agent list
+ * from the backend API (busy flags from restart readiness), legacy tmux
+ * reporting, verbose process information, and error handling (#776).
  */
 
 // ---------------------------------------------------------------------------
@@ -59,6 +60,68 @@ import { statusCommand } from './status.js';
 // Tests
 // ---------------------------------------------------------------------------
 
+/** Backend routes for the axios mock: path → body (an Error rejects). */
+type Routes = Record<string, unknown>;
+
+/** Serve `routes` from the axios mock; anything else is ECONNREFUSED. */
+function mockBackend(routes: Routes): void {
+	mockAxiosGet.mockImplementation(async (url: string) => {
+		const body = routes[new URL(url).pathname];
+		if (body === undefined) throw new Error('connect ECONNREFUSED');
+		if (body instanceof Error) throw body;
+		return { status: 200, data: body };
+	});
+}
+
+/** A healthy backend running two agents, one busy. */
+const HEALTHY_ROUTES: Routes = {
+	'/health': {
+		status: 'healthy',
+		uptime: 3725,
+		version: '1.20.99',
+		mode: 'standard',
+		orchestrator: { status: 'ok', reason: null },
+		team_health: { status: 'ok' },
+	},
+	'/api/sessions': {
+		sessions: [
+			{ sessionName: 'crewly-orc', pid: 5001, cwd: '/proj', status: 'active' },
+			{ sessionName: 'web-alice-1a2b', pid: 5002, cwd: '/proj/web', status: 'active' },
+		],
+	},
+	'/api/terminal/sessions': { success: true, data: { sessions: ['crewly-orc', 'web-alice-1a2b', 'assistant'], inProcessSessions: ['assistant'] } },
+	'/api/teams': {
+		success: true,
+		data: [
+			{ name: 'Orchestrator', members: [{ name: 'Orchestrator', sessionName: 'crewly-orc', runtimeType: 'claude-code' }] },
+			{ name: 'Web Team', members: [{ name: 'Alice', sessionName: 'web-alice-1a2b', runtimeType: 'codex-cli' }] },
+		],
+	},
+	'/api/system/restart-readiness': {
+		safe: false,
+		busyAgents: [{ session: 'web-alice-1a2b', since: '2026-09-23T10:00:00Z', messagePreview: 'Build the login page' }],
+		queued: 0,
+		draining: false,
+	},
+};
+
+/** Exec mock: port 8787 held by pid 4242 (a Crewly backend), no tmux. */
+function mockProcesses(extra: Record<string, string | Error> = {}): void {
+	mockExecAsync.mockImplementation((cmd: string) => {
+		for (const [pattern, response] of Object.entries(extra)) {
+			if (cmd.includes(pattern)) return response;
+		}
+		if (cmd.includes('lsof')) return '4242\n';
+		if (cmd.includes('ps -A')) return '4242 1 node /usr/lib/node_modules/crewly/dist/backend/backend/src/index.js\n5001 4242 claude --dangerously-skip-permissions\n';
+		return '';
+	});
+}
+
+/** Everything printed via console.log. */
+function printed(spy: jest.SpyInstance): string {
+	return spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
+}
+
 describe('statusCommand', () => {
 	let logSpy: jest.SpyInstance;
 	let errorSpy: jest.SpyInstance;
@@ -80,83 +143,110 @@ describe('statusCommand', () => {
 	});
 
 	// -----------------------------------------------------------------------
-	// Backend status check
+	// Backend and agents (#776: status listed nothing — it looked at tmux)
 	// -----------------------------------------------------------------------
 
-	describe('backend status', () => {
-		it('shows running status when backend responds', async () => {
-			mockAxiosGet
-				.mockResolvedValueOnce({
-					status: 200,
-					data: { uptime: 3600, version: '1.0.5' },
-				})
-				.mockResolvedValueOnce({
-					data: { success: true, data: [{ name: 'team1' }] },
-				});
-
-			mockExecAsync.mockReturnValue('');
+	describe('backend and agents', () => {
+		it('lists the backend (pid, port, version, uptime, health) and the running agents with busy state', async () => {
+			mockBackend(HEALTHY_ROUTES);
+			mockProcesses();
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Backend Server: Running');
-			expect(output).toContain('3600');
-			expect(output).toContain('1.0.5');
-			expect(output).toContain('Active Teams: 1');
+			const output = printed(logSpy);
+			expect(output).toContain('Backend: running');
+			expect(output).toContain('PID: 4242');
+			expect(output).toContain('Port: 8787');
+			expect(output).toContain('Version: 1.20.99');
+			expect(output).toContain('Uptime: 1h 2m');
+			expect(output).toContain('Health: healthy, orchestrator ok, team health ok');
+			expect(output).toContain('Agents: 3 running, 1 busy');
+			expect(output).toMatch(/crewly-orc \(Orchestrator, Orchestrator, claude-code\)\s+PID 5001\s+idle/);
+			expect(output).toMatch(/web-alice-1a2b \(Alice, Web Team, codex-cli\)\s+PID 5002\s+busy since 2026-09-23T10:00:00Z — Build the login page/);
+			expect(output).toMatch(/assistant\s+in-process\s+idle/);
+			expect(output).not.toMatch(/tmux/i);
 		});
 
-		it('shows not running when backend is unreachable', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('ECONNREFUSED'));
-			mockExecAsync.mockReturnValue('');
+		it('says "none running" when the backend has no agents', async () => {
+			mockBackend({ ...HEALTHY_ROUTES, '/api/sessions': { sessions: [] }, '/api/terminal/sessions': { success: true, data: { sessions: [], inProcessSessions: [] } }, '/api/system/restart-readiness': { safe: true, busyAgents: [], queued: 0 } });
+			mockProcesses();
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Backend Server: Not Running');
-			expect(output).toContain('npx crewly start');
+			expect(printed(logSpy)).toContain('Agents: none running');
 		});
 
-		it('handles teams API failure gracefully', async () => {
-			mockAxiosGet
-				.mockResolvedValueOnce({
-					status: 200,
-					data: { uptime: 100, version: '1.0.0' },
-				})
-				.mockRejectedValueOnce(new Error('API error'));
-
-			mockExecAsync.mockReturnValue('');
+		it('reports when the session list cannot be read instead of claiming there are no agents', async () => {
+			mockBackend({ ...HEALTHY_ROUTES, '/api/sessions': new Error('Request failed with status code 500') });
+			mockProcesses();
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Backend Server: Running');
-			expect(output).toContain('API not fully available');
+			const output = printed(logSpy);
+			expect(output).toContain('could not list them');
+			expect(output).toContain('/api/sessions failed');
+			expect(output).not.toContain('none running');
 		});
 
-		it('handles missing uptime and version in response', async () => {
-			mockAxiosGet
-				.mockResolvedValueOnce({
-					status: 200,
-					data: {},
-				})
-				.mockResolvedValueOnce({
-					data: { success: true, data: [] },
-				});
-
-			mockExecAsync.mockReturnValue('');
+		it('says busy state is unknown on a backend without restart readiness', async () => {
+			const { ['/api/system/restart-readiness']: _omit, ...routes } = HEALTHY_ROUTES;
+			mockBackend(routes);
+			mockProcesses();
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Backend Server: Running');
-			expect(output).toContain('0s');
-			expect(output).toContain('unknown');
+			const output = printed(logSpy);
+			expect(output).toContain('Agents: 3 running, busy state unknown');
+			expect(output).not.toContain('idle');
+		});
+
+		it('flags a degraded orchestrator with its reason', async () => {
+			mockBackend({
+				...HEALTHY_ROUTES,
+				'/health': { status: 'healthy', version: '1.20.99', uptime: 5, orchestrator: { status: 'degraded', reason: 'orchestrator session is hung' } },
+			});
+			mockProcesses();
+
+			await statusCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('orchestrator degraded');
+			expect(output).toContain('orchestrator session is hung');
+		});
+
+		it('shows not running when nothing listens on the port', async () => {
+			mockBackend({});
+			mockProcesses({ lsof: '' });
+
+			await statusCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('Backend: not running (nothing listening on port 8787)');
+			expect(output).toContain('crewly start');
+			expect(output).not.toContain('Agents');
+		});
+
+		it('shows a wedged backend: port held but /health does not answer', async () => {
+			mockBackend({});
+			mockProcesses();
+
+			await statusCommand({});
+
+			const output = printed(logSpy);
+			expect(output).toContain('Backend: not answering');
+			expect(output).toContain('held by PID 4242');
+			expect(output).toContain('crewly stop');
+		});
+
+		it('shows agent working directories in verbose mode', async () => {
+			mockBackend(HEALTHY_ROUTES);
+			mockProcesses();
+
+			await statusCommand({ verbose: true });
+
+			expect(printed(logSpy)).toContain('cwd: /proj/web');
 		});
 	});
-
-	// -----------------------------------------------------------------------
-	// Tmux session listing
-	// -----------------------------------------------------------------------
 
 	describe('tmux sessions', () => {
 		it('reports legacy crewly_ tmux sessions when they exist, without counting unrelated ones', async () => {
@@ -266,52 +356,33 @@ describe('statusCommand', () => {
 	// -----------------------------------------------------------------------
 
 	describe('verbose process check', () => {
-		it('shows running processes in verbose mode', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			mockExecAsync.mockImplementation((cmd: string) => {
-				if (cmd.includes('tmux list-sessions')) {
-					return '';
-				}
-				if (cmd.includes('ps aux')) {
-					return 'user  1234  2.5  1.0  0  0  ??  S  10:00AM  0:05.00  node backend/dist/index.js\n';
-				}
-				if (cmd.includes('lsof')) {
-					return 'node  1234  user  3u  IPv4  0x1234  0t0  TCP *:3000 (LISTEN)\n';
-				}
-				return '';
-			});
+		it('shows the backend process and its children in verbose mode', async () => {
+			mockBackend(HEALTHY_ROUTES);
+			mockProcesses();
 
 			await statusCommand({ verbose: true });
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('Running Processes');
-			expect(output).toContain('PID 1234');
-			expect(output).toContain('Port Usage');
+			const output = printed(logSpy);
+			expect(output).toContain('PID 4242 (listening on 8787)');
+			expect(output).toContain('└ PID 5001 claude');
 		});
 
 		it('does not show processes in non-verbose mode', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-			mockExecAsync.mockReturnValue('');
+			mockBackend(HEALTHY_ROUTES);
+			mockProcesses();
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).not.toContain('Running Processes');
+			expect(printed(logSpy)).not.toContain('Processes:');
 		});
 
-		it('handles no processes found in verbose mode', async () => {
-			mockAxiosGet.mockRejectedValue(new Error('not running'));
-
-			mockExecAsync.mockImplementation((cmd: string) => {
-				if (cmd.includes('lsof')) return '';
-				return '';
-			});
+		it('says nothing is listening in verbose mode when the port is free', async () => {
+			mockBackend({});
+			mockProcesses({ lsof: '' });
 
 			await statusCommand({ verbose: true });
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			expect(output).toContain('No Crewly processes found');
+			expect(printed(logSpy)).toContain('Nothing is listening on port 8787');
 		});
 	});
 
@@ -320,23 +391,19 @@ describe('statusCommand', () => {
 	// -----------------------------------------------------------------------
 
 	describe('error handling', () => {
-		it('reports errors when they occur', async () => {
-			// The status command catches most errors internally per-section.
-			// Backend failure is handled, tmux failure is handled, so we just
-			// verify the command completes without crashing.
+		it('completes when every call fails', async () => {
 			mockAxiosGet.mockRejectedValue(new Error('unexpected'));
-
 			mockExecAsync.mockImplementation(() => {
 				throw new Error('unexpected');
 			});
 
 			await statusCommand({});
 
-			const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-			// Backend should show not running
-			expect(output).toContain('Backend Server: Not Running');
+			const output = printed(logSpy);
+			expect(output).toContain('Backend: not running');
 			// tmux is not used: its failure is silent
 			expect(output).not.toMatch(/tmux/i);
+			expect(exitSpy).not.toHaveBeenCalled();
 		});
 	});
 });

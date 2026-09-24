@@ -1,72 +1,145 @@
+/**
+ * `crewly status` — the backend and the agents it is running.
+ *
+ * Agents run in node-pty sessions (or in-process) owned by the backend, so
+ * the list comes from the backend API, not tmux (#776): pid/port from the
+ * listening socket, version/uptime/health from `/health`, agents from
+ * `/api/sessions` (+ in-process ones), names from `/api/teams`, and busy
+ * (mid-turn) agents from `/api/system/restart-readiness`.
+ *
+ * @module cli/commands/status
+ */
+
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import chalk from 'chalk';
-import axios from 'axios';
-import { WEB_CONSTANTS, TIMING_CONSTANTS } from '../../../config/index.js';
+import { WEB_CONSTANTS } from '../../../config/index.js';
+import {
+	describeAgent,
+	fetchBackendSnapshot,
+	findListenerPids,
+	formatUptime,
+	readProcessTable,
+	type BackendSnapshot,
+	type RunCommand,
+} from '../utils/backend-status.js';
 
 const execAsync = promisify(exec);
 
+/** Shell runner for status (stdout only). */
+const run: RunCommand = async (command) => (await execAsync(command)).stdout;
+
 // Computed URLs using constants - allow environment variable override
 const BACKEND_PORT = process.env.WEB_PORT || WEB_CONSTANTS.PORTS.BACKEND;
-const BACKEND_URL = `http://localhost:${BACKEND_PORT}`;
+
+/** Longest message preview shown for a busy agent. */
+const BUSY_PREVIEW_MAX = 60;
 
 interface StatusOptions {
-  verbose?: boolean;
+	verbose?: boolean;
 }
 
-export async function statusCommand(options: StatusOptions) {
-  console.log(chalk.blue('🔍 Crewly Status'));
-  console.log(chalk.gray('='.repeat(50)));
+/**
+ * Print the backend's state and its running agents.
+ *
+ * @param options - `--verbose` adds agent working directories, legacy tmux details and related processes
+ */
+export async function statusCommand(options: StatusOptions = {}): Promise<void> {
+	console.log(chalk.blue('🔍 Crewly Status'));
+	console.log(chalk.gray('='.repeat(50)));
 
-  try {
-    // Check backend server
-    await checkBackendStatus();
+	try {
+		const snapshot = await fetchBackendSnapshot(BACKEND_PORT);
+		const listenerPids = await findListenerPids(BACKEND_PORT, run);
 
-    // Check tmux sessions
-    await checkTmuxSessions(options.verbose);
+		printBackend(snapshot, listenerPids);
+		if (snapshot.health) {
+			printAgents(snapshot, options.verbose === true);
+		}
 
-    // Check running processes
-    if (options.verbose) {
-      await checkRunningProcesses();
-    }
+		// Legacy tmux sessions from older Crewly versions (silent when none)
+		await checkTmuxSessions(options.verbose);
 
-  } catch (error) {
-    console.error(chalk.red('❌ Error checking status:'), error instanceof Error ? error.message : error);
-    process.exit(1);
-  }
+		if (options.verbose) {
+			await checkRunningProcesses();
+		}
+	} catch (error) {
+		console.error(chalk.red('❌ Error checking status:'), error instanceof Error ? error.message : error);
+		process.exit(1);
+	}
 }
 
-async function checkBackendStatus(): Promise<void> {
-  try {
-    const response = await axios.get(
-      `${BACKEND_URL}${WEB_CONSTANTS.ENDPOINTS.HEALTH}`,
-      { timeout: TIMING_CONSTANTS.TIMEOUTS.HTTP_HEALTH_CHECK }
-    );
+/**
+ * Print the backend block.
+ *
+ * @param snapshot - Backend snapshot
+ * @param listenerPids - Pids listening on the backend port
+ */
+function printBackend(snapshot: BackendSnapshot, listenerPids: number[]): void {
+	const health = snapshot.health;
+	if (!health) {
+		if (listenerPids.length > 0) {
+			console.log(chalk.red(`❌ Backend: not answering — port ${BACKEND_PORT} is held by PID ${listenerPids.join(', ')}, but ${snapshot.url}${WEB_CONSTANTS.ENDPOINTS.HEALTH} does not respond`));
+			console.log(chalk.gray('   Stop it with "crewly stop" (or "crewly stop --force"), then "crewly start"'));
+		} else {
+			console.log(chalk.red(`❌ Backend: not running (nothing listening on port ${BACKEND_PORT})`));
+			console.log(chalk.gray('   Run "crewly start" to start it'));
+		}
+		return;
+	}
 
-    if (response.status === 200) {
-      console.log(chalk.green('✅ Backend Server: Running'));
-      console.log(chalk.gray(`   URL: ${BACKEND_URL}`));
-      console.log(chalk.gray(`   Uptime: ${Math.round(response.data.uptime || 0)}s`));
-      console.log(chalk.gray(`   Version: ${response.data.version || 'unknown'}`));
+	console.log(chalk.green('✅ Backend: running'));
+	console.log(chalk.gray(`   PID: ${listenerPids.length > 0 ? listenerPids.join(', ') : 'unknown'}`));
+	console.log(chalk.gray(`   Port: ${BACKEND_PORT}  (${snapshot.url})`));
+	console.log(chalk.gray(`   Version: ${health.version ?? 'unknown'}`));
+	if (health.uptimeSeconds !== null) {
+		console.log(chalk.gray(`   Uptime: ${formatUptime(health.uptimeSeconds)}`));
+	}
+	const parts = [health.status];
+	if (health.orchestratorStatus) parts.push(`orchestrator ${health.orchestratorStatus}`);
+	if (health.teamHealthStatus) parts.push(`team health ${health.teamHealthStatus}`);
+	const degraded = health.status !== 'healthy' || health.orchestratorStatus === 'degraded';
+	const healthLine = `   Health: ${parts.join(', ')}`;
+	console.log(degraded ? chalk.yellow(healthLine) : chalk.gray(healthLine));
+	if (health.orchestratorReason) {
+		console.log(chalk.yellow(`   ⚠️  ${health.orchestratorReason}`));
+	}
+}
 
-      // Try to get teams data
-      try {
-        const teamsResponse = await axios.get(
-          `${BACKEND_URL}${WEB_CONSTANTS.ENDPOINTS.TEAMS}`,
-          { timeout: TIMING_CONSTANTS.TIMEOUTS.API_REQUEST_QUICK }
-        );
-        if (teamsResponse.data.success) {
-          const teams = teamsResponse.data.data || [];
-          console.log(chalk.gray(`   Active Teams: ${teams.length}`));
-        }
-      } catch (error) {
-        console.log(chalk.yellow('   ⚠️  API not fully available'));
-      }
-    }
-  } catch (error) {
-    console.log(chalk.red('❌ Backend Server: Not Running'));
-    console.log(chalk.gray('   Run "npx crewly start" to start the server'));
-  }
+/**
+ * Print the running agents.
+ *
+ * @param snapshot - Backend snapshot (health answered)
+ * @param verbose - Also print each agent's working directory
+ */
+function printAgents(snapshot: BackendSnapshot, verbose: boolean): void {
+	console.log('');
+	if (!snapshot.agents) {
+		console.log(chalk.yellow(`⚠️  Agents: could not list them (${snapshot.agentsError ?? 'unknown error'})`));
+		return;
+	}
+	const agents = snapshot.agents;
+	if (agents.length === 0) {
+		console.log(chalk.gray('Agents: none running'));
+		return;
+	}
+	const busyCount = agents.filter((a) => a.busy).length;
+	const busyText = snapshot.readiness ? `${busyCount} busy` : 'busy state unknown (backend has no restart-readiness endpoint)';
+	console.log(chalk.blue(`🤖 Agents: ${agents.length} running, ${busyText}`));
+	for (const agent of agents) {
+		const where = agent.inProcess ? 'in-process' : `PID ${agent.pid ?? '?'}`;
+		let state = snapshot.readiness ? 'idle' : '';
+		if (agent.busy) {
+			const preview = (agent.busyMessage ?? '').replace(/\s+/g, ' ').trim();
+			const clipped = preview.length > BUSY_PREVIEW_MAX ? `${preview.slice(0, BUSY_PREVIEW_MAX)}...` : preview;
+			state = `busy since ${agent.busySince ?? '?'}${clipped ? ` — ${clipped}` : ''}`;
+		}
+		const line = `   • ${describeAgent(agent)}  ${where}${state ? `  ${state}` : ''}`;
+		console.log(agent.busy ? chalk.yellow(line) : chalk.gray(line));
+		if (verbose && agent.cwd) {
+			console.log(chalk.gray(`     cwd: ${agent.cwd}`));
+		}
+	}
 }
 
 /**
@@ -81,87 +154,70 @@ async function checkBackendStatus(): Promise<void> {
  * @param verbose - Also print per-session details
  */
 async function checkTmuxSessions(verbose: boolean = false): Promise<void> {
-  try {
-    const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}:#{session_attached}:#{session_created}" 2>/dev/null || echo ""');
+	try {
+		const { stdout } = await execAsync('tmux list-sessions -F "#{session_name}:#{session_attached}:#{session_created}" 2>/dev/null || echo ""');
 
-    const sessions = stdout.trim() ? stdout.trim().split('\n') : [];
-    const agentMuxSessions = sessions.filter(s => s.includes('crewly_'));
+		const sessions = stdout.trim() ? stdout.trim().split('\n') : [];
+		const agentMuxSessions = sessions.filter(s => s.includes('crewly_'));
 
-    // No Crewly tmux sessions (the normal case): say nothing about tmux.
-    if (agentMuxSessions.length === 0) {
-      return;
-    }
+		// No Crewly tmux sessions (the normal case): say nothing about tmux.
+		if (agentMuxSessions.length === 0) {
+			return;
+		}
 
-    console.log(chalk.gray(`   Legacy tmux sessions (crewly_*): ${agentMuxSessions.length}`));
+		console.log(chalk.gray(`\n   Legacy tmux sessions (crewly_*): ${agentMuxSessions.length}`));
 
-    if (verbose && agentMuxSessions.length > 0) {
-      console.log(chalk.gray('\n   Crewly Sessions:'));
+		if (verbose && agentMuxSessions.length > 0) {
+			console.log(chalk.gray('\n   Crewly Sessions:'));
 
-      for (const session of agentMuxSessions) {
-        const [name, attached, created] = session.split(':');
-        const createdDate = new Date(parseInt(created) * 1000);
+			for (const session of agentMuxSessions) {
+				const [name, attached, created] = session.split(':');
+				const createdDate = new Date(parseInt(created) * 1000);
 
-        console.log(chalk.gray(`   • ${name}`));
-        console.log(chalk.gray(`     Attached: ${attached === '1' ? 'Yes' : 'No'}`));
-        console.log(chalk.gray(`     Created: ${createdDate.toLocaleString()}`));
+				console.log(chalk.gray(`   • ${name}`));
+				console.log(chalk.gray(`     Attached: ${attached === '1' ? 'Yes' : 'No'}`));
+				console.log(chalk.gray(`     Created: ${createdDate.toLocaleString()}`));
 
-        // Try to capture recent output
-        try {
-          const { stdout: output } = await execAsync(`tmux capture-pane -t "${name}:0" -p -S -5 2>/dev/null || echo "No output"`);
-          const lastLine = output.trim().split('\n').pop() || 'No recent activity';
-          console.log(chalk.gray(`     Last: ${lastLine.slice(0, 60)}${lastLine.length > 60 ? '...' : ''}`));
-        } catch (error) {
-          console.log(chalk.gray('     Last: Unable to capture'));
-        }
+				// Try to capture recent output
+				try {
+					const { stdout: output } = await execAsync(`tmux capture-pane -t "${name}:0" -p -S -5 2>/dev/null || echo "No output"`);
+					const lastLine = output.trim().split('\n').pop() || 'No recent activity';
+					console.log(chalk.gray(`     Last: ${lastLine.slice(0, 60)}${lastLine.length > 60 ? '...' : ''}`));
+				} catch (error) {
+					console.log(chalk.gray('     Last: Unable to capture'));
+				}
 
-        console.log('');
-      }
-    }
+				console.log('');
+			}
+		}
 
-  } catch {
-    // tmux absent or failing: it is not used (node-pty backend), so say nothing.
-  }
+	} catch {
+		// tmux absent or failing: it is not used (node-pty backend), so say nothing.
+	}
 }
 
+/**
+ * Print the backend process and its children (agent runtimes) from the
+ * process table (verbose only).
+ */
 async function checkRunningProcesses(): Promise<void> {
-  try {
-    console.log(chalk.blue('\n🔍 Running Processes:'));
-
-    // Check for Node.js processes related to Crewly
-    const { stdout } = await execAsync('ps aux | grep -E "(crewly|backend)" | grep -v grep || echo ""');
-
-    if (stdout.trim()) {
-      const lines = stdout.trim().split('\n');
-      console.log(chalk.gray(`   Found ${lines.length} related processes:`));
-
-      for (const line of lines) {
-        const parts = line.trim().split(/\s+/);
-        if (parts.length > 10) {
-          const pid = parts[1];
-          const cpu = parts[2];
-          const mem = parts[3];
-          const command = parts.slice(10).join(' ').slice(0, 80);
-
-          console.log(chalk.gray(`   • PID ${pid} (CPU: ${cpu}%, MEM: ${mem}%)`));
-          console.log(chalk.gray(`     ${command}${command.length >= 80 ? '...' : ''}`));
-        }
-      }
-    } else {
-      console.log(chalk.gray('   No Crewly processes found'));
-    }
-
-    // Check port usage
-    try {
-      const { stdout: portCheck } = await execAsync(`lsof -i :${BACKEND_PORT} 2>/dev/null || echo ""`);
-      if (portCheck.trim()) {
-        console.log(chalk.blue('\n🔌 Port Usage:'));
-        console.log(chalk.gray(portCheck.trim()));
-      }
-    } catch (error) {
-      // lsof might not be available
-    }
-
-  } catch (error) {
-    console.log(chalk.yellow('⚠️  Unable to check running processes'));
-  }
+	try {
+		console.log(chalk.blue('\n🔍 Processes:'));
+		const listenerPids = await findListenerPids(BACKEND_PORT, run);
+		if (listenerPids.length === 0) {
+			console.log(chalk.gray(`   Nothing is listening on port ${BACKEND_PORT}`));
+			return;
+		}
+		const table = await readProcessTable(run);
+		const byPid = new Map(table.map((row) => [row.pid, row]));
+		for (const pid of listenerPids) {
+			const command = byPid.get(pid)?.command ?? '';
+			console.log(chalk.gray(`   • PID ${pid} (listening on ${BACKEND_PORT}) ${command.slice(0, 80)}${command.length > 80 ? '...' : ''}`));
+			for (const child of table.filter((row) => row.ppid === pid)) {
+				console.log(chalk.gray(`     └ PID ${child.pid} ${child.command.slice(0, 76)}${child.command.length > 76 ? '...' : ''}`));
+			}
+		}
+	} catch (error) {
+		console.log(chalk.yellow('⚠️  Unable to check running processes'));
+	}
 }
