@@ -1,0 +1,131 @@
+# Ticket Loop (2026-09-24)
+
+Owner-approved plan: https://claude.ai/code/artifact/7247657a-63c9-426b-adb6-57e15a196ab1
+(Chinese, "Crewly Ticket Loop 方案"). This file is the engineering spec; the doc is
+the product plan. Four phases, each released on its own.
+
+## Why
+
+Measured on the owner's Mac, 2026-09-24:
+
+- **Intake is broken.** Requests are only created by the legacy chat endpoint
+  (`controllers/chat/chat.controller.ts`) and the legacy Slack → orchestrator
+  bridge (`services/slack/slack-orchestrator-bridge.ts`). Team channels, per-agent
+  Slack DMs, chat-v2, the portal and the phone create none. Seven days: 3 Requests,
+  all hand-made.
+- **Nothing links.** `WorkItem.requestId` is almost always empty.
+- **Review piles on the orc.** Every worker WorkItem spawns a `review` WorkItem
+  targeted at `crewly-orc` (event-to-workitem-bridge). 7 days: 191 WorkItems, 109
+  delegate + 82 review, all 82 on the orc; 40+ stale queued.
+- **Nothing closes.** 882 WorkItems in `~/.crewly/task-pool/pool.json`, 826
+  non-terminal, hundreds `verified` since May.
+- **Direct asks leave no trace.** Asking an agent in a DM produces no record.
+
+## Owner decisions (defaults the owner accepted by approving the plan)
+
+1. Every "please do X" becomes a ticket automatically; a one-tap "don't track" undoes it.
+2. Cron- and Mission-triggered tickets auto-close when self-check passes; other
+   no-review types are configurable.
+3. Phase 1: only the owner files tickets (other humans later).
+4. Tickets live on the machine that owns the project; portal and phone read via relay.
+5. SteamFun keeps its own board.
+
+## Model
+
+A ticket **is** a `Request` (`types/v2/request.types.ts`) with added fields — no
+new store. Storage stays `{projectDataDir}/.crewly/requests/{id}.json`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `ticketNumber` | number | Monotonic per data dir; displayed `TKT-{n}` (zero-pad 3) |
+| `kind` | `'issue' \| 'feature' \| 'idea'` | Default `feature`; 🐛 → `issue`; `ticket-idea` → `idea` |
+| `origin` | `{ channel: 'slack-channel' \| 'slack-dm' \| 'chat' \| 'portal' \| 'mobile' \| 'bug-button' \| 'agent' \| 'cron' \| 'mission' \| 'legacy'; ref: string; threadRef?: string; author: string; authorName?: string }` | Where it was said and by whom; replies go back to `threadRef` |
+| `assignee` | string? | Agent session that owns it (pre-filled for a DM) |
+| `acceptance` | `{ text: string; selfCheck?: 'pass' \| 'fail'; evidence?: string }[]` | Phase 2 surfaces it |
+| `rejectCount`, `submitCount` | number | Phase 2 |
+| `board` | derived | See status mapping |
+
+Existing fields stay. `priority` keeps `low|normal|high` internally and maps to
+P3/P2/P1; add `urgent` → P0.
+
+### Board status (derived, never stored separately)
+
+| Board column | From Request status / WorkItems |
+|---|---|
+| 想法 Idea | `kind === 'idea'` and status `open` |
+| 待处理 To do | `open`, `ready` |
+| 进行中 In progress | `running` |
+| 阻塞 Blocked | `blocked` or `waiting_confirmation` |
+| 待验收 To review | all WorkItems terminal-success and `requiresConfirmation` (Phase 2 sets it) |
+| 已完成 Done | `done` (`cancelled` hidden, searchable) |
+
+## Phase 1 — intake and linking (this PR)
+
+### 1. `TicketIntakeService` (new, `services/v3/ticket-intake.service.ts`)
+
+One entry point: `intake(message: IntakeMessage): Promise<Request | null>`.
+
+- `IntakeMessage` = `{ text, origin, attachments?, isOwner: boolean, targetAgent?: string }`.
+- Only owner messages (`isOwner`) create tickets in Phase 1; agent-authored text never does.
+- Reuse the existing suppression rules from `SlackOrchestratorBridge.shouldSuppressAutoRequest`
+  (continuations, file-only, trivial acks) — move them into the intake service so every
+  channel uses the same gate. Add: messages in a thread that already has an open ticket
+  append to that ticket's discussion instead of opening a new one.
+- Dedupe by `origin.ref` (`findBySourceConversationItemId`).
+- Classify with the existing `classifyIntent` / `generateRequestTitle`; `query` intent
+  (a question, not a task) does not open a ticket.
+- Emits `request:created` as today (decompose + SLA subscribers keep working).
+- Returns the ticket so the caller can post the receipt.
+
+### 2. Wire every channel
+
+| Channel | Hook point | Receipt |
+|---|---|---|
+| Slack team channel / shared room | `SlackTeamChannelService.routeInbound` (owner messages) | Thread reply "已记成 TKT-123 · 不用记" (block button) |
+| Slack agent DM | `SlackAgentDmService` inbound | Same, in the DM thread |
+| chat-v2 | chat-v2 message create for owner-authored messages | System message under it |
+| Portal / mobile | relay → chat-v2 path (covered by chat-v2) | Same |
+| Legacy chat + legacy Slack bridge | replace their inline `requestSvc.create` with `intake()` | unchanged |
+
+"不用记" (don't track) cancels the ticket (`status: 'cancelled'`, tag `dismissed`) and
+edits the receipt to "已取消记录".
+
+### 3. Link work to tickets
+
+- `TaskPoolService.addToPool`: when `requestId` is absent and the creating agent's
+  current in-flight turn (safe-restart `InFlightTurnTracker`) came from a message that
+  has a ticket, set `requestId` to that ticket. Record the mapping message → ticket when
+  intake runs.
+- Skills that create WorkItems (`delegate-task`, `create-task`, …) accept `--request-id`
+  and pass it through; the prompt's `[TICKET:TKT-123 <id>]` marker (added to the
+  delivered message when it has a ticket) tells agents which id to use.
+- Request `workItemIds` stays maintained by the existing `workitem:queued → linkWorkItem`.
+
+### 4. One-time archive (migration)
+
+On boot, once (marker file `task-pool/.archived-2026-09-ticket-loop`):
+move every WorkItem that is `verified`/`done`/`failed`/`cancelled` and older than 7 days,
+plus `queued` review items older than 7 days, into
+`task-pool/archive/pool-archive-YYYY-MM-DD.json`. The live pool keeps the rest.
+Log counts. Never delete; archive is append-only.
+
+### 5. API
+
+- `GET /api/tickets?column=&q=&kind=` — board-shaped list (Phase 2 UI uses it).
+- `GET /api/tickets/:tkt` — by `TKT-123`, `123` or id.
+- `POST /api/tickets/:id/dismiss` — the "不用记" action.
+
+### Out of scope for Phase 1
+
+Board UI, acceptance editing, verify/reject, agent self-claiming, review routing,
+bug button, delivery hooks (Phases 2–4).
+
+## Phases 2–4 (summary; specced when started)
+
+2. Board (Crewly dashboard, portal, mobile), acceptance criteria, 验过了 / 打回 with a
+   required reason, review in the Slack thread, push with the two actions.
+3. Agents self-claim by priority (own rejected → own unblocked → queue rejected → P0..P3),
+   one ticket per agent with a lock; review routing (self-check → team lead → owner),
+   orc stops reviewing every WorkItem; 30-day archive of done tickets.
+4. Per-project delivery hooks (PR / preview / release commands), 🐛 screenshot button in
+   dashboard + portal, `ticket-idea` skill.
