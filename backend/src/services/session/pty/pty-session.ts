@@ -17,6 +17,12 @@ import {
 import { PTY_CONSTANTS, API_SECURITY_CONSTANTS } from '../../../constants.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
 import { stripNestedClaudeSessionEnv } from '../../agent/runtime-session-recovery.js';
+import { createBareModuleRequire } from '../../../utils/node-require.utils.js';
+import {
+	ensureSpawnHelperExecutable,
+	findLoadedNodePtyDir,
+	resolveNodePtyDir,
+} from './node-pty-install.utils.js';
 
 /**
  * Test affordance: lets `pty-session.test.ts` swap in a stub instead of
@@ -125,12 +131,60 @@ class PtySpawnExhaustedError extends Error {
 	}
 }
 
+/**
+ * Set once the spawn-helper exec bit has been checked in this process.
+ * Holds the unfixable helper path (if any) so a later spawn failure can name
+ * the real cause instead of blaming the process table.
+ */
+let spawnHelperCheck: { done: boolean; unfixable: string | null } = { done: false, unfixable: null };
+
+/**
+ * Once per process, make node-pty's `spawn-helper` executable (#778).
+ *
+ * A helper without its exec bit makes every spawn fail with `posix_spawnp
+ * failed.`, which the retry loop below would treat as transient. Installs
+ * that skipped Crewly's postinstall (`--ignore-scripts`, other package
+ * managers) are repaired here instead.
+ *
+ * @param logger - Logger for the repair / failure line
+ */
+function ensureSpawnHelperOnce(logger: ComponentLogger): void {
+	if (spawnHelperCheck.done) return;
+	spawnHelperCheck = { done: true, unfixable: null };
+	try {
+		const nodeRequire = createBareModuleRequire(typeof require === 'function' ? require : null);
+		const dir =
+			findLoadedNodePtyDir(nodeRequire.cache) ??
+			resolveNodePtyDir((request) => nodeRequire.resolve(request));
+		if (!dir) return;
+		const { fixed, failed } = ensureSpawnHelperExecutable(dir);
+		if (fixed.length > 0) {
+			logger.warn('node-pty spawn-helper was not executable; fixed with chmod 755', { fixed });
+		}
+		if (failed.length > 0) {
+			spawnHelperCheck.unfixable = failed[0].path;
+			logger.error('node-pty spawn-helper is not executable and could not be fixed; PTY spawns will fail', {
+				failed,
+				hint: `chmod +x ${failed[0].path}`,
+			});
+		}
+	} catch (error) {
+		logger.debug('spawn-helper check skipped', { error: error instanceof Error ? error.message : String(error) });
+	}
+}
+
+/** Test affordance: forget the once-per-process spawn-helper check. */
+export function _resetSpawnHelperCheckForTesting(): void {
+	spawnHelperCheck = { done: false, unfixable: null };
+}
+
 function spawnPtyWithRetry(
 	command: string,
 	args: string[],
 	options: Parameters<typeof pty.spawn>[2],
 	logger: ComponentLogger,
 ): pty.IPty {
+	ensureSpawnHelperOnce(logger);
 	let lastError: unknown = null;
 	for (let attempt = 0; attempt < PTY_SPAWN_RETRY_BACKOFFS_MS.length; attempt++) {
 		const backoffMs = PTY_SPAWN_RETRY_BACKOFFS_MS[attempt];
@@ -160,7 +214,9 @@ function spawnPtyWithRetry(
 	const errMsg = lastError instanceof Error ? lastError.message : String(lastError);
 
 	let humanHint = '';
-	if (
+	if (spawnHelperCheck.unfixable) {
+		humanHint = ` node-pty's spawn-helper is not executable — run: chmod +x ${spawnHelperCheck.unfixable}`;
+	} else if (
 		userProcessCount !== null &&
 		maxProcPerUid !== null &&
 		userProcessCount > maxProcPerUid * 0.75

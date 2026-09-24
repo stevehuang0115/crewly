@@ -4,7 +4,7 @@
 > Every command in this document is executable against the current codebase.
 >
 > **Estimated time:** 10-15 minutes (including agent execution time)
-> **Prerequisites:** Node.js v20+, npm v9+, jq, a C++ build toolchain for node-pty (Xcode Command Line Tools on macOS; python3, make, g++ on Linux), and at least one AI CLI authenticated (Claude Code recommended)
+> **Prerequisites:** Node.js v20+, npm v9+, jq, a C++ build toolchain only where no prebuilt native binaries exist (Alpine/musl, glibc < 2.28, Node 20; see getting-started), and at least one AI CLI authenticated (Claude Code recommended)
 
 ---
 

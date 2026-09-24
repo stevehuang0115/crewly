@@ -48,8 +48,8 @@ jobs:
           fi
 
       # Workspaces (frontend, packages/*) install with the root lockfile.
-      # node-pty and better-sqlite3 compile in postinstall; ubuntu-latest has
-      # the toolchain.
+      # node-pty and better-sqlite3 install prebuilt binaries (they compile
+      # only when there is none, and ubuntu-latest has the toolchain).
       - run: npm ci
 
       # prepublishOnly runs the full build (backend + frontend + cli).
