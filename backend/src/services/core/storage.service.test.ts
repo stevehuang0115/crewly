@@ -68,6 +68,52 @@ describe('StorageService', () => {
     });
   });
 
+  describe('permanent agent ids (owner, 2026-09-24)', () => {
+    /**
+     * Team with one member.
+     *
+     * @param member - Member overrides
+     * @returns Team
+     */
+    function oneMember(member: Record<string, unknown>): Team {
+      return {
+        id: 'mkt', name: 'Crewly Marketing', description: '', projectIds: [], createdAt: '', updatedAt: '',
+        members: [{ id: '45506487-1b63', name: 'Dana', sessionName: '', role: 'developer', systemPrompt: '', agentStatus: 'inactive', workingStatus: 'idle', runtimeType: 'claude-code', createdAt: '', updatedAt: '', ...member }],
+      } as Team;
+    }
+
+    test('saveTeam gives a member without one its agent id (running session first)', async () => {
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      const running = oneMember({ sessionName: 'crewly-marketing-self-watch-scribe-45506487' });
+      await storageService.saveTeam(running);
+      expect(running.members[0].agentId).toBe('crewly-marketing-self-watch-scribe-45506487');
+      const idle = oneMember({});
+      await storageService.saveTeam(idle);
+      expect(idle.members[0].agentId).toBe('crewly-marketing-dana-45506487');
+    });
+
+    test('an existing id survives a rename', async () => {
+      mockFsPromises.writeFile.mockResolvedValue(undefined);
+      const team = oneMember({ agentId: 'crewly-marketing-dana-45506487' });
+      team.members[0].name = 'Dana Renamed';
+      team.name = 'Marketing';
+      await storageService.saveTeam(team);
+      expect(team.members[0].agentId).toBe('crewly-marketing-dana-45506487');
+    });
+
+    test('findMemberBySessionName finds an idle member by its agent id; ensureAgentIds only saves teams that need it', async () => {
+      const withId = oneMember({ agentId: 'mkt-dana-45506487', name: 'Someone Else' });
+      jest.spyOn(storageService, 'getTeams').mockResolvedValue([withId]);
+      expect((await storageService.findMemberBySessionName('mkt-dana-45506487'))?.member.id).toBe('45506487-1b63');
+      const save = jest.spyOn(storageService, 'saveTeam').mockResolvedValue(undefined);
+      expect(await storageService.ensureAgentIds()).toBe(0);
+      expect(save).not.toHaveBeenCalled();
+      (storageService.getTeams as jest.Mock).mockResolvedValue([oneMember({})]);
+      expect(await storageService.ensureAgentIds()).toBe(1);
+      expect(save).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('Team Management', () => {
     test('should save team to directory structure', async () => {
       const testTeam: Team = {

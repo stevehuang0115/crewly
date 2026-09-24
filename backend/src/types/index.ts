@@ -23,7 +23,16 @@ export type TeamMemberRole =
 export interface TeamMember {
   id: string;
   name: string;
-  sessionName: string; // tmux session name
+  /**
+   * The agent's permanent id — the session it always runs under. Assigned
+   * once (existing members keep the session name they had; new members get
+   * `<team>-<name>-<id8>` at creation) and never recomputed, so renaming the
+   * member or its team changes only the display name. Everything that stores
+   * "which agent" (triggers, work items, Slack bots, chat channels) keeps
+   * pointing at the same agent (owner, 2026-09-24).
+   */
+  agentId?: string;
+  sessionName: string; // tmux session name (set while running; equals agentId)
   role: TeamMemberRole;
   avatar?: string; // URL or emoji for member avatar
   systemPrompt: string;

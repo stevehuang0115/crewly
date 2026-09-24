@@ -14,7 +14,7 @@ import { getCrewlyHomePath } from './crewly-home.utils.js';
 import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js';
 import { atomicWriteJsonWithGuard } from '../../utils/integrity-guarded-write.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
-import { deriveMemberSessionName } from '../../utils/member-session-name.utils.js';
+import { deriveMemberSessionName, memberAgentId } from '../../utils/member-session-name.utils.js';
 import {
   StateInvariantViolation,
   isForceEmptyBootActive,
@@ -498,6 +498,25 @@ export class StorageService {
    *
    * @returns Array of all teams
    */
+  /**
+   * Give every existing member its permanent agent id (one-time migration,
+   * idempotent): the session it runs under now, else the one its current
+   * name derives. Nothing that already points at an agent changes.
+   *
+   * @returns Number of members that got an id
+   */
+  async ensureAgentIds(): Promise<number> {
+    let assigned = 0;
+    for (const team of await this.getTeams()) {
+      const missing = (team.members || []).filter((m) => !m.agentId);
+      if (missing.length === 0) continue;
+      assigned += missing.length;
+      await this.saveTeam(team);
+    }
+    if (assigned > 0) this.logger.info('Assigned permanent agent ids', { assigned });
+    return assigned;
+  }
+
   async getTeams(): Promise<Team[]> {
     try {
       // Migrate from legacy format if needed
@@ -563,6 +582,12 @@ export class StorageService {
         }
         if (!existsSync(promptsDir)) {
           mkdirSync(promptsDir, { recursive: true });
+        }
+
+        // Every member gets its permanent agent id the first time it is saved
+        // (see TeamMember.agentId): a rename after this never moves it.
+        for (const member of team.members || []) {
+          if (!member.agentId) member.agentId = memberAgentId(team.name, member);
         }
 
         // Check if this is an update or create
@@ -692,7 +717,14 @@ export class StorageService {
       }
       for (const team of teams) {
         for (const member of team.members || []) {
-          if (!member.sessionName && deriveMemberSessionName(team.name, member.name, member.id) === sessionName) {
+          if (!member.sessionName && member.agentId === sessionName) {
+            return { team, member };
+          }
+        }
+      }
+      for (const team of teams) {
+        for (const member of team.members || []) {
+          if (!member.sessionName && !member.agentId && deriveMemberSessionName(team.name, member.name, member.id) === sessionName) {
             return { team, member };
           }
         }

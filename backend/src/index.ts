@@ -2890,6 +2890,14 @@ void (async () => {
 			// before restore so their agents count as having work in hand.
 			this.loadInterruptedTurnsAtBoot();
 
+			// Permanent agent ids (one-time, idempotent): before anything starts
+			// a session, so every member runs under an id a rename cannot move.
+			await this.storageService.ensureAgentIds().catch((agentIdErr: unknown) => {
+				this.logger.warn('Assigning permanent agent ids failed (sessions keep derived names)', {
+					error: agentIdErr instanceof Error ? agentIdErr.message : String(agentIdErr),
+				});
+			});
+
 			// Auto-start orchestrator if enabled in settings
 			await this.autoStartOrchestratorIfEnabled();
 

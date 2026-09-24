@@ -27,7 +27,24 @@ export function deriveMemberSessionName(teamName: string, memberName: string, me
 }
 
 /**
- * A member's stored session name when it has one, else the derived one.
+ * A member's permanent agent id (its session name for life): the stored
+ * `agentId`, else — for a member saved before ids existed — the running
+ * session, else the derived name.
+ *
+ * @param teamName - The team's display name
+ * @param member - Member fields
+ * @returns The agent id
+ */
+export function memberAgentId(
+  teamName: string,
+  member: { agentId?: string; sessionName?: string; name: string; id: string },
+): string {
+  return member.agentId || member.sessionName || deriveMemberSessionName(teamName, member.name, member.id);
+}
+
+/**
+ * A member's stored session name when it has one, else its permanent agent id
+ * (else the derived one).
  *
  * @param teamName - The team's display name
  * @param member - Member fields the derivation needs
@@ -35,7 +52,7 @@ export function deriveMemberSessionName(teamName: string, memberName: string, me
  */
 export function resolveMemberSessionName(
   teamName: string,
-  member: { sessionName?: string; name: string; id: string },
+  member: { sessionName?: string; agentId?: string; name: string; id: string },
 ): string {
-  return member.sessionName || deriveMemberSessionName(teamName, member.name, member.id);
+  return member.sessionName || member.agentId || deriveMemberSessionName(teamName, member.name, member.id);
 }

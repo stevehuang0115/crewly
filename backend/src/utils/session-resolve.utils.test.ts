@@ -50,3 +50,20 @@ describe('resolveCurrentSession', () => {
     expect(resolveCurrentSession('', teams)).toBeNull();
   });
 });
+
+describe('resolveCurrentSession with permanent agent ids', () => {
+  const withIds = [
+    { id: 'mkt', name: 'mkt', members: [{ id: '45506487-1b63', name: 'Dana', sessionName: '', agentId: 'crewly-marketing-dana-45506487' }] },
+  ] as unknown as Team[];
+
+  it('an idle member is found by its agent id', () => {
+    expect(resolveCurrentSession('crewly-marketing-dana-45506487', withIds)).toMatchObject({ sessionName: 'crewly-marketing-dana-45506487', renamed: false });
+  });
+
+  it('an old name maps to the agent id', () => {
+    expect(resolveCurrentSession('crewly-marketing-self-watch-scribe-45506487', withIds)).toMatchObject({
+      sessionName: 'crewly-marketing-dana-45506487',
+      renamed: true,
+    });
+  });
+});

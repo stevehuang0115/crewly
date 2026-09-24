@@ -1,3 +1,4 @@
+import { memberAgentId } from '../../utils/member-session-name.utils.js';
 import { Request, Response } from 'express';
 import type { ApiContext } from '../types.js';
 import type {
@@ -766,11 +767,9 @@ async function _startTeamMemberCore(
       }
     }
 
-    // Generate session name
-    const teamSlug = team.name.toLowerCase().replace(/\s+/g, '-');
-    const memberSlug = member.name.toLowerCase().replace(/\s+/g, '-');
-    const memberIdSlug = member.id.substring(0, 8);
-    const sessionName = `${teamSlug}-${memberSlug}-${memberIdSlug}`;
+    // The session is the member's permanent agent id — assigned once, never
+    // re-derived from the (renamable) display names (owner, 2026-09-24).
+    const sessionName = memberAgentId(team.name, { ...member, sessionName: '' });
 
     // Load fresh team data before making any changes to avoid race conditions with MCP registration
     const currentTeams = await context.storageService.getTeams();
@@ -801,6 +800,7 @@ async function _startTeamMemberCore(
     // Set sessionName in team member BEFORE creating session to avoid race condition
     // Use fresh team data to preserve any concurrent agentStatus updates
     currentMember.sessionName = sessionName;
+    if (!currentMember.agentId) currentMember.agentId = sessionName;
     currentMember.workingStatus = currentMember.workingStatus || CREWLY_CONSTANTS.WORKING_STATUSES.IDLE;
     currentMember.updatedAt = new Date().toISOString();
 
