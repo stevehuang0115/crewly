@@ -241,6 +241,21 @@ describe('TriggerEngine', () => {
     });
   });
 
+  describe('retargetWorkItemAction', () => {
+    it('re-points a createWorkItem action and ignores no-ops / other actions', async () => {
+      const t = await engine.create({
+        ...makeCronTriggerInput(),
+        action: { createWorkItem: { type: 'delegate', owner: 'team_lead', target: 'old-scribe-45506487', title: 'metrics' } },
+      });
+      expect(await engine.retargetWorkItemAction(t.id, 'crewly-marketing-dana-45506487')).toBe(true);
+      expect(engine.get(t.id)!.action.createWorkItem!.target).toBe('crewly-marketing-dana-45506487');
+      expect(await engine.retargetWorkItemAction(t.id, 'crewly-marketing-dana-45506487')).toBe(false);
+      const plain = await engine.create(makeCronTriggerInput());
+      expect(await engine.retargetWorkItemAction(plain.id, 'x')).toBe(false);
+      expect(await engine.retargetWorkItemAction('missing', 'x')).toBe(false);
+    });
+  });
+
   describe('pause / resume', () => {
     it('pauses an active trigger', async () => {
       const trigger = await engine.create(makeCronTriggerInput());
