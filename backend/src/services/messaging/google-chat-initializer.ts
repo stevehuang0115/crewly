@@ -14,7 +14,7 @@
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { CREWLY_CONSTANTS, MESSAGE_SOURCES } from '../../constants.js';
+import { CREWLY_CONSTANTS, MESSAGE_SOURCES, CHAT_ROUTING_CONSTANTS } from '../../constants.js';
 import { MessengerRegistryService } from './messenger-registry.service.js';
 import { GoogleChatMessengerAdapter } from './adapters/google-chat-messenger.adapter.js';
 import { getGchatThreadStore } from './gchat-thread-store.service.js';
@@ -23,6 +23,8 @@ import { formatError } from '../../utils/format-error.js';
 import { cleanGoogleChatResponse } from '../../utils/terminal-output.utils.js';
 import type { MessageQueueService } from './message-queue.service.js';
 import type { IncomingMessage } from './messenger-adapter.interface.js';
+import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
+import { messengerConversationId, recordMessengerOwnerTurn } from '../chat-v2/owner-inbound.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('GoogleChatInitializer');
 
@@ -102,6 +104,27 @@ export function createIncomingCallback(
     if (msg.messageName) {
       adapter.addReaction(msg.messageName, '👀').catch((err) => {
         logger.debug('Could not add eyes reaction', { error: formatError(err) });
+      });
+    }
+
+    // Record the owner's message in chat-v2 like every other owner surface,
+    // so an approval given in Google Chat is visible to the commitment gate
+    // (#730). Best-effort: delivery below proceeds either way.
+    try {
+      const recorded = recordMessengerOwnerTurn(getChatV2Service(), {
+        conversationId: messengerConversationId(CHAT_ROUTING_CONSTANTS.GOOGLE_CHAT_CHANNEL_PREFIX, msg.conversationId),
+        content: msg.text,
+        senderId: msg.userId || '',
+        source: 'google-chat',
+        metadata: { gchatSpace: msg.channelId, gchatThread: msg.threadId, gchatMessage: msg.messageName },
+      });
+      if (!recorded) {
+        logger.warn('Could not record Google Chat message in chat history', { conversationId: msg.conversationId });
+      }
+    } catch (err) {
+      logger.warn('Could not record Google Chat message in chat history', {
+        conversationId: msg.conversationId,
+        error: formatError(err),
       });
     }
 

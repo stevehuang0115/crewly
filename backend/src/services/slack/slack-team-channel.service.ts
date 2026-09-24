@@ -51,7 +51,7 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
-import { SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
+import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -1116,7 +1116,9 @@ export class SlackTeamChannelService {
         slackThreadTs,
         slackTs: message.ts,
         slackUserId: message.userId,
-        ...(remoteAgent ? { remoteAgentSession: remoteAgent } : {}),
+        // Marks the row as agent-authored: the commitment-approval gate must
+        // never read a colleague agent's post as owner approval (#730).
+        ...(remoteAgent ? { [OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION]: remoteAgent } : {}),
       },
     };
     const persisted: ChatMessageDTO = handoffTo && seen

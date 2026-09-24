@@ -2,7 +2,8 @@
 # =============================================================================
 # Tests for lib.sh — shared skills library
 # Covers: --file preprocessor, read_json_input, require_param, error_exit,
-#         api_call output cap (CREWLY_SKILL_MAX_OUTPUT_BYTES)
+#         api_call output cap (CREWLY_SKILL_MAX_OUTPUT_BYTES),
+#         CREWLY_API_URL default (#777)
 # =============================================================================
 set -euo pipefail
 
@@ -305,6 +306,14 @@ export MOCK_BODY='{"error":"nope"}' MOCK_CODE=500
 RESULT=$(CREWLY_SKILL_MAX_OUTPUT_BYTES=5 bash "$TEMP_DIR/skills/fake-skill/execute.sh" 2>&1 || true)
 assert_contains "api_call: non-2xx still reports the error object" '"status":500' "$RESULT"
 unset MOCK_BODY MOCK_CODE CREWLY_HOME
+
+# ---- Test 24: CREWLY_API_URL default follows the instance's port (#777) ----
+RESULT=$(env -u CREWLY_API_URL WEB_PORT=8797 bash -c 'source "$1"; echo "$CREWLY_API_URL"' _ "$SCRIPT_DIR/lib.sh")
+assert_eq "lib.sh: default API URL uses WEB_PORT" "http://localhost:8797" "$RESULT"
+RESULT=$(env -u CREWLY_API_URL -u WEB_PORT bash -c 'source "$1"; echo "$CREWLY_API_URL"' _ "$SCRIPT_DIR/lib.sh")
+assert_eq "lib.sh: default API URL without WEB_PORT is 8787" "http://localhost:8787" "$RESULT"
+RESULT=$(CREWLY_API_URL=http://localhost:9001 WEB_PORT=8797 bash -c 'source "$1"; echo "$CREWLY_API_URL"' _ "$SCRIPT_DIR/lib.sh")
+assert_eq "lib.sh: CREWLY_API_URL set by the backend wins" "http://localhost:9001" "$RESULT"
 
 echo ""
 echo "=== Results: $PASS/$TOTAL passed, $FAIL failed ==="

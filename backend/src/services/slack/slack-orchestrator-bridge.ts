@@ -42,7 +42,7 @@ import { ContentApprovalService } from '../onboarding/content-approval.service.j
 import { getSlackImageService } from './slack-image.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
-import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
@@ -51,6 +51,7 @@ import { getSlackAgentDmService } from './slack-agent-dm.service.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 import { TERMINAL_REQUEST_STATUSES } from '../../types/v2/request.types.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /**
  * Bridge configuration
@@ -489,7 +490,12 @@ export class SlackOrchestratorBridge extends EventEmitter {
           }
           // Strip the @mention prefix and send to the target agent
           const cleanMessage = enrichedText.replace(new RegExp(`^@${mentionTarget.name}\\s*`, 'i'), '').trim();
-          const agentResponse = await this.sendToAgent(mentionTarget.sessionName, cleanMessage || enrichedText, context);
+          const agentResponse = await this.sendToAgent(
+            mentionTarget.sessionName,
+            cleanMessage || enrichedText,
+            context,
+            message.authorAgentSession,
+          );
           // Issue #394: `fromOrcReply` comes from the envelope — only
           // `true` when slackResolve fired with a non-empty body. The
           // pre-fix `response.length > 0` proxy false-positived on the
@@ -626,7 +632,7 @@ export class SlackOrchestratorBridge extends EventEmitter {
           });
           // Send to orchestrator for processing
           {
-            const r = await this.sendToOrchestrator(message.text, context);
+            const r = await this.sendToOrchestrator(message.text, context, message.authorAgentSession);
             response = r.response;
             fromOrcReply = r.fromOrcReply;
           }
@@ -965,11 +971,14 @@ Just type naturally to chat with the orchestrator!`;
    *
    * @param message - Message to send
    * @param context - Optional conversation context
+   * @param authorAgentSession - Set when a Crewly agent (not a human) wrote
+   *   the Slack message; persisted so the owner-approval gate ignores it
    * @returns Orchestrator response or offline/error message
    */
   private async sendToOrchestrator(
     message: string,
-    context?: SlackConversationContext
+    context?: SlackConversationContext,
+    authorAgentSession?: string,
   ): Promise<OrcResponse> {
     try {
       // Check if orchestrator is active before attempting to send
@@ -1010,7 +1019,7 @@ Just type naturally to chat with the orchestrator!`;
         if (auditorActive) {
           this.logger.info('Orchestrator offline — routing message to Auditor agent');
           // Auditor fallback is NOT an orc reply — caller must not auto-resolve SLA.
-          const fallback = await this.sendToAuditorFallback(message, context);
+          const fallback = await this.sendToAuditorFallback(message, context, authorAgentSession);
           return { response: fallback, fromOrcReply: false };
         }
 
@@ -1039,6 +1048,7 @@ Just type naturally to chat with the orchestrator!`;
                 channelId: context?.channelId,
                 threadTs: context?.threadTs,
                 userId: context?.userId,
+                authorAgentSession,
               }).conversationId,
             },
           };
@@ -1120,6 +1130,7 @@ Just type naturally to chat with the orchestrator!`;
             channelId: context?.channelId,
             threadTs: context?.threadTs,
             userId: context?.userId,
+            authorAgentSession,
           }).conversationId,
         },
       };
@@ -1260,6 +1271,7 @@ Just type naturally to chat with the orchestrator!`;
   private async sendToAuditorFallback(
     message: string,
     context?: SlackConversationContext,
+    authorAgentSession?: string,
   ): Promise<string> {
     const auditorSession = AUDITOR_SCHEDULER_CONSTANTS.AUDITOR_SESSION_NAME;
 
@@ -1288,6 +1300,7 @@ Just type naturally to chat with the orchestrator!`;
               channelId: context?.channelId,
               threadTs: context?.threadTs,
               userId: context?.userId,
+              authorAgentSession,
             }).conversationId,
           },
         };
@@ -2156,6 +2169,7 @@ Just type naturally to chat with the orchestrator!`;
     sessionName: string,
     message: string,
     context?: SlackConversationContext,
+    authorAgentSession?: string,
   ): Promise<OrcResponse> {
     try {
       // Enrich with Slack context for reply routing
@@ -2175,6 +2189,7 @@ Just type naturally to chat with the orchestrator!`;
               channelId: context?.channelId,
               threadTs: context?.threadTs,
               userId: context?.userId,
+              authorAgentSession,
             }).conversationId,
           },
         };
@@ -2221,7 +2236,7 @@ Just type naturally to chat with the orchestrator!`;
       // placeholder with fromOrcReply=false so the SLA cascade does NOT
       // close on this.
       const { default: fetch } = await import('node-fetch' as any).catch(() => ({ default: globalThis.fetch }));
-      const apiUrl = process.env.CREWLY_API_URL || 'http://localhost:8787';
+      const apiUrl = getLocalApiBaseUrl();
       await fetch(`${apiUrl}/api/terminal/${sessionName}/deliver`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2264,6 +2279,8 @@ Just type naturally to chat with the orchestrator!`;
     channelId?: string;
     threadTs?: string;
     userId?: string;
+    /** Crewly agent that wrote the Slack message (cross-machine colleague), if any. */
+    authorAgentSession?: string;
   }): { conversationId: string; messageId: string } {
     const cid =
       args.conversationId ??
@@ -2289,6 +2306,10 @@ Just type naturally to chat with the orchestrator!`;
         source: 'slack',
         slackChannelId: args.channelId,
         slackThreadTs: args.threadTs,
+        // An agent's Slack post is stored as a user turn so it is delivered
+        // like a colleague's, but it is NOT the owner: tag it so the
+        // commitment-approval gate never reads it as owner approval (#730).
+        ...(args.authorAgentSession ? { [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: args.authorAgentSession } : {}),
       },
     });
     return { conversationId: channel.id, messageId: message.id };

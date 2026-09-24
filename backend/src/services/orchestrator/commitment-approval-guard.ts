@@ -170,18 +170,22 @@ export function evaluateColdLaunch(args: {
   }
 
   // Distinguish "wrong wording" from "this channel records nothing" (issue
-  // #730). When the window holds ZERO owner messages, the owner is almost
-  // certainly talking on a surface that never persists `sender_type='user'`
-  // rows — a bare orchestrator session with no `[CHAT:…]` wrapper. There, no
-  // phrasing can ever satisfy the gate, and the generic "no such message
-  // found" text sends both orc and owner into a pointless retry loop hunting
-  // for the magic word.
+  // #730). Every messenger surface that carries the owner's words to the
+  // orchestrator records them (Chat UI, Slack DM/thread/team channel,
+  // WhatsApp, Telegram, Google Chat, portal/mobile relay), so when the window
+  // holds ZERO owner messages the owner is typing somewhere that is not a
+  // messenger — the orchestrator's terminal itself. There, no phrasing can
+  // ever satisfy the gate, and the generic "no such message found" text sends
+  // both orc and owner into a pointless retry loop hunting for the magic word.
   //
-  // The lookup deliberately stays chat-only: the guard's whole value is that
-  // the orchestrator cannot forge the evidence, and a session transcript is
-  // something the orchestrator writes. Widening the search would hand it the
-  // forgery it was built to prevent (2026-06-02 incident) — so we fix the
-  // diagnosis, not the trust boundary.
+  // The terminal stays out on purpose: the guard's whole value is that the
+  // orchestrator cannot forge the evidence, and a session transcript (or
+  // `/api/terminal/:session/write`) is something the orchestrator can write.
+  // Accepting it would hand it the forgery the gate was built to prevent
+  // (2026-06-02 incident). #730 widened which owner CHANNELS count; which
+  // AUTHORS count is unchanged (agent-authored rows are filtered upstream).
+  // And a human starting an agent from the dashboard is not gated at all
+  // (#775), so the terminal-only owner has a way through too.
   if (recentOwnerMessages.length === 0) {
     return {
       allowed: false,
@@ -189,11 +193,13 @@ export function evaluateColdLaunch(args: {
         'Cold-launching a dormant team requires an explicit owner approval, and ' +
         'NO owner chat messages at all were recorded in the lookback window. This ' +
         'is a channel problem, not a wording problem: approval must be given on a ' +
-        'surface that records owner messages (Slack, or the Chat UI). Approving ' +
-        'from a raw orchestrator session cannot satisfy this gate no matter how ' +
-        'it is phrased — the guard reads the owner\'s real chat history precisely ' +
-        'so the orchestrator cannot fabricate it. Ask the owner to send the ' +
-        'approval (启动/批准/go ahead/do it/proceed/approved) in Slack or the Chat UI.',
+        'surface that records owner messages (Slack DM or thread, the Chat UI, ' +
+        'WhatsApp, Telegram, Google Chat, or the Crewly portal/mobile app). ' +
+        'Approving by typing into the orchestrator\'s terminal cannot satisfy this ' +
+        'gate no matter how it is phrased — the guard reads the owner\'s real chat ' +
+        'history precisely so the orchestrator cannot fabricate it. Ask the owner to ' +
+        'send the approval (启动/批准/go ahead/do it/proceed/approved) on one of those ' +
+        'surfaces, or to start the member themselves from the dashboard.',
     };
   }
 

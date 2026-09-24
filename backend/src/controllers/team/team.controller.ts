@@ -54,6 +54,7 @@ import {
   isPreAuthorizedSchedule,
   COMMITMENT_APPROVAL_LOOKBACK_MS,
 } from '../../services/orchestrator/commitment-approval-guard.js';
+import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -1992,7 +1993,25 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
       CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVATING,
     ]);
     const memberAlreadyActive = skipStatusesForGate.has(member.agentStatus);
-    if (!memberAlreadyActive) {
+
+    // Who is asking (issue #775). Both gates below exist to stop the
+    // ORCHESTRATOR (or an internal waker acting on a WorkItem it wrote) from
+    // starting agents on recalled intent or fabricated approval. A human
+    // clicking Start in the dashboard is the owner's own say-so: gating it
+    // made per-member Start fail on every fresh install (no pool work, no
+    // prior chat). Only a dashboard request with no agent session qualifies
+    // — see isOwnerDashboardRequest for why a missing `X-Agent-Session`
+    // alone is not enough.
+    const ownerDashboardCall = isOwnerDashboardRequest(req);
+    if (ownerDashboardCall && !memberAlreadyActive) {
+      logger.info('startTeamMember: owner dashboard request — wake and commitment gates do not apply', {
+        teamId,
+        memberId,
+        sessionName: member.sessionName,
+      });
+    }
+
+    if (!memberAlreadyActive && !ownerDashboardCall) {
       const gateResult = await checkWakeGate(member.sessionName, req.body);
       if (!gateResult.allowed) {
         logger.warn('startTeamMember rejected by wake gate', {
@@ -2034,9 +2053,16 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
     // scheduled autonomy on a dormant team would be blocked (e.g. a 3am cron
     // with the owner asleep). The exemption is verified against the real
     // scheduler registry, so the orc cannot forge a `source:'cron'` claim.
+    //
+    // NOT GATED: the owner clicking Start in the dashboard (#775). The gate
+    // guards against the orchestrator acting without the owner; a human
+    // click IS the owner acting. Agent callers (`X-Agent-Session`, e.g. the
+    // start-agent skill) and header-less internal wakers stay fully gated.
     const wakeWorkItemId =
       typeof req.body?.workItemId === 'string' ? (req.body.workItemId as string) : null;
-    const scheduledPreAuthorized = await isScheduledWakePreAuthorized(wakeWorkItemId);
+    const scheduledPreAuthorized = ownerDashboardCall
+      ? false
+      : await isScheduledWakePreAuthorized(wakeWorkItemId);
     if (scheduledPreAuthorized) {
       logger.info('Commitment gate: exempting pre-authorized scheduled wake (cron/trigger)', {
         teamId,
@@ -2045,7 +2071,7 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
         workItemId: wakeWorkItemId,
       });
     }
-    if (!memberAlreadyActive && isDormantTeam(team) && !scheduledPreAuthorized) {
+    if (!memberAlreadyActive && !ownerDashboardCall && isDormantTeam(team) && !scheduledPreAuthorized) {
       let ownerMessages: string[] = [];
       let readOk = true;
       try {
@@ -2070,6 +2096,7 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
             memberName: member.name,
             sessionName: member.sessionName,
             workItemId: typeof req.body?.workItemId === 'string' ? req.body.workItemId : null,
+            callerSession: readAgentSessionHeader(req) ?? null,
             ownerMessagesScanned: ownerMessages.length,
           });
           res.status(403).json({

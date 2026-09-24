@@ -13,7 +13,7 @@ import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import axios from 'axios';
-import { WEB_CONSTANTS } from '../../../config/constants.js';
+import { getLocalApiBaseUrl } from '../utils/local-api-url.utils.js';
 
 const execAsync = promisify(exec);
 
@@ -202,7 +202,7 @@ export class FactoryService {
 
 		// 1. Fetch Crewly managed teams
 		try {
-			const backendPort = process.env.WEB_PORT || WEB_CONSTANTS.PORTS.BACKEND;
+			const apiBase = getLocalApiBaseUrl();
 			const teamsResponse = await axios.get<{ success: boolean; data: Array<{
 				name: string;
 				projectIds?: string[];
@@ -213,7 +213,7 @@ export class FactoryService {
 					agentStatus: string;
 					workingStatus: string;
 				}>;
-			}> }>(`http://localhost:${backendPort}/api/teams`, { timeout: 2000 });
+			}> }>(`${apiBase}/api/teams`, { timeout: 2000 });
 
 			const teams = teamsResponse.data.data || [];
 

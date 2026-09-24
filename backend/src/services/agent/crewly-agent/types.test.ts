@@ -38,7 +38,9 @@ describe('Crewly Agent Types', () => {
   describe('CREWLY_AGENT_DEFAULTS', () => {
     it('should have sensible default values', () => {
       expect(CREWLY_AGENT_DEFAULTS.MAX_STEPS).toBe(500);
-      expect(CREWLY_AGENT_DEFAULTS.API_BASE_URL).toBe('http://localhost:8787');
+      // No hard-coded API URL: the runtime gets the running instance's URL
+      // from utils/local-api-url (#777).
+      expect(CREWLY_AGENT_DEFAULTS).not.toHaveProperty('API_BASE_URL');
       expect(CREWLY_AGENT_DEFAULTS.MAX_HISTORY_MESSAGES).toBe(100);
       expect(CREWLY_AGENT_DEFAULTS.COMPACTION_THRESHOLD).toBe(0.8);
       expect(CREWLY_AGENT_DEFAULTS.API_TIMEOUT_MS).toBe(30000);

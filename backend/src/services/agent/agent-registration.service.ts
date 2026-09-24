@@ -38,7 +38,6 @@ import {
 	REGISTRATION_DELIVERY_CONSTANTS,
 	ORC_CONVERSATION_CONSTANTS,
 } from '../../constants.js';
-import { WEB_CONSTANTS } from '../../../../config/constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
@@ -94,6 +93,7 @@ import {
 	waitForCodexSessionId,
 	type RuntimeSessionPlan,
 } from './runtime-session-recovery.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /**
  * Whether a file exists (readable).
@@ -3081,7 +3081,8 @@ Loop until done, blocked, or explicitly reassigned:
 		return {
 			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
 			[ENV_CONSTANTS.CREWLY_ROLE]: role,
-			[ENV_CONSTANTS.CREWLY_API_URL]: `http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`,
+			// The port this instance actually runs on, not the default (#777).
+			[ENV_CONSTANTS.CREWLY_API_URL]: getLocalApiBaseUrl(),
 			[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwd,
 			[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
 		};
@@ -3707,7 +3708,7 @@ Loop until done, blocked, or explicitly reassigned:
 			await sessionHelper.setEnvironmentVariable(
 				sessionName,
 				ENV_CONSTANTS.CREWLY_API_URL,
-				`http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`
+				getLocalApiBaseUrl()
 			);
 			// #187: Set project path so memory skills can auto-inject it
 			await sessionHelper.setEnvironmentVariable(

@@ -27,7 +27,7 @@ OUTPUT_DIR=$(printf '%s' "$INPUT" | jq -r '.outputDir // ""')
 PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // ""')
 
 # Crewly API base URL
-API_BASE="${CREWLY_API_URL:-http://localhost:3000}"
+API_BASE="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
 
 # Local storage directory
 LOCAL_DIR="${PROJECT_PATH:-.}/.crewly/onboarding"

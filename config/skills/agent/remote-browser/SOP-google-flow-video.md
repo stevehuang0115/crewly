@@ -131,7 +131,7 @@ bash .../remote-browser/execute.sh '{"action":"navigate","url":"https://labs.goo
 
 ```bash
 # Direct API call (bypasses execute.sh):
-curl -s -X POST http://localhost:8787/api/browser/set-file-input \
+curl -s -X POST "$CREWLY_API_URL/api/browser/set-file-input" \
   -H "Content-Type: application/json" \
   -d '{"selector":"input[type=file]","filePaths":["/tmp/image.png"]}'
 

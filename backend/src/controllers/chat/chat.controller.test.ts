@@ -38,6 +38,7 @@ import * as os from 'os';
 import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
 import { setMessageQueueService, clipForOrchestrator } from './chat.controller.js';
+import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 
 // =============================================================================
 // Test Setup
@@ -152,6 +153,30 @@ describe('Chat Controller', () => {
       expect(response.status).toBe(201);
       expect(response.body.data.message.metadata.source).toBe('test');
       expect(response.body.data.message.metadata.priority).toBe('high');
+    });
+
+    // #730: this endpoint writes a `user` row, which the commitment gate reads
+    // as the owner's words. An agent session calling it must not be able to
+    // manufacture an owner approval.
+    it('tags a message sent by an agent session so it is never owner approval', async () => {
+      const marker = `go ahead agent-${Date.now()}`;
+      const response = await request(app)
+        .post('/api/chat/send')
+        .set('X-Agent-Session', 'crewly-orc')
+        .send({ content: marker, metadata: { source: 'web' } });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.message.metadata.authorAgentSession).toBe('crewly-orc');
+      expect(getChatV2Service().getRecentOwnerMessageContents(0, 500)).not.toContain(marker);
+    });
+
+    it('still counts the owner\'s own message (no agent session) as owner evidence', async () => {
+      const marker = `go ahead owner-${Date.now()}`;
+      const response = await request(app).post('/api/chat/send').send({ content: marker });
+
+      expect(response.status).toBe(201);
+      expect(response.body.data.message.metadata?.authorAgentSession).toBeUndefined();
+      expect(getChatV2Service().getRecentOwnerMessageContents(0, 500)).toContain(marker);
     });
   });
 

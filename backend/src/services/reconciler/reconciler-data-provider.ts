@@ -31,7 +31,8 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
-import { WEB_CONSTANTS, AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -1361,11 +1362,10 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // The agent session creation is complex — use the HTTP API endpoint.
         const { teamId, memberId } = action;
 
-        // Follow-up #10 from PR #543 review: replace the hardcoded
-        // 8787 with the canonical backend port constant. `process.env.PORT`
-        // still wins when set so deployments overriding the default keep
-        // working unchanged.
-        const port = process.env.PORT || WEB_CONSTANTS.PORTS.BACKEND;
+        // The port this instance runs on (#777). It used to read
+        // `process.env.PORT`, which Crewly never sets, so a non-default
+        // instance woke agents through whatever answered on 8787.
+        const apiBase = getLocalApiBaseUrl();
 
         // The main orchestrator (crewly-orc) is a VIRTUAL team member: its
         // teamId/memberId are intentionally undefined in the health map, and
@@ -1381,13 +1381,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         let url: string;
         let body: Record<string, unknown>;
         if (agentSessionName === ORCHESTRATOR_SESSION_NAME) {
-          url = `http://localhost:${port}/api/orchestrator/setup`;
+          url = `${apiBase}/api/orchestrator/setup`;
           // setupOrchestrator takes no body; it is idempotent and self-gating.
           body = {};
         } else {
-          url = `http://localhost:${port}/api/teams/members/start`;
+          url = `${apiBase}/api/teams/members/start`;
           if (teamId && memberId) {
-            url = `http://localhost:${port}/api/teams/${teamId}/members/${memberId}/start`;
+            url = `${apiBase}/api/teams/${teamId}/members/${memberId}/start`;
           }
           // Pass `workItemId` so the team-controller wake-gate can verify
           // that this wake is pool-driven (path 1 of the gate). Reconciler

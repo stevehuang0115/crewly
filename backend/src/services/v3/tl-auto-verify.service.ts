@@ -13,6 +13,7 @@
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -41,7 +42,6 @@ interface TeamInfo {
 const SERVICE_NAME = 'TLAutoVerify';
 
 /** Loopback API base (same one workitem-dispatch.subscriber.ts uses). */
-const API_BASE = 'http://localhost:8787';
 
 /** Timeout for the direct terminal write to the TL session. */
 const TL_WRITE_TIMEOUT_MS = 5_000;
@@ -201,7 +201,7 @@ export class TLAutoVerifyService {
       try {
         const axios = (await import('axios')).default;
         await axios.post(
-          `${API_BASE}/api/terminal/${encodeURIComponent(tlSessionName)}/write`,
+          `${getLocalApiBaseUrl()}/api/terminal/${encodeURIComponent(tlSessionName)}/write`,
           { data: verifyInstruction, mode: 'message' },
           {
             headers: { 'X-Agent-Session': SERVICE_NAME },
@@ -254,7 +254,7 @@ export class TLAutoVerifyService {
       // Fallback: load from API
       try {
         const axios = (await import('axios')).default;
-        const response = await axios.get('http://localhost:8787/api/teams');
+        const response = await axios.get(`${getLocalApiBaseUrl()}/api/teams`);
         teams = response.data?.data ?? [];
       } catch {
         return null;

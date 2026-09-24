@@ -38,11 +38,11 @@ import {
 	CLAUDE_FATAL_PATTERNS,
 	GEMINI_FAILURE_RETRY_CONSTANTS,
 	GEMINI_READY_PATTERNS,
-	WEB_CONSTANTS,
 	AGENT_HEARTBEAT_MONITOR_CONSTANTS,
 	type RuntimeType,
 } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
+import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /**
  * Runtimes that exit cleanly after task completion / idle timeout and are
@@ -1277,7 +1277,7 @@ export class RuntimeExitMonitorService {
 		}
 
 		// Use the deliver endpoint for reliable delivery to the orchestrator
-		const baseUrl = process.env.CREWLY_API_URL || `http://localhost:${WEB_CONSTANTS.PORTS.BACKEND}`;
+		const baseUrl = getLocalApiBaseUrl();
 		const body = JSON.stringify({
 			message,
 			force: true,

@@ -111,6 +111,11 @@ describe('evaluateColdLaunch', () => {
       expect(d.allowed).toBe(false);
       expect(d.reason).toContain('channel problem, not a wording problem');
       expect(d.reason).toMatch(/Slack.*Chat UI/s);
+      // Every recorded owner surface is named, and the dashboard way out.
+      for (const surface of ['WhatsApp', 'Telegram', 'Google Chat', 'portal']) {
+        expect(d.reason).toContain(surface);
+      }
+      expect(d.reason).toContain('dashboard');
     });
 
     it('honours an approval regardless of which message in the window carries it (no conversation scoping)', () => {

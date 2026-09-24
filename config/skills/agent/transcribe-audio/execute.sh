@@ -24,7 +24,7 @@ FLOPOST_WHISPER_DIR="${HOME}/.flopost/whisper"
 WHISPER_CACHE_DIR="${HOME}/.cache/whisper-models"
 OPENAI_TRANSCRIBE_URL="https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL="whisper-1"
-SETTINGS_URL="http://localhost:8787/api/settings"
+SETTINGS_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings"
 
 err_json() { printf '{"success":false,"error":%s}\n' "$(printf '%s' "$1" | jq -Rsa .)"; exit 1; }
 

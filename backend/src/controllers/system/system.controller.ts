@@ -9,6 +9,7 @@ import { ApiResponse } from '../../types/index.js';
 import { SOPService } from '../../services/sop/sop.service.js';
 import { PROCESS_EXIT_CODES } from '../../constants.js';
 import { RestartDrainService } from '../../services/restart/restart-drain.service.js';
+import { getLocalApiPort } from '../../utils/local-api-url.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SystemController');
 
@@ -180,14 +181,14 @@ export async function getLocalIpAddress(this: ApiContext, req: Request, res: Res
       if (localIp !== 'localhost') break;
     }
 
-    // Get the port from environment or default
-    const port = process.env.WEB_PORT || '8787';
+    // The port this instance actually listens on (#777)
+    const port = getLocalApiPort();
 
     res.json({
       success: true,
       data: {
         ip: localIp,
-        port: parseInt(port, 10),
+        port,
         url: `http://${localIp}:${port}`,
         timestamp: new Date().toISOString()
       }
