@@ -16,7 +16,6 @@ import {
   intakeWithin,
   receiptText,
   dismissedReceiptText,
-  slackReceiptBlocks,
   createSlackReceiptSink,
   createChatV2ReceiptSink,
   buildChatV2SourceId,
@@ -159,15 +158,9 @@ describe('intakeWithin', () => {
 });
 
 describe('receipt texts', () => {
-  it('recorded / dismissed', () => {
-    expect(receiptText(ticket())).toBe(`已记成 TKT-007 · ${TICKET_CONSTANTS.RECEIPT.DISMISS_HINT}`);
-    expect(receiptText(ticket(), true)).toBe('已记成 TKT-007');
+  it('recorded / dismissed — no "不用记？" question', () => {
+    expect(receiptText(ticket())).toBe('已记成 TKT-007');
     expect(dismissedReceiptText(ticket())).toBe('TKT-007 已取消记录');
-  });
-
-  it('the Slack button carries the ticket id and the dismiss action id', () => {
-    const [block] = slackReceiptBlocks(ticket()) as unknown as Array<{ accessory: { action_id: string; value: string } }>;
-    expect(block.accessory).toMatchObject({ action_id: TICKET_CONSTANTS.SLACK_DISMISS_ACTION_ID, value: ID });
   });
 });
 
@@ -175,59 +168,59 @@ describe('Slack receipt sink', () => {
   /**
    * Recording Slack fake.
    *
-   * @param interactive - Whether button clicks reach the process
+   * @param reactFails - Whether reactions.add throws (e.g. missing scope)
    * @returns Fake
    */
-  function slackFake(interactive: boolean): ReceiptSlackApi & { sent: unknown[]; updated: unknown[][] } {
-    const sent: unknown[] = [];
+  function slackFake(reactFails = false): ReceiptSlackApi & { added: unknown[][]; removed: unknown[][]; updated: unknown[][] } {
+    const added: unknown[][] = [];
+    const removed: unknown[][] = [];
     const updated: unknown[][] = [];
     return {
-      sent,
+      added,
+      removed,
       updated,
-      async sendMessage(m) {
-        sent.push(m);
-        return '999.1';
+      async addReaction(...args) {
+        if (reactFails) throw new Error('missing_scope');
+        added.push(args);
+      },
+      async removeReaction(...args) {
+        removed.push(args);
       },
       async updateMessage(...args) {
         updated.push(args);
       },
-      supportsInteractivity: () => interactive,
     };
   }
 
-  it('posts in the thread; asks for a 不用记 reply when buttons cannot reach us', async () => {
-    const slack = slackFake(false);
-    const sink = createSlackReceiptSink({ slack });
-    const receipt = await sink.post(ticket(), { kind: 'slack', slackChannelId: 'C1', threadTs: '1.0' });
-    expect(receipt).toEqual({ kind: 'slack', slackChannelId: 'C1', ts: '999.1', threadTs: '1.0' });
-    expect(slack.sent[0]).toMatchObject({ channelId: 'C1', threadTs: '1.0', skipChatV2Mirror: true, text: receiptText(ticket()) });
-    expect((slack.sent[0] as { blocks?: unknown }).blocks).toBeUndefined();
+  it('reacts 🎫 on the owner’s message instead of posting anything', async () => {
+    const slack = slackFake();
+    const receipt = await createSlackReceiptSink({ slack }).post(ticket(), { kind: 'slack', slackChannelId: 'C1', threadTs: '1.0', messageTs: '2.0' });
+    expect(slack.added[0]).toEqual(['C1', '2.0', TICKET_CONSTANTS.RECEIPT.REACTION, undefined]);
+    expect(receipt).toEqual({ kind: 'slack', slackChannelId: 'C1', ts: '2.0', threadTs: '1.0', reaction: TICKET_CONSTANTS.RECEIPT.REACTION });
   });
 
-  it('adds the button in socket mode', async () => {
-    const slack = slackFake(true);
-    await createSlackReceiptSink({ slack }).post(ticket(), { kind: 'slack', slackChannelId: 'C1', threadTs: '1.0' });
-    expect((slack.sent[0] as { blocks?: unknown[] }).blocks).toHaveLength(1);
+  it('stays silent when it cannot react or has no message ts', async () => {
+    expect(await createSlackReceiptSink({ slack: slackFake(true) }).post(ticket(), { kind: 'slack', slackChannelId: 'C1', threadTs: '1', messageTs: '2' })).toBeNull();
+    expect(await createSlackReceiptSink({ slack: slackFake() }).post(ticket(), { kind: 'slack', slackChannelId: 'C1', threadTs: '1' })).toBeNull();
+    expect(await createSlackReceiptSink({ slack: slackFake() }).post(ticket(), { kind: 'chat-v2', chatChannelId: 'c' })).toBeNull();
   });
 
-  it('posts as the agent’s own bot when asked (DMs), records who, and edits with the same bot', async () => {
-    const slack = slackFake(true);
+  it('reacts as the agent’s own bot (DMs) and 不用记 removes the reaction with the same bot', async () => {
+    const slack = slackFake();
     const sink = createSlackReceiptSink({ slack, botTokenFor: (s) => (s === 'ella' ? 'xoxb-ella' : undefined) });
-    const receipt = await sink.post(ticket(), { kind: 'slack', slackChannelId: 'D1', threadTs: '1.0', postAs: 'ella' });
-    expect(slack.sent[0]).toMatchObject({ botToken: 'xoxb-ella' });
-    // No button under an agent bot: its clicks go to Cloud, not here.
-    expect((slack.sent[0] as { blocks?: unknown }).blocks).toBeUndefined();
+    const receipt = await sink.post(ticket(), { kind: 'slack', slackChannelId: 'D1', threadTs: '1.0', messageTs: '2.0', postAs: 'ella' });
+    expect(slack.added[0]).toEqual(['D1', '2.0', TICKET_CONSTANTS.RECEIPT.REACTION, 'xoxb-ella']);
     expect(receipt).toMatchObject({ postedAs: 'ella' });
     expect(JSON.stringify(receipt)).not.toContain('xoxb');
     await sink.markDismissed(ticket(), receipt!);
-    expect(slack.updated[0]).toEqual(['D1', '999.1', 'TKT-007 已取消记录', [], 'xoxb-ella']);
+    expect(slack.removed[0]).toEqual(['D1', '2.0', TICKET_CONSTANTS.RECEIPT.REACTION, 'xoxb-ella']);
+    expect(slack.updated).toHaveLength(0);
   });
 
-  it('returns null when Slack deduplicated the post, and ignores chat-v2 targets', async () => {
-    const slack = { ...slackFake(false), sendMessage: async () => '' };
-    const sink = createSlackReceiptSink({ slack });
-    expect(await sink.post(ticket(), { kind: 'slack', slackChannelId: 'C1', threadTs: '1' })).toBeNull();
-    expect(await sink.post(ticket(), { kind: 'chat-v2', chatChannelId: 'c' })).toBeNull();
+  it('dismissing an older text receipt still edits it', async () => {
+    const slack = slackFake();
+    await createSlackReceiptSink({ slack }).markDismissed(ticket(), { kind: 'slack', slackChannelId: 'C1', ts: '9.1', threadTs: '1.0' });
+    expect(slack.updated[0]).toEqual(['C1', '9.1', 'TKT-007 已取消记录', [], undefined]);
   });
 });
 
@@ -312,7 +305,7 @@ describe('slackIntakeMessage', () => {
     const reply = slackIntakeMessage({ ...base, threadTs: '1.0' }, 'legacy-bridge');
     expect(reply.origin).toMatchObject({ ref: 'slack-C1-1.0-msg-2.0', threadRef: 'slack:C1:1.0' });
     expect(reply.legacyThreadParentRef).toBe('slack-C1-1.0');
-    expect(reply.receipt).toEqual({ kind: 'slack', slackChannelId: 'C1', threadTs: '1.0' });
+    expect(reply.receipt).toEqual({ kind: 'slack', slackChannelId: 'C1', threadTs: '1.0', messageTs: '2.0' });
   });
 
   it('legacy bridge @agent route gets no SLA tag (the orc is not the one answering)', () => {

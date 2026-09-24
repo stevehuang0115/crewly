@@ -108,6 +108,7 @@ interface SlackWebClient {
   };
   reactions: {
     add: (args: AddReactionArgs) => Promise<void>;
+    remove: (args: AddReactionArgs) => Promise<void>;
   };
   users: {
     info: (args: { user: string }) => Promise<{
@@ -1842,6 +1843,27 @@ export class SlackService extends EventEmitter {
       timestamp: messageTs,
       name: emoji,
       // An agent's own bot reacts in conversations the master bot cannot see (its DMs).
+      ...(botToken ? { token: botToken } : {}),
+    });
+  }
+
+  /**
+   * Remove a reaction this bot added to a message.
+   *
+   * @param channelId - Channel ID
+   * @param messageTs - Message timestamp
+   * @param emoji - Emoji name (without colons)
+   * @param botToken - Optional per-agent bot token (the bot that reacted)
+   */
+  async removeReaction(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void> {
+    if (!this.client) {
+      throw new Error('Slack client not initialized');
+    }
+
+    await this.client.reactions.remove({
+      channel: channelId,
+      timestamp: messageTs,
+      name: emoji,
       ...(botToken ? { token: botToken } : {}),
     });
   }

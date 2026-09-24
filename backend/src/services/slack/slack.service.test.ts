@@ -267,6 +267,14 @@ describe('SlackService', () => {
       ).rejects.toThrow('Slack client not initialized');
     });
 
+    it('should throw when removeReaction called without initialization', async () => {
+      const service = new SlackService();
+
+      await expect(
+        service.removeReaction('C123', '123.456', 'ticket')
+      ).rejects.toThrow('Slack client not initialized');
+    });
+
     it('should throw when getUserInfo called without initialization', async () => {
       const service = new SlackService();
 

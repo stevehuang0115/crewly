@@ -70,6 +70,8 @@ export type TicketReceipt =
       threadTs?: string;
       /** Agent whose bot posted it; absent = the workspace (master) bot */
       postedAs?: string;
+      /** Set when the receipt is a reaction on the owner's message (`ts` = that message) */
+      reaction?: string;
     }
   | {
       kind: 'chat-v2';

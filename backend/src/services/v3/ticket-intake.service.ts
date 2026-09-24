@@ -134,6 +134,13 @@ export type ReceiptTarget =
       threadTs: string;
       /** Agent whose bot posts it (DMs, private rooms); absent = workspace bot */
       postAs?: string;
+      /**
+       * The owner's own message. When set, the receipt is a 🎫 reaction on it
+       * instead of a thread reply: a reply per ticket was one more message
+       * (and notification) in every thread, next to the agent's own "working
+       * on it" (owner, 2026-09-24: 「每次都要问一下会不会很麻烦」).
+       */
+      messageTs?: string;
     }
   | {
       kind: 'chat-v2';

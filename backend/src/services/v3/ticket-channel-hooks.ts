@@ -22,7 +22,7 @@ import {
   formatTicketNumber,
   type TicketReceipt,
 } from '../../types/v2/ticket.types.js';
-import type { SlackBlock, SlackOutgoingMessage } from '../../types/slack.types.js';
+import type { SlackBlock } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { TicketOriginChannel } from '../../types/v2/ticket.types.js';
 import type {
@@ -209,16 +209,14 @@ export async function intakeWithin(
 // ---------------------------------------------------------------------------
 
 /**
- * Receipt text for a new ticket.
+ * Receipt text for a new ticket. Just the fact — no "不用记？" question
+ * (owner, 2026-09-24: asking every time is noise); 「不用记」 still works.
  *
  * @param ticket - The ticket
- * @param withButton - Whether a dismiss button is shown next to it
- * @returns `已记成 TKT-123 · 不用记？回复「不用记」`
+ * @returns `已记成 TKT-123`
  */
-export function receiptText(ticket: Pick<Request, 'ticketNumber'>, withButton = false): string {
-  const tkt = formatTicketNumber(ticket.ticketNumber ?? 0);
-  const recorded = TICKET_CONSTANTS.RECEIPT.RECORDED(tkt);
-  return withButton ? recorded : `${recorded} · ${TICKET_CONSTANTS.RECEIPT.DISMISS_HINT}`;
+export function receiptText(ticket: Pick<Request, 'ticketNumber'>): string {
+  return TICKET_CONSTANTS.RECEIPT.RECORDED(formatTicketNumber(ticket.ticketNumber ?? 0));
 }
 
 /**
@@ -237,10 +235,9 @@ export function dismissedReceiptText(ticket: Pick<Request, 'ticketNumber'>): str
 
 /** The slice of SlackService the Slack receipt sink uses. */
 export interface ReceiptSlackApi {
-  sendMessage(message: SlackOutgoingMessage): Promise<string>;
+  addReaction?(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
+  removeReaction?(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: SlackBlock[], botToken?: string): Promise<void>;
-  /** True when button clicks reach this process (socket mode with a Bolt app) */
-  supportsInteractivity?(): boolean;
 }
 
 /** Slack receipt sink dependencies. */
@@ -248,27 +245,6 @@ export interface SlackReceiptSinkDeps {
   slack: ReceiptSlackApi;
   /** Bot token of an agent's own Slack app, when it has one */
   botTokenFor?: (agentSession: string) => string | undefined;
-}
-
-/**
- * Block Kit body of a receipt with the dismiss button.
- *
- * @param ticket - The ticket
- * @returns Blocks
- */
-export function slackReceiptBlocks(ticket: Pick<Request, 'id' | 'ticketNumber'>): SlackBlock[] {
-  return [
-    {
-      type: 'section',
-      text: { type: 'mrkdwn', text: receiptText(ticket, true) },
-      accessory: {
-        type: 'button',
-        text: { type: 'plain_text', text: TICKET_CONSTANTS.RECEIPT.DISMISS_BUTTON },
-        action_id: TICKET_CONSTANTS.SLACK_DISMISS_ACTION_ID,
-        value: ticket.id,
-      },
-    } as unknown as SlackBlock,
-  ];
 }
 
 /**
@@ -286,26 +262,31 @@ export function createSlackReceiptSink(deps: SlackReceiptSinkDeps): TicketReceip
     async post(ticket: Request, target: ReceiptTarget): Promise<TicketReceipt | null> {
       if (target.kind !== 'slack') return null;
       const botToken = tokenFor(target.postAs);
-      const withButton = deps.slack.supportsInteractivity?.() === true && !botToken;
-      const ts = await deps.slack.sendMessage({
-        channelId: target.slackChannelId,
-        threadTs: target.threadTs,
-        text: receiptText(ticket, withButton),
-        ...(withButton ? { blocks: slackReceiptBlocks(ticket) } : {}),
-        ...(botToken ? { botToken } : {}),
-        skipChatV2Mirror: true,
-      });
-      if (!ts) return null;
+      // Silent receipt (owner, 2026-09-24: asking "不用记？" every time is
+      // noise). Only a 🎫 on the owner's own message — no extra message, no
+      // notification. No message ts, or the bot can't react: no receipt at
+      // all; the ticket still exists on the board.
+      if (!target.messageTs || !deps.slack.addReaction) return null;
+      try {
+        await deps.slack.addReaction(target.slackChannelId, target.messageTs, TICKET_CONSTANTS.RECEIPT.REACTION, botToken);
+      } catch {
+        return null;
+      }
       return {
         kind: 'slack',
         slackChannelId: target.slackChannelId,
-        ts,
+        ts: target.messageTs,
         threadTs: target.threadTs,
+        reaction: TICKET_CONSTANTS.RECEIPT.REACTION,
         ...(botToken && target.postAs ? { postedAs: target.postAs } : {}),
       };
     },
     async markDismissed(ticket: Request, receipt: TicketReceipt): Promise<void> {
       if (receipt.kind !== 'slack') return;
+      if (receipt.reaction) {
+        await deps.slack.removeReaction?.(receipt.slackChannelId, receipt.ts, receipt.reaction, tokenFor(receipt.postedAs));
+        return;
+      }
       // `blocks: []` drops the button; Slack keeps old blocks when omitted.
       await deps.slack.updateMessage(receipt.slackChannelId, receipt.ts, dismissedReceiptText(ticket), [], tokenFor(receipt.postedAs));
     },
@@ -560,6 +541,7 @@ export function slackIntakeMessage(
       kind: 'slack',
       slackChannelId: input.slackChannelId,
       threadTs: root,
+      messageTs: input.ts,
       ...(options.receiptPostAs ? { postAs: options.receiptPostAs } : {}),
     },
   };

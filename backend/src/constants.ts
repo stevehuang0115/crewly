@@ -2591,9 +2591,9 @@ export const TICKET_CONSTANTS = {
 	/** Receipt texts */
 	RECEIPT: {
 		RECORDED: (tkt: string) => `已记成 ${tkt}`,
-		DISMISS_HINT: '不用记？回复「不用记」',
-		DISMISS_BUTTON: '不用记',
 		DISMISSED: (tkt: string) => `${tkt} 已取消记录`,
+		/** Slack receipt: this reaction on the owner's message (no reply, no notification) */
+		REACTION: 'ticket',
 	},
 	/** Metadata key the dispatcher reads the delivered-message marker from */
 	MESSAGE_MARKER_METADATA_KEY: 'ticketMarker',

@@ -81,14 +81,14 @@ One entry point: `intake(message: IntakeMessage): Promise<Request | null>`.
 
 | Channel | Hook point | Receipt |
 |---|---|---|
-| Slack team channel / shared room | `SlackTeamChannelService.routeInbound` (owner messages) | Thread reply "已记成 TKT-123 · 不用记" (block button) |
+| Slack team channel / shared room | `SlackTeamChannelService.routeInbound` (owner messages) | 🎫 reaction on the owner's message (no reply) |
 | Slack agent DM | `SlackAgentDmService` inbound | Same, in the DM thread |
 | chat-v2 | chat-v2 message create for owner-authored messages | System message under it |
 | Portal / mobile | relay → chat-v2 path (covered by chat-v2) | Same |
 | Legacy chat + legacy Slack bridge | replace their inline `requestSvc.create` with `intake()` | unchanged |
 
 "不用记" (don't track) cancels the ticket (`status: 'cancelled'`, tag `dismissed`) and
-edits the receipt to "已取消记录".
+edits the receipt to "已取消记录" (Slack: removes the 🎫).
 
 ### 3. Link work to tickets
 
@@ -153,17 +153,20 @@ receipt sinks, per-channel intake builders), `types/v2/ticket.types.ts`,
 - **Receipts.** One per ticket (posted only on `created`), in the same thread,
   after intake returns (delivery never waits on Slack). Slack: through
   SlackService — the workspace bot in team channels / legacy bridge, the
-  agent's own bot in its DMs and in private ad-hoc rooms. Text:
-  「已记成 TKT-012 · 不用记？回复「不用记」」. A Block Kit 不用记 button is added
-  only in socket mode (`supportsInteractivity()`): on the Cloud transport Slack
-  sends button clicks to Cloud, which does not relay them. chat-v2: a
-  `system_note` row under the owner's message with
+  agent's own bot in its DMs and in private ad-hoc rooms. Slack receipts are
+  silent (owner, 2026-09-24: asking 「不用记？」 on every message is noise): a
+  `:ticket:` reaction on the owner's own message — no message, no
+  notification. If the bot can't react (no `reactions:write`) or the message
+  ts is unknown, there is no receipt at all; the ticket is still on the board.
+  Older text receipts (and their socket-mode button) are still honoured.
+  chat-v2: a
+  `system_note` row 「已记成 TKT-012」 (no question) under the owner's message with
   `metadata.ticketReceipt = { ticketId, tkt, status, dismissPath }`.
 - **不用记.** A reply 「不用记」 (or 别记 / don't track …) in the thread — or
   top-level within 30 min in the same conversation — or
   `POST /api/tickets/:id/dismiss` (owner only: refused with
   `X-Agent-Session`), or the socket-mode button. Cancels + tags `dismissed`,
-  edits the receipt to 「TKT-012 已取消记录」 (Slack `chat.update`, chat-v2
+  edits the receipt to 「TKT-012 已取消记录」 (Slack: `reactions.remove`, or `chat.update` for an older text receipt; chat-v2
   `updateSystemMessage`). A receipt that lands after the dismissal is edited
   as soon as it lands.
 - **Linking.** Delivered copies carry
