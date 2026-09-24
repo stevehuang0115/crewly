@@ -9,6 +9,13 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
+import type {
+  TicketKind,
+  TicketOrigin,
+  TicketAcceptance,
+  TicketReceipt,
+  TicketDiscussionEntry,
+} from './ticket.types.js';
 
 // ---------------------------------------------------------------------------
 // Enums & Literals
@@ -54,6 +61,15 @@ export const TERMINAL_REQUEST_STATUSES: ReadonlySet<RequestStatus> = new Set([
   'done',
   'cancelled',
 ]);
+
+/**
+ * Request priority. `urgent` (P0) was added by the ticket loop; the others
+ * map to P1 (high), P2 (normal), P3 (low).
+ */
+export type RequestPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+/** All valid {@link RequestPriority} values. */
+export const REQUEST_PRIORITIES: readonly RequestPriority[] = ['low', 'normal', 'high', 'urgent'] as const;
 
 /**
  * Intent category carried from v1 IntentTask system.
@@ -118,7 +134,7 @@ export interface Request {
   /** Lifecycle status */
   status: RequestStatus;
   /** User-assigned or auto-classified priority */
-  priority: 'low' | 'normal' | 'high';
+  priority: RequestPriority;
   /** Whether completion requires explicit user confirmation */
   requiresConfirmation: boolean;
   /** Reason confirmation is needed (shown to user) */
@@ -148,6 +164,27 @@ export interface Request {
   totalCost: number;
   /** Session name of the agent that handled this Request directly (no WorkItem delegation) */
   ownerAgent?: string;
+
+  // --- Ticket loop (specs/ticket-loop.md) — all optional so old files stay valid ---
+
+  /** Monotonic per data dir; displayed `TKT-{n}` */
+  ticketNumber?: number;
+  /** issue / feature / idea (default feature) */
+  kind?: TicketKind;
+  /** Where it was said and by whom */
+  origin?: TicketOrigin;
+  /** Agent session that owns it (pre-filled for a DM) */
+  assignee?: string;
+  /** Acceptance criteria (Phase 2) */
+  acceptance?: TicketAcceptance[];
+  /** Times the owner sent it back (Phase 2) */
+  rejectCount?: number;
+  /** Times work was submitted for review (Phase 2) */
+  submitCount?: number;
+  /** Where the receipt was posted, so it can be edited */
+  receipt?: TicketReceipt;
+  /** Follow-ups in the ticket's thread */
+  discussion?: TicketDiscussionEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -162,13 +199,18 @@ export interface CreateRequestInput {
   sourceConversationItemId: string;
   title: string;
   description: string;
-  priority?: 'low' | 'normal' | 'high';
+  priority?: RequestPriority;
   requiresConfirmation?: boolean;
   confirmationReason?: string;
   missionId?: string;
   intentLevel?: IntentLevel;
   intentCategory?: IntentCategory;
   tags?: string[];
+  /** Ticket fields (set by TicketIntakeService) */
+  ticketNumber?: number;
+  kind?: TicketKind;
+  origin?: TicketOrigin;
+  assignee?: string;
 }
 
 /**
@@ -179,7 +221,7 @@ export interface UpdateRequestInput {
   title?: string;
   description?: string;
   status?: RequestStatus;
-  priority?: 'low' | 'normal' | 'high';
+  priority?: RequestPriority;
   requiresConfirmation?: boolean;
   confirmationReason?: string;
   missionId?: string;
@@ -192,6 +234,11 @@ export interface UpdateRequestInput {
   totalCost?: number;
   /** Session name of the agent that handled this Request directly */
   ownerAgent?: string;
+  /** Ticket fields */
+  kind?: TicketKind;
+  assignee?: string;
+  receipt?: TicketReceipt;
+  discussion?: TicketDiscussionEntry[];
 }
 
 // ---------------------------------------------------------------------------
@@ -291,8 +338,11 @@ export function validateCreateRequestInput(input: CreateRequestInput): string[] 
   if (!input.description || typeof input.description !== 'string') {
     errors.push('description is required and must be a non-empty string');
   }
-  if (input.priority && !['low', 'normal', 'high'].includes(input.priority)) {
-    errors.push('priority must be one of: low, normal, high');
+  if (input.priority && !(REQUEST_PRIORITIES as readonly string[]).includes(input.priority)) {
+    errors.push(`priority must be one of: ${REQUEST_PRIORITIES.join(', ')}`);
+  }
+  if (input.ticketNumber !== undefined && (!Number.isInteger(input.ticketNumber) || input.ticketNumber < 1)) {
+    errors.push('ticketNumber must be a positive integer');
   }
   if (input.intentCategory && !isValidIntentCategory(input.intentCategory)) {
     errors.push(`intentCategory must be one of: ${INTENT_CATEGORIES.join(', ')}`);
@@ -343,5 +393,9 @@ export function createRequest(input: CreateRequestInput): Request {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCost: 0,
+    ...(input.ticketNumber !== undefined ? { ticketNumber: input.ticketNumber } : {}),
+    ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.origin ? { origin: input.origin } : {}),
+    ...(input.assignee ? { assignee: input.assignee } : {}),
   };
 }

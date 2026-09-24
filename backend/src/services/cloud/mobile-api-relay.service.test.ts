@@ -50,6 +50,9 @@ describe('isAllowedMobileApiCall', () => {
   it('allows only the human-in-the-loop mutations', () => {
     expect(isAllowedMobileApiCall('POST', '/escalations/abc/resolve')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/approvals/xyz/approve')).toBe(true);
+    // Ticket loop: read the board, and "不用记" from the phone.
+    expect(isAllowedMobileApiCall('GET', '/tickets?column=todo')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/tickets/abc/dismiss')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/teams')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/task-pool/add')).toBe(false);
   });
@@ -75,6 +78,8 @@ describe('MobileApiRelayService', () => {
     await flush();
 
     expect(fetchImpl).toHaveBeenCalledWith('http://127.0.0.1:8787/api/teams', expect.objectContaining({ method: 'GET' }));
+    // Marks the call as the phone's (tickets it files are `mobile`).
+    expect((fetchImpl as unknown as jest.Mock).mock.calls[0][1].headers).toMatchObject({ 'x-crewly-client': 'mobile' });
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({ to: 'phone-1', type: 'api_response' });
     const payload = sent[0].payload as { id: string; status: number; body: { success: boolean } };

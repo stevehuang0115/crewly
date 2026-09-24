@@ -32,6 +32,9 @@ import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
+import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -222,6 +225,22 @@ export async function maybeEnforceContract(
 // ---------------------------------------------------------------------------
 
 /**
+ * Replace a `TKT-123` style `requestId` in a task-pool body with the ticket's
+ * id, in place.
+ *
+ * @param body - Request body (mutated)
+ * @returns An error message when the reference names no ticket, else null
+ */
+async function normalizeTicketRequestId(body: Record<string, unknown>): Promise<string | null> {
+  const ref = body.requestId;
+  if (typeof ref !== 'string' || !isTicketNumberRef(ref)) return null;
+  const ticket = await getTicketIntakeService()?.resolve(ref);
+  if (!ticket) return `No ticket ${ref.trim().toUpperCase()} — pass the ticket id from the [TICKET:…] line`;
+  body.requestId = ticket.id;
+  return null;
+}
+
+/**
  * Adds a WorkItem to the Task Pool.
  *
  * HTTP entry point for the V3 pull-mode task path. Used by delegate-task
@@ -263,6 +282,13 @@ export async function addItem(req: Request, res: Response): Promise<void> {
 
     if (!body || typeof body !== 'object') {
       res.status(400).json({ success: false, error: 'Request body must be a WorkItem object' });
+      return;
+    }
+
+    // Ticket loop: skills may pass the displayed `TKT-123` as --request-id.
+    const ticketRefError = await normalizeTicketRequestId(body as Record<string, unknown>);
+    if (ticketRefError) {
+      res.status(400).json({ success: false, error: ticketRefError, code: 'unknown_ticket' });
       return;
     }
 
@@ -328,7 +354,9 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    await getService().addToPool(workItem);
+    // Ticket loop §3: an item created by an agent without --request-id is
+    // linked to the ticket of that agent's current turn, when there is one.
+    await getService().addToPool(workItem, { creatorSession: readAgentSessionHeader(req) });
 
     // V3.1: Project WorkItem entry as a TaskRecord
     const projection = getProjection();

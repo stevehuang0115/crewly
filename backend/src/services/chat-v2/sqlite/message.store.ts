@@ -650,6 +650,21 @@ export class MessageStore {
   }
 
   /**
+   * Replace a message's content in place. Used for server-authored rows that
+   * change state after they are posted (a ticket receipt turning into
+   * "已取消记录"); user and agent turns are never edited.
+   *
+   * @param id - Message id
+   * @param content - New content
+   * @returns The updated row, or null when no such message exists
+   */
+  updateContent(id: string, content: string): ChatMessageRow | null {
+    const result = this.db.prepare('UPDATE chat_messages SET content = ? WHERE id = ?').run(content, id);
+    if (result.changes === 0) return null;
+    return this.getById(id);
+  }
+
+  /**
    * Merge a JSON patch into an existing message's metadata column.
    * Implementation of Phase 6.0 of the unified-chat-message-store spec
    * — replaces the legacy `ChatService.updateMessageMetadata` so all

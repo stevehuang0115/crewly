@@ -17,6 +17,18 @@ const mockChatV2RecordTurn = jest.fn().mockReturnValue({
 // here parses a PDF.
 jest.mock('pdf-parse', () => ({ PDFParse: jest.fn() }));
 
+// `POST /disconnect` deletes the saved Slack credentials and `/connect`
+// saves them. Unmocked, running this suite deleted (and overwrote) the REAL
+// `~/.crewly/slack-credentials.json` unless HOME and CREWLY_HOME pointed at a
+// temp dir. Both writes are stubbed for the whole file; reads stay real.
+const mockDeleteSlackCredentials = jest.fn().mockResolvedValue(undefined);
+const mockSaveSlackCredentials = jest.fn().mockResolvedValue(undefined);
+jest.mock('../../services/slack/slack-credentials.service.js', () => ({
+  ...jest.requireActual('../../services/slack/slack-credentials.service.js'),
+  deleteSlackCredentials: (...args: unknown[]) => mockDeleteSlackCredentials(...args),
+  saveSlackCredentials: (...args: unknown[]) => mockSaveSlackCredentials(...args),
+}));
+
 jest.mock('../../services/chat-v2/chat-v2.singleton.js', () => ({
   getChatV2Service: jest.fn(() => ({
     ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
@@ -282,8 +294,7 @@ describe('Slack Controller', () => {
       jest
         .spyOn((await import('../../services/slack/slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
         .mockResolvedValue(undefined);
-      const creds = await import('../../services/slack/slack-credentials.service.js');
-      jest.spyOn(creds, 'saveSlackCredentials').mockResolvedValue(undefined);
+      mockSaveSlackCredentials.mockResolvedValue(undefined);
 
       const response = await request(app).post('/api/slack/connect').send({
         botToken: 'xoxb-body',
@@ -319,6 +330,8 @@ describe('Slack Controller', () => {
       expect(response.status).toBe(200);
       expect(response.body.success).toBe(true);
       expect(response.body.message).toBe('Slack disconnected');
+      // Stubbed: the real credentials file is never touched by this suite.
+      expect(mockDeleteSlackCredentials).toHaveBeenCalled();
     });
   });
 

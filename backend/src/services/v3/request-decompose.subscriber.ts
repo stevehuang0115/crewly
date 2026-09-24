@@ -79,6 +79,7 @@
  */
 
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import type { EventBusService, InProcessUnsubscribe } from '../event-bus/event-bus.service.js';
 import { RequestService } from './request.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
@@ -444,6 +445,18 @@ export class RequestDecomposeSubscriber {
    * @returns True if this subscriber should plan + addToPool for this Request.
    */
   private shouldDecompose(request: Request): boolean {
+    // Ticket loop: a ticket addressed to one agent (a DM, an @) is that
+    // agent's to plan. Auto-decomposing it would put orchestrator-owned,
+    // unassigned WorkItems in the pool — exactly the orc pile-up the ticket
+    // loop exists to remove.
+    if (request.assignee && request.assignee !== ORCHESTRATOR_SESSION_NAME) {
+      this.logger.debug('skip auto-decompose — ticket is assigned to an agent', {
+        requestId: request.id,
+        assignee: request.assignee,
+      });
+      return false;
+    }
+
     if (request.intentLevel !== 'L2') {
       this.logger.debug('skip auto-decompose — intentLevel is not L2', {
         requestId: request.id,

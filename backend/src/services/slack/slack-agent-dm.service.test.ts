@@ -10,6 +10,7 @@ import { promises as fs } from 'fs';
 import { SlackAgentDmService, type SlackAgentDmServiceDeps } from './slack-agent-dm.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
+import { setTicketIntakeService, type IntakeMessage, type TicketIntakeService } from '../v3/ticket-intake.service.js';
 
 type Listener = (dto: ChatMessageDTO) => void;
 
@@ -88,6 +89,43 @@ describe('SlackAgentDmService', () => {
     expect(svc.findBySlackChannelId('D0C2YLU8F2A')?.agentSession).toBe('crewly-marketing-ella-e6a6b8ea');
     svc.stop();
     await fs.rm(deps.storePath as string, { force: true });
+  });
+
+  describe('ticket loop intake', () => {
+    const TICKET = { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 21 };
+    afterEach(() => setTicketIntakeService(null));
+
+    it('the owner\'s DM becomes a ticket assigned to the agent; receipt under the agent\'s bot; the agent gets the marker', async () => {
+      const intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'created', ticket: TICKET })) };
+      setTicketIntakeService(intake as unknown as TicketIntakeService);
+      const seen: ChatMessageDTO[] = [];
+      const { deps } = makeDeps({
+        getOwnerUserId: () => 'U-steve',
+        getDispatcher: () => ({ dispatchMessage: async (_c: ChatChannelDTO, m: ChatMessageDTO) => { seen.push(m); return { strategy: 'dm', dispatched: true }; } }) as never,
+      });
+      const svc = new SlackAgentDmService(deps);
+      await svc.routeInbound(dm({ text: '帮我把周报的格式改成表格' }));
+      const [msg] = intake.intakeWithOutcome.mock.calls[0] as unknown as [IntakeMessage];
+      expect(msg).toMatchObject({
+        isOwner: true,
+        targetAgent: 'crewly-marketing-ella-e6a6b8ea',
+        origin: { channel: 'slack-dm', ref: 'slackdm-D0C2YLU8F2A-1789781178.423669' },
+        receipt: { kind: 'slack', slackChannelId: 'D0C2YLU8F2A', threadTs: '1789781178.423669', postAs: 'crewly-marketing-ella-e6a6b8ea' },
+      });
+      expect(String(seen[0].metadata?.ticketMarker)).toContain('[TICKET:TKT-021');
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('a DM from someone other than the owner is not the owner\'s', async () => {
+      const intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'ignored', reason: 'not_owner' })) };
+      setTicketIntakeService(intake as unknown as TicketIntakeService);
+      const { deps, dispatched } = makeDeps({ getOwnerUserId: () => 'U-owner' });
+      const svc = new SlackAgentDmService(deps);
+      await svc.routeInbound(dm());
+      expect((intake.intakeWithOutcome.mock.calls[0] as unknown as [IntakeMessage])[0].isOwner).toBe(false);
+      expect(dispatched).toHaveLength(1);
+      await fs.rm(deps.storePath as string, { force: true });
+    });
   });
 
   it('ignores messages not addressed to a local agent', async () => {

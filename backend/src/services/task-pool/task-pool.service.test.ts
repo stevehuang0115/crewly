@@ -94,6 +94,53 @@ describe('TaskPoolService', () => {
       expect(items[0].id).toBe(wi.id);
     });
 
+    describe('ticket loop — requestId from the creator’s in-flight turn', () => {
+      it('fills requestId from the resolver and records where it came from', async () => {
+        service.setTicketResolver((session) => (session === 'crewly-orc' ? 'ticket-1' : null));
+        const wi = makeWorkItem();
+        await service.addToPool(wi, { creatorSession: 'crewly-orc' });
+        const [stored] = await service.getAllItems();
+        expect(stored.requestId).toBe('ticket-1');
+        expect(stored.metadata).toMatchObject({ requestIdSource: 'in-flight-turn' });
+      });
+
+      it('never overrides an explicit requestId', async () => {
+        const resolver = jest.fn(() => 'ticket-1');
+        service.setTicketResolver(resolver);
+        await service.addToPool(makeWorkItem({ requestId: 'explicit' }), { creatorSession: 'crewly-orc' });
+        expect((await service.getAllItems())[0].requestId).toBe('explicit');
+        expect(resolver).not.toHaveBeenCalled();
+      });
+
+      it('does nothing without a creator, a resolver, or a unique ticket', async () => {
+        await service.addToPool(makeWorkItem(), { creatorSession: 'crewly-orc' });
+        service.setTicketResolver(() => null);
+        await service.addToPool(makeWorkItem(), { creatorSession: 'crewly-orc' });
+        service.setTicketResolver(() => 'ticket-1');
+        await service.addToPool(makeWorkItem());
+        expect((await service.getAllItems()).every((w) => w.requestId === undefined)).toBe(true);
+      });
+
+      it('a throwing resolver leaves the item unlinked but still adds it', async () => {
+        service.setTicketResolver(() => {
+          throw new Error('boom');
+        });
+        await service.addToPool(makeWorkItem(), { creatorSession: 'crewly-orc' });
+        const items = await service.getAllItems();
+        expect(items).toHaveLength(1);
+        expect(items[0].requestId).toBeUndefined();
+      });
+
+      it('links the inferred ticket through the Request linker', async () => {
+        const linker = { linkWorkItem: jest.fn().mockResolvedValue(null) };
+        service.setRequestService(linker);
+        service.setTicketResolver(() => 'ticket-9');
+        const wi = makeWorkItem();
+        await service.addToPool(wi, { creatorSession: 'dev-1' });
+        expect(linker.linkWorkItem).toHaveBeenCalledWith('ticket-9', wi.id);
+      });
+    });
+
     it('rejects non-queued items', async () => {
       const wi = makeWorkItem();
       wi.status = 'running';

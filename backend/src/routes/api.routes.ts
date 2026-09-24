@@ -39,6 +39,7 @@ import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
 import { createTaskPoolRouter, createTaskScoreRouter } from '../controllers/task-pool/task-pool.routes.js';
 import { createRequestRouter } from '../controllers/request/request.routes.js';
+import { createTicketsRouter } from '../controllers/tickets/tickets.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
@@ -173,6 +174,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Request routes for V3 incoming pipeline
   router.use('/requests', createRequestRouter());
+
+  // Ticket loop (specs/ticket-loop.md): board list, lookup by TKT, "不用记"
+  router.use('/tickets', createTicketsRouter());
 
   // Task Pool routes for V2 work item pool management
   router.use('/task-pool', createTaskPoolRouter());

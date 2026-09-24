@@ -28,6 +28,7 @@ import type {
 } from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { CHAT_CONTEXT_CONSTANTS } from '../../constants.js';
+import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -245,6 +246,12 @@ export interface FormatPromptArgs {
    * routes the message rather than simply deciding whether to answer it.
    */
   wakeRole?: 'team-leader' | 'orchestrator';
+  /**
+   * Ticket loop: `[TICKET:TKT-123 <id>] …` when the message opened (or
+   * belongs to) a ticket. Rendered under the header so the agent knows which
+   * `--request-id` to pass, and so `addToPool` can link its WorkItems.
+   */
+  ticketLine?: string;
 }
 
 /**
@@ -382,6 +389,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const contextBlock = renderChatContext(args.context ?? []);
   return [
     `[CHAT:${channelId}]${idHint} <${senderId}@${channelName}>`,
+    ...(args.ticketLine ? [args.ticketLine] : []),
     ``,
     ...(contextBlock ? [contextBlock, ``] : []),
     trimmed,
@@ -728,6 +736,7 @@ export class ChatV2DispatcherService {
         wakeRole: wakeRoles.get(sessionName),
         messageId: message.id,
         context: this.contextFor(channel.id, options.threadId),
+        ticketLine: ticketLineOf(message),
       });
 
     /** One delivery attempt; false when the sink refused (typically: no session). */
@@ -838,6 +847,7 @@ export class ChatV2DispatcherService {
             ? (message.metadata.clientMessageId as string)
             : undefined,
         context: this.contextFor(channel.id, message.threadId ?? undefined),
+        ticketLine: ticketLineOf(message),
       });
 
       try {
@@ -924,6 +934,7 @@ export class ChatV2DispatcherService {
           ? (message.metadata.clientMessageId as string)
           : undefined,
       context: this.contextFor(channel.id, message.threadId ?? undefined),
+      ticketLine: ticketLineOf(message),
     });
 
     let result: Awaited<ReturnType<AgentMessageSink['sendMessageToAgent']>>;

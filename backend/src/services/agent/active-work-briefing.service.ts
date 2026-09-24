@@ -144,7 +144,7 @@ const PENDING_REVIEW_STATUS: WorkItemStatus = 'done_by_worker';
 // ---------------------------------------------------------------------------
 
 /** Priority value used for sorting briefing rows. */
-export type BriefingPriority = 'high' | 'normal' | 'low';
+export type BriefingPriority = 'urgent' | 'high' | 'normal' | 'low';
 
 /**
  * One Request row in the briefing.
@@ -422,7 +422,7 @@ export class ActiveWorkBriefingService {
   }
 
   /**
-   * Convert a 'low' | 'normal' | 'high' priority to a sort key.
+   * Convert a 'low' | 'normal' | 'high' | 'urgent' priority to a sort key.
    * Higher number = higher priority (sorted DESC).
    *
    * @param p - Priority value
@@ -430,6 +430,8 @@ export class ActiveWorkBriefingService {
    */
   private priorityRank(p: BriefingPriority | undefined): number {
     switch (p) {
+      case 'urgent':
+        return 4;
       case 'high':
         return 3;
       case 'normal':

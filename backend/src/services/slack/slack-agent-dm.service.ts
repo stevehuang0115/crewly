@@ -26,6 +26,9 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
+import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
+import { intakeWithin, slackIntakeMessage, ticketOfOutcome, withTicketMarker } from '../v3/ticket-channel-hooks.js';
+import type { Request } from '../../types/v2/request.types.js';
 
 // ---------------------------------------------------------------------------
 // Dependency contracts (narrow so tests can pass plain fakes)
@@ -69,6 +72,8 @@ export interface SlackAgentDmServiceDeps {
   typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> | null;
   /** Whether the agent's runtime session exists right now (false = it must be woken first). */
   isAgentAwake?: (agentSession: string) => boolean;
+  /** Slack user id of the owner, when known — only the owner's DMs file tickets. */
+  getOwnerUserId?: () => string | null;
   /** Link store path; defaults to `<CREWLY_HOME>/slack-agent-dms.json`. */
   storePath?: string;
   now?: () => Date;
@@ -356,10 +361,15 @@ export class SlackAgentDmService {
       await typing.begin(typingKey, { botToken: installed!.botToken, displayName: member?.name ?? agentSession }, awake ? 'typing' : 'waking');
     }
 
+    // Ticket loop (specs/ticket-loop.md §2): an owner's ask in an agent's DM
+    // is a ticket assigned to that agent. The receipt goes into the DM thread
+    // under the agent's own bot (the workspace bot cannot see this DM).
+    const ticket = await this.intakeTicket(message, agentSession);
+
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
-      dispatch = await dispatcher.dispatchMessage(channel, persisted);
+      dispatch = await dispatcher.dispatchMessage(channel, withTicketMarker(persisted, ticket));
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }
@@ -505,6 +515,43 @@ export class SlackAgentDmService {
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
+
+  /**
+   * Ticket intake for a DM to an agent's bot. Never throws.
+   *
+   * @param message - The inbound DM
+   * @param agentSession - The agent it was addressed to
+   * @returns The ticket the message belongs to, or null
+   */
+  private async intakeTicket(message: SlackIncomingMessage, agentSession: string): Promise<Request | null> {
+    try {
+      const outcome = await intakeWithin(
+        getTicketIntakeService(),
+        slackIntakeMessage(
+          {
+            text: message.text ?? '',
+            slackChannelId: message.channelId,
+            ts: message.ts,
+            threadTs: message.threadTs,
+            userId: message.userId,
+            userName: message.user?.realName || message.user?.name,
+            authorAgentSession: message.authorAgentSession,
+            hasFiles: message.hasFiles,
+            ownerUserId: this.deps.getOwnerUserId?.() ?? null,
+          },
+          'agent-dm',
+          { targetAgent: agentSession, receiptPostAs: agentSession },
+        ),
+      );
+      return ticketOfOutcome(outcome);
+    } catch (err) {
+      this.logger.warn('Ticket intake failed for an agent DM (still delivered)', {
+        agentSession,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
 
   private async findMember(agentSession: string): Promise<Team['members'][number] | undefined> {
     try {

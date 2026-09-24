@@ -238,6 +238,37 @@ export class PoolStorage {
   }
 
   /**
+   * Removes several work items at once (one in-memory pass, one flush
+   * scheduled). Used by the one-time archive, which writes the items to the
+   * archive file first.
+   *
+   * @param workItemIds - IDs to remove
+   * @returns How many were removed
+   */
+  async removeWorkItems(workItemIds: ReadonlySet<string>): Promise<number> {
+    const data = await this.load();
+    // In place: other callers may hold the array reference.
+    let removed = 0;
+    for (let i = data.workItems.length - 1; i >= 0; i--) {
+      if (workItemIds.has(data.workItems[i].id)) {
+        data.workItems.splice(i, 1);
+        removed += 1;
+      }
+    }
+    if (removed > 0) this.markDirty();
+    return removed;
+  }
+
+  /**
+   * Directory the pool file lives in (`~/.crewly/task-pool` by default).
+   *
+   * @returns Absolute directory path
+   */
+  getDataDir(): string {
+    return path.dirname(this.filePath);
+  }
+
+  /**
    * Adds a claim to storage.
    *
    * @param claim - The claim to add

@@ -260,3 +260,25 @@ describe('SAFE_RESTART', () => {
     expect(SAFE_RESTART.RESUME_NOTICE).toMatch(/^\[CREWLY\] You were interrupted by a restart/);
   });
 });
+
+describe('TICKET_CONSTANTS / POOL_ARCHIVE_CONSTANTS (ticket loop)', () => {
+  it('ticket numbering, counter file and receipt texts', async () => {
+    const { TICKET_CONSTANTS } = await import('./constants.js');
+    expect(TICKET_CONSTANTS.NUMBER_PREFIX).toBe('TKT-');
+    expect(TICKET_CONSTANTS.NUMBER_PAD).toBe(3);
+    // No `.json`: RequestService.listAll must never read the counter as a Request.
+    expect(TICKET_CONSTANTS.COUNTER_FILENAME.endsWith('.json')).toBe(false);
+    expect(TICKET_CONSTANTS.RECEIPT.RECORDED('TKT-001')).toBe('已记成 TKT-001');
+    expect(TICKET_CONSTANTS.RECEIPT.DISMISSED('TKT-001')).toBe('TKT-001 已取消记录');
+    expect(TICKET_CONSTANTS.DISMISS_PATTERN.test('不用记')).toBe(true);
+    expect(TICKET_CONSTANTS.DISMISS_PATTERN.test('不用记这个')).toBe(false);
+    expect(TICKET_CONSTANTS.INTAKE_TIMEOUT_MS).toBeGreaterThan(0);
+  });
+
+  it('archive: 7 days, terminal statuses, marker file', async () => {
+    const { POOL_ARCHIVE_CONSTANTS } = await import('./constants.js');
+    expect(POOL_ARCHIVE_CONSTANTS.MIN_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
+    expect([...POOL_ARCHIVE_CONSTANTS.TERMINAL_STATUSES].sort()).toEqual(['cancelled', 'done', 'failed', 'verified']);
+    expect(POOL_ARCHIVE_CONSTANTS.MARKER_FILENAME).toBe('.archived-2026-09-ticket-loop');
+  });
+});

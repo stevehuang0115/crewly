@@ -73,6 +73,7 @@ Where `/tmp/decompose.json` contains:
 | `objective` | Yes | The high-level objective being decomposed |
 | `projectPath` | No | Project path for task file creation |
 | `milestone` | No | Milestone folder name (default: `delegated`) |
+| `requestId` (or `--request-id <id>` after the JSON) | No | Ticket this work is for: the id (or `TKT-123`) from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Omit it and the task is still linked when your current turn has exactly one ticket; applied to every sub-task |
 | `tasks` | Yes | Array of sub-task objects |
 | `tasks[].title` | Yes | Sub-task title |
 | `tasks[].description` | Yes | Detailed task description |

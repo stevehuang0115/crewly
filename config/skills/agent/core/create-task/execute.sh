@@ -30,6 +30,8 @@ Options:
   --description  | -d   Short summary of the task (optional)
   --brief               Long-form brief in markdown: inline text, or @/path/to/file.md
                         Should carry Goal + Expected Outcome + Eval Criteria. Max 16384 bytes.
+  --request-id   | -R   Ticket this task is for: the id (or TKT-123) from the
+                        [TICKET:TKT-123 <id>] line of the message you are working on
   --json         | -j   Raw JSON payload (same as legacy)
   --help         | -h   Show this help
 EOF_USAGE
@@ -45,6 +47,7 @@ OUTPUT_SCHEMA=""
 OWNER=""
 DESCRIPTION=""
 BRIEF=""
+REQUEST_ID=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -90,6 +93,10 @@ while [[ $# -gt 0 ]]; do
       BRIEF="$2"
       shift 2
       ;;
+    --request-id|-R)
+      REQUEST_ID="$2"
+      shift 2
+      ;;
     --json|-j)
       INPUT_JSON="$2"
       shift 2
@@ -133,6 +140,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$OWNER" ] && OWNER=$(printf '%s' "$INPUT" | jq -r '.owner // empty')
   [ -z "$DESCRIPTION" ] && DESCRIPTION=$(printf '%s' "$INPUT" | jq -r '.description // empty')
   [ -z "$BRIEF" ] && BRIEF=$(printf '%s' "$INPUT" | jq -r '.briefMarkdown // .brief // empty')
+  [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
 fi
 
 # Apply defaults
@@ -203,6 +211,7 @@ WORK_ITEM=$(jq -n \
   --arg priority "$PRIORITY" \
   --arg description "$DESCRIPTION" \
   --arg briefMarkdown "$BRIEF" \
+  --arg requestId "$REQUEST_ID" \
   '{
     title: $title,
     type: "delegate",
@@ -212,6 +221,7 @@ WORK_ITEM=$(jq -n \
   }
   + (if $description != "" then {description: $description} else {} end)
   + (if $briefMarkdown != "" then {briefMarkdown: $briefMarkdown} else {} end)
+  + (if $requestId != "" then {requestId: $requestId} else {} end)
   | with_entries(select(.value != null))')
 
 if [ -n "$OUTPUT_SCHEMA" ] && [ "$OUTPUT_SCHEMA" != "" ]; then

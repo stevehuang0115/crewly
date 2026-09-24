@@ -31,6 +31,8 @@ import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
 import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
+import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
+import { createSlackReceiptSink } from '../v3/ticket-channel-hooks.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('SlackInitializer');
 
@@ -952,10 +954,20 @@ export async function startSlackTeamChannels(): Promise<void> {
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? true,
         typing,
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
+        getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
       });
       setSlackAgentDmService(agentDm);
     }
     await agentDm.start();
+    // Ticket loop: receipts in Slack threads, through the same SlackService
+    // the channels and DMs post with (an agent's own bot for its DMs).
+    getTicketIntakeService()?.setReceiptSink(
+      'slack',
+      createSlackReceiptSink({
+        slack: getSlackService(),
+        botTokenFor: (agentSession) => identities.getInstalled(agentSession)?.botToken,
+      }),
+    );
     // Owner notifications must not target an agent app's own DM (the master bot cannot post there).
     getSlackService().isAgentOwnedConversation = (channelId) => !!getSlackAgentDmService()?.findBySlackChannelId(channelId);
     getSlackService().getOwnerUserId = () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null;

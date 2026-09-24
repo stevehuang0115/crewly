@@ -129,6 +129,7 @@ function makeRequest(overrides: Partial<Request> = {}): Request {
     totalInputTokens: 0,
     totalOutputTokens: 0,
     totalCost: 0,
+    ...(overrides.assignee ? { assignee: overrides.assignee } : {}),
   };
 }
 
@@ -187,6 +188,24 @@ describe('RequestDecomposeSubscriber', () => {
       ['research'],
     ])('decomposes when intentCategory = %s', async (intentCategory) => {
       const r = makeRequest({ intentCategory });
+      seed.set(r.id, r);
+      subscriber.start();
+      await deliverRequestCreated(bus, r.id);
+      await subscriber.flushPending();
+      expect((taskPool as unknown as { addMock: jest.Mock }).addMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('skips a ticket assigned to an agent (ticket loop — that agent plans it)', async () => {
+      const r = makeRequest({ assignee: 'crewly-dev-ella' });
+      seed.set(r.id, r);
+      subscriber.start();
+      await deliverRequestCreated(bus, r.id);
+      await subscriber.flushPending();
+      expect((taskPool as unknown as { addMock: jest.Mock }).addMock).not.toHaveBeenCalled();
+    });
+
+    it('still decomposes a ticket assigned to the orchestrator', async () => {
+      const r = makeRequest({ assignee: 'crewly-orc' });
       seed.set(r.id, r);
       subscriber.start();
       await deliverRequestCreated(bus, r.id);

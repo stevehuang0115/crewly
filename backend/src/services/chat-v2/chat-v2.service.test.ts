@@ -1627,6 +1627,39 @@ describe('ChatV2Service', () => {
     });
   });
 
+  describe('updateSystemMessage (ticket receipts)', () => {
+    it('edits a system row, merges metadata and emits chat_message_updated', () => {
+      const ch = createSam();
+      const { message } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'system',
+        senderId: 'system',
+        content: '已记成 TKT-001',
+        contentType: 'system_note',
+        metadata: { source: 'system', ticketReceipt: { ticketId: 't1', status: 'recorded' } },
+      });
+      const seen: unknown[] = [];
+      service.on('chat_message_updated', (dto) => seen.push(dto));
+      const updated = service.updateSystemMessage(message.id, 'TKT-001 已取消记录', { ticketReceipt: { status: 'dismissed' } });
+      expect(updated?.content).toBe('TKT-001 已取消记录');
+      expect(updated?.metadata).toMatchObject({ source: 'system', ticketReceipt: { ticketId: 't1', status: 'dismissed' } });
+      expect(seen).toHaveLength(1);
+    });
+
+    it('never edits the owner’s or an agent’s words', () => {
+      const ch = createSam();
+      const { message } = service.recordTurn({
+        channelId: ch.id,
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'hello',
+        metadata: { source: 'reply-tool' },
+      });
+      expect(service.updateSystemMessage(message.id, 'rewritten')).toBeNull();
+      expect(service.updateSystemMessage('no-such-msg', 'x')).toBeNull();
+    });
+  });
+
   describe('findMessagesWithPendingSlackDelivery (Phase 6.0)', () => {
     it('returns only messages tagged pending with a slackChannelId, within window', () => {
       const ch = createSam();

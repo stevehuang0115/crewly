@@ -5,6 +5,7 @@
  */
 
 // Jest globals are available automatically
+import { setTicketIntakeService, type TicketIntakeService } from '../v3/ticket-intake.service.js';
 import { SlackService, getSlackService, resetSlackService } from './slack.service.js';
 import type { SlackConfig, SlackNotification } from '../../types/slack.types.js';
 import { EventEmitter } from 'events';
@@ -1613,6 +1614,8 @@ describe('SlackService', () => {
       expect(service.isConnected()).toBe(true);
       expect(service.getStatus().socketMode).toBe(false);
       expect(service.getTransport()).toBe('cloud');
+      // Button clicks go to Cloud, which does not relay them.
+      expect(service.supportsInteractivity()).toBe(false);
       expect(connected).toHaveBeenCalledTimes(1);
       // Bot user id comes from the Cloud config — no auth.test round-trip.
       await expect(service.getBotUserId()).resolves.toBe('UBOT');
@@ -1872,6 +1875,7 @@ describe('SlackService', () => {
   describe('content approval block_actions handler', () => {
     let service: SlackService;
     let mockActionHandler: ((args: any) => Promise<void>) | null;
+    let actionHandlers: Array<[unknown, (args: any) => Promise<void>]> = [];
 
     beforeEach(async () => {
       resetSlackService();
@@ -1879,6 +1883,7 @@ describe('SlackService', () => {
 
       // Capture the action handler registered during initialize
       mockActionHandler = null;
+      actionHandlers = [];
       const { App } = await import('@slack/bolt');
       (App as jest.Mock).mockImplementation(() => ({
         client: {
@@ -1891,8 +1896,9 @@ describe('SlackService', () => {
         receiver: { client: new EventEmitter() },
         message: jest.fn(),
         event: jest.fn(),
-        action: jest.fn().mockImplementation((_pattern: RegExp, handler: (args: any) => Promise<void>) => {
+        action: jest.fn().mockImplementation((pattern: unknown, handler: (args: any) => Promise<void>) => {
           mockActionHandler = handler;
+          actionHandlers.push([pattern, handler]);
         }),
         error: jest.fn(),
         start: jest.fn().mockResolvedValue(undefined),
@@ -1910,6 +1916,35 @@ describe('SlackService', () => {
 
     it('should register an action handler for content_approval pattern', () => {
       expect(mockActionHandler).not.toBeNull();
+    });
+
+    describe('ticket loop — the receipt\'s 不用记 button', () => {
+      afterEach(() => setTicketIntakeService(null));
+
+      it('socket mode supports interactivity', () => {
+        expect(service.supportsInteractivity()).toBe(true);
+      });
+
+      it('clicking it dismisses the ticket named by the button value', async () => {
+        const dismiss = jest.fn().mockResolvedValue({ ok: true, alreadyDismissed: false });
+        setTicketIntakeService({ dismiss } as unknown as TicketIntakeService);
+        const entry = actionHandlers.find(([pattern]) => pattern === 'ticket_dismiss');
+        expect(entry).toBeDefined();
+        const ack = jest.fn().mockResolvedValue(undefined);
+        const respond = jest.fn().mockResolvedValue(undefined);
+        await entry![1]({ action: { action_id: 'ticket_dismiss', value: 'ticket-1', type: 'button' }, body: { user: { id: 'U1' } }, ack, respond });
+        expect(ack).toHaveBeenCalled();
+        expect(dismiss).toHaveBeenCalledWith('ticket-1');
+        expect(respond).not.toHaveBeenCalled();
+      });
+
+      it('tells the clicker when the ticket is already done', async () => {
+        setTicketIntakeService({ dismiss: jest.fn().mockResolvedValue({ ok: false, reason: 'already_done' }) } as unknown as TicketIntakeService);
+        const [, handler] = actionHandlers.find(([pattern]) => pattern === 'ticket_dismiss')!;
+        const respond = jest.fn().mockResolvedValue(undefined);
+        await handler({ action: { action_id: 'ticket_dismiss', value: 'ticket-1', type: 'button' }, body: { user: { id: 'U1' } }, ack: jest.fn(), respond });
+        expect(respond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+      });
     });
 
     it('should approve an approval when approve button is clicked', async () => {

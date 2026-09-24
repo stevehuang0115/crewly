@@ -240,6 +240,34 @@ describe('PoolStorage', () => {
     });
   });
 
+  describe('removeWorkItems (bulk)', () => {
+    it('removes the named items in place and persists on flush', async () => {
+      const a = sampleWorkItem({ id: 'a' });
+      const b = sampleWorkItem({ id: 'b' });
+      const c = sampleWorkItem({ id: 'c' });
+      for (const w of [a, b, c]) await storage.addWorkItem(w);
+      const live = await storage.getWorkItems();
+      expect(await storage.removeWorkItems(new Set(['a', 'c', 'ghost']))).toBe(2);
+      // Same array object: holders of the reference see the removal.
+      expect(live.map((w) => w.id)).toEqual(['b']);
+      await storage.flush();
+      const fresh = new PoolStorage({ dataDir: tempDir });
+      expect((await fresh.getWorkItems()).map((w) => w.id)).toEqual(['b']);
+    });
+
+    it('returns 0 and changes nothing when none match', async () => {
+      await storage.addWorkItem(sampleWorkItem({ id: 'a' }));
+      expect(await storage.removeWorkItems(new Set(['x']))).toBe(0);
+      expect(await storage.getWorkItems()).toHaveLength(1);
+    });
+  });
+
+  describe('getDataDir', () => {
+    it('is the directory the pool file lives in', () => {
+      expect(storage.getDataDir()).toBe(tempDir);
+    });
+  });
+
   // -----------------------------------------------------------------------
   // Claim operations
   // -----------------------------------------------------------------------

@@ -53,6 +53,8 @@ import {
   type ChatPrincipal,
 } from './types.js';
 import type { ChatV2Service } from './chat-v2.service.js';
+import { intakeChatV2OwnerMessage } from '../v3/ticket-channel-hooks.js';
+import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
 import type {
   IAgentDirectoryProvider,
   IAgentPresenceProvider,
@@ -475,8 +477,11 @@ export class ChatV2RelayAdapter {
         if (this.dispatcher && message.senderType === 'user') {
           try {
             const channel = this.service.getChannel(message.channelId, principal);
-            void this.dispatcher
-              .dispatchMessage(channel, message)
+            const dispatcher = this.dispatcher;
+            // Ticket loop: the portal is an owner surface — intake first so
+            // the agent's copy carries the ticket marker.
+            void intakeChatV2OwnerMessage(getTicketIntakeService(), channel, message, 'portal')
+              .then((toDispatch) => dispatcher.dispatchMessage(channel, toDispatch))
               .catch((err) => {
                 this.logger.warn('Portal-relay dispatch threw (non-fatal)', {
                   channelId: message.channelId,

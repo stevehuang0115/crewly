@@ -24,6 +24,7 @@ import {
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
+import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -1009,6 +1010,43 @@ describe('TaskPoolController', () => {
       expect(body.data.workItemId).toBe(addedWI.id);
       expect(body.data.id).toBe(addedWI.id);
       expect(body.data.status).toBe('queued');
+    });
+
+    describe('ticket loop', () => {
+      afterEach(() => setTicketIntakeService(null));
+
+      it('passes the calling agent to addToPool so it can link the turn’s ticket', async () => {
+        const req = mockReq({
+          headers: { 'x-agent-session': 'crewly-orc' },
+          body: { type: 'delegate', owner: 'orchestrator', target: 'crewly-product-leo', title: 'Do X' },
+        });
+        await addItem(req, mockRes());
+        expect(mockService.addToPool.mock.calls[0][1]).toEqual({ creatorSession: 'crewly-orc' });
+      });
+
+      it('resolves a TKT-123 requestId to the ticket id', async () => {
+        setTicketIntakeService({
+          resolve: async (ref: string) => (ref === 'TKT-012' ? { id: 'req-uuid-12' } : null),
+        } as unknown as TicketIntakeService);
+        const res = mockRes();
+        await addItem(mockReq({ body: { type: 'delegate', owner: 'agent', title: 'Do X', requestId: 'TKT-012' } }), res);
+        expect(res.status).toHaveBeenCalledWith(201);
+        expect(mockService.addToPool.mock.calls[0][0].requestId).toBe('req-uuid-12');
+      });
+
+      it('400s on a TKT reference that names no ticket', async () => {
+        setTicketIntakeService({ resolve: async () => null } as unknown as TicketIntakeService);
+        const res = mockRes();
+        await addItem(mockReq({ body: { type: 'delegate', owner: 'agent', title: 'Do X', requestId: 'TKT-404' } }), res);
+        expect(res.status).toHaveBeenCalledWith(400);
+        expect(res.json.mock.calls[0][0].code).toBe('unknown_ticket');
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+      });
+
+      it('leaves a uuid requestId alone', async () => {
+        await addItem(mockReq({ body: { type: 'delegate', owner: 'agent', title: 'Do X', requestId: 'plain-id' } }), mockRes());
+        expect(mockService.addToPool.mock.calls[0][0].requestId).toBe('plain-id');
+      });
     });
 
     it('rejects a minimal body missing required CreateWorkItemInput fields', async () => {

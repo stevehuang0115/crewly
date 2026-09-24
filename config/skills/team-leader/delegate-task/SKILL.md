@@ -47,6 +47,7 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 | `--team` / `-g` | `teamId` | No | Team ID for hierarchy validation |
 | `--tl-member` | `tlMemberId` | No | TL's member ID for hierarchy validation |
 | `--from` | `fromSession` | No | Delegating TL's session name (for monitoring) |
+| `--request-id` / `-R` | `requestId` | No | Ticket this work is for: the id (or `TKT-123`) from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Omit it and the task is still linked when your current turn has exactly one ticket |
 
 ## Request Contract check
 

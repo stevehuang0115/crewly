@@ -65,6 +65,7 @@ jest.mock('./slack-image.service.js', () => ({
   resetSlackImageService: jest.fn(),
 }));
 
+import { setTicketIntakeService, type IntakeMessage, type TicketIntakeService } from '../v3/ticket-intake.service.js';
 import { isOrchestratorActive, isAgentActive, getOrchestratorOfflineMessage, triggerOrchestratorSetup } from '../orchestrator/index.js';
 import { getChatService } from '../chat/chat.service.js';
 import { ChatMessage } from '../../types/chat.types.js';
@@ -1235,6 +1236,54 @@ describe('SlackOrchestratorBridge', () => {
 
       expect(routeInbound).toHaveBeenCalledTimes(1);
       expect(mockQueueService.enqueue).toHaveBeenCalled();
+    });
+  });
+
+  describe('ticket loop intake on the orchestrator path', () => {
+    afterEach(() => {
+      mockTeamChannels.current = null;
+      setTicketIntakeService(null);
+    });
+
+    it('the owner\'s message goes through intake first, and the orchestrator gets the [TICKET:…] line', async () => {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      mockChatV2EnsureChannel.mockReturnValue({ id: 'conv-orc', agentSession: 'crewly-orc' });
+      mockChatV2RecordTurn.mockReturnValue({ message: { id: 'm-orc' }, deduped: false });
+      mockTeamChannels.current = { findBySlackChannelId: jest.fn(() => null), routeInbound: jest.fn().mockResolvedValue(null) };
+      const intake = {
+        intakeWithOutcome: jest.fn(async () => ({
+          action: 'created',
+          ticket: { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 3 },
+        })),
+      };
+      setTicketIntakeService(intake as unknown as TicketIntakeService);
+      const mockQueueService = {
+        enqueue: jest.fn((msg: any) => {
+          msg?.sourceMetadata?.slackResolve?.('orc reply');
+          return { id: 'q-1' };
+        }),
+      };
+      const bridge = new SlackOrchestratorBridge();
+      bridge.setMessageQueueService(mockQueueService as any);
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'getConversationContext').mockReturnValue({ conversationId: 'conv-1', channelId: 'C-OTHER', userId: 'U123' });
+      await bridge.initialize();
+
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', { text: 'please fix the flaky deploy job', channelId: 'C-OTHER', userId: 'U123', ts: '1700000000.000300' });
+      await handled;
+
+      const [msg] = intake.intakeWithOutcome.mock.calls[0] as unknown as [IntakeMessage];
+      expect(msg).toMatchObject({
+        isOwner: true,
+        targetAgent: 'crewly-orc',
+        tags: ['slack'],
+        origin: { ref: 'slack-C-OTHER-1700000000.000300', threadRef: 'slack:C-OTHER:1700000000.000300' },
+        receipt: { kind: 'slack', slackChannelId: 'C-OTHER', threadTs: '1700000000.000300' },
+      });
+      expect(String(mockQueueService.enqueue.mock.calls[0][0].content)).toContain('[TICKET:TKT-003');
     });
   });
 

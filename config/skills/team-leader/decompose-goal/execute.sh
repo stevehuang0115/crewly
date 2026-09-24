@@ -9,13 +9,27 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${SCRIPT_DIR}/../_common/lib.sh"
 
+# `--request-id <id|TKT-123>` links every sub-task to the ticket they are for
+# (the [TICKET:TKT-123 <id>] line of the message being worked on). Also
+# accepted as `"requestId"` in the JSON.
+REQUEST_ID=""
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --request-id|-R) REQUEST_ID="${2:-}"; shift 2 ;;
+    *) POSITIONAL+=("$1"); shift ;;
+  esac
+done
+set -- "${POSITIONAL[@]+"${POSITIONAL[@]}"}"
+
 INPUT=$(read_json_input "${1:-}")
-[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"objective\":\"Build auth module\",\"projectPath\":\"/path/to/project\",\"tasks\":[{\"title\":\"...\",\"description\":\"...\",\"requiredRole\":\"developer\",\"acceptanceCriteria\":\"...\",\"priority\":\"high\"}]}'"
+[ -z "$INPUT" ] && error_exit "Usage: execute.sh '{\"objective\":\"Build auth module\",\"projectPath\":\"/path/to/project\",\"requestId\":\"<ticket id, optional>\",\"tasks\":[{\"title\":\"...\",\"description\":\"...\",\"requiredRole\":\"developer\",\"acceptanceCriteria\":\"...\",\"priority\":\"high\"}]}' [--request-id <id>]"
 
 OBJECTIVE=$(printf '%s' "$INPUT" | jq -r '.objective // empty')
 PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 TASKS=$(printf '%s' "$INPUT" | jq -c '.tasks // empty')
 MILESTONE=$(printf '%s' "$INPUT" | jq -r '.milestone // "delegated"')
+[ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
 require_param "objective" "$OBJECTIVE"
 require_param "tasks" "$TASKS"
 
@@ -68,13 +82,14 @@ Required role: ${TASK_ROLE}"
     --arg milestone "$MILESTONE" \
     --arg role "$TASK_ROLE" \
     --arg priority "$TASK_PRIORITY" \
+    --arg requestId "$REQUEST_ID" \
     '{
       title: $title,
       type: "delegate",
       owner: "system",
       briefMarkdown: $brief,
       metadata: { projectPath: $projectPath, milestone: $milestone, requiredRole: $role, priority: $priority }
-    }')
+    } + (if $requestId != "" then {requestId: $requestId} else {} end)')
 
   # No envelope: addItem reads req.body directly as the CreateWorkItemInput.
   CREATE_BODY="$WORK_ITEM"
