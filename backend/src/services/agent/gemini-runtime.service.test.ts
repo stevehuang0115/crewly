@@ -8,6 +8,9 @@ import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS } from '../../
 import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { getDefaultSettings } from '../../types/settings.types.js';
+import { ensureGeminiApiKeyAuthSelected } from '../../utils/gemini-auth-settings.js';
+import { addGeminiTrustedFolders } from '../../utils/gemini-trusted-folders.js';
+import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 
 jest.mock('fs', () => ({
 	...jest.requireActual('fs'),
@@ -28,6 +31,17 @@ jest.mock('../../utils/file-io.utils.js', () => ({
 	safeReadJson: jest.fn().mockResolvedValue({}),
 	atomicWriteJson: jest.fn().mockResolvedValue(undefined),
 }));
+
+jest.mock('../../utils/gemini-auth-settings.js', () => ({
+	ensureGeminiApiKeyAuthSelected: jest.fn().mockResolvedValue('seeded'),
+}));
+
+// Pass-through by default so the existing trusted-folders tests still exercise
+// the real util; the startup tests below override single calls.
+jest.mock('../../utils/gemini-trusted-folders.js', () => {
+	const actual = jest.requireActual('../../utils/gemini-trusted-folders.js');
+	return { ...actual, addGeminiTrustedFolders: jest.fn(actual.addGeminiTrustedFolders) };
+});
 
 jest.mock('../settings/settings.service.js', () => ({
 	getSettingsService: jest.fn().mockReturnValue({
@@ -1052,4 +1066,122 @@ describe('GeminiRuntimeService', () => {
 		});
 	});
 
+
+	// -----------------------------------------------------------------------
+	// Fresh-install startup (a clean HOME used to fail agent init after ~207s:
+	// Gemini's auth and trust dialogs held the session before its ready prompt)
+	// -----------------------------------------------------------------------
+
+	describe('fresh-install startup dialogs', () => {
+		it('pre-selects API-key auth and trusts the startup folders BEFORE launching Gemini', async () => {
+			const order: string[] = [];
+			(ensureGeminiApiKeyAuthSelected as jest.Mock).mockImplementationOnce(async () => { order.push('auth'); return 'seeded'; });
+			(addGeminiTrustedFolders as jest.Mock).mockImplementationOnce(async () => { order.push('trust'); return true; });
+			const launch = jest.spyOn(RuntimeAgentService.prototype, 'executeRuntimeInitScript')
+				.mockImplementation(async () => { order.push('launch'); });
+
+			await service.executeRuntimeInitScript('test-session', '/work/my-project');
+
+			expect(order).toEqual(['auth', 'trust', 'launch']);
+			const trusted = (addGeminiTrustedFolders as jest.Mock).mock.calls.at(-1)![0] as string[];
+			expect(trusted).toEqual(expect.arrayContaining([
+				path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME),
+				'/work/my-project',
+			]));
+			// Skills write artifacts to the temp dir; it is added to the workspace,
+			// so it must be trusted before launch too.
+			expect(trusted).toContain(os.tmpdir());
+			launch.mockRestore();
+		});
+
+		it('does not pre-select an auth method when no Gemini API key is configured', async () => {
+			const settings = (getSettingsService as jest.Mock)();
+			settings.getApiKey.mockResolvedValueOnce(undefined);
+			(ensureGeminiApiKeyAuthSelected as jest.Mock).mockClear();
+			const launch = jest.spyOn(RuntimeAgentService.prototype, 'executeRuntimeInitScript').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/work/my-project');
+
+			expect(ensureGeminiApiKeyAuthSelected).not.toHaveBeenCalled();
+			expect(launch).toHaveBeenCalled();
+			launch.mockRestore();
+		});
+
+		it('recognises the 0.61 startup trust dialog ("Do you trust the files in this folder?") and accepts it', async () => {
+			mockSessionHelper.capturePane
+				.mockReturnValueOnce(
+					'Do you trust the files in this folder?\n● 1. Trust folder (my-project)\n  2. Trust parent folder (work)\n  3. Don\'t trust'
+				)
+				.mockReturnValue('Type your message or @path/to/file');
+
+			const promise = service.waitForRuntimeReady('test-session', 5000, 200);
+			await jest.advanceTimersByTimeAsync(6000);
+
+			await expect(promise).resolves.toBe(true);
+			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
+		});
+
+		it('reports the auth dialog once and does not pick an auth method for the user', async () => {
+			mockSessionHelper.capturePane.mockReturnValue(
+				'Existing API key detected (GEMINI_API_KEY). Select "Gemini API Key" option to use it.\nHow would you like to authenticate for this project?\n● 1. Login with Google\n  2. Use Gemini API Key'
+			);
+			const warn = jest.spyOn((service as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger, 'warn');
+
+			const promise = service.waitForRuntimeReady('test-session', 3000, 200);
+			await jest.advanceTimersByTimeAsync(4000);
+
+			await expect(promise).resolves.toBe(false);
+			const authWarnings = warn.mock.calls.filter((c) => String(c[0]).includes('Gemini is asking how to authenticate'));
+			expect(authWarnings).toHaveLength(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+		});
+
+		it('trusts before launch every folder postInitialize adds to the workspace', async () => {
+			const startup = service.getStartupTrustedPaths('/work/my-project');
+			let n = 0;
+			mockSessionHelper.capturePane.mockImplementation(() => (++n % 2 === 1 ? 'before' : 'before\n✓ Directory added'));
+
+			const promise = service.postInitialize('test-session', '/work/my-project');
+			await jest.advanceTimersByTimeAsync(30000);
+			await promise;
+
+			const added = mockSessionHelper.sendMessage.mock.calls
+				.filter((c: any[]) => typeof c[1] === 'string' && c[1].includes('/directory add'))
+				.flatMap((c: any[]) => (c[1] as string).replace('/directory add', '').split(',').map((p) => p.trim()).filter(Boolean));
+			expect(added.length).toBeGreaterThan(0);
+			for (const p of added) {
+				expect(startup).toContain(p);
+			}
+		});
+
+		it('accepts the workspace trust dialog raised by /directory add', async () => {
+			// Stateful terminal: once the add is sent, the dialog stays on screen
+			// until Enter is pressed; only then does the folder show as added.
+			let sent = false;
+			let accepted = false;
+			mockSessionHelper.sendMessage.mockImplementation(async () => { sent = true; });
+			mockSessionHelper.sendEnter.mockImplementation(async () => { if (sent) accepted = true; });
+			mockSessionHelper.capturePane.mockImplementation(() => {
+				if (!sent) return 'before';
+				if (!accepted) return 'Do you trust the following folders being added to this workspace?\n● 1. Yes\n  2. Yes, and remember\n  3. No';
+				return 'before\n✓ Directory added';
+			});
+
+			const promise = service.addProjectToAllowlist('test-session', '/work/extra');
+			await jest.advanceTimersByTimeAsync(20000);
+			const result = await promise;
+
+			expect(result.success).toBe(true);
+			// The dialog itself must be answered. Without handling it, the add is
+			// still reported as successful (any screen change counts), while the
+			// dialog stays open and blocks the agent.
+			expect(accepted).toBe(true);
+			// ...and within the first attempt.
+			const adds = mockSessionHelper.sendMessage.mock.calls.filter(
+				(c: any[]) => typeof c[1] === 'string' && c[1].includes('/directory add')
+			);
+			expect(adds).toHaveLength(1);
+		});
+	});
 });
