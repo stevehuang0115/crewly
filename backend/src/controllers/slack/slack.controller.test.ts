@@ -12,6 +12,11 @@ const mockChatV2RecordTurn = jest.fn().mockReturnValue({
   message: { id: 'msg-1', content: 'hi' },
   deduped: false,
 });
+// The orchestrator bridge imports pdf-parse, whose pdfjs build needs DOM
+// globals (DOMMatrix) that some Node versions lack at load time. Nothing
+// here parses a PDF.
+jest.mock('pdf-parse', () => ({ PDFParse: jest.fn() }));
+
 jest.mock('../../services/chat-v2/chat-v2.singleton.js', () => ({
   getChatV2Service: jest.fn(() => ({
     ensureChannelForLegacyConversation: mockChatV2EnsureChannel,
@@ -85,9 +90,12 @@ const mockRegistry = {
   resolveInstanceId: jest.fn(async () => 'device-1'),
   getWorkspaceId: jest.fn(async (): Promise<string | null> => null),
   setWorkspaceId: jest.fn(async () => undefined),
+  getRelayQueue: jest.fn(() => ({ queueId: 'queue-1' as string | null, error: null as string | null })),
 };
 const mockHandleCloudConfigChange = jest.fn(async (_config: unknown) => undefined);
 let mockActiveSource: 'env' | 'cloud' | null = null;
+const mockRecordSlackSource = jest.fn(async (..._args: unknown[]) => undefined);
+const mockSwitchSlackSource = jest.fn(async (..._args: unknown[]): Promise<Record<string, unknown>> => ({ success: true, activeSource: 'cloud' }));
 jest.mock('../../services/slack/slack-initializer.js', () => ({
   startSlackTeamChannels: (...args: unknown[]) => mockStartTeamChannels(...args),
   ensureSlackCloudConfigService: async () => mockCloudConfig,
@@ -97,6 +105,8 @@ jest.mock('../../services/slack/slack-initializer.js', () => ({
   setActiveSlackSource: (s: 'env' | 'cloud' | null) => {
     mockActiveSource = s;
   },
+  recordSlackSource: (...args: unknown[]) => mockRecordSlackSource(...args),
+  switchSlackSource: (...args: unknown[]) => mockSwitchSlackSource(...args),
 }));
 jest.mock('../../services/slack/slack-instance-registry.service.js', () => ({
   getSlackInstanceRegistryService: () => mockRegistry,
@@ -178,6 +188,62 @@ describe('Slack Controller', () => {
 
       expect(response.body.data.socketMode).toBe(false);
     });
+
+    it('#753: reports which Slack app is connected, and degraded=false by default', async () => {
+      jest.spyOn(getSlackService(), 'isConnected').mockReturnValue(true);
+      jest.spyOn(getSlackService(), 'getTransport').mockReturnValue('cloud');
+      mockActiveSource = 'cloud';
+      const response = await request(app).get('/api/slack/status');
+      mockActiveSource = null;
+
+      expect(response.body.data).toMatchObject({ source: 'cloud', transport: 'cloud', degraded: false, sourceMode: 'auto' });
+    });
+
+    it('#753: reports degraded with the reason once posts keep failing with channel_not_found', async () => {
+      const service = getSlackService();
+      jest.spyOn(service, 'isConnected').mockReturnValue(true);
+      const notFound = Object.assign(new Error('An API error occurred: channel_not_found'), { data: { error: 'channel_not_found' } });
+      service.recordDeliveryOutcome('C1', notFound);
+      service.recordDeliveryOutcome('C2', notFound);
+      service.recordDeliveryOutcome('C1', notFound);
+
+      const response = await request(app).get('/api/slack/status');
+
+      expect(response.body.data.connected).toBe(false); // raw socket flag, untouched by the spy
+      expect(response.body.data.isConfigured).toBe(true);
+      expect(response.body.data.degraded).toBe(true);
+      expect(response.body.data.degradedReason).toBe('channel_not_found');
+      expect(response.body.data.lastError).toContain('cannot see these channels');
+      expect(response.body.data.deliveryFailures).toMatchObject({ consecutive: 3, code: 'channel_not_found', channels: ['C2', 'C1'] });
+    });
+  });
+
+  describe('PUT /api/slack/source', () => {
+    beforeEach(() => mockSwitchSlackSource.mockClear());
+
+    it('rejects anything but env or cloud', async () => {
+      const response = await request(app).put('/api/slack/source').send({ source: 'auto' });
+      expect(response.status).toBe(400);
+      expect(mockSwitchSlackSource).not.toHaveBeenCalled();
+    });
+
+    it('switches to the chosen source', async () => {
+      const response = await request(app).put('/api/slack/source').send({ source: 'cloud' });
+      expect(response.status).toBe(200);
+      expect(mockSwitchSlackSource).toHaveBeenCalledWith('cloud');
+      expect(response.body.data.activeSource).toBe('cloud');
+    });
+
+    it.each([
+      ['source_pinned', 409],
+      ['source_unavailable', 404],
+      ['connect_failed', 502],
+    ])('maps %s to HTTP %i', async (code, status) => {
+      mockSwitchSlackSource.mockResolvedValueOnce({ success: false, activeSource: 'env', code, error: 'nope' });
+      const response = await request(app).put('/api/slack/source').send({ source: 'env' });
+      expect(response.status).toBe(status);
+      expect(response.body).toMatchObject({ success: false, code, error: 'nope', data: { activeSource: 'env' } });
+    });
   });
 
   describe('POST /api/slack/connect', () => {
@@ -208,6 +274,27 @@ describe('Slack Controller', () => {
       const response = await request(app).post('/api/slack/connect').send({});
 
       expect(response.status).toBe(500);
+    });
+
+    it('#753: records the self-hosted app as the chosen source on a successful connect', async () => {
+      mockRecordSlackSource.mockClear();
+      jest.spyOn(getSlackService(), 'initialize').mockResolvedValue(undefined);
+      jest
+        .spyOn((await import('../../services/slack/slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+        .mockResolvedValue(undefined);
+      const creds = await import('../../services/slack/slack-credentials.service.js');
+      jest.spyOn(creds, 'saveSlackCredentials').mockResolvedValue(undefined);
+
+      const response = await request(app).post('/api/slack/connect').send({
+        botToken: 'xoxb-body',
+        appToken: 'xapp-body',
+        signingSecret: 'secret-body',
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockRecordSlackSource).toHaveBeenCalledWith('env', 'connect-route');
+      expect(mockActiveSource).toBe('env');
+      mockActiveSource = null;
     });
 
     it('should prefer body credentials over environment', async () => {

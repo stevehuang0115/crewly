@@ -130,7 +130,7 @@ GEMINI_API_KEY=your_key_here       # Required for Gemini CLI runtime
 SLACK_BOT_TOKEN=xoxb-...           # Optional: self-hosted Slack app (see "Slack" below)
 SLACK_APP_TOKEN=xapp-...
 SLACK_SIGNING_SECRET=...
-CREWLY_SLACK_SOURCE=cloud          # Optional: env | cloud (unset = Cloud wins when both exist)
+CREWLY_SLACK_SOURCE=cloud          # Optional: env | cloud (unset = last connected source, else self-hosted, when both exist)
 CREWLY_SLACK_PRIMARY=1             # Optional: this instance handles DMs / unmapped channels
 
 LOG_LEVEL=info                     # debug, info, warn, error
@@ -167,7 +167,14 @@ instance — the Settings toggle, or `CREWLY_SLACK_PRIMARY=1`.
 `SLACK_BOT_TOKEN` / `SLACK_APP_TOKEN` / `SLACK_SIGNING_SECRET` or the form under
 Settings → Slack → Advanced) still works. `CREWLY_SLACK_SOURCE` picks the source:
 `cloud` uses only the Cloud workspace, `env` uses only local tokens and never
-asks Cloud, unset prefers Cloud when both exist (logged once at boot).
+asks Cloud. Unset, when both exist, a restart keeps the app that was last
+connected (with none recorded, the self-hosted app) and logs a warning — the
+two are different bot users, so switching silently would break every channel of
+the other one. The other app is used only if the chosen one cannot connect.
+Switch explicitly with `PUT /api/slack/source {"source":"env"|"cloud"}`.
+`GET /api/slack/status` reports the connected `source` and turns `degraded`
+(with `degradedReason`) when posts keep failing with `channel_not_found` /
+`not_in_channel`.
 
 ### Securing a server install
 

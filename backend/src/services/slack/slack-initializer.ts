@@ -21,6 +21,11 @@ import {
   setSlackInstanceRegistryService,
 } from './slack-instance-registry.service.js';
 import { getSlackAgentIdentityService } from './slack-agent-identity.service.js';
+import {
+  loadSlackSourcePreference,
+  saveSlackSourcePreference,
+  type SlackSourceName,
+} from './slack-source-preference.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
 import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
@@ -61,12 +66,17 @@ function lastSlackUserIn(
 }
 
 /** Where the active Slack connection's tokens came from. */
-export type SlackSource = 'env' | 'cloud';
+export type SlackSource = SlackSourceName;
 
 /** A config together with its provenance. */
 export interface ResolvedSlackConfig {
   config: SlackConfig;
   source: SlackSource;
+  /**
+   * The other source, when both exist in `auto` mode. Used only when the
+   * chosen one cannot connect at all (unusable), and that switch is logged.
+   */
+  fallback?: { config: SlackConfig; source: SlackSource };
 }
 
 /** Source of the connection currently held by SlackService (null = none). */
@@ -77,12 +87,15 @@ let sessionBackendModule: typeof import('../session/index.js') | null = null;
 let unsubscribeCloudConfig: (() => void) | null = null;
 /**
  * When the Slack boot path ran. The Cloud token is often refreshed only
- * after Slack has already connected with local tokens; a Cloud config that
- * appears within this window is still treated as the boot decision and
- * replaces the self-hosted socket. Later appearances leave a live
- * connection alone.
+ * after Slack has already connected with local tokens; when the recorded
+ * source is `cloud`, a Cloud config that appears within this window is
+ * still treated as the boot decision and replaces the self-hosted socket.
+ * Later appearances — and any appearance without a recorded `cloud`
+ * choice — leave a live connection alone (#753).
  */
 let slackBootAt = 0;
+/** The recorded source preference as read at boot (null = none recorded). */
+let bootPreference: SlackSource | null = null;
 /**
  * Wire the directory (who can be @'d): Cloud roster + live channel members.
  * Never throws — without it agents simply get no roster line.
@@ -275,14 +288,53 @@ export async function ensureSlackCloudConfigService(): Promise<SlackCloudConfigS
   return service;
 }
 
+/** Inputs to {@link chooseSlackSource}. */
+export interface SlackSourceCandidates {
+  /** Self-hosted tokens (env vars or saved credentials), when present. */
+  local: SlackConfig | null;
+  /** The Cloud-owned workspace, when present. */
+  cloud: SlackConfig | null;
+  /** The source that last connected successfully (null = none recorded). */
+  preferred: SlackSource | null;
+}
+
+/**
+ * Pure precedence for `auto` mode (#753):
+ *
+ *  - only one source present → that one;
+ *  - both present → the recorded preference (the last source that
+ *    connected), else the self-hosted app. An explicitly configured bot token
+ *    is never silently replaced by the Cloud app: they are different bot
+ *    users, and the Cloud one is not in the self-hosted app's channels.
+ *
+ * The source not chosen is returned as `fallback` and is only used when the
+ * chosen one cannot connect.
+ *
+ * @param candidates - Local / Cloud configs and the recorded preference
+ * @returns The resolved config, or null when neither exists
+ */
+export function chooseSlackSource(candidates: SlackSourceCandidates): ResolvedSlackConfig | null {
+  const { local, cloud, preferred } = candidates;
+  if (local && cloud) {
+    const primary: SlackSource = preferred ?? 'env';
+    return primary === 'cloud'
+      ? { config: cloud, source: 'cloud', fallback: { config: local, source: 'env' } }
+      : { config: local, source: 'env', fallback: { config: cloud, source: 'cloud' } };
+  }
+  if (local) return { config: local, source: 'env' };
+  if (cloud) return { config: cloud, source: 'cloud' };
+  return null;
+}
+
 /**
  * Pick the Slack config to connect with, applying the source precedence:
  *
  *  - `CREWLY_SLACK_SOURCE=env`   → local tokens only (env / credentials file);
  *  - `CREWLY_SLACK_SOURCE=cloud` → the Cloud-owned workspace only;
- *  - unset                       → Cloud when the account has a workspace
- *    installed, otherwise local tokens. When both exist Cloud wins and this
- *    is logged once so the migration is visible.
+ *  - unset (`auto`)              → see {@link chooseSlackSource}: the source
+ *    that last connected wins when both exist, else the self-hosted app.
+ *    When both exist this is logged at WARN with the consequence and how to
+ *    switch.
  *
  * @returns The config and where it came from, or null when nothing is set up
  */
@@ -298,16 +350,58 @@ export async function resolveSlackConfig(): Promise<ResolvedSlackConfig | null> 
     cloud = cloudConfigService.toSlackConfig();
   }
 
-  if (cloud) {
-    if (local) {
-      logger.info(
-        'Both local Slack tokens and a Cloud-owned workspace are present — using Crewly Cloud. Set CREWLY_SLACK_SOURCE=env to keep the self-hosted app.',
-      );
-    }
-    return { config: cloud, source: 'cloud' };
+  if (mode !== 'auto') {
+    bootPreference = null;
+    const pinned = mode === 'env' ? local : cloud;
+    return pinned ? { config: pinned, source: mode } : null;
   }
-  if (local) return { config: local, source: 'env' };
-  return null;
+
+  const recorded = await loadSlackSourcePreference().catch(() => null);
+  bootPreference = recorded?.source ?? null;
+  const resolved = chooseSlackSource({ local, cloud, preferred: bootPreference });
+
+  if (resolved?.fallback) {
+    const other = resolved.fallback.source;
+    logger.warn(
+      `Both a self-hosted Slack app and a Crewly Cloud Slack workspace are configured — using ${describeSource(resolved.source)}. ` +
+        `They are different bot users: channels of ${describeSource(other)} are unreachable from this connection (channel_not_found). ` +
+        `To switch, connect the other one (PUT /api/slack/source) or set CREWLY_SLACK_SOURCE=${other}.`,
+      {
+        source: resolved.source,
+        reason: recorded ? `last connected source (recorded ${recorded.recordedAt || 'earlier'})` : 'no recorded source — self-hosted app wins',
+      },
+    );
+  }
+  return resolved;
+}
+
+/**
+ * Human label for a source, for logs.
+ *
+ * @param source - `env` or `cloud`
+ * @returns The label
+ */
+function describeSource(source: SlackSource): string {
+  return source === 'cloud' ? 'the Crewly Cloud app' : 'the self-hosted app';
+}
+
+/**
+ * Record the source of a successful connection so the next boot keeps it.
+ * Never throws — a failed write only means the next boot re-applies the
+ * default precedence.
+ *
+ * @param source - The source that connected
+ * @param reason - What triggered the connection
+ */
+export async function recordSlackSource(source: SlackSource, reason: string): Promise<void> {
+  try {
+    await saveSlackSourcePreference(source, reason);
+  } catch (error) {
+    logger.warn('Could not record the Slack source preference', {
+      source,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 /**
@@ -377,7 +471,18 @@ export async function initializeSlackIfConfigured(
     return { attempted: false, success: false };
   }
 
-  return connectSlack(resolved, options);
+  const result = await connectSlack(resolved, options, 'boot');
+  if (result.success || !resolved.fallback) return result;
+
+  // The chosen source is unusable (bad token, Slack unreachable). Only now
+  // is the other one tried — loudly, because it is a different bot user.
+  logger.warn(
+    `Slack could not connect with ${describeSource(resolved.source)} — falling back to ${describeSource(resolved.fallback.source)}. ` +
+      `Channels of ${describeSource(resolved.source)} will be unreachable until it is fixed and reconnected.`,
+    { failed: resolved.source, error: result.error, fallback: resolved.fallback.source },
+  );
+  const fallbackResult = await connectSlack(resolved.fallback, options, 'fallback');
+  return fallbackResult.success ? fallbackResult : result;
 }
 
 /**
@@ -390,8 +495,9 @@ export async function initializeSlackIfConfigured(
  * @returns Result object indicating success or failure
  */
 export async function connectSlack(
-  resolved: ResolvedSlackConfig,
+  resolved: Pick<ResolvedSlackConfig, 'config' | 'source'>,
   options?: SlackInitOptions,
+  reason = 'connect',
 ): Promise<SlackInitResult> {
   const { config, source } = resolved;
   try {
@@ -435,6 +541,7 @@ export async function connectSlack(
     }
 
     activeSource = source;
+    await recordSlackSource(source, reason);
     logger.info('Successfully connected', { source, transport: slackService.getTransport() });
     return { attempted: true, success: true };
   } catch (error) {
@@ -549,8 +656,9 @@ export async function watchSlackCloudConfig(): Promise<void> {
  *    and merge new identities;
  *  - removed while connected via Cloud → disconnect.
  *
- * A live self-hosted (`env`) connection is left alone; precedence is only
- * applied at boot so a running socket is never yanked under the owner.
+ * A live self-hosted (`env`) connection is left alone; it is replaced only
+ * in the boot race below, and only when Cloud is the recorded source
+ * (#753). Switching otherwise is the owner's call (`PUT /api/slack/source`).
  *
  * @param config - The new Cloud config (null when removed)
  */
@@ -574,15 +682,18 @@ export async function handleSlackCloudConfigChange(config: SlackCloudConfig | nu
 
   if (!slackService.isConnected()) {
     logger.info('Cloud Slack workspace available — connecting', { workspace: config.workspace.slackTeamName });
-    await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions);
+    await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions, 'cloud-config');
     return;
   }
 
   // Boot race: Slack came up on local tokens because the Cloud token was
-  // still being refreshed. Apply the boot precedence now instead of leaving
-  // the instance on Socket Mode until the next restart.
+  // still being refreshed, although Cloud is the source this instance last
+  // ran on. Apply that choice now instead of leaving the instance on Socket
+  // Mode until the next restart. Without a recorded `cloud` choice the
+  // self-hosted connection stays (#753).
   if (
     activeSource === 'env' &&
+    bootPreference === 'cloud' &&
     cloudConfigService.getSourceMode() === 'auto' &&
     slackBootAt > 0 &&
     Date.now() - slackBootAt < SLACK_CLOUD_CONSTANTS.BOOT_PRECEDENCE_WINDOW_MS
@@ -591,7 +702,12 @@ export async function handleSlackCloudConfigChange(config: SlackCloudConfig | nu
       workspace: config.workspace.slackTeamName,
     });
     await slackService.disconnect().catch(() => undefined);
-    await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions);
+    await connectSlack({ config: slackConfig, source: 'cloud' }, bootOptions, 'boot');
+    return;
+  }
+
+  if (activeSource === 'env' && cloudConfigService.getSourceMode() === 'auto') {
+    logger.debug('Cloud Slack workspace available but the self-hosted app is connected — leaving it (switch with PUT /api/slack/source)');
     return;
   }
 
@@ -632,6 +748,81 @@ export async function refreshSlackCloudConfig(): Promise<void> {
   }
 }
 
+/** Outcome of {@link switchSlackSource}. */
+export interface SlackSourceSwitchResult {
+  success: boolean;
+  /** Source connected after the call (null when Slack is down). */
+  activeSource: SlackSource | null;
+  error?: string;
+  /** Machine-readable failure: `source_pinned`, `source_unavailable`, `connect_failed`. */
+  code?: 'source_pinned' | 'source_unavailable' | 'connect_failed';
+}
+
+/**
+ * The owner's explicit choice of Slack app: connect with `source` now and
+ * record it so every later boot keeps it (#753). Refused when
+ * `CREWLY_SLACK_SOURCE` pins the other source, or when `source` has no
+ * credentials. When the new source fails to connect, the previous one is
+ * reconnected so Slack is not left down.
+ *
+ * @param source - `env` (self-hosted app) or `cloud` (Crewly Cloud app)
+ * @returns What happened
+ */
+export async function switchSlackSource(source: SlackSource): Promise<SlackSourceSwitchResult> {
+  const cloudConfigService = await ensureSlackCloudConfigService();
+  const mode = cloudConfigService.getSourceMode();
+  if (mode !== 'auto' && mode !== source) {
+    return {
+      success: false,
+      activeSource,
+      code: 'source_pinned',
+      error: `CREWLY_SLACK_SOURCE=${mode} pins the Slack source; unset it to switch to ${source}`,
+    };
+  }
+
+  let config: SlackConfig | null;
+  if (source === 'env') {
+    config = await getSlackConfig();
+  } else {
+    await cloudConfigService.loadOrRefresh();
+    config = cloudConfigService.toSlackConfig();
+  }
+  if (!config) {
+    return {
+      success: false,
+      activeSource,
+      code: 'source_unavailable',
+      error: source === 'env' ? 'No self-hosted Slack credentials are configured' : 'This Crewly account has no Cloud Slack workspace',
+    };
+  }
+
+  const slackService = getSlackService();
+  const previous = activeSource;
+  const previousConfig = slackService.isConnected() && previous ? slackService.getConfig() : null;
+  if (previous === source && slackService.isConnected()) {
+    await recordSlackSource(source, 'owner-choice');
+    return { success: true, activeSource };
+  }
+
+  logger.warn(`Switching Slack from ${previous ? describeSource(previous) : 'nothing'} to ${describeSource(source)} (owner choice)`, {
+    from: previous,
+    to: source,
+  });
+  if (slackService.isConnected()) {
+    if (previous === 'cloud') getSlackInstanceRegistryService()?.stop();
+    await slackService.disconnect().catch(() => undefined);
+    activeSource = null;
+  }
+  const result = await connectSlack({ config, source }, bootOptions, 'owner-choice');
+  if (result.success) return { success: true, activeSource };
+
+  if (previous && previousConfig) {
+    logger.warn(`Could not connect ${describeSource(source)} — restoring ${describeSource(previous)}`, { error: result.error });
+    await connectSlack({ config: previousConfig, source: previous }, bootOptions, 'restore');
+  }
+  return { success: false, activeSource, code: 'connect_failed', error: result.error };
+}
+
 /**
  * Reset module state (tests).
  */
@@ -640,6 +831,8 @@ export function resetSlackInitializerState(): void {
   unsubscribeCloudConfig = null;
   activeSource = null;
   bootOptions = undefined;
+  bootPreference = null;
+  slackBootAt = 0;
   getSlackCloudConfigService()?.stop();
   getSlackInstanceRegistryService()?.stop();
   setSlackInstanceRegistryService(null);

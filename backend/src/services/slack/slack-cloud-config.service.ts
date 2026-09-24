@@ -16,9 +16,10 @@
  *  - notifies listeners when the config appears, changes or goes away, so
  *    the initializer can (re)connect without a restart.
  *
- * Source precedence lives in {@link resolveSlackSourceMode}: unset → Cloud
- * wins when both exist (logged once), `CREWLY_SLACK_SOURCE=env` → never
- * touch Cloud, `CREWLY_SLACK_SOURCE=cloud` → never use local tokens.
+ * Source mode lives in {@link resolveSlackSourceMode}: `CREWLY_SLACK_SOURCE=env`
+ * → never touch Cloud, `CREWLY_SLACK_SOURCE=cloud` → never use local tokens,
+ * unset → the initializer picks (the last connected source, else the
+ * self-hosted app, when both exist — #753).
  *
  * @module services/slack/slack-cloud-config.service
  */

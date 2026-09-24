@@ -814,6 +814,131 @@ describe('SessionHandoffService', () => {
       ThreadStatusQueueService.resetInstance();
     });
 
+    // Regression (#757): cleanup() drops terminal entries 24h after their
+    // last update, but the resume scan goes by thread-file mtime, which can
+    // be later (the last write was an agent completion report). With the
+    // entry gone, "no entry" read as "unreplied" and the closed threads were
+    // re-flagged on every restart. Scenario from the issue: two threads
+    // answered at 2026-09-20T04:14Z, restarts at 04:00 and 05:08 on 09-21.
+    describe('closed threads whose status entry aged out (#757)', () => {
+      const REPLIED_AT = '2026-09-20T04:14:00.000Z';
+      const FIRST_RESTART = Date.parse('2026-09-21T04:00:00.000Z');
+      const SECOND_RESTART = Date.parse('2026-09-21T05:08:00.000Z');
+      const CLOSED = [
+        { channelId: 'D0AC7NF5N7L', threadId: '1789877640.000100' },
+        { channelId: 'C0BUILDS01', threadId: '1789877650.000200' },
+      ];
+      const UNTRACKED = { channelId: 'C0BUILDS01', threadId: '1789900000.000300' };
+
+      /** The scan result: file mtimes all inside the 24h lookback. */
+      const scan = (now: number): ResumeThread[] =>
+        [...CLOSED, UNTRACKED].map((t, i) => ({
+          channelType: 'slack' as const,
+          channelId: t.channelId,
+          threadId: t.threadId,
+          filePath: `/threads/${t.threadId}.md`,
+          lastActiveAt: new Date(now - (i + 1) * 60 * 60 * 1000).toISOString(),
+          recentMessages: [],
+        }));
+
+      /** Answer both CLOSED threads at REPLIED_AT. */
+      function seed(tsq: ThreadStatusQueueService): void {
+        for (const t of CLOSED) {
+          const threadKey = `${t.channelId}:${t.threadId}`;
+          tsq.trackInbound({ threadKey, conversationId: `slack-${t.channelId}-${t.threadId}`, source: 'slack', messagePreview: 'q' });
+          tsq.markReplied(threadKey, 'replied_completed');
+        }
+        for (const entry of tsq.getAllEntries()) entry.updatedAt = REPLIED_AT;
+      }
+
+      afterEach(() => {
+        jest.restoreAllMocks();
+        ThreadStatusQueueService.resetInstance();
+      });
+
+      it('does not resurface them once cleanup removed their entries, across a persisted restart', async () => {
+        ThreadStatusQueueService.resetInstance();
+        const first = new ThreadStatusQueueService(testDir);
+        seed(first);
+
+        // Restart 1 (04:00, entries 23h46m old): nothing is cleaned yet.
+        const now = jest.spyOn(Date, 'now').mockReturnValue(FIRST_RESTART);
+        expect(first.cleanup()).toBe(0);
+        await first.persist();
+
+        // Restart 2 (05:08): a fresh process loads the file, cleanup drops both entries.
+        ThreadStatusQueueService.resetInstance();
+        const second = new ThreadStatusQueueService(testDir);
+        await second.loadPersistedState();
+        now.mockReturnValue(SECOND_RESTART);
+        expect(second.cleanup()).toBe(2);
+        for (const t of CLOSED) expect(second.get(`${t.channelId}:${t.threadId}`)).toBeNull();
+        await second.persist();
+
+        // Restart 3: the records survive another reload.
+        ThreadStatusQueueService.resetInstance();
+        const third = new ThreadStatusQueueService(testDir);
+        await third.loadPersistedState();
+
+        jest.spyOn(service, 'findRecentThreads').mockResolvedValue(scan(SECOND_RESTART));
+        const sender: AgentMessageSender = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }) };
+        await service.pushResumeNotification(sender, 'crewly-orc');
+
+        expect(sender.sendMessageToAgent).toHaveBeenCalledTimes(1);
+        const message = (sender.sendMessageToAgent as jest.Mock).mock.calls[0][1] as string;
+        for (const t of CLOSED) expect(message).not.toContain(t.threadId);
+        // A thread the queue never tracked is still surfaced: no evidence it was answered.
+        expect(message).toContain(UNTRACKED.threadId);
+      });
+
+      it('sends nothing when every recent thread is closed', async () => {
+        ThreadStatusQueueService.resetInstance();
+        const tsq = new ThreadStatusQueueService();
+        seed(tsq);
+        jest.spyOn(Date, 'now').mockReturnValue(SECOND_RESTART);
+        tsq.cleanup();
+
+        jest.spyOn(service, 'findRecentThreads').mockResolvedValue(scan(SECOND_RESTART).slice(0, CLOSED.length));
+        const sender: AgentMessageSender = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }) };
+        await service.pushResumeNotification(sender, 'crewly-orc');
+        expect(sender.sendMessageToAgent).not.toHaveBeenCalled();
+      });
+
+      it('resurfaces a closed thread again when a new inbound message reopens it', async () => {
+        ThreadStatusQueueService.resetInstance();
+        const tsq = new ThreadStatusQueueService();
+        seed(tsq);
+        jest.spyOn(Date, 'now').mockReturnValue(SECOND_RESTART);
+        tsq.cleanup();
+        const [reopened] = CLOSED;
+        tsq.trackInbound({ threadKey: `${reopened.channelId}:${reopened.threadId}`, conversationId: 'c-reopened', source: 'slack', messagePreview: 'one more thing' });
+
+        jest.spyOn(service, 'findRecentThreads').mockResolvedValue(scan(SECOND_RESTART).slice(0, CLOSED.length));
+        const sender: AgentMessageSender = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }) };
+        await service.pushResumeNotification(sender, 'crewly-orc');
+        const message = (sender.sendMessageToAgent as jest.Mock).mock.calls[0][1] as string;
+        expect(message).toContain(reopened.threadId);
+        expect(message).not.toContain(CLOSED[1].threadId);
+      });
+
+      it('filters a closed chat-ui conversation by its conversation id', async () => {
+        ThreadStatusQueueService.resetInstance();
+        const tsq = new ThreadStatusQueueService();
+        tsq.trackInbound({ threadKey: 'chat:conv-42', conversationId: 'conv-42', source: 'web_chat', messagePreview: 'q' });
+        tsq.markReplied('chat:conv-42', 'replied_completed');
+        for (const entry of tsq.getAllEntries()) entry.updatedAt = REPLIED_AT;
+        jest.spyOn(Date, 'now').mockReturnValue(SECOND_RESTART);
+        tsq.cleanup();
+
+        jest.spyOn(service, 'findRecentThreads').mockResolvedValue([
+          { channelType: 'chat-ui', channelId: 'conv-42', threadId: 'conv-42', filePath: '/c.json', lastActiveAt: new Date(SECOND_RESTART).toISOString(), recentMessages: [] },
+        ]);
+        const sender: AgentMessageSender = { sendMessageToAgent: jest.fn().mockResolvedValue({ success: true }) };
+        await service.pushResumeNotification(sender, 'crewly-orc');
+        expect(sender.sendMessageToAgent).not.toHaveBeenCalled();
+      });
+    });
+
     it('should handle sendMessageToAgent failure gracefully', async () => {
       jest.spyOn(service, 'findRecentThreads').mockResolvedValue([
         {

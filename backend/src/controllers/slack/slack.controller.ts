@@ -24,7 +24,11 @@ import {
   handleSlackCloudConfigChange,
   getActiveSlackSource,
   setActiveSlackSource,
+  recordSlackSource,
+  switchSlackSource,
 } from '../../services/slack/slack-initializer.js';
+import { resolveSlackSourceMode } from '../../services/slack/slack-cloud-config.service.js';
+import { isSlackSourceName } from '../../services/slack/slack-source-preference.service.js';
 import { getSlackInstanceRegistryService } from '../../services/slack/slack-instance-registry.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
@@ -238,6 +242,9 @@ async function recordSlackReplyBookkeeping(params: {
  * GET /api/slack/status
  *
  * Get Slack integration status including connection state and message counts.
+ * `connected` only says a connection exists; `degraded` (with
+ * `degradedReason` / `deliveryFailures`) says whether posts actually reach
+ * their channels, and `source` says which Slack app is connected (#753).
  *
  * @returns Status object with connection info
  */
@@ -245,12 +252,18 @@ router.get('/status', async (req: Request, res: Response, next: NextFunction) =>
   try {
     const slackService = getSlackService();
     const status = slackService.getStatus();
+    const connected = slackService.isConnected();
 
     res.json({
       success: true,
       data: {
         ...status,
-        isConfigured: slackService.isConnected(),
+        degraded: status.degraded ?? false,
+        isConfigured: connected,
+        // Which Slack app holds the connection: `env` (self-hosted) or `cloud`.
+        source: connected ? getActiveSlackSource() : null,
+        sourceMode: resolveSlackSourceMode(),
+        transport: connected ? slackService.getTransport() : null,
       },
     });
   } catch (error) {
@@ -323,6 +336,9 @@ router.post('/connect', async (req: Request, res: Response, next: NextFunction) 
     }
 
     const slackService = getSlackService();
+    // Replacing a Cloud connection: its registry heartbeat must not keep
+    // claiming this instance serves the Cloud workspace.
+    if (getActiveSlackSource() === 'cloud') getSlackInstanceRegistryService()?.stop();
     await slackService.initialize(config);
 
     // Initialize bridge
@@ -332,15 +348,48 @@ router.post('/connect', async (req: Request, res: Response, next: NextFunction) 
     // Team channels (one Slack channel per team). Best-effort; never fails connect.
     await startSlackTeamChannels();
 
-    // Persist credentials to disk so they survive server restarts
+    // Persist credentials to disk so they survive server restarts, and
+    // record the self-hosted app as the chosen source so a restart does not
+    // swap it for a Cloud workspace (#753).
     await saveSlackCredentials(config);
     setActiveSlackSource('env');
+    await recordSlackSource('env', 'connect-route');
 
     res.json({
       success: true,
       message: 'Slack connection established',
       data: slackService.getStatus(),
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * PUT /api/slack/source
+ *
+ * The owner's explicit choice of Slack app when both a self-hosted app and a
+ * Crewly Cloud workspace exist: connect with it now and keep it across
+ * restarts (#753). 409 when `CREWLY_SLACK_SOURCE` pins the other source,
+ * 404 when the chosen source has no credentials, 502 when it cannot connect
+ * (the previous connection is restored).
+ *
+ * @body source - `env` (self-hosted app) or `cloud` (Crewly Cloud app)
+ */
+router.put('/source', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const source: unknown = req.body?.source;
+    if (!isSlackSourceName(source)) {
+      res.status(400).json({ success: false, error: "source must be 'env' or 'cloud'" });
+      return;
+    }
+    const result = await switchSlackSource(source);
+    if (!result.success) {
+      const status = result.code === 'source_pinned' ? 409 : result.code === 'source_unavailable' ? 404 : 502;
+      res.status(status).json({ success: false, error: result.error, code: result.code, data: { activeSource: result.activeSource } });
+      return;
+    }
+    res.json({ success: true, data: { activeSource: result.activeSource, status: getSlackService().getStatus() } });
   } catch (error) {
     next(error);
   }
