@@ -93,6 +93,8 @@ async function installAll(items: MarketplaceItem[]): Promise<void> {
     console.log(chalk.green(`Done! ${installed} skills installed.`));
   } else {
     console.log(chalk.yellow(`Done! ${installed} installed, ${failed} failed.`));
+    // Scripts and CI must see the failure, not a clean exit.
+    process.exitCode = 1;
   }
 }
 

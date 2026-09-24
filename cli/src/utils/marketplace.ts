@@ -60,7 +60,37 @@ export interface MarketplaceItem {
     model?: string;
   };
   metadata?: Record<string, unknown>;
+  /**
+   * The public-registry entry this item replaced, when a premium entry with
+   * the same id took priority. Installed instead if the premium source fails.
+   * Set by fetchRegistry; never present in registry JSON.
+   */
+  fallback?: MarketplaceItem;
 }
+
+/** One skill that could not be installed, and why. */
+export interface SkillInstallFailure {
+  id: string;
+  name: string;
+  message: string;
+}
+
+/** Outcome of installing every skill in the registry. */
+export interface InstallAllResult {
+  total: number;
+  installed: number;
+  failed: SkillInstallFailure[];
+}
+
+/**
+ * Skill manifests the installer accepts, in order of preference. Skills moved
+ * from skill.json to SKILL.md (8339f728); older ones still ship skill.json.
+ * A skill needs at least one of them.
+ */
+export const SKILL_MANIFEST_FILES = ['SKILL.md', 'skill.json'] as const;
+
+/** Files fetched for a GitHub-directory skill when its entry lists none. */
+export const DEFAULT_SKILL_FILES = ['SKILL.md', 'execute.sh', 'skill.json', 'instructions.md'] as const;
 
 /** The full registry response */
 export interface MarketplaceRegistry {
@@ -117,10 +147,15 @@ export async function fetchRegistry(): Promise<MarketplaceRegistry> {
     }
   }
 
-  // Process premium registry results (takes priority)
+  // Process premium registry results (takes priority). Keep the public entry
+  // it replaces as a fallback: premium archives can be missing from the CDN
+  // while the public copy of the same skill installs fine.
   if (premiumResult.status === 'fulfilled' && premiumResult.value) {
     for (const item of premiumResult.value.items || []) {
-      items.set(item.id, item);
+      const replaced = items.get(item.id);
+      const sameSource = replaced
+        && (replaced.assets.archive ?? replaced.assets.model) === (item.assets.archive ?? item.assets.model);
+      items.set(item.id, replaced && !sameSource ? { ...item, fallback: replaced } : item);
     }
   }
 
@@ -192,6 +227,29 @@ export function getInstallPath(type: 'skill' | 'model' | 'role', id: string): st
  * @returns Object with success status and message
  */
 export async function downloadAndInstall(item: MarketplaceItem): Promise<{ success: boolean; message: string }> {
+  const primary = await installFromSource(item);
+  if (primary.success || !item.fallback) return primary;
+
+  const fallback = await installFromSource(item.fallback);
+  if (fallback.success) {
+    return {
+      success: true,
+      message: `${fallback.message} (from the public registry; premium source failed: ${primary.message})`,
+    };
+  }
+  return {
+    success: false,
+    message: `premium source failed: ${primary.message}; public source failed: ${fallback.message}`,
+  };
+}
+
+/**
+ * Installs one item from exactly the source its entry names, with no fallback.
+ *
+ * @param item - The marketplace item to install
+ * @returns Object with success status and message
+ */
+async function installFromSource(item: MarketplaceItem): Promise<{ success: boolean; message: string }> {
   const installPath = getInstallPath(item.type, item.id);
 
   const assetPath = item.assets.archive || item.assets.model;
@@ -206,12 +264,14 @@ export async function downloadAndInstall(item: MarketplaceItem): Promise<{ succe
 
   try {
     if (isGitHubSource) {
-      // Download individual files from GitHub raw content in parallel
-      // Use custom file list from metadata if available, otherwise default 3 files
+      // Download individual files from GitHub raw content in parallel. Always
+      // try both manifests (SKILL.md preferred, skill.json for older skills),
+      // whatever the entry lists: registry `metadata.files` lists can be stale.
       const metadataFiles = item.metadata?.files as string[] | undefined;
-      const filesToDownload = metadataFiles && Array.isArray(metadataFiles) && metadataFiles.length > 0
+      const listed = metadataFiles && Array.isArray(metadataFiles) && metadataFiles.length > 0
         ? metadataFiles
-        : ['skill.json', 'execute.sh', 'instructions.md'];
+        : [...DEFAULT_SKILL_FILES];
+      const filesToDownload = Array.from(new Set([...SKILL_MANIFEST_FILES, ...listed]));
 
       const results = await Promise.allSettled(
         filesToDownload.map(async (file) => {
@@ -221,25 +281,34 @@ export async function downloadAndInstall(item: MarketplaceItem): Promise<{ succe
         }),
       );
 
+      // Only a manifest is required; every other file is best-effort.
+      const manifestOutcome = new Map<string, string>();
       for (let i = 0; i < results.length; i++) {
         const result = results[i];
         const fileName = filesToDownload[i];
+        const isManifest = (SKILL_MANIFEST_FILES as readonly string[]).includes(fileName);
 
         if (result.status === 'rejected') {
-          // Clean up partial install
-          await rm(installPath, { recursive: true, force: true }).catch(() => {});
-          return { success: false, message: `Download failed for ${fileName}: ${String(result.reason)}` };
+          if (isManifest) manifestOutcome.set(fileName, String(result.reason));
+          continue;
         }
-
         const { file, res } = result.value;
         if (!res.ok) {
-          if (file !== 'skill.json') continue; // only skill.json is strictly required
-          // Clean up partial install
-          await rm(installPath, { recursive: true, force: true }).catch(() => {});
-          return { success: false, message: `Download failed for ${file}: ${res.status} ${res.statusText}` };
+          if (isManifest) manifestOutcome.set(file, `${res.status} ${res.statusText}`.trim());
+          continue;
         }
         const content = Buffer.from(await res.arrayBuffer());
         await writeFile(path.join(installPath, file), content);
+        if (isManifest) manifestOutcome.set(file, 'ok');
+      }
+
+      if (![...manifestOutcome.values()].includes('ok')) {
+        await rm(installPath, { recursive: true, force: true }).catch(() => {});
+        const why = SKILL_MANIFEST_FILES.map((f) => `${f}: ${manifestOutcome.get(f) ?? 'not fetched'}`).join(', ');
+        return {
+          success: false,
+          message: `No skill manifest at ${MARKETPLACE_CONSTANTS.PUBLIC_CDN_BASE}/${assetPath} (${why})`,
+        };
       }
     } else {
       // Archive-based install (premium CDN or local)
@@ -248,7 +317,7 @@ export async function downloadAndInstall(item: MarketplaceItem): Promise<{ succe
       if (!res.ok) {
         // Clean up partial install
         await rm(installPath, { recursive: true, force: true }).catch(() => {});
-        return { success: false, message: `Download failed: ${res.status} ${res.statusText}` };
+        return { success: false, message: `Download failed: ${res.status} ${res.statusText} (${url})` };
       }
 
       const data = Buffer.from(await res.arrayBuffer());
@@ -406,29 +475,36 @@ export async function checkSkillsInstalled(): Promise<{ installed: number; total
  *
  * Downloads and installs each skill sequentially. An optional progress
  * callback is invoked after each skill to allow callers to display progress.
+ * Every failure is returned with the skill and the reason, so callers can
+ * show it: the onboarding wizard used to print only the success count, which
+ * hid 29 of 31 skills failing.
  *
  * @param onProgress - Optional callback invoked with (skillName, currentIndex, totalCount)
- * @returns The number of successfully installed skills
+ * @returns Totals plus one entry per skill that failed
  */
 export async function installAllSkills(
   onProgress?: (name: string, index: number, total: number) => void,
-): Promise<number> {
+): Promise<InstallAllResult> {
   const registry = await fetchRegistry();
   const skills = registry.items.filter((i) => i.type === 'skill');
   let installed = 0;
+  const failed: SkillInstallFailure[] = [];
 
   for (let i = 0; i < skills.length; i++) {
     const skill = skills[i];
-    const result = await downloadAndInstall(skill);
-    if (result.success) {
-      installed++;
+    try {
+      const result = await downloadAndInstall(skill);
+      if (result.success) installed++;
+      else failed.push({ id: skill.id, name: skill.name, message: result.message });
+    } catch (error) {
+      failed.push({ id: skill.id, name: skill.name, message: error instanceof Error ? error.message : String(error) });
     }
     if (onProgress) {
       onProgress(skill.name, i + 1, skills.length);
     }
   }
 
-  return installed;
+  return { total: skills.length, installed, failed };
 }
 
 // ========================= Bundled Skills =========================
