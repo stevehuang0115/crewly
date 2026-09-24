@@ -22,6 +22,7 @@ import {
   ORCHESTRATOR_ROLE,
   RUNTIME_TYPES,
   NON_RECOVERABLE_ERROR_PATTERNS,
+  CLAUDE_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
 import { CREWLY_CONSTANTS, AGENT_TIMEOUTS } from '../../constants.js';
@@ -310,6 +311,8 @@ interface SessionCreationResult {
   success: boolean;
   sessionName?: string;
   error?: string;
+  /** RUNTIME_STARTUP_BLOCKED when retrying cannot help. */
+  errorCode?: string;
 }
 
 /**
@@ -813,8 +816,12 @@ async function _startTeamMemberCore(
 
       lastError = createResult.error;
 
-      // Don't retry non-recoverable errors (e.g. missing CLI binary)
-      if (lastError && NON_RECOVERABLE_ERROR_PATTERNS.some(p => lastError!.includes(p))) {
+      // Don't retry non-recoverable errors (e.g. missing CLI binary, or a
+      // start-up blocked on the user such as Claude Code as root / never set up)
+      if (
+        createResult.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE ||
+        (lastError && NON_RECOVERABLE_ERROR_PATTERNS.some(p => lastError!.includes(p)))
+      ) {
         logger.error('Non-recoverable error detected, skipping retries', { sessionName, lastError });
         break;
       }

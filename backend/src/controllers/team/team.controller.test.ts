@@ -2899,6 +2899,29 @@ describe('Teams Handlers', () => {
       );
     });
 
+    it('does not retry a start-up blocked on the user (e.g. Claude as root): one attempt, message returned', async () => {
+      const blocked = {
+        success: false,
+        error: 'Crewly agents cannot run as root: run Crewly as a normal (non-root) user.',
+        errorCode: 'RUNTIME_STARTUP_BLOCKED',
+      };
+      mockApiContext.agentRegistrationService = {
+        createAgentSession: jest.fn<any>().mockResolvedValue(blocked)
+      } as any;
+
+      await teamsHandlers.startTeamMember.call(
+        mockApiContext,
+        mockRequest as Request,
+        mockResponse as Response
+      );
+
+      expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalledTimes(1);
+      expect(responseMock.status).toHaveBeenCalledWith(500);
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.stringContaining('cannot run as root') })
+      );
+    });
+
     it('should fail after all retry attempts', async () => {
       const mockFailResult = {
         success: false,

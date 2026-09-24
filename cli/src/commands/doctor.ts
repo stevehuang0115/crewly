@@ -18,7 +18,7 @@ import { pathToFileURL } from 'url';
 import chalk from 'chalk';
 import { CREWLY_CONSTANTS } from '../../../config/index.js';
 import { resolvePackageRoot } from '../utils/package-root.js';
-import { checkNativeToolchain } from '../utils/native-toolchain.js';
+import { checkNativeToolchain, isOnPath } from '../utils/native-toolchain.js';
 import { getLingerState } from './service.js';
 
 /** Severity of a doctor line. */
@@ -49,7 +49,30 @@ export interface DoctorDeps {
 	homeDir?: string;
 	/** Linger lookup (Linux only). */
 	lingerState?: () => Promise<'yes' | 'no' | null>;
+	/** Effective user id lookup (defaults to `process.getuid`; absent on Windows). */
+	getuid?: () => number;
+	/** Environment override (defaults to `process.env`). */
+	env?: NodeJS.ProcessEnv;
 }
+
+/**
+ * Fresh-install checks for the Claude Code runtime (Mia's pre-validation,
+ * 2026-09-23): Claude refuses `--dangerously-skip-permissions` as root unless
+ * `IS_SANDBOX=1`, and a never-run Claude stops agents at its theme picker and
+ * login screens. Claude records the finished first run as
+ * `hasCompletedOnboarding: true` in its config file.
+ */
+const CLAUDE_SETUP = {
+	/** Env var that lets Claude accept the permissions flag under root. */
+	SANDBOX_ENV: 'IS_SANDBOX',
+	/** Env var that relocates Claude's config directory. */
+	CONFIG_DIR_ENV: 'CLAUDE_CONFIG_DIR',
+	/** Claude's global config file name (in $HOME, or in CLAUDE_CONFIG_DIR). */
+	CONFIG_FILE: '.claude.json',
+	/** Flag Claude writes once the theme + login first run is done. */
+	ONBOARDED_KEY: 'hasCompletedOnboarding',
+	BIN: 'claude',
+} as const;
 
 /** Native modules whose loadability decides whether Crewly can start. */
 const NATIVE_MODULES = ['node-pty', 'better-sqlite3'] as const;
@@ -64,6 +87,21 @@ const NATIVE_MODULES = ['node-pty', 'better-sqlite3'] as const;
 function defaultTryLoad(moduleName: string, packageRoot: string): void {
 	const req = createRequire(pathToFileURL(path.join(packageRoot, 'package.json')).href);
 	req(moduleName);
+}
+
+/**
+ * Whether Claude Code has finished its first run (theme + login).
+ *
+ * @param configFile - Path to Claude's global config file
+ * @returns True only when the file parses and records a completed onboarding
+ */
+function isClaudeOnboarded(configFile: string): boolean {
+	try {
+		const config = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
+		return config[CLAUDE_SETUP.ONBOARDED_KEY] === true;
+	} catch {
+		return false;
+	}
 }
 
 /**
@@ -99,6 +137,20 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 	// 2. Node
 	checks.push({ name: 'node', status: 'ok', detail: `${process.version} (${process.execPath}, ${process.platform}-${process.arch})` });
 
+	// 2b. User — Claude Code agents cannot launch as root
+	const env = deps.env ?? process.env;
+	const uid = (deps.getuid ?? process.getuid)?.();
+	if (uid === 0 && env[CLAUDE_SETUP.SANDBOX_ENV] !== '1') {
+		checks.push({
+			name: 'user',
+			status: 'fail',
+			detail: 'running as root — Claude Code refuses to start agents under root/sudo',
+			hint: 'Run Crewly as a normal (non-root) user.',
+		});
+	} else {
+		checks.push({ name: 'user', status: 'ok', detail: uid === 0 ? `root, allowed by ${CLAUDE_SETUP.SANDBOX_ENV}=1` : 'not root' });
+	}
+
 	// 3. Native modules
 	const tryLoad = deps.tryLoad ?? defaultTryLoad;
 	for (const mod of NATIVE_MODULES) {
@@ -128,6 +180,23 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 			detail: `missing ${toolchain.missing.join(', ')} — node-pty ${needsBuild ? 'cannot be compiled' : 'cannot be rebuilt on upgrade'}`,
 			hint: toolchain.installHint,
 		});
+	}
+
+	// 4b. Claude Code first run (only when claude is installed; other runtimes are fine)
+	const which = deps.which ?? isOnPath;
+	if (which(CLAUDE_SETUP.BIN)) {
+		const configDir = env[CLAUDE_SETUP.CONFIG_DIR_ENV] || homeDir;
+		const configFile = path.join(configDir, CLAUDE_SETUP.CONFIG_FILE);
+		if (isClaudeOnboarded(configFile)) {
+			checks.push({ name: 'claude', status: 'ok', detail: 'first-run setup done' });
+		} else {
+			checks.push({
+				name: 'claude',
+				status: 'warn',
+				detail: 'installed but never set up — Claude agents will stop at its theme and login screens',
+				hint: 'Run `claude` once in a terminal, choose a theme and log in, then start the team.',
+			});
+		}
 	}
 
 	// 5. Service environment

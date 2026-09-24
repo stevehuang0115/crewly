@@ -2,7 +2,8 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
+import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, CLAUDE_STARTUP_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
+import { RuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
 import { delay } from '../../utils/async.utils.js';
 
 /**
@@ -53,6 +54,58 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 	}
 
 	/**
+	 * Fail fast when Crewly runs as root: Claude Code refuses
+	 * --dangerously-skip-permissions under root/sudo, which Crewly always
+	 * passes, so the agent would never launch and start-up would hang until
+	 * every timeout expired. IS_SANDBOX=1 is Claude's own "sandboxed" switch
+	 * that allows the flag as root (containers), so root is fine then.
+	 *
+	 * @throws RuntimeStartupBlockedError (reason `root_user`) when running as root
+	 */
+	assertCanLaunch(): void {
+		const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+		const sandboxed = process.env[CLAUDE_STARTUP_CONSTANTS.SANDBOX_ENV] === '1';
+		if (uid === 0 && !sandboxed) {
+			throw new RuntimeStartupBlockedError('root_user', CLAUDE_STARTUP_CONSTANTS.MESSAGES.ROOT);
+		}
+	}
+
+	/**
+	 * Refuse to launch Claude Code in a state it cannot start from (root), then
+	 * run the normal initialization script.
+	 *
+	 * @throws RuntimeStartupBlockedError when running as root without IS_SANDBOX=1
+	 */
+	async executeRuntimeInitScript(
+		sessionName: string,
+		targetPath?: string,
+		runtimeFlags?: string[],
+		promptFilePath?: string,
+		agentName?: string,
+		resumeSessionId?: string
+	): Promise<void> {
+		this.assertCanLaunch();
+		return super.executeRuntimeInitScript(sessionName, targetPath, runtimeFlags, promptFilePath, agentName, resumeSessionId);
+	}
+
+	/**
+	 * Classify terminal output that means Claude Code cannot become ready
+	 * without the user: the root refusal, or the first-run theme picker.
+	 *
+	 * @param output - Terminal output text
+	 * @returns The blocking error to throw, or null
+	 */
+	private detectStartupBlocked(output: string): RuntimeStartupBlockedError | null {
+		if (output.includes(CLAUDE_STARTUP_CONSTANTS.ROOT_REFUSAL_MARKER)) {
+			return new RuntimeStartupBlockedError('root_user', CLAUDE_STARTUP_CONSTANTS.MESSAGES.ROOT);
+		}
+		if (CLAUDE_STARTUP_CONSTANTS.FIRST_RUN_MARKERS.some((m) => output.includes(m))) {
+			return new RuntimeStartupBlockedError('first_run_setup', CLAUDE_STARTUP_CONSTANTS.MESSAGES.FIRST_RUN);
+		}
+		return null;
+	}
+
+	/**
 	 * Detect the Claude Code workspace trust prompt in terminal output.
 	 *
 	 * Claude Code shows "Is this a project you trust?" on first launch
@@ -79,6 +132,11 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 	 * Claude Code shows an interactive trust gate on first launch for
 	 * untrusted workspaces. Without auto-acceptance, the agent hangs
 	 * and enters a crash-restart loop.
+	 *
+	 * States the user must resolve (root refusal, first-run theme picker) are
+	 * detected before the ready patterns and fail fast.
+	 *
+	 * @throws RuntimeStartupBlockedError when start-up is blocked on the user
 	 */
 	async waitForRuntimeReady(
 		sessionName: string,
@@ -97,6 +155,18 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		while (Date.now() - startTime < timeout) {
 			try {
 				const output = this.sessionHelper.capturePane(sessionName);
+
+				// Root refusal / first-run setup: nothing can resolve these by
+				// waiting, so fail fast with an actionable error.
+				const blocked = this.detectStartupBlocked(output);
+				if (blocked) {
+					this.logger.error('Claude Code start-up blocked on the user', {
+						sessionName,
+						reason: blocked.reason,
+						totalElapsed: Date.now() - startTime,
+					});
+					throw blocked;
+				}
 
 				// #144: Auto-accept workspace trust prompt
 				if (this.isClaudeTrustPrompt(output)) {
@@ -131,6 +201,7 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 					return false;
 				}
 			} catch (error) {
+				if (error instanceof RuntimeStartupBlockedError) throw error;
 				this.logger.warn('Error checking Claude Code ready state', {
 					sessionName,
 					error: String(error),
