@@ -88,6 +88,9 @@ import {
   copyTemplateProjectFiles,
   printSummary,
   onboardCommand,
+  isInteractiveInput,
+  reportNonInteractiveInput,
+  WizardInputClosedError,
   type ProviderChoice,
 } from './onboard.js';
 
@@ -144,11 +147,22 @@ function mockJqFound(): void {
 // Tests
 // ---------------------------------------------------------------------------
 
+/** Original stdin TTY descriptor, restored after each test. */
+const originalStdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+
+/** Make process.stdin look like a terminal (true) or a pipe (false). */
+function setStdinIsTTY(value: boolean): void {
+  Object.defineProperty(process.stdin, 'isTTY', { value, configurable: true, writable: true });
+}
+
 describe('onboard command', () => {
   let logSpy: jest.SpyInstance;
   let exitSpy: jest.SpyInstance;
 
   beforeEach(() => {
+    // The interactive wizard requires a terminal; jest's stdin is not one.
+    setStdinIsTTY(true);
+    process.exitCode = 0;
     logSpy = jest.spyOn(console, 'log').mockImplementation();
     exitSpy = jest.spyOn(process, 'exit').mockImplementation((() => {
       throw new Error('process.exit called');
@@ -171,6 +185,12 @@ describe('onboard command', () => {
   afterEach(() => {
     logSpy.mockRestore();
     exitSpy.mockRestore();
+    if (originalStdinIsTTY) {
+      Object.defineProperty(process.stdin, 'isTTY', originalStdinIsTTY);
+    } else {
+      delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
+    process.exitCode = 0;
   });
 
   // -----------------------------------------------------------------------
@@ -916,6 +936,83 @@ describe('onboard command', () => {
 
       // Should have called scaffoldCrewlyDirectory (which calls mkdirSync)
       expect(mockMkdirSync).toHaveBeenCalled();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Non-interactive stdin (#772: `curl | bash` exited 0 having set up nothing)
+  // -----------------------------------------------------------------------
+
+  describe('onboardCommand without a terminal (#772)', () => {
+    beforeEach(() => {
+      mockRlClose.mockReset();
+      mockListTemplates.mockReturnValue([]);
+      mockExistsSync.mockReturnValue(false);
+    });
+
+    it('isInteractiveInput is true only for a TTY', () => {
+      expect(isInteractiveInput({ isTTY: true })).toBe(true);
+      expect(isInteractiveInput({ isTTY: false })).toBe(false);
+      expect(isInteractiveInput({})).toBe(false);
+    });
+
+    it('refuses with the next command and a non-zero exit code when stdin is a pipe', async () => {
+      setStdinIsTTY(false);
+
+      await onboardCommand();
+
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('needs a terminal');
+      expect(output).toContain('Nothing was set up');
+      expect(output).toContain('crewly onboard');
+      expect(output).toContain('crewly init --yes');
+      expect(output).not.toContain('Setup complete');
+      expect(process.exitCode).toBe(1);
+      // Nothing was written: no prompt, no skills, no scaffold
+      expect(mockCheckSkillsInstalled).not.toHaveBeenCalled();
+      expect(mockMkdirSync).not.toHaveBeenCalled();
+    });
+
+    it('still runs --yes without a terminal', async () => {
+      setStdinIsTTY(false);
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
+      mockJqFound();
+      mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
+        .mockReturnValueOnce(Buffer.from('1.0.17'));
+
+      await onboardCommand({ yes: true });
+
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('Setup complete');
+      expect(process.exitCode).toBe(0);
+      // The --yes readline interface is closed so stdin cannot hold the process open
+      expect(mockRlClose).toHaveBeenCalled();
+    });
+
+    it('says setup did not finish (not "nothing was set up") when the input closes mid-wizard', () => {
+      reportNonInteractiveInput('The setup wizard\'s input closed before setup finished.', true);
+
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('Setup did not finish');
+      expect(output).not.toContain('Nothing was set up');
+      expect(output).toContain('crewly onboard');
+      expect(process.exitCode).toBe(1);
+    });
+
+    it('rejects a pending question with WizardInputClosedError when the input closes', async () => {
+      const emitter = new EventEmitter();
+      const rl = {
+        question: jest.fn(),
+        close: jest.fn(),
+        on: emitter.on.bind(emitter),
+        removeListener: emitter.removeListener.bind(emitter),
+      } as unknown as import('readline').Interface;
+
+      const pending = selectProvider(rl);
+      emitter.emit('close');
+
+      await expect(pending).rejects.toBeInstanceOf(WizardInputClosedError);
     });
   });
 
