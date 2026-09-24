@@ -156,27 +156,6 @@ export const BROWSER_BRIDGE_CONSTANTS = {
 	 * Crewly tab this backend did not create (it may be another client's).
 	 */
 	RECONCILE_CLOSE_REASON_OWN_UNBOUND: 'own_unbound_tab',
-	/**
-	 * Oldest Crewly in Chrome version that implements `bindTab` (per-agent
-	 * tabs landed in extension 0.4.14, commit b91b1a3). Older extensions reply
-	 * "Unknown tool: bindTab"; the backend then fails with EXTENSION_OUTDATED
-	 * instead of falling back to the user's active tab.
-	 */
-	MIN_EXTENSION_VERSION_PER_TAB: '0.4.14',
-	/** Error code for an extension too old to support per-agent tabs. */
-	EXTENSION_OUTDATED_CODE: 'EXTENSION_OUTDATED',
-	/**
-	 * HTTP status for EXTENSION_OUTDATED: 426 Upgrade Required. The request
-	 * cannot succeed until the extension is upgraded, and retrying will not help.
-	 */
-	EXTENSION_OUTDATED_HTTP_STATUS: 426,
-	/**
-	 * Prefix of the extension's reply to a tool it does not implement:
-	 * `Unknown tool: <tool>` (chrome-extension src/background.ts, all versions).
-	 */
-	UNKNOWN_TOOL_REPLY_PREFIX: 'Unknown tool: ',
-	/** Longest extension version string recorded from an identity message. */
-	MAX_EXTENSION_VERSION_LENGTH: 32,
 	/** Longest agent goal forwarded to the extension banner and the live view. */
 	MAX_AGENT_GOAL_LENGTH: 200,
 } as const;
