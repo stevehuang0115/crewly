@@ -34,6 +34,12 @@ jest.mock('ws', () => {
 	};
 });
 
+jest.mock('../cloud/device-identity.service.js', () => ({
+	DeviceIdentityService: {
+		getInstance: () => ({ getDeviceId: async () => 'device-this-backend' }),
+	},
+}));
+
 jest.mock('../core/logger.service.js', () => ({
 	LoggerService: {
 		getInstance: () => ({
@@ -775,6 +781,111 @@ describe('BrowserBridgeService — per-tab dispatch', () => {
 			const evicted = await bridge.runSweepOnce();
 			expect(evicted).toBe(0);
 			expect(bridge.listBindings()).toHaveLength(1);
+		});
+	});
+
+	// -------------------------------------------------------------------------
+	// Several browsers / backends on one Cloud account (incident 2026-09-23)
+	// -------------------------------------------------------------------------
+
+	describe('bindings are judged only against their own browser', () => {
+		it('records the relay instance a tab was bound on', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 }, instanceId: 'inst-A' },
+			]);
+
+			await bridge.bindAgentTab('agent-A');
+
+			expect(bridge.getBinding('agent-A')?.instanceId).toBe('inst-A');
+		});
+
+		it("keeps a binding when another browser's inventory lacks its tab", async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 }, instanceId: 'inst-A' },
+			]);
+			await bridge.bindAgentTab('agent-A');
+
+			bridge.handleTabInventory([{ tabId: 7, crewlyOwned: false }], 'inst-B');
+
+			expect(bridge.getBinding('agent-A')?.tabId).toBe(42);
+		});
+
+		it("drops a binding when its own browser's inventory lacks the tab", async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 }, instanceId: 'inst-A' },
+			]);
+			await bridge.bindAgentTab('agent-A');
+
+			bridge.handleTabInventory([{ tabId: 7, crewlyOwned: false }], 'inst-A');
+
+			expect(bridge.getBinding('agent-A')).toBeUndefined();
+		});
+
+		it('leaves a direct-socket binding alone for a relay inventory, and vice versa', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [
+				{ id: 'b1', success: true, result: { tabId: 42 } },
+				{ id: 'b2', success: true, result: { tabId: 43 }, instanceId: 'inst-A' },
+			]);
+			await bridge.bindAgentTab('agent-direct');
+			await bridge.bindAgentTab('agent-relay');
+
+			bridge.handleTabInventory([], 'inst-A');
+			expect(bridge.getBinding('agent-direct')?.tabId).toBe(42);
+			expect(bridge.getBinding('agent-relay')).toBeUndefined();
+
+			bridge.handleTabInventory([]);
+			expect(bridge.getBinding('agent-direct')).toBeUndefined();
+		});
+	});
+
+	describe('clientId on commands', () => {
+		it('resolves this backend device id as the clientId', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			await expect(bridge.getClientId()).resolves.toBe('device-this-backend');
+		});
+
+		it('sends the clientId with a command over a direct socket', async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			const send = jest.fn();
+			(bridge as unknown as { clients: Map<string, unknown> }).clients.set('c1', {
+				id: 'c1',
+				ws: { readyState: 1, send },
+				connectedAt: new Date(),
+			});
+
+			void bridge.sendCommand('readText', { tabId: 5 }, 50).catch(() => undefined);
+			await new Promise((r) => setTimeout(r, 10));
+
+			expect(send).toHaveBeenCalledTimes(1);
+			const sent = JSON.parse(send.mock.calls[0][0] as string) as Record<string, unknown>;
+			expect(sent).toMatchObject({ tool: 'readText', clientId: 'device-this-backend' });
+		});
+
+		it("sends the clientId on the direct socket's orphan close, so the extension does not refuse our own sweep", async () => {
+			const bridge = BrowserBridgeService.getInstance();
+			stubSendCommand(bridge, [{ id: 'b1', success: true, result: { tabId: 42 } }]);
+			await bridge.bindAgentTab('agent-A');
+			await bridge.unbindAgentTab('agent-A', { closeTab: false });
+			await bridge.getClientId();
+			const send = jest.fn();
+			(bridge as unknown as { clients: Map<string, unknown> }).clients.set('c1', {
+				id: 'c1',
+				ws: { readyState: 1, send },
+				connectedAt: new Date(),
+			});
+
+			(bridge as unknown as { handleMessage: (id: string, data: unknown) => void }).handleMessage(
+				'c1',
+				JSON.stringify({ type: 'tabInventory', tabs: [{ tabId: 42, crewlyOwned: true }] }),
+			);
+
+			const frames = send.mock.calls.map((c) => JSON.parse(c[0] as string) as Record<string, unknown>);
+			const close = frames.find((f) => f.tool === 'unbindTab');
+			expect(close).toMatchObject({ params: { tabId: 42 }, clientId: 'device-this-backend' });
 		});
 	});
 });

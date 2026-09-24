@@ -62,6 +62,12 @@ export interface BrowserCommand {
 	params?: Record<string, unknown>;
 	/** Name of the agent sending this command (displayed in extension banner) */
 	agentName?: string;
+	/**
+	 * This backend's stable device id. The extension records it as the owner
+	 * of tabs bound by this backend and refuses commands naming them from any
+	 * other client (extension >= 0.4.20).
+	 */
+	clientId?: string;
 }
 
 /** Response from Chrome Extension */
@@ -74,6 +80,11 @@ export interface BrowserCommandResponse {
 	result?: unknown;
 	/** Error message on failure */
 	error?: string;
+	/**
+	 * Browser instance that answered, when the command went over the relay.
+	 * Set by BrowserProxyService, never by the extension.
+	 */
+	instanceId?: string;
 }
 
 /** Status information about the Crewly in Chrome bridge */
@@ -106,6 +117,12 @@ export interface AgentTabBinding {
 	tabId: number;
 	/** Window id the tab lives in (tracked for cross-window heuristics). */
 	windowId?: number;
+	/**
+	 * Relay browser instance the tab lives in; undefined when bound over a
+	 * direct WS socket. Reconcile only judges a binding against inventories
+	 * from this same instance.
+	 */
+	instanceId?: string;
 	/** Wall-clock time when the binding was first established. */
 	boundAt: Date;
 	/** Wall-clock time of the last command that touched this binding. Reset on activity. */
@@ -171,6 +188,9 @@ export class BrowserBridgeService {
 	 */
 	private ownedTabIds: Set<number> = new Set();
 
+	/** This backend's device id, sent as `clientId` with every command. Cached once resolved. */
+	private clientId: string | null = null;
+
 	/** Periodic timer that evicts idle bindings (§4.2). Only running while attached. */
 	private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -215,6 +235,8 @@ export class BrowserBridgeService {
 	 * @param httpServer - The HTTP server to attach to
 	 */
 	attach(httpServer: HttpServer): void {
+		// Resolve now: the orphan sweep sends from a sync handler and reads the cache.
+		void this.getClientId();
 		if (this.wss) {
 			this.logger.warn('WebSocket server already attached');
 			return;
@@ -349,7 +371,13 @@ export class BrowserBridgeService {
 						try {
 							const id = `cmd-orphan-${++this.commandCounter}-${Date.now()}`;
 							client.ws.send(
-								JSON.stringify({ id, tool: 'unbindTab', params: { tabId } })
+								JSON.stringify({
+									id,
+									tool: 'unbindTab',
+									params: { tabId },
+									// Without it the extension refuses to close a tab this backend owns.
+									...(this.clientId ? { clientId: this.clientId } : {}),
+								})
 							);
 						} catch (err) {
 							this.logger.warn('Failed to send orphan unbindTab', {
@@ -432,6 +460,8 @@ export class BrowserBridgeService {
 
 		const id = `cmd-${++this.commandCounter}-${Date.now()}`;
 		const command: BrowserCommand = { id, tool, params };
+		const clientId = await this.getClientId();
+		if (clientId) command.clientId = clientId;
 		if (agentName) {
 			command.agentName = agentName;
 		}
@@ -457,6 +487,25 @@ export class BrowserBridgeService {
 	// -------------------------------------------------------------------------
 	// Per-tab dispatch (§3.2 — 1 agent : 1 tab binding)
 	// -------------------------------------------------------------------------
+
+	/**
+	 * This backend's device id, sent as `clientId` so the extension can tell
+	 * this backend's tabs from another backend's on the same account.
+	 *
+	 * @returns The device id, or undefined when it cannot be resolved
+	 */
+	async getClientId(): Promise<string | undefined> {
+		if (this.clientId) return this.clientId;
+		try {
+			const { DeviceIdentityService } = await import('../cloud/device-identity.service.js');
+			this.clientId = await DeviceIdentityService.getInstance().getDeviceId();
+		} catch (err) {
+			this.logger.debug('Could not resolve clientId for browser commands (non-fatal)', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		}
+		return this.clientId ?? undefined;
+	}
 
 	/**
 	 * Look up the current binding for an agent session, if any. Read-only —
@@ -535,6 +584,7 @@ export class BrowserBridgeService {
 			agentSession,
 			tabId: result.tabId,
 			windowId: result.windowId,
+			...(response.instanceId ? { instanceId: response.instanceId } : {}),
 			boundAt: new Date(),
 			lastActivityAt: new Date(),
 		};
@@ -692,13 +742,19 @@ export class BrowserBridgeService {
 	 *   clients share one Crewly tab group). After a backend restart this
 	 *   leaves our own stray tabs open, which is the safe direction.
 	 *
+	 * A binding is only judged against an inventory from its own browser
+	 * instance (`instanceId`); undefined on both sides means the direct-WS path.
+	 *
 	 * Caller is responsible for actually sending the close commands; this
 	 * method returns the orphan list rather than firing `unbindTab` itself
 	 * to keep the function pure-ish and easier to test.
 	 *
 	 * @returns Orphan tabs the caller should close.
 	 */
-	handleTabInventory(extensionTabs: ExtensionTabDescriptor[]): { orphans: number[] } {
+	handleTabInventory(
+		extensionTabs: ExtensionTabDescriptor[],
+		instanceId?: string,
+	): { orphans: number[] } {
 		const extensionTabIds = new Set(
 			extensionTabs.filter((t) => typeof t.tabId === 'number').map((t) => t.tabId)
 		);
@@ -708,6 +764,10 @@ export class BrowserBridgeService {
 
 		// Drop stale bindings.
 		for (const [agentSession, binding] of this.agentTabBindings) {
+			// An inventory only speaks for the browser that sent it. With several
+			// browsers on one account, a tab missing from browser B's list says
+			// nothing about a binding that lives in browser A.
+			if (binding.instanceId !== instanceId) continue;
 			if (!extensionTabIds.has(binding.tabId)) {
 				this.agentTabBindings.delete(agentSession);
 				this.logger.info('Binding cleared (tab missing from Extension inventory)', {

@@ -524,7 +524,12 @@ fi
 # 404 with `tab_not_found` indicates our cached tabId is stale (Extension
 # closed the tab while we weren't looking). Purge cache and retry the call
 # WITHOUT a cached tabId so the backend auto-binds a fresh one.
+#
+# Only for a CACHED tabId. A tab the caller named with --tab-id must be
+# honoured or the call fails: retrying elsewhere would quietly answer about a
+# different tab than the one asked about.
 if [ "$RESPONSE_EXIT" -ne 0 ] \
+   && [ -z "$TAB_ID" ] \
    && [ -n "$STDERR_CAPTURE" ] \
    && printf '%s' "$STDERR_CAPTURE" | grep -q '"status":404' \
    && printf '%s' "$STDERR_CAPTURE" | grep -q 'tab_not_found' \

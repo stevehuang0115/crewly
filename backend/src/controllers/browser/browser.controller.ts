@@ -9,7 +9,7 @@
  */
 
 import type { Request, Response } from 'express';
-import { BrowserBridgeService } from '../../services/browser/browser-bridge.service.js';
+import { BrowserBridgeService, type BrowserCommandResponse } from '../../services/browser/browser-bridge.service.js';
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
@@ -231,6 +231,53 @@ function resolveAndAuthorizeTabId(
 }
 
 /**
+ * Classify an extension failure that has a precise HTTP meaning.
+ *
+ * The extension answers a refused or impossible command with
+ * `{ success: false, error }` over a transport that has no status codes, and
+ * the controller used to pass that through as a 200. Two failures matter to
+ * callers:
+ * - the tab belongs to another Crewly connection on the account (extension
+ *   >= 0.4.20 refuses with `tab_owned_by_other_client`) → 403
+ * - the named tab is gone (extension >= 0.4.19 fails instead of falling back
+ *   to another tab; Chrome says "No tab with id") → 404 `tab_not_found`,
+ *   which the remote-browser skill answers by dropping its cached tab and
+ *   binding a fresh one.
+ *
+ * @param result - The extension's response
+ * @returns The code and status, or null when the result passes through as-is
+ */
+export function classifyExtensionFailure(
+	result: BrowserCommandResponse,
+): { code: 'tab_owned_by_other_client' | 'tab_not_found'; status: number } | null {
+	if (result.success !== false || typeof result.error !== 'string') return null;
+	if (/tab_owned_by_other_client/.test(result.error)) {
+		return { code: 'tab_owned_by_other_client', status: 403 };
+	}
+	if (/no longer exists|No tab with id/i.test(result.error)) {
+		return { code: 'tab_not_found', status: 404 };
+	}
+	return null;
+}
+
+/**
+ * Write an extension response, with a real status for the failures
+ * {@link classifyExtensionFailure} recognises. The body is unchanged apart
+ * from an added `code`, so callers reading `error` still see the message.
+ *
+ * @param res - Express response
+ * @param result - The extension's response
+ */
+function sendExtensionResult(res: Response, result: BrowserCommandResponse): void {
+	const failure = classifyExtensionFailure(result);
+	if (failure) {
+		res.status(failure.status).json({ ...result, code: failure.code });
+		return;
+	}
+	res.json(result);
+}
+
+/**
  * Helper: send a tool command to the Chrome Extension and return the result.
  *
  * Tries three paths in order:
@@ -304,7 +351,7 @@ async function sendToolCommand(
 		try {
 			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
-			res.json(result);
+			sendExtensionResult(res, result);
 			return;
 		} catch (err) {
 			errors.push(`proxy(instance=${instance}): ${(err as Error).message}`);
@@ -320,7 +367,7 @@ async function sendToolCommand(
 				? await bridge.sendCommandForAgent(agentSession, tool, params, timeoutMs, agentName)
 				: await bridge.sendCommand(tool, params, timeoutMs, agentName);
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
-			res.json(result);
+			sendExtensionResult(res, result);
 			return;
 		} catch (err) {
 			errors.push(`direct-ws: ${(err as Error).message}`);
@@ -333,7 +380,7 @@ async function sendToolCommand(
 		try {
 			const result = await proxy.sendCommand(tool, params, instance, timeoutMs, agentName, agentSession);
 			noteBrowserSessionAction(agentSession, tool, params, agentName, req);
-			res.json(result);
+			sendExtensionResult(res, result);
 			return;
 		} catch (err) {
 			errors.push(`proxy-relay: ${(err as Error).message}`);

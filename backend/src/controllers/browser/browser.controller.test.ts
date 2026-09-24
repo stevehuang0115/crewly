@@ -11,6 +11,7 @@
 import express from 'express';
 import request from 'supertest';
 import { createBrowserRouter } from './browser.routes.js';
+import { classifyExtensionFailure } from './browser.controller.js';
 import {
 	BrowserBridgeService,
 	type BrowserCommandResponse,
@@ -912,5 +913,103 @@ describe('live browser view endpoints', () => {
 
 		const missing = await request(setup()).post('/api/browser/sessions/nobody/stop');
 		expect(missing.status).toBe(404);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Extension refusals get real statuses (incident 2026-09-23)
+// ---------------------------------------------------------------------------
+
+describe('classifyExtensionFailure', () => {
+	const fail = (error: string) => ({ id: 'x', success: false, error });
+
+	it('maps another connection owning the tab to 403', () => {
+		expect(
+			classifyExtensionFailure(
+				fail('tab_owned_by_other_client: tab 5 belongs to another Crewly connection on this account'),
+			),
+		).toEqual({ code: 'tab_owned_by_other_client', status: 403 });
+	});
+
+	it('maps a closed tab to 404 tab_not_found, in both wordings', () => {
+		expect(classifyExtensionFailure(fail('Tab 5 no longer exists. Bind a new tab instead of reusing this tabId.')))
+			.toEqual({ code: 'tab_not_found', status: 404 });
+		expect(classifyExtensionFailure(fail('No tab with id: 5.'))).toEqual({ code: 'tab_not_found', status: 404 });
+	});
+
+	it('passes everything else through', () => {
+		expect(classifyExtensionFailure(fail('Detached while handling command.'))).toBeNull();
+		expect(classifyExtensionFailure({ id: 'x', success: true, result: {} })).toBeNull();
+	});
+});
+
+describe('Browser Controller — extension refusal statuses', () => {
+	let app: express.Application;
+
+	beforeEach(() => {
+		jest.restoreAllMocks();
+		BrowserBridgeService.resetInstance();
+		app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+	});
+
+	afterEach(() => {
+		BrowserBridgeService.resetInstance();
+	});
+
+	it('answers 403 when the extension says the tab is another connection’s', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		jest.spyOn(bridge, 'isConnected').mockReturnValue(true);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockResolvedValue({
+			id: 'r',
+			success: false,
+			error: 'tab_owned_by_other_client: tab 5 belongs to another Crewly connection on this account',
+		});
+
+		const res = await request(app)
+			.post('/api/browser/read-text')
+			.set('X-Agent-Session', 'agent-A')
+			.send({ tabId: 5 });
+
+		expect(res.status).toBe(403);
+		expect(res.body.code).toBe('tab_owned_by_other_client');
+		expect(res.body.error).toMatch(/another Crewly connection/);
+	});
+
+	it('answers 404 tab_not_found when the named tab is gone, so the skill can rebind', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		jest.spyOn(bridge, 'isConnected').mockReturnValue(true);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockResolvedValue({
+			id: 'r',
+			success: false,
+			error: 'No tab with id: 5.',
+		});
+
+		const res = await request(app)
+			.post('/api/browser/read-text')
+			.set('X-Agent-Session', 'agent-A')
+			.send({ tabId: 5 });
+
+		expect(res.status).toBe(404);
+		expect(res.body.code).toBe('tab_not_found');
+	});
+
+	it('still answers 200 for an ordinary extension failure', async () => {
+		const bridge = BrowserBridgeService.getInstance();
+		jest.spyOn(bridge, 'isConnected').mockReturnValue(true);
+		jest.spyOn(bridge, 'sendCommandForAgent').mockResolvedValue({
+			id: 'r',
+			success: false,
+			error: 'Element not found: #a',
+		});
+
+		const res = await request(app)
+			.post('/api/browser/click')
+			.set('X-Agent-Session', 'agent-A')
+			.send({ selector: '#a' });
+
+		expect(res.status).toBe(200);
+		expect(res.body.success).toBe(false);
 	});
 });
