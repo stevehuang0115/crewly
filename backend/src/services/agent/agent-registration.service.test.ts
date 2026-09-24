@@ -5000,3 +5000,12 @@ describe('AgentRegistrationService — a prompt on screen is not the end of a tu
 		await expect(probe(svc, 'flopost-pia')).resolves.toBe(false);
 	});
 });
+
+describe('messageDedupKey (#128 duplicate guard)', () => {
+	it('tells apart two messages that share a long common header (2026-09-22: owner question to Sam dropped)', () => {
+		const header = '[CHAT:4c090d56-0e5c-4efe-a60f-102179761f67] <UG94JLNGK@#C0C2QCGE9K9>\n\n之前的对话:\n' + 'x'.repeat(250);
+		const { messageDedupKey } = jest.requireActual('./agent-registration.service.js') as typeof import('./agent-registration.service.js');
+		expect(messageDedupKey(`${header}\n存wiki那个去另一个thread`)).not.toBe(messageDedupKey(`${header}\n你说的这几个PR都是干什么的`));
+		expect(messageDedupKey('same')).toBe(messageDedupKey('same'));
+	});
+});

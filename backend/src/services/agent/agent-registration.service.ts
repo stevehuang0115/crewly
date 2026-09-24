@@ -1,3 +1,4 @@
+import { createHash } from 'crypto';
 import * as path from 'path';
 import * as os from 'os';
 import { readFile, readdir, stat, mkdir, writeFile, access } from 'fs/promises';
@@ -173,6 +174,16 @@ export function validateAgentRole(role: unknown, context?: string): asserts role
  * - Reliable message delivery to Claude Code with retry logic
  * - Health checking and status management
  */
+/**
+ * Key for the duplicate-write guard (#128): a hash of the whole message.
+ *
+ * @param message - Text written to the agent
+ * @returns sha1 hex of the full text
+ */
+export function messageDedupKey(message: string): string {
+	return createHash('sha1').update(message).digest('hex');
+}
+
 export class AgentRegistrationService {
 	private logger: ComponentLogger;
 	private _sessionHelper: SessionCommandHelper | null = null;
@@ -4747,7 +4758,12 @@ Loop until done, blocked, or explicitly reassigned:
 					if (hasSpinner) {
 						// Hash-based dedup: if the same message was recently sent
 						// and the agent is processing, it's very likely our message.
-						const msgHash = message.substring(0, 200);
+						// Whole message, not its first 200 characters: every chat
+						// delivery starts with the same header and "之前的对话"
+						// context block, so two different messages from one
+						// conversation matched and the second was dropped while
+						// reported as sent (2026-09-22: the owner's question to Sam).
+						const msgHash = messageDedupKey(message);
 						const lastSent = this.lastSentMessageHash.get(sessionName);
 						const isRecentDuplicate = lastSent
 							&& lastSent.hash === msgHash
@@ -4825,7 +4841,7 @@ Loop until done, blocked, or explicitly reassigned:
 
 				// Track message hash for deduplication on retry (#128)
 				this.lastSentMessageHash.set(sessionName, {
-					hash: message.substring(0, 200),
+					hash: messageDedupKey(message),
 					sentAt: Date.now(),
 				});
 
