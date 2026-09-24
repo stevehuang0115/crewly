@@ -146,6 +146,7 @@ import { FissionGuardService, type FissionDataProvider, type BudgetChecker, crea
 import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
+import { sessionsWithWorkInHand, type RestoreWorkItem } from './services/agent/restore-filter.js';
 import { ProjectMemoryService } from './services/memory/project-memory.service.js';
 import { TaskHistorySubscriber } from './services/memory/task-history.subscriber.js';
 import {
@@ -3198,19 +3199,15 @@ void (async () => {
 			try {
 				const pool = TaskPoolService.getInstance();
 				const allItems = await pool.getAllItems();
-				const targetedSessions = new Set<string>();
-				for (const wi of allItems) {
-					if (wi.status === 'done' || wi.status === 'cancelled') continue;
-					const t = (wi as { target?: string }).target;
-					if (typeof t === 'string' && t.length > 0) targetedSessions.add(t);
-				}
+				// Work in hand only: active statuses, touched recently (see restore-filter).
+				const targetedSessions = sessionsWithWorkInHand(allItems as RestoreWorkItem[]);
 				const filtered = baselineSessions.filter((s) => targetedSessions.has(s.name));
 				const skipped = baselineSessions
 					.filter((s) => !targetedSessions.has(s.name))
 					.map((s) => s.name);
 				if (skipped.length > 0) {
 					this.logger.info(
-						'Skipping auto-restore for sessions with no pending WorkItem (idle agents stay dead until dispatched work arrives)',
+						'Skipping auto-restore for sessions with no work in hand (idle agents stay down until work or a message wakes them)',
 						{
 							skippedCount: skipped.length,
 							skipped: skipped.slice(0, 20),
