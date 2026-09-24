@@ -23,6 +23,14 @@ import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sani
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
 import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
+import {
+  appendTicketLine,
+  chatV2ConversationRef,
+  chatV2ThreadRef,
+  intakeWithin,
+  ticketOfOutcome,
+} from '../../services/v3/ticket-channel-hooks.js';
 import { getSessionBackendSync } from '../../services/session/session-backend.factory.js';
 import { LoggerService, ComponentLogger } from '../../services/core/logger.service.js';
 import type { MessageQueueService } from '../../services/messaging/message-queue.service.js';
@@ -116,36 +124,29 @@ export async function sendMessage(
     const chatService = getChatService();
     const result = await chatService.sendMessage(input);
 
-    // V3 Request creation — fire-and-forget, never blocks the response
-    setImmediate(async () => {
-      try {
-        const { RequestService } = await import('../../services/v3/request.service.js');
-        const requestSvc = RequestService.getInstance();
-        // Deduplicate: one Request per conversation message
-        const existing = await requestSvc.findBySourceConversationItemId(result.message.id);
-        if (!existing) {
-          const { generateRequestTitle, classifyIntent } = await import('../../services/v3/v3-data.service.js');
-          const { intentLevel, intentCategory } = classifyIntent(content);
-          const request = await requestSvc.create({
-            title: generateRequestTitle(content, intentCategory),
-            description: content,
-            sourceConversationItemId: result.message.id,
-            priority: 'normal',
-            tags: ['chat-ui'],
-            intentLevel,
-            intentCategory,
-          });
-          // P2-2: RequestTracker.setActiveRequest write removed. The
-          // companion read in v3-data.service.ts no longer falls back to
-          // time-window correlation, so writing here would be dead code.
-          logger.debug('V3 Request created from chat message', { messageId: result.message.id, requestId: request.id });
-        }
-      } catch (err) {
-        logger.warn('V3 Request creation failed (non-critical)', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    });
+    // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
+    // the single intake — which may open a ticket (receipt posted in this
+    // conversation), join an open one, or be ignored. Only the owner files
+    // tickets: an agent posting here (X-Agent-Session) never does. Bounded
+    // wait; the message is forwarded either way.
+    const ticket = ticketOfOutcome(
+      await intakeWithin(getTicketIntakeService(), {
+        text: content,
+        isOwner: !agentSession,
+        origin: {
+          channel: 'chat',
+          // Same source id the pre-ticket code used, so dedupe still holds.
+          ref: result.message.id,
+          threadRef: chatV2ThreadRef(result.conversation.id, result.message.id),
+          author: 'owner',
+        },
+        conversationRef: chatV2ConversationRef(result.conversation.id),
+        targetAgent: ORCHESTRATOR_SESSION_NAME,
+        tags: ['chat-ui'],
+        receipt: { kind: 'chat-v2', chatChannelId: result.conversation.id },
+      }).catch(() => null),
+    );
+    const deliveryContent = appendTicketLine(content, ticket);
 
     // Enqueue message for orchestrator processing if enabled (default: true)
     let orchestratorStatus: { forwarded: boolean; queued?: boolean; queueId?: string; error?: string } = { forwarded: false };
@@ -167,7 +168,7 @@ export async function sendMessage(
         // The queue processor defers delivery until the orchestrator registers as active.
         try {
           const queued = messageQueueService.enqueue({
-            content,
+            content: deliveryContent,
             conversationId: result.conversation.id,
             source: 'web_chat',
           });
@@ -195,7 +196,7 @@ export async function sendMessage(
       } else {
         try {
           const queued = messageQueueService.enqueue({
-            content,
+            content: deliveryContent,
             conversationId: result.conversation.id,
             source: 'web_chat',
           });

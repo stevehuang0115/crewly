@@ -46,7 +46,7 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--team` / `-g` | `teamId` | No | Team ID for cross-team validation |
 | `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
 | `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
-| `--request-id` / `-R` | `requestId` | No | Parent V3 Request ID; tags the resulting WorkItem so `Request.workItemIds[]` is populated by the SLA subscriber (Pipeline-#4 fix) |
+| `--request-id` / `-R` | `requestId` | No | Ticket (Request) this work is for — the id or `TKT-123` from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Links the WorkItem into `Request.workItemIds[]`. Omit it and the WorkItem is still linked when your current turn has exactly one ticket |
 | `--fallback-minutes` | — | No | Minutes until the ONE §3.0 fallback check fires for this delegation (default `120` ≈ 2× a TL milestone ETA). `0` disables it. Not cancelled on completion — keep it at 2× ETA, never a poll interval |
 
 ## Usage — CLI Flags (preferred)

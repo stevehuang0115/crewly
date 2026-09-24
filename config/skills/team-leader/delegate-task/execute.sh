@@ -16,6 +16,7 @@ PROJECT_PATH=""
 TEAM_ID=""
 TL_MEMBER_ID=""
 FROM_SESSION=""
+REQUEST_ID=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -34,9 +35,10 @@ while [[ $# -gt 0 ]]; do
     --team|-g)     TEAM_ID="$2";        shift 2 ;;
     --tl-member)   TL_MEMBER_ID="$2";   shift 2 ;;
     --from)        FROM_SESSION="$2";   shift 2 ;;
+    --request-id|-R) REQUEST_ID="$2";   shift 2 ;;
     --json|-j)     INPUT_JSON="$2";     shift 2 ;;
     --help|-h)
-      echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId]"
+      echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId] [--request-id <ticket id from the [TICKET:TKT-123 <id>] line>]"
       exit 0
       ;;
     --)            shift; break ;;
@@ -72,6 +74,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$TEAM_ID" ] && TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
   [ -z "$TL_MEMBER_ID" ] && TL_MEMBER_ID=$(printf '%s' "$INPUT" | jq -r '.tlMemberId // empty')
   [ -z "$FROM_SESSION" ] && FROM_SESSION=$(printf '%s' "$INPUT" | jq -r '.fromSession // empty')
+  [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
 fi
 
 require_param "to (--to)" "$TO"
@@ -208,7 +211,8 @@ POOL_BODY=$(jq -n \
   --arg briefMarkdown "$TASK" \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))}')
+  --arg requestId "${REQUEST_ID:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
 
 POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
 POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)

@@ -281,6 +281,23 @@ describe('RequestService', () => {
   });
 
   describe('update', () => {
+    it('should update ticket fields (receipt, discussion, assignee, kind) and expose the requests dir', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      expect(service.getRequestsDir()).toMatch(/requests$/);
+      const created = await service.create({
+        sourceConversationItemId: 'conv-ticket',
+        title: 'Ticket',
+        description: 'Ticket fields',
+        ticketNumber: 3,
+        kind: 'feature',
+      });
+      expect(created.ticketNumber).toBe(3);
+      const receipt = { kind: 'slack' as const, slackChannelId: 'C1', ts: '1.1' };
+      const discussion = [{ at: 'now', author: 'U1', text: 'more', ref: 'r' }];
+      const updated = await service.update(created.id, { receipt, discussion, assignee: 'dev-1', kind: 'issue' });
+      expect(updated).toMatchObject({ receipt, discussion, assignee: 'dev-1', kind: 'issue', ticketNumber: 3 });
+    });
+
     it('should update request status with valid transition', async () => {
       const service = RequestService.getInstance('/tmp/test-project');
 

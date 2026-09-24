@@ -189,6 +189,18 @@ export interface ClaimResult {
  */
 
 /**
+ * Options for {@link TaskPoolService.addToPool}.
+ */
+export interface AddToPoolOptions {
+  /**
+   * The agent session creating the item (the caller's X-Agent-Session). Used
+   * to link the item to the ticket of that agent's current turn when it has
+   * no `requestId`.
+   */
+  creatorSession?: string;
+}
+
+/**
  * Options for {@link TaskPoolService.releaseBack}.
  */
 export interface ReleaseBackOptions {
@@ -278,6 +290,14 @@ export class TaskPoolService {
   private teamBudgetGate: Pick<TeamBudgetGateService, 'checkForSession'> | null = null;
 
   /**
+   * Ticket loop (specs/ticket-loop.md §3): resolves the ticket an agent's
+   * current turn is about, from the `[TICKET:…]` markers in the messages
+   * delivered into it (safe-restart InFlightTurnTracker). Wired from boot;
+   * `null` disables the fallback.
+   */
+  private ticketResolver: ((sessionName: string) => string | null) | null = null;
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -347,6 +367,16 @@ export class TaskPoolService {
   }
 
   /**
+   * Wire (or disable with `null`) the in-flight-turn ticket resolver used by
+   * {@link addToPool} when a WorkItem arrives without a `requestId`.
+   *
+   * @param resolver - Session name → ticket id (or null)
+   */
+  setTicketResolver(resolver: ((sessionName: string) => string | null) | null): void {
+    this.ticketResolver = resolver;
+  }
+
+  /**
    * Chains the given critical section after any in-flight claim operation.
    * Guarantees FIFO ordering even under concurrent invocation.
    */
@@ -390,10 +420,16 @@ export class TaskPoolService {
    * - `blocked` — waiting on unresolved dependsOn; the resolver will promote
    *               it to `queued` when every upstream dep reaches terminal success.
    *
+   * Ticket loop: when the item has no `requestId` and `options.creatorSession`
+   * names the agent creating it, the ticket of that agent's current turn (if
+   * exactly one) is filled in, and `metadata.requestIdSource` records that it
+   * was inferred.
+   *
    * @param workItem - The work item to add
+   * @param options - `creatorSession`: the agent creating it (X-Agent-Session)
    * @throws Error if workItem is invalid or in an ineligible status
    */
-  async addToPool(workItem: WorkItem): Promise<void> {
+  async addToPool(workItem: WorkItem, options: AddToPoolOptions = {}): Promise<void> {
     if (!isWorkItem(workItem)) {
       throw new Error('Invalid WorkItem: does not conform to WorkItem interface');
     }
@@ -409,6 +445,8 @@ export class TaskPoolService {
       this.logger.warn('WorkItem already in pool, skipping', { workItemId: workItem.id });
       return;
     }
+
+    this.inferRequestIdFromTurn(workItem, options.creatorSession);
 
     await this.storage.addWorkItem(workItem);
     await this.storage.flush();
@@ -444,6 +482,35 @@ export class TaskPoolService {
     // committed item. Publish failures are logged-but-isolated — the pool
     // mutation is the source of truth, the event is informational.
     this.publishWorkItemQueued(workItem);
+  }
+
+  /**
+   * Fill in `requestId` from the creating agent's in-flight turn (ticket
+   * loop §3). Mutates the item before it is stored; a resolver failure is
+   * logged and ignored.
+   *
+   * @param workItem - The item about to be stored
+   * @param creatorSession - The agent creating it, when known
+   */
+  private inferRequestIdFromTurn(workItem: WorkItem, creatorSession?: string): void {
+    if (workItem.requestId || !creatorSession || !this.ticketResolver) return;
+    try {
+      const ticketId = this.ticketResolver(creatorSession);
+      if (!ticketId) return;
+      workItem.requestId = ticketId;
+      workItem.metadata = { ...(workItem.metadata ?? {}), requestIdSource: 'in-flight-turn' };
+      this.logger.info('WorkItem linked to the ticket of its creator\'s turn', {
+        workItemId: workItem.id,
+        requestId: ticketId,
+        creatorSession,
+      });
+    } catch (err) {
+      this.logger.warn('Ticket resolver failed — WorkItem stays unlinked', {
+        workItemId: workItem.id,
+        creatorSession,
+        error: formatError(err),
+      });
+    }
   }
 
   /**

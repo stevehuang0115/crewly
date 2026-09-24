@@ -25,6 +25,9 @@
  * @module services/slack/slack-team-channel.service
  */
 
+import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
+import { intakeWithin, slackIntakeMessage, ticketOfOutcome, withTicketMarker } from '../v3/ticket-channel-hooks.js';
+import type { Request } from '../../types/v2/request.types.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import * as path from 'path';
@@ -1186,6 +1189,12 @@ export class SlackTeamChannelService {
       ? await dispatcherForPlan.planHuddleTargets(channel, persisted, dispatchOptions).catch(() => null)
       : null;
 
+    // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
+    // the single intake. Started now, awaited just before dispatch, so the
+    // receipt and the agent's `[TICKET:…]` marker do not hold up the eyes /
+    // placeholders below.
+    const ticketPromise = this.intakeTicket(message, mapping, resolved.mentions, planned, handoffTo, remoteAgent);
+
     await this.acknowledgeSeen(message, mapping, resolved.mentions, planned);
 
     // Agents that must reply get a placeholder straight away — "waking up…"
@@ -1249,7 +1258,8 @@ export class SlackTeamChannelService {
           .map((m) => `${m.name} (${teams.find((t) => (t.members ?? []).some((x) => x.id === m.id))?.name ?? '?'}, ${String(m.role)}, this machine)`)
           .join(' · ');
       }
-      dispatch = await dispatcher.dispatchMessage(channel, persisted, {
+      const ticket = await ticketPromise;
+      dispatch = await dispatcher.dispatchMessage(channel, withTicketMarker(persisted, ticket), {
         ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
       });
@@ -1285,6 +1295,69 @@ export class SlackTeamChannelService {
     });
 
     return { mapping, message: persisted, mentions: resolved.mentions, dispatch };
+  }
+
+  /**
+   * Ticket intake for a team-channel / shared-room message.
+   *
+   * Only the owner's messages count (a colleague agent's post never files a
+   * ticket). In a room shared across machines every machine sees the
+   * message, so only the machine that owns it files the ticket: the one with
+   * the team, or — in an ad-hoc room — the one whose agent was @'d or handed
+   * the message. Never throws; null when no ticket applies.
+   *
+   * @param message - Inbound Slack message
+   * @param mapping - Its channel mapping
+   * @param mentions - Local sessions @'d
+   * @param planned - Dispatch plan (session → required/optional), when known
+   * @param handoffTo - Local agent the room's router handed it to
+   * @param remoteAgent - Authoring agent, when an agent wrote it
+   * @returns The ticket the message belongs to, or null
+   */
+  private async intakeTicket(
+    message: SlackIncomingMessage,
+    mapping: SlackTeamChannelMapping,
+    mentions: readonly string[],
+    planned: Map<string, 'required' | 'optional'> | null,
+    handoffTo: string | null,
+    remoteAgent: string | null,
+  ): Promise<Request | null> {
+    try {
+      const intake = getTicketIntakeService();
+      if (!intake || remoteAgent) return null;
+      const required = planned ? [...planned].filter(([, mode]) => mode === 'required').map(([s]) => s) : [...mentions];
+      const ownsMessage = !isAdhocMapping(mapping) || !!handoffTo || required.length > 0;
+      if (!ownsMessage) return null;
+      const targetAgent = handoffTo ?? (mentions.length === 1 ? mentions[0] : required.length === 1 ? required[0] : undefined);
+      // The workspace bot is not a member of a private ad-hoc room; post the
+      // receipt as the agent that will answer, when it has its own bot.
+      const postAs = isAdhocMapping(mapping)
+        ? [targetAgent, ...required].find((s): s is string => !!s && !!this.deps.identities?.getInstalled(s))
+        : undefined;
+      const outcome = await intakeWithin(
+        intake,
+        slackIntakeMessage(
+          {
+            text: message.text ?? '',
+            slackChannelId: message.channelId,
+            ts: message.ts,
+            threadTs: message.threadTs,
+            userId: message.userId,
+            userName: message.user?.realName || message.user?.name,
+            hasFiles: message.hasFiles,
+            ownerUserId: this.deps.getOwnerUserId?.() ?? null,
+          },
+          'team-channel',
+          { ...(targetAgent ? { targetAgent } : {}), ...(postAs ? { receiptPostAs: postAs } : {}) },
+        ),
+      );
+      return ticketOfOutcome(outcome);
+    } catch (err) {
+      this.logger.warn('Ticket intake failed for a team channel message (still delivered)', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   /**

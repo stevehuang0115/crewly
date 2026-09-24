@@ -61,6 +61,20 @@ describe('MessageStore', () => {
   // insert — seq assigner & idempotency
   // -------------------------------------------------------------------------
 
+  describe('updateContent', () => {
+    it('replaces the content in place and returns the row', () => {
+      const { row } = messages.insert({ channelId, senderType: 'system', senderId: 'system', content: 'before' });
+      const updated = messages.updateContent(row.id, 'after');
+      expect(updated?.content).toBe('after');
+      expect(updated?.seq).toBe(row.seq);
+      expect(messages.getById(row.id)?.content).toBe('after');
+    });
+
+    it('returns null for a missing message', () => {
+      expect(messages.updateContent('nope', 'x')).toBeNull();
+    });
+  });
+
   describe('insert', () => {
     it('assigns monotonic sequence numbers starting at 1', () => {
       const a = messages.insert({

@@ -20,6 +20,7 @@
  * @module services/cloud/mobile-api-relay.service
  */
 
+import { TICKET_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
 // ---------------------------------------------------------------------------
@@ -76,6 +77,7 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // Reads — status surfaces.
   { method: 'GET', prefix: '/teams' },
   { method: 'GET', prefix: '/requests' },
+  { method: 'GET', prefix: '/tickets' },
   { method: 'GET', prefix: '/task-pool' },
   { method: 'GET', prefix: '/escalations' },
   { method: 'GET', prefix: '/approvals' },
@@ -126,6 +128,7 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // Mutations — human-in-the-loop actions only.
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject
+  { method: 'POST', prefix: '/tickets/' },     // …/:id/dismiss ("不用记")
 ];
 
 /**
@@ -242,7 +245,9 @@ export class MobileApiRelayService {
       const url = `http://127.0.0.1:${this.webPort}/api${path}`;
       const res = await this.fetchImpl(url, {
         method,
-        headers: { 'Content-Type': 'application/json' },
+        // Marks the call as the phone's, so an owner message it posts is
+        // filed as a `mobile` ticket (specs/ticket-loop.md).
+        headers: { 'Content-Type': 'application/json', [TICKET_CONSTANTS.CLIENT_HEADER]: TICKET_CONSTANTS.MOBILE_CLIENT },
         ...(method === 'POST' && payload.body !== undefined
           ? { body: JSON.stringify(payload.body) }
           : {}),

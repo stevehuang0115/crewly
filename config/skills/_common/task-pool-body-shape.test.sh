@@ -465,6 +465,66 @@ else
   PASS=$((PASS + 1)); echo "  ✓ no /block POST emitted"
 fi
 
+# ---------------------------------------------------------------------------
+# Scenario 12 — ticket loop: every WorkItem-creating skill forwards
+# --request-id as the top-level `requestId` (specs/ticket-loop.md §3), and
+# omits it entirely when not given.
+# ---------------------------------------------------------------------------
+echo ""
+echo "--- Scenario 12: --request-id reaches /add as requestId ---"
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/agent/core/create-task/execute.sh" \
+  --project-path /tmp/proj-foo --task "Ticketed task" --request-id TKT-042 >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -z "$BODY" ]; then
+  FAIL=$((FAIL + 1)); echo "  ✗ no /task-pool/add POST captured for create-task --request-id"
+else
+  assert_add_contract "create-task(ticket)" "$BODY"
+  assert_jq "create-task: --request-id forwarded as requestId" '.requestId == "TKT-042"' "$BODY"
+fi
+
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/agent/core/create-task/execute.sh" \
+  --project-path /tmp/proj-foo --task "Unticketed task" >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -n "$BODY" ]; then
+  assert_jq "create-task: omits requestId when not given" 'has("requestId") == false' "$BODY"
+fi
+
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/team-leader/delegate-task/execute.sh" \
+  --to quinn-target --task "Ticketed delegation" --request-id req-ticket-7 >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -z "$BODY" ]; then
+  FAIL=$((FAIL + 1)); echo "  ✗ no /task-pool/add POST captured for tl-delegate-task --request-id"
+else
+  assert_add_contract "tl-delegate-task(ticket)" "$BODY"
+  assert_jq "tl-delegate-task: --request-id forwarded as requestId" '.requestId == "req-ticket-7"' "$BODY"
+fi
+
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/team-leader/decompose-goal/execute.sh" \
+  '{"objective":"Ticketed objective","projectPath":"/tmp/proj-foo","tasks":[{"title":"Sub","description":"d"}]}' \
+  --request-id req-ticket-9 >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -z "$BODY" ]; then
+  FAIL=$((FAIL + 1)); echo "  ✗ no /task-pool/add POST captured for decompose-goal --request-id"
+else
+  assert_add_contract "decompose-goal(ticket)" "$BODY"
+  assert_jq "decompose-goal: --request-id forwarded as requestId" '.requestId == "req-ticket-9"' "$BODY"
+fi
+
+: > "$LOG"
+bash "${REPO_ROOT}/config/skills/team-leader/decompose-goal/execute.sh" \
+  '{"objective":"JSON ticket","projectPath":"/tmp/proj-foo","requestId":"req-json-3","tasks":[{"title":"Sub","description":"d"}]}' \
+  >/dev/null 2>&1 || true
+BODY=$(capture "/api/task-pool/add")
+if [ -n "$BODY" ]; then
+  assert_jq "decompose-goal: JSON requestId forwarded" '.requestId == "req-json-3"' "$BODY"
+else
+  FAIL=$((FAIL + 1)); echo "  ✗ no /task-pool/add POST captured for decompose-goal JSON requestId"
+fi
+
 echo ""
 echo "=== Results: ${PASS} passed, ${FAIL} failed ==="
 [ "$FAIL" -eq 0 ] || exit 1

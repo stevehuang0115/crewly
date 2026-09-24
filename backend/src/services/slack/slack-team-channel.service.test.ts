@@ -8,6 +8,7 @@
  * @module services/slack/slack-team-channel.service.test
  */
 
+import { setTicketIntakeService, type IntakeMessage, type TicketIntakeService } from '../v3/ticket-intake.service.js';
 import { EventEmitter } from 'events';
 import * as os from 'os';
 import * as path from 'path';
@@ -1326,6 +1327,71 @@ describe('one pair of eyes per agent that receives it', () => {
     const planOpts = dispatcher!.planHuddleTargets!.mock.calls[0][2];
     const sendOpts = dispatcher!.dispatchMessage.mock.calls[0][2];
     expect(sendOpts).toMatchObject(planOpts);
+  });
+});
+
+describe('ticket loop intake (specs/ticket-loop.md §2)', () => {
+  const TICKET = { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 12 };
+  let intake: { intakeWithOutcome: jest.Mock };
+
+  beforeEach(async () => {
+    intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'created', ticket: TICKET })) };
+    setTicketIntakeService(intake as unknown as TicketIntakeService);
+    await service.ensureTeamChannel(team());
+  });
+
+  afterEach(() => setTicketIntakeService(null));
+
+  it('the owner\'s message in a team channel is intake with team-channel refs and the @\'d agent as assignee; the dispatch carries the marker', async () => {
+    await service.routeInbound(inbound({ text: '@sam please fix the export', userId: 'UOWNER', ts: '700.1' }));
+    const [msg] = intake.intakeWithOutcome.mock.calls[0] as [IntakeMessage];
+    expect(msg).toMatchObject({
+      isOwner: true,
+      targetAgent: 'crewly-alpha-sam',
+      origin: { channel: 'slack-channel', ref: 'slackch-C1-700.1', threadRef: 'slack:C1:700.1', author: 'UOWNER' },
+      receipt: { kind: 'slack', slackChannelId: 'C1', threadTs: '700.1' },
+    });
+    // Team channel: the workspace bot posts the receipt.
+    expect((msg.receipt as { postAs?: string }).postAs).toBeUndefined();
+    const dispatched = dispatcher!.dispatchMessage.mock.calls[0][1];
+    expect(String(dispatched.metadata.ticketMarker)).toContain('[TICKET:TKT-012');
+  });
+
+  it('someone other than the owner is not the owner', async () => {
+    await service.routeInbound(inbound({ text: '@sam please fix the export', userId: 'U-colleague', ts: '700.2' }));
+    expect((intake.intakeWithOutcome.mock.calls[0][0] as IntakeMessage).isOwner).toBe(false);
+  });
+
+  it('a colleague agent\'s post never reaches intake', async () => {
+    await service.routeInbound(
+      inbound({ text: '<@USAM> please fix the export', userId: 'UMIA', ts: '700.3', authorAgentSession: 'remote-team-mia', authorDisplayName: 'Mia' }),
+    );
+    expect(intake.intakeWithOutcome).not.toHaveBeenCalled();
+    expect(dispatcher!.dispatchMessage.mock.calls[0][1].metadata?.ticketMarker).toBeUndefined();
+  });
+
+  it('in an ad-hoc room, only the machine whose agent must answer files the ticket', async () => {
+    identities = new FakeIdentities();
+    isLocal = (s) => s === 'crewly-alpha-leo';
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    // Seen here only because Leo's app is in the room; nobody here must answer.
+    dispatcher = { ...dispatcher!, planHuddleTargets: jest.fn().mockResolvedValue(new Map([['crewly-alpha-leo', 'optional']])) };
+    await service.routeInbound(inbound({ channelId: 'C-room', text: 'please fix the export', userId: 'UOWNER', ts: '800.1', receivedVia: 'crewly-alpha-leo' }));
+    expect(intake.intakeWithOutcome).not.toHaveBeenCalled();
+    // Addressed to Leo: this machine owns it, and the receipt goes out as Leo's bot.
+    dispatcher.planHuddleTargets = jest.fn().mockResolvedValue(new Map([['crewly-alpha-leo', 'required']]));
+    await service.routeInbound(inbound({ channelId: 'C-room', text: 'please fix the export', userId: 'UOWNER', ts: '800.2', receivedVia: 'crewly-alpha-leo' }));
+    expect(intake.intakeWithOutcome).toHaveBeenCalledTimes(1);
+    expect(intake.intakeWithOutcome.mock.calls[0][0]).toMatchObject({ targetAgent: 'crewly-alpha-leo', receipt: { postAs: 'crewly-alpha-leo' } });
+    isLocal = () => false;
+  });
+
+  it('a failing intake never stops delivery', async () => {
+    intake.intakeWithOutcome.mockRejectedValue(new Error('disk gone'));
+    await service.routeInbound(inbound({ text: '@sam please fix the export', userId: 'UOWNER', ts: '900.1' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalled();
   });
 });
 

@@ -205,8 +205,16 @@ describe('Request Types', () => {
       expect(errors.length).toBeGreaterThan(0);
     });
     it('should error on invalid priority', () => {
-      const errors = validateCreateRequestInput({ ...validInput, priority: 'urgent' as 'high' });
+      const errors = validateCreateRequestInput({ ...validInput, priority: 'critical' as 'high' });
       expect(errors.length).toBeGreaterThan(0);
+    });
+    it('should accept urgent (P0, ticket loop)', () => {
+      expect(validateCreateRequestInput({ ...validInput, priority: 'urgent' })).toEqual([]);
+    });
+    it('should error on a non-positive or fractional ticketNumber', () => {
+      expect(validateCreateRequestInput({ ...validInput, ticketNumber: 0 }).length).toBeGreaterThan(0);
+      expect(validateCreateRequestInput({ ...validInput, ticketNumber: 1.5 }).length).toBeGreaterThan(0);
+      expect(validateCreateRequestInput({ ...validInput, ticketNumber: 3 })).toEqual([]);
     });
     it('should error on invalid intentCategory', () => {
       const errors = validateCreateRequestInput({ ...validInput, intentCategory: 'bogus' as 'query' });
@@ -249,6 +257,14 @@ describe('Request Types', () => {
     it('should set default priority to normal', () => {
       const req = createRequest(input);
       expect(req.priority).toBe('normal');
+    });
+    it('should carry ticket fields when given, and omit them otherwise', () => {
+      const origin = { channel: 'slack-dm' as const, ref: 'slackdm-D1-1.0', threadRef: 'slack:D1:1.0', author: 'U1' };
+      const ticket = createRequest({ ...input, ticketNumber: 12, kind: 'issue', origin, assignee: 'dev-1' });
+      expect(ticket).toMatchObject({ ticketNumber: 12, kind: 'issue', origin, assignee: 'dev-1' });
+      const plain = createRequest(input);
+      expect('ticketNumber' in plain).toBe(false);
+      expect('origin' in plain).toBe(false);
     });
     it('should set default intentLevel to L1', () => {
       const req = createRequest(input);

@@ -39,6 +39,7 @@ import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
 import { setMessageQueueService, clipForOrchestrator } from './chat.controller.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 
 // =============================================================================
 // Test Setup
@@ -177,6 +178,50 @@ describe('Chat Controller', () => {
       expect(response.status).toBe(201);
       expect(response.body.data.message.metadata?.authorAgentSession).toBeUndefined();
       expect(getChatV2Service().getRecentOwnerMessageContents(0, 500)).toContain(marker);
+    });
+  });
+
+  // ===========================================================================
+  // Ticket loop (specs/ticket-loop.md §2) — legacy chat goes through intake
+  // ===========================================================================
+
+  describe('POST /api/chat/send — ticket intake', () => {
+    const TICKET = { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 4 };
+    let intake: { intakeWithOutcome: jest.Mock };
+    let enqueue: jest.Mock;
+
+    beforeEach(() => {
+      intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'created', ticket: TICKET })) };
+      setTicketIntakeService(intake as unknown as TicketIntakeService);
+      enqueue = jest.fn(() => ({ id: 'q-1' }));
+      setMessageQueueService({ enqueue } as any);
+    });
+
+    afterEach(() => {
+      setTicketIntakeService(null);
+      setMessageQueueService(null as any);
+    });
+
+    it('the owner’s message is intake as the owner, assigned to the orc; the delivered copy carries the ticket line', async () => {
+      const response = await request(app).post('/api/chat/send').send({ content: 'please add csv export to reports' });
+      expect(response.status).toBe(201);
+      const [msg] = intake.intakeWithOutcome.mock.calls[0];
+      expect(msg).toMatchObject({ isOwner: true, targetAgent: 'crewly-orc', tags: ['chat-ui'], origin: { channel: 'chat', ref: response.body.data.message.id } });
+      expect(enqueue.mock.calls[0][0].content).toContain('[TICKET:TKT-004');
+      expect(enqueue.mock.calls[0][0].content.startsWith('please add csv export to reports')).toBe(true);
+      // What is stored is the owner's text alone.
+      expect(response.body.data.message.content).toBe('please add csv export to reports');
+    });
+
+    it('an agent posting through this endpoint is never the owner', async () => {
+      await request(app).post('/api/chat/send').set('X-Agent-Session', 'dev-1').send({ content: 'please add csv export to reports' });
+      expect(intake.intakeWithOutcome.mock.calls[0][0].isOwner).toBe(false);
+    });
+
+    it('no ticket → the message is delivered unchanged', async () => {
+      intake.intakeWithOutcome.mockResolvedValueOnce({ action: 'ignored', reason: 'trivial_or_short' });
+      await request(app).post('/api/chat/send').send({ content: 'thanks' });
+      expect(enqueue.mock.calls[0][0].content).toBe('thanks');
     });
   });
 

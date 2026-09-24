@@ -19,7 +19,14 @@ import { ChatV2Service } from '../../services/chat-v2/chat-v2.service.js';
 import { openChatDatabase } from '../../services/chat-v2/sqlite/chat-db.js';
 import { loadChatV2Config } from '../../services/chat-v2/config.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
-import type { ChatChannelDTO } from '../../services/chat-v2/types.js';
+import type { ChatChannelDTO, ChatMessageDTO } from '../../services/chat-v2/types.js';
+import type { ChatV2DispatcherService } from '../../services/chat-v2/chat-v2.dispatcher.service.js';
+import {
+  setTicketIntakeService,
+  type IntakeMessage,
+  type IntakeOutcome,
+  type TicketIntakeService,
+} from '../../services/v3/ticket-intake.service.js';
 import type { ChatV2Gateway } from '../../websocket/chat-v2.gateway.js';
 
 /** Build a test app with the chat router mounted under /api/chat. */
@@ -807,6 +814,96 @@ function makeChannel(overrides: Partial<ChatChannelDTO> = {}): ChatChannelDTO {
     ...overrides,
   };
 }
+
+describe('ticket loop intake (specs/ticket-loop.md §2)', () => {
+  const TICKET = { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 5 };
+
+  /**
+   * App with a recording dispatcher and a fake intake.
+   *
+   * @param outcome - What the fake intake returns
+   * @returns App, service, intake mock and dispatched messages
+   */
+  function setup(outcome: IntakeOutcome) {
+    const db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+    const service = new ChatV2Service({
+      config: loadChatV2Config({}),
+      db,
+      getPresence: () => ({ status: 'online', lastSeenAt: 111 }),
+      now: () => 1000,
+    });
+    const dispatched: ChatMessageDTO[] = [];
+    const dispatcher = {
+      dispatchMessage: async (_c: ChatChannelDTO, m: ChatMessageDTO) => {
+        dispatched.push(m);
+        return { strategy: 'dm', dispatched: true };
+      },
+    };
+    const intake = { intakeWithOutcome: jest.fn(async (_m: IntakeMessage) => outcome) };
+    setTicketIntakeService(intake as unknown as TicketIntakeService);
+    const app = express();
+    app.use(express.json());
+    app.use('/api/chat', createChatV2Router(service, { dispatcher: dispatcher as unknown as ChatV2DispatcherService }));
+    return { app, service, intake, dispatched };
+  }
+
+  afterEach(() => setTicketIntakeService(null));
+
+  /** Wait for post-ack side effects. */
+  const settle = () => new Promise((r) => setTimeout(r, 20));
+
+  it('an owner message goes through intake first; the agent gets the [TICKET:…] line', async () => {
+    const { app, service, intake, dispatched } = setup({ action: 'created', ticket: TICKET as never });
+    try {
+      const created = await request(app).post('/api/chat/channels').send({ agentSession: 'ella', name: 'Ella' });
+      await request(app).post(`/api/chat/channels/${created.body.data.id}/messages`).send({ content: 'please add a dark mode toggle' });
+      await settle();
+      expect(intake.intakeWithOutcome).toHaveBeenCalledTimes(1);
+      const [msg] = intake.intakeWithOutcome.mock.calls[0];
+      expect(msg).toMatchObject({ isOwner: true, targetAgent: 'ella', origin: { channel: 'chat' } });
+      expect(dispatched).toHaveLength(1);
+      expect(String(dispatched[0].metadata?.ticketMarker)).toContain('[TICKET:TKT-005');
+      // The stored row is the owner's text, untouched.
+      const list = await request(app).get(`/api/chat/channels/${created.body.data.id}/messages`);
+      expect(JSON.stringify(list.body)).not.toContain('[TICKET:');
+    } finally {
+      service.close();
+    }
+  });
+
+  it('a message an agent posts as a user turn never reaches intake', async () => {
+    const { app, service, intake, dispatched } = setup({ action: 'ignored', reason: 'x' });
+    try {
+      const created = await request(app).post('/api/chat/channels').send({ agentSession: 'ella', name: 'Ella' });
+      // An agent posting into a channel it is not bound to is recorded as a
+      // `user` row with an authorship marker (#786) — not the owner.
+      await request(app)
+        .post(`/api/chat/channels/${created.body.data.id}/messages`)
+        .set('X-Agent-Session', 'someone-else')
+        .send({ content: 'please add a dark mode toggle' });
+      await settle();
+      expect(intake.intakeWithOutcome).not.toHaveBeenCalled();
+      expect(dispatched.every((m) => !m.metadata?.ticketMarker)).toBe(true);
+    } finally {
+      service.close();
+    }
+  });
+
+  it('the mobile client header files the ticket as mobile', async () => {
+    const { app, service, intake } = setup({ action: 'ignored', reason: 'x' });
+    try {
+      const created = await request(app).post('/api/chat/channels').send({ agentSession: 'ella', name: 'Ella' });
+      await request(app)
+        .post(`/api/chat/channels/${created.body.data.id}/messages`)
+        .set('X-Crewly-Client', 'mobile')
+        .send({ content: 'please add a dark mode toggle' });
+      await settle();
+      expect(intake.intakeWithOutcome.mock.calls[0][0].origin.channel).toBe('mobile');
+    } finally {
+      service.close();
+    }
+  });
+});
 
 describe('buildChatV2SourceId (INBOUND-2)', () => {
   it('builds the canonical chatv2-${channelId}__${messageId} composite (UUID-safe delim)', () => {

@@ -24,12 +24,17 @@ import type { ChatV2DispatcherService } from '../../services/chat-v2/chat-v2.dis
 import type { ChatV2Gateway } from '../../websocket/chat-v2.gateway.js';
 import { buildMessageEvent } from '../../websocket/chat-v2.gateway.js';
 import { getChatV2RealtimeDeps } from '../../services/chat-v2/chat-v2.realtime-holder.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { TICKET_CONSTANTS } from '../../constants.js';
+import {
+  buildChatV2SourceId,
+  isOrchestratorRoutedChatV2Channel,
+  intakeChatV2OwnerMessage,
+} from '../../services/v3/ticket-channel-hooks.js';
+import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import {
   CHAT_ERROR_CODES,
   ChatError,
   type ChatChannelType,
-  type ChatChannelDTO,
   type ChatMessageDTO,
   type ChatPrincipal,
 } from '../../services/chat-v2/types.js';
@@ -70,6 +75,20 @@ export function principalFromRequest(req: Request): ChatPrincipal {
     agentSession,
     source: 'oss',
   };
+}
+
+/**
+ * {@link principalFromRequest} that never throws (post-ack paths).
+ *
+ * @param req - The request
+ * @returns The principal, or an anonymous OSS principal
+ */
+function principalFromRequestSafe(req: Request): ChatPrincipal {
+  try {
+    return principalFromRequest(req);
+  } catch {
+    return { userId: '', source: 'oss' };
+  }
 }
 
 /** Serialize a `ChatError` into the canonical wire shape. */
@@ -115,92 +134,23 @@ export function runHandler<T>(res: Response, run: () => T): T | undefined {
 // ---------------------------------------------------------------------------
 
 /**
- * Build the canonical chat-v2 sourceConversationItemId so the
- * `RequestSlaSubscriber` can dedupe + extract channel/message ids the
- * same way it does for Slack (`slack-${channelId}-${ts}`).
- *
- * Shape: `chatv2-${channelId}__${messageId}`. The inter-field delimiter
- * is the double underscore `__` rather than a single dash because
- * `channel.store.ts:86` and `message.store.ts:165` mint ids via
- * `randomUUID()` (4 dashes embedded in each id). A single-dash
- * delimiter collides with the embedded UUID dashes and corrupts the
- * round-trip — see Arch's review on PR #364 / INBOUND-2.f1.
- * UUIDs are hex digits + dashes only and cannot contain `_`, so `__`
- * is collision-free against any current or future hex-shaped id.
- *
- * @param channelId - Persisted chat-v2 channel id (UUIDv4 in production)
- * @param messageId - Persisted chat-v2 message id (UUIDv4 in production)
- * @returns The composite source id, e.g.
- *   `chatv2-8b3c9a4e-5a02-4d51-9e7a-6f8c4d2e8a1b__fa1e2c3d-4567-89ab-cdef-0123456789ab`
+ * Canonical chat-v2 sourceConversationItemId (`chatv2-<channel>__<message>`).
+ * Lives in the ticket hooks now; re-exported for existing callers.
  */
-export function buildChatV2SourceId(channelId: string, messageId: string): string {
-  return `chatv2-${channelId}__${messageId}`;
-}
+export { buildChatV2SourceId, isOrchestratorRoutedChatV2Channel };
 
 /**
- * INBOUND-2: decide whether a chat-v2 channel routes user messages to the
- * orchestrator. v1 scope = `type='dm'` channels whose `agentSession`
- * field is the orchestrator session. `type='channel'` (team-scoped) is
- * excluded — the SLA path expects the WI target to be the orchestrator
- * and team-channels haven't yet defined an orc-tagged routing concept
- * (see INBOUND-2 task spec, escalation note "no orc-tagged channels yet").
+ * Where an owner's chat-v2 message came from, for the ticket's `origin`.
  *
- * Exported so tests can lock the scope without relying on private state.
- *
- * @param channel - The channel DTO returned by `service.getChannel`.
- * @returns True iff the channel routes to the orchestrator.
+ * @param req - The HTTP request (the mobile relay sets `X-Crewly-Client: mobile`)
+ * @param principal - The resolved principal (`portal` for Cloud service tokens)
+ * @returns `mobile`, `portal` or `chat`
  */
-export function isOrchestratorRoutedChatV2Channel(channel: ChatChannelDTO): boolean {
-  if (channel.type !== 'dm') return false;
-  if (!channel.agentSession) return false;
-  return channel.agentSession === ORCHESTRATOR_SESSION_NAME;
-}
-
-/**
- * Fire-and-forget: if a USER-origin chat-v2 message lands in a channel
- * routed to the orc, register a V3 Request so the
- * `RequestSlaSubscriber` (INBOUND-1) can attach a respond_to_user
- * WorkItem with the 5/10min SLA timers.
- *
- * Mirrors the Slack pattern at
- * `slack-orchestrator-bridge.ts:367-395`. Errors are swallowed and
- * logged at warn-level inside the lazy import — Request creation is
- * non-critical to the chat ack.
- *
- * @param channel - The persisted channel (provides type + agentSession)
- * @param message - The persisted user message (provides id + content)
- */
-export function emitChatV2RequestCreated(
-  channel: ChatChannelDTO,
-  message: ChatMessageDTO,
-): void {
-  if (message.senderType !== 'user') return;
-  if (!isOrchestratorRoutedChatV2Channel(channel)) return;
-
-  setImmediate(async () => {
-    try {
-      const { RequestService } = await import('../../services/v3/request.service.js');
-      const svc = RequestService.getInstance();
-      const sourceId = buildChatV2SourceId(channel.id, message.id);
-      const existing = await svc.findBySourceConversationItemId(sourceId);
-      if (existing) return;
-
-      const { generateRequestTitle, classifyIntent } = await import('../../services/v3/v3-data.service.js');
-      const rawText = message.content || '';
-      const { intentLevel, intentCategory } = classifyIntent(rawText);
-      await svc.create({
-        title: generateRequestTitle(rawText, intentCategory),
-        description: rawText,
-        sourceConversationItemId: sourceId,
-        priority: 'normal',
-        tags: ['chat-v2'],
-        intentLevel,
-        intentCategory,
-      });
-    } catch {
-      // Non-critical — Request creation failure must not break chat send.
-    }
-  });
+export function chatV2OriginChannel(req: Request, principal: ChatPrincipal): 'chat' | 'portal' | 'mobile' {
+  const hdr = req.headers?.[TICKET_CONSTANTS.CLIENT_HEADER];
+  const client = Array.isArray(hdr) ? hdr[0] : hdr;
+  if (typeof client === 'string' && client.trim().toLowerCase() === TICKET_CONSTANTS.MOBILE_CLIENT) return 'mobile';
+  return principal.source === 'portal' ? 'portal' : 'chat';
 }
 
 /**
@@ -534,6 +484,20 @@ export function createChatV2Controller(
         // broadcast must never break the ack
       }
 
+      // Ticket loop (specs/ticket-loop.md §2): an owner message becomes a
+      // ticket (or joins its thread's ticket) BEFORE it is dispatched, so the
+      // agent's copy carries `[TICKET:TKT-123 <id>]`. Replaces the INBOUND-2
+      // Request hook; orc-DM tickets keep the `chat-v2` tag, so the SLA
+      // subscriber still tracks them.
+      const toDispatch = channelForDispatch
+        ? await intakeChatV2OwnerMessage(
+            getTicketIntakeService(),
+            channelForDispatch,
+            persisted,
+            chatV2OriginChannel(req, principalFromRequestSafe(req)),
+          )
+        : persisted;
+
       try {
         if (dispatcher && channelForDispatch && persisted.senderType === 'user') {
           // Phase C BE.3 — single high-level entry point that branches
@@ -541,19 +505,14 @@ export function createChatV2Controller(
           //   `type='dm'`     → 1:1 dispatch via dispatchToAgent (legacy)
           //   `type='channel'`→ resolve `mentions[]` → fan-out per target
           // Fire-and-forget — already past the HTTP ack at this point.
-          void dispatcher.dispatchMessage(channelForDispatch, persisted);
+          void dispatcher.dispatchMessage(channelForDispatch, toDispatch);
         }
       } catch {
         // dispatcher must never break the ack
       }
 
-      // INBOUND-2 — V3 Request + SLA-tracking hooks. Mirrors the Slack
-      // ingress pattern at slack-orchestrator-bridge.ts:367-395.
-      // Fire-and-forget; failures are isolated inside the helpers.
+      // INBOUND-2 — SLA auto-resolve on agent replies. Fire-and-forget.
       try {
-        if (channelForDispatch) {
-          emitChatV2RequestCreated(channelForDispatch, persisted);
-        }
         notifyChatV2AgentReply(persisted);
       } catch {
         // INBOUND-2 hooks must never break the ack

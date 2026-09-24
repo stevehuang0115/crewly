@@ -101,6 +101,13 @@ import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-que
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
+import {
+	TicketIntakeService,
+	setTicketIntakeService,
+	resolveTicketIdForSession,
+} from './services/v3/ticket-intake.service.js';
+import { createChatV2ReceiptSink } from './services/v3/ticket-channel-hooks.js';
+import { runPoolArchiveMigration } from './services/task-pool/pool-archive-migration.js';
 import { createPtyTurnProbe } from './services/restart/turn-probe.js';
 import { RestartDrainService, resolveRestartDrainMs, type GracefulShutdownRequest } from './services/restart/restart-drain.service.js';
 import {
@@ -502,6 +509,59 @@ export class CrewlyServer {
 		// that data. The setter is duck-typed on IWorkItemQueryable so
 		// neither side needs a static import of the other.
 		RequestService.getInstance().setTaskPoolService(TaskPoolService.getInstance());
+
+		// Ticket loop (specs/ticket-loop.md, Phase 1): the single intake for
+		// owner messages on every channel, the chat-v2 receipt poster (the
+		// Slack one is wired in slack-initializer once Slack is up), and the
+		// WorkItem → ticket link through the creating agent's in-flight turn.
+		// Failure-isolated: tickets are an addition — messages are delivered
+		// whether or not this is wired.
+		try {
+			const ticketIntake = new TicketIntakeService({
+				requests: RequestService.getInstance(),
+				findWorkItem: (id) => TaskPoolService.getInstance().findWorkItem(id),
+			});
+			ticketIntake.setReceiptSink(
+				'chat-v2',
+				createChatV2ReceiptSink({
+					chat: {
+						recordTurn: (input) => getChatV2Service().recordTurn(input),
+						updateSystemMessage: (id, content, patch) => getChatV2Service().updateSystemMessage(id, content, patch),
+					},
+					// Lazy, like the rest of the chat-v2 realtime wiring (the gateway
+					// only exists once the HTTP server is up).
+					broadcast: (message) => {
+						void Promise.all([
+							import('./services/chat-v2/chat-v2.realtime-holder.js'),
+							import('./websocket/chat-v2.gateway.js'),
+						])
+							.then(([{ getChatV2RealtimeDeps }, { buildMessageEvent }]) => {
+								getChatV2RealtimeDeps().gateway?.broadcast(message.channelId, buildMessageEvent(message.channelId, message));
+							})
+							.catch(() => undefined);
+					},
+				}),
+			);
+			setTicketIntakeService(ticketIntake);
+			TaskPoolService.getInstance().setTicketResolver((sessionName) =>
+				resolveTicketIdForSession(InFlightTurnTracker.getInstance(), sessionName),
+			);
+		} catch (ticketBootErr) {
+			this.logger.error('Ticket intake boot failed — messages are still delivered, no tickets filed', {
+				error: ticketBootErr instanceof Error ? ticketBootErr.message : String(ticketBootErr),
+			});
+		}
+
+		// Ticket loop §4: one-time archive of old WorkItems (marker file makes
+		// it run once). Through the pool's own storage cache, so no later
+		// flush can write the archived items back. Never deletes.
+		void runPoolArchiveMigration(TaskPoolService.getInstance().getStorage(), {
+			logger: LoggerService.getInstance().createComponentLogger('PoolArchive'),
+		}).catch((archiveErr: unknown) => {
+			this.logger.warn('Task pool one-time archive failed (pool left as is; retried next boot)', {
+				error: archiveErr instanceof Error ? archiveErr.message : String(archiveErr),
+			});
+		});
 
 		// Atlas 2026-05-23 fix: wire the agent-liveness gate so claimFromPool /
 		// claimSpecificItem refuse to put a WI into `running` when the requesting

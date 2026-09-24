@@ -2555,6 +2555,72 @@ export const SELF_IMPROVEMENT_CONSTANTS = {
 	},
 } as const;
 
+/**
+ * Ticket loop (specs/ticket-loop.md, Phase 1): owner messages become tickets
+ * (a `Request` with a TKT number), receipts go back where the owner spoke,
+ * and WorkItems link back to the ticket.
+ */
+export const TICKET_CONSTANTS = {
+	/** Display prefix: `TKT-042` */
+	NUMBER_PREFIX: 'TKT-',
+	/** Minimum digits in a displayed ticket number (zero-padded) */
+	NUMBER_PAD: 3,
+	/** Counter file inside the requests dir (no `.json`, so listAll never reads it) */
+	COUNTER_FILENAME: '.ticket-counter',
+	/** Tag every ticket carries */
+	TAG: 'ticket',
+	/** Tag added when the owner said "don't track" */
+	DISMISSED_TAG: 'dismissed',
+	/**
+	 * Weighted minimum length a message needs to be a ticket. CJK characters
+	 * count double: "fix the build" (13) passes, and so does "把首页改成蓝色"
+	 * (7 CJK = 14), while "好的收到" (8) does not.
+	 */
+	MIN_WEIGHTED_TEXT_LENGTH: 12,
+	/** A bare "don't track" reply dismisses the ticket it answers */
+	DISMISS_PATTERN: /^\s*(不用记|别记|不用记录|不要记|取消记录|don'?t track|do not track|no ticket)\s*[。.!！]*\s*$/i,
+	/**
+	 * A top-level "不用记" (no thread) dismisses the latest open ticket from the
+	 * same conversation if it was opened this recently (ms).
+	 */
+	DISMISS_LOOKBACK_MS: 30 * 60 * 1000,
+	/** How long a caller waits for intake before delivering without a marker (ms) */
+	INTAKE_TIMEOUT_MS: 3_000,
+	/** Slack Block Kit action id of the receipt's dismiss button */
+	SLACK_DISMISS_ACTION_ID: 'ticket_dismiss',
+	/** Receipt texts */
+	RECEIPT: {
+		RECORDED: (tkt: string) => `已记成 ${tkt}`,
+		DISMISS_HINT: '不用记？回复「不用记」',
+		DISMISS_BUTTON: '不用记',
+		DISMISSED: (tkt: string) => `${tkt} 已取消记录`,
+	},
+	/** Metadata key the dispatcher reads the delivered-message marker from */
+	MESSAGE_MARKER_METADATA_KEY: 'ticketMarker',
+	/** Metadata key on a chat-v2 receipt row */
+	RECEIPT_METADATA_KEY: 'ticketReceipt',
+	/** Header a client may send to say it is the mobile app */
+	CLIENT_HEADER: 'x-crewly-client',
+	/** {@link CLIENT_HEADER} value sent by the mobile app / mobile relay */
+	MOBILE_CLIENT: 'mobile',
+} as const;
+
+/**
+ * One-time task-pool archive run by the ticket loop (specs/ticket-loop.md §4).
+ */
+export const POOL_ARCHIVE_CONSTANTS = {
+	/** Marker file in the task-pool dir; present = migration already ran */
+	MARKER_FILENAME: '.archived-2026-09-ticket-loop',
+	/** Archive dir inside the task-pool dir */
+	ARCHIVE_DIRNAME: 'archive',
+	/** Archive file name prefix; the date (YYYY-MM-DD) and `.json` follow */
+	ARCHIVE_FILE_PREFIX: 'pool-archive-',
+	/** Items older than this are eligible (ms) */
+	MIN_AGE_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Terminal statuses that are archived once old enough */
+	TERMINAL_STATUSES: ['verified', 'done', 'failed', 'cancelled'],
+} as const;
+
 /** License status type */
 export type CloudLicenseStatus = (typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS)[keyof typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS];
 

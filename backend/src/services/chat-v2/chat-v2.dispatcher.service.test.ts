@@ -526,6 +526,44 @@ describe('ChatV2DispatcherService', () => {
     });
   });
 
+  describe('ticket loop — [TICKET:…] line', () => {
+    const LINE = '[TICKET:TKT-007 11111111-2222-3333-4444-555555555555] 这条消息已记为工单 TKT-007。';
+
+    it('defaultFormatPrompt renders the ticket line right under the header', () => {
+      const prompt = defaultFormatPrompt({ channelId: 'c', channelName: 'n', agentSession: 's', senderId: 'U', content: 'do x', ticketLine: LINE });
+      const lines = prompt.split('\n');
+      expect(lines[0]).toContain('[CHAT:c]');
+      expect(lines[1]).toBe(LINE);
+      expect(defaultFormatPrompt({ channelId: 'c', channelName: 'n', agentSession: 's', senderId: 'U', content: 'do x' })).not.toContain('[TICKET:');
+    });
+
+    it('a DM dispatch carries the line from the message metadata', async () => {
+      const { sink, calls } = makeSink({ success: true });
+      const dispatcher = new ChatV2DispatcherService({ agentSink: sink });
+      await dispatcher.dispatchMessage(makeChannel(), makeMessage({ metadata: { ticketMarker: LINE } }));
+      expect(calls[0].message).toContain(LINE);
+    });
+
+    it('a huddle dispatch carries it to every recipient', async () => {
+      const delivered: string[] = [];
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: { sendMessageToAgent: async (_s: string, m: string) => { delivered.push(m); return { success: true }; } },
+        huddleMembersFor: () => ['atlas', 'sam'],
+        huddleLeaderFor: async () => 'atlas',
+      });
+      const channel = makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined });
+      await dispatcher.dispatchMessage(channel, makeMessage({ channelId: 'h1', mentions: ['atlas', 'sam'], metadata: { ticketMarker: LINE } }));
+      expect(delivered.length).toBeGreaterThan(0);
+      expect(delivered.every((m) => m.includes(LINE))).toBe(true);
+    });
+
+    it('no line without the metadata', async () => {
+      const { sink, calls } = makeSink({ success: true });
+      await new ChatV2DispatcherService({ agentSink: sink }).dispatchMessage(makeChannel(), makeMessage());
+      expect(calls[0].message).not.toContain('[TICKET:');
+    });
+  });
+
   describe('dispatchToAgent', () => {
     it('calls sendMessageToAgent with the bound session and formatted prompt', async () => {
       const { sink, calls } = makeSink({ success: true });

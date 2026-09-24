@@ -33,6 +33,7 @@ import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTAN
   SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES, SLACK_DELIVERY_HEALTH_CONSTANTS,
 } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { TICKET_CONSTANTS } from '../../constants.js';
 import { resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
@@ -684,6 +685,17 @@ export class SlackService extends EventEmitter {
   }
 
   /**
+   * Whether Block Kit button clicks reach this process. Only a socket-mode
+   * Bolt app receives interactive payloads; on the Cloud transport Slack
+   * sends them to Cloud, which does not relay them.
+   *
+   * @returns True in socket mode with a running app
+   */
+  supportsInteractivity(): boolean {
+    return this.transport === 'socket' && this.app !== null;
+  }
+
+  /**
    * The config the service was last initialised with (a copy).
    *
    * @returns The config, or null before the first initialise
@@ -931,6 +943,26 @@ export class SlackService extends EventEmitter {
     // Handle @mentions
     this.app.event('app_mention', async ({ event }) => {
       this.handleInboundEvent({ ...event, type: 'app_mention' }, { source: 'socket' });
+    });
+
+    // Ticket loop: the receipt's "不用记" button (socket mode only; on the
+    // Cloud transport the receipt asks for a 「不用记」 reply instead).
+    this.app.action(TICKET_CONSTANTS.SLACK_DISMISS_ACTION_ID, async ({ action, ack, respond }) => {
+      await ack();
+      const ticketId = (action as { value?: string }).value;
+      if (!ticketId) return;
+      try {
+        const { getTicketIntakeService } = await import('../v3/ticket-intake.service.js');
+        const result = await getTicketIntakeService()?.dismiss(ticketId);
+        if (result && !result.ok && result.reason === 'already_done') {
+          await respond({ text: '这个工单已经完成，不能取消记录。', replace_original: false, response_type: 'ephemeral' });
+        }
+      } catch (err) {
+        this.logger.warn('Ticket dismiss button failed', {
+          ticketId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     });
 
     // Handle content approval button clicks (Block Kit interactive actions)

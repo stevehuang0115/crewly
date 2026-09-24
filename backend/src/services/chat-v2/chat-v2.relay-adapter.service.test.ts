@@ -5,6 +5,12 @@
  * @module services/chat-v2/chat-v2.relay-adapter.service.test
  */
 
+import {
+  setTicketIntakeService,
+  type IntakeMessage,
+  type IntakeOutcome,
+  type TicketIntakeService,
+} from '../v3/ticket-intake.service.js';
 import { EventEmitter } from 'events';
 import { ChatV2Service } from './chat-v2.service.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
@@ -366,6 +372,44 @@ describe('ChatV2RelayAdapter', () => {
     expect(dispatched.channelId).toBe(ensure.channel.id);
 
     dispatchAdapter.stop();
+  });
+
+  it('sendMessage: a Portal owner message goes through ticket intake as `portal`, and the agent gets the marker', async () => {
+    adapter.stop();
+    const dispatcher = new FakeDispatcher();
+    const intake = {
+      intakeWithOutcome: jest.fn(async (_m: IntakeMessage): Promise<IntakeOutcome> => ({
+        action: 'created',
+        ticket: { id: '11111111-2222-3333-4444-555555555555', ticketNumber: 9 } as never,
+      })),
+    };
+    setTicketIntakeService(intake as unknown as TicketIntakeService);
+    const dispatchAdapter = new ChatV2RelayAdapter({
+      service, gateway, cloudSync, dispatcher, directory, presence, now: () => 10_000, portalIdleTtlMs: 60_000,
+    });
+    dispatchAdapter.start();
+    try {
+      const ensure = service.ensureDmChannel({
+        agentSession: 'crewly-orc',
+        name: 'Orc',
+        principal: { userId: 'dev-user-001', source: 'oss' },
+      });
+      cloudSync.emitInbound(
+        buildRequestMsg('portal-ticket', {
+          id: 'r-ticket',
+          method: 'sendMessage',
+          params: { channelId: ensure.channel.id, content: 'please ship the export feature', clientMessageId: 'cmid-ticket' },
+        }),
+      );
+      await flushMicrotasks();
+      await new Promise((r) => setTimeout(r, 20));
+      expect(intake.intakeWithOutcome.mock.calls[0][0].origin.channel).toBe('portal');
+      const dispatched = dispatcher.calls[0].message as { metadata?: Record<string, unknown> };
+      expect(String(dispatched.metadata?.ticketMarker)).toContain('[TICKET:TKT-009');
+    } finally {
+      setTicketIntakeService(null);
+      dispatchAdapter.stop();
+    }
   });
 
   it('sendMessage skips dispatcher when none is wired (back-compat)', async () => {

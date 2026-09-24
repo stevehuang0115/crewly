@@ -20,10 +20,25 @@ export type {
   IntentLevel,
   CreateRequestInput,
   UpdateRequestInput,
+  RequestPriority,
 } from './request.types.js';
+
+// Ticket types (specs/ticket-loop.md)
+export type {
+  TicketKind,
+  TicketOrigin,
+  TicketOriginChannel,
+  TicketAcceptance,
+  TicketReceipt,
+  TicketDiscussionEntry,
+  TicketBoardColumn,
+  TicketPriorityLabel,
+  TicketMarkerRef,
+} from './ticket.types.js';
 
 export {
   REQUEST_STATUSES,
+  REQUEST_PRIORITIES,
   TERMINAL_REQUEST_STATUSES,
   INTENT_CATEGORIES,
   REQUEST_TRANSITIONS,

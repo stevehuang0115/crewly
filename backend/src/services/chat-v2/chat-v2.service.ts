@@ -364,6 +364,32 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Edit a SYSTEM row's content (and optionally merge metadata), then emit
+   * `chat_message_updated` so live views can refresh it. Only rows with
+   * `senderType === 'system'` can be edited — the owner's and agents' words
+   * are never rewritten.
+   *
+   * @param messageId - Message id
+   * @param content - New content
+   * @param metadataPatch - Optional shallow metadata patch
+   * @returns The updated message, or null when missing or not a system row
+   */
+  updateSystemMessage(
+    messageId: string,
+    content: string,
+    metadataPatch?: Record<string, unknown>,
+  ): ChatMessageDTO | null {
+    const existing = this.messages.getById(messageId);
+    if (!existing || existing.sender_type !== 'system') return null;
+    const updated = this.messages.updateContent(messageId, content);
+    if (!updated) return null;
+    const row = metadataPatch ? this.messages.updateMetadata(messageId, metadataPatch) ?? updated : updated;
+    const dto = this.toMessageDTO(row, []);
+    this.emit('chat_message_updated', dto);
+    return dto;
+  }
+
+  /**
    * Phase 6.0 of unified-chat-message-store spec — replacement for the
    * legacy `ChatService.updateMessageMetadata`. Merges a partial
    * metadata object into the stored row's `metadata` JSON column using

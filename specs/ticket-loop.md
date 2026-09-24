@@ -111,9 +111,85 @@ Log counts. Never delete; archive is append-only.
 
 ### 5. API
 
-- `GET /api/tickets?column=&q=&kind=` — board-shaped list (Phase 2 UI uses it).
+- `GET /api/tickets?column=&q=&kind=&includeLegacy=` — board-shaped list (Phase 2 UI uses it).
+  Returns `{ tickets, columns }`; cancelled hidden unless `column=cancelled`;
+  Requests from before the ticket loop (no number) only with `includeLegacy=true`.
 - `GET /api/tickets/:tkt` — by `TKT-123`, `123` or id.
 - `POST /api/tickets/:id/dismiss` — the "不用记" action.
+
+### Phase 1 as built (implementation notes)
+
+Code: `services/v3/ticket-intake.service.ts` (intake, gate, counter, dismiss,
+list), `services/v3/ticket-channel-hooks.ts` (refs, owner test, delivery line,
+receipt sinks, per-channel intake builders), `types/v2/ticket.types.ts`,
+`services/task-pool/pool-archive-migration.ts`, `controllers/tickets/`.
+
+- **Numbering.** `requests/.ticket-counter` (no `.json`, so `listAll` never
+  reads it), updated with `modifyJsonFile` under a lock; intake is also
+  serialised in-process. Seeded from — and never below — the highest
+  `ticketNumber` on disk, so a lost counter file cannot reuse a number.
+- **Owner only.** chat-v2: `senderType === 'user'` with no
+  `authorAgentSession` / `remoteAgentSession` marker and no agent-reply
+  source (the #786 rule). Legacy chat: no `X-Agent-Session`. Slack: no
+  `authorAgentSession`, and — when the Cloud app's installer is known — the
+  author must be that user (other people in the workspace do not file tickets
+  in Phase 1; self-hosted socket mode, installer unknown, = any human).
+- **Gate.** Trivial acks, file-only, `query` / `L0` intent, duplicates, and
+  follow-ups (append to the thread's open ticket's `discussion`). Length gate
+  counts CJK characters twice (the old 12-char gate dropped most Chinese asks:
+  「把首页改成蓝色」 is 7 characters). A thread whose ticket was dismissed
+  stays quiet; a thread whose ticket is `done` may open a new one.
+- **Source ids.** Legacy bridge keeps `slack-<ch>-<root>[-msg-<ts>]` and the
+  `slack` tag (SLA unchanged) — the `slack` tag only when the orchestrator is
+  the one answering. Team channels use `slackch-…`, agent DMs `slackdm-…`,
+  non-orc chat-v2 `chatv2t-…`: the SLA subscriber closes any open Request whose
+  source starts with `slack-` / `chatv2-` on the next reply in that thread, and
+  must not do that to tickets. Orc-DM chat-v2 keeps `chatv2-` + `chat-v2` tag.
+- **Decompose.** Skips a ticket whose `assignee` is an agent other than the
+  orchestrator (that agent plans it); orc tickets decompose as before.
+- **Shared rooms.** Every machine sees a shared-room message; only the machine
+  that owns it files the ticket: a team channel's own machine, or in an ad-hoc
+  room the machine whose agent is @'d / handed it / must answer.
+- **Receipts.** One per ticket (posted only on `created`), in the same thread,
+  after intake returns (delivery never waits on Slack). Slack: through
+  SlackService — the workspace bot in team channels / legacy bridge, the
+  agent's own bot in its DMs and in private ad-hoc rooms. Text:
+  「已记成 TKT-012 · 不用记？回复「不用记」」. A Block Kit 不用记 button is added
+  only in socket mode (`supportsInteractivity()`): on the Cloud transport Slack
+  sends button clicks to Cloud, which does not relay them. chat-v2: a
+  `system_note` row under the owner's message with
+  `metadata.ticketReceipt = { ticketId, tkt, status, dismissPath }`.
+- **不用记.** A reply 「不用记」 (or 别记 / don't track …) in the thread — or
+  top-level within 30 min in the same conversation — or
+  `POST /api/tickets/:id/dismiss` (owner only: refused with
+  `X-Agent-Session`), or the socket-mode button. Cancels + tags `dismissed`,
+  edits the receipt to 「TKT-012 已取消记录」 (Slack `chat.update`, chat-v2
+  `updateSystemMessage`). A receipt that lands after the dismissal is edited
+  as soon as it lands.
+- **Linking.** Delivered copies carry
+  `[TICKET:TKT-012 <id>] …加上 --request-id <id>`: chat-v2 via
+  `metadata.ticketMarker` rendered by the dispatcher (the stored row is not
+  changed), queue deliveries (legacy chat / bridge) appended to the text.
+  `addToPool(wi, { creatorSession })` — the controller passes
+  `X-Agent-Session` — fills `requestId` from the markers in that session's
+  in-flight turn when exactly one ticket is referenced (two tickets in one
+  turn = ambiguous = not linked), and records
+  `metadata.requestIdSource = 'in-flight-turn'`. The marker in the delivered
+  text *is* the message → ticket mapping, so it survives restarts with the
+  tracker's own state. `--request-id` accepts the id or `TKT-123`
+  (`/task-pool/add` resolves it; unknown → 400 `unknown_ticket`) on
+  `create-task`, `team-leader/delegate-task`, `team-leader/decompose-goal`
+  (and `orchestrator/delegate-task`, `break-down-request`, which had it).
+- **Mobile / portal.** chat-v2 REST from the phone relay carries
+  `X-Crewly-Client: mobile` → origin `mobile`; the portal relay RPC →
+  `portal`. `/tickets` GET and `/tickets/…/dismiss` POST are on the mobile
+  relay allowlist.
+- **Archive.** Runs on boot through the pool's own `PoolStorage` cache (a
+  later debounced flush cannot write archived items back). Archive written
+  first, merged by id (append-only; an unreadable existing archive is never
+  overwritten — a new file is written beside it), then items leave the pool,
+  then the marker. Claims are left as they are. Items with no parseable date
+  are kept. Counts are logged and stored in the marker.
 
 ### Out of scope for Phase 1
 

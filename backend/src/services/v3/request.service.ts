@@ -206,6 +206,16 @@ export class RequestService {
     this.taskPoolService = svc;
   }
 
+  /**
+   * Absolute path of the directory Request files live in. The ticket intake
+   * keeps its number counter next to them so numbering is per data dir.
+   *
+   * @returns The requests directory
+   */
+  public getRequestsDir(): string {
+    return this.requestsDir;
+  }
+
   // ---------------------------------------------------------------------------
   // File helpers
   // ---------------------------------------------------------------------------
@@ -440,6 +450,10 @@ export class RequestService {
     if (updates.totalOutputTokens !== undefined) request.totalOutputTokens = updates.totalOutputTokens;
     if (updates.totalCost !== undefined) request.totalCost = updates.totalCost;
     if (updates.ownerAgent !== undefined) request.ownerAgent = updates.ownerAgent;
+    if (updates.kind !== undefined) request.kind = updates.kind;
+    if (updates.assignee !== undefined) request.assignee = updates.assignee;
+    if (updates.receipt !== undefined) request.receipt = updates.receipt;
+    if (updates.discussion !== undefined) request.discussion = updates.discussion;
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);
