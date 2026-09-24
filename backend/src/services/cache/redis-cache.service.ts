@@ -109,13 +109,18 @@ export class RedisCacheService {
 				10
 			);
 			const password = process.env[REDIS_CONSTANTS.ENV.REDIS_PASSWORD] || undefined;
+			const redisConfigured = !!(redisUrl || process.env[REDIS_CONSTANTS.ENV.REDIS_HOST]);
 
 			const options: RedisOptions = {
 				connectTimeout: REDIS_CONSTANTS.CONNECTION.CONNECT_TIMEOUT,
 				maxRetriesPerRequest: REDIS_CONSTANTS.CONNECTION.MAX_RETRIES,
 				retryStrategy: (times: number) => {
 					if (times > REDIS_CONSTANTS.CONNECTION.MAX_RETRIES) {
-						logger.warn('Redis max retries exceeded, falling back to memory cache');
+						// Most installs never run Redis; only a Redis someone
+						// configured is worth a warning when it cannot be reached.
+						const message = 'Redis max retries exceeded, falling back to memory cache';
+						if (redisConfigured) logger.warn(message);
+						else logger.info(`${message} (no REDIS_URL / REDIS_HOST set)`);
 						return null; // stop retrying
 					}
 					return REDIS_CONSTANTS.CONNECTION.RETRY_DELAY;

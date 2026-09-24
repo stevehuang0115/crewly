@@ -95,14 +95,21 @@ export class VersionCheckService {
 	 * Fetches the latest version of Crewly from the npm registry.
 	 * Uses the cached result if it is still fresh (within CACHE_TTL_MS).
 	 *
+	 * A cached "latest" older than the running version is stale by definition
+	 * (the machine was just upgraded past it), so it is re-fetched rather than
+	 * reported for up to a day (2026-09-24: /health said latest 1.20.108 on
+	 * 1.20.109).
+	 *
+	 * @param currentVersion - The running version, when known
 	 * @returns The latest version string, or null if the request failed
 	 */
-	async getLatestVersion(): Promise<string | null> {
+	async getLatestVersion(currentVersion?: string): Promise<string | null> {
 		// Check cache first
 		const cached = this.getCachedResult();
 		if (cached) {
 			const age = Date.now() - new Date(cached.checkedAt).getTime();
-			if (age < VERSION_CHECK_CONSTANTS.CACHE_TTL_MS) {
+			const behindUs = !!currentVersion && this.isNewerVersion(currentVersion, cached.latestVersion);
+			if (age < VERSION_CHECK_CONSTANTS.CACHE_TTL_MS && !behindUs) {
 				return cached.latestVersion;
 			}
 		}
@@ -146,7 +153,7 @@ export class VersionCheckService {
 	 */
 	async checkForUpdate(): Promise<VersionCheckResult> {
 		const currentVersion = this.getLocalVersion();
-		const latestVersion = await this.getLatestVersion();
+		const latestVersion = await this.getLatestVersion(currentVersion);
 
 		const updateAvailable =
 			latestVersion !== null && this.isNewerVersion(latestVersion, currentVersion);

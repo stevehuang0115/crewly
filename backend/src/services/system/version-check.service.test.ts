@@ -134,6 +134,26 @@ describe('VersionCheckService', () => {
 			const result = await service.getLatestVersion();
 			expect(result).toBe('2.0.0');
 		});
+
+		it('should re-fetch a fresh cache that is older than the running version', async () => {
+			const service = VersionCheckService.getInstance();
+			jest.spyOn(service, 'getCachedResult').mockReturnValue({
+				latestVersion: '1.20.108',
+				checkedAt: new Date().toISOString(),
+			});
+			jest.spyOn(service, 'writeCacheResult').mockImplementation(() => {});
+			const mockFetch = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: '1.20.109' }),
+			} as Response);
+
+			expect(await service.getLatestVersion('1.20.109')).toBe('1.20.109');
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+			// Same running version as the cache: the fresh cache is used.
+			mockFetch.mockClear();
+			expect(await service.getLatestVersion('1.20.108')).toBe('1.20.108');
+			expect(mockFetch).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('checkForUpdate', () => {
