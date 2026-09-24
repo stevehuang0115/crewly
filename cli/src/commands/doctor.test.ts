@@ -152,9 +152,14 @@ describe('collectDoctorChecks', () => {
 describe('collectDoctorChecks — Claude fresh install', () => {
 	const base = () => ({ packageRoot: tmp, tryLoad: () => undefined, platform: 'darwin' as const, homeDir: home });
 
-	it('fails the user check as root, with the run-as-a-normal-user hint', async () => {
-		const checks = await collectDoctorChecks({ ...base(), which: whichOf(), getuid: () => 0, env: {} });
+	it('fails the user check as root when claude is installed, with the run-as-a-normal-user hint', async () => {
+		const checks = await collectDoctorChecks({ ...base(), which: whichOf('claude'), getuid: () => 0, env: {} });
 		expect(byName(checks, 'user')).toMatchObject({ status: 'fail', hint: 'Run Crewly as a normal (non-root) user.' });
+	});
+
+	it('only warns about root when claude is not installed (other runtimes run as root)', async () => {
+		const checks = await collectDoctorChecks({ ...base(), which: whichOf('codex'), getuid: () => 0, env: {} });
+		expect(byName(checks, 'user')).toMatchObject({ status: 'warn' });
 	});
 
 	it('passes the user check as root when IS_SANDBOX=1, and as a normal user', async () => {

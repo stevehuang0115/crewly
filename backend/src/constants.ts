@@ -1115,17 +1115,6 @@ export const GEMINI_FORCE_RESTART_PATTERNS: RegExp[] = [
 ];
 
 /**
- * Claude Code fatal error patterns that indicate the CLI is stuck in an
- * unrecoverable state. Unlike transient API errors, these require an
- * immediate restart — no retry will resolve them.
- *
- * Example: When conversation history gets compacted and thinking blocks
- * are modified, the Claude API permanently rejects all subsequent requests
- * with a 400 error. The only recovery is to kill and restart the session.
- *
- * Used by RuntimeExitMonitorService to detect stuck Claude Code sessions.
- */
-/**
  * Claude Code start-up states that cannot resolve without the user, so the
  * agent start must fail fast with an actionable error instead of waiting out
  * the readiness timeout and every fallback (about 5 minutes before this).
@@ -1152,6 +1141,17 @@ export const CLAUDE_STARTUP_CONSTANTS = {
 	},
 } as const;
 
+/**
+ * Claude Code fatal error patterns that indicate the CLI is stuck in an
+ * unrecoverable state. Unlike transient API errors, these require an
+ * immediate restart — no retry will resolve them.
+ *
+ * Example: When conversation history gets compacted and thinking blocks
+ * are modified, the Claude API permanently rejects all subsequent requests
+ * with a 400 error. The only recovery is to kill and restart the session.
+ *
+ * Used by RuntimeExitMonitorService to detect stuck Claude Code sessions.
+ */
 export const CLAUDE_FATAL_PATTERNS: RegExp[] = [
 	// Thinking block corruption: once modified, every subsequent API call fails with 400
 	/thinking.*blocks.*cannot be modified/i,

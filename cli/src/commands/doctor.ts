@@ -137,13 +137,17 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 	// 2. Node
 	checks.push({ name: 'node', status: 'ok', detail: `${process.version} (${process.execPath}, ${process.platform}-${process.arch})` });
 
-	// 2b. User — Claude Code agents cannot launch as root
+	// 2b. User — Claude Code agents cannot launch as root. Other runtimes
+	// (e.g. Codex on a server) do run as root, so this only fails when claude
+	// is installed; otherwise it is a warning.
 	const env = deps.env ?? process.env;
+	const which = deps.which ?? isOnPath;
+	const claudeInstalled = which(CLAUDE_SETUP.BIN);
 	const uid = (deps.getuid ?? process.getuid)?.();
 	if (uid === 0 && env[CLAUDE_SETUP.SANDBOX_ENV] !== '1') {
 		checks.push({
 			name: 'user',
-			status: 'fail',
+			status: claudeInstalled ? 'fail' : 'warn',
 			detail: 'running as root — Claude Code refuses to start agents under root/sudo',
 			hint: 'Run Crewly as a normal (non-root) user.',
 		});
@@ -183,8 +187,7 @@ export async function collectDoctorChecks(deps: DoctorDeps = {}): Promise<Doctor
 	}
 
 	// 4b. Claude Code first run (only when claude is installed; other runtimes are fine)
-	const which = deps.which ?? isOnPath;
-	if (which(CLAUDE_SETUP.BIN)) {
+	if (claudeInstalled) {
 		const configDir = env[CLAUDE_SETUP.CONFIG_DIR_ENV] || homeDir;
 		const configFile = path.join(configDir, CLAUDE_SETUP.CONFIG_FILE);
 		if (isClaudeOnboarded(configFile)) {
