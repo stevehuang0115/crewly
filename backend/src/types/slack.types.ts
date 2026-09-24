@@ -423,6 +423,12 @@ export interface SlackOutgoingMessage {
    * same reply is not stored twice.
    */
   skipChatV2Mirror?: boolean;
+  /**
+   * The caller is probing candidate channels and expects some to be
+   * unreachable (notification fallback). Such failures do not count
+   * toward the outbound reachability health.
+   */
+  reachabilityProbe?: boolean;
 }
 
 /**
@@ -712,6 +718,30 @@ export interface SlackServiceStatus {
   degraded?: boolean;
   /** Why the integration is degraded, e.g. "invalid_auth" or "ECONNREFUSED". */
   degradedReason?: string;
+  /**
+   * Outbound posts the connected bot could not deliver because it cannot see
+   * the channel (`channel_not_found` / `not_in_channel`), counted since the
+   * last successful post. Present only while such failures are outstanding.
+   * Reaching the threshold sets `degraded` (#753).
+   */
+  deliveryFailures?: SlackDeliveryFailureSummary;
+}
+
+/**
+ * Outstanding outbound reachability failures (see
+ * {@link SlackServiceStatus.deliveryFailures}).
+ */
+export interface SlackDeliveryFailureSummary {
+  /** Consecutive failing posts since the last success. */
+  consecutive: number;
+  /** Slack error code of the latest failure. */
+  code: string;
+  /** Distinct channel ids that failed (most recent last, capped). */
+  channels: string[];
+  /** When the first failure of this run happened (ISO). */
+  since: string;
+  /** When the latest failure happened (ISO). */
+  lastAt: string;
 }
 
 /**

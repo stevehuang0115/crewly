@@ -564,6 +564,17 @@ export const THREAD_STATUS_CONSTANTS = {
 	STALE_TIMEOUT_MINUTES: 30,
 	/** Retention period in hours for terminal entries before cleanup */
 	CLEANUP_RETENTION_HOURS: 24,
+	/**
+	 * How long a compact tombstone of a cleaned-up terminal entry is kept.
+	 * The restart resume scan looks back 24h by thread-file mtime, which can
+	 * be later than the entry's last update (an agent posting a completion
+	 * report into the thread). Without a record the thread read as
+	 * "unreplied" on every restart (#757), so this must comfortably exceed
+	 * that lookback.
+	 */
+	TOMBSTONE_RETENTION_HOURS: 24 * 30,
+	/** Maximum tombstones kept (oldest dropped first) */
+	MAX_TOMBSTONES: 5000,
 	/** Debounce interval in ms for persisting state to disk */
 	PERSIST_DEBOUNCE_MS: 100,
 	/** Maximum number of delivery retries before marking as error */
@@ -814,8 +825,10 @@ export const SLACK_CLOUD_CONSTANTS = {
 	WORKSPACE_PATH: '/workspace',
 	/** GET → every workspace on the account (redacted) */
 	WORKSPACES_PATH: '/workspaces',
-	/** A Cloud config appearing this soon after boot still counts as the boot decision (replaces a self-hosted socket) */
+	/** A Cloud config appearing this soon after boot still counts as the boot decision — only when the recorded source is `cloud` */
 	BOOT_PRECEDENCE_WINDOW_MS: 5 * 60 * 1000,
+	/** Last Slack source that connected (`env` | `cloud`) under CREWLY_HOME; decides boot precedence when both exist (#753) */
+	SOURCE_PREFERENCE_FILENAME: 'slack-source.json',
 	/** `PUT /instances/:instanceId` — registry heartbeat */
 	INSTANCES_PATH: '/instances',
 	/** `POST` — provision per-agent apps for a team roster */
@@ -842,7 +855,7 @@ export const SLACK_CLOUD_CONSTANTS = {
 	QUEUE_WAIT_MAX_RETRIES: 24,
 	/** HTTP timeout for Cloud calls (ms) */
 	REQUEST_TIMEOUT_MS: 15_000,
-	/** `env` = only local tokens, `cloud` = only Cloud, unset = Cloud wins when both exist */
+	/** `env` = only local tokens, `cloud` = only Cloud, unset = the last connected source (else the self-hosted app) wins when both exist (#753) */
 	SOURCE_ENV_VAR: 'CREWLY_SLACK_SOURCE',
 	/** `1`/`true` marks this instance as the account's primary (DM / unmapped-channel target) */
 	PRIMARY_ENV_VAR: 'CREWLY_SLACK_PRIMARY',
@@ -1763,6 +1776,21 @@ export const NON_FATAL_UNHANDLED_REJECTION_PATTERNS = [
  * Controls automatic reconnection when network drops cause the WebSocket
  * to die and Bolt's built-in reconnect fails to recover.
  */
+/**
+ * Outbound reachability health (#753). Posts failing because the connected
+ * bot cannot see the channel usually mean the wrong Slack app is connected
+ * (self-hosted vs Crewly Cloud are different bot users), which leaves the
+ * socket healthy while every reply is lost.
+ */
+export const SLACK_DELIVERY_HEALTH_CONSTANTS = {
+	/** Slack error codes meaning "this bot cannot see that channel" */
+	UNREACHABLE_ERROR_CODES: ['channel_not_found', 'not_in_channel'] as readonly string[],
+	/** Consecutive unreachable posts (with no success in between) before status reports degraded */
+	FAILURES_BEFORE_DEGRADED: 3,
+	/** Distinct failing channel ids kept for the status payload */
+	MAX_TRACKED_CHANNELS: 5,
+} as const;
+
 export const SLACK_RECONNECT_CONSTANTS = {
 	/** Initial delay before first reconnection attempt (ms) */
 	INITIAL_DELAY_MS: 2_000,

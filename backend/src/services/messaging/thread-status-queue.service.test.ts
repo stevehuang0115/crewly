@@ -25,6 +25,8 @@ jest.mock('../../constants.js', () => ({
     MAX_ENTRIES: 5, // Small for testing overflow
     STALE_TIMEOUT_MINUTES: 30,
     CLEANUP_RETENTION_HOURS: 24,
+    TOMBSTONE_RETENTION_HOURS: 720,
+    MAX_TOMBSTONES: 3, // Small for testing overflow
     PERSIST_DEBOUNCE_MS: 10, // Fast for tests
     MAX_RETRY_COUNT: 3,
     MAX_PREVIEW_LENGTH: 200,
@@ -497,6 +499,105 @@ describe('ThreadStatusQueueService', () => {
       const count = svc.cleanup(9999); // Very long retention so none are removed by age
       expect(count).toBeGreaterThanOrEqual(1);
       expect(svc.getStats().total).toBeLessThanOrEqual(5);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Tombstones (#757)
+  // ---------------------------------------------------------------------------
+
+  describe('tombstones of cleaned-up terminal entries (#757)', () => {
+    const HOUR = 60 * 60 * 1000;
+
+    /** Track + close a thread, then age its last update. */
+    function closed(threadKey: string, ageMs: number, conversationId = `conv-${threadKey}`): void {
+      svc.trackInbound(makeInput({ threadKey, conversationId }));
+      svc.markReplied(threadKey, 'replied_completed');
+      (svc.get(threadKey) as { updatedAt: string }).updatedAt = new Date(Date.now() - ageMs).toISOString();
+    }
+
+    it('keeps a tombstone when cleanup removes a terminal entry by age', () => {
+      closed('ts-1', 25 * HOUR, 'conv-a');
+      expect(svc.getTombstone('ts-1')).toBeNull();
+
+      expect(svc.cleanup(24)).toBe(1);
+
+      expect(svc.get('ts-1')).toBeNull();
+      expect(svc.getTombstone('ts-1')).toMatchObject({ threadKey: 'ts-1', conversationId: 'conv-a', status: 'replied_completed' });
+      expect(svc.getTombstoneByConversationId('conv-a')?.threadKey).toBe('ts-1');
+      expect(svc.getTombstoneByConversationId('conv-unknown')).toBeNull();
+    });
+
+    it('keeps a tombstone for entries pruned by MAX_ENTRIES', () => {
+      for (let i = 0; i < 6; i++) closed(`cap-${i}`, (10 - i) * 1000);
+      svc.cleanup(9999);
+      expect(svc.get('cap-0')).toBeNull();
+      expect(svc.getTombstone('cap-0')?.status).toBe('replied_completed');
+    });
+
+    it('does not tombstone non-terminal entries', () => {
+      svc.trackInbound(makeInput({ threadKey: 'open-1' }));
+      (svc.get('open-1') as { updatedAt: string }).updatedAt = new Date(Date.now() - 48 * HOUR).toISOString();
+      svc.cleanup(24);
+      expect(svc.get('open-1')).not.toBeNull();
+      expect(svc.getTombstone('open-1')).toBeNull();
+    });
+
+    it('a new inbound message on the thread supersedes its tombstone', () => {
+      closed('re-1', 25 * HOUR);
+      svc.cleanup(24);
+      svc.trackInbound(makeInput({ threadKey: 're-1' }));
+      expect(svc.getTombstone('re-1')).toBeNull();
+      expect(svc.get('re-1')?.status).toBe('enqueued');
+    });
+
+    it('drops tombstones past TOMBSTONE_RETENTION_HOURS and beyond MAX_TOMBSTONES (oldest first)', () => {
+      closed('old', 721 * HOUR);
+      for (let i = 0; i < 4; i++) closed(`t-${i}`, (30 - i) * HOUR);
+      svc.cleanup(24);
+      expect(svc.getTombstone('old')).toBeNull();
+      // Cap is 3: the oldest of the four recent ones goes.
+      expect(svc.getTombstone('t-0')).toBeNull();
+      expect(['t-1', 't-2', 't-3'].every((k) => svc.getTombstone(k) !== null)).toBe(true);
+    });
+
+    it('persists tombstones and loads them back', async () => {
+      closed('p-1', 25 * HOUR, 'conv-p');
+      svc.cleanup(24);
+      mockAtomicWriteFile.mockClear();
+      await svc.persist();
+      const written = JSON.parse(mockAtomicWriteFile.mock.calls[0][1] as string) as PersistedThreadStatusState;
+      expect(written.tombstones).toEqual([expect.objectContaining({ threadKey: 'p-1', conversationId: 'conv-p' })]);
+
+      const reloaded = createService();
+      mockSafeReadJson.mockResolvedValue(written);
+      await reloaded.loadPersistedState();
+      expect(reloaded.getTombstone('p-1')?.status).toBe('replied_completed');
+      reloaded.destroy();
+    });
+
+    it('loads an older file with no tombstones, and skips malformed or superseded ones', async () => {
+      mockSafeReadJson.mockResolvedValue({ version: PERSISTED_THREAD_STATUS_VERSION, entries: [], lastCleanupAt: 'x' });
+      await svc.loadPersistedState();
+      expect(svc.getTombstone('anything')).toBeNull();
+
+      mockSafeReadJson.mockResolvedValue({
+        version: PERSISTED_THREAD_STATUS_VERSION,
+        entries: [
+          { id: 'e', source: 'slack', threadKey: 'live', conversationId: 'c', status: 'enqueued', receivedAt: 'x', updatedAt: 'x', messagePreview: '', retryCount: 0 },
+        ],
+        lastCleanupAt: 'x',
+        tombstones: [
+          { threadKey: 'good', status: 'replied_completed', updatedAt: '2026-09-20T04:14:00Z', removedAt: '2026-09-21T05:08:00Z' },
+          { threadKey: 'bad-status', status: 'nope', updatedAt: 'x', removedAt: 'x' },
+          { threadKey: 'live', status: 'replied_completed', updatedAt: 'x', removedAt: 'x' },
+          'garbage',
+        ],
+      });
+      await svc.loadPersistedState();
+      expect(svc.getTombstone('good')).not.toBeNull();
+      expect(svc.getTombstone('bad-status')).toBeNull();
+      expect(svc.getTombstone('live')).toBeNull();
     });
   });
 

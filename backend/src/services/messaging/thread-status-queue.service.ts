@@ -21,6 +21,7 @@ import {
   isPersistedThreadStatusState,
   isTerminalStatus,
   isReplyStatus,
+  isThreadStatusTombstone,
 } from '../../types/thread-status.types.js';
 import type {
   ThreadStatus,
@@ -29,6 +30,7 @@ import type {
   ThreadStatusStats,
   PersistedThreadStatusState,
   ReplyStatus,
+  ThreadStatusTombstone,
 } from '../../types/thread-status.types.js';
 
 /**
@@ -132,6 +134,13 @@ export class ThreadStatusQueueService {
   /** All tracked thread entries, keyed by threadKey for O(1) lookup */
   private entries: Map<string, ThreadStatusEntry> = new Map();
 
+  /**
+   * Compact records of terminal entries removed by cleanup, keyed by
+   * threadKey. "No entry" alone cannot tell a closed thread from an
+   * untracked one; the tombstone can (#757).
+   */
+  private tombstones: Map<string, ThreadStatusTombstone> = new Map();
+
   /** Path to the persistence file, or null if init() has not been called */
   private persistPath: string | null = null;
 
@@ -219,10 +228,17 @@ export class ThreadStatusQueueService {
     for (const entry of state.entries) {
       this.entries.set(entry.threadKey, entry);
     }
+    this.tombstones.clear();
+    for (const tombstone of Array.isArray(state.tombstones) ? state.tombstones : []) {
+      if (isThreadStatusTombstone(tombstone) && !this.entries.has(tombstone.threadKey)) {
+        this.tombstones.set(tombstone.threadKey, tombstone);
+      }
+    }
     this.lastCleanupAt = state.lastCleanupAt;
 
     this.logger.info('Loaded persisted state', {
       entryCount: this.entries.size,
+      tombstoneCount: this.tombstones.size,
       lastCleanupAt: this.lastCleanupAt,
     });
   }
@@ -257,6 +273,8 @@ export class ThreadStatusQueueService {
     };
 
     this.entries.set(input.threadKey, entry);
+    // A live entry supersedes any record of an earlier, closed one.
+    this.tombstones.delete(input.threadKey);
     this.schedulePersist();
 
     this.logger.info('Tracked inbound thread', {
@@ -501,6 +519,33 @@ export class ThreadStatusQueueService {
   }
 
   /**
+   * The tombstone of a closed thread whose entry cleanup removed.
+   *
+   * @param threadKey - Platform-specific thread identifier
+   * @returns The tombstone, or null when none is kept (never tracked, still
+   *   live, or aged past TOMBSTONE_RETENTION_HOURS)
+   */
+  getTombstone(threadKey: string): ThreadStatusTombstone | null {
+    return this.tombstones.get(threadKey) ?? null;
+  }
+
+  /**
+   * The most recent tombstone for a conversation id.
+   *
+   * @param conversationId - Conversation id of the removed entry
+   * @returns The tombstone, or null
+   */
+  getTombstoneByConversationId(conversationId: string): ThreadStatusTombstone | null {
+    let best: ThreadStatusTombstone | null = null;
+    for (const tombstone of this.tombstones.values()) {
+      if (tombstone.conversationId === conversationId && (!best || tombstone.updatedAt > best.updatedAt)) {
+        best = tombstone;
+      }
+    }
+    return best;
+  }
+
+  /**
    * Finds a thread status entry by its queueMessageId.
    * Returns the most recently updated entry if multiple match.
    *
@@ -558,6 +603,7 @@ export class ThreadStatusQueueService {
    */
   cleanup(retentionHours: number = THREAD_STATUS_CONSTANTS.CLEANUP_RETENTION_HOURS): number {
     const cutoff = Date.now() - retentionHours * 60 * 60 * 1000;
+    const removedAt = new Date().toISOString();
     let count = 0;
 
     // Remove terminal entries older than retention period
@@ -566,6 +612,7 @@ export class ThreadStatusQueueService {
         const updatedTime = new Date(entry.updatedAt).getTime();
         if (updatedTime < cutoff) {
           this.entries.delete(key);
+          this.addTombstone(entry, removedAt);
           count++;
         }
       }
@@ -577,12 +624,16 @@ export class ThreadStatusQueueService {
         .filter(([, e]) => isTerminalStatus(e.status))
         .sort(([, a], [, b]) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime());
 
-      for (const [key] of terminalEntries) {
+      for (const [key, entry] of terminalEntries) {
         if (this.entries.size <= THREAD_STATUS_CONSTANTS.MAX_ENTRIES) break;
         this.entries.delete(key);
+        this.addTombstone(entry, removedAt);
         count++;
       }
     }
+
+    const tombstonesPruned = this.pruneTombstones();
+    if (tombstonesPruned > 0) this.schedulePersist();
 
     if (count > 0) {
       this.lastCleanupAt = new Date().toISOString();
@@ -909,6 +960,48 @@ export class ThreadStatusQueueService {
   }
 
   /**
+   * Keep a compact record of a terminal entry cleanup is removing.
+   *
+   * @param entry - The entry being removed
+   * @param removedAt - Removal time (ISO)
+   */
+  private addTombstone(entry: ThreadStatusEntry, removedAt: string): void {
+    this.tombstones.set(entry.threadKey, {
+      threadKey: entry.threadKey,
+      ...(entry.conversationId ? { conversationId: entry.conversationId } : {}),
+      status: entry.status,
+      updatedAt: entry.updatedAt,
+      removedAt,
+    });
+  }
+
+  /**
+   * Drop tombstones past TOMBSTONE_RETENTION_HOURS (by the entry's last
+   * update), then the oldest beyond MAX_TOMBSTONES.
+   *
+   * @returns Number of tombstones dropped
+   */
+  private pruneTombstones(): number {
+    const cutoff = Date.now() - THREAD_STATUS_CONSTANTS.TOMBSTONE_RETENTION_HOURS * 60 * 60 * 1000;
+    let dropped = 0;
+    for (const [key, tombstone] of this.tombstones) {
+      if (new Date(tombstone.updatedAt).getTime() < cutoff) {
+        this.tombstones.delete(key);
+        dropped++;
+      }
+    }
+    const excess = this.tombstones.size - THREAD_STATUS_CONSTANTS.MAX_TOMBSTONES;
+    if (excess > 0) {
+      const oldest = Array.from(this.tombstones.values())
+        .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime())
+        .slice(0, excess);
+      for (const tombstone of oldest) this.tombstones.delete(tombstone.threadKey);
+      dropped += oldest.length;
+    }
+    return dropped;
+  }
+
+  /**
    * Schedules a debounced persistence write to disk.
    * Multiple mutations within PERSIST_DEBOUNCE_MS are batched into a single write.
    */
@@ -940,6 +1033,7 @@ export class ThreadStatusQueueService {
       version: PERSISTED_THREAD_STATUS_VERSION,
       entries: Array.from(this.entries.values()),
       lastCleanupAt: this.lastCleanupAt,
+      tombstones: Array.from(this.tombstones.values()),
     };
 
     await atomicWriteFile(this.persistPath, JSON.stringify(state, null, 2));

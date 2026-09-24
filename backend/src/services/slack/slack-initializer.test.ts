@@ -19,12 +19,20 @@ import {
   refreshSlackCloudConfig,
   getActiveSlackSource,
   resetSlackInitializerState,
+  chooseSlackSource,
+  switchSlackSource,
 } from './slack-initializer.js';
+import * as sourcePreference from './slack-source-preference.service.js';
 import { getSlackTeamChannelService, setSlackTeamChannelService } from './slack-team-channel.service.js';
 import { SlackCloudConfigService, setSlackCloudConfigService, getSlackCloudConfigService } from './slack-cloud-config.service.js';
 import { getSlackInstanceRegistryService } from './slack-instance-registry.service.js';
 import { getSlackAgentIdentityService, setSlackAgentIdentityService } from './slack-agent-identity.service.js';
 import type { SlackCloudConfig } from '../../types/slack.types.js';
+
+// The orchestrator bridge imports pdf-parse, whose pdfjs build needs DOM
+// globals (DOMMatrix) that some Node versions lack at load time. Nothing
+// here parses a PDF.
+jest.mock('pdf-parse', () => ({ PDFParse: jest.fn() }));
 
 // startSlackTeamChannels pulls its collaborators lazily; give it fakes so
 // it never opens the chat database or reads real team storage.
@@ -389,14 +397,48 @@ describe('Slack Initializer', () => {
         expect(resolved?.config).toMatchObject({ botToken: 'xoxb-cloud', transport: 'cloud', botUserId: 'UBOT', socketMode: false });
       });
 
-      it('prefers Cloud over env tokens when both exist (migration)', async () => {
+      it('#753: keeps the self-hosted app when both exist and no source was recorded (no silent switch to Cloud)', async () => {
         process.env.SLACK_BOT_TOKEN = 'xoxb-env';
         process.env.SLACK_APP_TOKEN = 'xapp-env';
         process.env.SLACK_SIGNING_SECRET = 'secret-env';
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue(null);
+        installCloudConfig(CLOUD_CONFIG);
+        const resolved = await resolveSlackConfig();
+        expect(resolved?.source).toBe('env');
+        expect(resolved?.config.botToken).toBe('xoxb-env');
+        expect(resolved?.fallback?.source).toBe('cloud');
+      });
+
+      it('#753: saved self-hosted credentials (the issue setup) are not outranked by Cloud on restart', async () => {
+        jest.spyOn(slackCredentials, 'loadSlackCredentials').mockResolvedValue({
+          botToken: 'xoxb-saved', appToken: 'xapp-saved', signingSecret: 's', socketMode: true,
+        });
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue({ source: 'env', recordedAt: 'x', reason: 'connect-route' });
+        installCloudConfig(CLOUD_CONFIG);
+        const resolved = await resolveSlackConfig();
+        expect(resolved?.source).toBe('env');
+        expect(resolved?.config).toMatchObject({ botToken: 'xoxb-saved', socketMode: true });
+      });
+
+      it('keeps Cloud when Cloud is the recorded source and both exist', async () => {
+        process.env.SLACK_BOT_TOKEN = 'xoxb-env';
+        process.env.SLACK_APP_TOKEN = 'xapp-env';
+        process.env.SLACK_SIGNING_SECRET = 'secret-env';
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue({ source: 'cloud', recordedAt: 'x', reason: 'boot' });
         installCloudConfig(CLOUD_CONFIG);
         const resolved = await resolveSlackConfig();
         expect(resolved?.source).toBe('cloud');
         expect(resolved?.config.botToken).toBe('xoxb-cloud');
+        expect(resolved?.fallback?.source).toBe('env');
+      });
+
+      it('uses the only available source even when the other one was recorded', async () => {
+        jest.spyOn(slackCredentials, 'loadSlackCredentials').mockResolvedValue(null);
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue({ source: 'env', recordedAt: 'x', reason: 'boot' });
+        installCloudConfig(CLOUD_CONFIG);
+        const resolved = await resolveSlackConfig();
+        expect(resolved?.source).toBe('cloud');
+        expect(resolved?.fallback).toBeUndefined();
       });
 
       it('CREWLY_SLACK_SOURCE=env keeps the self-hosted app and never asks Cloud', async () => {
@@ -426,6 +468,134 @@ describe('Slack Initializer', () => {
         process.env.SLACK_SIGNING_SECRET = 'secret-env';
         installCloudConfig(null);
         expect((await resolveSlackConfig())?.source).toBe('env');
+      });
+    });
+
+    describe('chooseSlackSource', () => {
+      const LOCAL = { botToken: 'l', appToken: 'a', signingSecret: 's', socketMode: true };
+      const CLOUD = { botToken: 'c', appToken: '', signingSecret: '', socketMode: false, transport: 'cloud' as const };
+      it('returns null when neither exists', () => {
+        expect(chooseSlackSource({ local: null, cloud: null, preferred: 'cloud' })).toBeNull();
+      });
+      it('self-hosted wins by default when both exist', () => {
+        expect(chooseSlackSource({ local: LOCAL, cloud: CLOUD, preferred: null })).toEqual({
+          config: LOCAL, source: 'env', fallback: { config: CLOUD, source: 'cloud' },
+        });
+      });
+      it('the recorded source wins when both exist', () => {
+        expect(chooseSlackSource({ local: LOCAL, cloud: CLOUD, preferred: 'cloud' })?.source).toBe('cloud');
+        expect(chooseSlackSource({ local: LOCAL, cloud: CLOUD, preferred: 'env' })?.source).toBe('env');
+      });
+      it('a single source has no fallback', () => {
+        expect(chooseSlackSource({ local: LOCAL, cloud: null, preferred: 'cloud' })).toEqual({ config: LOCAL, source: 'env' });
+        expect(chooseSlackSource({ local: null, cloud: CLOUD, preferred: 'env' })).toEqual({ config: CLOUD, source: 'cloud' });
+      });
+    });
+
+    describe('boot fallback and source recording (#753)', () => {
+      function envTokens() {
+        process.env.SLACK_BOT_TOKEN = 'xoxb-env';
+        process.env.SLACK_APP_TOKEN = 'xapp-env';
+        process.env.SLACK_SIGNING_SECRET = 'secret-env';
+      }
+
+      it('records the source that connected at boot', async () => {
+        envTokens();
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue(null);
+        const save = jest.spyOn(sourcePreference, 'saveSlackSourcePreference');
+        installCloudConfig(CLOUD_CONFIG);
+        jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);
+        jest
+          .spyOn((await import('./slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+          .mockResolvedValue(undefined);
+        const result = await initializeSlackIfConfigured();
+        expect(result.success).toBe(true);
+        expect(getActiveSlackSource()).toBe('env');
+        expect(save).toHaveBeenCalledWith('env', 'boot');
+      });
+
+      it('falls back to the other source only when the chosen one cannot connect, and records it', async () => {
+        envTokens();
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue(null);
+        const save = jest.spyOn(sourcePreference, 'saveSlackSourcePreference');
+        installCloudConfig(CLOUD_CONFIG);
+        const init = jest.spyOn(SlackService.prototype, 'initialize').mockImplementation(async (config) => {
+          if (config.transport !== 'cloud') throw new Error('invalid_auth');
+        });
+        jest
+          .spyOn((await import('./slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+          .mockResolvedValue(undefined);
+        const result = await initializeSlackIfConfigured();
+        expect(result.success).toBe(true);
+        expect(init).toHaveBeenCalledTimes(2);
+        expect(getActiveSlackSource()).toBe('cloud');
+        expect(save).toHaveBeenCalledWith('cloud', 'fallback');
+      });
+
+      it('reports the original failure when the fallback fails too', async () => {
+        envTokens();
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue(null);
+        installCloudConfig(CLOUD_CONFIG);
+        jest.spyOn(SlackService.prototype, 'initialize').mockImplementation(async (config) => {
+          throw new Error(config.transport === 'cloud' ? 'cloud down' : 'invalid_auth');
+        });
+        const result = await initializeSlackIfConfigured();
+        expect(result).toEqual({ attempted: true, success: false, error: 'invalid_auth' });
+        expect(getActiveSlackSource()).toBeNull();
+      });
+    });
+
+    describe('switchSlackSource (owner choice)', () => {
+      beforeEach(async () => {
+        process.env.SLACK_BOT_TOKEN = 'xoxb-env';
+        process.env.SLACK_APP_TOKEN = 'xapp-env';
+        process.env.SLACK_SIGNING_SECRET = 'secret-env';
+        jest
+          .spyOn((await import('./slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+          .mockResolvedValue(undefined);
+      });
+
+      it('switches from the self-hosted app to Cloud and records the choice', async () => {
+        installCloudConfig(CLOUD_CONFIG);
+        const save = jest.spyOn(sourcePreference, 'saveSlackSourcePreference');
+        const init = jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);
+        jest.spyOn(SlackService.prototype, 'disconnect').mockResolvedValue(undefined);
+        await connectSlack({ config: { botToken: 'xoxb-env', appToken: 'x', signingSecret: 'y', socketMode: true }, source: 'env' });
+        jest.spyOn(SlackService.prototype, 'isConnected').mockReturnValue(true);
+
+        const result = await switchSlackSource('cloud');
+        expect(result).toEqual({ success: true, activeSource: 'cloud' });
+        expect(init).toHaveBeenLastCalledWith(expect.objectContaining({ transport: 'cloud' }));
+        expect(save).toHaveBeenLastCalledWith('cloud', 'owner-choice');
+      });
+
+      it('refuses a source pinned away by CREWLY_SLACK_SOURCE', async () => {
+        installCloudConfig(CLOUD_CONFIG, { CREWLY_SLACK_SOURCE: 'env' });
+        const result = await switchSlackSource('cloud');
+        expect(result.success).toBe(false);
+        expect(result.code).toBe('source_pinned');
+      });
+
+      it('refuses a source with no credentials', async () => {
+        installCloudConfig(null);
+        const result = await switchSlackSource('cloud');
+        expect(result).toMatchObject({ success: false, code: 'source_unavailable' });
+      });
+
+      it('restores the previous connection when the new source cannot connect', async () => {
+        installCloudConfig(CLOUD_CONFIG);
+        const init = jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);
+        jest.spyOn(SlackService.prototype, 'disconnect').mockResolvedValue(undefined);
+        await connectSlack({ config: { botToken: 'xoxb-env', appToken: 'x', signingSecret: 'y', socketMode: true }, source: 'env' });
+        jest.spyOn(SlackService.prototype, 'isConnected').mockReturnValue(true);
+        jest.spyOn(SlackService.prototype, 'getConfig').mockReturnValue({ botToken: 'xoxb-env', appToken: 'x', signingSecret: 'y', socketMode: true });
+        init.mockImplementation(async (config) => {
+          if (config.transport === 'cloud') throw new Error('cloud down');
+        });
+
+        const result = await switchSlackSource('cloud');
+        expect(result).toMatchObject({ success: false, code: 'connect_failed', error: 'cloud down', activeSource: 'env' });
+        expect(init).toHaveBeenLastCalledWith(expect.objectContaining({ botToken: 'xoxb-env' }));
       });
     });
 
@@ -510,11 +680,34 @@ describe('Slack Initializer', () => {
         expect(getActiveSlackSource()).toBe('cloud');
       });
 
-      it('a Cloud config that appears right after an env boot replaces the self-hosted socket (boot race), later ones do not', async () => {
+      it('#753: without a recorded Cloud choice, a Cloud config appearing right after an env boot leaves the self-hosted socket alone', async () => {
+        process.env.SLACK_BOT_TOKEN = 'xoxb-env';
+        process.env.SLACK_APP_TOKEN = 'xapp-env';
+        process.env.SLACK_SIGNING_SECRET = 'secret-env';
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue(null);
+        const { service } = installCloudConfig(null);
+        mockCloud.connected = false;
+        jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);
+        jest
+          .spyOn((await import('./slack-orchestrator-bridge.js')).SlackOrchestratorBridge.prototype, 'initialize')
+          .mockResolvedValue(undefined);
+        const disconnect = jest.spyOn(SlackService.prototype, 'disconnect').mockResolvedValue(undefined);
+        jest.spyOn(SlackService.prototype, 'isConnected').mockReturnValue(true);
+        expect((await initializeSlackIfConfigured()).success).toBe(true);
+
+        mockCloud.connected = true;
+        (service as unknown as { config: SlackCloudConfig }).config = CLOUD_CONFIG;
+        await handleSlackCloudConfigChange(CLOUD_CONFIG);
+        expect(disconnect).not.toHaveBeenCalled();
+        expect(getActiveSlackSource()).toBe('env');
+      });
+
+      it('a Cloud config that appears right after an env boot replaces the self-hosted socket when Cloud is the recorded source (boot race), later ones do not', async () => {
         // Boot: Cloud signed out (token still refreshing) → env tokens win.
         process.env.SLACK_BOT_TOKEN = 'xoxb-env';
         process.env.SLACK_APP_TOKEN = 'xapp-env';
         process.env.SLACK_SIGNING_SECRET = 'secret-env';
+        jest.spyOn(sourcePreference, 'loadSlackSourcePreference').mockResolvedValue({ source: 'cloud', recordedAt: 'x', reason: 'boot' });
         const { service } = installCloudConfig(null);
         mockCloud.connected = false;
         const init = jest.spyOn(SlackService.prototype, 'initialize').mockResolvedValue(undefined);

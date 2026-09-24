@@ -2195,3 +2195,99 @@ describe('SlackService.sendEphemeral', () => {
     await expect(service.sendEphemeral('C1', 'U1', 'hi')).resolves.toBe(false);
   });
 });
+
+describe('SlackService outbound reachability health (#753)', () => {
+  /** Slack Web API error as the SDK throws it. */
+  const slackError = (code: string) => Object.assign(new Error(`An API error occurred: ${code}`), { data: { error: code } });
+
+  /**
+   * A service with a fake client whose postMessage is the given stub.
+   *
+   * @param postMessage - postMessage stub
+   * @returns The service
+   */
+  function withPost(postMessage: jest.Mock) {
+    const service = new SlackService();
+    (service as unknown as { client: unknown }).client = { chat: { postMessage, update: jest.fn() } };
+    (service as unknown as { status: { connected: boolean } }).status.connected = true;
+    return service;
+  }
+
+  it('reports degraded with the reason after repeated channel_not_found, while still connected', async () => {
+    const service = withPost(jest.fn().mockRejectedValue(slackError('channel_not_found')));
+    for (const [i, channelId] of ['C1', 'C2', 'C3'].entries()) {
+      await expect(service.sendMessage({ channelId, text: `m${i}` })).rejects.toThrow('channel_not_found');
+      if (i < 2) expect(service.getStatus().degraded).toBeFalsy();
+    }
+    const status = service.getStatus();
+    expect(status.connected).toBe(true);
+    expect(status.degraded).toBe(true);
+    expect(status.degradedReason).toBe('channel_not_found');
+    expect(status.lastError).toContain('3 consecutive posts failed with channel_not_found');
+    expect(status.deliveryFailures).toMatchObject({ consecutive: 3, code: 'channel_not_found', channels: ['C1', 'C2', 'C3'] });
+  });
+
+  it('counts not_in_channel as well', async () => {
+    const service = withPost(jest.fn().mockRejectedValue(slackError('not_in_channel')));
+    for (let i = 0; i < 3; i++) await service.sendMessage({ channelId: 'C1', text: `m${i}` }).catch(() => undefined);
+    expect(service.getStatus()).toMatchObject({ degraded: true, degradedReason: 'not_in_channel' });
+    expect(service.getStatus().deliveryFailures?.channels).toEqual(['C1']);
+  });
+
+  it('a successful post clears the failures and the degraded flag', async () => {
+    const post = jest.fn().mockRejectedValue(slackError('channel_not_found'));
+    const service = withPost(post);
+    for (let i = 0; i < 3; i++) await service.sendMessage({ channelId: 'C1', text: `m${i}` }).catch(() => undefined);
+    expect(service.getStatus().degraded).toBe(true);
+
+    post.mockResolvedValue({ ts: '1.1' });
+    await service.sendMessage({ channelId: 'C9', text: 'ok' });
+    const status = service.getStatus();
+    expect(status.degraded).toBe(false);
+    expect(status.degradedReason).toBeUndefined();
+    expect(status.deliveryFailures).toBeUndefined();
+  });
+
+  it('a success in between resets the count', async () => {
+    const post = jest.fn();
+    const service = withPost(post);
+    post.mockRejectedValueOnce(slackError('channel_not_found')).mockRejectedValueOnce(slackError('channel_not_found'));
+    post.mockResolvedValueOnce({ ts: '1.1' });
+    post.mockRejectedValueOnce(slackError('channel_not_found')).mockRejectedValueOnce(slackError('channel_not_found'));
+    for (let i = 0; i < 5; i++) await service.sendMessage({ channelId: 'C1', text: `m${i}` }).catch(() => undefined);
+    expect(service.getStatus().degraded).toBeFalsy();
+    expect(service.getStatus().deliveryFailures?.consecutive).toBe(2);
+  });
+
+  it('ignores unrelated errors, agent-bot posts and notification probes', async () => {
+    const post = jest.fn().mockRejectedValue(slackError('ratelimited'));
+    const service = withPost(post);
+    for (let i = 0; i < 4; i++) await service.sendMessage({ channelId: 'C1', text: `r${i}` }).catch(() => undefined);
+    expect(service.getStatus().deliveryFailures).toBeUndefined();
+
+    post.mockRejectedValue(slackError('channel_not_found'));
+    for (let i = 0; i < 4; i++) await service.sendMessage({ channelId: 'C1', text: `a${i}`, botToken: 'xoxb-agent' }).catch(() => undefined);
+    for (let i = 0; i < 4; i++) await service.sendMessage({ channelId: 'C1', text: `p${i}`, reachabilityProbe: true }).catch(() => undefined);
+    expect(service.getStatus().deliveryFailures).toBeUndefined();
+    expect(service.getStatus().degraded).toBeFalsy();
+  });
+
+  it('does not clear an auth degradation on a successful post', () => {
+    const service = withPost(jest.fn());
+    const status = (service as unknown as { status: { degraded?: boolean; degradedReason?: string } }).status;
+    status.degraded = true;
+    status.degradedReason = 'invalid_auth';
+    service.recordDeliveryOutcome('C1', slackError('channel_not_found'));
+    service.recordDeliveryOutcome('C1', null);
+    expect(service.getStatus()).toMatchObject({ degraded: true, degradedReason: 'invalid_auth' });
+  });
+
+  it('getConfig returns a copy of the initialised config', () => {
+    const service = new SlackService();
+    expect(service.getConfig()).toBeNull();
+    const config = { botToken: 'b', appToken: 'a', signingSecret: 's', socketMode: true };
+    (service as unknown as { config: unknown }).config = config;
+    expect(service.getConfig()).toEqual(config);
+    expect(service.getConfig()).not.toBe(config);
+  });
+});

@@ -955,6 +955,7 @@ export class SessionHandoffService {
         // shrug-and-include-all.
         const tsq = ThreadStatusQueueService.getInstance();
 
+        let closedByTombstone = 0;
         threads = allThreads.filter(thread => {
           // Build the threadKey the same way the Slack bridge does
           const threadKey = `${thread.channelId}:${thread.threadId}`;
@@ -964,6 +965,16 @@ export class SessionHandoffService {
               threadKey,
               status: entry.status,
             });
+            return false;
+          }
+          // No entry is not "unreplied": cleanup drops terminal entries after
+          // CLEANUP_RETENTION_HOURS, while this scan goes by thread-file
+          // mtime, which can be later (an agent's completion report). A
+          // tombstone says the thread was closed; without one, nothing is
+          // known and the thread is kept (#757).
+          if (!entry && tsq.getTombstone(threadKey)) {
+            this.logger.debug('Filtering out closed thread whose status entry aged out', { threadKey });
+            closedByTombstone++;
             return false;
           }
           // For chat-ui threads: also check by conversationId since chat-ui
@@ -978,6 +989,13 @@ export class SessionHandoffService {
               });
               return false;
             }
+            if (!entry && !byConvId && tsq.getTombstoneByConversationId(thread.channelId)) {
+              this.logger.debug('Filtering out closed chat-ui thread whose status entry aged out', {
+                channelId: thread.channelId,
+              });
+              closedByTombstone++;
+              return false;
+            }
           }
           return true;
         });
@@ -987,6 +1005,7 @@ export class SessionHandoffService {
             total: allThreads.length,
             kept: threads.length,
             filtered: allThreads.length - threads.length,
+            closedByTombstone,
           });
         }
       } catch (err) {

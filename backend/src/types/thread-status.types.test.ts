@@ -14,6 +14,7 @@ import {
   isTerminalStatus,
   isThreadStatusEntry,
   isPersistedThreadStatusState,
+  isThreadStatusTombstone,
   isReplyStatus,
 } from './thread-status.types.js';
 
@@ -208,5 +209,22 @@ describe('isPersistedThreadStatusState', () => {
     expect(isPersistedThreadStatusState(null)).toBe(false);
     expect(isPersistedThreadStatusState(undefined)).toBe(false);
     expect(isPersistedThreadStatusState(42)).toBe(false);
+  });
+});
+
+describe('isThreadStatusTombstone', () => {
+  const valid = { threadKey: 'C1:1.1', status: 'replied_completed', updatedAt: '2026-09-20T04:14:00Z', removedAt: '2026-09-21T05:08:00Z' };
+
+  it('accepts a tombstone with or without a conversation id', () => {
+    expect(isThreadStatusTombstone(valid)).toBe(true);
+    expect(isThreadStatusTombstone({ ...valid, conversationId: 'conv-1' })).toBe(true);
+  });
+
+  it('rejects unknown statuses, missing fields and non-objects', () => {
+    expect(isThreadStatusTombstone({ ...valid, status: 'closed' })).toBe(false);
+    expect(isThreadStatusTombstone({ ...valid, removedAt: undefined })).toBe(false);
+    expect(isThreadStatusTombstone({ ...valid, conversationId: 7 })).toBe(false);
+    expect(isThreadStatusTombstone(null)).toBe(false);
+    expect(isThreadStatusTombstone('C1:1.1')).toBe(false);
   });
 });

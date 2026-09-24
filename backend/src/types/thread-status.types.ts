@@ -148,6 +148,24 @@ export interface ThreadStatusEntry {
 export const PERSISTED_THREAD_STATUS_VERSION = 1;
 
 /**
+ * Compact record of a terminal entry that cleanup removed. Lets readers tell
+ * "this thread was closed, its entry aged out" apart from "never tracked"
+ * (#757).
+ */
+export interface ThreadStatusTombstone {
+  /** Platform-specific thread identifier of the removed entry */
+  threadKey: string;
+  /** Conversation id of the removed entry, when it had one */
+  conversationId?: string;
+  /** Terminal status the entry ended in */
+  status: ThreadStatus;
+  /** The entry's last update (ISO) */
+  updatedAt: string;
+  /** When cleanup removed the entry (ISO) */
+  removedAt: string;
+}
+
+/**
  * Shape of the persisted JSON file at ~/.crewly/thread-status-queue.json
  */
 export interface PersistedThreadStatusState {
@@ -159,6 +177,9 @@ export interface PersistedThreadStatusState {
 
   /** ISO timestamp of last cleanup run */
   lastCleanupAt: string;
+
+  /** Tombstones of cleaned-up terminal entries (absent in older files) */
+  tombstones?: ThreadStatusTombstone[];
 }
 
 // =============================================================================
@@ -262,6 +283,25 @@ export function isPersistedThreadStatusState(value: unknown): value is Persisted
     typeof obj.version === 'number' &&
     Array.isArray(obj.entries) &&
     typeof obj.lastCleanupAt === 'string'
+  );
+}
+
+/**
+ * Checks whether a value is a well-formed ThreadStatusTombstone.
+ *
+ * @param value - Value to check
+ * @returns True if value conforms to ThreadStatusTombstone
+ */
+export function isThreadStatusTombstone(value: unknown): value is ThreadStatusTombstone {
+  if (typeof value !== 'object' || value === null) return false;
+  const obj = value as Record<string, unknown>;
+  return (
+    typeof obj.threadKey === 'string' &&
+    typeof obj.status === 'string' &&
+    (THREAD_STATUS_VALUES as readonly string[]).includes(obj.status) &&
+    typeof obj.updatedAt === 'string' &&
+    typeof obj.removedAt === 'string' &&
+    (obj.conversationId === undefined || typeof obj.conversationId === 'string')
   );
 }
 

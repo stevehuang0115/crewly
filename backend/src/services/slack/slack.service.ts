@@ -16,6 +16,7 @@ import type {
   SlackIncomingMessage,
   SlackOutgoingMessage,
   SlackServiceStatus,
+  SlackDeliveryFailureSummary,
   SlackConversationContext,
   SlackNotification,
   SlackBlock,
@@ -29,7 +30,7 @@ import type {
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTANTS, SLACK_RECONNECT_CONSTANTS, SLACK_TEAM_CHANNEL_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME,
-  SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES,
+  SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES, SLACK_DELIVERY_HEALTH_CONSTANTS,
 } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
@@ -390,6 +391,10 @@ export class SlackService extends EventEmitter {
   private lastPingAt = 0;
   /** Number of consecutive health-check ping failures */
   private consecutivePingFailures = 0;
+  /** Outstanding outbound reachability failures (null = last post succeeded). */
+  private deliveryFailures: SlackDeliveryFailureSummary | null = null;
+  /** Whether `status.degraded` was set by outbound reachability (cleared by a successful post). */
+  private degradedByDelivery = false;
   /** Inbound transport the service was initialised with */
   private transport: SlackTransport = 'socket';
   /** Relay source the cloud transport is attached to (see attachCloudTransport) */
@@ -557,11 +562,82 @@ export class SlackService extends EventEmitter {
   }
 
   /**
-   * Clear the degraded flag after a successful connect.
+   * Clear the degraded flag after a successful connect. A (re)connect may be
+   * a different bot identity, so outbound reachability starts over too.
    */
   private clearDegraded(): void {
     this.status.degraded = false;
     delete this.status.degradedReason;
+    this.deliveryFailures = null;
+    this.degradedByDelivery = false;
+  }
+
+  /**
+   * Track whether posts made with the connection's own bot token reach
+   * their channel (#753). A socket can be perfectly healthy while every
+   * reply fails with `channel_not_found`: that is what connecting the wrong
+   * Slack app looks like (self-hosted and Crewly Cloud are different bot
+   * users). After {@link SLACK_DELIVERY_HEALTH_CONSTANTS.FAILURES_BEFORE_DEGRADED}
+   * consecutive unreachable posts the status reports `degraded` with the
+   * reason; the next successful post clears it.
+   *
+   * @param channelId - Channel the post targeted
+   * @param error - The failure, or null for a successful post
+   */
+  recordDeliveryOutcome(channelId: string, error: unknown): void {
+    if (!error) {
+      if (this.deliveryFailures) {
+        if (this.degradedByDelivery) {
+          this.logger.info('Slack outbound delivery recovered — clearing degraded', {
+            channelId,
+            failedPosts: this.deliveryFailures.consecutive,
+          });
+          this.status.degraded = false;
+          delete this.status.degradedReason;
+          this.degradedByDelivery = false;
+        }
+        this.deliveryFailures = null;
+      }
+      return;
+    }
+
+    const { code, message } = describeSlackError(error);
+    if (!SLACK_DELIVERY_HEALTH_CONSTANTS.UNREACHABLE_ERROR_CODES.includes(code)) return;
+
+    const now = new Date().toISOString();
+    const prev = this.deliveryFailures;
+    const channels = (prev?.channels ?? []).filter((id) => id !== channelId);
+    channels.push(channelId);
+    this.deliveryFailures = {
+      consecutive: (prev?.consecutive ?? 0) + 1,
+      code,
+      channels: channels.slice(-SLACK_DELIVERY_HEALTH_CONSTANTS.MAX_TRACKED_CHANNELS),
+      since: prev?.since ?? now,
+      lastAt: now,
+    };
+
+    if (
+      this.deliveryFailures.consecutive >= SLACK_DELIVERY_HEALTH_CONSTANTS.FAILURES_BEFORE_DEGRADED &&
+      !this.status.degraded
+    ) {
+      const botUserId = this.cachedBotUserId ?? 'unknown';
+      this.status.degraded = true;
+      this.status.degradedReason = code;
+      this.status.lastError =
+        `${this.deliveryFailures.consecutive} consecutive posts failed with ${code}: the connected bot (${botUserId}, ` +
+        `${this.transport === 'cloud' ? 'Crewly Cloud app' : 'self-hosted app'}) cannot see these channels. ` +
+        `If another Slack app is in them, the wrong app is connected.`;
+      this.status.lastErrorAt = now;
+      this.degradedByDelivery = true;
+      this.logger.error('Slack integration degraded: outbound posts cannot reach their channels', {
+        code,
+        consecutive: this.deliveryFailures.consecutive,
+        channels: this.deliveryFailures.channels,
+        transport: this.transport,
+        botUserId,
+        error: message,
+      });
+    }
   }
 
   /**
@@ -605,6 +681,15 @@ export class SlackService extends EventEmitter {
    */
   getTransport(): SlackTransport {
     return this.transport;
+  }
+
+  /**
+   * The config the service was last initialised with (a copy).
+   *
+   * @returns The config, or null before the first initialise
+   */
+  getConfig(): SlackConfig | null {
+    return this.config ? { ...this.config } : null;
   }
 
   /**
@@ -1405,6 +1490,7 @@ export class SlackService extends EventEmitter {
       });
 
       this.status.messagesSent++;
+      if (!message.botToken) this.recordDeliveryOutcome(message.channelId, null);
 
       // Track this fingerprint for future dedup
       this.trackMessageFingerprint(fingerprint, now);
@@ -1418,6 +1504,9 @@ export class SlackService extends EventEmitter {
       return result.ts || '';
     } catch (error) {
       this.logger.error('Send message error', { error: error instanceof Error ? (error as Error).message : String(error) });
+      // Only the connection's own bot says anything about which app is
+      // connected; an agent bot missing from a channel is its own problem.
+      if (!message.botToken && !message.reachabilityProbe) this.recordDeliveryOutcome(message.channelId, error);
 
       // F14: record slack.delivery.failed event (best-effort — never
       // changes retry semantics or throws). The wrapper swallows
@@ -1592,7 +1681,7 @@ export class SlackService extends EventEmitter {
     let lastError: unknown = null;
     for (const channelId of candidates) {
       try {
-        await this.sendMessage({ channelId, text, blocks, threadTs: notification.threadTs, skipChatV2Mirror: true });
+        await this.sendMessage({ channelId, text, blocks, threadTs: notification.threadTs, skipChatV2Mirror: true, reachabilityProbe: true });
         this.logger.info('No default channel; notification sent to the most recent reachable thread channel', { channelId });
         return;
       } catch (err) {
@@ -1775,7 +1864,12 @@ export class SlackService extends EventEmitter {
    * @returns Current service status
    */
   getStatus(): SlackServiceStatus {
-    return { ...this.status };
+    return {
+      ...this.status,
+      ...(this.deliveryFailures
+        ? { deliveryFailures: { ...this.deliveryFailures, channels: [...this.deliveryFailures.channels] } }
+        : {}),
+    };
   }
 
   /**
@@ -2193,6 +2287,7 @@ export class SlackService extends EventEmitter {
         });
 
         this.status.messagesSent++;
+        if (!options.botToken) this.recordDeliveryOutcome(options.channelId, null);
         return { fileId: result.files?.[0]?.id };
       } catch (error: unknown) {
         fileStream.destroy();
@@ -2207,6 +2302,7 @@ export class SlackService extends EventEmitter {
         }
 
         this.logger.error('Upload error', { error: error instanceof Error ? (error as Error).message : String(error) });
+        if (!options.botToken) this.recordDeliveryOutcome(options.channelId, error);
         throw error;
       }
     }
