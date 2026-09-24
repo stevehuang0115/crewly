@@ -820,6 +820,10 @@ export class RequestSlaSubscriber {
    *   metadata and on the Request's `result` field
    */
   private async cancelOrphansAndCloseRequest(requestId: string, reason: string): Promise<void> {
+    // Never cancel a ticket's work because an agent said something in its
+    // thread; TicketReviewService owns tickets matched to their chat turn.
+    const request = await this.requestService.getById(requestId);
+    if (request?.chatRef) return;
     const all = await this.taskPool.getAllItems();
     let cancelled = 0;
     for (const wi of all) {
@@ -1023,6 +1027,9 @@ export class RequestSlaSubscriber {
     const request = await this.requestService.getById(requestId);
     if (!request) return;
     if (TERMINAL_REQUEST_STATUSES.has(request.status)) return;
+    // A ticket matched to its chat turn is closed by TicketReviewService when
+    // its answer settles — not on the first reply ("收到，我来做" is a reply).
+    if (request.chatRef) return;
 
     // Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch E):
     // grace window for the orc_reply cascade. If the orc has replied within

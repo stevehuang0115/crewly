@@ -12,6 +12,8 @@ import {
   ticketDeliveryLine,
   appendTicketLine,
   withTicketMarker,
+  markAndLinkTicket,
+  doneReceiptText,
   ticketLineOf,
   intakeWithin,
   receiptText,
@@ -30,6 +32,7 @@ import { createRequest, type Request } from '../../types/v2/request.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { IntakeMessage, IntakeOutcome } from './ticket-intake.service.js';
 import { OWNER_EVIDENCE_METADATA, TICKET_CONSTANTS } from '../../constants.js';
+import { setTicketReviewService, type TicketReviewService } from './ticket-review.service.js';
 
 const ID = '11111111-2222-3333-4444-555555555555';
 
@@ -254,6 +257,55 @@ describe('chat-v2 receipt sink', () => {
     await sink.markDismissed(ticket(), receipt!);
     expect(updates[0]).toEqual(['r-1', 'TKT-007 已取消记录', { ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'dismissed' } }]);
     expect(broadcast).toHaveBeenCalledTimes(2);
+    await sink.markDone!(ticket(), receipt!);
+    expect(updates[1]).toEqual(['r-1', 'TKT-007 已完成', { ticketReceipt: { ticketId: ID, tkt: 'TKT-007', status: 'done' } }]);
+  });
+});
+
+describe('Phase 2 hooks', () => {
+  it('doneReceiptText', () => {
+    expect(doneReceiptText(ticket())).toBe('TKT-007 已完成');
+  });
+
+  it('Slack markDone swaps 🎫 for ✅ with the same bot; text receipts are left alone', async () => {
+    const calls: unknown[][] = [];
+    const sink = createSlackReceiptSink({
+      slack: {
+        addReaction: async (...a) => void calls.push(['add', ...a]),
+        removeReaction: async (...a) => void calls.push(['remove', ...a]),
+        updateMessage: async () => undefined,
+      },
+      botTokenFor: (s) => (s === 'ella' ? 'xoxb-ella' : undefined),
+    });
+    await sink.markDone!(ticket(), { kind: 'slack', slackChannelId: 'D1', ts: '2.0', reaction: 'ticket', postedAs: 'ella' });
+    expect(calls).toEqual([
+      ['remove', 'D1', '2.0', 'ticket', 'xoxb-ella'],
+      ['add', 'D1', '2.0', TICKET_CONSTANTS.RECEIPT.DONE_REACTION, 'xoxb-ella'],
+    ]);
+    await sink.markDone!(ticket(), { kind: 'slack', slackChannelId: 'C1', ts: '9.1' });
+    expect(calls).toHaveLength(2);
+  });
+
+  it('markAndLinkTicket records the chat turn for a numbered ticket and marks the message', async () => {
+    const noted: unknown[][] = [];
+    setTicketReviewService({ noteChatTurn: async (...a: unknown[]) => void noted.push(a) } as unknown as TicketReviewService);
+    try {
+      const m = chatMsg({ id: 'm-9' });
+      const out = markAndLinkTicket(m, ticket());
+      expect(out.metadata?.[TICKET_CONSTANTS.MESSAGE_MARKER_METADATA_KEY]).toEqual(expect.any(String));
+      expect(noted).toEqual([[ID, m]]);
+      expect(markAndLinkTicket(m, null)).toBe(m);
+      expect(noted).toHaveLength(1);
+    } finally {
+      setTicketReviewService(null);
+    }
+  });
+
+  it('ticketOfOutcome keeps the ticket for verified / rejected', () => {
+    const t = ticket() as Request;
+    expect(ticketOfOutcome({ action: 'verified', ticket: t })).toBe(t);
+    expect(ticketOfOutcome({ action: 'rejected', ticket: t })).toBe(t);
+    expect(ticketOfOutcome({ action: 'dismissed', ticket: t })).toBeNull();
   });
 });
 

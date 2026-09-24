@@ -128,7 +128,7 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // Mutations — human-in-the-loop actions only.
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject
-  { method: 'POST', prefix: '/tickets/' },     // …/:id/dismiss ("不用记")
+  { method: 'POST', prefix: '/tickets/' },     // …/:id/dismiss|verify|reject|acceptance|update|self-check
 ];
 
 /**

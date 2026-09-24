@@ -2592,8 +2592,38 @@ export const TICKET_CONSTANTS = {
 	RECEIPT: {
 		RECORDED: (tkt: string) => `已记成 ${tkt}`,
 		DISMISSED: (tkt: string) => `${tkt} 已取消记录`,
+		/** chat-v2 receipt once the ticket is accepted */
+		DONE: (tkt: string) => `${tkt} 已完成`,
 		/** Slack receipt: this reaction on the owner's message (no reply, no notification) */
 		REACTION: 'ticket',
+		/** Slack: the 🎫 becomes this once the ticket is accepted */
+		DONE_REACTION: 'white_check_mark',
+	},
+	/**
+	 * Review (Phase 2): an agent's answer puts a ticket in 待验收; the owner
+	 * accepts (验过了) or sends it back (打回 + reason). Silence accepts.
+	 */
+	REVIEW: {
+		/** Origins whose tickets close without the owner (cron, missions) */
+		NO_REVIEW_ORIGINS: ['cron', 'mission'] as readonly string[],
+		/** Tag on a ticket that closed because nobody objected in time */
+		AUTO_ACCEPTED_TAG: 'auto_accepted',
+		/** 待验收 this long with no word from the owner → accepted (ms) */
+		AUTO_ACCEPT_MS: 72 * 60 * 60 * 1000,
+		/** An agent reply must be this old, with the agent idle, before it counts as the answer (ms) */
+		SUBMIT_SETTLE_MS: 60 * 1000,
+		/** Sweep for settled answers and auto-accepts (ms) */
+		SWEEP_INTERVAL_MS: 2 * 60 * 1000,
+		/** Longest excerpt of the answer kept on the ticket */
+		REPLY_EXCERPT_MAX: 600,
+		/** 「验过了」 and friends — a bare accept in the ticket's thread */
+		VERIFY_PATTERN: /^\s*(验过了|验收通过|验收了|通过了?|没问题了?|可以了|lgtm|looks good|accept(ed)?|approved?)\s*[。.!！~～👍✅]*\s*$/i,
+		/** 「打回 <reason>」 — send it back; group 2 is the reason */
+		REJECT_PATTERN: /^\s*(打回|退回|重做|不通过|reject(ed)?|redo)\s*[:：,，。.\-—]*\s*([\s\S]*)$/i,
+		/** Reason recorded when 打回 came without one */
+		REJECT_NO_REASON: '（未写原因）',
+		/** WorkItem title for a rework sent from the board */
+		REWORK_TITLE: (tkt: string) => `打回 ${tkt}`,
 	},
 	/** Metadata key the dispatcher reads the delivered-message marker from */
 	MESSAGE_MARKER_METADATA_KEY: 'ticketMarker',

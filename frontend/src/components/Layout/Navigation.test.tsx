@@ -85,6 +85,12 @@ describe('Navigation', () => {
     expect(screen.getByRole('link', { name: /teams/i })).toHaveAttribute('href', '/teams');
   });
 
+  it('renders the Tickets board link in the Work group', () => {
+    renderWithProviders(<Navigation />);
+
+    expect(screen.getByRole('link', { name: /tickets/i })).toHaveAttribute('href', '/tickets');
+  });
+
   it('renders Communicate group items: Chat (consolidated /team-chat)', () => {
     renderWithProviders(<Navigation />);
 

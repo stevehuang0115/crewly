@@ -45,6 +45,12 @@ import {
   ticketPriorityLabel,
   inferTicketKind,
   uniqueTicketIdFromTexts,
+  parseReviewReply,
+  activeAcceptance,
+  ticketNeedsReview,
+  type ReviewReply,
+  type TicketAcceptance,
+  type TicketReply,
 } from '../../types/v2/ticket.types.js';
 
 // ---------------------------------------------------------------------------
@@ -185,7 +191,18 @@ export type IntakeOutcome =
   | { action: 'appended'; ticket: Request }
   | { action: 'duplicate'; ticket: Request }
   | { action: 'dismissed'; ticket: Request }
+  /** 验过了 on a 待验收 ticket (Phase 2) */
+  | { action: 'verified'; ticket: Request }
+  /** 打回 on a 待验收 ticket (Phase 2) */
+  | { action: 'rejected'; ticket: Request }
   | { action: 'ignored'; reason: string };
+
+/** The review actions intake hands 验过了 / 打回 / follow-ups to (TicketReviewService). */
+export interface IntakeReviewHandler {
+  verify(ref: string): Promise<{ ok: boolean; ticket?: Request }>;
+  reject(ref: string, reason: string, via: 'thread'): Promise<{ ok: boolean; ticket?: Request }>;
+  reopenOnFollowUp(ticketId: string): Promise<Request | null>;
+}
 
 /** Posts and edits receipts on one kind of surface. */
 export interface TicketReceiptSink {
@@ -204,6 +221,13 @@ export interface TicketReceiptSink {
    * @param receipt - The receipt to edit
    */
   markDismissed(ticket: Request, receipt: TicketReceipt): Promise<void>;
+  /**
+   * Change an existing receipt to "done" (Phase 2).
+   *
+   * @param ticket - The accepted ticket
+   * @param receipt - The receipt to edit
+   */
+  markDone?(ticket: Request, receipt: TicketReceipt): Promise<void>;
 }
 
 /** RequestService surface the intake needs (narrow for tests). */
@@ -233,6 +257,17 @@ export interface TicketListItem {
   tags: string[];
   createdAt: string;
   updatedAt: string;
+  /** Live acceptance criteria (removed ones left out) */
+  acceptance: TicketAcceptance[];
+  /** Start of the latest agent answer */
+  reply: TicketReply | null;
+  rejectCount: number;
+  submitCount: number;
+  /** When it last went to 待验收 */
+  submittedAt: string | null;
+  completedAt: string | null;
+  /** When silence will accept it (待验收 only) */
+  autoAcceptAt: string | null;
 }
 
 /** Filters for {@link TicketIntakeService.list}. */
@@ -276,6 +311,8 @@ export class TicketIntakeService {
   private readonly sinks: Partial<Record<ReceiptTarget['kind'], TicketReceiptSink>> = {};
   /** Serialises intake so two messages in one thread cannot both open a ticket. */
   private chain: Promise<unknown> = Promise.resolve();
+  /** 验过了 / 打回 handler (Phase 2); absent = those words are plain follow-ups */
+  private review: IntakeReviewHandler | null = null;
 
   /**
    * @param deps - Request store and optional WorkItem lookup
@@ -293,6 +330,26 @@ export class TicketIntakeService {
   setReceiptSink(kind: ReceiptTarget['kind'], sink: TicketReceiptSink | null): void {
     if (sink) this.sinks[kind] = sink;
     else delete this.sinks[kind];
+  }
+
+  /**
+   * Wire the review handler (Phase 2).
+   *
+   * @param handler - The handler, or null to remove
+   */
+  setReviewHandler(handler: IntakeReviewHandler | null): void {
+    this.review = handler;
+  }
+
+  /**
+   * Mark a ticket's receipt done (🎫 → ✅ on Slack, 「已完成」 in chat-v2).
+   *
+   * @param ticket - The done ticket
+   */
+  async markReceiptDone(ticket: Request): Promise<void> {
+    if (!ticket.receipt) return;
+    const sink = this.sinks[ticket.receipt.kind];
+    if (sink?.markDone) await sink.markDone(ticket, ticket.receipt);
   }
 
   /**
@@ -356,15 +413,31 @@ export class TicketIntakeService {
 
     // A follow-up in a thread that already has a ticket.
     const threadTicket = this.findThreadTicket(all, message);
+    const review = parseReviewReply(text);
     if (threadTicket) {
       if (TERMINAL_REQUEST_STATUSES.has(threadTicket.status)) {
         // Only a dismissed thread stays quiet; a finished one may open a new ticket.
         if (threadTicket.tags.includes(TICKET_CONSTANTS.DISMISSED_TAG)) {
           return this.ignored(message, 'thread_dismissed');
         }
+      } else if (threadTicket.status === 'waiting_confirmation' && this.review) {
+        if (review) return this.applyReview(threadTicket, review);
+        // Anything else from the owner: the agent is back on it.
+        await this.review.reopenOnFollowUp(threadTicket.id);
+        return this.appendToTicket(threadTicket, message, text);
       } else {
         return this.appendToTicket(threadTicket, message, text);
       }
+    }
+
+    // 验过了 / 打回 outside a thread (DMs, where every message is top-level):
+    // the newest 待验收 ticket of this conversation.
+    if (review && this.review && message.conversationRef) {
+      const conversation = message.conversationRef;
+      const inReview = all.find(
+        (r) => r.status === 'waiting_confirmation' && typeof r.ticketNumber === 'number' && this.conversationMatches(r, conversation),
+      );
+      if (inReview) return this.applyReview(inReview, review);
     }
 
     const trivial = suppressTrivialOrShort(text);
@@ -392,6 +465,8 @@ export class TicketIntakeService {
       ticketNumber,
       kind: inferTicketKind(text),
       origin: message.origin,
+      // Phase 2: the owner accepts it (or silence does); cron / mission close alone.
+      requiresConfirmation: !TICKET_CONSTANTS.REVIEW.NO_REVIEW_ORIGINS.includes(message.origin.channel),
       ...(message.targetAgent ? { assignee: message.targetAgent } : {}),
     });
     this.logger.info('Ticket created', {
@@ -402,6 +477,23 @@ export class TicketIntakeService {
     });
     if (message.receipt) void this.postReceipt(ticket, message.receipt);
     return { action: 'created', ticket };
+  }
+
+  /**
+   * Hand a 验过了 / 打回 to the review handler.
+   *
+   * @param ticket - The 待验收 ticket
+   * @param review - What the owner said
+   * @returns The outcome
+   */
+  private async applyReview(ticket: Request, review: NonNullable<ReviewReply>): Promise<IntakeOutcome> {
+    const handler = this.review;
+    if (!handler) return { action: 'appended', ticket };
+    const result =
+      review.action === 'verify' ? await handler.verify(ticket.id) : await handler.reject(ticket.id, review.reason, 'thread');
+    const after = result.ticket ?? ticket;
+    if (!result.ok) return { action: 'appended', ticket: after };
+    return review.action === 'verify' ? { action: 'verified', ticket: after } : { action: 'rejected', ticket: after };
   }
 
   /**
@@ -686,6 +778,16 @@ export class TicketIntakeService {
       tags: r.tags,
       createdAt: r.createdAt,
       updatedAt: r.updatedAt,
+      acceptance: activeAcceptance(r.acceptance),
+      reply: r.reply ?? null,
+      rejectCount: r.rejectCount ?? 0,
+      submitCount: r.submitCount ?? 0,
+      submittedAt: r.submittedAt ?? null,
+      completedAt: r.completedAt ?? null,
+      autoAcceptAt:
+        r.status === 'waiting_confirmation' && r.submittedAt && ticketNeedsReview(r)
+          ? new Date(Date.parse(r.submittedAt) + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS).toISOString()
+          : null,
     };
   }
 

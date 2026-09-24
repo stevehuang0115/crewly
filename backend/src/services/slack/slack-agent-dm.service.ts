@@ -27,7 +27,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
-import { intakeWithin, slackIntakeMessage, ticketOfOutcome, withTicketMarker } from '../v3/ticket-channel-hooks.js';
+import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
 
 // ---------------------------------------------------------------------------
@@ -369,7 +369,7 @@ export class SlackAgentDmService {
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
-      dispatch = await dispatcher.dispatchMessage(channel, withTicketMarker(persisted, ticket));
+      dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket));
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }

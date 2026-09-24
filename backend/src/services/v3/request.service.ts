@@ -27,6 +27,7 @@ import {
 } from '../../types/v2/work-item.types.js';
 import { classifyIntent, planTasksFromObjective, type PlannedTask } from './v3-data.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
+import { ticketNeedsReview } from '../../types/v2/ticket.types.js';
 import { resolveProjectDataDir } from '../core/crewly-home.utils.js';
 
 /** Directory name under .crewly for request storage. */
@@ -402,6 +403,16 @@ export class RequestService {
       throw new Error(`Request not found: ${id}`);
     }
 
+    // Ticket review gate (specs/ticket-loop.md Phase 2): a ticket that needs
+    // the owner never becomes `done` on its own. Every close path (cascade,
+    // SLA, reconciler, direct-answer sweep) lands it in 待验收 instead; only
+    // the owner's accept or the auto-accept pass `accepted`.
+    let submitted = false;
+    if (updates.status === 'done' && !updates.accepted && ticketNeedsReview(request)) {
+      updates = { ...updates, status: 'waiting_confirmation' };
+      submitted = request.status !== 'waiting_confirmation';
+    }
+
     // Validate status transition if status is being updated
     if (updates.status && updates.status !== request.status) {
       if (!isValidRequestTransition(request.status, updates.status)) {
@@ -434,6 +445,11 @@ export class RequestService {
       if (updates.status === 'done' || updates.status === 'cancelled') {
         request.completedAt = new Date().toISOString();
       }
+      if (updates.status === 'waiting_confirmation' && typeof request.ticketNumber === 'number') submitted = true;
+    }
+    if (submitted) {
+      request.submittedAt = new Date().toISOString();
+      request.submitCount = (request.submitCount ?? 0) + 1;
     }
 
     // Apply other updates
@@ -454,6 +470,12 @@ export class RequestService {
     if (updates.assignee !== undefined) request.assignee = updates.assignee;
     if (updates.receipt !== undefined) request.receipt = updates.receipt;
     if (updates.discussion !== undefined) request.discussion = updates.discussion;
+    if (updates.acceptance !== undefined) request.acceptance = updates.acceptance;
+    if (updates.rejectCount !== undefined) request.rejectCount = updates.rejectCount;
+    if (updates.submitCount !== undefined) request.submitCount = updates.submitCount;
+    if (updates.submittedAt !== undefined) request.submittedAt = updates.submittedAt;
+    if (updates.chatRef !== undefined) request.chatRef = updates.chatRef;
+    if (updates.reply !== undefined) request.reply = updates.reply;
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);
