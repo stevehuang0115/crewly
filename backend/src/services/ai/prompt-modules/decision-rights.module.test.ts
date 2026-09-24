@@ -1,4 +1,4 @@
-import { DecisionRightsModule } from './decision-rights.module.js';
+import { DecisionRightsModule, STOP_RESTART_SECTION_LINES } from './decision-rights.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
 
 describe('DecisionRightsModule', () => {
@@ -116,6 +116,44 @@ describe('DecisionRightsModule', () => {
 			expect(out).toContain('customer-facing commitment');
 			expect(out).toContain('irreversible expense');
 			expect(out).toContain('strategic direction');
+		});
+	});
+
+	describe('build — Stopping and Restarting Agents (Request 72c9427a)', () => {
+		it('should emit the ## Stopping and Restarting Agents H2 header', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/^## Stopping and Restarting Agents$/m);
+		});
+
+		it('should frame stopping and restarting as routine operations', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toContain(
+				"Stopping, restarting and reconfiguring agents — including your own session and your peers' — is routine operations.",
+			);
+		});
+
+		it('should prohibit modifying, disabling, delaying or working around a stop/restart/config change', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toContain(
+				"- Do not modify, disable, delay or work around any agent's stop, restart or configuration change.",
+			);
+		});
+
+		it('should prohibit editing the control-plane mechanisms unless the owner asked', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toMatch(/Do not edit the mechanisms that perform them \(stop\/start skill scripts, team and agent config under ~\/\.crewly, scheduler state\) unless the owner asked/);
+		});
+
+		it('should tell the agent to voice disagreement and then let the stop proceed', async () => {
+			const out = await module.build(baseConfig);
+			expect(out).toContain('say so to whoever issued it, then let it proceed.');
+		});
+
+		it('should emit the section after the Escalation Chain, verbatim and at the end', async () => {
+			const out = await module.build(baseConfig);
+			const section = STOP_RESTART_SECTION_LINES.join('\n');
+			expect(out.endsWith(section)).toBe(true);
+			expect(out.indexOf('## Escalation Chain')).toBeLessThan(out.indexOf('## Stopping and Restarting Agents'));
 		});
 	});
 
