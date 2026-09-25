@@ -115,6 +115,8 @@ export interface OrchestratorConfig {
 	sessionName: string;
 	projectPath: string;
 	windowName?: string;
+	/** Runtime the orchestrator will run; selects the settings API keys passed in its spawn env */
+	runtimeType?: RuntimeType;
 }
 
 /**
@@ -1918,6 +1920,7 @@ export class AgentRegistrationService {
 			await this.createOrchestratorSession({
 				sessionName,
 				projectPath: orchestratorCwd,
+				runtimeType,
 			});
 			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
 			await this.waitForShellReady(sessionName);
@@ -1995,9 +1998,12 @@ export class AgentRegistrationService {
 			// path — this branch used to spawn env-less, so every agent that came
 			// through Step 2 ran without CREWLY_SESSION_NAME (unattributed heartbeats
 			// and channel replies).
+			// API keys ride in the spawn env too (never typed in) — this path had no
+			// settings keys at all before, so a recreated agent ran without them.
 			const recreationCwd = projectPath || process.cwd();
+			const recreationKeyEnv = await this.buildApiKeyEnv(runtimeType);
 			await (await this.getSessionHelper()).createSession(sessionName, recreationCwd, {
-				env: this.buildAgentIdentityEnv(sessionName, role, recreationCwd),
+				env: { ...this.buildAgentIdentityEnv(sessionName, role, recreationCwd), ...recreationKeyEnv },
 			});
 			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
 			await this.waitForShellReady(sessionName);
@@ -3063,9 +3069,11 @@ Loop until done, blocked, or explicitly reassigned:
 		}
 
 		// Create new session for orchestrator — with the identity env (D1), the
-		// same object the primary path spawns with. windowName not used in PTY backend.
+		// same object the primary path spawns with, plus the settings API keys in
+		// the spawn env (never typed in). windowName not used in PTY backend.
+		const apiKeyEnv = await this.buildApiKeyEnv(config.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE);
 		await (await this.getSessionHelper()).createSession(config.sessionName, config.projectPath, {
-			env: this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath),
+			env: { ...this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath), ...apiKeyEnv },
 		});
 
 		this.logger.info('Orchestrator session created successfully', {
