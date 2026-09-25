@@ -241,8 +241,13 @@ Sessions that already exist keep their env until they are recreated.
   modules directly, as `crewly backup` and `crewly token` already do. Status,
   install and the orc choice are files and child processes, so they run
   in-process with no backend. Login sessions are live PTYs:
-  - When the backend is running (`/health` on `WEB_PORT`), the CLI starts
-    the login in the backend over loopback REST. The session outlives the CLI
+  - When *this user's* backend is running (`/health` on `WEB_PORT` answers
+    and its `homeId` equals the CLI's `getCrewlyHomeId()`, a short hash of
+    the Crewly home path), the CLI starts the login in the backend over
+    loopback REST. Loopback needs no token, so without the `homeId` check a
+    CLI run by one Unix user would drive another user's backend on the same
+    port (found on a shared server: a production Crewly running as root on
+    8787). A backend that reports no `homeId` is not used. The session outlives the CLI
     and is the same one the web page and the phone see.
   - Otherwise the broker runs in-process.
 - **`crewly onboard`**:
@@ -268,8 +273,13 @@ Sessions that already exist keep their env until they are recreated.
   - For login:
     - A login is started in the running backend, the link is printed, and
       onboard returns `pending` so the owner can finish on the phone.
-    - A device-code login (Codex) with no backend runs in-process and waits
-      for the phone with no prompts.
+    - A device-code login (Codex) with no backend runs as a **detached
+      background process** (`createDetachedLoginDriver`: own process group,
+      output in `<crewlyHome>/logs/login-<harness>.log`). The CLI prints the
+      link and code and returns `pending` right away; the harness saves the
+      login by itself and exits when the code is used or expires (15 min).
+      Waiting in-process would block an installer or agent for up to 15
+      minutes, and its tool timeout would kill the login with it.
     - A login that needs a typed reply (Claude) with no backend is skipped.
       The note tells the owner to start Crewly and open Setup on the phone,
       or to run `crewly login claude`.
@@ -281,6 +291,14 @@ Sessions that already exist keep their env until they are recreated.
 `scripts/install.sh` passes `--harness <id>`, `--yes`, `--web` and `--cli`
 through to `crewly onboard`. `--yes` runs even without a terminal. tmux is
 not required.
+
+When the global npm folder is not writable (a system Node on Linux, run as a
+normal user), the script installs Crewly under `<crewlyHome>/npm-global`
+(the harness fallback prefix) instead of suggesting `sudo`, puts its `bin` on
+PATH for the rest of the run, and appends it to `~/.profile` plus the
+shell's rc file once. `crewly upgrade` and `crewly start --auto-upgrade`
+install into that prefix when the running copy lives there
+(`cli/src/utils/self-install.ts`).
 
 `web/public/install.sh` (crewlyai.com) is a copy and **must be synced by
 hand**.

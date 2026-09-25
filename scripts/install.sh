@@ -14,7 +14,9 @@
 # What it does:
 #   1. Detects OS (macOS / Linux only)
 #   2. Ensures Node.js >= 22 is available (offers nvm install if missing)
-#   3. Installs crewly globally via npm
+#   3. Installs crewly globally via npm — or, when the global npm folder is
+#      not writable (a system Node on Linux), under ~/.crewly/npm-global, the
+#      same user prefix Crewly uses for harnesses, and adds its bin to PATH
 #   4. Runs `crewly onboard` to complete setup (harness, login, skills, team)
 #
 # Only jq is needed besides Node.js (agent sessions use node-pty; no tmux).
@@ -188,14 +190,73 @@ fi
 
 # ========================= Install Crewly =========================
 
+# User-owned npm prefix, used when the global npm folder is not writable.
+# Crewly installs harnesses (claude, codex) here on EACCES too and puts its
+# bin first on every agent's PATH, so one PATH entry covers everything.
+CREWLY_HOME_DIR="${CREWLY_HOME:-$HOME/.crewly}"
+USER_PREFIX="${CREWLY_HOME_DIR}/npm-global"
+USER_BIN="${USER_PREFIX}/bin"
+
+# True when `npm install -g` can write the global folder without sudo.
+npm_global_writable() {
+  local prefix
+  prefix="$(npm prefix -g 2>/dev/null)" || return 1
+  [ -n "$prefix" ] || return 1
+  local modules="$prefix/lib/node_modules"
+  [ -d "$modules" ] || modules="$prefix"
+  [ -w "$modules" ] || return 1
+  [ ! -e "$prefix/bin" ] || [ -w "$prefix/bin" ]
+}
+
+# Add the user prefix's bin to PATH in the shell startup files, once.
+persist_user_bin_on_path() {
+  local line="export PATH=\"${USER_BIN}:\$PATH\"  # added by the Crewly installer"
+  local files=("$HOME/.profile")
+  case "$(basename "${SHELL:-}")" in
+    zsh) files+=("$HOME/.zshrc") ;;
+    bash) if [ "$OS" = "Darwin" ]; then files+=("$HOME/.bash_profile"); else files+=("$HOME/.bashrc"); fi ;;
+  esac
+  local f
+  for f in "${files[@]}"; do
+    if [ -f "$f" ] && grep -qF "$USER_BIN" "$f" 2>/dev/null; then
+      continue
+    fi
+    printf '\n%s\n' "$line" >>"$f" && echo -e "${GREEN}  ✓ Added ${USER_BIN} to PATH in ${f/#$HOME/~}${NC}"
+  done
+}
+
+install_into_user_prefix() {
+  echo -e "${YELLOW}  No write access to the global npm folder ($(npm prefix -g 2>/dev/null)); installing under ${USER_PREFIX/#$HOME/~} instead (no sudo needed).${NC}"
+  mkdir -p "$USER_PREFIX"
+  if ! npm install -g --prefix "$USER_PREFIX" crewly; then
+    return 1
+  fi
+  export PATH="${USER_BIN}:$PATH"
+  persist_user_bin_on_path
+  USED_USER_PREFIX=1
+}
+
 echo -e "${BLUE}  Installing Crewly...${NC}"
 
-if npm install -g crewly; then
-  echo -e "${GREEN}  ✓ Crewly installed${NC}"
+USED_USER_PREFIX=0
+if npm_global_writable; then
+  if ! npm install -g crewly; then
+    # The check can miss (ACLs, a read-only bin dir); a permission error still
+    # gets the user-prefix install rather than a sudo suggestion.
+    install_into_user_prefix || INSTALL_FAILED=1
+  fi
 else
+  install_into_user_prefix || INSTALL_FAILED=1
+fi
+
+if [ "${INSTALL_FAILED:-0}" -eq 1 ] || ! command -v crewly &>/dev/null; then
   echo -e "${RED}  ✗ Failed to install Crewly.${NC}"
-  echo -e "  Try running: ${CYAN}sudo npm install -g crewly${NC}"
+  echo -e "  Try: ${CYAN}npm install -g --prefix ${USER_PREFIX} crewly${NC} and add ${CYAN}${USER_BIN}${NC} to your PATH"
   exit 1
+fi
+echo -e "${GREEN}  ✓ Crewly $(crewly --version 2>/dev/null) installed${NC}"
+if [ "$USED_USER_PREFIX" -eq 1 ]; then
+  echo -e "  Open a new terminal (or run ${CYAN}export PATH=\"${USER_BIN}:\$PATH\"${NC}) to use ${CYAN}crewly${NC} there."
 fi
 
 echo ""

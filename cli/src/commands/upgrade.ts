@@ -14,6 +14,7 @@ import { join } from 'path';
 import { homedir } from 'os';
 import chalk from 'chalk';
 import { checkForUpdate, printUpdateNotification } from '../utils/version-check.js';
+import { selfInstallArgs } from '../utils/self-install.js';
 import { ADDON_CONSTANTS } from '../../../config/constants.js';
 
 /**
@@ -98,7 +99,8 @@ export async function installProAddon(tarballPath: string): Promise<void> {
  *
  * With --check: queries npm for the latest version and prints the result.
  * With --pro: installs the Pro addon from a local tarball or Cloud API.
- * Without flags: runs `npm install -g crewly@latest` to upgrade in place.
+ * Without flags: runs `npm install -g crewly@latest` to upgrade in place
+ * (with `--prefix <crewlyHome>/npm-global` when Crewly is installed there).
  *
  * @param options - Command options
  */
@@ -125,9 +127,13 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
 
 	console.log(chalk.blue('Upgrading Crewly to the latest version...'));
 
-	const child = spawn('npm', ['install', '-g', 'crewly@latest'], {
+	// Upgrade in the prefix the running copy lives in (the user prefix when the
+	// installer could not write the global npm folder).
+	const npmArgs = selfInstallArgs('crewly@latest');
+	const child = spawn('npm', npmArgs, {
 		stdio: 'inherit',
-		shell: true,
+		// npm is npm.cmd on Windows; elsewhere no shell, so a prefix path with spaces stays one argument.
+		shell: process.platform === 'win32',
 	});
 
 	child.on('error', (error) => {
@@ -140,7 +146,7 @@ export async function upgradeCommand(options: UpgradeOptions): Promise<void> {
 			console.log(chalk.green('Crewly upgraded successfully!'));
 		} else {
 			console.error(
-				chalk.red('Upgrade failed. Try running manually: npm install -g crewly@latest')
+				chalk.red(`Upgrade failed. Try running manually: npm ${npmArgs.join(' ')}`)
 			);
 			process.exit(code ?? 1);
 		}

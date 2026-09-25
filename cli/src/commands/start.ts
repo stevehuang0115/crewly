@@ -15,6 +15,7 @@ import {
   SERVER_CONSTANTS,
 } from '../constants.js';
 import { checkForUpdate, printUpdateNotification } from '../utils/version-check.js';
+import { selfInstallArgs } from '../utils/self-install.js';
 import { killZombieProcesses } from '../utils/process-cleanup.js';
 import { createChildShutdownHandler, resolveShutdownBudgetMs } from '../utils/safe-shutdown.js';
 
@@ -144,9 +145,9 @@ export async function startCommand(options: StartOptions) {
 			if (result.updateAvailable && result.latestVersion) {
 				if (options.autoUpgrade) {
 					console.log(chalk.blue('Auto-upgrading Crewly...'));
-					const upgradeChild = spawn('npm', ['install', '-g', 'crewly@latest'], {
+					const upgradeChild = spawn('npm', selfInstallArgs('crewly@latest'), {
 						stdio: 'inherit',
-						shell: true,
+						shell: process.platform === 'win32',
 					});
 					upgradeChild.on('exit', (code: number | null) => {
 						if (code === 0) {

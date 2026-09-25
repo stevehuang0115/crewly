@@ -128,7 +128,7 @@ describe('upgradeCommand', () => {
 			expect(mockedSpawn).toHaveBeenCalledWith(
 				'npm',
 				['install', '-g', 'crewly@latest'],
-				expect.objectContaining({ stdio: 'inherit', shell: true })
+				expect.objectContaining({ stdio: 'inherit', shell: process.platform === 'win32' })
 			);
 		});
 
