@@ -118,6 +118,8 @@ export interface OrchestratorConfig {
 	sessionName: string;
 	projectPath: string;
 	windowName?: string;
+	/** Runtime the orchestrator will run; selects the settings API keys passed in its spawn env */
+	runtimeType?: RuntimeType;
 }
 
 /**
@@ -1983,6 +1985,7 @@ export class AgentRegistrationService {
 			await this.createOrchestratorSession({
 				sessionName,
 				projectPath: orchestratorCwd,
+				runtimeType,
 			});
 			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
 			await this.waitForShellReady(sessionName);
@@ -2060,9 +2063,12 @@ export class AgentRegistrationService {
 			// path — this branch used to spawn env-less, so every agent that came
 			// through Step 2 ran without CREWLY_SESSION_NAME (unattributed heartbeats
 			// and channel replies).
+			// API keys ride in the spawn env too (never typed in) — this path had no
+			// settings keys at all before, so a recreated agent ran without them.
 			const recreationCwd = projectPath || process.cwd();
+			const recreationKeyEnv = await this.buildApiKeyEnv(runtimeType);
 			await (await this.getSessionHelper()).createSession(sessionName, recreationCwd, {
-				env: this.buildAgentIdentityEnv(sessionName, role, recreationCwd),
+				env: { ...this.buildAgentIdentityEnv(sessionName, role, recreationCwd), ...recreationKeyEnv },
 			});
 			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
 			await this.waitForShellReady(sessionName);
@@ -3128,9 +3134,11 @@ Loop until done, blocked, or explicitly reassigned:
 		}
 
 		// Create new session for orchestrator — with the identity env (D1), the
-		// same object the primary path spawns with. windowName not used in PTY backend.
+		// same object the primary path spawns with, plus the settings API keys in
+		// the spawn env (never typed in). windowName not used in PTY backend.
+		const apiKeyEnv = await this.buildApiKeyEnv(config.runtimeType ?? RUNTIME_TYPES.CLAUDE_CODE);
 		await (await this.getSessionHelper()).createSession(config.sessionName, config.projectPath, {
-			env: this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath),
+			env: { ...this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath), ...apiKeyEnv },
 		});
 
 		this.logger.info('Orchestrator session created successfully', {
@@ -3168,6 +3176,45 @@ Loop until done, blocked, or explicitly reassigned:
 			[ENV_CONSTANTS.CREWLY_PROJECT_PATH]: cwd,
 			[ENV_CONSTANTS.CREWLY_INSTALL_DIR]: this.projectRoot,
 		};
+	}
+
+	/**
+	 * The API-key environment for a PTY runtime, resolved from settings (with
+	 * the per-runtime override chain).
+	 *
+	 * These are secrets, so they are only ever passed as the PTY's spawn
+	 * environment (`createSession(..., { env })`), never typed in as `export`
+	 * — a typed export is echoed by the shell into scrollback, the persistent
+	 * session log and the terminal-output API.
+	 *
+	 * Used by the PTY runtimes (claude-code, gemini-cli, codex-cli,
+	 * opencode-cli). crewly-agent gets its keys via
+	 * CrewlyAgentExternalRuntimeService.buildChildEnv instead.
+	 *
+	 * @param runtimeType - Runtime the session will run (selects key overrides)
+	 * @returns Env entries for every key that is configured; empty when none are
+	 */
+	private async buildApiKeyEnv(runtimeType: RuntimeType): Promise<Record<string, string>> {
+		const settingsService = getSettingsService();
+		const runtimeContext = { runtime: runtimeType };
+		const env: Record<string, string> = {};
+
+		// Gemini key — needed by gemini-cli
+		const geminiKey = await settingsService.getApiKey('gemini', runtimeContext);
+		if (geminiKey) {
+			env.GOOGLE_GENERATIVE_AI_API_KEY = geminiKey;
+			env[ENV_CONSTANTS.GEMINI_API_KEY] = geminiKey;
+		}
+
+		// Anthropic key — needed by claude-code
+		const anthropicKey = await settingsService.getApiKey('anthropic', runtimeContext);
+		if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey;
+
+		// OpenAI key — needed by codex-cli and opencode-cli
+		const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
+		if (openaiKey) env.OPENAI_API_KEY = openaiKey;
+
+		return env;
 	}
 
 	/**
@@ -3765,8 +3812,14 @@ Loop until done, blocked, or explicitly reassigned:
 				// CREWLY_SESSION_NAME — no X-Agent-Session header, and
 				// reply-channel fails with a misleading 404 (Think Tank, 2026-09-18).
 				// Same env object as the Step-2 recreation path (buildAgentIdentityEnv).
+				//
+				// API keys go ONLY into the spawn environment. They used to be typed
+				// in as `export KEY="…"`, which echoed the key into the PTY: it then
+				// sat in scrollback, in ~/.crewly/logs/sessions/*.log and in the
+				// terminal-output API. setEnvironmentVariable now refuses secrets.
+				const apiKeyEnv = await this.buildApiKeyEnv(runtimeType);
 				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse, {
-					env: this.buildAgentIdentityEnv(sessionName, role, cwdToUse),
+					env: { ...this.buildAgentIdentityEnv(sessionName, role, cwdToUse), ...apiKeyEnv },
 				});
 				this.logger.info('PTY session created successfully', {
 					sessionName,
@@ -3838,32 +3891,9 @@ Loop until done, blocked, or explicitly reassigned:
 				this.projectRoot
 			);
 
-			// Inject API keys from settings (with override chain) for the PTY
-			// runtimes (claude-code, gemini-cli, codex-cli, opencode-cli). crewly-agent never
-			// reaches this block — it returns from the in-process branch above —
-			// and gets its keys via CrewlyAgentExternalRuntimeService.buildChildEnv
-			// on the child's spawn environment instead.
+			// API keys were passed in the spawn environment above (buildApiKeyEnv),
+			// never typed into the PTY.
 			const settingsService = getSettingsService();
-			const runtimeContext = { runtime: runtimeType };
-
-			// Gemini key — needed by gemini-cli and crewly-agent
-			const geminiKey = await settingsService.getApiKey('gemini', runtimeContext);
-			if (geminiKey) {
-				await sessionHelper.setEnvironmentVariable(sessionName, 'GOOGLE_GENERATIVE_AI_API_KEY', geminiKey);
-				await sessionHelper.setEnvironmentVariable(sessionName, ENV_CONSTANTS.GEMINI_API_KEY, geminiKey);
-			}
-
-			// Anthropic key — needed by claude-code and crewly-agent
-			const anthropicKey = await settingsService.getApiKey('anthropic', runtimeContext);
-			if (anthropicKey) {
-				await sessionHelper.setEnvironmentVariable(sessionName, 'ANTHROPIC_API_KEY', anthropicKey);
-			}
-
-			// OpenAI key — needed by codex-cli, opencode-cli and crewly-agent
-			const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
-			if (openaiKey) {
-				await sessionHelper.setEnvironmentVariable(sessionName, 'OPENAI_API_KEY', openaiKey);
-			}
 
 			// Token tracking telemetry — inject env vars for runtimes that need them
 			const settings = await settingsService.getSettings();

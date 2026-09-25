@@ -20,6 +20,7 @@ import type { ISession, ISessionBackend } from './session-backend.interface.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SESSION_COMMAND_DELAYS, EVENT_DELIVERY_CONSTANTS, TERMINAL_PATTERNS, PLAN_MODE_DISMISS_PATTERNS } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
+import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 
 /**
@@ -429,14 +430,25 @@ export class SessionCommandHelper {
 	}
 
 	/**
-	 * Set an environment variable in a session by executing export command
-	 * Note: This only affects new commands run in the session
+	 * Set an environment variable in a session by typing an `export` command.
+	 *
+	 * Only for non-secret values: the shell echoes the typed line, so the value
+	 * ends up in scrollback, the persistent session log and the terminal-output
+	 * API. Secrets (API keys, tokens, passwords) belong in the spawn environment
+	 * (`createSession(..., { env })`) and are refused here.
+	 * Note: This only affects new commands run in the session.
+	 *
+	 * @param sessionName - Session to type into
+	 * @param key - Variable name
+	 * @param value - Variable value (not secret)
+	 * @throws Error when `key` names a secret (see utils/secret-env) or the session does not exist
 	 */
 	async setEnvironmentVariable(
 		sessionName: string,
 		key: string,
 		value: string
 	): Promise<void> {
+		assertNotSecretEnvKey(key);
 		const session = this.getSessionOrThrow(sessionName);
 
 		// Export the variable

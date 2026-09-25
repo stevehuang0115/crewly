@@ -414,6 +414,57 @@ describe('AgentRegistrationService', () => {
 			);
 		});
 
+		it.each([['developer'], ['orchestrator']])(
+			'Step 2 full recreation (%s) passes the settings API keys in the spawn env and types none of them',
+			async (role) => {
+				const FAKE_GEMINI_KEY = 'AIzaTESTrecreationGeminiKey0123456789ab';
+				const FAKE_ANTHROPIC_KEY = 'sk-ant-TESTrecreationAnthropicKey0123';
+				const { getSettingsService } = jest.requireMock<{ getSettingsService: jest.Mock }>('../settings/settings.service.js');
+				const previousSettings = (getSettingsService as jest.Mock)();
+				(getSettingsService as jest.Mock).mockReturnValue({
+					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true } }),
+					getApiKey: jest.fn().mockImplementation(async (provider: string) =>
+						provider === 'gemini' ? FAKE_GEMINI_KEY : provider === 'anthropic' ? FAKE_ANTHROPIC_KEY : undefined
+					),
+				});
+				try {
+					mockRuntimeService.waitForRuntimeReady
+						.mockResolvedValueOnce(false) // Step 1 fails
+						.mockResolvedValueOnce(true); // Step 2 succeeds
+					mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+
+					const result = await service.initializeAgentWithRegistration('test-session', role, '/test/path', 90000);
+
+					expect(result.success).toBe(true);
+					expect(result.message).toBe('Agent registered successfully after full recreation');
+					// The recreated runtime gets the keys — at spawn, like the primary path
+					expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+						'test-session',
+						'/test/path',
+						expect.objectContaining({
+							env: expect.objectContaining({
+								GEMINI_API_KEY: FAKE_GEMINI_KEY,
+								GOOGLE_GENERATIVE_AI_API_KEY: FAKE_GEMINI_KEY,
+								ANTHROPIC_API_KEY: FAKE_ANTHROPIC_KEY,
+								CREWLY_SESSION_NAME: 'test-session',
+							}),
+						})
+					);
+					// …and nothing sent to the terminal carries either key
+					const helper = mockSessionHelper as unknown as Record<string, unknown>;
+					const sent = Object.entries(helper)
+						.filter(([name, fn]) => name !== 'createSession' && jest.isMockFunction(fn))
+						.flatMap(([name, fn]) => (fn as jest.Mock).mock.calls.map((args) => `${name}(${JSON.stringify(args)})`))
+						.join('\n');
+					expect(sent.length).toBeGreaterThan(0); // the check examined real calls
+					expect(sent).not.toContain(FAKE_GEMINI_KEY);
+					expect(sent).not.toContain(FAKE_ANTHROPIC_KEY);
+				} finally {
+					(getSettingsService as jest.Mock).mockReturnValue(previousSettings);
+				}
+			}
+		);
+
 		it('Step 2 defers the runtime init write until the fresh shell has printed its prompt (D3)', async () => {
 			mockRuntimeService.waitForRuntimeReady
 				.mockResolvedValueOnce(false) // Step 1 fails
@@ -835,11 +886,138 @@ describe('AgentRegistrationService', () => {
 			// AGENTS.md convention, same as Codex (the path is resolved from the
 			// team's project, falling back to the install root when there is none)
 			expect(provisionSpy).toHaveBeenCalledWith(expect.any(String), RUNTIME_TYPES.OPENCODE_CLI);
-			// Provider keys land in the PTY environment so `opencode` can pick them up
-			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('opencode-session', 'OPENAI_API_KEY', 'sk-openai-test');
-			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('opencode-session', 'ANTHROPIC_API_KEY', 'sk-ant-test');
+			// Provider keys land in the PTY's spawn environment so `opencode` can pick
+			// them up — never typed into the terminal
+			expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+				'opencode-session',
+				expect.anything(),
+				expect.objectContaining({
+					env: expect.objectContaining({ OPENAI_API_KEY: 'sk-openai-test', ANTHROPIC_API_KEY: 'sk-ant-test' }),
+				}),
+			);
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('opencode-session', 'OPENAI_API_KEY', expect.anything());
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('opencode-session', 'ANTHROPIC_API_KEY', expect.anything());
 			// Claude-only telemetry env must not leak into other runtimes
 			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('opencode-session', 'CLAUDE_CODE_ENABLE_TELEMETRY', '1');
+		});
+
+		describe('API keys never reach the terminal (secrets in PTY scrollback / session logs)', () => {
+			/** Fake keys, shaped like real ones so the redaction patterns would also see them */
+			const FAKE_KEYS = {
+				gemini: 'AIzaTESTfakeGeminiKey0123456789abcdefXYZ',
+				anthropic: 'sk-ant-TESTfakeAnthropicKey0123456789',
+				openai: 'sk-TESTfakeOpenAiKey0123456789abcdef',
+			} as const;
+
+			/**
+			 * Every argument passed to any session-helper method except createSession
+			 * (whose spawn env is where the keys belong): these are the calls that
+			 * type into, or send to, the PTY.
+			 */
+			function argumentsSentToTerminal(): string {
+				const helper = mockSessionHelper as unknown as Record<string, unknown>;
+				return Object.entries(helper)
+					.filter(([name, fn]) => name !== 'createSession' && jest.isMockFunction(fn))
+					.flatMap(([name, fn]) => (fn as jest.Mock).mock.calls.map((args) => `${name}(${JSON.stringify(args)})`))
+					.join('\n');
+			}
+
+			it.each([
+				[RUNTIME_TYPES.GEMINI_CLI],
+				[RUNTIME_TYPES.CLAUDE_CODE],
+				[RUNTIME_TYPES.OPENCODE_CLI],
+			])('%s: passes the keys in the spawn env and types none of them into the session', async (runtimeType) => {
+				const { getSettingsService } = jest.requireMock<{ getSettingsService: jest.Mock }>('../settings/settings.service.js');
+				(getSettingsService as any).mockReturnValue({
+					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: true } }),
+					getApiKey: jest.fn().mockImplementation(async (provider: keyof typeof FAKE_KEYS) => FAKE_KEYS[provider]),
+				});
+				// Codex/OpenCode write AGENTS.md first; not what this test is about
+				jest.spyOn(service as any, 'provisionRuntimeConfigFile').mockResolvedValue(undefined);
+				mockSessionHelper.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+				mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+				mockReadFile
+					.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+					.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+				const result = await service.createAgentSession({
+					sessionName: 'keyed-session',
+					role: 'developer',
+					runtimeType,
+					projectPath: '/test/project',
+				});
+
+				expect(result.success).toBe(true);
+				// The runtime still gets every key — in the PTY's spawn environment
+				expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+					'keyed-session',
+					expect.anything(),
+					expect.objectContaining({
+						env: expect.objectContaining({
+							GEMINI_API_KEY: FAKE_KEYS.gemini,
+							GOOGLE_GENERATIVE_AI_API_KEY: FAKE_KEYS.gemini,
+							ANTHROPIC_API_KEY: FAKE_KEYS.anthropic,
+							OPENAI_API_KEY: FAKE_KEYS.openai,
+						}),
+					}),
+				);
+				// …and nothing written to the terminal contains any of them
+				const sent = argumentsSentToTerminal();
+				expect(sent.length).toBeGreaterThan(0); // the check examined real calls
+				for (const key of Object.values(FAKE_KEYS)) {
+					expect(sent).not.toContain(key);
+				}
+				// Non-secret CREWLY_* exports are still typed, as before
+				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('keyed-session', 'CREWLY_SESSION_NAME', 'keyed-session');
+			});
+
+			// codex-cli separately: its registration-prompt delivery (after the keys are
+			// placed) needs a live Codex TUI to accept the prompt, which the mocked PTY
+			// cannot show, so that step is stubbed. Everything up to and including the
+			// runtime init script — where a typed export would happen — still runs.
+			it('codex-cli: passes the keys in the spawn env and types none of them into the session', async () => {
+				const { getSettingsService } = jest.requireMock<{ getSettingsService: jest.Mock }>('../settings/settings.service.js');
+				(getSettingsService as any).mockReturnValue({
+					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: true } }),
+					getApiKey: jest.fn().mockImplementation(async (provider: keyof typeof FAKE_KEYS) => FAKE_KEYS[provider]),
+				});
+				jest.spyOn(service as any, 'provisionRuntimeConfigFile').mockResolvedValue(undefined);
+				const registration = jest
+					.spyOn(service as any, 'initializeAgentWithRegistration')
+					.mockResolvedValue({ success: true, message: 'registered (stubbed)' });
+				mockSessionHelper.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+				mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+				mockReadFile
+					.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+					.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+				const result = await service.createAgentSession({
+					sessionName: 'keyed-session',
+					role: 'developer',
+					runtimeType: RUNTIME_TYPES.CODEX_CLI,
+					projectPath: '/test/project',
+				});
+
+				expect(result.success).toBe(true);
+				expect(registration).toHaveBeenCalled();
+				expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+					'keyed-session',
+					expect.anything(),
+					expect.objectContaining({
+						env: expect.objectContaining({
+							OPENAI_API_KEY: FAKE_KEYS.openai,
+							ANTHROPIC_API_KEY: FAKE_KEYS.anthropic,
+							GEMINI_API_KEY: FAKE_KEYS.gemini,
+						}),
+					}),
+				);
+				const sent = argumentsSentToTerminal();
+				expect(sent.length).toBeGreaterThan(0); // the check examined real calls
+				for (const key of Object.values(FAKE_KEYS)) {
+					expect(sent).not.toContain(key);
+				}
+				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('keyed-session', 'CREWLY_SESSION_NAME', 'keyed-session');
+			});
 		});
 
 		it('should attempt recovery when session already exists', async () => {
