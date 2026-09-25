@@ -45,7 +45,23 @@ export interface MarketplaceItem {
   updatedAt: string;
   assets: MarketplaceItemAssets;
   metadata?: Record<string, unknown>;
+  /**
+   * Which registry the entry came from. Set by fetchRegistry, never present in
+   * registry JSON. `public` (GitHub, config/skills/registry.json) and `premium`
+   * (crewlyai.com) are curated by Crewly; `local` entries were published on
+   * this machine and are never treated as official (skill auto-install trust rule).
+   */
+  registrySource?: MarketplaceRegistrySource;
+  /**
+   * The public-registry entry a premium entry with the same id replaced, when
+   * their sources differ. Installed instead if the premium archive fails (as
+   * the CLI does). Set by fetchRegistry; never present in registry JSON.
+   */
+  fallback?: MarketplaceItem;
 }
+
+/** Where a registry entry came from (see MarketplaceItem.registrySource). */
+export type MarketplaceRegistrySource = 'public' | 'premium' | 'local';
 
 export interface MarketplaceRegistry {
   schemaVersion: number;

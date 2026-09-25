@@ -111,17 +111,26 @@ async function doFetchRegistry(now: number): Promise<MarketplaceRegistry> {
   // Merge: public + premium (premium overwrites by ID if conflict)
   const mergedMap = new Map<string, MarketplaceItem>();
   for (const item of publicItems) {
-    mergedMap.set(item.id, item);
+    mergedMap.set(item.id, { ...item, registrySource: 'public' });
   }
   for (const item of premiumItems) {
-    mergedMap.set(item.id, item);
+    // Keep the public entry a premium one replaces: premium archives can be
+    // missing from the CDN while the public copy of the same skill installs.
+    const replaced = mergedMap.get(item.id);
+    const sameSource =
+      replaced && (replaced.assets.archive ?? replaced.assets.model) === (item.assets.archive ?? item.assets.model);
+    mergedMap.set(item.id, {
+      ...item,
+      registrySource: 'premium',
+      ...(replaced && !sameSource ? { fallback: replaced } : {}),
+    });
   }
 
   // Merge locally published skills
   const localItems = await loadLocalRegistry();
   for (const item of localItems) {
     if (!mergedMap.has(item.id)) {
-      mergedMap.set(item.id, item);
+      mergedMap.set(item.id, { ...item, registrySource: 'local' });
     }
   }
 

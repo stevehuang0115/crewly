@@ -102,6 +102,28 @@ describe('fetchRegistry', () => {
     expect(registry.items).toHaveLength(3);
   });
 
+  it('tags each entry with the registry it came from, and keeps a public fallback for a premium override', async () => {
+    const publicReg = { ...sampleRegistry, items: [makeItem({ id: 'code-review', assets: { archive: 'config/skills/agent/marketplace/code-review' } }), makeItem({ id: 'only-public' })] };
+    const premiumReg = { ...sampleRegistry, items: [makeItem({ id: 'code-review', assets: { archive: 'skills/code-review/code-review-1.0.0.tar.gz' } })] };
+    mockFetch.mockImplementation((url: string) =>
+      Promise.resolve({ ok: true, json: () => Promise.resolve(structuredClone(url === MARKETPLACE_CONSTANTS.PUBLIC_REGISTRY_URL ? publicReg : premiumReg)) }),
+    );
+    readFile.mockImplementation((p: string) =>
+      p.endsWith(MARKETPLACE_CONSTANTS.LOCAL_REGISTRY_FILE)
+        ? Promise.resolve(JSON.stringify({ items: [makeItem({ id: 'local-one', author: 'Crewly Team' })] }))
+        : Promise.reject(new Error('ENOENT')),
+    );
+    const registry = await fetchRegistry();
+    const byId = new Map(registry.items.map((i) => [i.id, i]));
+    expect(byId.get('only-public')?.registrySource).toBe('public');
+    expect(byId.get('local-one')?.registrySource).toBe('local');
+    const cr = byId.get('code-review');
+    expect(cr?.registrySource).toBe('premium');
+    expect(cr?.assets.archive).toBe('skills/code-review/code-review-1.0.0.tar.gz');
+    expect(cr?.fallback?.assets.archive).toBe('config/skills/agent/marketplace/code-review');
+    expect(cr?.fallback?.registrySource).toBe('public');
+  });
+
   it('should return cached registry within TTL', async () => {
     await fetchRegistry();
     await fetchRegistry();

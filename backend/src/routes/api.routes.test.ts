@@ -78,6 +78,8 @@ jest.mock('../controllers/connector/connector.routes.js', () => ({ createConnect
 jest.mock('../controllers/agent-self-improvement/agent-self-improvement.controller.js', () => ({ createAgentSelfImprovementRouter: () => Router() }));
 jest.mock('../controllers/task-projection/task-projection.routes.js', () => ({ __esModule: true, default: Router() }));
 jest.mock('../controllers/chat-v2/index.js', () => ({ createChatV2Router: () => Router() }));
+const mockCreateSkillSetupRouter = jest.fn(() => Router());
+jest.mock('../controllers/skill-setup/skill-setup.routes.js', () => ({ createSkillSetupRouter: () => mockCreateSkillSetupRouter() }));
 jest.mock('../services/chat-v2/chat-v2.singleton.js', () => ({
   getChatV2Service: () => ({ setPresenceProvider: jest.fn() }),
 }));
@@ -104,6 +106,8 @@ describe('API Routes', () => {
 			expect(router).toBeDefined();
 			// Router should have registered route layers
 			expect(router.stack.length).toBeGreaterThan(0);
+			// On-demand skill install (find-skill / install-skill) is mounted
+			expect(mockCreateSkillSetupRouter).toHaveBeenCalled();
 		});
 	});
 

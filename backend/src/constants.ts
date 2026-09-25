@@ -3021,6 +3021,103 @@ export const ONBOARDING_CONSTANTS = {
 /** License status type */
 export type CloudLicenseStatus = (typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS)[keyof typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS];
 
+/**
+ * On-demand skill setup (specs/skill-auto-install.md).
+ *
+ * A skill's `skill.json` may declare a `setup` block (system commands, files
+ * such as models, Python packages). The setup runner performs it idempotently;
+ * `find-skill` / `install-skill` let an agent find and install an official
+ * skill, with its dependencies, as a background job.
+ */
+export const SKILL_SETUP_CONSTANTS = {
+	/** Directory under the Crewly home for setup state (locks) */
+	STATE_DIR: 'skill-setup',
+	/** Subdirectory of STATE_DIR holding one lock file per skill */
+	LOCKS_SUBDIR: 'locks',
+	/** Directory under the Crewly home for per-skill setup logs */
+	LOG_DIR: 'logs/skill-setup',
+	/** Directory under the Crewly home for Crewly-managed binaries (e.g. whisper-cli on Linux) */
+	BIN_DIR: 'bin',
+	/** Directory under the Crewly home for per-skill Python virtualenvs (`venv/<name>`) */
+	VENV_DIR: 'venv',
+	/** Directories always searched for commands, after the process PATH */
+	EXTRA_COMMAND_DIRS: ['/opt/homebrew/bin', '/usr/local/bin', '/usr/bin', '/bin', '/usr/sbin', '/sbin'],
+	/** Where Homebrew lives when it is not on PATH */
+	BREW_CANDIDATES: ['/opt/homebrew/bin/brew', '/usr/local/bin/brew', '/home/linuxbrew/.linuxbrew/bin/brew'],
+	/** File whose presence marks a Debian-family Linux (apt-get available) */
+	DEBIAN_MARKER_FILE: '/etc/debian_version',
+	/** Timeout for a check command (`bash -c`, venv import probe) */
+	CHECK_TIMEOUT_MS: 30_000,
+	/** Timeout for one package-manager install (brew / apt-get / pip) */
+	PACKAGE_INSTALL_TIMEOUT_MS: 30 * 60 * 1000,
+	/** Timeout for a skill-provided install script (may build from source) */
+	SCRIPT_INSTALL_TIMEOUT_MS: 45 * 60 * 1000,
+	/** Abort a download that receives no bytes for this long */
+	DOWNLOAD_STALL_TIMEOUT_MS: 2 * 60 * 1000,
+	/** Log download progress every this many percent */
+	DOWNLOAD_PROGRESS_STEP_PERCENT: 10,
+	/** Extra free space required beyond a file's size before downloading it (fraction) */
+	DOWNLOAD_FREE_SPACE_MARGIN: 0.1,
+	/** How often a waiting setup re-checks another process's lock */
+	LOCK_POLL_MS: 2_000,
+	/** How long a setup waits for another process's lock before giving up */
+	LOCK_WAIT_MS: 60 * 60 * 1000,
+	/** A lock older than this is treated as abandoned even if its pid is alive (pid reuse) */
+	LOCK_STALE_MS: 2 * 60 * 60 * 1000,
+	/** Keep this many characters of output per install job (tail) */
+	JOB_LOG_MAX_CHARS: 20_000,
+	/** Forget finished install jobs after this long */
+	JOB_RETENTION_MS: 24 * 60 * 60 * 1000,
+	/** Minutes quoted to the user when a skill declares setup but no estimate */
+	DEFAULT_ESTIMATED_MINUTES: 3,
+	/** Maximum candidates `find-skill` returns */
+	FIND_MAX_RESULTS: 8,
+	/** Candidates whose setup state is probed (checks only) per `find-skill` call */
+	FIND_PROBE_LIMIT: 3,
+	/** Registry authors whose entries in an official registry count as official */
+	OFFICIAL_AUTHORS: ['Crewly Team', 'crewly', 'Crewly'],
+	/** How far back an owner "yes" counts for `--approved-by-owner` (ms) */
+	OWNER_APPROVAL_LOOKBACK_MS: 2 * 60 * 60 * 1000,
+	/** Chat conversation id used for install-completion system events */
+	COMPLETION_CONVERSATION_ID: 'system',
+	/** Header lines that open the completion message the requesting agent receives */
+	COMPLETION_HEADERS: {
+		SUCCEEDED: '[SKILL INSTALLED]',
+		FAILED: '[SKILL INSTALL FAILED]',
+	},
+	/**
+	 * Words that map a user's phrasing onto the vocabulary skills are tagged
+	 * with, for `find-skill` ranking ("voice message" should find a
+	 * transcription skill even though no skill is tagged "voice").
+	 */
+	QUERY_SYNONYMS: {
+		voice: ['audio', 'speech', 'transcribe'],
+		recording: ['audio', 'transcribe'],
+		speech: ['audio', 'transcribe'],
+		m4a: ['audio', 'transcribe'],
+		mp3: ['audio', 'transcribe'],
+		wav: ['audio', 'transcribe'],
+		ogg: ['audio', 'transcribe'],
+		aac: ['audio', 'transcribe'],
+		opus: ['audio', 'transcribe'],
+		mp4: ['video', 'audio', 'transcribe'],
+		mov: ['video', 'audio', 'transcribe'],
+		video: ['audio', 'transcribe'],
+		transcript: ['transcribe'],
+		transcription: ['transcribe'],
+		dictation: ['audio', 'transcribe'],
+		'语音': ['audio', 'transcribe'],
+		'录音': ['audio', 'transcribe'],
+		'转写': ['transcribe'],
+		'转文字': ['transcribe'],
+		'音频': ['audio'],
+		'视频': ['video'],
+		document: ['pdf'],
+		'文档': ['pdf', 'document'],
+		report: ['pdf'],
+	} as Readonly<Record<string, readonly string[]>>,
+} as const;
+
 // Type helpers
 export type AgentStatus =
 	(typeof CREWLY_CONSTANTS.AGENT_STATUSES)[keyof typeof CREWLY_CONSTANTS.AGENT_STATUSES];

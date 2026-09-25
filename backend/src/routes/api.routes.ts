@@ -42,6 +42,7 @@ import { createTaskPoolRouter, createTaskScoreRouter } from '../controllers/task
 import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createTicketsRouter } from '../controllers/tickets/tickets.routes.js';
 import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
+import { createSkillSetupRouter } from '../controllers/skill-setup/skill-setup.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
@@ -188,6 +189,11 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Harness onboarding (specs/onboarding-harness-login.md): detect, install,
   // choose the orc harness and log in — shared engine with the CLI
   router.use('/harness', createHarnessRouter());
+
+  // On-demand skill install (specs/skill-auto-install.md): find-skill /
+  // install-skill — find an official skill, install it with its dependencies
+  // as a background job, message the requesting agent when it is done
+  router.use('/skill-setup', createSkillSetupRouter());
 
   // Task Pool routes for V2 work item pool management
   router.use('/task-pool', createTaskPoolRouter());
