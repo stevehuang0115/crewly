@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import { accessSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
+import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
 import { SessionInfo } from '../../types/index.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 
@@ -1020,10 +1021,19 @@ export class TmuxCommandService {
 	}
 
 	/**
-	 * Set environment variable in a tmux session
+	 * Set a non-secret environment variable in a tmux session by typing `export`.
+	 *
+	 * The typed line is echoed into the pane, so secrets are refused (see
+	 * utils/secret-env) and the value is never logged.
+	 *
+	 * @param sessionName - tmux session
+	 * @param key - Variable name
+	 * @param value - Variable value (not secret)
+	 * @throws Error when `key` names a secret
 	 */
 	async setEnvironmentVariable(sessionName: string, key: string, value: string): Promise<void> {
-		this.logger.debug('🔍 Setting environment variable:', { sessionName, key, value });
+		assertNotSecretEnvKey(key);
+		this.logger.debug('🔍 Setting environment variable:', { sessionName, key });
 		// Use robust script approach for reliable message sending (includes Enter key automatically)
 		await this.sendMessage(sessionName, `export ${key}="${value}"`);
 		this.logger.info('✅ Environment variable set successfully', { sessionName, key });

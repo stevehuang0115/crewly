@@ -3312,6 +3312,62 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * The API-key environment for a PTY runtime, resolved from settings (with
+	 * the per-runtime override chain).
+	 *
+	 * These are secrets, so they are only ever passed as the PTY's spawn
+	 * environment (`createSession(..., { env })`), never typed in as `export`
+	 * — a typed export is echoed by the shell into scrollback, the persistent
+	 * session log and the terminal-output API.
+	 *
+	 * Used by the PTY runtimes (claude-code, gemini-cli, codex-cli,
+	 * antigravity-cli, opencode-cli). crewly-agent gets its keys via
+	 * CrewlyAgentExternalRuntimeService.buildChildEnv instead.
+	 *
+	 * Two runtimes get an override on top of the plain settings lookup, both
+	 * carried over from the primary spawn path's inline key resolution:
+	 * - Antigravity: a key already saved in Settings → Harness is applied at
+	 *   spawn via buildAgentIdentityEnv (harnessEnvForAgents); a settings
+	 *   Gemini key must not override it here.
+	 * - Codex: it prefers OPENAI_API_KEY over its own login, so a stale
+	 *   settings key overrides a working ChatGPT sign-in ("Incorrect API
+	 *   key", Nova 2026-09-26). When Codex already has its own login, the
+	 *   settings key is withheld.
+	 *
+	 * @param runtimeType - Runtime the session will run (selects key overrides)
+	 * @returns Env entries for every key that is configured; empty when none are
+	 */
+	private async buildApiKeyEnv(runtimeType: RuntimeType): Promise<Record<string, string>> {
+		const settingsService = getSettingsService();
+		const runtimeContext = { runtime: runtimeType };
+		const env: Record<string, string> = {};
+
+		// Gemini key — needed by gemini-cli. An Antigravity session whose key
+		// was saved in Settings → Harness already got it at spawn
+		// (buildAgentIdentityEnv); a settings key must not override it.
+		const antigravityKeyAtSpawn =
+			runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI && getHarnessCredentialsStore().getAntigravityGeminiApiKey() !== null;
+		const geminiKey = antigravityKeyAtSpawn ? undefined : await settingsService.getApiKey('gemini', runtimeContext);
+		if (geminiKey) {
+			env.GOOGLE_GENERATIVE_AI_API_KEY = geminiKey;
+			env[ENV_CONSTANTS.GEMINI_API_KEY] = geminiKey;
+		}
+
+		// Anthropic key — needed by claude-code
+		const anthropicKey = await settingsService.getApiKey('anthropic', runtimeContext);
+		if (anthropicKey) env.ANTHROPIC_API_KEY = anthropicKey;
+
+		// OpenAI key — needed by codex-cli and opencode-cli. Skipped for Codex
+		// when it already has its own login (see docstring above).
+		const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
+		if (openaiKey && !(runtimeType === RUNTIME_TYPES.CODEX_CLI && codexHasOwnLogin())) {
+			env.OPENAI_API_KEY = openaiKey;
+		}
+
+		return env;
+	}
+
+	/**
 	 * Wait — bounded — for a freshly spawned shell to print its prompt before
 	 * anything is written to it.
 	 *
@@ -3906,8 +3962,14 @@ Loop until done, blocked, or explicitly reassigned:
 				// CREWLY_SESSION_NAME — no X-Agent-Session header, and
 				// reply-channel fails with a misleading 404 (Think Tank, 2026-09-18).
 				// Same env object as the Step-2 recreation path (buildAgentIdentityEnv).
+				//
+				// API keys go ONLY into the spawn environment. They used to be typed
+				// in as `export KEY="…"`, which echoed the key into the PTY: it then
+				// sat in scrollback, in ~/.crewly/logs/sessions/*.log and in the
+				// terminal-output API. setEnvironmentVariable now refuses secrets.
+				const apiKeyEnv = await this.buildApiKeyEnv(runtimeType);
 				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse, {
-					env: this.buildAgentIdentityEnv(sessionName, role, cwdToUse, runtimeType),
+					env: { ...this.buildAgentIdentityEnv(sessionName, role, cwdToUse, runtimeType), ...apiKeyEnv },
 				});
 				this.logger.info('PTY session created successfully', {
 					sessionName,
@@ -3979,40 +4041,12 @@ Loop until done, blocked, or explicitly reassigned:
 				this.projectRoot
 			);
 
-			// Inject API keys from settings (with override chain) for the PTY
-			// runtimes (claude-code, gemini-cli, codex-cli, opencode-cli). crewly-agent never
-			// reaches this block — it returns from the in-process branch above —
-			// and gets its keys via CrewlyAgentExternalRuntimeService.buildChildEnv
-			// on the child's spawn environment instead.
+			// API keys were passed in the spawn environment above (buildApiKeyEnv),
+			// never typed into the PTY. The Antigravity-harness-key and
+			// codex-has-own-login overrides that used to live here now live in
+			// buildApiKeyEnv() itself, since that is the only place keys are
+			// resolved for this (primary) spawn path.
 			const settingsService = getSettingsService();
-			const runtimeContext = { runtime: runtimeType };
-
-			// Gemini key — needed by gemini-cli, antigravity-cli and crewly-agent.
-			// An Antigravity session whose key was saved in Settings → Harness
-			// already got it at spawn (buildAgentIdentityEnv); a settings key
-			// must not override it, and the saved key is never typed here.
-			const antigravityKeyAtSpawn =
-				runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI && getHarnessCredentialsStore().getAntigravityGeminiApiKey() !== null;
-			const geminiKey = antigravityKeyAtSpawn ? undefined : await settingsService.getApiKey('gemini', runtimeContext);
-			if (geminiKey) {
-				await sessionHelper.setEnvironmentVariable(sessionName, 'GOOGLE_GENERATIVE_AI_API_KEY', geminiKey);
-				await sessionHelper.setEnvironmentVariable(sessionName, ENV_CONSTANTS.GEMINI_API_KEY, geminiKey);
-			}
-
-			// Anthropic key — needed by claude-code and crewly-agent
-			const anthropicKey = await settingsService.getApiKey('anthropic', runtimeContext);
-			if (anthropicKey) {
-				await sessionHelper.setEnvironmentVariable(sessionName, 'ANTHROPIC_API_KEY', anthropicKey);
-			}
-
-			// OpenAI key — needed by codex-cli, opencode-cli and crewly-agent
-			const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
-			// Codex prefers OPENAI_API_KEY over its own login, so a stale key in
-			// settings overrode a working ChatGPT sign-in ("Incorrect API key",
-			// Nova 2026-09-26). When codex has its own credentials, leave it be.
-			if (openaiKey && !(runtimeType === RUNTIME_TYPES.CODEX_CLI && codexHasOwnLogin())) {
-				await sessionHelper.setEnvironmentVariable(sessionName, 'OPENAI_API_KEY', openaiKey);
-			}
 
 			// Token tracking telemetry — inject env vars for runtimes that need them
 			const settings = await settingsService.getSettings();

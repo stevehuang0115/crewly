@@ -22,6 +22,8 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
+import { redactSensitive } from '../../wiki/wiki-redaction.js';
+import { collectSecretEnvValues, redactSecretEnvValues, type SecretEnvValue } from '../../../utils/secret-env.js';
 
 /**
  * Point-in-time PTY/FD health snapshot for observability.
@@ -95,6 +97,12 @@ export class PtySessionBackend implements ISessionBackend {
 	 * Map of session names to writable file streams for persistent session logs
 	 */
 	private sessionLogStreams: Map<string, fs.WriteStream> = new Map();
+
+	/**
+	 * Per session: the secret values (from the backend env and the session's
+	 * spawn env) masked by value before anything is written to its log.
+	 */
+	private sessionLogSecrets: Map<string, SecretEnvValue[]> = new Map();
 
 	/**
 	 * Directory for persistent session log files
@@ -263,6 +271,7 @@ export class PtySessionBackend implements ISessionBackend {
 
 		// Open persistent session log file stream (append mode with restart separator)
 		this.openSessionLogStream(name);
+		this.sessionLogSecrets.set(name, collectSecretEnvValues(process.env, options.env));
 
 		// Pipe session output to terminal buffer and record activity for idle detection.
 		// Recording here (at session creation) ensures activity is tracked even when
@@ -875,7 +884,15 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
-	 * Write ANSI-stripped terminal data to a session's persistent log file.
+	 * Write ANSI-stripped, secret-redacted terminal data to a session's
+	 * persistent log file.
+	 *
+	 * Secrets matching SECRET_PATTERNS (Google `AIza…`, OpenAI/Anthropic `sk-…`,
+	 * GitHub/Slack tokens, …) are masked before writing, and so is the exact
+	 * value of every secret-named variable in the backend env or the session's
+	 * spawn env (which catches secrets no pattern recognises). This is a backstop:
+	 * keys are no longer typed into sessions at all, and a secret split across
+	 * two output chunks is not caught here.
 	 *
 	 * @param sessionName - Name of the session
 	 * @param data - Raw terminal data (with ANSI codes)
@@ -892,7 +909,7 @@ export class PtySessionBackend implements ISessionBackend {
 
 		// Only write if there's content after stripping
 		if (stripped.length > 0) {
-			stream.write(stripped);
+			stream.write(redactSecretEnvValues(redactSensitive(stripped), this.sessionLogSecrets.get(sessionName) ?? []));
 		}
 	}
 
@@ -912,6 +929,7 @@ export class PtySessionBackend implements ISessionBackend {
 				// Ignore close errors
 			}
 			this.sessionLogStreams.delete(sessionName);
+			this.sessionLogSecrets.delete(sessionName);
 		}
 	}
 }
