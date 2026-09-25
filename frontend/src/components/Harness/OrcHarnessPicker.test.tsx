@@ -1,0 +1,51 @@
+/**
+ * Tests for OrcHarnessPicker: orc selection.
+ *
+ * @module components/Harness/OrcHarnessPicker.test
+ */
+
+import React from 'react';
+import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
+import { OrcHarnessPicker, defaultOrcChoice } from './OrcHarnessPicker';
+import { makeHarness, CODEX, GEMINI } from '../../test/harness.fixtures';
+
+describe('defaultOrcChoice', () => {
+  it('keeps the current choice when installed', () => {
+    expect(defaultOrcChoice([makeHarness(), CODEX], 'codex-cli')).toBe('codex-cli');
+  });
+
+  it('uses the preferred harness next, then Claude Code, then the first installed', () => {
+    expect(defaultOrcChoice([makeHarness(), CODEX], null, 'codex-cli')).toBe('codex-cli');
+    expect(defaultOrcChoice([makeHarness(), CODEX], null)).toBe('claude-code');
+    expect(defaultOrcChoice([makeHarness({ installed: false }), CODEX], 'claude-code')).toBe('codex-cli');
+    expect(defaultOrcChoice([GEMINI], null)).toBeNull();
+  });
+});
+
+describe('OrcHarnessPicker', () => {
+  it('lists only installed harnesses with the current one checked', () => {
+    render(<OrcHarnessPicker harnesses={[makeHarness(), CODEX, GEMINI]} value="claude-code" onChange={vi.fn()} />);
+    const radios = screen.getAllByRole('radio') as HTMLInputElement[];
+    expect(radios.map((r) => r.value)).toEqual(['claude-code', 'codex-cli']);
+    expect(radios[0].checked).toBe(true);
+    expect(screen.queryByText('Gemini CLI')).not.toBeInTheDocument();
+  });
+
+  it('reports a change', () => {
+    const onChange = vi.fn();
+    render(<OrcHarnessPicker harnesses={[makeHarness(), CODEX]} value="claude-code" onChange={onChange} />);
+    fireEvent.click(screen.getByDisplayValue('codex-cli'));
+    expect(onChange).toHaveBeenCalledWith('codex-cli');
+  });
+
+  it('disables radios while saving', () => {
+    render(<OrcHarnessPicker harnesses={[makeHarness()]} value="claude-code" onChange={vi.fn()} disabled />);
+    expect(screen.getByRole('radio')).toBeDisabled();
+  });
+
+  it('shows an empty state when nothing is installed', () => {
+    render(<OrcHarnessPicker harnesses={[GEMINI]} value={null} onChange={vi.fn()} />);
+    expect(screen.getByText('还没有安装任何编程助手')).toBeInTheDocument();
+  });
+});

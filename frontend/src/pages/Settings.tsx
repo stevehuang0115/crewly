@@ -1,7 +1,7 @@
 /**
  * Settings Page
  *
- * Main settings page with tab navigation for General, Roles, Skills, Integrations,
+ * Main settings page with tab navigation for General, Harness, Roles, Skills, Integrations,
  * API Keys, and System sections. Cloud management has been consolidated into the
  * dedicated Cloud Portal page (/cloud).
  *
@@ -12,7 +12,7 @@
 
 import React, { useEffect } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, Lock, LucideIcon } from 'lucide-react';
+import { Settings as SettingsIcon, User, Wrench, Link2, Key, Monitor, Lock, Bot, LucideIcon } from 'lucide-react';
 import { Tabs, TabList, TabTrigger, TabContent } from '@crewly/ui';
 import { GeneralTab } from '../components/Settings/GeneralTab';
 import { RolesTab } from '../components/Settings/RolesTab';
@@ -21,11 +21,12 @@ import { IntegrationsTab } from '../components/Settings/IntegrationsTab';
 import { ApiKeysTab } from '../components/Settings/ApiKeysTab';
 import { CredentialsTab } from '../components/Settings/CredentialsTab';
 import { SystemTab } from '../components/Settings/SystemTab';
+import { HarnessTab } from '../components/Settings/HarnessTab';
 
 /**
  * Available settings tabs (Cloud removed -- consolidated to /cloud)
  */
-type SettingsTab = 'general' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'credentials' | 'system';
+type SettingsTab = 'general' | 'harness' | 'roles' | 'skills' | 'integrations' | 'api-keys' | 'credentials' | 'system';
 
 /**
  * Tab configuration
@@ -37,7 +38,7 @@ interface TabConfig {
 }
 
 /** Valid tab IDs for URL parameter validation */
-const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'roles', 'skills', 'integrations', 'api-keys', 'credentials', 'system']);
+const VALID_TABS: ReadonlySet<string> = new Set<SettingsTab>(['general', 'harness', 'roles', 'skills', 'integrations', 'api-keys', 'credentials', 'system']);
 
 /**
  * Settings page with tabbed navigation for managing Crewly configuration.
@@ -66,6 +67,7 @@ export const Settings: React.FC = () => {
 
   const tabs: TabConfig[] = [
     { id: 'general', label: 'General', icon: SettingsIcon },
+    { id: 'harness', label: 'Harness', icon: Bot },
     { id: 'roles', label: 'Roles', icon: User },
     { id: 'skills', label: 'Skills', icon: Wrench },
     { id: 'integrations', label: 'Integrations', icon: Link2 },
@@ -79,6 +81,8 @@ export const Settings: React.FC = () => {
     switch (tab) {
       case 'general':
         return <GeneralTab />;
+      case 'harness':
+        return <HarnessTab />;
       case 'roles':
         return <RolesTab />;
       case 'skills':

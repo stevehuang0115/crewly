@@ -135,3 +135,24 @@ describe('App token prompt', () => {
     expect(await screen.findByTestId('api-token-prompt')).toBeInTheDocument();
   });
 });
+
+// First-run setup: the page and the redirect guard are covered in
+// Setup.test.tsx / SetupRedirectGuard.test.tsx; here we only check wiring.
+vi.mock('./pages/Setup', () => ({ Setup: () => <div>Setup Page</div> }));
+vi.mock('./components/Setup/SetupRedirectGuard', () => ({
+  SetupRedirectGuard: () => <div data-testid="setup-redirect-guard-mock" />,
+}));
+
+describe('App first-run setup', () => {
+  it('mounts the standalone Setup page at /setup', async () => {
+    window.history.pushState({}, '', '/setup');
+    render(<App />);
+    expect(await screen.findByText('Setup Page')).toBeInTheDocument();
+  });
+
+  it('mounts the setup redirect guard inside the router', async () => {
+    window.history.pushState({}, '', '/tickets');
+    render(<App />);
+    expect(await screen.findByTestId('setup-redirect-guard-mock')).toBeInTheDocument();
+  });
+});

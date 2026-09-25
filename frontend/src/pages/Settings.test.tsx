@@ -149,7 +149,7 @@ describe('Settings Page', () => {
       render(<Settings />);
 
       const tabs = screen.getAllByRole('tab');
-      expect(tabs).toHaveLength(7);
+      expect(tabs).toHaveLength(8);
     });
 
     it('should set aria-selected on active tab', () => {
@@ -221,5 +221,28 @@ describe('Settings Page', () => {
 
       expect(screen.getByTestId('general-tab')).toBeInTheDocument();
     });
+  });
+});
+
+vi.mock('../components/Settings/HarnessTab', () => ({
+  HarnessTab: () => <div data-testid="harness-tab">Harness Tab Content</div>,
+}));
+
+describe('Settings Page — Harness tab', () => {
+  beforeEach(() => {
+    mockSearchParams = new URLSearchParams('');
+  });
+
+  it('shows a Harness tab that renders the harness settings', () => {
+    render(<Settings />);
+    fireEvent.click(screen.getByText('Harness'));
+    expect(screen.getByTestId('harness-tab')).toBeInTheDocument();
+    expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
+  });
+
+  it('opens the Harness tab from ?tab=harness', () => {
+    mockSearchParams = new URLSearchParams('tab=harness');
+    render(<Settings />);
+    expect(screen.getByTestId('harness-tab')).toBeInTheDocument();
   });
 });

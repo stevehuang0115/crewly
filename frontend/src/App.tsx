@@ -35,6 +35,8 @@ import { RequestsPage } from './pages/RequestsPage';
 import { RequestDetail } from './pages/RequestDetail';
 import { ApiTokenPrompt } from './components/ApiTokenPrompt/ApiTokenPrompt';
 import { PendingLoginsBanner } from './components/PendingLoginsBanner';
+import { SetupRedirectGuard } from './components/Setup/SetupRedirectGuard';
+import { Setup } from './pages/Setup';
 
 
 /**
@@ -60,11 +62,15 @@ function App() {
         {/* Global "an agent needs you to sign in" banner — polls /api/oauth/pending. */}
         <PendingLoginsBanner />
         <Router>
+          {/* First-run: send to /setup when the orc harness is missing / not installed / logged out. */}
+          <SetupRedirectGuard />
           <Routes>
             {/* OAuth callback route (outside AppLayout — no sidebar/header) */}
             <Route path="/auth/callback" element={<AuthCallback />} />
             {/* Auth page (outside AppLayout — standalone login/register) */}
             <Route path="/auth" element={<Auth />} />
+            {/* First-run harness setup (outside AppLayout — standalone, no sidebar) */}
+            <Route path="/setup" element={<Setup />} />
 
             {/* Admin / Internal UI */}
             <Route path="/" element={<AppLayout />}>
