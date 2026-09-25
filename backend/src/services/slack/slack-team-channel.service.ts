@@ -1338,7 +1338,7 @@ export class SlackTeamChannelService {
           : { displayName: member?.name ?? session, ...slackIdentityFor(member, session) };
         const key = { agentSession: session, slackChannelId: message.channelId, threadTs: slackThreadTs };
         const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(session) : true;
-        await this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking');
+        await this.deps.typing.begin(key, identity, awake ? 'typing' : 'waking', message.ts);
         typingTargets.push({ session, key });
       }
     }

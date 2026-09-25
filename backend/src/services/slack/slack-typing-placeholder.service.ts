@@ -43,6 +43,7 @@ export interface TypingSlackApi {
   }): Promise<string>;
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: undefined, botToken?: string): Promise<void>;
   deleteMessage?(channelId: string, messageTs: string, botToken?: string): Promise<void>;
+  addReaction?(channelId: string, messageTs: string, emoji: string, botToken?: string): Promise<void>;
 }
 
 /** What the agent is doing while the reply is owed. */
@@ -71,6 +72,8 @@ export interface TypingPlaceholder {
   botToken?: string;
   displayName: string;
   phase: TypingPhase;
+  /** The person's message this placeholder answers (gets ✅ when the agent settles without replying) */
+  sourceTs?: string;
 }
 
 /** Identifies one pending reply: this agent, in this Slack conversation/thread. */
@@ -123,14 +126,20 @@ export class SlackTypingPlaceholderService {
     key: TypingKeyParts,
     identity: TypingIdentity,
     phase: TypingPhase = 'typing',
+    sourceTs?: string,
   ): Promise<TypingPlaceholder | null> {
     if (!this.deps.slack.isConnected()) return null;
     const k = keyOf(key);
     const existing = this.pending.get(k);
-    if (existing) return existing.placeholder;
+    if (existing) {
+      // A second message under the same placeholder: the latest one is what
+      // gets the ✅ if the agent settles without replying.
+      if (sourceTs) existing.placeholder.sourceTs = sourceTs;
+      return existing.placeholder;
+    }
     const running = this.inFlight.get(k);
     if (running) return running;
-    const task = this.post(k, key, identity, phase).finally(() => this.inFlight.delete(k));
+    const task = this.post(k, key, identity, phase, sourceTs).finally(() => this.inFlight.delete(k));
     this.inFlight.set(k, task);
     return task;
   }
@@ -187,6 +196,7 @@ export class SlackTypingPlaceholderService {
     key: TypingKeyParts,
     identity: TypingIdentity,
     phase: TypingPhase,
+    sourceTs?: string,
   ): Promise<TypingPlaceholder | null> {
     try {
       const ts = await this.deps.slack.sendMessage({
@@ -203,6 +213,7 @@ export class SlackTypingPlaceholderService {
         ...(identity.botToken ? { botToken: identity.botToken } : {}),
         displayName: identity.displayName,
         phase,
+        ...(sourceTs ? { sourceTs } : {}),
       };
       const setTimer = this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
       const unref = (t: ReturnType<typeof setTimeout>): void => {
@@ -380,6 +391,16 @@ export class SlackTypingPlaceholderService {
         }
       } catch (err) {
         this.logger.debug('Could not take down a settled placeholder', { error: err instanceof Error ? err.message : String(err) });
+      }
+      // Leave a trace on the person's message: read and handled, no reply
+      // needed. With the placeholder gone and no reaction, an answer to the
+      // agent's own question looked ignored (2026-09-25, Ella / "Muse").
+      if (placeholder.sourceTs && this.deps.slack.addReaction) {
+        try {
+          await this.deps.slack.addReaction(placeholder.slackChannelId, placeholder.sourceTs, SLACK_TYPING_CONSTANTS.SETTLED_REACTION, placeholder.botToken);
+        } catch (err) {
+          this.logger.debug('Could not add the settled reaction', { error: err instanceof Error ? err.message : String(err) });
+        }
       }
     }
     if (victims.length > 0) {

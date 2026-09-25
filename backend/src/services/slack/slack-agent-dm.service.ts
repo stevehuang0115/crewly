@@ -359,7 +359,7 @@ export class SlackAgentDmService {
     const typing = installed && this.deps.typing ? this.deps.typing : null;
     if (typing) {
       const awake = this.deps.isAgentAwake ? this.deps.isAgentAwake(agentSession) : true;
-      await typing.begin(typingKey, { botToken: installed!.botToken, displayName: member?.name ?? agentSession }, awake ? 'typing' : 'waking');
+      await typing.begin(typingKey, { botToken: installed!.botToken, displayName: member?.name ?? agentSession }, awake ? 'typing' : 'waking', message.ts);
     }
 
     // Ticket loop (specs/ticket-loop.md §2): an owner's ask in an agent's DM

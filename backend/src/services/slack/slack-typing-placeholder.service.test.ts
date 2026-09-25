@@ -215,4 +215,18 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000)).toBe(1);
     expect(updated.at(-1)?.text).toBe('✓ Ella read this — no reply needed.');
   });
+
+  it('settling puts ✅ on the person\'s message the placeholder answered', async () => {
+    const reactions: Array<{ ts: string; emoji: string; botToken?: string }> = [];
+    const { slack } = makeSlack({
+      deleteMessage: async () => undefined,
+      addReaction: async (_c, ts, emoji, botToken) => { reactions.push({ ts, emoji, botToken }); },
+    });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const t0 = Date.now();
+    await svc.begin(key, ella, 'typing', '100.1');
+    await svc.begin(key, ella, 'typing', '100.2'); // a second message under the same placeholder
+    await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000);
+    expect(reactions).toEqual([{ ts: '100.2', emoji: 'white_check_mark', botToken: 'xoxb-ella' }]);
+  });
 });

@@ -1360,6 +1360,7 @@ describe('one pair of eyes per agent that receives it', () => {
       { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '505.1' },
       expect.anything(),
       'typing',
+      expect.any(String), // the person's message ts (✅ when the agent settles without replying)
     );
     typing = null;
   });
@@ -2002,6 +2003,7 @@ describe('agent identities', () => {
       { agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' },
       { botToken: 'xoxb-sam', displayName: 'Sam' },
       'waking',
+      expect.any(String), // the person's message ts (✅ when the agent settles without replying)
     );
     expect(typing.begin.mock.invocationCallOrder[0]).toBeLessThan(dispatcher.dispatchMessage.mock.invocationCallOrder[0]);
     expect(typing.setPhase).toHaveBeenCalledWith({ agentSession: 'crewly-alpha-sam', slackChannelId: 'C1', threadTs: '100.1' }, 'typing');
@@ -2140,6 +2142,7 @@ describe('agent identities', () => {
       expect.objectContaining({ agentSession: 'alpha-team-claude-d11d57bb' }),
       expect.objectContaining({ displayName: 'Claude' }),
       expect.any(String),
+      expect.any(String), // the person's message ts (✅ when the agent settles without replying)
     );
     typing = null;
   });
@@ -2154,6 +2157,7 @@ describe('agent identities', () => {
       { agentSession: 'crewly-alpha-lena', slackChannelId: 'C1', threadTs: '500.1' },
       expect.objectContaining({ displayName: 'Lena', username: 'Lena' }),
       'typing',
+      expect.any(String), // the person's message ts (✅ when the agent settles without replying)
     );
     expect((typing.begin.mock.calls[0][1] as { botToken?: string }).botToken).toBeUndefined();
     typing = null;

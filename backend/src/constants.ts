@@ -744,7 +744,8 @@ export const SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES = 4;
 export const CHAT_REPLY_PACING_HINT =
 	'回复节奏: 动手前先判断工作量。一两分钟内能做完的（查一下、答一句、改一处）→ 直接做，做完一次性回复。' +
 	'要花更久的（多个步骤、要跑命令/开浏览器/查很多资料、预计超过约 3 分钟）→ **先**用一两句话回复（{cmd}）：你理解的需求、打算怎么做、大概多久，有要对方确认的就一并问；' +
-	'发完再开始做，做完发最终回复。中间不要刷进度，除非遇到阻塞或计划变了。';
+	'发完再开始做，做完发最终回复。中间不要刷进度，除非遇到阻塞或计划变了。' +
+	'对方是在回答你问的问题、或给了你新信息/决定时，至少回一句简短确认（例如「收到，按 X 来」）——不回会让对方以为没人看；只有「好」「ok」「谢谢」这类收尾可以不回。';
 
 /** Unassigned work goes to a decider and moves up when not taken (owner, 2026-09-24). */
 export const UNASSIGNED_ROUTE_CONSTANTS = {
@@ -774,6 +775,8 @@ export const SLACK_TYPING_CONSTANTS = {
 	SETTLE_MIN_AGE_MS: 30 * 1000,
 	/** Fallback text when a settled placeholder cannot be deleted */
 	SETTLED_TEXT: '✓ {name} read this — no reply needed.',
+	/** Reaction put on the person's message when the agent settled it without replying */
+	SETTLED_REACTION: 'white_check_mark',
 	/**
 	 * Metadata flag on an agent message that is an interim note ("got it —
 	 * here is my plan") rather than the answer: the Slack mirror posts it and
