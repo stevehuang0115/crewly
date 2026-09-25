@@ -1802,7 +1802,7 @@ This is a foundational task that should be completed first before other developm
     this.backupDebounceTimer = setTimeout(() => {
       this.backupDebounceTimer = null;
       this.getTeams()
-        .then((teams) => TeamsBackupService.getInstance().updateBackup(teams))
+        .then((teams) => TeamsBackupService.getInstance(this.crewlyHome).updateBackup(teams))
         .catch((error) => {
           this.logger.warn('Failed to update teams backup', {
             error: error instanceof Error ? error.message : String(error),

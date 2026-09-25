@@ -243,6 +243,17 @@ describe('CronTaskService', () => {
 			const file = service.getStoreFile('team-abc');
 			expect(file).toBe('/tmp/test-crewly/teams/team-abc/cron-tasks.json');
 		});
+
+		it('defaults to CREWLY_HOME, never the real ~/.crewly under another home', () => {
+			const saved = process.env.CREWLY_HOME;
+			process.env.CREWLY_HOME = '/tmp/crewly-home-under-test';
+			try {
+				expect(new CronTaskService().getStoreFile('t')).toBe('/tmp/crewly-home-under-test/teams/t/cron-tasks.json');
+			} finally {
+				if (saved === undefined) delete process.env.CREWLY_HOME;
+				else process.env.CREWLY_HOME = saved;
+			}
+		});
 	});
 
 	describe('create', () => {

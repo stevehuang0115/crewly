@@ -11,13 +11,13 @@
  * @module services/workflow/cron-task.service
  */
 
-import * as os from 'os';
 import * as path from 'path';
 import { existsSync } from 'fs';
 import { readFile, writeFile, mkdir, readdir } from 'fs/promises';
 import { v4 as uuidv4 } from 'uuid';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { CRON_SCHEDULE_CONSTANTS } from '../../constants.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import type {
 	CronTask,
 	CronTaskStore,
@@ -370,7 +370,9 @@ export class CronTaskService {
 
 	constructor(crewlyHome?: string) {
 		this.logger = LoggerService.getInstance().createComponentLogger('CronTaskService');
-		this.crewlyHome = crewlyHome || path.join(os.homedir(), '.crewly');
+		// CREWLY_HOME-aware: a test profile or trial must not write into the
+		// developer's real ~/.crewly (crewly-home.utils).
+		this.crewlyHome = crewlyHome || getCrewlyHomePath();
 	}
 
 	/**

@@ -75,6 +75,20 @@ describe('TeamsBackupService', () => {
       expect(a).toBe(b);
     });
 
+    it('defaults to CREWLY_HOME, so a CLI run under another home never rotates snapshots into ~/.crewly', () => {
+      const saved = process.env.CREWLY_HOME;
+      process.env.CREWLY_HOME = '/tmp/crewly-home-under-test';
+      try {
+        TeamsBackupService.clearInstance();
+        expect(TeamsBackupService.getInstance().getBackupPath()).toBe('/tmp/crewly-home-under-test/teams-backup.json');
+        expect(TeamsBackupService.getInstance().getHistoryDir().startsWith('/tmp/crewly-home-under-test/')).toBe(true);
+      } finally {
+        TeamsBackupService.clearInstance();
+        if (saved === undefined) delete process.env.CREWLY_HOME;
+        else process.env.CREWLY_HOME = saved;
+      }
+    });
+
     it('should reset after clearInstance', () => {
       const a = TeamsBackupService.getInstance(testDir);
       TeamsBackupService.clearInstance();

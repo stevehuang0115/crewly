@@ -14,7 +14,7 @@
  */
 
 import * as path from 'path';
-import * as os from 'os';
+import { getCrewlyHomePath } from './crewly-home.utils.js';
 import type { Team } from '../../types/index.js';
 import { LoggerService, ComponentLogger } from './logger.service.js';
 import { atomicWriteJson, safeReadJson, ensureDir } from '../../utils/file-io.utils.js';
@@ -120,7 +120,9 @@ export class TeamsBackupService {
    */
   constructor(crewlyHome?: string) {
     this.logger = LoggerService.getInstance().createComponentLogger('TeamsBackupService');
-    const home = crewlyHome || path.join(os.homedir(), '.crewly');
+    // CREWLY_HOME-aware (crewly-home.utils): a CLI run or test profile under
+    // another home must never rotate snapshots into the real ~/.crewly.
+    const home = crewlyHome || getCrewlyHomePath();
     this.backupPath = path.join(home, BACKUP_FILENAME);
     this.historyDir = path.join(home, HISTORY_SUBDIR);
     this.historyIndexPath = path.join(this.historyDir, HISTORY_INDEX_FILENAME);
