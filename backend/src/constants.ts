@@ -1977,7 +1977,115 @@ export const WHATSAPP_CONSTANTS = {
 	PHONE_PREFIX_PATTERN: /^\+/,
 	/** Fallback timeout when MESSAGE_QUEUE_CONSTANTS is unavailable (ms) */
 	DEFAULT_FALLBACK_TIMEOUT_MS: 120000,
+	/**
+	 * Connection modes. `assistant` routes every incoming message to the
+	 * orchestrator and auto-replies (the original bridge). `inbox` reads the
+	 * owner's personal account, stores it locally and never sends anything
+	 * without the owner's explicit confirmation.
+	 */
+	MODES: {
+		ASSISTANT: 'assistant',
+		INBOX: 'inbox',
+	},
+	/** Mode used by `POST /api/whatsapp/connect` when the body names none (owner decision) */
+	DEFAULT_CONNECT_MODE: 'inbox',
+	/**
+	 * Mode for the legacy `WHATSAPP_ENABLED=true` env path when neither
+	 * `WHATSAPP_MODE` nor a persisted connection names one — that path has
+	 * always meant the orchestrator assistant.
+	 */
+	LEGACY_ENV_MODE: 'assistant',
+	/** Data directory under the Crewly home (`~/.crewly/whatsapp/`) */
+	DATA_DIR: 'whatsapp',
+	/** SQLite file holding the inbox (chats, messages, drafts) */
+	INBOX_DB_FILE: 'inbox.db',
+	/** Persisted connection config (mode, allowed contacts, auto-connect) */
+	CONNECTION_CONFIG_FILE: 'connection.json',
+	/** Group chat JID suffix */
+	GROUP_JID_SUFFIX: '@g.us',
+	/** Phone-number user JID suffix */
+	USER_JID_SUFFIX: '@s.whatsapp.net',
+	/** Linked-identity (LID) JID suffix used by newer WhatsApp addressing */
+	LID_JID_SUFFIX: '@lid',
+	/** Pseudo-chat carrying status/stories — never part of the inbox */
+	STATUS_BROADCAST_JID: 'status@broadcast',
+	/** Baileys `messages.upsert` types: live (`notify`) and own/backfilled (`append`) */
+	UPSERT_TYPES: {
+		NOTIFY: 'notify',
+		APPEND: 'append',
+	},
+	/** Baileys `HistorySync.HistorySyncType.FULL` — the whole account history, skipped in inbox mode */
+	HISTORY_SYNC_TYPE_FULL: 2,
+	/** History-sync messages older than this are not stored (inbox seeds recent history only) */
+	HISTORY_SYNC_MAX_AGE_MS: 90 * 24 * 60 * 60 * 1000,
+	/** Stored message kinds */
+	MESSAGE_KINDS: {
+		TEXT: 'text',
+		IMAGE: 'image',
+		DOCUMENT: 'document',
+		AUDIO: 'audio',
+		VIDEO: 'video',
+		STICKER: 'sticker',
+		OTHER: 'other',
+	},
+	/** Chat-name provenance, higher wins: pushName < chat/group subject < address-book name */
+	NAME_RANKS: {
+		NONE: 0,
+		PUSH_NAME: 1,
+		CHAT: 2,
+		CONTACT: 3,
+	},
+	/** Row caps for the read API: default and hard maximum per endpoint */
+	LIMITS: {
+		INBOX_DEFAULT: 20,
+		INBOX_MAX: 200,
+		CHATS_DEFAULT: 50,
+		CHATS_MAX: 500,
+		MESSAGES_DEFAULT: 50,
+		MESSAGES_MAX: 500,
+		SEARCH_DEFAULT: 20,
+		SEARCH_MAX: 200,
+		DRAFTS_DEFAULT: 100,
+		DRAFTS_MAX: 500,
+	},
+	/** Prefix of the short human draft code (`W12`) */
+	DRAFT_CODE_PREFIX: 'W',
+	/** Draft lifecycle. `sending` is the claim held while the socket call is in flight */
+	DRAFT_STATUSES: {
+		PENDING: 'pending',
+		SENDING: 'sending',
+		SENT: 'sent',
+		DISCARDED: 'discarded',
+	},
+	/**
+	 * How long after a draft is written an agent may send it on the strength of
+	 * the owner's 「发 W12」 chat message. After this the owner must send it from
+	 * the dashboard, or the agent drafts again.
+	 */
+	DRAFT_CONFIRM_WINDOW_MS: 30 * 60 * 1000,
+	/**
+	 * Owner confirmation message: 「发 W12」 / 「发送 12」 / "send #W12" / 「确认发送 W12」.
+	 * Group 2 is the draft code (with or without the W).
+	 */
+	DRAFT_CONFIRM_PATTERN: /^(发|发送|send|确认发送?)\s*#?(W?\d+)\s*$/i,
+	/** Owner messages scanned for a confirmation (newest first) */
+	OWNER_CONFIRM_SCAN_LIMIT: 200,
+	/** Error codes returned by the inbox API */
+	ERROR_CODES: {
+		NEEDS_OWNER_CONFIRMATION: 'needs_owner_confirmation',
+		AGENT_SEND_FORBIDDEN: 'agent_send_forbidden_in_inbox_mode',
+		DRAFT_NOT_FOUND: 'draft_not_found',
+		DRAFT_NOT_PENDING: 'draft_not_pending',
+		CHAT_NOT_FOUND: 'chat_not_found',
+		NOT_CONNECTED: 'not_connected',
+		SEND_FAILED: 'send_failed',
+		INVALID_MODE: 'invalid_mode',
+		INVALID_INPUT: 'invalid_input',
+	},
 } as const;
+
+/** WhatsApp connection mode (see {@link WHATSAPP_CONSTANTS.MODES}) */
+export type WhatsAppMode = (typeof WHATSAPP_CONSTANTS.MODES)[keyof typeof WHATSAPP_CONSTANTS.MODES];
 
 /** Google OAuth endpoint URLs and default scopes. */
 export const GOOGLE_OAUTH_CONSTANTS = {

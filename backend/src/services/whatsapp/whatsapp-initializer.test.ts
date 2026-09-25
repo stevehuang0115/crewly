@@ -7,6 +7,9 @@
 import {
   isWhatsAppConfigured,
   getWhatsAppConfigFromEnv,
+  getWhatsAppModeFromEnv,
+  resolveStartupWhatsAppConfig,
+  applyBridgeForMode,
   initializeWhatsAppIfConfigured,
   shutdownWhatsApp,
 } from './whatsapp-initializer.js';
@@ -28,6 +31,18 @@ jest.mock('@whiskeysockets/baileys', () => ({
   DisconnectReason: { loggedOut: 401 },
 }));
 
+// The bridge constructs ChatV2Service (SQLite) — irrelevant here, and it
+// cannot open a database under the fs mock below.
+jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: jest.fn().mockReturnValue({}),
+}));
+
+// Persisted connection config, controlled per test.
+jest.mock('./whatsapp-connection-config.js', () => ({
+  loadWhatsAppConnection: jest.fn().mockResolvedValue(null),
+  toWhatsAppConfig: jest.requireActual('./whatsapp-connection-config.js').toWhatsAppConfig,
+}));
+
 // Mock fs
 jest.mock('fs', () => ({
   existsSync: jest.fn().mockReturnValue(false),
@@ -36,14 +51,18 @@ jest.mock('fs', () => ({
   },
 }));
 
+const { loadWhatsAppConnection: mockLoadConnection } = require('./whatsapp-connection-config.js');
+
 describe('WhatsApp Initializer', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    delete process.env.WHATSAPP_MODE;
     resetWhatsAppService();
     resetWhatsAppOrchestratorBridge();
     jest.clearAllMocks();
+    mockLoadConnection.mockResolvedValue(null);
   });
 
   afterEach(() => {
@@ -181,6 +200,85 @@ describe('WhatsApp Initializer', () => {
       expect(result).toEqual({
         attempted: true, success: false, error: 'Unknown error',
       });
+    });
+  });
+
+  // --- mode resolution (inbox connector) ---
+
+  describe('getWhatsAppModeFromEnv', () => {
+    it('reads a valid WHATSAPP_MODE case-insensitively', () => {
+      process.env.WHATSAPP_MODE = ' Inbox ';
+      expect(getWhatsAppModeFromEnv()).toBe('inbox');
+    });
+
+    it('ignores invalid or missing values', () => {
+      process.env.WHATSAPP_MODE = 'autopilot';
+      expect(getWhatsAppModeFromEnv()).toBeUndefined();
+      delete process.env.WHATSAPP_MODE;
+      expect(getWhatsAppModeFromEnv()).toBeUndefined();
+    });
+  });
+
+  describe('resolveStartupWhatsAppConfig', () => {
+    it('env path defaults to assistant (legacy meaning)', async () => {
+      process.env.WHATSAPP_ENABLED = 'true';
+      expect((await resolveStartupWhatsAppConfig())?.mode).toBe('assistant');
+    });
+
+    it('env path keeps a persisted inbox mode across restarts', async () => {
+      process.env.WHATSAPP_ENABLED = 'true';
+      mockLoadConnection.mockResolvedValue({ mode: 'inbox', autoConnect: false, updatedAt: 1 });
+      expect((await resolveStartupWhatsAppConfig())?.mode).toBe('inbox');
+    });
+
+    it('WHATSAPP_MODE wins over the persisted mode', async () => {
+      process.env.WHATSAPP_ENABLED = 'true';
+      process.env.WHATSAPP_MODE = 'assistant';
+      mockLoadConnection.mockResolvedValue({ mode: 'inbox', autoConnect: true, updatedAt: 1 });
+      expect((await resolveStartupWhatsAppConfig())?.mode).toBe('assistant');
+    });
+
+    it('without env, reconnects a persisted dashboard connection', async () => {
+      delete process.env.WHATSAPP_ENABLED;
+      mockLoadConnection.mockResolvedValue({ mode: 'inbox', autoConnect: true, allowedContacts: ['+1'], updatedAt: 1 });
+      expect(await resolveStartupWhatsAppConfig()).toEqual(
+        expect.objectContaining({ mode: 'inbox', allowedContacts: ['+1'] }),
+      );
+    });
+
+    it('without env, stays disconnected after an explicit disconnect', async () => {
+      delete process.env.WHATSAPP_ENABLED;
+      mockLoadConnection.mockResolvedValue({ mode: 'inbox', autoConnect: false, updatedAt: 1 });
+      expect(await resolveStartupWhatsAppConfig()).toBeNull();
+    });
+  });
+
+  describe('inbox mode startup', () => {
+    it('does not start the orchestrator bridge in inbox mode', async () => {
+      delete process.env.WHATSAPP_ENABLED;
+      mockLoadConnection.mockResolvedValue({ mode: 'inbox', autoConnect: true, updatedAt: 1 });
+      const service = getWhatsAppService();
+      const bridge = getWhatsAppOrchestratorBridge();
+      jest.spyOn(service, 'initialize').mockResolvedValue();
+      const init = jest.spyOn(bridge, 'initialize').mockResolvedValue();
+      const cleanup = jest.spyOn(bridge, 'cleanup');
+
+      const result = await initializeWhatsAppIfConfigured({ messageQueueService: { enqueue: jest.fn() } as any });
+      expect(result).toEqual({ attempted: true, success: true });
+      expect(service.initialize).toHaveBeenCalledWith(expect.objectContaining({ mode: 'inbox' }));
+      expect(init).not.toHaveBeenCalled();
+      expect(cleanup).toHaveBeenCalled();
+    });
+
+    it('applyBridgeForMode tears down a bridge left from an assistant session', async () => {
+      const bridge = getWhatsAppOrchestratorBridge();
+      jest.spyOn(bridge, 'initialize').mockResolvedValue();
+      const cleanup = jest.spyOn(bridge, 'cleanup');
+      await applyBridgeForMode('assistant');
+      expect(bridge.initialize).toHaveBeenCalledTimes(1);
+      await applyBridgeForMode('inbox');
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(bridge.initialize).toHaveBeenCalledTimes(1);
     });
   });
 

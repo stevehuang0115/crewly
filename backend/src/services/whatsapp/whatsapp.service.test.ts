@@ -8,7 +8,9 @@ import {
   WhatsAppService,
   getWhatsAppService,
   resetWhatsAppService,
+  stripDeviceFromJid,
 } from './whatsapp.service.js';
+import { WhatsAppInboxStore } from './whatsapp-inbox.store.js';
 
 // Mock Baileys — use require('events') inside factory to avoid jest.mock hoisting issues
 jest.mock('@whiskeysockets/baileys', () => {
@@ -41,7 +43,10 @@ jest.mock('fs', () => {
   const mkdir = jest.fn().mockResolvedValue(undefined);
   const stat = jest.fn().mockResolvedValue({ size: 1024 });
   const readFile = jest.fn().mockResolvedValue(Buffer.from('test'));
+  // Spread the real module so better-sqlite3 (inbox-mode tests) can load;
+  // only the calls this suite asserts on are replaced.
   return {
+    ...jest.requireActual('fs'),
     existsSync: jest.fn().mockReturnValue(false),
     promises: {
       mkdir: (...args: unknown[]) => mkdir(...args),
@@ -103,7 +108,7 @@ describe('WhatsAppService', () => {
       const s = getWhatsAppService();
       expect(s.getStatus()).toEqual({
         connected: false, qrCode: null, phoneNumber: null,
-        messagesSent: 0, messagesReceived: 0,
+        messagesSent: 0, messagesReceived: 0, mode: null,
       });
       expect(s.isConnected()).toBe(false);
       expect(s.getQRCode()).toBeNull();
@@ -507,6 +512,152 @@ describe('WhatsAppService', () => {
 
       await expect(service.disconnect()).resolves.toBeUndefined();
       expect(service.isConnected()).toBe(false);
+    });
+  });
+
+  // --- Inbox mode ---
+
+  describe('inbox mode', () => {
+    let store: WhatsAppInboxStore;
+    const DM = '4915550001@s.whatsapp.net';
+    const GROUP = '120363000000000001@g.us';
+    const nowSec = () => Math.floor(Date.now() / 1000);
+
+    beforeEach(() => {
+      jest.useRealTimers();
+      store = new WhatsAppInboxStore(':memory:');
+    });
+
+    afterEach(() => {
+      store.close();
+    });
+
+    /**
+     * Initialize the singleton in inbox mode against the in-memory store.
+     *
+     * @returns The service
+     */
+    async function startInbox(): Promise<WhatsAppService> {
+      const service = getWhatsAppService();
+      service.setInboxStore(store);
+      await service.initialize({ mode: 'inbox' });
+      return service;
+    }
+
+    it('reports inbox mode in status and passes inbox socket options', async () => {
+      const service = await startInbox();
+      expect(service.getMode()).toBe('inbox');
+      expect(service.isInboxMode()).toBe(true);
+      expect(service.getStatus().mode).toBe('inbox');
+      const opts = mockMakeWASocket.mock.calls[0][0];
+      expect(opts.markOnlineOnConnect).toBe(false);
+      expect(opts.syncFullHistory).toBe(false);
+      expect(opts.shouldSyncHistoryMessage({ syncType: 2 })).toBe(false); // FULL
+      expect(opts.shouldSyncHistoryMessage({ syncType: 3 })).toBe(true); // RECENT
+      expect(opts.shouldSyncHistoryMessage({ syncType: 0 })).toBe(true); // INITIAL_BOOTSTRAP
+    });
+
+    it('assistant mode (default) does not pass inbox socket options', async () => {
+      const service = getWhatsAppService();
+      await service.initialize({});
+      expect(service.getMode()).toBe('assistant');
+      expect(mockMakeWASocket.mock.calls[0][0].markOnlineOnConnect).toBeUndefined();
+    });
+
+    it('never emits "message" in inbox mode, and stores fromMe, group and media messages', async () => {
+      const service = await startInbox();
+      const onMessage = jest.fn();
+      service.on('message', onMessage);
+
+      mockEv.emit('messages.upsert', {
+        type: 'notify',
+        messages: [
+          { key: { remoteJid: DM, fromMe: false, id: 'in1' }, message: { conversation: 'hi there' }, pushName: 'Ann', messageTimestamp: nowSec() - 30 },
+          { key: { remoteJid: GROUP, fromMe: false, id: 'g1', participant: '4915550002@s.whatsapp.net' }, message: { conversation: 'group hi' }, pushName: 'Bob', messageTimestamp: nowSec() - 20 },
+          { key: { remoteJid: DM, fromMe: false, id: 'img1' }, message: { imageMessage: { caption: 'look' } }, messageTimestamp: nowSec() - 10 },
+        ],
+      });
+      mockEv.emit('messages.upsert', {
+        type: 'append',
+        messages: [{ key: { remoteJid: DM, fromMe: true, id: 'out1' }, message: { conversation: 'on my way' }, messageTimestamp: nowSec() }],
+      });
+
+      expect(onMessage).not.toHaveBeenCalled();
+      const msgs = store.listMessages(DM, { limit: 10 });
+      expect(msgs.map((m) => [m.id, m.kind, m.fromMe])).toEqual([
+        ['in1', 'text', false],
+        ['img1', 'image', false],
+        ['out1', 'text', true],
+      ]);
+      expect(msgs[2].senderJid).toBe('1234567890@s.whatsapp.net');
+      expect(store.listMessages(GROUP, { limit: 10 })[0].senderName).toBe('Bob');
+      expect(store.getChat(DM)?.name).toBe('Ann');
+      // Owner replied last → the DM no longer needs a reply.
+      expect(store.listInbox({ limit: 10, includeGroups: true }).map((e) => e.chat.id)).toEqual([GROUP]);
+      expect(service.getStatus().messagesReceived).toBe(4);
+    });
+
+    it('ignores the allowedContacts filter in inbox mode (it is the owner\'s own account)', async () => {
+      const service = getWhatsAppService();
+      service.setInboxStore(store);
+      await service.initialize({ mode: 'inbox', allowedContacts: ['+1999'] });
+      mockEv.emit('messages.upsert', {
+        type: 'notify',
+        messages: [{ key: { remoteJid: DM, fromMe: false, id: 'x1' }, message: { conversation: 'hey' }, messageTimestamp: nowSec() }],
+      });
+      expect(store.listMessages(DM, { limit: 5 })).toHaveLength(1);
+    });
+
+    it('seeds recent history from messaging-history.set and names chats from contacts/chats/groups', async () => {
+      await startInbox();
+      mockEv.emit('messaging-history.set', {
+        chats: [{ id: GROUP, name: 'Family', conversationTimestamp: nowSec() }],
+        contacts: [{ id: DM, name: 'Ann Smith' }],
+        messages: [
+          { key: { remoteJid: DM, fromMe: false, id: 'h1' }, message: { conversation: 'old but recent' }, messageTimestamp: nowSec() - 3600 },
+          { key: { remoteJid: DM, fromMe: false, id: 'h-ancient' }, message: { conversation: 'too old' }, messageTimestamp: nowSec() - 200 * 24 * 3600 },
+        ],
+        syncType: 3,
+      });
+      expect(store.listMessages(DM, { limit: 10 }).map((m) => m.id)).toEqual(['h1']);
+      expect(store.getChat(DM)?.name).toBe('Ann Smith');
+      expect(store.getChat(GROUP)?.name).toBe('Family');
+
+      mockEv.emit('contacts.upsert', [{ id: '4915550003@s.whatsapp.net', notify: 'Cara' }]);
+      mockEv.emit('groups.update', [{ id: GROUP, subject: 'Family 2' }]);
+      mockEv.emit('chats.upsert', [{ id: '4915550004@s.whatsapp.net', name: 'Dan' }]);
+      expect(store.getChat('4915550003@s.whatsapp.net')?.name).toBe('Cara');
+      expect(store.getChat(GROUP)?.name).toBe('Family 2');
+      expect(store.getChat('4915550004@s.whatsapp.net')?.name).toBe('Dan');
+    });
+
+    it('a malformed payload is logged, not thrown into the socket', async () => {
+      await startInbox();
+      expect(() => mockEv.emit('messaging-history.set', null)).not.toThrow();
+      expect(() => mockEv.emit('messages.upsert', { messages: 'nope' })).not.toThrow();
+    });
+
+    it('records its own sent message so the chat reads as answered', async () => {
+      const service = await startInbox();
+      mockEv.emit('connection.update', { connection: 'open' });
+      mockEv.emit('messages.upsert', {
+        type: 'notify',
+        messages: [{ key: { remoteJid: DM, fromMe: false, id: 'q1' }, message: { conversation: 'ping?' }, messageTimestamp: nowSec() - 5 }],
+      });
+      (mockSock.sendMessage as jest.Mock).mockResolvedValueOnce({
+        key: { remoteJid: DM, fromMe: true, id: 'sent1' },
+        message: { conversation: 'pong' },
+        messageTimestamp: nowSec(),
+      });
+      await service.sendMessage({ to: DM, text: 'pong' });
+      expect(store.listInbox({ limit: 10 })).toEqual([]);
+    });
+  });
+
+  describe('stripDeviceFromJid', () => {
+    it('removes the :device part', () => {
+      expect(stripDeviceFromJid('123:45@s.whatsapp.net')).toBe('123@s.whatsapp.net');
+      expect(stripDeviceFromJid('123@s.whatsapp.net')).toBe('123@s.whatsapp.net');
     });
   });
 });

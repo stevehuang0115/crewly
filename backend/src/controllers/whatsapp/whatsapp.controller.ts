@@ -10,11 +10,19 @@
 
 import { Router, Request, Response, NextFunction } from 'express';
 import { getWhatsAppService } from '../../services/whatsapp/whatsapp.service.js';
-import { getWhatsAppOrchestratorBridge } from '../../services/whatsapp/whatsapp-orchestrator-bridge.js';
-import type { WhatsAppConfig } from '../../types/whatsapp.types.js';
+import { applyBridgeForMode } from '../../services/whatsapp/whatsapp-initializer.js';
+import {
+  markWhatsAppDisconnected,
+  saveWhatsAppConnection,
+} from '../../services/whatsapp/whatsapp-connection-config.js';
+import { isWhatsAppMode, type WhatsAppConfig, type WhatsAppMode } from '../../types/whatsapp.types.js';
 import { WHATSAPP_CONSTANTS } from '../../constants.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { LoggerService } from '../../services/core/logger.service.js';
+import { createWhatsAppInboxRouter } from './whatsapp-inbox.controller.js';
 
 const router = Router();
+const logger = LoggerService.getInstance().createComponentLogger('WhatsAppController');
 
 /**
  * GET /api/whatsapp/status
@@ -47,12 +55,23 @@ router.get('/status', async (req: Request, res: Response, next: NextFunction) =>
  * Start WhatsApp connection. Returns the QR code for pairing
  * if not already authenticated.
  *
+ * @body mode - `inbox` (default: read-only + drafts, never auto-sends) or `assistant` (orchestrator auto-replies)
  * @body allowedContacts - Array of allowed phone numbers (optional)
  * @body authStatePath - Custom auth state path (optional)
  * @returns Connection status and QR code if pending
  */
 router.post('/connect', async (req: Request, res: Response, next: NextFunction) => {
   try {
+    const requestedMode: unknown = req.body?.mode ?? WHATSAPP_CONSTANTS.DEFAULT_CONNECT_MODE;
+    if (!isWhatsAppMode(requestedMode)) {
+      res.status(400).json({
+        success: false,
+        code: WHATSAPP_CONSTANTS.ERROR_CODES.INVALID_MODE,
+        error: `mode must be '${WHATSAPP_CONSTANTS.MODES.INBOX}' or '${WHATSAPP_CONSTANTS.MODES.ASSISTANT}'`,
+      });
+      return;
+    }
+    const mode: WhatsAppMode = requestedMode;
     const service = getWhatsAppService();
 
     if (service.isConnected()) {
@@ -70,6 +89,7 @@ router.post('/connect', async (req: Request, res: Response, next: NextFunction) 
       allowedContacts:
         req.body.allowedContacts ||
         process.env.WHATSAPP_ALLOWED_CONTACTS?.split(',').filter(Boolean),
+      mode,
     };
 
     // Set up a one-time QR listener to return in response
@@ -90,9 +110,17 @@ router.post('/connect', async (req: Request, res: Response, next: NextFunction) 
 
     await service.initialize(config);
 
-    // Initialize bridge
-    const bridge = getWhatsAppOrchestratorBridge();
-    await bridge.initialize();
+    // The orchestrator bridge (auto-replies) runs only in assistant mode.
+    await applyBridgeForMode(mode);
+
+    // Remember the mode so a restart reconnects the same way.
+    try {
+      await saveWhatsAppConnection(config, mode);
+    } catch (error) {
+      logger.warn('Could not persist WhatsApp connection config', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     const qrCode = await qrPromise;
 
@@ -120,6 +148,13 @@ router.post('/disconnect', async (req: Request, res: Response, next: NextFunctio
   try {
     const service = getWhatsAppService();
     await service.disconnect();
+    try {
+      await markWhatsAppDisconnected();
+    } catch (error) {
+      logger.warn('Could not persist WhatsApp disconnect', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     res.json({
       success: true,
@@ -134,6 +169,8 @@ router.post('/disconnect', async (req: Request, res: Response, next: NextFunctio
  * POST /api/whatsapp/send
  *
  * Send a text message via WhatsApp (for testing/manual use).
+ * In inbox mode agents (X-Agent-Session) are refused: they must write a
+ * draft and wait for the owner's confirmation.
  *
  * @body to - Destination chat JID (required, e.g., "1234567890@s.whatsapp.net")
  * @body text - Message text (required)
@@ -160,6 +197,19 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     }
 
     const service = getWhatsAppService();
+
+    const agentSession = readAgentSessionHeader(req);
+    if (agentSession && service.isInboxMode()) {
+      logger.warn('Refused agent direct send in inbox mode', { agentSession });
+      res.status(403).json({
+        success: false,
+        code: WHATSAPP_CONSTANTS.ERROR_CODES.AGENT_SEND_FORBIDDEN,
+        error:
+          'WhatsApp is in inbox mode: agents cannot send directly. Create a draft (POST /api/whatsapp/drafts) ' +
+          'and ask the owner to reply 「发 <code>」.',
+      });
+      return;
+    }
 
     if (!service.isConnected()) {
       res.status(503).json({
@@ -203,5 +253,8 @@ router.get('/qr', async (req: Request, res: Response, next: NextFunction) => {
     next(error);
   }
 });
+
+// Inbox read API + reply drafts (/inbox, /chats, /search, /drafts).
+router.use(createWhatsAppInboxRouter());
 
 export default router;

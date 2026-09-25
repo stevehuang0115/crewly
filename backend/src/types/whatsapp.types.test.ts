@@ -4,7 +4,7 @@
  * @module types/whatsapp.types.test
  */
 
-import { isContactAllowed, WhatsAppConfig } from './whatsapp.types.js';
+import { isContactAllowed, isWhatsAppMode, WhatsAppConfig } from './whatsapp.types.js';
 
 describe('WhatsApp Types', () => {
   describe('isContactAllowed', () => {
@@ -51,6 +51,20 @@ describe('WhatsApp Types', () => {
         allowedContacts: ['1234567890'],
       };
       expect(isContactAllowed('1234567890', config)).toBe(true);
+    });
+  });
+
+  describe('isWhatsAppMode', () => {
+    it('accepts the two modes', () => {
+      expect(isWhatsAppMode('inbox')).toBe(true);
+      expect(isWhatsAppMode('assistant')).toBe(true);
+    });
+
+    it('rejects anything else', () => {
+      expect(isWhatsAppMode('Inbox')).toBe(false);
+      expect(isWhatsAppMode('')).toBe(false);
+      expect(isWhatsAppMode(undefined)).toBe(false);
+      expect(isWhatsAppMode(1)).toBe(false);
     });
   });
 });

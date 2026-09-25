@@ -20,6 +20,7 @@ jest.mock('../../services/whatsapp/whatsapp.service.js', () => {
     initialize: jest.fn().mockResolvedValue(undefined),
     disconnect: jest.fn().mockResolvedValue(undefined),
     sendMessage: jest.fn().mockResolvedValue(undefined),
+    isInboxMode: jest.fn().mockReturnValue(false),
     on: jest.fn(),
     once: jest.fn(),
   };
@@ -35,6 +36,8 @@ jest.mock('../../services/whatsapp/whatsapp-orchestrator-bridge.js', () => {
   const brg = {
     initialize: jest.fn().mockResolvedValue(undefined),
     isInitialized: jest.fn().mockReturnValue(false),
+    cleanup: jest.fn(),
+    setMessageQueueService: jest.fn(),
   };
   return {
     getWhatsAppOrchestratorBridge: jest.fn().mockReturnValue(brg),
@@ -43,6 +46,14 @@ jest.mock('../../services/whatsapp/whatsapp-orchestrator-bridge.js', () => {
     _testRefs: { mockBridge: brg },
   };
 });
+
+// Never touch the real ~/.crewly from this suite.
+jest.mock('../../services/whatsapp/whatsapp-connection-config.js', () => ({
+  saveWhatsAppConnection: jest.fn().mockResolvedValue(undefined),
+  markWhatsAppDisconnected: jest.fn().mockResolvedValue(undefined),
+  loadWhatsAppConnection: jest.fn().mockResolvedValue(null),
+  toWhatsAppConfig: jest.fn(),
+}));
 
 jest.mock('@whiskeysockets/baileys', () => ({
   default: jest.fn(),
@@ -53,6 +64,7 @@ jest.mock('@whiskeysockets/baileys', () => ({
 // Get test references after mocks are applied
 const mockService = require('../../services/whatsapp/whatsapp.service.js')._testRefs.mockService;
 const mockBridge = require('../../services/whatsapp/whatsapp-orchestrator-bridge.js')._testRefs.mockBridge;
+const connectionConfig = require('../../services/whatsapp/whatsapp-connection-config.js');
 
 const app = express();
 app.use(express.json());
@@ -71,6 +83,8 @@ describe('WhatsApp Controller', () => {
       messagesSent: 0, messagesReceived: 0,
     });
     mockService.getQRCode.mockReturnValue(null);
+    mockService.isInboxMode.mockReturnValue(false);
+    mockService.once.mockImplementation(() => undefined);
   });
 
   // --- GET /status ---
@@ -128,7 +142,7 @@ describe('WhatsApp Controller', () => {
       expect(mockService.initialize).not.toHaveBeenCalled();
     });
 
-    it('should initialize service and bridge when not connected', async () => {
+    it('defaults to inbox mode: initializes the service, never starts the bridge, persists the mode', async () => {
       // Simulate connected event firing immediately
       mockService.once.mockImplementation((event: string, cb: Function) => {
         if (event === 'connected') cb();
@@ -140,9 +154,44 @@ describe('WhatsApp Controller', () => {
 
       expect(res.status).toBe(200);
       expect(mockService.initialize).toHaveBeenCalledWith(
-        expect.objectContaining({ allowedContacts: ['+111'] }),
+        expect.objectContaining({ allowedContacts: ['+111'], mode: 'inbox' }),
       );
+      expect(mockBridge.initialize).not.toHaveBeenCalled();
+      expect(mockBridge.cleanup).toHaveBeenCalled();
+      expect(connectionConfig.saveWhatsAppConnection).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'inbox' }),
+        'inbox',
+      );
+    });
+
+    it('starts the orchestrator bridge only in assistant mode', async () => {
+      mockService.once.mockImplementation((event: string, cb: Function) => {
+        if (event === 'connected') cb();
+      });
+
+      const res = await request(app).post('/api/whatsapp/connect').send({ mode: 'assistant' });
+
+      expect(res.status).toBe(200);
+      expect(mockService.initialize).toHaveBeenCalledWith(expect.objectContaining({ mode: 'assistant' }));
       expect(mockBridge.initialize).toHaveBeenCalled();
+      expect(mockBridge.cleanup).not.toHaveBeenCalled();
+      expect(connectionConfig.saveWhatsAppConnection).toHaveBeenCalledWith(expect.anything(), 'assistant');
+    });
+
+    it('rejects an unknown mode with 400', async () => {
+      const res = await request(app).post('/api/whatsapp/connect').send({ mode: 'autopilot' });
+      expect(res.status).toBe(400);
+      expect(res.body.code).toBe('invalid_mode');
+      expect(mockService.initialize).not.toHaveBeenCalled();
+    });
+
+    it('still connects when persisting the config fails', async () => {
+      mockService.once.mockImplementation((event: string, cb: Function) => {
+        if (event === 'connected') cb();
+      });
+      connectionConfig.saveWhatsAppConnection.mockRejectedValueOnce(new Error('disk full'));
+      const res = await request(app).post('/api/whatsapp/connect').send({});
+      expect(res.status).toBe(200);
     });
 
     it('should return QR code when qr event fires', async () => {
@@ -174,6 +223,7 @@ describe('WhatsApp Controller', () => {
       expect(res.status).toBe(200);
       expect(res.body.message).toBe('WhatsApp disconnected');
       expect(mockService.disconnect).toHaveBeenCalled();
+      expect(connectionConfig.markWhatsAppDisconnected).toHaveBeenCalled();
     });
 
     it('should pass through disconnect errors', async () => {
@@ -211,6 +261,34 @@ describe('WhatsApp Controller', () => {
       expect(mockService.sendMessage).toHaveBeenCalledWith({
         to: '123@s.whatsapp.net', text: 'hello',
       });
+    });
+
+    it('refuses agent callers with 403 in inbox mode', async () => {
+      mockService.isConnected.mockReturnValue(true);
+      mockService.isInboxMode.mockReturnValue(true);
+      const res = await request(app).post('/api/whatsapp/send')
+        .set('X-Agent-Session', 'crewly-orc')
+        .send({ to: '123@s.whatsapp.net', text: 'hello' });
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('agent_send_forbidden_in_inbox_mode');
+      expect(mockService.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('lets the owner (no agent header) send in inbox mode', async () => {
+      mockService.isConnected.mockReturnValue(true);
+      mockService.isInboxMode.mockReturnValue(true);
+      const res = await request(app).post('/api/whatsapp/send')
+        .send({ to: '123@s.whatsapp.net', text: 'hello' });
+      expect(res.status).toBe(200);
+      expect(mockService.sendMessage).toHaveBeenCalled();
+    });
+
+    it('keeps agent sends working in assistant mode', async () => {
+      mockService.isConnected.mockReturnValue(true);
+      const res = await request(app).post('/api/whatsapp/send')
+        .set('X-Agent-Session', 'crewly-orc')
+        .send({ to: '123@s.whatsapp.net', text: 'hello' });
+      expect(res.status).toBe(200);
     });
 
     it('should pass through sendMessage errors', async () => {

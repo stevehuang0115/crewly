@@ -129,6 +129,13 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
    * @param message - Incoming WhatsApp message
    */
   private async handleWhatsAppMessage(message: WhatsAppIncomingMessage): Promise<void> {
+    // Inbox mode never auto-replies. The service does not emit 'message' in
+    // inbox mode, but a bridge left attached from an earlier assistant
+    // session must not act either.
+    if (this.whatsappService.isInboxMode()) {
+      this.logger.warn('Ignoring message: WhatsApp is in inbox mode (no auto-replies)');
+      return;
+    }
     this.logger.info('Received message', {
       from: message.contactName || message.from,
       preview: message.text.substring(0, 50),
@@ -332,6 +339,10 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
   async sendWhatsAppResponse(chatId: string, text: string): Promise<void> {
     const trimmed = text?.trim();
     if (!trimmed) return;
+    if (this.whatsappService.isInboxMode()) {
+      this.logger.warn('Refusing auto-reply: WhatsApp is in inbox mode');
+      return;
+    }
 
     try {
       await this.whatsappService.sendMessage({ to: chatId, text: trimmed });

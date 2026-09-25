@@ -17,7 +17,24 @@ export {
   initializeWhatsAppIfConfigured,
   isWhatsAppConfigured,
   getWhatsAppConfigFromEnv,
+  getWhatsAppModeFromEnv,
+  resolveStartupWhatsAppConfig,
+  applyBridgeForMode,
   shutdownWhatsApp,
   type WhatsAppInitResult,
   type WhatsAppInitOptions,
 } from './whatsapp-initializer.js';
+export {
+  WhatsAppInboxStore,
+  getWhatsAppInboxStore,
+  resetWhatsAppInboxStore,
+  getDefaultInboxDbPath,
+} from './whatsapp-inbox.store.js';
+export { WhatsAppInboxCapture } from './whatsapp-inbox-capture.js';
+export { decideDraftSend, isConfirmationFor } from './whatsapp-draft-gate.js';
+export {
+  loadWhatsAppConnection,
+  saveWhatsAppConnection,
+  markWhatsAppDisconnected,
+  type PersistedWhatsAppConnection,
+} from './whatsapp-connection-config.js';

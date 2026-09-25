@@ -2,16 +2,21 @@
  * WhatsApp Initializer
  *
  * Handles automatic WhatsApp connection on application startup.
- * Checks for environment variables and initializes if configured.
+ * Connects when `WHATSAPP_ENABLED=true`, or when the owner connected from the
+ * dashboard earlier (persisted `~/.crewly/whatsapp/connection.json` with
+ * auto-connect on). The orchestrator bridge (auto-replies) is started only in
+ * `assistant` mode — never in `inbox` mode.
  *
  * @module services/whatsapp/initializer
  */
 
 import { getWhatsAppService } from './whatsapp.service.js';
 import { getWhatsAppOrchestratorBridge } from './whatsapp-orchestrator-bridge.js';
-import type { WhatsAppConfig } from '../../types/whatsapp.types.js';
+import { isWhatsAppMode, type WhatsAppConfig, type WhatsAppMode } from '../../types/whatsapp.types.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
+import { WHATSAPP_CONSTANTS } from '../../constants.js';
+import { loadWhatsAppConnection, toWhatsAppConfig } from './whatsapp-connection-config.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('WhatsAppInitializer');
 
@@ -58,7 +63,65 @@ export function getWhatsAppConfigFromEnv(): WhatsAppConfig | null {
     phoneNumber: process.env.WHATSAPP_PHONE_NUMBER,
     authStatePath: process.env.WHATSAPP_AUTH_PATH,
     allowedContacts: process.env.WHATSAPP_ALLOWED_CONTACTS?.split(',').filter(Boolean),
+    mode: getWhatsAppModeFromEnv(),
   };
+}
+
+/**
+ * Read `WHATSAPP_MODE` (`assistant` | `inbox`).
+ *
+ * @returns The mode, or undefined when unset or invalid
+ */
+export function getWhatsAppModeFromEnv(): WhatsAppMode | undefined {
+  const raw = process.env.WHATSAPP_MODE?.trim().toLowerCase();
+  return isWhatsAppMode(raw) ? raw : undefined;
+}
+
+/**
+ * Work out what to connect with at startup, if anything.
+ *
+ * - `WHATSAPP_ENABLED=true`: env config; mode from `WHATSAPP_MODE`, else the
+ *   persisted mode, else `assistant` (what the env path always meant).
+ * - Otherwise: the persisted dashboard connection, when auto-connect is on.
+ *
+ * @returns Config to initialize with, or null to stay disconnected
+ */
+export async function resolveStartupWhatsAppConfig(): Promise<WhatsAppConfig | null> {
+  const persisted = await loadWhatsAppConnection();
+  const envConfig = getWhatsAppConfigFromEnv();
+  if (envConfig) {
+    return {
+      ...envConfig,
+      mode: envConfig.mode ?? persisted?.mode ?? WHATSAPP_CONSTANTS.LEGACY_ENV_MODE,
+    };
+  }
+  if (persisted?.autoConnect) return toWhatsAppConfig(persisted);
+  return null;
+}
+
+/**
+ * Start or stop the orchestrator bridge to match a connection mode.
+ *
+ * `assistant` starts it (routes messages to the orchestrator and replies).
+ * `inbox` tears down any bridge left from an earlier assistant connection
+ * so nothing can auto-reply.
+ *
+ * @param mode - Connection mode
+ * @param messageQueueService - Queue for orchestrator delivery (assistant only)
+ */
+export async function applyBridgeForMode(
+  mode: WhatsAppMode,
+  messageQueueService?: MessageQueueService,
+): Promise<void> {
+  const bridge = getWhatsAppOrchestratorBridge();
+  if (mode !== WHATSAPP_CONSTANTS.MODES.ASSISTANT) {
+    bridge.cleanup();
+    return;
+  }
+  if (messageQueueService) {
+    bridge.setMessageQueueService(messageQueueService);
+  }
+  await bridge.initialize();
 }
 
 /**
@@ -83,7 +146,7 @@ export function getWhatsAppConfigFromEnv(): WhatsAppConfig | null {
 export async function initializeWhatsAppIfConfigured(
   options?: WhatsAppInitOptions,
 ): Promise<WhatsAppInitResult> {
-  const config = getWhatsAppConfigFromEnv();
+  const config = await resolveStartupWhatsAppConfig();
 
   if (!config) {
     logger.info('Not configured — skipping initialization');
@@ -91,18 +154,12 @@ export async function initializeWhatsAppIfConfigured(
   }
 
   try {
+    const mode = config.mode ?? WHATSAPP_CONSTANTS.LEGACY_ENV_MODE;
     const whatsappService = getWhatsAppService();
-    await whatsappService.initialize(config);
+    await whatsappService.initialize({ ...config, mode });
+    await applyBridgeForMode(mode, options?.messageQueueService);
 
-    const bridge = getWhatsAppOrchestratorBridge();
-
-    if (options?.messageQueueService) {
-      bridge.setMessageQueueService(options.messageQueueService);
-    }
-
-    await bridge.initialize();
-
-    logger.info('Successfully initialized');
+    logger.info('Successfully initialized', { mode });
     return { attempted: true, success: true };
   } catch (error) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';

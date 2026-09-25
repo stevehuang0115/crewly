@@ -154,6 +154,42 @@ describe('WhatsAppOrchestratorBridge', () => {
     });
   });
 
+  // --- inbox mode guard ---
+
+  describe('inbox mode', () => {
+    it('ignores messages and never replies when the service is in inbox mode', async () => {
+      const bridge = getWhatsAppOrchestratorBridge();
+      const service = getWhatsAppService();
+      jest.spyOn(service, 'isInboxMode').mockReturnValue(true);
+      const enqueue = jest.fn();
+      bridge.setMessageQueueService({ enqueue } as any);
+      const sendSpy = jest.spyOn(service, 'sendMessage').mockResolvedValue();
+      const handled = jest.fn();
+      bridge.on('message_handled', handled);
+
+      await bridge.initialize();
+      service.emit('message', {
+        messageId: 'i1', chatId: '555@s.whatsapp.net', from: '555@s.whatsapp.net',
+        text: 'hi', isGroup: false, timestamp: Date.now(),
+      });
+      await new Promise((r) => setImmediate(r));
+
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(sendSpy).not.toHaveBeenCalled();
+      expect(handled).not.toHaveBeenCalled();
+    });
+
+    it('sendWhatsAppResponse refuses to auto-reply in inbox mode', async () => {
+      const bridge = getWhatsAppOrchestratorBridge();
+      const service = getWhatsAppService();
+      jest.spyOn(service, 'isInboxMode').mockReturnValue(true);
+      const sendSpy = jest.spyOn(service, 'sendMessage').mockResolvedValue();
+
+      await bridge.sendWhatsAppResponse('555@s.whatsapp.net', 'auto reply');
+      expect(sendSpy).not.toHaveBeenCalled();
+    });
+  });
+
   // --- handleWhatsAppMessage (triggered via event) ---
 
   describe('handleWhatsAppMessage (via event)', () => {

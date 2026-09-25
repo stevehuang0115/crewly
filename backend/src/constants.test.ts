@@ -20,6 +20,7 @@ import {
   SLACK_CLOUD_CONSTANTS,
   TRIGGER_ENGINE_CONSTANTS,
   CRON_SCHEDULE_CONSTANTS,
+  WHATSAPP_CONSTANTS,
 } from './constants.js';
 
 describe('GOOGLE_OAUTH_CONSTANTS', () => {
@@ -280,5 +281,27 @@ describe('TICKET_CONSTANTS / POOL_ARCHIVE_CONSTANTS (ticket loop)', () => {
     expect(POOL_ARCHIVE_CONSTANTS.MIN_AGE_MS).toBe(7 * 24 * 60 * 60 * 1000);
     expect([...POOL_ARCHIVE_CONSTANTS.TERMINAL_STATUSES].sort()).toEqual(['cancelled', 'done', 'failed', 'verified']);
     expect(POOL_ARCHIVE_CONSTANTS.MARKER_FILENAME).toBe('.archived-2026-09-ticket-loop');
+  });
+});
+
+describe('WHATSAPP_CONSTANTS (inbox connector)', () => {
+  it('defaults dashboard connects to inbox mode (owner decision) and the env path to assistant', () => {
+    expect(WHATSAPP_CONSTANTS.DEFAULT_CONNECT_MODE).toBe(WHATSAPP_CONSTANTS.MODES.INBOX);
+    expect(WHATSAPP_CONSTANTS.LEGACY_ENV_MODE).toBe(WHATSAPP_CONSTANTS.MODES.ASSISTANT);
+  });
+
+  it('gives agents a 30-minute confirm window', () => {
+    expect(WHATSAPP_CONSTANTS.DRAFT_CONFIRM_WINDOW_MS).toBe(30 * 60 * 1000);
+  });
+
+  it('confirm pattern captures the draft code', () => {
+    const p = WHATSAPP_CONSTANTS.DRAFT_CONFIRM_PATTERN;
+    expect(p.exec('发 W12')?.[2]).toBe('W12');
+    expect(p.exec('确认发送 #12')?.[2]).toBe('12');
+    expect(p.test('发 W12 please')).toBe(false);
+  });
+
+  it('matches the Baileys FULL history-sync enum value', () => {
+    expect(WHATSAPP_CONSTANTS.HISTORY_SYNC_TYPE_FULL).toBe(2);
   });
 });

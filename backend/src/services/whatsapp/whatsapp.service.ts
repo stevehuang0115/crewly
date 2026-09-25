@@ -17,10 +17,13 @@ import type {
   WhatsAppOutgoingMessage,
   WhatsAppServiceStatus,
   WhatsAppConversationContext,
+  WhatsAppMode,
 } from '../../types/whatsapp.types.js';
 import { isContactAllowed } from '../../types/whatsapp.types.js';
 import { WHATSAPP_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { getWhatsAppInboxStore, type WhatsAppInboxStore } from './whatsapp-inbox.store.js';
+import { WhatsAppInboxCapture } from './whatsapp-inbox-capture.js';
 
 /**
  * Events emitted by WhatsAppService
@@ -42,6 +45,18 @@ interface BaileysSocket {
   end: (error?: Error) => void;
   ev: EventEmitter;
   user?: { id: string; name?: string };
+  /** Group metadata lookup (used to name groups in inbox mode) */
+  groupMetadata?: (jid: string) => Promise<{ subject?: string }>;
+}
+
+/**
+ * Strip the device suffix from a user JID (`123:45@s.whatsapp.net` → `123@s.whatsapp.net`).
+ *
+ * @param jid - JID as reported by `sock.user.id`
+ * @returns JID without the `:device` part
+ */
+export function stripDeviceFromJid(jid: string): string {
+  return jid.replace(/:\d+(?=@)/, '');
 }
 
 /**
@@ -69,6 +84,9 @@ export class WhatsAppService extends EventEmitter {
   private conversationContexts: Map<string, WhatsAppConversationContext> = new Map();
   private reconnectAttempts = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
+  private mode: WhatsAppMode | null = null;
+  private inboxStore: WhatsAppInboxStore | null = null;
+  private inboxCapture: WhatsAppInboxCapture | null = null;
   private static readonly MAX_RECONNECT_DELAY_MS = 60000;
   private static readonly MAX_RECONNECT_ATTEMPTS = 10;
 
@@ -80,6 +98,8 @@ export class WhatsAppService extends EventEmitter {
    */
   async initialize(config: WhatsAppConfig): Promise<void> {
     this.config = config;
+    this.mode = config.mode ?? WHATSAPP_CONSTANTS.MODES.ASSISTANT;
+    const inbox = this.mode === WHATSAPP_CONSTANTS.MODES.INBOX;
 
     // Clean up existing socket listeners before re-initializing (prevents leaks on reconnect)
     if (this.sock) {
@@ -111,6 +131,7 @@ export class WhatsAppService extends EventEmitter {
       const sock = makeWASocket({
         auth: state,
         printQRInTerminal: false,
+        ...(inbox ? WhatsAppService.inboxSocketOptions() : {}),
       });
 
       this.sock = sock as unknown as BaileysSocket;
@@ -194,14 +215,20 @@ export class WhatsAppService extends EventEmitter {
         }
       });
 
-      // Handle incoming messages
-      sock.ev.on('messages.upsert', (upsert: { messages: Array<Record<string, unknown>>; type: string }) => {
-        if (upsert.type !== 'notify') return;
+      if (inbox) {
+        // Inbox mode: capture everything into the local store. Nothing is
+        // emitted as 'message', so no bridge can ever auto-reply from here.
+        this.attachInboxCapture(sock.ev as EventEmitter);
+      } else {
+        // Handle incoming messages
+        sock.ev.on('messages.upsert', (upsert: { messages: Array<Record<string, unknown>>; type: string }) => {
+          if (upsert.type !== WHATSAPP_CONSTANTS.UPSERT_TYPES.NOTIFY) return;
 
-        for (const msg of upsert.messages) {
-          this.handleIncomingMessage(msg);
-        }
-      });
+          for (const msg of upsert.messages) {
+            this.handleIncomingMessage(msg);
+          }
+        });
+      }
 
       this.logger.info('Initialized — waiting for connection');
     } catch (error) {
@@ -209,6 +236,120 @@ export class WhatsAppService extends EventEmitter {
       this.emit('error', error instanceof Error ? error : new Error(String(error)));
       throw error;
     }
+  }
+
+  /**
+   * Socket options for inbox mode.
+   *
+   * - `markOnlineOnConnect: false` — otherwise the linked device marks the
+   *   owner "online" and the phone stops showing notifications.
+   * - `syncFullHistory: false` plus a `shouldSyncHistoryMessage` that accepts
+   *   every history chunk except FULL — seeds recent history (bootstrap,
+   *   RECENT, push names) without pulling the whole account.
+   *
+   * @returns Partial Baileys socket config
+   */
+  static inboxSocketOptions(): Record<string, unknown> {
+    return {
+      markOnlineOnConnect: false,
+      syncFullHistory: false,
+      shouldSyncHistoryMessage: (msg: { syncType?: number | null }) =>
+        msg?.syncType !== WHATSAPP_CONSTANTS.HISTORY_SYNC_TYPE_FULL,
+    };
+  }
+
+  /**
+   * Wire the inbox capture into a socket's event emitter.
+   *
+   * Handles `messages.upsert` (notify + append), `messaging-history.set`,
+   * `contacts.upsert/update`, `chats.upsert/update`, `groups.upsert/update`.
+   * Each handler is wrapped so a store error is logged, never thrown into
+   * the socket.
+   *
+   * @param ev - The socket's event emitter
+   */
+  private attachInboxCapture(ev: EventEmitter): void {
+    const capture = this.getInboxCapture();
+    if (!capture) {
+      this.logger.error('Inbox store unavailable — inbox mode is connected but not recording');
+      return;
+    }
+    const guard = (name: string, fn: (payload: unknown) => void) => (payload: unknown) => {
+      try {
+        fn(payload);
+      } catch (error) {
+        this.logger.error('Inbox capture failed', {
+          event: name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+    ev.on('messages.upsert', guard('messages.upsert', (p) => {
+      this.messagesReceived += capture.onMessagesUpsert(p);
+    }));
+    ev.on('messaging-history.set', guard('messaging-history.set', (p) => {
+      const n = capture.onHistorySet(p);
+      this.logger.info('History sync stored', { messages: n });
+    }));
+    ev.on('contacts.upsert', guard('contacts.upsert', (p) => capture.onContacts(p)));
+    ev.on('contacts.update', guard('contacts.update', (p) => capture.onContacts(p)));
+    ev.on('chats.upsert', guard('chats.upsert', (p) => capture.onChats(p)));
+    ev.on('chats.update', guard('chats.update', (p) => capture.onChats(p)));
+    ev.on('groups.upsert', guard('groups.upsert', (p) => capture.onGroups(p)));
+    ev.on('groups.update', guard('groups.update', (p) => capture.onGroups(p)));
+  }
+
+  /**
+   * Use a specific inbox store (tests); otherwise the process-wide one is opened lazily.
+   *
+   * @param store - Store to capture into
+   */
+  setInboxStore(store: WhatsAppInboxStore): void {
+    this.inboxStore = store;
+    this.inboxCapture = null;
+  }
+
+  /**
+   * Get (creating on first use) the capture bound to the inbox store.
+   *
+   * @returns The capture, or null when the store cannot be opened
+   */
+  private getInboxCapture(): WhatsAppInboxCapture | null {
+    if (this.inboxCapture) return this.inboxCapture;
+    try {
+      if (!this.inboxStore) this.inboxStore = getWhatsAppInboxStore();
+    } catch (error) {
+      this.logger.error('Failed to open WhatsApp inbox store', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    this.inboxCapture = new WhatsAppInboxCapture(this.inboxStore, {
+      getOwnJid: () => (this.sock?.user?.id ? stripDeviceFromJid(this.sock.user.id) : null),
+      fetchGroupSubject: async (jid) => {
+        const meta = this.sock?.groupMetadata ? await this.sock.groupMetadata(jid) : null;
+        return meta?.subject ?? null;
+      },
+    });
+    return this.inboxCapture;
+  }
+
+  /**
+   * Current connection mode (null before the first initialize).
+   *
+   * @returns `assistant`, `inbox`, or null
+   */
+  getMode(): WhatsAppMode | null {
+    return this.mode;
+  }
+
+  /**
+   * Whether the service is running in inbox mode.
+   *
+   * @returns True in inbox mode
+   */
+  isInboxMode(): boolean {
+    return this.mode === WHATSAPP_CONSTANTS.MODES.INBOX;
   }
 
   /**
@@ -226,6 +367,8 @@ export class WhatsAppService extends EventEmitter {
    * @param rawMsg - Raw Baileys message object containing key, message content, and metadata
    */
   private handleIncomingMessage(rawMsg: Record<string, unknown>): void {
+    // Defence in depth: the assistant path must never fire in inbox mode.
+    if (this.isInboxMode()) return;
     try {
       const key = rawMsg.key as { remoteJid?: string; fromMe?: boolean; id?: string } | undefined;
       if (!key?.remoteJid || key.fromMe) return;
@@ -290,9 +433,19 @@ export class WhatsAppService extends EventEmitter {
       throw new Error(`Message exceeds maximum length of ${WHATSAPP_CONSTANTS.MAX_MESSAGE_LENGTH} characters`);
     }
 
-    await this.sock.sendMessage(msg.to, { text: msg.text });
+    const sent = await this.sock.sendMessage(msg.to, { text: msg.text });
     this.messagesSent++;
     this.logger.info('Sent message', { to: msg.to, length: msg.text.length });
+    // Record our own message right away so the inbox shows the chat as answered.
+    if (this.isInboxMode() && sent) {
+      try {
+        this.getInboxCapture()?.captureMessage(sent);
+      } catch (error) {
+        this.logger.warn('Could not record sent message in inbox', {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /**
@@ -364,6 +517,7 @@ export class WhatsAppService extends EventEmitter {
       phoneNumber: this.phoneNumber,
       messagesSent: this.messagesSent,
       messagesReceived: this.messagesReceived,
+      mode: this.mode,
     };
   }
 
