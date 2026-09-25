@@ -22,6 +22,8 @@
 
 import { TICKET_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { API_SECURITY_CONSTANTS } from '../../../../config/constants.js';
+import { getApiToken } from '../core/api-token.service.js';
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -129,7 +131,25 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject
   { method: 'POST', prefix: '/tickets/' },     // …/:id/dismiss|verify|reject|acceptance|update|self-check
+  // WhatsApp reply drafts: the owner reviews and sends / discards from the
+  // phone or portal (reading the inbox itself stays on the machine).
+  { method: 'GET', prefix: '/whatsapp/drafts' },
+  { method: 'POST', prefix: '/whatsapp/drafts/' },
 ];
+
+/**
+ * The owner's API token header for relayed calls (empty when no token).
+ *
+ * @returns Header map
+ */
+function ownerTokenHeader(): Record<string, string> {
+  try {
+    const token = getApiToken();
+    return token ? { [API_SECURITY_CONSTANTS.TOKEN_HEADER]: token } : {};
+  } catch {
+    return {};
+  }
+}
 
 /**
  * Check a request against {@link MOBILE_API_ALLOWLIST}. Also rejects path
@@ -247,7 +267,15 @@ export class MobileApiRelayService {
         method,
         // Marks the call as the phone's, so an owner message it posts is
         // filed as a `mobile` ticket (specs/ticket-loop.md).
-        headers: { 'Content-Type': 'application/json', [TICKET_CONSTANTS.CLIENT_HEADER]: TICKET_CONSTANTS.MOBILE_CLIENT },
+        // The relay only carries the Cloud-authenticated owner's calls, so it
+        // presents the owner's API token: owner-only actions (sending a
+        // WhatsApp draft) can tell it apart from an agent that merely left
+        // out its session header.
+        headers: {
+          'Content-Type': 'application/json',
+          [TICKET_CONSTANTS.CLIENT_HEADER]: TICKET_CONSTANTS.MOBILE_CLIENT,
+          ...ownerTokenHeader(),
+        },
         ...(method === 'POST' && payload.body !== undefined
           ? { body: JSON.stringify(payload.body) }
           : {}),

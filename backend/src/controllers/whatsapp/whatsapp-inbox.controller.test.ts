@@ -41,6 +41,8 @@ describe('WhatsApp inbox routes', () => {
   let ownerMessages: Array<{ at: number; text: string }>;
   let sender: { isConnected: jest.Mock; sendMessage: jest.Mock };
   let getOwnerMessagesSince: jest.Mock;
+  /** Whether a header-less caller presents the owner's API token */
+  let ownerTokenOk = true;
   let app: express.Express;
 
   beforeEach(() => {
@@ -60,6 +62,7 @@ describe('WhatsApp inbox routes', () => {
         getSender: () => sender as unknown as WhatsAppInboxSender,
         getOwnerMessagesSince,
         now: () => now,
+        isOwnerRequest: () => ownerTokenOk,
       }),
     );
     app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
@@ -234,6 +237,19 @@ describe('WhatsApp inbox routes', () => {
         expect(res.body.data).toMatchObject({ status: 'sent', sentAt: T0 + 5000, via: 'owner' });
         expect(sender.sendMessage).toHaveBeenCalledWith({ to: ANN, text: 'Yes, 8 works!' });
         expect(getOwnerMessagesSince).not.toHaveBeenCalled();
+      });
+
+      it('a header-less caller without the owner token is refused (an agent leaving out its session header is not the owner)', async () => {
+        const d = await draftAsAgent();
+        ownerTokenOk = false;
+        try {
+          const res = await request(app).post(`/api/whatsapp/drafts/${d.id}/send`);
+          expect(res.status).toBe(401);
+          expect(sender.sendMessage).not.toHaveBeenCalled();
+          expect(store.findDraft(d.id)?.status).toBe('pending');
+        } finally {
+          ownerTokenOk = true;
+        }
       });
 
       it('agent without the owner confirmation → 403 needs_owner_confirmation, nothing sent', async () => {

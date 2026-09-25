@@ -55,6 +55,11 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('POST', '/tickets/abc/dismiss')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/teams')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/task-pool/add')).toBe(false);
+    // WhatsApp reply drafts: review / send / discard from the phone; the inbox itself stays local.
+    expect(isAllowedMobileApiCall('GET', '/whatsapp/drafts?status=pending')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/whatsapp/drafts/W3/send')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/whatsapp/inbox')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/whatsapp/send')).toBe(false);
   });
 
   it('rejects traversal, non-rooted, and odd methods', () => {
@@ -118,7 +123,12 @@ describe('MobileApiRelayService', () => {
 
     expect(fetchImpl).toHaveBeenCalledWith(
       'http://127.0.0.1:8787/api/escalations/e1/resolve',
-      expect.objectContaining({ method: 'POST', body: JSON.stringify({ resolution: 'approve' }) }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({ resolution: 'approve' }),
+        // Relayed calls are the Cloud-authenticated owner's: they present the owner token.
+        headers: expect.objectContaining({ 'x-crewly-token': expect.any(String) }),
+      }),
     );
     expect((sent[0].payload as { status: number }).status).toBe(200);
   });

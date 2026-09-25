@@ -21,6 +21,7 @@
  * @module controllers/whatsapp/whatsapp-inbox
  */
 
+import { hasValidApiToken } from '../../middleware/api-token.middleware.js';
 import { Router, Request, Response, NextFunction } from 'express';
 import { WHATSAPP_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
@@ -55,6 +56,12 @@ export interface WhatsAppInboxDeps {
   getOwnerMessagesSince: (sinceMs: number, limit: number) => string[];
   /** Clock */
   now: () => number;
+  /**
+   * Whether a request with no X-Agent-Session really is the owner: it must
+   * carry the API token (dashboard; the portal / phone relay adds it). An
+   * agent leaving out its session header is not the owner.
+   */
+  isOwnerRequest: (req: Request) => boolean;
 }
 
 /** Production dependencies. */
@@ -63,6 +70,7 @@ const DEFAULT_DEPS: WhatsAppInboxDeps = {
   getSender: getWhatsAppService,
   getOwnerMessagesSince: (sinceMs, limit) => getChatV2Service().getRecentOwnerMessageContents(sinceMs, limit),
   now: () => Date.now(),
+  isOwnerRequest: (req) => hasValidApiToken(req, false),
 };
 
 /**
@@ -286,6 +294,13 @@ export function createWhatsAppInboxRouter(overrides: Partial<WhatsAppInboxDeps> 
         return;
       }
       const agentSession = readAgentSessionHeader(req);
+      if (!agentSession && !deps.isOwnerRequest(req)) {
+        logger.warn('Draft send refused — no agent session and no owner token', { code: draft.code });
+        fail(res, 401, E.NEEDS_OWNER_CONFIRMATION, 'Sending a draft needs the owner (dashboard, portal or phone app) or the owner\'s 「发 <code>」 in chat.', {
+          code: draft.code,
+        });
+        return;
+      }
       const decision = decideDraftSend({
         draft,
         agentSession,
