@@ -74,11 +74,14 @@ const mockMkdirSync = jest.fn();
 const mockWriteFileSync = jest.fn();
 const mockExistsSync = jest.fn();
 const mockCopyFileSync = jest.fn();
+const mockReaddirSync = jest.fn((): string[] => []);
+const mockReadFileSync = jest.fn((): string => '');
 jest.mock('fs', () => ({
   mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
   writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
   existsSync: (...args: unknown[]) => mockExistsSync(...args),
-  readFileSync: () => '',
+  readdirSync: (...args: unknown[]) => mockReaddirSync(...(args as [])),
+  readFileSync: (...args: unknown[]) => mockReadFileSync(...(args as [])),
   copyFileSync: (...args: unknown[]) => mockCopyFileSync(...args),
 }));
 
@@ -1250,6 +1253,24 @@ describe('onboard command', () => {
       expect(createTeamFromTemplate(assistant)).toBe(true);
       expect(mockWriteFileSync).not.toHaveBeenCalled();
       expect(output()).toContain('already exists');
+    });
+
+    it('keeps a team the web app created from the same template (UUID directory)', () => {
+      mockExistsSync.mockReturnValue(false);
+      mockReaddirSync.mockReturnValueOnce(['0b1c-uuid']);
+      mockReadFileSync.mockReturnValueOnce(JSON.stringify({ id: '0b1c-uuid', templateId: 'personal-assistant-team' }));
+      expect(createTeamFromTemplate(assistant)).toBe(true);
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it('sends the first task to a web-created team by its own id', async () => {
+      mockReaddirSync.mockReturnValue(['0b1c-uuid']);
+      mockReadFileSync.mockReturnValue(JSON.stringify({ id: '0b1c-uuid', templateId: 'personal-assistant-team' }));
+      mockJqFound();
+      await onboardCommand({ yes: true, task: 'Plan my week' });
+      expect(mockDeliverFirstTask).toHaveBeenCalledWith('Plan my week', '0b1c-uuid');
+      mockReaddirSync.mockReturnValue([]);
+      mockReadFileSync.mockReturnValue('');
     });
 
     it('writes teams under CREWLY_HOME', () => {

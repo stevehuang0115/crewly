@@ -33,7 +33,7 @@
 
 import { createInterface, type Interface as ReadlineInterface } from 'readline';
 import { execSync } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync, copyFileSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, copyFileSync, readdirSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { randomUUID } from 'crypto';
 import chalk from 'chalk';
@@ -588,6 +588,32 @@ export async function selectFirstTeam(rl: ReadlineInterface): Promise<StarterCho
 // ========================= Team Creation =========================
 
 /**
+ * The id of an existing team created from a template: the CLI's own
+ * `teams/<template-id>/` or a team the web app created (UUID directory) that
+ * records the same `templateId`.
+ *
+ * @param templateId - Template id
+ * @returns Team id, or null when there is none
+ */
+export function findTeamIdForTemplate(templateId: string): string | null {
+  const teamsDir = join(getCrewlyHomePath(), 'teams');
+  try {
+    if (existsSync(join(teamsDir, templateId, 'config.json'))) return templateId;
+    for (const entry of readdirSync(teamsDir)) {
+      try {
+        const config = JSON.parse(String(readFileSync(join(teamsDir, entry, 'config.json'), 'utf-8'))) as { id?: unknown; templateId?: unknown };
+        if (config.templateId === templateId) return typeof config.id === 'string' ? config.id : entry;
+      } catch {
+        // Not a team directory.
+      }
+    }
+  } catch {
+    // No teams yet.
+  }
+  return null;
+}
+
+/**
  * Creates a team from a template by writing it to <crewlyHome>/teams/{template-id}/config.json
  * (`CREWLY_HOME`, else ~/.crewly).
  *
@@ -606,7 +632,7 @@ export function createTeamFromTemplate(template: TeamTemplate, runtimeType: stri
   const teamsDir = join(getCrewlyHomePath(), 'teams', template.id);
 
   try {
-    if (existsSync(join(teamsDir, 'config.json'))) {
+    if (findTeamIdForTemplate(template.id)) {
       console.log(chalk.gray(`  Team "${template.name}" already exists; keeping it.`));
       return true;
     }
@@ -751,15 +777,17 @@ export function copyTemplateProjectFiles(crewlyDir: string, template: TeamTempla
 // ========================= Steps 5-6: First task, Cloud & Slack =========================
 
 /**
- * The team a first task goes to: the team created from the template (its id
- * is the template id), or null for Blank / no team.
+ * The team a first task goes to: the team from the template (the CLI names
+ * it after the template id; a web-created one has its own id), or null for
+ * Blank / no team.
  *
  * @param choice - First-team choice
  * @param created - Whether the team exists
  * @returns Team id, or null
  */
 export function firstTaskTeamId(choice: StarterChoice | null, created: boolean): string | null {
-  return choice?.kind === 'template' && created ? choice.template.id : null;
+  if (choice?.kind !== 'template' || !created) return null;
+  return findTeamIdForTemplate(choice.template.id) ?? choice.template.id;
 }
 
 /**
