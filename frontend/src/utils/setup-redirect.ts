@@ -23,7 +23,10 @@ import { SETUP_REDIRECT_EXEMPT_PREFIXES, SETUP_SKIP_STORAGE_KEY } from '../const
 export function needsHarnessSetup(overview: HarnessOverview): boolean {
   if (!overview.orcHarness) return true;
   const orc = overview.harnesses.find((h) => h.id === overview.orcHarness);
-  if (!orc || !orc.installed) return true;
+  // An orc on a runtime outside the harness list (crewly-agent, opencode…)
+  // is configured elsewhere — setup has nothing to offer it.
+  if (!orc) return false;
+  if (!orc.installed) return true;
   return orc.loginState === 'logged_out';
 }
 

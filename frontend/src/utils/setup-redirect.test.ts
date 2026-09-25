@@ -51,9 +51,12 @@ describe('needsHarnessSetup', () => {
     expect(needsHarnessSetup(overview(harness(), null))).toBe(true);
   });
 
-  it('is true when the orc harness is not installed or missing', () => {
+  it('is true when the orc harness is not installed', () => {
     expect(needsHarnessSetup(overview(harness({ installed: false })))).toBe(true);
-    expect(needsHarnessSetup(overview(harness(), 'codex-cli'))).toBe(true);
+  });
+
+  it('is false when the orc runs on a runtime outside the harness list', () => {
+    expect(needsHarnessSetup(overview(harness(), 'crewly-agent' as never))).toBe(false);
   });
 
   it('is true when the orc harness is logged out', () => {
