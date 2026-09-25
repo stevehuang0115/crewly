@@ -1228,6 +1228,36 @@ describe('Orchestrator Handlers', () => {
       });
     });
 
+    it('says why the orchestrator is down when auto-restart gave up (B8 D1)', async () => {
+      const { OrchestratorRestartService } = await import('../../services/orchestrator/orchestrator-restart.service.js');
+      const restart = OrchestratorRestartService.getInstance();
+      restart.markGaveUp('Claude Code (`claude`) is not installed on this machine, so the agent cannot start.', { blocked: true, attempts: 1 });
+      mockGetOrchestratorStatus.mockResolvedValue({
+        isActive: false,
+        agentStatus: 'inactive',
+        message: 'Orchestrator is not running.',
+      });
+
+      try {
+        await orchestratorHandlers.getOrchestratorStatus.call(
+          mockApiContext as ApiContext,
+          mockRequest as Request,
+          mockResponse as Response
+        );
+      } finally {
+        restart.clearGiveUp();
+      }
+
+      expect(mockResponse.json).toHaveBeenCalledWith({
+        success: true,
+        data: expect.objectContaining({
+          isActive: false,
+          message: 'Orchestrator stopped restarting: Claude Code (`claude`) is not installed on this machine, so the agent cannot start.',
+          restartGaveUp: expect.objectContaining({ blocked: true, attempts: 1 }),
+        }),
+      });
+    });
+
     it('reports loginRequired: null when no sign-in is pending', async () => {
       mockGetOrchestratorStatus.mockResolvedValue({
         isActive: true,

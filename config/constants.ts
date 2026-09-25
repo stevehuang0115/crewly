@@ -893,6 +893,12 @@ export const ORCHESTRATOR_RESTART_CONSTANTS = {
   COOLDOWN_WINDOW_MS: 3600000,
   /** Delay before attempting restart (ms) - allows cleanup */
   RESTART_DELAY_MS: 5000,
+  /**
+   * Consecutive failed restarts after which auto-restart stops until the
+   * orchestrator runs again (B8 D1: a missing runtime CLI looped every ~2.5 min
+   * forever, because failed attempts never counted toward the cooldown).
+   */
+  MAX_CONSECUTIVE_FAILURES: 3,
 } as const;
 
 // ========================= ORCHESTRATOR HEARTBEAT MONITOR =========================

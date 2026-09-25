@@ -55,7 +55,7 @@ jest.mock('../core/storage.service.js', () => ({
 }));
 
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
-import { ORCHESTRATOR_RESTART_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
+import { ORCHESTRATOR_RESTART_CONSTANTS, RUNTIME_TYPES, CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
 
 describe('OrchestratorRestartService', () => {
 	let service: OrchestratorRestartService;
@@ -302,6 +302,101 @@ describe('OrchestratorRestartService', () => {
 			expect(stats.totalRestarts).toBe(1);
 			expect(stats.restartsInWindow).toBe(1);
 			expect(stats.lastRestartAt).not.toBeNull();
+		});
+	});
+
+	describe('giving up on a restart that keeps failing (B8 D1)', () => {
+		/** Run one restart attempt to completion under fake timers. */
+		const attempt = async (): Promise<boolean> => {
+			const p = service.attemptRestart();
+			await jest.advanceTimersByTimeAsync(6000);
+			return p;
+		};
+
+		beforeEach(() => {
+			jest.useFakeTimers();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('stops after MAX_CONSECUTIVE_FAILURES failures in a row, surfaces the reason, and makes no further attempts', async () => {
+			mockAgentRegistrationService.createAgentSession.mockResolvedValue({ success: false, error: 'Failed to initialize agent (65s)' });
+
+			for (let i = 0; i < ORCHESTRATOR_RESTART_CONSTANTS.MAX_CONSECUTIVE_FAILURES; i++) {
+				expect(await attempt()).toBe(false);
+			}
+
+			const gaveUp = service.getGiveUp();
+			expect(gaveUp).toEqual(expect.objectContaining({
+				reason: 'Failed to initialize agent (65s)',
+				attempts: ORCHESTRATOR_RESTART_CONSTANTS.MAX_CONSECUTIVE_FAILURES,
+				blocked: false,
+			}));
+			expect(mockSocketIO.emit).toHaveBeenCalledWith('orchestrator:restart_gave_up', gaveUp);
+
+			const callsBefore = mockAgentRegistrationService.createAgentSession.mock.calls.length;
+			expect(await attempt()).toBe(false);
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledTimes(callsBefore);
+		});
+
+		it('stops after ONE failure when start-up is blocked on the user (e.g. runtime CLI not installed)', async () => {
+			mockAgentRegistrationService.createAgentSession.mockResolvedValue({
+				success: false,
+				error: 'Claude Code (`claude`) is not installed on this machine, so the agent cannot start.',
+				errorCode: CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE,
+			});
+
+			expect(await attempt()).toBe(false);
+
+			expect(service.getGiveUp()).toEqual(expect.objectContaining({ blocked: true, attempts: 1 }));
+			expect(service.getGiveUp()?.reason).toContain('is not installed');
+		});
+
+		it('counts a failed attempt toward the hourly cooldown (it never did, so failures looped forever)', async () => {
+			mockAgentRegistrationService.createAgentSession.mockResolvedValueOnce({ success: false, error: 'boom' });
+
+			await attempt();
+
+			expect(service.getRestartStats().restartsInWindow).toBe(1);
+			expect(service.getRestartStats().consecutiveFailures).toBe(1);
+		});
+
+		it('a success in between resets the consecutive-failure count', async () => {
+			mockAgentRegistrationService.createAgentSession
+				.mockResolvedValueOnce({ success: false, error: 'a' })
+				.mockResolvedValueOnce({ success: true });
+
+			await attempt();
+			await attempt();
+
+			expect(service.getRestartStats().consecutiveFailures).toBe(0);
+			expect(service.getGiveUp()).toBeNull();
+		});
+
+		it('clearGiveUp re-arms auto-restart once the orchestrator runs again', async () => {
+			mockAgentRegistrationService.createAgentSession.mockResolvedValueOnce({
+				success: false,
+				error: 'not installed',
+				errorCode: CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE,
+			});
+			await attempt();
+			expect(service.getGiveUp()).not.toBeNull();
+
+			service.clearGiveUp();
+
+			expect(service.getGiveUp()).toBeNull();
+			expect(await attempt()).toBe(true);
+		});
+
+		it('markGaveUp (used by boot auto-start) blocks restarts and keeps the first reason', async () => {
+			service.markGaveUp('Gemini CLI is not signed in', { blocked: true, attempts: 1 });
+			service.markGaveUp('later reason', { blocked: false, attempts: 5 });
+
+			expect(service.getGiveUp()?.reason).toBe('Gemini CLI is not signed in');
+			expect(await attempt()).toBe(false);
+			expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
 		});
 	});
 });
