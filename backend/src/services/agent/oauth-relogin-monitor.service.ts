@@ -10,6 +10,12 @@
  * 4. **Notify**: Emit `agent:oauth_url` event so orchestrator/Slack can forward to user
  * 5. **Callback**: Accept auth code via API and write it to PTY to complete login
  *
+ * When a harness re-login handler is set (the Slack re-login coordinator,
+ * `services/harness/harness-relogin.service.ts`), an expired Claude Code or
+ * Codex login (`login-expiry-rules.ts`) is handed to it instead: it runs ONE
+ * login for the harness and asks the owner over Slack, so steps 2–5 and the
+ * per-agent sign-in notice are skipped for that session.
+ *
  * Follows the PTY subscription pattern from ContextWindowMonitorService and
  * RuntimeExitMonitorService.
  *
@@ -34,6 +40,8 @@ import type { RuntimeType } from '../../constants.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import type { EnqueueMessageInput } from '../../types/messaging.types.js';
+import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
+import type { ExpiryReport } from '../harness/harness-relogin.service.js';
 
 // =============================================================================
 // Types
@@ -136,6 +144,13 @@ export interface LoginNoticeSlackLike {
 }
 
 /**
+ * Receives an expired harness login (the Slack re-login coordinator).
+ * Returns true when it owns the re-login, so the monitor must not send
+ * `/login` or its own sign-in notice for that session.
+ */
+export type HarnessExpiryHandler = (report: ExpiryReport) => boolean;
+
+/**
  * Minimal chat surface (terminal gateway + chat-v2) for surfacing the notice
  * in the orchestrator conversation the owner is looking at.
  */
@@ -194,6 +209,9 @@ export class OAuthReloginMonitorService {
 	/** Periodic screen sweep timer (started by `start()`) */
 	private sweepTimer: ReturnType<typeof setInterval> | null = null;
 
+	/** Slack re-login coordinator for expired harness logins (optional) */
+	private harnessExpiryHandler: HarnessExpiryHandler | null = null;
+
 	private constructor() {
 		this.logger = LoggerService.getInstance().createComponentLogger('OAuthReloginMonitor');
 	}
@@ -227,6 +245,50 @@ export class OAuthReloginMonitorService {
 	 */
 	setChatProvider(provider: (() => LoginNoticeChatLike | null) | null): void {
 		this.chatProvider = provider;
+	}
+
+	/**
+	 * Hand expired harness logins to a coordinator (Slack re-login) instead
+	 * of sending `/login` into each agent and notifying per agent.
+	 *
+	 * @param handler - Coordinator callback, or null to restore the old behaviour
+	 */
+	setHarnessExpiryHandler(handler: HarnessExpiryHandler | null): void {
+		this.harnessExpiryHandler = handler;
+	}
+
+	/**
+	 * Check output for an expired harness login and report it to the handler.
+	 * Never logs the output itself.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param output - Raw PTY chunk or captured screen
+	 * @param runtimeType - Session runtime, or null to try every harness
+	 * @param source - `output` (live chunk) or `screen` (sweep / captured screen)
+	 * @returns True when the handler owns the re-login
+	 */
+	private reportHarnessExpiry(
+		sessionName: string,
+		output: string,
+		runtimeType: RuntimeType | null,
+		source: 'output' | 'screen',
+	): boolean {
+		if (!this.harnessExpiryHandler) return false;
+		const match = detectLoginExpiry(output, runtimeType);
+		if (!match) return false;
+		try {
+			const handled = this.harnessExpiryHandler({ harnessId: match.harnessId, sessionName, source });
+			if (handled) {
+				this.logger.info('Expired harness login handed to the Slack re-login', { sessionName, harnessId: match.harnessId, rule: match.ruleId, source });
+			}
+			return handled;
+		} catch (err) {
+			this.logger.warn('Harness re-login handler failed (falling back to /login)', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return false;
+		}
 	}
 
 	/**
@@ -336,6 +398,10 @@ export class OAuthReloginMonitorService {
 	 * @param runtimeType - Runtime type when known
 	 */
 	inspectScreen(sessionName: string, screen: string, runtimeType: RuntimeType | null = null): void {
+		const knownRuntime = runtimeType ?? this.sessions.get(sessionName)?.runtimeType ?? null;
+		// An expired login the Slack re-login coordinator owns: it DMs the
+		// owner once per harness, so this session gets no notice of its own.
+		const handledByRelogin = this.reportHarnessExpiry(sessionName, screen, knownRuntime, 'screen');
 		const detection = this.detectLoginRequired(screen);
 		const existing = this.loginRequired.get(sessionName);
 
@@ -365,6 +431,11 @@ export class OAuthReloginMonitorService {
 			notifiedAt: null,
 		};
 		this.loginRequired.set(sessionName, info);
+
+		if (handledByRelogin) {
+			info.notifiedAt = new Date().toISOString();
+			return;
+		}
 
 		this.logger.warn('Agent runtime is waiting on a human sign-in', {
 			sessionName,
@@ -837,6 +908,13 @@ export class OAuthReloginMonitorService {
 
 		// Skip during startup grace period
 		if (Date.now() - state.startedAt < OAUTH_RELOGIN_CONSTANTS.STARTUP_GRACE_PERIOD_MS) {
+			return;
+		}
+
+		// An expired Claude Code / Codex login goes to the Slack re-login
+		// coordinator (one login per harness, owner finishes it on the phone)
+		// instead of `/login` typed into this agent.
+		if (this.reportHarnessExpiry(sessionName, data, state.runtimeType, 'output')) {
 			return;
 		}
 

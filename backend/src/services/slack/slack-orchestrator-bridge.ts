@@ -201,6 +201,13 @@ export class SlackOrchestratorBridge extends EventEmitter {
   private initialized = false;
   /** Track if we've already logged the missing scope warning */
   private loggedMissingScope = false;
+  /**
+   * Offered every inbound message before anything else (logging, file
+   * download, thread store, routing). Returns true when it consumed the
+   * message — used by the harness re-login so an owner's login code is
+   * never logged, stored or forwarded to the orchestrator.
+   */
+  private inboundInterceptor: ((message: SlackIncomingMessage) => boolean) | null = null;
 
   /**
    * Pending completion reactions keyed by "channelId:threadTs".
@@ -268,6 +275,33 @@ export class SlackOrchestratorBridge extends EventEmitter {
   }
 
   /**
+   * Set (or clear) the inbound interceptor. See {@link inboundInterceptor}.
+   *
+   * @param interceptor - Returns true when it consumed the message, or null to clear
+   */
+  setInboundInterceptor(interceptor: ((message: SlackIncomingMessage) => boolean) | null): void {
+    this.inboundInterceptor = interceptor;
+  }
+
+  /**
+   * Offer a message to the inbound interceptor. Never logs the text.
+   *
+   * @param message - Inbound Slack message
+   * @returns True when the interceptor consumed it
+   */
+  private interceptInbound(message: SlackIncomingMessage): boolean {
+    if (!this.inboundInterceptor) return false;
+    try {
+      if (!this.inboundInterceptor(message)) return false;
+      this.logger.info('Inbound Slack message consumed by the harness re-login', { channelId: message.channelId });
+      return true;
+    } catch (err) {
+      this.logger.warn('Inbound interceptor failed (message routed normally)', { error: err instanceof Error ? err.message : String(err) });
+      return false;
+    }
+  }
+
+  /**
    * Set the message queue service for enqueuing messages to the orchestrator.
    * Called during server initialization.
    *
@@ -314,6 +348,10 @@ export class SlackOrchestratorBridge extends EventEmitter {
    * @param message - Incoming Slack message
    */
   private async handleSlackMessage(message: SlackIncomingMessage): Promise<void> {
+    // Before the log line below: a consumed message (an owner's login code)
+    // must not appear in logs, the thread store or the orchestrator.
+    if (this.interceptInbound(message)) return;
+
     this.logger.info('Received message', {
       preview: (message.text || '').substring(0, 50),
       hasImages: message.hasImages,

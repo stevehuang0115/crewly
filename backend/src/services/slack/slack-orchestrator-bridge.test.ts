@@ -1156,6 +1156,59 @@ describe('SlackOrchestratorBridge', () => {
     });
   });
 
+  describe('inbound interceptor (harness re-login replies)', () => {
+    /** Start a bridge whose normal path is observable through getConversationContext. */
+    async function startBridge() {
+      const bridge = new SlackOrchestratorBridge();
+      const queue = { enqueue: jest.fn().mockReturnValue({ id: 'q-1' }) };
+      bridge.setMessageQueueService(queue as any);
+      const store = { appendUserMessage: jest.fn().mockResolvedValue(undefined), getThreadFilePath: jest.fn(() => '/tmp/thread.md') };
+      bridge.setSlackThreadStore(store as any);
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+      // Reaching the conversation context = the normal path ran; it stops
+      // there (the handler's own catch absorbs the error).
+      const context = jest.spyOn(slackService, 'getConversationContext').mockImplementation(() => {
+        throw new Error('normal path reached');
+      });
+      bridge.on('error', () => undefined);
+      await bridge.initialize();
+      return { bridge, slackService, queue, store, context };
+    }
+
+    const codeMessage = { text: 'Kq3xZ8vN2mP7rT4wY1bC6dF9#state', channelId: 'DOWNER', userId: 'UOWNER', ts: '1700000000.000100' };
+
+    it('a consumed message never reaches the thread store, the orchestrator queue or routing', async () => {
+      const { bridge, slackService, queue, store, context } = await startBridge();
+      const interceptor = jest.fn().mockReturnValue(true);
+      bridge.setInboundInterceptor(interceptor);
+      slackService.emit('message', { ...codeMessage });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(interceptor).toHaveBeenCalledWith(expect.objectContaining({ channelId: 'DOWNER' }));
+      expect(context).not.toHaveBeenCalled();
+      expect(store.appendUserMessage).not.toHaveBeenCalled();
+      expect(queue.enqueue).not.toHaveBeenCalled();
+      bridge.setInboundInterceptor(null);
+    });
+
+    it('a declined or failing interceptor lets the message through the normal path', async () => {
+      const { bridge, slackService, context } = await startBridge();
+      bridge.setInboundInterceptor(() => false);
+      slackService.emit('message', { ...codeMessage, text: 'hello orc' });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(context).toHaveBeenCalledTimes(1);
+
+      bridge.setInboundInterceptor(() => {
+        throw new Error('boom');
+      });
+      slackService.emit('message', { ...codeMessage, text: 'hello again' });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(context).toHaveBeenCalledTimes(2);
+      bridge.setInboundInterceptor(null);
+    });
+  });
+
   describe('Slack team channel routing', () => {
     afterEach(() => {
       mockTeamChannels.current = null;

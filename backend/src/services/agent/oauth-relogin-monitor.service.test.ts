@@ -855,4 +855,80 @@ describe('OAuthReloginMonitorService', () => {
 			expect(service.getLoginRequired('agent-dev-001')).toBeUndefined();
 		});
 	});
+	// =========================================================================
+	// Slack re-login coordinator hand-off
+	// =========================================================================
+
+	describe('harness expiry handler (Slack re-login)', () => {
+		const CLAUDE_EXPIRED =
+			'API Error: 401 {"type":"error","error":{"type":"authentication_error","message":"OAuth token has expired. ' +
+			'Please obtain a new token or refresh your existing token."}} · Please run /login';
+		const mockSlack = { isConnected: jest.fn().mockReturnValue(true), sendNotification: jest.fn().mockResolvedValue(undefined) };
+		const handler = jest.fn().mockReturnValue(true);
+
+		beforeEach(() => {
+			handler.mockReset().mockReturnValue(true);
+			mockSlack.sendNotification.mockClear();
+			service.setHarnessExpiryHandler(handler);
+			service.setSlackProvider(async () => mockSlack);
+		});
+
+		/** Start monitoring and feed one live chunk after the grace period. */
+		function feedLive(data: string, runtime: 'claude-code' | 'codex-cli' = 'claude-code'): void {
+			service.startMonitoring('agent-dev-001', runtime);
+			jest.advanceTimersByTime(OAUTH_RELOGIN_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+			capturedOnDataCallback?.(data);
+		}
+
+		it('hands a live expiry chunk to the handler instead of typing /login', async () => {
+			feedLive(CLAUDE_EXPIRED);
+			await advancePastRelogin();
+			expect(handler).toHaveBeenCalledWith({ harnessId: 'claude-code', sessionName: 'agent-dev-001', source: 'output' });
+			expect(mockSessionWrite).not.toHaveBeenCalledWith('/login\r');
+		});
+
+		it('hands a Codex refresh failure to the handler', async () => {
+			feedLive('■ Your access token could not be refreshed because your refresh token has expired. Please log out and sign in again.', 'codex-cli');
+			await advancePastRelogin();
+			expect(handler).toHaveBeenCalledWith({ harnessId: 'codex-cli', sessionName: 'agent-dev-001', source: 'output' });
+		});
+
+		it('falls back to /login when the handler declines or throws', async () => {
+			handler.mockReturnValue(false);
+			feedLive(CLAUDE_EXPIRED);
+			await advancePastRelogin();
+			expect(mockSessionWrite).toHaveBeenCalledWith('/login\r');
+
+			handler.mockImplementation(() => {
+				throw new Error('boom');
+			});
+			mockSessionWrite.mockClear();
+			jest.advanceTimersByTime(OAUTH_RELOGIN_CONSTANTS.RELOGIN_COOLDOWN_MS + 1);
+			capturedOnDataCallback?.(CLAUDE_EXPIRED);
+			await advancePastRelogin();
+			expect(mockSessionWrite).toHaveBeenCalledWith('/login\r');
+		});
+
+		it('an expired-login screen found by the sweep goes to the handler and sends no per-agent notice', async () => {
+			service.inspectScreen('agent-dev-001', '  ⎿  Login expired · Please run /login\n> ', 'claude-code');
+			await Promise.resolve(); await Promise.resolve();
+			expect(handler).toHaveBeenCalledWith({ harnessId: 'claude-code', sessionName: 'agent-dev-001', source: 'screen' });
+			expect(service.getLoginRequired('agent-dev-001')).toBeDefined();
+			expect(mockSlack.sendNotification).not.toHaveBeenCalled();
+		});
+
+		it('first-run sign-in screens keep the old per-agent notice', async () => {
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
+			expect(handler).not.toHaveBeenCalled();
+			expect(mockSlack.sendNotification).toHaveBeenCalled();
+		});
+
+		it('without a handler the old behaviour is unchanged', async () => {
+			service.setHarnessExpiryHandler(null);
+			feedLive(CLAUDE_EXPIRED);
+			await advancePastRelogin();
+			expect(mockSessionWrite).toHaveBeenCalledWith('/login\r');
+		});
+	});
 });
