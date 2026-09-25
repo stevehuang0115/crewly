@@ -901,21 +901,24 @@ export async function startSlackTeamChannels(): Promise<void> {
       });
       setSlackAgentIdentityService(identities);
     }
-    // Agent-initiated posts (the `slack-post` skill).
+    // "Is typing…" placeholders posted by the agents' own bots.
+    let typing = getSlackTypingPlaceholderService();
+    if (!typing) {
+      typing = new SlackTypingPlaceholderService({ slack: getSlackService() });
+      setSlackTypingPlaceholderService(typing);
+    }
+    // Agent-initiated posts (the `slack-post` skill). A post into a
+    // conversation the agent owes an answer in lands in that thread and
+    // replaces its placeholder.
     if (!getSlackAgentPostService()) {
       setSlackAgentPostService(
         new SlackAgentPostService({
           slack: getSlackService(),
           storage: StorageService.getInstance(),
           identities,
+          typing,
         }),
       );
-    }
-    // "Is typing…" placeholders posted by the agents' own bots.
-    let typing = getSlackTypingPlaceholderService();
-    if (!typing) {
-      typing = new SlackTypingPlaceholderService({ slack: getSlackService() });
-      setSlackTypingPlaceholderService(typing);
     }
     let service = getSlackTeamChannelService();
     if (!service) {

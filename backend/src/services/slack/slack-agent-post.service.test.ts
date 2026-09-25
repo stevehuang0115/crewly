@@ -284,3 +284,28 @@ describe('singleton', () => {
     expect(new SlackAgentPostError('validation', 'x').code).toBe('validation');
   });
 });
+
+describe('answering an owed reply (2026-09-25)', () => {
+  it('a post without a thread into a conversation with a placeholder goes into that thread and replaces it', async () => {
+    const resolved: unknown[][] = [];
+    const typing = {
+      findOwed: (agent: string, channel: string) => (agent === 'crewly-a-sam' && channel === 'D-U0OWNER1' ? { agentSession: agent, slackChannelId: channel, threadTs: '9.9' } : null),
+      resolve: async (...a: unknown[]) => { resolved.push(a); return 'replaced' as const; },
+    };
+    const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });
+    const res = await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: '好的，我在填。' });
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0][0]).toEqual({ agentSession: 'crewly-a-sam', slackChannelId: 'D-U0OWNER1', threadTs: '9.9' });
+    expect(resolved[0][1]).toBe('好的，我在填。');
+    expect(slack.sent).toHaveLength(0);
+    expect(res.channelId).toBe('D-U0OWNER1');
+  });
+
+  it('an explicit thread, or nothing owed, posts normally', async () => {
+    const typing = { findOwed: () => null, resolve: jest.fn() };
+    const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });
+    await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: 'hi' });
+    expect(slack.sent).toHaveLength(1);
+    expect(typing.resolve).not.toHaveBeenCalled();
+  });
+});

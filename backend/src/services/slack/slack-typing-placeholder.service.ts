@@ -94,6 +94,12 @@ export interface SlackTypingPlaceholderDeps {
 export class SlackTypingPlaceholderService {
   private readonly logger: ComponentLogger;
   private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout> }>();
+  /**
+   * Placeholders that timed out into "still working on this". The reply that
+   * finally arrives must still remove them: forgetting them at timeout left
+   * the owner a "⏱ still working" line under every slow answer (2026-09-25).
+   */
+  private readonly expired = new Map<string, { placeholder: TypingPlaceholder; at: number }>();
   /** Placeholders being posted right now (two copies of one message must not post two). */
   private readonly inFlight = new Map<string, Promise<TypingPlaceholder | null>>();
 
@@ -237,7 +243,12 @@ export class SlackTypingPlaceholderService {
   take(key: TypingKeyParts): TypingPlaceholder | null {
     const k = keyOf(key);
     const entry = this.pending.get(k);
-    if (!entry) return null;
+    if (!entry) {
+      const late = this.expired.get(k);
+      if (!late) return null;
+      this.expired.delete(k);
+      return late.placeholder;
+    }
     (this.deps.clearTimer ?? clearTimeout)(entry.timer);
     if (entry.slowTimer) (this.deps.clearTimer ?? clearTimeout)(entry.slowTimer);
     this.pending.delete(k);
@@ -297,6 +308,39 @@ export class SlackTypingPlaceholderService {
     return 'posted';
   }
 
+  /**
+   * The conversation an agent still owes an answer in, on one Slack channel
+   * or DM: its pending (or timed-out) placeholder, newest first. An agent that
+   * answers with the `slack-post` skill instead of its reply skill names no
+   * thread; this is where that answer belongs.
+   *
+   * @param agentSession - The agent
+   * @param slackChannelId - Channel or DM it is posting to
+   * @returns The key of the owed reply, or null
+   */
+  findOwed(agentSession: string, slackChannelId: string): TypingKeyParts | null {
+    this.pruneExpired();
+    const candidates: Array<{ key: TypingKeyParts; at: number }> = [];
+    for (const [k, { placeholder }] of this.pending) {
+      if (placeholder.slackChannelId === slackChannelId && k.startsWith(`${agentSession}:`)) {
+        candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at: Number.MAX_SAFE_INTEGER });
+      }
+    }
+    for (const [k, { placeholder, at }] of this.expired) {
+      if (placeholder.slackChannelId === slackChannelId && k.startsWith(`${agentSession}:`)) {
+        candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at });
+      }
+    }
+    candidates.sort((a, b) => b.at - a.at);
+    return candidates[0]?.key ?? null;
+  }
+
+  /** Forget timed-out placeholders older than EXPIRED_KEEP_MS. */
+  private pruneExpired(): void {
+    const cutoff = Date.now() - SLACK_TYPING_CONSTANTS.EXPIRED_KEEP_MS;
+    for (const [k, v] of this.expired) if (v.at < cutoff) this.expired.delete(k);
+  }
+
   /** Number of placeholders still waiting for a reply (tests / diagnostics). */
   get pendingCount(): number {
     return this.pending.size;
@@ -307,6 +351,8 @@ export class SlackTypingPlaceholderService {
     if (!entry) return;
     this.pending.delete(k);
     const { placeholder } = entry;
+    this.pruneExpired();
+    this.expired.set(k, { placeholder, at: Date.now() });
     try {
       await this.deps.slack.updateMessage(
         placeholder.slackChannelId,

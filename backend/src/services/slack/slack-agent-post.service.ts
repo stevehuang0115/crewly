@@ -23,6 +23,7 @@
  * @module services/slack/slack-agent-post.service
  */
 
+import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 import type { Team } from '../../types/index.js';
 import type { SlackChannelInfo, SlackOutgoingMessage } from '../../types/slack.types.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -52,6 +53,8 @@ export interface SlackAgentPostServiceDeps {
   slack: AgentPostSlackApi;
   storage: AgentPostStorageApi;
   identities?: AgentPostIdentityApi | null;
+  /** Placeholders of replies agents owe — a post into such a conversation answers it */
+  typing?: Pick<SlackTypingPlaceholderService, 'findOwed' | 'resolve'> | null;
 }
 
 /** One post request. */
@@ -138,6 +141,36 @@ export class SlackAgentPostService {
 
     const { identity, botToken, postedAs } = await this.resolveIdentity(agentSession);
     const { channelId, kind } = await this.resolveTarget(target, botToken);
+
+    // An agent that owes an answer here (a "working on it…" placeholder is up,
+    // or timed out) and posts without naming a thread is answering: put it in
+    // that thread and take the placeholder down. Ella answered the owner's
+    // in-thread question with this skill and it landed top-level, next to a
+    // "⏱ still working" that never went away (2026-09-25).
+    const owed = !req.threadTs ? this.deps.typing?.findOwed(agentSession, channelId) ?? null : null;
+    if (owed) {
+      try {
+        await this.deps.typing!.resolve(owed, text, {
+          displayName: identity.username ?? agentSession,
+          ...(identity.botToken ? { botToken: identity.botToken } : {}),
+          ...(identity.username ? { username: identity.username } : {}),
+          ...(identity.iconEmoji ? { iconEmoji: identity.iconEmoji } : {}),
+          ...(identity.iconUrl ? { iconUrl: identity.iconUrl } : {}),
+        });
+      } catch (err) {
+        throw new SlackAgentPostError('slack_error', this.explainSendFailure(err, kind, postedAs));
+      }
+      this.logger.info('Agent posted to Slack', {
+        agentSession,
+        channelId,
+        kind,
+        postedAs,
+        threaded: !!owed.threadTs,
+        answeredOwedReply: true,
+        chars: text.length,
+      });
+      return { channelId, messageTs: '', kind, postedAs, identity: identity.username ?? agentSession };
+    }
 
     let messageTs: string;
     try {

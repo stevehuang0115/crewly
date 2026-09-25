@@ -120,8 +120,9 @@ describe('SlackTypingPlaceholderService', () => {
     await new Promise((r) => setImmediate(r));
     expect(updated[0]).toMatchObject({ ts: 'ts-1', text: '⏱ Ella is still working on this — the reply will follow.' });
     expect(svc.pendingCount).toBe(0);
-    // A reply after the timeout is posted fresh (the placeholder is gone).
-    expect(await svc.resolve(key, 'late', ella)).toBe('posted');
+    // A reply after the timeout still takes the "still working" note down
+    // (here: edited in place, as this fake Slack cannot delete).
+    expect(await svc.resolve(key, 'late', ella)).toBe('edited');
   });
 
   it('falls back to a fresh post when the edit fails, and skips placeholders while disconnected', async () => {
@@ -155,5 +156,31 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     expect(svc.pendingCount).toBe(0);
     expect(warnings).toHaveLength(1);
     expect(String(warnings[0]!['error'])).toContain('API error');
+  });
+
+  it('a reply that comes after the timeout still removes the "still working" placeholder (2026-09-25)', async () => {
+    const deleted: string[] = [];
+    const { slack, sent, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+    let fire: () => void = () => undefined;
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { fire = fn; return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined });
+    const threaded = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '100.1' };
+    await svc.begin(threaded, ella);
+    fire();
+    await new Promise((r) => setImmediate(r));
+    expect(updated.at(-1)?.text).toContain('still working');
+    expect(svc.findOwed('mk-ella', 'D1')).toEqual(threaded);
+    expect(await svc.resolve(threaded, 'done', ella)).toBe('replaced');
+    expect(sent.at(-1)).toMatchObject({ text: 'done', threadTs: '100.1' });
+    expect(deleted).toEqual(['ts-1']);
+    expect(svc.findOwed('mk-ella', 'D1')).toBeNull();
+  });
+
+  it('findOwed prefers a pending placeholder and only matches the agent and channel', async () => {
+    const { slack } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    await svc.begin({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '5.0' }, ella);
+    expect(svc.findOwed('mk-ella', 'D1')).toEqual({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '5.0' });
+    expect(svc.findOwed('mk-ella', 'D2')).toBeNull();
+    expect(svc.findOwed('mk-ellab', 'D1')).toBeNull();
   });
 });
