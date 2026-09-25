@@ -3,12 +3,23 @@
 #
 # Usage:
 #   curl -fsSL https://crewlyai.com/install.sh | bash
+#   curl -fsSL https://crewlyai.com/install.sh | bash -s -- --harness codex --yes
+#
+# Options (passed through to `crewly onboard`):
+#   --harness <id>   Harness for the orchestrator: claude (default), codex, gemini
+#   --yes            No prompts: defaults everywhere; prints the login link for your phone
+#   --web            Continue setup in the web app
+#   --cli            Continue setup in this terminal
 #
 # What it does:
 #   1. Detects OS (macOS / Linux only)
 #   2. Ensures Node.js >= 22 is available (offers nvm install if missing)
 #   3. Installs crewly globally via npm
-#   4. Runs `crewly onboard` to complete interactive setup
+#   4. Runs `crewly onboard` to complete setup (harness, login, skills, team)
+#
+# Only jq is needed besides Node.js (agent sessions use node-pty; no tmux).
+#
+# NOTE: web/public/install.sh (crewlyai.com) is a copy of this file; keep them in sync.
 #
 # Under `curl ... | bash` this script arrives on stdin, so nothing here may
 # read answers from stdin: prompts read from the terminal (/dev/tty). With no
@@ -16,6 +27,41 @@
 # run next, rather than "finishing" with nothing set up (#772).
 
 set -euo pipefail
+
+# ========================= Arguments =========================
+
+# Flags forwarded to `crewly onboard`.
+ONBOARD_ARGS=()
+AUTO_YES=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --harness)
+      if [ $# -lt 2 ]; then
+        echo "--harness needs a value: claude, codex or gemini" >&2
+        exit 2
+      fi
+      ONBOARD_ARGS+=("--harness" "$2")
+      shift 2
+      ;;
+    --harness=*)
+      ONBOARD_ARGS+=("--harness" "${1#--harness=}")
+      shift
+      ;;
+    -y|--yes)
+      ONBOARD_ARGS+=("--yes")
+      AUTO_YES=1
+      shift
+      ;;
+    --web|--cli)
+      ONBOARD_ARGS+=("$1")
+      shift
+      ;;
+    *)
+      echo "Unknown option: $1 (supported: --harness <id>, --yes, --web, --cli)" >&2
+      exit 2
+      ;;
+  esac
+done
 
 # ========================= Colors =========================
 
@@ -158,18 +204,24 @@ echo ""
 
 # The wizard must read answers from the terminal, not from stdin: under
 # `curl | bash` stdin is the rest of this script, every prompt got EOF and the
-# install exited 0 with nothing configured (#772).
-if [ -t 0 ]; then
+# install exited 0 with nothing configured (#772). `--yes` never prompts, so it
+# runs without a terminal (agents, CI, SSH without a tty).
+# ${ONBOARD_ARGS[@]+...} keeps `set -u` happy on bash 3.2 when no flags were given.
+if [ "$AUTO_YES" -eq 1 ]; then
+  echo -e "${BLUE}  Running setup with defaults (--yes)...${NC}"
+  echo ""
+  crewly onboard ${ONBOARD_ARGS[@]+"${ONBOARD_ARGS[@]}"} </dev/null
+elif [ -t 0 ]; then
   echo -e "${BLUE}  Launching setup wizard...${NC}"
   echo ""
-  crewly onboard
+  crewly onboard ${ONBOARD_ARGS[@]+"${ONBOARD_ARGS[@]}"}
 elif has_tty; then
   echo -e "${BLUE}  Launching setup wizard...${NC}"
   echo ""
-  crewly onboard </dev/tty
+  crewly onboard ${ONBOARD_ARGS[@]+"${ONBOARD_ARGS[@]}"} </dev/tty
 else
   echo -e "${RED}  ✗ Crewly is installed, but setup did not run: no terminal is available for the setup wizard.${NC}"
   echo -e "  Run the wizard from a terminal:            ${CYAN}crewly onboard${NC}"
-  echo -e "  Or set up with defaults, no prompts:       ${CYAN}crewly init --yes${NC}"
+  echo -e "  Or set up with defaults, no prompts:       ${CYAN}crewly onboard --yes${NC}"
   exit 1
 fi
