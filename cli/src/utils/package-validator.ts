@@ -38,7 +38,7 @@ export interface ValidationResult {
 /** The two accepted skill package layouts */
 export type SkillLayout = 'SKILL.md' | 'skill.json';
 
-/** Expected shape of skill.json */
+/** Skill manifest: SKILL.md frontmatter (current) or skill.json (legacy) */
 export interface SkillManifest {
   id: string;
   name: string;

@@ -123,7 +123,8 @@ export function generateChecksum(filePath: string): string {
  *
  * @example
  * ```ts
- * const manifest = JSON.parse(readFileSync('skill.json', 'utf-8'));
+ * const { manifest } = validatePackage('./my-skill'); // SKILL.md or skill.json
+ * if (!manifest) throw new Error('invalid skill');
  * const entry = generateRegistryEntry(manifest, './dist/my-skill-1.0.0.tar.gz', 'sha256:abc');
  * ```
  */
