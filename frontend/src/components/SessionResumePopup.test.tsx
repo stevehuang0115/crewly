@@ -31,7 +31,7 @@ vi.mock('../services/settings.service', () => ({
 /**
  * Helper to mock settings with autoResumeOnRestart value.
  * When false, the dialog is shown for manual action.
- * When true, teams are auto-resumed without showing the dialog.
+ * When true, the component does nothing (the backend restore owns it).
  */
 const mockSettingsWithAutoResume = (autoResume: boolean) => {
   vi.mocked(settingsService.getSettings).mockResolvedValue({
@@ -282,7 +282,7 @@ describe('SessionResumePopup', () => {
 
   // ============ Auto-Resume Tests ============
 
-  it('should auto-resume teams without showing dialog when autoResumeOnRestart is true', async () => {
+  it('should neither start teams nor dismiss when autoResumeOnRestart is true (backend restore owns it)', async () => {
     mockSettingsWithAutoResume(true);
     vi.mocked(apiService.getPreviousSessions).mockResolvedValue({
       sessions: [
@@ -290,19 +290,20 @@ describe('SessionResumePopup', () => {
         { name: 'agent-2', role: 'qa', teamId: 'team-2', runtimeType: 'claude-code', hasResumeId: true },
       ],
     });
-    vi.mocked(apiService.startTeam).mockResolvedValue(undefined);
-    vi.mocked(apiService.dismissPreviousSessions).mockResolvedValue(undefined);
 
     render(<SessionResumePopup />);
 
-    // Should NOT show the dialog
     await waitFor(() => {
-      expect(apiService.startTeam).toHaveBeenCalledTimes(2);
+      expect(settingsService.getSettings).toHaveBeenCalled();
+      expect(apiService.getPreviousSessions).toHaveBeenCalled();
     });
+    // Flush the effect's remaining microtasks before asserting absence.
+    await new Promise((r) => setTimeout(r, 0));
 
-    expect(apiService.startTeam).toHaveBeenCalledWith('team-1');
-    expect(apiService.startTeam).toHaveBeenCalledWith('team-2');
-    expect(apiService.dismissPreviousSessions).toHaveBeenCalled();
+    // A second launcher raced the backend restore (two kickoffs per agent),
+    // and dismissing mid-restore dropped not-yet-restored conversation ids.
+    expect(apiService.startTeam).not.toHaveBeenCalled();
+    expect(apiService.dismissPreviousSessions).not.toHaveBeenCalled();
     expect(screen.queryByText('Previous Sessions Detected')).not.toBeInTheDocument();
   });
 
@@ -324,23 +325,24 @@ describe('SessionResumePopup', () => {
     expect(apiService.startTeam).not.toHaveBeenCalled();
   });
 
-  it('should default to auto-resume when settings fetch fails', async () => {
+  it('should default to auto-resume (no start, no dialog) when settings fetch fails', async () => {
     vi.mocked(settingsService.getSettings).mockRejectedValue(new Error('Settings unavailable'));
     vi.mocked(apiService.getPreviousSessions).mockResolvedValue({
       sessions: [
         { name: 'agent-1', role: 'dev', teamId: 'team-1', runtimeType: 'claude-code', hasResumeId: true },
       ],
     });
-    vi.mocked(apiService.startTeam).mockResolvedValue(undefined);
-    vi.mocked(apiService.dismissPreviousSessions).mockResolvedValue(undefined);
 
     render(<SessionResumePopup />);
 
-    // Should auto-resume (default is true when settings unavailable)
     await waitFor(() => {
-      expect(apiService.startTeam).toHaveBeenCalledWith('team-1');
+      expect(apiService.getPreviousSessions).toHaveBeenCalled();
     });
+    await new Promise((r) => setTimeout(r, 0));
 
+    // Default is auto-resume, which the backend restore performs.
+    expect(apiService.startTeam).not.toHaveBeenCalled();
+    expect(apiService.dismissPreviousSessions).not.toHaveBeenCalled();
     expect(screen.queryByText('Previous Sessions Detected')).not.toBeInTheDocument();
   });
 });

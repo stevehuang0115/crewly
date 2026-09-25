@@ -1,13 +1,15 @@
 /**
  * Session Resume Popup Component
  *
- * Shown on app startup when previously running agents are detected.
- * Offers the user the choice to resume all teams or dismiss those sessions.
+ * Shown on app startup when previously running agents are detected and the
+ * `autoResumeOnRestart` setting is off. Offers the user the choice to resume
+ * all teams or dismiss those sessions. When the setting is on, the backend
+ * restores agents itself and this component renders nothing.
  *
  * @module components/SessionResumePopup
  */
 
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Play, Monitor } from 'lucide-react';
 import { Popup } from '@crewly/ui/Popup';
 import { Button } from '@crewly/ui/Button';
@@ -18,14 +20,15 @@ import type { PreviousSession } from '../types';
 
 /**
  * SessionResumePopup checks for previously running sessions on mount.
- * If found, displays a popup listing them with Resume All / Dismiss options.
+ * If found and auto-resume is off, displays a popup listing them with
+ * Resume All / Dismiss options. With auto-resume on it makes no start or
+ * dismiss calls: the backend restore is the only launcher.
  */
 export const SessionResumePopup: React.FC = () => {
   const [sessions, setSessions] = useState<PreviousSession[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [resumeError, setResumeError] = useState<string | null>(null);
-  const autoResumeTriggered = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -40,35 +43,19 @@ export const SessionResumePopup: React.FC = () => {
         const nonOrchestrator = result.sessions.filter(s => s.role !== 'orchestrator');
         if (cancelled || nonOrchestrator.length === 0) return;
 
-        setSessions(nonOrchestrator);
-
-        // If auto-resume is enabled, start teams automatically without
-        // showing the dialog. The setting defaults to true when missing.
+        // Auto-resume on: the backend restore (index.ts
+        // autoRestoreAgentSessionsIfEnabled) owns bringing agents back, gated
+        // by work in hand. Starting teams from here raced that restore — both
+        // launched the same session and each delivered its own kickoff into
+        // one resumed conversation (2026-09-25 startup-prompt loop). Dismissing
+        // is also wrong here: the restore runs one session every ~10 s, and
+        // dismiss forgets every not-yet-running session, dropping the
+        // conversation ids the restore still needs. The backend clears the
+        // state file itself when it finishes. So: do nothing.
         const autoResume = settings?.general?.autoResumeOnRestart ?? true;
-        if (autoResume && !autoResumeTriggered.current) {
-          autoResumeTriggered.current = true;
-          // Extract unique team IDs and start them
-          const teamIds = new Set<string>();
-          for (const s of nonOrchestrator) {
-            if (s.teamId && s.role !== 'orchestrator') {
-              teamIds.add(s.teamId);
-            }
-          }
-          for (const teamId of teamIds) {
-            try {
-              await apiService.startTeam(teamId);
-            } catch {
-              // Best-effort — failed teams can be started manually
-            }
-          }
-          try {
-            await apiService.dismissPreviousSessions();
-          } catch {
-            // Best-effort dismiss
-          }
-          return;
-        }
+        if (autoResume) return;
 
+        setSessions(nonOrchestrator);
         // Auto-resume disabled — show the dialog for manual action
         setIsOpen(true);
       } catch {
