@@ -4,7 +4,7 @@ This guide explains how to create, test, and submit new skills for the Crewly pl
 
 ## What is a Skill?
 
-A skill is a self-contained bash script with metadata that agents and orchestrators can invoke to perform specific operations. Skills communicate with the Crewly backend API and follow a standard three-file structure.
+A skill is a self-contained bash script with metadata that agents and orchestrators can invoke to perform specific operations. Skills communicate with the Crewly backend API and follow a standard two-file structure: `SKILL.md` (metadata + instructions) and `execute.sh`.
 
 ## Directory Structure
 
@@ -18,22 +18,23 @@ config/skills/
 │   │   └── lib.sh                # Delegates to ../../_common/lib.sh
 │   ├── core/                     # Core agent skills (built-in)
 │   │   └── {skill-name}/
-│   │       ├── execute.sh        # Implementation script
-│   │       ├── instructions.md   # Usage documentation
-│   │       └── skill.json        # Metadata and configuration
+│   │       ├── SKILL.md          # Metadata (YAML frontmatter) + usage documentation
+│   │       └── execute.sh        # Implementation script
 │   └── marketplace/              # Extended marketplace skills
 │       └── {skill-name}/
-│           ├── execute.sh
-│           ├── instructions.md
-│           └── skill.json
+│           ├── SKILL.md
+│           └── execute.sh
 └── orchestrator/
     ├── _common/
     │   └── lib.sh                # Delegates to ../../_common/lib.sh
     └── {skill-name}/
-        ├── execute.sh
-        ├── instructions.md
-        └── skill.json
+        ├── SKILL.md
+        └── execute.sh
 ```
+
+> **Legacy layout.** Older skills use `skill.json` (metadata) + `instructions.md`
+> (documentation) instead of `SKILL.md`. That layout still loads, and
+> `crewly publish` still accepts it, but new skills should use `SKILL.md`.
 
 ### Where to Place Your Skill
 
@@ -46,53 +47,71 @@ config/skills/
 ## Naming Conventions
 
 - **Directory name**: `kebab-case` (e.g., `report-status`, `send-message`)
-- **Skill ID**: `{scope}-{kebab-case-name}` (e.g., `agent-report-status`, `orc-send-message`)
+- **Skill ID**: the directory name. `SKILL.md` normally has no `id` field; an explicit `id:` in the frontmatter overrides the directory name
 - **Display name**: Title Case (e.g., `Report Status`, `Send Message`)
 
 ## Creating a New Skill
 
-Every skill requires exactly three files:
+Every skill requires two files: `SKILL.md` and `execute.sh`.
 
-### 1. `skill.json` — Metadata
+### 1. `SKILL.md` — Metadata and documentation
 
-```json
-{
-  "id": "agent-my-skill",
-  "name": "My Skill",
-  "description": "What it does. Use when [trigger conditions]. For X use other-skill instead.",
-  "category": "development",
-  "skillType": "claude-skill",
-  "promptFile": "instructions.md",
-  "execution": {
-    "type": "script",
-    "script": {
-      "file": "execute.sh",
-      "interpreter": "bash",
-      "timeoutMs": 15000
-    }
-  },
-  "assignableRoles": ["developer", "qa"],
-  "triggers": ["trigger phrase 1", "trigger phrase 2", "trigger phrase 3"],
-  "tags": ["tag1", "tag2"],
-  "version": "1.0.0"
-}
+`SKILL.md` is a YAML frontmatter block (the metadata) followed by the Markdown
+instructions agents read (see section 3 for what the body must contain).
+
+```markdown
+---
+name: My Skill
+description: "What it does. Use when [trigger conditions]. For X use other-skill instead."
+version: 1.0.0
+category: development
+skillType: claude-skill
+assignableRoles:
+  - developer
+  - qa
+triggers:
+  - trigger phrase 1
+  - trigger phrase 2
+  - trigger phrase 3
+tags:
+  - tag1
+  - tag2
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 15000
+---
+
+# My Skill
+
+One sentence describing what the skill does.
+...
 ```
 
-**Required fields:**
+**Frontmatter fields:**
 
 | Field | Description |
 |-------|-------------|
-| `id` | Unique identifier, prefixed with `agent-`, `orc-`, etc. |
 | `name` | Human-readable display name |
 | `description` | Must include: what it does + when to use + related skills |
+| `version` | Semantic version (`1.0.0`) |
 | `category` | One of: `management`, `communication`, `monitoring`, `memory`, `system`, `design`, `automation`, `development`, `task-management` |
 | `skillType` | `claude-skill` for bash scripts, `mcp` for MCP servers |
-| `promptFile` | Always `instructions.md` |
 | `execution` | Script configuration (file, interpreter, timeoutMs) |
 | `assignableRoles` | Array of roles that can use this skill |
 | `triggers` | 3-5 natural language phrases for auto-discovery |
 | `tags` | Searchable tags for marketplace |
-| `version` | Semantic version (`1.0.0`) |
+| `id` | Optional. Defaults to the directory name |
+
+`crewly publish` requires `name`, `description`, `version`, `category`, and non-empty
+`assignableRoles` and `tags`; `author`, `license` and `triggers` are recommended.
+
+**Legacy `skill.json` layout:** the same fields as JSON in `skill.json` (plus
+`"id"` and `"promptFile": "instructions.md"`), with the documentation in a separate
+`instructions.md`. Still accepted; if both `SKILL.md` and `skill.json` exist,
+`SKILL.md` wins field by field.
 
 **Timeout guidelines:**
 - Quick operations (status check, memory lookup): `15000` (15s)
@@ -149,7 +168,9 @@ api_call POST "/endpoint" "$BODY"
 - `CREWLY_API_URL` — Backend URL (default: `http://localhost:8787`)
 - `CREWLY_SESSION_NAME` — Current agent session name (sent as `X-Agent-Session` header)
 
-### 3. `instructions.md` — Documentation
+### 3. The `SKILL.md` body — Documentation
+
+Everything after the closing `---` of the frontmatter:
 
 ```markdown
 # My Skill
@@ -232,7 +253,7 @@ bash config/skills/agent/core/my-skill/execute.sh 2>&1
 
 ### 2. Validation checklist
 
-- [ ] `skill.json` is valid JSON (`jq . skill.json`)
+- [ ] `SKILL.md` starts with a valid YAML frontmatter block (`crewly publish <dir> --dry-run` checks it)
 - [ ] `execute.sh` is executable (`chmod +x execute.sh`)
 - [ ] Script exits cleanly on missing input
 - [ ] All required parameters are validated with `require_param`
@@ -260,7 +281,7 @@ shellcheck config/skills/agent/core/my-skill/execute.sh
 ## Submitting via Pull Request
 
 1. Create your skill in the appropriate directory
-2. Verify all three files are present and valid
+2. Verify `SKILL.md` and `execute.sh` are present and valid (`crewly publish <dir> --dry-run`)
 3. Run manual tests to confirm functionality
 4. Run `shellcheck` on your `execute.sh`
 5. Create a PR with a clear description:
@@ -275,10 +296,10 @@ feat: add {skill-name} skill for {agents|orchestrator}
 
 ### PR Checklist
 
-- [ ] Three files present: `execute.sh`, `instructions.md`, `skill.json`
-- [ ] `skill.json` has unique `id`, valid `category`, and 3+ `triggers`
+- [ ] `SKILL.md` and `execute.sh` present (or legacy `skill.json` + `instructions.md` + `execute.sh`)
+- [ ] Frontmatter has a valid `category` and 3+ `triggers`; the directory name is a unique kebab-case id
 - [ ] `execute.sh` sources `_common/lib.sh` and uses `set -euo pipefail`
-- [ ] `instructions.md` has Usage, Parameters, Examples, Error Handling sections
+- [ ] The `SKILL.md` body has Usage, Parameters, Examples, Error Handling sections
 - [ ] `execute.sh` is executable (`chmod +x`)
 - [ ] ShellCheck passes with no errors
 - [ ] Manual testing confirms success and error paths work
