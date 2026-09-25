@@ -1,0 +1,143 @@
+/*
+ * pdf-tools default stylesheet (Crewly, MIT).
+ *
+ * Clean A4 document typography with CJK-first font stacks: PingFang /
+ * Hiragino on macOS, Noto Sans/Serif CJK (fonts-noto-cjk) on Linux,
+ * Microsoft YaHei on Windows. Used for Markdown input; HTML input keeps its
+ * own styling unless `addDefaultStyle` is set.
+ *
+ * Page helpers: <div class="page-break"></div> starts a new page;
+ * class="keep-together" avoids splitting a block across pages.
+ */
+
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm 16mm;
+}
+
+:root {
+  --text: #1f2328;
+  --muted: #57606a;
+  --accent: #2f6feb;
+  --rule: #d8dee4;
+  --code-bg: #f3f4f6;
+  --table-head: #f0f3f6;
+  --zebra: #fafbfc;
+  --sans: "PingFang SC", "Hiragino Sans GB", "Noto Sans CJK SC", "Noto Sans SC", "Source Han Sans SC",
+    "Microsoft YaHei", "WenQuanYi Micro Hei", -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --serif: "Songti SC", "Noto Serif CJK SC", "Noto Serif SC", "Source Han Serif SC", Georgia, serif;
+  --mono: "SF Mono", Menlo, "JetBrains Mono", "Noto Sans Mono CJK SC", Consolas, monospace;
+}
+
+html {
+  -webkit-print-color-adjust: exact;
+  print-color-adjust: exact;
+}
+
+body {
+  font-family: var(--sans);
+  font-size: 10.5pt;
+  line-height: 1.7;
+  color: var(--text);
+  margin: 0;
+  text-align: justify;
+  word-break: normal;
+  overflow-wrap: anywhere;
+}
+
+main.doc {
+  max-width: 100%;
+}
+
+h1, h2, h3, h4, h5 {
+  font-family: var(--sans);
+  font-weight: 650;
+  line-height: 1.35;
+  color: #111;
+  break-after: avoid;
+  page-break-after: avoid;
+}
+
+h1 {
+  font-size: 20pt;
+  margin: 0 0 10pt;
+  padding-bottom: 6pt;
+  border-bottom: 2px solid var(--text);
+}
+
+h2 {
+  font-size: 14.5pt;
+  margin: 18pt 0 8pt;
+  padding-bottom: 3pt;
+  border-bottom: 1px solid var(--rule);
+}
+
+h3 { font-size: 12pt; margin: 14pt 0 6pt; }
+h4 { font-size: 10.5pt; margin: 12pt 0 4pt; color: var(--muted); }
+
+p { margin: 0 0 8pt; }
+
+a { color: var(--accent); text-decoration: none; }
+
+ul, ol { margin: 0 0 8pt; padding-left: 18pt; }
+li { margin: 2pt 0; }
+
+blockquote {
+  margin: 10pt 0;
+  padding: 6pt 12pt;
+  border-left: 3px solid var(--accent);
+  background: #f5f8ff;
+  color: #333;
+}
+
+blockquote > :last-child { margin-bottom: 0; }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.9em;
+  background: var(--code-bg);
+  padding: 1pt 4pt;
+  border-radius: 3px;
+}
+
+pre {
+  font-family: var(--mono);
+  font-size: 8.5pt;
+  line-height: 1.5;
+  background: var(--code-bg);
+  padding: 8pt 10pt;
+  border-radius: 4px;
+  white-space: pre-wrap;
+  break-inside: avoid;
+}
+
+pre code { background: none; padding: 0; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 10pt 0;
+  font-size: 9.5pt;
+  break-inside: auto;
+}
+
+th, td {
+  border: 1px solid var(--rule);
+  padding: 4pt 7pt;
+  text-align: left;
+  vertical-align: top;
+}
+
+th { background: var(--table-head); font-weight: 600; }
+tr:nth-child(even) td { background: var(--zebra); }
+thead { display: table-header-group; }
+tr { break-inside: avoid; }
+
+img { max-width: 100%; }
+
+hr { border: none; border-top: 1px solid var(--rule); margin: 16pt 0; }
+
+.page-break { break-after: page; page-break-after: always; }
+.keep-together { break-inside: avoid; page-break-inside: avoid; }
+.muted { color: var(--muted); }
+.serif { font-family: var(--serif); }

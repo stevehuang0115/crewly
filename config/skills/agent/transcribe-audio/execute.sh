@@ -15,6 +15,10 @@
 #   bash execute.sh '{"audioFile":"/x.wav","engine":"openai"}'
 #
 # Requires: ffmpeg, jq, curl. Local engine also needs whisper-cli + a model file.
+# All of it is declared in skill.json's `setup` block. When something is
+# missing the error JSON carries `"needsSetup": true, "skill": "transcribe-audio"`
+# so an agent can go straight to `install-skill --id transcribe-audio`
+# instead of telling the user "whisper.cpp is not installed".
 
 set -euo pipefail
 
@@ -25,14 +29,29 @@ WHISPER_CACHE_DIR="${HOME}/.cache/whisper-models"
 OPENAI_TRANSCRIBE_URL="https://api.openai.com/v1/audio/transcriptions"
 OPENAI_MODEL="whisper-1"
 SETTINGS_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}/api/settings"
+SKILL_ID="transcribe-audio"
+# Crewly-managed binaries (the Linux whisper.cpp install lands here).
+CREWLY_BIN_DIR="${CREWLY_HOME:-${HOME}/.crewly}/bin"
 
 err_json() { printf '{"success":false,"error":%s}\n' "$(printf '%s' "$1" | jq -Rsa .)"; exit 1; }
+
+# needs_setup_json <message> <missing...> — a failure an install can fix.
+# Works without jq (jq itself may be the missing piece).
+needs_setup_json() {
+  local msg="$1"; shift
+  local missing="" item esc
+  for item in "$@"; do missing="${missing:+${missing},}\"${item}\""; done
+  esc=$(printf '%s' "$msg" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr '\n' ' ')
+  printf '{"success":false,"error":"%s","needsSetup":true,"skill":"%s","missing":[%s],"hint":"Run install-skill --id %s (it installs the missing pieces in the background and messages you when done), then retry."}\n' \
+    "$esc" "$SKILL_ID" "$missing" "$SKILL_ID"
+  exit 1
+}
 
 # ── Input parsing ───────────────────────────────────────────────────────────────
 INPUT="${1:-}"
 [ -z "$INPUT" ] && err_json "Usage: execute.sh '{\"audioFile\":\"/path/to/audio.m4a\"}'"
 
-command -v jq >/dev/null 2>&1 || { echo '{"success":false,"error":"jq is required but not installed (brew install jq)"}'; exit 1; }
+command -v jq >/dev/null 2>&1 || needs_setup_json "jq is required but not installed" jq
 
 AUDIO_FILE=$(printf '%s' "$INPUT" | jq -r '.audioFile // empty')
 OUTPUT_FILE=$(printf '%s' "$INPUT" | jq -r '.outputFile // empty')
@@ -43,14 +62,18 @@ ENGINE=$(printf '%s' "$INPUT" | jq -r '.engine // "auto"')
 [ -f "$AUDIO_FILE" ] || err_json "audioFile not found: ${AUDIO_FILE}"
 case "$ENGINE" in auto|local|openai) ;; *) err_json "engine must be one of: auto, local, openai (got: ${ENGINE})";; esac
 
-command -v ffmpeg >/dev/null 2>&1 || err_json "ffmpeg is required but not installed (brew install ffmpeg)"
+command -v ffmpeg >/dev/null 2>&1 || needs_setup_json "ffmpeg is required but not installed" ffmpeg
 
 # ── Local whisper.cpp detection (lifted from whisperModule.ts) ───────────────────
 resolve_whisper_binary() {
   if [ -n "${FLOPOST_WHISPER_BIN:-}" ] && [ -x "${FLOPOST_WHISPER_BIN}" ]; then echo "${FLOPOST_WHISPER_BIN}"; return; fi
   if [ -x "${FLOPOST_WHISPER_DIR}/whisper-cli" ]; then echo "${FLOPOST_WHISPER_DIR}/whisper-cli"; return; fi
+  if [ -x "${CREWLY_BIN_DIR}/whisper-cli" ]; then echo "${CREWLY_BIN_DIR}/whisper-cli"; return; fi
   if command -v whisper-cli >/dev/null 2>&1; then command -v whisper-cli; return; fi
-  for p in /opt/homebrew/bin/whisper-cli /usr/local/bin/whisper-cli; do
+  # Homebrew locations (a backend started by launchd may lack them on PATH).
+  # TRANSCRIBE_WHISPER_BIN_CANDIDATES overrides the list (tests).
+  local candidates="${TRANSCRIBE_WHISPER_BIN_CANDIDATES-/opt/homebrew/bin/whisper-cli /usr/local/bin/whisper-cli}"
+  for p in $candidates; do
     [ -x "$p" ] && { echo "$p"; return; }
   done
   echo ""
@@ -61,11 +84,10 @@ resolve_whisper_model() {
   if [ -f "${WHISPER_CACHE_DIR}/${MODEL_FILENAME}" ]; then echo "${WHISPER_CACHE_DIR}/${MODEL_FILENAME}"; return; fi
   echo ""
 }
-binary_hint() {
-  case "$(uname -s)" in
-    Darwin) echo "brew install whisper-cpp" ;;
-    *) echo "Build whisper.cpp from https://github.com/ggerganov/whisper.cpp and put whisper-cli on PATH" ;;
-  esac
+# Names of the local-engine pieces that are missing (for needsSetup JSON).
+missing_local_parts() {
+  [ -n "$WHISPER_BIN" ] || printf '%s\n' whisper-cli
+  [ -n "$WHISPER_MODEL" ] || printf '%s\n' whisper-model
 }
 
 WHISPER_BIN="$(resolve_whisper_binary)"
@@ -82,7 +104,10 @@ resolve_openai_key() {
 # ── Choose engine ────────────────────────────────────────────────────────────────
 CHOSEN=""
 if [ "$ENGINE" = "local" ]; then
-  [ "$LOCAL_AVAILABLE" = true ] || err_json "engine=local requested but whisper.cpp is not installed. Binary: $( [ -n "$WHISPER_BIN" ] && echo found || echo "missing ($(binary_hint))" ); Model: $( [ -n "$WHISPER_MODEL" ] && echo found || echo "missing ${MODEL_FILENAME} (put it in ${FLOPOST_WHISPER_DIR}/ or set FLOPOST_WHISPER_MODEL)" )."
+  if [ "$LOCAL_AVAILABLE" != true ]; then
+    # shellcheck disable=SC2046 # word-splitting the list of missing parts is intended
+    needs_setup_json "engine=local requested but the local whisper.cpp engine is not set up (binary: $( [ -n "$WHISPER_BIN" ] && echo found || echo missing ); model ${MODEL_FILENAME}: $( [ -n "$WHISPER_MODEL" ] && echo found || echo missing ))" $(missing_local_parts)
+  fi
   CHOSEN="local"
 elif [ "$ENGINE" = "openai" ]; then
   CHOSEN="openai"
@@ -138,7 +163,7 @@ run_local() {
 # ── Engine: OpenAI Whisper API ───────────────────────────────────────────────────
 run_openai() {
   local key; key="$(resolve_openai_key)"
-  [ -z "$key" ] && { fail "OpenAI engine selected but no OpenAI API key found. Set OPENAI_API_KEY (Crewly secrets) or configure Settings > API Keys."; return 1; }
+  [ -z "$key" ] && { fail "OpenAI engine selected but no OpenAI API key found. Set OPENAI_API_KEY (Crewly secrets) or configure Settings > API Keys."; : > "${WORK}/no-openai-key"; return 1; }
   echo "{\"status\":\"transcribing\",\"engine\":\"openai-whisper-1\",\"message\":\"Uploading to OpenAI Whisper API...\"}" >&2
   local resp="${WORK}/openai.json"
   local lang_args=(); [ "$LANGUAGE" != "auto" ] && lang_args=(-F "language=${LANGUAGE}")
@@ -179,7 +204,15 @@ if [ "$CHOSEN" = "local" ]; then
     err_json "$(cat "${WORK}/engine.err" 2>/dev/null)"
   fi
 else
-  run_openai || err_json "$(cat "${WORK}/engine.err" 2>/dev/null)"
+  if ! run_openai; then
+    # auto mode with no local engine and no OpenAI key: installing the local
+    # engine fixes it, so say so in a way an agent can act on.
+    if [ "$ENGINE" = "auto" ] && [ -f "${WORK}/no-openai-key" ]; then
+      # shellcheck disable=SC2046
+      needs_setup_json "No transcription engine is available: the local whisper.cpp engine is not set up and there is no OpenAI API key" $(missing_local_parts)
+    fi
+    err_json "$(cat "${WORK}/engine.err" 2>/dev/null)"
+  fi
 fi
 
 [ -f "$RESULT_FILE" ] || err_json "Transcription produced no result"

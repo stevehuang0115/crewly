@@ -1,19 +1,34 @@
 ---
 name: transcribe-audio
-description: Transcribe a local audio (or video) file to text with timestamps using Whisper. Defaults to local whisper.cpp (free, offline, word/segment-level timestamps) and automatically falls back to the OpenAI Whisper API (whisper-1) when the local engine is not installed. Any agent can call it for meetings, podcasts, voice notes, interviews, or video audio tracks.
-category: content
+description: Transcribe a local audio (or video) file — Slack voice messages / audio clips, meetings, podcasts, interviews — to text with timestamps using Whisper. Defaults to local whisper.cpp (free, offline) and falls back to the OpenAI Whisper API (whisper-1) when the local engine is not installed. When a dependency is missing it returns `needsSetup:true` — run `install-skill --id transcribe-audio` instead of telling the user it cannot be done.
+category: content-creation
 assignableRoles:
   - "*"
-version: "1.0.0"
+version: "1.1.0"
+author: Crewly Team
 tags:
   - audio
+  - voice
+  - voice-message
+  - speech-to-text
   - transcribe
   - transcription
   - whisper
   - whisper.cpp
   - openai
-  - speech-to-text
   - timestamps
+  - m4a
+  - mp3
+  - video
+  - 语音
+  - 录音
+  - 转文字
+triggers:
+  - transcribe audio
+  - transcribe voice message
+  - speech to text
+  - what does this recording say
+  - audio clip
 ---
 
 # Transcribe Audio (Whisper)
@@ -91,10 +106,32 @@ downstream consumers have a stable shape).
 
 ## Dependencies & Setup
 
+**Automatic:** everything below is declared in `skill.json` → `setup`. Run
+`install-skill --id transcribe-audio` (agents) or `crewly skills setup transcribe-audio`
+(terminal) and Crewly installs what is missing — ffmpeg, whisper.cpp and the
+547 MB model (sha256-verified) — and reports "already satisfied" for the rest.
+On Linux, whisper.cpp comes from the official prebuilt Ubuntu release binaries
+(`install-whisper-cpp.sh`, pinned + sha256-checked) with a cmake source build as
+the fallback; it lands in `~/.crewly/bin/whisper-cli`.
+
+**When something is missing** the skill fails with machine-readable JSON:
+
+```json
+{"success":false,"error":"ffmpeg is required but not installed","needsSetup":true,
+ "skill":"transcribe-audio","missing":["ffmpeg"],"hint":"Run install-skill --id transcribe-audio …"}
+```
+
+On `needsSetup:true`, tell the user in one line that you are installing the
+transcription skill (a few minutes), run `install-skill --id transcribe-audio`,
+and continue when the `[SKILL INSTALLED]` message arrives. Never just reply
+"whisper.cpp is not installed".
+
+Manual details:
+
 - **`ffmpeg`** — required for both engines (audio is normalized to 16 kHz mono WAV).
   Install: `brew install ffmpeg`.
 - **Local engine (`whisper.cpp`)** — needs the `whisper-cli` binary and a model file:
-  - Binary: `brew install whisper-cpp` (provides `whisper-cli`). Override with `FLOPOST_WHISPER_BIN`.
+  - Binary: `brew install whisper-cpp` (provides `whisper-cli`); on Linux `~/.crewly/bin/whisper-cli`. Override with `FLOPOST_WHISPER_BIN`.
   - Model: `ggml-large-v3-turbo-q5_0.bin` in `~/.flopost/whisper/` or `~/.cache/whisper-models/`. Override with `FLOPOST_WHISPER_MODEL`.
   - If the binary or model is missing, the skill falls back to OpenAI (or reports a clear hint when `engine:"local"` is forced).
 - **OpenAI engine** — needs an OpenAI API key. Resolution order:

@@ -2,21 +2,82 @@
   "id": "transcribe-audio",
   "name": "transcribe-audio",
   "displayName": "Transcribe Audio (Whisper)",
-  "description": "Transcribe a local audio (or video) file to text with timestamps using Whisper. Defaults to local whisper.cpp (free/offline/word-level timestamps) and falls back to the OpenAI Whisper API (whisper-1) when the local engine is unavailable.",
-  "category": "content",
+  "description": "Transcribe a local audio or video file (voice messages, Slack audio clips, meetings, podcasts) to text with timestamps using Whisper. Defaults to local whisper.cpp (free/offline) and falls back to the OpenAI Whisper API (whisper-1) when the local engine is unavailable. Declares its own setup: ffmpeg, whisper.cpp and the large-v3-turbo model.",
+  "category": "content-creation",
   "assignableRoles": ["*"],
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Crewly Team",
+  "license": "MIT",
   "tags": [
     "audio",
+    "voice",
+    "voice-message",
+    "speech-to-text",
     "transcribe",
     "transcription",
     "whisper",
     "whisper.cpp",
     "openai",
-    "speech-to-text",
-    "timestamps"
+    "timestamps",
+    "m4a",
+    "mp3",
+    "video",
+    "语音",
+    "录音",
+    "转文字"
+  ],
+  "triggers": [
+    "transcribe audio",
+    "transcribe voice message",
+    "speech to text",
+    "what does this recording say",
+    "audio clip"
   ],
   "requires": [],
-  "optionalSecrets": ["OPENAI_API_KEY"]
+  "optionalSecrets": ["OPENAI_API_KEY"],
+  "setup": {
+    "estimatedMinutes": 6,
+    "steps": [
+      {
+        "id": "jq",
+        "type": "command",
+        "description": "jq — parses the skill's JSON input and output",
+        "check": { "commands": ["jq"] },
+        "install": { "darwin": { "brew": ["jq"] }, "debian": { "apt": ["jq"] } },
+        "manualHint": "Install jq with your package manager."
+      },
+      {
+        "id": "ffmpeg",
+        "type": "command",
+        "description": "ffmpeg — decodes audio/video into 16 kHz mono WAV",
+        "check": { "commands": ["ffmpeg"] },
+        "install": { "darwin": { "brew": ["ffmpeg"] }, "debian": { "apt": ["ffmpeg"] } },
+        "manualHint": "Install ffmpeg with your package manager and put it on PATH."
+      },
+      {
+        "id": "whisper-cli",
+        "type": "command",
+        "description": "whisper.cpp — the local, offline speech-to-text engine",
+        "check": {
+          "commands": ["whisper-cli"],
+          "paths": ["~/.flopost/whisper/whisper-cli", "$CREWLY_HOME/bin/whisper-cli"]
+        },
+        "install": {
+          "darwin": { "brew": ["whisper-cpp"] },
+          "linux": { "script": "install-whisper-cpp.sh" }
+        },
+        "manualHint": "Build whisper.cpp from https://github.com/ggml-org/whisper.cpp and put whisper-cli on PATH."
+      },
+      {
+        "id": "whisper-model",
+        "type": "file",
+        "description": "Whisper large-v3-turbo model (q5_0, 547 MB)",
+        "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+        "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+        "sizeBytes": 574041195,
+        "dest": "~/.cache/whisper-models/ggml-large-v3-turbo-q5_0.bin",
+        "alternatives": ["~/.flopost/whisper/ggml-large-v3-turbo-q5_0.bin"]
+      }
+    ]
+  }
 }

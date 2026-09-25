@@ -1,0 +1,103 @@
+{
+  "id": "pdf-tools",
+  "name": "pdf-tools",
+  "displayName": "PDF Tools (make + read PDFs)",
+  "description": "Make polished PDFs from Markdown or styled HTML (headless Chrome preferred, WeasyPrint fallback, clean CJK-ready default stylesheet), merge several parts into one PDF, and read PDFs a user sends (text extraction with pypdf / pdftotext). Declares its own setup: Python venv with pypdf, markdown and weasyprint, plus optional Chrome and CJK fonts.",
+  "category": "content-creation",
+  "assignableRoles": ["*"],
+  "version": "1.0.0",
+  "author": "Crewly Team",
+  "license": "MIT",
+  "tags": [
+    "pdf",
+    "document",
+    "report",
+    "markdown",
+    "html",
+    "chrome",
+    "weasyprint",
+    "merge",
+    "read-pdf",
+    "extract-text",
+    "pypdf",
+    "cjk",
+    "中文",
+    "文档"
+  ],
+  "triggers": [
+    "make a pdf",
+    "generate pdf",
+    "markdown to pdf",
+    "html to pdf",
+    "merge pdfs",
+    "read this pdf",
+    "extract text from pdf"
+  ],
+  "execution": {
+    "type": "script",
+    "script": { "file": "execute.sh", "interpreter": "bash", "timeoutMs": 300000 }
+  },
+  "setup": {
+    "estimatedMinutes": 3,
+    "steps": [
+      {
+        "id": "jq",
+        "type": "command",
+        "description": "jq — parses the skill's JSON input and output",
+        "check": { "commands": ["jq"] },
+        "install": { "darwin": { "brew": ["jq"] }, "debian": { "apt": ["jq"] } }
+      },
+      {
+        "id": "python3",
+        "type": "command",
+        "description": "Python 3 with venv support",
+        "check": { "shell": "python3 -c 'import venv, ensurepip' >/dev/null 2>&1" },
+        "install": { "darwin": { "brew": ["python"] }, "debian": { "apt": ["python3", "python3-venv"] } },
+        "manualHint": "Install Python 3 (with the venv module) and put python3 on PATH."
+      },
+      {
+        "id": "python-packages",
+        "type": "python",
+        "description": "pypdf (merge/read), markdown and weasyprint in ~/.crewly/venv/pdf-tools",
+        "venv": "pdf-tools",
+        "packages": ["pypdf>=4", "markdown>=3.5", "weasyprint>=60"],
+        "imports": ["pypdf", "markdown"]
+      },
+      {
+        "id": "weasyprint-libs",
+        "type": "command",
+        "optional": true,
+        "description": "Pango for WeasyPrint (the fallback engine when there is no Chrome)",
+        "check": { "shell": "\"$CREWLY_HOME/venv/pdf-tools/bin/python3\" -c 'import weasyprint' >/dev/null 2>&1" },
+        "install": {
+          "darwin": { "brew": ["pango"] },
+          "debian": { "apt": ["libpango-1.0-0", "libpangoft2-1.0-0", "libharfbuzz-subset0"] }
+        }
+      },
+      {
+        "id": "chrome",
+        "type": "command",
+        "optional": true,
+        "description": "Chrome/Chromium — the preferred engine (headless print-to-pdf)",
+        "check": {
+          "commands": ["google-chrome", "google-chrome-stable", "chromium", "chromium-browser"],
+          "paths": [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            "/Applications/Chromium.app/Contents/MacOS/Chromium"
+          ]
+        },
+        "install": { "debian": { "apt": ["chromium"] } },
+        "manualHint": "Install Google Chrome; until then PDFs are rendered with WeasyPrint."
+      },
+      {
+        "id": "cjk-fonts",
+        "type": "command",
+        "optional": true,
+        "description": "Chinese/Japanese/Korean fonts (Noto CJK) so CJK text is not blank boxes",
+        "check": { "shell": "[ \"$(uname -s)\" = Darwin ] || fc-list :lang=zh 2>/dev/null | grep -q ." },
+        "install": { "debian": { "apt": ["fonts-noto-cjk"] } }
+      }
+    ]
+  }
+}
