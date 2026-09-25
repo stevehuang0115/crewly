@@ -153,18 +153,17 @@ describe('RuntimeAdapter', () => {
 		});
 
 		describe('start', () => {
-			it('creates session, sets env, runs init script, and post-initializes', async () => {
+			it('creates the session with env at spawn, runs init script, and post-initializes', async () => {
 				await adapter.start(testConfig);
 
+				// env goes into the spawn environment; nothing is typed as `export`
+				// (a typed export echoes the value — API keys included — into the PTY)
 				expect(mockHelper.createSession).toHaveBeenCalledWith(
 					'test-agent',
 					'/test/project',
+					{ env: { CREWLY_SESSION_NAME: 'test-agent' } },
 				);
-				expect(mockHelper.setEnvironmentVariable).toHaveBeenCalledWith(
-					'test-agent',
-					'CREWLY_SESSION_NAME',
-					'test-agent',
-				);
+				expect(mockHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 				expect(mockRuntimeService.executeRuntimeInitScript).toHaveBeenCalledWith(
 					'test-agent',
 					'/test/project',
