@@ -871,6 +871,20 @@ describe('LiveReconcilerDataProvider', () => {
 
       expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-1', 'reconciler_requeue');
     });
+
+    it('never re-queues an explicitly blocked WorkItem (the agent\'s /block stands)', async () => {
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'explicit' });
+      await provider.requeueWorkItem('wi-1');
+
+      expect(mockPool.releaseBack).not.toHaveBeenCalled();
+    });
+
+    it('still re-queues a system-blocked WorkItem (agent back online)', async () => {
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked' });
+      await provider.requeueWorkItem('wi-1');
+
+      expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-1', 'reconciler_requeue');
+    });
   });
 
   // -----------------------------------------------------------------------

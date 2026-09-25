@@ -681,7 +681,12 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Marks a WorkItem as blocked.
+ * Marks a running WorkItem as explicitly blocked.
+ *
+ * The claim is released (freeing the agent's claim slot) and the item stays
+ * `blocked` — never re-queued or re-dispatched by the reconciler — until it
+ * is unblocked via `POST /api/task-pool/release/:workItemId`, which puts it
+ * back to `queued` for the same target.
  *
  * Request body:
  * ```json
@@ -705,7 +710,9 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    await getService().updateItemStatus(workItemId, 'blocked');
+    // Explicit block: releases the claim and stays blocked until unblocked
+    // (POST /task-pool/release/:id). The reconciler no longer re-queues it.
+    await getService().blockItem(workItemId, { agentId, reason });
 
     // V3.1: Project task blocked
     const projection = getProjection();

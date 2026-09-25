@@ -334,6 +334,34 @@ export const SLA_TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> =
  * They unify what v1 had as separate concepts: delegations, scheduled messages,
  * event subscriptions, cron runs, and checks.
  */
+/**
+ * Sources of a `blocked` status that change how the item is recovered.
+ * See {@link WorkItem.blockSource}.
+ */
+export const WORK_ITEM_BLOCK_SOURCES = {
+  /** Blocked through the block API by the agent / a lead: stays blocked until unblocked. */
+  EXPLICIT: 'explicit',
+} as const;
+
+/** A value of {@link WORK_ITEM_BLOCK_SOURCES}. */
+export type WorkItemBlockSource = (typeof WORK_ITEM_BLOCK_SOURCES)[keyof typeof WORK_ITEM_BLOCK_SOURCES];
+
+/**
+ * Whether a WorkItem is blocked on purpose (block API) rather than parked by
+ * the system. Such an item is never re-queued or re-dispatched automatically.
+ *
+ * @param wi - WorkItem (status + blockSource)
+ * @returns True for a `blocked` item whose block was explicit
+ *
+ * @example
+ * ```typescript
+ * if (isExplicitlyBlocked(wi)) continue; // reconciler: leave it alone
+ * ```
+ */
+export function isExplicitlyBlocked(wi: Pick<WorkItem, 'status' | 'blockSource'>): boolean {
+  return wi.status === 'blocked' && wi.blockSource === WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
+}
+
 export interface WorkItem {
   /** UUID v4 */
   id: string;
@@ -407,6 +435,20 @@ export interface WorkItem {
    * TaskPoolService.blockItem (explicit worker block).
    */
   blockedReason?: string;
+  /**
+   * Who parked the item in `blocked`, when it matters for recovery.
+   *
+   * - `'explicit'`: an agent (or a lead on its behalf) blocked the item
+   *   through the block API, e.g. "waiting on the owner". The claim is
+   *   released on block, the item is terminal-until-unblocked, and the
+   *   reconciler never re-queues it. Only an explicit unblock (a release /
+   *   blocked→queued transition) returns it to the queue.
+   * - absent: a system block (the reconciler parked it because the agent went
+   *   inactive, or it waits on dependencies); the reconciler recovers those.
+   *
+   * Cleared whenever the item leaves `blocked`.
+   */
+  blockSource?: WorkItemBlockSource;
   /**
    * Number of FAILED attempts so far.
    *

@@ -33,6 +33,7 @@ import {
 import {
   DISPOSITION_REQUIRED_STATUSES,
   isWorkItemDisposed,
+  isExplicitlyBlocked,
 } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -727,6 +728,10 @@ export function detectRecoverableWorkItems(
 
   for (const wi of workItems) {
     if (wi.status !== 'blocked') continue;
+    // An explicit block (the agent's /block) is not an outage to recover
+    // from: the agent is active *because* it just blocked. Re-queuing it
+    // here re-dispatched the item every few minutes (2026-09-25, WI 92327d6d).
+    if (isExplicitlyBlocked(wi)) continue;
     if (wi.retryCount >= wi.maxRetries) continue;
 
     // If the agent is back online, re-queue
@@ -1506,6 +1511,8 @@ export function detectDependencyResolvedWorkItems(
 
   for (const wi of workItems) {
     if (wi.status !== 'blocked') continue;
+    // An explicit block waits for an explicit unblock, not for dependencies.
+    if (isExplicitlyBlocked(wi)) continue;
 
     // Check if this WorkItem has dependency tracking
     const dependsOn = (wi as any).dependsOn as string[] | undefined;

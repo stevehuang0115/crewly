@@ -20,6 +20,7 @@ import type {
   ReconcileCorrection,
   WakeAction,
 } from '../../types/v2/index.js';
+import { isExplicitlyBlocked } from '../../types/v2/work-item.types.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { ClaimService } from '../task-pool/claim.service.js';
 import { PoolStorage } from '../task-pool/pool-storage.js';
@@ -636,6 +637,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   async requeueWorkItem(workItemId: string): Promise<void> {
     try {
       const pool = TaskPoolService.getInstance();
+      // Defence in depth: the rules already skip explicit blocks, but the
+      // reconciler must never be the one to undo an agent's /block.
+      const current = await pool.findWorkItem(workItemId);
+      if (current && isExplicitlyBlocked(current)) {
+        this.logger.info('Not re-queuing an explicitly blocked work item (stays blocked until unblocked)', { workItemId });
+        return;
+      }
       await pool.releaseBack(workItemId, 'reconciler_requeue');
       this.logger.info('Re-queued work item', { workItemId });
     } catch (error) {

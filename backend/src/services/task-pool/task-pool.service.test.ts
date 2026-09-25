@@ -11,7 +11,13 @@ import {
   createWorkItem,
   LAST_REQUEUED_AT_METADATA_KEY,
   getWorkItemDisposition,
+  WORK_ITEM_BLOCK_SOURCES,
+  TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
+import { ReconcilerService } from '../reconciler/reconciler.service.js';
+import type { ReconcilerDataProvider } from '../reconciler/reconciler.service.js';
+import type { AgentHealth } from '../reconciler/reconcile-rules.js';
+import type { WakeAction, WorkItemStatus } from '../../types/v2/index.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
@@ -3448,6 +3454,146 @@ describe('TaskPoolService', () => {
       const after = await service.findWorkItem(wi.id);
       expect(after?.blockedReason).toBeUndefined();
       expect(after?.cancelReason).toBeUndefined();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // 2026-09-25 (WI 92327d6d): an explicitly blocked WorkItem stays blocked
+  // -----------------------------------------------------------------------
+
+  describe('explicit block stays blocked across reconciler ticks', () => {
+    const AGENT = 'crewly-team-sam-1';
+
+    /**
+     * A reconciler provider over the REAL pool, shaped like the production
+     * ReconcilerDataProvider: `requeueWorkItem` is a plain
+     * `releaseBack(…, 'reconciler_requeue')` with no guard, so these tests
+     * exercise the rules themselves.
+     */
+    function makeProvider(health: Map<string, AgentHealth>): ReconcilerDataProvider & { wakes: WakeAction[] } {
+      const wakes: WakeAction[] = [];
+      return {
+        wakes,
+        getActiveWorkItems: async () =>
+          (await service.getAllItems()).filter((wi) => !TERMINAL_WORK_ITEM_STATUSES.has(wi.status)),
+        getWorkItemsForRequest: async () => [],
+        getActiveRequests: async () => [],
+        getActiveClaims: () => service.getActiveClaims(),
+        getAgentHealthMap: async () => health,
+        applyCorrection: async (c) => {
+          if (c.entityType === 'work_item') await service.updateItemStatus(c.entityId, c.newState as WorkItemStatus);
+        },
+        releaseToPool: (id, reason) => service.releaseBack(id, reason),
+        requeueWorkItem: (id) => service.releaseBack(id, 'reconciler_requeue'),
+        markClaimExpiring: (id) => service.markClaimExpiring(id),
+        revokeClaimAndRelease: (id, reason) => service.revokeAndRelease(id, reason),
+        getAvailablePoolItems: async () => (await service.getAllItems()).filter((wi) => wi.status === 'queued'),
+        executeWakeAction: async (action) => {
+          wakes.push(action);
+          return false;
+        },
+      };
+    }
+
+    const activeHealth = (): Map<string, AgentHealth> =>
+      new Map([[AGENT, { sessionName: AGENT, status: 'active', lastSeenAt: new Date().toISOString() }]]);
+
+    async function claimAndBlock(): Promise<string> {
+      const wi = makeWorkItem({ title: 'needs owner input', target: AGENT });
+      await service.addToPool(wi);
+      const claim = await service.claimFromPool(AGENT);
+      expect(claim?.workItem.id).toBe(wi.id);
+      await service.blockItem(wi.id, { agentId: AGENT, reason: 'blocked on Steve' });
+      return wi.id;
+    }
+
+    it('block releases the claim, frees the slot, and records who/why', async () => {
+      const id = await claimAndBlock();
+
+      const wi = (await service.getAllItems()).find((w) => w.id === id)!;
+      expect(wi.status).toBe('blocked');
+      expect(wi.blockSource).toBe(WORK_ITEM_BLOCK_SOURCES.EXPLICIT);
+      expect(wi.blockedReason).toBe('blocked on Steve');
+      expect(wi.metadata?.blockedBy).toBe(AGENT);
+      expect(wi.target).toBe(AGENT);
+      expect((await service.getActiveClaims()).filter((c) => c.workItemId === id)).toHaveLength(0);
+
+      // The slot is free: the agent can claim other work instead of being
+      // handed the blocked item back as `alreadyHeld`.
+      const other = makeWorkItem({ title: 'other work', target: AGENT });
+      await service.addToPool(other);
+      const next = await service.claimFromPool(AGENT);
+      expect(next?.workItem.id).toBe(other.id);
+      expect(next?.alreadyHeld).toBeFalsy();
+    });
+
+    it('block → reconciler ticks (agent active) → still blocked, not claimable, never woken or redelivered', async () => {
+      const id = await claimAndBlock();
+      const provider = makeProvider(activeHealth());
+      const reconciler = new ReconcilerService(provider);
+
+      for (let tick = 0; tick < 3; tick++) {
+        const result = await reconciler.runFull();
+        expect(result.corrections.filter((c) => c.entityId === id)).toEqual([]);
+      }
+
+      const wi = (await service.getAllItems()).find((w) => w.id === id)!;
+      expect(wi.status).toBe('blocked');
+      expect(wi.releaseCount ?? 0).toBe(0);
+      expect(await service.claimFromPool(AGENT)).toBeNull();
+      expect(provider.wakes.filter((w) => w.workItemId === id)).toEqual([]);
+    });
+
+    it('an explicit block is not undone by resolved dependencies either', async () => {
+      const dep = makeWorkItem({ type: 'cron_run', title: 'dep' });
+      await service.addToPool(dep);
+      await service.claimFromPool('someone-else');
+      await service.completeItem(dep.id);
+
+      const wi = makeWorkItem({ title: 'has deps', target: AGENT, dependsOn: [dep.id] });
+      await service.addToPool(wi);
+      // Deps were already done, so it is claimable.
+      const current = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      if (current.status === 'blocked') await service.updateItemStatus(wi.id, 'queued');
+      expect((await service.claimFromPool(AGENT))?.workItem.id).toBe(wi.id);
+      await service.blockItem(wi.id, { agentId: AGENT, reason: 'need creds' });
+
+      await new ReconcilerService(makeProvider(activeHealth())).runFull();
+      expect((await service.getAllItems()).find((w) => w.id === wi.id)!.status).toBe('blocked');
+    });
+
+    it('unblock (release) → queued for the same agent, marker cleared, claimable again', async () => {
+      const id = await claimAndBlock();
+      await service.releaseBack(id, 'unblocked: Steve answered');
+
+      const wi = (await service.getAllItems()).find((w) => w.id === id)!;
+      expect(wi.status).toBe('queued');
+      expect(wi.blockSource).toBeUndefined();
+      expect(typeof wi.metadata?.unblockedAt).toBe('string');
+      expect(wi.target).toBe(AGENT);
+      expect((await service.claimFromPool(AGENT))?.workItem.id).toBe(id);
+    });
+
+    it('control: a SYSTEM block (agent went inactive) is still recovered when the agent returns', async () => {
+      const wi = makeWorkItem({ title: 'in progress', target: AGENT });
+      await service.addToPool(wi);
+      await service.claimFromPool(AGENT);
+
+      const inactive = new Map<string, AgentHealth>([[AGENT, { sessionName: AGENT, status: 'inactive' }]]);
+      await new ReconcilerService(makeProvider(inactive)).runFull();
+      let after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.status).toBe('blocked');
+      expect(after.blockSource).toBeUndefined();
+
+      await new ReconcilerService(makeProvider(activeHealth())).runFull();
+      after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.status).toBe('queued');
+    });
+
+    it('blocking a non-running item is refused by the state machine', async () => {
+      const wi = makeWorkItem({ title: 'queued only', target: AGENT });
+      await service.addToPool(wi);
+      await expect(service.blockItem(wi.id, { agentId: AGENT })).rejects.toThrow(/Invalid status transition/);
     });
   });
 });

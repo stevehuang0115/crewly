@@ -67,6 +67,7 @@ const mockService = {
   getAllItems: jest.fn().mockResolvedValue([]),
   cancelQueued: jest.fn(),
   updateItemStatus: jest.fn(),
+  blockItem: jest.fn(),
   scoreItem: jest.fn(),
 };
 
@@ -1252,13 +1253,27 @@ describe('TaskPoolController', () => {
   // -------------------------------------------------------------------------
 
   describe('blockItem status-code mapping', () => {
+    it('delegates to the pool\'s explicit block (claim released, stays blocked) with agent and reason', async () => {
+      mockService.blockItem.mockResolvedValue(undefined);
+      const req = mockReq({
+        params: { workItemId: 'wi-1' } as Record<string, string>,
+        body: { agentId: 'dev-1', reason: 'waiting on Steve' },
+      });
+      const res = mockRes();
+      await blockItem(req, res);
+
+      expect(mockService.blockItem).toHaveBeenCalledWith('wi-1', { agentId: 'dev-1', reason: 'waiting on Steve' });
+      expect(mockService.updateItemStatus).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
     it('maps an invalid status transition to 409, not 500', async () => {
       // WORK_ITEM_TRANSITIONS allows `blocked` only from `running`, so
       // blocking a queued item throws. That is a CLIENT error — the caller
       // asked for something the state machine forbids. Reporting it as a 500
       // makes retry logic treat a PERMANENT failure as transient and hammer
       // the endpoint.
-      mockService.updateItemStatus.mockRejectedValue(
+      mockService.blockItem.mockRejectedValue(
         new Error('Invalid status transition for WorkItem wi-1: queued → blocked'),
       );
 
@@ -1280,7 +1295,7 @@ describe('TaskPoolController', () => {
     });
 
     it('still maps a missing WorkItem to 404', async () => {
-      mockService.updateItemStatus.mockRejectedValue(new Error('WorkItem wi-nope not found'));
+      mockService.blockItem.mockRejectedValue(new Error('WorkItem wi-nope not found'));
 
       const req = mockReq({
         params: { workItemId: 'wi-nope' } as Record<string, string>,
@@ -1294,7 +1309,7 @@ describe('TaskPoolController', () => {
 
     it('still maps a genuine server fault to 500', async () => {
       // The 409 mapping must not swallow real failures.
-      mockService.updateItemStatus.mockRejectedValue(new Error('ENOSPC: disk full'));
+      mockService.blockItem.mockRejectedValue(new Error('ENOSPC: disk full'));
 
       const req = mockReq({
         params: { workItemId: 'wi-1' } as Record<string, string>,

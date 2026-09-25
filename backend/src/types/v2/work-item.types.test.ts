@@ -26,6 +26,8 @@ import {
   DISPOSITION_METADATA_KEY,
   isWorkItemDisposed,
   getWorkItemDisposition,
+  WORK_ITEM_BLOCK_SOURCES,
+  isExplicitlyBlocked,
 } from './work-item.types.js';
 import type { CreateWorkItemInput, WorkItem } from './work-item.types.js';
 
@@ -615,5 +617,19 @@ describe('WorkItem Types', () => {
         ),
       ).toBe(false);
     });
+  });
+});
+
+describe('isExplicitlyBlocked', () => {
+  it('is true only for a blocked item whose block was explicit', () => {
+    expect(isExplicitlyBlocked({ status: 'blocked', blockSource: WORK_ITEM_BLOCK_SOURCES.EXPLICIT })).toBe(true);
+  });
+
+  it('is false for a system block (no source) — the reconciler may recover it', () => {
+    expect(isExplicitlyBlocked({ status: 'blocked' })).toBe(false);
+  });
+
+  it('is false once the item has left blocked, even with a stale source', () => {
+    expect(isExplicitlyBlocked({ status: 'queued', blockSource: WORK_ITEM_BLOCK_SOURCES.EXPLICIT })).toBe(false);
   });
 });

@@ -31,6 +31,8 @@ import {
   DISPOSITION_METADATA_KEY,
   DISPOSITION_REQUIRED_STATUSES,
   getWorkItemDisposition,
+  WORK_ITEM_BLOCK_SOURCES,
+  isExplicitlyBlocked,
 } from '../../types/v2/work-item.types.js';
 import type { WorkItemDisposition } from '../../types/v2/work-item.types.js';
 import {
@@ -1391,6 +1393,65 @@ export class TaskPoolService {
   }
 
   /**
+   * Explicitly block a running WorkItem (the agent's `/block`, e.g. "waiting
+   * on the owner").
+   *
+   * The item becomes terminal-until-unblocked:
+   * - status `running → blocked`, with `blockedReason` and
+   *   `blockSource: 'explicit'` written atomically with the flip;
+   * - the active claim is released (`blocked: <reason>`), which frees the
+   *   agent's claim slot and leaves no lease for the reconciler to expire,
+   *   revoke and redeliver;
+   * - the reconciler never re-queues an explicitly blocked item (see
+   *   `detectRecoverableWorkItems` / `detectDependencyResolvedWorkItems`).
+   *
+   * Unblocking is explicit: {@link releaseBack} (POST
+   * `/task-pool/release/:id`, the release-claim skill) or any
+   * `blocked → queued` transition puts it back to `queued` and clears the
+   * marker. `target` is kept, so it returns to the same agent.
+   *
+   * Before this (2026-09-25, WI 92327d6d) `/block` kept the claim, and the
+   * reconciler flipped the item `blocked → queued` (`reconciler_requeue`)
+   * as soon as it saw the agent active, so it was re-claimed and
+   * re-dispatched every few minutes.
+   *
+   * @param workItemId - The running WorkItem to block
+   * @param options.agentId - Who blocked it (recorded in metadata)
+   * @param options.reason - Why (persisted on `blockedReason`)
+   * @throws Error if not found, or the item is not `running` (state machine)
+   */
+  async blockItem(
+    workItemId: string,
+    options: { agentId: string; reason?: string },
+  ): Promise<void> {
+    const reason = options.reason && options.reason.trim().length > 0 ? options.reason : undefined;
+    const updated = await this.transitionStatus(
+      workItemId,
+      'blocked',
+      'system',
+      (wi) => {
+        wi.blockSource = WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
+        wi.metadata = {
+          ...(wi.metadata ?? {}),
+          blockedBy: options.agentId,
+          blockedAt: new Date().toISOString(),
+        };
+      },
+      reason,
+    );
+    if (!updated) {
+      throw new Error(`WorkItem not found: ${workItemId}`);
+    }
+    await this.releaseClaim(workItemId, reason ? `blocked: ${reason}` : 'blocked');
+    await this.storage.flush();
+    this.logger.info('WorkItem explicitly blocked (claim released; stays blocked until unblocked)', {
+      workItemId,
+      agentId: options.agentId,
+      reason,
+    });
+  }
+
+  /**
    * Release the active claim on a WorkItem, if it has one.
    *
    * Shared by `completeSimpleItem` and `submitForVerification` because both
@@ -1697,6 +1758,8 @@ export class TaskPoolService {
       const candidates = items.filter(
         (wi) =>
           wi.status === 'blocked' &&
+          // An explicit block waits for an explicit unblock, not for deps.
+          !isExplicitlyBlocked(wi) &&
           Array.isArray(wi.dependsOn) &&
           wi.dependsOn.includes(completedId),
       );
@@ -2643,6 +2706,10 @@ export class TaskPoolService {
       if (fromStatus === 'blocked' && newStatus === 'queued') {
         wi.metadata = { ...(wi.metadata ?? {}), unblockedAt: new Date().toISOString() };
       }
+      // An explicit-block marker lives exactly as long as the block.
+      if (fromStatus === 'blocked' && newStatus !== 'blocked') {
+        wi.blockSource = undefined;
+      }
     });
 
     this.logger.info('Work item status updated', {
@@ -2818,6 +2885,10 @@ export class TaskPoolService {
       // before new work, so remember that this item was blocked.
       if (fromStatus === 'blocked' && newStatus === 'queued') {
         wi.metadata = { ...(wi.metadata ?? {}), unblockedAt: new Date().toISOString() };
+      }
+      // An explicit-block marker lives exactly as long as the block.
+      if (fromStatus === 'blocked' && newStatus !== 'blocked') {
+        wi.blockSource = undefined;
       }
       if (mutator) mutator(wi);
     });

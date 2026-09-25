@@ -18,6 +18,7 @@ import {
   DEFAULT_VERIFY_ESCALATE_MS,
   VERIFY_ESCALATED_AT_KEY,
   detectRecoverableWorkItems,
+  detectDependencyResolvedWorkItems,
   cascadeCancelChildren,
   detectStaleQueuedWorkItems,
   detectUnclaimedTasks,
@@ -1069,6 +1070,23 @@ describe('detectTTLExpiredWorkItems', () => {
 // detectRecoverableWorkItems
 // ---------------------------------------------------------------------------
 describe('detectRecoverableWorkItems', () => {
+  // 2026-09-25 (WI 92327d6d): the agent is active *because* it just blocked;
+  // re-queuing an explicit block re-dispatched it every few minutes.
+  it('never re-queues an explicitly blocked WorkItem, even with the agent active', () => {
+    const wi = makeWorkItem({
+      status: 'blocked',
+      target: 'agent-1',
+      retryCount: 0,
+      maxRetries: 3,
+      blockSource: 'explicit',
+    });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    const { corrections, recoverableIds } = detectRecoverableWorkItems([wi], agentMap);
+    expect(recoverableIds).toHaveLength(0);
+    expect(corrections).toHaveLength(0);
+  });
+
   it('should detect blocked WorkItems with agent back online', () => {
     const wi = makeWorkItem({
       status: 'blocked',
@@ -2234,5 +2252,25 @@ describe('detectUndisposedStrandedWorkItems', () => {
     // terminal target.
     const result = detectUndisposedStrandedWorkItems([stranded('rejected', 10)]);
     expect(Object.keys(result)).toEqual(['items']);
+  });
+});
+
+describe('detectDependencyResolvedWorkItems', () => {
+  it('unblocks a dependency-blocked WorkItem once every dependency is terminal', () => {
+    const dep = makeWorkItem({ status: 'done' });
+    const wi = makeWorkItem({ status: 'blocked', dependsOn: [dep.id] });
+    const map = new Map([[dep.id, dep], [wi.id, wi]]);
+
+    expect(detectDependencyResolvedWorkItems([wi], map).unblockedIds).toEqual([wi.id]);
+  });
+
+  it('leaves an explicitly blocked WorkItem alone even when its dependencies are done', () => {
+    const dep = makeWorkItem({ status: 'done' });
+    const wi = makeWorkItem({ status: 'blocked', dependsOn: [dep.id], blockSource: 'explicit' });
+    const map = new Map([[dep.id, dep], [wi.id, wi]]);
+
+    const { corrections, unblockedIds } = detectDependencyResolvedWorkItems([wi], map);
+    expect(unblockedIds).toHaveLength(0);
+    expect(corrections).toHaveLength(0);
   });
 });
