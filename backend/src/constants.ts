@@ -2770,6 +2770,13 @@ export const TICKET_CONSTANTS = {
 	REVIEW: {
 		/** Origins whose tickets close without the owner (cron, missions) */
 		NO_REVIEW_ORIGINS: ['cron', 'mission'] as readonly string[],
+		/**
+		 * Intent categories whose answer is the whole deliverable — a shared
+		 * link, a note, "按你说的来". They close when answered instead of
+		 * waiting for an OK (owner, 2026-09-25: 19 tickets sat in 待验收, most
+		 * of them "[Message] 看看这个 <link>" already answered).
+		 */
+		NO_REVIEW_CATEGORIES: ['communication'] as readonly string[],
 		/** Tag on a ticket that closed because nobody objected in time */
 		AUTO_ACCEPTED_TAG: 'auto_accepted',
 		/** 待验收 this long with no word from the owner → accepted (ms) */
@@ -2786,7 +2793,9 @@ export const TICKET_CONSTANTS = {
 		 * A plain acknowledgement from the owner in a ticket's thread while the
 		 * agent is waiting for their OK counts as the OK (「好的」「可以」「行」).
 		 */
-		ACK_PATTERN: /^\s*(好的?|好滴|行|可以|可以的|ok|okay|okk|收到|嗯+|对|没问题|谢谢|thanks?|thx|👍|✅|nice|great|perfect)\s*[。.!！~～👍✅]*\s*$/iu,
+		// An @mention or a Latin first name next to it still reads as the OK
+		// (「可以 Dana」, 「好的 <@U0C2ZK849ND>」).
+		ACK_PATTERN: /^\s*(?:(?:<@[A-Z0-9]+>|@?[A-Za-z]{2,15})\s*[,，]?\s*)?(好的?|好滴|行|可以|可以的|ok|okay|okk|收到|嗯+|对|没问题|谢谢|thanks?|thx|👍|✅|nice|great|perfect)\s*[,，]?\s*(?:<@[A-Z0-9]+>|@?[A-Za-z]{2,15})?\s*[。.!！~～👍✅]*\s*$/iu,
 		/** An agent reply must be this old, with the agent idle, before it counts as the answer (ms) */
 		SUBMIT_SETTLE_MS: 60 * 1000,
 		/** Sweep for settled answers and auto-accepts (ms) */

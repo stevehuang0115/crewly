@@ -310,6 +310,23 @@ describe('intake — review replies (Phase 2)', () => {
     expect(cron?.requiresConfirmation).toBe(false);
   });
 
+  it('a message whose answer is the whole deliverable (communication) closes without review', async () => {
+    const v3data = await import('./v3-data.service.js');
+    const spy = jest.spyOn(v3data, 'classifyIntent').mockReturnValue({ intentLevel: 'L1', intentCategory: 'communication' } as never);
+    try {
+      const t = await svc.intake(msg({ ts: '300.1' }));
+      expect(t?.requiresConfirmation).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('an OK next to a name or mention still reads as the OK', () => {
+    const re = TICKET_CONSTANTS.REVIEW.ACK_PATTERN;
+    for (const yes of ['可以 Dana', '好的 <@U0C2ZK849ND>', 'Dana 可以', '可以，Dana！', 'ok']) expect(re.test(yes)).toBe(true);
+    for (const no of ['可以 不过改一下', '好的 按你说的来', '行吧我再想想']) expect(re.test(no)).toBe(false);
+  });
+
   it('验过了 in a 待验收 thread accepts; 打回 + reason sends back', async () => {
     const review = fakeReview();
     svc.setReviewHandler(review);

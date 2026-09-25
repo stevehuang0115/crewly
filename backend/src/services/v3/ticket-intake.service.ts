@@ -497,7 +497,9 @@ export class TicketIntakeService {
       kind: inferTicketKind(text),
       origin: message.origin,
       // Phase 2: the owner accepts it (or silence does); cron / mission close alone.
-      requiresConfirmation: !TICKET_CONSTANTS.REVIEW.NO_REVIEW_ORIGINS.includes(message.origin.channel),
+      requiresConfirmation:
+        !TICKET_CONSTANTS.REVIEW.NO_REVIEW_ORIGINS.includes(message.origin.channel) &&
+        !TICKET_CONSTANTS.REVIEW.NO_REVIEW_CATEGORIES.includes(intentCategory),
       ...(message.targetAgent ? { assignee: message.targetAgent } : {}),
     });
     this.logger.info('Ticket created', {
