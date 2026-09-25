@@ -11,11 +11,23 @@
 import path from 'path';
 import os from 'os';
 import { readFile, writeFile, mkdir, copyFile, rm } from 'fs/promises';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, realpathSync } from 'fs';
 import { createHash } from 'crypto';
-/** Returns the directory of the CLI entry point, or CWD as fallback */
+/**
+ * Returns the directory of the CLI entry point, or CWD as fallback.
+ *
+ * The entry is realpath'd: a global install runs through a `bin` symlink whose
+ * own directory is outside the package, so walking up from it never finds
+ * the package root.
+ */
 function getCliDir(): string {
-  return process.argv[1] ? path.dirname(path.resolve(process.argv[1])) : process.cwd();
+  const entry = process.argv[1];
+  if (!entry) return process.cwd();
+  try {
+    return path.dirname(realpathSync(entry));
+  } catch {
+    return path.dirname(path.resolve(entry));
+  }
 }
 import { Readable } from 'stream';
 import { pipeline } from 'stream/promises';

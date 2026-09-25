@@ -9,6 +9,7 @@
 
 import path from 'path';
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
+import { packageRootCandidates } from './package-root.js';
 
 // ========================= Types =========================
 
@@ -43,23 +44,28 @@ export interface TeamTemplate {
 /**
  * Resolves the absolute path to the config/templates/ directory.
  *
- * Walks up from the CLI entry point (process.argv[1]) to find the project root
+ * Walks up from the CLI's real location (see `packageRootCandidates`: the
+ * registered module dir, the realpath of process.argv[1], then the cwd) to find the project root
  * containing config/templates/. Falls back to process.cwd() if not found
  * (e.g. in test environments).
  *
  * @returns Absolute path to templates directory
  */
 export function getTemplatesDir(): string {
-  // Walk up from the CLI entry script to find config/templates/
-  let dir = process.argv[1] ? path.dirname(path.resolve(process.argv[1])) : process.cwd();
-  for (let i = 0; i < 10; i++) {
-    const candidate = path.join(dir, 'config', 'templates');
-    if (existsSync(candidate)) {
-      return candidate;
+  // Anchor on the CLI's real location: a global install runs through a `bin`
+  // symlink (e.g. ~/.crewly/npm-global/bin/crewly), whose own directory has no
+  // config/ above it — only its realpath inside the package does.
+  for (const start of packageRootCandidates()) {
+    let dir = start;
+    for (let i = 0; i < 10; i++) {
+      const candidate = path.join(dir, 'config', 'templates');
+      if (existsSync(candidate)) {
+        return candidate;
+      }
+      const parent = path.dirname(dir);
+      if (parent === dir) break;
+      dir = parent;
     }
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
   }
   // Fallback: relative to CWD (for development and tests)
   return path.join(process.cwd(), 'config', 'templates');
