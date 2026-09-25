@@ -271,6 +271,13 @@ export class EventBusService extends EventEmitter {
       eventType: event.type,
       sessionName: event.sessionName,
     });
+    // The full event, under the name index.ts and InFlightTurnTracker
+    // subscribe to. Nothing ever emitted it, so those listeners never ran:
+    // queued messages were not drained when an agent went idle (Atlas held
+    // the owner's messages ~6 h until a restart), agents that went down with
+    // messages queued were not woken, and finished turns never submitted
+    // their tickets (2026-09-25).
+    this.emit('eventPublished', event);
 
     // Dispatch to in-process handlers (BRIDGE-1, LEARN-1, …). Errors are
     // isolated — a throwing handler MUST NOT affect other handlers or the

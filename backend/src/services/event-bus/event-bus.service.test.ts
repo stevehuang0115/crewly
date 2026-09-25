@@ -71,6 +71,15 @@ describe('EventBusService', () => {
     jest.useRealTimers();
   });
 
+  describe('eventPublished (full event) — index.ts idle drain and InFlightTurnTracker listen to it', () => {
+    it('emits the whole event, with its type and session', () => {
+      const seen: Array<{ type?: string; sessionName?: string }> = [];
+      eventBus.on('eventPublished', (e: { type?: string; sessionName?: string }) => seen.push(e));
+      eventBus.publish(createTestEvent({ type: 'agent:idle', sessionName: 'think-tank-atlas' }));
+      expect(seen).toEqual([expect.objectContaining({ type: 'agent:idle', sessionName: 'think-tank-atlas' })]);
+    });
+  });
+
   describe('subscribe', () => {
     it('should create a subscription with defaults', () => {
       const sub = eventBus.subscribe(createTestSubscriptionInput());
