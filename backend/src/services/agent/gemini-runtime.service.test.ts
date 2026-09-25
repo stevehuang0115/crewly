@@ -3,6 +3,7 @@ import * as path from 'path';
 import * as fsModule from 'fs';
 import { promises as fs } from 'fs';
 import { GeminiRuntimeService } from './gemini-runtime.service.js';
+import { RuntimeStartupBlockedError, isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
 import { SessionCommandHelper } from '../session/index.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS } from '../../constants.js';
 import { getSettingsService } from '../settings/settings.service.js';
@@ -1121,20 +1122,49 @@ describe('GeminiRuntimeService', () => {
 			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('test-session');
 		});
 
-		it('reports the auth dialog once and does not pick an auth method for the user', async () => {
+		it('fails fast with an auth-specific reason when Gemini asks how to sign in, and does not pick a method (B8 D2)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue(
+				'How would you like to authenticate for this project?\n● 1. Sign in with Google\n  2. Use Gemini API Key\n  3. Vertex AI\nNo authentication method selected.'
+			);
+
+			const promise = service.waitForRuntimeReady('test-session', 60000, 2000);
+			const outcome = promise.catch((e: unknown) => e);
+			// One poll: the old code waited the whole 60 s and then retried.
+			await jest.advanceTimersByTimeAsync(100);
+
+			const err = await outcome;
+			expect(isRuntimeStartupBlockedError(err)).toBe(true);
+			expect((err as RuntimeStartupBlockedError).reason).toBe('auth_required');
+			expect((err as Error).message).toContain('Gemini CLI is not signed in');
+			expect((err as Error).message).toContain('GEMINI_API_KEY');
+			expect(mockSessionHelper.capturePane).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+		});
+
+		it('names the key-in-shell case when Gemini says an existing API key was detected', async () => {
 			mockSessionHelper.capturePane.mockReturnValue(
 				'Existing API key detected (GEMINI_API_KEY). Select "Gemini API Key" option to use it.\nHow would you like to authenticate for this project?\n● 1. Login with Google\n  2. Use Gemini API Key'
 			);
-			const warn = jest.spyOn((service as unknown as { logger: { warn: (...a: unknown[]) => void } }).logger, 'warn');
 
-			const promise = service.waitForRuntimeReady('test-session', 3000, 200);
-			await jest.advanceTimersByTimeAsync(4000);
+			const outcome = service.waitForRuntimeReady('test-session', 60000, 2000).catch((e: unknown) => e);
+			await jest.advanceTimersByTimeAsync(100);
 
-			await expect(promise).resolves.toBe(false);
-			const authWarnings = warn.mock.calls.filter((c) => String(c[0]).includes('Gemini is asking how to authenticate'));
-			expect(authWarnings).toHaveLength(1);
-			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
-			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+			const err = await outcome;
+			expect(isRuntimeStartupBlockedError(err)).toBe(true);
+			expect((err as Error).message).toContain('found a GEMINI_API_KEY in the agent shell');
+		});
+
+		it('fails fast when the shell cannot find gemini (bash wording)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue('node@box:~/app$ gemini --yolo\nbash: gemini: command not found\nnode@box:~/app$ ');
+
+			const outcome = service.waitForRuntimeReady('test-session', 60000, 2000).catch((e: unknown) => e);
+			await jest.advanceTimersByTimeAsync(100);
+
+			const err = await outcome;
+			expect(isRuntimeStartupBlockedError(err)).toBe(true);
+			expect((err as RuntimeStartupBlockedError).reason).toBe('runtime_not_installed');
+			expect((err as Error).message).toContain('Gemini CLI (`gemini`) is not installed');
 		});
 
 		it('trusts before launch every folder postInitialize adds to the workspace', async () => {

@@ -276,4 +276,26 @@ describe('ApiService', () => {
       await expect(apiService.approveMission('child')).rejects.toThrow('Cannot approve');
     });
   });
+
+  describe('startTeam', () => {
+    it('throws the server reason when no member could start (424), not the bare axios status text', async () => {
+      const axios = await import('axios');
+      const reason = 'No team member could start. Dev: Gemini CLI is not signed in: it is asking how to authenticate.';
+      const failure = Object.assign(new Error('Request failed with status code 424'), {
+        isAxiosError: true,
+        response: { status: 424, data: { success: false, error: reason } },
+      });
+      vi.spyOn(axios.default, 'post').mockRejectedValue(failure);
+
+      await expect(apiService.startTeam('t1')).rejects.toThrow(reason);
+    });
+
+    it('rethrows a failure without a server reason unchanged', async () => {
+      const axios = await import('axios');
+      const network = new Error('Network Error');
+      vi.spyOn(axios.default, 'post').mockRejectedValue(network);
+
+      await expect(apiService.startTeam('t1')).rejects.toBe(network);
+    });
+  });
 });
