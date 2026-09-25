@@ -183,4 +183,36 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     expect(svc.findOwed('mk-ella', 'D2')).toBeNull();
     expect(svc.findOwed('mk-ellab', 'D1')).toBeNull();
   });
+
+  it('settleTurnWithoutReply takes down pending and timed-out placeholders the agent never answered (2026-09-25)', async () => {
+    const deleted: string[] = [];
+    const timers: Array<() => void> = [];
+    const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined });
+    const t0 = Date.now();
+    await svc.begin(key, ella); // ts-1, pending
+    await svc.begin({ agentSession: 'mk-ella', slackChannelId: 'C9', threadTs: '1.1' }, ella); // ts-2
+    timers[1](); // ts-2 times out into "still working"
+    await new Promise((r) => setImmediate(r));
+    await svc.begin({ agentSession: 'other-agent', slackChannelId: 'D1' }, { displayName: 'Other' }); // ts-3, not Ella's
+
+    // Too young: a turn that ends right after delivery keeps its placeholder.
+    expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 1_000)).toBe(1); // only the expired one
+    expect(deleted).toEqual(['ts-2']);
+    expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000)).toBe(1);
+    expect(deleted).toEqual(['ts-2', 'ts-1']);
+    expect(svc.findOwed('mk-ella', 'D1')).toBeNull();
+    expect(svc.findOwed('other-agent', 'D1')).not.toBeNull();
+    // A reply that still comes later posts as a new message.
+    expect(await svc.resolve(key, 'late', ella)).toBe('posted');
+  });
+
+  it('settleTurnWithoutReply edits the placeholder when Slack cannot delete', async () => {
+    const { slack, updated } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const t0 = Date.now();
+    await svc.begin(key, ella);
+    expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000)).toBe(1);
+    expect(updated.at(-1)?.text).toBe('✓ Ella read this — no reply needed.');
+  });
 });

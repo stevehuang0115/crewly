@@ -96,6 +96,7 @@ import { RequestStatusUpdateSubscriber } from './services/v3/request-status-upda
 import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { getSlackService } from './services/slack/slack.service.js';
+import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS } from './constants.js';
@@ -1219,6 +1220,13 @@ void (async () => {
 				// was mid-answer and never got a reply; the message was still
 				// in the queue an hour later (2026-09-21, Ella).
 				setImmediate(() => void this.flushQueuedAgentMessages(event.sessionName as string));
+
+				// The turn ended: a "working on it" it never answered means it chose
+				// not to reply (an "ok", "好"). Take it down rather than leave a
+				// "still working — the reply will follow" that never follows.
+				void getSlackTypingPlaceholderService()
+					?.settleTurnWithoutReply(event.sessionName)
+					.catch(() => undefined);
 
 				// Ticket loop Phase 2: an agent that finished its turn has answered
 				// the tickets it replied in — submit them (待验收 or done).

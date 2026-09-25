@@ -93,7 +93,7 @@ export interface SlackTypingPlaceholderDeps {
  */
 export class SlackTypingPlaceholderService {
   private readonly logger: ComponentLogger;
-  private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout> }>();
+  private readonly pending = new Map<string, { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout>; startedAt: number }>();
   /**
    * Placeholders that timed out into "still working on this". The reply that
    * finally arrives must still remove them: forgetting them at timeout left
@@ -210,7 +210,7 @@ export class SlackTypingPlaceholderService {
       };
       const timer = setTimer(() => void this.expire(k), this.deps.timeoutMs ?? SLACK_TYPING_CONSTANTS.TIMEOUT_MS);
       unref(timer);
-      const entry: { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout> } = { placeholder, timer };
+      const entry: { placeholder: TypingPlaceholder; timer: ReturnType<typeof setTimeout>; slowTimer?: ReturnType<typeof setTimeout>; startedAt: number } = { placeholder, timer, startedAt: Date.now() };
       if (phase === 'waking') {
         // A cold start that drags on gets an honest note instead of a stale "waking up…".
         entry.slowTimer = setTimer(() => {
@@ -333,6 +333,59 @@ export class SlackTypingPlaceholderService {
     }
     candidates.sort((a, b) => b.at - a.at);
     return candidates[0]?.key ?? null;
+  }
+
+  /**
+   * The agent finished its turn. Any placeholder it still owes (pending, or
+   * timed out into "still working") and is older than SETTLE_MIN_AGE_MS
+   * means it decided no reply was needed — an "ok"/"好"/"没关系", or another
+   * agent's acknowledgement. Take the placeholder down instead of leaving a
+   * promise that never comes: the owner read those "⏱ still working — the
+   * reply will follow" lines as unanswered messages (2026-09-25, 13 of them
+   * in two days). A reply that still arrives later posts as a new message.
+   *
+   * @param agentSession - Agent whose turn ended
+   * @param now - Clock (tests)
+   * @returns How many placeholders were removed
+   */
+  async settleTurnWithoutReply(agentSession: string, now: number = Date.now()): Promise<number> {
+    const minAge = SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS;
+    const victims: TypingPlaceholder[] = [];
+    for (const [k, entry] of [...this.pending]) {
+      if (!k.startsWith(`${agentSession}:`) || now - entry.startedAt < minAge) continue;
+      if (this.inFlight.has(k)) continue;
+      const clear = this.deps.clearTimer ?? ((t: ReturnType<typeof setTimeout>) => clearTimeout(t));
+      clear(entry.timer);
+      if (entry.slowTimer) clear(entry.slowTimer);
+      this.pending.delete(k);
+      victims.push(entry.placeholder);
+    }
+    for (const [k, { placeholder }] of [...this.expired]) {
+      if (!k.startsWith(`${agentSession}:`)) continue;
+      this.expired.delete(k);
+      victims.push(placeholder);
+    }
+    for (const placeholder of victims) {
+      try {
+        if (this.deps.slack.deleteMessage) {
+          await this.deps.slack.deleteMessage(placeholder.slackChannelId, placeholder.ts, placeholder.botToken);
+        } else {
+          await this.deps.slack.updateMessage(
+            placeholder.slackChannelId,
+            placeholder.ts,
+            SLACK_TYPING_CONSTANTS.SETTLED_TEXT.replace('{name}', placeholder.displayName),
+            undefined,
+            placeholder.botToken,
+          );
+        }
+      } catch (err) {
+        this.logger.debug('Could not take down a settled placeholder', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (victims.length > 0) {
+      this.logger.info('Agent finished its turn without replying — placeholders taken down', { agentSession, count: victims.length });
+    }
+    return victims.length;
   }
 
   /** Forget timed-out placeholders older than EXPIRED_KEEP_MS. */

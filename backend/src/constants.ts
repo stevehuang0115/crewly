@@ -770,6 +770,10 @@ export const SLACK_TYPING_CONSTANTS = {
 	TIMEOUT_MS: 5 * 60 * 1000,
 	/** A timed-out placeholder is still removed by a reply arriving within this long (ms) */
 	EXPIRED_KEEP_MS: 24 * 60 * 60 * 1000,
+	/** A placeholder younger than this is not taken down when the turn ends (race with delivery) */
+	SETTLE_MIN_AGE_MS: 30 * 1000,
+	/** Fallback text when a settled placeholder cannot be deleted */
+	SETTLED_TEXT: '✓ {name} read this — no reply needed.',
 	/**
 	 * Metadata flag on an agent message that is an interim note ("got it —
 	 * here is my plan") rather than the answer: the Slack mirror posts it and
