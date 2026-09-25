@@ -67,6 +67,25 @@ describe('listSkillFiles', () => {
 	});
 });
 
+describe('buildRegistry — setup blocks', () => {
+	it('copies a skill.json setup block into metadata.setup, and leaves skills without one unchanged', () => {
+		const setup = { estimatedMinutes: 2, steps: [{ id: 'ffmpeg', type: 'command', check: { commands: ['ffmpeg'] } }] };
+		const root = fixture({
+			[`${M}/with-setup/skill.json`]: JSON.stringify({ id: 'with-setup', name: 'With Setup', setup }),
+			[`${M}/with-setup/execute.sh`]: 'echo\n',
+			[`${M}/plain/SKILL.md`]: skillMd('name: Plain'),
+		});
+		try {
+			const { registry } = buildRegistry(root, null, '2026-09-25T00:00:00.000Z');
+			const byId = new Map(registry.items.map((i) => [i.id, i]));
+			expect(byId.get('with-setup')?.metadata.setup).toEqual(setup);
+			expect(byId.get('plain')?.metadata).not.toHaveProperty('setup');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+});
+
 describe('buildRegistry', () => {
 	let root = '';
 	beforeEach(() => {

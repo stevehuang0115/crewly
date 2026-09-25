@@ -4,6 +4,11 @@
  * Installs skills from the Crewly marketplace. Supports installing a single
  * skill by ID or all agent skills with the --all flag.
  *
+ * A single install also runs the skill's setup block (system tools, models,
+ * Python packages — specs/skill-auto-install.md). A skill bundled with Crewly
+ * is not downloaded again; only its setup runs. `--all` skips setup (it would
+ * install every skill's dependencies); run `crewly skills setup <id>` for those.
+ *
  * @module cli/commands/install
  */
 
@@ -14,9 +19,30 @@ import {
   formatBytes,
   type MarketplaceItem,
 } from '../utils/marketplace.js';
+import { skillsSetupCommand } from './skills.js';
+import { SkillDiscoveryService } from '../../../backend/src/services/skill-setup/skill-discovery.service.js';
 
 interface InstallOptions {
   all?: boolean;
+}
+
+/** Injectable dependencies (tests). */
+export interface InstallDeps {
+  /** Where a skill lives on this machine: 'bundled', 'installed', or null */
+  localSource?: (id: string) => Promise<'bundled' | 'installed' | null>;
+  /** Run a skill's setup; returns the `crewly skills setup` exit code (0 ok, 1 failed, 2 not found) */
+  runSetup?: (id: string) => Promise<number>;
+}
+
+/**
+ * Default: resolve with the local (offline) skill discovery.
+ *
+ * @param id - Skill id
+ * @returns Source or null
+ */
+async function defaultLocalSource(id: string): Promise<'bundled' | 'installed' | null> {
+  const skill = await new SkillDiscoveryService().resolveLocal(id);
+  return skill && skill.source !== 'registry' ? skill.source : null;
 }
 
 /**
@@ -28,12 +54,22 @@ interface InstallOptions {
  * @param id - Optional marketplace item ID to install
  * @param options - Command options (--all)
  */
-export async function installCommand(id?: string, options?: InstallOptions): Promise<void> {
+export async function installCommand(id?: string, options?: InstallOptions, deps: InstallDeps = {}): Promise<void> {
+  const localSource = deps.localSource ?? defaultLocalSource;
+  const runSetup = deps.runSetup ?? ((skillId: string) => skillsSetupCommand(skillId));
   if (!id && !options?.all) {
     console.log(chalk.red('Please specify a skill ID or use --all to install all skills.'));
     console.log(chalk.gray('Example: crewly install skill-nano-banana'));
     console.log(chalk.gray('         crewly install --all'));
     process.exit(1);
+  }
+
+  // A skill bundled with Crewly is already on disk: only its setup is missing.
+  if (id && !options?.all && (await localSource(id)) === 'bundled') {
+    console.log(chalk.blue(`${id} is bundled with Crewly — no download needed.`));
+    const code = await runSetup(id);
+    if (code !== 0) process.exit(1);
+    return;
   }
 
   try {
@@ -44,7 +80,7 @@ export async function installCommand(id?: string, options?: InstallOptions): Pro
     if (options?.all) {
       await installAll(registry.items);
     } else if (id) {
-      await installSingle(id, registry.items);
+      await installSingle(id, registry.items, runSetup);
     }
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
@@ -103,8 +139,9 @@ async function installAll(items: MarketplaceItem[]): Promise<void> {
  *
  * @param id - The marketplace item ID
  * @param items - All registry items
+ * @param runSetup - Runs the installed skill's setup block
  */
-async function installSingle(id: string, items: MarketplaceItem[]): Promise<void> {
+async function installSingle(id: string, items: MarketplaceItem[], runSetup: (id: string) => Promise<number>): Promise<void> {
   const item = items.find((i) => i.id === id);
   if (!item) {
     console.log(chalk.red(`Item "${id}" not found in the marketplace.`));
@@ -121,6 +158,15 @@ async function installSingle(id: string, items: MarketplaceItem[]): Promise<void
       console.log(chalk.green('  ✓ Verified checksum'));
     }
     console.log(chalk.green(`  ✓ ${result.message}`));
+    if (item.type === 'skill') {
+      // 2 = no local copy found to set up (nothing declared to run); 1 = setup failed.
+      const code = await runSetup(item.id);
+      if (code === 1) {
+        console.log(chalk.red(`\n${item.name} is installed, but its setup failed. Fix the problem above, then run: crewly skills setup ${item.id}`));
+        process.exitCode = 1;
+        return;
+      }
+    }
     console.log(chalk.green('\nDone!'));
   } else {
     console.log(chalk.red(`  ✗ ${result.message}`));

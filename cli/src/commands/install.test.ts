@@ -29,6 +29,13 @@ jest.mock('../utils/marketplace.js', () => ({
   formatBytes: (b: number) => `${b} B`,
 }));
 
+const mockSkillsSetup = jest.fn();
+jest.mock('./skills.js', () => ({ skillsSetupCommand: (...args: unknown[]) => mockSkillsSetup(...args) }));
+const mockResolveLocal = jest.fn();
+jest.mock('../../../backend/src/services/skill-setup/skill-discovery.service.js', () => ({
+  SkillDiscoveryService: jest.fn().mockImplementation(() => ({ resolveLocal: (...args: unknown[]) => mockResolveLocal(...args) })),
+}));
+
 import { installCommand } from './install.js';
 
 // ---------------------------------------------------------------------------
@@ -71,6 +78,9 @@ describe('installCommand', () => {
     }) as never);
     mockFetchRegistry.mockReset();
     mockDownloadAndInstall.mockReset();
+    mockSkillsSetup.mockReset().mockResolvedValue(0);
+    mockResolveLocal.mockReset().mockResolvedValue(null);
+    process.exitCode = undefined;
   });
 
   afterEach(() => {
@@ -101,6 +111,55 @@ describe('installCommand', () => {
 
     expect(mockDownloadAndInstall).toHaveBeenCalledWith(item);
     expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Done'));
+  });
+
+  it('runs the setup of a skill after installing it', async () => {
+    const item = makeFakeItem('ocr-images', 'OCR');
+    mockFetchRegistry.mockResolvedValue({ schemaVersion: 1, lastUpdated: '', cdnBaseUrl: '', items: [item] });
+    mockDownloadAndInstall.mockResolvedValue({ success: true, message: 'Installed OCR v1.0.0' });
+
+    await installCommand('ocr-images');
+
+    expect(mockSkillsSetup).toHaveBeenCalledWith('ocr-images');
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('Done'));
+  });
+
+  it('reports a failed setup after a good download, with the command to retry', async () => {
+    const item = makeFakeItem('ocr-images', 'OCR');
+    mockFetchRegistry.mockResolvedValue({ schemaVersion: 1, lastUpdated: '', cdnBaseUrl: '', items: [item] });
+    mockDownloadAndInstall.mockResolvedValue({ success: true, message: 'Installed OCR v1.0.0' });
+    mockSkillsSetup.mockResolvedValue(1);
+
+    await installCommand('ocr-images');
+
+    expect(process.exitCode).toBe(1);
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('crewly skills setup ocr-images'));
+    process.exitCode = undefined;
+  });
+
+  it('does not download a bundled skill; it only runs its setup', async () => {
+    mockResolveLocal.mockResolvedValue({ id: 'transcribe-audio', source: 'bundled' });
+
+    await installCommand('transcribe-audio');
+
+    expect(mockFetchRegistry).not.toHaveBeenCalled();
+    expect(mockDownloadAndInstall).not.toHaveBeenCalled();
+    expect(mockSkillsSetup).toHaveBeenCalledWith('transcribe-audio');
+    expect(logSpy).toHaveBeenCalledWith(expect.stringContaining('bundled with Crewly'));
+  });
+
+  it('exits 1 when a bundled skill\'s setup fails', async () => {
+    mockResolveLocal.mockResolvedValue({ id: 'transcribe-audio', source: 'bundled' });
+    mockSkillsSetup.mockResolvedValue(1);
+    await expect(installCommand('transcribe-audio')).rejects.toThrow('process.exit called');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('--all does not run any setup', async () => {
+    mockFetchRegistry.mockResolvedValue({ schemaVersion: 1, lastUpdated: '', cdnBaseUrl: '', items: [makeFakeItem('a', 'A')] });
+    mockDownloadAndInstall.mockResolvedValue({ success: true, message: 'ok' });
+    await installCommand(undefined, { all: true });
+    expect(mockSkillsSetup).not.toHaveBeenCalled();
   });
 
   it('exits with error for unknown skill ID', async () => {

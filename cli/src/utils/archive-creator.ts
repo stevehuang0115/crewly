@@ -8,7 +8,7 @@
  */
 
 import path from 'path';
-import { readFileSync, statSync } from 'fs';
+import { readdirSync, readFileSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import * as tar from 'tar';
 import type { SkillManifest } from './package-validator.js';
@@ -36,7 +36,25 @@ export interface RegistryEntry {
   metadata: {
     assignableRoles: string[];
     triggers: string[];
+    /** Dependency setup block, copied from skill.json (specs/skill-auto-install.md) */
+    setup?: unknown;
   };
+}
+
+/**
+ * Files never packed into a skill archive: tests, test fixtures, packaging
+ * hints and OS/editor litter. Mirrors config/skills/marketplace-registry.ts.
+ */
+export const ARCHIVE_EXCLUDES: ReadonlyArray<RegExp> = [/\.test\./, /^mock-/, /^\.crewlyignore$/, /^\.DS_Store$/, /^__pycache__$/];
+
+/**
+ * Whether a path inside the skill directory belongs in the archive.
+ *
+ * @param entryPath - Path as tar sees it (relative, may include directories)
+ * @returns False for excluded names at any depth
+ */
+export function includeInArchive(entryPath: string): boolean {
+  return !entryPath.split('/').some((part) => ARCHIVE_EXCLUDES.some((re) => re.test(part)));
 }
 
 /**
@@ -64,14 +82,20 @@ export async function createSkillArchive(skillDir: string, outputDir: string): P
   const archiveName = `${manifest.id}-${manifest.version}.tar.gz`;
   const archivePath = path.join(absOutputDir, archiveName);
 
+  // Entries are `<id>/<file>`: installers extract with `strip: 1`. (Archiving
+  // the directory itself under a `<id>` prefix produced `<id>/<dir>/<file>`,
+  // which strip:1 unpacked one level too deep.)
+  const entries = readdirSync(absSkillDir).filter((name) => includeInArchive(name)).sort();
   await tar.c(
     {
       gzip: true,
       file: archivePath,
-      cwd: path.dirname(absSkillDir),
+      cwd: absSkillDir,
       prefix: manifest.id,
+      portable: true,
+      filter: (entryPath: string) => includeInArchive(entryPath),
     },
-    [path.basename(absSkillDir)]
+    entries
   );
 
   return archivePath;
@@ -142,6 +166,7 @@ export function generateRegistryEntry(
     metadata: {
       assignableRoles: manifest.assignableRoles,
       triggers: manifest.triggers || [],
+      ...(manifest.setup !== undefined ? { setup: manifest.setup } : {}),
     },
   };
 }

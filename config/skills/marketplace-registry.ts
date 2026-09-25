@@ -30,6 +30,12 @@ export interface SkillManifest {
 	skillType?: string;
 	assignableRoles?: string[];
 	triggers?: string[];
+	/**
+	 * Dependency setup block (skill.json only; specs/skill-auto-install.md).
+	 * Copied into `metadata.setup` so `find-skill` can quote install time
+	 * before the skill is downloaded.
+	 */
+	setup?: unknown;
 }
 
 /** One public registry entry. */
@@ -49,7 +55,7 @@ export interface RegistryItem {
 	updatedAt: string;
 	source: string;
 	assets: { archive: string; checksum: string; sizeBytes: number };
-	metadata: { skillType?: string; assignableRoles?: string[]; triggers?: string[]; files: string[] };
+	metadata: { skillType?: string; assignableRoles?: string[]; triggers?: string[]; files: string[]; setup?: unknown };
 }
 
 /** The public registry document. */
@@ -226,6 +232,7 @@ export function buildRegistry(
 				assignableRoles: manifest.assignableRoles,
 				triggers: manifest.triggers,
 				files: listSkillFiles(skillDir),
+				...(manifest.setup !== undefined ? { setup: manifest.setup } : {}),
 			},
 		};
 		if (prior) {

@@ -7,7 +7,8 @@
  * @module cli/utils/archive-creator.test
  */
 
-import { createSkillArchive, generateChecksum, generateRegistryEntry } from './archive-creator.js';
+import { createSkillArchive, generateChecksum, generateRegistryEntry, includeInArchive } from './archive-creator.js';
+import * as tar from 'tar';
 import type { SkillManifest } from './package-validator.js';
 import path from 'path';
 import os from 'os';
@@ -73,6 +74,41 @@ describe('archive-creator', () => {
     });
   });
 
+  describe('archive contents', () => {
+    it('leaves tests, mocks and litter out of the archive', async () => {
+      const skillDir = createSkill('test-exclude', '1.0.0');
+      writeFileSync(path.join(skillDir, 'execute.test.sh'), 'test');
+      writeFileSync(path.join(skillDir, 'mock-server.py'), 'mock');
+      writeFileSync(path.join(skillDir, 'install-x.sh'), 'exit 0');
+      const outputDir = path.join(tmpDir, 'output-exclude');
+      mkdirSync(outputDir, { recursive: true });
+      const archivePath = await createSkillArchive(skillDir, outputDir);
+      const entries: string[] = [];
+      await tar.t({ file: archivePath, onReadEntry: (e: { path: string }) => { entries.push(e.path); } } as never);
+      const files = entries.filter((e) => !e.endsWith('/')).sort();
+      // `<id>/<file>`: what installers expect when they extract with strip: 1
+      expect(files).toEqual(['test-exclude/execute.sh', 'test-exclude/install-x.sh', 'test-exclude/instructions.md', 'test-exclude/skill.json']);
+    });
+
+    it('extracts with strip: 1 into exactly the skill files', async () => {
+      const skillDir = createSkill('test-strip', '1.0.0');
+      const outputDir = path.join(tmpDir, 'output-strip');
+      const dest = path.join(tmpDir, 'installed-strip');
+      mkdirSync(outputDir, { recursive: true });
+      mkdirSync(dest, { recursive: true });
+      const archivePath = await createSkillArchive(skillDir, outputDir);
+      await tar.x({ file: archivePath, cwd: dest, strip: 1 });
+      expect(existsSync(path.join(dest, 'skill.json'))).toBe(true);
+      expect(existsSync(path.join(dest, 'execute.sh'))).toBe(true);
+    });
+
+    it('includeInArchive checks every path segment', () => {
+      expect(includeInArchive('x/execute.sh')).toBe(true);
+      expect(includeInArchive('x/__pycache__/a.pyc')).toBe(false);
+      expect(includeInArchive('x/execute.test.sh')).toBe(false);
+    });
+  });
+
   describe('generateChecksum', () => {
     it('should generate a sha256 checksum', () => {
       const testFile = path.join(tmpDir, 'checksum-test.txt');
@@ -133,6 +169,16 @@ describe('archive-creator', () => {
       expect(entry.metadata.triggers).toEqual(['test trigger']);
       expect(entry.downloads).toBe(0);
       expect(entry.rating).toBe(0);
+    });
+
+    it('copies the setup block into metadata.setup', () => {
+      const setup = { estimatedMinutes: 6, steps: [{ id: 'ffmpeg', type: 'command', check: { commands: ['ffmpeg'] } }] };
+      const outputDir = path.join(tmpDir, 'out-setup');
+      mkdirSync(outputDir, { recursive: true });
+      const archive = path.join(outputDir, 'x.tar.gz');
+      writeFileSync(archive, 'x');
+      const manifest = { id: 'test-setup-entry', name: 'n', description: 'd', version: '1.1.0', category: 'development', assignableRoles: ['*'], tags: ['t'], setup } as SkillManifest;
+      expect(generateRegistryEntry(manifest, archive, 'sha256:abc').metadata.setup).toEqual(setup);
     });
 
     it('should default author to Crewly Team when missing', () => {

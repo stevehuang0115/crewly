@@ -10,6 +10,7 @@ import { statusCommand } from './commands/status.js';
 import { logsCommand } from './commands/logs.js';
 import { upgradeCommand } from './commands/upgrade.js';
 import { installCommand } from './commands/install.js';
+import { skillsCommand } from './commands/skills.js';
 import { searchCommand } from './commands/search.js';
 import { onboardCommand } from './commands/onboard.js';
 import { harnessCommand, loginCommand as harnessLoginCommand } from './commands/harness.js';
@@ -88,9 +89,18 @@ program
 
 program
   .command('install [id]')
-  .description('Install a skill from the Crewly marketplace')
-  .option('--all', 'Install all agent skills')
-  .action(installCommand);
+  .description('Install a skill from the Crewly marketplace and run its setup (tools, models, Python packages)')
+  .option('--all', 'Install all agent skills (without their setup)')
+  // Explicit arity: commander appends the Command object, which must not land in `deps`.
+  .action((id: string | undefined, options: { all?: boolean }) => installCommand(id, options));
+
+program
+  .command('skills <action> [id]')
+  .description('Skill setup: `crewly skills setup <id>` installs what a skill needs (tools, models, Python packages); add --check to only check')
+  .option('--check', 'Only check what is installed; change nothing')
+  .action(async (action: string, id: string | undefined, options: { check?: boolean }) => {
+    process.exitCode = await skillsCommand(action, id, options);
+  });
 
 program
   .command('search [query]')

@@ -200,6 +200,32 @@ describe('validatePackage', () => {
     expect(result.warnings.some((w) => w.includes('license'))).toBe(true);
   });
 
+  describe('setup block', () => {
+    const setup = { steps: [{ id: 'whisper-cli', type: 'command', check: { commands: ['whisper-cli'] }, install: { linux: { script: 'install-whisper.sh' } } }] };
+
+    it('accepts a valid setup block whose install script ships with the skill', () => {
+      const dir = createSkill({ 'skill.json': validManifest({ setup }), 'execute.sh': '#!/bin/bash', 'instructions.md': '# x', 'install-whisper.sh': 'exit 0' });
+      expect(validatePackage(dir).errors).toEqual([]);
+    });
+
+    it('rejects an invalid setup block', () => {
+      const dir = createSkill({ 'skill.json': validManifest({ setup: { steps: [{ id: 'x', type: 'npm' }] } }), 'execute.sh': '#!/bin/bash', 'instructions.md': '# x' });
+      const result = validatePackage(dir);
+      expect(result.valid).toBe(false);
+      expect(result.errors[0]).toMatch(/^skill\.json setup\.steps\[0\]\.type must be one of/);
+    });
+
+    it('rejects a setup block naming an install script that is missing', () => {
+      const dir = createSkill({ 'skill.json': validManifest({ setup }), 'execute.sh': '#!/bin/bash', 'instructions.md': '# x' });
+      expect(validatePackage(dir).errors).toEqual(['skill.json setup step "whisper-cli" names install script install-whisper.sh, which is not in the skill directory']);
+    });
+
+    it.each(['transcribe-audio', 'pdf-tools'])('the shipped %s skill passes publish validation', (id) => {
+      const result = validatePackage(path.resolve(__dirname, '../../../config/skills/agent', id));
+      expect(result.errors).toEqual([]);
+    });
+  });
+
   it('should accept valid kebab-case IDs', () => {
     const dir = createSkill({
       'skill.json': validManifest({ id: 'git-commit-helper' }),

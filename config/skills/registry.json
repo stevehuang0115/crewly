@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-24T19:55:44.195Z",
+  "lastUpdated": "2026-09-25T15:08:17.144Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -980,6 +980,194 @@
       }
     },
     {
+      "id": "pdf-tools",
+      "type": "skill",
+      "name": "pdf-tools",
+      "description": "Make polished PDFs from Markdown or styled HTML (headless Chrome preferred, WeasyPrint fallback, CJK-ready default stylesheet), merge several parts into one PDF, and read the text of a PDF someone sent you. When a dependency is missing it returns `needsSetup:true` — run `install-skill --id pdf-tools`.",
+      "author": "Crewly Team",
+      "version": "1.0.0",
+      "category": "content-creation",
+      "tags": [
+        "pdf",
+        "document",
+        "report",
+        "markdown",
+        "html",
+        "chrome",
+        "weasyprint",
+        "merge",
+        "read-pdf",
+        "extract-text",
+        "pypdf",
+        "cjk",
+        "中文",
+        "文档"
+      ],
+      "license": "MIT",
+      "downloads": 0,
+      "rating": 0,
+      "createdAt": "2026-09-25T00:00:00.000Z",
+      "updatedAt": "2026-09-25T15:02:05.840Z",
+      "source": "config/skills/agent/pdf-tools",
+      "assets": {
+        "archive": "config/skills/agent/pdf-tools",
+        "checksum": "",
+        "sizeBytes": 47819
+      },
+      "metadata": {
+        "assignableRoles": [
+          "*"
+        ],
+        "triggers": [
+          "make a pdf",
+          "generate pdf",
+          "markdown to pdf",
+          "html to pdf",
+          "merge pdfs",
+          "read this pdf",
+          "extract text from pdf"
+        ],
+        "files": [
+          "execute.sh",
+          "instructions.md",
+          "pdf_tools.py",
+          "skill.json",
+          "SKILL.md",
+          "style.css"
+        ],
+        "setup": {
+          "estimatedMinutes": 3,
+          "steps": [
+            {
+              "id": "jq",
+              "type": "command",
+              "description": "jq — parses the skill's JSON input and output",
+              "check": {
+                "commands": [
+                  "jq"
+                ]
+              },
+              "install": {
+                "darwin": {
+                  "brew": [
+                    "jq"
+                  ]
+                },
+                "debian": {
+                  "apt": [
+                    "jq"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "python3",
+              "type": "command",
+              "description": "Python 3 with venv support",
+              "check": {
+                "shell": "python3 -c 'import venv, ensurepip' >/dev/null 2>&1"
+              },
+              "install": {
+                "darwin": {
+                  "brew": [
+                    "python"
+                  ]
+                },
+                "debian": {
+                  "apt": [
+                    "python3",
+                    "python3-venv"
+                  ]
+                }
+              },
+              "manualHint": "Install Python 3 (with the venv module) and put python3 on PATH."
+            },
+            {
+              "id": "python-packages",
+              "type": "python",
+              "description": "pypdf (merge/read), markdown and weasyprint in ~/.crewly/venv/pdf-tools",
+              "venv": "pdf-tools",
+              "packages": [
+                "pypdf>=4",
+                "markdown>=3.5",
+                "weasyprint>=60"
+              ],
+              "imports": [
+                "pypdf",
+                "markdown"
+              ]
+            },
+            {
+              "id": "weasyprint-libs",
+              "type": "command",
+              "optional": true,
+              "description": "Pango for WeasyPrint (the fallback engine when there is no Chrome)",
+              "check": {
+                "shell": "\"$CREWLY_HOME/venv/pdf-tools/bin/python3\" -c 'import weasyprint' >/dev/null 2>&1"
+              },
+              "install": {
+                "darwin": {
+                  "brew": [
+                    "pango"
+                  ]
+                },
+                "debian": {
+                  "apt": [
+                    "libpango-1.0-0",
+                    "libpangoft2-1.0-0",
+                    "libharfbuzz-subset0"
+                  ]
+                }
+              }
+            },
+            {
+              "id": "chrome",
+              "type": "command",
+              "optional": true,
+              "description": "Chrome/Chromium — the preferred engine (headless print-to-pdf)",
+              "check": {
+                "commands": [
+                  "google-chrome",
+                  "google-chrome-stable",
+                  "chromium",
+                  "chromium-browser"
+                ],
+                "paths": [
+                  "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                  "~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                  "/Applications/Chromium.app/Contents/MacOS/Chromium"
+                ]
+              },
+              "install": {
+                "debian": {
+                  "apt": [
+                    "chromium"
+                  ]
+                }
+              },
+              "manualHint": "Install Google Chrome; until then PDFs are rendered with WeasyPrint."
+            },
+            {
+              "id": "cjk-fonts",
+              "type": "command",
+              "optional": true,
+              "description": "Chinese/Japanese/Korean fonts (Noto CJK) so CJK text is not blank boxes",
+              "check": {
+                "shell": "[ \"$(uname -s)\" = Darwin ] || fc-list :lang=zh 2>/dev/null | grep -q ."
+              },
+              "install": {
+                "debian": {
+                  "apt": [
+                    "fonts-noto-cjk"
+                  ]
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    {
       "id": "playwright-chrome-browser",
       "type": "skill",
       "name": "Playwright Chrome Browser",
@@ -1315,6 +1503,151 @@
           "execute.sh",
           "SKILL.md"
         ]
+      }
+    },
+    {
+      "id": "transcribe-audio",
+      "type": "skill",
+      "name": "transcribe-audio",
+      "description": "Transcribe a local audio (or video) file — Slack voice messages / audio clips, meetings, podcasts, interviews — to text with timestamps using Whisper. Defaults to local whisper.cpp (free, offline) and falls back to the OpenAI Whisper API (whisper-1) when the local engine is not installed. When a dependency is missing it returns `needsSetup:true` — run `install-skill --id transcribe-audio` instead of telling the user it cannot be done.",
+      "author": "Crewly Team",
+      "version": "1.1.0",
+      "category": "content-creation",
+      "tags": [
+        "audio",
+        "voice",
+        "voice-message",
+        "speech-to-text",
+        "transcribe",
+        "transcription",
+        "whisper",
+        "whisper.cpp",
+        "openai",
+        "timestamps",
+        "m4a",
+        "mp3",
+        "video",
+        "语音",
+        "录音",
+        "转文字"
+      ],
+      "license": "MIT",
+      "downloads": 0,
+      "rating": 0,
+      "createdAt": "2026-09-25T00:00:00.000Z",
+      "updatedAt": "2026-09-25T15:08:17.144Z",
+      "source": "config/skills/agent/transcribe-audio",
+      "assets": {
+        "archive": "config/skills/agent/transcribe-audio",
+        "checksum": "",
+        "sizeBytes": 41643
+      },
+      "metadata": {
+        "assignableRoles": [
+          "*"
+        ],
+        "triggers": [
+          "transcribe audio",
+          "transcribe voice message",
+          "speech to text",
+          "what does this recording say",
+          "audio clip"
+        ],
+        "files": [
+          "execute.sh",
+          "install-whisper-cpp.sh",
+          "instructions.md",
+          "skill.json",
+          "SKILL.md"
+        ],
+        "setup": {
+          "estimatedMinutes": 6,
+          "steps": [
+            {
+              "id": "jq",
+              "type": "command",
+              "description": "jq — parses the skill's JSON input and output",
+              "check": {
+                "commands": [
+                  "jq"
+                ]
+              },
+              "install": {
+                "darwin": {
+                  "brew": [
+                    "jq"
+                  ]
+                },
+                "debian": {
+                  "apt": [
+                    "jq"
+                  ]
+                }
+              },
+              "manualHint": "Install jq with your package manager."
+            },
+            {
+              "id": "ffmpeg",
+              "type": "command",
+              "description": "ffmpeg — decodes audio/video into 16 kHz mono WAV",
+              "check": {
+                "commands": [
+                  "ffmpeg"
+                ]
+              },
+              "install": {
+                "darwin": {
+                  "brew": [
+                    "ffmpeg"
+                  ]
+                },
+                "debian": {
+                  "apt": [
+                    "ffmpeg"
+                  ]
+                }
+              },
+              "manualHint": "Install ffmpeg with your package manager and put it on PATH."
+            },
+            {
+              "id": "whisper-cli",
+              "type": "command",
+              "description": "whisper.cpp — the local, offline speech-to-text engine",
+              "check": {
+                "commands": [
+                  "whisper-cli"
+                ],
+                "paths": [
+                  "~/.flopost/whisper/whisper-cli",
+                  "$CREWLY_HOME/bin/whisper-cli"
+                ]
+              },
+              "install": {
+                "darwin": {
+                  "brew": [
+                    "whisper-cpp"
+                  ]
+                },
+                "linux": {
+                  "script": "install-whisper-cpp.sh"
+                }
+              },
+              "manualHint": "Build whisper.cpp from https://github.com/ggml-org/whisper.cpp and put whisper-cli on PATH."
+            },
+            {
+              "id": "whisper-model",
+              "type": "file",
+              "description": "Whisper large-v3-turbo model (q5_0, 547 MB)",
+              "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin",
+              "sha256": "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2",
+              "sizeBytes": 574041195,
+              "dest": "~/.cache/whisper-models/ggml-large-v3-turbo-q5_0.bin",
+              "alternatives": [
+                "~/.flopost/whisper/ggml-large-v3-turbo-q5_0.bin"
+              ]
+            }
+          ]
+        }
       }
     },
     {

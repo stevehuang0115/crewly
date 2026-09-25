@@ -9,6 +9,7 @@
 
 import { existsSync, readFileSync } from 'fs';
 import path from 'path';
+import { validateSetupManifest } from '../../../backend/src/services/skill-setup/skill-setup-manifest.js';
 
 /** Result of a package validation */
 export interface ValidationResult {
@@ -42,6 +43,8 @@ export interface SkillManifest {
   triggers?: string[];
   license?: string;
   author?: string;
+  /** Dependency setup block (specs/skill-auto-install.md) */
+  setup?: unknown;
 }
 
 /** Required files that must exist in a skill package */
@@ -153,6 +156,21 @@ export function validatePackage(skillDir: string): ValidationResult {
 
   if (!manifest.tags || !Array.isArray(manifest.tags) || manifest.tags.length === 0) {
     errors.push('skill.json must have a non-empty tags array');
+  }
+
+  // A setup block is run on users' machines: it must be valid, and every
+  // install script it names must ship with the skill.
+  if (manifest.setup !== undefined) {
+    const setup = validateSetupManifest(manifest.setup);
+    errors.push(...setup.errors.map((e) => `skill.json ${e}`));
+    for (const step of setup.manifest?.steps ?? []) {
+      if (step.type !== 'command') continue;
+      for (const recipe of Object.values(step.install ?? {})) {
+        if (recipe?.script && !existsSync(path.join(absDir, recipe.script))) {
+          errors.push(`skill.json setup step "${step.id}" names install script ${recipe.script}, which is not in the skill directory`);
+        }
+      }
+    }
   }
 
   // Warnings for optional best practices
