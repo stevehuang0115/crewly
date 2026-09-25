@@ -3,6 +3,9 @@
  * agent's bot posts and later edits into its reply.
  */
 
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import * as path from 'path';
 import { SlackTypingPlaceholderService, type TypingSlackApi } from './slack-typing-placeholder.service.js';
 
 function makeSlack(overrides: Partial<TypingSlackApi> = {}) {
@@ -228,5 +231,36 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     await svc.begin(key, ella, 'typing', '100.2'); // a second message under the same placeholder
     await svc.settleTurnWithoutReply('mk-ella', t0 + 60_000);
     expect(reactions).toEqual([{ ts: '100.2', emoji: 'white_check_mark', botToken: 'xoxb-ella' }]);
+  });
+
+  it('placeholders survive a restart: a late reply still replaces one, the rest are taken down as orphans', async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'typing-'));
+    const storePath = path.join(dir, 'placeholders.json');
+    try {
+      const noTimer = { setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined };
+      const before = new SlackTypingPlaceholderService({ slack: makeSlack().slack, storePath, ...noTimer });
+      await before.begin(key, ella); // ts-1
+      await before.begin({ agentSession: 'think-atlas', slackChannelId: 'C2', threadTs: '9.9' }, { botToken: 'xoxb-atlas', displayName: 'Atlas' }); // ts-2
+
+      // Restart: a fresh service loads both as timed out.
+      const deleted: string[] = [];
+      const orphanTimers: Array<() => void> = [];
+      const after = new SlackTypingPlaceholderService({
+        slack: makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } }).slack,
+        storePath,
+        setTimer: (fn) => { orphanTimers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; },
+        clearTimer: () => undefined,
+      });
+      expect(after.findOwed('mk-ella', 'D1')).not.toBeNull();
+      expect(await after.resolve(key, 'answer after restart', ella)).toBe('replaced');
+      expect(deleted).toEqual(['ts-1']);
+      // Atlas was never woken again: taken down when the orphan timer fires.
+      orphanTimers[0]();
+      await new Promise((r) => setImmediate(r));
+      expect(deleted).toEqual(['ts-1', 'ts-2']);
+      expect(after.findOwed('think-atlas', 'C2')).toBeNull();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

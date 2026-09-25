@@ -777,6 +777,10 @@ export const SLACK_TYPING_CONSTANTS = {
 	SETTLED_TEXT: '✓ {name} read this — no reply needed.',
 	/** Reaction put on the person's message when the agent settled it without replying */
 	SETTLED_REACTION: 'white_check_mark',
+	/** Placeholders restored after a restart that nobody claims within this long are taken down */
+	BOOT_ORPHAN_MS: 15 * 60 * 1000,
+	/** File (under CREWLY_HOME) where outstanding placeholders survive a restart */
+	STORE_FILENAME: 'slack-typing-placeholders.json',
 	/**
 	 * Metadata flag on an agent message that is an interim note ("got it —
 	 * here is my plan") rather than the answer: the Slack mirror posts it and

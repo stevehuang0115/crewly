@@ -14,6 +14,8 @@
  * @module services/slack/slack-typing-placeholder.service
  */
 
+import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
+import * as path from 'path';
 import { SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
@@ -89,6 +91,12 @@ export interface SlackTypingPlaceholderDeps {
   timeoutMs?: number;
   setTimer?: (fn: () => void, ms: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (t: ReturnType<typeof setTimeout>) => void;
+  /**
+   * Where outstanding placeholders are kept across restarts. Without it a
+   * restart forgot them and nothing ever took them down (Atlas's 17:02
+   * "working on it" stayed after the 17:40 restart, 2026-09-25).
+   */
+  storePath?: string;
 }
 
 /**
@@ -111,6 +119,7 @@ export class SlackTypingPlaceholderService {
    */
   constructor(private readonly deps: SlackTypingPlaceholderDeps) {
     this.logger = LoggerService.getInstance().createComponentLogger('SlackTyping');
+    this.loadPersisted();
   }
 
   /**
@@ -232,6 +241,7 @@ export class SlackTypingPlaceholderService {
         unref(entry.slowTimer);
       }
       this.pending.set(k, entry);
+      this.persist();
       return placeholder;
     } catch (err) {
       // At debug this was invisible — the running log level emits none, so a
@@ -258,11 +268,13 @@ export class SlackTypingPlaceholderService {
       const late = this.expired.get(k);
       if (!late) return null;
       this.expired.delete(k);
+      this.persist();
       return late.placeholder;
     }
     (this.deps.clearTimer ?? clearTimeout)(entry.timer);
     if (entry.slowTimer) (this.deps.clearTimer ?? clearTimeout)(entry.slowTimer);
     this.pending.delete(k);
+    this.persist();
     return entry.placeholder;
   }
 
@@ -403,10 +415,83 @@ export class SlackTypingPlaceholderService {
         }
       }
     }
+    if (victims.length > 0) this.persist();
     if (victims.length > 0) {
       this.logger.info('Agent finished its turn without replying — placeholders taken down', { agentSession, count: victims.length });
     }
     return victims.length;
+  }
+
+  /** Save outstanding placeholders (pending + timed out) so a restart can still take them down. */
+  private persist(): void {
+    if (!this.deps.storePath) return;
+    try {
+      const entries = [
+        ...[...this.pending].map(([key, e]) => ({ key, placeholder: e.placeholder, at: e.startedAt })),
+        ...[...this.expired].map(([key, e]) => ({ key, placeholder: e.placeholder, at: e.at })),
+      ];
+      mkdirSync(path.dirname(this.deps.storePath), { recursive: true });
+      writeFileSync(this.deps.storePath, JSON.stringify({ entries }), { mode: 0o600 });
+    } catch (err) {
+      this.logger.debug('Could not save typing placeholders', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Placeholders outstanding at the last shutdown come back as timed out:
+   * a reply that still arrives replaces them, the agent's next turn end
+   * takes them down, and whatever nobody claims within BOOT_ORPHAN_MS (the
+   * agent was never woken again) is taken down then.
+   */
+  private loadPersisted(): void {
+    if (!this.deps.storePath || !existsSync(this.deps.storePath)) return;
+    try {
+      const { entries } = JSON.parse(readFileSync(this.deps.storePath, 'utf8')) as {
+        entries: Array<{ key: string; placeholder: TypingPlaceholder; at: number }>;
+      };
+      const cutoff = Date.now() - SLACK_TYPING_CONSTANTS.EXPIRED_KEEP_MS;
+      const fromBoot: string[] = [];
+      for (const e of entries ?? []) {
+        if (!e?.key || !e.placeholder?.ts || e.at < cutoff) continue;
+        this.expired.set(e.key, { placeholder: e.placeholder, at: e.at });
+        fromBoot.push(e.key);
+      }
+      if (fromBoot.length === 0) return;
+      this.logger.info('Restored typing placeholders from before the restart', { count: fromBoot.length });
+      const setTimer = this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+      const t = setTimer(() => void this.dropOrphans(fromBoot), SLACK_TYPING_CONSTANTS.BOOT_ORPHAN_MS);
+      if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref();
+    } catch (err) {
+      this.logger.debug('Could not load typing placeholders', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Take down restored placeholders nobody answered or settled since boot.
+   *
+   * @param keys - Keys restored at boot
+   * @returns How many were taken down
+   */
+  async dropOrphans(keys: string[]): Promise<number> {
+    let n = 0;
+    for (const k of keys) {
+      const entry = this.expired.get(k);
+      if (!entry) continue;
+      this.expired.delete(k);
+      n += 1;
+      try {
+        if (this.deps.slack.deleteMessage) {
+          await this.deps.slack.deleteMessage(entry.placeholder.slackChannelId, entry.placeholder.ts, entry.placeholder.botToken);
+        }
+      } catch (err) {
+        this.logger.debug('Could not take down an orphaned placeholder', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (n > 0) {
+      this.persist();
+      this.logger.info('Took down placeholders left over from before the restart', { count: n });
+    }
+    return n;
   }
 
   /** Forget timed-out placeholders older than EXPIRED_KEEP_MS. */
@@ -427,6 +512,7 @@ export class SlackTypingPlaceholderService {
     const { placeholder } = entry;
     this.pruneExpired();
     this.expired.set(k, { placeholder, at: Date.now() });
+    this.persist();
     try {
       await this.deps.slack.updateMessage(
         placeholder.slackChannelId,

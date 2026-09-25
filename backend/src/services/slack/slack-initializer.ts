@@ -28,7 +28,9 @@ import {
 } from './slack-source-preference.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
-import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
+import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
+import * as path from 'path';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
@@ -904,7 +906,10 @@ export async function startSlackTeamChannels(): Promise<void> {
     // "Is typing…" placeholders posted by the agents' own bots.
     let typing = getSlackTypingPlaceholderService();
     if (!typing) {
-      typing = new SlackTypingPlaceholderService({ slack: getSlackService() });
+      typing = new SlackTypingPlaceholderService({
+        slack: getSlackService(),
+        storePath: path.join(getCrewlyHomePath(), SLACK_TYPING_CONSTANTS.STORE_FILENAME),
+      });
       setSlackTypingPlaceholderService(typing);
     }
     // Agent-initiated posts (the `slack-post` skill). A post into a
