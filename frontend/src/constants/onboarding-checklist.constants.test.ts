@@ -43,7 +43,7 @@ describe('onboarding checklist constants', () => {
     const url = new URL(buildCloudSignInUrl('http://192.168.1.20:8787', '/setup?step=cloud'));
     expect(url.origin).toBe('https://api.crewlyai.com');
     expect(url.pathname).toBe('/api/cloud/google/start');
-    const callback = new URL(url.searchParams.get('redirect')!);
+    const callback = new URL(url.searchParams.get('redirect') ?? '');
     expect(callback.origin).toBe('http://192.168.1.20:8787');
     expect(callback.pathname).toBe('/auth/callback');
     expect(callback.searchParams.get('next')).toBe('/setup?step=cloud');

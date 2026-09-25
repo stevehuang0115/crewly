@@ -20,7 +20,7 @@ import { CLI_CONSTANTS } from '../constants.js';
 import { ONBOARDING_CONSTANTS, HARNESS_CONSTANTS } from '../../../backend/src/constants.js';
 import { OnboardingStateStore } from '../../../backend/src/services/onboarding/onboarding-state.store.js';
 import { buildTokenPageSignInUrl } from '../../../backend/src/services/onboarding/onboarding-checklist.service.js';
-import { listOnboardingStarters, type TeamTemplate } from '../utils/templates.js';
+import type { TeamTemplate } from '../utils/templates.js';
 import { defaultHttpJson, isBackendRunning, localBackendUrl, type HttpJson } from '../utils/harness-engine.js';
 
 /** Question asker (readline in the wizard). */

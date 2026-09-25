@@ -33,7 +33,7 @@ describe('CloudConnectStep', () => {
     fireEvent.click(screen.getByTestId('cloud-sign-in'));
     const url = new URL(navigateTo.mock.calls[0][0]);
     expect(url.pathname).toBe('/api/cloud/google/start');
-    const callback = new URL(url.searchParams.get('redirect')!);
+    const callback = new URL(url.searchParams.get('redirect') ?? '');
     expect(callback.origin).toBe(window.location.origin);
     expect(callback.pathname).toBe('/auth/callback');
     expect(callback.searchParams.get('next')).toBe('/setup?step=cloud');

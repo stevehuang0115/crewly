@@ -115,7 +115,7 @@ describe('Setup page', () => {
     svc.setOrcHarness.mockResolvedValue('codex-cli');
     render(<Setup />);
     await screen.findByText('选择并安装编程助手');
-    fireEvent.click(screen.getAllByRole('radio').find((r) => (r as HTMLInputElement).value === 'codex-cli')!);
+    fireEvent.click(screen.getAllByRole('radio').find((r) => (r as HTMLInputElement).value === 'codex-cli') as HTMLElement);
     await click('下一步');
     expect((screen.getByDisplayValue('codex-cli') as HTMLInputElement).checked).toBe(true);
     await click('下一步');

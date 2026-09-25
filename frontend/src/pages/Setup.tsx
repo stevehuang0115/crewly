@@ -252,7 +252,7 @@ export const Setup: React.FC = () => {
             />
             <HarnessList
               harnesses={harnesses}
-              systemTools={overview!.systemTools}
+              systemTools={overview?.systemTools ?? []}
               selectedId={selectedHarness}
               onSelect={setSelectedHarness}
               onInstallFinished={() => void refresh()}
