@@ -31,12 +31,13 @@ export class SkillsReferenceModule implements PromptModule {
 	 */
 	async build(config: ModuleConfig): Promise<string> {
 		const coreSkills = this.buildCoreSkills(config);
+		const missingCapability = this.buildMissingCapability(config);
 		const capabilities = this.buildCapabilities(config);
 		const communication = this.buildCommunication(config);
 
 		const safeCallGuide = this.buildSafeCallGuide(config);
 		const connectors = this.buildConnectors(config);
-		const parts = [coreSkills, capabilities, connectors, communication];
+		const parts = [coreSkills, missingCapability, capabilities, connectors, communication];
 		if (safeCallGuide) {
 			parts.push(safeCallGuide);
 		}
@@ -92,6 +93,38 @@ export class SkillsReferenceModule implements PromptModule {
 			`\`${p}/whatsapp-inbox\` (chats needing a reply), \`whatsapp-read\` (a chat / search),`,
 			'`whatsapp-draft` (saves a reply as W12 — never sends), `whatsapp-send` (only after the',
 			'owner replies 「发 W12」). Never auto-reply; summarise, don\'t paste chats elsewhere.',
+		].join('\n');
+	}
+
+	/**
+	 * Build the "missing a capability" rule (specs/skill-auto-install.md).
+	 *
+	 * An owner sent a Slack voice message. One agent transcribed it; another,
+	 * on a machine without whisper.cpp, answered "can't transcribe,
+	 * whisper.cpp isn't installed" and stopped. The skill and its installer
+	 * existed — the agent just never looked. This rule makes looking the
+	 * first move: find-skill, tell the user in one line, install-skill in the
+	 * background, and pick the task back up when the completion message lands.
+	 *
+	 * @param config - Module configuration, for the skills path
+	 * @returns The formatted section
+	 */
+	private buildMissingCapability(config: ModuleConfig): string {
+		const p = `${config.agentSkillsPath}/core`;
+		return [
+			'## Missing a capability? Install it — never stop at "X is not installed"',
+			'',
+			'Before telling the user you cannot do something (a file you cannot read — audio, video,',
+			'PDF —, a missing tool, or a skill that answered `"needsSetup": true`):',
+			`1. \`${p}/find-skill/execute.sh --query "<what you need>"\` (skip when needsSetup already named the skill).`,
+			'2. Official and not ready → tell the user in ONE line that you are installing it and roughly how',
+			'   long it takes ("I can\'t listen to audio yet — installing the transcription skill, ~6 min"), then',
+			`   \`${p}/install-skill/execute.sh --id <id> --resume "<what you were doing>"\`. It runs in the background.`,
+			'3. When `[SKILL INSTALLED]` arrives, do the original task right away and deliver the result.',
+			'   On `[SKILL INSTALL FAILED]`, tell the user what is missing and the fix it names.',
+			'- Third-party (`official:false`): ask the owner first; only after their yes add',
+			'  `--approved-by-owner --owner-said "<their words>"`.',
+			'- Audio/video (voice messages) → `transcribe-audio`. PDFs (read, make, merge) → `pdf-tools`.',
 		].join('\n');
 	}
 

@@ -47,6 +47,28 @@ describe('SkillsReferenceModule', () => {
 		expect(result).toContain('core/resolve-prediction');
 	});
 
+	describe('missing-capability rule (skill auto-install)', () => {
+		it.each(['developer', 'orchestrator', 'team-leader'])('tells a %s to find and install a skill instead of giving up', async (role) => {
+			const result = await module.build({ ...baseConfig, role, canDelegate: role === 'team-leader' });
+			expect(result).toContain('never stop at "X is not installed"');
+			expect(result).toContain('/path/to/skills/agent/core/find-skill/execute.sh --query');
+			expect(result).toContain('/path/to/skills/agent/core/install-skill/execute.sh --id <id> --resume');
+			expect(result).toContain('"needsSetup": true');
+			expect(result).toContain('tell the user in ONE line that you are installing it');
+			expect(result).toContain('[SKILL INSTALLED]');
+			expect(result).toContain('[SKILL INSTALL FAILED]');
+			expect(result).toContain('--approved-by-owner');
+			expect(result).toContain('`transcribe-audio`');
+			expect(result).toContain('`pdf-tools`');
+		});
+
+		it('comes right after the core skills list', async () => {
+			const result = await module.build(baseConfig);
+			expect(result.indexOf('## Missing a capability?')).toBeGreaterThan(result.indexOf('## Available Skills'));
+			expect(result.indexOf('## Missing a capability?')).toBeLessThan(result.indexOf('## Available Capabilities'));
+		});
+	});
+
 	it('should include skill catalog reference', async () => {
 		const result = await module.build(baseConfig);
 

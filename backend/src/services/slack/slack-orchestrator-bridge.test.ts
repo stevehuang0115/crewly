@@ -252,7 +252,7 @@ describe('SlackOrchestratorBridge', () => {
         resolveFileToken(m: Partial<SlackIncomingMessage>, f: Array<{ id: string; name: string; url_private_download?: string }>): Promise<string | null>;
       };
       expect(bridgeApi.fileTokenCandidates({ channelId: 'CPRIV', text: 'voice' })).toEqual(['xoxb-ella', 'xoxb-atlas', 'xoxb-workspace']);
-      const files = [{ id: 'F1', name: 'Audio Clip.m4a' }];
+      const files: Array<{ id: string; name: string; url_private_download?: string }> = [{ id: 'F1', name: 'Audio Clip.m4a' }];
       expect(await bridgeApi.resolveFileToken({ channelId: 'CPRIV', text: '' }, files)).toBe('xoxb-atlas');
       expect(files[0].url_private_download).toBe('https://files/ok');
       expect(tried.slice(0, 2)).toEqual(['xoxb-ella', 'xoxb-atlas']);
@@ -487,6 +487,38 @@ describe('SlackOrchestratorBridge', () => {
       const enriched = enrichTextWithFiles(message);
       expect(enriched).toContain('Check this PDF');
       expect(enriched).toContain('[Slack File: /tmp/F002-report.pdf (report.pdf, application/pdf, 100KB)]');
+    });
+
+    it('points a Slack voice message at transcribe-audio, right after the file line', () => {
+      const bridge = new SlackOrchestratorBridge();
+      const enrichTextWithFiles = (bridge as any).enrichTextWithFiles.bind(bridge);
+      const message: SlackIncomingMessage = {
+        id: '1', type: 'message', text: '', userId: 'U1',
+        channelId: 'C1', ts: '1', teamId: 'T1', eventTs: '1',
+        attachments: [{
+          id: 'F009', name: 'Audio Clip.m4a', mimetype: 'audio/mp4',
+          localPath: '/tmp/F009-Audio_Clip.m4a', size: 219136,
+          permalink: 'https://slack.com/files/F009',
+        }],
+      };
+      const lines = enrichTextWithFiles(message).split('\n');
+      const at = lines.findIndex((l: string) => l.startsWith('[Slack File: /tmp/F009-Audio_Clip.m4a'));
+      expect(at).toBeGreaterThanOrEqual(0);
+      expect(lines[at + 1]).toMatch(/^\[Hint: voice\/audio or video file — use the transcribe-audio skill: \{"audioFile":"\/tmp\/F009-Audio_Clip\.m4a"\}/);
+      expect(lines[at + 1]).toContain('install-skill --id transcribe-audio');
+    });
+
+    it('hints the PDF reading skill only when the PDF text is not already inline', () => {
+      const bridge = new SlackOrchestratorBridge();
+      const enrichTextWithFiles = (bridge as any).enrichTextWithFiles.bind(bridge);
+      const base = { id: 'F002', name: 'report.pdf', mimetype: 'application/pdf', localPath: '/tmp/F002-report.pdf', size: 1024, permalink: 'p' };
+      const msg = (extractedText?: string): SlackIncomingMessage => ({
+        id: '1', type: 'message', text: 'pdf', userId: 'U1', channelId: 'C1', ts: '1', teamId: 'T1', eventTs: '1',
+        attachments: [{ ...base, ...(extractedText ? { extractedText } : {}) }],
+      });
+      expect(enrichTextWithFiles(msg('The whole contract.'))).not.toContain('[Hint:');
+      expect(enrichTextWithFiles(msg())).toContain('use the PDF reading skill (pdf-tools): {"action":"read","input":"/tmp/F002-report.pdf"}');
+      expect(enrichTextWithFiles(msg('Start...\n... [truncated]'))).toContain('only the start of its text is included above');
     });
 
     it('should enrich text with both images and file attachments', () => {

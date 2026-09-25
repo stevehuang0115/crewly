@@ -62,6 +62,7 @@ import {
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import type { ThreadStatusQueueService } from '../messaging/thread-status-queue.service.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { inboundFileHint } from '../../utils/inbound-file-hint.utils.js';
 
 /**
  * Bridge configuration
@@ -1596,6 +1597,10 @@ Just type naturally to chat with the orchestrator!`;
         if (file.extractedText) {
           text += `\n--- Extracted content from ${file.name} ---\n${file.extractedText}\n--- End of ${file.name} ---`;
         }
+        // Name the skill that reads this kind of file (voice messages →
+        // transcribe-audio, PDFs the inline extract could not cover → pdf-tools).
+        const hint = inboundFileHint(file);
+        if (hint) text += `\n${hint}`;
       }
     }
 
