@@ -197,6 +197,9 @@ describe('onboard-checklist', () => {
 			const links = buildConnectLinks('h', 1, null);
 			printConnectSteps(links, null, log);
 			expect(lines.join('\n')).toContain(links.cloudSignInUrl);
+			expect(lines.join('\n')).toContain(links.cloudSetupUrl);
+			expect(lines.join('\n')).toContain('crewly cloud login');
+			expect(lines.join('\n')).not.toContain('--no-browser');
 			expect(lines.join('\n')).toContain(links.slackSetupUrl);
 			lines = [];
 			printConnectSteps(links, { cloud: true, slack: true }, log);

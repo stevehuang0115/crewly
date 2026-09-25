@@ -272,10 +272,10 @@ export function printConnectSteps(links: ConnectLinks, state: ConnectState | nul
 		log(chalk.green('  ✓ Crewly Cloud connected'));
 	} else {
 		log(`  ${chalk.bold('Crewly Cloud')} (remote access, backups, Slack):`);
-		log(`    1. On your phone, sign in:  ${chalk.cyan(links.cloudSignInUrl)}`);
-		log(`    2. Paste the token and refresh token it shows into Setup → Cloud:`);
+		log(`    Open Setup → Cloud on your phone, scan or tap the link it shows, and approve:`);
 		log(`       ${chalk.cyan(links.cloudSetupUrl)}`);
-		log(chalk.gray('       (Or run `crewly cloud login --no-browser` here.)'));
+		log(chalk.gray('       (Or run `crewly cloud login` here — it prints a link to approve from your phone.)'));
+		log(chalk.gray(`       Fallback: sign in and paste the tokens: ${links.cloudSignInUrl}`));
 	}
 	if (state?.slack) {
 		log(chalk.green('  ✓ Slack connected\n'));

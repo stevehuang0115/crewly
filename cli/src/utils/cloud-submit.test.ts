@@ -26,6 +26,7 @@ jest.mock('axios', () => ({
   },
 }));
 
+import path from 'path';
 import { loadCloudToken, collectSkillFiles, submitToCloud } from './cloud-submit.js';
 
 /** Build a Dirent-like entry. */
@@ -58,6 +59,15 @@ describe('loadCloudToken', () => {
     mockExistsSync.mockReturnValue(true);
     mockReadFileSync.mockReturnValue(JSON.stringify({ token: 'jwt', cloudUrl: 'https://c' }));
     expect(loadCloudToken()).toEqual({ token: 'jwt', cloudUrl: 'https://c' });
+  });
+
+  it('reads the credentials under CREWLY_HOME, not the real home', () => {
+    mockExistsSync.mockReturnValue(true);
+    mockReadFileSync.mockReturnValue(JSON.stringify({ token: 'jwt' }));
+    loadCloudToken();
+    const expected = path.join(process.env.CREWLY_HOME as string, 'cloud', 'config.json');
+    expect(mockExistsSync).toHaveBeenCalledWith(expected);
+    expect(mockReadFileSync).toHaveBeenCalledWith(expected, 'utf-8');
   });
 
   it('returns null when the file has no token', () => {

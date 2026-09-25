@@ -77,8 +77,11 @@ jest.mock('readline', () => {
   };
 });
 
+import { join } from 'path';
 import {
   loginCommand,
+  getCloudConfigFile,
+  type LoginDeps,
   statusCommand,
   logoutCommand,
   saveCloudCredentials,
@@ -127,10 +130,13 @@ describe('saveCloudCredentials', () => {
 
     saveCloudCredentials('tok-123', 'ref-456');
 
+    // $CREWLY_HOME/cloud — the jest setup points CREWLY_HOME at a temp dir,
+    // so this also proves the real ~/.crewly is never touched.
     expect(mockMkdirSync).toHaveBeenCalledWith(
-      expect.stringContaining('.crewly/cloud'),
+      join(process.env.CREWLY_HOME as string, 'cloud'),
       { recursive: true },
     );
+    expect(mockWriteFileSync.mock.calls[0][0]).toBe(join(process.env.CREWLY_HOME as string, 'cloud', 'config.json'));
     expect(mockWriteFileSync).toHaveBeenCalledTimes(1);
     const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
     expect(written.token).toBe('tok-123');
@@ -279,7 +285,7 @@ describe('loginCommand — direct token', () => {
 // loginCommand — no-browser (mobile) flow
 // ---------------------------------------------------------------------------
 
-describe('loginCommand — no-browser (mobile) flow', () => {
+describe('loginCommand — --paste (copy-paste) flow', () => {
   it('prints a login URL and connects with pasted token', async () => {
     // Simulate user pasting a token
     mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb('pasted-token-123'));
@@ -288,7 +294,7 @@ describe('loginCommand — no-browser (mobile) flow', () => {
       data: { success: true, data: { tier: 'pro' } },
     });
 
-    await loginCommand({ browser: false });
+    await loginCommand({ paste: true });
 
     const output = getOutput();
     // Should show the OAuth URL with cli-token redirect
@@ -309,7 +315,7 @@ describe('loginCommand — no-browser (mobile) flow', () => {
     mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb(answers.shift() ?? ''));
     mockAxiosPost.mockResolvedValue({ data: { success: true, data: { tier: 'pro' } } });
 
-    await loginCommand({ browser: false });
+    await loginCommand({ paste: true });
 
     const prompts = mockRlQuestion.mock.calls.map((c) => String(c[0]));
     expect(prompts[1]).toContain('refresh token');
@@ -323,14 +329,14 @@ describe('loginCommand — no-browser (mobile) flow', () => {
     const answers = ['pasted-token-123', ''];
     mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb(answers.shift() ?? ''));
     mockAxiosPost.mockResolvedValue({ data: { success: true, data: { tier: 'pro' } } });
-    await loginCommand({ browser: false });
+    await loginCommand({ paste: true });
     expect(getOutput()).toContain('No refresh token');
   });
 
   it('exits when no token is pasted', async () => {
     mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb(''));
 
-    await expect(loginCommand({ browser: false })).rejects.toThrow('process.exit');
+    await expect(loginCommand({ paste: true })).rejects.toThrow('process.exit');
 
     const output = getOutput();
     expect(output).toContain('No token provided');
@@ -344,11 +350,91 @@ describe('loginCommand — no-browser (mobile) flow', () => {
     mockAxiosPost.mockRejectedValue(axiosErr);
     mockIsAxiosError.mockReturnValue(true);
 
-    await loginCommand({ browser: false });
+    await loginCommand({ paste: true });
 
     const output = getOutput();
     expect(output).toContain('Credentials saved');
     expect(mockWriteFileSync).toHaveBeenCalled();
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// loginCommand — device pairing (default)
+// ---------------------------------------------------------------------------
+
+describe('loginCommand — device pairing (default)', () => {
+  const started = {
+    deviceCode: 'device-secret',
+    userCode: 'ABCD-2345',
+    verificationUrl: 'https://crewlyai.com/cloud/pair?code=ABCD-2345',
+    verificationUri: 'https://crewlyai.com/cloud/pair',
+    expiresIn: 900,
+    interval: 5,
+  };
+
+  function deps(outcome: Awaited<ReturnType<LoginDeps['waitForApproval']>>): LoginDeps & { startPairing: jest.Mock; waitForApproval: jest.Mock } {
+    return {
+      startPairing: jest.fn().mockResolvedValue(started),
+      waitForApproval: jest.fn().mockResolvedValue(outcome),
+    };
+  }
+
+  it('prints the link and code, waits, then saves and connects with the approved tokens', async () => {
+    mockAxiosPost.mockResolvedValue({ data: { success: true, data: { tier: 'solo' } } });
+    const d = deps({ status: 'approved', credentials: { token: 'access-x', refreshToken: 'refresh-x', tier: 'solo', email: 'o@example.test' } });
+
+    await loginCommand({ browser: false }, d);
+
+    expect(d.startPairing).toHaveBeenCalledWith(expect.stringMatching(/^https?:\/\//), expect.objectContaining({ purpose: 'cli', deviceName: expect.any(String) }));
+    expect(d.waitForApproval).toHaveBeenCalledWith(expect.objectContaining({ start: started }));
+    const output = getOutput();
+    expect(output).toContain('https://crewlyai.com/cloud/pair?code=ABCD-2345');
+    expect(output).toContain('ABCD-2345');
+    expect(output).toContain('Waiting for approval');
+    expect(output).not.toContain('device-secret');
+    expect(output).not.toContain('access-x');
+    // --no-browser: nothing opened locally
+    expect(mockExec).not.toHaveBeenCalled();
+
+    const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
+    expect(written).toMatchObject({ token: 'access-x', refreshToken: 'refresh-x' });
+    expect(mockWriteFileSync.mock.calls[0][0]).toBe(getCloudConfigFile());
+    const [url, body] = mockAxiosPost.mock.calls[0] as any[];
+    expect(url).toContain('/api/cloud/connect');
+    expect(body).toEqual({ token: 'access-x', refreshToken: 'refresh-x' });
+    expect(output).toContain('Connected to CrewlyAI Cloud');
+  });
+
+  it.each([
+    ['denied', 'denied'],
+    ['expired', 'expired'],
+    ['cancelled', 'cancelled'],
+  ] as const)('exits with a message when the pairing is %s', async (status, text) => {
+    await expect(loginCommand({ browser: false }, deps({ status }))).rejects.toThrow('process.exit');
+    expect(getOutput()).toContain(text);
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(mockAxiosPost).not.toHaveBeenCalled();
+  });
+
+  it('exits and points at the other flows when the Cloud refuses to start', async () => {
+    const d = deps({ status: 'expired' });
+    d.startPairing.mockRejectedValue(new Error('Too many pairing requests'));
+    await expect(loginCommand({ browser: false }, d)).rejects.toThrow('process.exit');
+    expect(getOutput()).toContain('Too many pairing requests');
+    expect(getOutput()).toContain('--paste');
+  });
+
+  it('exits when polling fails for good', async () => {
+    const d = deps({ status: 'expired' });
+    d.waitForApproval.mockRejectedValue(new Error('Crewly Cloud unreachable'));
+    await expect(loginCommand({ browser: false }, d)).rejects.toThrow('process.exit');
+    expect(getOutput()).toContain('Crewly Cloud unreachable');
+  });
+
+  it('--web refuses to run without a browser', async () => {
+    await expect(loginCommand({ web: true, browser: false })).rejects.toThrow('process.exit');
+    expect(getOutput()).toContain('--web needs a browser');
   });
 });
 
@@ -578,21 +664,26 @@ describe('loginCommand — auto-detection headless fallback', () => {
     }
   });
 
-  it('auto-falls back to mobile flow in SSH environment without --no-browser', async () => {
+  it('over SSH the default device flow just prints the link (no local browser, no paste)', async () => {
     process.env['SSH_CLIENT'] = '192.168.1.1 12345 22';
+    mockAxiosPost.mockResolvedValue({ data: { success: true, data: { tier: 'pro' } } });
+    const d: LoginDeps = {
+      startPairing: jest.fn().mockResolvedValue({
+        deviceCode: 'dc',
+        userCode: 'WXYZ-6789',
+        verificationUrl: 'https://crewlyai.com/cloud/pair?code=WXYZ-6789',
+        expiresIn: 900,
+        interval: 5,
+      }),
+      waitForApproval: jest.fn().mockResolvedValue({ status: 'approved', credentials: { token: 'ssh-token', refreshToken: 'ssh-refresh', tier: 'pro' } }),
+    };
 
-    mockRlQuestion.mockImplementation((_prompt: string, cb: (answer: string) => void) => cb('ssh-token'));
-    mockAxiosPost.mockResolvedValue({
-      data: { success: true, data: { tier: 'pro' } },
-    });
+    // Empty options (no --no-browser flag): headless is detected, nothing is opened.
+    await loginCommand({}, d);
 
-    // Pass empty options (no --no-browser flag) — should auto-detect headless
-    await loginCommand({});
-
-    const output = getOutput();
-    expect(output).toContain('Headless environment detected');
-    expect(output).toContain('Open this URL');
-    expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+    expect(mockExec).not.toHaveBeenCalled();
+    expect(mockRlQuestion).not.toHaveBeenCalled();
+    expect(getOutput()).toContain('https://crewlyai.com/cloud/pair?code=WXYZ-6789');
     const [, body] = mockAxiosPost.mock.calls[0] as any[];
     expect(body.token).toBe('ssh-token');
   });

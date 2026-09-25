@@ -23,7 +23,7 @@ import { desktopCommand } from './commands/desktop.js';
 import { doctorCommand } from './commands/doctor.js';
 import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
-import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand } from './commands/cloud.js';
+import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand, type LoginOptions } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion, registerCliModuleDir } from './utils/version-check.js';
 import { setCliModuleDir } from './utils/package-root.js';
@@ -225,10 +225,12 @@ const cloudCmd = program
 
 cloudCmd
   .command('login')
-  .description('Login to CrewlyAI Cloud via Google OAuth or direct token')
-  .option('--token <token>', 'Login with a token directly (skip browser OAuth)')
-  .option('--no-browser', 'Show a URL to open on your phone instead of opening a local browser')
-  .action(loginCommand);
+  .description('Login to CrewlyAI Cloud: prints a link + code to approve from your phone (no token copying)')
+  .option('--token <token>', 'Login with a token directly')
+  .option('--no-browser', 'Do not open the approval link in a local browser (just print it)')
+  .option('--web', 'Old flow: Google sign-in in this machine\'s browser with a localhost callback')
+  .option('--paste', 'Old flow: sign in on the portal token page and paste the tokens here')
+  .action((options: LoginOptions) => loginCommand(options));
 
 cloudCmd
   .command('status')

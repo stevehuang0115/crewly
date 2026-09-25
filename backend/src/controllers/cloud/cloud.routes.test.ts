@@ -22,6 +22,13 @@ jest.mock('./cloud.controller.js', () => ({
   getDeviceId: jest.fn((_req, res) => res.status(200).json({ success: true })),
   getDevicesFromSync: jest.fn((_req, res) => res.status(200).json({ success: true })),
   verifyLicense: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  mobilePair: jest.fn((_req, res) => res.status(200).json({ success: true })),
+}));
+
+jest.mock('./cloud-device-pairing.controller.js', () => ({
+  startCloudDevicePairing: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  getCloudDevicePairingStatus: jest.fn((_req, res) => res.status(200).json({ success: true })),
+  cancelCloudDevicePairing: jest.fn((_req, res) => res.status(200).json({ success: true })),
 }));
 
 jest.mock('./cloud-google-auth.controller.js', () => ({
@@ -127,7 +134,17 @@ describe('Cloud Routes', () => {
     expect(routes).toContainEqual({ method: 'GET', path: '/license/verify' });
   });
 
-  it('should register exactly 14 routes', () => {
-    expect(routes).toHaveLength(14);
+  it('should register POST /mobile-pair route', () => {
+    expect(routes).toContainEqual({ method: 'POST', path: '/mobile-pair' });
+  });
+
+  it('should register the device pairing routes', () => {
+    expect(routes).toContainEqual({ method: 'POST', path: '/device/start' });
+    expect(routes).toContainEqual({ method: 'GET', path: '/device/status' });
+    expect(routes).toContainEqual({ method: 'POST', path: '/device/cancel' });
+  });
+
+  it('should register exactly 18 routes', () => {
+    expect(routes).toHaveLength(18);
   });
 });

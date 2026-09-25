@@ -634,35 +634,58 @@ the team, as it does any owner request.
 
 ### Crewly Cloud from a phone
 
-`/setup?step=cloud` offers two ways to connect.
+The owner is usually not at the machine: they tap on their phone and the
+machine gets its credentials by itself. `/setup?step=cloud` and Settings →
+Cloud offer three ways to connect, in this order.
 
-**1. Google sign-in that comes back to this page (primary).** The button
-opens:
+**1. Device-code pairing (primary, 2026-09-25).** The step starts it by
+itself (Settings starts it on a click) through the owner-only backend routes:
+
+| Route | Returns |
+|---|---|
+| `POST /api/cloud/device/start` `{ deviceName? }` | `{ state: 'pending', userCode, verificationUrl, verificationUri, expiresAt, deviceName }` (or the pairing already pending) |
+| `GET /api/cloud/device/status` | same shape; `state` ∈ `pending · connected · expired · denied · cancelled · error` |
+| `POST /api/cloud/device/cancel` | status after cancelling |
+
+All three refuse `X-Agent-Session` (403) and are on the mobile relay
+allowlist. None returns the device code or a token.
+
+`CloudDevicePairingService` asks crewly-auth (`POST /api/cloud/device/start`)
+for a pairing, then polls `POST /api/cloud/device/poll` in the background at
+the Cloud's interval (`slow_down` / HTTP 429 add 5 s, capped at 60 s; ten
+transient errors in a row end it). The panel shows a QR code of
+`https://crewlyai.com/cloud/pair?code=ABCD-2345`, the link, and the code. The
+owner approves there, signed in to the portal. The next poll returns the
+token pair exactly once. The backend connects through `performCloudConnect`,
+the same path as `POST /api/cloud/connect`. The panel reads `connected` and
+the step completes.
+
+The protocol lives in `cloud-device-pairing.client.ts`, shared with
+`crewly cloud login`.
+
+**2. Google sign-in in this browser (secondary).** The button opens:
 
 ```
 https://api.crewlyai.com/api/cloud/google/start?redirect=<origin>/auth/callback?next=/setup?step=cloud
 ```
 
-`<origin>` is whatever address the page was opened from: localhost, the LAN
-address on a phone, or a tunnel. The Cloud auth service accepts any http(s)
-callback (`isTrustedCallback`). It exchanges the code on the server and
-redirects to the callback with `&token=…&refreshToken=…`. `AuthCallback`
-then does the following:
+For `localhost` / `127.0.0.1` the Cloud redirects straight back with
+`&token=…&refreshToken=…`. For any other address (a LAN name, a VPS, a
+tunnel), crewly-auth no longer sends the token directly (the open-redirect fix,
+2026-09-25). It parks the login and shows
+`crewlyai.com/cloud/confirm-login`, which asks "Send your Crewly login to
+<host>?". The tokens arrive only after the owner clicks Continue, in the same
+browser. `AuthCallback` then does the following:
 
 - it posts both tokens to `/api/cloud/connect` on this backend;
 - it follows `next`, but only for a same-origin path (`isSafeNextPath`),
   and carries `?error=` back.
 
 `/auth/*` is excluded from API-token URL consumption, so the Cloud `token`
-parameter is never mistaken for the API token. Nothing lands on a localhost
-port of the machine.
+parameter is never mistaken for the API token.
 
-The existing Settings → Cloud button goes through
-`crewlyai.com/cloud/auth`, whose `isValidOssRedirect` accepts only
-localhost. That is why setup does not use it.
-
-**2. Paste (fallback).** Use this when the phone cannot be sent back to the
-page's address. The page links to the checklist's `tokenPageSignInUrl`:
+**3. Paste (last resort).** The page links to the checklist's
+`tokenPageSignInUrl`:
 
 ```
 https://api.crewlyai.com/api/cloud/google/start?redirect=https://crewlyai.com/cloud/cli-token
@@ -745,10 +768,14 @@ sets the task; with `--yes`, no task is sent without it.
 **Crewly Cloud & Slack.** This step never waits. If the running backend
 reports a step as done, it prints ✓. Otherwise it prints:
 
-- the Cloud sign-in link, which ends on the portal token page;
 - the LAN setup links `http://<lan-ip>:<port>/setup?step=cloud|slack&token=<api token>`.
-  The web app consumes the API token once.
-- `crewly cloud login --no-browser` as the terminal alternative.
+  The web app consumes the API token once. The Cloud step shows the pairing QR.
+- `crewly cloud login` as the terminal alternative. By default it runs the
+  same device-code pairing and prints the link and code. `--web` (localhost
+  callback), `--paste` and `--token` keep the older flows. Credentials go to
+  `$CREWLY_HOME/cloud/config.json`.
+- the Cloud sign-in link that ends on the portal token page, as the paste
+  fallback.
 
 ### Not in Phase 3
 

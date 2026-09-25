@@ -2,8 +2,9 @@
  * CloudTab Component
  *
  * CrewlyAI Cloud connection management in Settings.
- * Allows users to sign in to CrewlyAI Cloud via OAuth to access
- * Pro features like device sync and relay connections.
+ * Connects this machine by device-code pairing (link + QR + code approved
+ * from the owner's phone — {@link CloudDevicePairingPanel}); signing in with
+ * Google in this browser stays as a secondary option.
  * Shows connected devices when authenticated.
  *
  * Uses the backend `/api/cloud/status` endpoint as the source of truth
@@ -22,6 +23,7 @@ import { Card } from '@crewly/ui/Card';
 import { Alert } from '@crewly/ui/Alert';
 import { Badge, type BadgeVariant } from '@crewly/ui/Badge';
 import { Button, IconButton } from '@crewly/ui/Button';
+import { CloudDevicePairingPanel, PAIRING_LABELS_EN } from '../CloudDevicePairingPanel';
 
 /**
  * Cloud API validation endpoint -- proxied through the local OSS backend
@@ -607,12 +609,21 @@ export const CloudTab: React.FC = () => {
             </p>
           </div>
 
+          <div className="max-w-sm mx-auto text-left">
+            <CloudDevicePairingPanel
+              labels={PAIRING_LABELS_EN}
+              onConnected={() => { void checkBackendStatus(); }}
+            />
+          </div>
+
           <Button
+            variant="ghost"
+            size="sm"
             icon={ExternalLink}
             onClick={handleSignIn}
             data-testid="cloud-sign-in-button"
           >
-            Sign in with CrewlyAI
+            Or sign in with Google in this browser
           </Button>
         </Card>
       )}

@@ -36,6 +36,18 @@ vi.mock('../services/onboarding-checklist.service', () => ({
 
 const onboarding = vi.mocked(onboardingChecklistService);
 
+vi.mock('../services/cloud-device-pairing.service', () => ({
+  cloudDevicePairingService: {
+    start: vi.fn().mockResolvedValue({
+      state: 'pending',
+      userCode: 'ABCD-2345',
+      verificationUrl: 'https://crewlyai.com/cloud/pair?code=ABCD-2345',
+    }),
+    status: vi.fn().mockResolvedValue({ state: 'pending' }),
+    cancel: vi.fn(),
+  },
+}));
+
 vi.mock('../services/harness.service', () => ({
   harnessService: {
     getStatus: vi.fn(),
@@ -206,6 +218,8 @@ describe('Setup page', () => {
     svc.getStatus.mockImplementation(() => new Promise(() => {}));
     render(<Setup />);
     expect(await screen.findByTestId('cloud-connect-step')).toBeInTheDocument();
+    // Device pairing leads the step: the owner approves from a phone.
+    expect(await screen.findByTestId('cloud-pairing-code')).toHaveTextContent('ABCD-2345');
     expect(screen.getByTestId('setup-step-counter')).toHaveTextContent('第 6/8 步 · Cloud');
   });
 

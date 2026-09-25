@@ -9,27 +9,67 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CloudConnectStep } from './CloudConnectStep';
 import { onboardingChecklistService } from '../../services/onboarding-checklist.service';
+import { cloudDevicePairingService } from '../../services/cloud-device-pairing.service';
+import { CLOUD_DEVICE_PAIRING_POLL_MS } from '../../constants/cloud.constants';
 import { TOKEN_PAGE_URL } from '../../test/onboarding.fixtures';
 
 vi.mock('../../services/onboarding-checklist.service', () => ({
   onboardingChecklistService: { connectCloud: vi.fn() },
 }));
 
+vi.mock('../../services/cloud-device-pairing.service', () => ({
+  cloudDevicePairingService: { start: vi.fn(), status: vi.fn(), cancel: vi.fn() },
+}));
+
 const svc = vi.mocked(onboardingChecklistService);
+const pairing = vi.mocked(cloudDevicePairingService);
+
+const PENDING = {
+  state: 'pending' as const,
+  userCode: 'ABCD-2345',
+  verificationUrl: 'https://crewlyai.com/cloud/pair?code=ABCD-2345',
+};
 
 describe('CloudConnectStep', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    pairing.start.mockResolvedValue(PENDING);
+    pairing.status.mockResolvedValue(PENDING);
   });
 
-  it('shows the connected state', () => {
+  it('leads with device pairing: link + QR + code, then connects by itself', async () => {
+    vi.useFakeTimers();
+    try {
+      pairing.status.mockResolvedValue({ state: 'connected', tier: 'free' });
+      const onConnected = vi.fn();
+      await act(async () => {
+        render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={onConnected} />);
+      });
+      expect(pairing.start).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('cloud-pairing-code')).toHaveTextContent('ABCD-2345');
+      expect(screen.getByTestId('cloud-pairing-link')).toHaveAttribute('href', PENDING.verificationUrl);
+      expect(screen.getByText('等待你在手机上批准…')).toBeInTheDocument();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(CLOUD_DEVICE_PAIRING_POLL_MS);
+      });
+      expect(onConnected).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('shows the connected state and starts no pairing', () => {
     render(<CloudConnectStep connected tier="pro" tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={vi.fn()} />);
     expect(screen.getByTestId('cloud-connected')).toHaveTextContent('pro');
+    expect(pairing.start).not.toHaveBeenCalled();
   });
 
-  it('signs in with Google and comes back to this page, not a localhost callback', () => {
+  it('still offers Google sign-in (secondary) that comes back to this page, not a localhost callback', async () => {
     const navigateTo = vi.fn();
-    render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={vi.fn()} navigateTo={navigateTo} />);
+    await act(async () => {
+      render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={vi.fn()} navigateTo={navigateTo} />);
+    });
     fireEvent.click(screen.getByTestId('cloud-sign-in'));
     const url = new URL(navigateTo.mock.calls[0][0]);
     expect(url.pathname).toBe('/api/cloud/google/start');
@@ -42,7 +82,9 @@ describe('CloudConnectStep', () => {
   it('falls back to pasting the token and refresh token from the portal token page', async () => {
     svc.connectCloud.mockResolvedValue({ tier: 'free' });
     const onConnected = vi.fn();
-    render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={onConnected} />);
+    await act(async () => {
+      render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={onConnected} />);
+    });
     fireEvent.click(screen.getByTestId('cloud-show-paste'));
     expect(screen.getByRole('link', { name: /Crewly Cloud 登录页/ })).toHaveAttribute('href', TOKEN_PAGE_URL);
     expect(screen.getByTestId('cloud-paste-save')).toBeDisabled();
@@ -59,7 +101,9 @@ describe('CloudConnectStep', () => {
 
   it('shows a rejected token', async () => {
     svc.connectCloud.mockRejectedValue(new Error('authentication failed'));
-    render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={vi.fn()} />);
+    await act(async () => {
+      render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={vi.fn()} />);
+    });
     fireEvent.click(screen.getByTestId('cloud-show-paste'));
     fireEvent.change(screen.getByLabelText('Token'), { target: { value: 'bad' } });
     await act(async () => {

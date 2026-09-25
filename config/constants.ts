@@ -1244,6 +1244,55 @@ export const REDIS_CONSTANTS = {
 } as const;
 
 /**
+ * Device-code pairing with Crewly Cloud (crewly-auth `/api/cloud/device/*`).
+ *
+ * A machine signs in to the owner's Cloud account without anyone at it: it
+ * shows a short code + link (`crewlyai.com/cloud/pair?code=ABCD-2345`), the
+ * owner approves on their phone, and the machine polls until it receives its
+ * token pair. Shared by `crewly cloud login` (CLI) and the backend's
+ * background pairing used by `/setup` and Settings → Cloud.
+ */
+export const CLOUD_DEVICE_PAIRING_CONSTANTS = {
+	/** crewly-auth endpoints (relative to the Cloud API URL) */
+	CLOUD_ENDPOINTS: {
+		START: '/api/cloud/device/start',
+		POLL: '/api/cloud/device/poll',
+		REDEEM: '/api/cloud/device/redeem',
+	},
+	/** Local backend endpoints (owner-only; mounted under /api/cloud) */
+	LOCAL_ENDPOINTS: {
+		START: '/api/cloud/device/start',
+		STATUS: '/api/cloud/device/status',
+		CANCEL: '/api/cloud/device/cancel',
+	},
+	/** Poll outcomes reported by crewly-auth (RFC 8628 names where one exists) */
+	POLL_STATUS: {
+		PENDING: 'authorization_pending',
+		SLOW_DOWN: 'slow_down',
+		EXPIRED: 'expired',
+		DENIED: 'denied',
+		APPROVED: 'approved',
+	},
+	/** Poll interval when the Cloud does not say (seconds) */
+	DEFAULT_INTERVAL_S: 5,
+	/** Added to the interval on slow_down / rate limiting (seconds) */
+	SLOW_DOWN_INCREMENT_S: 5,
+	/** Longest interval the client will back off to (seconds) */
+	MAX_INTERVAL_S: 60,
+	/** Pairing lifetime when the Cloud does not say (seconds) */
+	DEFAULT_EXPIRES_IN_S: 900,
+	/** Timeout for one start / poll request (ms) */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** Consecutive network / server errors tolerated while polling */
+	MAX_CONSECUTIVE_POLL_ERRORS: 10,
+	/** `purpose` sent with a pairing (shown to the owner on the approve page) */
+	PURPOSES: {
+		CLI: 'cli',
+		SETUP: 'setup',
+	},
+} as const;
+
+/**
  * Type helpers for extracting literal types from constants
  */
 export type AgentStatus =

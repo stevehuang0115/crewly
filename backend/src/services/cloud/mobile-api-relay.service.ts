@@ -159,6 +159,14 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'POST', prefix: '/onboarding/checklist/dismiss' },
   { method: 'POST', prefix: '/onboarding/starter-team' },
   { method: 'POST', prefix: '/onboarding/first-task' },
+  // Device-code Cloud pairing (owner-only routes): show the link + code and
+  // watch it connect. It carries no credential either way — the owner
+  // approves on crewlyai.com and the tokens go Cloud → this machine. Useful
+  // from a phone paired to this machine over the LAN when it is signed out of
+  // Cloud, or to re-pair it under another account.
+  { method: 'GET', prefix: '/cloud/device/status' },
+  { method: 'POST', prefix: '/cloud/device/start' },
+  { method: 'POST', prefix: '/cloud/device/cancel' },
 ];
 
 /**

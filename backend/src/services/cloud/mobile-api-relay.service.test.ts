@@ -62,6 +62,14 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('POST', '/whatsapp/send')).toBe(false);
   });
 
+  it('allows the device-code Cloud pairing routes, but not the token-carrying connect', () => {
+    expect(isAllowedMobileApiCall('POST', '/cloud/device/start')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/cloud/device/status')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/cloud/device/cancel')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/cloud/device/start')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/cloud/connect')).toBe(false);
+  });
+
   it('rejects traversal, non-rooted, and odd methods', () => {
     expect(isAllowedMobileApiCall('GET', '/teams/../settings')).toBe(false);
     expect(isAllowedMobileApiCall('GET', 'teams')).toBe(false);

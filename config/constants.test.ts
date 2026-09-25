@@ -545,3 +545,22 @@ describe('SAFE_RESTART_CONSTANTS', () => {
     expect(index.SAFE_RESTART_CONSTANTS.SIGNAL_DEDUP_WINDOW_MS).toBeGreaterThan(0);
   });
 });
+
+describe('CLOUD_DEVICE_PAIRING_CONSTANTS', () => {
+  it('matches the crewly-auth device pairing contract', async () => {
+    const { CLOUD_DEVICE_PAIRING_CONSTANTS: C } = await import('./constants.js');
+    expect(C.CLOUD_ENDPOINTS).toEqual({
+      START: '/api/cloud/device/start',
+      POLL: '/api/cloud/device/poll',
+      REDEEM: '/api/cloud/device/redeem',
+    });
+    expect(Object.values(C.POLL_STATUS)).toEqual(['authorization_pending', 'slow_down', 'expired', 'denied', 'approved']);
+    expect(C.DEFAULT_INTERVAL_S).toBe(5);
+    expect(C.MAX_INTERVAL_S).toBeGreaterThan(C.DEFAULT_INTERVAL_S);
+  });
+
+  it('is exported from the config index', async () => {
+    const index = await import('./index.js');
+    expect(index.CLOUD_DEVICE_PAIRING_CONSTANTS.LOCAL_ENDPOINTS.STATUS).toBe('/api/cloud/device/status');
+  });
+});

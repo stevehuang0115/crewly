@@ -12,6 +12,13 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { CloudTab } from './CloudTab';
+import { cloudDevicePairingService } from '../../services/cloud-device-pairing.service';
+
+vi.mock('../../services/cloud-device-pairing.service', () => ({
+  cloudDevicePairingService: { start: vi.fn(), status: vi.fn(), cancel: vi.fn() },
+}));
+
+const pairing = vi.mocked(cloudDevicePairingService);
 
 // Mock localStorage
 const mockStorage = new Map<string, string>();
@@ -167,6 +174,24 @@ describe('CloudTab', () => {
     await waitFor(() => {
       expect(screen.getByTestId('cloud-sign-in-button')).toBeDefined();
     });
+  });
+
+  it('offers phone pairing when disconnected, and does not start one until clicked', async () => {
+    mockFullyDisconnected();
+    pairing.start.mockResolvedValue({
+      state: 'pending',
+      userCode: 'ABCD-2345',
+      verificationUrl: 'https://crewlyai.com/cloud/pair?code=ABCD-2345',
+    });
+    render(<CloudTab />);
+
+    const startButton = await screen.findByTestId('cloud-pairing-start');
+    expect(startButton.textContent).toContain('Connect with your phone');
+    expect(pairing.start).not.toHaveBeenCalled();
+
+    fireEvent.click(startButton);
+    await waitFor(() => expect(screen.getByTestId('cloud-pairing-code').textContent).toBe('ABCD-2345'));
+    expect(screen.getByTestId('cloud-pairing-link').getAttribute('href')).toBe('https://crewlyai.com/cloud/pair?code=ABCD-2345');
   });
 
   it('should show user info when token is valid', async () => {

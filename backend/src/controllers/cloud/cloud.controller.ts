@@ -129,6 +129,93 @@ async function sendCloudHandshake(cloudUrl: string, token: string): Promise<void
   }
 }
 
+/** Input for {@link performCloudConnect}. */
+export interface CloudConnectInput {
+  /** Cloud API base URL (defaults to CLOUD_CONSTANTS.DEFAULT_CLOUD_URL) */
+  cloudUrl?: string;
+  /** Cloud access token (JWT) */
+  token: string;
+  /** Cloud refresh token, for auto-renewal */
+  refreshToken?: string;
+}
+
+/**
+ * Connect this instance to CrewlyAI Cloud with a token pair.
+ *
+ * The single connect path shared by `POST /api/cloud/connect` (CLI, pasted
+ * token, Google redirect) and the device-code pairing that completes in the
+ * background ({@link CloudDevicePairingService}): verify the token, persist
+ * the credentials, send the handshake, and start Cloud Sync, the message
+ * router and the Slack config sync.
+ *
+ * @param input - Cloud URL and token pair
+ * @returns The subscription tier
+ * @throws Error when the Cloud rejects the token (message contains "authentication failed")
+ */
+export async function performCloudConnect(input: CloudConnectInput): Promise<{ tier: string }> {
+  const { cloudUrl, token, refreshToken } = input;
+  const resolvedUrl = cloudUrl || CLOUD_CONSTANTS.DEFAULT_CLOUD_URL;
+  const client = CloudClientService.getInstance();
+
+  // Try local JWT verification first — this works when OSS and Cloud share
+  // the same JWT secret (CREWLY_JWT_SECRET), or when the token was issued
+  // by this same instance (e.g. local Google OAuth flow).
+  const localPayload = verifyJwt(token);
+  let result: { success: boolean; tier: string };
+
+  if (localPayload) {
+    // JWT verified locally — connect without calling cloud API
+    const tier = (localPayload.plan as string) || 'free';
+    client.connectLocal(resolvedUrl, token, tier as import('../../constants.js').CloudTier, refreshToken);
+    result = { success: true, tier };
+    logger.info('Connected to CrewlyAI Cloud (local JWT verification)', { tier });
+  } else {
+    // Local verification failed (different JWT secret) — call cloud API
+    result = await client.connect(resolvedUrl, token, refreshToken);
+    logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
+  }
+
+  // Safety net: ensure refreshToken is persisted even if connect/connectLocal
+  // did not receive it (e.g. race condition or future refactor).
+  // Both connect() and connectLocal() already store refreshToken, but
+  // setRefreshToken() also re-persists config to disk as an extra guarantee.
+  if (refreshToken) {
+    client.setRefreshToken(refreshToken);
+  }
+
+  // Send device metadata + active teams to Cloud (best-effort, non-blocking)
+  sendCloudHandshake(resolvedUrl, token).catch(() => {/* already logged inside */});
+
+  // Start Cloud Sync for device discovery and message polling (best-effort)
+  try {
+    const identityService = DeviceIdentityService.getInstance();
+    const identity = await identityService.getOrCreateIdentity();
+    CloudSyncService.getInstance().start({
+      cloudUrl: resolvedUrl,
+      token,
+      deviceId: identity.deviceId,
+      deviceName: identity.deviceName,
+    });
+    logger.info('CloudSyncService started after cloud connect', { deviceId: identity.deviceId });
+
+    // Start MessageRouterService for cross-device agent communication
+    try {
+      const { startMessageRouter, startSlackCloudSync } = await import('../../services/cloud/cloud-initializer.js');
+      startMessageRouter();
+      // Slack v3: fetch the Cloud-owned Slack config right after login
+      startSlackCloudSync();
+    } catch {
+      logger.debug('MessageRouterService start deferred (non-fatal)');
+    }
+  } catch (syncErr) {
+    logger.warn('CloudSyncService start failed (non-fatal)', {
+      error: syncErr instanceof Error ? syncErr.message : String(syncErr),
+    });
+  }
+
+  return { tier: result.tier };
+}
+
 /**
  * POST /api/cloud/connect
  *
@@ -149,65 +236,7 @@ export async function connectToCloud(req: Request, res: Response, next: NextFunc
       return;
     }
 
-    const resolvedUrl = cloudUrl || CLOUD_CONSTANTS.DEFAULT_CLOUD_URL;
-    const client = CloudClientService.getInstance();
-
-    // Try local JWT verification first — this works when OSS and Cloud share
-    // the same JWT secret (CREWLY_JWT_SECRET), or when the token was issued
-    // by this same instance (e.g. local Google OAuth flow).
-    const localPayload = verifyJwt(token);
-    let result: { success: boolean; tier: string };
-
-    if (localPayload) {
-      // JWT verified locally — connect without calling cloud API
-      const tier = (localPayload.plan as string) || 'free';
-      client.connectLocal(resolvedUrl, token, tier as import('../../constants.js').CloudTier, refreshToken);
-      result = { success: true, tier };
-      logger.info('Connected to CrewlyAI Cloud (local JWT verification)', { tier });
-    } else {
-      // Local verification failed (different JWT secret) — call cloud API
-      result = await client.connect(resolvedUrl, token, refreshToken);
-      logger.info('Connected to CrewlyAI Cloud (remote verification)', { tier: result.tier });
-    }
-
-    // Safety net: ensure refreshToken is persisted even if connect/connectLocal
-    // did not receive it (e.g. race condition or future refactor).
-    // Both connect() and connectLocal() already store refreshToken, but
-    // setRefreshToken() also re-persists config to disk as an extra guarantee.
-    if (refreshToken) {
-      client.setRefreshToken(refreshToken);
-    }
-
-    // Send device metadata + active teams to Cloud (best-effort, non-blocking)
-    sendCloudHandshake(resolvedUrl, token).catch(() => {/* already logged inside */});
-
-    // Start Cloud Sync for device discovery and message polling (best-effort)
-    try {
-      const identityService = DeviceIdentityService.getInstance();
-      const identity = await identityService.getOrCreateIdentity();
-      CloudSyncService.getInstance().start({
-        cloudUrl: resolvedUrl,
-        token,
-        deviceId: identity.deviceId,
-        deviceName: identity.deviceName,
-      });
-      logger.info('CloudSyncService started after cloud connect', { deviceId: identity.deviceId });
-
-      // Start MessageRouterService for cross-device agent communication
-      try {
-        const { startMessageRouter, startSlackCloudSync } = await import('../../services/cloud/cloud-initializer.js');
-        startMessageRouter();
-        // Slack v3: fetch the Cloud-owned Slack config right after login
-        startSlackCloudSync();
-      } catch {
-        logger.debug('MessageRouterService start deferred (non-fatal)');
-      }
-    } catch (syncErr) {
-      logger.warn('CloudSyncService start failed (non-fatal)', {
-        error: syncErr instanceof Error ? syncErr.message : String(syncErr),
-      });
-    }
-
+    const result = await performCloudConnect({ cloudUrl, token, refreshToken });
     res.json({ success: true, data: { tier: result.tier } });
   } catch (error) {
     logger.error('Failed to connect to cloud', {

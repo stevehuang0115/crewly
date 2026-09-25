@@ -14,13 +14,21 @@
  */
 
 import path from 'path';
-import { homedir } from 'os';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import axios from 'axios';
 import type { SkillManifest } from './package-validator.js';
+import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
 
-/** Path to the cloud credentials written by `crewly cloud login`. */
-const CLOUD_CONFIG_FILE = path.join(homedir(), '.crewly', 'cloud', 'config.json');
+/**
+ * Path to the cloud credentials written by `crewly cloud login`:
+ * `$CREWLY_HOME/cloud/config.json` (default `~/.crewly/cloud/config.json`).
+ * Resolved per call so an isolated `CREWLY_HOME` is honoured.
+ *
+ * @returns Absolute file path
+ */
+function cloudConfigFile(): string {
+  return path.join(getCrewlyHomePath(), 'cloud', 'config.json');
+}
 
 /** Cloud submission endpoint (relative to the cloud base URL). */
 const SUBMIT_ENDPOINT = '/api/registry/submit';
@@ -66,9 +74,10 @@ interface CloudToken {
  * @returns The token and cloud base URL, or null if not logged in.
  */
 export function loadCloudToken(): CloudToken | null {
-  if (!existsSync(CLOUD_CONFIG_FILE)) return null;
+  const configFile = cloudConfigFile();
+  if (!existsSync(configFile)) return null;
   try {
-    const raw = JSON.parse(readFileSync(CLOUD_CONFIG_FILE, 'utf-8')) as {
+    const raw = JSON.parse(readFileSync(configFile, 'utf-8')) as {
       token?: string;
       cloudUrl?: string;
     };

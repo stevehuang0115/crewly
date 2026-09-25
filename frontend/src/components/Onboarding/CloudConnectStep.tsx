@@ -1,16 +1,23 @@
 /**
  * CloudConnectStep
  *
- * First-run step "连接 Crewly Cloud", built to work from a phone:
+ * First-run step "连接 Crewly Cloud", built for an owner who is usually NOT
+ * at the machine:
  *
- * 1. **Sign in with Google** (primary). Crewly Cloud's
+ * 1. **Device pairing** (primary, starts by itself —
+ *    {@link CloudDevicePairingPanel}). The page shows a QR code, a link to
+ *    `crewlyai.com/cloud/pair?code=…` and the short code; the owner approves on
+ *    their phone and this machine connects by itself. No token handling.
+ * 2. **Sign in with Google** in this browser (secondary). Crewly Cloud's
  *    `/api/cloud/google/start?redirect=<this origin>/auth/callback?next=…`
  *    sends the browser back to *this* web app — whatever address the page
  *    was opened from (localhost, a LAN address on the phone, a tunnel) — with
  *    `?token=&refreshToken=`. The callback page posts them to
  *    `/api/cloud/connect` on this backend and returns to `/setup?step=cloud`.
- *    Nothing lands on a localhost port of the machine.
- * 2. **Paste** (fallback, for when the phone cannot be sent back to this
+ *    Nothing lands on a localhost port of the machine. For any address other
+ *    than localhost, Crewly Cloud first asks the owner to confirm the host
+ *    on crewlyai.com before the login is sent.
+ * 3. **Paste** (last resort, for when the phone cannot be sent back to this
  *    address): sign in on the portal's token page
  *    (`crewlyai.com/cloud/cli-token`), copy the token and refresh token, and
  *    paste them here (`POST /api/cloud/connect`).
@@ -23,6 +30,7 @@ import { CheckCircle2, Cloud, ExternalLink } from 'lucide-react';
 import { Alert, Button, FormInput, FormLabel } from '@crewly/ui';
 import { onboardingChecklistService } from '../../services/onboarding-checklist.service';
 import { buildCloudSignInUrl, setupStepPath } from '../../constants/onboarding-checklist.constants';
+import { CloudDevicePairingPanel, PAIRING_LABELS_ZH } from '../CloudDevicePairingPanel';
 
 export interface CloudConnectStepProps {
   /** This machine is connected to Crewly Cloud */
@@ -31,7 +39,7 @@ export interface CloudConnectStepProps {
   tier: string | null;
   /** Sign-in that ends on the portal's token page (from the checklist) */
   tokenPageSignInUrl: string;
-  /** Called after a pasted token was accepted */
+  /** Called once this machine is connected (pairing approved or pasted token accepted) */
   onConnected: () => void;
   /** Navigation (tests) */
   navigateTo?: (url: string) => void;
@@ -87,16 +95,21 @@ export const CloudConnectStep: React.FC<CloudConnectStepProps> = ({
         <li>· 自动备份，换电脑也能恢复</li>
         <li>· 连接 Slack 需要先连 Cloud</li>
       </ul>
-      <Button
-        type="button"
-        fullWidth
-        icon={Cloud}
-        onClick={() => navigateTo(buildCloudSignInUrl(window.location.origin, setupStepPath('cloud')))}
-        data-testid="cloud-sign-in"
-      >
-        用 Google 登录 Crewly Cloud
-      </Button>
-      <p className="text-xs text-text-secondary-dark">登录后会自动回到这一页。</p>
+      <CloudDevicePairingPanel autoStart labels={PAIRING_LABELS_ZH} onConnected={() => onConnected()} />
+
+      <div className="space-y-1 border-t border-border-dark pt-3">
+        <Button
+          type="button"
+          variant="secondary"
+          fullWidth
+          icon={Cloud}
+          onClick={() => navigateTo(buildCloudSignInUrl(window.location.origin, setupStepPath('cloud')))}
+          data-testid="cloud-sign-in"
+        >
+          或者：在这个浏览器里用 Google 登录
+        </Button>
+        <p className="text-xs text-text-secondary-dark">登录后会自动回到这一页。</p>
+      </div>
 
       {!showPaste ? (
         <Button type="button" variant="link" onClick={() => setShowPaste(true)} data-testid="cloud-show-paste">

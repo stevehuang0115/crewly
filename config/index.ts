@@ -40,6 +40,7 @@ import {
   SERVER_CONSTANTS,
   API_SECURITY_CONSTANTS,
   EVENT_DEBOUNCE_MS,
+  CLOUD_DEVICE_PAIRING_CONSTANTS,
 
   // Type helpers
   type AgentStatus,
@@ -69,6 +70,7 @@ export {
   SERVER_CONSTANTS,
   API_SECURITY_CONSTANTS,
   EVENT_DEBOUNCE_MS,
+  CLOUD_DEVICE_PAIRING_CONSTANTS,
 
   // Type helpers
   type AgentStatus,

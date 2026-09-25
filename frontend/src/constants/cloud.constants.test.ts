@@ -20,3 +20,16 @@ describe('cloud.constants', () => {
     expect(CLOUD_TOKEN_KEY.length).toBeGreaterThan(0);
   });
 });
+
+describe('cloud device pairing constants', () => {
+  it('point at the owner-only backend endpoints', async () => {
+    const { CLOUD_DEVICE_PAIRING_API, CLOUD_DEVICE_PAIRING_POLL_MS, CLOUD_DEVICE_PAIRING_QR_SIZE } = await import('./cloud.constants');
+    expect(CLOUD_DEVICE_PAIRING_API).toEqual({
+      START: '/api/cloud/device/start',
+      STATUS: '/api/cloud/device/status',
+      CANCEL: '/api/cloud/device/cancel',
+    });
+    expect(CLOUD_DEVICE_PAIRING_POLL_MS).toBeGreaterThan(0);
+    expect(CLOUD_DEVICE_PAIRING_QR_SIZE).toBeGreaterThan(0);
+  });
+});

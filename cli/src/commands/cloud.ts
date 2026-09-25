@@ -6,13 +6,18 @@
  *   crewly cloud status                   — Show current connection status
  *   crewly cloud logout                   — Disconnect from CrewlyAI Cloud
  *
- * The login flow supports three modes:
- * 1. Direct token login via --token flag
- * 2. Browser-based OAuth: starts a local HTTP callback server, opens the
- *    backend Google OAuth URL, receives the token via redirect, persists
- *    credentials to ~/.crewly/cloud/config.json, then calls POST /api/cloud/connect.
- * 3. Mobile/no-browser login via --no-browser flag: prints a URL for the user
- *    to open on their phone, which displays the token after OAuth for manual copy-paste.
+ * Login modes:
+ * 1. **Device pairing (default)**: asks Crewly Cloud for a pairing, prints a
+ *    link + short code (`crewlyai.com/cloud/pair?code=ABCD-2345`) the owner
+ *    opens on any device — usually their phone — and approves. The CLI polls
+ *    and receives the token pair by itself: nobody copies a token, and nobody
+ *    has to be at this machine. Credentials are saved to
+ *    `$CREWLY_HOME/cloud/config.json` and `POST /api/cloud/connect` is called.
+ * 2. `--token <token>`: direct token login.
+ * 3. `--web`: the old localhost-callback flow (local callback server + Google
+ *    OAuth in this machine's browser).
+ * 4. `--paste`: the old copy-paste flow (sign in on the portal's token page,
+ *    paste the token and refresh token here).
  *
  * @module cli/commands/cloud
  */
@@ -24,8 +29,17 @@ import readline from 'readline';
 import { exec } from 'child_process';
 import { existsSync, mkdirSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
-import { homedir, platform } from 'os';
+import { hostname, platform } from 'os';
 import { DEFAULT_WEB_PORT } from '../constants.js';
+import { CLOUD_DEVICE_PAIRING_CONSTANTS } from '../../../config/constants.js';
+import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
+import {
+  startCloudDevicePairing,
+  waitForCloudDeviceApproval,
+  type DevicePairingOutcome,
+  type DevicePairingStartResult,
+  type WaitForApprovalOptions,
+} from '../../../backend/src/services/cloud/cloud-device-pairing.client.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -58,22 +72,59 @@ const CLI_TOKEN_PAGE_PATH = '/cloud/cli-token';
 /** Timeout for backend API requests (ms) */
 const API_TIMEOUT_MS = 15_000;
 
-/** Directory for cloud credentials */
-const CLOUD_CONFIG_DIR = join(homedir(), '.crewly', 'cloud');
+/** Sub-directory of the Crewly home that holds cloud credentials */
+const CLOUD_CONFIG_SUBDIR = 'cloud';
 
-/** Path to cloud config file */
-const CLOUD_CONFIG_FILE = join(CLOUD_CONFIG_DIR, 'config.json');
+/** Cloud credentials file name */
+const CLOUD_CONFIG_FILENAME = 'config.json';
+
+/**
+ * Directory for cloud credentials — `$CREWLY_HOME/cloud` (default
+ * `~/.crewly/cloud`). Resolved per call so `CREWLY_HOME` set after import
+ * (tests, isolated profiles) is honoured; it must match the backend's
+ * `CloudClientService` path so both read the same file.
+ *
+ * @returns Absolute directory path
+ */
+export function getCloudConfigDir(): string {
+  return join(getCrewlyHomePath(), CLOUD_CONFIG_SUBDIR);
+}
+
+/**
+ * Path to the cloud credentials file.
+ *
+ * @returns Absolute file path
+ */
+export function getCloudConfigFile(): string {
+  return join(getCloudConfigDir(), CLOUD_CONFIG_FILENAME);
+}
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 /** Options for the login subcommand */
-interface LoginOptions {
+export interface LoginOptions {
   token?: string;
   /** Commander.js sets this to false when --no-browser is passed */
   browser?: boolean;
+  /** `--web`: old flow — localhost callback server + Google OAuth in this machine's browser */
+  web?: boolean;
+  /** `--paste`: old flow — sign in on the portal's token page and paste the tokens here */
+  paste?: boolean;
 }
+
+/** Injectable pairing client (tests). */
+export interface LoginDeps {
+  startPairing: typeof startCloudDevicePairing;
+  waitForApproval: (options: WaitForApprovalOptions) => Promise<DevicePairingOutcome>;
+}
+
+/** The real pairing client. */
+const DEFAULT_LOGIN_DEPS: LoginDeps = {
+  startPairing: startCloudDevicePairing,
+  waitForApproval: waitForCloudDeviceApproval,
+};
 
 /**
  * Shape of the credentials saved to config.json.
@@ -102,15 +153,7 @@ interface CloudStatusData {
 // ---------------------------------------------------------------------------
 
 /**
- * Save cloud credentials to ~/.crewly/cloud/config.json.
- *
- * Creates the directory hierarchy if it does not exist.
- *
- * @param token - JWT access token
- * @param refreshToken - Optional refresh token
- */
-/**
- * Save cloud credentials to ~/.crewly/cloud/config.json.
+ * Save cloud credentials to $CREWLY_HOME/cloud/config.json.
  *
  * Creates the directory hierarchy if it does not exist. The format matches
  * PersistedCloudConfig so the backend's loadPersistedConfig() can read it.
@@ -119,15 +162,17 @@ interface CloudStatusData {
  * @param refreshToken - Optional refresh token for auto-renewal
  */
 export function saveCloudCredentials(token: string, refreshToken?: string): void {
-  if (!existsSync(CLOUD_CONFIG_DIR)) {
-    mkdirSync(CLOUD_CONFIG_DIR, { recursive: true });
+  const configDir = getCloudConfigDir();
+  const configFile = getCloudConfigFile();
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true });
   }
 
   // Merge with existing config to preserve fields the backend may have written
   let existing: Partial<CloudCredentials> = {};
   try {
-    if (existsSync(CLOUD_CONFIG_FILE)) {
-      existing = JSON.parse(readFileSync(CLOUD_CONFIG_FILE, 'utf-8'));
+    if (existsSync(configFile)) {
+      existing = JSON.parse(readFileSync(configFile, 'utf-8'));
     }
   } catch {
     // Ignore parse errors — overwrite with new credentials
@@ -142,20 +187,21 @@ export function saveCloudCredentials(token: string, refreshToken?: string): void
     // Preserve existing refreshToken if new one not provided
     ...(!refreshToken && existing.refreshToken && { refreshToken: existing.refreshToken }),
   };
-  writeFileSync(CLOUD_CONFIG_FILE, JSON.stringify(credentials, null, 2), 'utf-8');
+  writeFileSync(configFile, JSON.stringify(credentials, null, 2), 'utf-8');
 }
 
 /**
- * Load cloud credentials from ~/.crewly/cloud/config.json.
+ * Load cloud credentials from $CREWLY_HOME/cloud/config.json.
  *
  * @returns The saved credentials, or null if the file does not exist or is invalid
  */
 export function loadCloudCredentials(): CloudCredentials | null {
-  if (!existsSync(CLOUD_CONFIG_FILE)) {
+  const configFile = getCloudConfigFile();
+  if (!existsSync(configFile)) {
     return null;
   }
   try {
-    const raw = readFileSync(CLOUD_CONFIG_FILE, 'utf-8');
+    const raw = readFileSync(configFile, 'utf-8');
     return JSON.parse(raw) as CloudCredentials;
   } catch {
     return null;
@@ -338,15 +384,13 @@ export function promptForToken(prompt: string): Promise<string> {
 /**
  * Handle the `crewly cloud login` subcommand.
  *
- * Supports three login modes:
- * 1. `--token <token>`: saves the token and calls POST /api/cloud/connect directly.
- * 2. `--no-browser`: prints a URL for mobile login, waits for user to paste token.
- * 3. Default: starts a local HTTP callback server, opens the browser to the
- *    backend OAuth URL, waits for the callback, saves credentials.
+ * Modes (see the module comment): device pairing by default; `--token`,
+ * `--web` and `--paste` keep the older flows.
  *
- * @param options - Login command options (optional --token, --no-browser)
+ * @param options - Login command options
+ * @param deps - Pairing client (tests)
  */
-export async function loginCommand(options: LoginOptions): Promise<void> {
+export async function loginCommand(options: LoginOptions, deps: LoginDeps = DEFAULT_LOGIN_DEPS): Promise<void> {
   if (options.token) {
     // Direct token login
     console.log(chalk.blue('Logging in with provided token...'));
@@ -354,22 +398,109 @@ export async function loginCommand(options: LoginOptions): Promise<void> {
     return;
   }
 
-  // Auto-detect: use mobile flow if --no-browser was passed OR environment
-  // cannot open a browser (SSH, Docker, CI, headless Linux).
-  const useBrowser = options.browser !== false && canOpenBrowser();
-
-  if (!useBrowser) {
-    if (options.browser !== false) {
-      // Auto-detected headless — inform the user
-      console.log(chalk.yellow('  Headless environment detected — using manual token flow.'));
-    }
+  if (options.paste) {
     await mobileLoginFlow();
     return;
   }
 
-  // Browser-based OAuth flow — redirects to crewlyai.com (Cloud), NOT local backend.
-  // The Cloud server handles Google OAuth and redirects back to our local callback
-  // with token + refreshToken as query parameters.
+  if (options.web) {
+    if (options.browser === false || !canOpenBrowser()) {
+      console.log(chalk.red('  ✗ --web needs a browser on this machine. Run `crewly cloud login` to approve from your phone instead.'));
+      process.exit(1);
+    }
+    await browserLoginFlow();
+    return;
+  }
+
+  await deviceLoginFlow(options, deps);
+}
+
+/**
+ * Print a pairing's link and code where the owner can use them from any device.
+ *
+ * @param started - The pairing
+ */
+function printPairingInstructions(started: DevicePairingStartResult): void {
+  console.log(chalk.white('  On your phone or any browser, open:'));
+  console.log('');
+  console.log(chalk.cyan(`  ${started.verificationUrl}`));
+  console.log('');
+  console.log(chalk.white(`  and check the code matches:  ${chalk.bold(started.userCode)}`));
+  if (started.verificationUri) {
+    console.log(chalk.gray(`  (or go to ${started.verificationUri} and type the code)`));
+  }
+  console.log('');
+  console.log(chalk.gray(`  The link expires in ${Math.round(started.expiresIn / 60)} minutes.`));
+}
+
+/**
+ * Default login: device-code pairing.
+ *
+ * Prints a link + code, optionally opens the link locally, and waits while
+ * the owner approves from wherever they are. On approval the token pair
+ * arrives here by itself and is saved + connected like any other login.
+ *
+ * @param options - Login options (`--no-browser` stops the local browser from opening)
+ * @param deps - Pairing client
+ */
+async function deviceLoginFlow(options: LoginOptions, deps: LoginDeps): Promise<void> {
+  console.log('');
+  console.log(chalk.blue('CrewlyAI Cloud Login'));
+  console.log(chalk.gray('─'.repeat(40)));
+  console.log('');
+
+  let started: DevicePairingStartResult;
+  try {
+    started = await deps.startPairing(CLOUD_API_URL, {
+      deviceName: hostname(),
+      purpose: CLOUD_DEVICE_PAIRING_CONSTANTS.PURPOSES.CLI,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.log(chalk.red(`  ✗ Could not start login: ${msg}`));
+    console.log(chalk.gray('  Other ways in: crewly cloud login --paste   |   crewly cloud login --token <token>'));
+    process.exit(1);
+  }
+
+  printPairingInstructions(started);
+  if (options.browser !== false && canOpenBrowser()) {
+    openBrowser(started.verificationUrl);
+  }
+  console.log('');
+  console.log(chalk.gray('  Waiting for approval… (Ctrl+C to cancel)'));
+
+  let outcome: DevicePairingOutcome;
+  try {
+    outcome = await deps.waitForApproval({ cloudUrl: CLOUD_API_URL, start: started });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : String(error);
+    console.log(chalk.red(`  ✗ Login failed: ${msg}`));
+    process.exit(1);
+  }
+
+  if (outcome.status !== 'approved') {
+    const reason = outcome.status === 'denied'
+      ? 'The request was denied on crewlyai.com.'
+      : outcome.status === 'expired'
+        ? 'The link expired before it was approved.'
+        : 'Login cancelled.';
+    console.log(chalk.red(`  ✗ ${reason}`));
+    console.log(chalk.gray('  Run `crewly cloud login` again for a new link.'));
+    process.exit(1);
+  }
+
+  const { credentials } = outcome;
+  console.log(chalk.green(`  ✓ Approved${credentials.email ? ` by ${credentials.email}` : ''}`));
+  await connectWithToken(credentials.token, credentials.refreshToken);
+}
+
+/**
+ * `--web`: the localhost-callback flow.
+ *
+ * Starts a local HTTP callback server, opens Google OAuth on Crewly Cloud in
+ * this machine's browser and waits for the redirect back with the tokens.
+ */
+async function browserLoginFlow(): Promise<void> {
   console.log('');
   console.log(chalk.blue('CrewlyAI Cloud Login'));
   console.log(chalk.gray('─'.repeat(40)));
@@ -501,7 +632,7 @@ async function connectWithToken(token: string, refreshToken?: string): Promise<v
   } catch (error) {
     if (axios.isAxiosError(error) && error.code === 'ECONNREFUSED') {
       // Backend not running — this is OK, credentials are saved
-      console.log(chalk.green('  ✓ Credentials saved to ~/.crewly/cloud/config.json'));
+      console.log(chalk.green(`  ✓ Credentials saved to ${getCloudConfigFile()}`));
       console.log(chalk.gray('  Backend not running — Cloud will connect automatically on next crewly start'));
     } else {
       const msg = axios.isAxiosError(error)
