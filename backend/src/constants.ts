@@ -780,6 +780,8 @@ export const SLACK_TYPING_CONSTANTS = {
 } as const;
 
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
+  /** How long a channel member list is trusted when picking between same-named agents. */
+  MEMBER_CACHE_TTL_MS: 5 * 60 * 1000,
 	/** Mapping store filename under CREWLY_HOME */
 	STORE_FILENAME: 'slack-team-channels.json',
 	/** Slack's hard limit on channel-name length */

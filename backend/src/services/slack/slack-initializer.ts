@@ -917,6 +917,9 @@ export async function startSlackTeamChannels(): Promise<void> {
           storage: StorageService.getInstance(),
           identities,
           typing,
+          // Resolved lazily: the team-channel service is built just below.
+          linkMentions: async (text, channelId) =>
+            (await getSlackTeamChannelService()?.linkAgentMentions(text, channelId)) ?? text,
         }),
       );
     }

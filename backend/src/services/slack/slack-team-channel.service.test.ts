@@ -1104,6 +1104,34 @@ describe('mirrorOutbound', () => {
     expect(await service.linkAgentMentions('no mentions')).toBe('no mentions');
   });
 
+  it('links a bare @Name to a team-suffixed bot ("Ella (Crewly Marketing)") only when the bare name is unique', async () => {
+    const ids = new FakeIdentities();
+    identities = ids;
+    service = makeService();
+    const rec = (session: string, displayName: string, botUserId: string) =>
+      ids.records.set(session, {
+        agentSession: session, displayName, appId: `A-${botUserId}`, status: 'installed', botUserId, botToken: 'xoxb', announcedIn: [], invitedTo: [],
+      } as unknown as SlackAgentIdentityRecord);
+    rec('mkt-ella', 'Ella (Crewly Marketing)', 'UELLA');
+    rec('a-sam', 'Sam (Alpha)', 'USAMA');
+    rec('b-sam', 'Sam (Beta)', 'USAMB');
+    expect(await service.linkAgentMentions('@Ella 补一句')).toBe('<@UELLA> 补一句');
+    expect(await service.linkAgentMentions('cc @Ella (Crewly Marketing) pls')).toBe('cc <@UELLA> pls');
+    expect(await service.linkAgentMentions('@Sam hi, @Sam (Beta) you')).toBe('@Sam hi, <@USAMB> you');
+
+    // Two Sams: the one who is a member of the target channel is meant.
+    const asked: string[] = [];
+    (slack as unknown as { listChannelMembers: (c: string) => Promise<string[]> }).listChannelMembers = async (c) => {
+      asked.push(c);
+      return c === 'CBETA' ? ['UOWNER', 'USAMB'] : ['USAMA', 'USAMB'];
+    };
+    expect(await service.linkAgentMentions('@Sam hi', 'CBETA')).toBe('<@USAMB> hi');
+    expect(await service.linkAgentMentions('@Sam again', 'CBETA')).toBe('<@USAMB> again');
+    expect(await service.linkAgentMentions('@Sam both here', 'CBOTH')).toBe('@Sam both here');
+    expect(await service.linkAgentMentions('@Ella only', 'CNEW')).toBe('<@UELLA> only');
+    expect(asked).toEqual(['CBETA', 'CBOTH']);
+  });
+
   it('turns @Owner Name (multi-word) into a real mention of the owner, and remembers people who spoke', async () => {
     ownerUserId = 'UOWNER';
     (slack as unknown as { getUserInfo: (id: string) => Promise<{ name: string; realName: string }> }).getUserInfo = async (id) =>

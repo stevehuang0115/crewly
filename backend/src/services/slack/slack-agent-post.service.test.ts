@@ -309,3 +309,27 @@ describe('answering an owed reply (2026-09-25)', () => {
     expect(typing.resolve).not.toHaveBeenCalled();
   });
 });
+
+describe('mention linking', () => {
+  it('links @Name through the linker, and posts as written when the linker fails', async () => {
+    const linked = new SlackAgentPostService({
+      slack,
+      storage: { getTeams: async () => TEAMS },
+      identities,
+      linkMentions: async (t, channelId) => (channelId === 'C-GEN' ? t.replace('@Ella', '<@UELLA>') : t),
+    });
+    await linked.post({ agentSession: 'crewly-a-sam', target: '#general', text: '@Ella 补一句' });
+    expect(slack.sent[0].text).toBe('<@UELLA> 补一句');
+
+    const broken = new SlackAgentPostService({
+      slack,
+      storage: { getTeams: async () => TEAMS },
+      identities,
+      linkMentions: async () => {
+        throw new Error('boom');
+      },
+    });
+    await broken.post({ agentSession: 'crewly-a-sam', target: '#general', text: '@Ella hi' });
+    expect(slack.sent[1].text).toBe('@Ella hi');
+  });
+});

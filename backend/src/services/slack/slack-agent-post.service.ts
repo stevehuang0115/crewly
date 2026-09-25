@@ -55,6 +55,8 @@ export interface SlackAgentPostServiceDeps {
   identities?: AgentPostIdentityApi | null;
   /** Placeholders of replies agents owe — a post into such a conversation answers it */
   typing?: Pick<SlackTypingPlaceholderService, 'findOwed' | 'resolve'> | null;
+  /** Links `@Name` to real Slack mentions (agents' bots and known people). */
+  linkMentions?: SlackMentionLinker;
 }
 
 /** One post request. */
@@ -78,6 +80,12 @@ export interface SlackAgentPostResult {
   /** Display name the message carries. */
   identity: string;
 }
+
+/**
+ * Turns `@Name` into `<@Uxxx>` for known agents and people. Optional; when
+ * absent (or when it fails) the text is posted as written.
+ */
+export type SlackMentionLinker = (text: string, channelId: string) => Promise<string>;
 
 /** Reasons a post can be refused, for HTTP mapping. */
 export type SlackAgentPostErrorCode = 'validation' | 'not_connected' | 'target_not_found' | 'slack_error';
@@ -114,6 +122,23 @@ export class SlackAgentPostService {
   }
 
   /**
+   * Link `@Name` mentions, falling back to the text as written.
+   *
+   * @param text - Agent text
+   * @param channelId - Where it is going (decides between same-named agents)
+   * @returns Text with Slack mentions where a name is known
+   */
+  private async linkMentions(text: string, channelId: string): Promise<string> {
+    if (!this.deps.linkMentions || !text.includes('@')) return text;
+    try {
+      return await this.deps.linkMentions(text, channelId);
+    } catch (err) {
+      this.logger.warn('Mention linking failed — posting as written', { error: errText(err) });
+      return text;
+    }
+  }
+
+  /**
    * Send one agent-initiated message.
    *
    * @param req - Who is posting, where, and what
@@ -125,11 +150,11 @@ export class SlackAgentPostService {
   async post(req: SlackAgentPostRequest): Promise<SlackAgentPostResult> {
     const agentSession = (req.agentSession ?? '').trim();
     const target = (req.target ?? '').trim();
-    const text = req.text ?? '';
+    const rawText = req.text ?? '';
     if (!agentSession) throw new SlackAgentPostError('validation', 'agentSession is required');
     if (!target) throw new SlackAgentPostError('validation', 'target is required');
-    if (!text.trim()) throw new SlackAgentPostError('validation', 'text is required');
-    if (text.length > SLACK_AGENT_POST_CONSTANTS.MAX_TEXT_LENGTH) {
+    if (!rawText.trim()) throw new SlackAgentPostError('validation', 'text is required');
+    if (rawText.length > SLACK_AGENT_POST_CONSTANTS.MAX_TEXT_LENGTH) {
       throw new SlackAgentPostError(
         'validation',
         `text exceeds ${SLACK_AGENT_POST_CONSTANTS.MAX_TEXT_LENGTH} characters`,
@@ -141,6 +166,9 @@ export class SlackAgentPostService {
 
     const { identity, botToken, postedAs } = await this.resolveIdentity(agentSession);
     const { channelId, kind } = await this.resolveTarget(target, botToken);
+    // "@Ella" → a real mention. This path posted agent text verbatim, so an
+    // agent naming a colleague here never notified them (2026-09-25).
+    const text = await this.linkMentions(rawText, channelId);
 
     // An agent that owes an answer here (a "working on it…" placeholder is up,
     // or timed out) and posts without naming a thread is answering: put it in

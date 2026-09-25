@@ -79,6 +79,8 @@ export interface TeamChannelSlackApi {
   inviteToChannel(channelId: string, userIds: string[]): Promise<void>;
   /** Names of a Slack user (for turning `@Their Name` into a mention). Optional. */
   getUserInfo?(userId: string): Promise<{ name: string; realName: string }>;
+  /** Member user ids of a channel, bots included — picks between same-named agents. */
+  listChannelMembers?(channelId: string): Promise<string[]>;
   uploadFile(options: {
     channelId: string;
     filePath: string;
@@ -388,6 +390,8 @@ export class SlackTeamChannelService {
   private readonly humanNames = new Map<string, string>();
   /** Whether the owner's names were looked up yet. */
   private ownerNamesLoaded = false;
+  /** channelId → members, with fetch time; decides between same-named agents. */
+  private readonly channelMembers = new Map<string, { at: number; ids: Set<string> }>();
 
   private readonly onChatMessage = (dto: ChatMessageDTO): void => {
     void this.mirrorOutbound(dto);
@@ -1731,7 +1735,7 @@ export class SlackTeamChannelService {
       const installed = this.deps.identities?.getInstalled(dto.senderId) ?? null;
       const identity = installed ? { botToken: installed.botToken } : slackIdentityFor(member, dto.senderId);
 
-      const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content));
+      const text = await this.linkAgentMentions(toSlackMrkdwn(dto.content), mapping.slackChannelId);
       if (this.deps.typing) {
         const typingKey = { agentSession: dto.senderId, slackChannelId: mapping.slackChannelId, ...(threadTs ? { threadTs } : {}) };
         const typingIdentity = installed
@@ -1781,22 +1785,80 @@ export class SlackTeamChannelService {
    * whole account). Names nobody owns are left as typed.
    *
    * @param text - Reply text
+   * @param channelId - Slack channel the text goes to; when two agents share
+   *   a first name, the one in this channel is meant
    * @returns Text with `<@Uxxx>` mentions
    */
-  async linkAgentMentions(text: string): Promise<string> {
+  async linkAgentMentions(text: string, channelId?: string): Promise<string> {
     if (!text || !text.includes('@')) return text;
     text = await this.linkHumanMentions(text);
     if (!this.deps.identities) return text;
     const store = await this.deps.identities.load();
     const byName = new Map<string, string>();
+    // A duplicated first name carries its team in the bot's display name —
+    // "Ella (Crewly Marketing)" — while agents write "@Ella" (2026-09-25:
+    // Atlas's "@Ella" stayed plain text). Index the bare name too, but only
+    // when exactly one agent has it; an ambiguous bare name stays unlinked.
+    const bareOwners = new Map<string, Set<string>>();
+    const fullNames: Array<{ name: string; id: string }> = [];
     for (const r of store.identities) {
-      if (r.status === 'installed' && r.botUserId && r.displayName) byName.set(r.displayName.toLowerCase(), r.botUserId);
+      if (r.status !== 'installed' || !r.botUserId || !r.displayName) continue;
+      const full = r.displayName.trim();
+      byName.set(full.toLowerCase(), r.botUserId);
+      const bare = full.replace(/\s*\([^)]*\)\s*$/u, '').trim();
+      if (bare && bare !== full) {
+        fullNames.push({ name: full, id: r.botUserId });
+        const set = bareOwners.get(bare.toLowerCase()) ?? new Set<string>();
+        set.add(r.botUserId);
+        bareOwners.set(bare.toLowerCase(), set);
+      }
+    }
+    for (const [bare, ids] of bareOwners) {
+      if (byName.has(bare)) continue;
+      if (ids.size === 1) {
+        byName.set(bare, [...ids][0]);
+        continue;
+      }
+      // Two Ellas (Crewly Marketing / Personal Assistant Team): the one in
+      // this channel is meant. Only asked when the text names her.
+      if (!channelId || !new RegExp(`@${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu').test(text)) continue;
+      const members = await this.membersOf(channelId);
+      const here = [...ids].filter((id) => members?.has(id));
+      if (here.length === 1) byName.set(bare, here[0]);
     }
     if (byName.size === 0) return text;
+    // "@Ella (Crewly Marketing)" written out in full — longest names first.
+    for (const { name, id } of fullNames.sort((a, b) => b.name.length - a.name.length)) {
+      const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      text = text.replace(new RegExp(`(?<![\\w<@])@${escaped}`, 'giu'), `<@${id}>`);
+    }
     return text.replace(/(?<![\w<@])@([\p{L}\p{N}_.-]+)/gu, (whole, name: string) => {
       const id = byName.get(name.replace(/[.-]+$/u, '').toLowerCase());
       return id ? `<@${id}>` : whole;
     });
+  }
+
+  /**
+   * Members of a Slack channel, cached briefly. Null when Slack can't say.
+   *
+   * @param channelId - Slack channel id
+   * @returns Member user ids, or null
+   */
+  private async membersOf(channelId: string): Promise<Set<string> | null> {
+    const cached = this.channelMembers.get(channelId);
+    if (cached && Date.now() - cached.at < SLACK_TEAM_CHANNEL_CONSTANTS.MEMBER_CACHE_TTL_MS) return cached.ids;
+    if (!this.deps.slack.listChannelMembers) return null;
+    try {
+      const ids = new Set(await this.deps.slack.listChannelMembers(channelId));
+      this.channelMembers.set(channelId, { at: Date.now(), ids });
+      return ids;
+    } catch (err) {
+      this.logger.warn('Could not list channel members to pick between same-named agents', {
+        channelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   /**
