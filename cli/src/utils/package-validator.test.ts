@@ -7,7 +7,7 @@
  * @module cli/utils/package-validator.test
  */
 
-import { validatePackage } from './package-validator.js';
+import { NO_DESCRIPTOR_ERROR, validatePackage } from './package-validator.js';
 import path from 'path';
 import os from 'os';
 import { mkdirSync, writeFileSync, rmSync } from 'fs';
@@ -61,7 +61,7 @@ describe('validatePackage', () => {
     expect(result.errors[0]).toContain('does not exist');
   });
 
-  it('should fail when skill.json is missing', () => {
+  it('fails with an error naming both accepted layouts when neither SKILL.md nor skill.json exists', () => {
     const dir = createSkill({
       'execute.sh': '#!/bin/bash',
       'instructions.md': '# Instructions',
@@ -69,7 +69,20 @@ describe('validatePackage', () => {
 
     const result = validatePackage(dir);
     expect(result.valid).toBe(false);
-    expect(result.errors).toContain('Missing required file: skill.json');
+    expect(result.errors).toEqual([NO_DESCRIPTOR_ERROR]);
+    expect(NO_DESCRIPTOR_ERROR).toContain('SKILL.md (YAML frontmatter + instructions) and execute.sh');
+    expect(NO_DESCRIPTOR_ERROR).toContain('legacy: skill.json, instructions.md and execute.sh');
+  });
+
+  it('reports the legacy skill.json layout and returns its manifest', () => {
+    const dir = createSkill({
+      'skill.json': validManifest(),
+      'execute.sh': '#!/bin/bash',
+      'instructions.md': '# Instructions',
+    });
+
+    const result = validatePackage(dir);
+    expect(result).toMatchObject({ valid: true, layout: 'skill.json', manifest: { id: 'test-skill', version: '1.0.0' } });
   });
 
   it('should fail when execute.sh is missing', () => {
@@ -209,5 +222,117 @@ describe('validatePackage', () => {
 
     const result = validatePackage(dir);
     expect(result.valid).toBe(true);
+  });
+
+  describe('SKILL.md layout', () => {
+    /** SKILL.md content with the given frontmatter lines */
+    function skillMd(frontmatter: string, body = '# Instructions\n\nDo the thing.'): string {
+      return `---\n${frontmatter}\n---\n\n${body}\n`;
+    }
+
+    /** Frontmatter of a valid current-layout skill, no id (the usual case) */
+    const VALID_FRONTMATTER = [
+      'name: Test Skill',
+      'description: "A test skill"',
+      'version: 1.0.0',
+      'category: development',
+      'assignableRoles:',
+      '  - developer',
+      'tags:',
+      '  - test',
+      'triggers:',
+      '  - test trigger',
+    ].join('\n');
+
+    it('passes for SKILL.md + execute.sh with no skill.json or instructions.md', () => {
+      const dir = createSkill({ 'SKILL.md': skillMd(VALID_FRONTMATTER), 'execute.sh': '#!/bin/bash' });
+
+      const result = validatePackage(dir);
+      expect(result.errors).toEqual([]);
+      expect(result.valid).toBe(true);
+      expect(result.layout).toBe('SKILL.md');
+    });
+
+    it('takes the id from the directory name when the frontmatter has none, as the registry does', () => {
+      const dir = createSkill({ 'SKILL.md': skillMd(VALID_FRONTMATTER), 'execute.sh': '#!/bin/bash' });
+
+      expect(validatePackage(dir).manifest).toMatchObject({
+        id: path.basename(dir),
+        name: 'Test Skill',
+        version: '1.0.0',
+        category: 'development',
+        tags: ['test'],
+      });
+    });
+
+    it('uses an explicit frontmatter id over the directory name', () => {
+      const dir = createSkill({
+        'SKILL.md': skillMd(`id: explicit-id\n${VALID_FRONTMATTER}`),
+        'execute.sh': '#!/bin/bash',
+      });
+
+      expect(validatePackage(dir).manifest?.id).toBe('explicit-id');
+    });
+
+    it('still requires execute.sh', () => {
+      const dir = createSkill({ 'SKILL.md': skillMd(VALID_FRONTMATTER) });
+
+      const result = validatePackage(dir);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toEqual(['Missing required file: execute.sh']);
+    });
+
+    it('fails when SKILL.md has no frontmatter', () => {
+      const dir = createSkill({ 'SKILL.md': '# Just markdown\n', 'execute.sh': '#!/bin/bash' });
+
+      const result = validatePackage(dir);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('SKILL.md has no YAML frontmatter (it must start with a --- block)');
+    });
+
+    it('fails when the frontmatter is not valid YAML', () => {
+      const dir = createSkill({
+        'SKILL.md': skillMd('name: [unclosed\ndescription: x'),
+        'execute.sh': '#!/bin/bash',
+      });
+
+      const result = validatePackage(dir);
+      expect(result.valid).toBe(false);
+      expect(result.errors[0]).toMatch(/^Invalid YAML frontmatter in SKILL\.md:/);
+    });
+
+    it('names the frontmatter as the source of a missing field', () => {
+      const dir = createSkill({
+        'SKILL.md': skillMd(VALID_FRONTMATTER.replace('version: 1.0.0\n', '')),
+        'execute.sh': '#!/bin/bash',
+      });
+
+      const result = validatePackage(dir);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('SKILL.md frontmatter missing required field: version');
+    });
+
+    it('merges like the registry when both files exist: frontmatter wins, skill.json fills gaps', () => {
+      const dir = createSkill({
+        'SKILL.md': skillMd(VALID_FRONTMATTER.replace('version: 1.0.0', 'version: 2.0.0')),
+        'skill.json': validManifest({ id: 'json-id', version: '1.0.0', author: 'From Json' }),
+        'execute.sh': '#!/bin/bash',
+      });
+
+      const result = validatePackage(dir);
+      expect(result).toMatchObject({
+        valid: true,
+        layout: 'SKILL.md',
+        manifest: { id: 'json-id', version: '2.0.0', author: 'From Json' },
+      });
+    });
+
+    it('passes for a real built-in SKILL.md skill (config/skills/agent/marketplace/code-review)', () => {
+      const builtIn = path.resolve(__dirname, '..', '..', '..', 'config', 'skills', 'agent', 'marketplace', 'code-review');
+
+      const result = validatePackage(builtIn);
+      expect(result.errors).toEqual([]);
+      expect(result).toMatchObject({ valid: true, layout: 'SKILL.md', manifest: { id: 'code-review' } });
+    });
   });
 });

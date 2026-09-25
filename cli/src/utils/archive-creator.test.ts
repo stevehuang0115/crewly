@@ -51,6 +51,33 @@ describe('archive-creator', () => {
   });
 
   describe('createSkillArchive', () => {
+    it('archives a SKILL.md skill without skill.json, named after the directory', async () => {
+      const skillDir = path.join(tmpDir, 'md-only-skill');
+      mkdirSync(skillDir, { recursive: true });
+      writeFileSync(
+        path.join(skillDir, 'SKILL.md'),
+        '---\nname: Md Only\ndescription: x\nversion: 1.2.3\ncategory: development\n---\n\n# Body\n',
+      );
+      writeFileSync(path.join(skillDir, 'execute.sh'), '#!/bin/bash');
+      const outputDir = path.join(tmpDir, 'output-md');
+      mkdirSync(outputDir, { recursive: true });
+
+      const archivePath = await createSkillArchive(skillDir, outputDir);
+
+      expect(path.basename(archivePath)).toBe('md-only-skill-1.2.3.tar.gz');
+      expect(existsSync(archivePath)).toBe(true);
+    });
+
+    it('uses the manifest it is given for the archive name', async () => {
+      const skillDir = createSkill('given-manifest', '1.0.0');
+      const outputDir = path.join(tmpDir, 'output-given');
+      mkdirSync(outputDir, { recursive: true });
+
+      const archivePath = await createSkillArchive(skillDir, outputDir, { id: 'other-id', version: '9.9.9' });
+
+      expect(path.basename(archivePath)).toBe('other-id-9.9.9.tar.gz');
+    });
+
     it('should create a tar.gz archive', async () => {
       const skillDir = createSkill('test-archive', '1.0.0');
       const outputDir = path.join(tmpDir, 'output');

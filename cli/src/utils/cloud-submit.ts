@@ -127,7 +127,7 @@ export function collectSkillFiles(skillDir: string): CloudSubmitFile[] {
  * Submit a skill to Crewly Cloud, which opens/updates the marketplace PR.
  *
  * @param skillDir - Absolute path to the validated skill directory.
- * @param manifest - Parsed skill.json.
+ * @param manifest - Validated manifest (validatePackage().manifest; SKILL.md or skill.json).
  * @returns The PR result from the cloud.
  * @throws Error with a user-actionable message on auth failure (not logged in /
  *   expired), rate limiting (429), server misconfiguration (503), or network errors.

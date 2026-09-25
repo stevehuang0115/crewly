@@ -12,6 +12,7 @@ import { readFileSync, statSync } from 'fs';
 import { createHash } from 'crypto';
 import * as tar from 'tar';
 import type { SkillManifest } from './package-validator.js';
+import { readSkillManifest } from '../../../config/skills/marketplace-registry.js';
 
 /** Registry entry shape for a published skill */
 export interface RegistryEntry {
@@ -47,19 +48,33 @@ export interface RegistryEntry {
  *
  * @param skillDir - Path to the skill directory to archive
  * @param outputDir - Directory to write the archive to
+ * @param manifest - The validated manifest (validatePackage().manifest). When
+ *   omitted it is read from SKILL.md frontmatter or skill.json
  * @returns Absolute path to the created archive
+ * @throws Error when no manifest is given and none can be read
  *
  * @example
  * ```ts
  * const archivePath = await createSkillArchive('./my-skill', './dist');
  * ```
  */
-export async function createSkillArchive(skillDir: string, outputDir: string): Promise<string> {
+export async function createSkillArchive(
+  skillDir: string,
+  outputDir: string,
+  manifest?: Pick<SkillManifest, 'id' | 'version'>,
+): Promise<string> {
   const absSkillDir = path.resolve(skillDir);
   const absOutputDir = path.resolve(outputDir);
 
-  const manifestRaw = readFileSync(path.join(absSkillDir, 'skill.json'), 'utf-8');
-  const manifest = JSON.parse(manifestRaw) as SkillManifest;
+  if (!manifest) {
+    // Same reader and id rule as validatePackage: SKILL.md frontmatter or
+    // skill.json, id defaulting to the directory name
+    const read = readSkillManifest(absSkillDir);
+    if (!read?.version) {
+      throw new Error(`Cannot archive ${absSkillDir}: no SKILL.md frontmatter or skill.json with a version`);
+    }
+    manifest = { id: read.id || path.basename(absSkillDir), version: read.version };
+  }
 
   const archiveName = `${manifest.id}-${manifest.version}.tar.gz`;
   const archivePath = path.join(absOutputDir, archiveName);
@@ -101,7 +116,7 @@ export function generateChecksum(filePath: string): string {
  * Creates a complete registry entry suitable for inclusion in the
  * marketplace registry.json file.
  *
- * @param manifest - Parsed skill.json manifest
+ * @param manifest - Validated manifest (validatePackage().manifest; SKILL.md or skill.json)
  * @param archivePath - Path to the tar.gz archive
  * @param checksum - Checksum string (sha256:hex)
  * @returns A complete registry entry
