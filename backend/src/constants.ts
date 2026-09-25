@@ -3018,6 +3018,94 @@ export const ONBOARDING_CONSTANTS = {
 	},
 } as const;
 
+/**
+ * Solution bundles: sellable team templates that deploy a whole working
+ * setup in one step (specs/solution-bundles.md).
+ */
+export const BUNDLE_CONSTANTS = {
+	/** The only manifest schema version this engine understands */
+	SCHEMA_VERSION: 1,
+	/** Deployment state per template, under the Crewly home dir */
+	STATE_DIR: 'bundles',
+	/** Key of the team built from the template's own `roles` */
+	MAIN_TEAM_KEY: 'main',
+	/** Joins template id and team key into the id of an extra team */
+	TEAM_ID_SEPARATOR: '--',
+	/** Extra template directories (path-delimited), e.g. Crewly Pro's config/templates */
+	TEMPLATE_DIRS_ENV: 'CREWLY_TEMPLATE_DIRS',
+	/** Bundle status that may be deployed without `allowDraft` */
+	STATUS: { READY: 'ready', DRAFT: 'draft' },
+	/** Apply steps, in the order they run */
+	STEP_IDS: {
+		TEAM: 'team',
+		NORMS: 'norms',
+		SKILLS: 'skills',
+		CONNECTORS: 'connectors',
+		SLACK: 'slack',
+		SCHEDULES: 'schedules',
+		FIRST_WEEK: 'first_week',
+	},
+	STEP_ORDER: ['team', 'norms', 'skills', 'connectors', 'slack', 'schedules', 'first_week'] as readonly string[],
+	/** Owner-facing step labels */
+	STEP_LABELS: {
+		team: '建团队',
+		norms: '写团队规范和 SOP',
+		skills: '装技能',
+		connectors: '检查要接的服务',
+		slack: '建 Slack 频道',
+		schedules: '排定时任务',
+		first_week: '安排第一周的工作',
+	} as Readonly<Record<string, string>>,
+	/** Why a step is waiting (status `pending`) */
+	PENDING_REASONS: {
+		SLACK_NOT_CONNECTED: 'slack_not_connected',
+		BACKEND_NOT_RUNNING: 'backend_not_running',
+		CONNECTORS_MISSING: 'connectors_missing',
+	},
+	/** Why a step did not run (status `skipped`) */
+	SKIP_REASONS: {
+		TEAM_FAILED: 'team_failed',
+		NOTHING_TO_DO: 'nothing_to_do',
+	},
+	/** Timezone of schedules and first-week tasks when the bundle names none */
+	DEFAULT_TIMEZONE: 'Asia/Shanghai',
+	/** Time of day a later first-week task is handed over when it names none */
+	DEFAULT_FIRST_WEEK_TIME: '09:00',
+	/** Last day (0-based) a first-week task may be scheduled on */
+	MAX_FIRST_WEEK_DAY: 6,
+	/** Chat metadata `source` of a first-week task */
+	FIRST_WEEK_SOURCE: 'bundle_first_week',
+	/** First line of a first-week task the orchestrator receives */
+	FIRST_WEEK_HEADER: '[成套方案 · 第一周]',
+	/** How often the backend delivers due first-week tasks and resumes waiting deployments */
+	TICK_INTERVAL_MS: 5 * 60 * 1000,
+	/** How often `crewly deploy-bundle` polls a running backend's job */
+	CLI_POLL_INTERVAL_MS: 1500,
+	/** How long `crewly deploy-bundle` waits for a running backend's job */
+	CLI_JOB_TIMEOUT_MS: 10 * 60 * 1000,
+	/** Owner-facing connections page; `?platform=<id>` opens a connector */
+	CONNECTIONS_PATH: '/connections',
+	/** Connector ids a bundle may require (the /connections cards) */
+	CONNECTOR_IDS: ['google-workspace', 'canva', 'whatsapp', 'slack', 'microsoft-todo', 'telegram', 'discord', 'google-chat'] as readonly string[],
+	/** Google products a bundle may name on `google-workspace` */
+	GOOGLE_PRODUCTS: ['gmail', 'calendar', 'drive'] as readonly string[],
+	/** Hosted server tiers (ops/marketing/2026-09-template-deploy/00-plan.md §3) */
+	SERVER_TIERS: ['entry', 'standard', 'advanced'] as readonly string[],
+	/** Placeholders the engine fills without a question */
+	BUILTIN_PLACEHOLDERS: ['team_name', 'lead_name'] as readonly string[],
+	/** Longest accepted answer */
+	MAX_ANSWER_LENGTH: 2000,
+	/** Joins a multi-select answer when it fills a placeholder */
+	MULTISELECT_JOINER: '、',
+	/** Norm written from the bundle's review points */
+	REVIEW_POINTS_NORM_ID: 'owner-review-points',
+	/** Norms / SOP folders inside a team directory (see get-team-norms, get-sops) */
+	NORMS_DIR: 'norms',
+	SOPS_DIR: 'sops',
+	/** Default SOP category folder */
+	DEFAULT_SOP_CATEGORY: 'team',
+} as const;
+
 /** License status type */
 export type CloudLicenseStatus = (typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS)[keyof typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS];
 

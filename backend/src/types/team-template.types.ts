@@ -8,6 +8,8 @@
  * @module types/team-template
  */
 
+import type { SolutionBundle } from './solution-bundle.types.js';
+
 // =============================================================================
 // Template Category
 // =============================================================================
@@ -292,6 +294,13 @@ export interface TeamTemplate {
   mission?: string;
   /** Set when this template is a first-run starter (Phase 3 onboarding) */
   onboarding?: TemplateOnboarding;
+  /**
+   * Solution bundle section: norms/SOPs, skills, connectors, Slack layout,
+   * schedules, deploy questions, first-week tasks, recommended runtime and
+   * server tier (specs/solution-bundles.md). Validated by
+   * `services/bundle/bundle-manifest.ts`, not by {@link isValidTeamTemplate}.
+   */
+  bundle?: SolutionBundle;
 }
 
 // =============================================================================

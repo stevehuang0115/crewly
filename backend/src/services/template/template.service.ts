@@ -9,9 +9,9 @@
  */
 
 import { readFileSync, readdirSync, existsSync, statSync, mkdirSync, copyFileSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { LoggerService } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { randomUUID } from 'crypto';
 import type { TeamTemplate, TemplateRole, TemplateOnboarding } from '../../types/team-template.types.js';
 import { isValidTeamTemplate, isValidTemplateOnboarding } from '../../types/team-template.types.js';
@@ -386,7 +386,7 @@ export class TemplateService {
       const normsFiles = readdirSync(normsSourceDir).filter(f => f.endsWith('.md'));
       if (normsFiles.length === 0) return;
 
-      const crewlyHome = join(homedir(), '.crewly');
+      const crewlyHome = getCrewlyHomePath();
       const normsTargetDir = join(crewlyHome, 'teams', teamId, 'norms');
       mkdirSync(normsTargetDir, { recursive: true });
 
@@ -543,6 +543,9 @@ export class TemplateService {
           ...(typeof data.requiredTier === 'string' ? { requiredTier: data.requiredTier } : {}),
           ...(Array.isArray(data.tags) ? { tags: data.tags } : {}),
           ...(isValidTemplateOnboarding(data.onboarding) ? { onboarding: data.onboarding } : {}),
+          // Solution bundle section (specs/solution-bundles.md), validated
+          // and applied by services/bundle; carried so callers can see it.
+          ...(data.bundle && typeof data.bundle === 'object' ? { bundle: data.bundle } : {}),
         };
         this.templates.set(id, rolesTemplate);
         return;
