@@ -1,6 +1,6 @@
 import * as fs from 'fs/promises';
 import * as path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, appendFileSync } from 'fs';
 import { ConfigService } from './config.service.js';
 
 export type LogLevel = 'error' | 'warn' | 'info' | 'debug';
@@ -95,17 +95,29 @@ export class LoggerService {
     this.flushTimer.unref();
   }
 
+  /**
+   * Register process-level hooks that keep the file log complete.
+   *
+   * A stop signal is NOT the end of the process: since the safe-restart
+   * change the backend drains in-flight agent turns for up to 120s after
+   * SIGTERM, then runs its graceful shutdown. Stopping the flusher on the
+   * signal (the old behaviour) dropped that whole window — "Received
+   * SIGTERM", the drain, "Server shut down gracefully" — from the daily log,
+   * so no restart on 2026-09-24 showed its cause there. On a signal we only
+   * flush what is queued and keep the periodic flusher running; the queue is
+   * drained synchronously on 'exit', where async writes never complete.
+   */
   private setupProcessHandlers(): void {
     process.on('exit', () => {
-      this.shutdown();
+      this.flushLogsSync();
     });
 
     process.on('SIGINT', () => {
-      this.shutdown();
+      void this.flushLogs();
     });
 
     process.on('SIGTERM', () => {
-      this.shutdown();
+      void this.flushLogs();
     });
 
     process.on('uncaughtException', (error) => {
@@ -256,6 +268,31 @@ export class LoggerService {
 
     for (const entry of logsToFlush) {
       await this.writeToFile(entry);
+    }
+  }
+
+  /**
+   * Write every queued entry to today's log file synchronously.
+   *
+   * Used from the process 'exit' handler, where the event loop no longer runs
+   * and an async append would be abandoned. Rotation is skipped here; the next
+   * boot's first async write rotates as usual. Errors are reported to stderr
+   * and never thrown, since throwing inside 'exit' would mask the exit code.
+   */
+  private flushLogsSync(): void {
+    if (this.logQueue.length === 0) return;
+    const logConfig = this.getLoggingConfig();
+    const entries = this.logQueue;
+    this.logQueue = [];
+    if (!logConfig.enableFileLogging) return;
+
+    try {
+      const date = new Date().toISOString().split('T')[0];
+      const logPath = path.join(logConfig.logDir, `crewly-${date}.log`);
+      const text = entries.map((entry) => this.formatLogEntry(entry) + '\n').join('');
+      appendFileSync(logPath, text, 'utf-8');
+    } catch (error) {
+      console.error('Failed to write to log file on exit:', error);
     }
   }
 
