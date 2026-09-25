@@ -11,7 +11,13 @@
  * 2. Login — the harness's own login command runs in Crewly's login broker;
  *    the sign-in link (and code) is printed so it can be opened on a phone,
  *    and Claude's code is read back from this terminal.
- * 3. Agent skills, 4. team template, 5. summary.
+ * 3. Agent skills.
+ * 4. First team: a starter (Personal Assistant by default, Marketing) or
+ *    Blank (the orchestrator only).
+ * 5. First task ("派第一件事"), optional: sent to the orchestrator through the
+ *    running backend, or kept for it until Crewly starts.
+ * 6. Crewly Cloud and Slack: phone links only, never waits.
+ * 7. Summary.
  *
  * The owner is assumed not to be at the machine: nothing opens a local
  * browser for login, and `--yes` never prompts. With `--yes`, a login that
@@ -19,7 +25,8 @@
  * can finish it) or skipped with a note.
  *
  * Used directly via `crewly onboard`, by the curl install script, and by the
- * desktop app. Flags: `--yes`, `--template <id>`, `--harness <id>`, `--web`, `--cli`.
+ * desktop app. Flags: `--yes`, `--template <id>`, `--harness <id>`, `--task <text>`,
+ * `--web`, `--cli`.
  *
  * @module cli/commands/onboard
  */
@@ -28,7 +35,6 @@ import { createInterface, type Interface as ReadlineInterface } from 'readline';
 import { execSync } from 'child_process';
 import { mkdirSync, writeFileSync, existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import chalk from 'chalk';
 import {
@@ -40,6 +46,8 @@ import {
   listTemplates,
   getTemplate,
   getTemplatesDir,
+  listOnboardingStarters,
+  getDefaultStarterTemplate,
   type TeamTemplate,
 } from '../utils/templates.js';
 import { CLI_CONSTANTS } from '../constants.js';
@@ -55,6 +63,25 @@ import {
 } from '../utils/harness-engine.js';
 import { createReadlineIO } from '../utils/prompt-io.js';
 import { runHarnessSetup, type HarnessSetupResult, type SetupIO } from './harness-setup.js';
+import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
+import { resolveApiToken } from '../../../backend/src/services/core/api-token.service.js';
+import { pickAdvertisedHost } from './token.js';
+import {
+  askFirstTask,
+  buildConnectLinks,
+  chooseStarter,
+  deliverFirstTask,
+  printConnectSteps,
+  readConnectState,
+  recordBlankChoice,
+  reportFirstTask,
+  starterSuggestions,
+  stepHeader,
+  type ConnectLinks,
+  type ConnectState,
+  type FirstTaskOutcome,
+  type StarterChoice,
+} from './onboard-checklist.js';
 
 /** Process exit codes used by the wizard. */
 const CLI_EXIT_CODES = CLI_CONSTANTS.EXIT_CODES;
@@ -71,6 +98,8 @@ export interface OnboardOptions {
   web?: boolean;
   /** Continue setup in this terminal */
   cli?: boolean;
+  /** First task for the new team (with --yes; otherwise it is asked) */
+  task?: string;
 }
 
 /** Where the rest of setup happens. */
@@ -86,6 +115,14 @@ export interface OnboardDeps {
   hasDesktop?: boolean;
   /** Hand-off to the web app */
   continueInWeb?: () => Promise<void>;
+  /** Send / keep the first task */
+  deliverFirstTask?: (text: string, teamId: string | null) => Promise<FirstTaskOutcome>;
+  /** Record the Blank choice */
+  recordBlank?: () => Promise<void>;
+  /** Phone links for Cloud and Slack */
+  connectLinks?: () => ConnectLinks;
+  /** Cloud / Slack state from the running backend (null when unknown) */
+  readConnectState?: () => Promise<ConnectState | null>;
 }
 
 // ========================= Banner =========================
@@ -408,12 +445,12 @@ export async function runHarnessStep(
   getDriver: () => Promise<LoginDriver>,
   options: { interactive: boolean; harness?: string },
 ): Promise<HarnessSetupResult> {
-  console.log(chalk.bold('  Step 1/5: AI Harness'));
+  console.log(stepHeader(1, 'AI Harness'));
   ensureSystemTools();
   const result = await runHarnessSetup(io, service, getDriver, {
     interactive: options.interactive,
     preset: options.harness,
-    loginHeader: chalk.bold('  Step 2/5: Log in'),
+    loginHeader: stepHeader(2, 'Log in'),
   });
   console.log('');
   return result;
@@ -428,7 +465,7 @@ export async function runHarnessStep(
  * and installs all skills with progress feedback.
  */
 export async function ensureSkills(): Promise<void> {
-  console.log(chalk.bold('  Step 3/5: Agent Skills'));
+  console.log(stepHeader(3, 'Agent Skills'));
   console.log(chalk.gray('  Skills let agents communicate, manage memory, and coordinate tasks.\n'));
 
   try {
@@ -493,7 +530,7 @@ export async function ensureSkills(): Promise<void> {
  * @returns The selected template, or null if skipped
  */
 export async function selectTemplate(rl: ReadlineInterface): Promise<TeamTemplate | null> {
-  console.log(chalk.bold('  Step 4/5: Team Template'));
+  console.log(stepHeader(4, 'Team Template'));
   console.log('  Choose a pre-built team to get started quickly:\n');
 
   const templates = listTemplates();
@@ -530,13 +567,34 @@ export async function selectTemplate(rl: ReadlineInterface): Promise<TeamTemplat
   }
 }
 
+/**
+ * Step 4: choose the first team. With starter templates present (the normal
+ * case) this is Personal Assistant (default) / Marketing / Blank; without
+ * them it falls back to the full template list.
+ *
+ * @param rl - Readline interface
+ * @returns The choice, or null when skipped
+ */
+export async function selectFirstTeam(rl: ReadlineInterface): Promise<StarterChoice | null> {
+  const starters = listOnboardingStarters(listTemplates());
+  if (starters.length === 0) {
+    const template = await selectTemplate(rl);
+    return template ? { kind: 'template', template } : null;
+  }
+  console.log(stepHeader(4, 'First team'));
+  return chooseStarter((question) => ask(rl, question), starters);
+}
+
 // ========================= Team Creation =========================
 
 /**
- * Creates a team from a template by writing it to ~/.crewly/teams/{team-id}/config.json.
+ * Creates a team from a template by writing it to <crewlyHome>/teams/{template-id}/config.json
+ * (`CREWLY_HOME`, else ~/.crewly).
  *
  * Converts template members into full TeamMember objects with UUIDs, session names,
  * and default status fields. The team is immediately available when `crewly start` runs.
+ * An existing team from the same template is kept as it is (running onboard
+ * twice must not replace a team the owner already uses).
  *
  * @param template - The team template to create from
  * @param runtimeType - Harness the members run on (the orchestrator's harness,
@@ -545,9 +603,13 @@ export async function selectTemplate(rl: ReadlineInterface): Promise<TeamTemplat
  */
 export function createTeamFromTemplate(template: TeamTemplate, runtimeType: string = HARNESS_CONSTANTS.DEFAULT_ORC_HARNESS): boolean {
   const now = new Date().toISOString();
-  const teamsDir = join(homedir(), '.crewly', 'teams', template.id);
+  const teamsDir = join(getCrewlyHomePath(), 'teams', template.id);
 
   try {
+    if (existsSync(join(teamsDir, 'config.json'))) {
+      console.log(chalk.gray(`  Team "${template.name}" already exists; keeping it.`));
+      return true;
+    }
     mkdirSync(teamsDir, { recursive: true });
 
     const members = template.members.map((m) => {
@@ -574,6 +636,7 @@ export function createTeamFromTemplate(template: TeamTemplate, runtimeType: stri
       name: template.name,
       description: template.description,
       members,
+      templateId: template.id,
       projectIds: [],
       createdAt: now,
       updatedAt: now,
@@ -685,7 +748,79 @@ export function copyTemplateProjectFiles(crewlyDir: string, template: TeamTempla
   }
 }
 
-// ========================= Step 5: Summary =========================
+// ========================= Steps 5-6: First task, Cloud & Slack =========================
+
+/**
+ * The team a first task goes to: the team created from the template (its id
+ * is the template id), or null for Blank / no team.
+ *
+ * @param choice - First-team choice
+ * @param created - Whether the team exists
+ * @returns Team id, or null
+ */
+export function firstTaskTeamId(choice: StarterChoice | null, created: boolean): string | null {
+  return choice?.kind === 'template' && created ? choice.template.id : null;
+}
+
+/**
+ * Step 5: the first task. Interactive mode asks (Enter skips); `--yes` uses
+ * `--task` and never asks.
+ *
+ * @param choice - First-team choice (for the suggestions)
+ * @param teamId - Team the task is for, or null for the orchestrator
+ * @param options - `ask` (interactive) or `task` (preset)
+ * @param deliver - Sends / keeps the task
+ * @returns The outcome, or null when skipped
+ */
+export async function runFirstTaskStep(
+  choice: StarterChoice | null,
+  teamId: string | null,
+  options: { ask?: (question: string) => Promise<string>; task?: string },
+  deliver: (text: string, teamId: string | null) => Promise<FirstTaskOutcome>,
+): Promise<FirstTaskOutcome | null> {
+  console.log(stepHeader(5, 'First task (派第一件事)'));
+  let text: string | null = options.task?.trim() || null;
+  if (!text && options.ask) {
+    text = await askFirstTask(options.ask, starterSuggestions(choice?.kind === 'template' ? choice.template : null));
+  }
+  if (!text) {
+    if (!options.ask) console.log(chalk.gray('  Skipped (pass --task "<text>" to send one). Send it any time from the dashboard or Slack.\n'));
+    return null;
+  }
+  const outcome = await deliver(text, teamId);
+  reportFirstTask(outcome);
+  return outcome;
+}
+
+/**
+ * The phone links for Cloud and Slack on this machine: LAN address, backend
+ * port and the API token a non-loopback browser needs.
+ *
+ * @returns Links
+ */
+export function defaultConnectLinks(): ConnectLinks {
+  let token: string | null = null;
+  try {
+    token = resolveApiToken().token;
+  } catch {
+    token = null;
+  }
+  return buildConnectLinks(pickAdvertisedHost(), getBackendPort(), token);
+}
+
+/**
+ * Step 6: Crewly Cloud and Slack. Prints phone links (or done marks when the
+ * running backend says so) and moves on.
+ *
+ * @param links - Phone links
+ * @param readState - Cloud / Slack state from the running backend
+ */
+export async function runConnectStep(links: () => ConnectLinks, readState: () => Promise<ConnectState | null>): Promise<void> {
+  console.log(stepHeader(6, 'Crewly Cloud & Slack'));
+  printConnectSteps(links(), await readState());
+}
+
+// ========================= Step 7: Summary =========================
 
 /**
  * Prints the setup-complete summary with next-step instructions.
@@ -697,7 +832,7 @@ export function copyTemplateProjectFiles(crewlyDir: string, template: TeamTempla
  * @param projectDir - The project directory path for next-steps output
  */
 export function printSummary(selectedTemplate: TeamTemplate | null = null, projectDir?: string): void {
-  console.log(chalk.bold('  Step 5/5: Done!'));
+  console.log(stepHeader(CLI_CONSTANTS.ONBOARD.TOTAL_STEPS, 'Done!'));
   console.log(chalk.green('  ✓ Setup complete!\n'));
 
   if (selectedTemplate) {
@@ -730,11 +865,14 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
  *    (default Claude Code), install only that one, record the choice
  * 2. Log in through the login broker (link + code printed for a phone)
  * 3. Agent skills
- * 4. Team template (or skip)
- * 5. Summary
+ * 4. First team: Personal Assistant (default), Marketing or Blank
+ * 5. First task, optional (`--task` with `--yes`)
+ * 6. Crewly Cloud & Slack: phone links, never waits
+ * 7. Summary
  *
  * `--yes` uses the defaults and never prompts: the default harness (or
- * `--harness`), auto-install, and a login that is either handed to the
+ * `--harness`), auto-install, the recommended starter team (or `--template`),
+ * and a login that is either handed to the
  * running backend (web app / phone finish it), a device-code login that
  * needs no reply, or skipped with a note.
  *
@@ -780,6 +918,34 @@ export async function onboardCommand(options: OnboardOptions = {}, deps: Onboard
     return service;
   };
   const getDriver = deps.getDriver ?? (() => pickLoginDriver(getService()));
+  const deliver = deps.deliverFirstTask ?? ((text: string, teamId: string | null) => deliverFirstTask(text, teamId));
+  const recordBlank = deps.recordBlank ?? (() => recordBlankChoice());
+  const links = deps.connectLinks ?? defaultConnectLinks;
+  const readState = deps.readConnectState ?? (() => readConnectState());
+
+  /**
+   * Create the chosen team (or record Blank).
+   *
+   * @param choice - First-team choice
+   * @param harnessId - Runtime for the members
+   * @returns Whether a team now exists for the choice
+   */
+  const applyChoice = async (choice: StarterChoice | null, harnessId: string): Promise<boolean> => {
+    if (!choice) return false;
+    if (choice.kind === 'blank') {
+      try {
+        await recordBlank();
+      } catch (error) {
+        console.log(chalk.yellow(`  ⚠ Could not record the choice: ${error instanceof Error ? error.message : String(error)}`));
+      }
+      return false;
+    }
+    const created = createTeamFromTemplate(choice.template, harnessId);
+    if (created) {
+      console.log(chalk.green(`  ✓ Team "${choice.template.name}" created\n`));
+    }
+    return created;
+  };
 
   if (autoYes) {
     // Non-interactive mode: use defaults, never prompt.
@@ -798,23 +964,29 @@ export async function onboardCommand(options: OnboardOptions = {}, deps: Onboard
       // Step 3: Skills
       await ensureSkills();
 
-      // Step 4: Template — use preselected or first available
-      console.log(chalk.bold('  Step 4/5: Team Template'));
-      const selectedTemplate = preselectedTemplate ?? listTemplates()[0] ?? null;
+      // Step 4: First team — --template, else the recommended starter
+      // (Personal Assistant), never simply the first template by name.
+      console.log(stepHeader(4, 'First team'));
+      const selectedTemplate = preselectedTemplate ?? getDefaultStarterTemplate(listTemplates());
+      let choice: StarterChoice | null = null;
       if (selectedTemplate) {
         console.log(chalk.green(`  ✓ Using template: ${selectedTemplate.name}\n`));
-        const created = createTeamFromTemplate(selectedTemplate, harness.harnessId);
-        if (created) {
-          console.log(chalk.green(`  ✓ Team "${selectedTemplate.name}" created\n`));
-        }
+        choice = { kind: 'template', template: selectedTemplate };
       } else {
         console.log(chalk.gray('  No templates available.\n'));
       }
+      const created = await applyChoice(choice, harness.harnessId);
 
       // Scaffold .crewly/ directory (with template project files)
       scaffoldCrewlyDirectory(process.cwd(), selectedTemplate);
 
-      // Step 5: Summary
+      // Step 5: First task (only with --task)
+      await runFirstTaskStep(choice, firstTaskTeamId(choice, created), { task: options.task }, deliver);
+
+      // Step 6: Cloud & Slack (links only)
+      await runConnectStep(links, readState);
+
+      // Step 7: Summary
       printSummary(selectedTemplate);
     } finally {
       (service as HarnessService | null)?.broker.shutdown();
@@ -841,28 +1013,28 @@ export async function onboardCommand(options: OnboardOptions = {}, deps: Onboard
     // Step 3: Skills
     await ensureSkills();
 
-    // Step 4: Team template — preselected or interactive
-    let selectedTemplate: TeamTemplate | null;
+    // Step 4: First team — preselected or chosen (Enter = Personal Assistant)
+    let choice: StarterChoice | null;
     if (preselectedTemplate) {
-      console.log(chalk.bold('  Step 4/5: Team Template'));
+      console.log(stepHeader(4, 'First team'));
       console.log(chalk.green(`  ✓ Using template: ${preselectedTemplate.name}\n`));
-      selectedTemplate = preselectedTemplate;
+      choice = { kind: 'template', template: preselectedTemplate };
     } else {
-      selectedTemplate = await selectTemplate(rl);
+      choice = await selectFirstTeam(rl);
     }
-
-    // Create team from selected template
-    if (selectedTemplate) {
-      const created = createTeamFromTemplate(selectedTemplate, harness.harnessId);
-      if (created) {
-        console.log(chalk.green(`  ✓ Team "${selectedTemplate.name}" created\n`));
-      }
-    }
+    const created = await applyChoice(choice, harness.harnessId);
+    const selectedTemplate = choice?.kind === 'template' ? choice.template : null;
 
     // Scaffold .crewly/ directory (with template project files)
     scaffoldCrewlyDirectory(process.cwd(), selectedTemplate);
 
-    // Step 5: Summary
+    // Step 5: First task (optional)
+    await runFirstTaskStep(choice, firstTaskTeamId(choice, created), { ask: io.ask, task: options.task }, deliver);
+
+    // Step 6: Cloud & Slack (links only)
+    await runConnectStep(links, readState);
+
+    // Step 7: Summary
     printSummary(selectedTemplate);
   } catch (error) {
     if (error instanceof WizardInputClosedError) {

@@ -37,7 +37,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
-import { setMessageQueueService, clipForOrchestrator } from './chat.controller.js';
+import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator } from './chat.controller.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 
@@ -222,6 +222,49 @@ describe('Chat Controller', () => {
       intake.intakeWithOutcome.mockResolvedValueOnce({ action: 'ignored', reason: 'trivial_or_short' });
       await request(app).post('/api/chat/send').send({ content: 'thanks' });
       expect(enqueue.mock.calls[0][0].content).toBe('thanks');
+    });
+  });
+
+  // ===========================================================================
+  // sendChatMessageToOrchestrator — shared with the onboarding first task
+  // ===========================================================================
+
+  describe('sendChatMessageToOrchestrator', () => {
+    let enqueue: jest.Mock;
+
+    beforeEach(() => {
+      setTicketIntakeService({ intakeWithOutcome: jest.fn(async () => ({ action: 'ignored', reason: 'test' })) } as unknown as TicketIntakeService);
+      enqueue = jest.fn(() => ({ id: 'q-7' }));
+      setMessageQueueService({ enqueue } as any);
+    });
+
+    afterEach(() => {
+      setTicketIntakeService(null);
+      setMessageQueueService(null as any);
+    });
+
+    it('stores the owner message and queues it for the orchestrator', async () => {
+      const { result, orchestrator } = await sendChatMessageToOrchestrator({ content: 'Plan my week', metadata: { source: 'onboarding_first_task' } });
+      expect(result.message.content).toBe('Plan my week');
+      expect(result.message.from.type).toBe('user');
+      expect(orchestrator.forwarded).toBe(true);
+      expect(orchestrator.queueId).toBe('q-7');
+      expect(enqueue.mock.calls[0][0]).toMatchObject({ content: 'Plan my week', conversationId: result.conversation.id, source: 'web_chat' });
+    });
+
+    it('does not forward when asked not to', async () => {
+      const { orchestrator } = await sendChatMessageToOrchestrator({ content: 'note to self', forwardToOrchestrator: false });
+      expect(orchestrator).toEqual({ forwarded: false });
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('reports a failed queue without throwing', async () => {
+      enqueue.mockImplementation(() => {
+        throw new Error('queue full');
+      });
+      const { orchestrator } = await sendChatMessageToOrchestrator({ content: 'Plan my week' });
+      expect(orchestrator.forwarded).toBe(false);
+      expect(orchestrator.error).toMatch(/queue/);
     });
   });
 

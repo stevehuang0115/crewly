@@ -83,6 +83,11 @@ export const CLI_CONSTANTS = {
     WEB_WAIT_ATTEMPTS: 60,
     /** Delay between those checks */
     WEB_WAIT_INTERVAL_MS: 1000,
+    /** Steps in the terminal wizard: harness, login, skills, team, first task, Cloud & Slack, done */
+    TOTAL_STEPS: 7,
+    /** Backend routes of the first-run checklist (onboarding Phase 3) */
+    CHECKLIST_ENDPOINT: '/api/onboarding/checklist',
+    FIRST_TASK_ENDPOINT: '/api/onboarding/first-task',
   },
 } as const;
 

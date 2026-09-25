@@ -11,6 +11,8 @@ import {
   listTemplates,
   getTemplate,
   getTemplatesDir,
+  listOnboardingStarters,
+  getDefaultStarterTemplate,
   type TeamTemplate,
 } from './templates.js';
 
@@ -348,5 +350,36 @@ describe('templates', () => {
       const devTemplates = templates.filter(t => t.id === 'dev-fullstack');
       expect(devTemplates).toHaveLength(1);
     });
+  });
+});
+
+describe('onboarding starters', () => {
+  const onboarding = (order: number, recommended: boolean) => ({
+    order,
+    recommended,
+    label: `s${order}`,
+    tagline: 't',
+    suggestions: ['a', 'b', 'c'],
+  });
+  const plain: TeamTemplate = { id: 'a-plain', name: 'A Plain', description: 'd', members: [] };
+  const marketing: TeamTemplate = { id: 'growth-marketing-team', name: 'Growth Marketing Team', description: 'd', members: [], onboarding: onboarding(2, false) };
+  const assistant: TeamTemplate = { id: 'personal-assistant-team', name: 'Personal Assistant', description: 'd', members: [], onboarding: onboarding(1, true) };
+
+  it('lists only templates with valid onboarding metadata, by order', () => {
+    const broken = { ...plain, id: 'broken', onboarding: { order: 'x' } } as unknown as TeamTemplate;
+    expect(listOnboardingStarters([plain, marketing, broken, assistant]).map((t) => t.id)).toEqual([
+      'personal-assistant-team',
+      'growth-marketing-team',
+    ]);
+  });
+
+  it('defaults to the recommended starter, not the first template alphabetically', () => {
+    expect(getDefaultStarterTemplate([plain, marketing, assistant])?.id).toBe('personal-assistant-team');
+  });
+
+  it('falls back to the first starter, then the first template, then null', () => {
+    expect(getDefaultStarterTemplate([plain, marketing])?.id).toBe('growth-marketing-team');
+    expect(getDefaultStarterTemplate([plain])?.id).toBe('a-plain');
+    expect(getDefaultStarterTemplate([])).toBeNull();
   });
 });

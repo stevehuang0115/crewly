@@ -10,6 +10,12 @@
 import path from 'path';
 import { readFileSync, readdirSync, existsSync, statSync } from 'fs';
 import { packageRootCandidates } from './package-root.js';
+import {
+  isValidTemplateOnboarding,
+  type TemplateOnboarding,
+} from '../../../backend/src/types/team-template.types.js';
+
+export type { TemplateOnboarding };
 
 // ========================= Types =========================
 
@@ -37,6 +43,8 @@ export interface TeamTemplate {
   description: string;
   /** Agent definitions */
   members: TemplateMember[];
+  /** Set on first-run starter templates (Personal Assistant, Marketing) */
+  onboarding?: TemplateOnboarding;
 }
 
 // ========================= Internals =========================
@@ -208,4 +216,34 @@ function convertNewFormatTemplate(data: Record<string, unknown>): TeamTemplate |
  */
 export function getTemplate(id: string): TeamTemplate | undefined {
   return listTemplates().find(t => t.id === id);
+}
+
+/**
+ * The first-run starter templates (valid `onboarding` metadata), ordered by
+ * `onboarding.order` — Personal Assistant first.
+ *
+ * @param templates - Templates to filter (defaults to {@link listTemplates})
+ * @returns Starters, first-shown first
+ *
+ * @example
+ * ```typescript
+ * const [recommended] = listOnboardingStarters();
+ * ```
+ */
+export function listOnboardingStarters(templates: TeamTemplate[] = listTemplates()): Array<TeamTemplate & { onboarding: TemplateOnboarding }> {
+  return templates
+    .filter((t): t is TeamTemplate & { onboarding: TemplateOnboarding } => isValidTemplateOnboarding(t.onboarding))
+    .sort((a, b) => a.onboarding.order - b.onboarding.order);
+}
+
+/**
+ * The template setup uses when nobody chooses: the recommended starter (the
+ * Personal Assistant), else the first starter, else the first template.
+ *
+ * @param templates - Templates to choose from (defaults to {@link listTemplates})
+ * @returns The default template, or null when there are none
+ */
+export function getDefaultStarterTemplate(templates: TeamTemplate[] = listTemplates()): TeamTemplate | null {
+  const starters = listOnboardingStarters(templates);
+  return starters.find((t) => t.onboarding.recommended) ?? starters[0] ?? templates[0] ?? null;
 }

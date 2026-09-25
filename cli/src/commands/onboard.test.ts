@@ -38,10 +38,36 @@ jest.mock('../utils/marketplace.js', () => ({
 const mockListTemplates = jest.fn();
 const mockGetTemplate = jest.fn();
 const mockGetTemplatesDir = jest.fn().mockReturnValue('/mock/templates');
-jest.mock('../utils/templates.js', () => ({
-  listTemplates: (...args: unknown[]) => mockListTemplates(...args),
-  getTemplate: (...args: unknown[]) => mockGetTemplate(...args),
-  getTemplatesDir: (...args: unknown[]) => mockGetTemplatesDir(...args),
+jest.mock('../utils/templates.js', () => {
+  const actual = jest.requireActual('../utils/templates.js');
+  return {
+    listTemplates: (...args: unknown[]) => mockListTemplates(...args),
+    getTemplate: (...args: unknown[]) => mockGetTemplate(...args),
+    getTemplatesDir: (...args: unknown[]) => mockGetTemplatesDir(...args),
+    // Pure helpers: always called with the (mocked) template list.
+    listOnboardingStarters: actual.listOnboardingStarters,
+    getDefaultStarterTemplate: actual.getDefaultStarterTemplate,
+  };
+});
+
+// The first-task / Cloud / Slack steps (onboard-checklist.ts has its own tests):
+// keep the real prompts and printing, stub what touches the backend or disk.
+const mockDeliverFirstTask = jest.fn();
+const mockRecordBlankChoice = jest.fn();
+const mockReadConnectState = jest.fn();
+jest.mock('./onboard-checklist.js', () => ({
+  ...jest.requireActual('./onboard-checklist.js'),
+  deliverFirstTask: (...args: unknown[]) => mockDeliverFirstTask(...args),
+  recordBlankChoice: (...args: unknown[]) => mockRecordBlankChoice(...args),
+  readConnectState: (...args: unknown[]) => mockReadConnectState(...args),
+}));
+
+jest.mock('../../../backend/src/services/core/api-token.service.js', () => ({
+  resolveApiToken: () => ({ token: 'api-tok', source: 'file', filePath: '/x' }),
+}));
+
+jest.mock('./token.js', () => ({
+  pickAdvertisedHost: () => '192.168.1.20',
 }));
 
 const mockMkdirSync = jest.fn();
@@ -195,6 +221,9 @@ describe('onboard command', () => {
       throw new Error('process.exit called');
     }) as never);
     mockExecSync.mockReset();
+    mockDeliverFirstTask.mockReset().mockResolvedValue({ status: 'pending' });
+    mockRecordBlankChoice.mockReset().mockResolvedValue(undefined);
+    mockReadConnectState.mockReset().mockResolvedValue(null);
     mockCheckSkillsInstalled.mockReset();
     mockInstallAllSkills.mockReset();
     mockCountBundledSkills.mockReset();
@@ -402,10 +431,10 @@ describe('onboard command', () => {
       expect(mockRunHarnessSetup).toHaveBeenCalledWith(io, service, getDriver, expect.objectContaining({
         interactive: false,
         preset: 'codex',
-        loginHeader: expect.stringContaining('Step 2/5'),
+        loginHeader: expect.stringContaining('Step 2/7'),
       }));
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('Step 1/5: AI Harness');
+      expect(output).toContain('Step 1/7: AI Harness');
       expect(output).toContain('jq detected');
     });
   });
@@ -1112,6 +1141,127 @@ describe('onboard command', () => {
       expect(output).toContain('Template "nonexistent" not found');
       // Should not show available templates line
       expect(output).not.toContain('Available templates:');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Phase 3: starter teams, first task, Cloud & Slack
+  // -----------------------------------------------------------------------
+
+  describe('first-run steps (Phase 3)', () => {
+    const starter = (id: string, name: string, order: number, recommended: boolean): TeamTemplate => ({
+      id,
+      name,
+      description: `${name} team`,
+      members: [{ name: 'Lead', role: 'generalist', systemPrompt: 'prompt' }],
+      onboarding: { order, recommended, label: `L${order}`, tagline: `tagline ${order}`, suggestions: [`${id} s1`, `${id} s2`, `${id} s3`] },
+    });
+    const marketing = starter('growth-marketing-team', 'Growth Marketing Team', 2, false);
+    const assistant = starter('personal-assistant-team', 'Personal Assistant', 1, true);
+
+    beforeEach(() => {
+      mockRlClose.mockReset();
+      mockExistsSync.mockReturnValue(false);
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
+      // Alphabetical order, as listTemplates() returns it: Marketing first.
+      mockListTemplates.mockReturnValue([marketing, assistant, sampleTemplate]);
+    });
+
+    const output = (): string => logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+
+    it('--yes without --template creates the Personal Assistant, not the first template by name', async () => {
+      mockJqFound();
+      await onboardCommand({ yes: true });
+      expect(output()).toContain('Using template: Personal Assistant');
+      const written = mockWriteFileSync.mock.calls.find((c: unknown[]) => String(c[0]).endsWith('config.json'));
+      expect(String(written?.[0])).toContain('teams/personal-assistant-team');
+      expect(JSON.parse(String(written?.[1])).templateId).toBe('personal-assistant-team');
+    });
+
+    it('--yes never asks for a first task and sends --task to the new team', async () => {
+      mockJqFound();
+      await onboardCommand({ yes: true });
+      expect(mockDeliverFirstTask).not.toHaveBeenCalled();
+      expect(output()).toContain('pass --task');
+
+      mockJqFound();
+      await onboardCommand({ yes: true, task: '  Plan my week ' });
+      expect(mockDeliverFirstTask).toHaveBeenCalledWith('Plan my week', 'personal-assistant-team');
+      expect(output()).toContain('The orchestrator gets it when Crewly starts');
+    });
+
+    it('interactive: Enter picks the recommended starter and a number picks a suggested task', async () => {
+      mockReadlineAnswers = ['', '2']; // starter: Enter; first task: suggestion 2
+      mockReadlineAnswerIndex = 0;
+      mockJqFound();
+      mockDeliverFirstTask.mockResolvedValue({ status: 'sent', queued: false });
+
+      await onboardCommand({ cli: true });
+
+      expect(output()).toContain('Selected: Personal Assistant');
+      expect(output()).toContain('(recommended / 推荐)');
+      expect(mockDeliverFirstTask).toHaveBeenCalledWith('personal-assistant-team s2', 'personal-assistant-team');
+      expect(output()).toContain('Sent to the orchestrator.');
+      expect(output()).toContain('Step 7/7: Done!');
+    });
+
+    it('interactive: Blank records the choice, creates no team and sends the task to the orchestrator', async () => {
+      mockReadlineAnswers = ['3', 'Tell me what you can do'];
+      mockReadlineAnswerIndex = 0;
+      mockJqFound();
+
+      await onboardCommand({ cli: true });
+
+      expect(mockRecordBlankChoice).toHaveBeenCalled();
+      expect(mockWriteFileSync.mock.calls.some((c: unknown[]) => String(c[0]).includes('/teams/'))).toBe(false);
+      expect(mockDeliverFirstTask).toHaveBeenCalledWith('Tell me what you can do', null);
+    });
+
+    it('interactive: Enter at the first task skips it', async () => {
+      mockReadlineAnswers = ['1', ''];
+      mockReadlineAnswerIndex = 0;
+      mockJqFound();
+      await onboardCommand({ cli: true });
+      expect(mockDeliverFirstTask).not.toHaveBeenCalled();
+      expect(output()).toContain('Skipped. Send it any time');
+    });
+
+    it('prints phone links for Cloud and Slack (LAN host + API token) and does not wait', async () => {
+      mockJqFound();
+      await onboardCommand({ yes: true });
+      const text = output();
+      expect(text).toContain('Step 6/7: Crewly Cloud & Slack');
+      expect(text).toContain('/api/cloud/google/start?redirect=');
+      expect(text).toContain('http://192.168.1.20:8787/setup?step=cloud&token=api-tok');
+      expect(text).toContain('http://192.168.1.20:8787/setup?step=slack&token=api-tok');
+    });
+
+    it('shows done marks when the running backend reports Cloud and Slack connected', async () => {
+      mockReadConnectState.mockResolvedValue({ cloud: true, slack: true });
+      mockJqFound();
+      await onboardCommand({ yes: true });
+      expect(output()).toContain('Crewly Cloud connected');
+      expect(output()).toContain('Slack connected');
+      expect(output()).not.toContain('setup?step=cloud');
+    });
+
+    it('keeps a team that already exists instead of replacing it', () => {
+      mockExistsSync.mockReturnValue(true);
+      expect(createTeamFromTemplate(assistant)).toBe(true);
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(output()).toContain('already exists');
+    });
+
+    it('writes teams under CREWLY_HOME', () => {
+      const saved = process.env.CREWLY_HOME;
+      process.env.CREWLY_HOME = '/tmp/crewly-home-test';
+      try {
+        createTeamFromTemplate(assistant);
+        expect(String(mockWriteFileSync.mock.calls[0][0])).toBe('/tmp/crewly-home-test/teams/personal-assistant-team/config.json');
+      } finally {
+        if (saved === undefined) delete process.env.CREWLY_HOME;
+        else process.env.CREWLY_HOME = saved;
+      }
     });
   });
 });

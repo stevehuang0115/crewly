@@ -103,8 +103,9 @@ program
   .alias('onboard')
   .description('Setup wizard for new Crewly users (web app or terminal)')
   .option('-y, --yes', 'Non-interactive mode: use all defaults, never prompt (CI / agents); prints the login link for your phone')
-  .option('--template <id>', 'Select a team template by ID (e.g. web-dev-team)')
+  .option('--template <id>', 'Team template by ID (default: personal-assistant-team)')
   .option('--harness <id>', 'Harness for the orchestrator: claude (default), codex or gemini')
+  .option('--task <text>', 'First task for the new team; sent to the orchestrator (with --yes; otherwise it is asked)')
   .option('--web', 'Continue setup in the web app')
   .option('--cli', 'Continue setup in this terminal')
   .action((options: Parameters<typeof onboardCommand>[0]) => onboardCommand(options));
