@@ -419,7 +419,7 @@ describe('AgentRegistrationService', () => {
 			async (role) => {
 				const FAKE_GEMINI_KEY = 'AIzaTESTrecreationGeminiKey0123456789ab';
 				const FAKE_ANTHROPIC_KEY = 'sk-ant-TESTrecreationAnthropicKey0123';
-				const { getSettingsService } = require('../settings/settings.service.js');
+				const { getSettingsService } = jest.requireMock<{ getSettingsService: jest.Mock }>('../settings/settings.service.js');
 				const previousSettings = (getSettingsService as jest.Mock)();
 				(getSettingsService as jest.Mock).mockReturnValue({
 					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true } }),
@@ -927,7 +927,7 @@ describe('AgentRegistrationService', () => {
 				[RUNTIME_TYPES.CLAUDE_CODE],
 				[RUNTIME_TYPES.OPENCODE_CLI],
 			])('%s: passes the keys in the spawn env and types none of them into the session', async (runtimeType) => {
-				const { getSettingsService } = require('../settings/settings.service.js');
+				const { getSettingsService } = jest.requireMock<{ getSettingsService: jest.Mock }>('../settings/settings.service.js');
 				(getSettingsService as any).mockReturnValue({
 					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: true } }),
 					getApiKey: jest.fn().mockImplementation(async (provider: keyof typeof FAKE_KEYS) => FAKE_KEYS[provider]),
@@ -976,7 +976,7 @@ describe('AgentRegistrationService', () => {
 			// cannot show, so that step is stubbed. Everything up to and including the
 			// runtime init script — where a typed export would happen — still runs.
 			it('codex-cli: passes the keys in the spawn env and types none of them into the session', async () => {
-				const { getSettingsService } = require('../settings/settings.service.js');
+				const { getSettingsService } = jest.requireMock<{ getSettingsService: jest.Mock }>('../settings/settings.service.js');
 				(getSettingsService as any).mockReturnValue({
 					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: true } }),
 					getApiKey: jest.fn().mockImplementation(async (provider: keyof typeof FAKE_KEYS) => FAKE_KEYS[provider]),
