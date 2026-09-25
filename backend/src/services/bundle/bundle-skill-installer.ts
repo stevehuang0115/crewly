@@ -114,3 +114,63 @@ export function createMarketplaceSkillInstaller(deps: MarketplaceSkillInstallerD
     },
   };
 }
+
+/** The parts of the skill-setup services the bundle installer uses. */
+export interface SkillSetupInstallerDeps<S extends { installed: boolean; ready?: boolean } = { installed: boolean; ready?: boolean }> {
+  /** SkillDiscoveryService: resolve + probe (is it set up?) */
+  discovery: {
+    resolve(id: string): Promise<S | null>;
+    probe(skill: S): Promise<S>;
+  };
+  /** SkillInstallJobService: install + setup as a job */
+  jobs: {
+    startInstall(input: { skillId: string; ownerDashboard?: boolean; resumeNote?: string }): Promise<
+      { kind: 'already-ready' } | { kind: 'job'; job: { jobId: string } }
+    >;
+    waitForJob(jobId: string): Promise<{ state: string; log: string }>;
+  };
+  /** Home this deploy writes to */
+  crewlyHome: string;
+  /** Home the marketplace download writes to (always ~/.crewly today) */
+  marketplaceHome: string;
+}
+
+/**
+ * Bundle skill installer on the skill-setup services (specs/skill-auto-install.md):
+ * a skill counts as available only when its declared dependencies are set up,
+ * and installing runs that setup too (brew/apt/model downloads). Deploying a
+ * bundle is the owner's own action, so third-party skills in it install as
+ * the owner (`ownerDashboard`).
+ *
+ * @param deps - Discovery and install-job services
+ * @returns Installer for the apply engine
+ */
+export function createSkillSetupInstaller<S extends { installed: boolean; ready?: boolean }>(deps: SkillSetupInstallerDeps<S>): BundleSkillInstaller {
+  return {
+    async isAvailable(skillId) {
+      const skill = await deps.discovery.resolve(skillId);
+      if (!skill || !skill.installed) return false;
+      const probed = await deps.discovery.probe(skill);
+      return probed.ready !== false;
+    },
+    async install(skillId) {
+      const skill = await deps.discovery.resolve(skillId);
+      if (!skill) return { ok: false, message: `"${skillId}" is not bundled with Crewly or listed in the marketplace` };
+      // A download from the marketplace lands in ~/.crewly whatever CREWLY_HOME
+      // says — refuse rather than write into the real home from a test deploy.
+      if (!skill.installed && path.resolve(deps.crewlyHome) !== path.resolve(deps.marketplaceHome)) {
+        return {
+          ok: false,
+          message: `Not installed: the marketplace installs into ${deps.marketplaceHome}, not this CREWLY_HOME (${deps.crewlyHome})`,
+        };
+      }
+      const started = await deps.jobs.startInstall({ skillId, ownerDashboard: true, resumeNote: 'solution bundle deploy' });
+      if (started.kind === 'already-ready') return { ok: true, message: `${skillId} already set up` };
+      const job = await deps.jobs.waitForJob(started.job.jobId);
+      const tail = job.log.trim().split('\n').slice(-3).join(' | ');
+      return job.state === 'succeeded'
+        ? { ok: true, message: `${skillId} installed and set up` }
+        : { ok: false, message: `${skillId} install failed${tail ? `: ${tail}` : ''}` };
+    },
+  };
+}

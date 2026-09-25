@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import * as path from 'path';
 import type { MarketplaceItem } from '../../types/marketplace.types.js';
-import { createMarketplaceSkillInstaller, findBundledSkill } from './bundle-skill-installer.js';
+import { createMarketplaceSkillInstaller, findBundledSkill, createSkillSetupInstaller } from './bundle-skill-installer.js';
 
 describe('bundle skill installer', () => {
   let root: string;
@@ -75,5 +75,50 @@ describe('bundle skill installer', () => {
   it('treats an invalid install path as not installed', async () => {
     const { skills } = installer({ installPath: () => { throw new Error('bad id'); } });
     expect(await skills.isAvailable('Bad/Id')).toBe(false);
+  });
+});
+
+describe('createSkillSetupInstaller (skill-setup services)', () => {
+  type S = { installed: boolean; ready?: boolean };
+  function deps(skill: S | null, job: { state: string; log: string } = { state: 'succeeded', log: '' }, home = '/h') {
+    const started: Array<{ skillId: string; ownerDashboard?: boolean }> = [];
+    return {
+      started,
+      installer: createSkillSetupInstaller<S>({
+        discovery: { resolve: async () => skill, probe: async (s) => s },
+        jobs: {
+          startInstall: async (input) => {
+            started.push(input);
+            return { kind: 'job', job: { jobId: 'j1' } };
+          },
+          waitForJob: async () => job,
+        },
+        crewlyHome: home,
+        marketplaceHome: '/h',
+      }),
+    };
+  }
+
+  it('is available only when installed and set up', async () => {
+    expect(await deps({ installed: true, ready: true }).installer.isAvailable('x')).toBe(true);
+    expect(await deps({ installed: true, ready: false }).installer.isAvailable('x')).toBe(false);
+    expect(await deps({ installed: false }).installer.isAvailable('x')).toBe(false);
+    expect(await deps(null).installer.isAvailable('x')).toBe(false);
+  });
+
+  it('installs as the owner and waits for the job', async () => {
+    const d = deps({ installed: false });
+    expect(await d.installer.install('pdf-tools')).toEqual({ ok: true, message: 'pdf-tools installed and set up' });
+    expect(d.started[0]).toMatchObject({ skillId: 'pdf-tools', ownerDashboard: true });
+    const failed = deps({ installed: true, ready: false }, { state: 'failed', log: 'a\nb\napt needs root' });
+    expect((await failed.installer.install('x')).ok).toBe(false);
+  });
+
+  it('refuses a marketplace download into another CREWLY_HOME, but sets up a local skill there', async () => {
+    const remote = deps({ installed: false }, undefined, '/tmp/other');
+    expect((await remote.installer.install('x')).ok).toBe(false);
+    expect(remote.started).toEqual([]);
+    const local = deps({ installed: true, ready: false }, undefined, '/tmp/other');
+    expect((await local.installer.install('x')).ok).toBe(true);
   });
 });

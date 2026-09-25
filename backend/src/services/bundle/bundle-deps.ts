@@ -14,11 +14,12 @@ import { homedir } from 'os';
 import * as path from 'path';
 import { StorageService } from '../core/storage.service.js';
 import { CronTaskService } from '../workflow/cron-task.service.js';
-import { fetchRegistry, getInstallPath, installItem } from '../marketplace/index.js';
 import type { BundleApplyDeps } from './bundle-apply.service.js';
 import { BundleCatalog, bundleTemplateDirs } from './bundle-catalog.js';
 import { resolveBundleRuntime } from './bundle-runtime.js';
-import { createMarketplaceSkillInstaller } from './bundle-skill-installer.js';
+import { createSkillSetupInstaller } from './bundle-skill-installer.js';
+import { getSkillDiscoveryService } from '../skill-setup/skill-discovery.service.js';
+import { getSkillInstallJobService } from '../skill-setup/skill-install-job.service.js';
 import { BundleDeploymentStore } from './bundle-state.store.js';
 
 /** Inputs of {@link createBaseBundleDeps}. */
@@ -54,13 +55,11 @@ export function createBaseBundleDeps(options: BaseBundleDepsOptions): BundleAppl
       get: async (teamId) => (await storage.getTeams()).find((t) => t.id === teamId) ?? null,
       save: (team) => storage.saveTeam(team),
     },
-    skills: createMarketplaceSkillInstaller({
-      packageRoot: options.packageRoot,
+    skills: createSkillSetupInstaller({
+      discovery: getSkillDiscoveryService(),
+      jobs: getSkillInstallJobService(),
       crewlyHome: options.crewlyHome,
       marketplaceHome: path.join(homedir(), '.crewly'),
-      installPath: (id) => getInstallPath('skill', id),
-      fetchRegistry: () => fetchRegistry(),
-      installItem: (item) => installItem(item),
     }),
     slack: null,
     schedules: { create: (request) => cron.create(request) },
