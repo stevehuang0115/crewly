@@ -51,7 +51,7 @@ Every response is `{ success: true, data }` or `{ success: false, error, code? }
 
 | Method & path | Body | `data` |
 |---|---|---|
-| `GET /api/harness` | – | `{ harnesses: HarnessStatus[], orcHarness: string \| null, systemTools: [{ id: 'jq', installed, installHint }] }` |
+| `GET /api/harness` | – | `{ harnesses: (HarnessStatus & { reloginPending })[], orcHarness: string \| null, systemTools: [{ id: 'jq', installed, installHint }] }`. `reloginPending` was added in Phase 2 (see below). |
 | `POST /api/harness/:id/install` | – | `{ jobId }` |
 | `GET /api/harness/install/:jobId` | – | `{ jobId, harnessId, state: 'running'\|'succeeded'\|'failed', log, usedUserPrefix }` |
 | `PUT /api/harness/orc` | `{ harnessId }` | `{ orcHarness }` |
@@ -305,8 +305,183 @@ hand**.
 
 ## Not in Phase 1
 
-- Slack DM re-login. The broker's events are ready for it.
+- Slack DM re-login. Built in Phase 2 (below).
 - Gemini login.
-- Codex re-login detection while agents run.
 - A route that fetches a harness's active session. Instead,
   `POST /:id/login` returns the live one.
+
+## Phase 2: re-login over Slack
+
+Status: implemented on `feat/onboarding-p2-slack-relogin` (backend only).
+
+When a harness login expires, Crewly notices it by itself. It DMs the owner
+on Slack with what to do. The owner finishes the login on the phone, and the
+stuck agents restart and resume. Nobody touches the machine.
+
+### Components
+
+| File | Role |
+|---|---|
+| `services/harness/login-expiry-rules.ts` | Per-harness expiry patterns, next to `login-rules.ts` |
+| `services/harness/harness-relogin.service.ts` | The coordinator: flows, DMs, reply routing, success and failure, status check |
+| `services/agent/oauth-relogin-monitor.service.ts` | Existing PTY monitor. It now hands an expiry to the coordinator. |
+| `services/slack/slack-relogin-dm.service.ts` | Owner DM through the master bot; recognises the owner's DM replies |
+| `services/slack/slack-orchestrator-bridge.ts` | `setInboundInterceptor`: offers each inbound message to the interceptor before anything else |
+| `services/agent/relogin-agent-resumer.service.ts` | Lists a harness's live sessions and restarts them with conversation resume |
+| `index.ts` | Wiring; the status check starts at boot and stops at shutdown |
+
+### Detection
+
+`OAuthReloginMonitorService` already watched every agent PTY: live chunks
+after a 30 s startup grace, plus a 30 s sweep of every session's screen. It
+used to type `/login` into the stuck agent and send a per-agent notice. With
+the coordinator wired, a match of `detectLoginExpiry(output, runtimeType)` is
+reported instead, and the monitor then does neither for that session.
+First-run sign-in screens with no expiry text keep the old per-agent notice.
+
+Output is normalized with `normalizeTerminalOutput`. Each pattern is matched
+against the text and against its spaceless copy.
+
+**Claude Code 2.1.282.** The wording comes from the binary via `strings`:
+
+- `Login expired · Please run /login`
+- `OAuth token revoked · Please run /login`
+- `Not logged in · Please run /login` (or `· Run /login`)
+- `API Error: 401 … · Please run /login`
+- `Session expired. Please run /login to sign in again.`
+- The API's `OAuth token has expired` / `has been revoked` /
+  `Invalid authentication credentials`, only together with
+  `authentication_error`, `API Error` or `401`.
+
+The UI messages must include Claude's `·` separator, so source code that
+mentions "please run /login" does not match. The warning
+`Your login expires in N days · run /login to renew` does not match either.
+
+**Codex.** No native binary was available for `strings`, so these follow the
+codex-rs wording:
+
+- `access token could not be refreshed`
+- `refresh token has expired / was already used / was revoked`
+- `Provided authentication token is expired` or `"code":"token_expired"`
+- `unexpected status 401 Unauthorized`
+
+**Status check.** Every 10 min the coordinator checks the orc harness
+(`teams/orchestrator/config.json`) with its own status command, the same one
+`GET /api/harness` uses. `logged_out` counts as expired only if the harness
+was seen logged in earlier, or if agents are running on it; a machine that
+was never logged in is onboarding's job. Nobody's specific output matched,
+so the stuck agents are every live session of that runtime.
+
+### Flow (one per harness)
+
+1. **Debounce.** There is at most one flow per harness. Later reports only
+   add stuck sessions. After a failure, a new report restarts the flow (the
+   re-reminder) at most once every **3 h**.
+2. **Stored API key, used silently with no DM.**
+   - Claude: if Crewly holds an Anthropic key, agents get `ANTHROPIC_API_KEY`
+     when they are recreated, so the coordinator just restarts them.
+   - Codex: a stored OpenAI key is re-applied with `codex login --with-api-key`.
+   - If the harness expires again within 1 h, or the key is rejected, the
+     phone login below is used instead.
+3. **Broker login.** Claude uses `subscription` (`claude setup-token`); Codex
+   uses `device`. `broker.start` returns the live session if one already
+   exists, for example one the owner started on the web.
+4. **DM** through `SlackReloginDmService`. It opens a DM with the owner (the
+   user who installed the Slack app) through the master bot, and remembers
+   that channel. If the owner is unknown, it uses the owner-notification path
+   (`sendNotification`). Text is escaped for Slack (`&`, `<`, `>`), link
+   previews are off, and the message is not mirrored to chat-v2.
+   - **Codex:** sent once the URL **and** the one-time code are known. It
+     names the harness and the waiting agents, and puts the link and the code
+     on separate lines. It ends with "Finish the login on your phone and it
+     continues by itself." Success is detected by the broker (`codex login
+     status`).
+   - **Claude:** the link, plus "reply to this DM with the code shown after
+     you approve".
+   - **Unrecognised screen:** if there is still no URL or code after 20 s, the
+     DM carries the redacted tail of the screen (at most 1500 chars) and says
+     the next reply will be typed into that terminal.
+5. **Success.** The broker has already stored the credential. The flow then
+   does the following:
+   - Restarts the stuck sessions: the ones whose output matched, or every
+     session of the runtime if that is unknown.
+   - Team agents: runtime-exit monitoring is stopped, the PTY is killed, the
+     conversation id is kept and `createAgentSession` runs again. This is the
+     heartbeat-monitor path, and the agent resumes with `--resume` /
+     `codex resume`.
+   - The orchestrator restarts through `OrchestratorRestartService`.
+   - Then it DMs "Done: <harness> is logged in again, N agents resumed." and
+     lists any agent that could not be restarted.
+   - For the next 10 min, reports for that harness are ignored, because
+     resumed transcripts replay the old error. Screen-sweep reports for a
+     resumed session stay ignored until that session's live output reports
+     again.
+   - A success in another session for the same harness also completes the
+     flow, for example when the owner logged in from Setup.
+6. **Failure or timeout.** One DM with the broker's message (redacted) and
+   "Reply `relogin` (or `重新登录`) here to try again." A session cancelled
+   elsewhere (web, shutdown) sends no DM.
+
+### Owner DM replies
+
+`SlackOrchestratorBridge.handleSlackMessage` first offers the message to its
+interceptor, `createReloginReplyInterceptor`. This happens **before** the
+`Received message` log line, file download, thread store, ticket intake and
+orc routing. A consumed message goes nowhere else.
+
+The interceptor considers a message only if all of these hold:
+
+- it is text, with no files;
+- it is in a `D…` channel;
+- it has no `agentSession`, `authorAgentSession` or `handoffTo`;
+- the channel is not an agent bot's DM;
+- it comes from the owner, and in the DM the re-login went to (when known).
+
+The coordinator's `handleOwnerReply` then consumes it only in these cases:
+
+- `relogin`, `re-login` or `重新登录` (trimmed, case-insensitive), while a flow
+  exists. Failed flows restart; otherwise running flows are cancelled
+  quietly and restarted.
+- **A Claude code.** The Claude session is `awaiting_user` with `needsInput`,
+  its link was DM'd, and the reply looks like a code: one token, no spaces,
+  16–512 chars, with surrounding backticks stripped. It is typed in with
+  `broker.input()`. If the harness rejects it (the prompt returns with a
+  message), one DM says so and asks for the code again. A code-shaped reply
+  that arrives just after the session ended is still consumed.
+- **An unrecognised screen.** Any single-line reply of 512 chars or fewer
+  while that session is live.
+
+Anything else goes through the normal chat path. The code is never stored,
+logged or echoed. The coordinator logs only harness and session ids, and DMs
+are built from `LoginSession` snapshots, which never contain a token.
+
+### Status
+
+In `GET /api/harness`, each harness entry gains
+`reloginPending: { harnessId, sessionId, startedAt } | null`. It is non-null
+while a flow's broker session is running. Its `sessionId` works with
+`GET /api/harness/login/:sessionId` and `POST …/input`, so the web page and
+the phone app can finish the same login. The rest of the shape is unchanged.
+The CLI's in-process service always reports `null`.
+
+### Constants
+
+`HARNESS_CONSTANTS.RELOGIN`:
+
+- remind interval: 3 h
+- status check: 10 min
+- unrecognised-screen delay: 20 s
+- post-success quiet: 10 min
+- silent-key retry window: 1 h
+- code length: 16–512
+- retry keywords
+- DM caps
+
+### Not in Phase 2
+
+- Telegram / WhatsApp DMs. Slack only.
+- Gemini re-login. Gemini has no broker method, so the monitor keeps its old
+  behaviour for it.
+- Detecting an expired Claude login with the status check. It only sees
+  whether a credential exists, not whether it has expired, so Claude expiry
+  comes from agent output.

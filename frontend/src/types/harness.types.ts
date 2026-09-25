@@ -39,6 +39,21 @@ export interface HarnessStatus {
   loginState: HarnessLoginState;
   loginSource: string | null;
   loginMethods: HarnessLoginMethod[];
+  /**
+   * A re-login over Slack waiting for the owner: Crewly noticed this
+   * harness's login expired and started a broker login session. Present in
+   * `GET /api/harness`; optional so older backends still type-check.
+   */
+  reloginPending?: HarnessReloginPending | null;
+}
+
+/** A pending re-login over Slack (see `HarnessStatus.reloginPending`). */
+export interface HarnessReloginPending {
+  harnessId: HarnessId;
+  /** Login-broker session the owner is asked to finish */
+  sessionId: string;
+  /** ISO timestamp the session started */
+  startedAt: string;
 }
 
 /** A supporting system tool (e.g. `jq`) the skills rely on. */

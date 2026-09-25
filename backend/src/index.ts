@@ -156,6 +156,9 @@ import { OrchestratorHeartbeatMonitorService } from './services/orchestrator/orc
 import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor.service.js';
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
+import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
+import { getHarnessReloginService } from './services/harness/harness-relogin.service.js';
+import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
@@ -1962,6 +1965,32 @@ void (async () => {
 				oauthMonitor.start();
 			} catch (error) {
 				this.logger.warn('Failed to wire OAuthReloginMonitorService (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Re-login over Slack (onboarding Phase 2): expired Claude Code /
+			// Codex logins go to one coordinator that runs a broker login per
+			// harness, DMs the owner, takes their DM reply (Claude's code) and
+			// restarts the stuck agents once the login is back.
+			try {
+				const relogin = getHarnessReloginService();
+				const reloginDm = new SlackReloginDmService(() => getSlackService());
+				relogin.setNotifier(reloginDm);
+				relogin.setResumer(new ReloginAgentResumerService({
+					getBackend: () => getSessionBackendSync(),
+					getPersistence: () => getSessionStatePersistence(),
+					getAgentRegistration: () => this.apiController.agentRegistrationService,
+					restartOrchestrator: () => OrchestratorRestartService.getInstance().attemptRestart(),
+					stopExitMonitoring: (sessionName) => RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName),
+					clearActivity: (sessionName) => PtyActivityTrackerService.getInstance().clearSession(sessionName),
+				}));
+				OAuthReloginMonitorService.getInstance().setHarnessExpiryHandler((report) => relogin.reportExpiry(report));
+				getSlackOrchestratorBridge().setInboundInterceptor(createReloginReplyInterceptor(reloginDm, relogin));
+				relogin.start();
+				this.logger.info('Harness re-login over Slack wired');
+			} catch (error) {
+				this.logger.warn('Failed to wire harness re-login over Slack (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
@@ -4545,8 +4574,9 @@ void (async () => {
 			// Stop context window monitor
 			ContextWindowMonitorService.getInstance().stop();
 
-			// Stop OAuth relogin monitor
+			// Stop OAuth relogin monitor and the Slack re-login status check
 			OAuthReloginMonitorService.getInstance().destroy();
+			getHarnessReloginService().stop();
 
 			// Stop orchestrator heartbeat monitor
 			OrchestratorHeartbeatMonitorService.getInstance().stop();
