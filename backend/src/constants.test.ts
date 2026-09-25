@@ -12,6 +12,7 @@ import {
   CLOUD_SYNC_CONSTANTS,
   GOOGLE_OAUTH_CONSTANTS,
   GOOGLE_WORKSPACE_CONSTANTS,
+  HARNESS_CONSTANTS,
   LOGIN_REQUIRED_PATTERN_SETS,
   MICROSOFT_TODO_CONSTANTS,
   RUNTIME_COMPACT_COMMANDS,
@@ -303,5 +304,31 @@ describe('WHATSAPP_CONSTANTS (inbox connector)', () => {
 
   it('matches the Baileys FULL history-sync enum value', () => {
     expect(WHATSAPP_CONSTANTS.HISTORY_SYNC_TYPE_FULL).toBe(2);
+  });
+});
+
+describe('HARNESS_CONSTANTS (onboarding harness login)', () => {
+  it('harness ids match the runtime types', () => {
+    expect(HARNESS_CONSTANTS.IDS.CLAUDE_CODE).toBe(RUNTIME_TYPES.CLAUDE_CODE);
+    expect(HARNESS_CONSTANTS.IDS.CODEX_CLI).toBe(RUNTIME_TYPES.CODEX_CLI);
+    expect(HARNESS_CONSTANTS.IDS.GEMINI_CLI).toBe(RUNTIME_TYPES.GEMINI_CLI);
+    expect(HARNESS_CONSTANTS.DEFAULT_ORC_HARNESS).toBe(RUNTIME_TYPES.CLAUDE_CODE);
+  });
+
+  it('keeps credentials owner-only and the login PTY wide enough for unwrapped URLs', () => {
+    expect(HARNESS_CONSTANTS.CREDENTIALS_FILE_MODE).toBe(0o600);
+    expect(HARNESS_CONSTANTS.LOGIN.PTY_COLS).toBeGreaterThanOrEqual(500);
+    expect(HARNESS_CONSTANTS.LOGIN.TIMEOUT_MS).toBe(15 * 60 * 1000);
+    expect(HARNESS_CONSTANTS.LOGIN.SCREEN_MAX_CHARS).toBe(2000);
+  });
+
+  it('points at the keychain item and env vars Claude Code uses', () => {
+    expect(HARNESS_CONSTANTS.CLAUDE.KEYCHAIN_SERVICE).toBe('Claude Code-credentials');
+    expect(HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV).toBe('CLAUDE_CODE_OAUTH_TOKEN');
+    expect(HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV).toBe('ANTHROPIC_API_KEY');
+  });
+
+  it('parses versions', () => {
+    expect(HARNESS_CONSTANTS.VERSION_PATTERN.exec('codex-cli 0.156.1')?.[0]).toBe('0.156.1');
   });
 });

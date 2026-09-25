@@ -1,4 +1,5 @@
 import { createHash } from 'crypto';
+import { harnessEnvForAgents } from '../harness/harness-credentials.store.js';
 import * as path from 'path';
 import * as os from 'os';
 import { readFile, readdir, stat, mkdir, writeFile, access } from 'fs/promises';
@@ -3083,6 +3084,11 @@ Loop until done, blocked, or explicitly reassigned:
 	 * the env at spawn (rather than only typing `export`s afterwards) is what
 	 * makes it survive a shell that is still initialising.
 	 *
+	 * It also carries the harness env (harnessEnvForAgents): PATH with the
+	 * user npm prefix (`~/.crewly/npm-global/bin`, where a harness lands when
+	 * `npm install -g` hit EACCES) and the Claude credential Crewly holds from
+	 * onboarding (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`).
+	 *
 	 * @param sessionName - PTY session name (also the agent's identity)
 	 * @param role - Agent role (orchestrator, developer, …)
 	 * @param cwd - Working directory the PTY is spawned in (exposed as CREWLY_PROJECT_PATH)
@@ -3090,6 +3096,7 @@ Loop until done, blocked, or explicitly reassigned:
 	 */
 	private buildAgentIdentityEnv(sessionName: string, role: string, cwd: string): Record<string, string> {
 		return {
+			...harnessEnvForAgents(),
 			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
 			[ENV_CONSTANTS.CREWLY_ROLE]: role,
 			// The port this instance actually runs on, not the default (#777).

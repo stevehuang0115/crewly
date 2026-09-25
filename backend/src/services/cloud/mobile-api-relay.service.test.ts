@@ -200,3 +200,22 @@ describe('allowlist additions — projects/wiki/chat reads', () => {
     expect(isAllowedMobileApiCall('POST', '/chat/channels/c1/messages')).toBe(false);
   });
 });
+
+describe('allowlist additions — harness setup from the phone', () => {
+  it('lets the phone read status and drive install, orc choice and login', () => {
+    expect(isAllowedMobileApiCall('GET', '/harness')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/harness/install/job-1')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/harness/login/s1')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/harness/orc')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/harness/claude-code/install')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/harness/codex-cli/login')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/harness/login/s1/input')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/harness/login/s1/cancel')).toBe(true);
+  });
+
+  it('keeps API keys off the relay', () => {
+    expect(isAllowedMobileApiCall('POST', '/harness/claude-code/api-key')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/harness/codex-cli/api-key')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/harness/opencode-cli/install')).toBe(false);
+  });
+});

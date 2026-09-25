@@ -24,6 +24,7 @@ import { TICKET_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { API_SECURITY_CONSTANTS } from '../../../../config/constants.js';
 import { getApiToken } from '../core/api-token.service.js';
+import { HARNESS_IDS } from '../harness/harness.types.js';
 
 // ---------------------------------------------------------------------------
 // Wire types
@@ -135,6 +136,19 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // phone or portal (reading the inbox itself stays on the machine).
   { method: 'GET', prefix: '/whatsapp/drafts' },
   { method: 'POST', prefix: '/whatsapp/drafts/' },
+  // Harness setup (specs/onboarding-harness-login.md): the owner is usually not
+  // at the machine, so the phone / portal drives install, the orc choice and
+  // the login broker (read the URL / code, type Claude's code back, cancel).
+  // `POST /harness/orc` is the relay twin of `PUT /harness/orc`.
+  // Deliberately NOT here: `POST /harness/:id/api-key` — an API key would sit
+  // in the Cloud relay queue; keys are entered on the machine or the LAN dashboard.
+  { method: 'GET', prefix: '/harness' },
+  { method: 'POST', prefix: '/harness/orc' },
+  { method: 'POST', prefix: '/harness/login/' }, // …/:sessionId/input|cancel
+  ...HARNESS_IDS.flatMap((id) => [
+    { method: 'POST' as const, prefix: `/harness/${id}/install` },
+    { method: 'POST' as const, prefix: `/harness/${id}/login` },
+  ]),
 ];
 
 /**

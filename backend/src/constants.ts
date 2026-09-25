@@ -2815,6 +2815,125 @@ export const POOL_ARCHIVE_CONSTANTS = {
 	TERMINAL_STATUSES: ['verified', 'done', 'failed', 'cancelled'],
 } as const;
 
+/**
+ * Harness onboarding (specs/onboarding-harness-login.md): detect, install and
+ * log in to the agent CLIs ("harnesses") Crewly drives — Claude Code, Codex
+ * and Gemini CLI. Shared by the backend REST API and the `crewly` CLI.
+ */
+export const HARNESS_CONSTANTS = {
+	/** Harness ids; equal to the matching RUNTIME_TYPES values */
+	IDS: {
+		CLAUDE_CODE: 'claude-code',
+		CODEX_CLI: 'codex-cli',
+		GEMINI_CLI: 'gemini-cli',
+	},
+	/** Harness the orchestrator uses when the owner does not choose */
+	DEFAULT_ORC_HARNESS: 'claude-code',
+	/** Short names accepted by `crewly login <name>` / `--harness <name>` */
+	CLI_ALIASES: {
+		claude: 'claude-code',
+		codex: 'codex-cli',
+		gemini: 'gemini-cli',
+	},
+	/** Credentials file under the Crewly home dir */
+	CREDENTIALS_FILE: 'harness-credentials.json',
+	/** File mode for the credentials file (owner read/write only) */
+	CREDENTIALS_FILE_MODE: 0o600,
+	/** User-owned npm prefix under the Crewly home dir, used when `npm install -g` hits EACCES */
+	USER_NPM_PREFIX_DIR: 'npm-global',
+	/** Extra bin dir where Claude Code's native installer puts `claude` (relative to $HOME) */
+	NATIVE_INSTALLER_BIN_DIR: '.local/bin',
+	/** How long `npm view <pkg> version` results are cached */
+	LATEST_VERSION_CACHE_TTL_MS: 60 * 60 * 1000,
+	/** How long a failed `npm view` is cached (so an offline machine is not re-probed per request) */
+	LATEST_VERSION_FAILURE_TTL_MS: 5 * 60 * 1000,
+	/** Timeout for short probe commands (which, --version, login status) */
+	PROBE_TIMEOUT_MS: 15_000,
+	/** Timeout for `npm view` */
+	NPM_VIEW_TIMEOUT_MS: 20_000,
+	/** Timeout for one `npm install -g` attempt */
+	INSTALL_TIMEOUT_MS: 10 * 60 * 1000,
+	/** Install log kept per job (tail) */
+	INSTALL_LOG_MAX_CHARS: 64_000,
+	/** Finished install jobs are forgotten after this long */
+	INSTALL_JOB_RETENTION_MS: 60 * 60 * 1000,
+	/** npm output that means "no permission to write the global prefix" */
+	PERMISSION_ERROR_PATTERNS: ['EACCES', 'EPERM', 'permission denied'] as readonly string[],
+	/** Version-like token in `--version` output */
+	VERSION_PATTERN: /\d+\.\d+\.\d+[\w.+-]*/,
+	/** Length bounds for a pasted API key */
+	API_KEY_MIN_LENGTH: 20,
+	API_KEY_MAX_LENGTH: 512,
+	/** Login broker (PTY running the harness's own login command) */
+	LOGIN: {
+		/** A login session that has not finished by then is timed out */
+		TIMEOUT_MS: 15 * 60 * 1000,
+		/** Very wide PTY so login URLs are not wrapped at the terminal width */
+		PTY_COLS: 1000,
+		PTY_ROWS: 50,
+		/** Tail of normalized screen text exposed to front ends */
+		SCREEN_MAX_CHARS: 2000,
+		/** Raw PTY output kept per session (tail) */
+		RAW_BUFFER_MAX_CHARS: 200_000,
+		/** Finished sessions stay readable for this long */
+		SESSION_RETENTION_MS: 60 * 60 * 1000,
+		/** Timeout for the post-login verification command */
+		VERIFY_TIMEOUT_MS: 30_000,
+		/** Value for BROWSER in the broker env: a no-op command, so harnesses do not open a browser */
+		BROWSER_SUPPRESS_VALUE: 'true',
+		/** Replaces anything that looks like a token or key in exposed screen text */
+		REDACTED: '[redacted]',
+		/** A line that is a piece of a captured secret is redacted when at least this long */
+		REDACT_MIN_FRAGMENT: 8,
+		/** A URL line at least this long that ends at end-of-line may continue on the next line */
+		WRAPPED_LINE_MIN_LENGTH: 40,
+		/** Keys typed after user input */
+		ENTER: '\r',
+	},
+	/** Claude Code facts */
+	CLAUDE: {
+		OAUTH_TOKEN_ENV: 'CLAUDE_CODE_OAUTH_TOKEN',
+		API_KEY_ENV: 'ANTHROPIC_API_KEY',
+		CONFIG_DIR_ENV: 'CLAUDE_CONFIG_DIR',
+		/** `~/.claude.json` (or `$CLAUDE_CONFIG_DIR/.claude.json`) */
+		CONFIG_FILE: '.claude.json',
+		DATA_DIR: '.claude',
+		CREDENTIALS_FILE: '.credentials.json',
+		/** macOS keychain item Claude Code stores its login under */
+		KEYCHAIN_SERVICE: 'Claude Code-credentials',
+		/** Claude Code approves a custom API key by its last N characters */
+		API_KEY_APPROVAL_SUFFIX_LENGTH: 20,
+		API_KEY_PREFIX: 'sk-ant-',
+		/** Endpoint used to check a pasted Anthropic API key */
+		API_KEY_CHECK_URL: 'https://api.anthropic.com/v1/models',
+		API_VERSION: '2023-06-01',
+		API_KEY_CHECK_TIMEOUT_MS: 10_000,
+	},
+	/** Codex CLI facts */
+	CODEX: {
+		HOME_ENV: 'CODEX_HOME',
+		HOME_DIR: '.codex',
+		AUTH_FILE: 'auth.json',
+	},
+	/** Gemini CLI facts (detect only) */
+	GEMINI: {
+		OAUTH_CREDS_FILE: '.gemini/oauth_creds.json',
+		KEY_ENV: ['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'] as readonly string[],
+	},
+	/** System tools Crewly needs (tmux is not one: sessions use node-pty) */
+	SYSTEM_TOOLS: {
+		JQ: {
+			ID: 'jq',
+			INSTALL_HINT_MACOS: 'brew install jq',
+			INSTALL_HINT_LINUX: 'sudo apt-get install -y jq   (Fedora: sudo dnf install -y jq)',
+		},
+	},
+	/** Orchestrator config under the Crewly home dir (same file StorageService uses) */
+	ORCHESTRATOR_CONFIG_SEGMENTS: ['teams', 'orchestrator', 'config.json'] as readonly string[],
+	/** Web setup page opened by `crewly onboard --web` */
+	WEB_SETUP_PATH: '/setup',
+} as const;
+
 /** License status type */
 export type CloudLicenseStatus = (typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS)[keyof typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS];
 

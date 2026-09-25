@@ -40,6 +40,7 @@ import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.r
 import { createTaskPoolRouter, createTaskScoreRouter } from '../controllers/task-pool/task-pool.routes.js';
 import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createTicketsRouter } from '../controllers/tickets/tickets.routes.js';
+import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
@@ -177,6 +178,10 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Ticket loop (specs/ticket-loop.md): board list, lookup by TKT, "不用记"
   router.use('/tickets', createTicketsRouter());
+
+  // Harness onboarding (specs/onboarding-harness-login.md): detect, install,
+  // choose the orc harness and log in — shared engine with the CLI
+  router.use('/harness', createHarnessRouter());
 
   // Task Pool routes for V2 work item pool management
   router.use('/task-pool', createTaskPoolRouter());
