@@ -414,6 +414,57 @@ describe('AgentRegistrationService', () => {
 			);
 		});
 
+		it.each([['developer'], ['orchestrator']])(
+			'Step 2 full recreation (%s) passes the settings API keys in the spawn env and types none of them',
+			async (role) => {
+				const FAKE_GEMINI_KEY = 'AIzaTESTrecreationGeminiKey0123456789ab';
+				const FAKE_ANTHROPIC_KEY = 'sk-ant-TESTrecreationAnthropicKey0123';
+				const { getSettingsService } = require('../settings/settings.service.js');
+				const previousSettings = (getSettingsService as jest.Mock)();
+				(getSettingsService as jest.Mock).mockReturnValue({
+					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true } }),
+					getApiKey: jest.fn().mockImplementation(async (provider: string) =>
+						provider === 'gemini' ? FAKE_GEMINI_KEY : provider === 'anthropic' ? FAKE_ANTHROPIC_KEY : undefined
+					),
+				});
+				try {
+					mockRuntimeService.waitForRuntimeReady
+						.mockResolvedValueOnce(false) // Step 1 fails
+						.mockResolvedValueOnce(true); // Step 2 succeeds
+					mockReadFile.mockResolvedValue('Register with {{SESSION_ID}}');
+
+					const result = await service.initializeAgentWithRegistration('test-session', role, '/test/path', 90000);
+
+					expect(result.success).toBe(true);
+					expect(result.message).toBe('Agent registered successfully after full recreation');
+					// The recreated runtime gets the keys — at spawn, like the primary path
+					expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+						'test-session',
+						'/test/path',
+						expect.objectContaining({
+							env: expect.objectContaining({
+								GEMINI_API_KEY: FAKE_GEMINI_KEY,
+								GOOGLE_GENERATIVE_AI_API_KEY: FAKE_GEMINI_KEY,
+								ANTHROPIC_API_KEY: FAKE_ANTHROPIC_KEY,
+								CREWLY_SESSION_NAME: 'test-session',
+							}),
+						})
+					);
+					// …and nothing sent to the terminal carries either key
+					const helper = mockSessionHelper as unknown as Record<string, unknown>;
+					const sent = Object.entries(helper)
+						.filter(([name, fn]) => name !== 'createSession' && jest.isMockFunction(fn))
+						.flatMap(([name, fn]) => (fn as jest.Mock).mock.calls.map((args) => `${name}(${JSON.stringify(args)})`))
+						.join('\n');
+					expect(sent.length).toBeGreaterThan(0); // the check examined real calls
+					expect(sent).not.toContain(FAKE_GEMINI_KEY);
+					expect(sent).not.toContain(FAKE_ANTHROPIC_KEY);
+				} finally {
+					(getSettingsService as jest.Mock).mockReturnValue(previousSettings);
+				}
+			}
+		);
+
 		it('Step 2 defers the runtime init write until the fresh shell has printed its prompt (D3)', async () => {
 			mockRuntimeService.waitForRuntimeReady
 				.mockResolvedValueOnce(false) // Step 1 fails
