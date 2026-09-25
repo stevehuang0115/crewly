@@ -11,6 +11,16 @@ import { StarterTeamStep } from './StarterTeamStep';
 import { onboardingChecklistService } from '../../services/onboarding-checklist.service';
 import { STARTERS } from '../../test/onboarding.fixtures';
 
+vi.mock('./BundleDeployStep', () => ({
+  BundleDeployStep: ({ templateId, onBack, onDone }: { templateId: string; onBack: () => void; onDone: (d: unknown) => void }) => (
+    <div data-testid="bundle-deploy-mock">
+      {templateId}
+      <button type="button" onClick={onBack}>back</button>
+      <button type="button" onClick={() => onDone({ starterId: templateId, teamId: templateId, teamName: 'T', suggestions: [], bundle: true })}>done</button>
+    </div>
+  ),
+}));
+
 vi.mock('../../services/onboarding-checklist.service', () => ({
   onboardingChecklistService: {
     getStarters: vi.fn(),
@@ -90,5 +100,33 @@ describe('StarterTeamStep', () => {
       fireEvent.click(screen.getByRole('button', { name: '重试' }));
     });
     expect(await screen.findByTestId('starter-personal-assistant-team')).toBeInTheDocument();
+  });
+
+  it('a solution bundle opens its questions instead of creating a team, and passes its team on', async () => {
+    const bundleStarter = {
+      id: 'smb-marketing-team',
+      kind: 'bundle' as const,
+      name: 'Small-Business Marketing Team',
+      label: '小老板营销团队',
+      tagline: '每天简报',
+      description: 'd',
+      recommended: false,
+      members: [{ name: 'Ava', role: 'team-leader' }],
+      suggestions: [],
+    };
+    svc.getStarters.mockResolvedValue([...STARTERS, bundleStarter]);
+    const onDone = vi.fn();
+    render(<StarterTeamStep onDone={onDone} />);
+    fireEvent.click(await screen.findByTestId('starter-smb-marketing-team'));
+    expect(screen.getByText('成套方案')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-create')).toHaveTextContent('下一步：填写「小老板营销团队」的信息');
+    fireEvent.click(screen.getByTestId('starter-create'));
+    expect(svc.createStarterTeam).not.toHaveBeenCalled();
+    expect(screen.getByTestId('bundle-deploy-mock')).toHaveTextContent('smb-marketing-team');
+    fireEvent.click(screen.getByText('back'));
+    expect(await screen.findByTestId('starter-smb-marketing-team')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('starter-create'));
+    fireEvent.click(screen.getByText('done'));
+    expect(onDone).toHaveBeenCalledWith({ starterId: 'smb-marketing-team', teamId: 'smb-marketing-team', teamName: 'T', suggestions: [], bundle: true });
   });
 });

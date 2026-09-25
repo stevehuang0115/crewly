@@ -70,6 +70,12 @@ export interface OnboardingChecklist {
 /** A starter team (template or Blank). */
 export interface OnboardingStarter {
   id: string;
+  /**
+   * How picking it works: `template` creates the team, `bundle` asks the
+   * solution bundle's questions and deploys it, `blank` is the orchestrator
+   * only. Older backends omit it (treated as template / blank).
+   */
+  kind?: 'template' | 'bundle' | 'blank';
   name: string;
   label: string;
   tagline: string;

@@ -15,3 +15,7 @@ export { FirstTaskStep } from './FirstTaskStep';
 export { CloudConnectStep } from './CloudConnectStep';
 export { SlackConnectStep } from './SlackConnectStep';
 export { GettingStartedCard } from './GettingStartedCard';
+export { BundleDeployStep } from './BundleDeployStep';
+export type { BundleDeployDone, BundleDeployStepProps } from './BundleDeployStep';
+export { BundleQuestionsForm } from './BundleQuestionsForm';
+export type { BundleQuestionsFormProps } from './BundleQuestionsForm';

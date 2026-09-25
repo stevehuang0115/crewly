@@ -2,8 +2,10 @@
  * StarterTeamStep
  *
  * First-run step "建第一个团队": pick a starter — Personal Assistant
- * (recommended, pre-selected), Marketing, or Blank (the orchestrator only) —
- * and create it through `POST /api/onboarding/starter-team`.
+ * (recommended, pre-selected), Marketing, a solution bundle, or Blank (the
+ * orchestrator only). Templates are created through
+ * `POST /api/onboarding/starter-team`; a solution bundle opens
+ * {@link BundleDeployStep} (its questions, then the one-step deploy).
  *
  * Phone-width first: the choices stack as full-width tappable cards.
  *
@@ -14,6 +16,7 @@ import React, { useEffect, useState } from 'react';
 import { Check, RefreshCw, Users } from 'lucide-react';
 import { Alert, Badge, Button, Card, LoadingSpinner } from '@crewly/ui';
 import { onboardingChecklistService } from '../../services/onboarding-checklist.service';
+import { BundleDeployStep } from './BundleDeployStep';
 import type { OnboardingStarter, StarterTeamResult } from '../../types/onboarding-checklist.types';
 
 /** What the parent learns once the team step is done. */
@@ -24,6 +27,8 @@ export interface StarterTeamDone {
   teamName: string | null;
   /** Example first tasks for this starter */
   suggestions: string[];
+  /** Set when a solution bundle was deployed (its first week is already planned) */
+  bundle?: boolean;
 }
 
 export interface StarterTeamStepProps {
@@ -43,6 +48,7 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const [deployingBundle, setDeployingBundle] = useState<string | null>(null);
 
   /** Load the starters and pre-select the recommended one. */
   const load = async (): Promise<void> => {
@@ -60,10 +66,14 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
     void load();
   }, []);
 
-  /** Create the selected starter. */
+  /** Create the selected starter (a bundle opens its questions instead). */
   const create = async (): Promise<void> => {
     const starter = starters?.find((s) => s.id === selected);
     if (!starter) return;
+    if (starter.kind === 'bundle') {
+      setDeployingBundle(starter.id);
+      return;
+    }
     setCreating(true);
     setError(null);
     try {
@@ -94,6 +104,9 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
     );
   }
   if (!starters) return <LoadingSpinner centered text="正在读取团队模板…" />;
+  if (deployingBundle) {
+    return <BundleDeployStep templateId={deployingBundle} onBack={() => setDeployingBundle(null)} onDone={onDone} />;
+  }
 
   const chosen = starters.find((s) => s.id === selected) ?? null;
 
@@ -126,6 +139,7 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
                     <span className="font-semibold text-text-primary-dark">{starter.label}</span>
                     <span className="text-xs text-text-secondary-dark">{starter.name}</span>
                     {starter.recommended && <Badge variant="primary">推荐</Badge>}
+                    {starter.kind === 'bundle' && <Badge variant="info">成套方案</Badge>}
                   </div>
                   <p className="mt-1 text-sm text-text-secondary-dark">{starter.tagline}</p>
                   {starter.members.length > 0 && (
@@ -147,7 +161,7 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
         </Alert>
       )}
       <Button type="button" fullWidth loading={creating} disabled={!chosen} onClick={() => void create()} data-testid="starter-create">
-        {chosen?.members.length === 0 ? '先只用 Orc' : `创建「${chosen?.label ?? ''}」`}
+        {chosen?.members.length === 0 ? '先只用 Orc' : chosen?.kind === 'bundle' ? `下一步：填写「${chosen.label}」的信息` : `创建「${chosen?.label ?? ''}」`}
       </Button>
     </div>
   );

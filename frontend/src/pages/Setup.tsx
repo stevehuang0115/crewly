@@ -81,6 +81,8 @@ interface TaskTarget {
   teamId: string | null;
   teamName: string | null;
   suggestions: string[];
+  /** A solution bundle was deployed: its first-week tasks are already queued */
+  bundle?: boolean;
 }
 
 /**
@@ -199,7 +201,7 @@ export const Setup: React.FC = () => {
 
   /** Team created (or Blank chosen) → first task. */
   const onTeamDone = (done: StarterTeamDone): void => {
-    setTaskTarget({ teamId: done.teamId, teamName: done.teamName, suggestions: done.suggestions });
+    setTaskTarget({ teamId: done.teamId, teamName: done.teamName, suggestions: done.suggestions, bundle: done.bundle });
     void refreshChecklist();
     setStep(STEP.TASK);
   };
@@ -344,6 +346,11 @@ export const Setup: React.FC = () => {
         return (
           <>
             <StepHeading title="派第一件事" subtitle="Give your team its first task." />
+            {taskTarget?.bundle && (
+              <Alert variant="success" size="sm" className="mb-3" data-testid="setup-bundle-first-week">
+                第一周的工作已经排好，团队会按天开始做。还想加一件事，也可以写在下面。
+              </Alert>
+            )}
             {taskTarget ? (
               <FirstTaskStep
                 suggestions={taskTarget.suggestions}

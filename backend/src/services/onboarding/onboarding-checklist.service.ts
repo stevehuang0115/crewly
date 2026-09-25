@@ -28,6 +28,7 @@ import { ONBOARDING_CONSTANTS, HARNESS_CONSTANTS, CLOUD_CONSTANTS } from '../../
 import type { Team } from '../../types/index.js';
 import type { TeamTemplate, TemplateOnboarding } from '../../types/team-template.types.js';
 import type { CreateFromTemplateResult } from '../template/template.service.js';
+import type { BundleTemplate } from '../../types/solution-bundle.types.js';
 import { OnboardingStateStore, type OnboardingState } from './onboarding-state.store.js';
 
 // =============================================================================
@@ -105,10 +106,19 @@ export interface OnboardingChecklist {
 	dismissedAt: string | null;
 }
 
-/** A starter team the owner can pick (a template, or Blank). */
+/**
+ * What picking a starter does: `template` creates the team
+ * (`POST /starter-team`), `bundle` deploys a solution bundle after its
+ * questions (`POST /api/bundles/apply`), `blank` records the Blank choice.
+ */
+export type OnboardingStarterKind = 'template' | 'bundle' | 'blank';
+
+/** A starter team the owner can pick (a template, a solution bundle, or Blank). */
 export interface OnboardingStarter {
 	/** Template id, or `blank` */
 	id: string;
+	/** How it is created */
+	kind: OnboardingStarterKind;
 	name: string;
 	/** Short Chinese display name */
 	label: string;
@@ -175,6 +185,8 @@ export interface OrchestratorSendResult {
 /** Dependencies (all injectable for tests). */
 export interface OnboardingChecklistDeps {
 	store: OnboardingStateStore;
+	/** Ready solution bundles, offered after the free starters (optional) */
+	listBundles?(): BundleTemplate[];
 	/** Harness step */
 	getHarnessState(): Promise<HarnessStepDetail>;
 	listTeams(): Promise<Team[]>;
@@ -245,6 +257,7 @@ export function buildFirstTaskMessage(text: string, team: Pick<Team, 'id' | 'nam
 function templateToStarter(template: TeamTemplate, onboarding: TemplateOnboarding): OnboardingStarter {
 	return {
 		id: template.id,
+		kind: 'template',
 		name: template.name,
 		label: onboarding.label,
 		tagline: onboarding.tagline,
@@ -257,6 +270,33 @@ function templateToStarter(template: TeamTemplate, onboarding: TemplateOnboardin
 			})),
 		),
 		suggestions: [...onboarding.suggestions],
+	};
+}
+
+/**
+ * Starter DTO for a solution bundle. Its first-week tasks are sent by the
+ * bundle itself, so it offers no suggestions.
+ *
+ * @param template - Bundle template
+ * @returns Starter
+ */
+function bundleToStarter(template: BundleTemplate): OnboardingStarter {
+	const roles = [...template.roles, ...(template.bundle.teams ?? []).flatMap((t) => t.roles)];
+	return {
+		id: template.id,
+		kind: 'bundle',
+		name: template.name,
+		label: template.bundle.label,
+		tagline: template.bundle.tagline,
+		description: template.bundle.ownerSummary,
+		recommended: false,
+		members: roles.flatMap((role) =>
+			Array.from({ length: Math.max(1, role.count) }, (_, i) => ({
+				name: role.count > 1 ? `${role.defaultName}${i + 1}` : role.defaultName,
+				role: role.role,
+			})),
+		),
+		suggestions: [],
 	};
 }
 
@@ -312,7 +352,8 @@ export class OnboardingChecklistService {
 	}
 
 	/**
-	 * The starter teams: templates marked `onboarding` (by `order`), then Blank.
+	 * The starter teams: templates marked `onboarding` (by `order`), then the
+	 * ready solution bundles, then Blank.
 	 *
 	 * @returns Starters, recommended first
 	 */
@@ -322,9 +363,18 @@ export class OnboardingChecklistService {
 			.listOnboardingStarters()
 			.filter((t): t is TeamTemplate & { onboarding: TemplateOnboarding } => !!t.onboarding)
 			.map((t) => templateToStarter(t, t.onboarding));
+		let bundles: BundleTemplate[] = [];
+		try {
+			bundles = this.deps.listBundles?.() ?? [];
+		} catch {
+			bundles = [];
+		}
+		const taken = new Set(starters.map((s) => s.id));
+		starters.push(...bundles.filter((b) => !taken.has(b.id)).map(bundleToStarter));
 		const blank = ONBOARDING_CONSTANTS.BLANK_STARTER;
 		starters.push({
 			id: ONBOARDING_CONSTANTS.BLANK_STARTER_ID,
+			kind: 'blank',
 			name: blank.NAME,
 			label: blank.LABEL,
 			tagline: blank.TAGLINE,

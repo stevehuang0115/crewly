@@ -18,6 +18,7 @@ import { CloudClientService } from '../cloud/cloud-client.service.js';
 import { getSlackService } from '../slack/slack.service.js';
 import { sendChatMessageToOrchestrator } from '../../controllers/chat/chat.controller.js';
 import { OnboardingStateStore } from './onboarding-state.store.js';
+import { getBundleCatalog } from '../bundle/bundle-apply.factory.js';
 import {
 	OnboardingChecklistService,
 	type HarnessStepDetail,
@@ -71,6 +72,7 @@ export async function sendViaChat(content: string, metadata: Record<string, unkn
 export function createDefaultOnboardingDeps(): OnboardingChecklistDeps {
 	return {
 		store: new OnboardingStateStore(),
+		listBundles: () => getBundleCatalog().list().map((b) => b.template),
 		getHarnessState: readOrcHarnessState,
 		listTeams: () => StorageService.getInstance().getTeams(),
 		saveTeam: (team) => StorageService.getInstance().saveTeam(team),

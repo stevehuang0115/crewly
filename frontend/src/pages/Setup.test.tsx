@@ -12,6 +12,7 @@ import { harnessService } from '../services/harness.service';
 import { makeHarness, makeOverview, CODEX, GEMINI } from '../test/harness.fixtures';
 import { SETUP_SKIP_STORAGE_KEY } from '../constants/harness.constants';
 import { onboardingChecklistService } from '../services/onboarding-checklist.service';
+import { bundleService } from '../services/bundle.service';
 import { makeChecklist, STARTERS } from '../test/onboarding.fixtures';
 
 const mockNavigate = vi.fn();
@@ -47,6 +48,13 @@ vi.mock('../services/cloud-device-pairing.service', () => ({
     cancel: vi.fn(),
   },
 }));
+
+vi.mock('../services/bundle.service', () => ({
+  BundleRequestError: class extends Error {},
+  bundleService: { getBundle: vi.fn(), apply: vi.fn(), getJob: vi.fn() },
+}));
+
+const bundles = vi.mocked(bundleService);
 
 vi.mock('../services/harness.service', () => ({
   harnessService: {
@@ -211,6 +219,46 @@ describe('Setup page', () => {
     expect(onboarding.sendFirstTask).toHaveBeenCalledWith(STARTERS[0].suggestions[0], 't1');
     await click('下一步');
     expect(screen.getByText('连接 Crewly Cloud')).toBeInTheDocument();
+  });
+
+  it('deploys a solution bundle from the team step; the first-task step says the first week is planned', async () => {
+    mockSearchParams = new URLSearchParams('step=team');
+    svc.getStatus.mockResolvedValue(makeOverview({ orcHarness: 'claude-code' }));
+    onboarding.getStarters.mockResolvedValue([
+      ...STARTERS,
+      { id: 'smb-marketing-team', kind: 'bundle', name: 'SMB', label: '小老板营销团队', tagline: 't', description: 'd', recommended: false, members: [{ name: 'Ava', role: 'team-leader' }], suggestions: [] },
+    ]);
+    bundles.getBundle.mockResolvedValue({
+      bundle: {
+        id: 'smb-marketing-team', name: 'SMB', label: '小老板营销团队', tagline: 't', description: 'd', status: 'ready', tier: 'pro',
+        recommendedRuntime: 'crewly-agent', serverTier: 'entry', memberCount: 1, questionCount: 1, ownerSummary: '每天简报', ownerDoes: [],
+        runtime: { recommended: 'crewly-agent' }, server: { tier: 'entry' },
+        questions: [{ id: 'business_name', label: '公司叫什么？', type: 'text', required: true }],
+        teams: [{ key: 'main', name: 'x', members: [{ name: 'Ava', role: 'team-leader', title: '负责人' }] }],
+        skills: [], connectors: [], schedules: [], firstWeek: [], channels: [],
+      },
+      deployment: null,
+    });
+    bundles.apply.mockResolvedValue({
+      templateId: 'smb-marketing-team', jobId: 'j', status: 'done', runtime: 'claude-code',
+      teams: [{ key: 'main', teamId: 'smb-marketing-team', name: '小周咖啡 营销团队' }],
+      steps: [{ id: 'team', label: '建团队', status: 'done' }], connectors: [], firstWeek: [],
+    });
+    render(<Setup />);
+
+    fireEvent.click(await screen.findByTestId('starter-smb-marketing-team'));
+    fireEvent.click(screen.getByTestId('starter-create'));
+    fireEvent.change(await screen.findByLabelText(/公司叫什么/), { target: { value: '小周咖啡' } });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('bundle-deploy'));
+    });
+    expect(bundles.apply).toHaveBeenCalledWith('smb-marketing-team', { business_name: '小周咖啡' });
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('bundle-finish'));
+    });
+    expect(screen.getByText('派第一件事')).toBeInTheDocument();
+    expect(screen.getByTestId('setup-bundle-first-week')).toBeInTheDocument();
+    expect(onboarding.createStarterTeam).not.toHaveBeenCalled();
   });
 
   it('?step=cloud opens the Cloud step without waiting for the harness status', async () => {

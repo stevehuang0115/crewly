@@ -8,6 +8,7 @@ import { tmpdir } from 'os';
 import * as path from 'path';
 import type { Team } from '../../types/index.js';
 import type { TeamTemplate } from '../../types/team-template.types.js';
+import type { BundleTemplate } from '../../types/solution-bundle.types.js';
 import { TemplateService } from '../template/template.service.js';
 import { OnboardingStateStore } from './onboarding-state.store.js';
 import {
@@ -181,6 +182,56 @@ describe('OnboardingChecklistService', () => {
 				{ name: 'Researcher', role: 'researcher' },
 			]);
 			expect(starters[2].members).toEqual([]);
+		});
+
+		it('marks each starter with how it is created', () => {
+			expect(service.listStarters().map((s) => s.kind)).toEqual(['template', 'template', 'blank']);
+		});
+
+		it('offers ready solution bundles after the free starters and before Blank', () => {
+			const bundle = {
+				id: 'smb-marketing-team',
+				name: 'Small-Business Marketing Team',
+				description: 'd',
+				roles: [
+					{ role: 'team-leader', label: 'Lead', defaultName: 'Ava', count: 1, hierarchyLevel: 1, canDelegate: true, defaultSkills: [] },
+					{ role: 'researcher', label: 'R', defaultName: 'Max', count: 1, hierarchyLevel: 2, canDelegate: false, defaultSkills: [] },
+				],
+				bundle: {
+					schemaVersion: 1,
+					label: '小老板营销团队',
+					tagline: '一句话',
+					ownerSummary: '每天简报',
+					runtime: { recommended: 'crewly-agent' },
+					server: { tier: 'entry' },
+					teams: [{ key: 'ops', name: 'Ops', roles: [{ role: 'team-leader', label: 'L', defaultName: 'Oli', count: 1, hierarchyLevel: 1, canDelegate: true, defaultSkills: [] }] }],
+				},
+			} as BundleTemplate;
+			const withBundles = new OnboardingChecklistService({ ...deps, listBundles: () => [bundle] });
+			const starters = withBundles.listStarters();
+			expect(starters.map((s) => [s.id, s.kind])).toEqual([
+				['personal-assistant-team', 'template'],
+				['growth-marketing-team', 'template'],
+				['smb-marketing-team', 'bundle'],
+				['blank', 'blank'],
+			]);
+			expect(starters[2]).toMatchObject({
+				label: '小老板营销团队',
+				tagline: '一句话',
+				description: '每天简报',
+				recommended: false,
+				suggestions: [],
+				members: [
+					{ name: 'Ava', role: 'team-leader' },
+					{ name: 'Max', role: 'researcher' },
+					{ name: 'Oli', role: 'team-leader' },
+				],
+			});
+		});
+
+		it('still lists the starters when listing bundles fails', () => {
+			const broken = new OnboardingChecklistService({ ...deps, listBundles: () => { throw new Error('disk'); } });
+			expect(broken.listStarters().map((s) => s.id)).toEqual(['personal-assistant-team', 'growth-marketing-team', 'blank']);
 		});
 
 		it('expands counted roles into numbered members', () => {
