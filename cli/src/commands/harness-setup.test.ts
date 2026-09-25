@@ -57,7 +57,7 @@ const CODEX: HarnessStatus = {
 };
 const GEMINI: HarnessStatus = { ...CLAUDE, id: 'gemini-cli', displayName: 'Gemini CLI', installed: false, version: null, loginState: 'unknown', loginMethods: [] };
 const OVERVIEW: HarnessOverview = {
-	harnesses: [CLAUDE, CODEX, GEMINI],
+	harnesses: [CLAUDE, CODEX, GEMINI].map((status) => ({ ...status, reloginPending: null })),
 	orcHarness: null,
 	systemTools: [{ id: 'jq', installed: false, installHint: 'brew install jq' }],
 };
