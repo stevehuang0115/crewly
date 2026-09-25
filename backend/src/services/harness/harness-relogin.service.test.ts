@@ -179,10 +179,10 @@ describe('pure helpers', () => {
 	});
 
 	it('lists waiting agents with a cap', () => {
-		expect(describeWaitingAgents([])).toMatch(/No agent/);
-		expect(describeWaitingAgents(['a'])).toBe('1 agent is waiting: a.');
+		expect(describeWaitingAgents([])).toMatch(/没有 agent/);
+		expect(describeWaitingAgents(['a'])).toBe('a 在等它。');
 		const many = Array.from({ length: 10 }, (_, i) => `a${i}`);
-		expect(describeWaitingAgents(many)).toMatch(/10 agents are waiting: a0, .*a7 and 2 more\./);
+		expect(describeWaitingAgents(many)).toMatch(/a0、.*a7 等 10 个 在等它。/);
 	});
 });
 
@@ -204,39 +204,39 @@ describe('DM content', () => {
 	it('Codex: names the harness and agents, link and code on their own lines', () => {
 		const text = formatLinkDm(base, ['qa-1']);
 		const lines = text.split('\n');
-		expect(text).toMatch(/Codex login expired/);
-		expect(text).toMatch(/1 agent is waiting: qa-1/);
+		expect(text).toMatch(/Codex 登录过期了/);
+		expect(text).toMatch(/qa-1 在等它/);
 		expect(lines).toContain(CODEX_URL);
 		expect(lines).toContain('WH2P-EO69V');
-		expect(text).toMatch(/finish the login on your phone and it continues by itself/i);
+		expect(text).toMatch(/在手机上完成登录就行，这边会自动继续/);
 	});
 
 	it('Claude: carries the link and asks for the code as a reply', () => {
 		const text = formatLinkDm({ ...base, harnessId: 'claude-code', method: 'subscription', userCode: null, url: CLAUDE_URL }, ['crewly-orc']);
 		expect(text.split('\n')).toContain(CLAUDE_URL);
-		expect(text).toMatch(/Claude Code login expired/);
-		expect(text).toMatch(/Reply to this DM with the code/);
+		expect(text).toMatch(/Claude Code 登录过期了/);
+		expect(text).toMatch(/把授权后页面显示的代码直接回复在这里/);
 	});
 
 	it('unrecognised screen: includes the redacted screen and says the reply is typed in', () => {
 		const text = formatScreenDm({ ...base, url: null, userCode: null, screen: `Choose an option\n${TOKEN}\n\`\`\`` }, ['qa-1']);
-		expect(text).toMatch(/did not recognise/);
+		expect(text).toMatch(/没认出它的界面/);
 		expect(text).toMatch(/Choose an option/);
-		expect(text).toMatch(/typed into that terminal/);
+		expect(text).toMatch(/输入 <内容>/);
 		expect(text).not.toContain(TOKEN);
 		// Only the fences the DM itself adds
 		expect(text.match(/```/g)).toHaveLength(2);
 	});
 
 	it('success, failure and rejection DMs never carry a secret', () => {
-		expect(formatSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] })).toBe('Done: Claude Code is logged in again, 2 agents resumed.');
-		expect(formatSuccessDm('codex-cli', { resumed: ['a'], failed: ['b'] })).toMatch(/1 agent resumed\. Could not restart: b\./);
+		expect(formatSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] })).toBe('好了：Claude Code 已重新登录，2 个 agent 已恢复。');
+		expect(formatSuccessDm('codex-cli', { resumed: ['a'], failed: ['b'] })).toMatch(/1 个 agent 已恢复。 没能重启：b。/);
 		const failure = formatFailureDm('claude-code', `Login failed ${TOKEN}`);
 		expect(failure).toMatch(/relogin/);
 		expect(failure).toMatch(/重新登录/);
 		expect(failure).not.toContain(TOKEN);
 		const rejected = formatRejectedDm({ ...base, method: 'subscription', message: 'Invalid code. Please make sure the full code was copied' });
-		expect(rejected).toMatch(/That code did not work \(Invalid code/);
+		expect(rejected).toMatch(/这个代码没通过（Invalid code/);
 	});
 });
 
@@ -282,7 +282,7 @@ describe('debounce and reminders', () => {
 		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
 		await flush();
 		expect(dms).toHaveLength(1);
-		expect(dms[0]).toMatch(/2 agents are waiting: crewly-orc, dev-1/);
+		expect(dms[0]).toMatch(/crewly-orc、dev-1 在等它/);
 	});
 
 	it('after a failure, re-reminds at most once per REMIND_INTERVAL_MS', async () => {
@@ -293,7 +293,7 @@ describe('debounce and reminders', () => {
 		broker.finish('s1', 'timed_out', 'The login was not completed in time.');
 		await flush();
 		expect(dms).toHaveLength(2);
-		expect(dms[1]).toMatch(/did not finish.*relogin/s);
+		expect(dms[1]).toMatch(/登录没完成.*relogin/s);
 		expect(service.getPending('codex-cli')).toBeNull();
 
 		// Soon after: no new flow, no new DM
@@ -389,7 +389,7 @@ describe('owner reply routing', () => {
 		broker.patch('s1', rejected);
 		await flush();
 		expect(dms).toHaveLength(2);
-		expect(dms[1]).toMatch(/That code did not work/);
+		expect(dms[1]).toMatch(/这个代码没通过/);
 		expect(service.handleOwnerReply(`${AUTH_CODE}X`)).toBe(true);
 		expect(broker.inputs).toHaveLength(2);
 	});
@@ -411,7 +411,9 @@ describe('owner reply routing', () => {
 		await flush();
 		expect(dms).toHaveLength(1);
 		expect(dms[0]).toMatch(/Select login method/);
-		expect(service.handleOwnerReply('1')).toBe(true);
+		// A bare reply is a normal message to the orc, not terminal input.
+		expect(service.handleOwnerReply('1')).toBe(false);
+		expect(service.handleOwnerReply('输入 1')).toBe(true);
 		expect(broker.inputs).toEqual([{ id: 's1', text: '1' }]);
 		expect(service.handleOwnerReply('line one\nline two')).toBe(false);
 	});
@@ -438,7 +440,7 @@ describe('success path', () => {
 		broker.finish('s1', 'succeeded', 'Logged in. Crewly saved the token for its agents.');
 		await flush();
 		expect(resumer.resume).toHaveBeenCalledWith(['crewly-orc', 'dev-1']);
-		expect(dms[dms.length - 1]).toBe('Done: Claude Code is logged in again, 2 agents resumed.');
+		expect(dms[dms.length - 1]).toBe('好了：Claude Code 已重新登录，2 个 agent 已恢复。');
 		expect(dms.join('\n')).not.toContain(TOKEN);
 		expect(dms.join('\n')).not.toContain(AUTH_CODE);
 		expect(service.getPending('claude-code')).toBeNull();
@@ -465,7 +467,7 @@ describe('success path', () => {
 		broker.finish(web.id, 'succeeded', 'Logged in.');
 		await flush();
 		expect(resumer.resume).toHaveBeenCalledWith(['qa-1']);
-		expect(dms[dms.length - 1]).toMatch(/Done: Codex/);
+		expect(dms[dms.length - 1]).toMatch(/好了：Codex/);
 	});
 
 	it('reports agents that could not be restarted', async () => {
@@ -475,7 +477,7 @@ describe('success path', () => {
 		await flush();
 		broker.finish('s1', 'succeeded', 'Logged in.');
 		await flush();
-		expect(dms[dms.length - 1]).toMatch(/0 agents resumed\. Could not restart: qa-1\./);
+		expect(dms[dms.length - 1]).toMatch(/0 个 agent 已恢复。 没能重启：qa-1。/);
 	});
 });
 
@@ -488,7 +490,7 @@ describe('failure path', () => {
 		broker.finish('s1', 'failed', 'device code expired');
 		await flush();
 		expect(dms).toHaveLength(2);
-		expect(dms[1]).toMatch(/Codex login did not finish: device code expired/);
+		expect(dms[1]).toMatch(/Codex 登录没完成：device code expired/);
 
 		expect(service.handleOwnerReply('重新登录')).toBe(true);
 		await flush();
@@ -516,7 +518,7 @@ describe('failure path', () => {
 		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
 		await flush();
 		expect(dms).toHaveLength(1);
-		expect(dms[0]).toMatch(/could not start it.*not installed.*relogin/s);
+		expect(dms[0]).toMatch(/没能启动登录.*not installed.*relogin/s);
 	});
 
 	it('stays quiet when the session was cancelled elsewhere (web, shutdown)', async () => {

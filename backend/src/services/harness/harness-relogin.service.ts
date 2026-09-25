@@ -189,12 +189,11 @@ export function looksLikeAuthCode(text: string): boolean {
  * @returns Sentence fragment
  */
 export function describeWaitingAgents(agents: readonly string[]): string {
-	if (agents.length === 0) return 'No agent is running on it right now.';
+	if (agents.length === 0) return '目前没有 agent 在用它。';
 	const max = HARNESS_CONSTANTS.RELOGIN.DM_MAX_LISTED_AGENTS;
-	const listed = agents.slice(0, max).join(', ');
-	const more = agents.length > max ? ` and ${agents.length - max} more` : '';
-	const noun = agents.length === 1 ? '1 agent is' : `${agents.length} agents are`;
-	return `${noun} waiting: ${listed}${more}.`;
+	const listed = agents.slice(0, max).join('、');
+	const more = agents.length > max ? ` 等 ${agents.length} 个` : '';
+	return `${listed}${more} 在等它。`;
 }
 
 /**
@@ -210,7 +209,28 @@ function safeForDm(text: string, max: number): string {
 }
 
 /** Retry hint appended to failure DMs. */
-const RETRY_HINT = 'Reply `relogin` (or `重新登录`) here to try again.';
+const RETRY_HINT = '回复「重新登录」（或 `relogin`）再试一次。';
+
+/**
+ * Prefix an owner reply needs before it is typed into an unrecognised login
+ * screen. Without it, any one-line DM to the orc during the login would have
+ * been swallowed by the terminal.
+ */
+export const SCREEN_REPLY_PREFIXES = ['输入', 'input'] as const;
+
+/**
+ * The text after a screen-reply prefix ("输入 1" → "1"), or null.
+ *
+ * @param reply - Owner reply (already unwrapped)
+ * @returns Text to type, or null when the reply has no prefix
+ */
+export function stripScreenReplyPrefix(reply: string): string | null {
+	for (const prefix of SCREEN_REPLY_PREFIXES) {
+		const re = new RegExp(`^${prefix}[\\s:：]+`, 'i');
+		if (re.test(reply)) return reply.replace(re, '');
+	}
+	return null;
+}
 
 /**
  * DM with the sign-in link (and Codex's one-time code on its own line).
@@ -221,14 +241,14 @@ const RETRY_HINT = 'Reply `relogin` (or `重新登录`) here to try again.';
  */
 export function formatLinkDm(session: LoginSession, waiting: readonly string[]): string {
 	const name = displayName(session.harnessId);
-	const lines = [`*${name} login expired.* ${describeWaitingAgents(waiting)}`, ''];
+	const lines = [`*${name} 登录过期了。* ${describeWaitingAgents(waiting)}`, ''];
 	if (session.method === 'device') {
-		lines.push('1. Open this link on your phone:', session.url ?? '', '', '2. Enter this one-time code:', session.userCode ?? '', '');
-		lines.push('Finish the login on your phone and it continues by itself.');
+		lines.push('1. 在手机上打开这个链接：', session.url ?? '', '', '2. 输入这个验证码：', session.userCode ?? '', '');
+		lines.push('在手机上完成登录就行，这边会自动继续。');
 	} else {
-		lines.push('1. Open this link on your phone and approve:', session.url ?? '', '');
-		lines.push('2. Reply to this DM with the code shown after you approve (just the code).', '');
-		lines.push('Crewly types it in and the agents continue by themselves.');
+		lines.push('1. 在手机上打开这个链接并授权：', session.url ?? '', '');
+		lines.push('2. 把授权后页面显示的代码直接回复在这里（只要代码）。', '');
+		lines.push('Crewly 会自动填进去，agent 自己接着干。');
 	}
 	return lines.join('\n');
 }
@@ -243,13 +263,13 @@ export function formatLinkDm(session: LoginSession, waiting: readonly string[]):
 export function formatScreenDm(session: LoginSession, waiting: readonly string[]): string {
 	const screen = safeForDm(session.screen, HARNESS_CONSTANTS.RELOGIN.DM_SCREEN_MAX_CHARS) || '(empty screen)';
 	return [
-		`*${displayName(session.harnessId)} login expired.* ${describeWaitingAgents(waiting)}`,
+		`*${displayName(session.harnessId)} 登录过期了。* ${describeWaitingAgents(waiting)}`,
 		'',
-		'Crewly started the login, but did not recognise its screen. This is what it shows:',
+		'Crewly 已经启动了登录，但没认出它的界面。现在显示的是：',
 		'```',
 		screen,
 		'```',
-		'Your next reply in this DM will be typed into that terminal.',
+		'要往这个终端里输入，回复「输入 <内容>」（例如「输入 1」）。其他消息照常发给 Orc。',
 	].join('\n');
 }
 
@@ -261,8 +281,8 @@ export function formatScreenDm(session: LoginSession, waiting: readonly string[]
  */
 export function formatRejectedDm(session: LoginSession): string {
 	const reason = safeForDm(session.message ?? '', HARNESS_CONSTANTS.RELOGIN.DM_MESSAGE_MAX_CHARS);
-	const what = session.method === 'subscription' ? 'code' : 'reply';
-	return `That ${what} did not work${reason ? ` (${reason})` : ''}. Reply with the ${what} again, or ${RETRY_HINT.charAt(0).toLowerCase()}${RETRY_HINT.slice(1)}`;
+	const what = session.method === 'subscription' ? '代码' : '输入';
+	return `这个${what}没通过${reason ? `（${reason}）` : ''}。再回复一次${what}，或者${RETRY_HINT}`;
 }
 
 /**
@@ -274,9 +294,9 @@ export function formatRejectedDm(session: LoginSession): string {
  */
 export function formatSuccessDm(harnessId: HarnessId, result: { resumed: string[]; failed: string[] }): string {
 	const count = result.resumed.length;
-	let text = `Done: ${displayName(harnessId)} is logged in again, ${count} ${count === 1 ? 'agent' : 'agents'} resumed.`;
+	let text = `好了：${displayName(harnessId)} 已重新登录，${count} 个 agent 已恢复。`;
 	if (result.failed.length > 0) {
-		text += ` Could not restart: ${result.failed.join(', ')}.`;
+		text += ` 没能重启：${result.failed.join('、')}。`;
 	}
 	return text;
 }
@@ -290,7 +310,7 @@ export function formatSuccessDm(harnessId: HarnessId, result: { resumed: string[
  */
 export function formatFailureDm(harnessId: HarnessId, reason: string | null): string {
 	const detail = safeForDm(reason ?? '', HARNESS_CONSTANTS.RELOGIN.DM_MESSAGE_MAX_CHARS);
-	return `${displayName(harnessId)} login did not finish${detail ? `: ${detail}` : '.'} ${RETRY_HINT}`;
+	return `${displayName(harnessId)} 登录没完成${detail ? `：${detail}` : '。'}${RETRY_HINT}`;
 }
 
 /** Coordinates Slack re-login flows, one per harness. */
@@ -414,12 +434,16 @@ export class HarnessReloginService {
 
 			const takesCode =
 				flow.dm === 'link' && session.method === 'subscription' && session.state === 'awaiting_user' && session.needsInput && looksLikeAuthCode(reply);
+			const screenText = flow.dm === 'screen' ? stripScreenReplyPrefix(reply) : null;
 			const takesScreenReply =
-				flow.dm === 'screen' && reply.length > 0 && reply.length <= HARNESS_CONSTANTS.RELOGIN.SCREEN_REPLY_MAX_LENGTH && !/[\r\n]/.test(reply);
+				screenText !== null &&
+				screenText.length > 0 &&
+				screenText.length <= HARNESS_CONSTANTS.RELOGIN.SCREEN_REPLY_MAX_LENGTH &&
+				!/[\r\n]/.test(screenText);
 			if (!takesCode && !takesScreenReply) continue;
 
 			try {
-				this.broker.input(flow.sessionId, reply);
+				this.broker.input(flow.sessionId, takesCode ? reply : (screenText as string));
 				flow.replied = true;
 				flow.lastRejection = null;
 				this.logger.info('Owner reply typed into the login', { harnessId: flow.harnessId, sessionId: flow.sessionId });
@@ -539,7 +563,7 @@ export class HarnessReloginService {
 			const reason = error instanceof Error ? error.message : String(error);
 			this.logger.warn('Re-login: could not start the login', { harnessId: flow.harnessId, error: reason });
 			flow.phase = 'failed';
-			await this.dm(flow, formatFailureDm(flow.harnessId, `Crewly could not start it (${reason}).`));
+			await this.dm(flow, formatFailureDm(flow.harnessId, `Crewly 没能启动登录（${reason}）`));
 			return;
 		}
 		flow.sessionId = session.id;

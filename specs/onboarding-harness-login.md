@@ -448,8 +448,8 @@ The coordinator's `handleOwnerReply` then consumes it only in these cases:
   `broker.input()`. If the harness rejects it (the prompt returns with a
   message), one DM says so and asks for the code again. A code-shaped reply
   that arrives just after the session ended is still consumed.
-- **An unrecognised screen.** Any single-line reply of 512 chars or fewer
-  while that session is live.
+- **An unrecognised screen.** Only a reply prefixed `输入 ` / `input ` (e.g. `输入 1`) is typed into the terminal, single-line and ≤ 512 chars after the prefix. A bare reply goes to the orc as usual — the owner's DM with the orc is the same channel, so taking any one-line reply would swallow normal messages.
+  DMs are written in Chinese (the owner's language).
 
 Anything else goes through the normal chat path. The code is never stored,
 logged or echoed. The coordinator logs only harness and session ids, and DMs
