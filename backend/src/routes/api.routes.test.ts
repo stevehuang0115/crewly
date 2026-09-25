@@ -75,6 +75,7 @@ jest.mock('../controllers/google/google.routes.js', () => ({ createGoogleRouter:
 jest.mock('../controllers/canva/canva.routes.js', () => ({ createCanvaRouter: () => Router() }));
 jest.mock('../controllers/microsoft/microsoft-todo.routes.js', () => ({ createMicrosoftTodoRouter: () => Router() }));
 jest.mock('../controllers/connector/connector.routes.js', () => ({ createConnectorRouter: () => Router() }));
+jest.mock('../controllers/bundle/bundle.routes.js', () => ({ createBundleRouter: () => Router() }));
 jest.mock('../controllers/agent-self-improvement/agent-self-improvement.controller.js', () => ({ createAgentSelfImprovementRouter: () => Router() }));
 jest.mock('../controllers/task-projection/task-projection.routes.js', () => ({ __esModule: true, default: Router() }));
 jest.mock('../controllers/chat-v2/index.js', () => ({ createChatV2Router: () => Router() }));

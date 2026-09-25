@@ -2448,6 +2448,20 @@ void (async () => {
 				}
 			})();
 
+			// Solution bundles: deliver first-week tasks when they are due and
+			// finish deployments that waited for the backend or for Slack
+			// (a `crewly deploy-bundle` run while Crewly was stopped).
+			void (async () => {
+				try {
+					const { startBundleMaintenance } = await import('./services/bundle/bundle-apply.factory.js');
+					startBundleMaintenance();
+				} catch (bundleErr) {
+					this.logger.warn('Failed to start bundle maintenance (non-critical)', {
+						error: bundleErr instanceof Error ? bundleErr.message : String(bundleErr),
+					});
+				}
+			})();
+
 			// Thread Status Queue: load persisted state and recover pending threads
 			try {
 				const recoveryResult = await this.threadStatusQueueService.recoverPendingThreads(

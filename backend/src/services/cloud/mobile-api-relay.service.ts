@@ -167,6 +167,11 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/cloud/device/status' },
   { method: 'POST', prefix: '/cloud/device/start' },
   { method: 'POST', prefix: '/cloud/device/cancel' },
+  // Solution bundles (specs/solution-bundles.md): the owner picks a bundle,
+  // answers its questions and deploys it from the phone, then watches the
+  // job. `GET /bundles` covers the list, the detail and `/bundles/apply/:jobId`.
+  { method: 'GET', prefix: '/bundles' },
+  { method: 'POST', prefix: '/bundles/apply' },
 ];
 
 /**

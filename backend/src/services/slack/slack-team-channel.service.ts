@@ -847,6 +847,90 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Make sure an extra channel for a set of agents exists (solution bundles:
+   * e.g. an approvals channel with the lead and the writer). It is stored
+   * like an ad-hoc channel (`adhoc:<channelId>` with a member roster), so
+   * routing, outbound mirroring and room presence treat it the same way.
+   *
+   * Idempotent: `existingChannelId`, or an auto-created ad-hoc channel with
+   * the same derived name, is reused; its roster gains the given agents.
+   * The owner is invited on creation, and agents whose Slack bot is already
+   * installed are invited into it.
+   *
+   * @param input - Channel name, purpose, agent sessions, a known channel id
+   * @returns The mapping
+   * @throws Error when Slack is not connected or the channel cannot be created
+   */
+  async ensureAgentChannel(input: {
+    name: string;
+    purpose: string;
+    memberSessions: string[];
+    existingChannelId?: string;
+  }): Promise<SlackTeamChannelMapping> {
+    const store = await this.load();
+    const derived = slackChannelNameFor(input.name, store.channelPrefix);
+    return this.serialised(`agent-channel:${derived}`, async () => {
+      if (!this.deps.slack.isConnected()) throw new Error('Slack is not connected');
+      const current = await this.load();
+      let mapping =
+        (input.existingChannelId ? current.mappings.find((m) => m.slackChannelId === input.existingChannelId) : undefined) ??
+        current.mappings.find((m) => isAdhocMapping(m) && m.autoCreated && (m.derivedName ?? m.slackChannelName) === derived);
+      const sessions = [...new Set(input.memberSessions.filter((s) => !!s))];
+
+      if (mapping) {
+        const roster = [...new Set([...(mapping.members ?? []), ...sessions])];
+        if (roster.length !== (mapping.members ?? []).length) {
+          mapping.members = roster;
+          this.deps.chat.setHuddleMembers(mapping.chatChannelId, roster);
+          await this.save();
+          this.deps.onRoomsChanged?.();
+        }
+      } else {
+        const channel = await this.deps.slack.createChannel(derived);
+        const ownerInvited = await this.inviteOwner(channel.id, channel.name);
+        if (input.purpose.trim()) {
+          await this.deps.slack.setChannelPurpose(channel.id, input.purpose.trim()).catch((err: unknown) => {
+            this.logger.debug('setPurpose failed (non-critical)', { error: err instanceof Error ? err.message : String(err) });
+          });
+        }
+        const huddle = this.deps.chat.createHuddle({
+          name: `#${channel.name}`,
+          purpose: input.purpose.trim() || `Slack channel #${channel.name}`,
+          memberSessions: sessions.length > 0 ? sessions : [`channel:${channel.id}`],
+          principal: { userId: 'system', source: 'oss' },
+        });
+        mapping = {
+          teamId: `${SLACK_TEAM_CHANNEL_CONSTANTS.ADHOC_TEAM_PREFIX}${channel.id}`,
+          slackChannelId: channel.id,
+          slackChannelName: channel.name,
+          chatChannelId: huddle.id,
+          createdAt: (this.deps.now?.() ?? new Date()).toISOString(),
+          autoCreated: true,
+          derivedName: derived,
+          members: sessions,
+          ...(ownerInvited ? { ownerInvited: true } : {}),
+        };
+        current.mappings.push(mapping);
+        await this.save();
+        this.deps.onRoomsChanged?.();
+        this.logger.info('Agent channel ready', { slackChannel: `#${channel.name}`, huddle: huddle.id, agents: sessions });
+      }
+
+      const identities = this.deps.identities;
+      if (identities?.isAvailable()) {
+        await identities.load();
+        for (const session of mapping.members ?? []) {
+          const record = identities.get(session);
+          if (record?.status === 'installed' && record.botUserId && !record.invitedTo.includes(mapping.slackChannelId)) {
+            await this.inviteBot(mapping, session, record.botUserId);
+          }
+        }
+      }
+      return mapping;
+    });
+  }
+
+  /**
    * Remove a team's mapping. Optionally archives the Slack channel; the
    * huddle is always archived (it is Crewly's own object).
    *
@@ -2184,6 +2268,12 @@ export class SlackTeamChannelService {
       if (!teamChannelMembers(team).some((m) => m.sessionName === agentSession)) continue;
       const mapping = this.findByTeamId(team.id);
       if (!mapping || record.invitedTo.includes(mapping.slackChannelId)) continue;
+      await this.inviteBot(mapping, agentSession, record.botUserId);
+    }
+    // Channels Crewly created for a set of agents (ensureAgentChannel).
+    for (const mapping of this.store?.mappings ?? []) {
+      if (!isAdhocMapping(mapping) || !mapping.autoCreated) continue;
+      if (!(mapping.members ?? []).includes(agentSession) || record.invitedTo.includes(mapping.slackChannelId)) continue;
       await this.inviteBot(mapping, agentSession, record.botUserId);
     }
   }

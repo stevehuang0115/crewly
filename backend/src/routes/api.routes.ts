@@ -43,6 +43,7 @@ import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createTicketsRouter } from '../controllers/tickets/tickets.routes.js';
 import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
 import { createSkillSetupRouter } from '../controllers/skill-setup/skill-setup.routes.js';
+import { createBundleRouter } from '../controllers/bundle/bundle.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
@@ -194,6 +195,9 @@ export function createApiRoutes(apiController: ApiController): Router {
   // install-skill — find an official skill, install it with its dependencies
   // as a background job, message the requesting agent when it is done
   router.use('/skill-setup', createSkillSetupRouter());
+  // Solution bundles (specs/solution-bundles.md): list, preview with the
+  // deploy questions, apply in one step with progress. Apply is owner-only.
+  router.use('/bundles', createBundleRouter());
 
   // Task Pool routes for V2 work item pool management
   router.use('/task-pool', createTaskPoolRouter());

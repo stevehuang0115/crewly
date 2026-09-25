@@ -2192,3 +2192,61 @@ describe('singleton accessors', () => {
     expect(getSlackTeamChannelService()).toBe(service);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Extra channels for a set of agents (solution bundles)
+// ---------------------------------------------------------------------------
+
+describe('ensureAgentChannel', () => {
+  it('creates the channel, a huddle with the agents, invites the owner and stores an ad-hoc mapping', async () => {
+    const mapping = await service.ensureAgentChannel({
+      name: '小周咖啡 待审批',
+      purpose: '等老板点头',
+      memberSessions: ['crewly-alpha-sam', 'crewly-alpha-leo', 'crewly-alpha-sam'],
+    });
+    expect(slack.created).toEqual(['小周咖啡-待审批']);
+    expect(slack.invites).toEqual([{ channelId: 'C1', userIds: ['UOWNER'] }]);
+    expect(slack.purposes).toEqual([{ id: 'C1', purpose: '等老板点头' }]);
+    expect(mapping).toMatchObject({
+      teamId: 'adhoc:C1',
+      slackChannelId: 'C1',
+      autoCreated: true,
+      derivedName: '小周咖啡-待审批',
+      members: ['crewly-alpha-sam', 'crewly-alpha-leo'],
+      ownerInvited: true,
+    });
+    expect([...chat.members.get(mapping.chatChannelId)!]).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    expect(await service.listMappings()).toEqual(expect.arrayContaining([expect.objectContaining({ teamId: 'adhoc:C1' })]));
+  });
+
+  it('is idempotent by name or known channel id, and adds new agents to the roster', async () => {
+    const first = await service.ensureAgentChannel({ name: 'approvals', purpose: '', memberSessions: ['crewly-alpha-sam'] });
+    const again = await service.ensureAgentChannel({ name: 'approvals', purpose: '', memberSessions: ['crewly-alpha-leo'] });
+    const byId = await service.ensureAgentChannel({ name: 'renamed', purpose: '', memberSessions: [], existingChannelId: first.slackChannelId });
+    expect(slack.created).toEqual(['approvals']);
+    expect(again.slackChannelId).toBe(first.slackChannelId);
+    expect(byId.slackChannelId).toBe(first.slackChannelId);
+    expect(again.members).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+    expect([...chat.members.get(first.chatChannelId)!]).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
+  });
+
+  it('invites agents whose bot is installed, now or when it gets installed later', async () => {
+    identities = new FakeIdentities();
+    service = makeService();
+    await service.start();
+    await identities.provision('crewly-alpha-sam', 'Sam');
+    await identities.provision('crewly-alpha-leo', 'Leo');
+    identities.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    slack.invites = [];
+    const mapping = await service.ensureAgentChannel({ name: 'intel', purpose: '', memberSessions: ['crewly-alpha-sam', 'crewly-alpha-leo'] });
+    expect(slack.invites).toContainEqual({ channelId: mapping.slackChannelId, userIds: ['USAM'] });
+    identities.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(slack.invites).toContainEqual({ channelId: mapping.slackChannelId, userIds: ['ULEO'] });
+  });
+
+  it('throws when Slack is not connected', async () => {
+    slack.connected = false;
+    await expect(service.ensureAgentChannel({ name: 'x', purpose: '', memberSessions: [] })).rejects.toThrow('Slack is not connected');
+  });
+});

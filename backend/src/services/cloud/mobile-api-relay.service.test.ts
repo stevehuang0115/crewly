@@ -244,3 +244,18 @@ describe('allowlist additions — first-run checklist from the phone', () => {
     expect(isAllowedMobileApiCall('POST', '/cloud/connect')).toBe(false);
   });
 });
+
+describe('allowlist additions — solution bundles from the phone', () => {
+  it('lets the phone list bundles, read one, deploy it and watch the job', () => {
+    expect(isAllowedMobileApiCall('GET', '/bundles')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/bundles/smb-marketing-team')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/bundles/apply/bundle-123')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/bundles/apply')).toBe(true);
+  });
+
+  it('allows no other bundle mutation and no traversal', () => {
+    expect(isAllowedMobileApiCall('POST', '/bundles/smb-marketing-team')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/bundles')).toBe(false);
+    expect(isAllowedMobileApiCall('GET', '/bundles/../harness/claude-code/api-key')).toBe(false);
+  });
+});
