@@ -129,6 +129,32 @@ describe('PtySession', () => {
 			}
 		});
 
+		it('never passes backend-only Slack secrets into an agent PTY (an agent running `env` printed them)', () => {
+			const names = ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'];
+			const previous = Object.fromEntries(names.map((n) => [n, process.env[n]]));
+			for (const n of names) process.env[n] = `fake-${n.toLowerCase()}-value`;
+			let spawnedEnv: Record<string, string> | undefined;
+			const restoreSpawn = _setPtySpawnImplForTesting(((
+				_file: string,
+				_args: string | string[],
+				options: pty.IPtyForkOptions,
+			): pty.IPty => {
+				spawnedEnv = options.env as Record<string, string>;
+				return makeStubPty();
+			}) as unknown as typeof pty.spawn);
+			try {
+				session = new PtySession('test-session', TEST_CWD, createTestOptions({ env: { CUSTOM_VAR: 'test-value' } }));
+				expect(spawnedEnv?.CUSTOM_VAR).toBe('test-value');
+				for (const n of names) expect(spawnedEnv).not.toHaveProperty(n);
+			} finally {
+				restoreSpawn();
+				for (const n of names) {
+					if (previous[n] === undefined) delete process.env[n];
+					else process.env[n] = previous[n];
+				}
+			}
+		});
+
 		// Regression: 2026-05-23 incident — node-pty's "posix_spawnp failed"
 		// was bubbling up to the user on transient process-table pressure.
 		// We now retry up to 4 times with backoff (150/400/1000 ms).

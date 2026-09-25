@@ -271,6 +271,15 @@ describe('SessionCommandHelper', () => {
 			expect(mockSession.write).toHaveBeenCalledWith('export MY_VAR="my_value"\r');
 		});
 
+		it.each(['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'SLACK_BOT_TOKEN'])(
+			'refuses to type the secret %s into the terminal, and writes nothing',
+			async (key) => {
+				const fakeSecret = 'AIzaTESTfakeKeyThatMustNeverBeTyped0123';
+				await expect(helper.setEnvironmentVariable('test-session', key, fakeSecret)).rejects.toThrow(key);
+				expect(mockSession.write).not.toHaveBeenCalled();
+			}
+		);
+
 		it('should throw error if session does not exist', async () => {
 			mockBackend.getSession.mockReturnValue(undefined);
 			await expect(
