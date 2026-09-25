@@ -11,10 +11,10 @@
  * @module services/cloud/cloud-client.service
  */
 
-import * as os from 'os';
 import * as path from 'path';
 import { readFile, writeFile, mkdir, unlink } from 'fs/promises';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import {
   CLOUD_CONSTANTS,
   AUTH_CONSTANTS,
@@ -356,10 +356,11 @@ export class CloudClientService {
   // -------------------------------------------------------------------------
 
   /**
-   * Path to the persisted cloud config file.
+   * Path to the persisted cloud config file. Resolved through CREWLY_HOME so
+   * tests (which isolate CREWLY_HOME) can never overwrite the real login.
    */
   static getConfigPath(): string {
-    return path.join(os.homedir(), '.crewly', 'cloud', 'config.json');
+    return path.join(getCrewlyHomePath(), 'cloud', 'config.json');
   }
 
   /**

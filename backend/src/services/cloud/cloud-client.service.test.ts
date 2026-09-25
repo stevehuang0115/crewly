@@ -504,7 +504,7 @@ describe('CloudClientService', () => {
   // ----- Config Persistence ------------------------------------------------
 
   describe('config persistence', () => {
-    const expectedConfigPath = path.join(os.homedir(), '.crewly', 'cloud', 'config.json');
+    const expectedConfigPath = path.join(process.env.CREWLY_HOME as string, 'cloud', 'config.json');
 
     beforeEach(() => {
       jest.clearAllMocks();
