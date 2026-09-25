@@ -87,6 +87,11 @@ export class SkillsReferenceModule implements PromptModule {
 			'to authorize it, tell them what you are waiting on, and stop there.',
 			'',
 			'Consent is per product, so an account connected for Calendar cannot read Drive.',
+			'',
+			'**WhatsApp (owner\'s personal account, inbox mode)** — read and draft only:',
+			`\`${p}/whatsapp-inbox\` (chats needing a reply), \`whatsapp-read\` (a chat / search),`,
+			'`whatsapp-draft` (saves a reply as W12 — never sends), `whatsapp-send` (only after the',
+			'owner replies 「发 W12」). Never auto-reply; summarise, don\'t paste chats elsewhere.',
 		].join('\n');
 	}
 

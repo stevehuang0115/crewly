@@ -196,6 +196,16 @@ describe('SkillsReferenceModule', () => {
 			}
 		});
 
+		it('lists the WhatsApp inbox skills with the owner-confirmation rule', async () => {
+			const out = await module.build(baseConfig);
+
+			for (const skill of ['whatsapp-inbox', 'whatsapp-read', 'whatsapp-draft', 'whatsapp-send']) {
+				expect(out).toContain(skill);
+			}
+			expect(out).toContain('「发 W12」');
+			expect(out).toMatch(/never auto-reply/i);
+		});
+
 		it('says these come first and the browser is the fallback', async () => {
 			// The ordering is the whole point: the prompt described
 			// remote-browser at length and these not at all, so the browser won
