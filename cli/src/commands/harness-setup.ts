@@ -25,7 +25,7 @@ import {
 } from '../../../backend/src/services/harness/harness.types.js';
 import { getLoginRules } from '../../../backend/src/services/harness/login-rules.js';
 import { CLI_CONSTANTS } from '../constants.js';
-import type { LoginDriver } from '../utils/harness-engine.js';
+import { createDetachedLoginDriver, type LoginDriver } from '../utils/harness-engine.js';
 
 /** Prompting and output, injected by the caller (readline in production). */
 export interface SetupIO {
@@ -245,7 +245,9 @@ export async function driveBrokerLogin(
 	options: { interactive: boolean; timing?: SetupTiming },
 ): Promise<LoginOutcome> {
 	const timing = options.timing ?? DEFAULT_SETUP_TIMING;
-	const handOff = !options.interactive && driver.where === 'backend';
+	// Non-interactive runs never wait for the owner: the session lives on in
+	// the backend or in a background process, so print the link and return.
+	const handOff = !options.interactive && driver.where !== 'in-process';
 	let session = await driver.start(harnessId, method);
 	const startedAt = timing.now();
 	const shown: { url?: string; code?: string; message?: string } = {};
@@ -271,7 +273,12 @@ export async function driveBrokerLogin(
 
 		if (handOff && (shown.url || shown.code || session.needsInput)) {
 			io.log('');
-			io.log(`  Finish on your phone or any browser: ${session.needsInput ? 'paste the code you get into Crewly → Setup (web app or phone app) — it shows this same login.' : 'Crewly picks the login up by itself.'}`);
+			if (driver.where === 'detached') {
+				io.log('  Finish on your phone or any browser. The sign-in keeps waiting in the background until the code expires');
+				io.log(`  (15 minutes) and saves the login by itself — no need to keep this terminal open. Check with \`crewly harness\`.`);
+			} else {
+				io.log(`  Finish on your phone or any browser: ${session.needsInput ? 'paste the code you get into Crewly → Setup (web app or phone app) — it shows this same login.' : 'Crewly picks the login up by itself.'}`);
+			}
 			return 'pending';
 		}
 
@@ -289,7 +296,8 @@ export async function driveBrokerLogin(
 			io.log(chalk.gray(indent(session.screen)));
 		}
 		if ((handOff && elapsed >= timing.urlWaitMs) || elapsed >= timing.maxWaitMs) {
-			if (!handOff) await driver.cancel(session.id).catch(() => undefined);
+			// A backend session stays for Crewly → Setup; anything else would be left dangling.
+			if (driver.where !== 'backend') await driver.cancel(session.id).catch(() => undefined);
 			io.log(chalk.yellow(handOff ? '  The login did not show a link in time; finish it from Crewly → Setup.' : '  Stopped waiting for the login.'));
 			return handOff ? 'pending' : 'failed';
 		}
@@ -331,7 +339,7 @@ export async function loginHarness(
 	service: HarnessService,
 	getDriver: () => Promise<LoginDriver>,
 	status: HarnessStatus,
-	options: { interactive: boolean; force?: boolean; method?: string; timing?: SetupTiming },
+	options: { interactive: boolean; force?: boolean; method?: string; timing?: SetupTiming; detachedDriver?: () => LoginDriver },
 ): Promise<LoginOutcome> {
 	if (status.loginMethods.length === 0) {
 		io.log(chalk.gray(`  ${status.displayName}: Crewly does not log it in. Run \`${getHarnessDefinition(status.id)?.command}\` once and sign in.`));
@@ -380,12 +388,17 @@ export async function loginHarness(
 		}
 	}
 
-	const driver = await getDriver();
+	let driver = await getDriver();
 	const needsReply = Boolean(getLoginRules(status.id, method)?.inputPromptPattern);
-	if (!options.interactive && driver.where === 'in-process' && needsReply) {
-		io.log(chalk.gray(`  Login skipped (--yes): ${status.displayName}'s sign-in needs a code typed back.`));
-		io.log(chalk.gray(`  Finish it from your phone: start Crewly (\`crewly start\`) and open Crewly → Setup, or run \`crewly login ${cliAlias(status.id)}\`.`));
-		return 'skipped';
+	if (!options.interactive && driver.where === 'in-process') {
+		if (needsReply) {
+			io.log(chalk.gray(`  Login skipped (--yes): ${status.displayName}'s sign-in needs a code typed back.`));
+			io.log(chalk.gray(`  Finish it from your phone: start Crewly (\`crewly start\`) and open Crewly → Setup, or run \`crewly login ${cliAlias(status.id)}\`.`));
+			return 'skipped';
+		}
+		// A device-code login needs no reply: run it in the background so
+		// --yes prints the code and returns instead of waiting 15 minutes.
+		driver = (options.detachedDriver ?? (() => createDetachedLoginDriver(service)))();
 	}
 	if (driver.where === 'backend') io.log(chalk.gray('  (Crewly is running: this login is also visible in Crewly → Setup on the web and phone.)'));
 	try {

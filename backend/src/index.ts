@@ -73,7 +73,7 @@ import { KRCompletionSubscriber } from './services/v3/kr-completion.subscriber.j
 import { FallbackTriggerCleanupSubscriber } from './services/v3/fallback-trigger-cleanup.subscriber.js';
 import { MissionReminderService } from './services/v3/mission-reminder.service.js';
 import { OKROwnerGuidanceService } from './services/v3/okr-owner-guidance.service.js';
-import { migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
+import { getCrewlyHomeId, migrateLegacyProjectData, resolveProjectDataDir } from './services/core/crewly-home.utils.js';
 import { KRTrackingService } from './services/v3/kr-tracking.service.js';
 import { getSlackOrchestratorBridge } from './services/slack/slack-orchestrator-bridge.js';
 import { OKRReviewService } from './services/v3/okr-review.service.js';
@@ -1577,6 +1577,9 @@ void (async () => {
 				latestVersion: cachedCheck?.latestVersion ?? null,
 				updateAvailable: cachedCheck?.updateAvailable ?? false,
 				mode: this.config.headless ? 'headless' : 'standard',
+				// Which Crewly home this backend serves, so a CLI can tell its own
+				// backend from another user's on the same port.
+				homeId: getCrewlyHomeId(),
 				agents: {
 					active: agentCount,
 					total: agentCount,

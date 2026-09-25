@@ -24,6 +24,7 @@
  * @module services/core/crewly-home.utils
  */
 
+import { createHash } from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -58,6 +59,25 @@ export function getCrewlyHomePath(): string {
     return envValue;
   }
   return path.join(os.homedir(), '.crewly');
+}
+
+/** Length of {@link getCrewlyHomeId} (hex characters). */
+const CREWLY_HOME_ID_LENGTH = 16;
+
+/**
+ * A short, non-secret id for a Crewly home directory.
+ *
+ * The backend reports it on `/health` so a CLI can tell whether the backend
+ * on a port is *its own* one. Loopback requests need no API token, so without
+ * this check `crewly login` / `crewly onboard` run by one Unix user would
+ * drive another user's backend that happens to hold the port (on a shared
+ * server: a production Crewly running as root on 8787).
+ *
+ * @param home - Crewly home (defaults to {@link getCrewlyHomePath})
+ * @returns First 16 hex chars of sha256(absolute home path)
+ */
+export function getCrewlyHomeId(home: string = getCrewlyHomePath()): string {
+  return createHash('sha256').update(path.resolve(home)).digest('hex').slice(0, CREWLY_HOME_ID_LENGTH);
 }
 
 /**

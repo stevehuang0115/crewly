@@ -15,6 +15,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
+  getCrewlyHomeId,
   getCrewlyHomePath,
   isInsidePackageTree,
   resolveProjectDataDir,
@@ -122,5 +123,18 @@ describe('migrateLegacyProjectData', () => {
     const legacy = seedLegacy();
     expect(migrateLegacyProjectData(legacy, legacy)).toEqual([]);
     expect(migrateLegacyProjectData(path.join(tmp, 'nope'), path.join(tmp, 'home'))).toEqual([]);
+  });
+});
+
+describe('getCrewlyHomeId', () => {
+  it('is a short stable hex id of the absolute home path', () => {
+    const id = getCrewlyHomeId('/home/alice/.crewly');
+    expect(id).toMatch(/^[0-9a-f]{16}$/);
+    expect(getCrewlyHomeId('/home/alice/.crewly')).toBe(id);
+    expect(getCrewlyHomeId('/home/alice/.crewly/')).toBe(id);
+  });
+
+  it('differs between homes (another Unix user, another CREWLY_HOME)', () => {
+    expect(getCrewlyHomeId('/home/alice/.crewly')).not.toBe(getCrewlyHomeId('/root/.crewly'));
   });
 });

@@ -112,7 +112,7 @@ function fastTiming(overrides: Partial<SetupTiming> = {}): SetupTiming {
  * @param updates - Snapshots returned by successive gets (last one repeats)
  * @returns Driver with mocks
  */
-function makeDriver(where: 'in-process' | 'backend', start: Partial<LoginSession>, updates: Array<Partial<LoginSession>> = []) {
+function makeDriver(where: 'in-process' | 'backend' | 'detached', start: Partial<LoginSession>, updates: Array<Partial<LoginSession>> = []) {
 	const base: LoginSession = {
 		id: 's1',
 		harnessId: 'claude-code',
@@ -320,6 +320,13 @@ describe('driveBrokerLogin', () => {
 		expect(driver.input).toHaveBeenCalledTimes(2);
 	});
 
+	it('detached: cancels the background login when it never shows a link', async () => {
+		const driver = makeDriver('detached', { harnessId: 'codex-cli', state: 'starting' });
+		const io = makeIO();
+		expect(await driveBrokerLogin(io, driver, 'codex-cli', 'device', { interactive: false, timing: fastTiming() })).toBe('pending');
+		expect(driver.cancel).toHaveBeenCalled();
+	});
+
 	it('stops waiting (and cancels) after the maximum wait', async () => {
 		const driver = makeDriver('in-process', { state: 'awaiting_user', url: 'https://auth.openai.com/codex/device', userCode: 'AAAA-BBBB' });
 		const io = makeIO();
@@ -384,11 +391,31 @@ describe('loginHarness', () => {
 		expect(io.lines.join('\n')).toContain('also visible in Crewly → Setup');
 	});
 
-	it('--yes device-code login runs in-process (no reply needed)', async () => {
+	it('--yes device-code login with no backend runs detached: prints the code and returns without waiting', async () => {
 		const { service } = makeService();
-		const driver = makeDriver('in-process', { harnessId: 'codex-cli', state: 'succeeded' });
-		expect(await loginHarness(makeIO(), service, driverFor(driver), CODEX, { interactive: false, timing: fastTiming() })).toBe('succeeded');
-		expect(driver.start).toHaveBeenCalledWith('codex-cli', 'device');
+		const inProcess = makeDriver('in-process', {});
+		const detached = makeDriver('detached', { harnessId: 'codex-cli', method: 'device', state: 'starting' }, [
+			{ state: 'awaiting_user', url: 'https://auth.openai.com/codex/device', userCode: 'WH2P-EO69V' },
+		]);
+		const io = makeIO();
+		const outcome = await loginHarness(io, service, driverFor(inProcess), CODEX, { interactive: false, timing: fastTiming(), detachedDriver: () => detached });
+		expect(outcome).toBe('pending');
+		expect(inProcess.start).not.toHaveBeenCalled();
+		expect(detached.start).toHaveBeenCalledWith('codex-cli', 'device');
+		expect(detached.cancel).not.toHaveBeenCalled();
+		const out = io.lines.join('\n');
+		expect(out).toContain('WH2P-EO69V');
+		expect(out).toContain('no need to keep this terminal open');
+		expect(out).not.toContain('Waiting for the sign-in to finish');
+		expect(io.asked).toEqual([]);
+	});
+
+	it('--yes device-code login uses the backend when ours is running (no detached process)', async () => {
+		const { service } = makeService();
+		const backend = makeDriver('backend', { harnessId: 'codex-cli', method: 'device', state: 'awaiting_user', url: 'https://auth.openai.com/codex/device', userCode: 'AAAA-BBBB' });
+		const detachedDriver = jest.fn();
+		expect(await loginHarness(makeIO(), service, driverFor(backend), CODEX, { interactive: false, timing: fastTiming(), detachedDriver })).toBe('pending');
+		expect(detachedDriver).not.toHaveBeenCalled();
 	});
 
 	it('reports a driver error as failed', async () => {
