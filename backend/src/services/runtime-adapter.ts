@@ -186,7 +186,7 @@ abstract class BaseRuntimeAdapter implements RuntimeAdapter {
 	/**
 	 * Start a new agent session with the runtime CLI.
 	 *
-	 * Creates a PTY shell, sets environment variables, and executes the
+	 * Creates a PTY shell with `env` as its spawn environment, and executes the
 	 * runtime initialization script.
 	 *
 	 * @param config - Session start configuration
@@ -194,15 +194,10 @@ abstract class BaseRuntimeAdapter implements RuntimeAdapter {
 	async start(config: RuntimeAdapterConfig): Promise<void> {
 		const { sessionName, projectPath, runtimeFlags, promptFilePath, env } = config;
 
-		// Create PTY session
-		await this.sessionHelper.createSession(sessionName, projectPath);
-
-		// Set environment variables
-		if (env) {
-			for (const [key, value] of Object.entries(env)) {
-				await this.sessionHelper.setEnvironmentVariable(sessionName, key, value);
-			}
-		}
+		// Create the PTY session with its environment at spawn time. Typing
+		// `export`s afterwards would echo every value — including API keys —
+		// into scrollback and the session log.
+		await this.sessionHelper.createSession(sessionName, projectPath, env ? { env } : undefined);
 
 		// Execute runtime-specific initialization
 		await this.runtimeService.executeRuntimeInitScript(

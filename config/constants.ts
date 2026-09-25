@@ -296,6 +296,13 @@ export const API_SECURITY_CONSTANTS = {
 		/** Set to `1`/`true` to force headless (no display) detection */
 		HEADLESS: 'CREWLY_HEADLESS',
 	},
+	/**
+	 * Backend-only secrets that agent PTYs must not inherit from the backend's
+	 * process.env. No agent, skill or runtime reads them (the Slack bridge runs
+	 * in the backend), and an agent that runs `env` would print them into
+	 * scrollback and its session log.
+	 */
+	AGENT_ENV_DENYLIST: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN', 'SLACK_SIGNING_SECRET'] as readonly string[],
 	/** Default bind host — every interface, for backward compatibility */
 	DEFAULT_BIND_HOST: '0.0.0.0',
 	/** Loopback-only bind host suggested in the startup warning */
