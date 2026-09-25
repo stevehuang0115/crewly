@@ -367,6 +367,50 @@ describe('TemplateService', () => {
     });
   });
 
+  describe('onboarding starters', () => {
+    const onboarding = (order: number, recommended: boolean) => ({
+      order,
+      recommended,
+      label: `starter-${order}`,
+      tagline: 'tagline',
+      suggestions: ['one', 'two', 'three'],
+    });
+
+    it('carries onboarding metadata from legacy members[] files into summaries', () => {
+      writeFileSync(
+        join(tempDir, 'legacy-team.json'),
+        JSON.stringify({ ...createLegacyTemplateJson(), onboarding: onboarding(1, true) }),
+      );
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.getTemplate('legacy-team')!.onboarding).toEqual(onboarding(1, true));
+      expect(service.listTemplates()[0].onboarding).toEqual(onboarding(1, true));
+    });
+
+    it('drops malformed onboarding metadata', () => {
+      writeFileSync(
+        join(tempDir, 'legacy-team.json'),
+        JSON.stringify({ ...createLegacyTemplateJson(), onboarding: { order: 'first' } }),
+      );
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.getTemplate('legacy-team')!.onboarding).toBeUndefined();
+      expect(service.listTemplates()[0]).not.toHaveProperty('onboarding');
+    });
+
+    it('lists only starters, ordered by onboarding.order', () => {
+      writeFileSync(join(tempDir, 'b-team.json'), JSON.stringify({ ...createLegacyTemplateJson(), id: 'b-team', onboarding: onboarding(2, false) }));
+      writeFileSync(join(tempDir, 'a-team.json'), JSON.stringify({ ...createLegacyTemplateJson(), id: 'a-team', onboarding: onboarding(1, true) }));
+      writeFileSync(join(tempDir, 'plain.json'), JSON.stringify({ ...createLegacyTemplateJson(), id: 'plain' }));
+      const service = TemplateService.getInstance(tempDir);
+      expect(service.listOnboardingStarters().map((t) => t.id)).toEqual(['a-team', 'b-team']);
+    });
+
+    it('lists the real OSS starters: Personal Assistant first', () => {
+      const service = TemplateService.getInstance(join(__dirname, '..', '..', '..', '..', 'config', 'templates'));
+      const ids = service.listOnboardingStarters().map((t) => t.id);
+      expect(ids).toEqual(['personal-assistant-team', 'growth-marketing-team']);
+    });
+  });
+
   // =========================================================================
   // Tier check and skill degradation
   // =========================================================================

@@ -34,6 +34,7 @@ import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
 import { createOnboardingRouter } from '../controllers/onboarding/onboarding.routes.js';
+import { createOnboardingChecklistRouter } from '../controllers/onboarding/onboarding-checklist.routes.js';
 import { createOrchestratorOnboardingRouter } from '../controllers/orchestrator-onboarding/orchestrator-onboarding.routes.js';
 import { createDataRouter } from '../controllers/data/data.routes.js';
 import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.routes.js';
@@ -159,6 +160,11 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Website Analysis routes for KR3 magic onboarding — SSE + sync analysis
   router.use('/website-analysis', createWebsiteAnalysisRouter());
+
+  // First-run checklist after the harness (specs/onboarding-harness-login.md,
+  // Phase 3): /checklist, /starters, /starter-team, /first-task. Mounted
+  // before the session router that shares the prefix; unmatched paths fall through.
+  router.use('/onboarding', createOnboardingChecklistRouter());
 
   // Onboarding session routes for KR3 Cloud Portal onboarding flow
   router.use('/onboarding', createOnboardingRouter());

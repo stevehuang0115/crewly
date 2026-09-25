@@ -149,6 +149,16 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
     { method: 'POST' as const, prefix: `/harness/${id}/install` },
     { method: 'POST' as const, prefix: `/harness/${id}/login` },
   ]),
+  // First-run checklist (onboarding Phase 3): the phone / portal reads the
+  // steps and drives the owner's choices — starter team, first task, hiding
+  // the card. The Cloud Portal's onboarding *sessions* under the same prefix
+  // are deliberately not here. Cloud sign-in needs no route: a phone on the
+  // relay is already signed in to Cloud.
+  { method: 'GET', prefix: '/onboarding/checklist' },
+  { method: 'GET', prefix: '/onboarding/starters' },
+  { method: 'POST', prefix: '/onboarding/checklist/dismiss' },
+  { method: 'POST', prefix: '/onboarding/starter-team' },
+  { method: 'POST', prefix: '/onboarding/first-task' },
 ];
 
 /**

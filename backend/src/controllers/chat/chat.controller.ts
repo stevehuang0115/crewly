@@ -79,6 +79,167 @@ export function setThreadStatusQueueService(
 // Message Endpoints
 // =============================================================================
 
+/** How a chat message reached (or failed to reach) the orchestrator. */
+export interface OrchestratorDeliveryStatus {
+  forwarded: boolean;
+  queued?: boolean;
+  queueId?: string;
+  error?: string;
+}
+
+/** Input of {@link sendChatMessageToOrchestrator}. */
+export interface ChatToOrchestratorInput {
+  /** Message text (must be non-empty) */
+  content: string;
+  /** Existing conversation, or a new one when omitted */
+  conversationId?: string;
+  /** Caller metadata stored on the message */
+  metadata?: Record<string, unknown>;
+  /** Forward to the orchestrator (default true) */
+  forwardToOrchestrator?: boolean;
+  /** Set when an agent session wrote the message (`X-Agent-Session`) */
+  agentSession?: string | null;
+}
+
+/** Result of {@link sendChatMessageToOrchestrator}. */
+export interface ChatToOrchestratorResult {
+  /** Stored message and its conversation */
+  result: Awaited<ReturnType<ReturnType<typeof getChatService>['sendMessage']>>;
+  /** Delivery to the orchestrator */
+  orchestrator: OrchestratorDeliveryStatus;
+}
+
+/**
+ * Record a chat message and hand it to the orchestrator — the path behind
+ * `POST /api/chat/send`, shared with the first-run checklist's "first task"
+ * (specs/onboarding-harness-login.md, Phase 3).
+ *
+ * The message is stored as a `user` turn; when an agent session wrote it,
+ * that session is recorded so the commitment-approval gate never reads it as
+ * the owner's words. The owner's messages go through ticket intake. Delivery
+ * uses the message queue, which also holds the message while the
+ * orchestrator is offline.
+ *
+ * @param input - Content, conversation, metadata, forward flag, agent session
+ * @returns Stored message + conversation and the orchestrator delivery status
+ * @throws MessageValidationError for invalid content (from the chat service)
+ *
+ * @example
+ * ```ts
+ * const { orchestrator } = await sendChatMessageToOrchestrator({ content: 'Plan my week' });
+ * ```
+ */
+export async function sendChatMessageToOrchestrator(input: ChatToOrchestratorInput): Promise<ChatToOrchestratorResult> {
+  const { content, conversationId, metadata, forwardToOrchestrator: shouldForward = true, agentSession } = input;
+
+  // This records a `user` turn. When an agent session calls it, keep the
+  // message but mark who wrote it: the commitment-approval gate treats `user`
+  // rows as the owner's words and must never be satisfied by text an agent
+  // posted (#730 / 2026-06-02 incident).
+  const sendInput: SendMessageInput = {
+    content,
+    conversationId,
+    metadata: agentSession
+      ? { ...(metadata ?? {}), [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: agentSession }
+      : metadata,
+  };
+
+  const chatService = getChatService();
+  const result = await chatService.sendMessage(sendInput);
+
+  // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
+  // the single intake — which may open a ticket (receipt posted in this
+  // conversation), join an open one, or be ignored. Only the owner files
+  // tickets: an agent posting here (X-Agent-Session) never does. Bounded
+  // wait; the message is forwarded either way.
+  const ticket = ticketOfOutcome(
+    await intakeWithin(getTicketIntakeService(), {
+      text: content,
+      isOwner: !agentSession,
+      origin: {
+        channel: 'chat',
+        // Same source id the pre-ticket code used, so dedupe still holds.
+        ref: result.message.id,
+        threadRef: chatV2ThreadRef(result.conversation.id, result.message.id),
+        author: 'owner',
+      },
+      conversationRef: chatV2ConversationRef(result.conversation.id),
+      targetAgent: ORCHESTRATOR_SESSION_NAME,
+      tags: ['chat-ui'],
+      receipt: { kind: 'chat-v2', chatChannelId: result.conversation.id },
+    }).catch(() => null),
+  );
+  const deliveryContent = appendTicketLine(content, ticket);
+
+  // Enqueue message for orchestrator processing if enabled (default: true)
+  let orchestratorStatus: OrchestratorDeliveryStatus = { forwarded: false };
+
+  if (shouldForward) {
+    const backend = getSessionBackendSync();
+    const sessionExists = backend?.sessionExists(ORCHESTRATOR_SESSION_NAME) ?? false;
+
+    if (!sessionExists && !messageQueueService) {
+      // #247: Only fail if both orchestrator is down AND queue is unavailable.
+      // If the queue is available, enqueue the message for replay when
+      // the orchestrator comes back online.
+      orchestratorStatus = {
+        forwarded: false,
+        error: 'Orchestrator is not running. Please start the orchestrator first.',
+      };
+    } else if (!sessionExists && messageQueueService) {
+      // #247: Orchestrator is offline but queue is available — queue for later delivery.
+      // The queue processor defers delivery until the orchestrator registers as active.
+      try {
+        const queued = messageQueueService.enqueue({
+          content: deliveryContent,
+          conversationId: result.conversation.id,
+          source: 'web_chat',
+        });
+        orchestratorStatus = {
+          forwarded: true,
+          queued: true,
+          queueId: queued.id,
+          error: 'Orchestrator is currently offline. Message queued for delivery when it comes back online.',
+        };
+        logger.info('Message queued for offline orchestrator (#247)', {
+          conversationId: result.conversation.id,
+          queueId: queued.id,
+        });
+      } catch (enqueueErr) {
+        orchestratorStatus = {
+          forwarded: false,
+          error: `Orchestrator offline and queue failed: ${enqueueErr instanceof Error ? enqueueErr.message : 'Unknown error'}`,
+        };
+      }
+    } else if (!messageQueueService) {
+      orchestratorStatus = {
+        forwarded: false,
+        error: 'Message queue service not initialized',
+      };
+    } else {
+      try {
+        const queued = messageQueueService.enqueue({
+          content: deliveryContent,
+          conversationId: result.conversation.id,
+          source: 'web_chat',
+        });
+        orchestratorStatus = { forwarded: true, queued: true, queueId: queued.id };
+      } catch (enqueueErr) {
+        logger.warn('Failed to enqueue message', {
+          error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
+          conversationId: result.conversation.id,
+        });
+        orchestratorStatus = {
+          forwarded: false,
+          error: enqueueErr instanceof Error ? enqueueErr.message : 'Failed to enqueue message',
+        };
+      }
+    }
+  }
+
+  return { result, orchestrator: orchestratorStatus };
+}
+
 /**
  * POST /api/chat/send
  *
@@ -94,7 +255,7 @@ export async function sendMessage(
   next: NextFunction
 ): Promise<void> {
   try {
-    const { content, conversationId, metadata, forwardToOrchestrator: shouldForward = true } = req.body;
+    const { content, conversationId, metadata, forwardToOrchestrator } = req.body;
 
     if (!content || (typeof content === 'string' && content.trim().length === 0)) {
       res.status(400).json({
@@ -104,121 +265,25 @@ export async function sendMessage(
       return;
     }
 
-    // This endpoint records a `user` turn. When an agent session calls it,
-    // keep the message but mark who wrote it: the commitment-approval gate
-    // treats `user` rows as the owner's words and must never be satisfied by
-    // text an agent posted (#730 / 2026-06-02 incident).
-    const agentSession = readAgentSessionHeader(req);
     const callerMetadata =
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>)
         : undefined;
-    const input: SendMessageInput = {
+    const agentSession = readAgentSessionHeader(req);
+    const { result, orchestrator } = await sendChatMessageToOrchestrator({
       content,
       conversationId,
-      metadata: agentSession
-        ? { ...(callerMetadata ?? {}), [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: agentSession }
-        : metadata,
-    };
-
-    const chatService = getChatService();
-    const result = await chatService.sendMessage(input);
-
-    // Ticket loop (specs/ticket-loop.md §2): the owner's message goes through
-    // the single intake — which may open a ticket (receipt posted in this
-    // conversation), join an open one, or be ignored. Only the owner files
-    // tickets: an agent posting here (X-Agent-Session) never does. Bounded
-    // wait; the message is forwarded either way.
-    const ticket = ticketOfOutcome(
-      await intakeWithin(getTicketIntakeService(), {
-        text: content,
-        isOwner: !agentSession,
-        origin: {
-          channel: 'chat',
-          // Same source id the pre-ticket code used, so dedupe still holds.
-          ref: result.message.id,
-          threadRef: chatV2ThreadRef(result.conversation.id, result.message.id),
-          author: 'owner',
-        },
-        conversationRef: chatV2ConversationRef(result.conversation.id),
-        targetAgent: ORCHESTRATOR_SESSION_NAME,
-        tags: ['chat-ui'],
-        receipt: { kind: 'chat-v2', chatChannelId: result.conversation.id },
-      }).catch(() => null),
-    );
-    const deliveryContent = appendTicketLine(content, ticket);
-
-    // Enqueue message for orchestrator processing if enabled (default: true)
-    let orchestratorStatus: { forwarded: boolean; queued?: boolean; queueId?: string; error?: string } = { forwarded: false };
-
-    if (shouldForward) {
-      const backend = getSessionBackendSync();
-      const sessionExists = backend?.sessionExists(ORCHESTRATOR_SESSION_NAME) ?? false;
-
-      if (!sessionExists && !messageQueueService) {
-        // #247: Only fail if both orchestrator is down AND queue is unavailable.
-        // If the queue is available, enqueue the message for replay when
-        // the orchestrator comes back online.
-        orchestratorStatus = {
-          forwarded: false,
-          error: 'Orchestrator is not running. Please start the orchestrator first.',
-        };
-      } else if (!sessionExists && messageQueueService) {
-        // #247: Orchestrator is offline but queue is available — queue for later delivery.
-        // The queue processor defers delivery until the orchestrator registers as active.
-        try {
-          const queued = messageQueueService.enqueue({
-            content: deliveryContent,
-            conversationId: result.conversation.id,
-            source: 'web_chat',
-          });
-          orchestratorStatus = {
-            forwarded: true,
-            queued: true,
-            queueId: queued.id,
-            error: 'Orchestrator is currently offline. Message queued for delivery when it comes back online.',
-          };
-          logger.info('Message queued for offline orchestrator (#247)', {
-            conversationId: result.conversation.id,
-            queueId: queued.id,
-          });
-        } catch (enqueueErr) {
-          orchestratorStatus = {
-            forwarded: false,
-            error: `Orchestrator offline and queue failed: ${enqueueErr instanceof Error ? enqueueErr.message : 'Unknown error'}`,
-          };
-        }
-      } else if (!messageQueueService) {
-        orchestratorStatus = {
-          forwarded: false,
-          error: 'Message queue service not initialized',
-        };
-      } else {
-        try {
-          const queued = messageQueueService.enqueue({
-            content: deliveryContent,
-            conversationId: result.conversation.id,
-            source: 'web_chat',
-          });
-          orchestratorStatus = { forwarded: true, queued: true, queueId: queued.id };
-        } catch (enqueueErr) {
-          logger.warn('Failed to enqueue message', {
-            error: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr),
-            conversationId: result.conversation.id,
-          });
-          orchestratorStatus = {
-            forwarded: false,
-            error: enqueueErr instanceof Error ? enqueueErr.message : 'Failed to enqueue message',
-          };
-        }
-      }
-    }
+      // An agent's metadata is merged into; the owner's is passed through as sent.
+      metadata: agentSession ? callerMetadata : metadata,
+      forwardToOrchestrator,
+      agentSession,
+    });
 
     res.status(201).json({
       success: true,
       data: {
         ...result,
-        orchestrator: orchestratorStatus,
+        orchestrator,
       },
     });
 

@@ -193,6 +193,53 @@ export interface TemplateRole {
 }
 
 // =============================================================================
+// Onboarding starter metadata
+// =============================================================================
+
+/**
+ * Marks a template as a first-run starter (specs/onboarding-harness-login.md,
+ * Phase 3). Only free, members-only templates in `config/templates/` carry it.
+ */
+export interface TemplateOnboarding {
+  /** Position in the starter list (lower first) */
+  order: number;
+  /** The default starter (exactly one template sets this) */
+  recommended: boolean;
+  /** Short Chinese display name, e.g. 个人助理 */
+  label: string;
+  /** One-line pitch shown under the label */
+  tagline: string;
+  /** Example first tasks shown under the "派第一件事" box */
+  suggestions: string[];
+}
+
+/**
+ * Check if a value is valid onboarding starter metadata.
+ *
+ * @param value - Value to check
+ * @returns True when every field has the right type
+ *
+ * @example
+ * ```ts
+ * if (isValidTemplateOnboarding(raw.onboarding)) starters.push(raw);
+ * ```
+ */
+export function isValidTemplateOnboarding(value: unknown): value is TemplateOnboarding {
+  if (!value || typeof value !== 'object') return false;
+  const o = value as Record<string, unknown>;
+  return (
+    typeof o.order === 'number' &&
+    Number.isFinite(o.order) &&
+    typeof o.recommended === 'boolean' &&
+    typeof o.label === 'string' &&
+    o.label.trim().length > 0 &&
+    typeof o.tagline === 'string' &&
+    Array.isArray(o.suggestions) &&
+    o.suggestions.every((s) => typeof s === 'string' && s.trim().length > 0)
+  );
+}
+
+// =============================================================================
 // TeamTemplate
 // =============================================================================
 
@@ -243,6 +290,8 @@ export interface TeamTemplate {
   serviceContract?: ServiceContract;
   /** Team mission statement */
   mission?: string;
+  /** Set when this template is a first-run starter (Phase 3 onboarding) */
+  onboarding?: TemplateOnboarding;
 }
 
 // =============================================================================

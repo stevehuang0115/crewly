@@ -219,3 +219,20 @@ describe('allowlist additions — harness setup from the phone', () => {
     expect(isAllowedMobileApiCall('POST', '/harness/opencode-cli/install')).toBe(false);
   });
 });
+
+describe('allowlist additions — first-run checklist from the phone', () => {
+  it('lets the phone read the checklist and drive the owner choices', () => {
+    expect(isAllowedMobileApiCall('GET', '/onboarding/checklist')).toBe(true);
+    expect(isAllowedMobileApiCall('GET', '/onboarding/starters')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/onboarding/checklist/dismiss')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/onboarding/starter-team')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/onboarding/first-task')).toBe(true);
+  });
+
+  it('keeps the Cloud Portal onboarding sessions and cloud connect off the relay', () => {
+    expect(isAllowedMobileApiCall('GET', '/onboarding/sessions')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/onboarding/provision')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/onboarding/checklist')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/cloud/connect')).toBe(false);
+  });
+});

@@ -18,5 +18,16 @@
       "role": "distribution-growth",
       "systemPrompt": "You are a distribution and growth specialist on a marketing team. Manage content scheduling and posting. Monitor engagement, respond to comments, and track growth metrics. Identify peak posting windows and trending hashtags to maximize reach."
     }
-  ]
+  ],
+  "onboarding": {
+    "order": 2,
+    "recommended": false,
+    "label": "营销团队",
+    "tagline": "内容策划、写作和分发三人组，帮你持续产出内容、涨粉。",
+    "suggestions": [
+      "帮我定一个两周的内容计划：面向小红书和 X，每周三篇，先给我看选题。",
+      "根据我的产品介绍写 3 条小红书笔记草稿，我挑一条再发。",
+      "看看同行最近一个月什么内容数据好，总结 5 个我们可以借鉴的方向。"
+    ]
+  }
 }

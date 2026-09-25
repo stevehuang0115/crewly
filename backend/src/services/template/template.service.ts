@@ -13,8 +13,8 @@ import { homedir } from 'os';
 import { join, resolve } from 'path';
 import { LoggerService } from '../core/logger.service.js';
 import { randomUUID } from 'crypto';
-import type { TeamTemplate, TemplateRole } from '../../types/team-template.types.js';
-import { isValidTeamTemplate } from '../../types/team-template.types.js';
+import type { TeamTemplate, TemplateRole, TemplateOnboarding } from '../../types/team-template.types.js';
+import { isValidTeamTemplate, isValidTemplateOnboarding } from '../../types/team-template.types.js';
 import type { TeamMember, Team, TeamMemberRole } from '../../types/index.js';
 import { SkillTierService, type SkillTierInfo } from '../skill/skill-tier.service.js';
 import { type CloudTier, CLOUD_CONSTANTS } from '../../constants.js';
@@ -75,6 +75,8 @@ export interface TemplateSummary {
   source: TemplateSource;
   /** Minimum tier required to use this template */
   requiredTier?: CloudTier;
+  /** First-run starter metadata (only on onboarding starters) */
+  onboarding?: TemplateOnboarding;
 }
 
 // =============================================================================
@@ -181,7 +183,26 @@ export class TemplateService {
       icon: t.icon,
       source: 'local' as TemplateSource,
       requiredTier: t.requiredTier as CloudTier | undefined,
+      ...(t.onboarding ? { onboarding: t.onboarding } : {}),
     }));
+  }
+
+  /**
+   * The first-run starter templates (those with `onboarding` metadata),
+   * ordered by `onboarding.order`.
+   *
+   * @returns Starter templates, first-shown first
+   *
+   * @example
+   * ```ts
+   * const [recommended] = TemplateService.getInstance().listOnboardingStarters();
+   * ```
+   */
+  listOnboardingStarters(): TeamTemplate[] {
+    if (!this.loaded) this.loadTemplates();
+    return Array.from(this.templates.values())
+      .filter((t): t is TeamTemplate & { onboarding: TemplateOnboarding } => !!t.onboarding)
+      .sort((a, b) => a.onboarding.order - b.onboarding.order);
   }
 
 
@@ -521,6 +542,7 @@ export class TemplateService {
           verificationPipeline: data.verificationPipeline ?? defaultPipeline,
           ...(typeof data.requiredTier === 'string' ? { requiredTier: data.requiredTier } : {}),
           ...(Array.isArray(data.tags) ? { tags: data.tags } : {}),
+          ...(isValidTemplateOnboarding(data.onboarding) ? { onboarding: data.onboarding } : {}),
         };
         this.templates.set(id, rolesTemplate);
         return;
@@ -562,6 +584,7 @@ export class TemplateService {
           passPolicy: 'all',
           maxRetries: 1,
         },
+        ...(isValidTemplateOnboarding(data.onboarding) ? { onboarding: data.onboarding } : {}),
       };
 
       this.templates.set(id, template);

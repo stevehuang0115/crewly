@@ -14,6 +14,7 @@ import {
   isValidVerificationPipeline,
   isValidTemplateRole,
   isValidTeamTemplate,
+  isValidTemplateOnboarding,
 } from './team-template.types.js';
 import type {
   TeamTemplate,
@@ -270,5 +271,34 @@ describe('isValidTeamTemplate', () => {
       maxWorkersPerLeader: 4,
       autoAssign: false,
     })).toBe(true);
+  });
+});
+
+describe('isValidTemplateOnboarding', () => {
+  const valid = {
+    order: 1,
+    recommended: true,
+    label: '个人助理',
+    tagline: 'Keeps your inbox under control',
+    suggestions: ['a', 'b', 'c'],
+  };
+
+  it('accepts complete metadata', () => {
+    expect(isValidTemplateOnboarding(valid)).toBe(true);
+  });
+
+  it('rejects non-objects', () => {
+    expect(isValidTemplateOnboarding(null)).toBe(false);
+    expect(isValidTemplateOnboarding('starter')).toBe(false);
+  });
+
+  it('rejects a missing or wrong-typed field', () => {
+    expect(isValidTemplateOnboarding({ ...valid, order: '1' })).toBe(false);
+    expect(isValidTemplateOnboarding({ ...valid, order: Number.NaN })).toBe(false);
+    expect(isValidTemplateOnboarding({ ...valid, recommended: 'yes' })).toBe(false);
+    expect(isValidTemplateOnboarding({ ...valid, label: '  ' })).toBe(false);
+    expect(isValidTemplateOnboarding({ ...valid, tagline: undefined })).toBe(false);
+    expect(isValidTemplateOnboarding({ ...valid, suggestions: 'a' })).toBe(false);
+    expect(isValidTemplateOnboarding({ ...valid, suggestions: ['a', ''] })).toBe(false);
   });
 });

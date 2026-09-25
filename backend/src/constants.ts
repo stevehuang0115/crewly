@@ -2966,6 +2966,58 @@ export const HARNESS_CONSTANTS = {
 	WEB_SETUP_PATH: '/setup',
 } as const;
 
+/**
+ * First-run checklist and starter teams (specs/onboarding-harness-login.md,
+ * Phase 3): harness → first team → first task → Cloud → Slack.
+ */
+export const ONBOARDING_CONSTANTS = {
+	/** Checklist state (dismissed flag, blank choice, first-task record) under the Crewly home dir */
+	STATE_FILE: 'onboarding.json',
+	/** Checklist step ids, in display order */
+	STEP_IDS: {
+		HARNESS: 'harness',
+		TEAM: 'team',
+		FIRST_TASK: 'first_task',
+		CLOUD: 'cloud',
+		SLACK: 'slack',
+	},
+	STEP_ORDER: ['harness', 'team', 'first_task', 'cloud', 'slack'] as readonly string[],
+	/** Starter id of "Blank": the orchestrator only, no team */
+	BLANK_STARTER_ID: 'blank',
+	/** Display copy for the Blank starter (templates carry their own) */
+	BLANK_STARTER: {
+		NAME: 'Blank',
+		LABEL: '空白',
+		TAGLINE: '只有 Orc（总调度），先不建团队。需要时让 Orc 帮你组队。',
+		SUGGESTIONS: [
+			'帮我想想：我每周重复做的事里，哪些可以交给 AI 团队？',
+			'我想做一个小项目，先问我几个问题，再建议我需要什么样的团队。',
+			'介绍一下你能做什么，给我 3 个今天就能开始的例子。',
+		] as readonly string[],
+	},
+	/** Longest first task accepted */
+	FIRST_TASK_MAX_LENGTH: 4000,
+	/** First line of the message the orchestrator receives for a first task */
+	FIRST_TASK_HEADER: '[初始设置 · 第一件事]',
+	/** Chat metadata `source` of a first task sent from setup */
+	FIRST_TASK_SOURCE: 'onboarding_first_task',
+	/** Query parameter that opens `/setup` at a step (e.g. `/setup?step=cloud`) */
+	WEB_STEP_QUERY: 'step',
+	/** Crewly Cloud sign-in that works from a phone */
+	CLOUD: {
+		/** Cloud auth route that starts Google sign-in and redirects back with ?token=&refreshToken= */
+		GOOGLE_START_PATH: '/api/cloud/google/start',
+		/** Portal page that shows the token + refresh token for copy-paste */
+		CLI_TOKEN_PATH: '/cloud/cli-token',
+		/** The web app's callback page that hands the token to this backend */
+		WEB_CALLBACK_PATH: '/auth/callback',
+		/** Portal base URL (env: CLOUD_CONSOLE_URL) */
+		get CONSOLE_URL(): string {
+			return process.env['CLOUD_CONSOLE_URL'] || 'https://crewlyai.com';
+		},
+	},
+} as const;
+
 /** License status type */
 export type CloudLicenseStatus = (typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS)[keyof typeof CLOUD_AUTH_CONSTANTS.LICENSE_STATUS];
 

@@ -2431,6 +2431,23 @@ void (async () => {
 			this.logger.info('Starting message queue processor...');
 			this.queueProcessorService.start();
 
+			// A first task typed in `crewly onboard` while the backend was down
+			// (onboarding Phase 3) goes to the orchestrator now; the queue holds
+			// it until the orchestrator is up.
+			void (async () => {
+				try {
+					const { getOnboardingChecklistService } = await import('./services/onboarding/onboarding-checklist.factory.js');
+					const delivered = await getOnboardingChecklistService().deliverPendingFirstTask();
+					if (delivered) {
+						this.logger.info('Delivered the pending first task from setup', { forwarded: delivered.forwarded, teamId: delivered.teamId });
+					}
+				} catch (firstTaskErr) {
+					this.logger.warn('Failed to deliver the pending first task (non-critical)', {
+						error: firstTaskErr instanceof Error ? firstTaskErr.message : String(firstTaskErr),
+					});
+				}
+			})();
+
 			// Thread Status Queue: load persisted state and recover pending threads
 			try {
 				const recoveryResult = await this.threadStatusQueueService.recoverPendingThreads(

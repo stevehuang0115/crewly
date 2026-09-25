@@ -13,6 +13,7 @@ import {
   GOOGLE_OAUTH_CONSTANTS,
   GOOGLE_WORKSPACE_CONSTANTS,
   HARNESS_CONSTANTS,
+  ONBOARDING_CONSTANTS,
   LOGIN_REQUIRED_PATTERN_SETS,
   MICROSOFT_TODO_CONSTANTS,
   RUNTIME_COMPACT_COMMANDS,
@@ -339,5 +340,34 @@ describe('HARNESS_CONSTANTS (onboarding harness login)', () => {
     expect(RELOGIN.UNRECOGNISED_SCREEN_MS).toBeLessThan(HARNESS_CONSTANTS.LOGIN.TIMEOUT_MS);
     expect(RELOGIN.CODE_MIN_LENGTH).toBeLessThan(RELOGIN.CODE_MAX_LENGTH);
     expect(RELOGIN.RETRY_KEYWORDS).toEqual(expect.arrayContaining(['relogin', '重新登录']));
+  });
+});
+
+describe('ONBOARDING_CONSTANTS (first-run checklist)', () => {
+  it('lists the five steps in order, matching the step ids', () => {
+    expect(ONBOARDING_CONSTANTS.STEP_ORDER).toEqual(Object.values(ONBOARDING_CONSTANTS.STEP_IDS));
+    expect(ONBOARDING_CONSTANTS.STEP_ORDER).toEqual(['harness', 'team', 'first_task', 'cloud', 'slack']);
+  });
+
+  it('gives Blank three suggestions like the template starters', () => {
+    expect(ONBOARDING_CONSTANTS.BLANK_STARTER.SUGGESTIONS).toHaveLength(3);
+  });
+
+  it('points the phone sign-in at the portal token page', () => {
+    expect(ONBOARDING_CONSTANTS.CLOUD.CLI_TOKEN_PATH).toBe('/cloud/cli-token');
+    expect(ONBOARDING_CONSTANTS.CLOUD.GOOGLE_START_PATH).toBe('/api/cloud/google/start');
+  });
+
+  it('reads the portal URL from CLOUD_CONSOLE_URL', () => {
+    const saved = process.env['CLOUD_CONSOLE_URL'];
+    try {
+      delete process.env['CLOUD_CONSOLE_URL'];
+      expect(ONBOARDING_CONSTANTS.CLOUD.CONSOLE_URL).toBe('https://crewlyai.com');
+      process.env['CLOUD_CONSOLE_URL'] = 'https://portal.example';
+      expect(ONBOARDING_CONSTANTS.CLOUD.CONSOLE_URL).toBe('https://portal.example');
+    } finally {
+      if (saved === undefined) delete process.env['CLOUD_CONSOLE_URL'];
+      else process.env['CLOUD_CONSOLE_URL'] = saved;
+    }
   });
 });
