@@ -3,7 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
+import { CREWLY_CONSTANTS, RUNTIME_TYPES, GEMINI_FAILURE_PATTERNS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_STARTUP_CONSTANTS, type RuntimeType } from '../../constants.js';
+import { RuntimeStartupBlockedError, isRuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
 import { delay } from '../../utils/async.utils.js';
 import { addGeminiTrustedFolders } from '../../utils/gemini-trusted-folders.js';
 import { ensureGeminiApiKeyAuthSelected } from '../../utils/gemini-auth-settings.js';
@@ -94,6 +95,10 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 	 * Gemini CLI can show an interactive trust gate on first launch:
 	 * "Do you trust this folder?".
 	 * Auto-accept the default "Trust folder" option so startup does not stall.
+	 *
+	 * @throws RuntimeStartupBlockedError (reason `auth_required`) as soon as
+	 *   Gemini asks how to authenticate, and (reason `runtime_not_installed`)
+	 *   when the shell cannot find `gemini`: neither resolves by waiting.
 	 */
 	async waitForRuntimeReady(
 		sessionName: string,
@@ -102,7 +107,6 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 	): Promise<boolean> {
 		const startTime = Date.now();
 		let trustPromptAttempts = 0;
-		let authDialogReported = false;
 
 		this.logger.info('Waiting for runtime to be ready', {
 			sessionName,
@@ -129,16 +133,27 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 					continue;
 				}
 
-				if (!authDialogReported && this.isGeminiAuthDialog(output)) {
+				if (this.isGeminiAuthDialog(output)) {
 					// Not answered automatically: which method is right is the user's
 					// choice (e.g. Login with Google). With a configured key it is
-					// pre-answered before launch, so reaching here means no key.
-					authDialogReported = true;
-					this.logger.warn(
-						'Gemini is asking how to authenticate. Set a Gemini API key in Crewly settings, or answer it in the agent terminal',
-						{ sessionName },
+					// pre-answered before launch, so reaching here means no key and
+					// no Google login. Waiting cannot help: fail now with the reason
+					// instead of a 60s readiness timeout plus every retry (B8 D2:
+					// Start team blocked 213s and reported a generic error).
+					this.logger.warn('Gemini is asking how to authenticate; failing agent start-up', {
+						sessionName,
+						totalElapsed: Date.now() - startTime,
+					});
+					throw new RuntimeStartupBlockedError(
+						'auth_required',
+						/Existing API key detected/i.test(output)
+							? RUNTIME_STARTUP_CONSTANTS.MESSAGES.GEMINI_AUTH_KEY_NOT_SELECTED
+							: RUNTIME_STARTUP_CONSTANTS.MESSAGES.GEMINI_AUTH_REQUIRED,
 					);
 				}
+
+				const cliMissing = detectRuntimeCliMissing(output, this.getRuntimeType());
+				if (cliMissing) throw cliMissing;
 
 				const readyPatterns = this.getRuntimeReadyPatterns();
 				const hasReadySignal = readyPatterns.some((pattern) => output.includes(pattern));
@@ -166,6 +181,7 @@ export class GeminiRuntimeService extends RuntimeAgentService {
 					return false;
 				}
 			} catch (error) {
+				if (isRuntimeStartupBlockedError(error)) throw error;
 				this.logger.warn('Error while checking runtime ready signal', {
 					sessionName,
 					runtimeType: this.getRuntimeType(),

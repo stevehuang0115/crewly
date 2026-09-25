@@ -542,6 +542,19 @@ describe('ClaudeRuntimeService', () => {
 			expect(Date.now() - started).toBeLessThan(2000);
 		});
 
+		it('readiness: `bash: claude: command not found` fails fast as runtime_not_installed (B8 D1)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue(
+				'node@b8-clean:~/myapp$ claude --session-id f220fb50 --dangerously-skip-permissions --agent "crewly-orc"\nbash: claude: command not found\nnode@b8-clean:~/myapp$ ',
+			);
+			const started = Date.now();
+
+			const err = await service.waitForRuntimeReady('s1', 300000, 10).catch((e: unknown) => e);
+
+			expect((err as { reason?: string }).reason).toBe('runtime_not_installed');
+			expect((err as Error).message).toContain('Claude Code (`claude`) is not installed');
+			expect(Date.now() - started).toBeLessThan(2000);
+		});
+
 		it('readiness: a set-up, logged-in Claude still reaches ready', async () => {
 			mockSessionHelper.capturePane.mockReturnValue('✻ Welcome to Claude Code!\n\n/help for help, /status for your current setup\n\ncwd: /proj');
 

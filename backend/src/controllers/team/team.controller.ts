@@ -24,6 +24,7 @@ import {
   RUNTIME_TYPES,
   NON_RECOVERABLE_ERROR_PATTERNS,
   CLAUDE_STARTUP_CONSTANTS,
+  RUNTIME_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
 import { CREWLY_CONSTANTS, AGENT_TIMEOUTS } from '../../constants.js';
@@ -1536,16 +1537,55 @@ export async function startTeam(this: ApiContext, req: Request, res: Response): 
     // No need to save the team object here as it would overwrite the updated agentStatus
     // from MCP registration with stale data
 
-    const responseMessage = `Team started. Created ${sessionsCreated} new sessions, ${sessionsAlreadyRunning} already running. Sessions are working in project: ${assignedProject.name}`;
+    const data = { sessionsCreated, sessionsAlreadyRunning, projectName: assignedProject.name, projectPath: assignedProject.path, results };
+    const outcome = summarizeTeamStart(results);
+
+    // B8 D2: when no member started, this used to answer 200 "Team started"
+    // and the dashboard showed a success toast. Report the members' own
+    // reasons (e.g. "Gemini CLI is not signed in") with a failure status.
+    if (outcome.noneStarted) {
+      res.status(RUNTIME_STARTUP_CONSTANTS.NONE_STARTED_HTTP_STATUS).json({
+        success: false,
+        error: `No team member could start. ${outcome.failureSummary}`,
+        data,
+      } as ApiResponse);
+      return;
+    }
+
+    const failedNote = outcome.failureSummary ? ` ${outcome.failed.length} member(s) failed. ${outcome.failureSummary}` : '';
+    const responseMessage = `Team started. Created ${sessionsCreated} new sessions, ${sessionsAlreadyRunning} already running. Sessions are working in project: ${assignedProject.name}.${failedNote}`;
     res.json({
       success: true,
       message: responseMessage,
-      data: { sessionsCreated, sessionsAlreadyRunning, projectName: assignedProject.name, projectPath: assignedProject.path, results }
+      data,
     } as ApiResponse);
   } catch (error) {
     logger.error('Error starting team', { error: error instanceof Error ? error.message : String(error) });
     res.status(500).json({ success: false, error: 'Failed to start team' } as ApiResponse);
   }
+}
+
+/**
+ * Classify the per-member results of a team start.
+ *
+ * @param results - One result per member the start handled
+ * @returns The failed results, whether no member is running afterwards, and a
+ *   one-line "Name: reason" summary of the failures ('' when none failed)
+ *
+ * @example
+ * summarizeTeamStart([{ memberName: 'Dev', success: false, status: 'failed', error: 'Gemini CLI is not signed in' }])
+ * // → { failed: [...], noneStarted: true, failureSummary: 'Dev: Gemini CLI is not signed in' }
+ */
+export function summarizeTeamStart(results: TeamMemberOperationResult[]): {
+  failed: TeamMemberOperationResult[];
+  noneStarted: boolean;
+  failureSummary: string;
+} {
+  const failed = results.filter(r => !r.success);
+  const failureSummary = failed
+    .map(r => `${r.memberName}: ${r.error || 'failed to start'}`)
+    .join(' | ');
+  return { failed, noneStarted: failed.length > 0 && failed.length === results.length, failureSummary };
 }
 
 export async function stopTeam(this: ApiContext, req: Request, res: Response): Promise<void> {
