@@ -370,6 +370,18 @@ export class OrchestratorHeartbeatMonitorService {
 		// resets the PTY activity tracker and block restart indefinitely.
 		if (this.sessionBackend.isChildProcessAlive) {
 			const isAlive = this.sessionBackend.isChildProcessAlive(ORCHESTRATOR_SESSION_NAME);
+			const restartService = OrchestratorRestartService.getInstance();
+			if (isAlive) {
+				// Running again (started by hand, or the runtime was fixed):
+				// re-arm auto-restart if it had stopped.
+				restartService.clearGiveUp();
+			} else if (restartService.getGiveUp()) {
+				// Auto-restart stopped (e.g. the runtime CLI is not installed):
+				// do not log "triggering restart" or notify the auditor every
+				// 30s for a restart that will not happen (B8 D1: 32 in 16 min).
+				this.heartbeatRequestSentAt = null;
+				return;
+			}
 			if (!isAlive) {
 				const lastOutput = this.sessionBackend.captureOutput(ORCHESTRATOR_SESSION_NAME, 50);
 				this.logger.warn('Orchestrator child process is dead, triggering immediate restart', {
@@ -602,8 +614,8 @@ export class OrchestratorHeartbeatMonitorService {
 				this.logger.info('Orchestrator auto-restart triggered successfully', {
 					autoRestartCount: this.autoRestartCount,
 				});
-			} else {
-				this.logger.warn('Orchestrator auto-restart was not allowed (cooldown or concurrent restart)');
+			} else if (!restartService.getGiveUp()) {
+				this.logger.warn('Orchestrator auto-restart did not succeed (failed, cooldown, or concurrent restart)');
 			}
 		} catch (err) {
 			this.logger.error('Failed to trigger orchestrator auto-restart', {

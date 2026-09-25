@@ -1195,6 +1195,51 @@ export const CLAUDE_STARTUP_CONSTANTS = {
 } as const;
 
 /**
+ * Start-up states shared by every CLI runtime that cannot resolve without the
+ * user, so the agent start must fail fast (see {@link CLAUDE_STARTUP_CONSTANTS}
+ * for the Claude-specific ones and the shared error code).
+ */
+export const RUNTIME_STARTUP_CONSTANTS = {
+	/**
+	 * The command each CLI runtime launches. When the shell reports it as
+	 * missing, no retry can help until the user installs it.
+	 */
+	CLI_BINARIES: {
+		'claude-code': 'claude',
+		'gemini-cli': 'gemini',
+		'codex-cli': 'codex',
+		'opencode-cli': 'opencode',
+	} as Readonly<Partial<Record<string, string>>>,
+	/**
+	 * HTTP status of POST /api/teams/:id/start when no member could start
+	 * (424 Failed Dependency: the runtime needs the user first). The dashboard
+	 * shows `error` for any non-2xx answer.
+	 */
+	NONE_STARTED_HTTP_STATUS: 424,
+	/** Human names used in start-up errors. */
+	CLI_LABELS: {
+		'claude-code': 'Claude Code',
+		'gemini-cli': 'Gemini CLI',
+		'codex-cli': 'Codex CLI',
+		'opencode-cli': 'OpenCode',
+	} as Readonly<Partial<Record<string, string>>>,
+	MESSAGES: {
+		/** Gemini started without a key or a Google login and asks how to sign in. */
+		GEMINI_AUTH_REQUIRED:
+			'Gemini CLI is not signed in: it is asking how to authenticate. Add a Gemini API key in Crewly Settings (or set GEMINI_API_KEY), or run `gemini` once in a terminal and choose "Sign in with Google", then start the team again.',
+		/**
+		 * Gemini sees GEMINI_API_KEY in the agent's shell, but no sign-in method is
+		 * saved and Crewly's own environment/settings has no key to pre-select it.
+		 */
+		GEMINI_AUTH_KEY_NOT_SELECTED:
+			'Gemini CLI found a GEMINI_API_KEY in the agent shell, but no sign-in method is selected, so it is waiting for an answer. Add the key in Crewly Settings (Crewly then selects "Use Gemini API Key" for you), or run `gemini` once in a terminal and choose "Use Gemini API Key", then start the team again.',
+		/** Appended after "<Runtime> (`<binary>`) is not installed" for a missing CLI. */
+		RUNTIME_NOT_INSTALLED_HINT:
+			'Install it (see `crewly doctor`), or pick an installed runtime in Crewly Settings, then start again.',
+	},
+} as const;
+
+/**
  * Claude Code fatal error patterns that indicate the CLI is stuck in an
  * unrecoverable state. Unlike transient API errors, these require an
  * immediate restart — no retry will resolve them.

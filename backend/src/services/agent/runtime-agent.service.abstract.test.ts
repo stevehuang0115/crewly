@@ -170,6 +170,16 @@ describe('RuntimeAgentService (Abstract)', () => {
 			expect(result).toBe(false);
 		});
 
+		it('throws runtime_not_installed at once when bash cannot find the runtime CLI (B8 D1)', async () => {
+			mockSessionHelper.capturePane.mockReturnValue('user@box:~$ claude --agent x\nbash: claude: command not found\nuser@box:~$ ');
+
+			const err = await service['waitForRuntimeReady']('test-session', 30000, 2000).catch((e: unknown) => e);
+
+			expect((err as { reason?: string }).reason).toBe('runtime_not_installed');
+			expect((err as Error).message).toContain('Claude Code (`claude`) is not installed');
+			expect(mockSessionHelper.capturePane).toHaveBeenCalledTimes(1);
+		});
+
 		it('should return false when timeout is reached', async () => {
 			mockSessionHelper.capturePane.mockReturnValue('Loading...');
 

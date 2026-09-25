@@ -1879,6 +1879,9 @@ describe('Teams Handlers', () => {
       }]);
       mockTmuxService.createTeamMemberSession.mockResolvedValue({ success: true, sessionName: 'test-session' });
       mockStorageService.saveTeam.mockResolvedValue(undefined);
+      // Without this both members failed on `listSessions().some` and the old
+      // handler still answered success:true, which is how this test passed.
+      mockTmuxService.listSessions.mockResolvedValue([]);
       // Mock agentRegistrationService for startTeam
       mockApiContext.agentRegistrationService = {
         createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'test-session' })
@@ -1897,6 +1900,87 @@ describe('Teams Handlers', () => {
           success: true,
         })
       );
+    });
+
+    describe('when members fail to start (B8 D2)', () => {
+      const AUTH_REASON = 'Gemini CLI is not signed in: it is asking how to authenticate. Add a Gemini API key in Crewly Settings (or set GEMINI_API_KEY)';
+
+      /** One Gemini member (or two), fresh install, no key. */
+      function setup(memberNames: string[]) {
+        const now = new Date().toISOString();
+        const team: Team = {
+          id: 'team-b8',
+          name: 'B8 Team',
+          members: memberNames.map((name, i) => ({
+            id: `m-${i}`,
+            name,
+            sessionName: '',
+            role: 'developer',
+            runtimeType: 'gemini-cli',
+            systemPrompt: 'p',
+            agentStatus: 'inactive',
+            workingStatus: 'idle',
+            createdAt: now,
+            updatedAt: now,
+          })),
+          projectIds: [],
+          createdAt: now,
+          updatedAt: now,
+        } as Team;
+        mockRequest.params = { id: 'team-b8' };
+        mockRequest.body = { projectId: 'project-1' };
+        mockStorageService.getTeams.mockResolvedValue([team]);
+        mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/home/node/myapp', name: 'myapp' }]);
+        mockStorageService.saveTeam.mockResolvedValue(undefined);
+        mockTmuxService.listSessions.mockResolvedValue([]);
+      }
+
+      it('answers 424 with the member reason when no member could start, not 200 "Team started"', async () => {
+        setup(['Dev']);
+        const createAgentSession = jest.fn<any>().mockResolvedValue({
+          success: false,
+          error: AUTH_REASON,
+          errorCode: 'RUNTIME_STARTUP_BLOCKED',
+        });
+        mockApiContext.agentRegistrationService = { createAgentSession } as any;
+
+        await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(createAgentSession).toHaveBeenCalledTimes(1); // blocked: no retries
+        expect(responseMock.status).toHaveBeenCalledWith(424);
+        const body = (responseMock.json as jest.Mock).mock.calls.at(-1)![0] as { success: boolean; error: string; message?: string };
+        expect(body.success).toBe(false);
+        expect(body.error).toContain('No team member could start');
+        expect(body.error).toContain('Dev: Gemini CLI is not signed in');
+        expect(body.message).toBeUndefined();
+      });
+
+      it('answers 200 when at least one member started, and names the ones that failed', async () => {
+        setup(['Dev', 'QA']);
+        const createAgentSession = jest.fn<any>()
+          .mockResolvedValueOnce({ success: true, sessionName: 'b8-team-dev' })
+          .mockResolvedValue({ success: false, error: AUTH_REASON, errorCode: 'RUNTIME_STARTUP_BLOCKED' });
+        mockApiContext.agentRegistrationService = { createAgentSession } as any;
+
+        await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(responseMock.status).not.toHaveBeenCalledWith(424);
+        const body = (responseMock.json as jest.Mock).mock.calls.at(-1)![0] as { success: boolean; message: string };
+        expect(body.success).toBe(true);
+        expect(body.message).toContain('1 member(s) failed');
+        expect(body.message).toContain('QA: Gemini CLI is not signed in');
+      });
+    });
+
+    describe('summarizeTeamStart', () => {
+      it('classifies all-failed, partial and all-ok results', () => {
+        const ok = { memberName: 'A', success: true, status: 'started' } as any;
+        const bad = { memberName: 'B', success: false, status: 'failed', error: 'x' } as any;
+        expect(teamsHandlers.summarizeTeamStart([bad])).toEqual({ failed: [bad], noneStarted: true, failureSummary: 'B: x' });
+        expect(teamsHandlers.summarizeTeamStart([ok, bad]).noneStarted).toBe(false);
+        expect(teamsHandlers.summarizeTeamStart([ok])).toEqual({ failed: [], noneStarted: false, failureSummary: '' });
+        expect(teamsHandlers.summarizeTeamStart([]).noneStarted).toBe(false);
+      });
     });
 
     describe('renamed member (stale session name)', () => {

@@ -91,6 +91,7 @@ import {
   isInteractiveInput,
   reportNonInteractiveInput,
   WizardInputClosedError,
+  persistOrchestratorRuntime,
   type ProviderChoice,
 } from './onboard.js';
 
@@ -927,6 +928,28 @@ describe('onboard command', () => {
       expect(mockRlClose).toHaveBeenCalled();
     });
 
+    it('saves the chosen provider as the orchestrator runtime (B8 D1: Gemini chosen, orchestrator still ran claude)', async () => {
+      mockReadlineAnswers = ['2']; // Gemini CLI; template auto-skips (no templates)
+      mockReadlineAnswerIndex = 0;
+      mockJqFound();
+      mockExecSync
+        .mockReturnValueOnce(Buffer.from('/usr/local/bin/gemini'))
+        .mockReturnValueOnce(Buffer.from('0.61.0'));
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
+
+      await onboardCommand();
+
+      const orcWrite = mockWriteFileSync.mock.calls.find((c: unknown[]) =>
+        String(c[0]).endsWith(`teams/orchestrator/config.json`));
+      expect(orcWrite).toBeDefined();
+      expect(JSON.parse(String(orcWrite![1]))).toEqual(expect.objectContaining({
+        runtimeType: 'gemini-cli',
+        sessionName: 'crewly-orc',
+      }));
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('Orchestrator runtime set to gemini-cli');
+    });
+
     it('scaffolds .crewly/ directory during interactive flow', async () => {
       mockReadlineAnswers = ['6']; // skip provider
       mockReadlineAnswerIndex = 0;
@@ -942,6 +965,24 @@ describe('onboard command', () => {
   // -----------------------------------------------------------------------
   // Non-interactive stdin (#772: `curl | bash` exited 0 having set up nothing)
   // -----------------------------------------------------------------------
+
+  describe('persistOrchestratorRuntime', () => {
+    it.each([
+      ['claude', 'claude-code'],
+      ['gemini', 'gemini-cli'],
+      ['codex', 'codex-cli'],
+      ['opencode', 'opencode-cli'],
+    ] as Array<[ProviderChoice, string]>)('maps %s to %s', (provider, runtime) => {
+      mockExistsSync.mockReturnValue(false);
+      expect(persistOrchestratorRuntime(provider)).toBe(runtime);
+    });
+
+    it.each(['both', 'skip'] as ProviderChoice[])('writes nothing for "%s" (no single runtime)', (provider) => {
+      mockWriteFileSync.mockClear();
+      expect(persistOrchestratorRuntime(provider)).toBeNull();
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+  });
 
   describe('onboardCommand without a terminal (#772)', () => {
     beforeEach(() => {
