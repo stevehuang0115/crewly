@@ -3,7 +3,9 @@
  *
  * Handles the OAuth callback from CrewlyAI Cloud.
  * Receives the token from the URL query parameter, stores it
- * in localStorage, and redirects to the Settings Cloud tab.
+ * in localStorage, hands it to this backend (`POST /api/cloud/connect`) and
+ * redirects to `?next=` (a same-origin path, e.g. `/setup?step=cloud` from
+ * the first-run checklist) or else to the Settings Cloud tab.
  *
  * @module pages/AuthCallback
  */
@@ -11,6 +13,7 @@
 import React, { useEffect } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { CLOUD_TOKEN_KEY } from '../constants/cloud.constants';
+import { AUTH_CALLBACK_NEXT_PARAM, isSafeNextPath } from '../constants/onboarding-checklist.constants';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 
 /**
@@ -40,14 +43,20 @@ export const AuthCallback: React.FC = () => {
           await fetch('/api/cloud/connect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ token, refreshToken }),
+            body: JSON.stringify({ token, ...(refreshToken ? { refreshToken } : {}) }),
           });
         } catch {
           // Non-fatal — settings page will validate independently
         }
       }
 
-      // Redirect to settings with cloud tab active
+      // Back to where the sign-in started (first-run setup), else Settings → Cloud
+      const next = searchParams.get(AUTH_CALLBACK_NEXT_PARAM);
+      if (isSafeNextPath(next)) {
+        const sep = next.includes('?') ? '&' : '?';
+        navigate(error ? `${next}${sep}error=${encodeURIComponent(error)}` : next, { replace: true });
+        return;
+      }
       if (error) {
         navigate('/settings?tab=cloud&error=' + encodeURIComponent(error), { replace: true });
       } else {

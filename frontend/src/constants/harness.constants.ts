@@ -101,5 +101,3 @@ export const LOGIN_SESSION_STATE_LABELS: Record<LoginSessionState, string> = {
   cancelled: '已取消',
 };
 
-/** Step labels of the first-run setup flow. */
-export const SETUP_STEPS: readonly string[] = ['编程助手', 'Orc', '登录', '完成'];

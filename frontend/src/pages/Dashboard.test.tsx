@@ -41,6 +41,11 @@ vi.mock('../contexts/TerminalContext', () => ({
   }),
 }));
 
+// The "开始使用" card has its own tests; here it only has to be mounted.
+vi.mock('@/components/Onboarding/GettingStartedCard', () => ({
+  GettingStartedCard: () => <div data-testid="getting-started-card-mock" />,
+}));
+
 
 const mockProjects = [
   {
@@ -143,6 +148,15 @@ describe('Dashboard Page', () => {
   });
 
   describe('Layout', () => {
+    it('shows the 开始使用 checklist card', async () => {
+      render(
+        <TestWrapper>
+          <Dashboard />
+        </TestWrapper>
+      );
+      expect(await screen.findByTestId('getting-started-card-mock')).toBeInTheDocument();
+    });
+
     it('should render the dashboard header', async () => {
       render(
         <TestWrapper>

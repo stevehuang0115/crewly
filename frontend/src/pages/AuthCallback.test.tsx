@@ -160,6 +160,41 @@ describe('AuthCallback', () => {
   });
 
   // -----------------------------------------------------------------------
+  // ?next= (first-run setup, phone sign-in)
+  // -----------------------------------------------------------------------
+
+  it('connects, then returns to a same-origin ?next= path', async () => {
+    mockSearchParams = new URLSearchParams('?next=%2Fsetup%3Fstep%3Dcloud&token=t1&refreshToken=r1');
+    await renderAuthCallback();
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/setup?step=cloud', { replace: true });
+    });
+    expect(global.fetch).toHaveBeenCalledWith('/api/cloud/connect', expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ token: 't1', refreshToken: 'r1' }),
+    }));
+  });
+
+  it('carries an error back to ?next=', async () => {
+    mockSearchParams = new URLSearchParams('?next=%2Fsetup%3Fstep%3Dcloud&error=access_denied');
+    await renderAuthCallback();
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/setup?step=cloud&error=access_denied', { replace: true });
+    });
+  });
+
+  it('ignores an off-site ?next=', async () => {
+    mockSearchParams = new URLSearchParams('?next=%2F%2Fevil.example&token=t1');
+    await renderAuthCallback();
+
+    await waitFor(() => {
+      expect(mockNavigate).toHaveBeenCalledWith('/settings?tab=cloud', { replace: true });
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // UI rendering
   // -----------------------------------------------------------------------
 

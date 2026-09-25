@@ -1,13 +1,17 @@
 /**
- * Onboarding Wizard barrel exports
+ * Onboarding barrel exports: the step indicator and the first-run checklist
+ * steps used by `/setup` and the dashboard "开始使用" card.
+ *
+ * The old modal wizard (OnboardingWizard: template → review → cloud →
+ * launch) was removed in Phase 3; `/setup` replaced it.
  *
  * @module components/Onboarding
  */
 
-export { OnboardingWizard, shouldShowOnboarding } from './OnboardingWizard';
 export { StepIndicator } from './StepIndicator';
-export { StepCloudConnect } from './StepCloudConnect';
-export { StepSelectTemplate } from './StepSelectTemplate';
-export { StepReviewTeam } from './StepReviewTeam';
-export { StepLaunchProject } from './StepLaunchProject';
-export type { OnboardingState, TemplateInfo, TemplateRole } from './onboarding.types';
+export { StarterTeamStep } from './StarterTeamStep';
+export type { StarterTeamDone, StarterTeamStepProps } from './StarterTeamStep';
+export { FirstTaskStep } from './FirstTaskStep';
+export { CloudConnectStep } from './CloudConnectStep';
+export { SlackConnectStep } from './SlackConnectStep';
+export { GettingStartedCard } from './GettingStartedCard';

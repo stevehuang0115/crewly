@@ -485,3 +485,276 @@ The CLI's in-process service always reports `null`.
 - Detecting an expired Claude login with the status check. It only sees
   whether a credential exists, not whether it has expired, so Claude expiry
   comes from agent output.
+
+## Phase 3: first-run checklist and starter teams
+
+Status: implemented on `feat/onboarding-p3-checklist` (templates, backend,
+web, CLI).
+
+Once the harness works, the owner is walked through four more steps, on the
+web (`/setup`, the dashboard) or in `crewly onboard`:
+
+1. **First team** from a starter.
+2. **First task** ("派第一件事").
+3. **Crewly Cloud.**
+4. **Slack.**
+
+Every step after the harness can be skipped. Every step can be finished from
+a phone: through the web app on the LAN, or through the portal / phone app
+over the relay.
+
+### Starter templates
+
+Starters are ordinary free templates in `config/templates/` that carry an
+`onboarding` block:
+
+```json
+"onboarding": {
+  "order": 1,
+  "recommended": true,
+  "label": "个人助理",
+  "tagline": "…",
+  "suggestions": ["…", "…", "…"]
+}
+```
+
+| Starter | File | Members |
+|---|---|---|
+| Personal Assistant (recommended, `order` 1) | `personal-assistant-team.json` | Assistant (`generalist`, the lead: triage of email / calendar / WhatsApp inbox, morning briefing, drafts that are sent only after the owner confirms, errands and reminders) and Researcher (`researcher`) |
+| Marketing (`order` 2) | `growth-marketing-team.json` (reused as-is) | Content Strategist, Content Writer, Distribution Specialist |
+| Blank | none (`ONBOARDING_CONSTANTS.BLANK_STARTER`) | The orchestrator only, no team |
+
+The member prompts are the members' `systemPrompt` strings in the template
+JSON. `config/templates/templates.test.ts` keeps the starters simple:
+
+- the top-level keys are only `id`, `name`, `description`, `members` and
+  `onboarding`;
+- each member has only `name`, `role` and `systemPrompt`;
+- member names are ASCII, because session names are built from them;
+- there are exactly one recommended starter, unique `order` values, and
+  three suggestions per starter.
+
+`TemplateService` carries `onboarding` through (`listOnboardingStarters()`,
+ordered by `order`). The CLI's `listOnboardingStarters()` and
+`getDefaultStarterTemplate()` do the same. `crewly onboard --yes` without
+`--template` uses the recommended starter, and no longer takes the first
+template by name.
+
+### Checklist API (`/api/onboarding`)
+
+The checklist router is mounted before the Cloud Portal onboarding-session
+router that shares the prefix. Every response is `{ success, data }` or
+`{ success: false, error, code? }`.
+
+| Method & path | Body | `data` |
+|---|---|---|
+| `GET /checklist` | – | `{ steps: [{ id, done, detail }], doneCount, total, allDone, dismissed, dismissedAt }` |
+| `POST /checklist/dismiss` | `{ dismissed?: boolean }` (default `true`) | checklist |
+| `GET /starters` | – | `{ starters: [{ id, name, label, tagline, description, recommended, members, suggestions }] }`; Blank is last |
+| `POST /starter-team` | `{ starterId }` | `{ starterId, team \| null, created }`. 201 when a team was created, 200 for Blank or an existing team |
+| `POST /first-task` | `{ text, teamId? }` | `{ forwarded, queued, conversationId, teamId, sentAt, message }`. 201, or 503 when the orchestrator could not take it |
+
+Error codes: `unknown_starter` and `unknown_team` → 404, `invalid_task` →
+400.
+
+**Owner-only.** Every POST refuses `X-Agent-Session` with 403, the same
+check `/api/harness` uses. The GETs stay readable.
+
+**Relay.** `MobileApiRelayService` allowlists `GET /onboarding/checklist`,
+`GET /onboarding/starters`, `POST /onboarding/checklist/dismiss`,
+`POST /onboarding/starter-team` and `POST /onboarding/first-task`. The
+portal's onboarding sessions (`/onboarding/sessions`, `/provision`) and
+`POST /cloud/connect` are not relayed.
+
+### How each step's `done` is derived
+
+The service is `services/onboarding/onboarding-checklist.service.ts`; its
+real wiring is in `onboarding-checklist.factory.ts`.
+
+| Step | `done` when | Source |
+|---|---|---|
+| `harness` | the orc harness is recorded, installed, and not `logged_out` (`unknown` counts as done, the same rule as the web setup redirect). A runtime outside the harness list counts as done | `teams/orchestrator/config.json` + the harness status probes (no `npm view`) |
+| `team` | at least one team exists, **or** the owner chose Blank | `StorageService.getTeams()` + `blankChosenAt` |
+| `first_task` | the owner has written to Crewly on any surface, **or** setup handed a first task to the orchestrator | chat-v2 `getRecentOwnerMessageContents(0, 1)`: `user` rows an agent did not write, so chat, Slack, WhatsApp and relay all count. Plus `firstTask.sentAt` |
+| `cloud` | `CloudClientService.isConnected()` | live |
+| `slack` | `getSlackService().isConnected()`, whether the app is Cloud-installed or self-hosted with env tokens | live |
+
+A step whose source throws reads as not done, with `detail.error` set; the
+rest of the checklist is still returned.
+
+The only stored state is `<crewlyHome>/onboarding.json`, written atomically
+with serialized updates:
+
+- `dismissedAt`: the dashboard card was hidden;
+- `blankChosenAt`: the owner chose Blank;
+- `firstTask`: `{ sentAt, teamId, conversationId }`;
+- `pendingFirstTask`: see below.
+
+### Starter team
+
+`POST /starter-team` does the following:
+
+- It uses `TemplateService.createTeamFromTemplate`, named after the template.
+- Every member runs on the orchestrator's harness, the only one first-time
+  setup installs (Claude Code if none is recorded).
+- Session names are `<template-id>-<member>-<id8>`.
+- It is idempotent per template: a team whose `templateId` matches is
+  returned instead of a second one. This covers double taps on a phone.
+
+The CLI writes the team itself, to `<crewlyHome>/teams/<template-id>/config.json`:
+
+- it honours `CREWLY_HOME`, which the old code ignored;
+- it records `templateId`;
+- it keeps an existing team instead of overwriting it, which the old code
+  did on a second run.
+
+### First task
+
+The first task goes through the owner's normal chat path.
+`POST /api/chat/send`'s body was extracted into
+`sendChatMessageToOrchestrator()` (`controllers/chat/chat.controller.ts`), so
+the task is:
+
+- stored as a `user` message with metadata `source: onboarding_first_task`;
+- run through ticket intake;
+- enqueued for the orchestrator. The queue holds it while the orchestrator
+  is offline.
+
+The message starts with `[初始设置 · 第一件事]`. For a team it adds
+"请交给团队「<name>」(team id: <id>) 来做；团队还没启动的话先启动它。", and
+the owner's words follow on their own. The orchestrator routes the task to
+the team, as it does any owner request.
+
+`crewly onboard` sends the first task two ways:
+
+- When this user's backend is running (checked by `homeId`), it posts to
+  `POST /api/onboarding/first-task`.
+- Otherwise it stores `pendingFirstTask`. The backend delivers it once the
+  message queue processor starts, and clears it after a successful hand-off.
+
+### Crewly Cloud from a phone
+
+`/setup?step=cloud` offers two ways to connect.
+
+**1. Google sign-in that comes back to this page (primary).** The button
+opens:
+
+```
+https://api.crewlyai.com/api/cloud/google/start?redirect=<origin>/auth/callback?next=/setup?step=cloud
+```
+
+`<origin>` is whatever address the page was opened from: localhost, the LAN
+address on a phone, or a tunnel. The Cloud auth service accepts any http(s)
+callback (`isTrustedCallback`). It exchanges the code on the server and
+redirects to the callback with `&token=…&refreshToken=…`. `AuthCallback`
+then does the following:
+
+- it posts both tokens to `/api/cloud/connect` on this backend;
+- it follows `next`, but only for a same-origin path (`isSafeNextPath`),
+  and carries `?error=` back.
+
+`/auth/*` is excluded from API-token URL consumption, so the Cloud `token`
+parameter is never mistaken for the API token. Nothing lands on a localhost
+port of the machine.
+
+The existing Settings → Cloud button goes through
+`crewlyai.com/cloud/auth`, whose `isValidOssRedirect` accepts only
+localhost. That is why setup does not use it.
+
+**2. Paste (fallback).** Use this when the phone cannot be sent back to the
+page's address. The page links to the checklist's `tokenPageSignInUrl`:
+
+```
+https://api.crewlyai.com/api/cloud/google/start?redirect=https://crewlyai.com/cloud/cli-token
+```
+
+That page shows the token and the refresh token, which the owner pastes into
+two fields. The fields post to `POST /api/cloud/connect`. Without a refresh
+token, the page warns that the login lasts about an hour.
+
+Over the relay (portal / phone app), the instance is already connected to
+Cloud, so the Cloud step is done.
+
+### Slack
+
+`/setup?step=slack` reuses the one-click install through Crewly Cloud,
+`GET /api/slack/cloud/install-url`, which is also what Connections → Slack
+uses:
+
+- The Slack OAuth round-trip runs on Crewly Cloud, so it works from a phone.
+- The return URL is `<origin>/setup?step=slack`.
+- There the step calls `/api/slack/cloud/status?refresh=1` once, so a
+  workspace that was just installed connects.
+- Without Cloud, the step sends the owner to the Cloud step.
+- "更多 Slack 设置" links to `/connections?platform=slack`.
+
+### Web
+
+`/setup` has these steps:
+
+1. 编程助手
+2. Orc
+3. 登录
+4. 团队
+5. 第一件事
+6. Cloud
+7. Slack
+8. 完成
+
+- Steps 4–7 have 上一步 / 跳过, and 下一步 once the step is done.
+- `?step=team|first_task|cloud|slack` opens the page at that step, and the
+  harness overview is not waited for.
+- On a phone, the step indicator is replaced by "第 n/8 步 · <label>".
+- Opened at 第一件事 directly, the step targets the first existing team and
+  uses its starter's suggestions (Blank's when there is no team).
+- 完成 lists the five checklist steps with done marks.
+
+The dashboard shows `GettingStartedCard` ("开始使用"):
+
+- progress, and the five steps, each linking to `/setup?step=<id>`;
+- a 继续 button;
+- an X that hides the card. Hiding is stored on the backend, so the phone
+  and the laptop agree.
+
+The card disappears when every step is done or it is hidden.
+
+The unused modal `OnboardingWizard` (template → review → cloud → launch) was
+removed, together with its `Step*` components and types. Its cloud step used
+the localhost-only sign-in, and `/setup` replaces it. `StepIndicator` stays.
+
+### CLI
+
+`crewly onboard` now has seven steps:
+
+1. AI harness
+2. Log in
+3. Skills
+4. First team
+5. First task
+6. Crewly Cloud & Slack
+7. Done
+
+**First team.** The step lists the starters, then Blank. Enter picks the
+recommended one. When no starter templates are found, the old full template
+list is shown instead.
+
+**First task.** The three suggestions are listed. A number picks a
+suggestion, typed text is used as it is, and Enter skips. `--task "<text>"`
+sets the task; with `--yes`, no task is sent without it.
+
+**Crewly Cloud & Slack.** This step never waits. If the running backend
+reports a step as done, it prints ✓. Otherwise it prints:
+
+- the Cloud sign-in link, which ends on the portal token page;
+- the LAN setup links `http://<lan-ip>:<port>/setup?step=cloud|slack&token=<api token>`.
+  The web app consumes the API token once.
+- `crewly cloud login --no-browser` as the terminal alternative.
+
+### Not in Phase 3
+
+- Starting the new team's agents from setup. The orchestrator starts them
+  when it takes the first task.
+- A phone-app-native checklist screen. The routes are relayed; the app
+  still has to render them.
+- Relaying `GET /slack/cloud/install-url`. Its URL carries a Cloud JWT, so
+  from the portal the Slack install stays the portal's own flow.

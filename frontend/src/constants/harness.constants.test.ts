@@ -15,7 +15,6 @@ import {
   loginMethodLabel,
   LOGIN_STATE_BADGES,
   LOGIN_SESSION_STATE_LABELS,
-  SETUP_STEPS,
 } from './harness.constants';
 
 describe('harness.constants', () => {
@@ -63,9 +62,5 @@ describe('harness.constants', () => {
   it('has a badge for every login state and a label for every session state', () => {
     expect(Object.keys(LOGIN_STATE_BADGES).sort()).toEqual(['logged_in', 'logged_out', 'unknown']);
     expect(Object.keys(LOGIN_SESSION_STATE_LABELS)).toHaveLength(7);
-  });
-
-  it('has four setup steps', () => {
-    expect(SETUP_STEPS).toHaveLength(4);
   });
 });

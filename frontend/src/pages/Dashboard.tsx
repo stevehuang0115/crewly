@@ -15,6 +15,7 @@ import { CreateCard } from '@/components/Cards/CreateCard';
 import { Team, Project } from '@/types';
 import { apiService } from '@/services/api.service';
 import { HealthBar } from '@/components/Dashboard/HealthBar';
+import { GettingStartedCard } from '@/components/Onboarding/GettingStartedCard';
 import { assignDefaultAvatars } from '@/utils/team.utils';
 import { logSilentError } from '@/utils/error-handling';
 import { ScoreCard, ScoreCardGrid } from '@crewly/ui/ScoreCard';
@@ -52,6 +53,7 @@ interface ProjectProgress {
  * Dashboard component - main application landing page
  *
  * Features:
+ * - "开始使用" first-run checklist card (until done or hidden)
  * - Stat cards showing counts and quick access to 3D Factory
  * - Projects section with progress tracking
  * - Teams grid with member avatars
@@ -258,6 +260,11 @@ export const Dashboard: React.FC = () => {
           <h1 className="text-2xl font-bold text-text-primary-dark">Dashboard</h1>
           <p className="text-sm text-text-secondary-dark">Welcome back. Here's a summary of your teams and projects.</p>
         </div>
+      </div>
+
+      {/* First-run checklist ("开始使用") until every step is done or it is hidden */}
+      <div className="mb-6 empty:hidden">
+        <GettingStartedCard />
       </div>
 
       {/* Health Bar — compact system overview */}
