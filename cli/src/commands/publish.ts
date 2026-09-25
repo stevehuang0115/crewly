@@ -13,8 +13,6 @@ import { mkdirSync } from 'fs';
 import chalk from 'chalk';
 import { validatePackage } from '../utils/package-validator.js';
 import { createSkillArchive, generateChecksum, generateRegistryEntry } from '../utils/archive-creator.js';
-import type { SkillManifest } from '../utils/package-validator.js';
-import { readFileSync } from 'fs';
 import { MARKETPLACE_CONSTANTS } from '../../../config/constants.js';
 import { submitToGitHub } from '../utils/gh-submit.js';
 import { submitToCloud } from '../utils/cloud-submit.js';
@@ -75,7 +73,7 @@ export async function publishCommand(skillPath?: string, options?: PublishOption
     process.exit(1);
   }
 
-  console.log(chalk.green('  ✓ Validation passed'));
+  console.log(chalk.green(`  ✓ Validation passed (${result.layout} layout)`));
 
   if (options?.dryRun) {
     console.log(chalk.blue('\nDry run — no archive created.'));
@@ -87,7 +85,9 @@ export async function publishCommand(skillPath?: string, options?: PublishOption
   mkdirSync(outputDir, { recursive: true });
 
   console.log(chalk.blue('\nCreating archive...'));
-  const archivePath = await createSkillArchive(absPath, outputDir);
+  // validatePackage only omits the manifest when invalid, and that exited above
+  const manifest = result.manifest!;
+  const archivePath = await createSkillArchive(absPath, outputDir, manifest);
   console.log(chalk.green(`  ✓ Archive: ${archivePath}`));
 
   // Generate checksum
@@ -95,8 +95,6 @@ export async function publishCommand(skillPath?: string, options?: PublishOption
   console.log(chalk.green(`  ✓ Checksum: ${checksum}`));
 
   // Generate registry entry
-  const manifestRaw = readFileSync(path.join(absPath, 'skill.json'), 'utf-8');
-  const manifest = JSON.parse(manifestRaw) as SkillManifest;
   const entry = generateRegistryEntry(manifest, archivePath, checksum);
 
   console.log(chalk.blue('\nRegistry entry:'));

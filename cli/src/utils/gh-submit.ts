@@ -10,6 +10,7 @@
 
 import { execSync } from 'child_process';
 import path from 'path';
+import { readdirSync } from 'fs';
 import os from 'os';
 import chalk from 'chalk';
 import { MARKETPLACE_CONSTANTS } from '../../../config/constants.js';
@@ -30,6 +31,21 @@ const SKILL_BRANCH_PREFIX = 'skill/';
 
 /** Target directory in the repo for marketplace skills */
 const SKILL_TARGET_DIR = 'config/skills/agent/marketplace';
+
+/**
+ * Lists the regular files directly inside a skill directory, sorted, for the
+ * PR body. Reads the directory rather than assuming a layout, so SKILL.md and
+ * legacy skill.json packages both list what is actually submitted.
+ *
+ * @param skillPath - Absolute skill directory
+ * @returns File names
+ */
+export function listTopLevelFiles(skillPath: string): string[] {
+  return readdirSync(skillPath, { withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => e.name)
+    .sort();
+}
 
 /**
  * Execute a shell command and return trimmed stdout.
@@ -89,7 +105,7 @@ export function getGhUsername(): string {
  * 5. Create a PR against the upstream repo
  *
  * @param skillPath - Absolute path to the local skill directory
- * @param manifest - Parsed skill.json manifest
+ * @param manifest - Validated manifest (validatePackage().manifest; SKILL.md or skill.json)
  * @returns Result with PR URL, branch name, and username
  */
 export async function submitToGitHub(
@@ -99,6 +115,9 @@ export async function submitToGitHub(
   const repo = MARKETPLACE_CONSTANTS.GITHUB_REPO;
   const skillId = manifest.id;
   const branch = `${SKILL_BRANCH_PREFIX}${skillId}`;
+  // Read before any side effect (fork, clone, push), so an unreadable skill
+  // directory fails the submission up front
+  const skillFiles = listTopLevelFiles(skillPath);
 
   // Step 1: Check prerequisites
   console.log(chalk.blue('\nChecking GitHub CLI prerequisites...'));
@@ -164,9 +183,7 @@ export async function submitToGitHub(
       `**Description:** ${manifest.description}`,
       '',
       `### Files`,
-      `- \`${SKILL_TARGET_DIR}/${skillId}/skill.json\``,
-      `- \`${SKILL_TARGET_DIR}/${skillId}/execute.sh\``,
-      `- \`${SKILL_TARGET_DIR}/${skillId}/instructions.md\``,
+      ...skillFiles.map((f) => `- \`${SKILL_TARGET_DIR}/${skillId}/${f}\``),
       '',
       '_Submitted via `crewly publish --submit`_',
     ].join('\n');

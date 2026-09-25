@@ -8,6 +8,7 @@
  */
 
 import { publishCommand } from './publish.js';
+import * as fs from 'fs';
 
 // Mock chalk to pass through strings
 jest.mock('chalk', () => ({
@@ -53,15 +54,27 @@ jest.mock('../utils/cloud-submit.js', () => ({
   submitToCloud: (...args: unknown[]) => mockSubmitToCloud(...args),
 }));
 
-// Mock fs
+// Mock fs. readFileSync is a spy only: publish must take the manifest from
+// validatePackage and never read skill.json itself (a SKILL.md skill has none)
 jest.mock('fs', () => {
   const actual = jest.requireActual('fs');
   return {
     ...actual,
     mkdirSync: jest.fn(),
-    readFileSync: jest.fn().mockReturnValue('{"id":"test","name":"Test","description":"Test","version":"1.0.0","category":"development","assignableRoles":["developer"],"tags":["test"]}'),
+    readFileSync: jest.fn(actual.readFileSync),
   };
 });
+
+/** The manifest the mocked validator returns for a valid package */
+const TEST_MANIFEST = {
+  id: 'test',
+  name: 'Test',
+  description: 'Test',
+  version: '1.0.0',
+  category: 'development',
+  assignableRoles: ['developer'],
+  tags: ['test'],
+};
 
 describe('publishCommand', () => {
   const mockExit = jest.spyOn(process, 'exit').mockImplementation(() => {
@@ -110,6 +123,8 @@ describe('publishCommand', () => {
       valid: true,
       errors: [],
       warnings: [],
+      layout: 'SKILL.md',
+      manifest: TEST_MANIFEST,
     });
 
     await publishCommand('/some/path', { dryRun: true });
@@ -123,6 +138,8 @@ describe('publishCommand', () => {
       valid: true,
       errors: [],
       warnings: [],
+      layout: 'SKILL.md',
+      manifest: TEST_MANIFEST,
     });
     mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
     mockGenerateChecksum.mockReturnValue('sha256:abc123');
@@ -145,6 +162,8 @@ describe('publishCommand', () => {
       valid: true,
       errors: [],
       warnings: [],
+      layout: 'SKILL.md',
+      manifest: TEST_MANIFEST,
     });
     mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
     mockGenerateChecksum.mockReturnValue('sha256:abc123');
@@ -172,7 +191,7 @@ describe('publishCommand', () => {
   });
 
   it('should call submitToCloud (and NOT gh) when --cloud flag is set', async () => {
-    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [] });
+    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [], layout: 'SKILL.md', manifest: TEST_MANIFEST });
     mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
     mockGenerateChecksum.mockReturnValue('sha256:abc123');
     mockGenerateRegistryEntry.mockReturnValue({ id: 'test', type: 'skill' });
@@ -193,7 +212,7 @@ describe('publishCommand', () => {
   });
 
   it('should exit when --cloud submission fails (e.g. not logged in)', async () => {
-    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [] });
+    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [], layout: 'SKILL.md', manifest: TEST_MANIFEST });
     mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
     mockGenerateChecksum.mockReturnValue('sha256:abc123');
     mockGenerateRegistryEntry.mockReturnValue({ id: 'test', type: 'skill' });
@@ -210,6 +229,8 @@ describe('publishCommand', () => {
       valid: true,
       errors: [],
       warnings: [],
+      layout: 'SKILL.md',
+      manifest: TEST_MANIFEST,
     });
     mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
     mockGenerateChecksum.mockReturnValue('sha256:abc123');
@@ -226,5 +247,29 @@ describe('publishCommand', () => {
     expect(mockConsole).toHaveBeenCalledWith(
       expect.stringContaining('submit manually'),
     );
+  });
+
+  it('passes the validated manifest to archive, registry entry and submit without reading skill.json', async () => {
+    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [], layout: 'SKILL.md', manifest: TEST_MANIFEST });
+    mockCreateArchive.mockResolvedValue('/output/test-1.0.0.tar.gz');
+    mockGenerateChecksum.mockReturnValue('sha256:abc123');
+    mockGenerateRegistryEntry.mockReturnValue({ id: 'test', type: 'skill' });
+    mockSubmitToGitHub.mockResolvedValue({ prUrl: 'https://example.test/pr/1', branch: 'skill/test', username: 'u' });
+
+    await publishCommand('/some/md-skill', { submit: true });
+
+    expect(mockCreateArchive).toHaveBeenCalledWith(expect.any(String), expect.any(String), TEST_MANIFEST);
+    expect(mockGenerateRegistryEntry).toHaveBeenCalledWith(TEST_MANIFEST, '/output/test-1.0.0.tar.gz', 'sha256:abc123');
+    expect(mockSubmitToGitHub).toHaveBeenCalledWith(expect.any(String), TEST_MANIFEST);
+    const readPaths = (fs.readFileSync as unknown as jest.Mock).mock.calls.map((c: unknown[]) => String(c[0]));
+    expect(readPaths.filter((p) => p.endsWith('skill.json'))).toEqual([]);
+  });
+
+  it('prints which layout passed validation', async () => {
+    mockValidate.mockReturnValue({ valid: true, errors: [], warnings: [], layout: 'SKILL.md', manifest: TEST_MANIFEST });
+
+    await publishCommand('/some/md-skill', { dryRun: true });
+
+    expect(mockConsole).toHaveBeenCalledWith(expect.stringContaining('Validation passed (SKILL.md layout)'));
   });
 });
