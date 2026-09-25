@@ -89,6 +89,11 @@ export const CLI_CONSTANTS = {
     CHECKLIST_ENDPOINT: '/api/onboarding/checklist',
     FIRST_TASK_ENDPOINT: '/api/onboarding/first-task',
   },
+  /** `crewly deploy-bundle` and bundle templates in `crewly onboard` (specs/solution-bundles.md) */
+  BUNDLE: {
+    /** Backend route that starts an apply job */
+    APPLY_ENDPOINT: '/api/bundles/apply',
+  },
 } as const;
 
 // ========================= CONVENIENCE ALIASES =========================

@@ -26,7 +26,10 @@
  *
  * Used directly via `crewly onboard`, by the curl install script, and by the
  * desktop app. Flags: `--yes`, `--template <id>`, `--harness <id>`, `--task <text>`,
- * `--web`, `--cli`.
+ * `--web`, `--cli`, and for a solution bundle (`--template <bundle id>`)
+ * `--answers <file>` / `--runtime <id>`: the bundle's questions are asked
+ * (or read from the file) and it is deployed in one step
+ * (specs/solution-bundles.md).
  *
  * @module cli/commands/onboard
  */
@@ -63,6 +66,9 @@ import {
 } from '../utils/harness-engine.js';
 import { createReadlineIO } from '../utils/prompt-io.js';
 import { runHarnessSetup, type HarnessSetupResult, type SetupIO } from './harness-setup.js';
+import { askBundleQuestions, cliPackageRoot, deployBundle, loadAnswersFile } from './deploy-bundle.js';
+import { BundleCatalog, bundleTemplateDirs } from '../../../backend/src/services/bundle/bundle-catalog.js';
+import type { BundleTemplate } from '../../../backend/src/types/solution-bundle.types.js';
 import { getCrewlyHomePath } from '../../../backend/src/services/core/crewly-home.utils.js';
 import { resolveApiToken } from '../../../backend/src/services/core/api-token.service.js';
 import { pickAdvertisedHost } from './token.js';
@@ -100,6 +106,10 @@ export interface OnboardOptions {
   cli?: boolean;
   /** First task for the new team (with --yes; otherwise it is asked) */
   task?: string;
+  /** Answers file (JSON) for a solution bundle's questions */
+  answers?: string;
+  /** Runtime for a solution bundle's members */
+  runtime?: string;
 }
 
 /** Where the rest of setup happens. */
@@ -123,6 +133,10 @@ export interface OnboardDeps {
   connectLinks?: () => ConnectLinks;
   /** Cloud / Slack state from the running backend (null when unknown) */
   readConnectState?: () => Promise<ConnectState | null>;
+  /** Find a solution bundle by template id (null when the id is not a bundle) */
+  findBundle?: (templateId: string) => BundleTemplate | null;
+  /** Deploy a solution bundle; returns the exit code */
+  deployBundle?: (templateId: string, answers: Record<string, unknown>, runtime: string | undefined) => Promise<number>;
 }
 
 // ========================= Banner =========================
@@ -881,6 +895,59 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
   }
 }
 
+// ========================= Solution bundles =========================
+
+/**
+ * A solution bundle by template id, from the OSS templates and
+ * CREWLY_TEMPLATE_DIRS (e.g. Crewly Pro's templates).
+ *
+ * @param templateId - Template id
+ * @returns The bundle, or null when the id is not a bundle
+ */
+export function findBundleTemplate(templateId: string): BundleTemplate | null {
+  try {
+    return new BundleCatalog(() => bundleTemplateDirs(cliPackageRoot())).get(templateId)?.template ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Step 4 for a solution bundle: its questions (unless `--answers` covers
+ * them, or `--yes` forbids asking), then the one-step deploy.
+ *
+ * @param bundle - Bundle template
+ * @param options - `--answers`, `--runtime`
+ * @param ask - Prompt function, or null in non-interactive mode
+ * @param deploy - Deploy function (exit code)
+ * @returns Whether the bundle deployed (possibly with pending steps)
+ */
+export async function runBundleStep(
+  bundle: BundleTemplate,
+  options: Pick<OnboardOptions, 'answers' | 'runtime'>,
+  ask: ((question: string) => Promise<string>) | null,
+  deploy: (templateId: string, answers: Record<string, unknown>, runtime: string | undefined) => Promise<number>,
+): Promise<boolean> {
+  console.log(stepHeader(4, `First team: ${bundle.bundle.label}`));
+  console.log(chalk.gray(`  ${bundle.bundle.tagline}\n`));
+  let answers: Record<string, unknown> = {};
+  if (options.answers) {
+    try {
+      answers = loadAnswersFile(options.answers);
+    } catch (error) {
+      console.log(chalk.red(`  ✗ ${error instanceof Error ? error.message : String(error)}`));
+      return false;
+    }
+  }
+  if (ask) {
+    console.log(chalk.bold('  先回答几个问题，团队会按你的情况来做事：\n'));
+    answers = await askBundleQuestions(ask, bundle.bundle.questions ?? [], answers);
+  }
+  const code = await deploy(bundle.id, answers, options.runtime);
+  console.log('');
+  return code === CLI_EXIT_CODES.SUCCESS;
+}
+
 // ========================= Main command =========================
 
 /**
@@ -917,9 +984,13 @@ export async function onboardCommand(options: OnboardOptions = {}, deps: Onboard
 
   const autoYes = options.yes === true;
 
-  // Handle --template flag: look up template by ID
+  // Handle --template flag: a solution bundle, else a template by ID
   let preselectedTemplate: TeamTemplate | null = null;
-  if (options.template) {
+  const findBundle = deps.findBundle ?? findBundleTemplate;
+  const preselectedBundle: BundleTemplate | null = options.template ? findBundle(options.template) : null;
+  const runBundleDeploy = deps.deployBundle ?? ((templateId: string, answers: Record<string, unknown>, runtime: string | undefined) =>
+    deployBundle(templateId, { answers, ...(runtime ? { runtime } : {}) }));
+  if (options.template && !preselectedBundle) {
     const found = getTemplate(options.template);
     if (found) {
       preselectedTemplate = found;
@@ -992,6 +1063,17 @@ export async function onboardCommand(options: OnboardOptions = {}, deps: Onboard
       // Step 3: Skills
       await ensureSkills();
 
+      // Step 4 for a solution bundle: deploy it with --answers; its
+      // first-week tasks replace the first-task step.
+      if (preselectedBundle) {
+        await runBundleStep(preselectedBundle, options, null, runBundleDeploy);
+        scaffoldCrewlyDirectory(process.cwd(), null);
+        if (options.task) await runFirstTaskStep(null, preselectedBundle.id, { task: options.task }, deliver);
+        await runConnectStep(links, readState);
+        printSummary(null);
+        return;
+      }
+
       // Step 4: First team — --template, else the recommended starter
       // (Personal Assistant), never simply the first template by name.
       console.log(stepHeader(4, 'First team'));
@@ -1040,6 +1122,17 @@ export async function onboardCommand(options: OnboardOptions = {}, deps: Onboard
 
     // Step 3: Skills
     await ensureSkills();
+
+    // Step 4 for a solution bundle: ask its questions and deploy it; its
+    // first-week tasks replace the first-task step.
+    if (preselectedBundle) {
+      await runBundleStep(preselectedBundle, options, io.ask, runBundleDeploy);
+      scaffoldCrewlyDirectory(process.cwd(), null);
+      if (options.task) await runFirstTaskStep(null, preselectedBundle.id, { task: options.task }, deliver);
+      await runConnectStep(links, readState);
+      printSummary(null);
+      return;
+    }
 
     // Step 4: First team — preselected or chosen (Enter = Personal Assistant)
     let choice: StarterChoice | null;

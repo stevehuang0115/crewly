@@ -13,6 +13,7 @@ import { installCommand } from './commands/install.js';
 import { skillsCommand } from './commands/skills.js';
 import { searchCommand } from './commands/search.js';
 import { onboardCommand } from './commands/onboard.js';
+import { deployBundleCommand } from './commands/deploy-bundle.js';
 import { harnessCommand, loginCommand as harnessLoginCommand } from './commands/harness.js';
 import { mcpServerCommand } from './commands/mcp-server.js';
 import { publishCommand } from './commands/publish.js';
@@ -118,7 +119,23 @@ program
   .option('--task <text>', 'First task for the new team; sent to the orchestrator (with --yes; otherwise it is asked)')
   .option('--web', 'Continue setup in the web app')
   .option('--cli', 'Continue setup in this terminal')
+  .option('--answers <file>', 'Answers to a solution bundle\'s questions (JSON), for --template <bundle> with --yes')
+  .option('--runtime <id>', 'Runtime for a solution bundle\'s members (default: recommended if available, else the orchestrator\'s)')
   .action((options: Parameters<typeof onboardCommand>[0]) => onboardCommand(options));
+
+/** Collect a repeatable option into an array. */
+const collect = (value: string, previous: string[] = []): string[] => [...previous, value];
+
+program
+  .command('deploy-bundle <templateId>')
+  .description('Deploy a solution bundle in one step: team, norms/SOPs, skills, Slack channels, schedules and first-week tasks')
+  .option('--answers <file>', 'JSON file with the answers to the bundle\'s questions, e.g. {"business_name": "…"}')
+  .option('--runtime <id>', 'Runtime for every member (claude-code, codex-cli, crewly-agent, …)')
+  .option('--templates-dir <dir>', 'Extra template directory, e.g. crewly-pro/config/templates (repeatable)', collect, [])
+  .option('--dry-run', 'Validate and print what would be set up, without deploying')
+  .option('--allow-draft', 'Deploy a bundle that is still marked draft')
+  .option('--json', 'Print the final deployment as JSON')
+  .action((templateId: string, options: Parameters<typeof deployBundleCommand>[1]) => deployBundleCommand(templateId, options));
 
 program
   .command('harness')

@@ -1285,4 +1285,76 @@ describe('onboard command', () => {
       }
     });
   });
+
+  // -----------------------------------------------------------------------
+  // --template <solution bundle>
+  // -----------------------------------------------------------------------
+
+  describe('onboardCommand with a solution bundle template', () => {
+    const bundle = {
+      id: 'demo-bundle',
+      name: 'Demo',
+      description: 'd',
+      roles: [],
+      bundle: {
+        schemaVersion: 1,
+        label: '演示方案',
+        tagline: '一句话',
+        ownerSummary: 's',
+        runtime: { recommended: 'crewly-agent' },
+        server: { tier: 'entry' },
+        questions: [
+          { id: 'business_name', label: '名字', type: 'text', required: true },
+          { id: 'platforms', label: '平台', type: 'multiselect', required: true, options: [{ value: '小红书' }, { value: '抖音' }] },
+        ],
+      },
+    } as unknown as import('../../../backend/src/types/solution-bundle.types.js').BundleTemplate;
+
+    beforeEach(() => {
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
+      mockListTemplates.mockReturnValue([]);
+    });
+
+    it('--yes deploys it with --answers and --runtime instead of creating a starter team', async () => {
+      mockReadFileSync.mockReturnValueOnce(JSON.stringify({ business_name: 'Acme', platforms: ['抖音'] }));
+      const deployBundle = jest.fn(async () => 0);
+      mockJqFound();
+      await onboardCommand(
+        { yes: true, template: 'demo-bundle', answers: 'answers.json', runtime: 'crewly-agent' },
+        { findBundle: (id) => (id === 'demo-bundle' ? bundle : null), deployBundle },
+      );
+      expect(deployBundle).toHaveBeenCalledWith('demo-bundle', { business_name: 'Acme', platforms: ['抖音'] }, 'crewly-agent');
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('First team: 演示方案');
+      expect(output).toContain('Setup complete');
+      expect(mockGetTemplate).not.toHaveBeenCalled();
+      expect(mockDeliverFirstTask).not.toHaveBeenCalled();
+    });
+
+    it('asks the bundle questions in the terminal', async () => {
+      mockReadlineAnswers = ['2', 'Acme', '1,2'];
+      mockReadlineAnswerIndex = 0;
+      const deployBundle = jest.fn(async () => 0);
+      mockJqFound();
+      await onboardCommand({ template: 'demo-bundle' }, { findBundle: () => bundle, deployBundle });
+      expect(deployBundle).toHaveBeenCalledWith('demo-bundle', { business_name: 'Acme', platforms: ['小红书', '抖音'] }, undefined);
+    });
+
+    it('--task still goes to the bundle team', async () => {
+      const deployBundle = jest.fn(async () => 0);
+      mockJqFound();
+      await onboardCommand({ yes: true, template: 'demo-bundle', task: 'Hello' }, { findBundle: () => bundle, deployBundle });
+      expect(mockDeliverFirstTask).toHaveBeenCalledWith('Hello', 'demo-bundle');
+    });
+
+    it('does not deploy when the answers file cannot be read', async () => {
+      mockReadFileSync.mockImplementationOnce(() => { throw new Error('ENOENT'); });
+      const deployBundle = jest.fn(async () => 0);
+      mockJqFound();
+      await onboardCommand({ yes: true, template: 'demo-bundle', answers: 'missing.json' }, { findBundle: () => bundle, deployBundle });
+      expect(deployBundle).not.toHaveBeenCalled();
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('Cannot read the answers file: missing.json');
+    });
+  });
 });
