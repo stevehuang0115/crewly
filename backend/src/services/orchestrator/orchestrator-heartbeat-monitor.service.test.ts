@@ -409,6 +409,45 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 			restartSpy.mockRestore();
 		});
 
+		it('does not trigger a restart (or notify the auditor) while auto-restart has given up (B8 D1)', async () => {
+			const restartService = OrchestratorRestartService.getInstance();
+			const restartSpy = jest.spyOn(restartService, 'attemptRestart').mockResolvedValue(false);
+			const giveUpSpy = jest.spyOn(restartService, 'getGiveUp').mockReturnValue({
+				reason: 'Claude Code (`claude`) is not installed',
+				attempts: 1,
+				at: new Date().toISOString(),
+				blocked: true,
+			});
+
+			service.start();
+			service.stop();
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+
+			for (let i = 0; i < 5; i++) await service.performCheck();
+
+			expect(restartSpy).not.toHaveBeenCalled();
+			expect(mockHandleUserMessage).not.toHaveBeenCalled();
+			expect(mockSession.write).not.toHaveBeenCalled();
+
+			restartSpy.mockRestore();
+			giveUpSpy.mockRestore();
+		});
+
+		it('re-arms auto-restart when the orchestrator process is alive again', async () => {
+			const clearSpy = jest.spyOn(OrchestratorRestartService.getInstance(), 'clearGiveUp');
+
+			service.start();
+			service.stop();
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(true);
+
+			await performCheckAndFlush(service);
+
+			expect(clearSpy).toHaveBeenCalled();
+			clearSpy.mockRestore();
+		});
+
 		it('should not trigger immediate restart when child process is alive', async () => {
 			const restartSpy = jest.spyOn(OrchestratorRestartService.getInstance(), 'attemptRestart')
 				.mockResolvedValue(true);

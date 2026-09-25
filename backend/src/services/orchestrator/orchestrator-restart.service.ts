@@ -13,6 +13,7 @@ import {
 	ORCHESTRATOR_ROLE,
 	ORCHESTRATOR_WINDOW_NAME,
 	ORCHESTRATOR_RESTART_CONSTANTS,
+	CLAUDE_STARTUP_CONSTANTS,
 	RUNTIME_TYPES,
 	type RuntimeType,
 } from '../../constants.js';
@@ -40,6 +41,22 @@ export interface RestartStats {
 	lastRestartAt: string | null;
 	/** Whether further restarts are allowed under cooldown */
 	restartAllowed: boolean;
+	/** Failed restarts in a row since the orchestrator last ran */
+	consecutiveFailures: number;
+	/** Set once auto-restart has stopped trying; null while it still tries */
+	gaveUp: RestartGiveUp | null;
+}
+
+/** Why auto-restart stopped trying, surfaced to the user. */
+export interface RestartGiveUp {
+	/** The last failure's user-facing reason */
+	reason: string;
+	/** Failed attempts that led here */
+	attempts: number;
+	/** ISO time auto-restart stopped */
+	at: string;
+	/** True when the failure needs the user (e.g. runtime not installed / not signed in) */
+	blocked: boolean;
 }
 
 /**
@@ -51,7 +68,9 @@ export interface RestartStats {
  * - Initializes memory and starts chat monitoring
  * - Notifies via Slack (if configured)
  * - Broadcasts WebSocket event for UI updates
- * - Enforces max 3 restarts per hour cooldown
+ * - Enforces max 3 restarts per hour cooldown (failed attempts count too)
+ * - Stops after MAX_CONSECUTIVE_FAILURES failures in a row, or at once when
+ *   start-up is blocked on the user, and surfaces the reason (getGiveUp)
  *
  * @example
  * ```typescript
@@ -70,6 +89,10 @@ export class OrchestratorRestartService {
 	private totalRestarts = 0;
 	/** Flag to prevent concurrent restart attempts */
 	private isRestarting = false;
+	/** Failed restarts in a row since the orchestrator last ran */
+	private consecutiveFailures = 0;
+	/** Set when auto-restart has stopped trying (see {@link markGaveUp}) */
+	private gaveUp: RestartGiveUp | null = null;
 
 	/** External dependencies (injected via setDependencies) */
 	private agentRegistrationService: AgentRegistrationService | null = null;
@@ -103,6 +126,8 @@ export class OrchestratorRestartService {
 			OrchestratorRestartService.instance.socketIO = null;
 			OrchestratorRestartService.instance.restartTimestamps = [];
 			OrchestratorRestartService.instance.isRestarting = false;
+			OrchestratorRestartService.instance.consecutiveFailures = 0;
+			OrchestratorRestartService.instance.gaveUp = null;
 		}
 		OrchestratorRestartService.instance = null;
 	}
@@ -153,6 +178,10 @@ export class OrchestratorRestartService {
 	 * @returns true if restart succeeded, false otherwise
 	 */
 	async attemptRestart(): Promise<boolean> {
+		if (this.gaveUp) {
+			return false;
+		}
+
 		if (this.isRestarting) {
 			this.logger.warn('Restart already in progress, skipping');
 			return false;
@@ -232,7 +261,12 @@ export class OrchestratorRestartService {
 			if (!result.success) {
 				this.logger.error('Failed to create new orchestrator session', {
 					error: result.error,
+					errorCode: result.errorCode,
 				});
+				this.recordFailure(
+					result.error || 'the orchestrator session could not be created',
+					result.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE,
+				);
 				return false;
 			}
 
@@ -278,6 +312,7 @@ export class OrchestratorRestartService {
 			// Track restart
 			this.restartTimestamps.push(Date.now());
 			this.totalRestarts++;
+			this.consecutiveFailures = 0;
 
 			this.logger.info('Orchestrator restart successful', {
 				totalRestarts: this.totalRestarts,
@@ -289,10 +324,69 @@ export class OrchestratorRestartService {
 				error: formatError(error),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
+			this.recordFailure(formatError(error), false);
 			return false;
 		} finally {
 			this.isRestarting = false;
 		}
+	}
+
+	/**
+	 * Count a failed restart. Failed attempts also take a slot in the cooldown
+	 * window (before, only successes did, so failures were never limited). On a
+	 * start-up blocked on the user, or after MAX_CONSECUTIVE_FAILURES in a row,
+	 * auto-restart stops (see {@link markGaveUp}).
+	 *
+	 * @param reason - User-facing reason of this failure
+	 * @param blocked - True when retrying cannot help (RUNTIME_STARTUP_BLOCKED)
+	 */
+	private recordFailure(reason: string, blocked: boolean): void {
+		this.restartTimestamps.push(Date.now());
+		this.consecutiveFailures++;
+		if (blocked || this.consecutiveFailures >= ORCHESTRATOR_RESTART_CONSTANTS.MAX_CONSECUTIVE_FAILURES) {
+			this.markGaveUp(reason, { blocked, attempts: this.consecutiveFailures });
+		}
+	}
+
+	/**
+	 * Stop auto-restarting the orchestrator and surface why: logged once at
+	 * ERROR, broadcast as `orchestrator:restart_gave_up`, and returned by
+	 * {@link getGiveUp} for the orchestrator status endpoint. Also called by the
+	 * boot-time auto-start when it gives up, so the heartbeat monitor does not
+	 * start a second retry loop. Cleared by {@link clearGiveUp}.
+	 *
+	 * @param reason - User-facing reason
+	 * @param options - `blocked` when the user must act; `attempts` made
+	 */
+	markGaveUp(reason: string, options: { blocked: boolean; attempts: number }): void {
+		if (this.gaveUp) return;
+		this.gaveUp = { reason, attempts: options.attempts, at: new Date().toISOString(), blocked: options.blocked };
+		this.logger.error('Orchestrator auto-restart STOPPED — the orchestrator stays down until it is started again', {
+			reason,
+			attempts: options.attempts,
+			blocked: options.blocked,
+		});
+		this.socketIO?.emit('orchestrator:restart_gave_up', this.gaveUp);
+	}
+
+	/**
+	 * Why auto-restart stopped, or null while it still tries.
+	 *
+	 * @returns The give-up record, or null
+	 */
+	getGiveUp(): RestartGiveUp | null {
+		return this.gaveUp;
+	}
+
+	/**
+	 * Re-arm auto-restart once the orchestrator runs again (it was started by
+	 * hand, or the user fixed the runtime and it came back).
+	 */
+	clearGiveUp(): void {
+		if (!this.gaveUp && this.consecutiveFailures === 0) return;
+		if (this.gaveUp) this.logger.info('Orchestrator is running again; auto-restart re-armed');
+		this.gaveUp = null;
+		this.consecutiveFailures = 0;
 	}
 
 	/**
@@ -334,6 +428,8 @@ export class OrchestratorRestartService {
 					? new Date(this.restartTimestamps[this.restartTimestamps.length - 1]).toISOString()
 					: null,
 			restartAllowed: this.isRestartAllowed(),
+			consecutiveFailures: this.consecutiveFailures,
+			gaveUp: this.gaveUp,
 		};
 	}
 

@@ -3254,15 +3254,16 @@ void (async () => {
 			const MAX_AUTOSTART_ATTEMPTS = 5;
 			const AUTOSTART_BACKOFF_MS = 3_000;
 
+			let autostartAttempts = 0;
 			const result = await retryWithBackoff(
-				() => this.apiController.agentRegistrationService.createAgentSession({
+				() => (autostartAttempts++, this.apiController.agentRegistrationService.createAgentSession({
 					sessionName: ORCHESTRATOR_SESSION_NAME,
 					role: ORCHESTRATOR_ROLE,
 					projectPath: this.config.crewlyHome,
 					windowName: ORCHESTRATOR_WINDOW_NAME,
 					runtimeType,
 					forceRecreate: true,
-				}),
+				})),
 				{
 					maxAttempts: MAX_AUTOSTART_ATTEMPTS,
 					backoffMs: AUTOSTART_BACKOFF_MS,
@@ -3294,7 +3295,17 @@ void (async () => {
 					{
 						error: result.error,
 						errorCode: result.errorCode,
-						attempts: MAX_AUTOSTART_ATTEMPTS,
+						attempts: autostartAttempts,
+					},
+				);
+				// Hand the reason to the restart service so the heartbeat
+				// monitor does not start a second, endless retry loop on the
+				// same failure (B8 D1) and the status endpoint can show it.
+				OrchestratorRestartService.getInstance().markGaveUp(
+					result.error || 'the orchestrator could not be started',
+					{
+						blocked: result.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE,
+						attempts: autostartAttempts,
 					},
 				);
 				return;

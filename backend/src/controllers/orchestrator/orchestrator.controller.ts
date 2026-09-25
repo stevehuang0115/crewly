@@ -15,6 +15,7 @@ import {
 } from '../../services/orchestrator/index.js';
 import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import { OAuthReloginMonitorService } from '../../services/agent/oauth-relogin-monitor.service.js';
+import { OrchestratorRestartService } from '../../services/orchestrator/orchestrator-restart.service.js';
 import { MemoryService } from '../../services/memory/memory.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { isModelProvider } from '../../services/agent/crewly-agent/types.js';
@@ -711,6 +712,9 @@ export async function updateOrchestratorRuntime(
 		// Persist both fields independently so partial updates are supported.
 		if (hasRuntimeType) {
 			await this.storageService.updateOrchestratorRuntimeType(runtimeType as RuntimeType);
+			// A new runtime may fix what made auto-restart stop (e.g. the old
+			// runtime's CLI was not installed): let it try again.
+			OrchestratorRestartService.getInstance().clearGiveUp();
 		}
 		if (hasModelId && !hasEffort) {
 			await this.storageService.updateOrchestratorModelId(modelId);
@@ -765,6 +769,10 @@ export async function getOrchestratorStatus(
 			? { url: pendingLogin.url, code: pendingLogin.code, detectedAt: pendingLogin.detectedAt }
 			: null;
 
+		// Auto-restart stopped (e.g. the runtime CLI is not installed or not
+		// signed in): say why instead of a bare "not running" (B8 D1).
+		const restartGaveUp = status.isActive ? null : OrchestratorRestartService.getInstance().getGiveUp();
+
 		res.json({
 			success: true,
 			data: {
@@ -772,9 +780,12 @@ export async function getOrchestratorStatus(
 				agentStatus: status.agentStatus,
 				message: loginRequired
 					? `Orchestrator needs you to sign in${loginRequired.url ? `: ${loginRequired.url}` : ''}${loginRequired.code ? ` code ${loginRequired.code}` : ''}`
-					: status.message,
+					: restartGaveUp
+						? `Orchestrator stopped restarting: ${restartGaveUp.reason}`
+						: status.message,
 				offlineMessage: status.isActive ? null : getOrchestratorOfflineMessage(false),
 				loginRequired,
+				restartGaveUp,
 			},
 		} as ApiResponse);
 	} catch (error) {

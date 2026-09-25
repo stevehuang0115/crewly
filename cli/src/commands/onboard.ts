@@ -32,7 +32,7 @@ import {
   getTemplatesDir,
   type TeamTemplate,
 } from '../utils/templates.js';
-import { CLI_CONSTANTS } from '../constants.js';
+import { CLI_CONSTANTS, CREWLY_HOME_DIR, CREWLY_CONSTANTS } from '../constants.js';
 
 /** Process exit codes used by the wizard. */
 const CLI_EXIT_CODES = CLI_CONSTANTS.EXIT_CODES;
@@ -705,6 +705,71 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
   }
 }
 
+// ========================= Orchestrator runtime =========================
+
+/** Runtime the orchestrator uses for each single-provider choice. */
+const ORCHESTRATOR_RUNTIME_BY_PROVIDER: Partial<Record<ProviderChoice, string>> = {
+  claude: 'claude-code',
+  gemini: 'gemini-cli',
+  codex: 'codex-cli',
+  opencode: 'opencode-cli',
+};
+
+/**
+ * Save the chosen provider as the orchestrator's runtime, in the file the
+ * backend reads it from (`<CREWLY_HOME>/teams/orchestrator/config.json`,
+ * field `runtimeType`). Other fields in the file are kept.
+ *
+ * Before this, the choice was used only for a template team, so a Gemini-only
+ * user's orchestrator still started Claude Code and looped on
+ * `claude: command not found` (B8 D1).
+ *
+ * "All providers" and "Skip" name no single runtime and change nothing.
+ *
+ * @param provider - The provider chosen in step 1
+ * @returns The runtime saved, or null when nothing was saved
+ *
+ * @example
+ * persistOrchestratorRuntime('gemini'); // → 'gemini-cli'
+ */
+export function persistOrchestratorRuntime(provider: ProviderChoice): string | null {
+  const runtimeType = ORCHESTRATOR_RUNTIME_BY_PROVIDER[provider];
+  if (!runtimeType) return null;
+
+  const crewlyHome = process.env.CREWLY_HOME || join(homedir(), CREWLY_HOME_DIR);
+  const dir = join(crewlyHome, 'teams', CREWLY_CONSTANTS.AGENT_IDS.ORCHESTRATOR_ID);
+  const file = join(dir, 'config.json');
+  const now = new Date().toISOString();
+
+  let existing: Record<string, unknown> = {};
+  if (existsSync(file)) {
+    try {
+      existing = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>;
+    } catch {
+      console.log(chalk.yellow(`  ⚠ ${file} is not valid JSON; the orchestrator runtime was not saved.\n`));
+      return null;
+    }
+  }
+
+  const config = {
+    sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME,
+    agentStatus: CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE,
+    workingStatus: CREWLY_CONSTANTS.WORKING_STATUSES.IDLE,
+    createdAt: now,
+    ...existing,
+    runtimeType,
+    updatedAt: now,
+  };
+  try {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(file, JSON.stringify(config, null, 2) + '\n');
+  } catch (error) {
+    console.log(chalk.yellow(`  ⚠ Could not save the orchestrator runtime: ${error instanceof Error ? error.message : String(error)}\n`));
+    return null;
+  }
+  return runtimeType;
+}
+
 // ========================= Main command =========================
 
 /**
@@ -807,6 +872,12 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
 
     // Step 2: Tool installation
     await ensureTools(rl, provider);
+
+    // The orchestrator runs on the chosen provider (B8 D1)
+    const orchestratorRuntime = persistOrchestratorRuntime(provider);
+    if (orchestratorRuntime) {
+      console.log(chalk.green(`  ✓ Orchestrator runtime set to ${orchestratorRuntime}\n`));
+    }
 
     // Step 3: Skills
     await ensureSkills();
