@@ -155,6 +155,14 @@ describe('TmuxCommandService', () => {
 				service.setEnvironmentVariable('test-session', 'TEST_VAR', 'test-value')
 			).rejects.toThrow('tmux_robosend.sh has been removed');
 		});
+
+		it('refuses a secret before anything is typed, naming the variable but not the value', async () => {
+			const fakeKey = 'AIzaTESTtmuxGeminiKey0123456789abcdef';
+			const attempt = service.setEnvironmentVariable('test-session', 'GEMINI_API_KEY', fakeKey);
+			await expect(attempt).rejects.toThrow(/Refusing to type secret environment variable GEMINI_API_KEY/);
+			await expect(attempt).rejects.not.toThrow(fakeKey);
+			expect(mockSpawn).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('validateSessionReady', () => {
