@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-25T15:08:17.144Z",
+  "lastUpdated": "2026-09-25T15:19:59.383Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -903,12 +903,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-24T19:55:44.195Z",
+      "updatedAt": "2026-09-25T15:19:59.383Z",
       "source": "config/skills/agent/marketplace/nano-banana-image",
       "assets": {
         "archive": "config/skills/agent/marketplace/nano-banana-image",
         "checksum": "",
-        "sizeBytes": 3944
+        "sizeBytes": 4048
       },
       "metadata": {
         "skillType": "claude-skill",
@@ -923,6 +923,7 @@
           "ai image"
         ],
         "files": [
+          ".env",
           ".env.example",
           "generate.sh",
           "SKILL.md"
