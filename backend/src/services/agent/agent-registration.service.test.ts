@@ -5044,6 +5044,31 @@ describe('AgentRegistrationService', () => {
 			expect(countFileReads()).toBe(1);
 		});
 
+		it('a later non-force create while the first flow is still registering sends no second kickoff (1.20.135, Sam)', async () => {
+			const pty = { id: 'pty' };
+			mockSessionHelper.getSession.mockImplementation(() => pty);
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockStorageService.getTeams.mockResolvedValue([]);
+			mockRuntimeService.isReadyForInput = jest.fn(() => false);
+			const detect = jest.fn().mockResolvedValue(true);
+			mockRuntimeService.detectRuntimeWithCommand = detect;
+
+			// The restore's flow is waiting for the resumed runtime.
+			void service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(3_000);
+
+			const pending = service.createAgentSession({ sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.CODEX_CLI });
+			let settled = false;
+			void pending.then(() => { settled = true; });
+			for (let i = 0; i < 20 && !settled; i++) await jest.advanceTimersByTimeAsync(5_000);
+			expect(settled).toBe(true);
+			const res = await pending;
+			expect(res.success).toBe(true);
+			expect(detect).not.toHaveBeenCalled();
+			expect(countFileReads()).toBe(0);
+			service['registrationFlows'].cancel('test-session', 'session-killed');
+		});
+
 		it('forceRecreate during an in-flight registration: the old flow sends nothing into the new PTY', async () => {
 			const ptyOld = { id: 'old' };
 			const ptyNew = { id: 'new' };

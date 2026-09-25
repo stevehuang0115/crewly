@@ -3466,6 +3466,21 @@ Loop until done, blocked, or explicitly reassigned:
 					});
 				}
 			} else {
+				// A registration flow for this session is still running (e.g. the
+				// boot restore is waiting for the resumed runtime): it will deliver
+				// the kickoff. Sending a second one from here gave Sam two
+				// "Crewly restarted" messages 80 s apart (2026-09-25, 1.20.135).
+				if (this.registrationFlows.has(sessionName)) {
+					this.logger.info('Session is already registering — joining the running flow, no second kickoff', {
+						sessionName,
+					});
+					return {
+						success: true,
+						sessionName,
+						message: 'Agent session is already starting; registration in progress',
+					};
+				}
+
 				this.logger.info(
 					'Session already exists, attempting intelligent recovery instead of killing',
 					{
