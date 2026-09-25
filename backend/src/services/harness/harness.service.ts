@@ -23,6 +23,7 @@ import {
 	type HarnessLogger,
 	type HarnessOverview,
 	type HarnessStatus,
+	type ReloginPending,
 	type InstallJob,
 	type LoginSession,
 } from './harness.types.js';
@@ -56,6 +57,8 @@ export class HarnessService {
 	readonly broker: LoginBrokerService;
 	readonly apiKeys: HarnessApiKeyService;
 	readonly orc: OrcHarnessStore;
+	/** Pending Slack re-login per harness (set by the backend's re-login coordinator; the CLI has none) */
+	private reloginPendingProvider: ((harnessId: HarnessId) => ReloginPending | null) | null = null;
 
 	/**
 	 * @param parts - Service parts
@@ -86,8 +89,33 @@ export class HarnessService {
 	 * @returns Harness statuses, the orc harness and system tools
 	 */
 	async getOverview(): Promise<HarnessOverview> {
-		const [harnesses, orcHarness] = await Promise.all([this.status.listStatuses(), this.orc.get()]);
+		const [statuses, orcHarness] = await Promise.all([this.status.listStatuses(), this.orc.get()]);
+		const harnesses = statuses.map((status) => ({ ...status, reloginPending: this.getReloginPending(status.id) }));
 		return { harnesses, orcHarness, systemTools: this.status.getSystemTools() };
+	}
+
+	/**
+	 * Provide the pending-re-login lookup shown in {@link getOverview}.
+	 *
+	 * @param provider - Lookup, or null to clear
+	 */
+	setReloginPendingProvider(provider: ((harnessId: HarnessId) => ReloginPending | null) | null): void {
+		this.reloginPendingProvider = provider;
+	}
+
+	/**
+	 * The pending Slack re-login for a harness.
+	 *
+	 * @param harnessId - Harness id
+	 * @returns The pending re-login, or null (also when no provider is set or it throws)
+	 */
+	getReloginPending(harnessId: HarnessId): ReloginPending | null {
+		if (!this.reloginPendingProvider) return null;
+		try {
+			return this.reloginPendingProvider(harnessId);
+		} catch {
+			return null;
+		}
 	}
 
 	/**

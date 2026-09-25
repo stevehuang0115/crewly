@@ -49,10 +49,26 @@ describe('HarnessService', () => {
 		const parts = mockParts();
 		const service = new HarnessService(parts as unknown as HarnessServiceParts);
 		expect(await service.getOverview()).toEqual({
-			harnesses: [STATUS],
+			harnesses: [{ ...STATUS, reloginPending: null }],
 			orcHarness: 'claude-code',
 			systemTools: [{ id: 'jq', installed: true, installHint: 'brew install jq' }],
 		});
+	});
+
+	it('adds the pending Slack re-login of each harness to the overview', async () => {
+		const parts = mockParts();
+		const service = new HarnessService(parts as unknown as HarnessServiceParts);
+		const pending = { harnessId: 'codex-cli' as const, sessionId: 's1', startedAt: '2026-09-25T00:00:00.000Z' };
+		service.setReloginPendingProvider((id) => (id === 'codex-cli' ? pending : null));
+		expect((await service.getOverview()).harnesses[0].reloginPending).toEqual(pending);
+		expect(service.getReloginPending('claude-code')).toBeNull();
+
+		service.setReloginPendingProvider(() => {
+			throw new Error('boom');
+		});
+		expect(service.getReloginPending('codex-cli')).toBeNull();
+		service.setReloginPendingProvider(null);
+		expect(service.getReloginPending('codex-cli')).toBeNull();
 	});
 
 	it('validates harness ids before delegating', async () => {

@@ -60,9 +60,26 @@ export interface SystemToolStatus {
 	installHint: string;
 }
 
+/**
+ * A re-login over Slack that is waiting for the owner (Phase 2): Crewly
+ * noticed the harness login expired and started a broker login session.
+ */
+export interface ReloginPending {
+	harnessId: HarnessId;
+	/** Login broker session the owner is asked to finish */
+	sessionId: string;
+	/** ISO timestamp the broker session started */
+	startedAt: string;
+}
+
+/** One harness in `GET /api/harness`: its status plus any pending re-login. */
+export interface HarnessOverviewEntry extends HarnessStatus {
+	reloginPending: ReloginPending | null;
+}
+
 /** Body of `GET /api/harness`. */
 export interface HarnessOverview {
-	harnesses: HarnessStatus[];
+	harnesses: HarnessOverviewEntry[];
 	orcHarness: string | null;
 	systemTools: SystemToolStatus[];
 }

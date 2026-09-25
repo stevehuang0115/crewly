@@ -331,4 +331,13 @@ describe('HARNESS_CONSTANTS (onboarding harness login)', () => {
   it('parses versions', () => {
     expect(HARNESS_CONSTANTS.VERSION_PATTERN.exec('codex-cli 0.156.1')?.[0]).toBe('0.156.1');
   });
+
+  it('re-login over Slack: reminds every few hours, code bounds fit Claude codes, both retry keywords', () => {
+    const { RELOGIN } = HARNESS_CONSTANTS;
+    expect(RELOGIN.REMIND_INTERVAL_MS).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    expect(RELOGIN.STATUS_CHECK_INTERVAL_MS).toBeLessThan(RELOGIN.REMIND_INTERVAL_MS);
+    expect(RELOGIN.UNRECOGNISED_SCREEN_MS).toBeLessThan(HARNESS_CONSTANTS.LOGIN.TIMEOUT_MS);
+    expect(RELOGIN.CODE_MIN_LENGTH).toBeLessThan(RELOGIN.CODE_MAX_LENGTH);
+    expect(RELOGIN.RETRY_KEYWORDS).toEqual(expect.arrayContaining(['relogin', '重新登录']));
+  });
 });

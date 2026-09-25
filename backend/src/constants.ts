@@ -2892,6 +2892,36 @@ export const HARNESS_CONSTANTS = {
 		/** Keys typed after user input */
 		ENTER: '\r',
 	},
+	/**
+	 * Re-login over Slack (Phase 2): an expired harness login is noticed in
+	 * agent output or by a periodic status check, a broker login is started
+	 * and the owner finishes it from their phone.
+	 */
+	RELOGIN: {
+		/** At most one owner reminder per harness in this window while the owner has not acted */
+		REMIND_INTERVAL_MS: 3 * 60 * 60 * 1000,
+		/** How often the orchestrator's harness login state is checked */
+		STATUS_CHECK_INTERVAL_MS: 10 * 60 * 1000,
+		/** A broker screen with no URL, code or prompt after this long is sent to the owner as-is */
+		UNRECOGNISED_SCREEN_MS: 20_000,
+		/** Expiry reports for a harness are ignored this long after its login succeeded (resumed transcripts repeat old errors) */
+		POST_SUCCESS_QUIET_MS: 10 * 60 * 1000,
+		/** A second expiry within this window after a silent API-key recovery falls back to the phone login */
+		SILENT_KEY_RETRY_WINDOW_MS: 60 * 60 * 1000,
+		/** Bounds for an owner reply that is taken as Claude's authorization code */
+		CODE_MIN_LENGTH: 16,
+		CODE_MAX_LENGTH: 512,
+		/** Longest reply typed into an unrecognised login screen */
+		SCREEN_REPLY_MAX_LENGTH: 512,
+		/** Owner replies that start the login over (compared trimmed, case-insensitive) */
+		RETRY_KEYWORDS: ['relogin', 're-login', '重新登录'] as readonly string[],
+		/** Tail of the (redacted) login screen included in a DM */
+		DM_SCREEN_MAX_CHARS: 1500,
+		/** Longest broker message quoted in a DM */
+		DM_MESSAGE_MAX_CHARS: 300,
+		/** Waiting agents named in a DM; the rest are counted */
+		DM_MAX_LISTED_AGENTS: 8,
+	},
 	/** Claude Code facts */
 	CLAUDE: {
 		OAUTH_TOKEN_ENV: 'CLAUDE_CODE_OAUTH_TOKEN',
