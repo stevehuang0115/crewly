@@ -290,6 +290,13 @@ const IRREVERSIBLE_WORDS: ReadonlyArray<readonly [RegExp, string]> = [
 ];
 
 /**
+ * What makes a page script act rather than read: clicking, submitting a form,
+ * dispatching events, or sending a request out of the page.
+ */
+const SCRIPT_ACTION =
+	/\.click\s*\(|\.submit\s*\(|requestSubmit\s*\(|dispatchEvent\s*\(|new\s+(Mouse|Keyboard|Pointer|Submit)Event\b|sendBeacon\s*\(|XMLHttpRequest|fetch\s*\([^)]*method\s*:\s*['"`](POST|PUT|PATCH|DELETE)/i;
+
+/**
  * Decide whether an action looks irreversible and outward-facing.
  *
  * @param tool - Tool the agent wants to use
@@ -311,6 +318,15 @@ export function matchIrreversible(tool: string, params?: Record<string, unknown>
 		return /^(Enter|NumpadEnter)$/i.test(key) || /\bMeta\+Enter|Control\+Enter\b/i.test(key)
 			? 'submitting with a keystroke'
 			: null;
+	}
+
+	// A page script is only an action if it does something: clicks, submits a
+	// form, fires events or sends a request. A script that only reads the page
+	// can mention "submit" all it likes — Ella's read of a form's fields
+	// (`button[type=submit]` in a selector) was held for the owner as
+	// "submitting" and stalled the job (2026-09-25).
+	if ((tool === 'executeJs' || tool === 'executeScript') && typeof params?.code === 'string' && !SCRIPT_ACTION.test(params.code)) {
+		return null;
 	}
 
 	const haystack = [params?.selector, params?.text, params?.value, params?.code]

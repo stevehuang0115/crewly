@@ -56,6 +56,22 @@ describe('statusForTool', () => {
 	});
 });
 
+describe('matchIrreversible — page scripts (2026-09-25)', () => {
+	it('a script that only reads the page is never held, even if it mentions submit', () => {
+		const read = `[...document.querySelectorAll('input, button[type=submit]')].map(e => ({name: e.name, text: e.textContent}))`;
+		expect(matchIrreversible('executeJs', { code: read })).toBeNull();
+		expect(matchIrreversible('executeScript', { code: 'return document.querySelector("#submit-btn")?.disabled' })).toBeNull();
+	});
+
+	it('a script that clicks, submits or posts is still held', () => {
+		expect(matchIrreversible('executeJs', { code: 'document.querySelector("button[type=submit]").click()' })).toBe('submitting');
+		expect(matchIrreversible('executeJs', { code: 'document.forms[0].requestSubmit() // 提交' })).toBe('submitting');
+		expect(matchIrreversible('executeJs', { code: `fetch('/api/pay', {method: 'POST'}) // checkout` })).toBe('paying');
+		// Acting, but nothing irreversible named: not held.
+		expect(matchIrreversible('executeJs', { code: 'document.querySelector("#next-page").click()' })).toBeNull();
+	});
+});
+
 describe('matchIrreversible', () => {
 	it('spots a send button however it is addressed', () => {
 		expect(matchIrreversible('click', { selector: 'button[aria-label="Send"]' })).toBe('sending');
