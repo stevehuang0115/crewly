@@ -2,17 +2,27 @@
  * WhatsAppTab Component
  *
  * WhatsApp integration configuration panel.
- * Allows users to connect their WhatsApp account via QR code pairing
- * for mobile communication with the orchestrator.
+ * Connects the owner's WhatsApp account via QR code pairing. Connecting uses
+ * inbox mode: Crewly reads and drafts replies, never sends without the
+ * owner's confirmation, and never auto-replies. Pending reply drafts are
+ * listed here with 发送 / 丢弃 buttons (owner calls — no agent header).
  *
  * @module components/Settings/WhatsAppTab
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Unlink, QrCode } from 'lucide-react';
+import { RefreshCw, Unlink, QrCode, Send, Trash2 } from 'lucide-react';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Button } from '@crewly/ui/Button';
 import { Alert } from '@crewly/ui/Alert';
+import { DASHBOARD_CALLER_HEADERS } from '../../constants/caller.constants';
+import {
+  WHATSAPP_ENDPOINTS,
+  WHATSAPP_MODES,
+  WHATSAPP_DEFAULT_CONNECT_MODE,
+  WHATSAPP_INBOX_COPY,
+  type WhatsAppMode,
+} from '../../constants/whatsapp.constants';
 
 // =============================================================================
 // Types
@@ -28,7 +38,48 @@ interface WhatsAppStatus {
   error?: string;
   messagesSent?: number;
   messagesReceived?: number;
+  mode?: WhatsAppMode | null;
 }
+
+/**
+ * A reply draft waiting for the owner (from GET /api/whatsapp/drafts?status=pending)
+ */
+interface PendingDraft {
+  id: string;
+  code: string;
+  chatId: string;
+  recipient: string;
+  text: string;
+  createdAt: number;
+  createdBy: string | null;
+  lastError?: string | null;
+}
+
+/**
+ * Narrow an API payload to a list of pending drafts.
+ *
+ * @param value - `data` field of the drafts response
+ * @returns The drafts, or an empty list when the payload is not a list
+ */
+function toPendingDrafts(value: unknown): PendingDraft[] {
+  return Array.isArray(value)
+    ? value.filter((d): d is PendingDraft => !!d && typeof d === 'object' && typeof (d as PendingDraft).id === 'string')
+    : [];
+}
+
+/**
+ * Explains inbox mode: read + draft, owner confirms every send, no auto-replies.
+ *
+ * @returns Explainer card
+ */
+const InboxModeNotice: React.FC = () => (
+  <div className="bg-background-dark border border-border-dark rounded-lg p-4 space-y-1" data-testid="whatsapp-inbox-notice">
+    <h3 className="text-xs font-semibold text-text-secondary-dark uppercase tracking-wide">{WHATSAPP_INBOX_COPY.TITLE}</h3>
+    <p className="text-sm">{WHATSAPP_INBOX_COPY.ZH}</p>
+    <p className="text-sm text-text-secondary-dark">{WHATSAPP_INBOX_COPY.EN}</p>
+    <p className="text-xs text-text-secondary-dark">{WHATSAPP_INBOX_COPY.TOS}</p>
+  </div>
+);
 
 // =============================================================================
 // Component
@@ -50,6 +101,8 @@ export const WhatsAppTab: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [drafts, setDrafts] = useState<PendingDraft[]>([]);
+  const [busyDraftId, setBusyDraftId] = useState<string | null>(null);
 
   /**
    * Fetch current WhatsApp connection status
@@ -57,7 +110,7 @@ export const WhatsAppTab: React.FC = () => {
   const fetchStatus = useCallback(async () => {
     try {
       setError(null);
-      const res = await fetch('/api/whatsapp/status');
+      const res = await fetch(WHATSAPP_ENDPOINTS.STATUS);
       const data = await res.json();
 
       if (data.success) {
@@ -67,6 +120,7 @@ export const WhatsAppTab: React.FC = () => {
           qrCode: data.data?.qrCode,
           messagesSent: data.data?.messagesSent,
           messagesReceived: data.data?.messagesReceived,
+          mode: data.data?.mode ?? null,
         });
       } else {
         setStatus({ connected: false, error: data.error });
@@ -78,9 +132,51 @@ export const WhatsAppTab: React.FC = () => {
     }
   }, []);
 
+  /**
+   * Fetch reply drafts waiting for the owner
+   */
+  const fetchDrafts = useCallback(async () => {
+    try {
+      const res = await fetch(WHATSAPP_ENDPOINTS.PENDING_DRAFTS);
+      const data = await res.json();
+      setDrafts(data?.success ? toPendingDrafts(data.data) : []);
+    } catch {
+      setDrafts([]);
+    }
+  }, []);
+
   useEffect(() => {
     fetchStatus();
-  }, [fetchStatus]);
+    fetchDrafts();
+  }, [fetchStatus, fetchDrafts]);
+
+  /**
+   * Send or discard one draft as the owner. The request carries no
+   * X-Agent-Session header, so the backend treats the click itself as the
+   * owner's confirmation.
+   *
+   * @param draft - The draft
+   * @param action - `send` or `discard`
+   */
+  const handleDraftAction = async (draft: PendingDraft, action: 'send' | 'discard') => {
+    setBusyDraftId(draft.id);
+    setError(null);
+    try {
+      const url = action === 'send' ? WHATSAPP_ENDPOINTS.draftSend(draft.id) : WHATSAPP_ENDPOINTS.draftDiscard(draft.id);
+      const res = await fetch(url, { method: 'POST', headers: { ...DASHBOARD_CALLER_HEADERS } });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Could not ${action} draft ${draft.code}`);
+      }
+      await fetchDrafts();
+      if (action === 'send') await fetchStatus();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Could not ${action} draft ${draft.code}`);
+      await fetchDrafts();
+    } finally {
+      setBusyDraftId(null);
+    }
+  };
 
   /**
    * Start WhatsApp connection (triggers QR code generation)
@@ -90,10 +186,10 @@ export const WhatsAppTab: React.FC = () => {
     setError(null);
 
     try {
-      const res = await fetch('/api/whatsapp/connect', {
+      const res = await fetch(WHATSAPP_ENDPOINTS.CONNECT, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        headers: { 'Content-Type': 'application/json', ...DASHBOARD_CALLER_HEADERS },
+        body: JSON.stringify({ mode: WHATSAPP_DEFAULT_CONNECT_MODE }),
       });
 
       const data = await res.json();
@@ -125,7 +221,7 @@ export const WhatsAppTab: React.FC = () => {
 
     try {
       setError(null);
-      const res = await fetch('/api/whatsapp/disconnect', { method: 'POST' });
+      const res = await fetch(WHATSAPP_ENDPOINTS.DISCONNECT, { method: 'POST', headers: { ...DASHBOARD_CALLER_HEADERS } });
       const data = await res.json();
 
       if (!res.ok || !data.success) {
@@ -153,6 +249,12 @@ export const WhatsAppTab: React.FC = () => {
         <Alert variant="error" onClose={() => setError(null)}>{error}</Alert>
       )}
 
+      {status.mode === WHATSAPP_MODES.ASSISTANT ? (
+        <Alert variant="warning">{WHATSAPP_INBOX_COPY.ASSISTANT_WARNING}</Alert>
+      ) : (
+        <InboxModeNotice />
+      )}
+
       {status.connected ? (
         /* Connected State */
         <div className="space-y-5">
@@ -165,6 +267,12 @@ export const WhatsAppTab: React.FC = () => {
               Connection Details
             </h3>
             <div className="space-y-2">
+              {status.mode && (
+                <div className="flex items-center justify-between py-2 border-b border-border-dark">
+                  <span className="text-sm text-text-secondary-dark">Mode</span>
+                  <span className="text-sm font-medium" data-testid="whatsapp-mode">{status.mode}</span>
+                </div>
+              )}
               {status.phoneNumber && (
                 <div className="flex items-center justify-between py-2 border-b border-border-dark">
                   <span className="text-sm text-text-secondary-dark">Phone Number</span>
@@ -251,6 +359,64 @@ export const WhatsAppTab: React.FC = () => {
           )}
         </div>
       )}
+
+      {/* Pending reply drafts — the owner sends or discards each one */}
+      <div className="bg-background-dark border border-border-dark rounded-lg p-5" data-testid="whatsapp-drafts">
+        <h3 className="text-xs font-semibold text-text-secondary-dark uppercase tracking-wide mb-3">
+          待发送草稿 · Pending drafts
+        </h3>
+        {drafts.length === 0 ? (
+          <p className="text-sm text-text-secondary-dark">
+            No pending drafts. Replies your agents draft appear here for you to send or discard.
+          </p>
+        ) : (
+          <ul className="space-y-3">
+            {drafts.map((draft) => (
+              <li
+                key={draft.id}
+                className="border border-border-dark rounded-lg p-3 space-y-2"
+                data-testid={`whatsapp-draft-${draft.code}`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-medium">
+                    <span className="text-text-secondary-dark mr-2">{draft.code}</span>
+                    → {draft.recipient}
+                  </span>
+                  {draft.createdBy && (
+                    <span className="text-xs text-text-secondary-dark">by {draft.createdBy}</span>
+                  )}
+                </div>
+                <p className="text-sm whitespace-pre-wrap break-words">{draft.text}</p>
+                {draft.lastError && (
+                  <p className="text-xs text-rose-400">Last attempt failed: {draft.lastError}</p>
+                )}
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    icon={Send}
+                    onClick={() => handleDraftAction(draft, 'send')}
+                    disabled={busyDraftId !== null}
+                    loading={busyDraftId === draft.id}
+                    aria-label={`发送 ${draft.code}`}
+                  >
+                    发送
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    icon={Trash2}
+                    onClick={() => handleDraftAction(draft, 'discard')}
+                    disabled={busyDraftId !== null}
+                    aria-label={`丢弃 ${draft.code}`}
+                  >
+                    丢弃
+                  </Button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
     </div>
   );
 };
