@@ -51,7 +51,9 @@ jest.mock('fs', () => ({
   },
 }));
 
-const { loadWhatsAppConnection: mockLoadConnection } = require('./whatsapp-connection-config.js');
+const { loadWhatsAppConnection: mockLoadConnection } = jest.requireMock<{ loadWhatsAppConnection: jest.Mock }>(
+  './whatsapp-connection-config.js',
+);
 
 describe('WhatsApp Initializer', () => {
   const originalEnv = process.env;

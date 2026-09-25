@@ -206,7 +206,7 @@ describe('WhatsAppTab', () => {
       await waitFor(() => {
         const call = mockFetch.mock.calls.find(([u]) => u === '/api/whatsapp/connect');
         expect(call).toBeDefined();
-        const init = call![1] as RequestInit;
+        const init = (call?.[1] ?? {}) as RequestInit;
         expect(JSON.parse(init.body as string)).toEqual({ mode: 'inbox' });
         expect(init.headers).toMatchObject({ 'X-Crewly-Caller': 'dashboard' });
         expect(init.headers).not.toHaveProperty('X-Agent-Session');

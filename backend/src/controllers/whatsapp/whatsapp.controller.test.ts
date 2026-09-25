@@ -64,7 +64,10 @@ jest.mock('@whiskeysockets/baileys', () => ({
 // Get test references after mocks are applied
 const mockService = require('../../services/whatsapp/whatsapp.service.js')._testRefs.mockService;
 const mockBridge = require('../../services/whatsapp/whatsapp-orchestrator-bridge.js')._testRefs.mockBridge;
-const connectionConfig = require('../../services/whatsapp/whatsapp-connection-config.js');
+const connectionConfig = jest.requireMock<{
+  saveWhatsAppConnection: jest.Mock;
+  markWhatsAppDisconnected: jest.Mock;
+}>('../../services/whatsapp/whatsapp-connection-config.js');
 
 const app = express();
 app.use(express.json());
@@ -165,7 +168,7 @@ describe('WhatsApp Controller', () => {
     });
 
     it('starts the orchestrator bridge only in assistant mode', async () => {
-      mockService.once.mockImplementation((event: string, cb: Function) => {
+      mockService.once.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'connected') cb();
       });
 
@@ -186,7 +189,7 @@ describe('WhatsApp Controller', () => {
     });
 
     it('still connects when persisting the config fails', async () => {
-      mockService.once.mockImplementation((event: string, cb: Function) => {
+      mockService.once.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'connected') cb();
       });
       connectionConfig.saveWhatsAppConnection.mockRejectedValueOnce(new Error('disk full'));
@@ -195,7 +198,7 @@ describe('WhatsApp Controller', () => {
     });
 
     it('should return QR code when qr event fires', async () => {
-      mockService.once.mockImplementation((event: string, cb: Function) => {
+      mockService.once.mockImplementation((event: string, cb: (...args: unknown[]) => void) => {
         if (event === 'qr') cb('my-qr-code');
       });
       mockService.getStatus.mockReturnValue({ connected: false, qrCode: 'my-qr-code' });
