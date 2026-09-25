@@ -96,6 +96,8 @@ import {
 	type RuntimeSessionPlan,
 } from './runtime-session-recovery.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { RegistrationFlowRegistry, type RegistrationFlowCancelReason } from './registration-flow-registry.js';
+import { buildResumedKickoff } from './resumed-kickoff.js';
 
 /**
  * Whether a file exists (readable).
@@ -197,8 +199,10 @@ export class AgentRegistrationService {
 	// Session creation locks to prevent concurrent createAgentSession calls for the same session
 	private sessionCreationLocks = new Map<string, Promise<{ success: boolean; sessionName?: string; message?: string; error?: string; errorCode?: string }>>();
 
-	// AbortControllers for pending registration prompts (keyed by session name)
-	private registrationAbortControllers = new Map<string, AbortController>();
+	// The one live registration/kickoff flow per session, bound to the PTY it
+	// was started for. An orphaned flow (its PTY killed and replaced under the
+	// same name) must never type into the replacement (2026-09-25).
+	private registrationFlows = new RegistrationFlowRegistry<object>();
 
 	// Background stuck-message detector timer
 	private stuckMessageDetectorTimer: ReturnType<typeof setInterval> | null = null;
@@ -289,16 +293,72 @@ export class AgentRegistrationService {
 
 	/**
 	 * Cancel a pending registration prompt for a session.
-	 * Called by RuntimeExitMonitorService when a runtime exit is detected.
+	 * Called by RuntimeExitMonitorService when a runtime exit is detected, and
+	 * before every kill of the session's PTY.
 	 *
 	 * @param sessionName - The session whose registration to cancel
+	 * @param reason - Why the flow is cancelled (defaults to a runtime exit)
 	 */
-	cancelPendingRegistration(sessionName: string): void {
-		const controller = this.registrationAbortControllers.get(sessionName);
-		if (controller) {
-			controller.abort();
-			this.registrationAbortControllers.delete(sessionName);
-			this.logger.info('Cancelled pending registration', { sessionName });
+	cancelPendingRegistration(
+		sessionName: string,
+		reason: RegistrationFlowCancelReason = 'runtime-exited'
+	): void {
+		if (this.registrationFlows.cancel(sessionName, reason)) {
+			this.logger.info('Cancelled pending registration', { sessionName, reason });
+		}
+	}
+
+	/**
+	 * The PTY currently registered under a session name, used as the identity
+	 * a registration flow is bound to. Undefined when there is none (or the
+	 * session helper is not initialised yet).
+	 *
+	 * @param sessionName - Session name
+	 * @returns The live session object, compared by reference
+	 */
+	private currentPtySession(sessionName: string): object | undefined {
+		try {
+			const helper = this._sessionHelper as (SessionCommandHelper & { getSession?: (n: string) => object | undefined }) | null;
+			return typeof helper?.getSession === 'function' ? helper.getSession(sessionName) ?? undefined : undefined;
+		} catch {
+			return undefined;
+		}
+	}
+
+	/**
+	 * Whether a registration flow must stop writing to its session: its
+	 * signal was aborted, a newer flow took over, or the session's PTY was
+	 * killed/replaced since the flow started. Checked before every send.
+	 *
+	 * @param sessionName - Session the flow writes to
+	 * @param abortSignal - The flow's signal (undefined = unguarded caller)
+	 * @returns True when the caller must not send anything
+	 */
+	private isFlowCancelled(sessionName: string, abortSignal?: AbortSignal): boolean {
+		const cancelled = this.registrationFlows.isCancelled(abortSignal, this.currentPtySession(sessionName));
+		if (cancelled && abortSignal && abortSignal.reason === 'session-replaced') {
+			this.logger.info('Registration flow orphaned — its PTY was replaced; sending nothing', { sessionName });
+		}
+		return cancelled;
+	}
+
+	/**
+	 * Whether a session is already up or being brought up: a creation is in
+	 * flight, a PTY exists under the name, or an in-process runtime runs it.
+	 * The boot restore uses this to leave alone an agent another launcher
+	 * (reconciler wake, team start) already started this boot, instead of
+	 * killing it and resuming the same conversation a second time.
+	 *
+	 * @param sessionName - Session name
+	 * @returns True when the session is live or launching
+	 */
+	async isSessionLiveOrLaunching(sessionName: string): Promise<boolean> {
+		if (this.sessionCreationLocks.has(sessionName)) return true;
+		if (this.inProcessRuntimes.has(sessionName)) return true;
+		try {
+			return (await this.getSessionHelper()).sessionExists(sessionName);
+		} catch {
+			return false;
 		}
 	}
 
@@ -977,23 +1037,20 @@ export class AgentRegistrationService {
 	}
 
 	/**
-	 * Kickoff text for a resumed (non-Claude) runtime: the backend restarted,
-	 * so its registration is gone even though the conversation remembers
-	 * doing it. Tell it plainly and hand it the command.
+	 * Kickoff text for a resumed runtime conversation (any runtime): the
+	 * backend restarted, so its registration is gone even though the
+	 * conversation remembers doing it. Tell it plainly that this is the same
+	 * conversation, hand it the exact register-self command its prompt uses
+	 * (orchestrator skill for the orchestrator), and tell it to carry on.
 	 *
 	 * @param sessionName - The session
 	 * @param role - Its role
-	 * @param promptFilePath - The init prompt, for a context refresh if needed
+	 * @param promptFilePath - The init prompt, for a context refresh; omitted
+	 *   for Claude Code, whose prompt is loaded as its agent definition
 	 * @returns The message to type into the runtime
 	 */
-	private resumedKickoff(sessionName: string, role: string, promptFilePath: string): string {
-		const skillsPath = path.join(this.projectRoot, 'config', 'skills', 'agent');
-		return (
-			`Crewly restarted and your registration was reset (you are "${sessionName}", role ${role}). ` +
-			`Even if you registered earlier in this conversation, run this now: ` +
-			`bash ${skillsPath}/core/register-self/execute.sh '{"sessionName":"${sessionName}","role":"${role}"}' ` +
-			`— then re-read ${promptFilePath} only if you have lost your context, and continue where you left off.`
-		);
+	private resumedKickoff(sessionName: string, role: string, promptFilePath?: string): string {
+		return buildResumedKickoff({ projectRoot: this.projectRoot, sessionName, role, promptFilePath });
 	}
 
 	private recordRuntimeSessionAfterLaunch(
@@ -1667,14 +1724,20 @@ export class AgentRegistrationService {
 		memberId?: string,
 		runtimeType: RuntimeType = RUNTIME_TYPES.CLAUDE_CODE
 	): Promise<void> {
-		// Create AbortController for this registration
-		const controller = new AbortController();
-		this.registrationAbortControllers.set(sessionName, controller);
+		// One live flow per session, bound to the PTY that exists right now
+		// (the helper is initialised: the caller just created the PTY with it).
+		// Starting it aborts any older flow for the same name.
+		const { flow, superseded } = this.registrationFlows.begin(sessionName, this.currentPtySession(sessionName));
+		if (superseded) {
+			this.logger.info('Superseded an older registration flow for this session', { sessionName, generation: flow.generation });
+		}
+		const signal = flow.signal;
+		const cancelled = (): boolean => this.isFlowCancelled(sessionName, signal);
 
 		try {
 			this.logger.info('Loading registration prompt', { sessionName, role, runtimeType });
 
-			if (controller.signal.aborted) return;
+			if (cancelled()) return;
 			const prompt = await this.loadRegistrationPrompt(role, sessionName, memberId, runtimeType);
 
 			this.logger.info('Registration prompt loaded, sending to agent', {
@@ -1686,11 +1749,11 @@ export class AgentRegistrationService {
 			// while the TUI is still booting — with Codex the instruction landed
 			// ~2 s after spawn, during `model: loading`, and was swallowed while
 			// every log line still said "sent successfully" (server-install finding 3).
-			if (controller.signal.aborted) return;
-			await this.waitForRuntimeInputReady(sessionName, runtimeType, controller.signal);
+			if (cancelled()) return;
+			await this.waitForRuntimeInputReady(sessionName, runtimeType, signal);
 
-			if (controller.signal.aborted) return;
-			const sent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, controller.signal);
+			if (cancelled()) return;
+			const sent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, signal);
 
 			if (sent) {
 				this.logger.info('Registration prompt sent successfully', { sessionName, role });
@@ -1701,10 +1764,10 @@ export class AgentRegistrationService {
 			// Make a silent non-registration loud, and re-deliver once. Previously a
 			// swallowed instruction left the agent at `started` / readyAt null forever
 			// with no log line saying so.
-			await this.redeliverIfUnregistered(sessionName, role, prompt, runtimeType, controller.signal);
+			await this.redeliverIfUnregistered(sessionName, role, prompt, runtimeType, signal);
 		} catch (error) {
-			if (controller.signal.aborted) {
-				this.logger.info('Registration prompt cancelled (runtime exited)', { sessionName });
+			if (cancelled()) {
+				this.logger.info('Registration prompt cancelled', { sessionName, reason: String(signal.reason) });
 				return;
 			}
 			this.logger.warn('Failed to send registration prompt asynchronously', {
@@ -1713,7 +1776,7 @@ export class AgentRegistrationService {
 				stack: error instanceof Error ? error.stack : undefined,
 			});
 		} finally {
-			this.registrationAbortControllers.delete(sessionName);
+			this.registrationFlows.end(flow);
 		}
 	}
 
@@ -1748,7 +1811,7 @@ export class AgentRegistrationService {
 		const startedAt = Date.now();
 		let polls = 0;
 
-		while (!abortSignal?.aborted) {
+		while (!this.isFlowCancelled(sessionName, abortSignal)) {
 			let screen = '';
 			try {
 				screen = sessionHelper.capturePane(sessionName);
@@ -1828,7 +1891,7 @@ export class AgentRegistrationService {
 		for (let redelivery = 0; redelivery <= REGISTRATION_DELIVERY_CONSTANTS.MAX_REDELIVERIES; redelivery++) {
 			const startedAt = Date.now();
 			while (Date.now() - startedAt < timeout) {
-				if (abortSignal.aborted) return;
+				if (this.isFlowCancelled(sessionName, abortSignal)) return;
 				if (await this.checkAgentRegistration(sessionName, role)) {
 					this.logger.info('Agent registration confirmed after prompt delivery', {
 						sessionName, role, redeliveries: redelivery, waitedMs: Date.now() - startedAt,
@@ -1838,7 +1901,7 @@ export class AgentRegistrationService {
 				await delay(checkInterval);
 			}
 
-			if (abortSignal.aborted) return;
+			if (this.isFlowCancelled(sessionName, abortSignal)) return;
 
 			if (redelivery >= REGISTRATION_DELIVERY_CONSTANTS.MAX_REDELIVERIES) {
 				this.logger.error('Agent never registered after registration prompt delivery', {
@@ -1858,7 +1921,7 @@ export class AgentRegistrationService {
 				sessionName, role, runtimeType, timeoutMs: timeout,
 			});
 			await this.waitForRuntimeInputReady(sessionName, runtimeType, abortSignal);
-			if (abortSignal.aborted) return;
+			if (this.isFlowCancelled(sessionName, abortSignal)) return;
 			const resent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, abortSignal);
 			this.logger.info('registration re-delivered', { sessionName, role, runtimeType, resent });
 		}
@@ -1881,6 +1944,7 @@ export class AgentRegistrationService {
 		// for the old incarnation must not outlive it, or it false-declares the
 		// replacement PTY dead before startMonitoring() below replaces it.
 		RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
+		this.cancelPendingRegistration(sessionName, 'session-killed');
 		await (await this.getSessionHelper()).killSession(sessionName);
 
 		// Wait for cleanup
@@ -3200,10 +3264,12 @@ Loop until done, blocked, or explicitly reassigned:
 			};
 		}
 
-		// If another creation is in progress for this session, wait for it
+		// Single-flight per session name. A second caller while a creation is
+		// in flight joins it (same result, one PTY, one kickoff flow) — team
+		// start, reconciler wake and activateAgentBySession all land here.
 		const existingLock = this.sessionCreationLocks.get(config.sessionName);
-		if (existingLock) {
-			this.logger.info('Waiting for existing session creation to complete', { sessionName: config.sessionName });
+		if (existingLock && !config.forceRecreate) {
+			this.logger.info('Joining in-flight session creation (single-flight)', { sessionName: config.sessionName });
 			try {
 				return await existingLock;
 			} catch {
@@ -3212,8 +3278,18 @@ Loop until done, blocked, or explicitly reassigned:
 			}
 		}
 
-		// Create and store the lock promise
-		const creationPromise = this._createAgentSessionImpl(config);
+		// forceRecreate does not join: it waits for the in-flight creation to
+		// settle, then kills that session (aborting its registration flow) and
+		// builds its own. Chaining through the lock — set synchronously below —
+		// keeps it single-flight: later callers join the forceRecreate run, and
+		// two creations for one name never run at the same time.
+		const predecessor = existingLock && config.forceRecreate ? existingLock : undefined;
+		if (predecessor) {
+			this.logger.info('forceRecreate queued behind in-flight session creation', { sessionName: config.sessionName });
+		}
+		const creationPromise = predecessor
+			? predecessor.catch(() => undefined).then(() => this._createAgentSessionImpl(config))
+			: this._createAgentSessionImpl(config);
 		this.sessionCreationLocks.set(config.sessionName, creationPromise);
 		try {
 			const result = await creationPromise;
@@ -3374,6 +3450,11 @@ Loop until done, blocked, or explicitly reassigned:
 					// judges the seconds-old replacement PTY (no runtime child yet)
 					// dead and force-kills it — Step 1 then fails and Step 2 runs.
 					RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
+					// The killed incarnation's registration flow must die with it:
+					// stopMonitoring above means no exit callback will cancel it, and
+					// left alive it would find the replacement PTY by name and type
+					// a second kickoff into it (2026-09-25 startup-prompt loop).
+					this.cancelPendingRegistration(sessionName, 'session-killed');
 					const runtimeService = this.createRuntimeService(runtimeType);
 					runtimeService.clearDetectionCache(sessionName);
 					await (await this.getSessionHelper()).killSession(sessionName);
@@ -3525,6 +3606,7 @@ Loop until done, blocked, or explicitly reassigned:
 						sessionName,
 					}
 				);
+				this.cancelPendingRegistration(sessionName, 'session-killed');
 				await (await this.getSessionHelper()).killSession(sessionName);
 				await delay(1000); // Wait for cleanup
 			}
@@ -3858,6 +3940,9 @@ Loop until done, blocked, or explicitly reassigned:
 
 			// Stop runtime exit monitoring before killing the session
 			RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
+			// ...and with it the session's pending registration flow, which no
+			// exit callback will cancel now.
+			this.cancelPendingRegistration(sessionName, 'session-killed');
 
 			// Stop OAuth relogin monitoring before killing the session
 			OAuthReloginMonitorService.getInstance().stopMonitoring(sessionName);
@@ -6054,13 +6139,19 @@ Loop until done, blocked, or explicitly reassigned:
 		const resumedRole = this.resumedSessions.get(sessionName);
 		const handover = this.pendingHandovers.get(sessionName);
 		if (handover) this.pendingHandovers.delete(sessionName);
-		const messageToSend = isClaudeCode
-			? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.' +
-				(handover
-					? ` This is a fresh conversation: your previous one had grown to ${handover.tokens} tokens and was closed. After registering, read ${handover.path} once — it holds the end of what was said before.`
-					: '')
-			: resumedRole
-				? this.resumedKickoff(sessionName, resumedRole, promptFilePath)
+		// A resumed conversation (Claude `--resume`, Codex `resume`) already went
+		// through its startup steps; the full kickoff would read as a restart
+		// from scratch (2026-09-25). It gets the short "register again, then
+		// carry on" message instead — for every runtime. A genuinely fresh
+		// conversation (new session, or the orc handover case, which is never
+		// marked resumed) keeps the full kickoff.
+		const messageToSend = resumedRole
+			? this.resumedKickoff(sessionName, resumedRole, isClaudeCode ? undefined : promptFilePath)
+			: isClaudeCode
+				? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.' +
+					(handover
+						? ` This is a fresh conversation: your previous one had grown to ${handover.tokens} tokens and was closed. After registering, read ${handover.path} once — it holds the end of what was said before.`
+						: '')
 				: `Read the file at ${promptFilePath} and follow all instructions in it.`;
 		// Note: kickoff message is intentionally imperative for reliable agent bootstrapping.
 		// The --agent flag (Claude Code) loads the prompt as trusted system context, so this
@@ -6079,7 +6170,7 @@ Loop until done, blocked, or explicitly reassigned:
 
 		for (let attempt = 1; attempt <= maxAttempts; attempt++) {
 			// Check abort before each attempt
-			if (abortSignal?.aborted) {
+			if (this.isFlowCancelled(sessionName, abortSignal)) {
 				this.logger.info('Prompt delivery aborted (runtime exited)', { sessionName, attempt });
 				return false;
 			}
@@ -6094,7 +6185,7 @@ Loop until done, blocked, or explicitly reassigned:
 				});
 
 				// Check abort before sending to terminal
-				if (abortSignal?.aborted) {
+				if (this.isFlowCancelled(sessionName, abortSignal)) {
 					this.logger.info('Prompt delivery aborted before send (runtime exited)', { sessionName });
 					return false;
 				}
@@ -6125,7 +6216,7 @@ Loop until done, blocked, or explicitly reassigned:
 				}
 
 				// Check abort right before writing instruction to terminal
-				if (abortSignal?.aborted) {
+				if (this.isFlowCancelled(sessionName, abortSignal)) {
 					this.logger.info('Prompt delivery aborted before instruction send (runtime exited)', { sessionName });
 					return false;
 				}
@@ -6141,7 +6232,7 @@ Loop until done, blocked, or explicitly reassigned:
 				if (isClaudeCode) {
 					for (let i = 0; i < 24; i++) {
 						await delay(1000);
-						if (abortSignal?.aborted) return false;
+						if (this.isFlowCancelled(sessionName, abortSignal)) return false;
 
 						const currentOutput = sessionHelper.capturePane(sessionName);
 
@@ -6169,10 +6260,11 @@ Loop until done, blocked, or explicitly reassigned:
 					// can be dropped). A missing agent costs far more than a duplicate kickoff
 					// (idempotent: it just re-reads the prompt file), so resend ONCE and re-poll.
 					this.logger.warn('Kickoff unconfirmed after 24s — resending once', { sessionName, runtimeType });
+					if (this.isFlowCancelled(sessionName, abortSignal)) return false;
 					await sessionHelper.sendMessage(sessionName, messageToSend);
 					for (let j = 0; j < 12; j++) {
 						await delay(1000);
-						if (abortSignal?.aborted) return false;
+						if (this.isFlowCancelled(sessionName, abortSignal)) return false;
 						const out2 = sessionHelper.capturePane(sessionName);
 						if (containsSpinnerOrWorkingIndicator(out2) || !this.isClaudeAtPrompt(out2, RUNTIME_TYPES.CLAUDE_CODE)) {
 							this.logger.debug('Kickoff delivered on resend', { sessionName, checkIndex: j });

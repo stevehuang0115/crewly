@@ -3587,6 +3587,7 @@ void (async () => {
 			});
 
 			let restored = 0;
+			let alreadyRunning = 0;
 			const failed: string[] = [];
 			const RESTORE_DELAY_MS = 10_000; // 10 seconds between each session restore to avoid resource pressure
 
@@ -3604,6 +3605,18 @@ void (async () => {
 				}
 
 				try {
+					// PTYs live in this process, so none survive a restart: a session
+					// that exists now was started this boot by another launcher (a
+					// reconciler wake, a team start). forceRecreate would kill it and
+					// resume the same conversation again — a second kickoff in one
+					// chat (2026-09-25 startup-prompt loop). Leave it be.
+					if (await this.apiController.agentRegistrationService.isSessionLiveOrLaunching(session.name)) {
+						alreadyRunning++;
+						this.logger.info('Skipping restore — session already started this boot by another launcher', {
+							name: session.name,
+						});
+						continue;
+					}
 					const result = await this.apiController.agentRegistrationService.createAgentSession({
 						sessionName: session.name,
 						role: session.role || 'developer',
@@ -3640,6 +3653,7 @@ void (async () => {
 
 			this.logger.info('Agent session restore complete', {
 				restored,
+				alreadyRunning,
 				total: agentSessions.length,
 				failed: failed.length > 0 ? failed : undefined,
 			});

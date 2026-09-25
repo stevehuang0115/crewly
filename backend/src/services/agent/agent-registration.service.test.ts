@@ -592,10 +592,10 @@ describe('AgentRegistrationService', () => {
 			await jest.advanceTimersByTimeAsync(2000);
 
 			const allCalls = mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => c[1]);
-			const kickoff = allCalls.find((msg: string) => msg && msg.includes('registration was reset'));
+			const kickoff = allCalls.find((msg: string) => msg && msg.includes('this is your same conversation, resumed'));
 			expect(kickoff).toBeDefined();
-			expect(kickoff).toContain('register-self/execute.sh');
-			expect(kickoff).toContain('"sessionName":"test-session","role":"developer"');
+			expect(kickoff).toContain('core/register-self/execute.sh');
+			expect(kickoff).toContain('\'{"role":"developer","sessionName":"test-session"}\'');
 			expect(allCalls.find((msg: string) => msg && msg.startsWith('Read the file at'))).toBeUndefined();
 		});
 	});
@@ -4873,6 +4873,287 @@ describe('AgentRegistrationService', () => {
 			const fileReads = mockSessionHelper.sendMessage.mock.calls.filter((c: any[]) => String(c[1]).includes('Read the file at'));
 			expect(fileReads).toHaveLength(1);
 			expect(getLogger().info).not.toHaveBeenCalledWith('registration re-delivered', expect.anything());
+		});
+	});
+
+	// ── 2026-09-25 startup-prompt loop: resumed conversations get a short kickoff ──
+	describe('kickoff text: resumed vs fresh conversation', () => {
+		const RESUMED = 'this is your same conversation, resumed';
+		const FULL_CLAUDE = 'Begin your work now';
+
+		beforeEach(() => {
+			jest.useFakeTimers();
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			mockReadFile.mockResolvedValue('Register {{SESSION_ID}} as {{ROLE}}');
+			// Codex id discovery after a fresh launch is background work unrelated here.
+			jest.spyOn(service as any, 'recordRuntimeSessionAfterLaunch').mockImplementation(() => undefined);
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		/** Launch through tryCleanupAndReinit with a stubbed conversation plan; return what was typed. */
+		const launch = async (
+			runtimeType: string,
+			resumeSessionId: string | null,
+			opts: { role?: string; sessionName?: string } = {},
+		): Promise<string[]> => {
+			jest.spyOn(service as any, 'planSessionRecovery').mockResolvedValue({
+				flags: [], resumeSessionId, presetSessionId: null, note: 'test plan',
+			});
+			const init = service.initializeAgentWithRegistration(
+				opts.sessionName ?? 'test-session',
+				opts.role ?? 'developer',
+				'/test/path',
+				90000,
+				undefined,
+				runtimeType as any,
+			);
+			await jest.advanceTimersByTimeAsync(2000);
+			await init;
+			return mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => String(c[1]));
+		};
+
+		it.each([
+			[RUNTIME_TYPES.CLAUDE_CODE],
+			[RUNTIME_TYPES.CODEX_CLI],
+			[RUNTIME_TYPES.GEMINI_CLI],
+			[RUNTIME_TYPES.OPENCODE_CLI],
+		])('%s resumed conversation: short register-only kickoff, never the step-by-step one', async (runtime) => {
+			const typed = await launch(runtime, 'conv-123');
+			const kickoff = typed.find((m) => m.includes(RESUMED));
+			expect(kickoff).toBeDefined();
+			expect(kickoff).toContain('Run register-self now (only that step)');
+			expect(kickoff).toContain(
+				`bash /test/project/config/skills/agent/core/register-self/execute.sh '{"role":"developer","sessionName":"test-session"}'`,
+			);
+			expect(kickoff).toContain('Do not redo your startup steps or re-announce yourself');
+			expect(typed.find((m) => m.includes(FULL_CLAUDE))).toBeUndefined();
+			expect(typed.find((m) => m.startsWith('Read the file at'))).toBeUndefined();
+			// Claude has its prompt as the agent definition; others get a pointer for a context refresh.
+			if (runtime === RUNTIME_TYPES.CLAUDE_CODE) expect(kickoff).not.toContain('re-read');
+			else expect(kickoff).toContain('re-read');
+		});
+
+		it('claude-code fresh conversation keeps the full step-by-step kickoff', async () => {
+			const typed = await launch(RUNTIME_TYPES.CLAUDE_CODE, null);
+			const kickoff = typed.find((m) => m.includes(FULL_CLAUDE));
+			expect(kickoff).toBeDefined();
+			expect(kickoff).toContain('Step 3 (register-self)');
+			expect(typed.find((m) => m.includes(RESUMED))).toBeUndefined();
+		});
+
+		it.each([[RUNTIME_TYPES.CODEX_CLI], [RUNTIME_TYPES.GEMINI_CLI]])(
+			'%s fresh conversation keeps the full file-read kickoff',
+			async (runtime) => {
+				const typed = await launch(runtime, null);
+				expect(typed.find((m) => m.startsWith('Read the file at'))).toBeDefined();
+				expect(typed.find((m) => m.includes(RESUMED))).toBeUndefined();
+			},
+		);
+
+		it('a relaunch as a fresh conversation after a resumed one gets the full kickoff again', async () => {
+			await launch(RUNTIME_TYPES.CLAUDE_CODE, 'conv-123');
+			mockSessionHelper.sendMessage.mockClear();
+			const typed = await launch(RUNTIME_TYPES.CLAUDE_CODE, null);
+			expect(typed.find((m) => m.includes(FULL_CLAUDE))).toBeDefined();
+			expect(typed.find((m) => m.includes(RESUMED))).toBeUndefined();
+		});
+
+		it('orchestrator handover (fresh conversation) keeps the full kickoff plus the handover pointer', async () => {
+			(service as any).pendingHandovers.set('crewly-orc', { path: '/h/handover.md', tokens: 400000 });
+			const typed = await launch(RUNTIME_TYPES.CLAUDE_CODE, null, { sessionName: 'crewly-orc', role: 'orchestrator' });
+			const kickoff = typed.find((m) => m.includes(FULL_CLAUDE));
+			expect(kickoff).toContain('This is a fresh conversation');
+			expect(kickoff).toContain('/h/handover.md');
+		});
+
+		it('resumed orchestrator is pointed at the orchestrator register-self skill', async () => {
+			const typed = await launch(RUNTIME_TYPES.CLAUDE_CODE, 'conv-orc', { sessionName: 'crewly-orc', role: 'orchestrator' });
+			const kickoff = typed.find((m) => m.includes(RESUMED));
+			expect(kickoff).toContain(
+				`bash /test/project/config/skills/orchestrator/register-self/execute.sh '{"role":"orchestrator","sessionName":"crewly-orc"}'`,
+			);
+		});
+
+		it('a resumed agent is still waited on until it registers', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			(service as any).resumedSessions.set('test-session', 'developer');
+			mockStorageService.getTeams
+				.mockResolvedValueOnce([])
+				.mockResolvedValue([
+					{ id: 't', members: [{ sessionName: 'test-session', role: 'developer', agentStatus: 'active' }] },
+				] as any);
+			const logger = (LoggerService.getInstance() as any).createComponentLogger();
+
+			const run = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(80_000);
+			await run;
+
+			const typed = mockSessionHelper.sendMessage.mock.calls.map((c: any[]) => String(c[1]));
+			expect(typed.filter((m: string) => m.includes(RESUMED))).toHaveLength(1);
+			expect(logger.info).toHaveBeenCalledWith(
+				'Agent registration confirmed after prompt delivery',
+				expect.objectContaining({ sessionName: 'test-session', redeliveries: 0 }),
+			);
+		});
+	});
+
+	// ── 2026-09-25 startup-prompt loop: single-flight creation + orphaned flows ──
+	describe('single-flight session creation and orphaned registration flows', () => {
+		const countFileReads = (): number =>
+			mockSessionHelper.sendMessage.mock.calls.filter((c: any[]) => String(c[1]).includes('Read the file at')).length;
+
+		beforeEach(async () => {
+			jest.useFakeTimers();
+			mockReadFile.mockResolvedValue('Register {{SESSION_ID}} as {{ROLE}}');
+			mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+			// In production the helper exists before any flow starts (the PTY
+			// was just created through it); direct flow calls need it too.
+			await service['getSessionHelper']();
+			jest.spyOn(service as any, 'recordRuntimeSessionAfterLaunch').mockImplementation(() => undefined);
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('two concurrent creates for one session yield one PTY and one kickoff', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			mockSessionHelper.sessionExists.mockReturnValueOnce(false).mockReturnValue(true);
+			// Registers after the first check, so the flow ends without a re-delivery.
+			mockStorageService.getTeams
+				.mockResolvedValueOnce([]) // runtime flag lookup, call 1
+				.mockResolvedValueOnce([]) // prompt load
+				.mockResolvedValue([
+					{ id: 't', members: [{ sessionName: 'test-session', role: 'developer', agentStatus: 'active' }] },
+				] as any);
+
+			const both = Promise.all([
+				service.createAgentSession({ sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.GEMINI_CLI }),
+				service.createAgentSession({ sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.GEMINI_CLI }),
+			]);
+			await jest.advanceTimersByTimeAsync(30_000);
+			const [r1, r2] = await both;
+			await jest.advanceTimersByTimeAsync(30_000);
+
+			expect(r1.success).toBe(true);
+			expect(r2).toBe(r1);
+			expect(mockSessionHelper.createSession).toHaveBeenCalledTimes(1);
+			expect(countFileReads()).toBe(1);
+		});
+
+		it('forceRecreate during an in-flight registration: the old flow sends nothing into the new PTY', async () => {
+			const ptyOld = { id: 'old' };
+			const ptyNew = { id: 'new' };
+			let live: object | undefined = ptyOld;
+			mockSessionHelper.getSession.mockImplementation(() => live);
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockStorageService.getTeams.mockResolvedValue([]);
+			// The old runtime never reaches its idle prompt while it is alive.
+			let ready = false;
+			mockRuntimeService.isReadyForInput = jest.fn(() => ready);
+
+			// Launcher B's background flow, bound to the old PTY, waiting for input-ready.
+			const oldFlow = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(3_000);
+			expect(countFileReads()).toBe(0);
+
+			// Launcher A: forceRecreate kills the session and builds a new PTY under the same name.
+			mockSessionHelper.killSession.mockImplementation(async () => { live = undefined; });
+			mockSessionHelper.createSession.mockImplementation(async () => { live = ptyNew; return { pid: 2, cwd: '/test', name: 'test-session' }; });
+			const recreate = service.createAgentSession({
+				sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.CODEX_CLI, forceRecreate: true,
+			});
+			await jest.advanceTimersByTimeAsync(20_000);
+			await recreate;
+			expect(mockSessionHelper.killSession).toHaveBeenCalledWith('test-session');
+
+			// The new runtime becomes ready: only A's flow may type its kickoff.
+			ready = true;
+			await jest.advanceTimersByTimeAsync(10_000);
+			await oldFlow;
+			expect(countFileReads()).toBe(1);
+		});
+
+		it('an orphaned flow whose PTY was replaced by any other kill path sends nothing', async () => {
+			const ptyOld = { id: 'old' };
+			let live: object | undefined = ptyOld;
+			mockSessionHelper.getSession.mockImplementation(() => live);
+			mockStorageService.getTeams.mockResolvedValue([]);
+			let ready = false;
+			mockRuntimeService.isReadyForInput = jest.fn(() => ready);
+
+			const flow = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(3_000);
+
+			// Someone else killed and relaunched the PTY without telling the registry.
+			live = { id: 'replacement' };
+			ready = true;
+			await jest.advanceTimersByTimeAsync(10_000);
+			await flow;
+
+			expect(countFileReads()).toBe(0);
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+		});
+
+		it('forceRecreate does not join an in-flight creation: it waits, then recreates once', async () => {
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			mockStorageService.getTeams.mockResolvedValue([
+				{ id: 't', members: [{ sessionName: 'test-session', role: 'developer', agentStatus: 'active' }] },
+			] as any);
+			mockSessionHelper.sessionExists
+				.mockReturnValueOnce(false) // first create: no session yet
+				.mockReturnValue(true);     // afterwards it exists
+
+			const first = service.createAgentSession({ sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.GEMINI_CLI });
+			const forced = service.createAgentSession({
+				sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.GEMINI_CLI, forceRecreate: true,
+			});
+			await jest.advanceTimersByTimeAsync(60_000);
+			const [r1, r2] = await Promise.all([first, forced]);
+
+			expect(r1.success).toBe(true);
+			expect(r2.success).toBe(true);
+			expect(r2).not.toBe(r1);
+			// The forced run killed the first run's session exactly once, after it settled.
+			expect(mockSessionHelper.killSession).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.createSession).toHaveBeenCalledTimes(2);
+		});
+
+		it('isSessionLiveOrLaunching: in-flight creation or an existing PTY counts; nothing does not', async () => {
+			mockSessionHelper.sessionExists.mockReturnValue(false);
+			expect(await service.isSessionLiveOrLaunching('test-session')).toBe(false);
+
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			const creating = service.createAgentSession({ sessionName: 'test-session', role: 'developer', runtimeType: RUNTIME_TYPES.GEMINI_CLI });
+			expect(await service.isSessionLiveOrLaunching('test-session')).toBe(true);
+			await jest.advanceTimersByTimeAsync(30_000);
+			await creating;
+
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			expect(await service.isSessionLiveOrLaunching('test-session')).toBe(true);
+		});
+
+		it('terminateAgentSession cancels the session\'s pending registration flow', async () => {
+			const pty = { id: 'pty' };
+			mockSessionHelper.getSession.mockImplementation(() => pty);
+			mockStorageService.getTeams.mockResolvedValue([]);
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(false);
+
+			const flow = service['sendRegistrationPromptAsync']('test-session', 'developer', undefined, RUNTIME_TYPES.CODEX_CLI);
+			await jest.advanceTimersByTimeAsync(2_000);
+			expect((service as any).registrationFlows.has('test-session')).toBe(true);
+
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			await service.terminateAgentSession('test-session', 'developer');
+			expect((service as any).registrationFlows.has('test-session')).toBe(false);
+
+			mockRuntimeService.isReadyForInput = jest.fn().mockReturnValue(true);
+			await jest.advanceTimersByTimeAsync(5_000);
+			await flow;
+			expect(countFileReads()).toBe(0);
 		});
 	});
 
