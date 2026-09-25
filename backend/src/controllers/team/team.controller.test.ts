@@ -1879,6 +1879,9 @@ describe('Teams Handlers', () => {
       }]);
       mockTmuxService.createTeamMemberSession.mockResolvedValue({ success: true, sessionName: 'test-session' });
       mockStorageService.saveTeam.mockResolvedValue(undefined);
+      // Without this both members failed on `listSessions().some` and the old
+      // handler still answered success:true, which is how this test passed.
+      mockTmuxService.listSessions.mockResolvedValue([]);
       // Mock agentRegistrationService for startTeam
       mockApiContext.agentRegistrationService = {
         createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'test-session' })
