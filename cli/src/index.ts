@@ -12,6 +12,7 @@ import { upgradeCommand } from './commands/upgrade.js';
 import { installCommand } from './commands/install.js';
 import { searchCommand } from './commands/search.js';
 import { onboardCommand } from './commands/onboard.js';
+import { harnessCommand, loginCommand as harnessLoginCommand } from './commands/harness.js';
 import { mcpServerCommand } from './commands/mcp-server.js';
 import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
@@ -100,10 +101,30 @@ program
 program
   .command('init')
   .alias('onboard')
-  .description('Interactive setup wizard for new Crewly users')
-  .option('-y, --yes', 'Non-interactive mode: use all defaults (CI-friendly)')
+  .description('Setup wizard for new Crewly users (web app or terminal)')
+  .option('-y, --yes', 'Non-interactive mode: use all defaults, never prompt (CI / agents); prints the login link for your phone')
   .option('--template <id>', 'Select a team template by ID (e.g. web-dev-team)')
-  .action(onboardCommand);
+  .option('--harness <id>', 'Harness for the orchestrator: claude (default), codex or gemini')
+  .option('--web', 'Continue setup in the web app')
+  .option('--cli', 'Continue setup in this terminal')
+  .action((options: Parameters<typeof onboardCommand>[0]) => onboardCommand(options));
+
+program
+  .command('harness')
+  .description('Show the AI harnesses (Claude Code, Codex, Gemini CLI): installed version, updates, login state')
+  .action(async () => {
+    process.exitCode = await harnessCommand();
+  });
+
+program
+  .command('login <harness>')
+  .description('Log a harness in: crewly login claude | codex (prints a link to open on any device)')
+  .option('--method <method>', 'subscription | device | api_key (default: the harness\'s browser login)')
+  .option('--force', 'Log in again even when already logged in')
+  .option('-y, --yes', 'Never prompt: start the login for Crewly → Setup (web / phone) to finish')
+  .action(async (harness: string, options: Parameters<typeof harnessLoginCommand>[1]) => {
+    process.exitCode = await harnessLoginCommand(harness, options);
+  });
 
 program
   .command('mcp-server')

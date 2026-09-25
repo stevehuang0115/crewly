@@ -1,22 +1,32 @@
 /**
  * CLI Onboard Command
  *
- * Interactive setup wizard that walks new users through configuring Crewly.
- * Detects AI providers, installs missing tools, and installs agent skills
- * from the marketplace.
+ * Setup wizard for new Crewly users. It can hand off to the web app (for
+ * non-technical users) or run fully in the terminal; both call the same
+ * harness engine (backend/src/services/harness):
  *
- * Used directly via `crewly onboard`, by the curl install script, and
- * by the Electron desktop app.
+ * 1. AI harness — detect Claude Code / Codex / Gemini CLI, choose the one the
+ *    orchestrator uses (default Claude Code), install only that one when it
+ *    is missing or outdated, and record the choice.
+ * 2. Login — the harness's own login command runs in Crewly's login broker;
+ *    the sign-in link (and code) is printed so it can be opened on a phone,
+ *    and Claude's code is read back from this terminal.
+ * 3. Agent skills, 4. team template, 5. summary.
  *
- * Supports non-interactive mode via `--yes` flag and direct template
- * selection via `--template <id>`.
+ * The owner is assumed not to be at the machine: nothing opens a local
+ * browser for login, and `--yes` never prompts. With `--yes`, a login that
+ * needs a reply is started in the running backend (so the web app / phone
+ * can finish it) or skipped with a note.
+ *
+ * Used directly via `crewly onboard`, by the curl install script, and by the
+ * desktop app. Flags: `--yes`, `--template <id>`, `--harness <id>`, `--web`, `--cli`.
  *
  * @module cli/commands/onboard
  */
 
 import { createInterface, type Interface as ReadlineInterface } from 'readline';
 import { execSync } from 'child_process';
-import { mkdirSync, writeFileSync, existsSync, readFileSync, copyFileSync } from 'fs';
+import { mkdirSync, writeFileSync, existsSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { randomUUID } from 'crypto';
@@ -33,12 +43,21 @@ import {
   type TeamTemplate,
 } from '../utils/templates.js';
 import { CLI_CONSTANTS } from '../constants.js';
+import { HARNESS_CONSTANTS } from '../../../backend/src/constants.js';
+import type { HarnessService } from '../../../backend/src/services/harness/harness.service.js';
+import {
+  createCliHarnessService,
+  getBackendPort,
+  isBackendRunning,
+  localBackendUrl,
+  pickLoginDriver,
+  type LoginDriver,
+} from '../utils/harness-engine.js';
+import { createReadlineIO } from '../utils/prompt-io.js';
+import { runHarnessSetup, type HarnessSetupResult, type SetupIO } from './harness-setup.js';
 
 /** Process exit codes used by the wizard. */
 const CLI_EXIT_CODES = CLI_CONSTANTS.EXIT_CODES;
-
-/** Provider choice returned by the selection step */
-export type ProviderChoice = 'claude' | 'gemini' | 'codex' | 'opencode' | 'both' | 'skip';
 
 /** Options passed from Commander.js for the onboard command */
 export interface OnboardOptions {
@@ -46,6 +65,27 @@ export interface OnboardOptions {
   yes?: boolean;
   /** Select a team template by ID (e.g. "web-dev-team") */
   template?: string;
+  /** Harness for the orchestrator (claude | codex | gemini, or a full id) */
+  harness?: string;
+  /** Continue setup in the web app */
+  web?: boolean;
+  /** Continue setup in this terminal */
+  cli?: boolean;
+}
+
+/** Where the rest of setup happens. */
+export type SetupMode = 'web' | 'cli';
+
+/** Injectable dependencies (tests). */
+export interface OnboardDeps {
+  /** Harness engine (defaults to an in-process one) */
+  service?: HarnessService;
+  /** Login driver resolver (defaults to backend when running, else in-process) */
+  getDriver?: () => Promise<LoginDriver>;
+  /** Whether a local desktop session is available */
+  hasDesktop?: boolean;
+  /** Hand-off to the web app */
+  continueInWeb?: () => Promise<void>;
 }
 
 // ========================= Banner =========================
@@ -148,56 +188,114 @@ export function reportNonInteractiveInput(reason: string, startedSetup = false):
   process.exitCode = CLI_EXIT_CODES.ERROR;
 }
 
-// ========================= Step 1: Provider selection =========================
+// ========================= Setup mode (web or here) =========================
 
 /**
- * Asks the user which AI coding assistant they use.
+ * Whether a person is likely sitting at a local desktop session.
  *
- * Displays a numbered menu and returns the user's choice.
+ * False over SSH and inside a Crewly agent shell; on Linux a display
+ * (`DISPLAY` / `WAYLAND_DISPLAY`) is required.
  *
- * @param rl - Readline interface
- * @returns The selected provider choice
+ * @param env - Environment
+ * @param platform - OS platform
+ * @returns True when a local browser would reach the user
  */
-export async function selectProvider(rl: ReadlineInterface): Promise<ProviderChoice> {
-  console.log(chalk.bold('  Step 1/5: AI Provider'));
-  console.log('  Which AI coding assistant do you use?\n');
-  console.log('    1. Claude Code (Anthropic) ' + chalk.green('(recommended)'));
-  console.log(chalk.gray('       Best code quality, strong reasoning'));
-  console.log('    2. Gemini CLI (Google)');
-  console.log(chalk.gray('       Free tier available, fast responses'));
-  console.log('    3. Codex CLI (OpenAI)');
-  console.log(chalk.gray('       GPT-powered coding assistant'));
-  console.log('    4. OpenCode (open source)');
-  console.log(chalk.gray('       Bring any provider/model; install: npm install -g opencode-ai, then opencode auth login'));
-  console.log('    5. All providers');
-  console.log('    6. Skip\n');
+export function hasLocalDesktop(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
+  if (env.SSH_CONNECTION || env.SSH_TTY || env.CREWLY_SESSION_NAME) return false;
+  if (platform === 'darwin' || platform === 'win32') return true;
+  return Boolean(env.DISPLAY || env.WAYLAND_DISPLAY);
+}
 
-  const choices: Record<string, ProviderChoice> = {
-    '1': 'claude',
-    '2': 'gemini',
-    '3': 'codex',
-    '4': 'opencode',
-    '5': 'both',
-    '6': 'skip',
-  };
-
-  while (true) {
-    const answer = await ask(rl, '  Enter choice (1-6): ');
-    const choice = choices[answer];
-    if (choice) {
-      console.log('');
-      return choice;
-    }
-    console.log(chalk.yellow('  Please enter 1, 2, 3, 4, 5, or 6.'));
+/**
+ * Decide whether setup continues in the web app or in this terminal.
+ *
+ * `--web` / `--cli` win; `--yes` means the terminal; otherwise the user is
+ * asked, with the web app as the default when a desktop is available.
+ *
+ * @param ask - Prompt function
+ * @param options - Command options
+ * @param desktop - Whether a local desktop session is available
+ * @returns Setup mode
+ */
+export async function chooseSetupMode(
+  ask: (question: string) => Promise<string>,
+  options: OnboardOptions,
+  desktop: boolean,
+): Promise<SetupMode> {
+  if (options.web) return 'web';
+  if (options.cli || options.yes) return 'cli';
+  const defaultMode: SetupMode = desktop ? 'web' : 'cli';
+  console.log(chalk.bold('  Continue setup in the web app or here?'));
+  console.log(`    1. Web app${desktop ? chalk.green(' (recommended)') : ''} — point and click, works from your phone too`);
+  console.log(`    2. Here in the terminal${desktop ? '' : chalk.green(' (recommended)')}\n`);
+  for (;;) {
+    const answer = (await ask(`  Enter choice (1-2) [${defaultMode === 'web' ? 1 : 2}]: `)).toLowerCase();
+    if (answer === '') return defaultMode;
+    if (answer === '1' || answer === 'w' || answer === 'web') return 'web';
+    if (answer === '2' || answer === 'c' || answer === 'cli' || answer === 'here') return 'cli';
+    console.log(chalk.yellow('  Please enter 1 or 2.'));
   }
 }
 
-// ========================= Step 2: Tool detection & install =========================
+/**
+ * Hand setup over to the web app.
+ *
+ * Opens the setup page when Crewly is already running; otherwise starts
+ * Crewly in this terminal (like `crewly start`) and opens the page once it
+ * answers. The URL is always printed, so it also works from another device.
+ * Loopback needs no API token.
+ *
+ * @param deps - Browser opener, backend probe, starter (tests)
+ */
+export async function continueInWebApp(
+  deps: {
+    openUrl?: (url: string) => Promise<unknown>;
+    isRunning?: () => Promise<boolean>;
+    start?: () => Promise<void>;
+    port?: number;
+  } = {},
+): Promise<void> {
+  const port = deps.port ?? getBackendPort();
+  const url = `${localBackendUrl(port)}${HARNESS_CONSTANTS.WEB_SETUP_PATH}`;
+  // Loaded lazily: `open` is ESM-only and `start` pulls in the server
+  // launcher; neither is needed by the modules that import this file for
+  // REQUIRED_SYSTEM_TOOLS (crewly doctor).
+  const openUrl = deps.openUrl ?? (async (target: string) => (await import('open')).default(target));
+  const isRunning = deps.isRunning ?? (() => isBackendRunning(port));
+  const tryOpen = async (): Promise<void> => {
+    try {
+      await openUrl(url);
+    } catch {
+      // No browser here — the printed URL is enough.
+    }
+  };
+
+  if (await isRunning()) {
+    console.log(chalk.green(`  ✓ Crewly is running. Setup continues at ${chalk.cyan(url)}\n`));
+    await tryOpen();
+    return;
+  }
+  console.log(chalk.blue('  Starting Crewly; setup continues in the web app at'));
+  console.log(chalk.cyan(`    ${url}\n`));
+  const start = deps.start ?? (async () => (await import('./start.js')).startCommand({ port: String(port), browser: false }));
+  const opener = (async () => {
+    for (let attempt = 0; attempt < CLI_CONSTANTS.ONBOARD.WEB_WAIT_ATTEMPTS; attempt++) {
+      if (await isRunning()) {
+        await tryOpen();
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, CLI_CONSTANTS.ONBOARD.WEB_WAIT_INTERVAL_MS));
+    }
+  })();
+  await Promise.all([start(), opener]);
+}
+
+// ========================= Step 1: System tools & harness =========================
 
 /**
  * Checks whether a CLI tool is installed by running `which <command>`.
  *
- * @param command - The command name to look for (e.g. "claude")
+ * @param command - The command name to look for (e.g. "jq")
  * @returns True if the command is found on the PATH
  */
 export function checkToolInstalled(command: string): boolean {
@@ -230,37 +328,6 @@ export function getToolVersion(command: string, versionFlag = '--version'): stri
   }
 }
 
-/**
- * Installs a tool via npm globally.
- *
- * @param displayName - Human-readable tool name for output
- * @param npmPackage - The npm package name to install
- * @returns True if installation succeeded
- */
-export function installTool(displayName: string, npmPackage: string): boolean {
-  try {
-    console.log(chalk.blue(`  Installing ${displayName}...`));
-    execSync(`npm install -g ${npmPackage}`, {
-      stdio: 'pipe',
-      timeout: 120000,
-    });
-    console.log(chalk.green(`  ✓ ${displayName} installed`));
-    return true;
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    console.log(chalk.red(`  ✗ Failed to install ${displayName}: ${msg}`));
-    console.log(chalk.gray(`  Try: sudo npm install -g ${npmPackage}`));
-    return false;
-  }
-}
-
-/** Tool descriptor for detection and installation */
-interface ToolInfo {
-  displayName: string;
-  command: string;
-  npmPackage: string;
-}
-
 /** A system (non-npm) tool the Crewly agent runtime cannot work without. */
 export interface SystemToolInfo {
   displayName: string;
@@ -288,7 +355,7 @@ export const REQUIRED_SYSTEM_TOOLS: readonly SystemToolInfo[] = [
     command: 'jq',
     versionFlag: '--version',
     reason: 'Agent skills use jq to read and write JSON; agents cannot register without it.',
-    install: { macos: 'brew install jq', linux: 'sudo apt-get install -y jq   (Fedora: sudo dnf install -y jq)' },
+    install: { macos: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_MACOS, linux: HARNESS_CONSTANTS.SYSTEM_TOOLS.JQ.INSTALL_HINT_LINUX },
   },
 ];
 
@@ -325,74 +392,31 @@ export function ensureSystemTools(): number {
   return checked;
 }
 
-/** Map of provider choices to the tools they require */
-const PROVIDER_TOOLS: Record<string, ToolInfo[]> = {
-  claude: [
-    { displayName: 'Claude Code', command: 'claude', npmPackage: '@anthropic-ai/claude-code' },
-  ],
-  gemini: [
-    { displayName: 'Gemini CLI', command: 'gemini', npmPackage: '@google/gemini-cli' },
-  ],
-  codex: [
-    { displayName: 'Codex CLI', command: 'codex', npmPackage: '@openai/codex' },
-  ],
-  opencode: [
-    { displayName: 'OpenCode', command: 'opencode', npmPackage: 'opencode-ai' },
-  ],
-  both: [
-    { displayName: 'Claude Code', command: 'claude', npmPackage: '@anthropic-ai/claude-code' },
-    { displayName: 'Gemini CLI', command: 'gemini', npmPackage: '@google/gemini-cli' },
-    { displayName: 'Codex CLI', command: 'codex', npmPackage: '@openai/codex' },
-    { displayName: 'OpenCode', command: 'opencode', npmPackage: 'opencode-ai' },
-  ],
-  skip: [],
-};
-
 /**
- * Checks for and optionally installs the tools needed for the selected provider.
+ * Steps 1 and 2: system tools, then the harness engine's setup (detect →
+ * choose → install the orc's harness only → record → log in).
  *
- * For each required tool, checks if it's on the PATH. If missing, asks the user
- * whether to install it via npm. In non-interactive (--yes) mode, automatically
- * installs missing tools.
- *
- * @param rl - Readline interface
- * @param provider - The chosen provider
- * @param autoYes - When true, skip prompts and install missing tools automatically
+ * @param io - Prompting and output
+ * @param service - Harness engine
+ * @param getDriver - Login driver resolver
+ * @param options - `interactive`, `harness` preset
+ * @returns What was set up
  */
-export async function ensureTools(rl: ReadlineInterface, provider: ProviderChoice, autoYes = false): Promise<void> {
-  console.log(chalk.bold('  Step 2/5: Tool Installation'));
-
-  // Required system tools (jq). tmux is not required: sessions use node-pty.
+export async function runHarnessStep(
+  io: SetupIO,
+  service: HarnessService,
+  getDriver: () => Promise<LoginDriver>,
+  options: { interactive: boolean; harness?: string },
+): Promise<HarnessSetupResult> {
+  console.log(chalk.bold('  Step 1/5: AI Harness'));
   ensureSystemTools();
-
-  const tools = PROVIDER_TOOLS[provider] || [];
-
-  if (tools.length === 0) {
-    console.log(chalk.gray('  Skipped AI provider installation.\n'));
-    return;
-  }
-
-  for (const tool of tools) {
-    if (checkToolInstalled(tool.command)) {
-      const version = getToolVersion(tool.command);
-      const versionStr = version ? ` (v${version})` : '';
-      console.log(chalk.green(`  ✓ ${tool.displayName} detected${versionStr}`));
-    } else {
-      console.log(chalk.yellow(`  ⚠ ${tool.displayName} not found.`));
-      if (autoYes) {
-        installTool(tool.displayName, tool.npmPackage);
-      } else {
-        const answer = await ask(rl, `  Install ${tool.displayName} now? [Y/n] `);
-        if (answer === '' || answer.toLowerCase() === 'y' || answer.toLowerCase() === 'yes') {
-          installTool(tool.displayName, tool.npmPackage);
-        } else {
-          console.log(chalk.gray(`  Skipped ${tool.displayName} installation.`));
-        }
-      }
-    }
-  }
-
+  const result = await runHarnessSetup(io, service, getDriver, {
+    interactive: options.interactive,
+    preset: options.harness,
+    loginHeader: chalk.bold('  Step 2/5: Log in'),
+  });
   console.log('');
+  return result;
 }
 
 // ========================= Step 3: Skills =========================
@@ -490,7 +514,7 @@ export async function selectTemplate(rl: ReadlineInterface): Promise<TeamTemplat
 
   const maxChoice = templates.length + 1;
 
-  while (true) {
+  for (;;) {
     const answer = await ask(rl, `  Enter choice (1-${maxChoice}): `);
     const num = parseInt(answer, 10);
     if (num >= 1 && num <= templates.length) {
@@ -515,24 +539,13 @@ export async function selectTemplate(rl: ReadlineInterface): Promise<TeamTemplat
  * and default status fields. The team is immediately available when `crewly start` runs.
  *
  * @param template - The team template to create from
- * @param provider - The chosen AI provider to set as default runtime for members
+ * @param runtimeType - Harness the members run on (the orchestrator's harness,
+ *   the only one first-time setup installs)
  * @returns True if the team was created successfully
  */
-export function createTeamFromTemplate(template: TeamTemplate, provider: ProviderChoice = 'claude'): boolean {
+export function createTeamFromTemplate(template: TeamTemplate, runtimeType: string = HARNESS_CONSTANTS.DEFAULT_ORC_HARNESS): boolean {
   const now = new Date().toISOString();
   const teamsDir = join(homedir(), '.crewly', 'teams', template.id);
-
-  // Map ProviderChoice to RuntimeType
-  const runtimeTypeMap: Record<string, string> = {
-    'claude': 'claude-code',
-    'gemini': 'gemini-cli',
-    'codex': 'codex-cli',
-    'opencode': 'opencode-cli',
-    'both': 'claude-code', // Default to Claude if both are selected
-    'skip': 'claude-code',
-  };
-
-  const runtimeType = runtimeTypeMap[provider] || 'claude-code';
 
   try {
     mkdirSync(teamsDir, { recursive: true });
@@ -710,18 +723,20 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
 /**
  * Runs the onboarding wizard.
  *
- * In interactive mode (default), walks the user through 5 steps:
- * 1. Choose an AI provider (Claude Code, Gemini CLI, Codex, OpenCode, all, or skip)
- * 2. Detect / install the chosen tool(s)
- * 3. Install agent skills from the marketplace
- * 4. Pick a team template (or skip)
- * 5. Print a success summary
+ * First asks whether to continue in the web app or here (`--web` / `--cli`
+ * skip the question; the web app is the default when a desktop is
+ * available). In the terminal it walks through:
+ * 1. AI harness: jq check, detect harnesses, choose the orchestrator's
+ *    (default Claude Code), install only that one, record the choice
+ * 2. Log in through the login broker (link + code printed for a phone)
+ * 3. Agent skills
+ * 4. Team template (or skip)
+ * 5. Summary
  *
- * In non-interactive mode (--yes), uses defaults:
- * - Provider: claude
- * - Auto-install missing tools
- * - First available template (or --template flag)
- * - Scaffold .crewly/ directory
+ * `--yes` uses the defaults and never prompts: the default harness (or
+ * `--harness`), auto-install, and a login that is either handed to the
+ * running backend (web app / phone finish it), a device-code login that
+ * needs no reply, or skipped with a note.
  *
  * Interactive mode requires stdin to be a terminal. When it is not (a pipe,
  * as under `curl ... | bash` without `< /dev/tty`), or when the input closes
@@ -729,8 +744,9 @@ export function printSummary(selectedTemplate: TeamTemplate | null = null, proje
  * of finishing with nothing set up (#772).
  *
  * @param options - Command options from Commander.js
+ * @param deps - Injectable dependencies (tests)
  */
-export async function onboardCommand(options: OnboardOptions = {}): Promise<void> {
+export async function onboardCommand(options: OnboardOptions = {}, deps: OnboardDeps = {}): Promise<void> {
   printBanner();
 
   const autoYes = options.yes === true;
@@ -751,62 +767,76 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
   }
 
   // Interactive mode needs a terminal to read answers from (#772).
-  if (!autoYes && !isInteractiveInput()) {
+  if (!autoYes && !options.web && !isInteractiveInput()) {
     reportNonInteractiveInput('The setup wizard needs a terminal, but its input is not one.');
     return;
   }
 
+  const continueInWeb = deps.continueInWeb ?? (() => continueInWebApp());
+  const desktop = deps.hasDesktop ?? hasLocalDesktop();
+  let service: HarnessService | null = null;
+  const getService = (): HarnessService => {
+    service = service ?? deps.service ?? createCliHarnessService();
+    return service;
+  };
+  const getDriver = deps.getDriver ?? (() => pickLoginDriver(getService()));
+
   if (autoYes) {
-    // Non-interactive mode: use defaults
-    const provider: ProviderChoice = 'claude';
+    // Non-interactive mode: use defaults, never prompt.
     console.log(chalk.gray('  Running in non-interactive mode (--yes)\n'));
-
-    // Step 1: Default provider
-    console.log(chalk.bold('  Step 1/5: AI Provider'));
-    console.log(chalk.green(`  ✓ Using default: Claude Code\n`));
-
-    // Step 2: Auto-install tools (autoYes never prompts; close the interface
-    // so an open stdin cannot keep the process alive)
-    const autoRl = createReadlineInterface();
+    if (options.web) {
+      await continueInWeb();
+      return;
+    }
+    const noPrompt: SetupIO = {
+      ask: async () => '',
+      log: (line) => console.log(line),
+    };
     try {
-      await ensureTools(autoRl, provider, true);
-    } finally {
-      autoRl.close();
-    }
+      const harness = await runHarnessStep(noPrompt, getService(), getDriver, { interactive: false, harness: options.harness });
 
-    // Step 3: Skills
-    await ensureSkills();
+      // Step 3: Skills
+      await ensureSkills();
 
-    // Step 4: Template — use preselected or first available
-    console.log(chalk.bold('  Step 4/5: Team Template'));
-    const selectedTemplate = preselectedTemplate ?? listTemplates()[0] ?? null;
-    if (selectedTemplate) {
-      console.log(chalk.green(`  ✓ Using template: ${selectedTemplate.name}\n`));
-      const created = createTeamFromTemplate(selectedTemplate, provider);
-      if (created) {
-        console.log(chalk.green(`  ✓ Team "${selectedTemplate.name}" created\n`));
+      // Step 4: Template — use preselected or first available
+      console.log(chalk.bold('  Step 4/5: Team Template'));
+      const selectedTemplate = preselectedTemplate ?? listTemplates()[0] ?? null;
+      if (selectedTemplate) {
+        console.log(chalk.green(`  ✓ Using template: ${selectedTemplate.name}\n`));
+        const created = createTeamFromTemplate(selectedTemplate, harness.harnessId);
+        if (created) {
+          console.log(chalk.green(`  ✓ Team "${selectedTemplate.name}" created\n`));
+        }
+      } else {
+        console.log(chalk.gray('  No templates available.\n'));
       }
-    } else {
-      console.log(chalk.gray('  No templates available.\n'));
+
+      // Scaffold .crewly/ directory (with template project files)
+      scaffoldCrewlyDirectory(process.cwd(), selectedTemplate);
+
+      // Step 5: Summary
+      printSummary(selectedTemplate);
+    } finally {
+      (service as HarnessService | null)?.broker.shutdown();
     }
-
-    // Scaffold .crewly/ directory (with template project files)
-    scaffoldCrewlyDirectory(process.cwd(), selectedTemplate);
-
-    // Step 5: Summary
-    printSummary(selectedTemplate);
     return;
   }
 
   // Interactive mode
   const rl = createReadlineInterface();
+  const io = createReadlineIO(rl, () => new WizardInputClosedError());
 
   try {
-    // Step 1: Provider selection
-    const provider = await selectProvider(rl);
+    const mode = await chooseSetupMode(io.ask, options, desktop);
+    if (mode === 'web') {
+      rl.close();
+      await continueInWeb();
+      return;
+    }
+    console.log('');
 
-    // Step 2: Tool installation
-    await ensureTools(rl, provider);
+    // Steps 1-2: harness + login
+    const harness = await runHarnessStep(io, getService(), getDriver, { interactive: true, harness: options.harness });
 
     // Step 3: Skills
     await ensureSkills();
@@ -823,7 +853,7 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
 
     // Create team from selected template
     if (selectedTemplate) {
-      const created = createTeamFromTemplate(selectedTemplate, provider);
+      const created = createTeamFromTemplate(selectedTemplate, harness.harnessId);
       if (created) {
         console.log(chalk.green(`  ✓ Team "${selectedTemplate.name}" created\n`));
       }
@@ -843,5 +873,6 @@ export async function onboardCommand(options: OnboardOptions = {}): Promise<void
     throw error;
   } finally {
     rl.close();
+    (service as HarnessService | null)?.broker.shutdown();
   }
 }

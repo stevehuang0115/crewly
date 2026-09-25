@@ -64,6 +64,26 @@ export const CLI_CONSTANTS = {
     ERROR: 1,
     INVALID_ARGS: 2,
   },
+
+  /** Harness setup in `crewly onboard` / `crewly login` (specs/onboarding-harness-login.md) */
+  HARNESS_SETUP: {
+    /** How often a login session is polled */
+    POLL_INTERVAL_MS: 1000,
+    /** Non-interactive: how long to wait for the login URL / code before giving up on printing it */
+    URL_WAIT_MS: 30_000,
+    /** Print the raw login screen when no URL / code / prompt showed up by then */
+    SCREEN_FALLBACK_MS: 20_000,
+    /** Extra time past the broker's own timeout before the CLI stops waiting */
+    WAIT_GRACE_MS: 30_000,
+  },
+
+  /** `crewly onboard --web` hand-off */
+  ONBOARD: {
+    /** Health checks before opening the setup page on a freshly started backend */
+    WEB_WAIT_ATTEMPTS: 60,
+    /** Delay between those checks */
+    WEB_WAIT_INTERVAL_MS: 1000,
+  },
 } as const;
 
 // ========================= CONVENIENCE ALIASES =========================

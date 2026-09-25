@@ -1,9 +1,10 @@
 /**
  * Tests for the CLI onboard command.
  *
- * Validates the interactive setup wizard: banner output, provider selection,
- * tool detection/installation, skills check, team creation, the full flow,
- * and the --yes (non-interactive) and --template flags.
+ * Validates the setup wizard: banner, web-or-terminal choice, system tools,
+ * the harness step (engine mocked — it has its own tests in harness-setup),
+ * skills check, team creation, the full flow, and the --yes (non-interactive),
+ * --template, --harness, --web and --cli flags.
  */
 
 // ---------------------------------------------------------------------------
@@ -51,7 +52,7 @@ jest.mock('fs', () => ({
   mkdirSync: (...args: unknown[]) => mockMkdirSync(...args),
   writeFileSync: (...args: unknown[]) => mockWriteFileSync(...args),
   existsSync: (...args: unknown[]) => mockExistsSync(...args),
-  readFileSync: (...args: unknown[]) => '',
+  readFileSync: () => '',
   copyFileSync: (...args: unknown[]) => mockCopyFileSync(...args),
 }));
 
@@ -74,13 +75,39 @@ jest.mock('readline', () => ({
   }),
 }));
 
+const mockRunHarnessSetup = jest.fn();
+jest.mock('./harness-setup.js', () => ({
+  runHarnessSetup: (...args: unknown[]) => mockRunHarnessSetup(...args),
+}));
+
+const mockBrokerShutdown = jest.fn();
+const mockPickLoginDriver = jest.fn();
+const mockIsBackendRunning = jest.fn();
+jest.mock('../utils/harness-engine.js', () => ({
+  createCliHarnessService: () => ({ broker: { shutdown: mockBrokerShutdown } }),
+  pickLoginDriver: (...args: unknown[]) => mockPickLoginDriver(...args),
+  getBackendPort: () => 8787,
+  localBackendUrl: (port: number) => `http://localhost:${port}`,
+  isBackendRunning: (...args: unknown[]) => mockIsBackendRunning(...args),
+}));
+
+const mockStartCommand = jest.fn();
+jest.mock('./start.js', () => ({
+  startCommand: (...args: unknown[]) => mockStartCommand(...args),
+}));
+
+const mockOpen = jest.fn();
+jest.mock('open', () => ({ __esModule: true, default: (...args: unknown[]) => mockOpen(...args) }), { virtual: true });
+
 import {
   printBanner,
-  selectProvider,
   checkToolInstalled,
   getToolVersion,
-  installTool,
-  ensureTools,
+  ensureSystemTools,
+  hasLocalDesktop,
+  chooseSetupMode,
+  continueInWebApp,
+  runHarnessStep,
   ensureSkills,
   selectTemplate,
   createTeamFromTemplate,
@@ -91,8 +118,8 @@ import {
   isInteractiveInput,
   reportNonInteractiveInput,
   WizardInputClosedError,
-  type ProviderChoice,
 } from './onboard.js';
+import { createReadlineIO } from '../utils/prompt-io.js';
 
 import type { TeamTemplate } from '../utils/templates.js';
 
@@ -180,6 +207,13 @@ describe('onboard command', () => {
     mockExistsSync.mockReturnValue(false);
     mockCopyFileSync.mockReset();
     mockGetTemplatesDir.mockReturnValue('/mock/templates');
+    mockRunHarnessSetup.mockReset();
+    mockRunHarnessSetup.mockResolvedValue({ harnessId: 'claude-code', installed: true, login: 'succeeded' });
+    mockBrokerShutdown.mockReset();
+    mockPickLoginDriver.mockReset();
+    mockIsBackendRunning.mockReset();
+    mockStartCommand.mockReset();
+    mockOpen.mockReset();
   });
 
   afterEach(() => {
@@ -207,39 +241,72 @@ describe('onboard command', () => {
   });
 
   // -----------------------------------------------------------------------
-  // selectProvider
+  // Web or terminal
   // -----------------------------------------------------------------------
 
-  describe('selectProvider', () => {
-    it.each([
-      ['1', 'claude'],
-      ['2', 'gemini'],
-      ['3', 'codex'],
-      ['4', 'opencode'],
-      ['5', 'both'],
-      ['6', 'skip'],
-    ] as [string, ProviderChoice][])('returns "%s" when user enters %s', async (input, expected) => {
-      const rl = createMockReadline([input]);
-      const result = await selectProvider(rl);
-      expect(result).toBe(expected);
+  describe('hasLocalDesktop', () => {
+    it('is true on macOS and on Linux with a display', () => {
+      expect(hasLocalDesktop({}, 'darwin')).toBe(true);
+      expect(hasLocalDesktop({ DISPLAY: ':0' }, 'linux')).toBe(true);
+      expect(hasLocalDesktop({ WAYLAND_DISPLAY: 'wayland-0' }, 'linux')).toBe(true);
     });
 
-    it('#306: lists OpenCode with its install hint in the provider menu', async () => {
-      const rl = createMockReadline(['4']);
-      await selectProvider(rl);
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('4. OpenCode (open source)');
-      expect(output).toContain('npm install -g opencode-ai');
-      expect(output).toContain('opencode auth login');
+    it('is false over SSH, inside an agent shell, and on a headless Linux box', () => {
+      expect(hasLocalDesktop({ SSH_CONNECTION: '1.2.3.4 22 5.6.7.8 22' }, 'darwin')).toBe(false);
+      expect(hasLocalDesktop({ SSH_TTY: '/dev/ttys001' }, 'darwin')).toBe(false);
+      expect(hasLocalDesktop({ CREWLY_SESSION_NAME: 'crewly-orc' }, 'darwin')).toBe(false);
+      expect(hasLocalDesktop({}, 'linux')).toBe(false);
+    });
+  });
+
+  describe('chooseSetupMode', () => {
+    const never = async (): Promise<string> => { throw new Error('should not ask'); };
+
+    it('honours --web, --cli and --yes without asking', async () => {
+      expect(await chooseSetupMode(never, { web: true }, false)).toBe('web');
+      expect(await chooseSetupMode(never, { cli: true }, true)).toBe('cli');
+      expect(await chooseSetupMode(never, { yes: true }, true)).toBe('cli');
     });
 
-    it('re-prompts on invalid input then accepts valid', async () => {
-      const rl = createMockReadline(['x', '9', '2']);
-      const result = await selectProvider(rl);
-      expect(result).toBe('gemini');
-      // Should have printed a warning for bad inputs
+    it('defaults to the web app with a desktop and to the terminal without', async () => {
+      expect(await chooseSetupMode(async () => '', {}, true)).toBe('web');
+      expect(await chooseSetupMode(async () => '', {}, false)).toBe('cli');
+    });
+
+    it('accepts numbers and words, and re-asks on nonsense', async () => {
+      const answers = ['x', '2'];
+      expect(await chooseSetupMode(async () => answers.shift() ?? '', {}, true)).toBe('cli');
+      expect(await chooseSetupMode(async () => 'web', {}, false)).toBe('web');
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('Please enter 1, 2, 3, 4, 5, or 6');
+      expect(output).toContain('Please enter 1 or 2');
+    });
+  });
+
+  describe('continueInWebApp', () => {
+    it('opens the setup page when Crewly is running and prints the URL', async () => {
+      const openUrl = jest.fn(async () => undefined);
+      const start = jest.fn(async () => undefined);
+      await continueInWebApp({ openUrl, isRunning: async () => true, start, port: 8787 });
+      expect(openUrl).toHaveBeenCalledWith('http://localhost:8787/setup');
+      expect(start).not.toHaveBeenCalled();
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('http://localhost:8787/setup');
+    });
+
+    it('uses the real opener and starter by default (loaded lazily)', async () => {
+      const running = [false, true];
+      await continueInWebApp({ isRunning: async () => running.shift() ?? true, port: 8787 });
+      expect(mockStartCommand).toHaveBeenCalledWith({ port: '8787', browser: false });
+      expect(mockOpen).toHaveBeenCalledWith('http://localhost:8787/setup');
+    });
+
+    it('starts Crewly when it is not running, then opens the page once it answers', async () => {
+      const running = [false, true];
+      const openUrl = jest.fn(async () => { throw new Error('no browser'); });
+      const start = jest.fn(async () => undefined);
+      await continueInWebApp({ openUrl, isRunning: async () => running.shift() ?? true, start, port: 9000 });
+      expect(start).toHaveBeenCalled();
+      expect(openUrl).toHaveBeenCalledWith('http://localhost:9000/setup');
     });
   });
 
@@ -282,50 +349,20 @@ describe('onboard command', () => {
   });
 
   // -----------------------------------------------------------------------
-  // installTool
+  // ensureSystemTools (jq required, tmux not)
   // -----------------------------------------------------------------------
 
-  describe('installTool', () => {
-    it('runs npm install and returns true on success', () => {
-      mockExecSync.mockReturnValue(Buffer.from(''));
-      const result = installTool('Claude Code', '@anthropic-ai/claude-code');
-      expect(result).toBe(true);
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'npm install -g @anthropic-ai/claude-code',
-        expect.objectContaining({ stdio: 'pipe' }),
-      );
-    });
-
-    it('returns false on failure and suggests sudo', () => {
-      mockExecSync.mockImplementation(() => { throw new Error('permission denied'); });
-      const result = installTool('Claude Code', '@anthropic-ai/claude-code');
-      expect(result).toBe(false);
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('sudo npm install -g');
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // ensureTools
-  // -----------------------------------------------------------------------
-
-  describe('ensureTools', () => {
-    it('checks for jq before provider tools', async () => {
+  describe('ensureSystemTools', () => {
+    it('reports jq when present', () => {
       mockJqFound();
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'skip');
-
+      expect(ensureSystemTools()).toBe(1);
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('jq detected');
     });
 
-    it('blocks with install commands when jq is not found', async () => {
+    it('blocks with install commands when jq is not found', () => {
       mockJqNotFound();
-
-      const rl = createMockReadline([]);
-      await expect(ensureTools(rl, 'skip')).rejects.toThrow('process.exit called');
-
+      expect(() => ensureSystemTools()).toThrow('process.exit called');
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('jq not found');
       expect(output).toContain('brew install jq');
@@ -333,144 +370,43 @@ describe('onboard command', () => {
       expect(exitSpy).toHaveBeenCalledWith(1);
     });
 
-    it('does not require tmux: with tmux absent and jq present, setup continues', async () => {
+    it('does not require tmux: only jq is probed', () => {
       mockExecSync.mockImplementation((cmd: string) => {
         if (String(cmd).includes('tmux')) throw new Error('not found');
         if (String(cmd) === 'which jq') return Buffer.from('/usr/bin/jq');
         if (String(cmd).startsWith('jq --version')) return Buffer.from('jq-1.7.1');
         throw new Error(`unexpected command: ${cmd}`);
       });
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'skip');
-
+      ensureSystemTools();
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(exitSpy).not.toHaveBeenCalled();
       expect(output).not.toMatch(/tmux/i);
-      const probed = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]));
-      expect(probed.some((c) => c.includes('tmux'))).toBe(false);
-    });
-
-    it('reports how many system tools it checked: exactly one (jq), never tmux', async () => {
-      mockJqFound();
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'skip');
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      // An examined-count is printed so a check over nothing cannot pass silently.
       expect(output).toContain('1 system tool(s) checked');
       const probed = mockExecSync.mock.calls.map((c: unknown[]) => String(c[0]));
       expect(probed).toEqual(['which jq', 'jq --version 2>/dev/null']);
     });
+  });
 
-    it('skips tool installation when provider is skip and jq present', async () => {
+  // -----------------------------------------------------------------------
+  // runHarnessStep
+  // -----------------------------------------------------------------------
+
+  describe('runHarnessStep', () => {
+    it('checks jq, then runs the shared harness setup with the login step header', async () => {
       mockJqFound();
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'skip');
+      const io = { ask: jest.fn(), log: jest.fn() };
+      const getDriver = jest.fn();
+      const service = { broker: { shutdown: jest.fn() } } as never;
+      const result = await runHarnessStep(io, service, getDriver, { interactive: false, harness: 'codex' });
+      expect(result).toEqual({ harnessId: 'claude-code', installed: true, login: 'succeeded' });
+      expect(mockRunHarnessSetup).toHaveBeenCalledWith(io, service, getDriver, expect.objectContaining({
+        interactive: false,
+        preset: 'codex',
+        loginHeader: expect.stringContaining('Step 2/5'),
+      }));
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('Skipped');
-    });
-
-    it('detects an already-installed tool', async () => {
-      // jq → found; which claude → found; claude --version
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
-        .mockReturnValueOnce(Buffer.from('jq-1.7.1'))         // jq --version
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'claude');
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('Claude Code detected');
-    });
-
-    it('prompts to install a missing tool and installs on Y', async () => {
-      // jq → found; which claude → not found; npm install → succeeds
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
-        .mockReturnValueOnce(Buffer.from('jq-1.7.1'))         // jq --version
-        .mockImplementationOnce(() => { throw new Error('not found'); })  // which claude
-        .mockReturnValueOnce(Buffer.from(''))  // npm install
-        ;
-
-      const rl = createMockReadline(['Y']);
-      await ensureTools(rl, 'claude');
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('not found');
-      expect(output).toContain('installed');
-    });
-
-    it('skips installation when user declines', async () => {
-      // jq → found; which claude → not found
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
-        .mockReturnValueOnce(Buffer.from('jq-1.7.1'))         // jq --version
-        .mockImplementationOnce(() => { throw new Error('not found'); });  // which claude
-
-      const rl = createMockReadline(['n']);
-      await ensureTools(rl, 'claude');
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('Skipped Claude Code');
-    });
-
-    it('#306: detects an installed OpenCode binary for the opencode provider', async () => {
-      // jq → found; which opencode → found; opencode --version
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
-        .mockReturnValueOnce(Buffer.from('jq-1.7.1'))         // jq --version
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/opencode'))
-        .mockReturnValueOnce(Buffer.from('1.18.31'));
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'opencode');
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('OpenCode detected (v1.18.31)');
-    });
-
-    it('#306: offers to install OpenCode from the opencode-ai npm package when missing', async () => {
-      // jq → found; which opencode → not found; npm install → succeeds
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
-        .mockReturnValueOnce(Buffer.from('jq-1.7.1'))         // jq --version
-        .mockImplementationOnce(() => { throw new Error('not found'); })  // which opencode
-        .mockReturnValueOnce(Buffer.from(''));  // npm install
-
-      const rl = createMockReadline(['Y']);
-      await ensureTools(rl, 'opencode');
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('OpenCode not found');
-      expect(output).toContain('OpenCode installed');
-      expect(mockExecSync).toHaveBeenCalledWith(
-        'npm install -g opencode-ai',
-        expect.anything(),
-      );
-    });
-
-    it('auto-installs missing tools when autoYes is true', async () => {
-      // jq → found; which claude → not found; npm install → succeeds
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/bin/jq'))   // which jq
-        .mockReturnValueOnce(Buffer.from('jq-1.7.1'))         // jq --version
-        .mockImplementationOnce(() => { throw new Error('not found'); }) // which claude
-        .mockReturnValueOnce(Buffer.from('')) // npm install
-        ;
-
-      const rl = createMockReadline([]);
-      await ensureTools(rl, 'claude', true);
-
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('not found');
-      expect(output).toContain('installed');
-      // Should NOT have asked the user
-      expect(rl.question).not.toHaveBeenCalled;
+      expect(output).toContain('Step 1/5: AI Harness');
+      expect(output).toContain('jq detected');
     });
   });
 
@@ -650,13 +586,13 @@ describe('onboard command', () => {
       expect(config.members[0].createdAt).toBeDefined();
     });
 
-    it('#306: maps the opencode provider to the opencode-cli runtime type', () => {
-      createTeamFromTemplate(sampleTemplate, 'opencode');
+    it('puts every member on the given runtime (the orchestrator harness)', () => {
+      createTeamFromTemplate(sampleTemplate, 'codex-cli');
 
       const writeCall = mockWriteFileSync.mock.calls[0];
       const config = JSON.parse(writeCall[1] as string);
 
-      expect(config.members.every((m: { runtimeType: string }) => m.runtimeType === 'opencode-cli')).toBe(true);
+      expect(config.members.every((m: { runtimeType: string }) => m.runtimeType === 'codex-cli')).toBe(true);
     });
 
     it('returns false when filesystem operation fails', () => {
@@ -854,9 +790,10 @@ describe('onboard command', () => {
       mockExistsSync.mockReturnValue(false);
     });
 
-    it('runs the full wizard selecting skip provider', async () => {
-      mockReadlineAnswers = ['6']; // skip provider; template auto-skips (no templates)
+    it('runs the full wizard in the terminal', async () => {
+      mockReadlineAnswers = ['2']; // terminal; template auto-skips (no templates)
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
 
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
@@ -864,9 +801,38 @@ describe('onboard command', () => {
 
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('Welcome');
-      expect(output).toContain('Skipped');
+      expect(output).toContain('No templates available');
       expect(output).toContain('Setup complete');
       expect(mockRlClose).toHaveBeenCalled();
+      expect(mockRunHarnessSetup).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Function), expect.objectContaining({ interactive: true }));
+      expect(mockBrokerShutdown).toHaveBeenCalled();
+    });
+
+    it('hands off to the web app when chosen, without running the terminal steps', async () => {
+      mockReadlineAnswers = ['1'];
+      mockReadlineAnswerIndex = 0;
+      const continueInWeb = jest.fn(async () => undefined);
+
+      await onboardCommand({}, { continueInWeb, hasDesktop: true });
+
+      expect(continueInWeb).toHaveBeenCalled();
+      expect(mockRunHarnessSetup).not.toHaveBeenCalled();
+      expect(mockCheckSkillsInstalled).not.toHaveBeenCalled();
+    });
+
+    it('creates the team on the chosen orchestrator harness', async () => {
+      mockListTemplates.mockReturnValue([sampleTemplate]);
+      mockRunHarnessSetup.mockResolvedValue({ harnessId: 'codex-cli', installed: true, login: 'pending' });
+      mockReadlineAnswers = ['1']; // template 1 (mode comes from --cli)
+      mockReadlineAnswerIndex = 0;
+      mockJqFound();
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
+
+      await onboardCommand({ cli: true, harness: 'codex' });
+
+      expect(mockRunHarnessSetup).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Function), expect.objectContaining({ preset: 'codex' }));
+      const written = String(mockWriteFileSync.mock.calls.find((c: unknown[]) => String(c[0]).endsWith('config.json'))?.[1]);
+      expect(written).toContain('"runtimeType": "codex-cli"');
     });
 
     it('runs full wizard with template selection', async () => {
@@ -879,9 +845,10 @@ describe('onboard command', () => {
         },
       ]);
 
-      // Answer '6' for provider (skip), '1' for template selection
-      mockReadlineAnswers = ['6', '1'];
+      // Answer '2' for the terminal, '1' for template selection
+      mockReadlineAnswers = ['2', '1'];
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
 
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
@@ -897,8 +864,9 @@ describe('onboard command', () => {
     it('creates team when template is selected', async () => {
       mockListTemplates.mockReturnValue([sampleTemplate]);
 
-      mockReadlineAnswers = ['6', '1']; // skip provider, select first template
+      mockReadlineAnswers = ['2', '1']; // terminal, select first template
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
 
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
@@ -909,14 +877,9 @@ describe('onboard command', () => {
     });
 
     it('closes readline even if an error occurs in skills', async () => {
-      mockReadlineAnswers = ['1']; // claude provider; template auto-skips (no templates)
+      mockReadlineAnswers = ['2']; // terminal; template auto-skips (no templates)
       mockReadlineAnswerIndex = 0;
-
-      // jq → found; which claude → found; claude --version
       mockJqFound();
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
 
       // Skills check fails
       mockCheckSkillsInstalled.mockRejectedValue(new Error('fail'));
@@ -928,8 +891,9 @@ describe('onboard command', () => {
     });
 
     it('scaffolds .crewly/ directory during interactive flow', async () => {
-      mockReadlineAnswers = ['6']; // skip provider
+      mockReadlineAnswers = ['2']; // terminal
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
       await onboardCommand();
@@ -977,17 +941,14 @@ describe('onboard command', () => {
       setStdinIsTTY(false);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
       mockJqFound();
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
 
       await onboardCommand({ yes: true });
 
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('Setup complete');
       expect(process.exitCode).toBe(0);
-      // The --yes readline interface is closed so stdin cannot hold the process open
-      expect(mockRlClose).toHaveBeenCalled();
+      // --yes never opens a readline interface, so stdin cannot hold the process open
+      expect(mockRlClose).not.toHaveBeenCalled();
     });
 
     it('says setup did not finish (not "nothing was set up") when the input closes mid-wizard', () => {
@@ -1009,7 +970,8 @@ describe('onboard command', () => {
         removeListener: emitter.removeListener.bind(emitter),
       } as unknown as import('readline').Interface;
 
-      const pending = selectProvider(rl);
+      const io = createReadlineIO(rl, () => new WizardInputClosedError());
+      const pending = chooseSetupMode(io.ask, {}, true);
       emitter.emit('close');
 
       await expect(pending).rejects.toBeInstanceOf(WizardInputClosedError);
@@ -1029,42 +991,40 @@ describe('onboard command', () => {
 
     it('runs non-interactive with defaults', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      // jq → found; which claude → found; claude --version
       mockJqFound();
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
 
       await onboardCommand({ yes: true });
 
       const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
       expect(output).toContain('non-interactive');
-      expect(output).toContain('Using default: Claude Code');
       expect(output).toContain('Setup complete');
+      expect(mockRunHarnessSetup).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.any(Function), expect.objectContaining({ interactive: false }));
     });
 
-    it('auto-installs missing tools in --yes mode', async () => {
+    it('never prompts in --yes mode (the harness step gets a no-prompt IO)', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
-      // jq → found; which claude → not found; npm install succeeds
       mockJqFound();
-      mockExecSync
-        .mockImplementationOnce(() => { throw new Error('not found'); })
-        .mockReturnValueOnce(Buffer.from(''));
 
-      await onboardCommand({ yes: true });
+      await onboardCommand({ yes: true, harness: 'codex' });
 
-      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
-      expect(output).toContain('not found');
-      expect(output).toContain('installed');
+      const [io, , , opts] = mockRunHarnessSetup.mock.calls[0];
+      expect(opts).toMatchObject({ interactive: false, preset: 'codex' });
+      expect(await io.ask('anything?')).toBe('');
+      expect(mockRlClose).not.toHaveBeenCalled();
+      expect(mockBrokerShutdown).toHaveBeenCalled();
+    });
+
+    it('--yes --web hands off to the web app', async () => {
+      const continueInWeb = jest.fn(async () => undefined);
+      await onboardCommand({ yes: true, web: true }, { continueInWeb });
+      expect(continueInWeb).toHaveBeenCalled();
+      expect(mockRunHarnessSetup).not.toHaveBeenCalled();
     });
 
     it('uses first available template when no --template specified', async () => {
       mockListTemplates.mockReturnValue([sampleTemplate]);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
       mockJqFound();
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
 
       await onboardCommand({ yes: true });
 
@@ -1075,9 +1035,6 @@ describe('onboard command', () => {
     it('scaffolds .crewly/ directory in --yes mode', async () => {
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
       mockJqFound();
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
 
       await onboardCommand({ yes: true });
 
@@ -1100,9 +1057,10 @@ describe('onboard command', () => {
       mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
-      // Skip provider (step 1)
-      mockReadlineAnswers = ['6'];
+      // Terminal
+      mockReadlineAnswers = ['2'];
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
 
       await onboardCommand({ template: 'web-dev-team' });
 
@@ -1116,9 +1074,6 @@ describe('onboard command', () => {
       mockGetTemplate.mockReturnValue(sampleTemplate);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
       mockJqFound();
-      mockExecSync
-        .mockReturnValueOnce(Buffer.from('/usr/local/bin/claude'))
-        .mockReturnValueOnce(Buffer.from('1.0.17'));
 
       await onboardCommand({ yes: true, template: 'web-dev-team' });
 
@@ -1131,8 +1086,9 @@ describe('onboard command', () => {
       mockListTemplates.mockReturnValue([sampleTemplate]);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
-      mockReadlineAnswers = ['6', '']; // skip provider, skip template
+      mockReadlineAnswers = ['2', '']; // terminal, skip template
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
 
       await onboardCommand({ template: 'nonexistent' });
 
@@ -1146,8 +1102,9 @@ describe('onboard command', () => {
       mockListTemplates.mockReturnValue([]);
       mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
 
-      mockReadlineAnswers = ['6'];
+      mockReadlineAnswers = ['2'];
       mockReadlineAnswerIndex = 0;
+      mockJqFound();
 
       await onboardCommand({ template: 'nonexistent' });
 
