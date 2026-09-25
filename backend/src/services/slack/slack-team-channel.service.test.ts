@@ -1130,6 +1130,13 @@ describe('mirrorOutbound', () => {
     expect(await service.linkAgentMentions('@Sam both here', 'CBOTH')).toBe('@Sam both here');
     expect(await service.linkAgentMentions('@Ella only', 'CNEW')).toBe('<@UELLA> only');
     expect(asked).toEqual(['CBETA', 'CBOTH']);
+
+    // The Crewly room's roster decides first — no Slack call needed.
+    await service.ensureTeamChannel(team());
+    const room = service.findBySlackChannelId('C1')!;
+    chat.setHuddleMembers(room.chatChannelId, ['a-sam']);
+    expect(await service.linkAgentMentions('@Sam go', 'C1')).toBe('<@USAMA> go');
+    expect(asked).toEqual(['CBETA', 'CBOTH']);
   });
 
   it('turns @Owner Name (multi-word) into a real mention of the owner, and remembers people who spoke', async () => {

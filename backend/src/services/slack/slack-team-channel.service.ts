@@ -1822,8 +1822,16 @@ export class SlackTeamChannelService {
       // Two Ellas (Crewly Marketing / Personal Assistant Team): the one in
       // this channel is meant. Only asked when the text names her.
       if (!channelId || !new RegExp(`@${bare.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}_])`, 'iu').test(text)) continue;
-      const members = await this.membersOf(channelId);
-      const here = [...ids].filter((id) => members?.has(id));
+      // First the room's own roster (agents Crewly put in this channel —
+      // no Slack scope needed; agent bots can't read private-channel
+      // members), then Slack's member list.
+      await this.load();
+      const roster = this.rosterBotIds(channelId, store.identities);
+      let here = [...ids].filter((id) => roster.has(id));
+      if (here.length !== 1) {
+        const members = await this.membersOf(channelId);
+        here = [...ids].filter((id) => members?.has(id));
+      }
       if (here.length === 1) byName.set(bare, here[0]);
     }
     if (byName.size === 0) return text;
@@ -1836,6 +1844,25 @@ export class SlackTeamChannelService {
       const id = byName.get(name.replace(/[.-]+$/u, '').toLowerCase());
       return id ? `<@${id}>` : whole;
     });
+  }
+
+  /**
+   * Bot user ids of the agents on the Crewly room mapped to a Slack channel.
+   *
+   * @param slackChannelId - Slack channel id
+   * @param identities - The account's agent identities
+   * @returns Bot user ids (empty when the channel isn't mapped)
+   */
+  private rosterBotIds(
+    slackChannelId: string,
+    identities: ReadonlyArray<{ agentSession: string; botUserId?: string | null }>,
+  ): Set<string> {
+    const mapping = this.findBySlackChannelId(slackChannelId);
+    const room = mapping ? this.deps.chat.getChannelForBridge(mapping.chatChannelId) : null;
+    const sessions = new Set((room?.members ?? []).map((m) => m.sessionName));
+    const ids = new Set<string>();
+    for (const r of identities) if (r.botUserId && sessions.has(r.agentSession)) ids.add(r.botUserId);
+    return ids;
   }
 
   /**
