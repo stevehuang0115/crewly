@@ -20,6 +20,18 @@ export type TeamMemberRole =
   | 'sales'
   | 'support';
 
+/** Why a team member could not be started. See {@link TeamMember.lastError}. */
+export interface MemberStartError {
+  /** User-facing, actionable explanation. */
+  message: string;
+  /** Machine-readable code, e.g. RUNTIME_STARTUP_BLOCKED, when known. */
+  code?: string;
+  /** Blocking condition, e.g. 'root_user' or 'first_run_setup', when known. */
+  reason?: string;
+  /** ISO timestamp of the failed attempt. */
+  at: string;
+}
+
 export interface TeamMember {
   id: string;
   name: string;
@@ -77,6 +89,13 @@ export interface TeamMember {
    */
   skills?: string[];
   lastActivityCheck?: string; // ISO timestamp of last activity monitoring
+  /**
+   * Why the member's most recent start attempt failed, so the dashboard and
+   * API can show it instead of a bare "inactive". Cleared on the next
+   * successful start. `code`/`reason` are set when start-up was blocked on
+   * the user (e.g. Claude Code as root, or never set up).
+   */
+  lastError?: MemberStartError;
   createdAt: string;
   updatedAt: string;
 

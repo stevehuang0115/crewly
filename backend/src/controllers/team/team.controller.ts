@@ -305,6 +305,10 @@ interface TeamMemberOperationResult {
   sessionName: string | null;
   status: string;
   error?: string;
+  /** e.g. RUNTIME_STARTUP_BLOCKED when start-up was blocked on the user. */
+  errorCode?: string;
+  /** e.g. 'root_user' or 'first_run_setup'. */
+  errorReason?: string;
 }
 
 /**
@@ -316,6 +320,8 @@ interface SessionCreationResult {
   error?: string;
   /** RUNTIME_STARTUP_BLOCKED when retrying cannot help. */
   errorCode?: string;
+  /** Which blocking condition, e.g. 'root_user' or 'first_run_setup'. */
+  errorReason?: string;
 }
 
 /**
@@ -898,7 +904,11 @@ async function _startTeamMemberCore(
         // Only update sessionName if needed, preserve all other fields including agentStatus
         const needsSessionUpdate = finalMember.sessionName !== (createResult.sessionName || sessionName);
 
-        if (needsSessionUpdate) {
+        // A successful start supersedes any earlier start error.
+        const hadStartError = finalMember.lastError !== undefined;
+        if (hadStartError) delete finalMember.lastError;
+
+        if (needsSessionUpdate || hadStartError) {
           finalMember.sessionName = createResult.sessionName || sessionName;
           finalMember.updatedAt = new Date().toISOString();
 
@@ -929,10 +939,18 @@ async function _startTeamMemberCore(
       const failureTeam = failureTeams.find(t => t.id === team.id);
       const failureMember = failureTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
 
+      const failureMessage = lastError || createResult?.error || `Failed to create team member session after ${MAX_CREATION_RETRIES} attempts`;
       if (failureTeam && failureMember) {
-        // Reset to inactive if session creation failed
+        // Reset to inactive if session creation failed, and keep WHY on the
+        // member so the dashboard/API can show it (not only the server log).
         failureMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
         failureMember.sessionName = '';
+        failureMember.lastError = {
+          message: failureMessage,
+          ...(createResult?.errorCode && { code: createResult.errorCode }),
+          ...(createResult?.errorReason && { reason: createResult.errorReason }),
+          at: new Date().toISOString(),
+        };
         failureMember.updatedAt = new Date().toISOString();
         await context.storageService.saveTeam(failureTeam);
       }
@@ -944,7 +962,9 @@ async function _startTeamMemberCore(
         memberId: member.id,
         sessionName: null,
         status: 'failed',
-        error: lastError || createResult?.error || `Failed to create team member session after ${MAX_CREATION_RETRIES} attempts`
+        error: failureMessage,
+        ...(createResult?.errorCode && { errorCode: createResult.errorCode }),
+        ...(createResult?.errorReason && { errorReason: createResult.errorReason }),
       };
     }
   } catch (error) {
@@ -1519,6 +1539,8 @@ export async function startTeam(this: ApiContext, req: Request, res: Response): 
       if (result.error) {
         resultForResponse.error = result.error;
       }
+      if (result.errorCode) resultForResponse.errorCode = result.errorCode;
+      if (result.errorReason) resultForResponse.errorReason = result.errorReason;
 
       // Count sessions for response
       if (result.success) {
@@ -1536,7 +1558,13 @@ export async function startTeam(this: ApiContext, req: Request, res: Response): 
     // No need to save the team object here as it would overwrite the updated agentStatus
     // from MCP registration with stale data
 
-    const responseMessage = `Team started. Created ${sessionsCreated} new sessions, ${sessionsAlreadyRunning} already running. Sessions are working in project: ${assignedProject.name}`;
+    // Name members whose start-up was blocked on the user, with the reason, so
+    // "Created 0 new sessions" is never the whole story.
+    const blocked = results.filter((r) => r.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE);
+    const blockedNote = blocked.length > 0
+      ? ` ${blocked.length} member(s) could not start: ${blocked.map((r) => `${r.memberName}: ${r.error}`).join(' | ')}`
+      : '';
+    const responseMessage = `Team started. Created ${sessionsCreated} new sessions, ${sessionsAlreadyRunning} already running. Sessions are working in project: ${assignedProject.name}.${blockedNote}`;
     res.json({
       success: true,
       message: responseMessage,
@@ -1583,6 +1611,8 @@ export async function stopTeam(this: ApiContext, req: Request, res: Response): P
       if (result.error) {
         resultForResponse.error = result.error;
       }
+      if (result.errorCode) resultForResponse.errorCode = result.errorCode;
+      if (result.errorReason) resultForResponse.errorReason = result.errorReason;
 
       // Count sessions for response
       if (result.success) {

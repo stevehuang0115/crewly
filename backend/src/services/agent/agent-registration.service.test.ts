@@ -325,6 +325,9 @@ describe('AgentRegistrationService', () => {
 				success: false,
 				error: 'Run `claude` once, choose a theme and log in.',
 				errorCode: 'RUNTIME_STARTUP_BLOCKED',
+				// The reason travels with the code so the member record and the
+				// Start response can say which condition blocked start-up.
+				errorReason: 'first_run_setup',
 			});
 			// Step 2 (full recreation) kills the session first; it must not run.
 			expect(mockSessionHelper.killSession).not.toHaveBeenCalled();

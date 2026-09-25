@@ -1983,6 +1983,78 @@ describe('Teams Handlers', () => {
       });
     });
 
+    describe('a start-up blocked on the user is visible, not only in the server log', () => {
+      const ROOT_MSG = 'Crewly agents cannot run as root: Claude Code refuses --dangerously-skip-permissions under root/sudo. Run Crewly as a normal (non-root) user.';
+      const SETUP_MSG = 'Claude Code has not been set up on this machine yet. Run `claude` once in a terminal, choose a theme and log in, then start the team again.';
+
+      /** A one-member team whose only member is inactive. */
+      function oneMemberTeam(extra: Record<string, unknown> = {}): Team {
+        return {
+          id: 'team-blk', name: 'Blocked Team', projectIds: [],
+          members: [{
+            id: 'm-1', name: 'Alice', sessionName: '', role: 'developer', runtimeType: 'claude-code',
+            systemPrompt: 'p', agentStatus: 'inactive', workingStatus: 'idle',
+            createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...extra,
+          }],
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+        } as Team;
+      }
+
+      async function start(team: Team, createResult: Record<string, unknown>) {
+        mockRequest.params = { id: team.id };
+        mockRequest.body = { projectId: 'project-1' };
+        mockStorageService.getTeams.mockResolvedValue([team]);
+        mockStorageService.getProjects.mockResolvedValue([{ id: 'project-1', path: '/test/project', name: 'Test Project' }]);
+        mockStorageService.saveTeam.mockResolvedValue(undefined);
+        const createAgentSession = jest.fn<any>().mockResolvedValue(createResult);
+        mockApiContext.agentRegistrationService = { createAgentSession, isInProcessRuntimeActive: jest.fn<any>().mockReturnValue(false) } as any;
+        await teamsHandlers.startTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+        return { body: (responseMock.json as jest.Mock).mock.calls.at(-1)![0] as any, createAgentSession };
+      }
+
+      it.each([
+        ['root_user', ROOT_MSG],
+        ['first_run_setup', SETUP_MSG],
+      ])('%s: stored on the member as lastError and returned by Start', async (reason, message) => {
+        const team = oneMemberTeam();
+        const { body, createAgentSession } = await start(team, {
+          success: false, error: message, errorCode: 'RUNTIME_STARTUP_BLOCKED', errorReason: reason,
+        });
+
+        // Not retried: blocked start-ups cannot resolve themselves.
+        expect(createAgentSession).toHaveBeenCalledTimes(1);
+        const member = team.members[0] as any;
+        expect(member.agentStatus).toBe('inactive');
+        expect(member.lastError).toEqual({ message, code: 'RUNTIME_STARTUP_BLOCKED', reason, at: expect.any(String) });
+        expect(mockStorageService.saveTeam).toHaveBeenCalled();
+
+        expect(body.data.results[0]).toMatchObject({
+          memberName: 'Alice', success: false, error: message, errorCode: 'RUNTIME_STARTUP_BLOCKED', errorReason: reason,
+        });
+        expect(body.message).toContain('Created 0 new sessions');
+        expect(body.message).toContain(`1 member(s) could not start: Alice: ${message}`);
+      });
+
+      it('clears a previous lastError once the member starts successfully', async () => {
+        const team = oneMemberTeam({
+          lastError: { message: SETUP_MSG, code: 'RUNTIME_STARTUP_BLOCKED', reason: 'first_run_setup', at: '2026-09-24T00:00:00.000Z' },
+        });
+        const { body } = await start(team, { success: true, sessionName: 'blocked-team-alice' });
+
+        expect((team.members[0] as any).lastError).toBeUndefined();
+        expect(body.message).not.toContain('could not start');
+      });
+
+      it('keeps the message of an ordinary failure, without a blocked code or reason', async () => {
+        const team = oneMemberTeam();
+        const { body } = await start(team, { success: false, error: 'claude: command not found' });
+
+        expect((team.members[0] as any).lastError).toEqual({ message: 'claude: command not found', at: expect.any(String) });
+        expect(body.data.results[0].errorReason).toBeUndefined();
+        expect(body.message).not.toContain('could not start');
+      });
+    });
+
     it('should return 404 when team not found', async () => {
       mockRequest.params = { id: 'non-existent-team' };
       mockRequest.body = {};
