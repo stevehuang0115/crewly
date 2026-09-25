@@ -919,6 +919,54 @@ describe('AgentRegistrationService', () => {
 				// Non-secret CREWLY_* exports are still typed, as before
 				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('keyed-session', 'CREWLY_SESSION_NAME', 'keyed-session');
 			});
+
+			// codex-cli separately: its registration-prompt delivery (after the keys are
+			// placed) needs a live Codex TUI to accept the prompt, which the mocked PTY
+			// cannot show, so that step is stubbed. Everything up to and including the
+			// runtime init script — where a typed export would happen — still runs.
+			it('codex-cli: passes the keys in the spawn env and types none of them into the session', async () => {
+				const { getSettingsService } = require('../settings/settings.service.js');
+				(getSettingsService as any).mockReturnValue({
+					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: true } }),
+					getApiKey: jest.fn().mockImplementation(async (provider: keyof typeof FAKE_KEYS) => FAKE_KEYS[provider]),
+				});
+				jest.spyOn(service as any, 'provisionRuntimeConfigFile').mockResolvedValue(undefined);
+				const registration = jest
+					.spyOn(service as any, 'initializeAgentWithRegistration')
+					.mockResolvedValue({ success: true, message: 'registered (stubbed)' });
+				mockSessionHelper.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+				mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+				mockReadFile
+					.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+					.mockResolvedValueOnce('Register {{SESSION_ID}}');
+
+				const result = await service.createAgentSession({
+					sessionName: 'keyed-session',
+					role: 'developer',
+					runtimeType: RUNTIME_TYPES.CODEX_CLI,
+					projectPath: '/test/project',
+				});
+
+				expect(result.success).toBe(true);
+				expect(registration).toHaveBeenCalled();
+				expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+					'keyed-session',
+					expect.anything(),
+					expect.objectContaining({
+						env: expect.objectContaining({
+							OPENAI_API_KEY: FAKE_KEYS.openai,
+							ANTHROPIC_API_KEY: FAKE_KEYS.anthropic,
+							GEMINI_API_KEY: FAKE_KEYS.gemini,
+						}),
+					}),
+				);
+				const sent = argumentsSentToTerminal();
+				expect(sent.length).toBeGreaterThan(0); // the check examined real calls
+				for (const key of Object.values(FAKE_KEYS)) {
+					expect(sent).not.toContain(key);
+				}
+				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('keyed-session', 'CREWLY_SESSION_NAME', 'keyed-session');
+			});
 		});
 
 		it('should attempt recovery when session already exists', async () => {
