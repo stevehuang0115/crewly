@@ -1277,27 +1277,57 @@ Just type naturally to chat with the orchestrator!`;
    * can read the file.
    *
    * @param message - The inbound message
-   * @returns A bot token that can read the file: the agent the DM was for,
-   *   else an @-mentioned agent's, else the workspace token
+   * @returns Tokens to try, in order: the agent the DM was for, @-mentioned
+   *   agents, the agents in the channel's room, then the workspace token
    */
-  private fileTokenFor(message: SlackIncomingMessage): string | undefined {
+  private fileTokenCandidates(message: SlackIncomingMessage): string[] {
     const workspaceToken = this.slackService.getBotToken() ?? undefined;
+    const tokens: Array<string | undefined> = [];
     const identities = getSlackAgentIdentityService();
-    if (!identities) return workspaceToken;
-
-    if (message.agentSession) {
-      const installed = identities.getInstalled(message.agentSession);
-      if (installed?.botToken) return installed.botToken;
-      return workspaceToken;
+    const tokenOf = (session: string | null | undefined): string | undefined =>
+      session ? identities?.getInstalled(session)?.botToken ?? undefined : undefined;
+    if (identities) {
+      if (message.agentSession) tokens.push(tokenOf(message.agentSession));
+      for (const botUserId of mentionedBotUserIds(message.text)) {
+        tokens.push(tokenOf(identities.findByBotUserId(botUserId)));
+      }
+      // No @: the agents Crewly put in this channel's room are members of
+      // it. A voice clip posted to #content-team with no mention went to
+      // the workspace bot — not in that private channel — and 403'd, so
+      // two of three agents answered "I can't open your recording"
+      // (2026-09-25).
+      if (message.channelId) {
+        for (const session of getSlackTeamChannelService()?.rosterSessions(message.channelId) ?? []) {
+          tokens.push(tokenOf(session));
+        }
+      }
     }
+    tokens.push(workspaceToken);
+    return [...new Set(tokens.filter((t): t is string => !!t))];
+  }
 
-    for (const botUserId of mentionedBotUserIds(message.text)) {
-      const session = identities.findByBotUserId(botUserId);
-      if (!session) continue;
-      const installed = identities.getInstalled(session);
-      if (installed?.botToken) return installed.botToken;
+  /**
+   * Pick the first token that can read these files (via `files.info`) and
+   * refresh their URLs with it.
+   *
+   * @param message - The inbound message
+   * @param files - Files to read (URLs mutated in place)
+   * @returns The token to download with, or null when downloads can't proceed
+   */
+  private async resolveFileToken(message: SlackIncomingMessage, files: SlackFile[]): Promise<string | null> {
+    const candidates = this.fileTokenCandidates(message);
+    if (candidates.length === 0) return null;
+    if (files.length === 0) return candidates[0];
+    for (const token of candidates.slice(0, -1)) {
+      try {
+        await this.slackService.getFileInfo(files[0].id, token);
+        return (await this.refreshFileUrls(files, token)) ? token : null;
+      } catch {
+        // Not in the channel / no scope with this token — try the next.
+      }
     }
-    return workspaceToken;
+    const last = candidates[candidates.length - 1];
+    return (await this.refreshFileUrls(files, last)) ? last : null;
   }
 
   /**
@@ -1306,7 +1336,7 @@ Just type naturally to chat with the orchestrator!`;
    * files.info API returns authenticated URLs and validates scope.
    *
    * @param files - Slack file objects to refresh URLs for (mutated in place)
-   * @param botToken - Token with access to these files; see {@link fileTokenFor}
+   * @param botToken - Token with access to these files; see {@link resolveFileToken}
    * @returns true if downloads can proceed, false if scope is missing
    */
   private async refreshFileUrls(files: SlackFile[], botToken?: string): Promise<boolean> {
@@ -1340,13 +1370,12 @@ Just type naturally to chat with the orchestrator!`;
    * @param imageFiles - Pre-filtered list of image files to download
    */
   private async downloadMessageImages(message: SlackIncomingMessage, imageFiles: SlackFile[]): Promise<void> {
-    const botToken = this.fileTokenFor(message);
-    if (!botToken) {
-      this.logger.warn('Cannot download images: no bot token available');
+    if (imageFiles.length === 0) {
       return;
     }
-
-    if (imageFiles.length === 0) {
+    const botToken = await this.resolveFileToken(message, imageFiles);
+    if (!botToken) {
+      this.logger.warn('Cannot download images: no bot token can read them');
       return;
     }
 
@@ -1356,9 +1385,6 @@ Just type naturally to chat with the orchestrator!`;
     const maxConcurrent = SLACK_IMAGE_CONSTANTS.MAX_CONCURRENT_DOWNLOADS;
     const rejectionMessages: string[] = [];
 
-    // Refresh file URLs via files.info API before downloading.
-    const canProceed = await this.refreshFileUrls(files, botToken);
-    if (!canProceed) return;
 
     for (let i = 0; i < files.length; i += maxConcurrent) {
       const batch = files.slice(i, i + maxConcurrent);
@@ -1414,9 +1440,9 @@ Just type naturally to chat with the orchestrator!`;
    * @param nonImageFiles - Non-image SlackFile objects to download
    */
   private async downloadMessageFiles(message: SlackIncomingMessage, nonImageFiles: SlackFile[]): Promise<void> {
-    const botToken = this.fileTokenFor(message);
+    const botToken = await this.resolveFileToken(message, nonImageFiles);
     if (!botToken) {
-      this.logger.warn('Cannot download files: no bot token available');
+      this.logger.warn('Cannot download files: no bot token can read them');
       return;
     }
 
@@ -1428,9 +1454,6 @@ Just type naturally to chat with the orchestrator!`;
     const rejectionMessages: string[] = [];
     const maxConcurrent = SLACK_FILE_DOWNLOAD_CONSTANTS.MAX_CONCURRENT_DOWNLOADS;
 
-    // Refresh file URLs via files.info API
-    const canProceed = await this.refreshFileUrls(nonImageFiles, botToken);
-    if (!canProceed) return;
 
     for (let i = 0; i < nonImageFiles.length; i += maxConcurrent) {
       const batch = nonImageFiles.slice(i, i + maxConcurrent);

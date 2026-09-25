@@ -1847,6 +1847,20 @@ export class SlackTeamChannelService {
   }
 
   /**
+   * Agent sessions on the Crewly room mapped to a Slack channel — the agents
+   * that are in that channel. Empty when the channel isn't mapped (or the
+   * store hasn't loaded yet).
+   *
+   * @param slackChannelId - Slack channel id
+   * @returns Agent session names
+   */
+  rosterSessions(slackChannelId: string): string[] {
+    const mapping = this.findBySlackChannelId(slackChannelId);
+    const room = mapping ? this.deps.chat.getChannelForBridge(mapping.chatChannelId) : null;
+    return (room?.members ?? []).map((m) => m.sessionName);
+  }
+
+  /**
    * Bot user ids of the agents on the Crewly room mapped to a Slack channel.
    *
    * @param slackChannelId - Slack channel id
@@ -1857,9 +1871,7 @@ export class SlackTeamChannelService {
     slackChannelId: string,
     identities: ReadonlyArray<{ agentSession: string; botUserId?: string | null }>,
   ): Set<string> {
-    const mapping = this.findBySlackChannelId(slackChannelId);
-    const room = mapping ? this.deps.chat.getChannelForBridge(mapping.chatChannelId) : null;
-    const sessions = new Set((room?.members ?? []).map((m) => m.sessionName));
+    const sessions = new Set(this.rosterSessions(slackChannelId));
     const ids = new Set<string>();
     for (const r of identities) if (r.botUserId && sessions.has(r.agentSession)) ids.add(r.botUserId);
     return ids;

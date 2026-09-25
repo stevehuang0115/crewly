@@ -157,8 +157,8 @@ describe('SlackOrchestratorBridge', () => {
     /** Call the private token picker. */
     function tokenFor(bridge: SlackOrchestratorBridge, message: Partial<SlackIncomingMessage>): string | undefined {
       return (bridge as unknown as {
-        fileTokenFor(m: Partial<SlackIncomingMessage>): string | undefined;
-      }).fileTokenFor(message);
+        fileTokenCandidates(m: Partial<SlackIncomingMessage>): string[];
+      }).fileTokenCandidates(message)[0];
     }
 
     afterEach(() => {
@@ -219,6 +219,43 @@ describe('SlackOrchestratorBridge', () => {
       } as never);
 
       expect(tokenFor(bridge, { text: '<@UHUMAN> and <@U-PENDING> look' })).toBe('xoxb-workspace');
+    });
+  });
+
+  describe('a channel file with no @ (2026-09-25, #content-team voice clip)', () => {
+    const identityModule = '../slack/slack-agent-identity.service.js';
+    const teamChannelModule = './slack-team-channel.service.js';
+    afterEach(() => jest.restoreAllMocks());
+
+    it('tries the agents in the channel\'s room, then the workspace bot, and downloads with the first that can read it', async () => {
+      const bridge = new SlackOrchestratorBridge();
+      const slack = getSlackService();
+      jest.spyOn(slack, 'getBotToken').mockReturnValue('xoxb-workspace');
+      const identities = await import(identityModule);
+      jest.spyOn(identities, 'getSlackAgentIdentityService').mockReturnValue({
+        findByBotUserId: () => null,
+        getInstalled: (s: string) => ({ 'room-ella': { botToken: 'xoxb-ella' }, 'room-atlas': { botToken: 'xoxb-atlas' } } as Record<string, { botToken: string }>)[s] ?? null,
+      } as never);
+      const teamChannels = await import(teamChannelModule);
+      jest.spyOn(teamChannels, 'getSlackTeamChannelService').mockReturnValue({
+        rosterSessions: (c: string) => (c === 'CPRIV' ? ['room-ella', 'room-atlas'] : []),
+      } as never);
+      const tried: Array<string | undefined> = [];
+      jest.spyOn(slack, 'getFileInfo').mockImplementation(async (_id: string, token?: string) => {
+        tried.push(token);
+        if (token !== 'xoxb-atlas') throw new Error('An API error occurred: file_not_found');
+        return { url_private_download: 'https://files/ok' } as never;
+      });
+
+      const bridgeApi = bridge as unknown as {
+        fileTokenCandidates(m: Partial<SlackIncomingMessage>): string[];
+        resolveFileToken(m: Partial<SlackIncomingMessage>, f: Array<{ id: string; name: string; url_private_download?: string }>): Promise<string | null>;
+      };
+      expect(bridgeApi.fileTokenCandidates({ channelId: 'CPRIV', text: 'voice' })).toEqual(['xoxb-ella', 'xoxb-atlas', 'xoxb-workspace']);
+      const files = [{ id: 'F1', name: 'Audio Clip.m4a' }];
+      expect(await bridgeApi.resolveFileToken({ channelId: 'CPRIV', text: '' }, files)).toBe('xoxb-atlas');
+      expect(files[0].url_private_download).toBe('https://files/ok');
+      expect(tried.slice(0, 2)).toEqual(['xoxb-ella', 'xoxb-atlas']);
     });
   });
 
