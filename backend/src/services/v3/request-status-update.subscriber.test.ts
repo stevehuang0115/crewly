@@ -775,7 +775,9 @@ describe('computeStateFingerprint', () => {
   });
 
   it('keeps done_by_worker (reported, not reviewed) out of the done bucket (#813)', () => {
-    const { computeStateFingerprint } = require('./request-status-update.subscriber.js');
+    const { computeStateFingerprint } = jest.requireActual<typeof import('./request-status-update.subscriber.js')>(
+      './request-status-update.subscriber.js',
+    );
     const reviewed = [makeWI({ status: 'verified' })];
     const unreviewed = [makeWI({ status: 'done_by_worker' })];
     expect(computeStateFingerprint(unreviewed)).toContain('done=0,review=1');

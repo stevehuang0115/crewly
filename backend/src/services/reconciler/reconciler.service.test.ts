@@ -659,9 +659,9 @@ describe('ReconcilerService', () => {
       // (a retry-ELIGIBLE failed item is a different path — the retry rule
       // legally requeues it; see the dedicated case below.)
       // ...an unreviewed item is never passed by the sweeper (#813)...
-      expect(byId.get('wi-dbw')!.status).toBe('done_by_worker');
+      expect(byId.get('wi-dbw')?.status).toBe('done_by_worker');
       // ...while the genuinely stale in-flight work is still cleaned up.
-      expect(byId.get('wi-running')!.status).toBe('cancelled');
+      expect(byId.get('wi-running')?.status).toBe('cancelled');
     });
 
     // ---------------------------------------------------------------------

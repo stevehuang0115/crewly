@@ -513,22 +513,31 @@ describe('resolve and list', () => {
 
 describe('board — accepted is not verified (#813)', () => {
   it('labels how a done ticket was accepted: owner, silence (field or legacy tag), else null', async () => {
-    const owner = await svc.intake(msg({ ts: '1.0', text: 'implement csv export' }));
-    const silent = await svc.intake(msg({ ts: '2.0', text: 'implement pdf export' }));
-    const legacy = await svc.intake(msg({ ts: '3.0', text: 'implement xml export' }));
-    const open = await svc.intake(msg({ ts: '4.0', text: 'implement json export' }));
-    const set = (id: string, patch: Record<string, unknown>) =>
-      store.items.set(id, { ...store.items.get(id)!, ...patch });
-    set(owner!.id, { status: 'done', acceptedBy: 'owner' });
-    set(silent!.id, { status: 'done', acceptedBy: 'silence' });
-    set(legacy!.id, { status: 'done', tags: [TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG] });
+    /** Open a ticket and return its id (fails the test if intake declined). */
+    const open = async (ts: string, text: string): Promise<string> => {
+      const t = await svc.intake(msg({ ts, text }));
+      if (!t) throw new Error(`intake declined: ${text}`);
+      return t.id;
+    };
+    const ownerId = await open('1.0', 'implement csv export');
+    const silentId = await open('2.0', 'implement pdf export');
+    const legacyId = await open('3.0', 'implement xml export');
+    const openId = await open('4.0', 'implement json export');
+    const set = (id: string, patch: Record<string, unknown>) => {
+      const cur = store.items.get(id);
+      if (!cur) throw new Error(`missing ${id}`);
+      store.items.set(id, { ...cur, ...patch });
+    };
+    set(ownerId, { status: 'done', acceptedBy: 'owner' });
+    set(silentId, { status: 'done', acceptedBy: 'silence' });
+    set(legacyId, { status: 'done', tags: [TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG] });
 
     const byId = new Map((await svc.list({ includeLegacy: true })).tickets.map((t) => [t.id, t]));
     expect(byId.size).toBeGreaterThanOrEqual(4);
-    expect(byId.get(owner!.id)?.acceptedBy).toBe('owner');
-    expect(byId.get(silent!.id)?.acceptedBy).toBe('silence');
-    expect(byId.get(legacy!.id)?.acceptedBy).toBe('silence');
-    expect(byId.get(open!.id)?.acceptedBy).toBeNull();
+    expect(byId.get(ownerId)?.acceptedBy).toBe('owner');
+    expect(byId.get(silentId)?.acceptedBy).toBe('silence');
+    expect(byId.get(legacyId)?.acceptedBy).toBe('silence');
+    expect(byId.get(openId)?.acceptedBy).toBeNull();
   });
 });
 
