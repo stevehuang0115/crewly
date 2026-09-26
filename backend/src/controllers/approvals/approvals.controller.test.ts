@@ -14,6 +14,14 @@ import {
 } from './approvals.controller.js';
 import { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
 
+// The real check reads the token file; here the owner's token is 'owner-token'.
+jest.mock('../../middleware/api-token.middleware.js', () => ({
+  hasValidApiToken: jest.fn((req: { headers: Record<string, unknown> }) => req.headers['x-crewly-token'] === 'owner-token'),
+}));
+
+/** Headers the dashboard sends (the owner). */
+const DASHBOARD = { 'x-crewly-caller': 'dashboard' };
+
 describe('Approvals Controller', () => {
   let queue: ApprovalQueueService;
   let mockReq: Partial<Request>;
@@ -33,7 +41,8 @@ describe('Approvals Controller', () => {
       status: statusSpy,
     };
     mockNext = jest.fn();
-    mockReq = { query: {}, params: {}, body: {} };
+    // Default caller: the owner from the dashboard. Owner-gate tests override.
+    mockReq = { query: {}, params: {}, body: {}, headers: { ...DASHBOARD } };
   });
 
   afterEach(() => {
@@ -99,6 +108,54 @@ describe('Approvals Controller', () => {
 
       await getPendingApprovals(mockReq as Request, mockRes as Response, mockNext);
       expect(mockNext).toHaveBeenCalledWith(expect.any(Error));
+    });
+  });
+
+  describe('approve/reject are owner-only (#817 review)', () => {
+    let approvalId: string;
+    beforeEach(() => {
+      approvalId = queue.enqueue('dev-1', 'edit_file', 'destructive', {}).id;
+      mockReq.params = { id: approvalId };
+    });
+    const stillPending = () => queue.getPending().some((a) => a.id === approvalId);
+
+    it.each([
+      ['an agent session', { 'x-agent-session': 'dev-1' }],
+      ['an agent session that also sets the dashboard marker', { 'x-agent-session': 'dev-1', ...DASHBOARD }],
+      ['an agent session holding the owner token', { 'x-agent-session': 'dev-1', 'x-crewly-token': 'owner-token' }],
+      ['no marker and no session', {}],
+      ['a wrong token', { 'x-crewly-token': 'guess' }],
+    ])('refuses %s with 403 and the approval stays pending', async (_who, headers) => {
+      for (const handler of [approveRequest, rejectRequest]) {
+        mockReq.headers = headers as Request['headers'];
+        statusSpy.mockClear();
+        jsonSpy.mockClear();
+        await handler(mockReq as Request, mockRes as Response, mockNext);
+        expect(statusSpy).toHaveBeenCalledWith(403);
+        expect(jsonSpy).toHaveBeenCalledWith({ success: false, error: 'only the owner can decide approvals' });
+        expect(stillPending()).toBe(true);
+      }
+    });
+
+    it('lets the dashboard (marker) approve', async () => {
+      mockReq.headers = { ...DASHBOARD };
+      await approveRequest(mockReq as Request, mockRes as Response, mockNext);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approvalId, status: 'approved' }) });
+    });
+
+    it('lets the owner token (crewly-mobile over the relay) reject', async () => {
+      mockReq.headers = { 'x-crewly-token': 'owner-token' };
+      await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approvalId, status: 'rejected' }) });
+    });
+
+    it('keeps GET open to any caller, agents included', async () => {
+      mockReq.headers = { 'x-agent-session': 'dev-1' };
+      await getPendingApprovals(mockReq as Request, mockRes as Response, mockNext);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: [expect.objectContaining({ id: approvalId })] });
     });
   });
 

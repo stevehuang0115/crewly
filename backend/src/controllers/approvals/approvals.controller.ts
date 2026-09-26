@@ -9,6 +9,32 @@
 
 import type { Request, Response, NextFunction } from 'express';
 import { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
+import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { hasValidApiToken } from '../../middleware/api-token.middleware.js';
+
+/** 403 body for a non-owner approve/reject (#817 review). */
+export const OWNER_ONLY_APPROVAL_ERROR = 'only the owner can decide approvals';
+
+/**
+ * Whether the caller may decide an approval (approve or reject).
+ *
+ * Approving lets a gated tool run, so an agent must never approve its own
+ * pending call. Allowed only with NO `X-Agent-Session` and either:
+ * - the dashboard marker (`X-Crewly-Caller: dashboard`, {@link isOwnerDashboardRequest},
+ *   the same rule #813 uses), or
+ * - the owner's API token. This is what crewly-mobile's relay path presents
+ *   (`mobile-api-relay.service`), and agents cannot read it.
+ *
+ * Limitation: the session header and the dashboard marker are asserted by
+ * the caller, the same as in #813. Per-session tokens will close that.
+ *
+ * @param req - Incoming request (headers only)
+ * @returns True for the owner, false for an agent or an unidentified caller
+ */
+export function isApprovalOwner(req: Request): boolean {
+  if (readAgentSessionHeader(req)) return false;
+  return isOwnerDashboardRequest(req) || hasValidApiToken(req, false);
+}
 
 /** Module-level reference to the approval queue service */
 let approvalQueue: ApprovalQueueService | null = null;
@@ -76,7 +102,8 @@ export async function getPendingApprovals(
 /**
  * POST /api/approvals/:id/approve
  *
- * Approve a pending tool execution request.
+ * Approve a pending tool execution request. Owner only
+ * ({@link isApprovalOwner}); anyone else gets 403.
  *
  * @param req - Express request with approval ID in params
  * @param res - Express response with resolution result
@@ -88,6 +115,11 @@ export async function approveRequest(
   next: NextFunction,
 ): Promise<void> {
   try {
+    if (!isApprovalOwner(req)) {
+      res.status(403).json({ success: false, error: OWNER_ONLY_APPROVAL_ERROR });
+      return;
+    }
+
     const { id } = req.params;
     const resolvedBy = (req.body?.resolvedBy as string) || 'api';
     const result = resolveQueue().approve(id, resolvedBy);
@@ -106,7 +138,8 @@ export async function approveRequest(
 /**
  * POST /api/approvals/:id/reject
  *
- * Reject a pending tool execution request.
+ * Reject a pending tool execution request. Owner only
+ * ({@link isApprovalOwner}); anyone else gets 403.
  *
  * @param req - Express request with approval ID in params and optional reason in body
  * @param res - Express response with resolution result
@@ -118,6 +151,11 @@ export async function rejectRequest(
   next: NextFunction,
 ): Promise<void> {
   try {
+    if (!isApprovalOwner(req)) {
+      res.status(403).json({ success: false, error: OWNER_ONLY_APPROVAL_ERROR });
+      return;
+    }
+
     const { id } = req.params;
     const resolvedBy = (req.body?.resolvedBy as string) || 'api';
     const reason = req.body?.reason as string | undefined;
