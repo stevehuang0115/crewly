@@ -14,6 +14,7 @@ import type { RoleWithPrompt } from '../../types/role.types';
 import type { SkillSummary } from '../../types/skill.types';
 import { HierarchyModeConfig } from '../Hierarchy';
 import type { HierarchyConfig } from '../Hierarchy';
+import { getSelectableRuntimes, runtimeOptionLabel } from '../../utils/runtime-options';
 
 interface TeamRole {
   key: string;
@@ -30,7 +31,7 @@ interface TeamMember {
   name: string;
   role: string;
   systemPrompt: string;
-  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent';
   modelId?: string; // Per-agent model (provider/model for crewly-agent, harness model name otherwise)
   reasoningEffort?: string; // Per-agent effort level (claude-code / codex-cli)
   avatar?: string;
@@ -492,11 +493,11 @@ export const TeamModal: React.FC<TeamModalProps> = ({ isOpen, onClose, onSubmit,
                       onChange={(e) => handleMemberChange(member.id, 'runtimeType', e.target.value)}
                       required
                     >
-                      <option value="claude-code">Claude CLI</option>
-                      <option value="gemini-cli">Gemini CLI</option>
-                      <option value="codex-cli">Codex CLI</option>
-                      <option value="opencode-cli">OpenCode CLI</option>
-                      <option value="crewly-agent">Crewly Agent</option>
+                      {getSelectableRuntimes(member.runtimeType).map((runtime) => (
+                        <option key={runtime} value={runtime}>
+                          {runtimeOptionLabel(runtime)}
+                        </option>
+                      ))}
                     </FormSelect>
                   </div>
 

@@ -922,9 +922,11 @@ describe('TeamModal Component', () => {
         return el as HTMLSelectElement;
       });
       const values = Array.from(runtimeSelect.querySelectorAll('option')).map((o) => o.value);
-      expect(values).toEqual(['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent']);
+      // Antigravity CLI replaces the retired Gemini CLI for new members.
+      expect(values).toEqual(['claude-code', 'codex-cli', 'antigravity-cli', 'opencode-cli', 'crewly-agent']);
       const opencodeOption = runtimeSelect.querySelector('option[value="opencode-cli"]');
       expect(opencodeOption?.textContent).toBe('OpenCode CLI');
+      expect(runtimeSelect.querySelector('option[value="antigravity-cli"]')?.textContent).toBe('Antigravity CLI');
 
       // Tear down explicitly so the role-details effect cannot keep running into the next test.
       await act(async () => {

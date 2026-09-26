@@ -46,7 +46,7 @@ import {
   type OnboardingChecklist,
   type OnboardingStarter,
 } from '../types/onboarding-checklist.types';
-import { DEFAULT_ORC_HARNESS, LOGIN_STATE_BADGES, SETUP_DONE_ROUTE } from '../constants/harness.constants';
+import { DEFAULT_ORC_HARNESS, LOGIN_STATE_BADGES, SETUP_DONE_ROUTE, harnessDisplayName, visibleHarnesses } from '../constants/harness.constants';
 import {
   CHECKLIST_STEP_LABELS,
   SETUP_FLOW_STEPS,
@@ -155,7 +155,8 @@ export const Setup: React.FC = () => {
   // Set by the Cloud callback page when the sign-in came back with an error.
   const cloudError = searchParams.get('error');
 
-  const harnesses = overview?.harnesses ?? [];
+  // Gemini CLI is retired for new users: listed only when already in use here.
+  const harnesses = visibleHarnesses(overview?.harnesses ?? [], overview?.orcHarness);
   const anyInstalled = harnesses.some((h) => h.installed);
   const orcHarness = harnesses.find((h) => h.id === overview?.orcHarness) ?? null;
 
@@ -438,7 +439,7 @@ export const Setup: React.FC = () => {
             </div>
             {orcHarness && badge && (
               <p className="text-center text-sm text-text-secondary-dark">
-                Orc 使用 <span className="font-semibold text-text-primary-dark">{orcHarness.displayName}</span>{' '}
+                Orc 使用 <span className="font-semibold text-text-primary-dark">{harnessDisplayName(orcHarness)}</span>{' '}
                 <Badge variant={badge.variant}>{badge.label}</Badge>
               </p>
             )}

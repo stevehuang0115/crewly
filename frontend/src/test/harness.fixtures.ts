@@ -41,7 +41,18 @@ export const CODEX = makeHarness({
   ],
 });
 
-/** Gemini CLI, not installed, no login methods (Phase 1 detect-only). */
+/** Antigravity CLI, not installed, Gemini API key login only. */
+export const ANTIGRAVITY = makeHarness({
+  id: 'antigravity-cli',
+  displayName: 'Antigravity CLI',
+  installed: false,
+  version: null,
+  latestVersion: null,
+  loginState: 'logged_out',
+  loginMethods: [{ id: 'api_key', label: 'Gemini API key', kind: 'api_key' }],
+});
+
+/** Gemini CLI, not installed, no login methods (detect-only), retired for new users. */
 export const GEMINI = makeHarness({
   id: 'gemini-cli',
   displayName: 'Gemini CLI',
@@ -49,17 +60,18 @@ export const GEMINI = makeHarness({
   version: null,
   loginState: 'unknown',
   loginMethods: [],
+  retired: true,
 });
 
 /**
- * Build an overview with all three harnesses.
+ * Build an overview with all four harnesses.
  *
  * @param overrides - Fields to override
  * @returns Overview
  */
 export function makeOverview(overrides: Partial<HarnessOverview> = {}): HarnessOverview {
   return {
-    harnesses: [makeHarness(), CODEX, GEMINI],
+    harnesses: [makeHarness(), CODEX, ANTIGRAVITY, GEMINI],
     orcHarness: 'claude-code',
     systemTools: [{ id: 'jq', installed: true, installHint: 'brew install jq' }],
     ...overrides,

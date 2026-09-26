@@ -39,6 +39,7 @@ export const BUNDLE_RUNTIME_LABELS: Record<string, string> = {
   'codex-cli': 'Codex',
   'gemini-cli': 'Gemini CLI',
   'opencode-cli': 'OpenCode',
+  'antigravity-cli': 'Antigravity CLI',
 };
 
 /** Hosted server tiers → owner-facing names. */

@@ -12,6 +12,8 @@ import {
   ApiKeyProvider,
   getAIRuntimeDisplayName,
   isValidAIRuntime,
+  RETIRED_AI_RUNTIMES,
+  RETIRED_RUNTIME_LABEL_SUFFIX,
 } from './settings.types';
 
 describe('Settings Types', () => {
@@ -24,8 +26,15 @@ describe('Settings Types', () => {
       expect(AI_RUNTIMES).toContain('crewly-agent');
     });
 
-    it('should have exactly 5 runtimes', () => {
-      expect(AI_RUNTIMES).toHaveLength(5);
+    it('should have exactly 6 runtimes', () => {
+      expect(AI_RUNTIMES).toHaveLength(6);
+      expect(AI_RUNTIMES).toContain('antigravity-cli');
+    });
+
+    it('marks Gemini CLI (and only it) as retired', () => {
+      expect(RETIRED_AI_RUNTIMES).toEqual(['gemini-cli']);
+      expect(RETIRED_RUNTIME_LABEL_SUFFIX).toBe(' (enterprise only)');
+      expect(getAIRuntimeDisplayName('antigravity-cli')).toBe('Antigravity CLI');
     });
   });
 

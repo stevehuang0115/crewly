@@ -218,9 +218,35 @@ describe('GeneralTab', () => {
       const select = screen.getByLabelText('Default AI Runtime') as HTMLSelectElement;
       expect(select.value).toBe('claude-code');
 
-      fireEvent.change(select, { target: { value: 'gemini-cli' } });
+      fireEvent.change(select, { target: { value: 'antigravity-cli' } });
 
+      expect(select.value).toBe('antigravity-cli');
+    });
+
+    it('offers Antigravity CLI but not the retired Gemini CLI as the default runtime', () => {
+      render(<GeneralTab />);
+
+      const select = screen.getByLabelText('Default AI Runtime') as HTMLSelectElement;
+      const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
+      expect(values).toContain('antigravity-cli');
+      expect(values).not.toContain('gemini-cli');
+    });
+
+    it('keeps an existing Gemini CLI default, labelled "(enterprise only)"', () => {
+      vi.spyOn(useSettingsHook, 'useSettings').mockReturnValue({
+        settings: { ...mockSettings, general: { ...mockSettings.general, defaultRuntime: 'gemini-cli' as const } },
+        updateSettings: mockUpdateSettings,
+        resetSettings: vi.fn().mockResolvedValue(mockSettings),
+        resetSection: mockResetSection,
+        refreshSettings: mockRefreshSettings,
+        isLoading: false,
+        error: null,
+      } as never);
+      render(<GeneralTab />);
+
+      const select = screen.getByLabelText('Default AI Runtime') as HTMLSelectElement;
       expect(select.value).toBe('gemini-cli');
+      expect(select.querySelector('option[value="gemini-cli"]')?.textContent).toBe('Gemini CLI (enterprise only)');
     });
 
     it('should update local state on runtime command change', () => {

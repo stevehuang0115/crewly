@@ -12,7 +12,7 @@ import React, { useState } from 'react';
 import { ExternalLink } from 'lucide-react';
 import { Alert, Button, Input } from '@crewly/ui';
 import type { HarnessId, HarnessStatus } from '../../types/harness.types';
-import { API_KEY_CONSOLE_URLS } from '../../constants/harness.constants';
+import { API_KEY_CONSOLE_URLS, API_KEY_NOTES, API_KEY_PLACEHOLDERS } from '../../constants/harness.constants';
 import { harnessService } from '../../services/harness.service';
 
 export interface ApiKeyFormProps {
@@ -36,6 +36,7 @@ export const ApiKeyForm: React.FC<ApiKeyFormProps> = ({ harnessId, label, onSave
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const consoleLink = API_KEY_CONSOLE_URLS[harnessId];
+  const note = API_KEY_NOTES[harnessId];
 
   /**
    * Submit the key: clear it from state first, then save.
@@ -69,11 +70,16 @@ export const ApiKeyForm: React.FC<ApiKeyFormProps> = ({ harnessId, label, onSave
         name={`${harnessId}-api-key`}
         autoComplete="off"
         spellCheck={false}
-        placeholder="sk-…"
+        placeholder={API_KEY_PLACEHOLDERS[harnessId] ?? 'sk-…'}
         value={key}
         onChange={(e) => setKey(e.target.value)}
         fullWidth
       />
+      {note && (
+        <p className="text-xs text-text-secondary-dark" data-testid="api-key-note">
+          {note}
+        </p>
+      )}
       <div className="flex flex-wrap items-center justify-between gap-3">
         {consoleLink ? (
           <a

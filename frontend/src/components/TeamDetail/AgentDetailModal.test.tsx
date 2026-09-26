@@ -82,4 +82,23 @@ describe('AgentDetailModal', () => {
     );
     expect(onClose).toHaveBeenCalled();
   });
+
+  it('offers Antigravity CLI and hides the retired Gemini CLI for a member not on it', () => {
+    render(<AgentDetailModal member={member} onClose={vi.fn()} isEditable onSave={vi.fn()} />);
+    const select = screen.getByLabelText('Runtime') as HTMLSelectElement;
+    const values = Array.from(select.querySelectorAll('option')).map((o) => o.value);
+    expect(values).toContain('antigravity-cli');
+    expect(values).not.toContain('gemini-cli');
+  });
+
+  it('keeps Gemini CLI for a member already on it, labelled "(enterprise only)"', () => {
+    const geminiMember = { ...member, runtimeType: 'gemini-cli' as const };
+    const { unmount } = render(<AgentDetailModal member={geminiMember} onClose={vi.fn()} isEditable onSave={vi.fn()} />);
+    const select = screen.getByLabelText('Runtime') as HTMLSelectElement;
+    expect(select.value).toBe('gemini-cli');
+    expect(select.querySelector('option[value="gemini-cli"]')?.textContent).toBe('Gemini CLI (enterprise only)');
+    unmount();
+    render(<AgentDetailModal member={geminiMember} onClose={vi.fn()} />);
+    expect(screen.getByText('Gemini CLI (enterprise only)')).toBeInTheDocument();
+  });
 });

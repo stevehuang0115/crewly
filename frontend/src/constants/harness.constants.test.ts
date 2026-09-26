@@ -15,7 +15,11 @@ import {
   loginMethodLabel,
   LOGIN_STATE_BADGES,
   LOGIN_SESSION_STATE_LABELS,
+  harnessDisplayName,
+  visibleHarnesses,
+  API_KEY_PLACEHOLDERS,
 } from './harness.constants';
+import { ANTIGRAVITY, CODEX, GEMINI, makeHarness } from '../test/harness.fixtures';
 
 describe('harness.constants', () => {
   it('builds the contract endpoints', () => {
@@ -62,5 +66,21 @@ describe('harness.constants', () => {
   it('has a badge for every login state and a label for every session state', () => {
     expect(Object.keys(LOGIN_STATE_BADGES).sort()).toEqual(['logged_in', 'logged_out', 'unknown']);
     expect(Object.keys(LOGIN_SESSION_STATE_LABELS)).toHaveLength(7);
+  });
+
+  it('orders Antigravity CLI before the retired Gemini CLI and labels its key login', () => {
+    expect(HARNESS_ORDER).toEqual(['claude-code', 'codex-cli', 'antigravity-cli', 'gemini-cli']);
+    expect(loginMethodLabel('antigravity-cli', 'api_key', 'Gemini API key')).toBe('使用 Gemini API Key');
+    expect(API_KEY_CONSOLE_URLS['antigravity-cli']?.url).toBe('https://aistudio.google.com/apikey');
+    expect(API_KEY_PLACEHOLDERS['antigravity-cli']).toBe('AIza…');
+  });
+
+  it('shows a retired harness only when it is installed or the orc harness', () => {
+    const all = [makeHarness(), CODEX, ANTIGRAVITY, GEMINI];
+    expect(visibleHarnesses(all, 'claude-code').map((h) => h.id)).toEqual(['claude-code', 'codex-cli', 'antigravity-cli']);
+    expect(visibleHarnesses(all, 'gemini-cli').map((h) => h.id)).toContain('gemini-cli');
+    expect(visibleHarnesses([...all.slice(0, 3), { ...GEMINI, installed: true }], null).map((h) => h.id)).toContain('gemini-cli');
+    expect(harnessDisplayName(GEMINI)).toBe('Gemini CLI (enterprise only)');
+    expect(harnessDisplayName(ANTIGRAVITY)).toBe('Antigravity CLI');
   });
 });

@@ -1,7 +1,7 @@
 /**
  * HarnessCard
  *
- * One coding harness (Claude Code / Codex / Gemini CLI): install, version
+ * One coding harness (Claude Code / Codex / Antigravity CLI; Gemini CLI when already in use): install, version
  * and login badges, an Install / Update button and the live install log.
  * Optionally selectable (radio) for the setup flow's "which one do you
  * want" step.
@@ -13,7 +13,7 @@ import React from 'react';
 import { Download, RefreshCw } from 'lucide-react';
 import { Alert, Badge, Button, Card } from '@crewly/ui';
 import type { HarnessStatus, InstallJob } from '../../types/harness.types';
-import { LOGIN_STATE_BADGES } from '../../constants/harness.constants';
+import { LOGIN_STATE_BADGES, harnessDisplayName } from '../../constants/harness.constants';
 import { useInstallJob } from '../../hooks/useInstallJob';
 import { InstallLog } from './InstallLog';
 
@@ -50,7 +50,7 @@ export const HarnessCard: React.FC<HarnessCardProps> = ({
     job?.state === 'failed' ? '重试安装' : harness.installed ? '更新 / Update' : '安装 / Install';
 
   const title = (
-    <span className="font-semibold text-text-primary-dark">{harness.displayName}</span>
+    <span className="font-semibold text-text-primary-dark">{harnessDisplayName(harness)}</span>
   );
 
   return (

@@ -17,6 +17,8 @@ import { rolesService } from '../../services/roles.service';
 import { RoleWithPrompt, ROLE_CATEGORY_DISPLAY_NAMES } from '../../types/role.types';
 import { useSkills } from '../../hooks/useSkills';
 import { ExpertSelector } from '../TeamBuilder/ExpertSelector';
+import { MEMBER_RUNTIME_LABELS, getSelectableRuntimes, runtimeOptionLabel } from '../../utils/runtime-options';
+import type { AIRuntime } from '../../types/settings.types';
 
 interface AgentDetailModalProps {
   /** The team member to display details for */
@@ -273,21 +275,18 @@ export const AgentDetailModal: React.FC<AgentDetailModalProps> = ({ member, onCl
               value={editedRuntime}
               onChange={(e) => setEditedRuntime(e.target.value)}
             >
-              <option value="claude-code">Claude CLI</option>
-              <option value="gemini-cli">Gemini CLI</option>
-              <option value="codex-cli">Codex CLI</option>
-              <option value="opencode-cli">OpenCode CLI</option>
-              <option value="crewly-agent">Crewly Agent</option>
+              {getSelectableRuntimes(member.runtimeType).map((runtime) => (
+                <option key={runtime} value={runtime}>
+                  {runtimeOptionLabel(runtime)}
+                </option>
+              ))}
             </FormSelect>
           ) : (
             <div className="bg-background-dark/50 rounded-lg px-4 py-2">
               <span className="text-sm text-text-primary-dark">
-                {member.runtimeType === 'claude-code' ? 'Claude CLI' :
-                 member.runtimeType === 'gemini-cli' ? 'Gemini CLI' :
-                 member.runtimeType === 'codex-cli' ? 'Codex CLI' :
-                 member.runtimeType === 'opencode-cli' ? 'OpenCode CLI' :
-                 member.runtimeType === 'crewly-agent' ? 'Crewly Agent' :
-                 member.runtimeType || 'Claude CLI'}
+                {member.runtimeType && member.runtimeType in MEMBER_RUNTIME_LABELS
+                  ? runtimeOptionLabel(member.runtimeType as AIRuntime)
+                  : member.runtimeType || MEMBER_RUNTIME_LABELS['claude-code']}
               </span>
             </div>
           )}

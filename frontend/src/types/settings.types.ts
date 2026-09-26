@@ -10,7 +10,7 @@
 /**
  * Supported AI runtime types
  */
-export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent';
 
 /**
  * General application settings
@@ -175,7 +175,17 @@ export interface SettingsValidationResult {
 /**
  * Available AI runtimes
  */
-export const AI_RUNTIMES: AIRuntime[] = ['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent'];
+export const AI_RUNTIMES: AIRuntime[] = ['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'antigravity-cli', 'crewly-agent'];
+
+/**
+ * Runtimes kept working for existing and enterprise users but not offered to
+ * new ones: Gemini CLI stopped serving individual accounts on 2026-06-18 and
+ * Antigravity CLI replaces it. Pickers list them only when already selected.
+ */
+export const RETIRED_AI_RUNTIMES: readonly AIRuntime[] = ['gemini-cli'];
+
+/** Appended to a retired runtime's name wherever it is still listed. */
+export const RETIRED_RUNTIME_LABEL_SUFFIX = ' (enterprise only)';
 
 /**
  * AI runtime display names
@@ -185,6 +195,7 @@ export const AI_RUNTIME_DISPLAY_NAMES: Record<AIRuntime, string> = {
   'gemini-cli': 'Gemini CLI',
   'codex-cli': 'Codex CLI',
   'opencode-cli': 'OpenCode CLI',
+  'antigravity-cli': 'Antigravity CLI',
   'crewly-agent': 'Crewly Agent',
 };
 

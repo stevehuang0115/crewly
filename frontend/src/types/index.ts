@@ -34,7 +34,7 @@ export interface TeamMember {
   systemPrompt: string;
   agentStatus: 'inactive' | 'starting' | 'started' | 'active' | 'suspended' | 'activating'; // Connection/registration status (activating is deprecated)
   workingStatus: 'idle' | 'in_progress'; // Activity level status
-  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent'; // AI runtime to use
+  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent'; // AI runtime to use
   /**
    * Per-agent model. PTY runtimes take the harness's own model name and get
    * it at launch (`claude --model`, `codex -m`, `gemini -m`, `opencode --model`);
@@ -101,6 +101,13 @@ export const RUNTIME_MODEL_PRESETS: Record<string, readonly { id: string; label:
     { id: 'anthropic/claude-sonnet-4-20250514', label: 'anthropic/claude-sonnet-4-20250514' },
     { id: 'openai/gpt-4o', label: 'openai/gpt-4o' },
   ],
+  // Slugs from `agy models` (agy 1.2.11)
+  'antigravity-cli': [
+    { id: 'gemini-3.8-flash-high', label: 'gemini-3.8-flash-high' },
+    { id: 'gemini-3.8-flash-medium', label: 'gemini-3.8-flash-medium' },
+    { id: 'gemini-3.1-pro-high', label: 'gemini-3.1-pro-high' },
+    { id: 'gemini-3.1-pro-low', label: 'gemini-3.1-pro-low' },
+  ],
 };
 
 /** Reasoning-effort levels per runtime (empty = the runtime has no such flag). */
@@ -109,6 +116,7 @@ export const RUNTIME_EFFORT_LEVELS: Record<string, readonly string[]> = {
   'codex-cli': ['minimal', 'low', 'medium', 'high', 'xhigh'],
   'gemini-cli': [],
   'opencode-cli': [],
+  'antigravity-cli': ['low', 'medium', 'high', 'max'],
   'crewly-agent': [],
 };
 
@@ -118,6 +126,7 @@ export const RUNTIME_MODEL_HINTS: Record<string, string> = {
   'codex-cli': 'Passed as `codex -m` — a model name your Codex account can use.',
   'gemini-cli': 'Passed as `gemini -m`.',
   'opencode-cli': 'Passed as `opencode --model` — must be provider/model.',
+  'antigravity-cli': 'Passed as `agy --model` — a slug from `agy models`. Runs on your Gemini API key.',
   'crewly-agent': 'provider/model for the in-process runtime.',
 };
 

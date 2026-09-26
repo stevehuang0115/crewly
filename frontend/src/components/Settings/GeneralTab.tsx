@@ -17,6 +17,7 @@ import { Card } from '@crewly/ui/Card';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Toggle } from '@crewly/ui/Toggle';
 import { FormInput, FormLabel, FormSelect } from '@crewly/ui/Form';
+import { getSelectableRuntimes, runtimeOptionLabel } from '../../utils/runtime-options';
 
 /**
  * Save status states
@@ -147,9 +148,9 @@ export const GeneralTab: React.FC = () => {
               value={localSettings.general.defaultRuntime}
               onChange={(e) => handleChange('general', 'defaultRuntime', e.target.value as AIRuntime)}
             >
-              {(Object.keys(AI_RUNTIME_DISPLAY_NAMES) as AIRuntime[]).map((runtime) => (
+              {getSelectableRuntimes(localSettings.general.defaultRuntime).map((runtime) => (
                 <option key={runtime} value={runtime}>
-                  {AI_RUNTIME_DISPLAY_NAMES[runtime]}
+                  {runtimeOptionLabel(runtime, AI_RUNTIME_DISPLAY_NAMES)}
                 </option>
               ))}
             </FormSelect>

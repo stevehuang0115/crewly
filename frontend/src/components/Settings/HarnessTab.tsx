@@ -15,6 +15,7 @@ import { useHarnessStatus } from '../../hooks/useHarnessStatus';
 import { HarnessList } from '../Harness/HarnessList';
 import { OrcHarnessPicker } from '../Harness/OrcHarnessPicker';
 import { HarnessLoginCard } from '../Harness/HarnessLoginCard';
+import { visibleHarnesses } from '../../constants/harness.constants';
 
 /**
  * Section heading with Chinese title and short English subtitle.
@@ -54,8 +55,10 @@ export const HarnessTab: React.FC = () => {
     );
   }
 
+  // Gemini CLI is retired: listed only when it is already in use here.
+  const harnesses = visibleHarnesses(overview.harnesses, overview.orcHarness);
   // Orc harness first, then the other installed ones.
-  const loginHarnesses = overview.harnesses
+  const loginHarnesses = harnesses
     .filter((h) => h.installed)
     .sort((a, b) => Number(b.id === overview.orcHarness) - Number(a.id === overview.orcHarness));
 
@@ -75,7 +78,7 @@ export const HarnessTab: React.FC = () => {
           </Button>
         </div>
         <HarnessList
-          harnesses={overview.harnesses}
+          harnesses={harnesses}
           systemTools={overview.systemTools}
           onInstallFinished={() => void refresh()}
         />

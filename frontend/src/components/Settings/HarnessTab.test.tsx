@@ -5,7 +5,7 @@
  */
 
 import React from 'react';
-import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { HarnessTab } from './HarnessTab';
 import { harnessService } from '../../services/harness.service';
@@ -36,11 +36,32 @@ describe('HarnessTab', () => {
     await screen.findByTestId('harness-tab');
 
     expect(screen.getByTestId('harness-card-claude-code')).toBeInTheDocument();
-    expect(screen.getByTestId('harness-card-gemini-cli')).toBeInTheDocument();
+    expect(screen.getByTestId('harness-card-antigravity-cli')).toBeInTheDocument();
+    // Gemini CLI is retired: not installed and not the orc harness, so not listed.
+    expect(screen.queryByTestId('harness-card-gemini-cli')).not.toBeInTheDocument();
     expect((screen.getByDisplayValue('codex-cli') as HTMLInputElement).checked).toBe(true);
 
     const cards = screen.getAllByTestId(/^harness-login-card-/);
     expect(cards.map((c) => c.dataset.testid)).toEqual(['harness-login-card-codex-cli', 'harness-login-card-claude-code']);
+  });
+
+  it('keeps an installed Gemini CLI, labelled "(enterprise only)"', async () => {
+    const overview = makeOverview();
+    overview.harnesses = overview.harnesses.map((h) => (h.id === 'gemini-cli' ? { ...h, installed: true, version: '0.61.0' } : h));
+    svc.getStatus.mockResolvedValue(overview);
+    render(<HarnessTab />);
+    await screen.findByTestId('harness-tab');
+
+    expect(within(screen.getByTestId('harness-card-gemini-cli')).getByText('Gemini CLI (enterprise only)')).toBeInTheDocument();
+    // Offered for the orchestrator only when it already is the orchestrator's harness.
+    expect(screen.queryByDisplayValue('gemini-cli')).not.toBeInTheDocument();
+  });
+
+  it('lists Gemini CLI when the orchestrator runs on it', async () => {
+    svc.getStatus.mockResolvedValue(makeOverview({ orcHarness: 'gemini-cli' }));
+    render(<HarnessTab />);
+    await screen.findByTestId('harness-tab');
+    expect(screen.getByTestId('harness-card-gemini-cli')).toBeInTheDocument();
   });
 
   it('saves a new orc harness immediately', async () => {

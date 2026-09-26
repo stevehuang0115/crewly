@@ -12,7 +12,7 @@
 import React, { useState } from 'react';
 import { Badge, Button, Card, SegmentedControl } from '@crewly/ui';
 import type { HarnessLoginMethodId, HarnessStatus } from '../../types/harness.types';
-import { LOGIN_STATE_BADGES, loginMethodLabel } from '../../constants/harness.constants';
+import { LOGIN_STATE_BADGES, harnessDisplayName, loginMethodLabel } from '../../constants/harness.constants';
 import { ApiKeyForm } from './ApiKeyForm';
 import { BrokerLoginPanel } from './BrokerLoginPanel';
 
@@ -101,7 +101,7 @@ export const HarnessLoginCard: React.FC<HarnessLoginCardProps> = ({ harness, onL
   return (
     <Card padding="md" data-testid={`harness-login-card-${harness.id}`}>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h3 className="font-semibold text-text-primary-dark">登录 {harness.displayName}</h3>
+        <h3 className="font-semibold text-text-primary-dark">登录 {harnessDisplayName(harness)}</h3>
         {harness.installed && <Badge variant={badge.variant}>{badge.label}</Badge>}
       </div>
       {renderBody()}

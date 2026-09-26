@@ -10,7 +10,7 @@
  */
 
 /** Coding harness identifiers known to Crewly. */
-export type HarnessId = 'claude-code' | 'codex-cli' | 'gemini-cli';
+export type HarnessId = 'claude-code' | 'codex-cli' | 'antigravity-cli' | 'gemini-cli';
 
 /** Whether the harness CLI currently holds a usable login. */
 export type HarnessLoginState = 'logged_in' | 'logged_out' | 'unknown';
@@ -45,6 +45,12 @@ export interface HarnessStatus {
    * `GET /api/harness`; optional so older backends still type-check.
    */
   reloginPending?: HarnessReloginPending | null;
+  /**
+   * Kept for existing / enterprise users but not offered to new ones
+   * (Gemini CLI). Listed only when already in use, labelled "(enterprise
+   * only)". Optional so older backends still type-check.
+   */
+  retired?: boolean;
 }
 
 /** A pending re-login over Slack (see `HarnessStatus.reloginPending`). */

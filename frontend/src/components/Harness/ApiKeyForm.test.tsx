@@ -29,6 +29,19 @@ describe('ApiKeyForm', () => {
     );
   });
 
+  it('for Antigravity: Google AI Studio link, an AIza placeholder and the API-key-only note', () => {
+    render(<ApiKeyForm harnessId="antigravity-cli" label="使用 Gemini API Key" />);
+    expect(screen.getByLabelText('使用 Gemini API Key')).toHaveAttribute('placeholder', 'AIza…');
+    expect(screen.getByRole('link', { name: /Google AI Studio/ })).toHaveAttribute('href', 'https://aistudio.google.com/apikey');
+    expect(screen.getByTestId('api-key-note')).toHaveTextContent('never your Google account login');
+  });
+
+  it('shows no note for harnesses without one', () => {
+    render(<ApiKeyForm harnessId="codex-cli" label="使用 OpenAI API Key" />);
+    expect(screen.queryByTestId('api-key-note')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('使用 OpenAI API Key')).toHaveAttribute('placeholder', 'sk-…');
+  });
+
   it('clears the key on submit, saves it and reports the new status', async () => {
     let resolve: (v: ReturnType<typeof makeHarness>) => void = () => {};
     svc.setApiKey.mockImplementation(() => new Promise((r) => (resolve = r)));

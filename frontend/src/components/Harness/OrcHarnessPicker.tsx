@@ -12,7 +12,7 @@ import React from 'react';
 import { Badge, EmptyState } from '@crewly/ui';
 import { Bot } from 'lucide-react';
 import type { HarnessId, HarnessStatus } from '../../types/harness.types';
-import { DEFAULT_ORC_HARNESS, LOGIN_STATE_BADGES } from '../../constants/harness.constants';
+import { DEFAULT_ORC_HARNESS, LOGIN_STATE_BADGES, harnessDisplayName } from '../../constants/harness.constants';
 
 export interface OrcHarnessPickerProps {
   /** All harnesses (only installed ones are offered) */
@@ -39,7 +39,7 @@ export function defaultOrcChoice(
   current: HarnessId | null,
   preferred?: HarnessId | null,
 ): HarnessId | null {
-  const installed = harnesses.filter((h) => h.installed);
+  const installed = harnesses.filter((h) => h.installed && (!h.retired || h.id === current));
   for (const candidate of [current, preferred, DEFAULT_ORC_HARNESS]) {
     if (candidate && installed.some((h) => h.id === candidate)) return candidate;
   }
@@ -53,7 +53,8 @@ export function defaultOrcChoice(
  * @returns Radio group
  */
 export const OrcHarnessPicker: React.FC<OrcHarnessPickerProps> = ({ harnesses, value, onChange, disabled = false }) => {
-  const installed = harnesses.filter((h) => h.installed);
+  // A retired harness (Gemini CLI) is offered only when it is the current choice.
+  const installed = harnesses.filter((h) => h.installed && (!h.retired || h.id === value));
 
   if (installed.length === 0) {
     return (
@@ -61,7 +62,7 @@ export const OrcHarnessPicker: React.FC<OrcHarnessPickerProps> = ({ harnesses, v
         compact
         icon={Bot}
         title="还没有安装任何编程助手"
-        description="先安装 Claude Code 或 Codex，再回来选择。Install a harness first."
+        description="先安装 Claude Code、Codex 或 Antigravity CLI，再回来选择。Install a harness first."
       />
     );
   }
@@ -88,7 +89,7 @@ export const OrcHarnessPicker: React.FC<OrcHarnessPickerProps> = ({ harnesses, v
                 onChange={() => onChange(h.id)}
                 className="h-4 w-4 accent-[var(--crewly-primary)]"
               />
-              <span className="font-medium text-text-primary-dark truncate">{h.displayName}</span>
+              <span className="font-medium text-text-primary-dark truncate">{harnessDisplayName(h)}</span>
               {h.id === DEFAULT_ORC_HARNESS && <span className="text-xs text-text-secondary-dark">推荐</span>}
             </span>
             <Badge variant={badge.variant}>{badge.label}</Badge>
