@@ -8,7 +8,7 @@
  */
 
 import type { Request, Response, NextFunction } from 'express';
-import type { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
+import { ApprovalQueueService } from '../../services/agent/crewly-agent/approval-queue.service.js';
 
 /** Module-level reference to the approval queue service */
 let approvalQueue: ApprovalQueueService | null = null;
@@ -33,9 +33,26 @@ export function getApprovalQueueService(): ApprovalQueueService | null {
 }
 
 /**
- * GET /api/approvals/pending
+ * The queue the handlers use: the one set at startup, else the shared
+ * singleton that agent runners enqueue into.
  *
- * List all pending tool approval requests.
+ * #817: nothing in the server ever called {@link setApprovalQueueService}, so
+ * every handler answered 503 "Approval queue not initialized" on a real
+ * install. The queue is a process-wide singleton by design
+ * ({@link ApprovalQueueService.getInstance}), so the handlers fall back to it
+ * instead of depending on a startup call.
+ *
+ * @returns The approval queue
+ */
+function resolveQueue(): ApprovalQueueService {
+  return approvalQueue ?? ApprovalQueueService.getInstance();
+}
+
+/**
+ * GET /api/approvals/pending, and GET /api/approvals (alias, #817)
+ *
+ * List all pending tool approval requests. crewly-mobile polls the bare
+ * `/approvals` path; the alias keeps installed app builds working.
  * Optionally filter by sessionName query parameter.
  *
  * @param req - Express request with optional ?sessionName query param
@@ -48,13 +65,8 @@ export async function getPendingApprovals(
   next: NextFunction,
 ): Promise<void> {
   try {
-    if (!approvalQueue) {
-      res.status(503).json({ success: false, error: 'Approval queue not initialized' });
-      return;
-    }
-
     const sessionName = req.query.sessionName as string | undefined;
-    const pending = approvalQueue.getPending(sessionName);
+    const pending = resolveQueue().getPending(sessionName);
     res.json({ success: true, data: pending });
   } catch (error) {
     next(error);
@@ -76,14 +88,9 @@ export async function approveRequest(
   next: NextFunction,
 ): Promise<void> {
   try {
-    if (!approvalQueue) {
-      res.status(503).json({ success: false, error: 'Approval queue not initialized' });
-      return;
-    }
-
     const { id } = req.params;
     const resolvedBy = (req.body?.resolvedBy as string) || 'api';
-    const result = approvalQueue.approve(id, resolvedBy);
+    const result = resolveQueue().approve(id, resolvedBy);
 
     if (!result.success) {
       res.status(404).json({ success: false, error: result.error });
@@ -111,15 +118,10 @@ export async function rejectRequest(
   next: NextFunction,
 ): Promise<void> {
   try {
-    if (!approvalQueue) {
-      res.status(503).json({ success: false, error: 'Approval queue not initialized' });
-      return;
-    }
-
     const { id } = req.params;
     const resolvedBy = (req.body?.resolvedBy as string) || 'api';
     const reason = req.body?.reason as string | undefined;
-    const result = approvalQueue.reject(id, resolvedBy, reason);
+    const result = resolveQueue().reject(id, resolvedBy, reason);
 
     if (!result.success) {
       res.status(404).json({ success: false, error: result.error });
