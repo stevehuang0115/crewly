@@ -116,22 +116,26 @@ export interface OwnerLoginOptions {
 	requestedBy: 'owner_dm' | 'orchestrator';
 }
 
+/** An owner-requested login that was started. */
+export interface OwnerLoginStarted {
+	/** `restarted`: a flow for the harness was running and was started over */
+	status: 'started' | 'restarted';
+	harnessId: HarnessId;
+	/** Whether the owner can be DM'd right now (false = Slack is down) */
+	dmAvailable: boolean;
+}
+
+/** An owner-requested login for a harness without a link login. */
+export interface OwnerLoginUnsupported {
+	/** The harness has no link login (Antigravity: API key; Gemini: enterprise only) */
+	status: 'no_broker_login';
+	harnessId: HarnessId;
+	/** What to tell the owner, in Chinese */
+	message: string;
+}
+
 /** Result of {@link HarnessReloginService.startOwnerLogin}. */
-export type OwnerLoginResult =
-	| {
-			/** `restarted`: a flow for the harness was running and was started over */
-			status: 'started' | 'restarted';
-			harnessId: HarnessId;
-			/** Whether the owner can be DM'd right now (false = Slack is down) */
-			dmAvailable: boolean;
-	  }
-	| {
-			/** The harness has no link login (Antigravity: API key; Gemini: enterprise only) */
-			status: 'no_broker_login';
-			harnessId: HarnessId;
-			/** What to tell the owner, in Chinese */
-			message: string;
-	  };
+export type OwnerLoginResult = OwnerLoginStarted | OwnerLoginUnsupported;
 
 /** Restarts agents after a login succeeded. */
 export interface ReloginAgentResumer {
