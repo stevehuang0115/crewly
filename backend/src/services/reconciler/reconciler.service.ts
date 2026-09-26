@@ -39,6 +39,9 @@ import {
   detectDependencyResolvedWorkItems,
   detectUnclaimedTasks,
   detectUnverifiedWorkItems,
+  detectUnreviewedPastTTL,
+  VERIFY_ESCALATED_AT_KEY,
+  REVIEW_OWNER_ESCALATED_AT_KEY,
   runPruningPass,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
@@ -253,7 +256,7 @@ export class ReconcilerService {
       if (pruning.ttlAutoVerifiedCount > 0) {
         LoggerService.getInstance()
           .createComponentLogger('ReconcilerService')
-          .warn('WorkItems auto-accepted by the 24h TTL fallback (NOT counted as staleItemsCleaned)', {
+          .warn('TTL rule accepted WorkItems instead of cancelling them — should be 0 since #813 (NOT counted as staleItemsCleaned)', {
             ttlAutoVerifiedCount: pruning.ttlAutoVerifiedCount,
           });
       }
@@ -598,16 +601,6 @@ export class ReconcilerService {
   }
 
   /**
-   * Verification enforcement (P1): escalate `done_by_worker` WorkItems the
-   * Team Leader never verified within the deadline to the orchestrator for an
-   * explicit verdict — so unverified work is never silently auto-accepted by
-   * the 24h TTL fallback. Fires once per item via {@link escalatedVerifyIds}
-   * (pruned of items that have left `done_by_worker`). Best-effort; failures
-   * are logged, never thrown.
-   *
-   * @param workItems - All active WorkItems for this pass.
-   */
-  /**
    * Dispose of `rejected`/`failed` WorkItems that no writer dealt with.
    *
    * The writers dispose their own items eagerly; this catches the ones that
@@ -655,6 +648,22 @@ export class ReconcilerService {
     }
   }
 
+  /**
+   * Review escalation (P1, #813): lead → orchestrator → owner.
+   *
+   * 1. A `done_by_worker` item its reviewer has not judged within
+   *    {@link DEFAULT_VERIFY_ESCALATE_MS} goes to the orchestrator, and the
+   *    item is stamped so the orchestrator may now render the verdict.
+   * 2. One still unreviewed past the WorkItem TTL goes to the owner
+   *    ({@link detectUnreviewedPastTTL}); this replaced the old TTL
+   *    auto-verify. The item is never moved by either step.
+   *
+   * Each step fires once per item: the in-memory set covers a pass, the
+   * metadata stamp covers restarts. Best-effort; failures are logged, never
+   * thrown.
+   *
+   * @param workItems - All active WorkItems for this pass.
+   */
   private async enforceVerification(workItems: WorkItem[]): Promise<void> {
     const log = LoggerService.getInstance().createComponentLogger('ReconcilerService');
     try {
@@ -670,33 +679,50 @@ export class ReconcilerService {
       }
 
       const fresh = items.filter((wi) => !this.escalatedVerifyIds.has(wi.id));
-      if (fresh.length === 0) return;
+      const { items: ownerDue, examined } = detectUnreviewedPastTTL(workItems);
+      if (fresh.length === 0 && ownerDue.length === 0) return;
 
       const { EscalationRouterService } = await import('../v3/escalation-router.service.js');
       const router = EscalationRouterService.getInstance();
+      const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+      const pool = TaskPoolService.getInstance();
       const now = Date.now();
 
-      for (const wi of fresh) {
-        const awaitingSince = new Date(
-          wi.completedAt ?? wi.startedAt ?? wi.createdAt,
-        ).getTime();
-        const awaitingMs = Number.isFinite(awaitingSince) ? now - awaitingSince : 0;
+      /** Best-effort metadata stamp; a failure never stops the pass. */
+      const stamp = async (id: string, key: string): Promise<boolean> => {
         try {
-          await router.escalateUnverifiedWorkItem(
-            {
-              id: wi.id,
-              title: wi.title,
-              type: wi.type,
-              target: wi.target ?? null,
-              retryCount: wi.retryCount,
-              maxRetries: wi.maxRetries,
-              requestId: wi.requestId ?? null,
-              missionId: wi.missionId ?? null,
-              parentWorkItemId: wi.parentWorkItemId ?? null,
-            },
-            awaitingMs,
-          );
+          return await pool.stampReviewEscalation(id, key);
+        } catch {
+          return false;
+        }
+      };
+      /** The router's view of a WorkItem plus how long it has awaited review. */
+      const forEscalation = (wi: WorkItem) => {
+        const awaitingSince = new Date(wi.completedAt ?? wi.startedAt ?? wi.createdAt).getTime();
+        return {
+          view: {
+            id: wi.id,
+            title: wi.title,
+            type: wi.type,
+            target: wi.target ?? null,
+            retryCount: wi.retryCount,
+            maxRetries: wi.maxRetries,
+            requestId: wi.requestId ?? null,
+            missionId: wi.missionId ?? null,
+            parentWorkItemId: wi.parentWorkItemId ?? null,
+          },
+          awaitingMs: Number.isFinite(awaitingSince) ? now - awaitingSince : 0,
+        };
+      };
+
+      // Step 1 — orchestrator.
+      for (const wi of fresh) {
+        const { view, awaitingMs } = forEscalation(wi);
+        try {
+          await router.escalateUnverifiedWorkItem(view, awaitingMs);
           this.escalatedVerifyIds.add(wi.id);
+          // Lets the orchestrator render the verdict (#813) and survives restarts.
+          await stamp(wi.id, VERIFY_ESCALATED_AT_KEY);
           log.info('Escalated unverified WorkItem to orchestrator for a verdict', {
             workItemId: wi.id,
             awaitingMs,
@@ -707,6 +733,31 @@ export class ReconcilerService {
             error: err instanceof Error ? err.message : String(err),
           });
         }
+      }
+
+      // Step 2 — owner (replaces the TTL auto-verify). Stamp first so a
+      // failed notify is not re-sent every pass; the pending escalation
+      // record is the durable signal.
+      let ownerEscalated = 0;
+      for (const wi of ownerDue) {
+        const { view, awaitingMs } = forEscalation(wi);
+        try {
+          if (!(await stamp(wi.id, REVIEW_OWNER_ESCALATED_AT_KEY))) continue;
+          await router.escalateUnreviewedToOwner(view, awaitingMs);
+          ownerEscalated += 1;
+        } catch (err) {
+          log.warn('Owner review escalation failed (non-fatal)', {
+            workItemId: wi.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      if (ownerDue.length > 0) {
+        log.info('Unreviewed WorkItems escalated to the owner', {
+          escalated: ownerEscalated,
+          due: ownerDue.length,
+          examined,
+        });
       }
     } catch (err) {
       log.warn('enforceVerification pass failed (non-fatal)', {

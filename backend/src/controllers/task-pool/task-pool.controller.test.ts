@@ -20,7 +20,9 @@ import {
   listAllItems,
   blockItem,
   scoreItem,
+  renderVerdict,
 } from './task-pool.controller.js';
+import { ForbiddenTransitionError } from '../../types/v2/work-item.types.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
@@ -69,6 +71,7 @@ const mockService = {
   updateItemStatus: jest.fn(),
   blockItem: jest.fn(),
   scoreItem: jest.fn(),
+  verifyItem: jest.fn(),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -786,6 +789,7 @@ describe('TaskPoolController', () => {
       expect(mockService.completeItem).toHaveBeenCalledWith(
         'wi-4',
         expect.objectContaining({ summary: expect.stringContaining('Designed schema') }),
+        expect.objectContaining({ role: 'agent' }),
       );
       // Output is persisted with the summary.
       expect(mockService.setOutput).toHaveBeenCalledWith(
@@ -912,6 +916,7 @@ describe('TaskPoolController', () => {
       expect(mockService.completeItem).toHaveBeenCalledWith(
         'wi-h4',
         expect.objectContaining({ summary: expect.stringContaining('Hygiene #4') }),
+        expect.objectContaining({ role: 'agent' }),
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ success: true }),
@@ -1546,5 +1551,111 @@ describe('scoreItem', () => {
       await scoreItem(mockReq({ body: { taskId: 'wi-1', qualityScore: value } }), res);
       expect(res.json).toHaveBeenCalledWith({ success: true, data: { id: 'wi-1' } });
     }
+  });
+
+  // -------------------------------------------------------------------------
+  // #813 — the actor comes from the request's session, not from the body
+  // -------------------------------------------------------------------------
+  describe('#813 transition actor resolution', () => {
+    const forbidden = () =>
+      new ForbiddenTransitionError('wi-src', 'done_by_worker', 'verified', { role: 'team_lead', session: 'tl-other' }, {
+        allowed: false,
+        reason: 'not_reviewer',
+        detail: 'only the reviewer (tl-sam) may render this verdict',
+      });
+
+    beforeEach(() => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-1', output: null });
+      mockService.setOutput.mockResolvedValue(undefined);
+      mockService.completeItem.mockResolvedValue(undefined);
+      mockService.verifyItem.mockReset();
+    });
+
+    it('complete: uses X-Agent-Session as the actor, ignoring a different body agentId', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-1' },
+        headers: { 'x-agent-session': 'tl-sam' },
+        body: { agentId: 'someone-else', result: { summary: 'reviewed' } },
+      });
+      await completeItem(req, mockRes());
+      expect(mockService.completeItem).toHaveBeenCalledWith('wi-1', expect.anything(), {
+        role: 'agent',
+        session: 'tl-sam',
+        via: 'POST /task-pool/complete',
+      });
+    });
+
+    it('complete: with no session header the actor has no identity (never the body agentId)', async () => {
+      const req = mockReq({ params: { workItemId: 'wi-1' }, body: { agentId: 'tl-sam', result: { summary: 'x' } } });
+      await completeItem(req, mockRes());
+      const actor = mockService.completeItem.mock.calls.at(-1)[2];
+      expect(actor).toEqual({ role: 'agent', via: 'POST /task-pool/complete' });
+    });
+
+    it('complete: the orchestrator session resolves to the orchestrator role', async () => {
+      const req = mockReq({
+        params: { workItemId: 'wi-1' },
+        headers: { 'x-agent-session': 'crewly-orc' },
+        body: { agentId: 'crewly-orc', result: { summary: 'x' } },
+      });
+      await completeItem(req, mockRes());
+      expect(mockService.completeItem.mock.calls.at(-1)[2]).toMatchObject({ role: 'orchestrator', session: 'crewly-orc' });
+    });
+
+    it('complete: a refused verdict is a 403 with a machine-readable code and a hint', async () => {
+      mockService.completeItem.mockRejectedValueOnce(forbidden());
+      const res = mockRes();
+      await completeItem(
+        mockReq({ params: { workItemId: 'wi-1' }, headers: { 'x-agent-session': 'tl-other' }, body: { agentId: 'tl-other', result: { summary: 'x' } } }),
+        res,
+      );
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, code: 'transition_not_reviewer', hint: expect.stringContaining('CREWLY_SESSION_NAME') }),
+      );
+    });
+
+    it('verdict: rejects an invalid verdict with 400', async () => {
+      const res = mockRes();
+      await renderVerdict(mockReq({ params: { workItemId: 'wi-src' }, body: { verdict: 'done' } }), res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockService.verifyItem).not.toHaveBeenCalled();
+    });
+
+    it('verdict: an agent session renders it as a reviewer (team_lead + that session)', async () => {
+      mockService.verifyItem.mockResolvedValue({ id: 'wi-src', status: 'verified' });
+      const res = mockRes();
+      await renderVerdict(
+        mockReq({ params: { workItemId: 'wi-src' }, headers: { 'x-agent-session': 'tl-sam' }, body: { verdict: 'verified', comment: ' ok ' } }),
+        res,
+      );
+      expect(mockService.verifyItem).toHaveBeenCalledWith(
+        'wi-src',
+        expect.objectContaining({ role: 'team_lead', session: 'tl-sam' }),
+        'verified',
+        'ok',
+      );
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('verdict: the dashboard is the owner', async () => {
+      mockService.verifyItem.mockResolvedValue({ id: 'wi-src', status: 'rejected' });
+      await renderVerdict(
+        mockReq({ params: { workItemId: 'wi-src' }, headers: { 'x-crewly-caller': 'dashboard' }, body: { verdict: 'rejected' } }),
+        mockRes(),
+      );
+      expect(mockService.verifyItem).toHaveBeenCalledWith('wi-src', expect.objectContaining({ role: 'owner' }), 'rejected', undefined);
+    });
+
+    it('verdict: a caller that is not the reviewer gets 403', async () => {
+      mockService.verifyItem.mockRejectedValue(forbidden());
+      const res = mockRes();
+      await renderVerdict(
+        mockReq({ params: { workItemId: 'wi-src' }, headers: { 'x-agent-session': 'tl-other' }, body: { verdict: 'verified' } }),
+        res,
+      );
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'transition_not_reviewer' }));
+    });
   });
 });

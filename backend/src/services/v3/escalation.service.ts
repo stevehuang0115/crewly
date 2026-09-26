@@ -469,7 +469,7 @@ export class EscalationService {
       for (const item of activeItems) {
         try {
           // queued → blocked requires queued→running→blocked or direct update
-          await taskPool.updateItemStatus(item.id, 'blocked');
+          await taskPool.updateItemStatus(item.id, 'blocked', { role: 'system', via: 'escalation-service' });
           succeeded += 1;
         } catch (err) {
           // Some transitions may not be valid — track so we don't report

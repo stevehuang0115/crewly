@@ -2643,7 +2643,7 @@ void (async () => {
 
 							// Append system note to description so Agent knows why it was woken
 							const wakeNote = `\n\n[SYSTEM NOTE] Woken automatically by Trigger '${triggerId}' at ${new Date().toISOString()}.`;
-							await taskPool.updateItemStatus(action.wakeWorkItemId, 'queued');
+							await taskPool.updateItemStatus(action.wakeWorkItemId, 'queued', { role: 'system', via: 'trigger-wake' });
 							// Append wake reason to WorkItem description via storage
 							try {
 								const item = (await taskPool.getAllItems()).find(wi => wi.id === action.wakeWorkItemId);

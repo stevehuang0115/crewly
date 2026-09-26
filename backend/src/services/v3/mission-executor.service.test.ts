@@ -319,8 +319,8 @@ describe('MissionExecutorService', () => {
       const count = await service.pauseMission('mission-1');
       expect(count).toBe(2); // Only queued items frozen
       expect(mockUpdateItemStatus).toHaveBeenCalledTimes(2);
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'scheduled');
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-3', 'scheduled');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'scheduled', expect.objectContaining({ role: 'system' }));
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-3', 'scheduled', expect.objectContaining({ role: 'system' }));
     });
 
     it('should unfreeze scheduled tasks to queued', async () => {
@@ -333,7 +333,7 @@ describe('MissionExecutorService', () => {
 
       const count = await service.resumeMission('mission-1');
       expect(count).toBe(1);
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'queued');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'queued', expect.objectContaining({ role: 'system' }));
     });
   });
 });

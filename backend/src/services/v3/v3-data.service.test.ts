@@ -399,7 +399,7 @@ describe('V3DataService', () => {
       eventBus.emit('v3:task_completed', event);
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockCompleteItem).toHaveBeenCalledWith('wi-1');
+      expect(mockCompleteItem).toHaveBeenCalledWith('wi-1', undefined, expect.objectContaining({ role: 'agent', session: 'agent-leo' }));
       // Request should cascade to 'done' since all WorkItems are done
       expect(mockRequestUpdate).toHaveBeenCalledWith('req-c1', { status: 'done' });
     });
@@ -418,8 +418,8 @@ describe('V3DataService', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Should first transition queued → running, then complete
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'running');
-      expect(mockCompleteItem).toHaveBeenCalledWith('wi-1');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'running', expect.objectContaining({ role: 'system' }));
+      expect(mockCompleteItem).toHaveBeenCalledWith('wi-1', undefined, expect.objectContaining({ role: 'agent', session: 'agent-leo' }));
     });
 
     it('should match by projectTaskId first (precise match)', async () => {
@@ -438,7 +438,7 @@ describe('V3DataService', () => {
       await new Promise((r) => setTimeout(r, 50));
 
       // Should match by projectTaskId, not by sessionName
-      expect(mockCompleteItem).toHaveBeenCalledWith('wi-right');
+      expect(mockCompleteItem).toHaveBeenCalledWith('wi-right', undefined, expect.objectContaining({ role: 'agent', session: 'agent-leo' }));
     });
 
     it('should skip if no WorkItem matches at all', async () => {
@@ -484,7 +484,7 @@ describe('V3DataService', () => {
       });
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-qf', 'running');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-qf', 'running', expect.objectContaining({ role: 'system' }));
       expect(mockFailItem).toHaveBeenCalledWith('wi-qf', expect.stringContaining('agent-max'));
     });
 
@@ -720,7 +720,7 @@ describe('V3DataService', () => {
       eventBus.emit('v3:task_blocked', event);
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-b1', 'blocked');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-b1', 'blocked', expect.objectContaining({ role: 'system' }));
     });
 
     it('should cascade Request status to blocked', async () => {
@@ -747,7 +747,7 @@ describe('V3DataService', () => {
       eventBus.emit('v3:task_blocked', event);
       await new Promise((r) => setTimeout(r, 50));
 
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-b2', 'blocked');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-b2', 'blocked', expect.objectContaining({ role: 'system' }));
       expect(mockRequestUpdate).toHaveBeenCalledWith('req-b1', { status: 'blocked' });
     });
 

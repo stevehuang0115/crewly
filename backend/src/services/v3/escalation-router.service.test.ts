@@ -108,7 +108,7 @@ describe('EscalationRouterService', () => {
       );
 
       expect(id).not.toBeNull();
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'blocked');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-1', 'blocked', expect.objectContaining({ role: 'system' }));
     });
 
     it('should route team_lead target to agent message (no persistence)', async () => {
@@ -188,7 +188,7 @@ describe('EscalationRouterService', () => {
       expect(resolved!.status).toBe('resolved');
       expect(resolved!.resolvedBy).toBe('steve');
       // Should have called resume (queued)
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-2', 'queued');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-2', 'queued', expect.objectContaining({ role: 'system' }));
     });
 
     it('should return null for non-existent escalation', async () => {
@@ -456,6 +456,48 @@ describe('EscalationRouterService', () => {
       await service.escalateUnverifiedWorkItem(makeUnverifiedWI(), 3_600_000);
       expect(mockEnqueue).toHaveBeenCalledTimes(1);
     });
+  });
+
+  describe('escalateUnreviewedToOwner (#813 — replaces the TTL auto-verify)', () => {
+    const wi = {
+      id: 'wi-unreviewed-1',
+      title: 'Build the login API',
+      type: 'delegate',
+      target: 'agent-dev',
+      retryCount: 0,
+      maxRetries: 3,
+      requestId: 'req-9',
+    } as Parameters<EscalationRouterService['escalateUnreviewedToOwner']>[0];
+
+    it('persists a human-targeted tl_verification escalation and notifies the owner', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.escalateUnreviewedToOwner(wi, 26 * 3_600_000);
+
+      expect(id).not.toBeNull();
+      const [, written] = fileIo.atomicWriteJson.mock.calls[0];
+      expect(written).toMatchObject({ source: 'tl_verification', target: 'human', workItemId: 'wi-unreviewed-1' });
+      expect(written.details.stage).toBe('owner');
+      expect(written.summary).toContain('~26h');
+      expect(written.summary).toContain('nothing passes by timeout');
+      expect(mockSendNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('is best-effort: returns null instead of throwing when persistence fails', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      fileIo.atomicWriteJson.mockRejectedValueOnce(new Error('disk full'));
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      await expect(service.escalateUnreviewedToOwner(wi, 3_600_000)).resolves.toBeNull();
+    });
+  });
+
+  it('the orchestrator verification message names the verdict endpoint (#813)', async () => {
+    const service = EscalationRouterService.getInstance('/tmp/test');
+    await service.escalateUnverifiedWorkItem(
+      { id: 'wi-x', title: 't', type: 'delegate', target: 'a', retryCount: 0, maxRetries: 3 } as Parameters<EscalationRouterService['escalateUnverifiedWorkItem']>[0],
+      3 * 3_600_000,
+    );
+    expect(mockEnqueue.mock.calls[0][0].content).toContain('POST /api/task-pool/items/wi-x/verdict');
   });
 
   describe('requestFinalDeliverableReview (final deliverable judgment — P2b)', () => {
