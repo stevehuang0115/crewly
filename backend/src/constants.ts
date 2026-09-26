@@ -3111,6 +3111,32 @@ export const SELF_IMPROVEMENT_CONSTANTS = {
 } as const;
 
 /**
+ * Daily owner receipt (#828): one phone-readable message every evening with
+ * every ask of the window, its outcome and link, what waits on the owner, and
+ * what it cost. See specs/owner-receipt.md.
+ */
+export const OWNER_RECEIPT_CONSTANTS = {
+	/** Default local send time (HH:MM, 24h) */
+	DEFAULT_TIME: '21:00',
+	/** Default owner time zone (same default as team-health off-hours) */
+	DEFAULT_TIMEZONE: 'America/New_York',
+	/** How often the scheduler checks whether it is time (ms) */
+	TICK_INTERVAL_MS: 60 * 1000,
+	/** Settings + last-sent state, under ~/.crewly */
+	STATE_FILENAME: 'owner-receipt.json',
+	/** An ask is shortened to this many characters (CJK count double) */
+	MAX_ASK_WEIGHTED_LENGTH: 56,
+	/** A waiting-on-you question is shortened to this many characters */
+	MAX_QUESTION_WEIGHTED_LENGTH: 90,
+	/** Ask lines in the Slack message before "另有 N 件" (phone length) */
+	MAX_ASK_LINES: 30,
+	/** Waiting-on-you lines before "另有 N 件" */
+	MAX_WAITING_LINES: 12,
+	/** Team label for a ticket nobody is assigned to */
+	UNASSIGNED_TEAM: '未分配',
+} as const;
+
+/**
  * Ticket loop (specs/ticket-loop.md, Phase 1): owner messages become tickets
  * (a `Request` with a TKT number), receipts go back where the owner spoke,
  * and WorkItems link back to the ticket.
