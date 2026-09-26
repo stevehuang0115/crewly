@@ -305,6 +305,15 @@ export interface ISessionBackend {
 	captureOutput(name: string, lines?: number): string;
 
 	/**
+	 * Get the latest OSC terminal title the session's program set.
+	 * Optional: backends without title tracking omit it.
+	 *
+	 * @param name - Name of the session
+	 * @returns The title, or '' when unknown
+	 */
+	getTerminalTitle?(name: string): string;
+
+	/**
 	 * Get the full terminal buffer content for a session.
 	 *
 	 * @param name - Name of the session

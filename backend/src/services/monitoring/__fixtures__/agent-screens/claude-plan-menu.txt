@@ -1,0 +1,29 @@
+ ▐▛███▛█   Claude Code v2.1.283
+▝▜██████▀  Opus 5.5 · Claude Max
+ ▝▝   ▝▝   /…/project
+
+
+❯ Plan (do not research, the folder is empty): add a hello.py that prints hi. Keep the plan to 2 lines and exit plan
+  mode immediately.
+
+⏺ Updated plan
+  ⎿  /plan to preview
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Ready to code?
+
+ Here is Claude's plan:
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ 1. Create hello.py in the working directory containing print("hi").
+ 2. Verify with python3 hello.py → outputs hi.
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Claude has written up a plan and is ready to execute. Would you like to proceed?
+
+ ❯ 1. Yes, and use auto mode
+   2. Yes, manually approve edits
+   3. Tell Claude what to change
+      shift+tab to approve with this feedback
+
+ ctrl+g to edit in Vim · ~/.claude/plans/plan-example.md

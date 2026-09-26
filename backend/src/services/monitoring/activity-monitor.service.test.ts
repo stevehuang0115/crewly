@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import { getWaiting, resetWaitingRegistry } from './agent-attention-registry.js';
 
 // Mock dependencies
 jest.mock('node-pty', () => ({ spawn: jest.fn() }));
@@ -32,6 +33,16 @@ jest.mock('../agent/pty-activity-tracker.service.js', () => ({
     getInstance: jest.fn().mockReturnValue({
       getIdleTimeMs: jest.fn().mockReturnValue(0),
       recordActivity: jest.fn(),
+    }),
+  },
+}));
+const mockRecordAgentWaitingOnHuman = jest.fn().mockResolvedValue('esc-1');
+const mockResolveAgentWaitingOnHuman = jest.fn().mockResolvedValue(1);
+jest.mock('../v3/escalation-router.service.js', () => ({
+  EscalationRouterService: {
+    getInstance: () => ({
+      recordAgentWaitingOnHuman: mockRecordAgentWaitingOnHuman,
+      resolveAgentWaitingOnHuman: mockResolveAgentWaitingOnHuman,
     }),
   },
 }));
@@ -1108,6 +1119,98 @@ describe('ActivityMonitorService', () => {
 
       // Should have seeded busyTransitionTimestamps
       expect((service as any).busyTransitionTimestamps.has('test-session-1')).toBe(true);
+    });
+  });
+
+  describe('waiting_on_human (#815)', () => {
+    // fs and path are mocked in this file; read the real captured screens.
+    const realFs = jest.requireActual('fs') as typeof import('fs');
+    const realPath = jest.requireActual('path') as typeof import('path');
+    const screen = (file: string): string =>
+      realFs.readFileSync(realPath.join(__dirname, '__fixtures__', 'agent-screens', file), 'utf8');
+    const team = {
+      id: 'team-a', name: 'Team A', projectIds: [], createdAt: '', updatedAt: '',
+      members: [{
+        id: 'm-1', name: 'Dev', role: 'developer' as const, runtimeType: 'claude-code' as const,
+        systemPrompt: '', agentStatus: 'active' as const, workingStatus: 'idle' as const,
+        sessionName: 'dev-1', createdAt: '', updatedAt: '',
+      }],
+    };
+    let publish: jest.Mock;
+
+    beforeEach(() => {
+      resetWaitingRegistry();
+      mockRecordAgentWaitingOnHuman.mockClear();
+      mockResolveAgentWaitingOnHuman.mockClear();
+      mockStorageService.getTeams.mockResolvedValue([team] as never);
+      (readFile as jest.Mock).mockResolvedValue(JSON.stringify({
+        orchestrator: { sessionName: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, workingStatus: 'idle', lastActivityCheck: '', updatedAt: '' },
+        teamMembers: {}, metadata: { lastUpdated: '', version: '1.0.0' },
+      }));
+      (writeFile as jest.Mock).mockResolvedValue(undefined);
+      (existsSync as jest.Mock).mockReturnValue(true);
+      publish = jest.fn();
+      service.setEventBusService({ publish } as never);
+    });
+
+    it('one poll puts a blocked agent in the owner queue (poll interval keeps it under 1 minute)', async () => {
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-bash-permission.txt'));
+
+      await (service as any).performActivityCheck();
+
+      expect(getWaiting('dev-1')).toMatchObject({ kind: 'permission' });
+      expect(mockRecordAgentWaitingOnHuman).toHaveBeenCalledWith(expect.objectContaining({ sessionName: 'dev-1', kind: 'permission' }));
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent:waiting_on_human', sessionName: 'dev-1', newValue: 'waiting_on_human:permission' }));
+      expect(mockSessionBackend.captureOutput).toHaveBeenCalledWith('dev-1', 60);
+      // One poll is enough; crewly-mobile polls /escalations every 15s, so
+      // poll interval + 15s must stay within the 1-minute acceptance bound.
+      expect(ACTIVITY_MONITOR_CONSTANTS.POLLING_INTERVAL_MS + 15_000).toBeLessThanOrEqual(60_000);
+    });
+
+    it('does not file again on the next poll while still waiting, and keeps since', async () => {
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-trust-dialog.txt'));
+      await (service as any).performActivityCheck();
+      const since = getWaiting('dev-1')?.since;
+      await (service as any).performActivityCheck();
+
+      expect(mockRecordAgentWaitingOnHuman).toHaveBeenCalledTimes(1);
+      expect(getWaiting('dev-1')?.since).toBe(since);
+    });
+
+    it('clears the wait and closes the escalation once the prompt is gone', async () => {
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-plan-menu.txt'));
+      await (service as any).performActivityCheck();
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-busy.txt'));
+      await (service as any).performActivityCheck();
+
+      expect(getWaiting('dev-1')).toBeUndefined();
+      expect(mockResolveAgentWaitingOnHuman).toHaveBeenCalledWith('dev-1');
+      expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: 'agent:waiting_resolved', sessionName: 'dev-1' }));
+    });
+
+    it('a busy or idle agent is never reported as waiting', async () => {
+      for (const f of ['claude-busy.txt', 'claude-idle.txt', 'codex-busy.txt', 'codex-idle.txt']) {
+        mockSessionBackend.captureOutput.mockReturnValue(screen(f));
+        await (service as any).performActivityCheck();
+      }
+      expect(getWaiting('dev-1')).toBeUndefined();
+      expect(mockRecordAgentWaitingOnHuman).not.toHaveBeenCalled();
+    });
+
+    it('uses the terminal title: a Codex "Action Required" title alone counts', async () => {
+      mockSessionBackend.captureOutput.mockReturnValue('› Ask Codex to do anything');
+      (mockSessionBackend as unknown as { getTerminalTitle: jest.Mock }).getTerminalTitle = jest.fn().mockReturnValue('[ ! ] Action Required | ⠸ | repo');
+      await (service as any).performActivityCheck();
+      expect(getWaiting('dev-1')).toMatchObject({ kind: 'unspecified' });
+    });
+
+    it('clears the wait when the session is gone', async () => {
+      mockSessionBackend.captureOutput.mockReturnValue(screen('claude-bash-permission.txt'));
+      await (service as any).performActivityCheck();
+      mockSessionBackend.sessionExists.mockReturnValue(false);
+      await (service as any).performActivityCheck();
+      expect(getWaiting('dev-1')).toBeUndefined();
+      expect(mockResolveAgentWaitingOnHuman).toHaveBeenCalledWith('dev-1');
     });
   });
 });

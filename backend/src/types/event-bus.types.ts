@@ -48,6 +48,11 @@ export const EVENT_TYPES = [
   // flow) and needs a human to complete login. Payload: newValue = login
   // URL, and `loginCode` carries the device code when one was captured.
   'agent:login_required',
+  // Agent is blocked on a terminal prompt (approval, trust dialog, plan
+  // menu) and needs a human (#815). newValue = 'waiting_on_human:<kind>'.
+  'agent:waiting_on_human',
+  // The prompt is gone (answered, or the session ended). newValue = 'resolved'.
+  'agent:waiting_resolved',
 
   // Hierarchical task events
   'task:submitted',
@@ -175,6 +180,8 @@ export const CRITICAL_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   // A runtime parked on a sign-in screen is dead until a human acts, and a
   // device code expires in minutes — always actionable.
   'agent:login_required',
+  // An agent blocked on a prompt makes no progress until a human answers (#815).
+  'agent:waiting_on_human',
   'hierarchy:escalation',
   // Architecture Upgrade: task event chain — these drive workflow progression
   'task:done',
@@ -224,6 +231,7 @@ export const INFO_EVENT_TYPES: ReadonlySet<EventType> = new Set([
   'agent:active',
   'agent:context_warning',
   'agent:oauth_url',
+  'agent:waiting_resolved',
   'task:submitted',
   'task:accepted',
   'task:working',

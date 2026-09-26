@@ -35,6 +35,8 @@ describe('Event Bus Types', () => {
         'agent:context_critical',
         'agent:oauth_url',
         'agent:login_required',
+        'agent:waiting_on_human',
+        'agent:waiting_resolved',
         // Hierarchical task events
         'task:submitted',
         'task:accepted',

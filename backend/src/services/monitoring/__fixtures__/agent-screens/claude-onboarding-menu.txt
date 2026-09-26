@@ -1,0 +1,14 @@
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  Claude in Chrome extension detected
+
+  Claude will use your Chrome browser by default — navigating sites, filling forms, and capturing screenshots in your
+  existing session.
+
+  This session is in Auto mode, so an AI classifier approves routine browser actions — you are only prompted when it
+  is unsure. Turn browser tools off for future sessions with /chrome.
+
+  ❯ No, keep browser tools off
+    Yes, use my browser
+
+  Enter to confirm · Esc to keep browser tools off
