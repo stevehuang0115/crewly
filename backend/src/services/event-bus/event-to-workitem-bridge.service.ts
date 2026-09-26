@@ -394,7 +394,13 @@ export class EventToWorkItemBridge {
     //     15-minute tick doubled the orc's turn count on steamfun-ops (2026-09-16).
     //   - bridge-auto maintenance (wiki drain/migrate/cleanup): the bridge
     //     re-scans on its own tick and re-creates work if anything is left.
-    if (sourceWI.type === 'cron_run' || sourceWI.metadata?.['autoCreated'] === true) {
+    // #813: only when nobody asked for a gate. An item that explicitly
+    // requires verification is reviewed like any other — skipping it used to
+    // leave it in done_by_worker until the TTL auto-verified it.
+    if (
+      (sourceWI.type === 'cron_run' || sourceWI.metadata?.['autoCreated'] === true) &&
+      sourceWI.metadata?.['requiresVerification'] !== true
+    ) {
       this.logger.debug('Skipping verification WI (cron run or auto-created maintenance)', {
         sourceWorkItemId: sourceWI.id,
         type: sourceWI.type,
@@ -423,18 +429,20 @@ export class EventToWorkItemBridge {
     // Ticket loop Phase 3 — review goes to the worker's own lead (its parent,
     // else the team's lead), never to someone reviewing their own work, and
     // no longer to the orchestrator by default: 82 of 82 review items in a
-    // week landed on crewly-orc because worker items carry no teamId. With
-    // no separate lead the work is verified here; for a ticket, the owner's
-    // 待验收 is the review.
-    const reviewer = await this.resolveReviewer(sourceWI);
-    if (!reviewer) {
-      await this.taskPool.verifyItem(sourceWI.id, 'system', 'verified');
-      this.logger.info('No separate reviewer — work verified without a review item', {
+    // week landed on crewly-orc because worker items carry no teamId.
+    //
+    // #813: with no separate lead the ORCHESTRATOR reviews it. This used to
+    // call verifyItem(system, 'verified') — the worker's own report became
+    // "verified" with nobody looking. The review item's target is the
+    // reviewer of record: the transition gate reads it to decide who may
+    // render the verdict.
+    const reviewer = (await this.resolveReviewer(sourceWI)) ?? ORCHESTRATOR_SESSION_NAME;
+    if (reviewer === ORCHESTRATOR_SESSION_NAME) {
+      this.logger.info('No separate lead — the orchestrator reviews this work', {
         sourceWorkItemId: sourceWI.id,
         worker: sourceWI.target,
         requestId: sourceWI.requestId,
       });
-      return;
     }
     const target = reviewer;
     const verifyId = `${sourceWI.id}:verify:${sourceWI.id}`;

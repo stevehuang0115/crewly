@@ -234,7 +234,10 @@ per-message prompts. So review costs the owner nothing unless they object.
    queued for whoever answered (else assignee / orc). Any other owner message
    in a 待验收 thread → running (no reject counted).
 4. **Silence accepts.** 待验收 for `REVIEW.AUTO_ACCEPT_MS` (72 h) → done,
-   tag `auto_accepted`. No ping.
+   tag `auto_accepted`, `acceptedBy: 'silence'`. No ping. This is
+   *acceptance*, never verification (#813): the board shows 默认通过 · 未验收
+   on the card, and an owner accept shows 已验收 (`acceptedBy: 'owner'`).
+   See `specs/2026-09-26-workitem-verification-gate.md`.
 5. **Receipts.** Slack 🎫 → ✅ when done (no message). chat-v2 note →
    「TKT-… 已完成」.
 
@@ -292,7 +295,7 @@ the owner never sees ticket mechanics.
   `sendMessageToAgent`, `nudgeText`) `NUDGE_AFTER_MS` (24 h) after the answer
   and again 24 h later (`MAX_NUDGES` = 2), each time telling it to ask once
   more in the original thread if the result needs an OK; 24 h after the last
-  nudge the ticket is accepted (`auto_accepted`). A new answer resets the count.
+  nudge the ticket is accepted (`auto_accepted`, `acceptedBy: 'silence'`). A new answer resets the count.
 
 **No auto-decomposition for tickets** (2026-09-24 log review):
 `RequestDecomposeSubscriber.shouldDecompose` skips any Request with a

@@ -213,7 +213,7 @@ describe('owner actions', () => {
   it('verify → done and the receipt turns ✅', async () => {
     const t = await inReview();
     const r = await review.verify('TKT-001');
-    expect(r).toMatchObject({ ok: true, ticket: { status: 'done' } });
+    expect(r).toMatchObject({ ok: true, ticket: { status: 'done', acceptedBy: 'owner' } });
     expect(doneReceipts).toEqual([t.id]);
     expect(await review.verify(t.id)).toMatchObject({ ok: false, reason: 'already_done' });
     expect(await review.verify('TKT-404')).toMatchObject({ ok: false, reason: 'not_found' });
@@ -269,6 +269,8 @@ describe('auto-accept', () => {
     const after = await requests.getById(t.id);
     expect(after?.status).toBe('done');
     expect(after?.tags).toContain(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG);
+    // #813: silence is acceptance, never a review.
+    expect(after?.acceptedBy).toBe('silence');
   });
 });
 
@@ -340,6 +342,8 @@ describe('follow-up by the agent (owner, 2026-09-24)', () => {
     const after = await requests.getById(t.id);
     expect(after?.status).toBe('done');
     expect(after?.tags).toContain(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG);
+    // #813: silence is acceptance, never a review.
+    expect(after?.acceptedBy).toBe('silence');
     expect(nudges).toHaveLength(2);
   });
 

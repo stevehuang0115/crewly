@@ -77,3 +77,43 @@ export function isOwnerDashboardRequest(req: Pick<Request, 'headers'>): boolean 
   const value = Array.isArray(hdr) ? hdr[0] : hdr;
   return typeof value === 'string' && value.trim().toLowerCase() === API_SECURITY_CONSTANTS.DASHBOARD_CALLER;
 }
+
+/**
+ * Resolve the actor of a WorkItem status transition from the request (#813).
+ *
+ * Identity comes from the request's session context, never from the body:
+ * - `X-Agent-Session: crewly-orc` → `orchestrator` with that session.
+ * - any other `X-Agent-Session` → `agent` with that session. What that
+ *   session may do to a given item (complete it as its assignee, render a
+ *   verdict as its reviewer) is decided per item by the transition gate.
+ * - no header + the dashboard marker ({@link isOwnerDashboardRequest}) → `owner`.
+ * - no header otherwise → `agent` with NO session: it can still take the
+ *   worker edges it always could, but it has no identity, so it can never be
+ *   anyone's reviewer.
+ *
+ * Limitation: the header is set by the skills' `lib.sh` from the agent's own
+ * environment, so it is the best identity available today, not an
+ * authenticated one. Per-session API tokens (control-plane isolation spec)
+ * will replace it; this function is the single place to change.
+ *
+ * @param req - Incoming request (only its headers are read)
+ * @param via - Entry point, recorded on the actor for the audit log
+ * @returns The transition actor
+ *
+ * @example
+ * ```typescript
+ * const actor = resolveTransitionActor(req, 'POST /task-pool/complete');
+ * await pool.completeItem(id, result, actor);
+ * ```
+ */
+export function resolveTransitionActor(
+  req: Pick<Request, 'headers'>,
+  via: string,
+): { role: 'orchestrator' | 'agent' | 'owner'; session?: string; via: string } {
+  const session = readAgentSessionHeader(req);
+  if (session) {
+    return { role: session === ORCHESTRATOR_SESSION_NAME ? 'orchestrator' : 'agent', session, via };
+  }
+  if (isOwnerDashboardRequest(req)) return { role: 'owner', via };
+  return { role: 'agent', via };
+}

@@ -511,6 +511,36 @@ describe('resolve and list', () => {
   });
 });
 
+describe('board — accepted is not verified (#813)', () => {
+  it('labels how a done ticket was accepted: owner, silence (field or legacy tag), else null', async () => {
+    /** Open a ticket and return its id (fails the test if intake declined). */
+    const open = async (ts: string, text: string): Promise<string> => {
+      const t = await svc.intake(msg({ ts, text }));
+      if (!t) throw new Error(`intake declined: ${text}`);
+      return t.id;
+    };
+    const ownerId = await open('1.0', 'implement csv export');
+    const silentId = await open('2.0', 'implement pdf export');
+    const legacyId = await open('3.0', 'implement xml export');
+    const openId = await open('4.0', 'implement json export');
+    const set = (id: string, patch: Record<string, unknown>) => {
+      const cur = store.items.get(id);
+      if (!cur) throw new Error(`missing ${id}`);
+      store.items.set(id, { ...cur, ...patch });
+    };
+    set(ownerId, { status: 'done', acceptedBy: 'owner' });
+    set(silentId, { status: 'done', acceptedBy: 'silence' });
+    set(legacyId, { status: 'done', tags: [TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG] });
+
+    const byId = new Map((await svc.list({ includeLegacy: true })).tickets.map((t) => [t.id, t]));
+    expect(byId.size).toBeGreaterThanOrEqual(4);
+    expect(byId.get(ownerId)?.acceptedBy).toBe('owner');
+    expect(byId.get(silentId)?.acceptedBy).toBe('silence');
+    expect(byId.get(legacyId)?.acceptedBy).toBe('silence');
+    expect(byId.get(openId)?.acceptedBy).toBeNull();
+  });
+});
+
 describe('resolveTicketIdForSession', () => {
   const ID = '11111111-2222-3333-4444-555555555555';
   it('reads the ticket marker of the session’s current turn', () => {

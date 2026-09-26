@@ -20,6 +20,8 @@ import type {
   AgentScoreBreakdown,
 } from '../../types/v2/index.js';
 import {
+  REVIEW_ESCALATED_TO_ORC_KEY,
+  REVIEW_ESCALATED_TO_OWNER_KEY,
   isValidRequestTransition,
   isLeaseExpired,
   isGracePeriodExceeded,
@@ -463,16 +465,22 @@ export function detectOrphanWorkItems(
  * {@link WORK_ITEM_TRANSITIONS}).
  *
  * `cancelled` is first because a TTL expiry is an abandonment, not an
- * accomplishment. `verified` follows so `done_by_worker` — which has no
- * `→ cancelled` edge — auto-approves rather than stranding: 24h of
- * nobody objecting is treated as implicit acceptance. `done` is last and
- * in practice unreachable (every status that permits `→ done` also
- * permits `→ cancelled`), but is listed so the table stays total if a
- * future status permits `→ done` alone.
+ * accomplishment. `done` is last and in practice unreachable (every status
+ * that permits `→ done` also permits `→ cancelled`), but is listed so the
+ * table stays total if a future status permits `→ done` alone.
+ *
+ * **`verified` is deliberately absent (#813).** It used to sit second, so a
+ * `done_by_worker` item — which has no `→ cancelled` edge — was auto-verified
+ * after 24h of silence: unreviewed work became indistinguishable from
+ * reviewed work. A TTL-expired `done_by_worker` item is now skipped here and
+ * escalated to the owner instead ({@link detectUnreviewedPastTTL}). It stays
+ * `done_by_worker` — visibly awaiting review — until its reviewer, the
+ * orchestrator or the owner renders a verdict. The permission table also
+ * refuses `done_by_worker → verified` to `system`, so this cannot regress
+ * silently by re-adding the entry.
  */
 const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
   'cancelled',
-  'verified',
   'done',
 ] as const;
 
@@ -480,14 +488,13 @@ const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
  * Pick a state-machine-legal terminal status for a TTL-expired WorkItem,
  * or `null` when no legal terminal target exists.
  *
- * **Scope: the TTL rule only.** The `verified` fallback below encodes a TIME
- * semantic — "24h elapsed with nobody objecting, treat silence as implicit
- * acceptance" — which is only defensible because a TTL expiry *is* the passage
- * of time. Rules with no time dimension must NOT borrow this picker; commit
- * 469a3a21 briefly shared it with the orphan + deep-cascade rules and that
- * silently auto-`verified` seconds-old `done_by_worker` children whenever an
- * unrelated ancestor failed. Those rules use {@link pickCascadeTarget}, which
- * is cancel-only. Read that JSDoc before wiring a third caller into this one.
+ * **Scope: the TTL rule only.** Commit 469a3a21 briefly shared this picker
+ * with the orphan + deep-cascade rules; back then it still fell back to
+ * `verified` and so silently auto-verified seconds-old `done_by_worker`
+ * children whenever an unrelated ancestor failed. Those rules use
+ * {@link pickCascadeTarget}, which is cancel-only. The picker no longer
+ * returns `verified` for anything (#813), but read that JSDoc before wiring a
+ * third caller into this one.
  *
  * This picker is TABLE-DRIVEN off {@link WORK_ITEM_TRANSITIONS} rather
  * than hardcoded per-status branches. That is deliberate: the hardcoded
@@ -519,7 +526,7 @@ const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
  * reintroduce this — worst case the new status is skipped by TTL, which
  * is inert, instead of throwing on every reconciler pass forever.
  *
- * `null` results (currently `rejected` and `failed`) are intentional — the
+ * `null` results (currently `done_by_worker`, `rejected` and `failed`) are intentional — the
  * alternative is an illegal edge, not a cleanup. Both statuses end their
  * lifecycle through the successor model (#740, correcting #736) rather than
  * through a status transition: the writer that parks an item there stamps a
@@ -549,7 +556,7 @@ const TTL_EXPIRY_TARGET_PREFERENCE: readonly WorkItemStatus[] = [
  * @example
  * ```typescript
  * pickTTLExpiryTarget('running');        // 'cancelled'
- * pickTTLExpiryTarget('done_by_worker'); // 'verified'
+ * pickTTLExpiryTarget('done_by_worker'); // null  → skip; escalated to the owner instead
  * pickTTLExpiryTarget('rejected');       // null  → skip, do not correct
  * ```
  */
@@ -632,10 +639,9 @@ export function detectTTLExpiredWorkItems(
 
 /**
  * How long a `done_by_worker` WorkItem may await TL verification before the
- * reconciler escalates it to the orchestrator for a verdict. Deliberately far
- * shorter than the 24h TTL fallback (which silently auto-`verified`s as a last
- * resort) so unverified work gets a REAL verdict opportunity long before it
- * could be implicitly accepted. Default 2 hours.
+ * reconciler escalates it to the orchestrator for a verdict (second step of
+ * lead → orchestrator → owner; the owner step is {@link detectUnreviewedPastTTL}).
+ * Default 2 hours.
  */
 export const DEFAULT_VERIFY_ESCALATE_MS = 2 * 60 * 60 * 1000;
 
@@ -644,7 +650,7 @@ export const DEFAULT_VERIFY_ESCALATE_MS = 2 * 60 * 60 * 1000;
  * overdue verification, so the rule fires exactly once per item (no per-tick
  * re-nudge spam). Exported so the reconciler service and tests share the key.
  */
-export const VERIFY_ESCALATED_AT_KEY = 'verifyEscalatedAt';
+export const VERIFY_ESCALATED_AT_KEY = REVIEW_ESCALATED_TO_ORC_KEY;
 
 /**
  * Detect WorkItems the worker reported done but the Team Leader has NOT
@@ -652,10 +658,10 @@ export const VERIFY_ESCALATED_AT_KEY = 'verifyEscalatedAt';
  *
  * Background: a `done_by_worker` item sits awaiting a TL verdict
  * (`done_by_worker → verified | rejected`). If the TL never acts, the only
- * thing that eventually moves it is the 24h TTL rule, which treats
+ * thing that used to move it was the 24h TTL rule, which treated
  * "no-objection" as IMPLICIT ACCEPTANCE (auto-`verified`) — i.e. unverified
- * work silently passes. That breaks the "verify → reject → iterate" loop the
- * autonomous harness depends on.
+ * work silently passed. #813 removed that; this rule and
+ * {@link detectUnreviewedPastTTL} escalate instead.
  *
  * This rule surfaces such items so the reconciler can ESCALATE them to the
  * orchestrator for an explicit verdict (which then either accepts, or rejects
@@ -705,6 +711,53 @@ export function detectUnverifiedWorkItems(
   }
 
   return { items, unverifiedIds };
+}
+
+/** Re-export: metadata key stamped when an unreviewed item reached the owner. */
+export const REVIEW_OWNER_ESCALATED_AT_KEY = REVIEW_ESCALATED_TO_OWNER_KEY;
+
+/**
+ * Detect `done_by_worker` items still unreviewed past the WorkItem TTL — the
+ * last step of the review escalation chain (lead → orchestrator → owner, #813).
+ *
+ * This replaces the TTL rule's old `done_by_worker → verified` correction.
+ * It emits no correction: the item stays `done_by_worker`, visibly awaiting
+ * review, and the reconciler escalates it to the owner once (stamping
+ * {@link REVIEW_OWNER_ESCALATED_AT_KEY}). Only a reviewer's verdict moves it.
+ *
+ * Age is measured the same way as {@link detectUnverifiedWorkItems}: from when
+ * the worker reported done.
+ *
+ * Pure + deterministic for unit testing.
+ *
+ * @param workItems - All WorkItems to scan
+ * @param nowMs - Current time in ms (injectable for tests)
+ * @param ttlMs - Awaiting-review age before the owner is asked (default 24h,
+ *   the same budget the TTL rule gives every other status)
+ * @returns The items to escalate to the owner and how many were examined
+ *
+ * @example
+ * ```ts
+ * const { items } = detectUnreviewedPastTTL(pool, Date.now());
+ * for (const wi of items) await router.escalateUnreviewedToOwner(wi, age);
+ * ```
+ */
+export function detectUnreviewedPastTTL(
+  workItems: WorkItem[],
+  nowMs: number = Date.now(),
+  ttlMs: number = 24 * 60 * 60 * 1000,
+): { items: WorkItem[]; examined: number } {
+  const items: WorkItem[] = [];
+  let examined = 0;
+  for (const wi of workItems) {
+    if (wi.status !== 'done_by_worker') continue;
+    examined += 1;
+    if (wi.metadata?.[REVIEW_OWNER_ESCALATED_AT_KEY]) continue;
+    const awaitingSince = new Date(wi.completedAt ?? wi.startedAt ?? wi.createdAt).getTime();
+    if (!Number.isFinite(awaitingSince)) continue;
+    if (nowMs - awaitingSince > ttlMs) items.push(wi);
+  }
+  return { items, examined };
 }
 
 // ---------------------------------------------------------------------------
@@ -899,11 +952,12 @@ export interface PruningResult {
    */
   ttlCancelledCount: number;
   /**
-   * WorkItems the TTL rule **auto-accepted** rather than discarded — today
-   * exclusively the `done_by_worker → verified` 24h implicit-acceptance
-   * fallback (see {@link pickTTLExpiryTarget}). Counted separately and
-   * deliberately EXCLUDED from `ReconcileResult.staleItemsCleaned`: this is
-   * work that passed, not work that was cleaned up.
+   * WorkItems the TTL rule moved to anything OTHER than `cancelled` — i.e.
+   * accepted instead of discarded. **Expected to be 0 since #813**: the old
+   * `done_by_worker → verified` 24h fallback is gone (see
+   * {@link pickTTLExpiryTarget}). Kept as a tripwire — the reconciler logs a
+   * warning whenever it is non-zero — and still EXCLUDED from
+   * `ReconcileResult.staleItemsCleaned`.
    *
    * Defined as "TTL acted, but the target was not `cancelled`", so if the
    * target-preference list ever yields a third acceptance-shaped terminal

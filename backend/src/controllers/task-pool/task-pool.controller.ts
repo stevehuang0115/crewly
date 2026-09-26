@@ -27,12 +27,13 @@ import {
   validateCreateWorkItemInput,
   type CreateWorkItemInput,
   type WorkItem,
+  ForbiddenTransitionError,
 } from '../../types/v2/work-item.types.js';
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
-import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
 
@@ -93,6 +94,18 @@ async function validateTargetSession(target: string | undefined): Promise<string
  */
 function handleServiceError(res: Response, error: unknown): void {
   const message = formatError(error);
+  if (error instanceof ForbiddenTransitionError) {
+    // #813: legal edge, wrong caller (not the reviewer, missing identity, …).
+    res.status(403).json({
+      success: false,
+      error: message,
+      code: `transition_${error.reason}`,
+      ...(error.reason === 'not_reviewer' || error.reason === 'missing_actor'
+        ? { hint: 'Verdicts are checked against the caller\'s X-Agent-Session. Run the skill with CREWLY_SESSION_NAME=<your session> set; only the item\'s reviewer, the orchestrator after escalation, or the owner may verify it.' }
+        : {}),
+    });
+    return;
+  }
   if (message.includes('not found')) {
     res.status(404).json({ success: false, error: message });
   } else if (message.includes('status must be') || message.includes('Invalid')) {
@@ -649,7 +662,17 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
       });
     }
 
-    await getService().completeItem(workItemId, result);
+    // #813: the actor is resolved from the request's session header, not from
+    // the body's agentId — the body is whatever the caller chose to write.
+    const actor = resolveTransitionActor(req, 'POST /task-pool/complete');
+    if (actor.session && actor.session !== agentId) {
+      logger.warn('complete: body agentId differs from X-Agent-Session; using the session', {
+        workItemId,
+        agentId,
+        session: actor.session,
+      });
+    }
+    await getService().completeItem(workItemId, result, actor);
 
     // V3.1: Project task completion
     const projection = getProjection();
@@ -788,6 +811,50 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
 // ---------------------------------------------------------------------------
 // POST /api/task-pool/items/:workItemId/cancel — Cancel a queued/blocked WI
 // ---------------------------------------------------------------------------
+
+/**
+ * POST /api/task-pool/items/:workItemId/verdict — record a review verdict.
+ *
+ * Body: `{ "verdict": "verified" | "rejected", "comment"?: string }`.
+ *
+ * The caller is resolved from the request (`X-Agent-Session`, or the owner's
+ * dashboard marker) — never from the body (#813). An agent session acts as a
+ * reviewer and is accepted only when it is the item's reviewer of record; the
+ * orchestrator only once the review was escalated to it (or when no reviewer
+ * is recorded); the owner always. Anyone else gets 403.
+ *
+ * Responses:
+ *   - 200 `{ success: true, data: WorkItem }`
+ *   - 400 invalid verdict
+ *   - 403 `{ code: 'transition_not_reviewer' | 'transition_self_review' | … }`
+ *   - 404 WorkItem not found
+ *   - 409 item is not `done_by_worker`
+ *
+ * @param req - Express request with `workItemId` param and verdict body
+ * @param res - Express response
+ */
+export async function renderVerdict(req: Request, res: Response): Promise<void> {
+  try {
+    const { workItemId } = req.params;
+    const { verdict, comment } = (req.body ?? {}) as { verdict?: unknown; comment?: unknown };
+    if (verdict !== 'verified' && verdict !== 'rejected') {
+      res.status(400).json({ success: false, error: "verdict must be 'verified' or 'rejected'" });
+      return;
+    }
+    const caller = resolveTransitionActor(req, 'POST /task-pool/items/:id/verdict');
+    // An agent session here is acting as a reviewer, not as the worker.
+    const actor = caller.role === 'agent' ? { ...caller, role: 'team_lead' as const } : caller;
+    const updated = await getService().verifyItem(
+      workItemId,
+      actor,
+      verdict,
+      typeof comment === 'string' && comment.trim() ? comment.trim() : undefined,
+    );
+    res.json({ success: true, data: updated });
+  } catch (error) {
+    handleServiceError(res, error);
+  }
+}
 
 /**
  * Cleanly cancel a WorkItem that is `queued`, `blocked`, or `scheduled`

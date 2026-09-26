@@ -15,6 +15,8 @@ import {
   pickTTLExpiryTarget,
   pickCascadeTarget,
   detectUnverifiedWorkItems,
+  detectUnreviewedPastTTL,
+  REVIEW_OWNER_ESCALATED_AT_KEY,
   DEFAULT_VERIFY_ESCALATE_MS,
   VERIFY_ESCALATED_AT_KEY,
   detectRecoverableWorkItems,
@@ -512,22 +514,26 @@ describe('detectTTLExpiredWorkItems', () => {
     expect(expiredIds).toHaveLength(0);
   });
 
-  // 2026-05-12 dogfood: 10 done_by_worker WIs sat unreviewable for 86h
-  // because the TTL correction was illegal per WORK_ITEM_TRANSITIONS
-  // (`done_by_worker` only has edges to `verified` / `rejected`, not
-  // `cancelled`). Reconciler logged ERROR every minute, never cleaned up.
-  it('routes expired `done_by_worker` to `verified` (the legal terminal edge), not `cancelled`', () => {
-    const stale = makeWorkItem({
-      status: 'done_by_worker',
-      createdAt: new Date(Date.now() - 25 * 3600 * 1000).toISOString(),
-    });
+  // #813: a TTL-expired done_by_worker item NEVER reaches verified. The
+  // 2026-05-12 fix for the illegal `→ cancelled` correction special-cased it
+  // to `→ verified`, which turned 24h of silence into a pass. It is now
+  // skipped here (no correction at all, so nothing throws either) and the
+  // owner is asked instead — see detectUnreviewedPastTTL below.
+  it('never routes an expired `done_by_worker` item to `verified` — it emits no correction', () => {
+    const ages = [25, 48, 24 * 30]; // hours: just past TTL, 2 days, a month
+    const stale = ages.map((h) =>
+      makeWorkItem({
+        status: 'done_by_worker',
+        createdAt: new Date(Date.now() - h * 3600 * 1000).toISOString(),
+      }),
+    );
 
-    const { corrections, expiredIds } = detectTTLExpiredWorkItems([stale]);
+    const { corrections, expiredIds } = detectTTLExpiredWorkItems(stale);
 
-    expect(expiredIds).toContain(stale.id);
-    expect(corrections).toHaveLength(1);
-    expect(corrections[0].newState).toBe('verified');
-    expect(corrections[0].previousState).toBe('done_by_worker');
+    expect(stale).toHaveLength(3); // examined 3 items, not an empty set
+    expect(corrections).toEqual([]);
+    expect(expiredIds).toEqual([]);
+    expect(pickTTLExpiryTarget('done_by_worker')).toBeNull();
   });
 
   it('keeps `cancelled` as the default expiry target for non-done_by_worker statuses', () => {
@@ -596,8 +602,10 @@ describe('detectTTLExpiredWorkItems', () => {
         const { corrections } = detectTTLExpiredWorkItems([
           makeWorkItem({ status, createdAt: staleAt() }),
         ]);
+        // `verified` is a legal terminal edge but never a TTL target (#813):
+        // a timer is not a reviewer.
         const hasTerminalEdge = [...WORK_ITEM_TRANSITIONS[status]]
-          .some((t) => TERMINAL_WORK_ITEM_STATUSES.has(t));
+          .some((t) => TERMINAL_WORK_ITEM_STATUSES.has(t) && t !== 'verified');
 
         // Liveness — the rule must still DO something where it legally can.
         expect(corrections).toHaveLength(hasTerminalEdge ? 1 : 0);
@@ -619,8 +627,8 @@ describe('detectTTLExpiredWorkItems', () => {
         running: 'cancelled',
         blocked: 'cancelled',
         escalated: 'cancelled',
-        done_by_worker: 'verified',
       });
+      expect(emitted.has('done_by_worker')).toBe(false);
       expect(emitted.has('rejected')).toBe(false);
       expect(emitted.has('failed')).toBe(false);
     });
@@ -1027,8 +1035,8 @@ describe('detectTTLExpiredWorkItems', () => {
     });
 
     it('diverges from pickTTLExpiryTarget exactly where time semantics apply', () => {
-      // The whole reason the two pickers exist separately.
-      expect(pickTTLExpiryTarget('done_by_worker')).toBe('verified');
+      // Since #813 neither picker accepts unreviewed work.
+      expect(pickTTLExpiryTarget('done_by_worker')).toBeNull();
       expect(pickCascadeTarget('done_by_worker')).toBeNull();
       // Everywhere a cancel is legal they agree.
       for (const status of WORK_ITEM_STATUSES) {
@@ -1049,8 +1057,14 @@ describe('detectTTLExpiredWorkItems', () => {
       }
     });
 
-    it('preserves the 2026-05-12 done_by_worker → verified behaviour', () => {
-      expect(pickTTLExpiryTarget('done_by_worker')).toBe('verified');
+    it('never returns verified for any status (#813)', () => {
+      let examined = 0;
+      for (const status of WORK_ITEM_STATUSES) {
+        examined += 1;
+        expect(pickTTLExpiryTarget(status)).not.toBe('verified');
+      }
+      expect(examined).toBe(WORK_ITEM_STATUSES.length);
+      expect(examined).toBeGreaterThan(0);
     });
 
     it('prefers `cancelled` over `done` for `running` (timeout is not completion)', () => {
@@ -1367,28 +1381,24 @@ describe('runPruningPass', () => {
     }
   });
 
-  it('a TTL auto-verified parent does not cascade-cancel its children', () => {
-    // `detectTTLExpiredWorkItems` emits `done_by_worker → verified` after 24h.
-    // Seeding the cascade set from the raw expired-id list treated that
-    // ACCEPTED parent as a dead ancestor and killed its live children —
-    // the same "cancelled off a parent that was never cancelled" defect.
+  it('a TTL-expired done_by_worker parent is left for review and does not cascade-cancel its children (#813)', () => {
+    // Before #813 the TTL rule emitted `done_by_worker → verified` here, and
+    // an earlier bug then cascaded off that ACCEPTED parent. Now the rule does
+    // not act on the parent at all — it stays awaiting review.
     const now = Date.now();
     const parent = makeWorkItem({
-      id: 'accepted-parent',
+      id: 'awaiting-parent',
       status: 'done_by_worker',
       createdAt: new Date(now - 25 * 3600000).toISOString(),
     });
-    const child = makeWorkItem({ id: 'live-child', status: 'running', parentWorkItemId: 'accepted-parent' });
+    const child = makeWorkItem({ id: 'live-child', status: 'running', parentWorkItemId: 'awaiting-parent' });
 
     const result = runPruningPass([parent, child]);
 
-    // Liveness: the TTL rule still acted on the parent — as an ACCEPTANCE,
-    // which must never be reported under a cancellation counter.
-    expect(result.ttlAutoVerifiedCount).toBe(1);
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.ttlCancelledCount).toBe(0);
-    const parentCorrection = result.totalCorrections.find((c) => c.entityId === 'accepted-parent');
-    expect(parentCorrection?.newState).toBe('verified');
-    // Soundness: the child was NOT cascaded off it.
+    expect(result.totalCorrections.find((c) => c.entityId === 'awaiting-parent')).toBeUndefined();
+    expect(result.totalCorrections.some((c) => c.newState === 'verified')).toBe(false);
     expect(result.cascadeCancelledCount).toBe(0);
     expect(result.totalCorrections.find((c) => c.entityId === 'live-child')).toBeUndefined();
   });
@@ -1413,15 +1423,14 @@ describe('runPruningPass', () => {
       .toBe('cancelled');
   });
 
-  it('partitions TTL outcomes: a `done_by_worker → verified` item is NOT counted as a cancellation', () => {
-    // The two TTL outcomes are opposites: `running → cancelled` DISCARDS the
-    // work, `done_by_worker → verified` ACCEPTS it. The old single
-    // `ttlExpiredCount` (= expiredIds.length) reported both as one number,
-    // and the reconciler folded that into `ReconcileResult.staleItemsCleaned`
-    // — so accepted work was reported to operators as thrown away.
+  it('partitions TTL outcomes: an expired done_by_worker item is neither cancelled nor accepted (#813)', () => {
+    // Before #813 the two TTL outcomes were `running → cancelled` (discard)
+    // and `done_by_worker → verified` (accept). The second is gone: the
+    // counters must still partition the TTL corrections exactly, with the
+    // acceptance counter at 0.
     const now = Date.now();
-    const accepted = makeWorkItem({
-      id: 'ttl-accepted',
+    const awaiting = makeWorkItem({
+      id: 'ttl-awaiting',
       status: 'done_by_worker',
       createdAt: new Date(now - 25 * 3600000).toISOString(),
     });
@@ -1431,23 +1440,18 @@ describe('runPruningPass', () => {
       createdAt: new Date(now - 25 * 3600000).toISOString(),
     });
 
-    const result = runPruningPass([accepted, discarded]);
+    const result = runPruningPass([awaiting, discarded]);
 
-    // Exactly one of each, in the counter that matches its semantics.
     expect(result.ttlCancelledCount).toBe(1);
-    expect(result.ttlAutoVerifiedCount).toBe(1);
-    // Unrelated items, so no cascade noise inflating the cleanup total.
+    expect(result.ttlAutoVerifiedCount).toBe(0);
     expect(result.orphanCancelledCount).toBe(0);
     expect(result.cascadeCancelledCount).toBe(0);
 
-    // The counters must partition the TTL corrections exactly — nothing
-    // double-counted, nothing silently dropped.
     const ttlCorrections = result.totalCorrections.filter(
-      (c) => c.entityId === 'ttl-accepted' || c.entityId === 'ttl-discarded',
+      (c) => c.entityId === 'ttl-awaiting' || c.entityId === 'ttl-discarded',
     );
     expect(result.ttlCancelledCount + result.ttlAutoVerifiedCount).toBe(ttlCorrections.length);
-    expect(result.totalCorrections.find((c) => c.entityId === 'ttl-accepted')?.newState)
-      .toBe('verified');
+    expect(result.totalCorrections.find((c) => c.entityId === 'ttl-awaiting')).toBeUndefined();
     expect(result.totalCorrections.find((c) => c.entityId === 'ttl-discarded')?.newState)
       .toBe('cancelled');
   });
@@ -2272,5 +2276,44 @@ describe('detectDependencyResolvedWorkItems', () => {
     const { corrections, unblockedIds } = detectDependencyResolvedWorkItems([wi], map);
     expect(unblockedIds).toHaveLength(0);
     expect(corrections).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectUnreviewedPastTTL — owner step of the review escalation chain (#813)
+// ---------------------------------------------------------------------------
+
+describe('detectUnreviewedPastTTL', () => {
+  const NOW = Date.parse('2026-09-26T12:00:00Z');
+  const hoursAgo = (h: number) => new Date(NOW - h * 3600 * 1000).toISOString();
+
+  it('picks done_by_worker items awaiting review longer than the TTL, and reports what it examined', () => {
+    const old = makeWorkItem({ status: 'done_by_worker', createdAt: hoursAgo(30), completedAt: hoursAgo(25) });
+    const fresh = makeWorkItem({ status: 'done_by_worker', createdAt: hoursAgo(30), completedAt: hoursAgo(3) });
+    const running = makeWorkItem({ status: 'running', createdAt: hoursAgo(40) });
+    const { items, examined } = detectUnreviewedPastTTL([old, fresh, running], NOW);
+    expect(items.map((w) => w.id)).toEqual([old.id]);
+    expect(examined).toBe(2);
+  });
+
+  it('fires once per item — skips items already escalated to the owner', () => {
+    const stamped = makeWorkItem({
+      status: 'done_by_worker',
+      completedAt: hoursAgo(50),
+      metadata: { [REVIEW_OWNER_ESCALATED_AT_KEY]: hoursAgo(26) },
+    });
+    const { items, examined } = detectUnreviewedPastTTL([stamped], NOW);
+    expect(items).toEqual([]);
+    expect(examined).toBe(1);
+  });
+
+  it('measures from when the worker reported done, not from creation', () => {
+    const wi = makeWorkItem({ status: 'done_by_worker', createdAt: hoursAgo(100), completedAt: hoursAgo(2) });
+    expect(detectUnreviewedPastTTL([wi], NOW).items).toEqual([]);
+  });
+
+  it('honours a custom TTL', () => {
+    const wi = makeWorkItem({ status: 'done_by_worker', completedAt: hoursAgo(2) });
+    expect(detectUnreviewedPastTTL([wi], NOW, 3600 * 1000).items).toHaveLength(1);
   });
 });

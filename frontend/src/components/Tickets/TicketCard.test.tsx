@@ -73,6 +73,27 @@ describe('TicketCard', () => {
     expect(screen.getByTestId('ticket-reject-badge')).toHaveTextContent('打回 ×2');
   });
 
+  it('on a done card, labels silence as 默认通过 · 未验收 — accepted, not verified (#813)', () => {
+    render(<TicketCard ticket={row({ column: 'done', status: 'done', acceptedBy: 'silence' })} onOpen={vi.fn()} />);
+    const badge = screen.getByTestId('ticket-accepted-by');
+    expect(badge).toHaveAttribute('data-accepted-by', 'silence');
+    expect(screen.getByText('默认通过 · 未验收')).toHaveAttribute('title', expect.stringContaining('没有人检查过'));
+    expect(screen.queryByText('已验收')).not.toBeInTheDocument();
+  });
+
+  it('on a done card, labels an owner review as 已验收', () => {
+    render(<TicketCard ticket={row({ column: 'done', status: 'done', acceptedBy: 'owner' })} onOpen={vi.fn()} />);
+    expect(screen.getByTestId('ticket-accepted-by')).toHaveAttribute('data-accepted-by', 'owner');
+    expect(screen.getByText('已验收')).toBeInTheDocument();
+  });
+
+  it('shows no acceptance label outside the done column or when unknown', () => {
+    const { rerender } = render(<TicketCard ticket={row({ column: 'to_review', acceptedBy: 'owner' })} onOpen={vi.fn()} />);
+    expect(screen.queryByTestId('ticket-accepted-by')).not.toBeInTheDocument();
+    rerender(<TicketCard ticket={row({ column: 'done', acceptedBy: null })} onOpen={vi.fn()} />);
+    expect(screen.queryByTestId('ticket-accepted-by')).not.toBeInTheDocument();
+  });
+
   it('opens on click and on Enter', () => {
     const onOpen = vi.fn();
     const ticket = row();

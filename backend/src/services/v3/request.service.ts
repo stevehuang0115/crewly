@@ -482,6 +482,7 @@ export class RequestService {
     if (updates.reply !== undefined) request.reply = updates.reply;
     if (updates.nudgeCount !== undefined) request.nudgeCount = updates.nudgeCount;
     if (updates.lastNudgeAt !== undefined) request.lastNudgeAt = updates.lastNudgeAt;
+    if (updates.acceptedBy !== undefined) request.acceptedBy = updates.acceptedBy;
 
     request.updatedAt = new Date().toISOString();
     await this.save(request);

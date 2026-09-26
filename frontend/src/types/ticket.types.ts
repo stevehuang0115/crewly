@@ -86,7 +86,16 @@ export interface TicketListItem {
   submittedAt?: string | null;
   completedAt?: string | null;
   autoAcceptAt?: string | null;
+  /**
+   * How a done ticket was accepted (#813): `owner` reviewed it; `silence` =
+   * nobody objected before the deadline — accepted, never verified. Null
+   * while open or when unknown.
+   */
+  acceptedBy?: TicketAcceptedBy | null;
 }
+
+/** How a done ticket was accepted. */
+export type TicketAcceptedBy = 'owner' | 'silence';
 
 /** `GET /api/tickets` payload. */
 export interface TicketBoardResponse {

@@ -219,7 +219,7 @@ export class V3DataService {
     // Bug 1 fix: completeItem/failItem require status === 'running', but WorkItems
     // created via delegation start as 'queued' and may never be claimed.
     if (match.status === 'queued') {
-      await taskPool.updateItemStatus(match.id, 'running');
+      await taskPool.updateItemStatus(match.id, 'running', { role: 'system', via: 'v3-data:auto-start' });
     }
 
     return match;
@@ -350,7 +350,13 @@ export class V3DataService {
       if (!match) return;
 
       const taskPool = TaskPoolService.getInstance();
-      await taskPool.completeItem(match.id);
+      // #813: the completing session comes from the task:completed event; it
+      // is who renders a verdict when the matched item is a review item.
+      await taskPool.completeItem(match.id, undefined, {
+        role: 'agent',
+        ...(event.sessionName ? { session: event.sessionName } : {}),
+        via: 'v3-data:task-completed',
+      });
 
       // Look up token usage for this work item
       try {
@@ -691,7 +697,7 @@ export class V3DataService {
       if (!match) return;
 
       const taskPool = TaskPoolService.getInstance();
-      await taskPool.updateItemStatus(match.id, 'blocked');
+      await taskPool.updateItemStatus(match.id, 'blocked', { role: 'system', via: 'v3-data:task-blocked' });
 
       this.logger.info('WorkItem auto-blocked', {
         workItemId: match.id,

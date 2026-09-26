@@ -844,19 +844,35 @@ describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () =>
     expect(taskPool.addCalls[0]).toMatchObject({ target: 'tl-sam' });
   });
 
-  it('verifies directly when the worker is its own lead or in no team (no review on the orc)', async () => {
+  it('routes to the orchestrator when the worker is its own lead or in no team — never self-verifies (#813)', async () => {
     const solo = buildTeam({ members: [member('ann', 'dev-ann', { canDelegate: true, hierarchyLevel: 1 })] });
     const a = setup([solo], worker);
     a.bus.publish(buildEvent());
     await a.bridge.flushPending();
-    expect(a.taskPool.addCalls).toHaveLength(0);
-    expect(a.taskPool.verifyItem).toHaveBeenCalledWith(worker.id, 'system', 'verified');
+    expect(a.taskPool.addCalls).toHaveLength(1);
+    expect(a.taskPool.addCalls[0]).toMatchObject({ type: 'review', target: 'crewly-orc', metadata: expect.objectContaining({ verifyOf: worker.id }) });
+    expect(a.taskPool.verifyItem).not.toHaveBeenCalled();
 
     const b = setup([], worker);
     b.bus.publish(buildEvent());
     await b.bridge.flushPending();
-    expect(b.taskPool.addCalls).toHaveLength(0);
-    expect(b.taskPool.verifyItem).toHaveBeenCalledTimes(1);
+    expect(b.taskPool.addCalls).toHaveLength(1);
+    expect(b.taskPool.addCalls[0]).toMatchObject({ target: 'crewly-orc' });
+    expect(b.taskPool.verifyItem).not.toHaveBeenCalled();
+  });
+
+  it('reviews a cron/auto item that explicitly requires verification instead of skipping it (#813)', async () => {
+    const team = buildTeam({ members: [member('tl', 'tl-sam', { canDelegate: true, hierarchyLevel: 1 }), member('ann', 'dev-ann')] });
+    for (const gated of [
+      buildWorkItem({ type: 'cron_run', target: 'dev-ann', metadata: { requiresVerification: true } }),
+      buildWorkItem({ target: 'dev-ann', metadata: { autoCreated: true, requiresVerification: true } }),
+    ]) {
+      const { bridge, bus, taskPool } = setup([team], gated);
+      bus.publish(buildEvent());
+      await bridge.flushPending();
+      expect(taskPool.addCalls).toHaveLength(1);
+      expect(taskPool.addCalls[0]).toMatchObject({ type: 'review', target: 'tl-sam' });
+    }
   });
 
   it('a retry carries the reviewer’s feedback', async () => {
