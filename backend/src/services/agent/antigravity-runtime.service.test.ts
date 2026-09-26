@@ -138,6 +138,7 @@ describe('Antigravity screen helpers', () => {
 		expect(detectAntigravityStartupBlocker(FIRST_RUN_COLOR)?.reason).toBe('first_run_setup');
 		expect(detectAntigravityStartupBlocker(FIRST_RUN_TERMS)?.reason).toBe('first_run_setup');
 		expect(detectAntigravityStartupBlocker(MISSING_KEY)?.reason).toBe('api_key_required');
+		expect(detectAntigravityStartupBlocker(MISSING_KEY)?.message).toBe(ANTIGRAVITY_CONSTANTS.MESSAGES.KEY_NOT_IN_SESSION);
 		expect(detectAntigravityStartupBlocker(MISSING_KEY_80)?.reason).toBe('api_key_required');
 		expect(detectAntigravityStartupBlocker(ACCOUNT_LOGIN)?.reason).toBe('account_login_refused');
 		for (const screen of [IDLE_FRESH, BUSY, AFTER_TURN_ERROR, TRUST_SCREEN, TYPED]) {

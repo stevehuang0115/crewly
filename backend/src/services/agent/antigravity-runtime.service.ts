@@ -97,7 +97,7 @@ export function detectAntigravityStartupBlocker(screen: string): RuntimeStartupB
 		return new RuntimeStartupBlockedError('account_login_refused', MESSAGES.ACCOUNT_LOGIN);
 	}
 	if (antigravityScreenIncludes(clean, SCREEN.MISSING_KEY_ERROR)) {
-		return new RuntimeStartupBlockedError('api_key_required', MESSAGES.NO_API_KEY);
+		return new RuntimeStartupBlockedError('api_key_required', MESSAGES.KEY_NOT_IN_SESSION);
 	}
 	if (SCREEN.FIRST_RUN_MARKERS.some((m) => antigravityScreenIncludes(clean, m))) {
 		return new RuntimeStartupBlockedError('first_run_setup', MESSAGES.FIRST_RUN);
