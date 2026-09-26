@@ -398,6 +398,20 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(posts[0].text).toContain('1');     // running
   });
 
+  it('reports reported-but-unreviewed work as 待验收, not 已完成 (#813)', async () => {
+    const wis = [
+      makeWI({ id: 'wi-a', requestId: 'req-r', status: 'verified', target: 'crewly-product-leo' }),
+      makeWI({ id: 'wi-b', requestId: 'req-r', status: 'done_by_worker', target: 'crewly-product-max' }),
+      makeWI({ id: 'wi-c', requestId: 'req-r', status: 'running', target: 'crewly-product-max' }),
+    ];
+    const r = makeRequest({ id: 'req-r', status: 'running' });
+    const { sub, posts } = makeSubscriber({ request: r, pool: wis });
+
+    expect(await sub.runHeartbeat()).toBe(1);
+    expect(posts[0].text).toContain('已完成 1/3');
+    expect(posts[0].text).toContain('待验收 1');
+  });
+
   it('suppresses heartbeat when all delegate WIs are user-terminal and only a Verify WI is in flight (Steve 2026-05-15)', async () => {
     // Repro of the 智库 Request heartbeat that fired right after Grace
     // turned in her Review — "5/7 完成, 进行中 1" where the "1" was
@@ -753,10 +767,18 @@ describe('computeStateFingerprint', () => {
     expect(computeStateFingerprint(before)).not.toBe(computeStateFingerprint(after));
   });
 
-  it('treats done/verified/done_by_worker as the same "done" bucket', () => {
+  it('treats done and verified as the same "done" bucket', () => {
     const { computeStateFingerprint } = require('./request-status-update.subscriber.js');
     const a = [makeWI({ status: 'done' }), makeWI({ status: 'done' })];
-    const b = [makeWI({ status: 'verified' }), makeWI({ status: 'done_by_worker' })];
+    const b = [makeWI({ status: 'verified' }), makeWI({ status: 'done' })];
     expect(computeStateFingerprint(a)).toBe(computeStateFingerprint(b));
+  });
+
+  it('keeps done_by_worker (reported, not reviewed) out of the done bucket (#813)', () => {
+    const { computeStateFingerprint } = require('./request-status-update.subscriber.js');
+    const reviewed = [makeWI({ status: 'verified' })];
+    const unreviewed = [makeWI({ status: 'done_by_worker' })];
+    expect(computeStateFingerprint(unreviewed)).toContain('done=0,review=1');
+    expect(computeStateFingerprint(reviewed)).not.toBe(computeStateFingerprint(unreviewed));
   });
 });

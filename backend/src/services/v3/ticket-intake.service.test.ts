@@ -511,6 +511,27 @@ describe('resolve and list', () => {
   });
 });
 
+describe('board — accepted is not verified (#813)', () => {
+  it('labels how a done ticket was accepted: owner, silence (field or legacy tag), else null', async () => {
+    const owner = await svc.intake(msg({ ts: '1.0', text: 'implement csv export' }));
+    const silent = await svc.intake(msg({ ts: '2.0', text: 'implement pdf export' }));
+    const legacy = await svc.intake(msg({ ts: '3.0', text: 'implement xml export' }));
+    const open = await svc.intake(msg({ ts: '4.0', text: 'implement json export' }));
+    const set = (id: string, patch: Record<string, unknown>) =>
+      store.items.set(id, { ...store.items.get(id)!, ...patch });
+    set(owner!.id, { status: 'done', acceptedBy: 'owner' });
+    set(silent!.id, { status: 'done', acceptedBy: 'silence' });
+    set(legacy!.id, { status: 'done', tags: [TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG] });
+
+    const byId = new Map((await svc.list({ includeLegacy: true })).tickets.map((t) => [t.id, t]));
+    expect(byId.size).toBeGreaterThanOrEqual(4);
+    expect(byId.get(owner!.id)?.acceptedBy).toBe('owner');
+    expect(byId.get(silent!.id)?.acceptedBy).toBe('silence');
+    expect(byId.get(legacy!.id)?.acceptedBy).toBe('silence');
+    expect(byId.get(open!.id)?.acceptedBy).toBeNull();
+  });
+});
+
 describe('resolveTicketIdForSession', () => {
   const ID = '11111111-2222-3333-4444-555555555555';
   it('reads the ticket marker of the session’s current turn', () => {

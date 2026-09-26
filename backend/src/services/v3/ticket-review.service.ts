@@ -18,7 +18,9 @@
  *   owner sent it back from the board rather than the thread, a rework
  *   WorkItem is queued for whoever answered.
  * - **Silence accepts.** 待验收 for {@link TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS}
- *   with no word → done, tagged `auto_accepted`. The owner is never pinged.
+ *   with no word → done, tagged `auto_accepted` and `acceptedBy: 'silence'`
+ *   (#813: accepted, not verified — the board labels it so). The owner is
+ *   never pinged.
  *
  * The `done` gate itself lives in {@link RequestService.update}: without
  * `accepted`, a ticket that needs review cannot become done by any path.
@@ -326,7 +328,9 @@ export class TicketReviewService {
       if (!isValidRequestTransition(current.status, 'done') && isValidRequestTransition(current.status, 'running')) {
         current = await this.deps.requests.update(current.id, { status: 'running' });
       }
-      const updated = await this.deps.requests.update(current.id, { status: 'done', accepted: true, tags });
+      // #813: silence is recorded as acceptance, never as a review.
+      const acceptedBy = tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) ? 'silence' : 'owner';
+      const updated = await this.deps.requests.update(current.id, { status: 'done', accepted: true, acceptedBy, tags });
       this.logger.info('Ticket accepted', { tkt: tkt(updated), auto: tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) });
       await this.receiptDone(updated);
       return { ok: true, ticket: updated };

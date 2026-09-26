@@ -196,17 +196,20 @@ interface ParsedSlackContext {
  * @returns A short string fingerprint, e.g. `done=1,running=0,queued=0,blocked=3,failed=0,total=4`
  */
 export function computeStateFingerprint(childWIs: WorkItem[]): string {
-  const counts = { done: 0, running: 0, queued: 0, blocked: 0, failed: 0 };
+  const counts = { done: 0, review: 0, running: 0, queued: 0, blocked: 0, failed: 0 };
   for (const wi of childWIs) {
     const s = wi.status;
-    if (s === 'done' || s === 'verified' || s === 'done_by_worker') counts.done++;
+    // #813: reported done but not yet reviewed is its own bucket — a verdict
+    // moving it to verified is progress.
+    if (s === 'done_by_worker') counts.review++;
+    else if (s === 'done' || s === 'verified') counts.done++;
     else if (s === 'running') counts.running++;
     else if (s === 'queued') counts.queued++;
     else if (s === 'blocked') counts.blocked++;
     else if (s === 'failed' || s === 'cancelled') counts.failed++;
   }
   return (
-    `done=${counts.done},running=${counts.running},queued=${counts.queued},` +
+    `done=${counts.done},review=${counts.review},running=${counts.running},queued=${counts.queued},` +
     `blocked=${counts.blocked},failed=${counts.failed},total=${childWIs.length}`
   );
 }
@@ -565,6 +568,7 @@ export class RequestStatusUpdateSubscriber {
   private buildHeartbeatText(_request: Request, childWIs: WorkItem[]): string {
     const counts = {
       done: 0,
+      review: 0,
       running: 0,
       queued: 0,
       blocked: 0,
@@ -573,7 +577,9 @@ export class RequestStatusUpdateSubscriber {
     };
     for (const wi of childWIs) {
       const s = wi.status;
-      if (s === 'done' || s === 'verified' || s === 'done_by_worker') counts.done++;
+      // #813: done_by_worker is reported, not reviewed — never count it as 已完成.
+      if (s === 'done_by_worker') counts.review++;
+      else if (s === 'done' || s === 'verified') counts.done++;
       else if (s === 'running') counts.running++;
       else if (s === 'queued') counts.queued++;
       else if (s === 'blocked') counts.blocked++;
@@ -589,8 +595,9 @@ export class RequestStatusUpdateSubscriber {
     // some cancelled and some still in-flight would still hit this
     // path, so include the count for honesty.
     const tail = counts.failed > 0 ? `, 取消/失败 ${counts.failed}` : '';
+    const review = counts.review > 0 ? `待验收 ${counts.review}, ` : '';
     return (
-      `⏳ 还在做。已完成 ${counts.done}/${childWIs.length}, ` +
+      `⏳ 还在做。已完成 ${counts.done}/${childWIs.length}, ${review}` +
       `进行中 ${counts.running}, 排队 ${counts.queued}, 卡住 ${counts.blocked}${tail}。` +
       ` 我会在有变化时再更新。`
     );
