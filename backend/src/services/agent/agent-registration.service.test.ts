@@ -5315,3 +5315,21 @@ describe('messageDedupKey (#128 duplicate guard)', () => {
 		expect(messageDedupKey('same')).toBe(messageDedupKey('same'));
 	});
 });
+
+describe('codexHasOwnLogin (a stale OPENAI_API_KEY must not override a ChatGPT login)', () => {
+	it('is true only when $CODEX_HOME/auth.json exists', async () => {
+		const { codexHasOwnLogin } = await import('./agent-registration.service.js');
+		// os/fs are mocked in this file — use the real ones.
+		const fs = jest.requireActual<typeof import('fs')>('fs');
+		const os = jest.requireActual<typeof import('os')>('os');
+		const path = jest.requireActual<typeof import('path')>('path');
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+		try {
+			expect(codexHasOwnLogin({ CODEX_HOME: dir })).toBe(false);
+			fs.writeFileSync(path.join(dir, 'auth.json'), '{}');
+			expect(codexHasOwnLogin({ CODEX_HOME: dir })).toBe(true);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	});
+});

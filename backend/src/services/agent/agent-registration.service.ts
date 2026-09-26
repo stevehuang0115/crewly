@@ -3861,7 +3861,10 @@ Loop until done, blocked, or explicitly reassigned:
 
 			// OpenAI key — needed by codex-cli, opencode-cli and crewly-agent
 			const openaiKey = await settingsService.getApiKey('openai', runtimeContext);
-			if (openaiKey) {
+			// Codex prefers OPENAI_API_KEY over its own login, so a stale key in
+			// settings overrode a working ChatGPT sign-in ("Incorrect API key",
+			// Nova 2026-09-26). When codex has its own credentials, leave it be.
+			if (openaiKey && !(runtimeType === RUNTIME_TYPES.CODEX_CLI && codexHasOwnLogin())) {
 				await sessionHelper.setEnvironmentVariable(sessionName, 'OPENAI_API_KEY', openaiKey);
 			}
 
@@ -6344,4 +6347,17 @@ Loop until done, blocked, or explicitly reassigned:
 			return '';
 		}
 	}
+}
+
+
+/**
+ * Whether Codex has its own stored login (`$CODEX_HOME/auth.json`, written by
+ * `codex login` for ChatGPT or an API key).
+ *
+ * @param env - Environment (tests)
+ * @returns True when the auth file exists
+ */
+export function codexHasOwnLogin(env: NodeJS.ProcessEnv = process.env): boolean {
+	const home = env.CODEX_HOME && env.CODEX_HOME.length > 0 ? env.CODEX_HOME : path.join(os.homedir(), '.codex');
+	return existsSync(path.join(home, 'auth.json'));
 }
