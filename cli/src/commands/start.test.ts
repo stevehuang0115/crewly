@@ -9,6 +9,9 @@
  * - Output messaging differences between standard and headless modes
  */
 
+import * as fs from 'fs';
+import * as path from 'path';
+
 describe('start command headless mode logic', () => {
 	// -----------------------------------------------------------------------
 	// StartOptions headless flag behavior
@@ -225,3 +228,22 @@ describe('dynamic heap size calculation', () => {
  * importable and tested directly in safe-shutdown.test.ts (child wait,
  * one exit listener per child, drain-sized SIGKILL budget, signal forwarding).
  */
+
+/**
+ * start.ts cannot be imported under Jest (import.meta), so the auto-update
+ * contract is pinned at the source level: the backend learns it has a
+ * respawning parent, and the restart loop defers to shouldRespawnBackend
+ * (unit-tested in utils/backend-respawn.test.ts).
+ */
+describe('start command auto-update supervision (source contract)', () => {
+	const source = fs.readFileSync(path.join(__dirname, 'start.ts'), 'utf-8');
+
+	it('marks the spawned backend as supervised by crewly start', () => {
+		expect(source).toContain('[AUTO_UPDATE_CONSTANTS.SUPERVISOR_ENV_VAR]: AUTO_UPDATE_CONSTANTS.SUPERVISOR_CLI_START');
+	});
+
+	it('decides respawns through shouldRespawnBackend, once per marker', () => {
+		expect(source).toContain('shouldRespawnBackend(exitCode, { markerRespawnUsed })');
+		expect(source).toContain("if (respawn === 'auto-update-marker') markerRespawnUsed = true;");
+	});
+});

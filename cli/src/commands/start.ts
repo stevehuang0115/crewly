@@ -13,11 +13,13 @@ import {
   CREWLY_HOME_DIR,
   PROCESS_EXIT_CODES,
   SERVER_CONSTANTS,
+  AUTO_UPDATE_CONSTANTS,
 } from '../constants.js';
 import { checkForUpdate, printUpdateNotification } from '../utils/version-check.js';
 import { selfInstallArgs } from '../utils/self-install.js';
 import { killZombieProcesses } from '../utils/process-cleanup.js';
 import { createChildShutdownHandler, resolveShutdownBudgetMs } from '../utils/safe-shutdown.js';
+import { shouldRespawnBackend } from '../utils/backend-respawn.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -168,12 +170,18 @@ export async function startCommand(options: StartOptions) {
 		setupShutdownHandlers(activeProcesses);
 
 		// Restart loop: respawn backend when it exits with RESTART_REQUESTED
+		// (graceful restarts, including auto-update, which has just replaced
+		// the files under projectRoot — the respawn runs the new version), or
+		// once after an auto-update whose shutdown ended in a self-SIGKILL.
 		let currentBackend = backendProcess;
+		let markerRespawnUsed = false;
 		while (true) {
 			const exitCode = await waitForExit(currentBackend);
+			const respawn = shouldRespawnBackend(exitCode, { markerRespawnUsed });
 
-			if (exitCode === PROCESS_EXIT_CODES.RESTART_REQUESTED) {
-				console.log(chalk.blue('🔄 Backend requested restart, respawning in 1.5s...'));
+			if (respawn) {
+				if (respawn === 'auto-update-marker') markerRespawnUsed = true;
+				console.log(chalk.blue(`🔄 Backend requested restart (${respawn}), respawning in 1.5s...`));
 				// Small delay to let OS reclaim the port
 				await new Promise((r) => setTimeout(r, 1500));
 
@@ -310,6 +318,9 @@ async function startBackendServer(webPort: number, headless = false): Promise<Ch
 		WEB_PORT: webPort.toString(),
 		NODE_ENV: process.env.NODE_ENV || 'development',
 		...(headless ? { CREWLY_HEADLESS: 'true' } : {}),
+		// Tells the backend a parent respawns it after RESTART_REQUESTED, so
+		// auto-update may install and restart (specs/auto-update.md).
+		[AUTO_UPDATE_CONSTANTS.SUPERVISOR_ENV_VAR]: AUTO_UPDATE_CONSTANTS.SUPERVISOR_CLI_START,
 	};
 
 	const backendProcess = spawn(

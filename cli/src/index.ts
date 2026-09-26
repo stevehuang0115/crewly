@@ -22,6 +22,7 @@ import { serviceCommand } from './commands/service.js';
 import { backupCommandAndExit } from './commands/backup.js';
 import { desktopCommand } from './commands/desktop.js';
 import { doctorCommand } from './commands/doctor.js';
+import { updateStatusCommand } from './commands/update-status.js';
 import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand, type LoginOptions } from './commands/cloud.js';
@@ -180,6 +181,13 @@ program
   .command('doctor')
   .description('Check this install: package root, node, jq/curl, native modules, build toolchain, AI runtime login, marketplace, service environment')
   .action(() => doctorCommand());
+
+program
+  .command('update-status')
+  .description('Show automatic self-update status: installed/running/latest version, on/off, last check, last result')
+  .action(async () => {
+    process.exitCode = await updateStatusCommand();
+  });
 
 program
   .command('service <action>')
