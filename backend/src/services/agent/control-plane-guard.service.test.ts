@@ -12,7 +12,7 @@ import {
 	applyControlPlaneSettingsFlag,
 	ControlPlaneSettings,
 } from './control-plane-guard.service.js';
-import { CONTROL_PLANE_GUARD_CONSTANTS } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
 
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..', '..');
 
@@ -129,6 +129,36 @@ describe('control-plane-guard.service', () => {
 		});
 	});
 
+	describe('buildControlPlaneSettings with the agent-status hook (#815)', () => {
+		const paths = resolveControlPlanePaths(roots);
+		const guardOnly = buildControlPlaneSettings(paths, 'bash hook.sh paths');
+		const merged = buildControlPlaneSettings(paths, 'bash hook.sh paths', 'bash status.sh');
+
+		it('leaves the guard untouched: deny list and PreToolUse are identical with or without it', () => {
+			expect(JSON.stringify(merged.permissions)).toBe(JSON.stringify(guardOnly.permissions));
+			expect(JSON.stringify(merged.hooks.PreToolUse)).toBe(JSON.stringify(guardOnly.hooks.PreToolUse));
+			expect(merged.hooks.PreToolUse).toHaveLength(1);
+			expect(JSON.stringify(merged.hooks.PreToolUse)).not.toContain('status.sh');
+		});
+
+		it('registers the status hook on exactly its own events, all tools for tool events', () => {
+			const statusEvents = Object.keys(merged.hooks).filter((e) => e !== 'PreToolUse').sort();
+			expect(statusEvents).toEqual([...AGENT_STATUS_HOOK_CONSTANTS.EVENTS].sort());
+			expect(merged.hooks.PermissionRequest).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: 'bash status.sh' }] }]);
+			expect(merged.hooks.PostToolUse).toEqual([{ matcher: '*', hooks: [{ type: 'command', command: 'bash status.sh' }] }]);
+			expect(merged.hooks.Notification).toEqual([{ hooks: [{ type: 'command', command: 'bash status.sh' }] }]);
+		});
+
+		it('adds no status events when no status hook is given', () => {
+			expect(Object.keys(guardOnly.hooks)).toEqual(['PreToolUse']);
+		});
+
+		it('write-protects the status hook directory', () => {
+			expect(paths.writeDenied).toContainEqual({ path: '/opt/crewly/config/hooks/agent-status', isDirectory: true });
+			expect(merged.permissions.deny).toContain('Edit(//opt/crewly/config/hooks/agent-status/**)');
+		});
+	});
+
 	describe('toSafeFileStem', () => {
 		it('keeps ordinary session names', () => {
 			expect(toSafeFileStem('crewly-product-team-max-358c7cb7')).toBe('crewly-product-team-max-358c7cb7');
@@ -165,6 +195,16 @@ describe('control-plane-guard.service', () => {
 			const listed = readFileSync(r.pathsPath, 'utf-8').split('\n').filter((l) => l && !l.startsWith('#'));
 			expect(listed.length).toBe(r.protectedCount);
 			expect(listed).toContain(path.join(home, 'teams'));
+		});
+
+		it('writes the agent-status hook into the same settings file (one --settings), pointing at the real script', async () => {
+			const r = await prepareControlPlaneGuard('st1', { crewlyHome: home, installRoot: REPO_ROOT }, {});
+			if (!r.enabled) throw new Error('expected enabled');
+			const settings = JSON.parse(readFileSync(r.settingsPath, 'utf-8')) as ControlPlaneSettings;
+			const script = path.join(REPO_ROOT, AGENT_STATUS_HOOK_CONSTANTS.HOOK_SCRIPT);
+			expect(existsSync(script)).toBe(true);
+			expect(settings.hooks.Notification[0].hooks[0].command).toBe(`bash '${script}'`);
+			expect(settings.hooks.PreToolUse).toHaveLength(1);
 		});
 
 		it('puts its own generated files under a protected directory', async () => {
