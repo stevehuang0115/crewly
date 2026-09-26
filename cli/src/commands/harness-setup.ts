@@ -13,7 +13,7 @@
  */
 
 import chalk from 'chalk';
-import { HARNESS_CONSTANTS } from '../../../backend/src/constants.js';
+import { ANTIGRAVITY_CONSTANTS, HARNESS_CONSTANTS } from '../../../backend/src/constants.js';
 import { describeInstallCommand, getBrokerLoginMethod, getHarnessDefinition, resolveHarnessAlias } from '../../../backend/src/services/harness/harness-registry.js';
 import type { HarnessService } from '../../../backend/src/services/harness/harness.service.js';
 import {
@@ -45,6 +45,9 @@ export type LoginOutcome =
 	| 'pending'
 	| 'skipped'
 	| 'failed';
+
+/** Column width of the harness name in status lines ("Gemini CLI (enterprise only)"). */
+const DESCRIBE_NAME_WIDTH = 28;
 
 /** Timing knobs (tests shrink them). */
 export interface SetupTiming {
@@ -80,6 +83,29 @@ export function isYes(answer: string, defaultYes: boolean): boolean {
 }
 
 /**
+ * Display name of a harness; a retired one (Gemini CLI) is marked
+ * "(enterprise only)".
+ *
+ * @param status - Harness status
+ * @returns Label
+ */
+export function harnessLabel(status: Pick<HarnessStatus, 'displayName' | 'retired'>): string {
+	return status.retired ? `${status.displayName}${HARNESS_CONSTANTS.RETIRED_LABEL_SUFFIX}` : status.displayName;
+}
+
+/**
+ * The harnesses to list: every current one, plus a retired one only when it
+ * is already in use here (installed, or the orchestrator's harness). New
+ * users are not offered Gemini CLI any more; Antigravity CLI replaces it.
+ *
+ * @param overview - Engine overview
+ * @returns Harnesses in display order
+ */
+export function visibleHarnesses<T extends HarnessStatus>(overview: { harnesses: T[]; orcHarness: string | null }): T[] {
+	return overview.harnesses.filter((status) => !status.retired || status.installed || status.id === overview.orcHarness);
+}
+
+/**
  * One status line for a harness.
  *
  * @param status - Harness status
@@ -96,7 +122,7 @@ export function describeHarness(status: HarnessStatus, isOrc = false): string {
 			: status.loginState === 'logged_out'
 				? 'not logged in'
 				: 'login unknown';
-	return `${status.displayName.padEnd(12)} ${install.padEnd(34)} ${login}${isOrc ? '   ← orchestrator' : ''}`;
+	return `${harnessLabel(status).padEnd(DESCRIBE_NAME_WIDTH)} ${install.padEnd(34)} ${login}${isOrc ? '   ← orchestrator' : ''}`;
 }
 
 /**
@@ -106,7 +132,7 @@ export function describeHarness(status: HarnessStatus, isOrc = false): string {
  * @param overview - Engine overview
  */
 export function printHarnessOverview(io: SetupIO, overview: HarnessOverview): void {
-	for (const status of overview.harnesses) {
+	for (const status of visibleHarnesses(overview)) {
 		const line = describeHarness(status, status.id === overview.orcHarness);
 		io.log(`    ${status.installed ? chalk.green('✓') : chalk.gray('·')} ${line}`);
 	}
@@ -132,28 +158,32 @@ export async function chooseOrcHarness(
 	options: { interactive: boolean; preset?: string },
 ): Promise<HarnessId> {
 	if (options.preset) {
+		// An explicit --harness still accepts a retired harness (existing / enterprise setups).
 		const resolved = resolveHarnessAlias(options.preset);
-		if (!resolved) throw new Error(`Unknown harness "${options.preset}" (use claude, codex or gemini)`);
+		if (!resolved) throw new Error(`Unknown harness "${options.preset}" (use claude, codex or antigravity)`);
 		return resolved;
 	}
 	const fallback = HARNESS_CONSTANTS.DEFAULT_ORC_HARNESS;
 	if (!options.interactive) return fallback;
 
+	// Only the orchestrator's current harness keeps a retired one on the list.
+	const choices = overview.harnesses.filter((status) => !status.retired || status.id === overview.orcHarness);
 	io.log('  Which harness should the orchestrator use?');
-	overview.harnesses.forEach((status, index) => {
+	choices.forEach((status, index) => {
 		const tag = status.id === fallback ? chalk.green(' (recommended)') : '';
 		const detectOnly = status.loginMethods.length === 0 ? chalk.gray(' — log in yourself by running it once') : '';
-		io.log(`    ${index + 1}. ${status.displayName}${tag}${detectOnly}`);
+		const keyOnly = status.id === HARNESS_CONSTANTS.IDS.ANTIGRAVITY_CLI ? chalk.gray(' — Gemini API key') : '';
+		io.log(`    ${index + 1}. ${harnessLabel(status)}${tag}${detectOnly}${keyOnly}`);
 	});
-	const defaultIndex = Math.max(0, overview.harnesses.findIndex((status) => status.id === fallback)) + 1;
+	const defaultIndex = Math.max(0, choices.findIndex((status) => status.id === fallback)) + 1;
 	for (;;) {
-		const answer = await io.ask(`  Enter choice (1-${overview.harnesses.length}) [${defaultIndex}]: `);
-		if (answer.trim() === '') return overview.harnesses[defaultIndex - 1].id;
+		const answer = await io.ask(`  Enter choice (1-${choices.length}) [${defaultIndex}]: `);
+		if (answer.trim() === '') return choices[defaultIndex - 1].id;
 		const index = Number.parseInt(answer, 10);
-		if (index >= 1 && index <= overview.harnesses.length) return overview.harnesses[index - 1].id;
+		if (index >= 1 && index <= choices.length) return choices[index - 1].id;
 		const byName = resolveHarnessAlias(answer);
 		if (byName) return byName;
-		io.log(chalk.yellow(`  Please enter a number from 1 to ${overview.harnesses.length}.`));
+		io.log(chalk.yellow(`  Please enter a number from 1 to ${choices.length}.`));
 	}
 }
 
@@ -374,6 +404,10 @@ export async function loginHarness(
 			io.log(chalk.gray(`  Skipped: an API key has to be pasted. Run \`crewly login ${cliAlias(status.id)}\` or use Crewly → Setup.`));
 			return 'skipped';
 		}
+		const isAntigravity = status.id === HARNESS_CONSTANTS.IDS.ANTIGRAVITY_CLI;
+		if (isAntigravity) {
+			io.log(chalk.gray(`  Crewly runs Antigravity only with a Gemini API key (never a Google account login). Create one at ${ANTIGRAVITY_CONSTANTS.API_KEY_CONSOLE_URL}`));
+		}
 		const key = await (io.askSecret ?? io.ask)(`  Paste your ${methodDef.label} (not shown): `);
 		if (key.trim() === '') {
 			io.log(chalk.gray('  Skipped.'));
@@ -382,6 +416,11 @@ export async function loginHarness(
 		try {
 			const after = await service.submitApiKey(status.id, key);
 			io.log(chalk.green(`  ✓ ${status.displayName} ${after.loginState === 'logged_in' ? 'is logged in' : 'key saved'}`));
+			if (isAntigravity) {
+				io.log(chalk.gray('  Antigravity now uses this key (modelProvider "gemini" in ~/.gemini/antigravity-cli/settings.json).'));
+				io.log(chalk.gray('  The first time agy runs on a machine it shows Google\'s terms, which only you can accept: if an agent'));
+				io.log(chalk.gray('  reports that, run `GEMINI_API_KEY=<your key> agy` once in a terminal, finish those screens and type /exit.'));
+			}
 			return 'succeeded';
 		} catch (error) {
 			io.log(chalk.red(`  ✖ ${error instanceof Error ? error.message : String(error)}`));
@@ -411,7 +450,7 @@ export async function loginHarness(
 }
 
 /**
- * Short CLI name for a harness (`claude`, `codex`, `gemini`).
+ * Short CLI name for a harness (`claude`, `codex`, `antigravity`, `gemini`).
  *
  * @param id - Harness id
  * @returns Alias

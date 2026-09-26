@@ -307,7 +307,9 @@ describe('collectDoctorChecks — what agents need (#779)', () => {
 		expect(runtime).toMatchObject({ status: 'fail', detail: expect.stringContaining('no AI runtime is installed and logged in') });
 		expect(runtime?.hint).toContain('npm install -g @anthropic-ai/claude-code');
 		expect(runtime?.hint).toContain('codex login');
-		expect(runtime?.hint).toContain('npm install -g @google/gemini-cli');
+		// Gemini CLI is retired for new users: Antigravity CLI is offered instead.
+		expect(runtime?.hint).toContain('https://antigravity.google/cli/install.sh');
+		expect(runtime?.hint).not.toContain('npm install -g @google/gemini-cli');
 	});
 
 	it('fails when the only installed runtime is not logged in, and lists its login command first', async () => {
@@ -358,6 +360,29 @@ describe('runtimeChecks', () => {
 		const checks = runtimeChecks([rt({ id: 'gemini', displayName: 'Gemini CLI', loggedIn: false, detail: 'no key', fix: 'set GEMINI_API_KEY' }), rt({})]);
 		expect(checks.find((c) => c.name === 'gemini')).toMatchObject({ status: 'warn', hint: 'set GEMINI_API_KEY' });
 		expect(checks.find((c) => c.name === 'runtime')).toMatchObject({ status: 'ok', detail: 'ready: Codex CLI' });
+	});
+});
+
+describe('runtimeChecks — no runtime ready', () => {
+	const rt = (over: Partial<RuntimeAuthStatus>): RuntimeAuthStatus => ({
+		id: 'codex', displayName: 'Codex CLI', installed: false, loggedIn: false, detail: 'not installed', fix: 'npm install -g @openai/codex', ...over,
+	});
+
+	it('suggests Antigravity CLI but not the retired Gemini CLI to a new user', () => {
+		const checks = runtimeChecks([
+			rt({}),
+			rt({ id: 'antigravity', displayName: 'Antigravity CLI', fix: 'curl -fsSL https://antigravity.google/cli/install.sh | bash, then crewly login antigravity' }),
+			rt({ id: 'gemini', displayName: 'Gemini CLI', fix: 'npm install -g @google/gemini-cli', retired: true }),
+		]);
+		const runtime = checks.find((c) => c.name === 'runtime');
+		expect(runtime?.status).toBe('fail');
+		expect(runtime?.hint).toContain('Antigravity CLI');
+		expect(runtime?.hint).not.toContain('gemini-cli');
+	});
+
+	it('still points an existing Gemini CLI user at finishing its login', () => {
+		const checks = runtimeChecks([rt({ id: 'gemini', displayName: 'Gemini CLI', installed: true, detail: 'no key', fix: 'set GEMINI_API_KEY', retired: true })]);
+		expect(checks.find((c) => c.name === 'runtime')?.hint).toContain('Gemini CLI: set GEMINI_API_KEY');
 	});
 });
 

@@ -5,12 +5,14 @@
  * non-technical users) or run fully in the terminal; both call the same
  * harness engine (backend/src/services/harness):
  *
- * 1. AI harness — detect Claude Code / Codex / Gemini CLI, choose the one the
- *    orchestrator uses (default Claude Code), install only that one when it
- *    is missing or outdated, and record the choice.
+ * 1. AI harness — detect Claude Code / Codex / Antigravity CLI (Gemini CLI is
+ *    retired for new users and only listed when already in use), choose the
+ *    one the orchestrator uses (default Claude Code), install only that one
+ *    when it is missing or outdated, and record the choice.
  * 2. Login — the harness's own login command runs in Crewly's login broker;
  *    the sign-in link (and code) is printed so it can be opened on a phone,
- *    and Claude's code is read back from this terminal.
+ *    and Claude's code is read back from this terminal. Antigravity CLI takes
+ *    a Gemini API key only.
  * 3. Agent skills.
  * 4. First team: a starter (Personal Assistant by default, Marketing) or
  *    Blank (the orchestrator only).
@@ -98,7 +100,7 @@ export interface OnboardOptions {
   yes?: boolean;
   /** Select a team template by ID (e.g. "web-dev-team") */
   template?: string;
-  /** Harness for the orchestrator (claude | codex | gemini, or a full id) */
+  /** Harness for the orchestrator (claude | codex | antigravity, or a full id; gemini still accepted) */
   harness?: string;
   /** Continue setup in the web app */
   web?: boolean;

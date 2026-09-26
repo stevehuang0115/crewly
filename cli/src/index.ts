@@ -115,7 +115,7 @@ program
   .description('Setup wizard for new Crewly users (web app or terminal)')
   .option('-y, --yes', 'Non-interactive mode: use all defaults, never prompt (CI / agents); prints the login link for your phone')
   .option('--template <id>', 'Team template by ID (default: personal-assistant-team)')
-  .option('--harness <id>', 'Harness for the orchestrator: claude (default), codex or gemini')
+  .option('--harness <id>', 'Harness for the orchestrator: claude (default), codex or antigravity')
   .option('--task <text>', 'First task for the new team; sent to the orchestrator (with --yes; otherwise it is asked)')
   .option('--web', 'Continue setup in the web app')
   .option('--cli', 'Continue setup in this terminal')
@@ -139,14 +139,14 @@ program
 
 program
   .command('harness')
-  .description('Show the AI harnesses (Claude Code, Codex, Gemini CLI): installed version, updates, login state')
+  .description('Show the AI harnesses (Claude Code, Codex, Antigravity CLI): installed version, updates, login state')
   .action(async () => {
     process.exitCode = await harnessCommand();
   });
 
 program
   .command('login <harness>')
-  .description('Log a harness in: crewly login claude | codex (prints a link to open on any device)')
+  .description('Log a harness in: crewly login claude | codex | antigravity (prints a link to open on any device; Antigravity takes a Gemini API key)')
   .option('--method <method>', 'subscription | device | api_key (default: the harness\'s browser login)')
   .option('--force', 'Log in again even when already logged in')
   .option('-y, --yes', 'Never prompt: start the login for Crewly → Setup (web / phone) to finish')

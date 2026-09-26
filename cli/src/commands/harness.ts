@@ -1,5 +1,5 @@
 /**
- * `crewly harness` and `crewly login <claude|codex>`.
+ * `crewly harness` and `crewly login <claude|codex|antigravity>`.
  *
  * - `crewly harness` prints each harness (installed version, newer version,
  *   login state), the orchestrator's harness and the system tools.
@@ -69,7 +69,7 @@ export async function harnessCommand(deps: HarnessCommandDeps = {}): Promise<num
 /**
  * `crewly login <name>`: log a harness in.
  *
- * @param name - `claude`, `codex` (or a full harness id)
+ * @param name - `claude`, `codex`, `antigravity` / `agy` (or a full harness id)
  * @param options - Command options
  * @param deps - Injectable dependencies
  * @returns Exit code
@@ -77,7 +77,7 @@ export async function harnessCommand(deps: HarnessCommandDeps = {}): Promise<num
 export async function loginCommand(name: string, options: LoginCommandOptions = {}, deps: HarnessCommandDeps = {}): Promise<number> {
 	const harnessId = resolveHarnessAlias(name);
 	if (!harnessId) {
-		console.log(chalk.red(`Unknown harness "${name}". Use: crewly login claude | codex`));
+		console.log(chalk.red(`Unknown harness "${name}". Use: crewly login claude | codex | antigravity`));
 		return CLI_CONSTANTS.EXIT_CODES.INVALID_ARGS;
 	}
 	const service = deps.service ?? createCliHarnessService();

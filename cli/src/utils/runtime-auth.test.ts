@@ -6,10 +6,12 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
+	checkAntigravityAuth,
 	checkClaudeAuth,
 	checkCodexAuth,
 	checkGeminiAuth,
 	checkRuntimeAuth,
+	findAntigravityKey,
 	findCrewlyGeminiKey,
 	type RuntimeAuthDeps,
 } from './runtime-auth.js';
@@ -152,8 +154,51 @@ describe('findCrewlyGeminiKey', () => {
 	});
 });
 
+describe('checkAntigravityAuth', () => {
+	it('is not installed without agy on PATH, and the fix is the official installer', () => {
+		const status = checkAntigravityAuth(deps([]));
+		expect(status).toMatchObject({ id: 'antigravity', displayName: 'Antigravity CLI', installed: false, loggedIn: false });
+		expect(status.fix).toContain('curl -fsSL https://antigravity.google/cli/install.sh | bash');
+		expect(status.fix).toContain('crewly login antigravity');
+	});
+
+	it('needs a Gemini API key — an account login does not count', () => {
+		// An agy account login lives in the OS keyring; Crewly never uses it.
+		writeJson('.gemini/antigravity-cli/settings.json', {});
+		const status = checkAntigravityAuth(deps(['agy']));
+		expect(status).toMatchObject({ installed: true, loggedIn: false });
+		expect(status.detail).toContain('only with an API key');
+	});
+
+	it('finds the key saved in Crewly, a settings key or GEMINI_API_KEY — never returning the value', () => {
+		writeJson('.crewly/harness-credentials.json', { antigravity: { geminiApiKey: 'AIza-secret' } });
+		const status = checkAntigravityAuth(deps(['agy']));
+		expect(status).toMatchObject({ loggedIn: true, detail: 'Gemini API key (saved in Crewly)' });
+		expect(JSON.stringify(status)).not.toContain('AIza-secret');
+		fs.rmSync(path.join(home, '.crewly', 'harness-credentials.json'));
+		writeJson('.crewly/settings.json', { apiKeys: { global: {}, runtimeOverrides: { 'antigravity-cli': { gemini: { source: 'custom', key: 'k' } } } } });
+		expect(findAntigravityKey(deps([]))).toBe('Crewly settings (Antigravity runtime key)');
+		writeJson('.crewly/settings.json', { apiKeys: { global: { gemini: 'k' } } });
+		expect(findAntigravityKey(deps([]))).toBe('Crewly settings');
+		writeJson('.crewly/settings.json', {});
+		expect(findAntigravityKey(deps([], { GEMINI_API_KEY: 'k' }))).toBe('$GEMINI_API_KEY');
+		// agy reads only GEMINI_API_KEY
+		expect(findAntigravityKey(deps([], { GOOGLE_GENERATIVE_AI_API_KEY: 'k' }))).toBeNull();
+	});
+
+	it('honours CREWLY_HOME', () => {
+		const other = path.join(home, 'custom-home');
+		fs.mkdirSync(other, { recursive: true });
+		fs.writeFileSync(path.join(other, 'harness-credentials.json'), JSON.stringify({ antigravity: { geminiApiKey: 'k' } }));
+		expect(findAntigravityKey(deps([], { CREWLY_HOME: other }))).toBe('saved in Crewly');
+	});
+});
+
 describe('checkRuntimeAuth', () => {
-	it('returns Claude, Codex, Gemini in order', () => {
-		expect(checkRuntimeAuth(deps([])).map((s) => s.id)).toEqual(['claude', 'codex', 'gemini']);
+	it('returns Claude, Codex, Antigravity, Gemini in order, with Gemini marked retired', () => {
+		const statuses = checkRuntimeAuth(deps([]));
+		expect(statuses.map((s) => s.id)).toEqual(['claude', 'codex', 'antigravity', 'gemini']);
+		expect(statuses.find((s) => s.id === 'gemini')?.retired).toBe(true);
+		expect(statuses.find((s) => s.id === 'antigravity')?.retired).toBeUndefined();
 	});
 });

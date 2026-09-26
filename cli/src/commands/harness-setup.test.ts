@@ -19,11 +19,13 @@ import {
 	chooseOrcHarness,
 	cliAlias,
 	describeHarness,
+	harnessLabel,
 	driveBrokerLogin,
 	ensureHarnessInstalled,
 	isYes,
 	loginHarness,
 	printHarnessOverview,
+	visibleHarnesses,
 	runHarnessSetup,
 	type SetupIO,
 	type SetupTiming,
@@ -56,9 +58,18 @@ const CODEX: HarnessStatus = {
 		{ id: 'api_key', label: 'OpenAI API key', kind: 'api_key' },
 	],
 };
+const ANTIGRAVITY: HarnessStatus = {
+	...CLAUDE,
+	id: 'antigravity-cli',
+	displayName: 'Antigravity CLI',
+	installed: false,
+	version: null,
+	latestVersion: null,
+	loginMethods: [{ id: 'api_key', label: 'Gemini API key', kind: 'api_key' }],
+};
 const GEMINI: HarnessStatus = { ...CLAUDE, id: 'gemini-cli', displayName: 'Gemini CLI', installed: false, version: null, loginState: 'unknown', loginMethods: [], retired: true };
 const OVERVIEW: HarnessOverview = {
-	harnesses: [CLAUDE, CODEX, GEMINI].map((status) => ({ ...status, reloginPending: null })),
+	harnesses: [CLAUDE, CODEX, ANTIGRAVITY, GEMINI].map((status) => ({ ...status, reloginPending: null })),
 	orcHarness: null,
 	systemTools: [{ id: 'jq', installed: false, installHint: 'brew install jq' }],
 };
@@ -193,7 +204,33 @@ describe('small helpers', () => {
 		const io = makeIO();
 		printHarnessOverview(io, OVERVIEW);
 		expect(io.lines.join('\n')).toContain('Claude Code');
+		expect(io.lines.join('\n')).toContain('Antigravity CLI');
 		expect(io.lines.join('\n')).toContain('jq missing — brew install jq');
+	});
+
+	it('hides the retired Gemini CLI from a new user, and labels it when it is in use', () => {
+		const fresh = makeIO();
+		printHarnessOverview(fresh, OVERVIEW);
+		expect(fresh.lines.join('\n')).not.toContain('Gemini CLI');
+
+		const installed = makeIO();
+		printHarnessOverview(installed, { ...OVERVIEW, harnesses: OVERVIEW.harnesses.map((h) => (h.id === 'gemini-cli' ? { ...h, installed: true, version: '0.61.0' } : h)) });
+		expect(installed.lines.join('\n')).toContain('Gemini CLI (enterprise only)');
+
+		const orc = makeIO();
+		printHarnessOverview(orc, { ...OVERVIEW, orcHarness: 'gemini-cli' });
+		expect(orc.lines.join('\n')).toContain('Gemini CLI (enterprise only)');
+	});
+
+	it('visibleHarnesses keeps current harnesses and a retired one only when in use', () => {
+		expect(visibleHarnesses(OVERVIEW).map((h) => h.id)).toEqual(['claude-code', 'codex-cli', 'antigravity-cli']);
+		expect(visibleHarnesses({ ...OVERVIEW, orcHarness: 'gemini-cli' }).map((h) => h.id)).toContain('gemini-cli');
+		expect(harnessLabel(GEMINI)).toBe('Gemini CLI (enterprise only)');
+		expect(harnessLabel(ANTIGRAVITY)).toBe('Antigravity CLI');
+	});
+
+	it('cliAlias names Antigravity `antigravity`', () => {
+		expect(cliAlias('antigravity-cli')).toBe('antigravity');
 	});
 });
 
@@ -210,8 +247,33 @@ describe('chooseOrcHarness', () => {
 		expect(await chooseOrcHarness(makeIO(['']), OVERVIEW, { interactive: true })).toBe('claude-code');
 		expect(await chooseOrcHarness(makeIO(['2']), OVERVIEW, { interactive: true })).toBe('codex-cli');
 		const io = makeIO(['zzz', 'gemini']);
+		// Typing the retired harness's name is still honoured (enterprise setups).
 		expect(await chooseOrcHarness(io, OVERVIEW, { interactive: true })).toBe('gemini-cli');
 		expect(io.lines.join('\n')).toContain('Please enter a number');
+	});
+
+	it('offers Antigravity CLI and not Gemini CLI to a new user', async () => {
+		const io = makeIO(['3']);
+		expect(await chooseOrcHarness(io, OVERVIEW, { interactive: true })).toBe('antigravity-cli');
+		const menu = io.lines.join('\n');
+		expect(menu).toContain('3. Antigravity CLI');
+		expect(menu).toContain('Gemini API key');
+		expect(menu).not.toContain('Gemini CLI');
+		expect(io.asked[0]).toContain('(1-3)');
+	});
+
+	it('keeps Gemini CLI on the menu, labelled, when the orchestrator already runs on it', async () => {
+		const io = makeIO(['']);
+		await chooseOrcHarness(io, { ...OVERVIEW, orcHarness: 'gemini-cli' }, { interactive: true });
+		expect(io.lines.join('\n')).toContain('4. Gemini CLI (enterprise only)');
+	});
+
+	it('accepts --harness antigravity / agy / gemini', async () => {
+		const io = makeIO();
+		expect(await chooseOrcHarness(io, OVERVIEW, { interactive: false, preset: 'antigravity' })).toBe('antigravity-cli');
+		expect(await chooseOrcHarness(io, OVERVIEW, { interactive: false, preset: 'agy' })).toBe('antigravity-cli');
+		expect(await chooseOrcHarness(io, OVERVIEW, { interactive: false, preset: 'gemini' })).toBe('gemini-cli');
+		await expect(chooseOrcHarness(io, OVERVIEW, { interactive: false, preset: 'nope' })).rejects.toThrow('use claude, codex or antigravity');
 	});
 });
 
@@ -364,6 +426,31 @@ describe('loginHarness', () => {
 		expect(io.lines.join('\n')).not.toContain('sk-ant-api03-secret');
 	});
 
+	it('Antigravity: only a Gemini API key, pasted without echo, with where to get one and the first-run note', async () => {
+		const agy = { ...ANTIGRAVITY, installed: true, version: '1.2.11', loginState: 'logged_out' as const };
+		const { service, mocks } = makeService({ submitApiKey: jest.fn(async () => ({ ...agy, loginState: 'logged_in' })) });
+		const io = makeIO(['AIza-test-key']);
+		expect(await loginHarness(io, service, driverFor(makeDriver('in-process', {})), agy, { interactive: true })).toBe('succeeded');
+		// One method only: no "how do you want to log in" menu, no broker, straight to the key.
+		expect(io.asked).toEqual(['secret:  Paste your Gemini API key (not shown): ']);
+		expect(mocks.submitApiKey).toHaveBeenCalledWith('antigravity-cli', 'AIza-test-key');
+		const out = io.lines.join('\n');
+		expect(out).toContain('https://aistudio.google.com/apikey');
+		expect(out).toContain('never a Google account login');
+		expect(out).toContain('GEMINI_API_KEY=<your key> agy');
+		expect(out).not.toContain('AIza-test-key');
+	});
+
+	it('Antigravity with --yes never prompts and points at crewly login antigravity', async () => {
+		const agy = { ...ANTIGRAVITY, installed: true, loginState: 'logged_out' as const };
+		const { service, mocks } = makeService();
+		const io = makeIO();
+		expect(await loginHarness(io, service, driverFor(makeDriver('in-process', {})), agy, { interactive: false })).toBe('skipped');
+		expect(io.asked).toEqual([]);
+		expect(mocks.submitApiKey).not.toHaveBeenCalled();
+		expect(io.lines.join('\n')).toContain('crewly login antigravity');
+	});
+
 	it('API key errors and empty keys', async () => {
 		const { service } = makeService({ submitApiKey: jest.fn(async () => { throw new Error('Anthropic rejected this API key'); }) });
 		const io = makeIO(['2', 'bad-key']);
@@ -446,8 +533,10 @@ describe('runHarnessSetup', () => {
 		const { service, mocks } = makeService();
 		const io = makeIO(['3', 'n']);
 		const result = await runHarnessSetup(io, service, async () => makeDriver('in-process', {}), { interactive: true });
-		expect(result).toEqual({ harnessId: 'gemini-cli', installed: false, login: 'skipped' });
-		expect(mocks.setOrcHarness).toHaveBeenCalledWith('gemini-cli');
-		expect(io.lines.join('\n')).toContain('crewly login gemini');
+		expect(result).toEqual({ harnessId: 'antigravity-cli', installed: false, login: 'skipped' });
+		expect(mocks.setOrcHarness).toHaveBeenCalledWith('antigravity-cli');
+		// The install question names the official script, not npm.
+		expect(io.asked[1]).toContain('curl -fsSL https://antigravity.google/cli/install.sh | bash');
+		expect(io.lines.join('\n')).toContain('crewly login antigravity');
 	});
 });

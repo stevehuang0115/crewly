@@ -1,5 +1,5 @@
 /**
- * Is an AI runtime (Claude Code, Codex, Gemini CLI) installed AND logged in?
+ * Is an AI runtime (Claude Code, Codex, Antigravity CLI, Gemini CLI) installed AND logged in?
  *
  * `crewly doctor` used to say "All checks passed" on machines where no agent
  * could ever start (#779). An agent needs a runtime binary on PATH and a
@@ -13,8 +13,14 @@
  *   its config, a credentials file, an `apiKeyHelper`, or an auth env var.
  * - Codex: `$CODEX_HOME/auth.json` (default `~/.codex`) holds tokens or an
  *   API key (written by `codex login`).
- * - Gemini CLI: an auth method saved in `~/.gemini/settings.json` with its
- *   credential present, or a Gemini API key Crewly can hand it — Crewly then
+ * - Antigravity CLI: a Gemini API key Crewly can hand it (saved in
+ *   `<crewlyHome>/harness-credentials.json`, a Crewly settings Gemini key, or
+ *   GEMINI_API_KEY). Crewly never runs agy on an account login (Google does
+ *   not allow third-party tools to use Antigravity OAuth), so an account
+ *   login alone does not count.
+ * - Gemini CLI (retired for new users; kept for existing / enterprise ones):
+ *   an auth method saved in `~/.gemini/settings.json` with its credential
+ *   present, or a Gemini API key Crewly can hand it — Crewly then
  *   pre-selects "Use Gemini API Key" at launch (#781).
  *
  * @module cli/utils/runtime-auth
@@ -22,6 +28,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { ANTIGRAVITY_CONSTANTS } from '../../../backend/src/constants.js';
 import {
 	GEMINI_API_KEY_AUTH_TYPE,
 	LEGACY_AUTH_TYPE_KEY,
@@ -41,10 +48,12 @@ export interface RuntimeAuthStatus {
 	detail: string;
 	/** Command that fixes it (install and/or log in) */
 	fix: string;
+	/** Not recommended to new users (Gemini CLI) */
+	retired?: boolean;
 }
 
 /** Runtimes doctor checks. */
-export type RuntimeId = 'claude' | 'codex' | 'gemini';
+export type RuntimeId = 'claude' | 'codex' | 'antigravity' | 'gemini';
 
 /** Inputs, injectable for tests. */
 export interface RuntimeAuthDeps {
@@ -84,6 +93,18 @@ export const RUNTIME_AUTH_INFO = {
 		homeEnv: 'CODEX_HOME',
 		homeDir: '.codex',
 		authFile: 'auth.json',
+	},
+	antigravity: {
+		displayName: 'Antigravity CLI',
+		bin: ANTIGRAVITY_CONSTANTS.BINARY,
+		install: `curl -fsSL ${ANTIGRAVITY_CONSTANTS.INSTALL_SCRIPT_URL} | bash`,
+		login: `crewly login antigravity   (paste a Gemini API key from ${ANTIGRAVITY_CONSTANTS.API_KEY_CONSOLE_URL})`,
+		/** The only env var agy reads a key from */
+		keyEnv: [ANTIGRAVITY_CONSTANTS.API_KEY_ENV],
+		/** Crewly's harness credentials file under the Crewly home */
+		credentialsFile: 'harness-credentials.json',
+		/** Runtime id under apiKeys.runtimeOverrides */
+		crewlyRuntimeId: 'antigravity-cli',
 	},
 	gemini: {
 		displayName: 'Gemini CLI',
@@ -236,6 +257,56 @@ export function findCrewlyGeminiKey(deps: RuntimeAuthDeps): string | null {
 }
 
 /**
+ * Where Crewly would get the Gemini key an Antigravity session runs with:
+ * the key saved for Antigravity (Settings → Harness / `crewly login
+ * antigravity`), a Crewly settings Gemini key (antigravity-cli override or
+ * global), or GEMINI_API_KEY.
+ *
+ * @param deps - Inputs
+ * @returns Where the key comes from (never the key), or null
+ */
+export function findAntigravityKey(deps: RuntimeAuthDeps): string | null {
+	const info = RUNTIME_AUTH_INFO.antigravity;
+	const crewlyHome = deps.env.CREWLY_HOME || path.join(deps.homeDir, '.crewly');
+	const credentials = readJsonObject(path.join(crewlyHome, info.credentialsFile));
+	const stored = credentials?.antigravity as Record<string, unknown> | undefined;
+	if (stored && isSet(stored.geminiApiKey)) return 'saved in Crewly';
+	const settings = readJsonObject(path.join(crewlyHome, 'settings.json'));
+	const apiKeys = settings && typeof settings.apiKeys === 'object' && settings.apiKeys !== null
+		? (settings.apiKeys as Record<string, unknown>)
+		: null;
+	if (apiKeys) {
+		const overrides = (apiKeys.runtimeOverrides ?? {}) as Record<string, Record<string, { source?: string; key?: string }> | undefined>;
+		const override = overrides[info.crewlyRuntimeId]?.gemini;
+		if (override && override.source === 'custom' && isSet(override.key)) return 'Crewly settings (Antigravity runtime key)';
+		const global = (apiKeys.global ?? {}) as Record<string, unknown>;
+		if (isSet(global.gemini)) return 'Crewly settings';
+	}
+	const envName = firstSetEnv(deps.env, info.keyEnv);
+	return envName ? `$${envName}` : null;
+}
+
+/**
+ * Antigravity CLI state: installed, and a Gemini API key Crewly can use.
+ *
+ * @param deps - Inputs
+ * @returns Status
+ */
+export function checkAntigravityAuth(deps: RuntimeAuthDeps): RuntimeAuthStatus {
+	const info = RUNTIME_AUTH_INFO.antigravity;
+	const installed = deps.which(info.bin);
+	const base = { id: 'antigravity' as const, displayName: info.displayName, installed, fix: fixFor(info, installed) };
+	if (!installed) return { ...base, loggedIn: false, detail: 'not installed' };
+	const key = findAntigravityKey(deps);
+	if (key) return { ...base, loggedIn: true, detail: `Gemini API key (${key})` };
+	return {
+		...base,
+		loggedIn: false,
+		detail: 'installed but no Gemini API key — Crewly runs Antigravity only with an API key, never a Google account login',
+	};
+}
+
+/**
  * Gemini CLI login state.
  *
  * @param deps - Inputs
@@ -244,7 +315,7 @@ export function findCrewlyGeminiKey(deps: RuntimeAuthDeps): string | null {
 export function checkGeminiAuth(deps: RuntimeAuthDeps): RuntimeAuthStatus {
 	const info = RUNTIME_AUTH_INFO.gemini;
 	const installed = deps.which(info.bin);
-	const base = { id: 'gemini' as const, displayName: info.displayName, installed, fix: fixFor(info, installed) };
+	const base = { id: 'gemini' as const, displayName: info.displayName, installed, fix: fixFor(info, installed), retired: true };
 	if (!installed) return { ...base, loggedIn: false, detail: 'not installed' };
 
 	const settings = readJsonObject(path.join(deps.homeDir, info.settingsFile));
@@ -280,8 +351,8 @@ export function checkGeminiAuth(deps: RuntimeAuthDeps): RuntimeAuthStatus {
  * Check every runtime.
  *
  * @param deps - Inputs
- * @returns Claude, Codex, Gemini — in that order
+ * @returns Claude, Codex, Antigravity, Gemini — in that order
  */
 export function checkRuntimeAuth(deps: RuntimeAuthDeps): RuntimeAuthStatus[] {
-	return [checkClaudeAuth(deps), checkCodexAuth(deps), checkGeminiAuth(deps)];
+	return [checkClaudeAuth(deps), checkCodexAuth(deps), checkAntigravityAuth(deps), checkGeminiAuth(deps)];
 }

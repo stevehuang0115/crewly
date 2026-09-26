@@ -8,7 +8,7 @@
  * the user service will survive logout.
  *
  * It also checks what agents need to do anything at all (#779): the jq and
- * curl the skills call, at least one AI runtime (Claude Code / Codex / Gemini
+ * curl the skills call, at least one AI runtime (Claude Code / Codex / Antigravity / Gemini
  * CLI) that is installed AND logged in, and that the skill marketplace the
  * installer uses is reachable. Every failure names the command that fixes it,
  * and any failure makes the command exit non-zero instead of claiming a pass.
@@ -207,7 +207,7 @@ export async function defaultProbeUrl(url: string, timeoutMs: number): Promise<U
  * Checks for the runtimes: one line per installed runtime, plus a `runtime`
  * line that fails when none is installed and logged in.
  *
- * @param statuses - Claude, Codex, Gemini login state
+ * @param statuses - Claude, Codex, Antigravity, Gemini login state
  * @returns Checks
  */
 export function runtimeChecks(statuses: readonly RuntimeAuthStatus[]): DoctorCheck[] {
@@ -233,7 +233,10 @@ export function runtimeChecks(statuses: readonly RuntimeAuthStatus[]): DoctorChe
 		checks.push({ name: 'runtime', status: 'ok', detail: `ready: ${ready.map((rt) => rt.displayName).join(', ')}` });
 	} else {
 		// Installed-but-logged-out first: finishing a login is the shortest fix.
-		const ordered = [...statuses].sort((a, b) => Number(b.installed) - Number(a.installed));
+		// A retired runtime (Gemini CLI) is only suggested when already installed.
+		const ordered = statuses
+			.filter((rt) => rt.installed || !rt.retired)
+			.sort((a, b) => Number(b.installed) - Number(a.installed));
 		checks.push({
 			name: 'runtime',
 			status: 'fail',
