@@ -47,7 +47,7 @@ async function addWt(repo: string, id: string): Promise<string> {
 
 
 // Real git on a loaded machine: checkouts can take seconds each.
-jest.setTimeout(120_000);
+jest.setTimeout(600_000);
 
 describe('worktree-git', () => {
 	let tmp: string;
@@ -181,6 +181,76 @@ describe('worktree-git', () => {
 		it('a modified tracked file reads dirty', async () => {
 			await fs.writeFile(path.join(wt, 'README.md'), 'changed\n');
 			expect((await checkDirty(wt, owned)).dirtyPaths).toEqual(['README.md']);
+		});
+
+		describe('exact recorded paths, never a name pattern (#829 review)', () => {
+			const none = { symlinks: [] as string[], copies: [] as string[] };
+
+			/** A fresh repo whose info/exclude has NO worktree patterns, plus one worktree. */
+			const freshWorktree = async (): Promise<string> => {
+				const other = await makeRepo(path.join(tmp, `other-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`));
+				return addWt(other, 'u1');
+			};
+
+			describe('visible to git status (no exclude entry for the name)', () => {
+				it('an unrecorded REAL node_modules dir with a file reads dirty', async () => {
+					const w = await freshWorktree();
+					await fs.mkdir(path.join(w, 'node_modules'));
+					await fs.writeFile(path.join(w, 'node_modules', 'x.js'), 'x');
+					const r = await checkDirty(w, none);
+					expect(r.state).toBe('dirty');
+					expect(r.dirtyPaths).toEqual(['node_modules/x.js']);
+				});
+
+				it('an unrecorded SYMLINK named node_modules reads dirty', async () => {
+					const w = await freshWorktree();
+					await fs.symlink(tmp, path.join(w, 'node_modules'), 'dir');
+					expect((await checkDirty(w, none)).dirtyPaths).toEqual(['node_modules']);
+				});
+
+				it('an unrecorded .env (a .worktreeinclude-style name) reads dirty', async () => {
+					const w = await freshWorktree();
+					await fs.writeFile(path.join(w, '.env'), 'TOKEN=x');
+					expect((await checkDirty(w, none)).dirtyPaths).toEqual(['.env']);
+				});
+			});
+
+			describe('hidden by the SHARED exclude another worktree registered', () => {
+				let other: string;
+				beforeEach(async () => {
+					// wi-d (outer beforeEach) registered /node_modules; register /.env as another worktree's copy would.
+					await ensureExcluded(repo, ['.env']);
+					other = await addWt(repo, 'wi-other');
+				});
+
+				it('an unrecorded REAL node_modules dir reads dirty although git status hides it', async () => {
+					await fs.mkdir(path.join(other, 'node_modules'));
+					await fs.writeFile(path.join(other, 'node_modules', 'x.js'), 'x');
+					expect(await git(other, 'status', '--porcelain')).toBe(''); // plain status sees nothing
+					const r = await checkDirty(other, none);
+					expect(r.state).toBe('dirty');
+					expect(r.dirtyPaths.join(' ')).toContain('node_modules (hidden by the shared worktree exclude');
+				});
+
+				it('an unrecorded SYMLINK named node_modules reads dirty', async () => {
+					await fs.symlink(tmp, path.join(other, 'node_modules'), 'dir');
+					expect((await checkDirty(other, none)).state).toBe('dirty');
+				});
+
+				it('an unrecorded .env reads dirty', async () => {
+					await fs.writeFile(path.join(other, '.env'), 'TOKEN=x');
+					const r = await checkDirty(other, none);
+					expect(r.dirtyPaths.join(' ')).toContain('.env (hidden by the shared worktree exclude');
+				});
+
+				it('the same names RECORDED for this worktree are excluded (clean)', async () => {
+					await fs.symlink(path.join(repo, 'node_modules'), path.join(other, 'node_modules'), 'dir');
+					await fs.writeFile(path.join(other, '.env'), 'TOKEN=x');
+					const r = await checkDirty(other, { symlinks: ['node_modules'], copies: ['.env'] });
+					expect(r.state).toBe('clean');
+					expect(r.excludedOurs).toBe(2);
+				});
+			});
 		});
 
 		it('only the RECORDED symlink is excluded — an unrecorded one is dirty', async () => {

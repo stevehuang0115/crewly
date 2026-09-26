@@ -80,6 +80,11 @@ A worktree is removed **only** when all of these hold:
      **exactly** the symlinks and copies recorded at creation, must be empty. No patterns
      are used.
    - A recorded symlink that has been replaced by real content counts as dirty.
+   - Paths hidden by the **shared** `info/exclude`, which another worktree may have
+     registered (for example `/node_modules` or `/.env`), are listed too, with
+     `--ignored=matching`. One that this worktree did not record counts as dirty. Plain
+     `git status` would never show it. There is no name-based exclusion anywhere (#829
+     review).
    - It reports `N path(s) examined, M excluded as our symlinks/copies, K dirty`.
    - `unknown` → keep.
 2. **Landed = `landed`**, required for done, verified and missing WorkItems. It holds when
@@ -130,6 +135,14 @@ The sweep runs every 30 minutes over every registered project's repo that has a
 A project that is not in a git repo is skipped. A WorkItem's project is taken from
 `metadata.projectPath` when that path names a registered project, else from the first
 project of the target member's team.
+
+**Effect on the main checkout.** `.git/info/exclude` is shared by the clone, so the rooted
+patterns this feature writes also apply in the user's main checkout. For example, an
+untracked `/node_modules` or `/.env` there becomes ignored. Tracked files are never
+affected. This happens only on opted-in projects. The patterns sit under a marker line
+and are **not removed** when the last worktree goes: they are harmless for gitignored
+paths, and removing them while another worktree still relies on them would expose its
+symlinks to `git add -A`. Delete the marker block by hand to undo it.
 
 ## Out of scope in v1
 

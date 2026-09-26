@@ -53,7 +53,7 @@ function makePool(): WorktreePool & { items: Map<string, WorkItem>; add(wi: Part
 
 
 // Real git on a loaded machine: checkouts can take seconds each.
-jest.setTimeout(120_000);
+jest.setTimeout(600_000);
 
 describe('WorkItemWorktreeService', () => {
 	let tmp: string;
@@ -70,10 +70,15 @@ describe('WorkItemWorktreeService', () => {
 	const rec = (id: string): WorktreeRecord => pool.items.get(id)?.metadata?.[WORKTREE_CONSTANTS.METADATA_KEY] as WorktreeRecord;
 	const wtPath = (id: string): string => path.join(repo, WORKTREE_CONSTANTS.DIR, id);
 
-	beforeEach(async () => {
-		tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wi-wt-')));
-		// A bare origin, cloned into the project checkout (so origin/main exists).
-		const seed = path.join(tmp, 'seed');
+	/**
+	 * The git fixture (seed → bare origin → clone with node_modules, .env and
+	 * .worktreeinclude) is built ONCE and copied per test: under real load
+	 * (load average 42) eleven git spawns per test blew the hook timeout.
+	 */
+	let template: string;
+	beforeAll(async () => {
+		template = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wi-wt-template-')));
+		const seed = path.join(template, 'seed');
 		await fs.mkdir(seed);
 		await git(seed, 'init', '-q', '-b', 'main');
 		await configure(seed);
@@ -82,18 +87,30 @@ describe('WorkItemWorktreeService', () => {
 		await fs.writeFile(path.join(seed, 'app', 'index.ts'), 'export const x = 1;\n');
 		await git(seed, 'add', '-A');
 		await git(seed, 'commit', '-q', '-m', 'init');
+		await git(template, 'clone', '-q', '--bare', seed, path.join(template, 'origin.git'));
+		await git(template, 'clone', '-q', path.join(template, 'origin.git'), path.join(template, 'repo'));
+		const r = path.join(template, 'repo');
+		await configure(r);
+		await fs.mkdir(path.join(r, 'node_modules', 'dep'), { recursive: true });
+		await fs.writeFile(path.join(r, 'node_modules', 'dep', 'index.js'), 'dep');
+		await fs.writeFile(path.join(r, '.env'), 'TOKEN=local\n');
+		await fs.writeFile(path.join(r, '.worktreeinclude'), '.env\n');
+		await git(r, 'add', '.worktreeinclude');
+		await git(r, 'commit', '-q', '-m', 'include');
+		await git(r, 'push', '-q', 'origin', 'main');
+	});
+
+	afterAll(async () => {
+		await fs.rm(template, { recursive: true, force: true });
+	});
+
+	beforeEach(async () => {
+		tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wi-wt-')));
+		await fs.cp(template, tmp, { recursive: true, verbatimSymlinks: true });
 		origin = path.join(tmp, 'origin.git');
-		await git(tmp, 'clone', '-q', '--bare', seed, origin);
-		await git(tmp, 'clone', '-q', origin, path.join(tmp, 'repo'));
 		repo = await fs.realpath(path.join(tmp, 'repo'));
-		await configure(repo);
-		await fs.mkdir(path.join(repo, 'node_modules', 'dep'), { recursive: true });
-		await fs.writeFile(path.join(repo, 'node_modules', 'dep', 'index.js'), 'dep');
-		await fs.writeFile(path.join(repo, '.env'), 'TOKEN=local\n');
-		await fs.writeFile(path.join(repo, '.worktreeinclude'), '.env\n');
-		await git(repo, 'add', '.worktreeinclude');
-		await git(repo, 'commit', '-q', '-m', 'include');
-		await git(repo, 'push', '-q', 'origin', 'main');
+		// The copy must push to ITS origin, never the shared template's.
+		await git(repo, 'remote', 'set-url', 'origin', origin);
 
 		projects = [{ id: 'p1', name: 'P', path: repo, teams: {}, status: 'active', worktrees: 'on', createdAt: '', updatedAt: '' }];
 		teams = [{ id: 't1', name: 'T', members: [{ sessionName: 'dev-1' }, { sessionName: 'dev-2' }] as Team['members'], projectIds: ['p1'], createdAt: '', updatedAt: '' }];

@@ -309,6 +309,35 @@ export interface OwnedPaths {
 	copies: readonly string[];
 }
 
+/**
+ * Repo-relative paths this feature added to the repo's shared
+ * `info/exclude` (the lines under {@link WORKTREE_CONSTANTS.EXCLUDE_MARKER}),
+ * minus the worktree directory itself.
+ *
+ * @param dir - Any directory in the repo or one of its worktrees
+ * @returns Paths without the leading slash (empty when none / unreadable)
+ */
+export async function readOwnExcludePatterns(dir: string): Promise<string[]> {
+	const common = await runGit(dir, ['rev-parse', '--git-common-dir']);
+	if (!common.ok) return [];
+	let text: string;
+	try {
+		text = await fs.readFile(path.join(path.resolve(dir, common.stdout.trim()), 'info', 'exclude'), 'utf8');
+	} catch {
+		return [];
+	}
+	const lines = text.split('\n');
+	const start = lines.indexOf(WORKTREE_CONSTANTS.EXCLUDE_MARKER);
+	if (start < 0) return [];
+	const out: string[] = [];
+	for (const line of lines.slice(start + 1)) {
+		if (!line.startsWith('/')) continue;
+		const rel = line.slice(1);
+		if (rel && rel !== WORKTREE_CONSTANTS.DIR) out.push(rel);
+	}
+	return out;
+}
+
 /** Outcome of {@link checkDirty}. */
 export interface DirtyReport {
 	state: 'clean' | 'dirty' | 'unknown';
@@ -384,6 +413,26 @@ export async function checkDirty(worktree: string, owned: OwnedPaths): Promise<D
 	const ownedSet = new Set([...owned.symlinks, ...owned.copies]);
 	const entries = parsePorcelainZ(status.stdout);
 	const dirty = entries.filter((p) => !ownedSet.has(p.replace(/\/$/, '')));
+
+	// The shared .git/info/exclude hides every path ANY worktree of this repo
+	// registered (e.g. /node_modules, /.env). In THIS worktree such a path is
+	// only ours if it was recorded here; otherwise it is the agent's content
+	// that plain `git status` would never show. List ignored entries and flag
+	// the ones under our exclude patterns that this worktree did not record.
+	const ourPatterns = await readOwnExcludePatterns(wtReal);
+	let hiddenChecked = 0;
+	if (ourPatterns.length) {
+		const ignored = await runGit(wtReal, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignored=matching']);
+		if (!ignored.ok) return unknown(`git status --ignored failed: ${ignored.stderr.trim()}`, trackedCount + entries.length);
+		for (const raw of ignored.stdout.split('\0')) {
+			if (!raw.startsWith('!! ')) continue;
+			const p = raw.slice(3).replace(/\/$/, '');
+			const pattern = ourPatterns.find((q) => p === q || p.startsWith(`${q}/`));
+			if (!pattern) continue;
+			hiddenChecked += 1;
+			if (!ownedSet.has(pattern)) dirty.push(`${p} (hidden by the shared worktree exclude; not recorded for this worktree)`);
+		}
+	}
 	let excludedOurs = 0;
 	for (const rel of owned.symlinks) {
 		try {
@@ -402,7 +451,7 @@ export async function checkDirty(worktree: string, owned: OwnedPaths): Promise<D
 			// removed: nothing to lose
 		}
 	}
-	const examined = trackedCount + entries.length;
+	const examined = trackedCount + entries.length + hiddenChecked;
 	return {
 		state: dirty.length ? 'dirty' : 'clean',
 		examined,
