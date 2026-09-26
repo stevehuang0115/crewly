@@ -17,6 +17,7 @@ import {
   blockItem,
   failItemHandler,
   cancelQueuedItem,
+  renderVerdict,
   getStats,
   heartbeat,
   extendLease,
@@ -97,6 +98,9 @@ export function createTaskPoolRouter(): Router {
   // `cancelQueued` (queued/blocked/scheduled → cancelled). Distinct
   // from DELETE which is a hard purge.
   router.post('/items/:workItemId/cancel', cancelQueuedItem);
+  // #813: the reviewer (or the orchestrator / owner after escalation)
+  // records a verdict on a done_by_worker item. Actor from X-Agent-Session.
+  router.post('/items/:workItemId/verdict', renderVerdict);
 
   return router;
 }

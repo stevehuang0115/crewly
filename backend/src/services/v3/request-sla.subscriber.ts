@@ -190,19 +190,21 @@ export function respondToUserWorkItemId(requestId: string): string {
  *
  * Mapping:
  *   - `running`        → `done`      (someone explicitly claimed; close cleanly).
- *   - `done_by_worker` → `verified`  (the only edge `done_by_worker` permits
- *     toward terminal-success; `done_by_worker → cancelled` is illegal).
+ *   - `done_by_worker` → `null` — leave it alone (#813). It is awaiting its
+ *     reviewer; the user having been answered is not a review, and resolving
+ *     it here used to auto-`verified` it as `system`.
  *   - `proposed`       → `accepted` then handled separately — but in practice
  *     the SLA WI never lands here, so we route to `cancelled` (legal).
  *   - everything else  → `cancelled` (the V3 matrix permits `* → cancelled`
  *     from all of `queued`/`scheduled`/`accepted`/`blocked`/`escalated`).
  *
  * @param current - The WI's current (non-terminal) status.
- * @returns The legal terminal status to transition into.
+ * @returns The legal terminal status to transition into, or `null` when the
+ *   item must be left for its reviewer.
  */
-export function pickResolveTarget(current: WorkItemStatus): WorkItemStatus {
+export function pickResolveTarget(current: WorkItemStatus): WorkItemStatus | null {
   if (current === 'running') return 'done';
-  if (current === 'done_by_worker') return 'verified';
+  if (current === 'done_by_worker') return null;
   return 'cancelled';
 }
 
@@ -908,8 +910,14 @@ export class RequestSlaSubscriber {
       // may not have completed yet. Brief retry on null lookup absorbs
       // that window without blocking the happy path.
       const wi = await this.findWorkItemWithRetry(tracked.workItemId);
-      if (wi && !TERMINAL_WI_STATUSES.has(wi.status)) {
-        const target = pickResolveTarget(wi.status);
+      const target = wi && !TERMINAL_WI_STATUSES.has(wi.status) ? pickResolveTarget(wi.status) : null;
+      if (wi && target === null && !TERMINAL_WI_STATUSES.has(wi.status)) {
+        this.logger.info('SLA auto-resolve: WorkItem is awaiting review — left for its reviewer', {
+          workItemId: tracked.workItemId,
+          requestId,
+          status: wi.status,
+        });
+      } else if (wi && target !== null) {
         // Surface the SLA reason as cancelReason when the target is
         // 'cancelled' so the activity timeline shows WHY (instead of
         // an opaque "WorkItem was cancelled.").

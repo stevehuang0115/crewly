@@ -18,6 +18,15 @@ import {
   isValidWorkItemOwner,
   isValidWorkItemTransition,
   isTransitionPermitted,
+  checkTransitionPermission,
+  normalizeTransitionActor,
+  describeTransitionActor,
+  getWorkItemReviewer,
+  ForbiddenTransitionError,
+  TRANSITION_ACTOR_ROLES,
+  WORK_ITEM_REVIEWER_KEY,
+  REVIEW_ESCALATED_TO_ORC_KEY,
+  REVIEW_ESCALATED_TO_OWNER_KEY,
   isWorkItem,
   validateCreateWorkItemInput,
   createWorkItem,
@@ -29,7 +38,7 @@ import {
   WORK_ITEM_BLOCK_SOURCES,
   isExplicitlyBlocked,
 } from './work-item.types.js';
-import type { CreateWorkItemInput, WorkItem } from './work-item.types.js';
+import type { CreateWorkItemInput, WorkItem, TransitionActorInput } from './work-item.types.js';
 
 describe('WorkItem Types', () => {
   // -----------------------------------------------------------------------
@@ -267,96 +276,215 @@ describe('WorkItem Types', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Role-Based Transition Permissions
+  // Transition Permissions — closed, item-aware gate (#813)
   // -----------------------------------------------------------------------
-  describe('isTransitionPermitted', () => {
-    it('should always permit system role', () => {
-      expect(isTransitionPermitted('done_by_worker', 'verified', 'system')).toBe(true);
-      expect(isTransitionPermitted('proposed', 'accepted', 'system')).toBe(true);
+  describe('isTransitionPermitted / checkTransitionPermission', () => {
+    /** Minimal WorkItem shape the gate reads. */
+    const at = (
+      status: WorkItem['status'],
+      extra: { target?: string; metadata?: Record<string, unknown> } = {},
+    ): Pick<WorkItem, 'status' | 'target' | 'metadata'> => ({ status, ...extra });
+
+    const WORKER = 'dev-max';
+    const LEAD = 'tl-sam';
+    const OTHER_LEAD = 'tl-other';
+    const awaitingReview = at('done_by_worker', { target: WORKER, metadata: { [WORK_ITEM_REVIEWER_KEY]: LEAD } });
+
+    describe('closed table (deny by default)', () => {
+      it('has a permission entry for every legal edge in WORK_ITEM_TRANSITIONS, and nothing else', () => {
+        const legal: string[] = [];
+        for (const from of WORK_ITEM_STATUSES) {
+          for (const to of WORK_ITEM_TRANSITIONS[from]) legal.push(`${from}→${to}`);
+        }
+        // Report what was examined: an empty edge set would make this vacuous.
+        expect(legal.length).toBe(26);
+        const missing = legal.filter((k) => !TRANSITION_PERMISSIONS[k]);
+        const extra = Object.keys(TRANSITION_PERMISSIONS).filter((k) => !legal.includes(k));
+        expect({ examined: legal.length, missing, extra }).toEqual({ examined: 26, missing: [], extra: [] });
+      });
+
+      it('refuses an unlisted transition for every actor, system included', () => {
+        const saved = TRANSITION_PERMISSIONS['queued→running'];
+        delete TRANSITION_PERMISSIONS['queued→running'];
+        try {
+          for (const role of TRANSITION_ACTOR_ROLES) {
+            const d = checkTransitionPermission(at('queued'), 'running', role);
+            expect(d).toMatchObject({ allowed: false, reason: 'unlisted_transition' });
+          }
+        } finally {
+          TRANSITION_PERMISSIONS['queued→running'] = saved;
+        }
+      });
+
+      it('refuses a pair that is not an edge at all (e.g. verified → queued)', () => {
+        expect(checkTransitionPermission(at('verified'), 'queued', 'system')).toMatchObject({
+          allowed: false,
+          reason: 'unlisted_transition',
+        });
+      });
     });
-    it('should permit agent to accept proposals', () => {
-      expect(isTransitionPermitted('proposed', 'accepted', 'agent')).toBe(true);
-    });
-    it('should deny orchestrator from accepting proposals', () => {
-      expect(isTransitionPermitted('proposed', 'accepted', 'orchestrator')).toBe(false);
-    });
-    it('should permit team_lead to verify worker output', () => {
-      expect(isTransitionPermitted('done_by_worker', 'verified', 'team_lead')).toBe(true);
-    });
-    it('should deny agent from verifying their own output', () => {
-      expect(isTransitionPermitted('done_by_worker', 'verified', 'agent')).toBe(false);
-    });
-    it('should permit agent to report done_by_worker', () => {
-      expect(isTransitionPermitted('running', 'done_by_worker', 'agent')).toBe(true);
-    });
-    it('should permit agent to escalate', () => {
-      expect(isTransitionPermitted('running', 'escalated', 'agent')).toBe(true);
-    });
-    it('should permit any role for transitions without explicit permissions', () => {
-      // queued → running has no explicit permission entry
-      expect(isTransitionPermitted('queued', 'running', 'agent')).toBe(true);
-      expect(isTransitionPermitted('queued', 'running', 'orchestrator')).toBe(true);
-    });
-    it('should only allow TL or orchestrator to propose tasks', () => {
-      expect(isTransitionPermitted('queued', 'proposed', 'team_lead')).toBe(true);
-      expect(isTransitionPermitted('queued', 'proposed', 'orchestrator')).toBe(true);
-      expect(isTransitionPermitted('queued', 'proposed', 'agent')).toBe(false);
+
+    describe('no default actor', () => {
+      it.each([undefined, null, '', 'root'])('refuses a missing or unknown actor (%p)', (actor) => {
+        expect(
+          checkTransitionPermission(at('queued'), 'running', actor as unknown as TransitionActorInput),
+        ).toMatchObject({ allowed: false, reason: 'missing_actor' });
+      });
+
+      it('refuses a missing actor on the verdict edge', () => {
+        expect(isTransitionPermitted(awaitingReview, 'verified', undefined)).toBe(false);
+      });
     });
 
-    // -------------------------------------------------------------------
-    // TRANS-1 F-F: rejected→queued / failed→queued / blocked→queued are
-    // restricted to TL/orchestrator/system. Agent self-revival is blocked.
-    // -------------------------------------------------------------------
-
-    describe('F-F: re-queue gates (rejected/failed/blocked → queued)', () => {
-      it('blocks agent from re-queueing a rejected WorkItem (self-revival hazard)', () => {
-        expect(isTransitionPermitted('rejected', 'queued', 'agent')).toBe(false);
+    describe('system is listed, not a bypass', () => {
+      it('may take the edges server code takes', () => {
+        expect(isTransitionPermitted(at('queued'), 'running', 'system')).toBe(true);
+        expect(isTransitionPermitted(at('running'), 'blocked', 'system')).toBe(true);
+        expect(isTransitionPermitted(at('running'), 'failed', 'system')).toBe(true);
       });
 
-      it('allows team_lead to re-queue a rejected WorkItem', () => {
-        expect(isTransitionPermitted('rejected', 'queued', 'team_lead')).toBe(true);
+      it('may never verify work', () => {
+        expect(checkTransitionPermission(awaitingReview, 'verified', 'system')).toMatchObject({
+          allowed: false,
+          reason: 'role_not_permitted',
+        });
       });
 
-      it('allows orchestrator to re-queue a rejected WorkItem', () => {
-        expect(isTransitionPermitted('rejected', 'queued', 'orchestrator')).toBe(true);
+      it('may send work back (SLA escalation timeout)', () => {
+        expect(isTransitionPermitted(awaitingReview, 'rejected', 'system')).toBe(true);
       });
 
-      it('allows system actor (Reconciler) to re-queue a rejected WorkItem', () => {
-        expect(isTransitionPermitted('rejected', 'queued', 'system')).toBe(true);
+      it('may not take agent-only edges (proposed → accepted)', () => {
+        expect(isTransitionPermitted(at('proposed'), 'accepted', 'system')).toBe(false);
+      });
+    });
+
+    describe('verdicts are identity-checked', () => {
+      it('permits the recorded reviewer', () => {
+        expect(isTransitionPermitted(awaitingReview, 'verified', { role: 'team_lead', session: LEAD })).toBe(true);
+        expect(isTransitionPermitted(awaitingReview, 'rejected', { role: 'team_lead', session: LEAD })).toBe(true);
       });
 
-      it('blocks agent from re-queueing a failed WorkItem (BRIDGE-1 retry path is canonical)', () => {
-        expect(isTransitionPermitted('failed', 'queued', 'agent')).toBe(false);
+      it('refuses a different team lead', () => {
+        expect(
+          checkTransitionPermission(awaitingReview, 'verified', { role: 'team_lead', session: OTHER_LEAD }),
+        ).toMatchObject({ allowed: false, reason: 'not_reviewer' });
       });
 
-      it('allows team_lead to re-queue a failed WorkItem', () => {
-        expect(isTransitionPermitted('failed', 'queued', 'team_lead')).toBe(true);
+      it('refuses the team_lead role with no session (a role claim is not an identity)', () => {
+        expect(checkTransitionPermission(awaitingReview, 'verified', 'team_lead')).toMatchObject({
+          allowed: false,
+          reason: 'not_reviewer',
+        });
       });
 
-      it('blocks agent from re-queueing a blocked WorkItem', () => {
-        expect(isTransitionPermitted('blocked', 'queued', 'agent')).toBe(false);
+      it('refuses the worker, as agent and even when it claims team_lead', () => {
+        expect(checkTransitionPermission(awaitingReview, 'verified', { role: 'agent', session: WORKER })).toMatchObject({
+          allowed: false,
+          reason: 'role_not_permitted',
+        });
+        expect(
+          checkTransitionPermission(awaitingReview, 'verified', { role: 'team_lead', session: WORKER }),
+        ).toMatchObject({ allowed: false, reason: 'self_review' });
       });
 
-      it('allows system actor for the dependency-resolution path (blocked → queued)', () => {
-        expect(isTransitionPermitted('blocked', 'queued', 'system')).toBe(true);
+      it('refuses the worker even when it is somehow recorded as its own reviewer', () => {
+        const selfReviewed = at('done_by_worker', { target: WORKER, metadata: { [WORK_ITEM_REVIEWER_KEY]: WORKER } });
+        expect(checkTransitionPermission(selfReviewed, 'verified', { role: 'team_lead', session: WORKER })).toMatchObject({
+          allowed: false,
+          reason: 'self_review',
+        });
       });
 
-      // TRANS-2: running → queued is gated to the same set as the other
-      // re-queue transitions. Agents cannot self-revive a claim they hold.
-      it('blocks agent from re-queueing a running WorkItem (claim self-revival hazard)', () => {
-        expect(isTransitionPermitted('running', 'queued', 'agent')).toBe(false);
+      it('refuses the orchestrator before escalation when a lead is the reviewer', () => {
+        expect(
+          checkTransitionPermission(awaitingReview, 'verified', { role: 'orchestrator', session: 'crewly-orc' }),
+        ).toMatchObject({ allowed: false, reason: 'not_reviewer' });
       });
 
-      it('allows team_lead to release a running WorkItem back to queued', () => {
-        expect(isTransitionPermitted('running', 'queued', 'team_lead')).toBe(true);
+      it('permits the orchestrator once the review was escalated to it, or to the owner', () => {
+        for (const key of [REVIEW_ESCALATED_TO_ORC_KEY, REVIEW_ESCALATED_TO_OWNER_KEY]) {
+          const escalated = at('done_by_worker', {
+            target: WORKER,
+            metadata: { [WORK_ITEM_REVIEWER_KEY]: LEAD, [key]: '2026-09-26T00:00:00Z' },
+          });
+          expect(isTransitionPermitted(escalated, 'verified', { role: 'orchestrator', session: 'crewly-orc' })).toBe(true);
+        }
       });
 
-      it('allows orchestrator to release a running WorkItem back to queued', () => {
-        expect(isTransitionPermitted('running', 'queued', 'orchestrator')).toBe(true);
+      it('permits the orchestrator when no reviewer is recorded', () => {
+        expect(isTransitionPermitted(at('done_by_worker', { target: WORKER }), 'verified', 'orchestrator')).toBe(true);
       });
 
-      it('allows system actor (Reconciler abandon path) to release running → queued', () => {
-        expect(isTransitionPermitted('running', 'queued', 'system')).toBe(true);
+      it('permits the owner always', () => {
+        expect(isTransitionPermitted(awaitingReview, 'verified', 'owner')).toBe(true);
+      });
+
+      it('explains the refusal', () => {
+        const d = checkTransitionPermission(awaitingReview, 'verified', { role: 'team_lead', session: OTHER_LEAD });
+        expect(d.allowed).toBe(false);
+        if (!d.allowed) expect(d.detail).toContain(LEAD);
+      });
+    });
+
+    describe('role gates carried over from TRANS-1', () => {
+      it('only the agent accepts proposals', () => {
+        expect(isTransitionPermitted(at('proposed'), 'accepted', 'agent')).toBe(true);
+        expect(isTransitionPermitted(at('proposed'), 'accepted', 'orchestrator')).toBe(false);
+      });
+      it('only the agent reports done_by_worker and escalates', () => {
+        expect(isTransitionPermitted(at('running'), 'done_by_worker', 'agent')).toBe(true);
+        expect(isTransitionPermitted(at('running'), 'done_by_worker', 'system')).toBe(false);
+        expect(isTransitionPermitted(at('running'), 'escalated', 'agent')).toBe(true);
+      });
+      it('keeps queued → running open to the roles that used it', () => {
+        for (const role of ['agent', 'team_lead', 'orchestrator', 'system'] as const) {
+          expect(isTransitionPermitted(at('queued'), 'running', role)).toBe(true);
+        }
+        expect(isTransitionPermitted(at('queued'), 'running', 'owner')).toBe(false);
+      });
+      it('only TL or orchestrator propose tasks', () => {
+        expect(isTransitionPermitted(at('queued'), 'proposed', 'team_lead')).toBe(true);
+        expect(isTransitionPermitted(at('queued'), 'proposed', 'orchestrator')).toBe(true);
+        expect(isTransitionPermitted(at('queued'), 'proposed', 'agent')).toBe(false);
+      });
+      it('agents cannot re-queue rejected, failed, blocked or running items (self-revival)', () => {
+        for (const from of ['rejected', 'failed', 'blocked', 'running'] as const) {
+          expect(isTransitionPermitted(at(from), 'queued', 'agent')).toBe(false);
+          expect(isTransitionPermitted(at(from), 'queued', 'team_lead')).toBe(true);
+          expect(isTransitionPermitted(at(from), 'queued', 'orchestrator')).toBe(true);
+          expect(isTransitionPermitted(at(from), 'queued', 'system')).toBe(true);
+        }
+      });
+    });
+
+    describe('actor helpers', () => {
+      it('normalises a bare role and trims the session', () => {
+        expect(normalizeTransitionActor('system')).toEqual({ role: 'system' });
+        expect(normalizeTransitionActor({ role: 'agent', session: '  s1 ', via: 'x' })).toEqual({
+          role: 'agent',
+          session: 's1',
+          via: 'x',
+        });
+        expect(normalizeTransitionActor({ role: 'agent', session: '   ' })).toEqual({ role: 'agent' });
+      });
+      it('describes actors for logs', () => {
+        expect(describeTransitionActor(undefined)).toBe('(none)');
+        expect(describeTransitionActor({ role: 'team_lead', session: 'sam', via: 'api' })).toBe('team_lead(sam)[api]');
+      });
+      it('reads the reviewer from metadata', () => {
+        expect(getWorkItemReviewer({ metadata: { [WORK_ITEM_REVIEWER_KEY]: ' sam ' } })).toBe('sam');
+        expect(getWorkItemReviewer({ metadata: {} })).toBeUndefined();
+      });
+      it('ForbiddenTransitionError carries the reason and names the actor', () => {
+        const err = new ForbiddenTransitionError('wi-1', 'done_by_worker', 'verified', { role: 'system' }, {
+          allowed: false,
+          reason: 'role_not_permitted',
+          detail: 'nope',
+        });
+        expect(err).toBeInstanceOf(Error);
+        expect(err.reason).toBe('role_not_permitted');
+        expect(err.message).toMatch(/^Forbidden transition for WorkItem wi-1: actor='system'/);
       });
     });
   });

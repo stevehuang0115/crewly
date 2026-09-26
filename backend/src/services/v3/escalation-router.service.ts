@@ -545,13 +545,63 @@ export class EscalationRouterService {
   }
 
   /**
+   * Last step of the review escalation chain (#813): a `done_by_worker` item
+   * nobody reviewed within the WorkItem TTL goes to the owner.
+   *
+   * Replaces the old TTL auto-verify. The item is NOT moved — it stays
+   * `done_by_worker` until its reviewer, the orchestrator or the owner renders
+   * a verdict. One pending `tl_verification` record targeted at the human,
+   * plus the usual owner notification.
+   *
+   * @param wi - The unreviewed WorkItem (only read)
+   * @param awaitingMs - How long it has awaited review
+   * @returns The escalation id, or null on failure (logged, never thrown)
+   */
+  async escalateUnreviewedToOwner(
+    wi: WorkItemForEscalation,
+    awaitingMs: number,
+  ): Promise<string | null> {
+    const awaitingH = Math.max(1, Math.round(awaitingMs / 3_600_000));
+    try {
+      const escalation = await this.createPendingEscalation({
+        source: 'tl_verification',
+        target: 'human',
+        summary:
+          `"${String(wi.title).slice(0, 200)}" has waited ~${awaitingH}h for review. ` +
+          'It stays unverified until someone reviews it — nothing passes by timeout.',
+        details: {
+          workItemId: wi.id,
+          title: wi.title,
+          worker: wi.target ?? null,
+          awaitingMs,
+          requestId: wi.requestId ?? null,
+          stage: 'owner',
+        },
+        workItemId: wi.id,
+        missionId: wi.missionId ?? undefined,
+        raisedBy: 'reconciler',
+      });
+      await this.notifyHuman(escalation);
+      this.logger.info('Unreviewed WorkItem escalated to the owner', { workItemId: wi.id, awaitingH });
+      return escalation.id;
+    } catch (err) {
+      this.logger.warn('Owner review escalation failed (non-fatal)', {
+        workItemId: wi.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
    * Escalate a WorkItem whose worker reported done but whose Team Leader has
    * NOT verified it within the deadline (verification-enforcement, P1).
    *
    * Asks the orchestrator to render an EXPLICIT verdict — verify/accept
-   * (→ verified) or reject (→ rejected → the existing rework loop) — so
-   * unverified work is never silently auto-accepted by the 24h TTL fallback
-   * (`pickTTLExpiryTarget('done_by_worker') → 'verified'`). Mirrors
+   * (→ verified) or reject (→ rejected → the existing rework loop). Second
+   * step of lead → orchestrator → owner (#813); from here on the orchestrator
+   * may render the verdict itself via `POST /api/task-pool/items/:id/verdict`.
+   * Mirrors
    * {@link escalateFailedWorkItem}: persists a `tl_verification` escalation
    * targeted at the orchestrator and enqueues a self-contained orc-facing
    * message. Best-effort — persistence/message failures are logged, not
@@ -622,6 +672,9 @@ export class EscalationRouterService {
       'Actions:',
       '  (a) Verify against the acceptance criteria (yourself or via the TL) → accept',
       '  (b) If it falls short, reject with concrete fix instructions → the team reworks it',
+      '',
+      `Record it: POST /api/task-pool/items/${wi.id}/verdict {"verdict":"verified"|"rejected","comment":"…"}`,
+      'You may render this verdict now that it is escalated to you. It will never pass by itself.',
       '',
       `Escalation id: ${escalationId}`,
     ];
@@ -866,7 +919,7 @@ export class EscalationRouterService {
   private async pauseWorkItem(workItemId: string): Promise<void> {
     try {
       const taskPool = (await import('../task-pool/task-pool.service.js')).TaskPoolService.getInstance();
-      await taskPool.updateItemStatus(workItemId, 'blocked');
+      await taskPool.updateItemStatus(workItemId, 'blocked', { role: 'system', via: 'escalation-router:pause' });
     } catch {
       // Non-fatal
     }
@@ -875,7 +928,7 @@ export class EscalationRouterService {
   private async resumeWorkItem(workItemId: string): Promise<void> {
     try {
       const taskPool = (await import('../task-pool/task-pool.service.js')).TaskPoolService.getInstance();
-      await taskPool.updateItemStatus(workItemId, 'queued');
+      await taskPool.updateItemStatus(workItemId, 'queued', { role: 'system', via: 'escalation-router:resume' });
     } catch {
       // Non-fatal
     }

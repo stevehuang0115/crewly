@@ -629,79 +629,339 @@ export const DISPOSITION_REQUIRED_STATUSES: ReadonlySet<WorkItemStatus> = new Se
 );
 
 // ---------------------------------------------------------------------------
-// Role-Based Transition Permissions
+// Transition Actors
 // ---------------------------------------------------------------------------
 
 /**
- * Defines which roles are allowed to trigger specific status transitions.
- *
- * Format: `from→to` key maps to a set of allowed WorkItemOwner roles.
- * If a transition is not listed here, any role may trigger it (backward compatible).
- * The 'system' role (reconciler) can always trigger any valid transition.
+ * Who may act on a WorkItem's status. The {@link WorkItemOwner} roles plus
+ * `owner` — the human who owns the Crewly install (dashboard / API token).
+ * `owner` is never a WorkItem's `owner` field, so it is not a WorkItemOwner.
  */
-export const TRANSITION_PERMISSIONS: Record<string, ReadonlySet<WorkItemOwner>> = {
+export type TransitionActorRole = WorkItemOwner | 'owner';
+
+/** All valid TransitionActorRole values. */
+export const TRANSITION_ACTOR_ROLES: readonly TransitionActorRole[] = [
+  ...WORK_ITEM_OWNERS,
+  'owner',
+] as const;
+
+/**
+ * The caller of a status transition.
+ *
+ * `role` decides which edges the caller may take at all; `session` is who
+ * the caller is, and is what the verdict edges check (#813). A role alone is
+ * a claim about trust posture; only a session can be the item's reviewer.
+ */
+export interface TransitionActor {
+  /** Trust posture of the caller */
+  role: TransitionActorRole;
+  /** Agent session name, when the caller is an agent (resolved server-side) */
+  session?: string;
+  /** Server component or entry point that made the call, for the audit log */
+  via?: string;
+}
+
+/** What callers may pass where an actor is expected: a full actor or a bare role. */
+export type TransitionActorInput = TransitionActor | TransitionActorRole;
+
+/**
+ * Normalise an actor argument. Anything that is not a known role — including
+ * `undefined`, `null` and `''` — yields `undefined`, which the gate refuses.
+ * There is deliberately no default role (#813: a missing actor used to
+ * become `'system'`, the most privileged role).
+ *
+ * @param input - Actor object, bare role, or nothing
+ * @returns The normalised actor, or undefined when no valid actor was given
+ *
+ * @example
+ * ```typescript
+ * normalizeTransitionActor('system');                       // { role: 'system' }
+ * normalizeTransitionActor({ role: 'team_lead', session }); // unchanged
+ * normalizeTransitionActor(undefined);                      // undefined → refused
+ * ```
+ */
+export function normalizeTransitionActor(
+  input: TransitionActorInput | null | undefined,
+): TransitionActor | undefined {
+  if (input === null || input === undefined) return undefined;
+  const actor: TransitionActor = typeof input === 'string' ? { role: input } : input;
+  if (typeof actor !== 'object' || !(TRANSITION_ACTOR_ROLES as readonly string[]).includes(actor.role)) {
+    return undefined;
+  }
+  const session = typeof actor.session === 'string' && actor.session.trim() ? actor.session.trim() : undefined;
+  return { role: actor.role, ...(session ? { session } : {}), ...(actor.via ? { via: actor.via } : {}) };
+}
+
+/**
+ * Render an actor for logs and error messages: `team_lead(sam-1)`,
+ * `system[reconciler]`, `(none)`.
+ *
+ * @param actor - Normalised actor, or undefined
+ * @returns A short human-readable label
+ */
+export function describeTransitionActor(actor: TransitionActor | undefined): string {
+  if (!actor) return '(none)';
+  return `${actor.role}${actor.session ? `(${actor.session})` : ''}${actor.via ? `[${actor.via}]` : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Review metadata (#813)
+// ---------------------------------------------------------------------------
+
+/**
+ * `WorkItem.metadata` key naming the session that must review a
+ * `done_by_worker` item, when set explicitly. Usually absent: the reviewer of
+ * record is then the target of the item's review WorkItem
+ * (`<id>:verify:<id>`), which the EventToWorkItemBridge routes to the
+ * worker's own lead, else the orchestrator. TaskPoolService fills it from
+ * there before calling the gate.
+ */
+export const WORK_ITEM_REVIEWER_KEY = 'reviewer';
+
+/**
+ * `WorkItem.metadata` key stamped when an overdue review was escalated to the
+ * orchestrator. From then on the orchestrator may render the verdict too.
+ */
+export const REVIEW_ESCALATED_TO_ORC_KEY = 'verifyEscalatedAt';
+
+/**
+ * `WorkItem.metadata` key stamped when a review still open at the TTL was
+ * escalated to the owner (replaces the old 24h auto-verify).
+ */
+export const REVIEW_ESCALATED_TO_OWNER_KEY = 'reviewOwnerEscalatedAt';
+
+/** The two verdict edges: the only way out of `done_by_worker`. */
+export const VERDICT_TRANSITIONS: ReadonlySet<string> = new Set([
+  'done_by_worker→verified',
+  'done_by_worker→rejected',
+]);
+
+/**
+ * The session recorded as a WorkItem's reviewer, if any.
+ *
+ * @param item - WorkItem (only `metadata` is read)
+ * @returns The reviewer session, or undefined
+ */
+export function getWorkItemReviewer(item: Pick<WorkItem, 'metadata'>): string | undefined {
+  const v = item.metadata?.[WORK_ITEM_REVIEWER_KEY];
+  return typeof v === 'string' && v.trim() ? v.trim() : undefined;
+}
+
+// ---------------------------------------------------------------------------
+// Transition Permissions (closed table)
+// ---------------------------------------------------------------------------
+
+/**
+ * Which actor roles may take each legal status edge.
+ *
+ * Format: `from→to` key → set of allowed {@link TransitionActorRole}s.
+ *
+ * **Closed (#813).** Every edge in {@link WORK_ITEM_TRANSITIONS} has an entry;
+ * an edge with no entry is refused for every actor, `system` included. The
+ * test suite fails if a legal edge is added without an entry here. `system`
+ * no longer bypasses the table: it is listed on the edges server code
+ * actually takes, and is absent from `done_by_worker→verified` — no timer,
+ * sweeper or fallback may certify work.
+ *
+ * The verdict edges ({@link VERDICT_TRANSITIONS}) additionally require the
+ * caller to be the item's reviewer — see {@link checkTransitionPermission}.
+ */
+export const TRANSITION_PERMISSIONS: Record<string, ReadonlySet<TransitionActorRole>> = {
+  // --- queued ---
+  // Claims run server-side (claimFromPool → 'system'); agents / leads that
+  // move an item straight to running keep the access they always had.
+  'queued→running':           new Set(['agent', 'team_lead', 'orchestrator', 'system']),
   // Only TL or orchestrator can propose tasks
   'queued→proposed':          new Set(['team_lead', 'orchestrator']),
+  // Mission executor defers an item to a future slot
+  'queued→scheduled':         new Set(['team_lead', 'orchestrator', 'system']),
+  'queued→cancelled':         new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // --- scheduled ---
+  'scheduled→queued':         new Set(['team_lead', 'orchestrator', 'system']),
+  'scheduled→cancelled':      new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // --- proposed ---
   // Only the assigned agent can accept or reject a proposal
   'proposed→accepted':        new Set(['agent']),
   'proposed→rejected':        new Set(['agent']),
-  // Only the assigned agent can report completion
-  'running→done_by_worker':   new Set(['agent']),
-  // Only the assigned agent can escalate
-  'running→escalated':        new Set(['agent']),
-  // Only TL can verify or reject worker output
-  'done_by_worker→verified':  new Set(['team_lead']),
-  'done_by_worker→rejected':  new Set(['team_lead']),
+  'proposed→cancelled':       new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // --- accepted ---
+  'accepted→running':         new Set(['agent', 'system']),
+  'accepted→cancelled':       new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // --- running ---
   // Simple done — allowed for agents (simple tasks) and system (reconciler)
   'running→done':             new Set(['agent', 'system', 'orchestrator']),
-  // TRANS-1 F-F: only TL / orchestrator / system may re-queue a rejected
-  // WorkItem. Without this entry, the backward-compat default-allow at
-  // isTransitionPermitted line ~322 lets any actor (including the agent
-  // whose work was rejected) re-queue itself — a self-revival hazard.
-  // BRIDGE-1 retry policy is the canonical re-queueing path; manual
-  // TL action (or system reconciler) is the only other legal path.
-  'rejected→queued':          new Set(['team_lead', 'orchestrator', 'system']),
-  // failed→queued (BRIDGE-1 retry path) — same gate as rejected→queued.
-  // Agent cannot self-resurrect a failed WorkItem.
-  'failed→queued':            new Set(['team_lead', 'orchestrator', 'system']),
-  // blocked→queued (dependency-resolution path) — system-only by
-  // default. The TaskPoolService.resolveBlockedDependents() helper
-  // is the canonical caller and runs as system.
-  'blocked→queued':           new Set(['team_lead', 'orchestrator', 'system']),
-  // TRANS-2: running→queued (releaseBack abandon path). Same gate as
-  // the other re-queue transitions — Reconciler revoke and TL manual
-  // release are the legitimate callers; agents cannot self-revive a
+  // Only the assigned agent can report completion
+  'running→done_by_worker':   new Set(['agent']),
+  'running→failed':           new Set(['agent', 'system']),
+  'running→blocked':          new Set(['agent', 'team_lead', 'orchestrator', 'system']),
+  // Only the assigned agent can escalate
+  'running→escalated':        new Set(['agent']),
+  'running→cancelled':        new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // TRANS-2: running→queued (releaseBack abandon path). Reconciler revoke and
+  // TL manual release are the legitimate callers; agents cannot self-revive a
   // running claim by re-queueing it.
   'running→queued':           new Set(['team_lead', 'orchestrator', 'system']),
+  // --- blocked / escalated ---
+  // blocked→queued (dependency-resolution path) — resolveBlockedDependents
+  // runs as system.
+  'blocked→queued':           new Set(['team_lead', 'orchestrator', 'system']),
+  'blocked→cancelled':        new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  'escalated→queued':         new Set(['team_lead', 'orchestrator', 'system']),
+  'escalated→cancelled':      new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // --- verdicts (identity-checked, see checkTransitionPermission) ---
+  // No 'system': work is verified only by its reviewer.
+  'done_by_worker→verified':  new Set(['team_lead', 'orchestrator', 'owner']),
+  // 'system' may send work BACK (SLA escalation timeout); it may never pass it.
+  'done_by_worker→rejected':  new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // --- re-queue after a verdict / failure ---
+  // TRANS-1 F-F: the agent whose work was rejected or failed cannot re-queue
+  // itself; BRIDGE-1 retry policy (system) and a lead are the legal paths.
+  'rejected→queued':          new Set(['team_lead', 'orchestrator', 'system']),
+  'failed→queued':            new Set(['team_lead', 'orchestrator', 'system']),
 };
 
+/** Why a transition was refused. */
+export type TransitionDenialReason =
+  | 'missing_actor'
+  | 'unlisted_transition'
+  | 'role_not_permitted'
+  | 'not_reviewer'
+  | 'self_review';
+
+/** Outcome of {@link checkTransitionPermission}. */
+export type TransitionDecision =
+  | { allowed: true }
+  | { allowed: false; reason: TransitionDenialReason; detail: string };
+
 /**
- * Checks whether a role is permitted to trigger a specific status transition.
+ * Whether `actor` is the rightful reviewer of a `done_by_worker` item.
  *
- * If no explicit permission is defined for a transition, it is considered
- * open to all roles (backward compatible). The 'system' role always has
- * permission for any valid transition.
+ * - `owner`: always — the owner is the last escalation step.
+ * - `orchestrator`: when it is the recorded reviewer, when no reviewer was
+ *   recorded (items that predate reviewer stamping — the orchestrator is the
+ *   escalation reviewer), or once the review was escalated.
+ * - `team_lead`: only as the recorded reviewer, identified by session.
+ * - `system` (rejection only — the table keeps it off `verified`).
  *
- * @param from - Current status
+ * @param item - The WorkItem under review
+ * @param actor - The normalised caller
+ * @returns A decision (never throws)
+ */
+function checkReviewer(
+  item: Pick<WorkItem, 'target' | 'metadata'>,
+  actor: TransitionActor,
+): TransitionDecision {
+  if (actor.role === 'owner' || actor.role === 'system') return { allowed: true };
+  const reviewer = getWorkItemReviewer(item);
+  if (actor.session && item.target && actor.session === item.target) {
+    return { allowed: false, reason: 'self_review', detail: `${actor.session} is the worker on this item and cannot review its own work` };
+  }
+  if (actor.session && reviewer && actor.session === reviewer) return { allowed: true };
+  if (actor.role === 'orchestrator') {
+    const escalated =
+      !!item.metadata?.[REVIEW_ESCALATED_TO_ORC_KEY] || !!item.metadata?.[REVIEW_ESCALATED_TO_OWNER_KEY];
+    if (!reviewer || escalated) return { allowed: true };
+  }
+  return {
+    allowed: false,
+    reason: 'not_reviewer',
+    detail: reviewer
+      ? `only the reviewer (${reviewer}), the orchestrator after escalation, or the owner may render this verdict`
+      : 'no reviewer is recorded; only the orchestrator or the owner may render this verdict',
+  };
+}
+
+/**
+ * Decide whether `actor` may move `item` to status `to`.
+ *
+ * Deny by default (#813):
+ * 1. No actor → refused (`missing_actor`). There is no default role.
+ * 2. Edge not in {@link TRANSITION_PERMISSIONS} → refused for everyone
+ *    (`unlisted_transition`).
+ * 3. Role not listed for the edge → refused (`role_not_permitted`).
+ * 4. Verdict edges ({@link VERDICT_TRANSITIONS}) also require the caller to
+ *    be the item's reviewer, and never the worker itself.
+ *
+ * Checks permission only — state-machine legality is
+ * {@link isValidWorkItemTransition}'s job.
+ *
+ * @param item - The WorkItem (its current `status`, `target`, `metadata` are read)
  * @param to - Desired next status
- * @param actorRole - Role of the agent/system attempting the transition
- * @returns True if the role is permitted to trigger this transition
+ * @param actorInput - The caller (object or bare role); undefined is refused
+ * @returns `{ allowed: true }` or the refusal reason and a readable detail
+ *
+ * @example
+ * ```typescript
+ * checkTransitionPermission(wi, 'verified', { role: 'team_lead', session: 'sam' });
+ * // → { allowed: true } only when wi.metadata.reviewer === 'sam'
+ * ```
+ */
+export function checkTransitionPermission(
+  item: Pick<WorkItem, 'status' | 'target' | 'metadata'>,
+  to: WorkItemStatus,
+  actorInput: TransitionActorInput | null | undefined,
+): TransitionDecision {
+  const actor = normalizeTransitionActor(actorInput);
+  const key = `${item.status}→${to}`;
+  if (!actor) {
+    return { allowed: false, reason: 'missing_actor', detail: `no actor supplied for ${key}` };
+  }
+  const allowed = TRANSITION_PERMISSIONS[key];
+  if (!allowed) {
+    return { allowed: false, reason: 'unlisted_transition', detail: `${key} is not in the transition permission table` };
+  }
+  if (!allowed.has(actor.role)) {
+    return { allowed: false, reason: 'role_not_permitted', detail: `role '${actor.role}' may not perform ${key}` };
+  }
+  if (VERDICT_TRANSITIONS.has(key)) return checkReviewer(item, actor);
+  return { allowed: true };
+}
+
+/**
+ * Boolean form of {@link checkTransitionPermission}.
+ *
+ * @param item - The WorkItem (its current status, target and metadata)
+ * @param to - Desired next status
+ * @param actor - The caller; undefined is refused
+ * @returns True if the actor may perform the transition
  */
 export function isTransitionPermitted(
-  from: WorkItemStatus,
+  item: Pick<WorkItem, 'status' | 'target' | 'metadata'>,
   to: WorkItemStatus,
-  actorRole: WorkItemOwner,
+  actor: TransitionActorInput | null | undefined,
 ): boolean {
-  // System role can always transition
-  if (actorRole === 'system') return true;
+  return checkTransitionPermission(item, to, actor).allowed;
+}
 
-  const key = `${from}→${to}`;
-  const allowed = TRANSITION_PERMISSIONS[key];
+/**
+ * Thrown when a transition is legal in the state machine but the actor may
+ * not take it. Controllers map it to HTTP 403.
+ */
+export class ForbiddenTransitionError extends Error {
+  /** Machine-readable refusal reason */
+  readonly reason: TransitionDenialReason;
 
-  // If no explicit permission defined, allow any role (backward compatible)
-  if (!allowed) return true;
-
-  return allowed.has(actorRole);
+  /**
+   * @param workItemId - The WorkItem the transition was attempted on
+   * @param from - Its current status
+   * @param to - The refused target status
+   * @param actor - Who attempted it
+   * @param decision - The refusal from {@link checkTransitionPermission}
+   */
+  constructor(
+    workItemId: string,
+    from: WorkItemStatus,
+    to: WorkItemStatus,
+    actor: TransitionActor | undefined,
+    decision: Extract<TransitionDecision, { allowed: false }>,
+  ) {
+    super(
+      `Forbidden transition for WorkItem ${workItemId}: actor='${describeTransitionActor(actor)}' ` +
+        `not permitted to perform ${from} → ${to} (${decision.reason}: ${decision.detail}).`,
+    );
+    this.name = 'ForbiddenTransitionError';
+    this.reason = decision.reason;
+  }
 }
 
 // ---------------------------------------------------------------------------

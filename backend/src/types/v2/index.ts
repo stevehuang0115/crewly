@@ -63,6 +63,11 @@ export type {
   WorkItemStatus,
   CreateWorkItemInput,
   UpdateWorkItemInput,
+  TransitionActor,
+  TransitionActorRole,
+  TransitionActorInput,
+  TransitionDecision,
+  TransitionDenialReason,
 } from './work-item.types.js';
 
 export {
@@ -81,6 +86,18 @@ export {
   createWorkItem,
   LAST_REQUEUED_AT_METADATA_KEY,
   getTtlAnchorAt,
+  TRANSITION_PERMISSIONS,
+  TRANSITION_ACTOR_ROLES,
+  VERDICT_TRANSITIONS,
+  WORK_ITEM_REVIEWER_KEY,
+  REVIEW_ESCALATED_TO_ORC_KEY,
+  REVIEW_ESCALATED_TO_OWNER_KEY,
+  checkTransitionPermission,
+  isTransitionPermitted,
+  normalizeTransitionActor,
+  describeTransitionActor,
+  getWorkItemReviewer,
+  ForbiddenTransitionError,
 } from './work-item.types.js';
 
 // Trigger types

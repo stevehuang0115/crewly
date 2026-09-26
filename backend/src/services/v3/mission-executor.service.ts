@@ -332,7 +332,7 @@ export class MissionExecutorService {
 
     let frozenCount = 0;
     for (const wi of queuedItems) {
-      await taskPool.updateItemStatus(wi.id, 'scheduled');
+      await taskPool.updateItemStatus(wi.id, 'scheduled', { role: 'system', via: 'mission-executor:freeze' });
       frozenCount++;
     }
 
@@ -354,7 +354,7 @@ export class MissionExecutorService {
 
     let unfrozenCount = 0;
     for (const wi of frozenItems) {
-      await taskPool.updateItemStatus(wi.id, 'queued');
+      await taskPool.updateItemStatus(wi.id, 'queued', { role: 'system', via: 'mission-executor:unfreeze' });
       unfrozenCount++;
     }
 
