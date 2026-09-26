@@ -2245,6 +2245,14 @@ describe('Tool Registry', () => {
       expect(result.error).toContain('blocked');
     });
 
+    it('refuses interactive harness logins and points at harness-login (2026-09-26)', async () => {
+      const result = await bashTools.bash_exec.execute({ command: 'claude setup-token' }) as any;
+      expect(result.success).toBe(false);
+      expect(result.exitCode).toBe(126);
+      expect(result.error).toContain('harness-login');
+      expect(result.stdout).toBe('');
+    });
+
     it('should handle command failure gracefully', async () => {
       const result = await bashTools.bash_exec.execute({ command: 'false' }) as any;
       expect(result.success).toBe(false);

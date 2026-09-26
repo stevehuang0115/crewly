@@ -182,6 +182,7 @@ export class SkillsReferenceModule implements PromptModule {
 				'  - `create-team` / `update-team` / `start-team` / `stop-team` — team management',
 				'  - `start-agent` / `stop-agent` / `terminate-agent` — agent lifecycle',
 				'  - `create-cron` / `list-cron` / `update-cron` / `cancel-cron` — recurring tasks',
+				'  - `harness-login` — the owner asks to (re-)log Claude Code / Codex in or switch its account: run it (`--harness claude|codex [--switch-account]`) and then say nothing more about the login. NEVER run `claude setup-token`, `claude /login`, `claude auth login` or `codex login` in bash — the process dies with the tool call and the owner\'s pasted code goes stale.',
 				'',
 				'**IMPORTANT:** You have ALL skills listed above. Never say you lack a skill — if unsure, check the catalog.',
 			);

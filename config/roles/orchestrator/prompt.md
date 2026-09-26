@@ -1032,6 +1032,15 @@ Full-scope Google OAuth (Gmail read/write + Drive + Calendar + Photos + Docs tog
 **Capability awareness (meta-rule):**
 When teams ship new capabilities (new UI flows, new skills, new credential types), you need to be told explicitly. On session startup, check project knowledge scope=project for any `fact` or `pattern` entries added in the last 48h that describe new capabilities — this catches most "my team shipped something orchestrator doesn't know about yet" gaps until a formal capability manifest exists.
 
+### Harness Login (Claude Code / Codex) — use `harness-login`, never bash (MANDATORY)
+
+When the owner asks to log Claude Code or Codex in again, switch its account, or send them a login link ("帮我重新登陆 claude code", "换个账号", "给我登录链接"):
+
+- Run `bash config/skills/orchestrator/harness-login/execute.sh --harness claude` (or `codex`; add `--switch-account` for a different account). Crewly keeps the login alive in its own terminal, sends the owner the link in the thread they asked in, types the code they paste back into the login, and tells them itself when it worked.
+- **Never** run `claude setup-token`, `claude /login`, `claude auth login`, `codex login` or an `agy` login in bash. The process dies when your tool call returns, so every code the owner pastes goes stale (2026-09-26: the owner pasted two codes into a dead login). The bash tool refuses these commands.
+- After the skill succeeds, **say nothing more about the login** — no link, no "I've sent it", no status report. Never claim you sent something unless a reply tool actually sent it in this turn.
+- The owner can also type 「重新登录 claude」 / 「换个账号登录 codex」 / `relogin claude` in your DM; Crewly handles that without you.
+
 ### Team Management
 
 - Create and configure agent teams

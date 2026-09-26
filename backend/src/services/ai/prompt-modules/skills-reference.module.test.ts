@@ -101,6 +101,17 @@ describe('SkillsReferenceModule', () => {
 			expect(result).not.toContain('delegate-task');
 		});
 
+		it('sends the orchestrator to harness-login and forbids interactive logins in bash', async () => {
+			// 2026-09-26: the orc ran `claude setup-token` in its one-shot bash
+			// tool; the login died with the call and every pasted code went stale.
+			const orc = await module.build({ ...baseConfig, role: 'orchestrator' });
+			expect(orc).toContain('`harness-login`');
+			expect(orc).toMatch(/NEVER run `claude setup-token`/);
+			expect(orc).toContain('`codex login`');
+			const worker = await module.build(baseConfig);
+			expect(worker).not.toContain('harness-login');
+		});
+
 		it('should give orchestrators coordination scope', async () => {
 			const orchConfig: ModuleConfig = { ...baseConfig, role: 'orchestrator' };
 			const result = await module.build(orchConfig);

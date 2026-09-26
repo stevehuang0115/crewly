@@ -21,6 +21,7 @@ import { OutputFilterService } from './output-filter.service.js';
 import { createWebSearchTool } from './web-search.tool.js';
 import { createComputerTool } from './computer.tool.js';
 import { createDesktopTaskTool } from './desktop-task.tool.js';
+import { checkInteractiveLoginCommand } from './interactive-login-guard.js';
 
 /** TTL for delegation idle event subscriptions (minutes) */
 const DELEGATION_SUBSCRIPTION_TTL_MINUTES = 120;
@@ -1820,6 +1821,19 @@ export function createTools(client: CrewlyApiClient, sessionName: string, projec
       sensitivity: 'destructive' as ToolSensitivity,
       execute: async ({ command, cwd, timeout }) => {
         const cmd = command as string;
+
+        // Interactive harness logins die with this one-shot call; the owner's
+        // pasted code would go stale (2026-09-26). Point at harness-login.
+        const loginRefusal = checkInteractiveLoginCommand(cmd);
+        if (loginRefusal) {
+          return {
+            success: false,
+            exitCode: 126,
+            stdout: '',
+            stderr: loginRefusal,
+            error: loginRefusal,
+          };
+        }
 
         // Check command against blocklist before execution
         const blockReason = validateBashCommand(cmd);
