@@ -36,14 +36,14 @@ Claude Code takes one `--settings`, so the status hook is merged into the guard'
 ### Privacy contract
 
 The hook's stdin can carry `tool_input`, tool output, prompts, messages and the transcript path, and any of these can hold secrets. The script handles it as follows:
-- It extracts exactly two fields, `hook_event_name` and `notification_type` (with jq, or with a narrow sed fallback when jq is absent).
+- It extracts exactly two **top-level** fields, `hook_event_name` and `notification_type`, with a real JSON parser: jq, else `node`'s `JSON.parse`. With neither, it sends nothing (screen detection still covers the state). A regex fallback is not used: it cannot tell a top-level key from the same key nested in `tool_input`, so `"hook_event_name":"Stop"` inside a command would spoof the event (the original sed took the last occurrence).
 - It keeps a value only if it is a plain identifier (`[A-Za-z_]{1,64}`); anything else is dropped, not sanitised.
 - It sends `{event, notificationType?}` plus the `X-Agent-Session` header, and prints nothing.
 - It always exits 0, and the POST has a 2 s ceiling, so the hook can never block or slow the agent.
 
 The endpoint enforces the same contract. Events and notification types are checked against fixed allowlists, extra body fields are ignored, and only identifiers are stored.
 
-Tests: a key-looking string placed in `tool_input`, `message`, `tool_response` and `transcript_path` never appears in the POST body or headers. This holds with jq and without it (the no-jq test builds a PATH that provably lacks jq).
+Tests: a key-looking string placed in `tool_input`, `message`, `tool_response` and `transcript_path` never appears in the POST body or headers. This holds on both parser paths; each path test builds a PATH that provably has or lacks jq and node. A payload with a top-level `PermissionRequest` and a nested `"hook_event_name":"Stop"` sends `PermissionRequest` on both.
 
 ## Event → signal
 

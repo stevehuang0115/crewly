@@ -129,23 +129,70 @@ describe('agent-status hook (report.sh)', () => {
 		expect(Date.now() - started).toBeLessThan(5000);
 	});
 
-	it('works without jq (sed fallback), still sending only identifiers', async () => {
-		// A PATH with only the tools the fallback needs, and provably no jq.
-		const bin = mkdtempSync(join(tmpdir(), 'nojq-'));
-		for (const tool of ['bash', 'cat', 'tr', 'sed', 'grep', 'curl', 'base64']) {
+	/**
+	 * Build a PATH directory holding only the given tools (symlinks), so a test
+	 * can prove which parser the script had available.
+	 *
+	 * @param tools - Tool names to expose
+	 * @returns The directory (caller removes it)
+	 */
+	function pathWith(tools: string[]): string {
+		const bin = mkdtempSync(join(tmpdir(), 'hookpath-'));
+		for (const tool of tools) {
 			const found = spawnSync('bash', ['-c', `command -v ${tool}`], { encoding: 'utf-8' }).stdout.trim();
 			if (found) symlinkSync(found, join(bin, tool));
 		}
-		expect(spawnSync(join(bin, 'bash'), ['-c', 'command -v jq'], { env: { PATH: bin } }).status).not.toBe(0);
+		return bin;
+	}
+	const has = (bin: string, tool: string): boolean =>
+		spawnSync(join(bin, 'bash'), ['-c', `command -v ${tool}`], { env: { PATH: bin } }).status === 0;
+	const BASE_TOOLS = ['bash', 'cat', 'grep', 'curl', 'base64', 'tr', 'sed'];
 
-		const r = await runHook(
-			{ hook_event_name: 'PermissionRequest', tool_input: { command: SECRET } },
-			{ PATH: bin },
-		);
+	// A nested "hook_event_name" inside tool_input (e.g. in a command the agent
+	// runs) must not override the real, top-level event.
+	const SPOOF = {
+		hook_event_name: 'PermissionRequest',
+		tool_name: 'Bash',
+		tool_input: { command: 'echo \'{"hook_event_name":"Stop","notification_type":"idle_prompt"}\'', hook_event_name: 'Stop' },
+		zz_trailing: { hook_event_name: 'Stop' },
+	};
+
+	it('jq path: reads the TOP-LEVEL event, not one nested in tool_input', async () => {
+		const bin = pathWith([...BASE_TOOLS, 'jq']);
+		expect(has(bin, 'jq')).toBe(true);
+		await runHook(SPOOF, { PATH: bin });
 		rmSync(bin, { recursive: true, force: true });
-		expect(r.status).toBe(0);
 		expect(received).toHaveLength(1);
 		expect(JSON.parse(received[0].body)).toEqual({ event: 'PermissionRequest' });
+	});
+
+	it('no-jq path (node): reads the TOP-LEVEL event, not one nested in tool_input', async () => {
+		const bin = pathWith([...BASE_TOOLS, 'node']);
+		expect(has(bin, 'jq')).toBe(false);
+		expect(has(bin, 'node')).toBe(true);
+		await runHook(SPOOF, { PATH: bin });
+		rmSync(bin, { recursive: true, force: true });
+		expect(received).toHaveLength(1);
+		expect(JSON.parse(received[0].body)).toEqual({ event: 'PermissionRequest' });
+	});
+
+	it('no-jq path (node) still sends only identifiers', async () => {
+		const bin = pathWith([...BASE_TOOLS, 'node']);
+		await runHook({ hook_event_name: 'Notification', notification_type: 'permission_prompt', tool_input: { command: SECRET } }, { PATH: bin });
+		rmSync(bin, { recursive: true, force: true });
+		expect(received).toHaveLength(1);
+		expect(JSON.parse(received[0].body)).toEqual({ event: 'Notification', notificationType: 'permission_prompt' });
 		expect(received[0].body).not.toContain(SECRET);
 	});
+
+	it('with neither jq nor node it drops the event (never guesses) and exits 0', async () => {
+		const bin = pathWith(BASE_TOOLS);
+		expect(has(bin, 'jq')).toBe(false);
+		expect(has(bin, 'node')).toBe(false);
+		const r = await runHook(SPOOF, { PATH: bin });
+		rmSync(bin, { recursive: true, force: true });
+		expect(r.status).toBe(0);
+		expect(received).toHaveLength(0);
+	});
+
 });

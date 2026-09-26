@@ -12,7 +12,7 @@
 #
 # PRIVACY: the stdin JSON can hold tool_input, file contents, prompts and a
 # transcript path, any of which may contain secrets. This script extracts
-# exactly two fields — hook_event_name and notification_type — keeps them only
+# exactly two TOP-LEVEL fields — hook_event_name and notification_type — keeps them only
 # if they are plain identifiers ([A-Za-z_], max 64 chars), and sends those plus
 # the session name. Nothing else from stdin is sent, printed or logged.
 #
@@ -29,14 +29,26 @@ API_URL="${CREWLY_API_URL:-http://localhost:${WEB_PORT:-8787}}"
 # No session => nothing to attribute the event to.
 [ -z "$SESSION" ] && exit 0
 
-# Pull one top-level string field out of the JSON without echoing the rest.
-# jq when present; otherwise a narrow sed that only ever returns an identifier.
+# Pull one TOP-LEVEL string field out of the JSON without echoing the rest.
+# Only a real JSON parser can tell a top-level key from the same key nested in
+# tool_input (a regex cannot: `"hook_event_name":"Stop"` inside a command would
+# spoof the event). So: jq, else node's JSON.parse, else nothing — the event is
+# dropped and the backend's screen detection still covers the state.
 field() {
 	local name="$1" value=""
 	if command -v jq >/dev/null 2>&1; then
-		value="$(printf '%s' "$INPUT" | jq -r --arg k "$name" '.[$k] // empty | select(type == "string")' 2>/dev/null)"
-	else
-		value="$(printf '%s' "$INPUT" | tr -d '\n' | sed -n "s/.*\"$name\"[[:space:]]*:[[:space:]]*\"\\([A-Za-z_]*\\)\".*/\\1/p")"
+		value="$(printf '%s' "$INPUT" | jq -r --arg k "$name" 'if type == "object" then (.[$k] // empty | select(type == "string")) else empty end' 2>/dev/null)"
+	elif command -v node >/dev/null 2>&1; then
+		value="$(printf '%s' "$INPUT" | node -e '
+			let s = "";
+			process.stdin.on("data", (c) => { s += c; });
+			process.stdin.on("end", () => {
+				try {
+					const o = JSON.parse(s);
+					const v = o && typeof o === "object" && !Array.isArray(o) ? o[process.argv[1]] : undefined;
+					if (typeof v === "string") process.stdout.write(v);
+				} catch { /* not JSON: send nothing */ }
+			});' "$name" 2>/dev/null)"
 	fi
 	# Keep only a plain identifier; anything else is discarded, not sanitised.
 	if printf '%s' "$value" | grep -Eq '^[A-Za-z_]{1,64}$'; then
