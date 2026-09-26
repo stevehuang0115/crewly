@@ -67,7 +67,9 @@ paper over it, and its own JSDoc says so:
 >
 > The *evidence* #733 cites is correct: an independent sweep of every writer confirms
 > `verifyItem` has exactly one production call site (`task-pool.service.ts:1107`), hardcoded to
-> `'verified'`; there is no verify/reject HTTP route (`task-pool.routes.ts:36-104`); no skill
+> `'verified'`; there is no verify/reject HTTP route (`task-pool.routes.ts:36-104`; *update 2026-09-26:
+> #813 added `POST /task-pool/items/:id/verdict` and made verdicts identity-checked — see
+> `specs/2026-09-26-workitem-verification-gate.md`*); no skill
 > writes a verdict; and `proposed → rejected` (R3) has zero writers. So R1 and R3 are indeed
 > dead.
 >

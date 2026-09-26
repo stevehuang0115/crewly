@@ -3,7 +3,8 @@
  *
  * Shows TKT, title, P-label, kind and assignee; for 待验收 also the agent's
  * answer excerpt and the "N天后自动验收" countdown; a "打回 ×N" badge when
- * the ticket has been sent back.
+ * the ticket has been sent back; for 已完成, whether the owner reviewed it
+ * (已验收) or silence accepted it (默认通过 · 未验收, #813).
  *
  * @module components/Tickets/TicketCard
  */
@@ -37,6 +38,8 @@ export interface TicketCardProps {
 export const TicketCard: React.FC<TicketCardProps> = ({ ticket, onOpen, now }) => {
   const inReview = ticket.column === 'to_review';
   const countdown = inReview ? autoAcceptLabel(ticket.autoAcceptAt, now) : null;
+  // #813: a done ticket says whether anyone actually reviewed it.
+  const acceptedBy = ticket.column === 'done' ? ticket.acceptedBy ?? null : null;
   const rejectCount = ticket.rejectCount ?? 0;
 
   /**
@@ -90,6 +93,17 @@ export const TicketCard: React.FC<TicketCardProps> = ({ ticket, onOpen, now }) =
         <p className="mt-2 text-xs text-primary" data-testid="ticket-auto-accept">
           {countdown}
         </p>
+      )}
+      {acceptedBy && (
+        <div className="mt-2" data-testid="ticket-accepted-by" data-accepted-by={acceptedBy}>
+          <Badge
+            size="sm"
+            variant={acceptedBy === 'owner' ? 'success' : 'warning'}
+            title={acceptedBy === 'silence' ? TICKET_TEXT.ACCEPTED_BY_SILENCE_HINT : undefined}
+          >
+            {acceptedBy === 'owner' ? TICKET_TEXT.ACCEPTED_BY_OWNER : TICKET_TEXT.ACCEPTED_BY_SILENCE}
+          </Badge>
+        </div>
       )}
     </Card>
   );

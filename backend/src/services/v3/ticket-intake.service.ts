@@ -29,6 +29,7 @@ import { TICKET_CONSTANTS } from '../../constants.js';
 import {
   type Request,
   type RequestStatus,
+  type TicketAcceptedBy,
   TERMINAL_REQUEST_STATUSES,
   isValidRequestTransition,
 } from '../../types/v2/request.types.js';
@@ -287,6 +288,12 @@ export interface TicketListItem {
   completedAt: string | null;
   /** When silence will accept it (待验收 only) */
   autoAcceptAt: string | null;
+  /**
+   * How a done ticket was accepted (#813): `owner` reviewed it, `silence` =
+   * nobody objected in time. Null while open. Older tickets fall back to the
+   * `auto_accepted` tag.
+   */
+  acceptedBy: TicketAcceptedBy | null;
 }
 
 /** Filters for {@link TicketIntakeService.list}. */
@@ -819,6 +826,10 @@ export class TicketIntakeService {
       submitCount: r.submitCount ?? 0,
       submittedAt: r.submittedAt ?? null,
       completedAt: r.completedAt ?? null,
+      acceptedBy:
+        r.status !== 'done'
+          ? null
+          : r.acceptedBy ?? (r.tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) ? 'silence' : null),
       autoAcceptAt:
         r.status === 'waiting_confirmation' && r.submittedAt && ticketNeedsReview(r)
           ? new Date(
