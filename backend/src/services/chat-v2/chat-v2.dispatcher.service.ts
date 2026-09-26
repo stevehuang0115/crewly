@@ -29,6 +29,7 @@ import type {
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
+import { isSlackDm } from '../orc/orc-reply-route.service.js';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -252,6 +253,14 @@ export interface FormatPromptArgs {
    * `--request-id` to pass, and so `addToPool` can link its WorkItems.
    */
   ticketLine?: string;
+  /**
+   * Set when the message came from a Slack DM (bridged into this chat-v2
+   * channel). The hint then names the reply target explicitly and says it
+   * holds for everything the message leads to, so the agent never has to
+   * remember or guess one (2026-09-26: the orc's follow-up to a Slack-DM
+   * question went to #pro-think-tank and to the master-bot DM).
+   */
+  slackDmChannelId?: string;
 }
 
 /**
@@ -300,6 +309,19 @@ export interface HuddleRoomState {
 // ---------------------------------------------------------------------------
 // Prompt formatter
 // ---------------------------------------------------------------------------
+
+/**
+ * The Slack DM a chat-v2 message was bridged from, if it was.
+ *
+ * @param message - Persisted chat-v2 message
+ * @returns The Slack `D…` channel id, or undefined
+ */
+export function slackDmChannelOf(message: Pick<ChatMessageDTO, 'metadata'>): string | undefined {
+  const meta = message.metadata;
+  if (!meta || meta.source !== 'slack') return undefined;
+  const id = meta.slackChannelId;
+  return typeof id === 'string' && isSlackDm(id) ? id : undefined;
+}
 
 /**
  * Default prompt formatter the agent sees when a user sends in their
@@ -381,6 +403,10 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         : mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
       : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
+  } else if (args.slackDmChannelId && mode === 'required') {
+    replyHint =
+      `回复本频道: 这条消息来自 Slack 私信 ${args.slackDmChannelId}。回复目标: conversationId="${channelId}"——用 \`reply-chat\` skill，参数 conversationId="${channelId}"、content="<your reply>"，会发回这个私信。` +
+      `由这条消息引出的后续进度、提问和 [BLOCKED]/[DONE] 汇报也都发到这个 conversationId：不要省略它，不要改用 reply-slack，也不要发到别的频道或会话。`;
   } else {
     replyHint = mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员），关于团队本身的问题由你来答。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
@@ -945,6 +971,7 @@ export class ChatV2DispatcherService {
           : undefined,
       context: this.contextFor(channel.id, message.threadId ?? undefined),
       ticketLine: ticketLineOf(message),
+      slackDmChannelId: slackDmChannelOf(message),
     });
 
     let result: Awaited<ReturnType<AgentMessageSink['sendMessageToAgent']>>;

@@ -56,6 +56,7 @@ bash config/skills/orchestrator/reply-slack/execute.sh '{"channelId":"C0123","te
 | `--image` / `-i` | No | Path to an image file to upload to Slack. When provided, calls `/api/slack/upload-image` instead of `/api/slack/send`. The `--text` becomes an optional comment on the image |
 | `--file` / `-f` | No | Path to any file type (PDF/CSV/ZIP/etc.) to upload via `/api/slack/upload-file`. The `--text` becomes an optional comment |
 | `--allow-new-thread` | No | Explicitly allow posting without a thread (safety override) |
+| `--cross-post` | No | Deliberately post to a Slack DM other than the one your turn came from. Without it, a DM post (`D…`) nobody wrote to you from recently is sent back to the conversation your turn came from. Channel posts are never re-routed |
 | `conversationId` / `--conversation` | No | Conversation ID from the `[CHAT:...]` prefix so the queue can resolve instantly (falls back to the active conversation if omitted) |
 
 ## Image Upload

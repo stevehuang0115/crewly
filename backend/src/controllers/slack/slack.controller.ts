@@ -32,7 +32,10 @@ import { isSlackSourceName } from '../../services/slack/slack-source-preference.
 import { getSlackInstanceRegistryService } from '../../services/slack/slack-instance-registry.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { SlackConfig, SlackNotification, SlackNotificationType } from '../../types/slack.types.js';
-import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_CLOUD_CONSTANTS } from '../../constants.js';
+import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_CLOUD_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { LoggerService } from '../../services/core/logger.service.js';
 import type { SlackCloudWorkspaceSummary } from '../../types/slack.types.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 import { synthesizeSlackConversationId } from '../../services/chat-v2/legacy-dto.utils.js';
@@ -421,6 +424,59 @@ router.post('/disconnect', async (req: Request, res: Response, next: NextFunctio
 });
 
 /**
+ * Applies orchestrator reply routing to a Slack post
+ * (see `services/orc/orc-reply-route.service.ts`).
+ *
+ * Only posts by the orchestrator (X-Agent-Session header, else the body's
+ * `senderSessionName`) are considered, and only Slack DMs are ever re-routed.
+ * A re-route to a Slack conversation rewrites the target; a re-route to a
+ * chat-v2 conversation stores the text there as the orchestrator's reply,
+ * which the Slack DM bridge mirrors under the right bot.
+ *
+ * @param req - The request (for the agent header)
+ * @param target - Requested channel/thread, cross-post flag, text and body sender
+ * @returns Where to send, or the chat-v2 message that was stored instead
+ */
+async function planOrchestratorSlackReply(
+  req: Request,
+  target: { channelId: string; threadTs?: string; crossPost: boolean; text: string; senderSessionName?: unknown },
+): Promise<
+  | { kind: 'slack'; channelId: string; threadTs?: string }
+  | { kind: 'conversation'; conversationId: string; messageId: string }
+> {
+  const asRequested = { kind: 'slack' as const, channelId: target.channelId, threadTs: target.threadTs };
+  const header = readAgentSessionHeader(req);
+  const sender = header ?? (typeof target.senderSessionName === 'string' ? target.senderSessionName : undefined);
+  if (sender !== ORCHESTRATOR_SESSION_NAME) return asRequested;
+
+  const { getSlackAgentDmService } = await import('../../services/slack/slack-agent-dm.service.js');
+  const dm = getSlackAgentDmService();
+  const { plan, decision } = OrcReplyRouteService.getInstance().planSlackReply(
+    ORCHESTRATOR_SESSION_NAME,
+    { channelId: target.channelId, threadTs: target.threadTs, crossPost: target.crossPost },
+    (conversationId) => dm?.findByChatChannelId(conversationId)?.slackChannelId,
+  );
+  if (decision.action !== 'rerouted-to-origin') return asRequested;
+
+  const logger = LoggerService.getInstance().createComponentLogger('SlackController');
+  logger.warn('Orchestrator Slack reply re-routed to the conversation its turn came from', {
+    requestedChannelId: target.channelId,
+    requestedThreadTs: target.threadTs,
+    routedTo: plan.kind === 'slack' ? plan.channelId : plan.conversationId,
+    reason: decision.reason,
+    preview: target.text.substring(0, 80),
+  });
+  if (plan.kind === 'slack') return plan;
+
+  const { getChatService } = await import('../../services/chat/chat.service.js');
+  const saved = await getChatService().addDirectMessage(plan.conversationId, target.text, {
+    type: 'orchestrator',
+    name: 'Orchestrator',
+  });
+  return { kind: 'conversation', conversationId: plan.conversationId, messageId: saved.id };
+}
+
+/**
  * POST /api/slack/send
  *
  * Send a message to Slack (for testing/manual notifications).
@@ -452,10 +508,28 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
       return;
     }
 
-    const messageTs = await slackService.sendMessage({
+    // An orchestrator reply aimed at a Slack DM its turn did not come from
+    // goes back to the conversation it was asked in (2026-09-26: the answer
+    // to a question asked in the orc-bot DM went to the master-bot DM).
+    const orcRoute = await planOrchestratorSlackReply(req, {
       channelId,
-      text,
       threadTs,
+      crossPost: req.body?.crossPost === true,
+      text: typeof text === 'string' ? text : String(text),
+      senderSessionName,
+    });
+    if (orcRoute.kind === 'conversation') {
+      res.json({
+        success: true,
+        data: { rerouted: true, conversationId: orcRoute.conversationId, messageId: orcRoute.messageId },
+      });
+      return;
+    }
+
+    const messageTs = await slackService.sendMessage({
+      channelId: orcRoute.channelId,
+      text,
+      threadTs: orcRoute.threadTs,
     });
 
     // F14: record `agent.action` with actionType='send_slack' on
@@ -469,8 +543,8 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
         agent: typeof senderSessionName === 'string' ? senderSessionName : '',
         actionType: 'send_slack',
         details: {
-          channelId,
-          threadTs: threadTs ?? null,
+          channelId: orcRoute.channelId,
+          threadTs: orcRoute.threadTs ?? null,
           textLength: typeof text === 'string' ? text.length : 0,
           deduplicated: messageTs === '',
         },
@@ -483,8 +557,8 @@ router.post('/send', async (req: Request, res: Response, next: NextFunction) => 
     // SLA cascade). The same helper is used by /upload-image and /upload-file
     // so the orchestrator never has to re-derive "did I already reply here?".
     await recordSlackReplyBookkeeping({
-      channelId,
-      threadTs,
+      channelId: orcRoute.channelId,
+      threadTs: orcRoute.threadTs,
       conversationId,
       senderSessionName,
       content: typeof text === 'string' ? text : String(text),

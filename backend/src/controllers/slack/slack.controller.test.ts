@@ -46,6 +46,19 @@ jest.mock('../../services/orc/orc-delivery-enforcer.service.js', () => ({
   },
 }));
 
+// Orchestrator reply routing (2026-09-26): the DM link lookup and the chat
+// store the re-route writes into. Both are lazily imported by /send.
+const mockFindDmByChatChannel = jest.fn<{ slackChannelId: string } | null, [string]>(() => null);
+jest.mock('../../services/slack/slack-agent-dm.service.js', () => ({
+  ...jest.requireActual('../../services/slack/slack-agent-dm.service.js'),
+  getSlackAgentDmService: () => ({ findByChatChannelId: mockFindDmByChatChannel }),
+}));
+const mockAddDirectMessage = jest.fn(async () => ({ id: 'chat-msg-1' }));
+jest.mock('../../services/chat/chat.service.js', () => ({
+  ...jest.requireActual('../../services/chat/chat.service.js'),
+  getChatService: () => ({ addDirectMessage: mockAddDirectMessage }),
+}));
+
 // Slack team channels — routes read the singleton; tests swap in a fake.
 const mockTeamChannels: { current: null | Record<string, jest.Mock> } = { current: null };
 jest.mock('../../services/slack/slack-team-channel.service.js', () => ({
@@ -332,6 +345,64 @@ describe('Slack Controller', () => {
       expect(response.body.message).toBe('Slack disconnected');
       // Stubbed: the real credentials file is never touched by this suite.
       expect(mockDeleteSlackCredentials).toHaveBeenCalled();
+    });
+  });
+
+  describe('POST /api/slack/send — orchestrator replies go where the turn came from (2026-09-26)', () => {
+    const ORC = 'crewly-orc';
+    const ORC_DM_CONV = 'a721f48d-e161-4dd4-88cb-ad7487d3313a';
+
+    let sendMessage: jest.SpyInstance;
+
+    beforeEach(async () => {
+      const { OrcReplyRouteService } = await import('../../services/orc/orc-reply-route.service.js');
+      OrcReplyRouteService.resetInstance();
+      // The owner wrote to the orc in its bot DM (D0C381XPD3L → chat-v2 a721f48d),
+      // then a WorkItem-dispatch system turn followed.
+      OrcReplyRouteService.getInstance().noteDelivery(ORC, `[CHAT:${ORC_DM_CONV}] <UG94JLNGK@Orchestrator>\n\nA chatgpt账号`);
+      OrcReplyRouteService.getInstance().noteDelivery(ORC, '[CREWLY-DISPATCH] 3 WorkItems are still queued for you');
+      mockFindDmByChatChannel.mockImplementation((id: string) => (id === ORC_DM_CONV ? { slackChannelId: 'D0C381XPD3L' } : null));
+      mockAddDirectMessage.mockClear();
+      const slackService = getSlackService();
+      jest.spyOn(slackService, 'isConnected').mockReturnValue(true);
+      sendMessage = jest.spyOn(slackService, 'sendMessage').mockResolvedValue('1790393610.000100');
+    });
+
+    it('re-routes a post to the master-bot DM into the DM conversation the owner is in', async () => {
+      const response = await request(app)
+        .post('/api/slack/send')
+        .set('X-Agent-Session', ORC)
+        .send({ channelId: 'D0AC7NF5N7L', text: 'Summary — reply "start Ella"' });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data).toEqual({ rerouted: true, conversationId: ORC_DM_CONV, messageId: 'chat-msg-1' });
+      expect(sendMessage).not.toHaveBeenCalled();
+      expect(mockAddDirectMessage).toHaveBeenCalledWith(ORC_DM_CONV, 'Summary — reply "start Ella"', { type: 'orchestrator', name: 'Orchestrator' });
+    });
+
+    it('sends as asked with --cross-post', async () => {
+      await request(app)
+        .post('/api/slack/send')
+        .set('X-Agent-Session', ORC)
+        .send({ channelId: 'D0AC7NF5N7L', text: 'as asked', crossPost: true });
+      expect(sendMessage).toHaveBeenCalledWith({ channelId: 'D0AC7NF5N7L', text: 'as asked', threadTs: undefined });
+      expect(mockAddDirectMessage).not.toHaveBeenCalled();
+    });
+
+    it('never re-routes a channel post (team notifications / delegation)', async () => {
+      await request(app)
+        .post('/api/slack/send')
+        .set('X-Agent-Session', ORC)
+        .send({ channelId: 'C0C30RWA17W', text: 'heads-up, team', threadTs: '1.2' });
+      expect(sendMessage).toHaveBeenCalledWith({ channelId: 'C0C30RWA17W', text: 'heads-up, team', threadTs: '1.2' });
+    });
+
+    it('does not touch posts by other senders', async () => {
+      await request(app)
+        .post('/api/slack/send')
+        .set('X-Agent-Session', 'think-tank-atlas')
+        .send({ channelId: 'D0AC7NF5N7L', text: 'hi' });
+      expect(sendMessage).toHaveBeenCalledWith({ channelId: 'D0AC7NF5N7L', text: 'hi', threadTs: undefined });
     });
   });
 

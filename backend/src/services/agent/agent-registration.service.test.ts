@@ -3565,6 +3565,26 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendMessage).not.toHaveBeenCalled();
 		});
 
+		// 2026-09-26: a system turn right after a Slack-DM turn answered in the
+		// wrong conversation. Delivery records where a user turn came from; a
+		// system delivery leaves that origin in place.
+		it('records the turn origin of a user message and keeps it through a system delivery', async () => {
+			const { OrcReplyRouteService } = await import('../orc/orc-reply-route.service.js');
+			OrcReplyRouteService.resetInstance();
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+			await service.createAgentSession({
+				sessionName: 'crewly-orc',
+				role: 'orchestrator',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			await service.sendMessageToAgent('crewly-orc', '[CHAT:a721f48d] <UG94JLNGK@Orchestrator>\n\nA chatgpt账号', RUNTIME_TYPES.CREWLY_AGENT as any);
+			await service.sendMessageToAgent('crewly-orc', '[CREWLY-DISPATCH] 3 WorkItems are still queued for you', RUNTIME_TYPES.CREWLY_AGENT as any);
+
+			expect(OrcReplyRouteService.getInstance().getFreshOrigin('crewly-orc')?.conversationId).toBe('a721f48d');
+		});
+
 		it('should return error when in-process runtime not initialized', async () => {
 			const result = await service.sendMessageToAgent(
 				'nonexistent-session',

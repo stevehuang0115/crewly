@@ -16,6 +16,7 @@ import {
 import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
 import { RuntimeServiceFactory } from './runtime-service.factory.js';
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
+import { OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
 import {
 	registerInProcessRuntime,
 	unregisterInProcessRuntime,
@@ -4286,6 +4287,9 @@ Loop until done, blocked, or explicitly reassigned:
 				// In-process turns end exactly when handleMessage settles; the
 				// restart drain waits on this record until then.
 				const inFlight = InFlightTurnTracker.getInstance().recordDelivery(sessionName, message, 'in-process');
+				// Remember where a user turn came from, so a reply posted in this
+				// turn or a system turn right after it lands there (2026-09-26).
+				OrcReplyRouteService.getInstance().noteDelivery(sessionName, message);
 
 				// Process message asynchronously — don't block the caller
 				crewlyRuntime.handleMessage(message, slackMetadata)
@@ -4485,6 +4489,7 @@ Loop until done, blocked, or explicitly reassigned:
 			const delivered = await this.sendMessageWithRetry(sessionName, message, maxDeliveryAttempts, runtimeType);
 			if (delivered) {
 				turnTracker.recordDelivery(sessionName, message, 'pty');
+				OrcReplyRouteService.getInstance().noteDelivery(sessionName, message);
 			}
 
 			if (!delivered) {

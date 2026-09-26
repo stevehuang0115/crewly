@@ -69,10 +69,20 @@ bash config/skills/orchestrator/reply-chat/execute.sh '{"conversationId":"conv-a
 
 | Flag | Short | Description |
 |------|-------|-------------|
-| `--conversation` | `-C` | Chat conversation ID (optional — defaults to current) |
+| `--conversation` | `-C` | Chat conversation ID. Omitted → the conversation your current turn came from (the `[CHAT:<id>]` of the last user message you received) |
 | `--text` | `-t` | Message text |
 | `--text-file` | | Read message text from file |
 | `--sender` | `-s` | Sender name (default: "Orchestrator") |
 | `--sender-type` | | Sender type: orchestrator, agent, system (default: orchestrator) |
+| `--cross-post` | | Deliberately post to a conversation other than the one your turn came from (you were asked to post there) |
 | `--json` | `-j` | Raw JSON payload |
 | `--help` | `-h` | Show help |
+
+## Where your reply goes
+
+Your reply belongs in the conversation the user wrote to you from. While the
+last user message you received is under 15 minutes old, a reply to a
+conversation nobody has written to you from in the last 30 minutes is sent to
+the conversation that message came from instead, and a warning is logged. This
+also covers system turns (WorkItem dispatch, reminders) that follow a user's
+message. Pass `--cross-post` only when you were asked to post somewhere else.

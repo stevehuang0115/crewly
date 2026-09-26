@@ -363,6 +363,29 @@ export const TERMINAL_GATEWAY_CONSTANTS = {
 	MONITORING_RETRY_BACKOFFS_MS: [100, 500, 1000, 2000, 5000] as readonly number[],
 } as const;
 
+/**
+ * Orchestrator reply routing (2026-09-26 incident: the owner asked the orc a
+ * question in a Slack DM, and its answer landed in #pro-think-tank).
+ * See `services/orc/orc-reply-route.service.ts`.
+ */
+export const ORC_REPLY_ROUTE_CONSTANTS = {
+	/**
+	 * How long after the last user message the orchestrator received its
+	 * conversation stays "the one its turn came from". Covers a long turn and
+	 * the system-triggered turns (WorkItem dispatch, reminders) that follow it.
+	 */
+	ORIGIN_TTL_MS: 15 * 60 * 1000,
+	/**
+	 * A conversation the orchestrator received a user message from within this
+	 * window is one it is actively in; replies there are never re-routed.
+	 */
+	RECENT_INBOUND_MS: 30 * 60 * 1000,
+	/** Cap on remembered inbound conversations per session (oldest dropped). */
+	MAX_TRACKED_CONVERSATIONS: 50,
+	/** Slack channel-id prefix of a direct-message conversation. */
+	SLACK_DM_PREFIX: 'D',
+} as const;
+
 // Chat routing constants (message markers and patterns for orchestrator communication)
 export const CHAT_ROUTING_CONSTANTS = {
 	/** Message format prefix for chat routing */

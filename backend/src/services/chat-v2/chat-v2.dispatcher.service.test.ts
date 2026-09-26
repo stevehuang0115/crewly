@@ -8,6 +8,7 @@ import {
   ChatV2DispatcherService,
   defaultFormatPrompt,
   renderChatContext,
+  slackDmChannelOf,
   type AgentMessageSink,
 } from './chat-v2.dispatcher.service.js';
 import type { ChatChannelDTO, ChatMessageDTO } from './types.js';
@@ -540,6 +541,41 @@ describe('ChatV2DispatcherService', () => {
         content: 'x',
       });
       expect(prompt).not.toContain('[cmid:');
+    });
+  });
+
+  // 2026-09-26: the orc's follow-up to a Slack-DM question went to
+  // #pro-think-tank and to the master-bot DM. A Slack DM names its reply
+  // target explicitly, and says it holds for everything the message leads to.
+  describe('Slack DM — explicit reply target', () => {
+    const DM_META = { source: 'slack', slackChannelId: 'D0C381XPD3L', slackThreadTs: '1790392986.498639' };
+
+    it('slackDmChannelOf picks out Slack DMs only', () => {
+      expect(slackDmChannelOf(makeMessage({ metadata: DM_META }))).toBe('D0C381XPD3L');
+      expect(slackDmChannelOf(makeMessage({ metadata: { source: 'slack', slackChannelId: 'C0C30RWA17W' } }))).toBeUndefined();
+      expect(slackDmChannelOf(makeMessage({ metadata: { slackChannelId: 'D0C381XPD3L' } }))).toBeUndefined();
+      expect(slackDmChannelOf(makeMessage())).toBeUndefined();
+    });
+
+    it('the DM prompt names the conversationId as the fixed target for replies and status reports', async () => {
+      const { sink, calls } = makeSink({ success: true });
+      await new ChatV2DispatcherService({ agentSink: sink }).dispatchMessage(
+        makeChannel({ id: 'a721f48d' }),
+        makeMessage({ channelId: 'a721f48d', metadata: DM_META }),
+      );
+      const prompt = calls[0].message;
+      expect(prompt).toContain('[CHAT:a721f48d]');
+      expect(prompt).toContain('Slack 私信 D0C381XPD3L');
+      expect(prompt).toContain('回复目标: conversationId="a721f48d"');
+      expect(prompt).toContain('[BLOCKED]/[DONE]');
+      expect(prompt).toContain('不要改用 reply-slack');
+    });
+
+    it('a web-chat DM keeps the plain hint', async () => {
+      const { sink, calls } = makeSink({ success: true });
+      await new ChatV2DispatcherService({ agentSink: sink }).dispatchMessage(makeChannel(), makeMessage());
+      expect(calls[0].message).toContain('回复本频道: 用 `reply-chat` skill, 参数 conversationId="chan-1"');
+      expect(calls[0].message).not.toContain('Slack 私信');
     });
   });
 

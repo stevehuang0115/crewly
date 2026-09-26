@@ -23,6 +23,7 @@ import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sani
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
 import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import {
   appendTicketLine,
@@ -534,8 +535,49 @@ export async function agentResponse(
     // fallback below picks the globally-current conversation, which is a fine
     // default for storing a message but is NOT evidence that this message
     // belongs to that thread (issue #731).
-    const conversationIdWasExplicit = Boolean(conversationId);
+    let conversationIdWasExplicit = Boolean(conversationId);
     let resolvedConversationId = conversationId;
+
+    // The orchestrator answers where its turn came from (2026-09-26: a
+    // system turn right after a Slack-DM turn posted its summary — with the
+    // owner's pending question in it — to #think-tank, because the
+    // "current conversation" fallback never sees the owner's orchestrator
+    // DM). A stale named conversation is re-routed; an unnamed one defaults
+    // to the origin. `crossPost: true` keeps a deliberate cross-post.
+    // The X-Agent-Session header is authoritative when present (skills send
+    // it); without it, fall back to the sender the body claims.
+    const agentHeader = readAgentSessionHeader(req);
+    const { isOrchestratorSender: isOrcName } = await import(
+      '../../services/orc/orc-delivery-enforcer.service.js'
+    );
+    const isOrchestratorPost = agentHeader
+      ? agentHeader === ORCHESTRATOR_SESSION_NAME
+      : senderType === 'orchestrator' || isOrcName(String(senderName));
+    if (isOrchestratorPost) {
+      const route = OrcReplyRouteService.getInstance().resolveConversationReply(
+        ORCHESTRATOR_SESSION_NAME,
+        typeof conversationId === 'string' && conversationId ? conversationId : undefined,
+        { crossPost: req.body?.crossPost === true },
+      );
+      if (route.action === 'rerouted-to-origin') {
+        logger.warn('Orchestrator reply re-routed to the conversation its turn came from', {
+          requestedConversationId: conversationId,
+          routedTo: route.conversationId,
+          originReceivedAt: route.origin ? new Date(route.origin.receivedAt).toISOString() : undefined,
+          reason: route.reason,
+          preview: String(content).substring(0, 80),
+        });
+      } else if (route.action === 'defaulted-to-origin') {
+        logger.info('Orchestrator reply with no conversation — using its turn origin', {
+          routedTo: route.conversationId,
+        });
+      }
+      if (route.conversationId) {
+        resolvedConversationId = route.conversationId;
+        conversationIdWasExplicit = true;
+      }
+    }
+
     if (!resolvedConversationId) {
       const current = await chatService.getCurrentConversation();
       if (current) {

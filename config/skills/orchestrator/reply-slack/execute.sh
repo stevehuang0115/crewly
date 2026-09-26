@@ -27,12 +27,17 @@ Options:
   --image   | -i   Path to image file to upload (uses /api/slack/upload-image)
   --file    | -f   Path to file upload (uses /api/slack/upload-file)
   --allow-new-thread  Allow posting without --thread (disabled by default for safety)
+  --cross-post     Deliberately post to a Slack DM other than the one your
+                   current turn came from. Without it, a DM post nobody wrote
+                   to you from recently is sent back where the turn came from.
+                   (Channel posts are never re-routed.)
   --json    | -j   Raw JSON payload (same as legacy usage)
   --help    | -h   Show this help
 EOF_USAGE
 }
 
 INPUT_JSON=""
+CROSS_POST="false"
 CHANNEL_ID=""
 TEXT=""
 THREAD_TS=""
@@ -76,6 +81,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --allow-new-thread)
       ALLOW_NEW_THREAD="true"
+      shift
+      ;;
+    --cross-post)
+      CROSS_POST="true"
       shift
       ;;
     --conversation|-C)
@@ -200,10 +209,10 @@ else
   export _SLACK_TEXT="$TEXT"
   if [ -n "$THREAD_TS" ]; then
     export _SLACK_THREAD="$THREAD_TS"
-    BODY=$(jq -n '{channelId: env._SLACK_CHANNEL, text: env._SLACK_TEXT, threadTs: env._SLACK_THREAD}')
+    BODY=$(jq -n --argjson crossPost "$CROSS_POST" '{channelId: env._SLACK_CHANNEL, text: env._SLACK_TEXT, threadTs: env._SLACK_THREAD} + (if $crossPost then {crossPost: true} else {} end)')
     unset _SLACK_THREAD
   else
-    BODY=$(jq -n '{channelId: env._SLACK_CHANNEL, text: env._SLACK_TEXT}')
+    BODY=$(jq -n --argjson crossPost "$CROSS_POST" '{channelId: env._SLACK_CHANNEL, text: env._SLACK_TEXT} + (if $crossPost then {crossPost: true} else {} end)')
   fi
   unset _SLACK_CHANNEL _SLACK_TEXT
 

@@ -22,6 +22,11 @@ Options:
   --text-file           Read message text from the specified file path
   --sender       | -s   Sender name (default: Orchestrator)
   --sender-type         Sender type: orchestrator, agent, system (default: orchestrator)
+  --cross-post          Deliberately post in a conversation other than the one
+                        your current turn came from (e.g. the owner asked you to
+                        post there). Without it, an orchestrator reply aimed at a
+                        conversation nobody wrote to you from recently is sent
+                        back to the conversation the turn came from.
   --json         | -j   Raw JSON payload
   --help         | -h   Show this help
 EOF_USAGE
@@ -32,6 +37,7 @@ CONVERSATION_ID=""
 TEXT=""
 SENDER_NAME="Orchestrator"
 SENDER_TYPE="orchestrator"
+CROSS_POST="false"
 
 # Detect legacy JSON argument as the first parameter
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -60,6 +66,10 @@ while [[ $# -gt 0 ]]; do
     --sender-type)
       SENDER_TYPE="$2"
       shift 2
+      ;;
+    --cross-post)
+      CROSS_POST="true"
+      shift
       ;;
     --json|-j)
       INPUT_JSON="$2"
@@ -117,7 +127,9 @@ BODY=$(jq -n \
   --arg senderName "$SENDER_NAME" \
   --arg senderType "$SENDER_TYPE" \
   --arg conversationId "$CONVERSATION_ID" \
+  --argjson crossPost "$CROSS_POST" \
   '{content: $content, senderName: $senderName, senderType: $senderType} +
-   (if $conversationId != "" then {conversationId: $conversationId} else {} end)')
+   (if $conversationId != "" then {conversationId: $conversationId} else {} end) +
+   (if $crossPost then {crossPost: true} else {} end)')
 
 api_call POST "/chat/agent-response" "$BODY"

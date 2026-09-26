@@ -812,6 +812,85 @@ describe('Chat Controller', () => {
     });
 
     /**
+     * 2026-09-26: the owner asked the orc a question in a Slack DM; a
+     * WorkItem-dispatch system turn right after it posted the answer (with
+     * the owner's pending question in it) to #think-tank.
+     */
+    describe('orchestrator replies go back to the conversation the turn came from', () => {
+      const ORC = 'crewly-orc';
+
+      /**
+       * Sets up the incident: the owner's orchestrator DM (user-owned, so the
+       * "current conversation" fallback can never see it) and a newer
+       * system-owned team conversation standing in for #think-tank.
+       *
+       * @returns The two conversation ids
+       */
+      async function setupIncident(): Promise<{ dmId: string; teamId: string }> {
+        const { OrcReplyRouteService } = await import('../../services/orc/orc-reply-route.service.js');
+        OrcReplyRouteService.resetInstance();
+        const chatV2 = getChatV2Service();
+        const { channel: dm } = chatV2.ensureDmChannel({
+          agentSession: ORC,
+          name: 'Orchestrator',
+          principal: { userId: 'dev-user-001', source: 'oss' },
+        });
+        const team = await chatService.createNewConversation('#think-tank');
+        await chatService.addDirectMessage(team.id, 'Atlas: filled the form', { type: 'agent', name: 'think-tank-atlas' });
+        // The owner's DM reached the orc, then a system turn followed.
+        OrcReplyRouteService.getInstance().noteDelivery(ORC, `[CHAT:${dm.id}] <UG94JLNGK@Orchestrator>\n\nA chatgpt账号`);
+        OrcReplyRouteService.getInstance().noteDelivery(ORC, '[CREWLY-DISPATCH] 3 WorkItems are still queued for you');
+        return { dmId: dm.id, teamId: team.id };
+      }
+
+      it('reply-chat naming a stale team conversation is re-routed to the DM', async () => {
+        const { dmId, teamId } = await setupIncident();
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ORC)
+          .send({ content: '## Summary — reply "start Ella"', senderName: 'Orchestrator', senderType: 'orchestrator', conversationId: teamId });
+
+        expect(response.status).toBe(201);
+        expect(response.body.data.conversationId).toBe(dmId);
+      });
+
+      it('reply-chat with no conversation goes to the DM, not the newest system channel', async () => {
+        const { dmId, teamId } = await setupIncident();
+        // Without routing, the fallback is the newest system-owned conversation.
+        expect((await chatService.getCurrentConversation())?.id).toBe(teamId);
+
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ORC)
+          .send({ content: 'Nova needs your ChatGPT login', senderName: 'Orchestrator', senderType: 'orchestrator' });
+
+        expect(response.body.data.conversationId).toBe(dmId);
+      });
+
+      it('an explicit cross-post is kept', async () => {
+        const { teamId } = await setupIncident();
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ORC)
+          .send({ content: 'Posting the plan here as asked', senderName: 'Orchestrator', senderType: 'orchestrator', conversationId: teamId, crossPost: true });
+
+        expect(response.body.data.conversationId).toBe(teamId);
+      });
+
+      it('a post whose X-Agent-Session is another agent is not touched', async () => {
+        const { teamId } = await setupIncident();
+        // The header is authoritative: not the orchestrator, so no routing,
+        // whatever the body claims.
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', 'think-tank-atlas')
+          .send({ content: 'Atlas: submitted', senderName: 'Orchestrator', senderType: 'system', conversationId: teamId });
+
+        expect(response.body.data.conversationId).toBe(teamId);
+      });
+    });
+
+    /**
      * Issue #731 — a cron-driven daily task reports completion with no
      * conversationId, so the handler fell back to the globally-current
      * conversation and tracked a delivery against whatever thread happened to
