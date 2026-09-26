@@ -124,6 +124,18 @@ export async function createProject(this: ApiContext, req: Request, res: Respons
 				});
 			} else if (isGeminiOrchestrator && !isOrchestratorActive) {
 				logger.info('Orchestrator uses Gemini CLI but is not active, project allowlist will be updated when orchestrator starts');
+			} else if (orchestratorStatus?.runtimeType === 'antigravity-cli' && isOrchestratorActive) {
+				// Antigravity: `/add-dir <path>`, sent only while the orchestrator is
+				// idle (a slash command typed mid-turn would be queued as a message).
+				// The folder is added at the next start otherwise.
+				const { RuntimeServiceFactory } = await import('../../services/agent/runtime-service.factory.js');
+				const { AntigravityRuntimeService } = await import('../../services/agent/antigravity-runtime.service.js');
+				const { RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME } = await import('../../constants.js');
+				const agyService = RuntimeServiceFactory.create(RUNTIME_TYPES.ANTIGRAVITY_CLI, this.tmuxService.getTmuxCommandService(), process.cwd());
+				if (agyService instanceof AntigravityRuntimeService) {
+					const added = await agyService.addWorkspaceDir(ORCHESTRATOR_SESSION_NAME, finalProject.path);
+					logger.info('Antigravity workspace update for new project', { projectPath: finalProject.path, added });
+				}
 			}
 		} catch (error) {
 			// Log error but continue - as per requirement, don't fail project creation

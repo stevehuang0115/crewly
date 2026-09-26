@@ -43,6 +43,13 @@ import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
 import type { ExpiryReport } from '../harness/harness-relogin.service.js';
 
+/**
+ * Runtimes Crewly must never type `/login` into. Antigravity CLI runs only on
+ * a Gemini API key: Google does not allow third-party tools to use its
+ * account (OAuth) login, and agy has no `/login` command anyway.
+ */
+const NO_RELOGIN_COMMAND_RUNTIMES: ReadonlySet<string> = new Set<string>([RUNTIME_TYPES.ANTIGRAVITY_CLI]);
+
 // =============================================================================
 // Types
 // =============================================================================
@@ -1136,6 +1143,10 @@ export class OAuthReloginMonitorService {
 	private async triggerRelogin(sessionName: string): Promise<void> {
 		const state = this.sessions.get(sessionName);
 		if (!state || state.reloginInProgress) {
+			return;
+		}
+		if (NO_RELOGIN_COMMAND_RUNTIMES.has(state.runtimeType)) {
+			this.logger.debug('OAuth relogin skipped: this runtime never gets /login', { sessionName, runtimeType: state.runtimeType });
 			return;
 		}
 

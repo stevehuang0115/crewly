@@ -14,10 +14,13 @@ import {
   lastTurnContextTokens,
   orcFreshContextTokens,
   conversationExists,
+  discoverAntigravityConversationId,
   discoverCodexSessionId,
   planRuntimeSessionFlags,
   stripNestedClaudeSessionEnv,
+  toAntigravityResumeFlag,
   toCodexResumeCommand,
+  waitForAntigravityConversationId,
   waitForCodexSessionId,
 } from './runtime-session-recovery.js';
 
@@ -47,6 +50,110 @@ describe('planRuntimeSessionFlags', () => {
     expect(planRuntimeSessionFlags({ runtimeType: 'codex-cli', isRestored: true, storedSessionId: 'c1', autoResume: true })).toMatchObject({ flags: [], resumeSessionId: 'c1' });
     expect(planRuntimeSessionFlags({ runtimeType: 'codex-cli', isRestored: false, storedSessionId: null, autoResume: true })).toMatchObject({ flags: [], resumeSessionId: null, presetSessionId: null });
     expect(planRuntimeSessionFlags({ runtimeType: 'gemini-cli', isRestored: true, storedSessionId: 'g', autoResume: true })).toMatchObject({ flags: [], resumeSessionId: null });
+  });
+});
+
+describe('Antigravity CLI conversations', () => {
+  const ID_A = '75e715be-ea13-400e-8e4a-0358e87d170c';
+  const ID_B = '537e402c-83b8-4f69-9bf1-04729ba3ea7f';
+  let configDir: string;
+  let cwd: string;
+
+  beforeEach(() => {
+    configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-conv-'));
+    cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'agy-ws-'));
+    fs.mkdirSync(path.join(configDir, 'conversations'));
+    fs.mkdirSync(path.join(configDir, 'cache'));
+  });
+  afterEach(() => {
+    fs.rmSync(configDir, { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  /** Create a conversation the way agy 1.2.11 lays it out (db + brain dir). */
+  function conversation(id: string, log?: string): void {
+    fs.writeFileSync(path.join(configDir, 'conversations', `${id}.db`), '');
+    const logs = path.join(configDir, 'brain', id, '.system_generated', 'logs');
+    fs.mkdirSync(logs, { recursive: true });
+    if (log) fs.writeFileSync(path.join(logs, 'transcript.jsonl'), log);
+  }
+
+  /** Write cache/last_conversations.json. */
+  function lastConversation(map: Record<string, string>): void {
+    fs.writeFileSync(path.join(configDir, 'cache', 'last_conversations.json'), JSON.stringify(map, null, 2));
+  }
+
+  it('plans a fresh start (id discovered later) and a resume with --conversation=<id>', () => {
+    const fresh = planRuntimeSessionFlags({ runtimeType: 'antigravity-cli', isRestored: false, storedSessionId: null, autoResume: true });
+    expect(fresh).toMatchObject({ flags: [], resumeSessionId: null, presetSessionId: null });
+    const resumed = planRuntimeSessionFlags({ runtimeType: 'antigravity-cli', isRestored: true, storedSessionId: ID_A, autoResume: true, conversationExists: true });
+    expect(resumed).toMatchObject({ flags: [`--conversation=${ID_A}`], resumeSessionId: ID_A });
+    const gone = planRuntimeSessionFlags({ runtimeType: 'antigravity-cli', isRestored: true, storedSessionId: ID_A, autoResume: true, conversationExists: false });
+    expect(gone.flags).toEqual([]);
+  });
+
+  it('builds the resume flag agy prints on exit, stripping anything unsafe', () => {
+    expect(toAntigravityResumeFlag(ID_A)).toBe(`--conversation=${ID_A}`);
+    expect(toAntigravityResumeFlag(`${ID_A}; rm -rf ~`)).toBe(`--conversation=${ID_A}rm-rf`);
+  });
+
+  it('knows whether a conversation still exists', () => {
+    conversation(ID_A);
+    expect(conversationExists({ runtimeType: 'antigravity-cli', sessionId: ID_A, cwd, antigravityConfigDir: configDir })).toBe(true);
+    expect(conversationExists({ runtimeType: 'antigravity-cli', sessionId: ID_B, cwd, antigravityConfigDir: configDir })).toBe(false);
+  });
+
+  it('finds nothing before the first prompt creates a conversation', () => {
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: Date.now() })).toBeNull();
+    fs.rmSync(path.join(configDir, 'conversations'), { recursive: true });
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: Date.now() })).toBeNull();
+  });
+
+  it('takes the workspace\'s latest conversation from last_conversations.json (realpath or as given)', () => {
+    const launchedAt = Date.now();
+    conversation(ID_A);
+    lastConversation({ [fs.realpathSync(cwd)]: ID_A });
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: launchedAt })).toBe(ID_A);
+  });
+
+  it('ignores conversations from before the launch and ones another agent claimed', () => {
+    conversation(ID_A);
+    lastConversation({ [fs.realpathSync(cwd)]: ID_A });
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: Date.now() + 60_000 })).toBeNull();
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: 0, claimed: new Set([ID_A]) })).toBeNull();
+  });
+
+  it('prefers the conversation whose logs mention this agent\'s prompt file, even when another agent in the same folder started later', () => {
+    conversation(ID_A, '{"type":"user","text":"Read the file at /home/me/.crewly/prompts/team-dev-1-init.md and follow all instructions in it."}\n');
+    conversation(ID_B, '{"type":"user","text":"Read the file at /home/me/.crewly/prompts/team-dev-2-init.md"}\n');
+    lastConversation({ [fs.realpathSync(cwd)]: ID_B });
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: 0, marker: 'team-dev-1-init.md' })).toBe(ID_A);
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: 0, marker: 'team-dev-2-init.md' })).toBe(ID_B);
+    // No log mentions the marker yet: fall back to the workspace cache.
+    expect(discoverAntigravityConversationId({ configDir, cwd, notBeforeMs: 0, marker: 'team-dev-3-init.md' })).toBe(ID_B);
+  });
+
+  it('polls until the conversation appears', async () => {
+    let polls = 0;
+    const found = await waitForAntigravityConversationId({
+      configDir,
+      cwd,
+      notBeforeMs: 0,
+      timeoutMs: 60_000,
+      intervalMs: 1,
+      sleep: async () => {
+        polls++;
+        if (polls === 2) {
+          conversation(ID_A);
+          lastConversation({ [path.resolve(cwd)]: ID_A });
+        }
+      },
+    });
+    expect(found).toBe(ID_A);
+    // Timing out: the only conversation belongs to another agent.
+    expect(
+      await waitForAntigravityConversationId({ configDir, cwd, notBeforeMs: 0, claimed: new Set([ID_A]), timeoutMs: 0, intervalMs: 1, sleep: async () => undefined }),
+    ).toBeNull();
   });
 });
 

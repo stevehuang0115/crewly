@@ -19,6 +19,11 @@
  *     and cwd, which is how Crewly learns the id for a fresh Codex agent.
  *   - {@link stripNestedClaudeSessionEnv}: the env markers a parent Claude
  *     Code session leaves behind, which must never reach an agent.
+ *   - Antigravity CLI resumes with `agy --conversation=<id>` (the command agy
+ *     itself prints on exit). It creates a conversation only when the first
+ *     prompt arrives, so {@link discoverAntigravityConversationId} learns the
+ *     id after the registration kickoff from `conversations/<id>.db` and
+ *     `cache/last_conversations.json` (workspace → latest id).
  *
  * @module services/agent/runtime-session-recovery
  */
@@ -27,7 +32,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS } from '../../constants.js';
+import { ANTIGRAVITY_CONSTANTS, RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS } from '../../constants.js';
+import { getAntigravityConfigDir } from '../../utils/antigravity-settings.utils.js';
 
 /**
  * Env vars set by a running Claude Code session for its children. An agent
@@ -120,7 +126,182 @@ export function planRuntimeSessionFlags(args: {
     }
     return { flags: [], resumeSessionId: null, presetSessionId: null, note: 'fresh Codex conversation; id discovered from the rollout file after launch' };
   }
+  if (runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+    if (canResume) {
+      return {
+        flags: [toAntigravityResumeFlag(storedSessionId as string)],
+        resumeSessionId: storedSessionId as string,
+        presetSessionId: null,
+        note: 'resuming Antigravity conversation',
+      };
+    }
+    return { flags: [], resumeSessionId: null, presetSessionId: null, note: 'fresh Antigravity conversation; id discovered after the first prompt' };
+  }
   return { flags: [], resumeSessionId: null, presetSessionId: null, note: 'runtime has no resume support' };
+}
+
+/**
+ * The agy flag that resumes a conversation: `--conversation=<id>`, exactly
+ * as agy prints it on exit ("Resume with -c (or command below):").
+ *
+ * @param conversationId - Antigravity conversation id (a UUID)
+ * @returns The flag, with anything but `[A-Za-z0-9-]` removed from the id
+ */
+export function toAntigravityResumeFlag(conversationId: string): string {
+  const safeId = conversationId.replace(/[^A-Za-z0-9-]/g, '');
+  return `${ANTIGRAVITY_CONSTANTS.RESUME_FLAG}=${safeId}`;
+}
+
+/** Options for {@link discoverAntigravityConversationId}. */
+export interface AntigravityDiscoveryOptions {
+  /** agy config dir (defaults to ~/.gemini/antigravity-cli) */
+  configDir?: string;
+  /** The agent's working directory (agy's workspace) */
+  cwd: string;
+  /** When the launch command was sent */
+  notBeforeMs: number;
+  /** Ids other sessions already own */
+  claimed?: ReadonlySet<string>;
+  /**
+   * Text only this agent's first prompt contains (its init prompt file
+   * name). When a conversation's logs mention it, that conversation wins
+   * even if another agent in the same folder started one later.
+   */
+  marker?: string;
+}
+
+/** Largest log file read when looking for the marker. */
+const MAX_ANTIGRAVITY_LOG_BYTES = 512 * 1024;
+
+/**
+ * Whether one of a conversation's log files mentions the marker.
+ *
+ * @param configDir - agy config dir
+ * @param conversationId - Conversation id
+ * @param marker - Text to find
+ * @returns True when found
+ */
+function antigravityLogsMention(configDir: string, conversationId: string, marker: string): boolean {
+  const logsDir = path.join(configDir, 'brain', conversationId, '.system_generated', 'logs');
+  let files: string[];
+  try {
+    files = fs.readdirSync(logsDir);
+  } catch {
+    return false;
+  }
+  for (const file of files) {
+    const full = path.join(logsDir, file);
+    try {
+      const stat = fs.statSync(full);
+      if (!stat.isFile()) continue;
+      const fd = fs.openSync(full, 'r');
+      try {
+        const length = Math.min(stat.size, MAX_ANTIGRAVITY_LOG_BYTES);
+        const buf = Buffer.alloc(length);
+        fs.readSync(fd, buf, 0, length, 0);
+        if (buf.toString('utf8').includes(marker)) return true;
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      // unreadable log — try the next
+    }
+  }
+  return false;
+}
+
+/**
+ * The forms a workspace path may take in agy's cache (as given, and with
+ * symlinks resolved — macOS `/tmp` is `/private/tmp`).
+ *
+ * @param cwd - Working directory
+ * @returns Candidate keys
+ */
+function workspaceKeys(cwd: string): string[] {
+  const keys = new Set<string>([path.resolve(cwd)]);
+  try {
+    keys.add(fs.realpathSync(cwd));
+  } catch {
+    // folder gone — the resolved form is all we have
+  }
+  return [...keys];
+}
+
+/**
+ * Find the Antigravity conversation a just-launched agent started.
+ *
+ * Candidates are `conversations/<id>.db` files created after the launch that
+ * no other session has claimed. The one whose logs mention the agent's
+ * marker wins; otherwise the id agy recorded as the latest for this
+ * workspace in `cache/last_conversations.json` (what `agy -c` resumes) is
+ * taken when it is a candidate.
+ *
+ * @param opts - Config dir, cwd, launch time, claimed ids, marker
+ * @returns The conversation id, or null when nothing matches yet
+ */
+export function discoverAntigravityConversationId(opts: AntigravityDiscoveryOptions): string | null {
+  const configDir = opts.configDir ?? getAntigravityConfigDir();
+  const conversationsDir = path.join(configDir, ANTIGRAVITY_CONSTANTS.CONVERSATIONS_DIR);
+  const ext = ANTIGRAVITY_CONSTANTS.CONVERSATION_FILE_EXT;
+  let files: string[];
+  try {
+    files = fs.readdirSync(conversationsDir).filter((f) => f.endsWith(ext));
+  } catch {
+    return null;
+  }
+  const candidates: Array<{ id: string; bornMs: number }> = [];
+  for (const file of files) {
+    const id = file.slice(0, -ext.length);
+    if (opts.claimed?.has(id)) continue;
+    try {
+      const stat = fs.statSync(path.join(conversationsDir, file));
+      const bornMs = stat.birthtimeMs || stat.mtimeMs;
+      // Allow a little clock skew between "we typed the command" and the file's birth.
+      if (Math.max(bornMs, stat.mtimeMs) < opts.notBeforeMs - 5_000) continue;
+      candidates.push({ id, bornMs });
+    } catch {
+      continue;
+    }
+  }
+  if (candidates.length === 0) return null;
+
+  if (opts.marker) {
+    const marked = candidates.filter((c) => antigravityLogsMention(configDir, c.id, opts.marker as string));
+    if (marked.length > 0) return marked.sort((a, b) => a.bornMs - b.bornMs)[0].id;
+  }
+
+  try {
+    const cache = JSON.parse(
+      fs.readFileSync(path.join(configDir, ...ANTIGRAVITY_CONSTANTS.LAST_CONVERSATIONS_FILE_SEGMENTS), 'utf8'),
+    ) as Record<string, unknown>;
+    for (const key of workspaceKeys(opts.cwd)) {
+      const id = cache[key];
+      if (typeof id === 'string' && candidates.some((c) => c.id === id)) return id;
+    }
+  } catch {
+    // no cache yet
+  }
+  return null;
+}
+
+/**
+ * Poll {@link discoverAntigravityConversationId} until a match appears or time runs out.
+ *
+ * @param opts - Discovery options plus `timeoutMs` / `intervalMs` (defaults from ANTIGRAVITY_CONSTANTS)
+ * @returns The conversation id, or null on timeout
+ */
+export async function waitForAntigravityConversationId(
+  opts: AntigravityDiscoveryOptions & { timeoutMs?: number; intervalMs?: number; sleep?: (ms: number) => Promise<void> },
+): Promise<string | null> {
+  const deadline = Date.now() + (opts.timeoutMs ?? ANTIGRAVITY_CONSTANTS.CONVERSATION_DISCOVERY_TIMEOUT_MS);
+  const interval = opts.intervalMs ?? ANTIGRAVITY_CONSTANTS.CONVERSATION_DISCOVERY_INTERVAL_MS;
+  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  for (;;) {
+    const found = discoverAntigravityConversationId(opts);
+    if (found) return found;
+    if (Date.now() >= deadline) return null;
+    await sleep(interval);
+  }
 }
 
 /**
@@ -287,7 +468,8 @@ function readSessionMeta(filePath: string): { sessionId: string; cwd: string } |
 /**
  * Whether a stored conversation still exists on disk, so a resume will not
  * fail to boot. Claude Code keeps `~/.claude/projects/<cwd slug>/<id>.jsonl`;
- * Codex keeps `<codexHome>/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl`.
+ * Codex keeps `<codexHome>/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl`;
+ * Antigravity keeps `~/.gemini/antigravity-cli/conversations/<id>.db`.
  *
  * @param args - Runtime, id, the agent's cwd, optional home overrides
  * @returns True when found; true (benefit of the doubt) for unknown runtimes
@@ -298,8 +480,15 @@ export function conversationExists(args: {
   cwd: string;
   claudeHome?: string;
   codexHome?: string;
+  antigravityConfigDir?: string;
 }): boolean {
   const { runtimeType, sessionId, cwd } = args;
+  if (runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+    // agy silently starts fresh for an unknown --conversation id, but a
+    // deleted one should not be "resumed" (and reported as resumed) either.
+    const dir = path.join(args.antigravityConfigDir ?? getAntigravityConfigDir(), ANTIGRAVITY_CONSTANTS.CONVERSATIONS_DIR);
+    return fs.existsSync(path.join(dir, `${sessionId}${ANTIGRAVITY_CONSTANTS.CONVERSATION_FILE_EXT}`));
+  }
   if (runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
     const home = args.claudeHome ?? path.join(os.homedir(), '.claude');
     const slug = path.resolve(cwd).replace(/[\/.]/g, '-');

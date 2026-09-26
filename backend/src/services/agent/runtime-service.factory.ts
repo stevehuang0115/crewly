@@ -3,6 +3,7 @@ import { ClaudeRuntimeService } from './claude-runtime.service.js';
 import { GeminiRuntimeService } from './gemini-runtime.service.js';
 import { CodexRuntimeService } from './codex-runtime.service.js';
 import { OpenCodeRuntimeService } from './opencode-runtime.service.js';
+import { AntigravityRuntimeService } from './antigravity-runtime.service.js';
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
 import {
 	SessionCommandHelper,
@@ -94,6 +95,10 @@ export class RuntimeServiceFactory {
 				runtimeService = new OpenCodeRuntimeService(sessionHelper, projectRoot);
 				break;
 
+			case RUNTIME_TYPES.ANTIGRAVITY_CLI:
+				runtimeService = new AntigravityRuntimeService(sessionHelper, projectRoot);
+				break;
+
 			case RUNTIME_TYPES.CREWLY_AGENT:
 				runtimeService = new CrewlyAgentExternalRuntimeService(sessionHelper, projectRoot);
 				break;
@@ -139,6 +144,9 @@ export class RuntimeServiceFactory {
 			case RUNTIME_TYPES.OPENCODE_CLI:
 				return new OpenCodeRuntimeService(sessionHelper, projectRoot);
 
+			case RUNTIME_TYPES.ANTIGRAVITY_CLI:
+				return new AntigravityRuntimeService(sessionHelper, projectRoot);
+
 			case RUNTIME_TYPES.CREWLY_AGENT:
 				return new CrewlyAgentExternalRuntimeService(sessionHelper, projectRoot);
 
@@ -158,6 +166,7 @@ export class RuntimeServiceFactory {
 			RUNTIME_TYPES.GEMINI_CLI,
 			RUNTIME_TYPES.CODEX_CLI,
 			RUNTIME_TYPES.OPENCODE_CLI,
+			RUNTIME_TYPES.ANTIGRAVITY_CLI,
 			RUNTIME_TYPES.CREWLY_AGENT,
 		];
 	}
@@ -226,6 +235,9 @@ export class RuntimeServiceFactory {
 
 			case RUNTIME_TYPES.OPENCODE_CLI:
 				return new OpenCodeRuntimeService(sessionHelper, projectRoot);
+
+			case RUNTIME_TYPES.ANTIGRAVITY_CLI:
+				return new AntigravityRuntimeService(sessionHelper, projectRoot);
 
 			case RUNTIME_TYPES.CREWLY_AGENT:
 				return new CrewlyAgentExternalRuntimeService(sessionHelper, projectRoot);

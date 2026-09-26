@@ -200,9 +200,10 @@ export class OrchestratorRestartService {
 			// Step 3: Determine runtime type (preserve the orchestrator's configured runtime).
 			const runtimeType = await this.resolveOrchestratorRuntimeType();
 
-			// Step 3b: For Gemini CLI, gather existing project paths for /directory allowlist.
+			// Step 3b: For Gemini CLI (/directory add) and Antigravity CLI (/add-dir),
+			// gather existing project paths for the workspace.
 			let additionalAllowlistPaths: string[] | undefined;
-			if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+			if (runtimeType === RUNTIME_TYPES.GEMINI_CLI || runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
 				try {
 					const storageService = StorageService.getInstance();
 					const projects = await storageService.getProjects();

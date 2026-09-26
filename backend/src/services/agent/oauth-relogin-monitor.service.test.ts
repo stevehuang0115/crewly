@@ -559,6 +559,23 @@ describe('OAuthReloginMonitorService', () => {
 		});
 	});
 
+	describe('Antigravity CLI handling', () => {
+		it('never types /login (or anything) into an Antigravity session, whatever the output says', async () => {
+			service.startMonitoring('agy-session', 'antigravity-cli');
+			jest.advanceTimersByTime(OAUTH_RELOGIN_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			if (capturedOnDataCallback) {
+				capturedOnDataCallback('authentication_error - OAuth token has expired');
+				capturedOnDataCallback('HTTP 401 Unauthorized: Invalid authentication credentials');
+			}
+
+			await advancePastRelogin();
+
+			expect(mockSessionWrite).not.toHaveBeenCalledWith('/login\r');
+			expect(mockSessionWrite).not.toHaveBeenCalledWith('\x1b');
+		});
+	});
+
 	// =========================================================================
 	// Buffer management
 	// =========================================================================

@@ -328,6 +328,16 @@ export class OpenCodeAdapter extends BaseRuntimeAdapter {
 	readonly displayName = 'OpenCode';
 }
 
+/**
+ * Adapter for Google's Antigravity CLI (`agy`), run on a Gemini API key only.
+ *
+ * Uses the base adapter behavior which delegates to AntigravityRuntimeService.
+ */
+export class AntigravityCliAdapter extends BaseRuntimeAdapter {
+	readonly runtimeType = RUNTIME_TYPES.ANTIGRAVITY_CLI;
+	readonly displayName = 'Antigravity CLI';
+}
+
 // ========================= Factory =========================
 
 /**
@@ -337,7 +347,7 @@ export class OpenCodeAdapter extends BaseRuntimeAdapter {
  * the appropriate adapter. Requires the session backend to be initialized
  * first (via createSessionBackend()).
  *
- * @param runtimeType - The runtime type ('claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli')
+ * @param runtimeType - The runtime type ('claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'antigravity-cli')
  * @param projectRoot - The project root directory (for runtime config resolution)
  * @returns A RuntimeAdapter instance for the specified runtime
  * @throws Error if session backend is not initialized or runtime type is unknown
@@ -378,6 +388,9 @@ export function getRuntimeAdapter(
 
 		case RUNTIME_TYPES.OPENCODE_CLI:
 			return new OpenCodeAdapter(backend, sessionHelper, runtimeService);
+
+		case RUNTIME_TYPES.ANTIGRAVITY_CLI:
+			return new AntigravityCliAdapter(backend, sessionHelper, runtimeService);
 
 		default: {
 			// Fallback to Claude Code for unrecognized types

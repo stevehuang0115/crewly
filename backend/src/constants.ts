@@ -1795,6 +1795,8 @@ export const ANTIGRAVITY_CONSTANTS = {
 			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. In a terminal run `GEMINI_API_KEY=<your key> agy`, finish those screens, type /exit, then start the agent again.',
 		SETTINGS_UNREADABLE:
 			'Crewly could not switch Antigravity CLI to your Gemini API key because ~/.gemini/antigravity-cli/settings.json is not valid JSON. Fix or remove that file, then start the agent again.',
+		SETTINGS_WRITE_FAILED:
+			'Crewly could not write ~/.gemini/antigravity-cli/settings.json to switch Antigravity CLI to your Gemini API key, so the agent was not started (it would otherwise fall back to a Google account login). Check that the file and its folder are writable, then start the agent again.',
 	},
 } as const;
 
@@ -3011,6 +3013,8 @@ export const HARNESS_CONSTANTS = {
 	 * already in use.
 	 */
 	RETIRED_IDS: ['gemini-cli'] as readonly string[],
+	/** Appended to a retired harness's name wherever it is still listed */
+	RETIRED_LABEL_SUFFIX: ' (enterprise only)',
 	/** Harness the orchestrator uses when the owner does not choose */
 	DEFAULT_ORC_HARNESS: 'claude-code',
 	/** Short names accepted by `crewly login <name>` / `--harness <name>` */

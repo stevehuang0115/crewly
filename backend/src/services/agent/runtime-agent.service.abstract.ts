@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SessionCommandHelper } from '../session/index.js';
-import { RuntimeType, ADDON_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_TYPES } from '../../constants.js';
+import { RuntimeType, ADDON_CONSTANTS, ANTIGRAVITY_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, RUNTIME_TYPES } from '../../constants.js';
 import {
 	stripAnsiCodes,
 	isPromptLine,
@@ -25,6 +25,9 @@ import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
  * `GEMINI_NO_UPDATE=1` is for Gemini (#229).
  */
 const OPENCODE_DISABLE_AUTOUPDATE_ENV = 'OPENCODE_DISABLE_AUTOUPDATE';
+
+/** `AGY_CLI_DISABLE_AUTO_UPDATE=true ` — prefixed onto an Antigravity launch command. */
+const ANTIGRAVITY_AUTOUPDATE_PREFIX = `${ANTIGRAVITY_CONSTANTS.DISABLE_AUTO_UPDATE_ENV}=${ANTIGRAVITY_CONSTANTS.DISABLE_AUTO_UPDATE_VALUE}`;
 
 /**
  * Result of MCP configuration operation.
@@ -242,6 +245,18 @@ export abstract class RuntimeAgentService {
 						: `${OPENCODE_DISABLE_AUTOUPDATE_ENV}=1 ${cmd}`;
 				});
 				this.logger.info('Injected OPENCODE_DISABLE_AUTOUPDATE=1 to prevent auto-update kills', { sessionName });
+			}
+
+			// Antigravity: keep agy's background self-updater from replacing the
+			// binary mid-task (same failure mode as Gemini #229 / OpenCode #306).
+			// The launch flags themselves (--add-dir, --conversation) come from
+			// AntigravityRuntimeService; the Gemini API key comes from the spawn
+			// env, never the command line.
+			if (this.getRuntimeType() === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+				finalCommands = finalCommands.map(cmd =>
+					cmd.startsWith(`${ANTIGRAVITY_CONSTANTS.DISABLE_AUTO_UPDATE_ENV}=`) ? cmd : `${ANTIGRAVITY_AUTOUPDATE_PREFIX} ${cmd}`
+				);
+				this.logger.info('Injected AGY_CLI_DISABLE_AUTO_UPDATE=true to prevent auto-update restarts', { sessionName });
 			}
 
 			// Clear the commandline before execute

@@ -14,6 +14,7 @@ import {
 	GeminiCliAdapter,
 	CodexAdapter,
 	OpenCodeAdapter,
+	AntigravityCliAdapter,
 	getRuntimeAdapter,
 	getSupportedRuntimeTypes,
 	isSupportedRuntime,
@@ -38,10 +39,11 @@ jest.mock('./agent/runtime-service.factory.js', () => ({
 			'gemini-cli',
 			'codex-cli',
 			'opencode-cli',
+			'antigravity-cli',
 			'crewly-agent',
 		]),
 		isRuntimeTypeSupported: jest.fn((type: string) =>
-			['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'crewly-agent'].includes(type),
+			['claude-code', 'gemini-cli', 'codex-cli', 'opencode-cli', 'antigravity-cli', 'crewly-agent'].includes(type),
 		),
 	},
 }));
@@ -439,6 +441,14 @@ describe('RuntimeAdapter', () => {
 			expect(adapter.displayName).toBe('OpenCode');
 		});
 
+		it('returns AntigravityCliAdapter for antigravity-cli', () => {
+			const adapter = getRuntimeAdapter(RUNTIME_TYPES.ANTIGRAVITY_CLI, '/project');
+
+			expect(adapter).toBeInstanceOf(AntigravityCliAdapter);
+			expect(adapter.runtimeType).toBe(RUNTIME_TYPES.ANTIGRAVITY_CLI);
+			expect(adapter.displayName).toBe('Antigravity CLI');
+		});
+
 		it('falls back to ClaudeCodeAdapter for unknown runtime', () => {
 			const adapter = getRuntimeAdapter('unknown' as any, '/project');
 
@@ -476,8 +486,9 @@ describe('RuntimeAdapter', () => {
 			expect(types).toContain('gemini-cli');
 			expect(types).toContain('codex-cli');
 			expect(types).toContain('opencode-cli');
+			expect(types).toContain('antigravity-cli');
 			expect(types).toContain('crewly-agent');
-			expect(types).toHaveLength(5);
+			expect(types).toHaveLength(6);
 		});
 	});
 

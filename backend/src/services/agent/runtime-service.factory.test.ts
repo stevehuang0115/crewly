@@ -3,6 +3,7 @@ import { ClaudeRuntimeService } from './claude-runtime.service.js';
 import { GeminiRuntimeService } from './gemini-runtime.service.js';
 import { CodexRuntimeService } from './codex-runtime.service.js';
 import { OpenCodeRuntimeService } from './opencode-runtime.service.js';
+import { AntigravityRuntimeService } from './antigravity-runtime.service.js';
 import { CrewlyAgentExternalRuntimeService } from './crewly-agent/crewly-agent-external-runtime.service.js';
 import { RUNTIME_TYPES } from '../../constants.js';
 import type { SessionCommandHelper } from '../session/index.js';
@@ -83,6 +84,13 @@ describe('RuntimeServiceFactory', () => {
 			);
 
 			expect(service).toBeInstanceOf(OpenCodeRuntimeService);
+		});
+
+		it('should create AntigravityRuntimeService for ANTIGRAVITY_CLI (create, createFresh, createWithHelper)', () => {
+			expect(RuntimeServiceFactory.create(RUNTIME_TYPES.ANTIGRAVITY_CLI, null, testProjectRoot)).toBeInstanceOf(AntigravityRuntimeService);
+			expect(RuntimeServiceFactory.createFresh(RUNTIME_TYPES.ANTIGRAVITY_CLI, null, testProjectRoot)).toBeInstanceOf(AntigravityRuntimeService);
+			expect(RuntimeServiceFactory.getAvailableRuntimeTypes()).toContain(RUNTIME_TYPES.ANTIGRAVITY_CLI);
+			expect(RuntimeServiceFactory.isRuntimeTypeSupported('antigravity-cli')).toBe(true);
 		});
 
 		it('should create CrewlyAgentExternalRuntimeService for CREWLY_AGENT runtime type', () => {
@@ -243,8 +251,9 @@ describe('RuntimeServiceFactory', () => {
 			expect(types).toContain(RUNTIME_TYPES.GEMINI_CLI);
 			expect(types).toContain(RUNTIME_TYPES.CODEX_CLI);
 			expect(types).toContain(RUNTIME_TYPES.OPENCODE_CLI);
+			expect(types).toContain(RUNTIME_TYPES.ANTIGRAVITY_CLI);
 			expect(types).toContain(RUNTIME_TYPES.CREWLY_AGENT);
-			expect(types).toHaveLength(5);
+			expect(types).toHaveLength(6);
 		});
 	});
 

@@ -49,12 +49,14 @@ import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
  * auto-restarted (non-orchestrator agents only) to keep the agent available.
  * Gemini is excluded on purpose: its exits go through the failure-retry flow.
  *
- * #228 Claude Code, #234 Codex CLI, #306 OpenCode.
+ * #228 Claude Code, #234 Codex CLI, #306 OpenCode, Antigravity CLI (it exits
+ * cleanly and prints its resume hint).
  */
 const IDLE_EXIT_AUTO_RESTART_RUNTIMES: ReadonlySet<RuntimeType> = new Set<RuntimeType>([
 	RUNTIME_TYPES.CLAUDE_CODE,
 	RUNTIME_TYPES.CODEX_CLI,
 	RUNTIME_TYPES.OPENCODE_CLI,
+	RUNTIME_TYPES.ANTIGRAVITY_CLI,
 ]);
 
 /**

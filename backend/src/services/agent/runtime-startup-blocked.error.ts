@@ -1,11 +1,28 @@
 import { CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
 
-/** Why an agent runtime cannot start without the user acting first. */
-export type RuntimeStartupBlockedReason = 'root_user' | 'first_run_setup';
+/**
+ * Why an agent runtime cannot start without the user acting first.
+ *
+ * - `root_user` / `first_run_setup`: Claude Code as root, or a runtime whose
+ *   first-run screens (theme, terms) only the user may complete.
+ * - `api_key_required`: a runtime Crewly runs only on an API key
+ *   (Antigravity CLI) and no key is available.
+ * - `account_login_refused`: the runtime asked for an account (OAuth)
+ *   sign-in Crewly must not use (Antigravity CLI, by Google's policy).
+ * - `settings_unreadable`: Crewly could not put the runtime's own settings
+ *   into the state it needs (Antigravity's API-key provider).
+ */
+export type RuntimeStartupBlockedReason =
+	| 'root_user'
+	| 'first_run_setup'
+	| 'api_key_required'
+	| 'account_login_refused'
+	| 'settings_unreadable';
 
 /**
  * Thrown when an agent runtime cannot start until the user does something:
- * for example Claude Code as root, or a Claude Code that was never set up.
+ * for example Claude Code as root, a Claude Code that was never set up, or
+ * an Antigravity CLI without a Gemini API key.
  * Retrying cannot help, so the start-up fallback chain and the orchestrator
  * auto-start stop on it and surface {@link RuntimeStartupBlockedError.message}
  * to the user unchanged.

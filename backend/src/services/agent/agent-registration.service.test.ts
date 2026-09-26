@@ -842,6 +842,72 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('opencode-session', 'CLAUDE_CODE_ENABLE_TELEMETRY', '1');
 		});
 
+		describe('antigravity-cli key handling', () => {
+			const realFs = jest.requireActual<typeof import('fs')>('fs');
+			let crewlyHome: string;
+			const originalCrewlyHome = process.env.CREWLY_HOME;
+
+			beforeEach(() => {
+				crewlyHome = realFs.mkdtempSync('/tmp/crewly-agy-reg-');
+				process.env.CREWLY_HOME = crewlyHome;
+			});
+			afterEach(() => {
+				realFs.rmSync(crewlyHome, { recursive: true, force: true });
+				if (originalCrewlyHome === undefined) delete process.env.CREWLY_HOME;
+				else process.env.CREWLY_HOME = originalCrewlyHome;
+			});
+
+			/** Save an Antigravity key the way Settings → Harness does. */
+			function saveHarnessKey(key: string): void {
+				realFs.writeFileSync(`${crewlyHome}/harness-credentials.json`, JSON.stringify({ antigravity: { geminiApiKey: key } }));
+			}
+
+			/** Boot an antigravity-cli agent with a settings Gemini key. */
+			async function bootAgy(): Promise<void> {
+				const { getSettingsService } = require('../settings/settings.service.js');
+				(getSettingsService as any).mockReturnValue({
+					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: false } }),
+					getApiKey: jest.fn().mockImplementation(async (provider: string) => (provider === 'gemini' ? 'settings-gemini-key' : undefined)),
+				});
+				jest.spyOn(service as any, 'provisionRuntimeConfigFile').mockResolvedValue(undefined);
+				mockSessionHelper.sessionExists.mockReturnValueOnce(false).mockReturnValueOnce(true);
+				mockRuntimeService.waitForRuntimeReady.mockResolvedValue(true);
+				mockReadFile
+					.mockResolvedValueOnce('{"roles": [{"key": "developer", "promptFile": "dev-prompt.md"}]}')
+					.mockResolvedValueOnce('Register {{SESSION_ID}}');
+				const result = await service.createAgentSession({
+					sessionName: 'agy-session',
+					role: 'developer',
+					runtimeType: RUNTIME_TYPES.ANTIGRAVITY_CLI,
+					projectPath: '/test/project',
+				});
+				expect(result).toMatchObject({ success: true });
+			}
+
+			it('spawns the PTY with the saved key and never types it into the terminal', async () => {
+				saveHarnessKey('AIza-harness-key');
+				await bootAgy();
+				const spawnEnv = mockSessionHelper.createSession.mock.calls[0][2].env;
+				expect(spawnEnv.GEMINI_API_KEY).toBe('AIza-harness-key');
+				expect(spawnEnv.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('true');
+				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', expect.anything());
+			});
+
+			it('falls back to the Crewly settings Gemini key when none was saved for Antigravity', async () => {
+				await bootAgy();
+				const spawnEnv = mockSessionHelper.createSession.mock.calls[0][2].env;
+				expect(spawnEnv.GEMINI_API_KEY).toBeUndefined();
+				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', 'settings-gemini-key');
+			});
+
+			it('keeps the saved Antigravity key out of other runtimes\' spawn env', () => {
+				saveHarnessKey('AIza-harness-key');
+				expect((service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.ANTIGRAVITY_CLI).GEMINI_API_KEY).toBe('AIza-harness-key');
+				expect((service as any).buildAgentIdentityEnv('s', 'developer', '/p', RUNTIME_TYPES.GEMINI_CLI).GEMINI_API_KEY).toBeUndefined();
+				expect((service as any).buildAgentIdentityEnv('s', 'developer', '/p').GEMINI_API_KEY).toBeUndefined();
+			});
+		});
+
 		it('should attempt recovery when session already exists', async () => {
 			mockSessionHelper.sessionExists.mockReturnValue(true);
 			mockRuntimeService.detectRuntimeWithCommand.mockResolvedValue(true);
@@ -2826,6 +2892,59 @@ describe('AgentRegistrationService', () => {
 		});
 	});
 
+	describe('sendMessageWithRetry — Antigravity CLI', () => {
+		// agy 1.2.11 screens: echo of the submitted message above the box, footer below.
+		const RULE = '─'.repeat(80);
+		const IDLE = [RULE, '> Accept-edits mode: file edits auto-approved (shift+tab to cycle)', RULE, '? for shortcuts        accept-edits · Gemini 3.1 Pro · low'].join('\n');
+		const BUSY_AFTER_SEND = ['> Please review the PR', '⣯  Generating...', RULE, '>', RULE, 'esc to cancel          accept-edits · Gemini 3.1 Pro · low'].join('\n');
+		const STUCK = [RULE, '> Please review the PR', RULE, '                       accept-edits · Gemini 3.1 Pro · low'].join('\n');
+
+		beforeEach(() => {
+			jest.useFakeTimers();
+			mockSessionHelper.sessionExists.mockReturnValue(true);
+			mockGetIdleTimeMs.mockReturnValue(60_000);
+		});
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		it('trusts delivery once the message left the prompt box (the `> text` echo is not "stuck") and presses nothing', async () => {
+			let calls = 0;
+			mockSessionHelper.capturePane.mockImplementation(() => (++calls <= 3 ? IDLE : BUSY_AFTER_SEND));
+
+			const resultPromise = service.sendMessageToAgent('agy-session', 'Please review the PR', RUNTIME_TYPES.ANTIGRAVITY_CLI);
+			await jest.advanceTimersByTimeAsync(60_000);
+			const result = await resultPromise;
+
+			expect(result.success).toBe(true);
+			expect(mockSessionHelper.sendMessage).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalledWith(expect.anything(), 'Tab');
+			expect(mockSessionHelper.sendCtrlC).not.toHaveBeenCalled();
+		});
+
+		it('presses Enter once when the message is still in the prompt box', async () => {
+			let calls = 0;
+			let entered = false;
+			mockSessionHelper.sendEnter.mockImplementation(async () => {
+				entered = true;
+			});
+			mockSessionHelper.capturePane.mockImplementation(() => {
+				calls++;
+				if (calls <= 3) return IDLE;
+				return entered ? BUSY_AFTER_SEND : STUCK;
+			});
+
+			const resultPromise = service.sendMessageToAgent('agy-session', 'Please review the PR', RUNTIME_TYPES.ANTIGRAVITY_CLI);
+			await jest.advanceTimersByTimeAsync(60_000);
+			const result = await resultPromise;
+
+			expect(result.success).toBe(true);
+			expect(mockSessionHelper.sendEnter).toHaveBeenCalledTimes(1);
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalledWith(expect.anything(), 'Tab');
+		});
+	});
+
 	describe('sendMessageWithRetry — retry deduplication guard (#128)', () => {
 		beforeEach(() => {
 			jest.useFakeTimers();
@@ -4000,6 +4119,13 @@ describe('AgentRegistrationService', () => {
 				'# Agent Config Template Content',
 				{ flag: 'wx' },
 			);
+		});
+
+		it('should write AGENTS.md for antigravity-cli runtime (agy reads GEMINI.md and AGENTS.md)', async () => {
+			await (service as any).provisionRuntimeConfigFile('/test/project', RUNTIME_TYPES.ANTIGRAVITY_CLI);
+
+			expect(mockReadFile).toHaveBeenCalledWith(expect.stringContaining('agent-agents-md.md'), 'utf8');
+			expect(mockWriteFileFs).toHaveBeenCalledWith(expect.stringContaining('AGENTS.md'), '# Agent Config Template Content', { flag: 'wx' });
 		});
 
 		it('should skip unknown runtime types', async () => {

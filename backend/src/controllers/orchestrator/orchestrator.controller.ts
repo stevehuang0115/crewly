@@ -354,10 +354,11 @@ async function _performOrchestratorSetup(
 			logger.warn('Failed to get orchestrator runtime type from storage, using default', { runtimeType, error: error instanceof Error ? error.message : String(error) });
 		}
 
-		// For Gemini CLI, gather existing project paths so all /directory add
-		// commands can run during postInitialize — before the registration prompt.
+		// For Gemini CLI (/directory add) and Antigravity CLI (/add-dir), gather
+		// existing project paths so the folders are added during postInitialize —
+		// before the registration prompt.
 		let additionalAllowlistPaths: string[] | undefined;
-		if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+		if (runtimeType === RUNTIME_TYPES.GEMINI_CLI || runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
 			try {
 				const projects = await context.storageService.getProjects();
 				additionalAllowlistPaths = projects.map(project => project.path);

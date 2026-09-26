@@ -681,6 +681,28 @@ describe('RuntimeExitMonitorService', () => {
 			jest.useRealTimers();
 		});
 
+		it('should auto-restart an idle-exited antigravity-cli agent (agy exits cleanly with its resume hint)', async () => {
+			jest.useFakeTimers();
+
+			mockGetAllItems.mockResolvedValue([]);
+			mockGetExitPatterns.mockReturnValueOnce([/Resume with -c \(or command below\)/]);
+
+			service.startMonitoring('agy-agent', RUNTIME_TYPES.ANTIGRAVITY_CLI, 'developer', 'team-1', 'member-1');
+			const onDataCallback = mockOnData.mock.calls[0][0];
+
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 100);
+			onDataCallback('Resume with -c (or command below):\r\nagy --conversation=75e715be-ea13-400e-8e4a-0358e87d170c\r\n');
+			jest.advanceTimersByTime(RUNTIME_EXIT_CONSTANTS.CONFIRMATION_DELAY_MS + 100);
+			await jest.runAllTimersAsync();
+
+			expect(mockCreateAgentSession).toHaveBeenCalledWith(
+				expect.objectContaining({ sessionName: 'agy-agent', role: 'developer', teamId: 'team-1', memberId: 'member-1' })
+			);
+			expect(mockUpdateAgentStatus).not.toHaveBeenCalledWith('agy-agent', CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE);
+
+			jest.useRealTimers();
+		});
+
 		it('should restart orchestrator on exit via OrchestratorRestartService', async () => {
 			jest.useFakeTimers();
 			mockAttemptRestart.mockResolvedValue(true);

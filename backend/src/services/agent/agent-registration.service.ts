@@ -1,5 +1,5 @@
 import { createHash } from 'crypto';
-import { harnessEnvForAgents } from '../harness/harness-credentials.store.js';
+import { getHarnessCredentialsStore, harnessEnvForAgents } from '../harness/harness-credentials.store.js';
 import * as path from 'path';
 import * as os from 'os';
 import { readFile, readdir, stat, mkdir, writeFile, access } from 'fs/promises';
@@ -92,9 +92,11 @@ import {
 	lastTurnContextTokens,
 	orcFreshContextTokens,
 	planRuntimeSessionFlags,
+	waitForAntigravityConversationId,
 	waitForCodexSessionId,
 	type RuntimeSessionPlan,
 } from './runtime-session-recovery.js';
+import { isTextInAntigravityInputBox } from './antigravity-runtime.service.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { RegistrationFlowRegistry, type RegistrationFlowCancelReason } from './registration-flow-registry.js';
 import { buildResumedKickoff } from './resumed-kickoff.js';
@@ -118,6 +120,8 @@ export interface OrchestratorConfig {
 	sessionName: string;
 	projectPath: string;
 	windowName?: string;
+	/** Runtime the orchestrator will run (adds runtime-scoped env such as Antigravity's key) */
+	runtimeType?: RuntimeType;
 }
 
 /**
@@ -1060,6 +1064,10 @@ export class AgentRegistrationService {
 		launchedAtMs: number,
 		plan: RuntimeSessionPlan,
 	): void {
+		if (runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+			this.recordAntigravityConversationAfterLaunch(sessionName, cwd, launchedAtMs, plan);
+			return;
+		}
 		if (runtimeType !== RUNTIME_TYPES.CODEX_CLI || plan.resumeSessionId || !cwd) return;
 		let persistence: ReturnType<typeof getSessionStatePersistence>;
 		try {
@@ -1083,6 +1091,64 @@ export class AgentRegistrationService {
 			})
 			.catch((err) => {
 				this.logger.debug('Codex conversation id discovery failed (non-fatal)', {
+					sessionName,
+					error: err instanceof Error ? err.message : String(err),
+				});
+			});
+	}
+
+	/**
+	 * For a freshly launched Antigravity agent, learn its conversation id and
+	 * persist it so a restart can resume with `agy --conversation=<id>`.
+	 * agy creates the conversation when the first prompt (the registration
+	 * kickoff) arrives; the conversation whose logs mention this agent's init
+	 * prompt file wins, else agy's latest conversation for the workspace.
+	 * Runs in the background; never throws.
+	 *
+	 * @param sessionName - Agent session
+	 * @param cwd - The agent's working directory (agy's workspace)
+	 * @param launchedAtMs - When the launch command was sent
+	 * @param plan - The launch plan (skips when resuming a known id)
+	 */
+	private recordAntigravityConversationAfterLaunch(
+		sessionName: string,
+		cwd: string | undefined,
+		launchedAtMs: number,
+		plan: RuntimeSessionPlan,
+	): void {
+		if (plan.resumeSessionId || !cwd) return;
+		let persistence: ReturnType<typeof getSessionStatePersistence>;
+		const claimed = new Set<string>();
+		try {
+			persistence = getSessionStatePersistence();
+			for (const name of persistence.getRegisteredSessions()) {
+				const id = persistence.getSessionId(name);
+				if (id && name !== sessionName) claimed.add(id);
+			}
+		} catch (err) {
+			// No (usable) persistence: nothing to record into; the launch goes on.
+			this.logger.debug('Antigravity conversation id not recorded: session persistence unavailable', {
+				sessionName,
+				error: err instanceof Error ? err.message : String(err),
+			});
+			return;
+		}
+		void waitForAntigravityConversationId({
+			cwd,
+			notBeforeMs: launchedAtMs,
+			claimed,
+			marker: path.basename(this.getInitPromptFilePath(sessionName)),
+		})
+			.then((conversationId) => {
+				if (!conversationId) {
+					this.logger.warn('Antigravity conversation id not found after launch (resume after restart will not work)', { sessionName, cwd });
+					return;
+				}
+				persistence.updateSessionId(sessionName, conversationId);
+				this.logger.info('Antigravity conversation id recorded', { sessionName, sessionId: conversationId });
+			})
+			.catch((err) => {
+				this.logger.debug('Antigravity conversation id discovery failed (non-fatal)', {
 					sessionName,
 					error: err instanceof Error ? err.message : String(err),
 				});
@@ -1646,6 +1712,7 @@ export class AgentRegistrationService {
 	 * - Gemini CLI   → GEMINI.md (project root)
 	 * - Codex        → AGENTS.md (project root)
 	 * - OpenCode     → AGENTS.md (project root, same convention as Codex — #306)
+	 * - Antigravity  → AGENTS.md (project root; agy reads GEMINI.md and AGENTS.md)
 	 *
 	 * Uses 'wx' flag to avoid overwriting existing files.
 	 *
@@ -1668,6 +1735,11 @@ export class AgentRegistrationService {
 				outputPath: path.join(projectPath, 'AGENTS.md'),
 			},
 			[RUNTIME_TYPES.OPENCODE_CLI]: {
+				template: 'agent-agents-md.md',
+				outputPath: path.join(projectPath, 'AGENTS.md'),
+			},
+			// agy reads both GEMINI.md and AGENTS.md (antigravity.google/docs/cli/gcli-migration)
+			[RUNTIME_TYPES.ANTIGRAVITY_CLI]: {
 				template: 'agent-agents-md.md',
 				outputPath: path.join(projectPath, 'AGENTS.md'),
 			},
@@ -2008,6 +2080,7 @@ export class AgentRegistrationService {
 			await this.createOrchestratorSession({
 				sessionName,
 				projectPath: orchestratorCwd,
+				runtimeType,
 			});
 			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
 			await this.waitForShellReady(sessionName);
@@ -2087,7 +2160,7 @@ export class AgentRegistrationService {
 			// and channel replies).
 			const recreationCwd = projectPath || process.cwd();
 			await (await this.getSessionHelper()).createSession(sessionName, recreationCwd, {
-				env: this.buildAgentIdentityEnv(sessionName, role, recreationCwd),
+				env: this.buildAgentIdentityEnv(sessionName, role, recreationCwd, runtimeType),
 			});
 			// D3: let the shell print its prompt before the init sequence's Ctrl-C.
 			await this.waitForShellReady(sessionName);
@@ -3155,7 +3228,7 @@ Loop until done, blocked, or explicitly reassigned:
 		// Create new session for orchestrator — with the identity env (D1), the
 		// same object the primary path spawns with. windowName not used in PTY backend.
 		await (await this.getSessionHelper()).createSession(config.sessionName, config.projectPath, {
-			env: this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath),
+			env: this.buildAgentIdentityEnv(config.sessionName, ORCHESTRATOR_ROLE, config.projectPath, config.runtimeType),
 		});
 
 		this.logger.info('Orchestrator session created successfully', {
@@ -3176,16 +3249,20 @@ Loop until done, blocked, or explicitly reassigned:
 	 * It also carries the harness env (harnessEnvForAgents): PATH with the
 	 * user npm prefix (`~/.crewly/npm-global/bin`, where a harness lands when
 	 * `npm install -g` hit EACCES) and the Claude credential Crewly holds from
-	 * onboarding (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`).
+	 * onboarding (`CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`). For an
+	 * Antigravity session it adds the saved Gemini key as `GEMINI_API_KEY`
+	 * (agy reads the key only from its environment) — in the spawn env, so it
+	 * is never typed into the terminal.
 	 *
 	 * @param sessionName - PTY session name (also the agent's identity)
 	 * @param role - Agent role (orchestrator, developer, …)
 	 * @param cwd - Working directory the PTY is spawned in (exposed as CREWLY_PROJECT_PATH)
+	 * @param runtimeType - Runtime the session will run, when known
 	 * @returns Env map to pass as `createSession(..., { env })`
 	 */
-	private buildAgentIdentityEnv(sessionName: string, role: string, cwd: string): Record<string, string> {
+	private buildAgentIdentityEnv(sessionName: string, role: string, cwd: string, runtimeType?: RuntimeType): Record<string, string> {
 		return {
-			...harnessEnvForAgents(),
+			...harnessEnvForAgents(process.env, runtimeType),
 			[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
 			[ENV_CONSTANTS.CREWLY_ROLE]: role,
 			// The port this instance actually runs on, not the default (#777).
@@ -3791,7 +3868,7 @@ Loop until done, blocked, or explicitly reassigned:
 				// reply-channel fails with a misleading 404 (Think Tank, 2026-09-18).
 				// Same env object as the Step-2 recreation path (buildAgentIdentityEnv).
 				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse, {
-					env: this.buildAgentIdentityEnv(sessionName, role, cwdToUse),
+					env: this.buildAgentIdentityEnv(sessionName, role, cwdToUse, runtimeType),
 				});
 				this.logger.info('PTY session created successfully', {
 					sessionName,
@@ -3871,8 +3948,13 @@ Loop until done, blocked, or explicitly reassigned:
 			const settingsService = getSettingsService();
 			const runtimeContext = { runtime: runtimeType };
 
-			// Gemini key — needed by gemini-cli and crewly-agent
-			const geminiKey = await settingsService.getApiKey('gemini', runtimeContext);
+			// Gemini key — needed by gemini-cli, antigravity-cli and crewly-agent.
+			// An Antigravity session whose key was saved in Settings → Harness
+			// already got it at spawn (buildAgentIdentityEnv); a settings key
+			// must not override it, and the saved key is never typed here.
+			const antigravityKeyAtSpawn =
+				runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI && getHarnessCredentialsStore().getAntigravityGeminiApiKey() !== null;
+			const geminiKey = antigravityKeyAtSpawn ? undefined : await settingsService.getApiKey('gemini', runtimeContext);
 			if (geminiKey) {
 				await sessionHelper.setEnvironmentVariable(sessionName, 'GOOGLE_GENERATIVE_AI_API_KEY', geminiKey);
 				await sessionHelper.setEnvironmentVariable(sessionName, ENV_CONSTANTS.GEMINI_API_KEY, geminiKey);
@@ -4610,6 +4692,7 @@ Loop until done, blocked, or explicitly reassigned:
 		const isClaudeCode = runtimeType === RUNTIME_TYPES.CLAUDE_CODE;
 		const isCodexCli = runtimeType === RUNTIME_TYPES.CODEX_CLI;
 		const isGeminiCli = runtimeType === RUNTIME_TYPES.GEMINI_CLI;
+		const isAntigravity = runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI;
 
 		// Register TUI sessions for TUI prompt-line scanning (Part 1 of scanner).
 		// The scanner itself is started lazily by trackSentMessage() which
@@ -4740,6 +4823,15 @@ Loop until done, blocked, or explicitly reassigned:
 					} catch { /* non-fatal */ }
 					await sessionHelper.sendKey(sessionName, 'Tab');
 					await delay(300);
+				} else if (isAntigravity) {
+					// Antigravity CLI: Ctrl+U clears stale input (verified on agy
+					// 1.2.11). No Tab/Enter nudges: Tab completes slash commands and
+					// the binary labels its spinner "Generating... (Enter/Esc to
+					// cancel)", so a stray Enter or Esc can cancel a running turn.
+					if (attempt > 1) {
+						await sessionHelper.sendKey(sessionName, 'C-u');
+						await delay(300);
+					}
 				} else if (isCodexCli) {
 					// #246: Codex CLI TUI recovery — simpler than Gemini.
 					// Codex uses Ink-based TUI with › prompt. Avoid Gemini-specific
@@ -5274,7 +5366,24 @@ Loop until done, blocked, or explicitly reassigned:
 					// write. Skip the output-change heuristics that cause false negatives.
 					const isGemini = runtimeType === RUNTIME_TYPES.GEMINI_CLI;
 
-					if (isGemini) {
+					if (isAntigravity) {
+						// --- Antigravity CLI: prompt-box check only ---
+						// agy echoes every submitted message as `> text` above its
+						// prompt box, so the generic "text on a `>` line" check would
+						// call a delivered message stuck. Only the box itself counts.
+						const screen = sessionHelper.capturePane(sessionName);
+						if (!isTextInAntigravityInputBox(screen, message)) {
+							this.logger.debug('Antigravity: message left the prompt box — delivery trusted', { sessionName, attempt });
+							return true;
+						}
+						this.logger.warn('Antigravity: message still in the prompt box — pressing Enter once', { sessionName, attempt });
+						await sessionHelper.sendEnter(sessionName);
+						await delay(SESSION_COMMAND_DELAYS.MESSAGE_PROCESSING_DELAY);
+						if (!isTextInAntigravityInputBox(sessionHelper.capturePane(sessionName), message)) {
+							return true;
+						}
+						this.logger.warn('Antigravity: message still in the prompt box after Enter', { sessionName, attempt });
+					} else if (isGemini) {
 						// Single stuck-at-prompt check — the only reliable failure signal
 						const stuckAtPrompt = this.isTextStuckAtTuiPrompt(sessionName, message);
 						if (stuckAtPrompt) {
@@ -5378,6 +5487,11 @@ Loop until done, blocked, or explicitly reassigned:
 				});
 				if (isClaudeCode) {
 					await sessionHelper.clearCurrentCommandLine(sessionName);
+				} else if (isAntigravity) {
+					// Antigravity: clear the prompt box (Ctrl+U) so the retry types
+					// the message into an empty box. No Ctrl+C (arms exit), no Tab.
+					await sessionHelper.sendKey(sessionName, 'C-u');
+					await delay(300);
 				} else {
 					// Gemini CLI retry cleanup: NEVER send Ctrl+C — it triggers /quit
 					// and kills the CLI entirely, regardless of whether text is in the
@@ -5675,7 +5789,10 @@ Loop until done, blocked, or explicitly reassigned:
 			try {
 				// Skip Gemini CLI sessions — their TUI prompt behaves differently
 				// and false-positive stuck detection causes Tab+Enter spam.
-				if (runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+				// Skip Antigravity too: its idle placeholder and the `> text` echo
+				// of every submitted message sit on `>` lines, and Enter during a
+				// turn can cancel it; its deliveries are verified on the prompt box.
+				if (runtimeType === RUNTIME_TYPES.GEMINI_CLI || runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
 					continue;
 				}
 
@@ -5754,7 +5871,7 @@ Loop until done, blocked, or explicitly reassigned:
 			// Skip Gemini CLI sessions — Tab+Enter recovery causes more harm
 			// than good because the Gemini TUI handles input differently.
 			const trackedRuntime = this.tuiSessionRegistry.get(sessionName);
-			if (trackedRuntime === RUNTIME_TYPES.GEMINI_CLI) {
+			if (trackedRuntime === RUNTIME_TYPES.GEMINI_CLI || trackedRuntime === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
 				continue;
 			}
 
@@ -6241,10 +6358,11 @@ Loop until done, blocked, or explicitly reassigned:
 						await delay(200);
 						await sessionHelper.sendKey(sessionName, 'C-u');
 						await delay(300);
-					} else if (runtimeType === RUNTIME_TYPES.CODEX_CLI) {
+					} else if (runtimeType === RUNTIME_TYPES.CODEX_CLI || runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
 						// #246: Codex CLI — Ctrl+U to clear any stale input text.
 						// Unlike Gemini, Codex doesn't need Enter flush; its Ink TUI
 						// handles Ctrl+U for line clear similar to Claude Code.
+						// Antigravity clears its prompt box on Ctrl+U the same way.
 						await sessionHelper.sendKey(sessionName, 'C-u');
 						await delay(300);
 					} else {

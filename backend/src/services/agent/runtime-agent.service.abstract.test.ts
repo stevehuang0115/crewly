@@ -806,6 +806,33 @@ echo "second command"
 			expect(calledCmd).not.toContain('--auto');
 		});
 
+		it('prefixes AGY_CLI_DISABLE_AUTO_UPDATE=true for antigravity-cli only, once', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('antigravity-cli');
+			const mockSettings = getDefaultSettings();
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			const calledCmd = (sendCommandsSpy.mock.calls[0][1] as string[])[0];
+			expect(calledCmd).toBe('AGY_CLI_DISABLE_AUTO_UPDATE=true agy --dangerously-skip-permissions --mode=accept-edits');
+		});
+
+		it('never adds the Antigravity env prefix to other runtimes', async () => {
+			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
+			const mockSettings = getDefaultSettings();
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockReturnValue({
+				getSettings: jest.fn().mockResolvedValue(mockSettings),
+			} as any);
+			const sendCommandsSpy = jest.spyOn(service as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+
+			await service.executeRuntimeInitScript('test-session', '/test/path');
+
+			expect((sendCommandsSpy.mock.calls[0][1] as string[])[0]).not.toContain('AGY_CLI_DISABLE_AUTO_UPDATE');
+		});
+
 		it('#243: should NOT inject --no-update-check for codex-cli (invalid flag)', async () => {
 			jest.spyOn(service as any, 'getRuntimeType').mockReturnValue('codex-cli');
 			jest.spyOn(service as any, 'getRuntimeConfig').mockReturnValue({

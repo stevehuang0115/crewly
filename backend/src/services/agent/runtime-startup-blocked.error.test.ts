@@ -18,4 +18,12 @@ describe('RuntimeStartupBlockedError', () => {
 		expect(isRuntimeStartupBlockedError(new Error('timeout'))).toBe(false);
 		expect(isRuntimeStartupBlockedError('RUNTIME_STARTUP_BLOCKED')).toBe(false);
 	});
+
+	it('carries the Antigravity reasons (API key required, account login refused, settings unreadable)', () => {
+		for (const reason of ['api_key_required', 'account_login_refused', 'settings_unreadable'] as const) {
+			const err = new RuntimeStartupBlockedError(reason, 'msg');
+			expect(err.reason).toBe(reason);
+			expect(isRuntimeStartupBlockedError(err)).toBe(true);
+		}
+	});
 });
