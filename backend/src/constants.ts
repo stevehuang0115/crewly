@@ -735,6 +735,57 @@ export const WIKI_KB_CONSTANTS = {
 	FRONTMATTER_KEYS: ['title', 'summary', 'keep_because', 'tags', 'visibility', 'source', 'caller', 'recorded', 'updated', 'superseded_by', 'superseded_at', 'superseded_reason', 'proposed_by'] as const,
 } as const;
 
+/**
+ * Standing-answer pages (#816): a few question-anchored pages per scope,
+ * read at boot as a plain file read (no retrieval, no LLM) and refreshed by
+ * an agent only when the memory behind them has moved.
+ */
+export const STANDING_ANSWERS_CONSTANTS = {
+	/** Project pages live here, under the project's `.crewly` data dir. */
+	PROJECT_DIR: 'wiki/llm-curated/standing',
+	/** The agent page, under `<CREWLY_HOME>/agents/<session>/`. */
+	AGENT_FILE: 'standing.md',
+	/** Page id of the agent page. */
+	AGENT_PAGE_ID: 'unfinished-work',
+	/** Hard cap on the whole Standing Answers prompt section (~2 000 tokens). */
+	PROMPT_MAX_CHARS: 8000,
+	/** Cap on one page's body inside the prompt. */
+	PROMPT_PAGE_MAX_CHARS: 3000,
+	/** Cap on one section body written through the API. */
+	SECTION_MAX_CHARS: 1500,
+	/** Cap on a section heading. */
+	HEADING_MAX_CHARS: 80,
+	/** Cap on citations per section. */
+	MAX_CITES_PER_SECTION: 20,
+	/** Entries listed in a refresh WorkItem brief. */
+	BRIEF_MAX_ENTRIES: 30,
+	/** Characters of each entry shown in a refresh brief. */
+	BRIEF_ENTRY_MAX_CHARS: 240,
+	/** Refresh tick interval when CREWLY_WIKI_REFLECT_INTERVAL_MS is unset (the reflect default). */
+	REFRESH_INTERVAL_MS: 60 * 60 * 1000,
+	/** Minimum time between two refresh WorkItems for the same page. */
+	REFRESH_COOLDOWN_MS: 6 * 60 * 60 * 1000,
+	/** At most this many refresh WorkItems per tick (PTY paste-flood guard). */
+	REFRESH_MAX_CREATES_PER_TICK: 2,
+	/** Refresh bookkeeping (last raised watermark per page), under CREWLY_HOME. */
+	REFRESH_STATE_FILE: 'standing-refresh-state.json',
+	/** `metadata.kind` of refresh WorkItems. */
+	WORKITEM_KIND: 'standing-refresh',
+	/**
+	 * Decisions whose title starts with this are task-completion records that
+	 * report-status files automatically, not decisions; they are out of scope
+	 * for "decisions in force" (in this repo: 229 of 327 decision entries).
+	 */
+	COMPLETED_DECISION_PREFIX: '[COMPLETED]',
+	/**
+	 * Agent-memory entries starting with this are report-status completion
+	 * learnings ("Task completed: <summary>"). Done work is neither
+	 * unfinished nor blocking, so they are out of scope for the agent page
+	 * and do not move its watermark; "Task failed:"/"Task blocked:" stay in.
+	 */
+	COMPLETED_LEARNING_PREFIX: 'Task completed:',
+} as const;
+
 /** One of {@link WIKI_KB_CONSTANTS.KEEP_BECAUSE}. */
 export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
 

@@ -93,7 +93,9 @@ describe('PromptAssemblyService', () => {
 			// Startup state (#816 — regression of #395): Active Work + session briefing
 			expect(names).toContain('active-work');
 			expect(names).toContain('session-briefing');
-			expect(names.length).toBe(26);
+			// Standing answers (#816 part B)
+			expect(names).toContain('standing-answers');
+			expect(names.length).toBe(27);
 		});
 
 		it('should use default token budget of 28000', () => {

@@ -74,6 +74,13 @@ describe('RecoveryModule', () => {
 		expect(result).toMatch(/Run this skill now if that section says it was \*\*not injected\*\*/);
 	});
 
+	it('points Step 1 at the Standing Answers section before recall (#816 part B)', async () => {
+		const result = await module.build(baseConfig);
+		const step1 = result.slice(result.indexOf('### Step 1:'), result.indexOf('### Step 1.5'));
+		expect(step1).toContain('`## Standing Answers` section appears above');
+		expect(step1.indexOf('Standing Answers')).toBeLessThan(step1.indexOf('core/recall/execute.sh'));
+	});
+
 	it('should include recall command with correct parameters', async () => {
 		const result = await module.build(baseConfig);
 
