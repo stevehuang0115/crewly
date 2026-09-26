@@ -7,7 +7,11 @@
 
 **Website:** [crewlyai.com](https://crewlyai.com/)
 
-Crewly is an open-source multi-agent orchestration platform that coordinates AI coding agents (Claude Code, Gemini CLI, Codex, OpenCode) to work together as a team. It provides a web dashboard for real-time monitoring, task management, and team coordination — all running locally on your machine.
+**Your judgment, run by an AI crew.**
+
+You're closest to the problem. Crewly gives you an AI crew that works the way you'd decide — even when you're not in the room.
+
+Under the hood, Crewly is an open-source multi-agent orchestration platform that coordinates AI coding agents (Claude Code, Gemini CLI, Codex, OpenCode) to work together as a team. It provides a web dashboard for real-time monitoring, task management, and team coordination — all running locally on your machine.
 
 ## Features
 
