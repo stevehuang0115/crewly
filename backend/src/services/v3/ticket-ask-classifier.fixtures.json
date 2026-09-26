@@ -1,0 +1,1547 @@
+{
+ "_about": "Real owner messages from Slack threads started 2026-09-20..26 (#827). Labels by hand: new_ask = a new deliverable not already in progress in the thread; follow_up = answer/approval of the agent, clarification, correction, feedback, delivery format of the current work, status ping, file, discussion. Top level: new_ask / question / not_ask. Sets: tuned (09-25/26, used to design the rules), holdout (09-23/24, labelled blind, then also used for tuning), final (09-20..22, labelled blind; one rule added after scoring it). Local file paths replaced with /path/file; a message that looked like a credential was dropped.",
+ "sets": {
+  "tuned": [
+   {
+    "id": "tuned-0",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 可以去看看这个是谁 做了什么吗 为什么他们能做成 有什么我们可以借鉴"
+   },
+   {
+    "id": "tuned-2",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 我们现在每天都有进来insights 和signals\n有的我们进wiki了\n但为了避免我丢进去后遗忘了\n我需要你每周日晚上把我们过去这一周所进入总结过的wiki都汇总出来 \n发一个周报到这个channel里\n明白吗？或者有什么疑问吗"
+   },
+   {
+    "id": "tuned-3",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1. 也可以 合并吧\n2. 好的 先试试看"
+   },
+   {
+    "id": "tuned-4",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "wiki周报我建议还是区分一下\n家庭的和个人的一份周报\n行业、创业的和职场的一份"
+   },
+   {
+    "id": "tuned-5",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "没关系"
+   },
+   {
+    "id": "tuned-6",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 看看这个 <https://x.com/ayi_ainotes/status/2103314317416230958?s=46|https://x.com/ayi_ainotes/status/2103314317416230958?s=46>"
+   },
+   {
+    "id": "tuned-7",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "存"
+   },
+   {
+    "id": "tuned-8",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 看看这个 <https://www.xiaoyuzhoufm.com/episode/6aa6adcc9d3264778168765d|https://www.xiaoyuzhoufm.com/episode/6aa6adcc9d3264778168765d>"
+   },
+   {
+    "id": "tuned-9",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-25 12:25:43).m4a, audio/mp4, 899KB)]\n[Hint: voice/audio or video file — use the transcribe-audio skill: {\"audioFile\":\"/path/file If it answers \"needsSetup\": true, tell the user you are setting up transcription and run install-skill --id transcribe-audio — do not just say you cannot.]"
+   },
+   {
+    "id": "tuned-10",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我上面的录音 有听吗"
+   },
+   {
+    "id": "tuned-11",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "wiki就按你说的来"
+   },
+   {
+    "id": "tuned-12",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 看看 <https://x.com/mattpocockuk/status/2103431302527508886?s=46|https://x.com/mattpocockuk/status/2103431302527508886?s=46>"
+   },
+   {
+    "id": "tuned-13",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "crewly那些写到github issue吧"
+   },
+   {
+    "id": "tuned-14",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 看看 <https://x.com/0xwhrrari/status/2103157617715491278?s=46|https://x.com/0xwhrrari/status/2103157617715491278?s=46>"
+   },
+   {
+    "id": "tuned-15",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "看看这个 <https://www.latent.space/p/openrouter?r=3rtl7&amp;utm_medium=ios&amp;triedRedirect=true|https://www.latent.space/p/openrouter?r=3rtl7&amp;utm_medium=ios&amp;triedRedirect=true> \n<@U0C2ZK849ND>"
+   },
+   {
+    "id": "tuned-16",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "补吧\n同时把这个的文字稿发pdf给我\n稍微organize一下"
+   },
+   {
+    "id": "tuned-17",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "有什么值得crewly学习的吗"
+   },
+   {
+    "id": "tuned-18",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "把这些潜在的改善内容存到md文档"
+   },
+   {
+    "id": "tuned-19",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "那个orca和crewly是不是有点像\n可以研究一下他们是怎么做的吗\n\nhindsight那个可以看看"
+   },
+   {
+    "id": "tuned-20",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C30GRCPT4> 这个可以发到crewly博客上"
+   },
+   {
+    "id": "tuned-21",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 开issue可以的"
+   },
+   {
+    "id": "tuned-22",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 那个other turing tests是什么\n可以给我看看文章并告诉我吗"
+   },
+   {
+    "id": "tuned-23",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 可以看看有什么值得进wiki值得深挖的吗？\n我们的wiki目前应该有industry相关的vault吧\n都有什么focus吗？\n\n那个plan mode已死什么意思\n\nwhat even is an os是讲什么的"
+   },
+   {
+    "id": "tuned-24",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C45AW5G80> 那个X的动向能不能按theme帮我group"
+   },
+   {
+    "id": "tuned-25",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 可以去研究一下opus做视频那个吗\n可以怎么加到flopost里"
+   },
+   {
+    "id": "tuned-26",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> hingsight那个要写到一起吗？\n我只是想着和orca对比而已\n除非你觉得有必要"
+   },
+   {
+    "id": "tuned-27",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-26 11:22:44).m4a, audio/mp4, 119KB)]\n[Hint: voice/audio or video file — use the transcribe-audio skill: {\"audioFile\":\"/path/file If it answers \"needsSetup\": true, tell the user you are setting up transcription and run install-skill --id transcribe-audio — do not just say you cannot.]"
+   },
+   {
+    "id": "tuned-28",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "Chit 那个概念挺好的 我们crewly也可以进行总结看看今天做的requesta进行汇总"
+   },
+   {
+    "id": "tuned-29",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 可以开issues发给Sam"
+   },
+   {
+    "id": "tuned-30",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "这是我们准备要做的\nops/marketing/2026-09-template-deploy/00-plan.md\n\n你可以看一下"
+   },
+   {
+    "id": "tuned-31",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-25 10:41:25).m4a, audio/mp4, 295KB)]"
+   },
+   {
+    "id": "tuned-32",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "把方案通过PDF发给我"
+   },
+   {
+    "id": "tuned-33",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "现在有一个新的这个想法，就是说看看 crewly 的这个，因为我们现在主要是 Slack 为主嘛，那么呢，就是可能从工作的角度，或者说从这个企业的角度来说，只有是你用 Slack 用得比较多的可能会还不错。但是还有另外一种体验的话，就等于说我们现在全部都受限于这个 Slack 里面去了。然后我在想说能不能做一个手机 App，这样的话呢，手机 App 我们就可以自己去掌管这个用户的体验，然后就像那个 Muse AI 一样，对吧？它的那个 agent 它就可以把它做得比较流畅很多。然后我的话就可以把它做成类似是说，我们就通过语音的对话，就可以把这个同事，这个 AI 同事就可以串联起来，就把事给办了。这样的话是不是这种体验会更好一点？然后当然我在想说这个东西是不是应该由它自己去长出来的。比如说我们现在在给别的一些 Steam Fund 做这个对接，对吧？他们在使用这个 agent 的这个能力。然后当我们把这个 agent 能力对接上了以后，然后发现说他们觉得 Slack 不好，不方便用，然后我们需要开发一个 Mobile App。这样的话可能这个东西就能 validate。然后你能不能帮我去调研一下，看看说有没有这种需求，就是说，或者说调研一下，看看是不是这样的会比较更容易能够做得起来，或者说看这个 industry 里面有没有这种人在做这些事情。如果没有的话，那个是不是一个机会，就是对 crewly 来说。"
+   },
+   {
+    "id": "tuned-34",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Muse就是Meta搞的 但是不是manus就不知道了"
+   },
+   {
+    "id": "tuned-35",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "先记着吧"
+   },
+   {
+    "id": "tuned-36",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "注册用户那个不是让你和Sam去对接做出来吗\nchrome ext 我会后续去上传"
+   },
+   {
+    "id": "tuned-37",
+    "inThread": false,
+    "label": "question",
+    "text": "这个团队都有几个人"
+   },
+   {
+    "id": "tuned-38",
+    "inThread": false,
+    "label": "not_ask",
+    "text": "*start Ella*"
+   },
+   {
+    "id": "tuned-39",
+    "inThread": false,
+    "label": "not_ask",
+    "text": "start Nova"
+   },
+   {
+    "id": "tuned-40",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "所以Nova已经登陆过了？"
+   },
+   {
+    "id": "tuned-41",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "再试试看？之前是codex有问题"
+   },
+   {
+    "id": "tuned-42",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "登陆了 再试试看"
+   },
+   {
+    "id": "tuned-43",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "现在呢"
+   },
+   {
+    "id": "tuned-44",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "你可以让Nova试试看能不能生成一张图片"
+   },
+   {
+    "id": "tuned-45",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "现在nova在线了吗"
+   },
+   {
+    "id": "tuned-46",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 重新开"
+   },
+   {
+    "id": "tuned-47",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "可以"
+   },
+   {
+    "id": "tuned-48",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 主要是负责CE的网站文章 看看可以生什么图"
+   },
+   {
+    "id": "tuned-49",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不需要 先找2-3篇文章试试看"
+   },
+   {
+    "id": "tuned-50",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "你可以去跑一下daily ops的skill吗"
+   },
+   {
+    "id": "tuned-51",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1. 修\n2. 485那个因为体检rfe的可以去其他地方搜索一下吗"
+   },
+   {
+    "id": "tuned-52",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "第一个可以发\nrfe那个可以写 记得写大白话"
+   },
+   {
+    "id": "tuned-53",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "rfe可以发"
+   },
+   {
+    "id": "tuned-54",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "图片可以啊 要不发到文章上给我preview看看"
+   },
+   {
+    "id": "tuned-55",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "整体看可以 但是少了一些\n至少每个文章三个配图\n还有封面图也需要"
+   },
+   {
+    "id": "tuned-56",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "封面图不一定是这种流程图 可以是真人图那种也行"
+   },
+   {
+    "id": "tuned-57",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "封面图 请你们来定调 关键还是要和CE的风格匹配"
+   },
+   {
+    "id": "tuned-58",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-26 11:24:32).m4a, audio/mp4, 352KB)]\n[Hint: voice/audio or video file — use the transcribe-audio skill: {\"audioFile\":\"/path/file If it answers \"needsSetup\": true, tell the user you are setting up transcription and run install-skill --id transcribe-audio — do not just say you cannot.]"
+   },
+   {
+    "id": "tuned-59",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "挺好的\n这个配图的设计可以做成skill吗 以后都能记住这样的风格\n这个封面图现在放在哪里了？是不是在那个hero background比较好\n[Slack Image: /path/file (1320x2868), image/jpeg]\n\n![IMG_4219.jpg](slack://F0C4TLCFE1J) _(1320x2868, image/jpeg)_\nLocal: /path/file"
+   },
+   {
+    "id": "tuned-60",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 部署吧"
+   },
+   {
+    "id": "tuned-61",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "另一个教育相关的痛点\n小朋友要去弹琴 她说要再玩一下 我问玩多久 她说10分钟 然后20分钟后还是不去"
+   },
+   {
+    "id": "tuned-62",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的"
+   },
+   {
+    "id": "tuned-63",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "之前我们有没有讨论过我想做的自媒体账号？\n你知道我的账号情况、对标数据情况这些吗？譬如YouTube、X、linkedin、stevesprompt的blog、小红书\n因为你现在掌管我的wiki 所以你可以帮我也看看哪些适合我去写内容吗"
+   },
+   {
+    "id": "tuned-64",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> <@U0C3LHD5SG7> <@U0C30GRCPT4> 欢迎加入这个内容团队\nAtlas 你掌管我所有context/wiki 以及你的团队可以获取youtube、X、网页内容等\nRex你的团队可以访问小红书\nElla目前负责marketing\n\n我需要你们今后就是负责帮我管理我的所有自媒体运营"
+   },
+   {
+    "id": "tuned-65",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不是 小红书就是 森先生你好"
+   },
+   {
+    "id": "tuned-66",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "YouTube账号你有数了吗\n我的Linkedin内容你有数了吗\nX呢？"
+   },
+   {
+    "id": "tuned-67",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "linkedin可以用我的chrome"
+   },
+   {
+    "id": "tuned-68",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "应该有连的"
+   },
+   {
+    "id": "tuned-69",
+    "inThread": false,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 我和你可以每天都进行问答 进行更新我的思路和想法\n假如我前一天没有找你说我个人的想法（注意，这些想法必须是和我自媒体涉及的话题相关），那么第二天的一早 你可以主动来问我一些问题 可以是你对wiki库里某一个方向的问题 或者是你觉得什么方向可以适合我去写内容的\n总之你来问我 我来回答 （或者我想到什么就主动给你说）\n\n另外，你如果需要的话 也可以主动联系Rex去看小红书里有什么选题内容这些\n\n然后你也可以让你团队的Sage去看看YouTube或者博客或者X上都有什么trend\n\n这个每天要做的事情你明白了吗"
+   },
+   {
+    "id": "tuned-70",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "等一下 Sage那个要不先不安排\n那几个方向也不太对 <@U0C2ZK849ND>"
+   },
+   {
+    "id": "tuned-71",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我心里的主要也是和AI相关，在大厂（例如Google），在SMB如果要做AI native或者AI transform的话都有什么经验见解\n一人公司（我就是很好的例子）可以怎么做\n如何利用AI去放大自己的乘法系数\n这些都属于我自媒体会愿意聊的东西"
+   },
+   {
+    "id": "tuned-72",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> 你可以负责数据、选题、反馈、排内容等marketing的工作"
+   },
+   {
+    "id": "tuned-73",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "还有 我有一个《第二工位》的中文播客\n我要是有空的话一般也会录制一下\n这是我前面几期的内容\n<https://www.xiaoyuzhoufm.com/episode/6970c23b109824f9e1c620f1|https://www.xiaoyuzhoufm.com/episode/6970c23b109824f9e1c620f1> \n<https://www.xiaoyuzhoufm.com/episode/697fdc762fc7f49d094a42ab|https://www.xiaoyuzhoufm.com/episode/697fdc762fc7f49d094a42ab> \n<https://www.xiaoyuzhoufm.com/episode/69e951191e94ae6921ed219c|https://www.xiaoyuzhoufm.com/episode/69e951191e94ae6921ed219c> \n<https://www.xiaoyuzhoufm.com/episode/69ff92131b7bd50295d2e5ba|https://www.xiaoyuzhoufm.com/episode/69ff92131b7bd50295d2e5ba> \n\n<@U0C2ZK849ND> 你可以去听听看 建立你对我的了解"
+   },
+   {
+    "id": "tuned-74",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "stevesprompt先不着急吧\n后面再说"
+   },
+   {
+    "id": "tuned-75",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1 英文\n2 尽量不提客户名 数字可以说\n3. 对 如果涉及到隐私的就算了\n4 英文\n5 不改了\n\nA。B。C是指？"
+   },
+   {
+    "id": "tuned-76",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1.8万粉那个是CE的北美生活指南\n也就是Rex现在在用的那个\n可惜那个账号因为内容缘故 被限流了"
+   },
+   {
+    "id": "tuned-77",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C2ZK849ND> 副业不放大是因为副业挣的只是我全部财务的零头\n但是我坚持要做是因为这些能锻炼思维、口才、能反哺主业\n\n每天的时间 目前是计划10小时一周 但也很有可能会超"
+   },
+   {
+    "id": "tuned-78",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> \n1. 我的Google calendar有专门一个内容排期calendar 你去看看 看看这些时间要不要调整\n2. 关于内容 文字、图片这些都交给你去给你的团队来完成 来交付\n3. 关于视频内容 因为目前我要十月底以后才能录制视频 所以可能想着暂缓视频"
+   },
+   {
+    "id": "tuned-79",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1. 叫Crewly Marketing Calendar\n2. ack\n3. 音频可以保留"
+   },
+   {
+    "id": "tuned-80",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> 你打算怎么定我的人设？\n换句话说 我们打算做成什么样的image 吸引什么人群 吸引来做什么"
+   },
+   {
+    "id": "tuned-81",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Ella说的人设基本对的\n我想吸引的不一定是华人 我想扩大我的覆盖面\n确实想吸引那些希望做AI转型的中小企业老板 他们可以找我做fde\n对的 就是可以顺势接住“能不能帮我做”\n其他的话就是如果有公司（大厂或创业公司）来物色管理人员 我就是他们要找的那个人\n\n吸引来做什么，对的 你的判断准确 目前主要先把账号做起来 有人互动"
+   },
+   {
+    "id": "tuned-82",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "linkedin可以就发些我的观察 判断 \n不一定要突出我创业拿的结果\n但可以突出AI方法论拿的结果"
+   },
+   {
+    "id": "tuned-83",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> 如果你有想要我发内容的计划 提前（根据需要准备的时间）在这个channel和我说（新开thread）\n然后我可能会和你讨论一下 具体的选题这些 然后哪里可以怎么改"
+   },
+   {
+    "id": "tuned-84",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不是 譬如 你希望我周一发Linkedin 我们就周六或周日在channel里说要发什么选题 素材这些"
+   },
+   {
+    "id": "tuned-85",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我一般比较喜欢一个选题（一鱼多吃）多个平台都能用\n这样就一次准备 之后全品台都能发"
+   },
+   {
+    "id": "tuned-86",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "关于这个是Content的一个创作，我比较喜欢的一个过程，就是说当我们把一个选题选出来，然后我们可以深化地去探讨这个选题。然后呢，就是说可以去多方面地去思考，看能不能形成一道系统，或者能不能组合成一些方法论。然后有了这个以后呢，我们就可以把它作为一个素材，就是去写到长文章，然后把它做成YouTube视频，然后把它拆解成小的这种X的 posts，然后甚至还把它转化成中文的这种播客，还有以及还有这个X。就这些东西是我比较喜欢去这样操作的一个方式。"
+   },
+   {
+    "id": "tuned-87",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "另外我还想就是听一听看，你们是怎么想的这个事情，还包括说看能不能在网上面搜一下有没有对应的人，他们在这个选题啊，然后说自媒体啊，这个上面他们有没有一些什么见解。就是说我们如果想要像拿到这种正反馈，就是我指的就是说有人来看你的内容，然后有人来评价，然后去跟你互动。像这样的一个正反馈的话，那么我们需要在选题上面去迎合吗？就是说去需要知道说用户他们想要看什么样的内容吗？还是说我就先按照自己的节奏来，比如说这个东西是我现在我能讲的，我就先这个来讲，然后而不是说去看说现在什么话题比较热门，然后什么东西能迎合别人。这个是这个 balance 怎么样去取。"
+   },
+   {
+    "id": "tuned-88",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "这个完整的 strategy，可不可以通过 PDF 的方式也发给我看一下。"
+   },
+   {
+    "id": "tuned-89",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我看到这边有需要我确定的东西，长文章的话，目前我主要是发在 LinkedIn 上面，然后 X 上面的话，我们也可以发这个长文章，这个没问题。<http://SteveSprompt.com|SteveSprompt.com> 这个网站的话，我之前主要是写的是一些系统方法论，所以可能更多的是我把它沉淀下来了以后再写上去。但是当然，我觉得我们 Steve Prompt 这个网站也可以进行改版，然后我们这个可以下一步来操作吧。然后深挖怎么聊的话，我觉得对，可以通过 Slack。然后我其实比较喜欢就是通过录语音的方式，然后你们去转文字，这个是没问题的。但是就不知道说你是否有对应的这个 skill。然后比如说像那个 Whisper 的那个 skill，如果有的话也可以。那么如果你要是说验证过觉得 OK，那我就以后都给你发录音也没问题。目前的话我主要是自己在操作这个事情，我把我要说的话我发给 OpenAI 的 ChatGPT，然后它转为文字以后再 copy 到这个 Slack 里面去。然后 Crawly Marketing Calendar 的话这个我一会去看看，你提醒一下我，然后我等会去看看能不能通过这个 Google Chrome，或者我把那个 Chrome 打开，然后再看看你能不能访问。然后 LinkedIn 的数据的话，估计也是要用 Chrome。对，我们没有去对接这个 API。然后私信的话，各平台的私信怎么转给 Grace，我觉得要不就是也是用这个 Chrome extension，就是用我们的 Crawly in Chrome 这个去处理，看看这样效果行不行。"
+   },
+   {
+    "id": "tuned-90",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack: 1 attachment(s) could not be read — Audio Clip (2026-09-25 09:49:32).m4a. Say so rather than guessing what they contained; the owner may need to invite your Slack app to this channel.]"
+   },
+   {
+    "id": "tuned-92",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-25 10:14:45).m4a, audio/mp4, 1330KB)]"
+   },
+   {
+    "id": "tuned-93",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-25 10:19:06).m4a, audio/mp4, 1732KB)]"
+   },
+   {
+    "id": "tuned-94",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "那个autopilot的可以说是通勤上语音 没问题"
+   },
+   {
+    "id": "tuned-95",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的\n这个选题和自媒体内容是不是也要有对应的wiki"
+   },
+   {
+    "id": "tuned-96",
+    "inThread": false,
+    "label": "not_ask",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-25 16:52:04).m4a, audio/mp4, 229KB)]\n[Hint: voice/audio or video file — use the transcribe-audio skill: {\"audioFile\":\"/path/file If it answers \"needsSetup\": true, tell the user you are setting up transcription and run install-skill --id transcribe-audio — do not just say you cannot.]"
+   },
+   {
+    "id": "tuned-97",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "[Slack File: /path/file (Audio Clip (2026-09-25 16:57:34).m4a, audio/mp4, 1411KB)]\n[Hint: voice/audio or video file — use the transcribe-audio skill: {\"audioFile\":\"/path/file If it answers \"needsSetup\": true, tell the user you are setting up transcription and run install-skill --id transcribe-audio — do not just say you cannot.]"
+   },
+   {
+    "id": "tuned-98",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我觉得前面的那个方向的话，嗯，就是说，应该是哪个，说让我选的是对，把 agent 拿掉，然后如果它还能用的话，它用模型至少吃掉它那个。我觉得这个观点是 OK 的，因为这个的判断，这个的问题来判断，更多的是说，判断你这个东西是不是 AI native，对吧？如果说当你把这个东西拿掉了以后，这个东西可能就不成立了，那么就应该是意味着它应该算是一个 AI native。所以这个观点的话可以。对。然后今天说的那个 AI员工会不会像人一样越干越不一样，目前我只是一个提问吧，就是我也觉得我没有太多深入的一些了解，所以还有体感也没有，所以不太确定。所以就是说这个东西可能不一定太着急地去说。"
+   },
+   {
+    "id": "tuned-99",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "可以发pdf吗 而不是md"
+   },
+   {
+    "id": "tuned-100",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我的感受是现在的这个文章就是说好像写得还挺好的，但是好像我也不太清楚说它到底是不是真的就是这样。就是大公司它的 fail是不是真的就是没有找到合适的 headcount，还是怎么样。就是这样子的一个问题。我要怎么样去验证，或者说怎么样能够和你这边的一个沟通，能够判断得出来说这个是对的，还是怎么样。就是我自己的感受，比如说我现在在公司里面，我也有在推，然后我们其实就是走的是 volunteer 的一个方式。然后但是我们的 leadership 反而觉得说是 OK 的。当然相较而言，可能确实就是说这个 adoption 会慢一点，但是从 leadership 的角度来说，因为 expectation 提前就放好了，所以他并不会觉得说通过 volunteer 的方式去 push 是一个有什么太大的问题。因为可能当下这个阶段 leadership 觉得说我们更多地主要先是 explore，先尝试一下。所以我就不知道说我发这样的一个内容是不是就代表了我也要认可，但是如果说我认可的话，我现在就是还没有办法完全地认可。这个可以怎么样去帮助我梳理一下吗？"
+   },
+   {
+    "id": "tuned-101",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我们现在这个探索期的话是，就是想说就今年吧，今年一整年做探索的。然后但是呢，明年的话我们大概率就开始要想说怎么样能够把它规模化、生产化，然后要跟 measurement 要相绑定了。然后当然那个时候的话，我估计可能是志愿者可能是不太行的。那确实就是从这个角度来说，他应该是跟 leadership expectation 有关系。然后推不动的话，我觉得还是主要一个原因就是大家的 mindset，然后大家觉得这个东西跟我的 OKR 没有关系，对吧。然后我又没有什么压力，然后而且再加上觉得说我有别的 work 要做，我时间还跟他们都有限的，我为什么要花这个时间去 push，所以他反而会觉得说就是没有那么积极。然后或者说有些东西就可能不能一整套地这样去做出来。然后其他的话就是说钱啊这些，当然会有，因为你会有这个 token 啊，但是在我们公司的话目前没有，所以。"
+   },
+   {
+    "id": "tuned-102",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "这样\n定稿以前我们都不着急写出来 浪费token\n既然我们想发某个话题 我倾向于我们去研究一下目前industry是怎样的 有什么佐证吗之类的\n如果我觉得没有什么需要补充的了以后 我们再定稿去写其他"
+   },
+   {
+    "id": "tuned-103",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我对这个就是说的一个判断哈，当然就是说首先看你用的是什么样的一个模型，有一些模型它可能比较弱一点，那弱一点的时候，再加上你的工具可能跟不上，那么你做的很多事情就是说你看不到这个真正的一个效果出来。然后但是你就有点 FOMO 的情绪，对吧，其他人都在用，然后你也希望说我们自己的公司能够加紧地把这个东西给推出来。就我觉得这里面好多个点吧，就是说一个就是工具确实是没有跟上，或者说模型的能力没有跟上。但如果说你用了一个好的模型，优秀的模型，那么或者说你有一个好的工具，那么你的这个成本就会更高，你就更需要看到这个 ROI 能够有所回报。然后这样的话呢，就是说，那它 leadership 这个压力肯定就更大。比如说像之前的这个 token maxing，对吧，那这个问题就是在于，花那么多钱，然后没有看到这个成效。然后第二个就是这是属于人和钱，还有包括 leadership 的这个意志力能看段的事情。那第二个就是等于说，我现在能够有这样的一个 champion，对吧，能够帮你去推这个事情。那他也是前期可能看到的一些成果，对吧，比如说像你有这个 AI 进来以后，可能有百分之七十的这个 effort 都不用再你做了，那剩下的百分之三十，或者说你要把剩下这个 scale 到百分之一百。那剩下的这些 effort 可能是往往最需要的，就是说你这个 ROI 最需要的。比如说你这个一个东西，你只做了百分之七十，你没有办法上线到这个生产，对吧。那你只能就是说做一个 demo，大家都觉得 OK，但你要上生产的话，你觉得这个东西就完全质量不够了，不过关。那往往你要花这百分之，这完成这百分之三十的这个 effort，其实可能是更大更难的。那可能就会对于很多人来说，他就觉得这个东西，哪怕你要是找一个能问责的一个人，他也担不起这个责，或者就是说你必须得要再给更多的人去弥补这个模型的这个欠缺的地方。但很有可能你这花了一年的时间去做这个事情，弥补这百分之三十，明年这个新的模型一出来，它就补上了。那你说这一年是不是就白白浪费了？所以可能也会有这方面的顾虑。然后当然还有一种就是等于说是员工自己的 mindset change，对吧，他觉得这个东西是替代我的工作的。然后或者他可能觉得，嗯，我还要学新的东西，要有这种 friction 在。我现在做得挺好的，我现在这个所有的东西都是我自己顺手做的，那我为什么还要找一个 AI 来做？AI 反而还做得又错，然后我还要花时间去给它擦屁股。然后但是我自己做的话就反而不会有错，所以那员工的 mindset 可能也并不会，也没有办法去那个。所以这里面也会涉及到一个就是说，当你模型能力不够强的时候，大家没有什么信心。然后没有什么信心的话，那你就没有办法去做出来。然后所以就是这也是一个观察点了。"
+   },
+   {
+    "id": "tuned-104",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "你去调研的时候还有看到说 industry 里面，比如说它这个推动 AI 失败的这样的一个其他的一些观察点是什么吗？然后或者说你还有没有什么其他的问题？因为我就是在想说，除了这些人啊、钱啊、这些回报率啊等等之类的，还有没有可能是一些其他的问题，对吧？当然有一些的话可能就是说，是不是行业啊会有点区别啊，或者是说哪些地方就是说你没有办法通过 AI 来加速的呀，这等等之类的一些其他的一些观点。然后但是我觉得，因为我们这边是想说告诉人家为什么失败嘛，但是我们同样也要想提出解决方案。那这个解决方案是啥，我们现在还没有讨论，所以我觉得还不着急定稿吧，对吧。"
+   },
+   {
+    "id": "tuned-105",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "关于那最后的百分之三十，目前来说的话，我没有看到有什么特别好的一种数据方法。然后很多的话可能就是说，你要不就是把这个节奏放慢一点，然后就是说边自己补的同时，然后也希望说能够等到这个新的工具、新的模型出来。那其实这个东西就是也是跟你公司的这个其他的有关系，因为毕竟像我所在的公司，我们自己具有自己的模型，有自己的工具，那你就可以说，我只能等他们。但如果说你是别的公司的话，那你就是说，那我能不能就是把预算调高一点，然后去用别人的更强的那些模型啊，等等之类的，就是这种决定他可能要去做。当然我就不太清楚说还有没有其他他们的这些考量点，他们想要去考量的。如果说让我来定这个规模化的话，我觉得肯定首先就是说，你这里面有什么东西是还没有数据化的，这是 number one，对吧？因为很多人他可能会喜欢用 Google Docs，Google Drive，那个 Google Excel，等等之类的，他们去处理他们这些问题。那这些东西其实都不是属于一个可以量化，不是属于一个可以数据化的这样的一个东西。那像这一部分就是说你能不能先把它数据化了。然后其次就是说，基于你现有的这种，对吧？你人工花了多少时间，你能够先做一个 baseline 的一个确定。然后呢，就是接下来的话就是说你需要去把你这里面的所有的这些东西把它放到一个，就是你要去 engineering 一下 loop，要把它当一个 loop engineering 这样的一个问题来看待。就有什么东西是你现在有数据化了以后，能够让它自己跑起来这样的一个 loop。我觉得就应该是由团队去 design 这个 loop。然后 design 完了以后，那我们才能够说真正地去让这个 agent 把它给推起来，规模化起来。这样的话，它出来的这个效果再跟你之前人工去处理的这个去做一个 baseline 的一个对比。那我觉得这样的一个思路的话，可能大概就是说，是我判断的会比较容易去 track 和量化，以及还有包括规模化。但是我不知道我行业里面还有没有其他一些更好的方法。然后对于说人的那个 mindset 那一块的话，我们现在能做的也就只能是，比如说不同的 share 这些 knowledge，或者说是做一些 demo啊，但是很多时候还是很难，因为毕竟人他们会觉得非常 overwhelm，对吧。然后首先一个就是说模型啊、工具啊这些每天都在变。然后你今天学的东西，明天可能又换了。然后第二个就是说现在本人又有活，对吧，我又不是说纯去学这些东西，现在又有其他的活儿。然后他们又觉得说，让我自己来摸索的话，我又不是 champion，我又不是那个 volunteer，我为什么要去摸索一套能够 work 的东西呢，对吧。就是他的 mindset 不在那儿。对，所以还是不太容易。是。然后当然这个东西就是说，可能还是只能通过 manager 吧，或者说通过 leadership 吧，这种上下层级就是关系，这种关系来推进吧。就是等于说 manager 去做，把这个东西当做一个考核点。然后这样有可能能推起来。我不知道说有没有其他的一些历史上的一些案例，就是说也是关于这种人际关系啊，就是在企业里面的，然后或者说人的本性啊这一类的，就是怎么样去推这种东西，怎么样去把这个东西 adopt。就不知道有没有类似像这样子的一些东西可以加进来。然后我的建议的话，给其他公司现在就跟我刚刚说的那个差不多吧。就是说你确实可以去探索，但是你这个探索的主要目的也就是，比如说 Copilot 这一块，对吧？你先看看有什么东西是你现在人为在做的，你可以把它变成 skill。然后你也可以去 Copilot，对吧？你根据用这个 agent 一起去 Copilot 出来。然后呢，当你发现了说可以了以后，那么接下来你就应该是把这个东西给数据化、量化，然后让它放到这个 loop 里面去，然后让它自动化起来。然后模型啊，agent 啊，这一边的话就是说能够去更多地推起来。对，就是说我觉得可能就是你要花这个 effort 去做这个 loop engineering 这一块的工作。"
+   },
+   {
+    "id": "tuned-106",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "等模型变强绝对不是一个好的entrepreneur心态\n肯定还有自主性的比较好对吧？"
+   },
+   {
+    "id": "tuned-107",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我觉得基本上可以，但是还可以再斟酌打磨一下，就是说看看你这里面有没有什么观点是逻辑性还不够强的。比如说你提的这些问题，对吧，然后那你还提了解决方案。那这个解决方案是不是真的能解决这些问题。就是说你看看能不能让团队的成员去帮忙，去 argue 一下，然后看看还有没有什么点是我们没有讨论到的。"
+   },
+   {
+    "id": "tuned-108",
+    "inThread": false,
+    "label": "not_ask",
+    "text": "登陆了"
+   },
+   {
+    "id": "tuned-109",
+    "inThread": false,
+    "label": "question",
+    "text": "我们这里有没有codex的agent"
+   },
+   {
+    "id": "tuned-110",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "可以在ce的团队下添加一个codex agent吗？"
+   },
+   {
+    "id": "tuned-111",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "这个新增加的负责内容（文字、图片等）"
+   },
+   {
+    "id": "tuned-112",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "A chatgpt账号"
+   }
+  ],
+  "holdout": [
+   {
+    "id": "holdout-1",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 你看看今天发的信息里有没有什么值得我们深入了解的"
+   },
+   {
+    "id": "holdout-2",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C2ZK849ND> 按你说的继续挖\n看看有没有值得存入wiki的"
+   },
+   {
+    "id": "holdout-3",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C45AW5G80> 今天就发一批"
+   },
+   {
+    "id": "holdout-4",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 有两个点吧，一个就是刚刚讲的说我们这个系统需要优化，有不少可以改善的地方。你能不能帮我把这些，然后根据你刚刚看的论文，然后总结成一个MD文档，然后把这个 path 发给我，然后我复制过去，然后给我们的开发团队去看看是怎么样优化。然后第二个点就是关于这个 X 的这个大V的一些动向。然后因为目前的话我们才刚开始启动，但是我希望能够在我们的 Wiki 里面能够加入对应的这种大V动向，也就相当于是这个行业的这样一个动向的一个栏目吧。然后这个大V这一块的话呢，就是我希望你也能够给一点建议，然后看看都应该有哪些大V比较适合我们去继续观察的。然后我主要的话呢，一个是说前沿的这个大V的，不是，就前沿 AI 的这一块的发展如何，有些什么新的技术，有什么新的产品，这是一个。然后第二个就是说也想要知道一下大家怎么去运用的，就怎么样把那个东西用到生活实际当中，用到这个经济生活当中的。然后这一块也想要能够知道一下，所以你能根据我的这个需求去看看都有哪些账号是值得我们关注的吗。 然后关于大V的那个账号，当你有了这个结果以后，你可以@一下Ella，然后让她去加入到她的这个信息源里去。"
+   },
+   {
+    "id": "holdout-5",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C45AW5G80> 看看"
+   },
+   {
+    "id": "holdout-6",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C2ZK849ND> 还有一个大V的这个就是，就是在创业这一块吧，就是现在不是也有那个，比如说像那个 Startup Ideas 啊，或者是还有像几个什么 <http://Levels.io|Levels.io> 啊，然后好像还有一个他是用了什么 Trust MRR 啊之类的那个。然后就这几个他们的，就是或者说同类似的这种账号，我觉得都可以加入到关注里面。因为像他们的说话是真的是自己有业务在做，然后而且也拿到一些 outcome，然后也在运用 AI 的，然后有一定的这个声量的。我觉得可以把他们也加入到这个信号源里面，帮我再去 research 看看。"
+   },
+   {
+    "id": "holdout-7",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C45AW5G80> 看看上面这个"
+   },
+   {
+    "id": "holdout-8",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C45AW5G80> 看看"
+   },
+   {
+    "id": "holdout-9",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你能不能今天就试一次 把你抓到的名人动态发给我"
+   },
+   {
+    "id": "holdout-10",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 看看这里有没有哪些X的信号值得收录"
+   },
+   {
+    "id": "holdout-11",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "存"
+   },
+   {
+    "id": "holdout-12",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1和3和4可以都给我详细说一下吗\n5那个 CE的问题有什么想法吗去破局吗？"
+   },
+   {
+    "id": "holdout-13",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "关于1 你能不能用大白话的方式把crewly和steamfun两个项目如何执行写成一个pdf发给我？\n\n关于CE的那个 我想做 但你能把想法交给CE的团队吗？我在他们的channel里接着聊"
+   },
+   {
+    "id": "holdout-15",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "这里有几个想法，一个就是因为你现在已经跑通了，把这个哔哩哔哩的视频给拿下来，而且能够读取里面的内容，我建议你把它做成一个 skill。然后这个 skill 的话呢，我们之后可以复用。然后第二个就是，我之前有跟另外一个 Cloud Code 去聊这个关于我的一些财务啊，或者是创业啊相关的一些信息。因为我觉得你现在在帮我处理我的这个 wiki，然后或者说你在帮我沉淀所有的这些经验知识库等等的。我觉得你可能需要知道一下我现在在做的一些什么项目，然后我的兴趣，我的一些关注的点。这样的话能够方便你判断哪些东西是需要进我们的这个 wiki 的。然后我希望你能够写一个 prompt，你可以单独再给我一个 message，这样的话我就直接复制这个 prompt，就给那个 Cloud Code，让它把对应的这个信息可以把它输出到一个 MD 文档或者是在哪个地方。这样的话就方便你去读取。"
+   },
+   {
+    "id": "holdout-16",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好了 你去看看"
+   },
+   {
+    "id": "holdout-18",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C30GRCPT4> 这个MD文档可能适合你们组去研究"
+   },
+   {
+    "id": "holdout-19",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> 你再看看"
+   },
+   {
+    "id": "holdout-21",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "存"
+   },
+   {
+    "id": "holdout-23",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 呃，我有一些想法，就是关于最近在工作的，然后还有做这AI相关的这些。我觉得这些可能可以成为我之后做 YouTube，或者说做小红书啊，自媒体等的一些素材。我希望你也能够帮我整理一下，把它们分类到 Wiki 里面，然后看看是对应到哪个 Vault 里面比较合适。首先一个就是，第一个点，就是说我发现之前的话，我们也有讲过一个，就是好像在 AI 时代，大家愿意等了，就是说愿意去等待这个 AI，它可能花个一分钟，或者说几十秒，去 load 它的这个 prompt，然后出结果等等的。就感觉好像是说，这个速度不重要了。但是后来我现在发现 Google 它因为它不是一直都在出这个 Gemini 的 Flash Model，然后他们的 Flash Model 主打的就是快。然后其实你从在 Google Search 上面的角度来说，就是它这个体验其实是非常好的，因为它这个产品用户它就是越快越好，给用户的这个反馈也会更快，然后用户也会更能够，就是说你想我要搜一个什么东西，还得等半天，那这样的话其实这个体验不好。所以我是觉得从某种角度上来说，在这个 Agent 的这个时代，速度这个东西肯定还是好的，还是重要的。因为你想，并不是说大家都愿意等，对吧？只是说因为你现在市场上所有的这个 Agent，它都是需要花点时间的，所以你也没办法，你只能等。但是我觉得如果说像在 Google 它用 Gemini 这样的一个产品，这种 Flash 的这个上面来说，它速度是很快的，其实整个用户的体验会非常好。所以我觉得在我们这个开发产品啊，或者等等这些，我们也还是要考虑说什么样的一个东西，用户他是愿意等的。就什么样的东西用户是不愿意等的。不愿意等的我们可能要用些比如说小一点的模型，或者快一点的模型。然后他愿意等的，那可能就是看看异步处理啊，还是怎么样，就是尽量让他能够释放他手头上的这个时间，让他能够去处理别的事情，这是一个。然后第二个就是关于我们现在在做这个 Steam Fund 的这个产品上面。然后我们会发现，其实最一开始最重要的就是要先把这个东西能够 data 化，把你这个公司办这个业务全部都进入到 data 里面。像这个业务，它像我们这个客户，对吧，他本身就是很多东西都是在 Google Drive 里面去运营的，用 Google Sheet，用 Google Doc，然后所有的这些东西都非结构化，所以等到我们需要去想要 scale 的时候就特别难。所以我觉得这个是很多 SMB，小中小企业他们必须要跨过的一个门槛。首先你就要先把你自己的这些东西，把你整个运营都是建立在一个数据化的一个基础之上。那么这是 prerequisite，当你有了这个以后，我们才能够去谈说怎么样把你 automate，怎么样能够把这个打造成 AI Native。然后接下来的一步就是我们开始要去梳理就是我们的一些需求是什么。因为我们在做 Steam Fund 的时候，它有很多这些各种各样的需求，它想要这个也要功能，那个也要有功能，有一些功能就是可能纯 API 就能解决的，有一些功能可能是需要加入一些 AI 的一些，比如说 LM 的一些输出，对吧，它要去做评语啊，评价，就看一个视频这样。那所以这样的话呢，就是它有各种各样的需求，这些需求很容易就丢掉，或者说很容易就被淹没了。所以我们现在需要的就是要有一个 ticket system。那我觉得这个 ticket system 就是一个最关键的，就是说你要有一个这样的对应的 pipeline。这个 pipeline 可以去帮助我们把这个所有的这些你想要做的东西，把它也相当于是一个数据化了。然后有了这个 ticket system 以后的下一步，我们就是可以开始引入 Agent。那么这个 Agent 它就是等于你要去创建一些对应的 Agent 来帮你去处理这些 ticket。那每一个 ticket 进来了以后，它可能自己会去获取这个 ticket，然后去判断它应该怎么做。那这个 Agent 的话就等于说我们要有一些 specialized 的一些 Agent。那当然目前的话，因为这个客户它主要的一个任务是做一个开发管理，那么我们现在主要就是一个开发的一个 specialized 的一个 coding agent。那之后的话可能会需要有一些运营的一些 Agent，所以这个的话我们就再往后看是怎么样的去一个演变。所以这个就是我在做这个 AI Native 的这个角度的一些判断。我觉得这个你看看能帮我加入到我们的这个 system，这个 Wiki 的里面，是吗？"
+   },
+   {
+    "id": "holdout-25",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 存吧"
+   },
+   {
+    "id": "holdout-27",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C3LHD5SG7> 你能把你刚才看的那个glm的笔记发到这里吗？包括图片和文字"
+   },
+   {
+    "id": "holdout-28",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C2ZK849ND> 再看一次？"
+   },
+   {
+    "id": "holdout-29",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 进wiki"
+   },
+   {
+    "id": "holdout-31",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 帮我搜搜看这个 找到访谈并下载下来summarize"
+   },
+   {
+    "id": "holdout-33",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 <@U0C2ZK849ND>  按你说的来"
+   },
+   {
+    "id": "holdout-34",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "开\n建traces"
+   },
+   {
+    "id": "holdout-35",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C2ZK849ND> 怎么看？"
+   },
+   {
+    "id": "holdout-36",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 可以仔细去看看Lenny那个节目吗\n给我说说"
+   },
+   {
+    "id": "holdout-37",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "补"
+   },
+   {
+    "id": "holdout-38",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "补"
+   },
+   {
+    "id": "holdout-39",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 可以看看这些信号吗"
+   },
+   {
+    "id": "holdout-40",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1. 补"
+   },
+   {
+    "id": "holdout-43",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 这些能有什么进我们教育那块的wiki？"
+   },
+   {
+    "id": "holdout-44",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "存"
+   },
+   {
+    "id": "holdout-46",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 帮我看看这个\n看看原文是什么\n有什么可以进wiki\n[Slack Image: /path/file (1320x942), image/jpeg]\n[Slack Image: /path/file (1320x666), image/png]\n\n![IMG_4132.jpg](slack://F0C4DCW1068) _(1320x942, image/jpeg)_\nLocal: /path/file\n\n![34658.png](slack://F0C47PZTA1L) _(1320x666, image/png)_\nLocal: /path/file"
+   },
+   {
+    "id": "holdout-48",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "763是什么"
+   },
+   {
+    "id": "holdout-49",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "OK"
+   },
+   {
+    "id": "holdout-51",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "好的 <@U0C30GRCPT4> 我们是不是可以考虑上PH了？"
+   },
+   {
+    "id": "holdout-53",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我们最近这段时间给 Cruly 做了不少的升级。然后呢，首先就是说 Cruly 在这个 Slack 的这个里面，它现在就可以不再是以前的一个 orchestrator 了。它有更多的是把 sub-agent 可以加入到这个 Slack 里面。那么用户也可以直接在这个 Slack 里面去 @对应的这个 agent。然后他们的这个分发现在就是说全部都不再走这个 orchestrator 了。那当然这一部分的具体的技术细节我们可以不用透露，但是主要是讲了说这个工作流这一块就是我们在 Slack 里面会更加地顺畅一点了，然后也更加地能展现我们这种 multi-agent 的这样的一个 harness。这是一个。然后第二个呢，我们在这个 Cruly 的 Chrome extension 这一块，我们现在也完全开放了。就是说以前的话还必须得要你是 Cruly Cloud 的这个 Pro 用户你才能够用，但是现在的话就是说免费的用户，OSS 的用户他们也可以使用。然后那这样的话呢，我们的这个 browser 这一块的 feature 现在也加入到了我们的 Cruly Cloud 里面。它在 Cloud 里面就可以直接看它的 browser 现在是怎么样的一个使用情况，而且可以 take over。那么我们在 Slack 里面也可以通过跟 agent 去交互，然后 agent 把这个对应的这个 Slack 的对应的这个浏览器的这个操作可以让用户去接管。然后还有一个 feature 就是我们刚刚又加了的就是这个 computer use。虽然我们之前就有，但是现在的话把它就再优化了一下。然后它现在可以是 take control of your browser 这个 computer。然后这一块的话呢，它现在就是也是同样地跟这个 browser 是一样的道理，它可以把它显示在这个 app 上面，它可以让他们大家能够通过我们的 Cruly Cloud 的这个 UI 去看它对应的这个操作。然后这个的话也是我们的这个 feature，请你都能够去看一看。然后我们因为现在我们的整个 marketing 的这个效果还不太好，然后很多这个 web 上面的这个 presence 还不是很够。然后希望就是说能够根据你对我们现在这个 feature 的这个了解，能够去给它进行一些，看看比如说写些文章啊，还是说看看我们的 SEO 应该怎么做啊。然后请你能够看一下。"
+   },
+   {
+    "id": "holdout-54",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1. 可以\n2. 要不要写Agent in Slack这个我交给你去判断 看看一般行业的seo或geo的方法论是什么 然后可以怎么安排\n3. 你可以发布到页面上 保持preview的状态 然后我再去审核"
+   },
+   {
+    "id": "holdout-55",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "Chrome 商店是有的 叫Crewly In chrome\nSlack对OSS也是免费\n\n我觉得你可能也要去自行查看我们的GA4数据 看看你的改动是否有效\n\n创建对应的skill来每天获取GA4的数据和我们数据库里注册用户的数据\n\n然后每天给我一个汇总 发到这个channel\n[Slack Image: /path/file (1320x2868), image/png]\n\n![IMG_4079.png](slack://F0C3RSANTB7) _(1320x2868, image/png)_\nLocal: /path/file"
+   },
+   {
+    "id": "holdout-56",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "self-watch-scribe这个名字真不咋地 可以改一下吗？\ncrewlyai.com的GA4在代码里有添加吗？stevesprompt应该是另一个网站吧\n注册用户数据那里请你和product团队的Sam联系"
+   },
+   {
+    "id": "holdout-57",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Dana吧\n\nGA4那边需要你查看清楚了是对应的网站 名字你后面再提醒我去改\n\nproduct那边你联系Sam了吗？"
+   },
+   {
+    "id": "holdout-58",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Product team那边我去会去他们的channel跟进\nSlack App上架了\nX官方应该是@crewlyai\nWindows确实没有测试过\nChrome商店描述你打算怎么换？用crewly in chrome换吗？"
+   },
+   {
+    "id": "holdout-59",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "改好了"
+   },
+   {
+    "id": "holdout-61",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "诶，为什么前面说了让你去看一看这个重构的这个事情，然后就没有消息了呢？你能帮忙看一看吗，follow up一下。"
+   },
+   {
+    "id": "holdout-62",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "如果是现在这个 Book a Call，因为是这样子的，我现在在想的是说，怎么样去推广我们这个 Cruelly。然后这个的话呢，就是说当然我们现在有 OSS 这个产品。我的想法就是说这个产品，要不就是直接可以让用户去自己使用，但他们得要自己去 figure out 怎么样安装。然后下来的话，我们肯定是需要我们的团队去把这个 documentation 写得更好一点。然后你这边的话做配合，主要就是说能够看看把我们的这个 marketing 能够这个页面说得更清楚，就这个是一个什么样的一个产品。然后这样子的话呢，就是用户他们自己去安装，他们可以自己去查看 documentation，然后通过 SEO 也好，他们找到这个产品，他们自己去操作。然后 business 这一块的话呢，我觉得目前看可能就是帮别人，就是等于前面我们也讲过，是卖结果，不是卖工具。就这个 Book a Call 的话呢，我觉得可能更多可以要不就先改成就是一个 email 吧，就是说可以给我，把这个线索发到这个 <mailto:info@CruellyAI.com|info@CruellyAI.com> 的这个邮箱里面去。这样的话我能知道说有多少人是感兴趣的，然后可以到这儿。然后至于说要不要换成 calendar 的话，我觉得之后再说。然后先发邮件吧。然后另外一个这个 download 的话呢，就是，我觉得可能现在我们也要重新再调整一下我们这个网站，就是我们有 OSS，然后我们有这个 desktop，我们还有这个 Chrome extension 这三样。所以现在的话呢，就是可能或者我们这个叫什么 desktop 这个，因为我们还没有去申请开发者账号，要不就先不着急上这个 download，主要还是先 download 这个 OSS 这个产品。然后我们可以说一下还有这个 Chrome extension，他们可以添加。然后第三个那个 cloud 的那个 URL，它报 500 的报错，那个可能需要开发团队他们去 solve 一下。然后 business 上面的这个价格，嗯，我觉得现在这个的话，就是因为我更想倾向于做 FDE 嘛。根据我在 Steam Fund 这一块的话，目前是一个月是 3000 美金。然后就是说这个定价我们看看是怎么样来确定会比较好。就是说我们是要不就先不写，还是怎么样。然后文案那块的话，就是请你去帮我们操作一下吧。对。"
+   },
+   {
+    "id": "holdout-63",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我觉得企业业如果说不写价格的话是 OK 的，因为我们现在想倾向于 FDE，所以那个 Pro 的那个套餐我们也可以先暂时先保留和隐藏，全部都走这个 FDE。然后我们的 OSS 这个的话，我们应该可以把它叫做 Community Version。这样的话就是它意味着也就是说是 Free 的，是 Open Source 的，然后也要根据我们的 license 来。然后会不会被封号，这个不会，因为我们用的就是 Cloud Code 自己的这个 CLI，然后用的是自己的 Harness，所以我们并没有在这个基础上去做额外的东西，我们只是一个 orchestrator。然后还有 Steam Fund 这个的话，我觉得现在可能暂时先不去点名吧，就但可以说是某教培的机构等等之类这样的一个方式去说。然后 FAQ 里面推荐的这些和安全说法冲突的话，可以要不就是先弱化这个，就是安全嘛，因为但毕竟你想要让这个 agent 它完全自己独立去操作的话，肯定是需要用 YOLO 这种模式的。其他的可以就按照你的这个想法来做。"
+   },
+   {
+    "id": "holdout-64",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Ack"
+   },
+   {
+    "id": "holdout-65",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Ack"
+   },
+   {
+    "id": "holdout-66",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "create github issues。do nothing now"
+   },
+   {
+    "id": "holdout-67",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 走private"
+   },
+   {
+    "id": "holdout-68",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 那我什么时候能看preview"
+   },
+   {
+    "id": "holdout-69",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "按推荐"
+   },
+   {
+    "id": "holdout-70",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C30GRCPT4> 可以在本地跑一下给我看看吗"
+   },
+   {
+    "id": "holdout-71",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "能给我局域网地址吗"
+   },
+   {
+    "id": "holdout-72",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我手机打不开\n要不你截图给我看"
+   },
+   {
+    "id": "holdout-73",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "挺好的 那个media pending要不就继续用我们现在那个“see it in action”\n[Slack Image: /path/file (1320x2868), image/jpeg]\n\n![IMG_4108.jpg](slack://F0C3MBCUPM5) _(1320x2868, image/jpeg)_\nLocal: /path/file"
+   },
+   {
+    "id": "holdout-74",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 或者你觉得还有什么可以添加到这个动画的吗？"
+   },
+   {
+    "id": "holdout-75",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "按你推荐的来"
+   },
+   {
+    "id": "holdout-76",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "之前是不是你说Crewly in Chrome更改了 然后版本要升级到0.4.19？\n我现在看到的本地的folder还是0.4.18"
+   },
+   {
+    "id": "holdout-77",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "好的 那你让Sam去把0.4.20都做好"
+   },
+   {
+    "id": "holdout-78",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "按你的来"
+   },
+   {
+    "id": "holdout-79",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Crewly in Chrome 本地的版本还是0.4.18\n这个有更新吗"
+   },
+   {
+    "id": "holdout-80",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "目前是从这个地方load的\n[Slack Image: /path/file (2924x2158), image/png]\n\n![image.png](slack://F0C413U7D0E) _(2924x2158, image/png)_\nLocal: /path/file"
+   },
+   {
+    "id": "holdout-81",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "那你跑啊"
+   },
+   {
+    "id": "holdout-82",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "这个能用中文发吗 Dana？\n然后格式稍微整理一下"
+   },
+   {
+    "id": "holdout-83",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "可以 Dana"
+   },
+   {
+    "id": "holdout-85",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "加好了 可以试试看吗？同时跑一次新的日报给我"
+   },
+   {
+    "id": "holdout-86",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "博客写了以后就直接发preview的地址给我看 为什么还需要看PR？还是说我们是用md文档来写的？"
+   },
+   {
+    "id": "holdout-87",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "可以合并 这个授权给你们去做\n你们的目标就是运营好<http://crewlyai.com|crewlyai.com>\n为我们带来更多流量\n\n所以你要用md来写博客 可以 但是你自己负责合branch 我只要看preview 然后approve后发布\n你也可以用database 这样可能更简单\n\n请你和Sam去交流负责这个吧"
+   },
+   {
+    "id": "holdout-88",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "文章看不了\n[Slack Image: /path/file (1320x2868), image/png]\n\n![IMG_4130.png](slack://F0C44DW8Z2R) _(1320x2868, image/png)_\nLocal: /path/file"
+   },
+   {
+    "id": "holdout-89",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "对的 crewly web这个授权给Sam"
+   },
+   {
+    "id": "holdout-90",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "没有i18n是吗？\n[Slack Image: /path/file (1320x2868), image/jpeg]\n\n![IMG_4134.jpg](slack://F0C47QL6GR4) _(1320x2868, image/jpeg)_\nLocal: /path/file"
+   },
+   {
+    "id": "holdout-91",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "另外 我觉得 文章好像缺少screenshots\n你看看可以怎么增加这个能力？\n\n西班牙语可能还是可以加 因为我们有巴西的客户"
+   },
+   {
+    "id": "holdout-92",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "客户案例不需要提科学奶酪 就说某教育机构这种"
+   },
+   {
+    "id": "holdout-93",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "另外 文章可能需要添加一些截图吧？"
+   },
+   {
+    "id": "holdout-94",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "那个博客里添加图片或视频的能力你有吗？我前面问了你没有回答"
+   },
+   {
+    "id": "holdout-95",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C3D68441F> 这个截图和Screen Cast的工具能不能加到Crewly的系统里？"
+   },
+   {
+    "id": "holdout-96",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "免费开源skill"
+   },
+   {
+    "id": "holdout-97",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "好的，感谢感谢。首先我觉得几个点吧，就是现在是数据上面也已经反映了，就是说我们还没有很好的起色。那么我这边的话呢，就是希望说你们能够去每天都去 review 一下这些 metric，然后看看有什么样的东西是可以我们去操作执行的。然后另外一个那个说 token 拿不到，那个的话是不是我们 Sam 团队他们就可以自己去处理了呢？你能不能交给他们去处理。然后那个 Chrome 的 extension 也会一会儿把它上线。然后还有这个 email 这一块的话，我也同意你的观点，我会把它转发到我自己的个人 Gmail 里面，这样的话你也能访问。然后关于那个预约的表单，目前的话我是建议还是先通过邮件的方式，不要着急地把 Calendar 发给他们。我们这样的话呢，就是首先一个你们也可以帮我处理，然后还可以看看他们到底是不是真的有什么样的一些想法。对。然后那个预约表单的话，要不就是也交给 Sam 团队去把它稍微地调整一下，修改一下，看一看。"
+   },
+   {
+    "id": "holdout-98",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "这几个文章我都看了，呃，我先承认一个点，就是说我可能都把它们切换成了中文去看，因为这样的话我会速度更快一点，而且更能够马上能 get it，就是说你想表达什么东西。然后我现在都统一来说一下，有几个点。就是首先一个，我看到了你想写的这几个 point，然后以及包括说我们的这个部分的文章都有截图，Very good。然后但是的话呢，我觉得这个截图还可以再更多一点。然后另外一个文字有点太冗长了，可以看看像一般这种，比如说 Anthropic 或者是 OpenAI，他们发的这种文章，他们都是什么样的一种风格。然后尽量是科技一点，然后简短一点，然后尽量把这个事情就是说用大白话能够说得清楚。还是我不知道你这边是想做一个类似教程一样的吗，还是怎么样，但是这个教程又感觉它不是教程，然后但反而文字又很冗长，然后那个配图也那个截图也不够多，这是一个。然后还有一个点就是 call to action 这一块，就是假如说我现在看了这个文章，我知道了哦你有这个 computer use，对吧？那我应该去哪里下载？那我觉得应该是要有一个比较醒目的一个 call to action，这样的话他就可以直接去点击去下载。然后还包括说我要安装这个 Curly，对吧，也是一样的。然后还有一个就是这个标题的问题。我觉得这个标题感觉很奇怪。这个标题就是一眼看过去，就感觉好像你是为了凑这个关键字，然后为了这个 SEO，它不是一个很能一眼就看出来到底是什么的。比如说我们可能是要站在用户的角度去想，什么 Clock Code 能不能跑在 Slack，对吧？然后可能如果说这样的话呢，我们的标题可能要去就是要迎合一下这种这样的一些需求。然后当然我们是一个 orchestration 的一个 harness，对吧？我们可以编排各种各样的，所以就是在想说这一块就可以交给你们团队去 figure out，我们是不是要有不一样的这个 keyword 都要出来。然后比如说 Gemini 也要写一个，Codex 也要写一个，这个就交给你们去分配。你们可以通过看这个 Google Search 的这些对应的数据然后去判断。"
+   },
+   {
+    "id": "holdout-99",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好"
+   },
+   {
+    "id": "holdout-100",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "有用 先这样"
+   },
+   {
+    "id": "holdout-102",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你的几个想法和问题都挺好\n要不你帮我调研一下市场 看看我们有没有机会\n人群可以去看看我们有可能拿下的人群\n然后再看看目前flopost产品在网上的presence情况"
+   },
+   {
+    "id": "holdout-103",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "名字你有什么想法吗"
+   },
+   {
+    "id": "holdout-104",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "但是我不想只针对家庭片\n我们之后还会有其他剪辑 例如YouTuber那些"
+   },
+   {
+    "id": "holdout-106",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "可以帮我点开企业微信吗"
+   },
+   {
+    "id": "holdout-107",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "可以看看未读的群有哪些吗"
+   },
+   {
+    "id": "holdout-108",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你能去看看Z0277那个群说了什么吗\n汇总一下"
+   },
+   {
+    "id": "holdout-110",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "律所合作那里你能登陆CE的zoho邮箱吗？<mailto:contact@careerengine.us|contact@careerengine.us>\n\n然后需要你去\n• 判断联系哪些律所\n• 发什么内容给他们（我需要过目）\n预测那个是两个东西吧\n一个是网友投排期前进速度\n另一个是网站计算排期公布的概率"
+   },
+   {
+    "id": "holdout-111",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你帮我调研一下定价怎么定\n另外 能不能不打电话 只通过邮件交流？这样你能帮我处理"
+   },
+   {
+    "id": "holdout-112",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "转正价那个现在就要说吗？另外我们打算怎么统计？如果现在就想针对大所 我们是否可以考虑做个newsletter的sample出来 告诉他们我们会怎么摆放？而且网站什么地方可以放置广告位？\n\n确实如果能稳定从律所拿广告费 那么我们就不需考虑adsense了 毕竟那个对用户体验不好\n\n可以用我的名字\n公众号好像几千吧不记得了 我可以稍后去看看"
+   },
+   {
+    "id": "holdout-113",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "好的 那么你可以去帮我draft这些邮件吗？用zoho的contact@careerengine.us邮箱\n请不要发出去！我要审核后我会自己发送"
+   },
+   {
+    "id": "holdout-114",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "邮件我已经都发出去了，谢谢你帮我 draft。然后我在想就是说，我们目前 target 了大概有五家这个律所，那么我们是否就是说坚持去 monitor，然后看看之后他们是有没有回复啊，或者是什么样的一个情况，然后我们再考虑说是不是要 expand 到其他更多的这个律所。然后还有一个就是说，我们目前可能这针对的都是中文市场，那么需要去考虑说找这个英文市场的这些律所吗？其实如果说从直业移民的这个角度来说的话，很多他们都是在公司就已经有自己对接的这个律所了，所以我不知道这个是需不需要，但是当然这是广告嘛，我们可以广撒网。"
+   },
+   {
+    "id": "holdout-115",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "微信可以加\n上线时间可以马上上线\n付款可以用stripe（我们应该还有之前的那套campaign 系统可以复用）\n我需要你帮我想的是，我们的方案是什么\n就是他说的“具体了解一下这个项目”\n我们能提供什么"
+   },
+   {
+    "id": "holdout-116",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "*放在哪（首月四项） - 你能出一些截图吗*"
+   },
+   {
+    "id": "holdout-117",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "谢谢 那个回复的邮件你是怎么draft的？可以给我看看嘛"
+   },
+   {
+    "id": "holdout-118",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 改一下"
+   },
+   {
+    "id": "holdout-119",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "但我们也不知道他们是不是专门处理亲属移民的？"
+   },
+   {
+    "id": "holdout-120",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "还有 按照你这里的计算 我们预计能同时有多少家律所？最高的收入为一个月多少"
+   },
+   {
+    "id": "holdout-121",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "还有 按照你这里的计算 我们预计能同时有多少家律所？最高的收入为一个月多少\n再问一次"
+   },
+   {
+    "id": "holdout-122",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我们那个草稿有包含效果图吗"
+   },
+   {
+    "id": "holdout-123",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "回信我发了"
+   },
+   {
+    "id": "holdout-125",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "OK 这个可以先留作backlog\n你10月24号以后提醒我"
+   },
+   {
+    "id": "holdout-127",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "每天都帮忙monitor一下"
+   },
+   {
+    "id": "holdout-129",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "还有这个\n\n两个问题连在一起 —— **Flopost 最好的变现方式，正好也是找客户 #2 的方式。** 先说我漏掉的那块。\n\n---\n\n# 一、Flopost 变现：我上次把它算进\"杠杆\"里了，但那不是答案\n\n三条路，按每小时回报排：\n\n## :star::star: 路径 1：作为 FDE 交付的第二条线（最高杠杆）\n\n```\n每个客户：  系统 $3,000/月  +  视频 $800–1,200/月\n           = $3,800–4,200/月   :star: 单客户收入 +27–40%\n你的时间：  约 +2 小时/月（引擎干活，你只审）\n:star: 时薪：   $400–600\n```\n\n**为什么这条最强：它乘以客户数。** 5 个客户 = **每月多 $4,000–6,000**，而你的时间只多 10 小时/月。\n\n:star: **这正好是把杠杆从 1× 推到 2.5× 的那个机制 —— 不是服务更多客户，是同一个客户值更多钱。**\n\n**在 STEAM Fun 的具体形态：** 作品集视频（已在合同范围内，不另收）+ 招生宣传片（范围外，$400–600/条，等她开口问）。\n\n## :star: 路径 2：代剪服务（$150–250/条）\n\n```\n市场价：$305/条（自由职业剪辑师均价）\n你的报价：$200/条\n你的时间：0.5–1 小时（AI 干 90%，你审 + 交付）\n:star: 时薪：  $200–400\n```\n\n**不需要产品、不需要分发、不需要客服。** 缺的只有一样：客户从哪来。\n\n:star: **而答案就在下一节 —— 教培机构每年都要拍招生视频，而他们正好是你要找的客户 #2。**\n\n## 路径 3：桌面 App 一次性授权（$99，BYOK）\n\n```\n现实区间：10–250 份 = $1,000 – 25,000（一次性）\n成本：约一周打包 + 发布 + 持续的客服负担\n```\n\n:warning: **不是经常性收入，而且要先过\"10 个陌生人素材\"那关。**\n\n:star: **它真正的价值不是钱，是可信度** —— 一个公开发布、有人在用的产品，是你谈教培客户时的信任凭据。**当营销资产看，不当收入看。**\n\n---\n\n# 二、:star: 所以 Flopost 和客户 #2 是同一件事\n\n```\n免费给一家教培机构剪一条招生视频\n        ↓\n他们看到成片（不是 PPT，是他们自己的孩子、自己的教室）\n        ↓\n:star: 你已经在门里了，而且是以\"已经交付过东西的人\"的身份\n        ↓\n再谈系统\n```\n\n:star: **这是 SMB 销售里最有效的一招，而且只有你做得起** —— 人工剪辑团队一条要几百刀成本，做不起免费样片；**你的边际成本接近零。**\n\n**免费样片是你唯一一个别人抄不了的获客动作。**\n\n---\n\n# 三、怎么找客户 #2 —— 五个渠道，按成本排\n\n## :star::star: 1. 你自己孩子上的那些机构（最被低估）\n\n**你刚告诉我孩子在打壁球训练。那家机构、还有其他你在付钱的兴趣班 —— 每一家都是潜在客户，而且你已经是他们的客户了。**\n\n| 为什么这条最好 |\n|---|\n| **你有天然的站位** —— 家长问「你们平时怎么管排课和家长沟通」不是推销，是闲聊 |\n| **你亲眼见过他们的痛点** —— 你自己就在经历他们的流程 |\n| **不需要任何介绍人** |\n| :star: **零竞争顾虑** —— 壁球和 STEAM 不抢学生 |\n\n**一句话就能开场：「你们招生的时候有做视频吗？我平时在做这个，可以免费帮你们剪一条试试。」**\n\n## :star: 2. 牡丹的转介绍 —— 但有个陷阱\n\n:warning: **别直接问「你认识哪些教培机构」—— 那等于让她把你介绍给竞争对手。**\n\n**要限定在不冲突的范围：**\n\n| 方向 | 为什么不冲突 |\n|---|---|\n| :star: **不同城市**（纽约、加州、西雅图） | 她的学生不会跑那么远 |\n| :star: **不同科目**（中文、音乐、美术、舞蹈、数学） | 不抢同一批课时 |\n| **她在中国 DI 那边对接的伙伴** | 完全不在她的市场里 |\n\n**问法：「你们圈子里，做中文或者音乐的机构，有没有也在为师资培训和家长沟通头疼的？」**\n\n## 3. 行业协会 —— 买家最密集的地方\n\n**全美中文学校协会（CSAUS）这类组织、地区性的中文学校联合会、夏令营协会** —— 这些地方一次聚集几十上百家机构主，而且他们本来就在交流运营经验。\n\n:star: **这比 NECINA 精准得多** —— 我上次把 NECINA 说得太好了，那边主要是科技行业的专业人士，**不是教培机构主**。NECINA 适合建公开身份，不适合找教培客户。\n\n## 4. 微信群 / 小红书\n\n机构主自己的交流群、家长群里的机构信息。**成本低但转化慢。**\n\n## 5. 内容（YouTube）\n\n:star: 最好的渠道，**但 12–18 个月之后才成立。** 现在不算。\n\n---\n\n# 四、销售动作：从牡丹那次学到的模式\n\n**回看你和牡丹是怎么成的 —— 那个模式可以复制：**\n\n```\n① 先有关系（你之前给她做过项目制的小活儿）\n② 她自己说出痛点\n③ 你用她自己的数字给她算账\n④ 才谈月费\n```\n\n:warning: **不要上来就报 $3,000/月。** 那个价格是在她已经信任你之后才成立的。\n\n## :star: 一个能撬开话题的问题\n\n&gt; **「你每周花多少时间在**不是教学**的事情上？」**\n**这一问会直接问出痛点，而且不像销售。** 牡丹那边浮出来的是师资培训 —— 每家机构的答案会不一样，但都疼。\n\n## 第一笔生意不要是 retainer\n\n**从一个小的、有明确交付物的项目开始**（一条招生视频、一个排课自动化、一份家长沟通模板）。**做完再谈长期。**\n\n---\n\n# :warning: 五、用 STEAM Fun 当案例，要先拿授权\n\n**你那份合同第八条是我写的，里面有：**\n\n&gt; 「如需在对外案例、演示或内容中提及本合作，须事先取得机构书面同意；涉及学生的素材须另行取得相应授权。」\n:star: **所以在拿 STEAM Fun 去谈客户 #2 之前，先跟牡丹要一个书面同意。**\n\n**这条看着限制你，实际是保护你** —— 教培涉及未成年人，没有授权就拿案例去谈，是真的会出事的那类风险。\n\n**而且这个要求很好提：「我想在跟别人介绍我做什么的时候提到我们的合作，可以吗？涉及孩子的素材我不会用。」**\n\n---\n\n# 六、这两周可以做的\n\n| | 动作 | 成本 |\n|---|---|---|\n| **1** | :star: **下次送孩子去壁球训练时，跟机构的人聊十分钟** | 零 |\n| **2** | :star: **挑一家，免费剪一条招生视频**（同时也是 Flopost 的真实素材测试） | 引擎干活 |\n| **3** | **跟牡丹要案例授权** + 问不冲突方向的转介绍 | 一次对话 |\n| **4** | 查一下本地/全美的中文学校协会，看有没有年会 | 半小时 |\n\n:star: **第 1 和第 2 条合起来，就是你现在能做的成本最低、也最可能出结果的动作 —— 而且它同时推进了 Flopost 的验证和客户 #2 的开发。**"
+   },
+   {
+    "id": "holdout-130",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "这个也可以看看\n\n我会派一个子代理去查外部行情（律师获客成本、邮件广告报价等），同时我这边继续完成案件追踪的需求测试并拉取我们自己的数据；已确认 ce-backend 是从源码在 Docker 中构建、工作区干净，可以放心改动。\n\n行情那边在查了。我这边先拉变现评估要用的自有数据：月活、美国用户占比、页面浏览、广告展示和点击。\n\nGA4 已经关联了 AdSense，能直接看到真实广告收入：**近 30 天 484.65 美元**。这个数字很关键，粗估就不用靠猜了。按月拉一年的收入走势：\n\n广告数据已核实：过去12个月总收入约4,418美元（月均约340美元，区间135-666美元），99.6%来自首页，千次浏览收入2.2-4.7美元，这将作为后续评估的基准。接下来我要把等候名单话题加入ce-backend，先查看话题数据结构对模板的要求。\n\n要改的地方都清楚了。开始改 ce-backend 和共享常量：\n\nce-backend 那边已经改好，服务重启时种子程序会自动创建新话题。现在开始改 web-visa，先确认埋点事件名的定义方式和几个投放位置的页面结构，再动手改白名单、事件名和入口组件。\n\n我确定了投放三处：首页（求职入口旁）、等待时间估算工具页、案例解读文章末尾。接下来查看案例文章使用的渲染组件。\n\n我会在 `AnalysisArticleContent` 中判断栏目类型，若为案例解读则在文末订阅框后追加等候名单卡片；同时首页入口要参照求职入口样式实现，现在先查看 `HomeListRow` 支持哪些参数。\n\n看 `PredictionResultNotify` 完整的提交和结果处理逻辑，照着写：\n\n开始写入口组件：首页用一行展开式表单，文章/工具页用卡片，并加滚动可见才计入的曝光统计；文案标注「开发中」并说明留邮箱即订阅每月排期邮件，只收邮箱和案子类型，不收收据号。\n\n组件写好了。接下来接上埋点事件的类型定义、两处白名单，并把入口放到三个位置：\n\n再把入口放到三个位置，并导出组件：\n\n导入时直接指向组件文件，不经过 widgets 的汇总导出：文件里有注释提醒过，汇总导出会顺带把图表库打包进来。放置三处：\n\nweb-visa 类型检查和45个测试全部通过。接下来检查 ce-backend，先确认它引用的 `@ce-core/shared` 构建产物是否已提交到 git，再做类型检查。\n\n外部行情数据已获取，ce-backend 类型检查和通知模块298个测试全部通过，共享包构建产物无需入库（Docker构建时会重新编译）。现在提交并推送代码，接下来将上线等候名单测试并撰写变现评估。\n\n两个镜像依次在后台构建：ce-backend 1.1.59 和 web-visa 1.3.92。\n\n趁镜像在构建，补几项变现评估要用的数据：CE 的账户总数和近一年的活跃情况、各个业务线还剩多少流量。\n\n数据都齐了。CE 现有 53,713 个账户，近一年新增约 9,800 个，大部分来自订阅时自动建的账户。镜像还在构建，构建完成后我会先部署测试，再把变现评估一起给你。\n\nweb-visa 1.3.92 构建成功，但 **ce-backend 没有生成镜像**：grunt 构建失败时不报错，是之前记过的坑。看日志：\n\ngruntfile 里的注释写得很清楚：ce-backend 不能传 Dockerfile 路径，否则构建上下文会被缩到子目录，找不到共享包。去掉路径参数重新构建：\n\nce-backend 1.1.59 构建成功。部署顺序是先 ce-backend，它启动时会自动建出新话题；再 web-visa。先确认 ce-backend 跑在哪几台节点上：\n\n部署前按老规矩核对：线上的 ce-backend 1.1.58 是三天前部署的，要确认它的代码都在 git 里，否则这次构建会把线上的功能悄悄丢掉：\n\n1.1.58 是 9 月 21 日 04:24（UTC）构建的。看它之前最后一个 ce-backend 提交的准确时间，确认线上的改动都已经提交：\n\n那次提交在 UTC 04:23，正好被 04:24 构建的 1.1.58 包含,ce-backend 之后无其他变更,可以安全部署。接下来我会逐台节点部署,先部署 ce-backend,再部署 web-visa。\n\n两台节点都已更新，状态健康。日志里没有看到「Topic created」，要到数据库里直接确认新话题有没有建出来：\n\n**新话题没有被建出来**：数据库里还是原来的 6 个话题。看看 `seedTopics` 到底在哪里被调用：\n\n`seedTopics` 从未被实际调用，之前的话题都是直接写入数据库的，种子文件只是文档。我将按同样的结构，直接把这条新话题插入数据库。\n\nField shape matches (my script fills CreatedDate/ModifiedDate). Insert:\n\n话题已经写入数据库。再确认 ce-backend 查话题时有没有内存缓存，有的话要重启才认得到新话题：\n\n没有缓存，不用重启。由于游客提交需过 Turnstile 验证脚本拿不到令牌，我改为直接调用 ce-backend 内部订阅接口，用一个格式正确但不存在的账户 ID 测试：返回「账户不存在」说明新话题通过白名单校验，返回「话题不合法」则说明未通过，且不会影响任何真实账户。\n\n新话题已通过 ce-backend 白名单验证：假账户提示「账户不存在」，非法话题名提示「话题不合法」。接下来我会确认入口在三个页面上都能正常显示。\n\n三个位置都正常，表单和 Turnstile 也都在，页面无报错。接下来记两条记忆：本次测试的判断标准和复查日期，以及「通知话题需手动写库，种子文件不会执行」这个坑。\n\n测试已上线：web-visa 1.3.92 和 ce-backend 1.1.59 已部署到两台节点，入口分布在首页、等待时间估算工具页和案例文章末尾，10 月 8 日按标准复查。接下来顺手清理本机 Docker。\n\n案件追踪的需求测试已经上线，10 月 8 日按事先定的标准复查。下面是你问的变现评估。\n\n## 一句话结论\n\n**只靠现在的广告，每年大约 4,400 美元，不值得继续大投入。** 真正可能把收入做到每月几千美元的只有一条路：**中文移民律师合作**。建议先花 90 天低成本验证，达不到门槛就转为低维护状态。\n\n## 先看家底（都是真实数据）\n\n| 指标 | 数字 |\n|---|---|\n| 月活用户 | 约 2.7 万（87% 在美国） |\n| 年访问 | 28 万人、123 万次页面浏览 |\n| **广告收入** | **过去 12 个月约 4,418 美元，平均每月约 370 美元**，99.6% 来自首页 |\n| 每千次浏览收入 | 2.2 到 4.7 美元 |\n| 排期邮件名单 | 20,384 人，打开率 53% |\n| CE 账户 | 53,713 个 |\n| 社区 | 很小，86% 的发言人只来过一天 |\n\n用户画像很值钱：在美华人 H-1B 和职业移民申请人，收入高，而且正在花大钱（一个 EB-1A 或 NIW 案子的律师费是 6,000 到 8,000 美元）。**但流量小，而且几乎只关心排期。**\n\n## 各种变现方式，按我们的规模估算（每月）\n\n| 方式 | 估算月收入 | 可行性和前提 |\n|---|---|---|\n| **展示广告（现状）** | 约 370 美元 | 已经在做 |\n| **换高端广告联盟**（Raptive 或 Mediavine） | 800 到 1,500 美元 | 门槛我们大致够：Raptive 要求每月 2.5 万次浏览，Mediavine 要求年广告收入 5,000 美元，我们是 4,400。**但它们收不收中文站不确定**，得去问。几乎零开发，最先试 |\n| **律师合作**（固定月费赞助或按线索收费） | 1,000 到 5,000 美元起，跑顺了上限更高 | **潜力最大**。EB-1A/NIW 的一条有效线索值 60 到 300 美元。注意：律师职业规范一般**不允许按律师费抽成**，只能按广告位或线索收固定费用，各州规定不同，签约前要让律师确认 |\n| **排期邮件赞助** | 每封 300 到 800 美元 | 约 1 万次打开，按行业价算。但你定过邮件改动要等名单迁移完成，所以排在迁移之后 |\n| **返佣**：父母探亲医疗保险、Wise 汇款、非居民报税等 | 100 到 800 美元 | 父母探亲保险和我们的用户最对口。信用卡返佣门槛高，而且很多学生用户批不下来 |\n| **付费会员** | 乐观约 1,200 美元 | 行业免费转付费的中位数是 0.62%。我们没有一亩三分地「面经」那种能直接换钱的独家内容，把握最小 |\n\n## 三种情景（全年）\n\n| 情景 | 月收入 | 年收入 | 需要做什么 |\n|---|---|---|---|\n| **维持现状** | 约 370 美元 | 约 4,400 美元 | 什么都不做 |\n| **保守** | 800 到 1,500 美元 | 1 万到 1.8 万 | 换广告联盟，加几个返佣链接 |\n| **现实** | 2,000 到 5,000 美元 | 2.5 万到 6 万 | 再签下 2 到 3 家律所的赞助或线索合作，加上邮件赞助 |\n| **上限** | 8,000 到 15,000 美元 | 10 万到 18 万 | 律师线索规模化，再做付费会员，**流量还得翻倍**。这一条难度大，因为我们的自然搜索需求几乎只有排期这一类 |\n\n## CE 这个品牌能做成什么\n\n1. **中文移民资讯加律师撮合**（最推荐）：用户正处在要花钱请律师的阶段，信任来自我们的排期数据和内容。这块在中文市场是空白，现有的只是律师名录挂牌，没有撮合。\n2. **以邮件为核心的小媒体**：排期邮件是我们最好的渠道，成本很低，可以靠赞助养活，但天花板也低。\n3. **华人专业人士社区**（类似一亩三分地）：社区太小，要做很多年，不建议作为主线。\n4. **求职招聘**（CE 本来的方向）：刚测过，这批读者没有需求，点击率 0.02%。\n5. **工具或数据订阅**：用户付费意愿低，案件追踪的测试正在验证。\n## 值不值得继续投入\n\n这取决于两个我不知道的数：**服务器每月花多少钱，你每周投入多少时间。** 如果服务器加其他固定成本每月在几百美元，现在的广告收入基本只够打平。\n\n我的建议是先做一轮 **90 天验证**，事先定好标准：\n\n• **第 1 周**：申请 Raptive 或 Mediavine；在相关页面加父母探亲保险和 Wise 的返佣链接。\n• **第 1 到 4 周**：联系 5 到 10 家做 EB-1A/NIW 的华人律所，提供两种合作方式：每月固定的赞助位，或者按线索试点（每条 50 到 100 美元）。站上加一个「免费评估 EB-1A/NIW」表单，线索转给合作律所。\n• **第 90 天做决定**：\n    ◦ 月收入达到 2,000 美元以上：继续加码，律师这条线值得做成主业务。\n    ◦ 不到 1,000 美元：转成低维护状态，只保留排期数据和邮件，不再开发新功能。\n还有一个教训：过去一个月的数据显示，我们新做的功能大多没人用，真正有效的都是修复坏掉的东西。所以接下来的时间应该优先花在变现验证上，而不是继续加功能。\n\n律所名单和联系话术我可以先起草。这份评估如果要发给合伙人，我也可以做成一个网页。"
+   },
+   {
+    "id": "holdout-131",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "还有这个\n先看 posts 站现在的真实情况。巡检记录里有两个线索：\n• 按国家剔除机器人流量后，真人每天只有 60 到 70 个。\n• nginx 日志里，老文章的 `/p/&lt;id&gt;` 地址一天有 2.9 万个不同网址返回 404。这些主要是爬虫和外链访问，GA4 里看不到。\n后者可能是真正的机会：如果那批老文章的内容还在数据库里，恢复它们等于找回一批已经被搜索引擎收录过的页面。依次查三件事：posts 站的流量和广告收入、404 的规模和来源、老文章的内容还在不在：\n\nGA4数据显示posts站没有广告收入，流量大部分是机器人（互动率仅1%-5%），真实读者主要来自美国和自然搜索（约2,400人和578次会话，互动率30%-64%）。接下来我要查nginx日志，看老文章404的规模和访问来源。\n\n今天已有近1.2万次旧文章404，谷歌爬虫占3799次说明这些网址仍在其索引中被反复抓取，而直接搜索点击仅3次。接下来我用几个404的文章ID去数据库里查这些内容是否还存在。\n\n在主库 ChineseCareerEngine 的所有集合里都没找到这 200 个 ID。老文章可能在别的数据库里，把整个集群的库都列出来看看：\n\n整个集群里都找不到。再查老的 posts 程序原本从哪里读文章，可能用的是别的集合名，或者 ID 存成了字符串：\n\n这些都是依赖包里的测试模型。直接看 ce-data-posts 源码里定义的文章模型：\n\n我来查一下 posts 集合当前的文档数量，以及句子表、图片表里是否还残留这些文章的相关数据。\n\n发现posts、postimages、postsentences集合全部为空，而404文章ID的创建时间跨度从2017年1月到2025年7月，说明这些文章直到2025年7月仍存在，之后被清空了。接下来查看ce-core根目录下的mongodb文件夹及本机可能存在的导出文件，寻找备份。\n\nmongodb 目录下有 dump_glacier_posts.sh、dump_to_ssd_backup.sh 两个备份脚本和一份 README，我来看看它们把老文章存到了哪里。\n\n找到了：README 里有条恢复命令指向 `/Volumes/T7 Shield/mongodb_backups/posts.gz`，说明老文章导出到外接盘 T7 Shield 后才从线上库删除。接下来我看看这块盘是否还连着，以及冷存储脚本存在哪儿。\n\n找到关键线索：76GB 的旧 posts 集合曾导出两份备份，一份在未连接的外接 SSD 上，另一份在服务器路径 `/mnt/volume_cedbglacier2/mongodb_backups`。接下来我去确认那台服务器是否还在线。\n\n`doctl` 当前连的是另一个项目的账号（steamfun），看不到 CE 的服务器。看看本机还配置了哪些账号：\n\nCE账号下已经没有`volume_cedbglacier2`这块挂载盘了，服务器和存储应该都已删除，唯一可能的备份就是你那块「T7 Shield」外接SSD。接下来我先用互联网档案馆查几个被收录过的老网址，看看老文章的内容。\n\n结论先说：**posts 基本不会提高收入上限，它最大的潜在资产也用不了。**\n\n## posts 现在的真实情况\n\n| 指标 | 数字 |\n|---|---|\n| 广告收入 | **0**（GA4 里 posts 没有任何广告收入） |\n| 真人流量 | 30 天约 2,400 个美国用户，每天几十人；其余绝大多数是机器人（挪威、越南、新加坡等地，停留 0 到 1 秒） |\n| 自然搜索 | 30 天 578 次会话，互动率 64%，量很小但是真人 |\n| 老文章 `/p/&lt;id&gt;` 的 404 | 今天前 5 个小时就有约 1.2 万次，其中谷歌爬虫 3,799 次 |\n\n## 唯一看起来像机会的：谷歌还在抓的老文章\n\n谷歌至今还在反复抓这批老网址，说明它们曾经被大量收录。我追查了一下这批内容：\n\n• **线上已经没有了**：`posts`、`postimages`、`postsentences` 这些集合全部清空。这批文章的创建时间从 2017 年 1 月到 2025 年 7 月，删除前 `posts` 集合有 76 GB。\n• **备份可能还在**：删除前导出过两份。一份在服务器挂载盘上，那块盘已经不在 CE 的 DigitalOcean 账号里了。另一份在外接 SSD「T7 Shield」上，这是现在唯一可能还在的副本，只有你手上能确认。\n• **但这批内容不该恢复。** 我用互联网档案馆抽查了几篇被收录过的，标题像这样：\n    ◦ 「网络狂欢的背后：作为亚文化符号的\"张献忠\"」，页面标着「原文」「微信」\n    ◦ 「【纽约 Brunch 指南】这十家最热门 Brunch 餐厅」，同样来自微信\n    ◦ 「Favorite sofas for your home's cozy corner」，自动生成的英文带货文\n  也就是说，主要是**转载的微信文章**，加上**自动生成的低质量内容**（数据库里也确实有「自动生成」「句子聚合」这类模块）。重新上线会带来两个风险：一是版权问题；二是谷歌会把它判为「大规模低质内容」，连累整个 career<http://careerengine.us|engine.us 域名，包括> visa 站的排名。\n\n## posts 的几条路，收入都很有限\n\n| 做法 | 收入影响 | 我的建议 |\n|---|---|---|\n| 恢复老文章 | 可能带回一些搜索流量，但风险远大于收益 | **不做** |\n| 给 posts 挂广告 | 真人流量太少，每月大概十几美元；而且现在流量以机器人为主，挂上广告很可能被 AdSense 判为**无效流量**，连累和 visa 共用的广告账户 | **不做**，至少要先清掉机器人流量 |\n| 老网址统一返回「410 已删除」 | 不增加收入，但能让谷歌更快把死链从索引里清掉，减少无效抓取，也避免拖累整个域名的质量评价 | 可以做，改一行 nginx 配置，属于清理 |\n| 把 posts 改造成一个新的原创内容站（比如在美华人理财、保险、父母探亲） | 理论上能挂返佣，但这等于从零开始做一门新的内容生意 | 现阶段不建议，精力应该集中在 visa 的律师合作上 |\n\n## 对整体收入上限的影响\n\n把 posts 加进去，前面那张表里的四种情景基本不变，最多每月多几十到一两百美元。**CE 的变现重心还是 visa，关键在律师合作这条线。**\n\n如果你想确认 T7 Shield 上的备份还在不在（哪怕不打算恢复，也值得知道它是不是唯一的副本），接上电脑后告诉我，我来检查。另外，老网址统一返回 410 这件事要不要做，你来决定。"
+   },
+   {
+    "id": "holdout-132",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "Raptive那个你可以帮我申请一下吗？\n然后随时寄那个我要如何开口要4000？"
+   },
+   {
+    "id": "holdout-133",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "1. 整个 <http://careerengine.us|careerengine.us> 吧\n2. 联系 <mailto:contact@careerengine.us|contact@careerengine.us>\n3. 我们是数据、用户UGC、PGC"
+   },
+   {
+    "id": "holdout-134",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 按你说的 我现在打开了页面了 你可以看看吗"
+   },
+   {
+    "id": "holdout-135",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好了 请你继续"
+   },
+   {
+    "id": "holdout-136",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "Adsense VS Raptive的区别是什么"
+   },
+   {
+    "id": "holdout-138",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "开frontiers吧\n按你推荐的来"
+   },
+   {
+    "id": "holdout-139",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "还有一个就是属于跟我个人相关的，然后属于家庭这一块，就是家庭的教育。我觉得小朋友的这个教育还是不简单的。就是尤其像我们就是移民家庭，然后我们在美国这边生活，然后两个小朋友他们都是美国这边学校教育体系出来的，所以可能这里面会存在一定的这种教育的差异吧。就我们也是需要知道说，作为家长的话，我们应该怎么样更好地去培养我们的小孩，然后让他们在这个身心灵上面都能够更好地去发展。那如果说用简单粗暴的方式，或者说还是用我们传统的这种亚洲的这种教育方式，是不是不适合还是怎么样。因为我们有时候也会碰到有challenge的struggle，所以这个是我想要探讨的，就是说看看通过一种什么样的一个方式，我们能够去把这一块给梳理出来。然后在这个vote里面，然后我们也可以把它加入，然后能够提供，或者说我们去research相关的这些话题。"
+   },
+   {
+    "id": "holdout-140",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我们的struggle主要是她们两个小的在一起时很容易疯得“得意忘形”\n然后怎么说都不听/不停下来\n只有大人发火大喊大叫了才肯停 但往往也是伴随着惩罚"
+   },
+   {
+    "id": "holdout-141",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "补\n同时能深挖Kazdin的父母课吗"
+   },
+   {
+    "id": "holdout-142",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "这个可以帮我加到microsoft todo里吗？\n• 看书及书名\n• 看课程及课程名\n看看todo里有没有哪个list比较适合"
+   },
+   {
+    "id": "holdout-143",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "我应该登陆了的 你再看看？"
+   },
+   {
+    "id": "holdout-144",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "crewly的connector"
+   },
+   {
+    "id": "holdout-145",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "都放教育想法"
+   },
+   {
+    "id": "holdout-147",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你可以把finance的那个project也挂上吗"
+   },
+   {
+    "id": "holdout-150",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你能在本地macbook pro的claude code agent上跑一下/design-login吗\n然后把登陆链接发给我"
+   },
+   {
+    "id": "holdout-151",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 启动"
+   },
+   {
+    "id": "holdout-152",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不是 你直接给这个claude login的agent的terminal发布“/design-login”\n然后把链接给我"
+   },
+   {
+    "id": "holdout-154",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "Create the detail to GitHub issues. Do nothing now"
+   }
+  ],
+  "final": [
+   {
+    "id": "final-1",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 你怎么看待Muse的崛起？"
+   },
+   {
+    "id": "final-3",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C3D68441F> 你可以去看看WeKnora这个repo吗\n看看和我们的wiki对比一下"
+   },
+   {
+    "id": "final-4",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不是 我说的算了是给 <@U0C3D68441F> 说的"
+   },
+   {
+    "id": "final-5",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C2ZK849ND> 这个可以帮我研究一下吗"
+   },
+   {
+    "id": "final-6",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不对 我要你研究的是截图里的内容 不是weknora"
+   },
+   {
+    "id": "final-8",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "<@U0C3D68441F> 你看到上面说的吗？你能去看看workitem的产出情况吗"
+   },
+   {
+    "id": "final-9",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C2ZK849ND> 存wiki那个我们在另一个thread（关于eval的那个）去探讨吧"
+   },
+   {
+    "id": "final-10",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "<@U0C3D68441F> 你说的这几个PR都是干什么的\n是必要的吗"
+   },
+   {
+    "id": "final-13",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你写吧\ngithub issue <@U0C3D68441F> 你能去创建吗？"
+   },
+   {
+    "id": "final-14",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "不是前面Alta说的是steveswiki\n你帮我问问"
+   },
+   {
+    "id": "final-15",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "Sorry 是Atlas"
+   },
+   {
+    "id": "final-16",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 那就按你说的 推 吧"
+   },
+   {
+    "id": "final-18",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "可以帮我把这里的视频下载到桌面的footages文件夹里吗\n<https://drive.google.com/drive/folders/1RprMTueSpn9DnkoYB5ravlBzTlehDgbC|https://drive.google.com/drive/folders/1RprMTueSpn9DnkoYB5ravlBzTlehDgbC>"
+   },
+   {
+    "id": "final-19",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "下载好了吗？"
+   },
+   {
+    "id": "final-21",
+    "inThread": true,
+    "label": "new_ask",
+    "text": "你觉得这里有什么可以进wiki？不然就是行业类的wiki？"
+   },
+   {
+    "id": "final-22",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "进"
+   },
+   {
+    "id": "final-23",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "好的 可以提醒"
+   },
+   {
+    "id": "final-25",
+    "inThread": true,
+    "label": "follow_up",
+    "text": "方案A\n可以把steveswiki的project path添加到你这个团队里"
+   }
+  ]
+ }
+}
