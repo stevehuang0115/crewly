@@ -42,6 +42,7 @@ const CLAUDE: HarnessStatus = {
 		{ id: 'subscription', label: 'Claude subscription (Pro / Max)', kind: 'broker' },
 		{ id: 'api_key', label: 'Anthropic API key', kind: 'api_key' },
 	],
+	retired: false,
 };
 const CODEX: HarnessStatus = {
 	...CLAUDE,
@@ -55,7 +56,7 @@ const CODEX: HarnessStatus = {
 		{ id: 'api_key', label: 'OpenAI API key', kind: 'api_key' },
 	],
 };
-const GEMINI: HarnessStatus = { ...CLAUDE, id: 'gemini-cli', displayName: 'Gemini CLI', installed: false, version: null, loginState: 'unknown', loginMethods: [] };
+const GEMINI: HarnessStatus = { ...CLAUDE, id: 'gemini-cli', displayName: 'Gemini CLI', installed: false, version: null, loginState: 'unknown', loginMethods: [], retired: true };
 const OVERVIEW: HarnessOverview = {
 	harnesses: [CLAUDE, CODEX, GEMINI].map((status) => ({ ...status, reloginPending: null })),
 	orcHarness: null,

@@ -2,8 +2,9 @@
  * Harness onboarding types — the shapes shared by the backend REST API
  * (`/api/harness`), the `crewly` CLI and the web setup page.
  *
- * A "harness" is an agent CLI Crewly drives in a PTY: Claude Code, Codex or
- * Gemini CLI. See specs/onboarding-harness-login.md for the contract.
+ * A "harness" is an agent CLI Crewly drives in a PTY: Claude Code, Codex,
+ * Antigravity CLI or (retired) Gemini CLI. See
+ * specs/onboarding-harness-login.md for the contract.
  *
  * @module services/harness/harness.types
  */
@@ -51,6 +52,12 @@ export interface HarnessStatus {
 	/** Where the login was found (never a secret), e.g. `crewly-subscription`, `macos-keychain` */
 	loginSource: string | null;
 	loginMethods: HarnessLoginMethod[];
+	/**
+	 * Still supported for existing / enterprise users but not offered to new
+	 * ones (Gemini CLI). Front ends list it only when it is already in use and
+	 * label it "(enterprise only)".
+	 */
+	retired: boolean;
 }
 
 /** A required system tool (only jq today). */
@@ -130,7 +137,7 @@ export interface LoginSession {
  * Whether a value is a known harness id.
  *
  * @param value - Candidate
- * @returns True for `claude-code`, `codex-cli` or `gemini-cli`
+ * @returns True for `claude-code`, `codex-cli`, `antigravity-cli` or `gemini-cli`
  */
 export function isHarnessId(value: unknown): value is HarnessId {
 	return typeof value === 'string' && (HARNESS_IDS as readonly string[]).includes(value);

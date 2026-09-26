@@ -27,6 +27,7 @@ const STATUS: HarnessStatus = {
 	loginState: 'logged_in',
 	loginSource: 'api_key',
 	loginMethods: [],
+	retired: false,
 };
 
 /**

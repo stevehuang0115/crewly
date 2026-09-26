@@ -8,13 +8,21 @@
  *   is pre-approved (claude-config.utils).
  * - Codex: `codex login --with-api-key` with the key on **stdin** (never in
  *   argv); Codex saves it in its own `auth.json`.
+ * - Antigravity CLI: the Gemini key is checked with a models-list call to
+ *   the Gemini API (key in the `x-goog-api-key` header, never in the URL),
+ *   stored in the harness credentials store (exported to antigravity-cli
+ *   agents as `GEMINI_API_KEY`), and agy's settings are switched to the
+ *   Gemini API key provider. This is the only Antigravity login Crewly
+ *   offers: Google does not allow third-party tools to use Antigravity
+ *   account (OAuth) login.
  *
  * The key is never logged, echoed back or put in an error message.
  *
  * @module services/harness/harness-api-key.service
  */
 
-import { HARNESS_CONSTANTS } from '../../constants.js';
+import { ANTIGRAVITY_CONSTANTS, HARNESS_CONSTANTS } from '../../constants.js';
+import { ensureAntigravityApiKeyProvider, type AntigravityProviderResult } from '../../utils/antigravity-settings.utils.js';
 import { prepareClaudeConfigForCrewlyLogin } from './claude-config.utils.js';
 import { HarnessCredentialsStore, getHarnessCredentialsStore } from './harness-credentials.store.js';
 import { buildHarnessPath, resolveExecutable, runCommand } from './harness-exec.utils.js';
@@ -54,6 +62,8 @@ export interface HarnessApiKeyDeps {
 	credentials?: HarnessCredentialsStore;
 	resolveCommand?: (command: string) => string | null;
 	prepareClaudeConfig?: (apiKey: string) => void;
+	/** Switches agy to the Gemini API key provider (defaults to the real ~/.gemini/antigravity-cli/settings.json) */
+	prepareAntigravitySettings?: () => Promise<AntigravityProviderResult>;
 	logger?: HarnessLogger;
 }
 
@@ -75,6 +85,7 @@ export class HarnessApiKeyService {
 	private readonly credentials: HarnessCredentialsStore;
 	private readonly resolveCommand: (command: string) => string | null;
 	private readonly prepareClaudeConfig: (apiKey: string) => void;
+	private readonly prepareAntigravitySettings: () => Promise<AntigravityProviderResult>;
 	private readonly logger: HarnessLogger;
 
 	/**
@@ -88,6 +99,7 @@ export class HarnessApiKeyService {
 		this.resolveCommand = deps.resolveCommand ?? ((command) => resolveExecutable(command, buildHarnessPath(this.env.PATH)));
 		this.prepareClaudeConfig = deps.prepareClaudeConfig ?? ((apiKey) => void prepareClaudeConfigForCrewlyLogin({ apiKey }));
 		this.logger = deps.logger ?? SILENT_HARNESS_LOGGER;
+		this.prepareAntigravitySettings = deps.prepareAntigravitySettings ?? (() => ensureAntigravityApiKeyProvider({ logger: this.logger }));
 	}
 
 	/**
@@ -107,11 +119,59 @@ export class HarnessApiKeyService {
 		if (!isPlausibleApiKey(key)) {
 			throw new HarnessApiKeyError('invalid_key', 'That does not look like an API key');
 		}
-		if (def.id === HARNESS_CONSTANTS.IDS.CLAUDE_CODE) {
-			await this.submitAnthropicKey(key);
-			return;
+		switch (def.id) {
+			case HARNESS_CONSTANTS.IDS.CLAUDE_CODE:
+				await this.submitAnthropicKey(key);
+				return;
+			case HARNESS_CONSTANTS.IDS.ANTIGRAVITY_CLI:
+				await this.submitAntigravityKey(key);
+				return;
+			default:
+				await this.submitCodexKey(key);
 		}
-		await this.submitCodexKey(key);
+	}
+
+	/**
+	 * Check a Gemini API key with a models-list call.
+	 *
+	 * @param key - The key (sent in the `x-goog-api-key` header)
+	 * @returns valid | invalid (400/401/403) | unverified (network error, other status)
+	 */
+	async checkGeminiKey(key: string): Promise<KeyCheckResult> {
+		const api = ANTIGRAVITY_CONSTANTS.GEMINI_API;
+		try {
+			const response = await this.fetchFn(api.MODELS_URL, {
+				method: 'GET',
+				headers: { [api.KEY_HEADER]: key },
+				signal: AbortSignal.timeout(api.CHECK_TIMEOUT_MS),
+			});
+			if (response.status >= 200 && response.status < 300) return 'valid';
+			if (api.REJECTED_STATUSES.includes(response.status)) return 'invalid';
+			return 'unverified';
+		} catch {
+			return 'unverified';
+		}
+	}
+
+	/**
+	 * Validate and store the Gemini key Antigravity CLI runs with, then
+	 * switch agy to the Gemini API key provider.
+	 *
+	 * @param key - The key
+	 * @throws HarnessApiKeyError invalid_key | login_failed (agy settings file unreadable)
+	 */
+	private async submitAntigravityKey(key: string): Promise<void> {
+		const check = await this.checkGeminiKey(key);
+		if (check === 'invalid') throw new HarnessApiKeyError('invalid_key', 'The Gemini API rejected this key');
+		this.credentials.setAntigravityGeminiApiKey(key);
+		this.logger.info('Antigravity Gemini API key stored', { verified: check === 'valid' });
+		const provider = await this.prepareAntigravitySettings();
+		if (provider === 'unparseable') {
+			throw new HarnessApiKeyError('login_failed', ANTIGRAVITY_CONSTANTS.MESSAGES.SETTINGS_UNREADABLE);
+		}
+		if (provider === 'error') {
+			this.logger.warn('Could not switch Antigravity to the Gemini API key provider now; it is retried at every agent launch');
+		}
 	}
 
 	/**

@@ -11,6 +11,7 @@ import type { RunCommand } from './harness.types.js';
 
 const ANTHROPIC_KEY = `sk-ant-api03-${'k'.repeat(80)}`;
 const OPENAI_KEY = `sk-proj-${'o'.repeat(60)}`;
+const GEMINI_KEY = `AIzaSy${'g'.repeat(33)}`;
 
 describe('isPlausibleApiKey', () => {
 	it('checks length and whitespace', () => {
@@ -41,16 +42,19 @@ describe('HarnessApiKeyService', () => {
 		const fetchFn = jest.fn<ReturnType<FetchLike>, Parameters<FetchLike>>(async () => ({ status: 200 }));
 		const run = jest.fn<ReturnType<RunCommand>, Parameters<RunCommand>>(async () => ({ code: 0, stdout: 'Successfully logged in', stderr: '' }));
 		const prepareClaudeConfig = jest.fn();
+		// Never the real ~/.gemini: every test gets a mocked settings writer.
+		const prepareAntigravitySettings = jest.fn(async () => 'written' as const);
 		const service = new HarnessApiKeyService({
 			fetchFn,
 			run,
 			credentials,
 			prepareClaudeConfig,
+			prepareAntigravitySettings,
 			env: { PATH: '/usr/bin' },
 			resolveCommand: (cmd) => `/usr/bin/${cmd}`,
 			...overrides,
 		});
-		return { service, fetchFn, run, prepareClaudeConfig };
+		return { service, fetchFn, run, prepareClaudeConfig, prepareAntigravitySettings };
 	}
 
 	it('checks an Anthropic key, stores it and pre-approves it in Claude config', async () => {
@@ -111,6 +115,54 @@ describe('HarnessApiKeyService', () => {
 	it('needs Codex installed', async () => {
 		const { service } = make({ resolveCommand: () => null });
 		await expect(service.submit('codex-cli', OPENAI_KEY)).rejects.toMatchObject({ code: 'not_installed' });
+	});
+
+	it('checks an Antigravity Gemini key with the key in a header, stores it and forces the API-key provider', async () => {
+		const { service, fetchFn, run, prepareAntigravitySettings } = make();
+		await service.submit('antigravity-cli', ` ${GEMINI_KEY} `);
+		expect(credentials.getAntigravityGeminiApiKey()).toBe(GEMINI_KEY);
+		expect(prepareAntigravitySettings).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchFn.mock.calls[0];
+		expect(url).toBe('https://generativelanguage.googleapis.com/v1beta/models?pageSize=1');
+		expect(url).not.toContain(GEMINI_KEY);
+		expect(init.headers).toEqual({ 'x-goog-api-key': GEMINI_KEY });
+		// No agy login command is ever run: the key is the whole login.
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it.each([400, 401, 403])('rejects a Gemini key the API refuses with %d and stores nothing', async (status) => {
+		const { service, prepareAntigravitySettings } = make({ fetchFn: async () => ({ status }) });
+		await expect(service.submit('antigravity-cli', GEMINI_KEY)).rejects.toMatchObject({ code: 'invalid_key' });
+		expect(credentials.getAntigravityGeminiApiKey()).toBeNull();
+		expect(prepareAntigravitySettings).not.toHaveBeenCalled();
+	});
+
+	it('still saves a well-formed Gemini key when the API cannot be reached or answers oddly', async () => {
+		const { service } = make({ fetchFn: async () => { throw new Error('offline'); } });
+		await service.submit('antigravity-cli', GEMINI_KEY);
+		expect(credentials.getAntigravityGeminiApiKey()).toBe(GEMINI_KEY);
+		expect(await make({ fetchFn: async () => ({ status: 429 }) }).service.checkGeminiKey(GEMINI_KEY)).toBe('unverified');
+		expect(await make({ fetchFn: async () => ({ status: 503 }) }).service.checkGeminiKey(GEMINI_KEY)).toBe('unverified');
+	});
+
+	it('reports an unreadable agy settings file (the key stays saved) without echoing the key', async () => {
+		const { service } = make({ prepareAntigravitySettings: async () => 'unparseable' });
+		const error = await service.submit('antigravity-cli', GEMINI_KEY).catch((e: Error & { code: string }) => e);
+		expect(error).toMatchObject({ code: 'login_failed' });
+		expect((error as Error).message).toContain('settings.json');
+		expect((error as Error).message).not.toContain(GEMINI_KEY);
+		expect(credentials.getAntigravityGeminiApiKey()).toBe(GEMINI_KEY);
+	});
+
+	it('does not fail the login when agy settings cannot be written now (retried at launch)', async () => {
+		const { service } = make({ prepareAntigravitySettings: async () => 'error' });
+		await expect(service.submit('antigravity-cli', GEMINI_KEY)).resolves.toBeUndefined();
+	});
+
+	it('rejects a non-key for Antigravity before calling the API', async () => {
+		const { service, fetchFn } = make();
+		await expect(service.submit('antigravity-cli', 'short')).rejects.toMatchObject({ code: 'invalid_key' });
+		expect(fetchFn).not.toHaveBeenCalled();
 	});
 
 	it('rejects unknown harnesses and Gemini (detect only)', async () => {

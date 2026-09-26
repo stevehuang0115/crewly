@@ -3001,14 +3001,24 @@ export const HARNESS_CONSTANTS = {
 	IDS: {
 		CLAUDE_CODE: 'claude-code',
 		CODEX_CLI: 'codex-cli',
+		ANTIGRAVITY_CLI: 'antigravity-cli',
 		GEMINI_CLI: 'gemini-cli',
 	},
+	/**
+	 * Harnesses kept working for existing and enterprise users but no longer
+	 * offered to new users: Gemini CLI stopped serving individual accounts on
+	 * 2026-06-18 (Antigravity CLI replaces it). Setup lists them only when
+	 * already in use.
+	 */
+	RETIRED_IDS: ['gemini-cli'] as readonly string[],
 	/** Harness the orchestrator uses when the owner does not choose */
 	DEFAULT_ORC_HARNESS: 'claude-code',
 	/** Short names accepted by `crewly login <name>` / `--harness <name>` */
 	CLI_ALIASES: {
 		claude: 'claude-code',
 		codex: 'codex-cli',
+		antigravity: 'antigravity-cli',
+		agy: 'antigravity-cli',
 		gemini: 'gemini-cli',
 	},
 	/** Credentials file under the Crewly home dir */
@@ -3122,6 +3132,17 @@ export const HARNESS_CONSTANTS = {
 		HOME_ENV: 'CODEX_HOME',
 		HOME_DIR: '.codex',
 		AUTH_FILE: 'auth.json',
+	},
+	/** Antigravity CLI facts (API key only; see ANTIGRAVITY_CONSTANTS) */
+	ANTIGRAVITY: {
+		/** Login source when Crewly holds the key */
+		STORED_KEY_SOURCE: 'crewly-api-key',
+		/** Longest installer script accepted (the official one is ~8 KB) */
+		INSTALL_SCRIPT_MAX_BYTES: 256 * 1024,
+		/** Timeout for downloading the installer script */
+		INSTALL_SCRIPT_FETCH_TIMEOUT_MS: 30_000,
+		/** Shell the official installer is written for */
+		INSTALL_SHELL: 'bash',
 	},
 	/** Gemini CLI facts (detect only) */
 	GEMINI: {

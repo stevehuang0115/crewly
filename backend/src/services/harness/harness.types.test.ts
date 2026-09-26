@@ -14,13 +14,14 @@ import {
 
 describe('harness types', () => {
 	it('harness ids equal the matching runtime types', () => {
-		expect(HARNESS_IDS).toEqual([RUNTIME_TYPES.CLAUDE_CODE, RUNTIME_TYPES.CODEX_CLI, RUNTIME_TYPES.GEMINI_CLI]);
+		expect(HARNESS_IDS).toEqual([RUNTIME_TYPES.CLAUDE_CODE, RUNTIME_TYPES.CODEX_CLI, RUNTIME_TYPES.ANTIGRAVITY_CLI, RUNTIME_TYPES.GEMINI_CLI]);
 	});
 
 	it('isHarnessId accepts only known ids', () => {
 		expect(isHarnessId('claude-code')).toBe(true);
 		expect(isHarnessId('codex-cli')).toBe(true);
 		expect(isHarnessId('gemini-cli')).toBe(true);
+		expect(isHarnessId('antigravity-cli')).toBe(true);
 		expect(isHarnessId('opencode-cli')).toBe(false);
 		expect(isHarnessId('claude')).toBe(false);
 		expect(isHarnessId(42)).toBe(false);

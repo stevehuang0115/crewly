@@ -14,7 +14,7 @@
 
 import chalk from 'chalk';
 import { createInterface } from 'readline';
-import { getHarnessDefinition, resolveHarnessAlias } from '../../../backend/src/services/harness/harness-registry.js';
+import { describeInstallCommand, getHarnessDefinition, resolveHarnessAlias } from '../../../backend/src/services/harness/harness-registry.js';
 import type { HarnessService } from '../../../backend/src/services/harness/harness.service.js';
 import { CLI_CONSTANTS } from '../constants.js';
 import { createCliHarnessService, pickLoginDriver, type LoginDriver } from '../utils/harness-engine.js';
@@ -96,7 +96,8 @@ export async function loginCommand(name: string, options: LoginCommandOptions = 
 	try {
 		const status = await service.getStatus(harnessId);
 		if (!status.installed) {
-			io.log(chalk.red(`${status.displayName} is not installed. Run \`crewly onboard\` or: npm install -g ${getHarnessDefinition(harnessId)?.npmPackage}`));
+			const def = getHarnessDefinition(harnessId);
+			io.log(chalk.red(`${status.displayName} is not installed. Run \`crewly onboard\`${def ? ` or: ${describeInstallCommand(def)}` : ''}`));
 			return CLI_CONSTANTS.EXIT_CODES.ERROR;
 		}
 		io.log(chalk.bold(`Logging in to ${status.displayName}`));

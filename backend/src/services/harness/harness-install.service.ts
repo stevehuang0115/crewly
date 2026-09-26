@@ -1,10 +1,19 @@
 /**
- * Harness install — `npm install -g <pkg>@latest` as an async job.
+ * Harness install as an async job with a log.
  *
- * When the global prefix is not writable (EACCES / EPERM), the install is
- * retried once under the user-owned prefix `<crewlyHome>/npm-global`
- * (`npm install -g --prefix …`); its `bin` dir is on the PATH of everything
- * Crewly spawns (harness-exec.utils). No sudo, no shell profile edits.
+ * - npm harnesses: `npm install -g <pkg>@latest`. When the global prefix is
+ *   not writable (EACCES / EPERM), the install is retried once under the
+ *   user-owned prefix `<crewlyHome>/npm-global` (`npm install -g --prefix …`);
+ *   its `bin` dir is on the PATH of everything Crewly spawns
+ *   (harness-exec.utils). No sudo, no shell profile edits.
+ * - Script harnesses (Antigravity CLI, which has no npm package): the vendor's
+ *   official installer is downloaded over https from exactly the registry URL
+ *   (`https://antigravity.google/cli/install.sh`; redirects refused, size
+ *   capped, must be a `#!` script), written to a private temp dir and run
+ *   with bash — the same as the documented `curl -fsSL … | bash`. The
+ *   installer verifies the binary's SHA-512 itself and puts `agy` in
+ *   `~/.local/bin`, which is on the harness PATH. When the binary is already
+ *   installed the job runs its own updater (`agy update`) instead.
  *
  * One install runs per harness at a time: starting a second one while the
  * first is running returns the running job.
@@ -14,10 +23,53 @@
 
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { HARNESS_CONSTANTS } from '../../constants.js';
-import { buildNpmPath, getUserNpmPrefix, runCommand } from './harness-exec.utils.js';
-import { getHarnessDefinition } from './harness-registry.js';
+import { buildHarnessPath, buildNpmPath, getUserNpmPrefix, resolveExecutable, runCommand } from './harness-exec.utils.js';
+import { getHarnessDefinition, type HarnessDefinition, type ScriptInstallSpec } from './harness-registry.js';
 import { SILENT_HARNESS_LOGGER, type HarnessId, type HarnessLogger, type InstallJob, type RunCommand } from './harness.types.js';
+
+/** Downloads an installer script; rejects on any failure. */
+export type FetchScript = (url: string) => Promise<string>;
+
+/**
+ * Whether a URL is one Crewly may download an installer from: https, and
+ * exactly the URL the registry names.
+ *
+ * @param url - Candidate URL
+ * @param spec - The harness's script install spec
+ * @returns True when allowed
+ */
+export function isAllowedInstallerUrl(url: string, spec: ScriptInstallSpec): boolean {
+	try {
+		const parsed = new URL(url);
+		const expected = new URL(spec.scriptUrl);
+		return parsed.protocol === 'https:' && parsed.href === expected.href;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Default installer download: https only, no redirects, size-capped.
+ *
+ * @param url - Installer URL
+ * @returns Script text
+ * @throws Error on a non-2xx status, a redirect, a timeout or an oversized body
+ */
+export const defaultFetchScript: FetchScript = async (url) => {
+	const response = await fetch(url, {
+		redirect: 'error',
+		signal: AbortSignal.timeout(HARNESS_CONSTANTS.ANTIGRAVITY.INSTALL_SCRIPT_FETCH_TIMEOUT_MS),
+	});
+	if (!response.ok) throw new Error(`Download failed: HTTP ${response.status}`);
+	const text = await response.text();
+	if (Buffer.byteLength(text, 'utf8') > HARNESS_CONSTANTS.ANTIGRAVITY.INSTALL_SCRIPT_MAX_BYTES) {
+		throw new Error('Download failed: installer is larger than expected');
+	}
+	return text;
+};
 
 /** Injectable dependencies. */
 export interface HarnessInstallDeps {
@@ -30,6 +82,10 @@ export interface HarnessInstallDeps {
 	logger?: HarnessLogger;
 	/** Called after a successful install (e.g. to refresh status caches) */
 	onInstalled?: (harnessId: HarnessId) => void;
+	/** Downloads a vendor installer script (script harnesses) */
+	fetchScript?: FetchScript;
+	/** PATH lookup of an installed harness binary (script harnesses update in place) */
+	resolveCommand?: (command: string) => string | null;
 }
 
 /** Error with a machine-readable code, for the REST layer. */
@@ -74,6 +130,8 @@ export class HarnessInstallService {
 	private readonly idFactory: () => string;
 	private readonly logger: HarnessLogger;
 	private readonly onInstalled?: (harnessId: HarnessId) => void;
+	private readonly fetchScript: FetchScript;
+	private readonly resolveCommand: (command: string) => string | null;
 	private readonly jobs = new Map<string, JobRecord>();
 
 	/**
@@ -87,6 +145,8 @@ export class HarnessInstallService {
 		this.idFactory = deps.idFactory ?? randomUUID;
 		this.logger = deps.logger ?? SILENT_HARNESS_LOGGER;
 		this.onInstalled = deps.onInstalled;
+		this.fetchScript = deps.fetchScript ?? defaultFetchScript;
+		this.resolveCommand = deps.resolveCommand ?? ((command) => resolveExecutable(command, buildHarnessPath(this.env.PATH)));
 	}
 
 	/**
@@ -113,7 +173,7 @@ export class HarnessInstallService {
 			done: null,
 		};
 		this.jobs.set(record.jobId, record);
-		record.done = this.execute(record, def.npmPackage);
+		record.done = this.execute(record, def);
 		return this.toPublic(record);
 	}
 
@@ -145,39 +205,17 @@ export class HarnessInstallService {
 	}
 
 	/**
-	 * Run npm, falling back to the user prefix on a permission error.
+	 * Run the install for a harness and record the outcome.
 	 *
 	 * @param record - Job record (mutated)
-	 * @param npmPackage - Package to install
+	 * @param def - Harness definition
 	 * @returns The finished job
 	 */
-	private async execute(record: JobRecord, npmPackage: string): Promise<InstallJob> {
-		const spec = `${npmPackage}@latest`;
-		const env = { ...this.env, PATH: buildNpmPath(this.env.PATH) };
+	private async execute(record: JobRecord, def: HarnessDefinition): Promise<InstallJob> {
 		try {
-			this.append(record, `$ npm install -g ${spec}\n`);
-			const first = await this.run('npm', ['install', '-g', spec], {
-				env,
-				timeoutMs: HARNESS_CONSTANTS.INSTALL_TIMEOUT_MS,
-				onOutput: (chunk) => this.append(record, chunk),
-			});
-			let ok = first.code === 0;
-			if (!ok && isPermissionError(`${first.stdout}\n${first.stderr}\n${first.error ?? ''}`)) {
-				const prefix = getUserNpmPrefix();
-				this.mkdirp(prefix);
-				record.usedUserPrefix = true;
-				this.append(record, `\nNo permission to write the global npm prefix; installing under ${prefix} instead.\n`);
-				this.append(record, `$ npm install -g --prefix ${prefix} ${spec}\n`);
-				const second = await this.run('npm', ['install', '-g', '--prefix', prefix, spec], {
-					env,
-					timeoutMs: HARNESS_CONSTANTS.INSTALL_TIMEOUT_MS,
-					onOutput: (chunk) => this.append(record, chunk),
-				});
-				ok = second.code === 0;
-				if (!ok && second.error) this.append(record, `\n${second.error}\n`);
-			} else if (!ok && first.error) {
-				this.append(record, `\n${first.error}\n`);
-			}
+			const ok = def.install.kind === 'npm'
+				? await this.installNpm(record, def.install.npmPackage)
+				: await this.installScript(record, def, def.install);
 			record.state = ok ? 'succeeded' : 'failed';
 			this.append(record, ok ? '\nInstalled.\n' : '\nInstall failed.\n');
 			if (ok) this.onInstalled?.(record.harnessId);
@@ -188,6 +226,92 @@ export class HarnessInstallService {
 		record.finishedAt = this.now();
 		this.logger.info('Harness install finished', { harnessId: record.harnessId, state: record.state, usedUserPrefix: record.usedUserPrefix });
 		return this.toPublic(record);
+	}
+
+	/**
+	 * Install with the vendor's official script, or update in place when the
+	 * binary is already there.
+	 *
+	 * @param record - Job record (mutated)
+	 * @param def - Harness definition
+	 * @param spec - Script install spec
+	 * @returns True on success
+	 */
+	private async installScript(record: JobRecord, def: HarnessDefinition, spec: ScriptInstallSpec): Promise<boolean> {
+		const env = { ...this.env, PATH: buildHarnessPath(this.env.PATH) };
+		const installed = this.resolveCommand(def.command);
+		if (installed) {
+			this.append(record, `$ ${def.command} ${spec.updateArgs.join(' ')}\n`);
+			const result = await this.run(installed, spec.updateArgs, {
+				env,
+				timeoutMs: HARNESS_CONSTANTS.INSTALL_TIMEOUT_MS,
+				onOutput: (chunk) => this.append(record, chunk),
+			});
+			if (result.code !== 0 && result.error) this.append(record, `\n${result.error}\n`);
+			return result.code === 0;
+		}
+
+		if (!isAllowedInstallerUrl(spec.scriptUrl, spec)) {
+			this.append(record, `Refusing to download an installer from ${spec.scriptUrl}\n`);
+			return false;
+		}
+		const shell = HARNESS_CONSTANTS.ANTIGRAVITY.INSTALL_SHELL;
+		this.append(record, `$ curl -fsSL ${spec.scriptUrl} | ${shell}\n`);
+		const script = await this.fetchScript(spec.scriptUrl);
+		if (!script.startsWith('#!')) {
+			this.append(record, 'The downloaded installer is not a shell script; not running it.\n');
+			return false;
+		}
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-harness-install-'));
+		const file = path.join(dir, 'install.sh');
+		try {
+			fs.writeFileSync(file, script, { mode: 0o700 });
+			const result = await this.run(shell, [file], {
+				env,
+				timeoutMs: HARNESS_CONSTANTS.INSTALL_TIMEOUT_MS,
+				onOutput: (chunk) => this.append(record, chunk),
+			});
+			if (result.code !== 0 && result.error) this.append(record, `\n${result.error}\n`);
+			return result.code === 0;
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
+	}
+
+	/**
+	 * Run npm, falling back to the user prefix on a permission error.
+	 *
+	 * @param record - Job record (mutated)
+	 * @param npmPackage - Package to install
+	 * @returns True on success
+	 */
+	private async installNpm(record: JobRecord, npmPackage: string): Promise<boolean> {
+		const spec = `${npmPackage}@latest`;
+		const env = { ...this.env, PATH: buildNpmPath(this.env.PATH) };
+		this.append(record, `$ npm install -g ${spec}\n`);
+		const first = await this.run('npm', ['install', '-g', spec], {
+			env,
+			timeoutMs: HARNESS_CONSTANTS.INSTALL_TIMEOUT_MS,
+			onOutput: (chunk) => this.append(record, chunk),
+		});
+		let ok = first.code === 0;
+		if (!ok && isPermissionError(`${first.stdout}\n${first.stderr}\n${first.error ?? ''}`)) {
+			const prefix = getUserNpmPrefix();
+			this.mkdirp(prefix);
+			record.usedUserPrefix = true;
+			this.append(record, `\nNo permission to write the global npm prefix; installing under ${prefix} instead.\n`);
+			this.append(record, `$ npm install -g --prefix ${prefix} ${spec}\n`);
+			const second = await this.run('npm', ['install', '-g', '--prefix', prefix, spec], {
+				env,
+				timeoutMs: HARNESS_CONSTANTS.INSTALL_TIMEOUT_MS,
+				onOutput: (chunk) => this.append(record, chunk),
+			});
+			ok = second.code === 0;
+			if (!ok && second.error) this.append(record, `\n${second.error}\n`);
+		} else if (!ok && first.error) {
+			this.append(record, `\n${first.error}\n`);
+		}
+		return ok;
 	}
 
 	/**

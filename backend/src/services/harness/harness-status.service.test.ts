@@ -93,7 +93,25 @@ describe('HarnessStatusService', () => {
 		const codex = await service.getStatus('codex-cli');
 		expect(codex).toMatchObject({ installed: true, version: '0.156.1', updateAvailable: false, loginState: 'logged_out' });
 		const gemini = await service.getStatus('gemini-cli');
-		expect(gemini).toMatchObject({ installed: false, version: null, latestVersion: '0.9.0', updateAvailable: false, loginState: 'unknown', loginMethods: [] });
+		expect(gemini).toMatchObject({ installed: false, version: null, latestVersion: '0.9.0', updateAvailable: false, loginState: 'unknown', loginMethods: [], retired: true });
+		expect(claude.retired).toBe(false);
+	});
+
+	it('reports Antigravity CLI from `agy --version` with no latest version (no npm package) and API-key login only', async () => {
+		const run = fakeRun({ 'agy --version': { stdout: '1.2.11\n' } });
+		const status = await make({ run, resolveCommand: (cmd) => (cmd === 'agy' ? `${home}/.local/bin/agy` : null) }).getStatus('antigravity-cli');
+		expect(status).toMatchObject({
+			id: 'antigravity-cli',
+			displayName: 'Antigravity CLI',
+			installed: true,
+			version: '1.2.11',
+			latestVersion: null,
+			updateAvailable: false,
+			loginState: 'logged_out',
+			retired: false,
+			loginMethods: [{ id: 'api_key', label: 'Gemini API key', kind: 'api_key' }],
+		});
+		expect(run.mock.calls.some(([cmd, args]) => cmd === 'npm' && args.includes('view'))).toBe(false);
 	});
 
 	it('a binary whose --version crashes is installed with an unknown version', async () => {
@@ -101,8 +119,8 @@ describe('HarnessStatusService', () => {
 		expect(await make({ run }).getStatus('codex-cli')).toMatchObject({ installed: true, version: null, updateAvailable: false });
 	});
 
-	it('lists all three harnesses in order', async () => {
-		expect((await make().listStatuses()).map((s) => s.id)).toEqual(['claude-code', 'codex-cli', 'gemini-cli']);
+	it('lists all four harnesses in order', async () => {
+		expect((await make().listStatuses()).map((s) => s.id)).toEqual(['claude-code', 'codex-cli', 'antigravity-cli', 'gemini-cli']);
 	});
 
 	it('caches npm view results', async () => {
@@ -202,6 +220,27 @@ describe('HarnessStatusService', () => {
 		it('not installed and no auth file means logged out', async () => {
 			const status = await make({ resolveCommand: () => null }).getStatus('codex-cli');
 			expect(status).toMatchObject({ installed: false, loginState: 'logged_out' });
+		});
+	});
+
+	describe('Antigravity login (Gemini API key only)', () => {
+		it('prefers the key Crewly stores', async () => {
+			credentials.setAntigravityGeminiApiKey(`AIzaSy${'k'.repeat(33)}`);
+			const status = await make().getStatus('antigravity-cli');
+			expect(status).toMatchObject({ loginState: 'logged_in', loginSource: 'crewly-api-key' });
+			expect(JSON.stringify(status)).not.toContain('AIzaSy');
+		});
+
+		it('reports GEMINI_API_KEY in the env by name only', async () => {
+			const status = await make({ env: { PATH: '/usr/bin', GEMINI_API_KEY: 'AIza-secret' } }).getStatus('antigravity-cli');
+			expect(status).toMatchObject({ loginState: 'logged_in', loginSource: 'env:GEMINI_API_KEY' });
+			expect(JSON.stringify(status)).not.toContain('AIza-secret');
+		});
+
+		it('ignores keys agy does not read and never counts an account login', async () => {
+			// agy reads only GEMINI_API_KEY; an account session in its keyring is not usable by Crewly (policy).
+			const status = await make({ env: { PATH: '/usr/bin', GOOGLE_API_KEY: 'x', GOOGLE_GENERATIVE_AI_API_KEY: 'y' } }).getStatus('antigravity-cli');
+			expect(status).toMatchObject({ loginState: 'logged_out', loginSource: null });
 		});
 	});
 

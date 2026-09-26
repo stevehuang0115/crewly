@@ -10,6 +10,7 @@ import { HarnessCredentialsStore, getHarnessCredentialsStore, harnessEnvForAgent
 
 const TOKEN = `sk-ant-oat01-${'a'.repeat(90)}`;
 const API_KEY = `sk-ant-api03-${'b'.repeat(90)}`;
+const GEMINI_KEY = `AIzaSy${'c'.repeat(33)}`;
 
 describe('HarnessCredentialsStore', () => {
 	let home: string;
@@ -90,6 +91,38 @@ describe('HarnessCredentialsStore', () => {
 		expect(store.harnessEnvForAgents({ PATH: '/usr/bin' }).CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
 	});
 
+	it('stores the Antigravity Gemini key next to the Claude credential and clears it alone', () => {
+		const store = new HarnessCredentialsStore();
+		expect(store.getAntigravityGeminiApiKey()).toBeNull();
+		store.setClaudeOauthToken(TOKEN);
+		store.setAntigravityGeminiApiKey(`  ${GEMINI_KEY}  `);
+		expect(store.getAntigravityGeminiApiKey()).toBe(GEMINI_KEY);
+		expect(store.read().claude?.oauthToken).toBe(TOKEN);
+		store.clearAntigravity();
+		expect(store.getAntigravityGeminiApiKey()).toBeNull();
+		expect(store.read().claude?.oauthToken).toBe(TOKEN);
+		expect(() => store.setAntigravityGeminiApiKey(' ')).toThrow();
+	});
+
+	it('exports GEMINI_API_KEY only to antigravity-cli sessions, with agy auto-update off', () => {
+		const store = new HarnessCredentialsStore();
+		store.setAntigravityGeminiApiKey(GEMINI_KEY);
+		const agy = store.harnessEnvForAgents({ PATH: '/usr/bin' }, 'antigravity-cli');
+		expect(agy.GEMINI_API_KEY).toBe(GEMINI_KEY);
+		expect(agy.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('true');
+		// A Gemini CLI (Google login) session must not suddenly see a key.
+		expect(store.harnessEnvForAgents({ PATH: '/usr/bin' }, 'gemini-cli').GEMINI_API_KEY).toBeUndefined();
+		expect(store.harnessEnvForAgents({ PATH: '/usr/bin' }, 'claude-code').GEMINI_API_KEY).toBeUndefined();
+		expect(store.harnessEnvForAgents({ PATH: '/usr/bin' }).GEMINI_API_KEY).toBeUndefined();
+		expect(harnessEnvForAgents({ PATH: '/bin' }, 'antigravity-cli').GEMINI_API_KEY).toBe(GEMINI_KEY);
+	});
+
+	it('does not invent a key for an antigravity session when none is stored', () => {
+		const env = new HarnessCredentialsStore().harnessEnvForAgents({ PATH: '/usr/bin' }, 'antigravity-cli');
+		expect(env.GEMINI_API_KEY).toBeUndefined();
+		expect(env.AGY_CLI_DISABLE_AUTO_UPDATE).toBe('true');
+	});
+
 	it('module-level harnessEnvForAgents uses the default store and never throws', () => {
 		new HarnessCredentialsStore().setClaudeOauthToken(TOKEN);
 		expect(harnessEnvForAgents({ PATH: '/bin' }).CLAUDE_CODE_OAUTH_TOKEN).toBe(TOKEN);
@@ -104,10 +137,12 @@ describe('HarnessCredentialsStore', () => {
 		const store = new HarnessCredentialsStore();
 		store.setClaudeOauthToken(TOKEN);
 		store.setAnthropicApiKey(API_KEY);
-		store.harnessEnvForAgents();
+		store.setAntigravityGeminiApiKey(GEMINI_KEY);
+		store.harnessEnvForAgents(process.env, 'antigravity-cli');
 		for (const spy of spies) {
 			for (const call of spy.mock.calls) {
 				expect(JSON.stringify(call)).not.toContain('sk-ant-');
+				expect(JSON.stringify(call)).not.toContain(GEMINI_KEY);
 			}
 		}
 	});

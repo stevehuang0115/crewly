@@ -11,7 +11,15 @@
  *   keychain item "Claude Code-credentials" (existence only: `security
  *   find-generic-password -s …` without `-w`/`-g`, so no secret is printed).
  * - Codex: `codex login status`; falls back to `$CODEX_HOME/auth.json`.
+ * - Antigravity CLI: a Gemini key Crewly stores, else `GEMINI_API_KEY` in the
+ *   env. An account login in agy's keyring is deliberately NOT counted:
+ *   Crewly never runs agy on it (Google policy), so without a key it is
+ *   logged out as far as Crewly is concerned.
  * - Gemini CLI (detect only): Google-login credentials file or an API key env var.
+ *
+ * Latest versions come from `npm view` for npm-installed harnesses; a
+ * script-installed harness (Antigravity) has no version feed Crewly reads,
+ * so its latest version is null.
  *
  * @module services/harness/harness-status.service
  */
@@ -19,7 +27,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { HARNESS_CONSTANTS } from '../../constants.js';
+import { ANTIGRAVITY_CONSTANTS, HARNESS_CONSTANTS } from '../../constants.js';
 import { getClaudeConfigFile, getClaudeCredentialsFile } from './claude-config.utils.js';
 import { HarnessCredentialsStore, getHarnessCredentialsStore } from './harness-credentials.store.js';
 import { buildHarnessPath, buildNpmPath, resolveExecutable, runCommand } from './harness-exec.utils.js';
@@ -172,20 +180,22 @@ export class HarnessStatusService {
 	 * Latest published version (`npm view <pkg> version`), cached.
 	 *
 	 * @param def - Harness definition
-	 * @returns The version, or null when npm could not be asked
+	 * @returns The version, or null when npm could not be asked or the harness is not an npm package
 	 */
 	async getLatestVersion(def: HarnessDefinition): Promise<string | null> {
-		const cached = this.latestCache.get(def.npmPackage);
+		if (def.install.kind !== 'npm') return null;
+		const npmPackage = def.install.npmPackage;
+		const cached = this.latestCache.get(npmPackage);
 		if (cached && cached.expiresAt > this.now()) return cached.value;
-		const result = await this.run('npm', ['view', def.npmPackage, 'version'], {
+		const result = await this.run('npm', ['view', npmPackage, 'version'], {
 			env: { ...this.env, PATH: buildNpmPath(this.env.PATH, this.homeDir) },
 			timeoutMs: HARNESS_CONSTANTS.NPM_VIEW_TIMEOUT_MS,
 		});
 		const value = result.code === 0 ? parseVersion(result.stdout) : null;
 		if (value === null) {
-			this.logger.debug('npm view failed', { pkg: def.npmPackage, code: result.code, error: result.error });
+			this.logger.debug('npm view failed', { pkg: npmPackage, code: result.code, error: result.error });
 		}
-		this.latestCache.set(def.npmPackage, {
+		this.latestCache.set(npmPackage, {
 			value,
 			expiresAt: this.now() + (value ? HARNESS_CONSTANTS.LATEST_VERSION_CACHE_TTL_MS : HARNESS_CONSTANTS.LATEST_VERSION_FAILURE_TTL_MS),
 		});
@@ -280,6 +290,20 @@ export class HarnessStatusService {
 	}
 
 	/**
+	 * Antigravity CLI login detection: only a Gemini API key counts.
+	 *
+	 * @returns Login facts
+	 */
+	private getAntigravityLogin(): LoginInfo {
+		if (this.credentials.getAntigravityGeminiApiKey()) {
+			return { loginState: 'logged_in', loginSource: HARNESS_CONSTANTS.ANTIGRAVITY.STORED_KEY_SOURCE };
+		}
+		const envName = this.firstSetEnv([ANTIGRAVITY_CONSTANTS.API_KEY_ENV]);
+		if (envName) return { loginState: 'logged_in', loginSource: `env:${envName}` };
+		return { loginState: 'logged_out', loginSource: null };
+	}
+
+	/**
 	 * Gemini CLI login detection (detect only).
 	 *
 	 * @returns Login facts
@@ -307,6 +331,8 @@ export class HarnessStatusService {
 					return await this.getClaudeLogin();
 				case HARNESS_CONSTANTS.IDS.CODEX_CLI:
 					return await this.getCodexLogin(binary);
+				case HARNESS_CONSTANTS.IDS.ANTIGRAVITY_CLI:
+					return this.getAntigravityLogin();
 				default:
 					return this.getGeminiLogin();
 			}
@@ -341,6 +367,7 @@ export class HarnessStatusService {
 			loginState: login.loginState,
 			loginSource: login.loginSource,
 			loginMethods: toPublicLoginMethods(def),
+			retired: def.retired,
 		};
 	}
 

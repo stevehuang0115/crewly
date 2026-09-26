@@ -225,6 +225,9 @@ describe('allowlist additions — harness setup from the phone', () => {
     expect(isAllowedMobileApiCall('POST', '/harness/claude-code/api-key')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/harness/codex-cli/api-key')).toBe(false);
     expect(isAllowedMobileApiCall('POST', '/harness/opencode-cli/install')).toBe(false);
+    // Antigravity can be installed from the phone; its Gemini key is never relayed.
+    expect(isAllowedMobileApiCall('POST', '/harness/antigravity-cli/install')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/harness/antigravity-cli/api-key')).toBe(false);
   });
 });
 

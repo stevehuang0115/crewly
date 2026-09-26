@@ -14,7 +14,7 @@
 
 import chalk from 'chalk';
 import { HARNESS_CONSTANTS } from '../../../backend/src/constants.js';
-import { getBrokerLoginMethod, getHarnessDefinition, resolveHarnessAlias } from '../../../backend/src/services/harness/harness-registry.js';
+import { describeInstallCommand, getBrokerLoginMethod, getHarnessDefinition, resolveHarnessAlias } from '../../../backend/src/services/harness/harness-registry.js';
 import type { HarnessService } from '../../../backend/src/services/harness/harness.service.js';
 import {
 	isTerminalLoginState,
@@ -181,11 +181,12 @@ export async function ensureHarnessInstalled(
 		return true;
 	}
 	const def = getHarnessDefinition(status.id);
+	const installCommand = def ? describeInstallCommand(def) : status.displayName;
 	const what = missing ? `Install ${status.displayName}` : `Update ${status.displayName} v${status.version} → v${status.latestVersion}`;
 	if (options.interactive) {
-		const answer = await io.ask(`  ${what} (npm install -g ${def?.npmPackage})? [${missing ? 'Y/n' : 'y/N'}] `);
+		const answer = await io.ask(`  ${what} (${installCommand})? [${missing ? 'Y/n' : 'y/N'}] `);
 		if (!isYes(answer, missing)) {
-			io.log(chalk.gray(missing ? `  Skipped. Install it later: npm install -g ${def?.npmPackage}` : '  Keeping the installed version.'));
+			io.log(chalk.gray(missing ? `  Skipped. Install it later: ${installCommand}` : '  Keeping the installed version.'));
 			return !missing;
 		}
 	} else {

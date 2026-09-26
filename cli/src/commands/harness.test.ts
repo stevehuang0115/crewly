@@ -30,6 +30,7 @@ const CODEX: HarnessStatus = {
 		{ id: 'device', label: 'ChatGPT account (device code)', kind: 'broker' },
 		{ id: 'api_key', label: 'OpenAI API key', kind: 'api_key' },
 	],
+	retired: false,
 };
 
 /**

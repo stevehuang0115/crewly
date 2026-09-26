@@ -5,10 +5,11 @@
  * saving it, and an Anthropic API key has to reach agents somehow; both live
  * here, in `<crewlyHome>/harness-credentials.json` with mode 0600. Codex
  * writes its own credentials (`$CODEX_HOME/auth.json`), so nothing is stored
- * for it unless a future flow needs the key.
+ * for it unless a future flow needs the key. Antigravity CLI reads its Gemini
+ * API key only from the environment, so Crewly keeps that key here too.
  *
  * {@link harnessEnvForAgents} turns the stored credentials into the env vars
- * injected into every agent PTY (and adds the user npm prefix to PATH).
+ * injected into agent PTYs (and adds the user npm prefix to PATH).
  *
  * Secrets are never logged, never returned by the REST API and never put in
  * an error message.
@@ -18,7 +19,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { HARNESS_CONSTANTS } from '../../constants.js';
+import { ANTIGRAVITY_CONSTANTS, HARNESS_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { buildHarnessPath } from './harness-exec.utils.js';
 
@@ -34,6 +35,11 @@ export interface HarnessCredentials {
 	codex?: {
 		/** OpenAI API key — only kept if a flow needs it (Codex stores its own login) */
 		openaiApiKey?: string;
+		updatedAt?: string;
+	};
+	antigravity?: {
+		/** Gemini API key Antigravity CLI runs with (exported as GEMINI_API_KEY to antigravity-cli agents only) */
+		geminiApiKey?: string;
 		updatedAt?: string;
 	};
 }
@@ -149,6 +155,39 @@ export class HarnessCredentialsStore {
 	}
 
 	/**
+	 * Store the Gemini API key Antigravity CLI runs with.
+	 *
+	 * @param key - Gemini API key
+	 * @throws Error when the key is empty
+	 */
+	setAntigravityGeminiApiKey(key: string): void {
+		if (!isNonEmptyString(key)) throw new Error('Gemini API key is empty');
+		const current = this.read();
+		this.write({ ...current, antigravity: { geminiApiKey: key.trim(), updatedAt: new Date().toISOString() } });
+	}
+
+	/**
+	 * The stored Antigravity Gemini API key.
+	 *
+	 * @returns The key, or null when none is stored
+	 */
+	getAntigravityGeminiApiKey(): string | null {
+		const key = this.read().antigravity?.geminiApiKey;
+		return isNonEmptyString(key) ? key : null;
+	}
+
+	/**
+	 * Forget the stored Antigravity key.
+	 */
+	clearAntigravity(): void {
+		const current = this.read();
+		if (!current.antigravity) return;
+		const next: HarnessCredentials = { ...current };
+		delete next.antigravity;
+		this.write(next);
+	}
+
+	/**
 	 * Forget the stored Claude credential.
 	 */
 	clearClaude(): void {
@@ -179,16 +218,29 @@ export class HarnessCredentialsStore {
 	 * a Claude credential. Nothing is added for Codex: it reads its own
 	 * `auth.json`.
 	 *
+	 * For an `antigravity-cli` session it also adds the stored Gemini key as
+	 * `GEMINI_API_KEY` (Antigravity reads the key only from the environment)
+	 * and `AGY_CLI_DISABLE_AUTO_UPDATE`. The key is scoped to that runtime on
+	 * purpose: in a Gemini CLI session an unexpected GEMINI_API_KEY brings up
+	 * Gemini's "Existing API key detected" dialog for Google-login users.
+	 *
 	 * @param baseEnv - Environment whose PATH is extended (defaults to process.env)
+	 * @param runtimeType - Runtime the session will run, when known
 	 * @returns Env map to merge into the agent's spawn env
 	 */
-	harnessEnvForAgents(baseEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
+	harnessEnvForAgents(baseEnv: NodeJS.ProcessEnv = process.env, runtimeType?: string): Record<string, string> {
 		const env: Record<string, string> = { PATH: buildHarnessPath(baseEnv.PATH) };
-		const claude = this.read().claude;
+		const stored = this.read();
+		const claude = stored.claude;
 		if (isNonEmptyString(claude?.oauthToken)) {
 			env[HARNESS_CONSTANTS.CLAUDE.OAUTH_TOKEN_ENV] = claude.oauthToken;
 		} else if (isNonEmptyString(claude?.anthropicApiKey)) {
 			env[HARNESS_CONSTANTS.CLAUDE.API_KEY_ENV] = claude.anthropicApiKey;
+		}
+		if (runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+			env[ANTIGRAVITY_CONSTANTS.DISABLE_AUTO_UPDATE_ENV] = ANTIGRAVITY_CONSTANTS.DISABLE_AUTO_UPDATE_VALUE;
+			const key = stored.antigravity?.geminiApiKey;
+			if (isNonEmptyString(key)) env[ANTIGRAVITY_CONSTANTS.API_KEY_ENV] = key;
 		}
 		return env;
 	}
@@ -212,16 +264,17 @@ export function getHarnessCredentialsStore(): HarnessCredentialsStore {
  * Never throws: a broken credentials file yields just the PATH.
  *
  * @param baseEnv - Environment whose PATH is extended (defaults to process.env)
- * @returns Env map (PATH plus any Claude credential env var)
+ * @param runtimeType - Runtime the session will run (adds runtime-scoped vars such as Antigravity's key)
+ * @returns Env map (PATH plus any credential env var)
  *
  * @example
  * ```ts
- * const env = { ...identityEnv, ...harnessEnvForAgents() };
+ * const env = { ...identityEnv, ...harnessEnvForAgents(process.env, 'antigravity-cli') };
  * ```
  */
-export function harnessEnvForAgents(baseEnv: NodeJS.ProcessEnv = process.env): Record<string, string> {
+export function harnessEnvForAgents(baseEnv: NodeJS.ProcessEnv = process.env, runtimeType?: string): Record<string, string> {
 	try {
-		return defaultStore.harnessEnvForAgents(baseEnv);
+		return defaultStore.harnessEnvForAgents(baseEnv, runtimeType);
 	} catch {
 		return { PATH: buildHarnessPath(baseEnv.PATH) };
 	}

@@ -3,7 +3,9 @@
  * async jobs with a log, one install per harness (exec calls mocked).
  */
 
-import { HarnessInstallError, HarnessInstallService, isPermissionError } from './harness-install.service.js';
+import * as fs from 'fs';
+import { HarnessInstallError, HarnessInstallService, isAllowedInstallerUrl, isPermissionError } from './harness-install.service.js';
+import { getHarnessDefinition, type ScriptInstallSpec } from './harness-registry.js';
 import type { CommandResult, RunCommand, RunCommandOptions } from './harness.types.js';
 
 /** A runner that answers each call from a queue and records the calls. */
@@ -135,6 +137,74 @@ describe('HarnessInstallService', () => {
 		now += 2 * 60 * 60 * 1000;
 		service.startInstall('claude-code');
 		expect(() => service.getJob(job.jobId)).toThrow(HarnessInstallError);
+	});
+
+	describe('Antigravity CLI (official install script)', () => {
+		const SCRIPT = '#!/bin/bash\necho "installing agy"\n';
+
+		it('downloads the installer from antigravity.google and runs it with bash from a private temp file', async () => {
+			let scriptPath = '';
+			let scriptBody = '';
+			const run = jest.fn(async (cmd: string, args: readonly string[], options?: RunCommandOptions) => {
+				scriptPath = args[0];
+				scriptBody = fs.readFileSync(scriptPath, 'utf8');
+				expect(fs.statSync(scriptPath).mode & 0o777).toBe(0o700);
+				expect(options?.env?.PATH).toContain('.local/bin');
+				options?.onOutput?.('Antigravity CLI binary placed successfully\n');
+				return { code: 0, stdout: '', stderr: '' };
+			});
+			const fetchScript = jest.fn(async () => SCRIPT);
+			const { service } = make(run, { fetchScript, resolveCommand: () => null });
+			const done = await service.waitForJob(service.startInstall('antigravity-cli').jobId);
+			expect(fetchScript).toHaveBeenCalledWith('https://antigravity.google/cli/install.sh');
+			expect(run).toHaveBeenCalledWith('bash', [scriptPath], expect.anything());
+			expect(scriptBody).toBe(SCRIPT);
+			expect(fs.existsSync(scriptPath)).toBe(false); // temp dir removed
+			expect(done.state).toBe('succeeded');
+			expect(done.log).toContain('$ curl -fsSL https://antigravity.google/cli/install.sh | bash');
+			expect(done.log).toContain('placed successfully');
+			// Never npm: Antigravity has no npm package.
+			expect(run.mock.calls.some(([cmd]) => cmd === 'npm')).toBe(false);
+		});
+
+		it('updates an installed agy with its own updater instead of re-running the installer', async () => {
+			const run = queuedRun([{ code: 0, output: 'Updated.\n' }]);
+			const fetchScript = jest.fn(async () => SCRIPT);
+			const { service } = make(run, { fetchScript, resolveCommand: (cmd) => (cmd === 'agy' ? '/home/me/.local/bin/agy' : null) });
+			const done = await service.waitForJob(service.startInstall('antigravity-cli').jobId);
+			expect(run).toHaveBeenCalledWith('/home/me/.local/bin/agy', ['update'], expect.anything());
+			expect(fetchScript).not.toHaveBeenCalled();
+			expect(done).toMatchObject({ state: 'succeeded' });
+			expect(done.log).toContain('$ agy update');
+		});
+
+		it('does not run anything that is not a shell script', async () => {
+			const run = queuedRun([]);
+			const { service } = make(run, { fetchScript: async () => '<html>error page</html>', resolveCommand: () => null });
+			const done = await service.waitForJob(service.startInstall('antigravity-cli').jobId);
+			expect(done.state).toBe('failed');
+			expect(run).not.toHaveBeenCalled();
+		});
+
+		it('fails the job when the download fails or the installer exits non-zero', async () => {
+			const failedFetch = make(queuedRun([]), { fetchScript: async () => { throw new Error('Download failed: HTTP 503'); }, resolveCommand: () => null });
+			const a = await failedFetch.service.waitForJob(failedFetch.service.startInstall('antigravity-cli').jobId);
+			expect(a).toMatchObject({ state: 'failed' });
+			expect(a.log).toContain('HTTP 503');
+			const failedRun = make(queuedRun([{ code: 1, output: 'Security Halt: checksum mismatch\n' }]), { fetchScript: async () => SCRIPT, resolveCommand: () => null });
+			const b = await failedRun.service.waitForJob(failedRun.service.startInstall('antigravity-cli').jobId);
+			expect(b).toMatchObject({ state: 'failed' });
+			expect(b.log).toContain('Security Halt');
+		});
+
+		it('only allows the exact https URL the registry names', () => {
+			const spec = getHarnessDefinition('antigravity-cli')!.install as ScriptInstallSpec;
+			expect(isAllowedInstallerUrl('https://antigravity.google/cli/install.sh', spec)).toBe(true);
+			expect(isAllowedInstallerUrl('http://antigravity.google/cli/install.sh', spec)).toBe(false);
+			expect(isAllowedInstallerUrl('https://evil.example/cli/install.sh', spec)).toBe(false);
+			expect(isAllowedInstallerUrl('https://antigravity.google.evil.example/cli/install.sh', spec)).toBe(false);
+			expect(isAllowedInstallerUrl('not a url', spec)).toBe(false);
+		});
 	});
 
 	it('rejects unknown harnesses and jobs', async () => {

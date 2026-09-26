@@ -26,6 +26,7 @@ const STATUS: HarnessStatus = {
 		{ id: 'subscription', label: 'Claude subscription (Pro / Max)', kind: 'broker' },
 		{ id: 'api_key', label: 'Anthropic API key', kind: 'api_key' },
 	],
+	retired: false,
 };
 
 const SESSION: LoginSession = {
