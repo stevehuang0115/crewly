@@ -63,6 +63,7 @@ Every response is `{ success: true, data }` or `{ success: false, error, code? }
 | `POST /api/harness/login/:sessionId/input` | `{ text }` | `LoginSession` |
 | `POST /api/harness/login/:sessionId/cancel` | – | `LoginSession` |
 | `POST /api/harness/:id/api-key` | `{ key }` | `HarnessStatus` (the key is never echoed) |
+| `POST /api/harness/:id/owner-login` | `{ switchAccount?: boolean }` | **Orchestrator only.** Starts the owner-requested login (see "Owner-triggered login" below). 202 `{ status: 'started'\|'restarted', harnessId, displayName, dmAvailable, next }` |
 
 ```ts
 HarnessStatus = { id, displayName, installed, version: string|null, latestVersion: string|null,
@@ -91,6 +92,9 @@ header (403), mirroring the tickets controller:
 - `api-key`
 
 `GET /api/harness` and `GET /install/:jobId` stay readable.
+
+`POST /:id/owner-login` is the one route an agent may call, and only the
+orchestrator (see "Owner-triggered login").
 
 **Relay (phone / portal).** `MobileApiRelayService` allowlists the following.
 The relay presents the owner API token.
@@ -493,6 +497,122 @@ The CLI's in-process service always reports `null`.
 - Detecting an expired Claude login with the status check. It only sees
   whether a credential exists, not whether it has expired, so Claude expiry
   comes from agent output.
+
+### Owner-triggered login (2026-09-26)
+
+Status: implemented on `feat/orc-login`.
+
+**Why.** The owner asked the orchestrator (an in-process agent on DeepSeek) in
+its Slack DM to log Claude Code in to a different account. The orc ran
+`claude setup-token` in its one-shot bash tool: the process died when the tool
+call returned, so every authorization code the owner pasted back was stale.
+It then claimed several times that it had sent a new link without calling a
+reply tool, and the owner's DM filled with English status reports. The rule
+from the owner: the orc handles login and re-login itself; the owner, on a
+phone, only taps a link and pastes a code.
+
+**The same flow as an expiry, started by the owner.** Both entry points below
+call `HarnessReloginService.startOwnerLogin(harnessId, { switchAccount,
+replyTarget, requestedBy })`. The flow is the Phase 2 flow with three
+differences:
+
+- **Forced.** No "still logged in" check and no silent API-key path: the owner
+  may be switching accounts. (Codex's `login` clears its credentials — the
+  owner asked for it.)
+- **Answered where asked.** `replyTarget = { channelId, threadTs, agentSession? }`.
+  DMs go into that conversation and thread; for the orc's own-bot DM
+  ("Crewly Orc" app, `agentSession: crewly-orc`) they are posted with that
+  bot's token. If the target cannot be used, the master-bot DM is the fallback.
+- **Owner wording.** The link DM starts `*登录 Claude Code*` (or
+  `*换账号登录 Claude Code*`, which adds "先在打开的页面里切到要用的那个账号"),
+  not "登录过期了". Success is one line: 「好了：Claude Code 已登录。 N 个 agent 已重启，用上了新登录。」
+  Failure uses the Phase 2 failure line with the retry hint.
+
+A flow already running for the harness (an expiry, or an earlier request) is
+cancelled quietly and started over with a fresh link; its stuck agents are
+kept. The post-success quiet period does not apply. `重新登录` / `relogin` on a
+failed owner flow restarts it with the same wording and thread. On success
+every live session of the harness restarts (conversation resumed) so it picks
+up the new login.
+
+**Entry 1 — the orc DM, no LLM.** `handleOwnerReply(text, target)` now runs,
+in order: the retry keyword (while a flow exists), a code / screen reply for a
+running flow, then `parseOwnerLoginRequest(text)`
+(`services/harness/owner-login-request.ts`). The whole message (≤ 60 chars
+after normalising) must be the request:
+
+| Owner writes | Result |
+|---|---|
+| 「重新登录 claude」 「帮我重新登陆claude code」 「claude 重新登录」 「登录 codex」 `relogin codex` `log in to claude` `claude login` | forced login of that harness |
+| 「换个账号登录 claude」 「用另一个账号登录 claude」 「给 claude 换个账号」 `switch claude account` | the same, account-switch wording |
+| 「重新登录」 `relogin` (no flow running) · 「登录 cursor」 · 「重新登录编程助手」 | 「要登录哪个？回复「重新登录 claude」或「重新登录 codex」…」 |
+| 「登录 agy」 / 「登录 antigravity」 | Antigravity uses a Gemini API key: `crewly login antigravity` or Setup |
+| 「登录 gemini」 | Gemini CLI is enterprise-only; no link login |
+| 「claude 登录了吗」, 「登录 gmail」, any longer sentence | not consumed — goes to the orc |
+
+Aliases: claude / claude code; codex / codex cli; antigravity / agy; gemini.
+Only coding-assistant names (a short list: cursor, copilot, aider, …) or
+generic words ("编程助手", "harness") count as an unknown harness; any other
+word after a login verb is not ours.
+
+The interceptor now also accepts the owner's DM with the **orchestrator's own
+bot** (`agentSession === crewly-orc`), where the owner usually talks to the
+orc; other agents' DMs stay theirs. `SlackReloginDmService.replyTargetOf`
+turns the message into the reply target (its thread, or the message itself).
+
+**Entry 2 — the orc's `harness-login` skill.** When the owner asks in other
+words, the orc runs
+`config/skills/orchestrator/harness-login/execute.sh --harness claude|codex [--switch-account]`,
+which calls `POST /api/harness/:id/owner-login` (`controllers/harness/owner-login.controller.ts`):
+
+- `X-Agent-Session` must be the orchestrator. Another agent → 403
+  `orchestrator_only`; no header → 403 (the owner uses `POST /:id/login`).
+- `:id` accepts ids and aliases; unknown → 404 `unknown_harness`.
+- Owner evidence, mirroring install-skill: chat-v2's owner-authored messages
+  from the last 30 min (`getRecentOwnerMessageContents`) must contain one that
+  asks for this login (`isOwnerLoginRequestEvidence`: a login verb, naming this
+  harness or none; status questions and other harnesses do not count).
+  None → 403 `owner_request_not_found`; unreadable history → 503
+  `owner_request_unverifiable`.
+- No link login (Antigravity, Gemini) → 400 `no_link_login` with the Chinese
+  explanation to pass on.
+- The reply target is the orc's current conversation: its fresh turn origin
+  (`OrcReplyRouteService`), mapped to the Slack DM thread via
+  `SlackAgentDmService` links (`resolveOrcTurnReplyTarget`); web chat → the
+  master-bot DM.
+- 202 returns at once with `next`: "say nothing more about this login". With
+  Slack down (`dmAvailable: false`), `next` tells the orc to point the owner at
+  Setup.
+
+**Guard rails for the orc.**
+
+- Orc prompt (`config/roles/orchestrator/prompt.md`, "Harness Login") and the
+  skills reference: use `harness-login`; never run `claude setup-token`,
+  `claude /login`, `claude auth login`, `codex login` or an agy login in bash.
+- crewly-agent's `bash_exec` refuses those commands
+  (`packages/crewly-agent/src/runtime/interactive-login-guard.ts`), with a
+  message naming the skill. Status checks (`claude auth status`,
+  `codex login status`) still run.
+
+**Turn text that is not an answer is not posted.** The in-process runtime
+posts an agent's final text to the person when no reply tool sent the answer.
+
+- `crewly-agent-external-runtime.service.ts` used to require "a text summary
+  of findings, results, and issues encountered, then call report-status" at
+  the end of every task, and `agent-runner.service.ts` asked "summarize what
+  you just did …" whenever a turn ended with tool calls and no text — even
+  right after `reply-chat` had sent the answer. That is where "I've sent the
+  reply. Here's my status: *What the user asked* … *What I did* … *Next step*"
+  came from. Now the output requirements ask for a short reply in the writer's
+  language (no text if a reply skill already answered, never a status report,
+  never a claim of sending without a tool), the runner skips the fallback when
+  a reply tool ran, and the fallback prompt asks for a short user-facing reply.
+- `agent-registration.service.ts` filters the final text first
+  (`utils/agent-reply-filter.utils.ts`): a meta status report ("Here's my
+  status" openers, or a self-report header such as "What I did" plus another
+  report header), or a claim of a sent reply / link with no reply-tool call in
+  the turn (unless the text itself carries a URL), is logged
+  (`In-process agent turn text not posted`) and not posted to chat or Slack.
 
 ## Phase 3: first-run checklist and starter teams
 
