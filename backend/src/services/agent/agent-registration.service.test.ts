@@ -864,7 +864,7 @@ describe('AgentRegistrationService', () => {
 
 			/** Boot an antigravity-cli agent with a settings Gemini key. */
 			async function bootAgy(): Promise<void> {
-				const { getSettingsService } = require('../settings/settings.service.js');
+				const { getSettingsService } = jest.requireMock<typeof import('../settings/settings.service.js')>('../settings/settings.service.js');
 				(getSettingsService as any).mockReturnValue({
 					getSettings: jest.fn().mockResolvedValue({ general: { autoResumeOnRestart: true, tokenTracking: false } }),
 					getApiKey: jest.fn().mockImplementation(async (provider: string) => (provider === 'gemini' ? 'settings-gemini-key' : undefined)),
