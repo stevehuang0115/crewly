@@ -167,6 +167,8 @@ jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { SESSION_RECREATION_CONSTANTS } from '../../constants.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
+import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
+import { SessionMemoryService } from '../memory/session-memory.service.js';
 
 jest.mock('./oauth-relogin-monitor.service.js', () => ({
 	OAuthReloginMonitorService: {
@@ -1841,6 +1843,101 @@ describe('AgentRegistrationService', () => {
 				expect(typeof result).toBe('string');
 				expect(result.length).toBeGreaterThan(0);
 				expect(result).not.toContain('Legacy prompt for');
+			});
+		});
+
+		describe('startup briefings under the modular prompt (#816, regression of #395)', () => {
+			const originalModular = process.env.CREWLY_USE_MODULAR_PROMPTS;
+			const ACTIVE_WORK_MD = '## Your Active Work\n\n### Active WorkItems\n- **wi-816-probe** — Fix the startup briefing — _running · 1h_';
+			const SESSION_MD = '## Your Previous Knowledge\n\n### Last Session\nsession-briefing-probe: rebased PR #30';
+			let activeWorkSpy: jest.SpyInstance;
+			let sessionMemorySpy: jest.SpyInstance;
+
+			/**
+			 * Stub both briefing sources. `activeWork` null makes generation throw,
+			 * which is how a TaskPool/Request hiccup reaches registration.
+			 */
+			const stubBriefings = (activeWork: string | null, session: string): void => {
+				activeWorkSpy = jest.spyOn(ActiveWorkBriefingService, 'getInstance').mockResolvedValue({
+					generateActiveWorkBriefing: activeWork === null
+						? jest.fn().mockRejectedValue(new Error('task pool unavailable'))
+						: jest.fn().mockResolvedValue({
+							openRequests: [], activeWorkItems: [{}], pendingReviews: [],
+							outboundDelegations: [], recentlyAutoResolved: [], truncated: false,
+						}),
+					formatBriefingAsMarkdown: jest.fn().mockReturnValue(activeWork ?? ''),
+				} as unknown as ActiveWorkBriefingService);
+				sessionMemorySpy = jest.spyOn(SessionMemoryService, 'getInstance').mockReturnValue({
+					onSessionStart: jest.fn().mockResolvedValue(undefined),
+					generateStartupBriefing: jest.fn().mockResolvedValue({}),
+					formatBriefingAsMarkdown: jest.fn().mockReturnValue(session),
+				} as unknown as SessionMemoryService);
+			};
+
+			beforeEach(() => {
+				delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+				mockReadFile.mockResolvedValue('Legacy prompt for {{SESSION_NAME}}');
+			});
+
+			afterEach(() => {
+				activeWorkSpy?.mockRestore();
+				sessionMemorySpy?.mockRestore();
+				if (originalModular === undefined) delete process.env.CREWLY_USE_MODULAR_PROMPTS;
+				else process.env.CREWLY_USE_MODULAR_PROMPTS = originalModular;
+			});
+
+			it('the default (modular) prompt contains the Active Work briefing and the session briefing', async () => {
+				stubBriefings(ACTIVE_WORK_MD, SESSION_MD);
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				const result: string = await loadRegistrationPrompt('developer', 'test-session', 'member-123');
+
+				expect(result).not.toContain('Legacy prompt for'); // modular path was taken
+				expect(result).toContain('## Your Active Work');
+				expect(result).toContain('wi-816-probe');
+				expect(result).toContain('## Your Previous Knowledge');
+				expect(result).toContain('session-briefing-probe');
+			});
+
+			it('places Active Work above the recovery protocol that refers to it', async () => {
+				stubBriefings(ACTIVE_WORK_MD, SESSION_MD);
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				const result: string = await loadRegistrationPrompt('developer', 'test-session', 'member-123');
+
+				// Locate the briefing by its content, not the heading: the "not
+				// injected" notice carries the same heading.
+				const activeAt = result.indexOf('wi-816-probe');
+				const recoveryAt = result.indexOf('## Session Recovery Protocol');
+				expect(activeAt).toBeGreaterThanOrEqual(0);
+				expect(recoveryAt).toBeGreaterThan(activeAt);
+				expect(result.slice(recoveryAt)).toContain('section above');
+			});
+
+			it('says the briefing was not injected when generating it fails, never "no work"', async () => {
+				stubBriefings(null, SESSION_MD);
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				const result: string = await loadRegistrationPrompt('developer', 'test-session', 'member-123');
+
+				expect(result).toContain('## Your Active Work');
+				expect(result).toContain('Not injected into this prompt');
+				expect(result).toContain('core/get-my-active-work/execute.sh --session test-session --role developer');
+				expect(result).not.toContain('fresh start');
+				// The session briefing is independent and still arrives.
+				expect(result).toContain('session-briefing-probe');
+			});
+
+			it('the legacy prompt also carries the section (flag=false)', async () => {
+				process.env.CREWLY_USE_MODULAR_PROMPTS = 'false';
+				stubBriefings(ACTIVE_WORK_MD, SESSION_MD);
+
+				const loadRegistrationPrompt = (service as any).loadRegistrationPrompt.bind(service);
+				const result: string = await loadRegistrationPrompt('developer', 'test-session', 'member-123');
+
+				expect(result).toContain('Legacy prompt for test-session');
+				expect(result).toContain('wi-816-probe');
+				expect(result).toContain('session-briefing-probe');
 			});
 		});
 

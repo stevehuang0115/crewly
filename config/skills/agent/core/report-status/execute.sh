@@ -31,6 +31,7 @@ Options:
   --summary  | -m   Status summary text (required unless piped via stdin)
   --summary-file    Read summary from file path
   --project  | -p   Project path for auto-remember on completion
+  --role     | -r   Agent role for the recorded learning (default: $CREWLY_ROLE, else "agent")
   --task-path       Task file path to auto-complete
   --task-id         Task ID (for structured StatusReport format)
   --progress        Progress percentage (0-100, for structured format)
@@ -45,6 +46,7 @@ SESSION_NAME=""
 STATUS=""
 SUMMARY=""
 PROJECT_PATH=""
+AGENT_ROLE=""
 TASK_PATH=""
 TASK_ID=""
 WORK_ITEM_ID=""
@@ -77,6 +79,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --project|-p)
       PROJECT_PATH="$2"
+      shift 2
+      ;;
+    --role|-r)
+      AGENT_ROLE="$2"
       shift 2
       ;;
     --task-path)
@@ -143,6 +149,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$WORK_ITEM_ID" ] && WORK_ITEM_ID=$(printf '%s' "$INPUT" | jq -r '.workItemId // empty')
   [ -z "$PROGRESS" ] && PROGRESS=$(printf '%s' "$INPUT" | jq -r '.progress // empty')
   [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
+  [ -z "$AGENT_ROLE" ] && AGENT_ROLE=$(printf '%s' "$INPUT" | jq -r '.role // .agentRole // empty')
   ARTIFACTS=$(printf '%s' "$INPUT" | jq -c '.artifacts // empty')
   BLOCKERS=$(printf '%s' "$INPUT" | jq -c '.blockers // empty')
   USE_STRUCTURED=$(printf '%s' "$INPUT" | jq -r '.structured // "false"')
@@ -155,6 +162,11 @@ fi
 require_param "sessionName (--session)" "$SESSION_NAME"
 require_param "status (--status)" "$STATUS"
 require_param "summary (--summary)" "$SUMMARY"
+
+# The agent's role labels its learnings. Agent sessions carry it in
+# CREWLY_ROLE (set by the backend at session creation); /memory/record-learning
+# rejects an empty agentRole, so fall back to a generic label.
+[ -z "$AGENT_ROLE" ] && AGENT_ROLE="${CREWLY_ROLE:-agent}"
 
 # Gate: milestone summaries must carry a real "WHAT shipped + WHAT it means
 # for the owner" — see config/sops/common/mid-flight-milestone-surface.md
@@ -297,6 +309,28 @@ if [ "$STATUS" = "done" ]; then
   fi
 fi
 
+# record_task_learning <label> <summary>
+#
+# Records the report as a project learning via POST /memory/record-learning.
+# The controller requires {agentId, agentRole, projectPath, learning}; this
+# call used to send {agentId, content, type}, so every one 400'd and the
+# `2>/dev/null || true` hid it (#816). A failure is still non-fatal (the
+# status report itself already went out) but is now surfaced on stderr.
+record_task_learning() {
+  local label="$1" text="$2" body result
+  body=$(jq -n \
+    --arg agentId "$SESSION_NAME" \
+    --arg agentRole "$AGENT_ROLE" \
+    --arg projectPath "$PROJECT_PATH" \
+    --arg learning "${label}: ${text}" \
+    --arg relatedTask "${WORK_ITEM_ID:-$TASK_ID}" \
+    '{agentId: $agentId, agentRole: $agentRole, projectPath: $projectPath, learning: $learning}
+      + (if $relatedTask != "" then {relatedTask: $relatedTask} else {} end)')
+  if ! result=$(api_call POST "/memory/record-learning" "$body" 2>&1 >/dev/null); then
+    jq -n --arg err "$result" '{warning: "status reported, but recording the learning FAILED", error: $err}' >&2
+  fi
+}
+
 # Auto-persist key findings as project knowledge when task is done (#127, #219).
 if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ]; then
   auto_remember "$SESSION_NAME" "[COMPLETED] Task completed by ${SESSION_NAME}: ${SUMMARY}" "decision" "project" "$PROJECT_PATH"
@@ -306,14 +340,8 @@ fi
 # Uses existing APIs — no additional LLM calls. The agent's own summary
 # is the learning input; keyword extraction identifies growth areas.
 if [ "$STATUS" = "done" ] && [ -n "$SUMMARY" ] && [ -n "$PROJECT_PATH" ]; then
-  # Record as a structured learning entry (appends to what_worked.md)
-  LEARN_BODY=$(jq -n \
-    --arg agentId "$SESSION_NAME" \
-    --arg content "$SUMMARY" \
-    --arg projectPath "$PROJECT_PATH" \
-    --arg type "success" \
-    '{agentId: $agentId, content: $content, projectPath: $projectPath, type: $type}')
-  api_call POST "/memory/record-learning" "$LEARN_BODY" 2>/dev/null || true
+  # Record as a project learning (POST /memory/record-learning).
+  record_task_learning "Task completed" "$SUMMARY"
 
   # Extract growth areas from summary (keyword-based, no LLM)
   GROWTH_BODY=$(jq -n \
@@ -326,12 +354,6 @@ fi
 # Growth: record failures for learning when task fails or is blocked.
 if [ "$STATUS" = "failed" ] || [ "$STATUS" = "blocked" ]; then
   if [ -n "$SUMMARY" ] && [ -n "$PROJECT_PATH" ]; then
-    FAIL_BODY=$(jq -n \
-      --arg agentId "$SESSION_NAME" \
-      --arg content "$SUMMARY" \
-      --arg projectPath "$PROJECT_PATH" \
-      --arg type "failure" \
-      '{agentId: $agentId, content: $content, projectPath: $projectPath, type: $type}')
-    api_call POST "/memory/record-learning" "$FAIL_BODY" 2>/dev/null || true
+    record_task_learning "Task ${STATUS}" "$SUMMARY"
   fi
 fi

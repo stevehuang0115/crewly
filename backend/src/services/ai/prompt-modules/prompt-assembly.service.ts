@@ -33,6 +33,8 @@ import { DomainSOPModule } from './domain-sop.module.js';
 import { RiskPolicyModule } from './risk-policy.module.js';
 import { TeamNormsModule } from './team-norms.module.js';
 import { WorkingMemoryModule } from './working-memory.module.js';
+import { ActiveWorkModule } from './active-work.module.js';
+import { SessionBriefingModule } from './session-briefing.module.js';
 
 /**
  * Default total token budget for all prompt modules combined.
@@ -98,6 +100,7 @@ export const LITE_PROFILE_SUMMARISED_MODULES: ReadonlySet<string> = new Set(['mi
  */
 export const PROFILE_REQUIRED_MODULES: ReadonlyArray<string> = [
 	'identity',
+	'active-work',
 	'communication',
 	'lifecycle',
 	'recovery',
@@ -158,6 +161,11 @@ export class PromptAssemblyService {
 	private registerDefaultModules(): void {
 		this.modules = [
 			new IdentityModule(),
+			// Startup state (#395, #816): Active Work (1.5) then the
+			// session-memory briefing (1.6), both BEFORE recovery (2), whose
+			// text refers to "the ## Your Active Work section above".
+			new ActiveWorkModule(),
+			new SessionBriefingModule(),
 			new SoulModule(),
 			new ExpertProfileModule(),
 			new RecoveryModule(),

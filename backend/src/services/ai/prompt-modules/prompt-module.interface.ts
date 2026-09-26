@@ -109,6 +109,23 @@ export interface ModuleConfig {
 	 */
 	teamAncestorIds?: string[];
 
+	// === Startup briefings (#395, #816) ===
+
+	/**
+	 * Pre-rendered `## Your Active Work` markdown (Requests + WorkItems) from
+	 * ActiveWorkBriefingService. Rendered by the `active-work` module. The
+	 * caller generates it (registration does) so modules stay free of
+	 * TaskPool/Request I/O. Undefined means "not generated for this prompt":
+	 * the module then tells the agent to fetch it with get-my-active-work.
+	 */
+	activeWorkBriefing?: string;
+	/**
+	 * Pre-rendered session-memory startup briefing (`## Your Previous
+	 * Knowledge`) from SessionMemoryService. Rendered by the
+	 * `session-briefing` module; omitted when undefined or empty.
+	 */
+	sessionBriefing?: string;
+
 	// === Eval mode ===
 
 	/**

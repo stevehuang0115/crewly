@@ -90,7 +90,10 @@ describe('PromptAssemblyService', () => {
 			expect(names).toContain('lazy-anti-patterns');
 			// Default Execution Loop (P1 Fix 6 — behavioral mandate, priority 3.8)
 			expect(names).toContain('default-execution-loop');
-			expect(names.length).toBe(24);
+			// Startup state (#816 — regression of #395): Active Work + session briefing
+			expect(names).toContain('active-work');
+			expect(names).toContain('session-briefing');
+			expect(names.length).toBe(26);
 		});
 
 		it('should use default token budget of 28000', () => {
@@ -288,6 +291,51 @@ describe('PromptAssemblyService', () => {
 			});
 
 			await expect(service.assemble(baseConfig)).rejects.toThrow('critical failure');
+		});
+	});
+
+	describe('startup briefings (#816)', () => {
+		const ACTIVE = '## Your Active Work\n\n### Active WorkItems\n- **wi-probe** — x';
+		const SESSION = '## Your Previous Knowledge\n\n### Last Session\nsession-probe';
+
+		it('renders both briefings from the config, in order, before the recovery protocol', async () => {
+			const { prompt, report } = await new PromptAssemblyService().assemble({
+				...baseConfig,
+				activeWorkBriefing: ACTIVE,
+				sessionBriefing: SESSION,
+			});
+			const names = report.moduleBreakdown.map((m) => m.name);
+			expect(names.indexOf('active-work')).toBeGreaterThanOrEqual(0);
+			expect(names.indexOf('active-work')).toBeLessThan(names.indexOf('session-briefing'));
+			expect(names.indexOf('session-briefing')).toBeLessThan(names.indexOf('recovery'));
+
+			const activeAt = prompt.indexOf('wi-probe');
+			const sessionAt = prompt.indexOf('session-probe');
+			const recoveryAt = prompt.indexOf('## Session Recovery Protocol');
+			expect(activeAt).toBeGreaterThanOrEqual(0);
+			expect(sessionAt).toBeGreaterThan(activeAt);
+			expect(recoveryAt).toBeGreaterThan(sessionAt);
+		});
+
+		it('without briefings: Active Work says "not injected" and the session module is skipped', async () => {
+			const { prompt, report } = await new PromptAssemblyService().assemble(baseConfig);
+			const names = report.moduleBreakdown.map((m) => m.name);
+			expect(names).toContain('active-work');
+			expect(names).not.toContain('session-briefing');
+			expect(prompt).toContain('Not injected into this prompt');
+		});
+
+		it('under budget pressure the session briefing may be cut but Active Work never is', async () => {
+			const service = new PromptAssemblyService(1);
+			const { prompt, report } = await service.assemble({
+				...baseConfig,
+				activeWorkBriefing: ACTIVE,
+				sessionBriefing: SESSION + '\n' + 'filler line\n'.repeat(200),
+			});
+			expect(prompt).toContain('wi-probe');
+			const cut = report.truncated.map((t) => t.name);
+			expect(cut).toContain('session-briefing');
+			expect(cut).not.toContain('active-work');
 		});
 	});
 

@@ -61,6 +61,7 @@ import {
 	type SessionRuntimeContext,
 } from '../ai/prompt-builder.service.js';
 import { PromptAssemblyService } from '../ai/prompt-modules/prompt-assembly.service.js';
+import { renderActiveWorkSection } from '../ai/prompt-modules/active-work.module.js';
 import {
 	resolveOrcPromptProfile,
 	ORC_PROMPT_PROFILE_ENV,
@@ -2598,6 +2599,13 @@ export class AgentRegistrationService {
 			// so the agent's reading order is "what am I on the hook for RIGHT
 			// NOW" before the supplementary memory context. Soft-fail with WARN
 			// — TaskPool/Request hiccups must not block agent boot.
+			//
+			// #816: both briefings are captured here and handed to the modular
+			// assembler below (ActiveWorkModule / SessionBriefingModule). The
+			// modular path returns its own prompt, so appending to `prompt`
+			// alone used to drop them on the default path.
+			let activeWorkBriefingMd: string | undefined;
+			let sessionBriefingMd: string | undefined;
 			try {
 				// ActiveWorkBriefingService.getInstance() is async — see service
 				// JSDoc. Dynamic-import migration was the build-fix for PR #494's
@@ -2609,7 +2617,7 @@ export class AgentRegistrationService {
 				);
 				const activeWorkMd = activeWorkService.formatBriefingAsMarkdown(activeWorkBriefing);
 				if (activeWorkMd && activeWorkMd.length > 30) {
-					prompt += `\n\n---\n\n${activeWorkMd}`;
+					activeWorkBriefingMd = activeWorkMd;
 					this.logger.info('Active-work briefing injected into prompt', {
 						sessionName,
 						role,
@@ -2628,6 +2636,14 @@ export class AgentRegistrationService {
 					error: activeWorkError instanceof Error ? activeWorkError.message : String(activeWorkError),
 				});
 			}
+			// Always emit the section: the briefing, or an explicit "not
+			// injected" notice, so the recovery protocol's "section above" is
+			// true on this (legacy, non-modular) path too.
+			prompt += `\n\n---\n\n${renderActiveWorkSection(activeWorkBriefingMd, {
+				agentSkillsPath: path.join(this.projectRoot, 'config', 'skills', 'agent'),
+				sessionName,
+				role,
+			})}`;
 
 			// Generate and inject startup briefing from session memory
 			try {
@@ -2636,6 +2652,7 @@ export class AgentRegistrationService {
 				const briefing = await sessionMemoryService.generateStartupBriefing(sessionName, role, projectPath);
 				const briefingMd = sessionMemoryService.formatBriefingAsMarkdown(briefing);
 				if (briefingMd && briefingMd.length > 30) {
+					sessionBriefingMd = briefingMd;
 					prompt += `\n\n---\n\n${briefingMd}`;
 					this.logger.info('Startup briefing injected into prompt', { sessionName, role, briefingLength: briefingMd.length });
 				}
@@ -2762,6 +2779,11 @@ export class AgentRegistrationService {
 						teamNormsPath,
 					};
 				}
+
+				// #816: startup state rides in the module config so the modular
+				// prompt carries it (ActiveWorkModule / SessionBriefingModule).
+				moduleConfig.activeWorkBriefing = activeWorkBriefingMd;
+				moduleConfig.sessionBriefing = sessionBriefingMd;
 
 				// Prompt tiering: the orchestrator is re-registered on every
 				// cold start and re-reads the whole system prompt at full price.
