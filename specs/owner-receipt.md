@@ -46,6 +46,19 @@ The format can change in the renderer alone. The data layer can change (for exam
   - every WorkItem the reconciler escalated to the owner for review (#813, `reviewOwnerEscalatedAt`) that is still `done_by_worker`.
 - **Cost.** Pluggable (`ReceiptCostSource`). The default, `cumulativeMeterCost`, **never prints a number it cannot stand behind**. `WorkItem.cost` today is a cumulative session meter (#812), so a non-zero value is the session's lifetime spend, not today's. It renders as 没记; no data at all is 没记 too, and never "$0". When a per-day source exists, the renderer prints `$x.xx` per team.
 
+## Coverage — the receipt says what it covers (#828 review)
+
+A receipt showing correct lines can still show only part of what the owner said. In the 9/26 replay, 13 of Ava's 31 asks got their own ticket. So the receipt states its coverage, right under the header, and never looks complete while silently showing part:
+
+```
+今天你发了 *43 条消息*：13 条成了事项 · 25 条并进已有事项 · 5 条没记（确认/寒暄）
+```
+
+- **Source.** Ticket intake records every owner message's fate in `<requests dir>/.intake-outcomes.jsonl` (`ticket-intake-log.ts`): `created`, `appended` (including 验过了 / 打回 / 不用记 into a ticket) or `ignored` plus the reason, with a timestamp. Duplicates (Slack redelivery) are not counted again. The file's first line is a `start` marker.
+- **Unknown is 不详.** If the log does not exist, or began after the window started, the line reads 「你发了几条消息：不详（这段时间还没有开始记录）」 — never 0, and never left out. Every day before this shipped reads 不详, including the 9/26 replay over real stored data.
+- **可能漏记.** An appended message whose words still carry request signals (the #827 ask score is above 0, even below the new-ask threshold) is listed with the ticket it went into, at most 5, then 「…另有 n 条」. Its redacted words are stored in the log only in that case. Pure acks score 0 and are never listed. The owner replies 「拆出来」; each entry's `splitCommand` in the API data is the `split-ticket` call that does it.
+- **Replay of 9/26 with counting on:** 43 = 13 created + 25 appended + 5 ignored. 可能漏记 lists 10 messages, 8 of them among the 12 asks Ava counted that intake folded into another ticket.
+
 ## Safety
 
 - Every text field is redacted with the shared secret patterns (`wiki-redaction.ts` `redactSensitive`): the ask, the question, and the deliverable refs.

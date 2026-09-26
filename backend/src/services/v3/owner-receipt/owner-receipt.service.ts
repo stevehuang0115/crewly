@@ -23,6 +23,7 @@ import { getCrewlyHomePath } from '../../core/crewly-home.utils.js';
 import { redactSensitive } from '../../wiki/wiki-redaction.js';
 import { buildReceiptData, localDate, localParts, resolveReceiptWindow, type ReceiptCostSource } from './owner-receipt-data.js';
 import { renderReceiptSlack } from './owner-receipt.renderer.js';
+import type { IntakeLogReading } from '../ticket-intake-log.js';
 import {
   applySettingsPatch,
   defaultReceiptSettings,
@@ -45,6 +46,8 @@ export interface OwnerReceiptServiceDeps {
   /** State file (default ~/.crewly/owner-receipt.json); null = in memory (tests) */
   statePath?: string | null;
   cost?: ReceiptCostSource;
+  /** The intake outcome log (#828 coverage); absent = coverage 不详 */
+  readIntakeLog?: () => Promise<IntakeLogReading>;
   now?: () => Date;
 }
 
@@ -121,16 +124,18 @@ export class OwnerReceiptService {
       ...(state.lastSentAt ? { lastSentAt: state.lastSentAt } : {}),
       ...opts,
     });
-    const [requests, workItems, teams] = await Promise.all([
+    const [requests, workItems, teams, intakeLog] = await Promise.all([
       this.deps.listRequests(),
       this.deps.listWorkItems(),
       this.deps.loadTeamIndex(),
+      this.deps.readIntakeLog ? this.deps.readIntakeLog().catch(() => null) : Promise.resolve(null),
     ]);
     const data = buildReceiptData({
       requests,
       workItems,
       window,
       teamOf: (session) => teams.get(session) ?? null,
+      intakeLog,
       ...(this.deps.cost ? { cost: this.deps.cost } : {}),
       now,
     });

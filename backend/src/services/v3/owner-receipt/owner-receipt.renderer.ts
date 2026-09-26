@@ -15,7 +15,25 @@
 
 import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
 import { localParts } from './owner-receipt-data.js';
-import type { ReceiptAsk, ReceiptCost, ReceiptData, ReceiptDeliverable, ReceiptOutcome } from './owner-receipt.types.js';
+import type { ReceiptAsk, ReceiptCost, ReceiptCoverage, ReceiptData, ReceiptDeliverable, ReceiptOutcome } from './owner-receipt.types.js';
+
+/**
+ * The coverage line (#828): how many messages the owner sent in the window
+ * and what became of them, so the receipt never looks complete while showing
+ * part of what he said. Unknown is 不详 — never 0, never left out.
+ *
+ * @param coverage - Coverage from the data layer
+ * @param basis - How the window was chosen (for 今天 vs 这段时间)
+ * @returns mrkdwn line
+ */
+function coverageLine(coverage: ReceiptCoverage, basis: ReceiptData['window']['basis']): string {
+  const when = basis === 'local_day' ? '今天' : '这段时间';
+  if (coverage.status === 'unknown') return `${when}你发了几条消息：不详（这段时间还没有开始记录）`;
+  return (
+    `${when}你发了 *${coverage.messages} 条消息*：${coverage.created} 条成了事项 · ` +
+    `${coverage.appended} 条并进已有事项 · ${coverage.ignored} 条没记（确认/寒暄）`
+  );
+}
 
 /** Emoji per outcome. */
 const OUTCOME_MARK: Record<ReceiptOutcome, string> = {
@@ -165,7 +183,7 @@ export function renderReceiptSlack(data: ReceiptData): string {
     data.window.basis === 'since_last_receipt'
       ? `（${zone}，上次小票 ${start.date === end.date ? '' : `${start.date} `}${start.time} 起）`
       : `（${zone} ${start.time}–${end.time}）`;
-  const lines: string[] = [`*Crewly 小票 · ${end.date}*${span}`];
+  const lines: string[] = [`*Crewly 小票 · ${end.date}*${span}`, coverageLine(data.coverage, data.window.basis)];
 
   if (data.askCount === 0) {
     lines.push('这段时间你没有提新的事。');
@@ -204,6 +222,16 @@ export function renderReceiptSlack(data: ReceiptData): string {
     hidden += Math.max(0, t.asks.length - room);
   }
   if (hidden > 0) lines.push(`…另有 ${hidden} 件，见看板`);
+
+  // Appended messages that still read like a request: he can say 「拆出来」.
+  if (data.possiblyMissed.length > 0) {
+    lines.push('', `*可能漏记（${data.possiblyMissed.length}）* — 回复「拆出来」就单独记一件`);
+    for (const m of data.possiblyMissed.slice(0, OWNER_RECEIPT_CONSTANTS.MAX_POSSIBLY_MISSED)) {
+      lines.push(`• ${escapeMrkdwn(m.text)} → 并进了 ${m.tkt ?? '一件事'}`);
+    }
+    const more = data.possiblyMissed.length - OWNER_RECEIPT_CONSTANTS.MAX_POSSIBLY_MISSED;
+    if (more > 0) lines.push(`…另有 ${more} 条，见看板`);
+  }
 
   // Waiting on you.
   if (data.waiting.length > 0) {

@@ -29,6 +29,8 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { modifyJsonFile } from '../../utils/file-io.utils.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
 import { classifyOwnerMessage, weightedTextLength, type AskClassification } from './ticket-ask-classifier.js';
+import type { IntakeLogEvent, IntakeOutcomeRecorder } from './ticket-intake-log.js';
+import { redactSensitive } from '../wiki/wiki-redaction.js';
 import {
   type Request,
   type RequestStatus,
@@ -337,6 +339,11 @@ export interface TicketIntakeServiceDeps {
   now?: () => Date;
   /** Post receipts (default {@link TICKET_CONSTANTS.RECEIPT.ENABLED}, i.e. off) */
   receiptsEnabled?: boolean;
+  /**
+   * Where each owner message's fate is recorded (#828 coverage: the receipt
+   * says how many messages became tickets, went into one, or were ignored).
+   */
+  outcomeLog?: IntakeOutcomeRecorder | null;
 }
 
 /** Counter file shape. */
@@ -427,13 +434,54 @@ export class TicketIntakeService {
   intakeWithOutcome(message: IntakeMessage): Promise<IntakeOutcome> {
     const run = this.chain.then(() => this.process(message));
     this.chain = run.catch(() => undefined);
-    return run.catch((err: unknown) => {
-      this.logger.warn('Ticket intake failed (message still delivered)', {
-        ref: message.origin.ref,
-        error: err instanceof Error ? err.message : String(err),
+    return run
+      .catch((err: unknown) => {
+        this.logger.warn('Ticket intake failed (message still delivered)', {
+          ref: message.origin.ref,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return { action: 'ignored', reason: 'error' } as IntakeOutcome;
+      })
+      .then(async (outcome) => {
+        await this.recordOutcome(message, outcome);
+        return outcome;
       });
-      return { action: 'ignored', reason: 'error' } as IntakeOutcome;
-    });
+  }
+
+  /**
+   * Record what happened to an owner message (#828 coverage). Duplicates are
+   * the same message delivered twice and are not counted again. Never throws.
+   *
+   * @param message - The message
+   * @param outcome - What intake did with it
+   */
+  private async recordOutcome(message: IntakeMessage, outcome: IntakeOutcome): Promise<void> {
+    const log = this.deps.outcomeLog;
+    if (!log || !message.isOwner || outcome.action === 'duplicate') return;
+    const base = { at: this.now().toISOString(), ref: message.origin.ref };
+    let event: IntakeLogEvent;
+    if (outcome.action === 'ignored') {
+      event = { ...base, action: 'ignored', reason: outcome.reason };
+    } else if (outcome.action === 'created' || outcome.action === 'created_in_thread') {
+      event = { ...base, action: 'created', ticketId: outcome.ticket.id, ...(typeof outcome.ticket.ticketNumber === 'number' ? { ticketNumber: outcome.ticket.ticketNumber } : {}) };
+    } else {
+      // appended, or a review reply / 不用记 that went into an existing ticket.
+      const text = (message.text ?? '').trim();
+      const askSignal = outcome.action === 'appended' && classifyOwnerMessage(text, { inThread: true }).ask > 0;
+      event = {
+        ...base,
+        action: 'appended',
+        ...(outcome.action !== 'appended' ? { reason: outcome.action } : {}),
+        ticketId: outcome.ticket.id,
+        ...(typeof outcome.ticket.ticketNumber === 'number' ? { ticketNumber: outcome.ticket.ticketNumber } : {}),
+        ...(askSignal ? { askSignal: true, text: redactSensitive(text).slice(0, 400) } : {}),
+      };
+    }
+    try {
+      await log.record(event);
+    } catch (err) {
+      this.logger.warn('Intake outcome could not be recorded (non-fatal)', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   /**

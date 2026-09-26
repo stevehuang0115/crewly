@@ -3132,6 +3132,8 @@ export const OWNER_RECEIPT_CONSTANTS = {
 	MAX_ASK_LINES: 30,
 	/** Waiting-on-you lines before "另有 N 件" */
 	MAX_WAITING_LINES: 12,
+	/** 「可能漏记」 lines: appended messages that still read like a request (#828 coverage) */
+	MAX_POSSIBLY_MISSED: 5,
 	/** Team label for a ticket nobody is assigned to */
 	UNASSIGNED_TEAM: '未分配',
 } as const;
@@ -3148,6 +3150,13 @@ export const TICKET_CONSTANTS = {
 	NUMBER_PAD: 3,
 	/** Counter file inside the requests dir (no `.json`, so listAll never reads it) */
 	COUNTER_FILENAME: '.ticket-counter',
+	/**
+	 * #828 coverage: one JSON line per owner message intake handled
+	 * (created / appended / ignored + reason), next to the Request files. The
+	 * first line records when counting started, so a window that begins
+	 * earlier is reported as unknown (不详), never as 0.
+	 */
+	INTAKE_LOG_FILENAME: '.intake-outcomes.jsonl',
 	/** Tag every ticket carries */
 	TAG: 'ticket',
 	/** Tag added when the owner said "don't track" */

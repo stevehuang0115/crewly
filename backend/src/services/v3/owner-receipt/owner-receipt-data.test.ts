@@ -6,6 +6,7 @@ import { createRequest, type Request } from '../../../types/v2/request.types.js'
 import { createWorkItem, REVIEW_ESCALATED_TO_OWNER_KEY, type WorkItem } from '../../../types/v2/work-item.types.js';
 import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
 import {
+  askLineOf,
   buildReceiptData,
   cumulativeMeterCost,
   extractDeliverables,
@@ -221,3 +222,60 @@ describe('shortenAsk and extractDeliverables', () => {
     expect(extractDeliverables([null, '', 'https://a.b/c https://a.b/c.'])).toEqual([{ kind: 'link', ref: 'https://a.b/c', label: 'a.b' }]);
   });
 });
+
+describe('coverage (#828: the receipt says what it covers)', () => {
+  const at = (h: number) => `2026-09-26T${String(h).padStart(2, '0')}:00:00.000Z`;
+
+  it('counts every logged owner message in the window by what intake did with it', () => {
+    const log = {
+      startedAt: '2026-09-20T00:00:00.000Z',
+      events: [
+        { at: at(12), ref: 'a', action: 'created' as const, ticketId: 't1', ticketNumber: 1 },
+        { at: at(13), ref: 'b', action: 'appended' as const, ticketId: 't1', ticketNumber: 1, askSignal: true, text: '可以去研究一下opus做视频那个吗' },
+        { at: at(13), ref: 'c', action: 'appended' as const, ticketId: 't1', ticketNumber: 1 },
+        { at: at(14), ref: 'd', action: 'ignored' as const, reason: 'trivial_or_short' },
+        { at: at(14), ref: 'e', action: 'ignored' as const, reason: 'status_ping' },
+        { at: at(14), ref: 'e', action: 'ignored' as const, reason: 'status_ping' }, // same message twice: once
+        { at: '2026-09-26T02:00:00.000Z', ref: 'old', action: 'created' as const, ticketId: 't0' }, // before the window
+      ],
+    };
+    const data = buildReceiptData({ requests: [], workItems: [], window: WINDOW, teamOf, now: NOW, intakeLog: log });
+    expect(data.coverage).toEqual({ status: 'known', messages: 5, created: 1, appended: 2, ignored: 2 });
+    expect(data.possiblyMissed).toEqual([
+      {
+        text: '可以去研究一下opus做视频那个吗',
+        ticketId: 't1',
+        tkt: 'TKT-001',
+        ref: 'b',
+        splitCommand: 'split-ticket --ticket TKT-001 --discussion-ref b',
+        at: at(13),
+      },
+    ]);
+  });
+
+  it('is unknown — not zero — without a log, or when the log started after the window began', () => {
+    expect(buildReceiptData({ requests: [], workItems: [], window: WINDOW, teamOf, now: NOW }).coverage).toEqual({ status: 'unknown', reason: 'not_recorded' });
+    expect(buildReceiptData({ requests: [], workItems: [], window: WINDOW, teamOf, now: NOW, intakeLog: { startedAt: null, events: [] } }).coverage.status).toBe('unknown');
+    const late = { startedAt: '2026-09-26T12:00:00.000Z', events: [{ at: at(13), ref: 'x', action: 'created' as const, ticketId: 't' }] };
+    expect(buildReceiptData({ requests: [], workItems: [], window: WINDOW, teamOf, now: NOW, intakeLog: late }).coverage).toEqual({ status: 'unknown', reason: 'window_before_log' });
+  });
+
+  it('an empty but counted window is a real zero', () => {
+    const data = buildReceiptData({ requests: [], workItems: [], window: WINDOW, teamOf, now: NOW, intakeLog: { startedAt: '2026-09-01T00:00:00Z', events: [] } });
+    expect(data.coverage).toEqual({ status: 'known', messages: 0, created: 0, appended: 0, ignored: 0 });
+  });
+
+  it('possibly-missed never lists a pure ack (intake only marks appended messages with request signals)', () => {
+    const log = { startedAt: '2026-09-01T00:00:00Z', events: [{ at: at(15), ref: 'ok', action: 'appended' as const, ticketId: 't', text: '好的' }] };
+    expect(buildReceiptData({ requests: [], workItems: [], window: WINDOW, teamOf, now: NOW, intakeLog: log }).possiblyMissed).toEqual([]);
+  });
+});
+
+describe('askLineOf', () => {
+  it('picks the line that carries the request, else the text', () => {
+    expect(askLineOf('1. 修\n2. 485那个因为体检rfe的可以去其他地方搜索一下吗')).toBe('2. 485那个因为体检rfe的可以去其他地方搜索一下吗');
+    expect(askLineOf('这样\n定稿以前我们都不着急\n我倾向于我们去研究一下目前industry')).toBe('我倾向于我们去研究一下目前industry');
+    expect(askLineOf('没关系')).toBe('没关系');
+  });
+});
+

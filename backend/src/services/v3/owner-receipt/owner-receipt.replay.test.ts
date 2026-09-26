@@ -14,6 +14,7 @@ import { TicketIntakeService, type IntakeMessage, type TicketRequestStore } from
 import { createRequest, isValidRequestTransition, type CreateRequestInput, type Request, type UpdateRequestInput } from '../../../types/v2/request.types.js';
 import { buildReceiptData } from './owner-receipt-data.js';
 import { renderReceiptSlack } from './owner-receipt.renderer.js';
+import { MemoryIntakeOutcomeLog } from '../ticket-intake-log.js';
 
 interface FixtureMessage { at: string; owner: boolean; text: string }
 interface FixtureThread { channel: string; thread: string; messages: FixtureMessage[] }
@@ -82,7 +83,9 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'receipt-replay-'));
     try {
       const store = new ReplayStore(dir);
-      const intake = new TicketIntakeService({ requests: store });
+      // Counting starts with the window, as it will from the first night #828 runs.
+      const outcomeLog = new MemoryIntakeOutcomeLog('2026-09-26T04:00:00.000Z');
+      const intake = new TicketIntakeService({ requests: store, outcomeLog, now: () => new Date(store.clock) });
       const all = FIXTURE.threads
         .flatMap((t) => t.messages.map((m, i) => ({ ...m, channel: t.channel, thread: t.thread, i })))
         .sort((a, b) => a.at.localeCompare(b.at) || a.i - b.i);
@@ -117,13 +120,20 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
         }
       }
 
+      const window = { from: '2026-09-26T04:00:00.000Z', to: '2026-09-26T18:00:00.000Z', basis: 'explicit' as const, timezone: 'America/New_York' };
       const data = buildReceiptData({
         requests: await store.listAll(),
         workItems: [],
-        window: { from: '2026-09-26T04:00:00.000Z', to: '2026-09-26T18:00:00.000Z', basis: 'explicit', timezone: 'America/New_York' },
+        window,
         teamOf: (s) => TEAM[s] ?? null,
+        intakeLog: await outcomeLog.read(),
         now: new Date('2026-09-26T18:00:00Z'),
       });
+      // The real 9/26 data has no outcome log (it did not exist yet): the
+      // receipt says 不详 instead of pretending to know.
+      const past = buildReceiptData({ requests: await store.listAll(), workItems: [], window, teamOf: (s) => TEAM[s] ?? null, now: new Date('2026-09-26T18:00:00Z') });
+      expect(past.coverage).toEqual({ status: 'unknown', reason: 'not_recorded' });
+      expect(renderReceiptSlack(past)).toContain('不详');
       const ids = data.teams.flatMap((t) => t.asks.map((a) => a.ticketId));
       const perTeam = Object.fromEntries(data.teams.map((t) => [t.team, t.asks.length]));
 
@@ -153,6 +163,14 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
       // 31 = 13 tickets + 12 missed messages + 6 from Ava splitting 4 messages.
       expect(data.askCount).toBe(REPLAY_ASKS);
       expect(REPLAY_ASKS + missed.length + AVA_MULTI_ASK_EXTRA).toBe(31);
+
+      // Coverage, counted: all 43 messages are accounted for, none silently.
+      const cov = data.coverage;
+      // eslint-disable-next-line no-console
+      console.log(`[replay 2026-09-26] coverage ${JSON.stringify(cov)}; 可能漏记 ${data.possiblyMissed.length}: ${JSON.stringify(data.possiblyMissed.map((m) => m.text))}`);
+      expect(cov).toEqual({ status: 'known', messages: 43, ...REPLAY_COVERAGE });
+      expect(data.possiblyMissed.map((m) => m.ref)).toHaveLength(REPLAY_POSSIBLY_MISSED);
+      expect(renderReceiptSlack(data)).toContain(`你发了 *43 条消息*：${REPLAY_COVERAGE.created} 条成了事项`);
       expect(renderReceiptSlack(data)).toContain(`你提了 *${REPLAY_ASKS} 件事*`);
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
@@ -162,6 +180,12 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
 
 /** The replay's ask count today (pinned so a change is visible; see the test). */
 const REPLAY_ASKS = 13;
+
+/** What the coverage line says for the replay (43 messages). */
+const REPLAY_COVERAGE = { created: 13, appended: 25, ignored: 5 };
+
+/** Appended messages with request signals (the 可能漏记 list, before the cap of 5). */
+const REPLAY_POSSIBLY_MISSED = 10;
 
 /**
  * The 25 messages Ava counts as opening an ask (detail.md §3), as

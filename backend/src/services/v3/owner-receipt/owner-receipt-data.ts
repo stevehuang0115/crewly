@@ -18,15 +18,18 @@
  * @module services/v3/owner-receipt/owner-receipt-data
  */
 
-import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
+import { OWNER_RECEIPT_CONSTANTS, TICKET_CONSTANTS } from '../../../constants.js';
 import type { Request } from '../../../types/v2/request.types.js';
 import { formatTicketNumber, ticketNeedsReview } from '../../../types/v2/ticket.types.js';
 import { REVIEW_ESCALATED_TO_OWNER_KEY, type WorkItem } from '../../../types/v2/work-item.types.js';
 import { redactSensitive } from '../../wiki/wiki-redaction.js';
 import { weightedTextLength } from '../ticket-ask-classifier.js';
+import type { IntakeLogReading } from '../ticket-intake-log.js';
 import {
   RECEIPT_OUTCOMES,
   type ReceiptAsk,
+  type ReceiptCoverage,
+  type ReceiptPossiblyMissed,
   type ReceiptCost,
   type ReceiptData,
   type ReceiptDeliverable,
@@ -309,7 +312,70 @@ export interface ReceiptInputs {
   teamOf: (session: string) => string | null;
   /** Cost policy (default {@link cumulativeMeterCost}) */
   cost?: ReceiptCostSource;
+  /**
+   * The intake outcome log (#828 coverage). Absent → coverage `unknown`
+   * (`not_recorded`); a log that started after the window began → `unknown`
+   * (`window_before_log`). Never zeros for a window it did not see.
+   */
+  intakeLog?: IntakeLogReading | null;
   now: Date;
+}
+
+/**
+ * The line of a message that carries the request: in 「1. 修 ⏎ 2. 485那个…可以去
+ * 其他地方搜索一下吗」 it is line 2, not "1. 修". Falls back to the text.
+ *
+ * @param text - The owner's message
+ * @returns The line to show
+ */
+export function askLineOf(text: string): string {
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
+  const hit = lines.find((l) => TICKET_CONSTANTS.ASK.STRONG_REQUEST.test(l) || TICKET_CONSTANTS.ASK.REQUEST_VERB.test(l));
+  return hit ?? text;
+}
+
+/**
+ * Coverage of a window: every owner message intake logged in it, and what it
+ * did with each. Unknown — not zero — when the log does not cover the window.
+ *
+ * @param log - The intake outcome log, if any
+ * @param window - The receipt's window
+ * @returns Coverage and the appended messages that still read like a request
+ */
+export function coverageOf(
+  log: IntakeLogReading | null | undefined,
+  window: ReceiptWindow,
+): { coverage: ReceiptCoverage; possiblyMissed: ReceiptPossiblyMissed[] } {
+  if (!log || !log.startedAt) return { coverage: { status: 'unknown', reason: 'not_recorded' }, possiblyMissed: [] };
+  const from = Date.parse(window.from);
+  const to = Date.parse(window.to);
+  if (Date.parse(log.startedAt) > from) {
+    return { coverage: { status: 'unknown', reason: 'window_before_log' }, possiblyMissed: [] };
+  }
+  const seen = new Set<string>();
+  const counts = { created: 0, appended: 0, ignored: 0 };
+  const possiblyMissed: ReceiptPossiblyMissed[] = [];
+  for (const e of [...log.events].sort((a, b) => a.at.localeCompare(b.at))) {
+    const at = Date.parse(e.at);
+    if (!(at >= from && at < to) || seen.has(e.ref)) continue;
+    seen.add(e.ref);
+    counts[e.action] += 1;
+    if (e.action === 'appended' && e.askSignal && e.text && e.ticketId) {
+      const tkt = typeof e.ticketNumber === 'number' ? formatTicketNumber(e.ticketNumber) : null;
+      possiblyMissed.push({
+        text: shortenAsk(askLineOf(e.text)),
+        ticketId: e.ticketId,
+        tkt,
+        ref: e.ref,
+        splitCommand: `split-ticket --ticket ${tkt ?? e.ticketId} --discussion-ref ${e.ref}`,
+        at: e.at,
+      });
+    }
+  }
+  return {
+    coverage: { status: 'known', messages: counts.created + counts.appended + counts.ignored, ...counts },
+    possiblyMissed,
+  };
 }
 
 /**
@@ -379,6 +445,7 @@ export function buildReceiptData(input: ReceiptInputs): ReceiptData {
     deliverables,
     waiting: collectWaiting(input.requests, input.workItems, teamName),
     askCount: inWindow.length,
+    ...coverageOf(input.intakeLog, input.window),
     generatedAt: input.now.toISOString(),
   };
 }

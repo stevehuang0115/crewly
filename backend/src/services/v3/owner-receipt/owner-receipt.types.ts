@@ -101,6 +101,33 @@ export interface ReceiptWindow {
   timezone: string;
 }
 
+/**
+ * How much of what the owner said the receipt covers (#828 coverage): every
+ * owner message in the window, and what intake did with it. `unknown` when
+ * the window starts before intake began counting — never zeros.
+ */
+export type ReceiptCoverage =
+  | { status: 'known'; messages: number; created: number; appended: number; ignored: number }
+  | { status: 'unknown'; reason: 'not_recorded' | 'window_before_log' };
+
+/**
+ * An appended message that still read like a request (the ask classifier saw
+ * request signals below the new-ask threshold) — maybe it deserved its own
+ * ticket. The owner says 「拆出来」; the agent runs `splitCommand`.
+ */
+export interface ReceiptPossiblyMissed {
+  /** His words, shortened and redacted */
+  text: string;
+  /** The ticket it went into */
+  ticketId: string;
+  tkt: string | null;
+  /** Message ref (the discussion entry to split out) */
+  ref: string;
+  /** For the agent: the split-ticket skill call that splits it out */
+  splitCommand: string;
+  at: string;
+}
+
 /** Everything a receipt says. */
 export interface ReceiptData {
   window: ReceiptWindow;
@@ -114,6 +141,10 @@ export interface ReceiptData {
   waiting: ReceiptWaiting[];
   /** Number of asks in the window */
   askCount: number;
+  /** How many owner messages the window had and what became of them */
+  coverage: ReceiptCoverage;
+  /** Appended messages that still read like a request, oldest first (all of them) */
+  possiblyMissed: ReceiptPossiblyMissed[];
   generatedAt: string;
 }
 
