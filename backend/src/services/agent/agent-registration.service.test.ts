@@ -5333,3 +5333,13 @@ describe('codexHasOwnLogin (a stale OPENAI_API_KEY must not override a ChatGPT l
 		}
 	});
 });
+
+describe('isSignInScreen (never type the kickoff into a sign-in prompt)', () => {
+	it('recognises codex and claude sign-in screens, spaces or not', async () => {
+		const { isSignInScreen } = await import('./agent-registration.service.js');
+		expect(isSignInScreen('Welcome to Codex\n  1. Sign in with ChatGPT\n  2. Provide your own API key')).toBe(true);
+		expect(isSignInScreen('SigninwithChatGPT ProvideyourownAPIkey')).toBe(true);
+		expect(isSignInScreen('Pastecodehereifprompted>')).toBe(true);
+		expect(isSignInScreen('› Ask Codex to do anything\n  gpt-6-sol medium')).toBe(false);
+	});
+});

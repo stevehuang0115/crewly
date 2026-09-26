@@ -551,6 +551,21 @@ export class HarnessReloginService {
 	 * @param flow - The flow
 	 */
 	private async run(flow: ReloginFlow): Promise<void> {
+		// An agent's "401" is not proof the login expired — a bad API key or
+		// text typed into the sign-in screen gives one too. Starting a login
+		// then *logs the harness out* (`codex login` clears its credentials):
+		// that is how a fresh ChatGPT sign-in was wiped twice in a row
+		// (2026-09-26, Nova). Only a harness that is not logged in gets one.
+		const state = await this.checkLoginState(flow.harnessId).catch((): LoginState => 'unknown');
+		if (state === 'logged_in') {
+			this.flows.delete(flow.harnessId);
+			this.quietUntil.set(flow.harnessId, this.now() + HARNESS_CONSTANTS.RELOGIN.NOT_EXPIRED_QUIET_MS);
+			this.logger.warn('Re-login skipped: the harness is still logged in (the error was not an expired login)', {
+				harnessId: flow.harnessId,
+				stuck: [...flow.stuck],
+			});
+			return;
+		}
 		if (await this.tryStoredApiKey(flow)) return;
 		if (this.flows.get(flow.harnessId) !== flow) return;
 

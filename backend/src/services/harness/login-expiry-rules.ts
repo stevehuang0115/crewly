@@ -122,6 +122,14 @@ export const CODEX_EXPIRY_RULES: readonly LoginExpiryRule[] = [
 		harnessId: HARNESS_CONSTANTS.IDS.CODEX_CLI,
 		all: [/unexpected\s*status\s*401\s*Unauthorized/i],
 	},
+	{
+		// Launched while signed out: codex shows its sign-in choices. The
+		// re-login checks `codex login status` first, so a signed-in codex is
+		// never logged out by this.
+		id: 'codex.sign_in_screen',
+		harnessId: HARNESS_CONSTANTS.IDS.CODEX_CLI,
+		all: [/Sign\s*in\s*with\s*ChatGPT/i, /Provide\s*your\s*own\s*API\s*key/i],
+	},
 ];
 
 /** Every rule, by harness. */

@@ -117,7 +117,7 @@ function setup(overrides: Partial<HarnessReloginDeps> & { sessionsByHarness?: Re
 	};
 	const credentials = { read: jest.fn(() => ({})), getClaudeCredentialKind: jest.fn(() => null) };
 	const apiKeys = { submit: jest.fn(async () => undefined) };
-	let loginState: LoginState = 'logged_in';
+	let loginState: LoginState = 'logged_out';
 	const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
 	const service = new HarnessReloginService({
 		broker: broker as unknown as HarnessReloginDeps['broker'],
@@ -583,8 +583,21 @@ describe('periodic status check of the orc harness', () => {
 		expect(broker.startCalls).toHaveLength(0);
 	});
 
+	it('an agent\'s 401 does not start a login while the harness is still logged in (2026-09-26, Nova)', async () => {
+		const { service, broker, setLoginState } = setup();
+		setLoginState('logged_in');
+		expect(service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'ce-nova', source: 'output' })).toBe(true);
+		await flush();
+		expect(broker.startCalls).toHaveLength(0);
+		// And it stays quiet for a while instead of re-checking every line of output.
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'ce-nova', source: 'output' });
+		await flush();
+		expect(broker.startCalls).toHaveLength(0);
+	});
+
 	it('reports once it was seen logged in, then logged out', async () => {
 		const { service, broker, setLoginState } = setup({ sessionsByHarness: {} });
+		setLoginState('logged_in');
 		await service.checkOrcHarness();
 		setLoginState('logged_out');
 		await service.checkOrcHarness();

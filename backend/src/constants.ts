@@ -2926,6 +2926,8 @@ export const HARNESS_CONSTANTS = {
 		UNRECOGNISED_SCREEN_MS: 20_000,
 		/** Expiry reports for a harness are ignored this long after its login succeeded (resumed transcripts repeat old errors) */
 		POST_SUCCESS_QUIET_MS: 10 * 60 * 1000,
+		/** After a reported "expiry" turned out to be a logged-in harness, ignore reports this long */
+		NOT_EXPIRED_QUIET_MS: 30 * 60 * 1000,
 		/** A second expiry within this window after a silent API-key recovery falls back to the phone login */
 		SILENT_KEY_RETRY_WINDOW_MS: 60 * 60 * 1000,
 		/** Bounds for an owner reply that is taken as Claude's authorization code */

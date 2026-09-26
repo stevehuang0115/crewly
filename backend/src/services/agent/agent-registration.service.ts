@@ -1750,9 +1750,10 @@ export class AgentRegistrationService {
 			// ~2 s after spawn, during `model: loading`, and was swallowed while
 			// every log line still said "sent successfully" (server-install finding 3).
 			if (cancelled()) return;
-			await this.waitForRuntimeInputReady(sessionName, runtimeType, signal);
+			const inputReady = await this.waitForRuntimeInputReady(sessionName, runtimeType, signal);
 
 			if (cancelled()) return;
+			if (!inputReady && (await this.isOnSignInScreen(sessionName))) return;
 			const sent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, signal);
 
 			if (sent) {
@@ -1778,6 +1779,29 @@ export class AgentRegistrationService {
 		} finally {
 			this.registrationFlows.end(flow);
 		}
+	}
+
+	/**
+	 * Whether the runtime is sitting on its sign-in screen. Typing the kickoff
+	 * there after the input-ready timeout put the instruction text into
+	 * Codex's "Provide your own API key" box: it became the "API key", every
+	 * call 401'd, and the 401 set off a re-login that wiped the owner's fresh
+	 * ChatGPT sign-in (2026-09-26, Nova). Nothing is typed; the login monitor
+	 * sees the screen and asks the owner to sign in.
+	 *
+	 * @param sessionName - Session
+	 * @returns True when the screen is a sign-in / login prompt
+	 */
+	private async isOnSignInScreen(sessionName: string): Promise<boolean> {
+		let screen = '';
+		try {
+			screen = (await this.getSessionHelper()).capturePane(sessionName);
+		} catch {
+			return false;
+		}
+		if (!isSignInScreen(screen)) return false;
+		this.logger.warn('Runtime is on its sign-in screen — not typing the registration instruction into it', { sessionName });
+		return true;
 	}
 
 	/**
@@ -1920,8 +1944,9 @@ export class AgentRegistrationService {
 			this.logger.warn('No registration within timeout — re-delivering registration instruction', {
 				sessionName, role, runtimeType, timeoutMs: timeout,
 			});
-			await this.waitForRuntimeInputReady(sessionName, runtimeType, abortSignal);
+			const readyAgain = await this.waitForRuntimeInputReady(sessionName, runtimeType, abortSignal);
 			if (this.isFlowCancelled(sessionName, abortSignal)) return;
+			if (!readyAgain && (await this.isOnSignInScreen(sessionName))) return;
 			const resent = await this.sendPromptRobustly(sessionName, prompt, runtimeType, abortSignal);
 			this.logger.info('registration re-delivered', { sessionName, role, runtimeType, resent });
 		}
@@ -6360,4 +6385,18 @@ Loop until done, blocked, or explicitly reassigned:
 export function codexHasOwnLogin(env: NodeJS.ProcessEnv = process.env): boolean {
 	const home = env.CODEX_HOME && env.CODEX_HOME.length > 0 ? env.CODEX_HOME : path.join(os.homedir(), '.codex');
 	return existsSync(path.join(home, 'auth.json'));
+}
+
+
+/** Sign-in prompts of the CLI runtimes (compared with spaces removed: TUIs drop them). */
+const SIGN_IN_SCREEN = /signinwithchatgpt|provideyourownapikey|signinwithdevicecode|pastecodehereifprompted|usetheurlbelowtosignin|loginwithgoogle/i;
+
+/**
+ * Whether a captured screen is a runtime's sign-in / login prompt.
+ *
+ * @param screen - Captured terminal text
+ * @returns True for a sign-in screen
+ */
+export function isSignInScreen(screen: string): boolean {
+	return SIGN_IN_SCREEN.test((screen ?? '').replace(/\s+/g, ''));
 }
