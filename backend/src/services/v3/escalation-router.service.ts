@@ -55,7 +55,7 @@ export interface PendingEscalation {
   id: string;
   status: EscalationStatus;
   /** What triggered this escalation */
-  source: 'alignment_request' | 'policy_rule' | 'tl_verification' | 'manual' | 'workitem_failed';
+  source: 'alignment_request' | 'policy_rule' | 'tl_verification' | 'manual' | 'workitem_failed' | 'agent_waiting_on_human';
   /** Who needs to resolve it */
   target: 'human' | 'team_lead' | 'orchestrator';
   /** The escalation content */
@@ -240,6 +240,89 @@ export class EscalationRouterService {
       });
       return null;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Route: agent blocked on a prompt (waiting_on_human, #815)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Put an agent that is blocked on a terminal prompt (approval, trust,
+   * plan-mode menu) into the owner's escalations queue. crewly-mobile polls
+   * `GET /api/escalations`, and the owner is also told on Slack.
+   *
+   * One pending record per session: a repeat call while one is pending
+   * returns that record's id and sends nothing.
+   *
+   * Resolving the record does not answer the prompt. The owner answers it in
+   * the agent's terminal; the record is closed by
+   * {@link resolveAgentWaitingOnHuman} once the prompt is gone.
+   *
+   * @param input - Session, dialog kind, rule evidence and task label
+   * @returns The escalation id (existing or new), or null on failure
+   */
+  async recordAgentWaitingOnHuman(input: {
+    sessionName: string;
+    kind: string;
+    evidence: string[];
+    titleLabel?: string;
+  }): Promise<string | null> {
+    try {
+      const open = (await this.listPending()).find(
+        (e) => e.source === 'agent_waiting_on_human' && e.details?.sessionName === input.sessionName,
+      );
+      if (open) return open.id;
+
+      const what = input.kind === 'unspecified' ? 'a prompt' : `a ${input.kind} prompt`;
+      const escalation = await this.createPendingEscalation({
+        source: 'agent_waiting_on_human',
+        target: 'human',
+        summary: `Agent "${input.sessionName}" is waiting on ${what} in its terminal${input.titleLabel ? ` (task: ${input.titleLabel})` : ''}. Answer it in the agent's terminal.`,
+        details: {
+          sessionName: input.sessionName,
+          kind: input.kind,
+          evidence: input.evidence,
+          ...(input.titleLabel ? { titleLabel: input.titleLabel } : {}),
+          reason: 'waiting_on_human',
+        },
+        raisedBy: 'system',
+      });
+      await this.notifyHuman(escalation);
+      return escalation.id;
+    } catch (err) {
+      this.logger.error('Could not record an agent waiting on a human', {
+        sessionName: input.sessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Close the pending waiting_on_human escalation(s) for a session once the
+   * agent is no longer blocked.
+   *
+   * @param sessionName - The agent session
+   * @returns Number of escalations closed
+   */
+  async resolveAgentWaitingOnHuman(sessionName: string): Promise<number> {
+    let closed = 0;
+    try {
+      const open = (await this.listPending()).filter(
+        (e) => e.source === 'agent_waiting_on_human' && e.details?.sessionName === sessionName,
+      );
+      for (const e of open) {
+        if (await this.resolve(e.id, 'Agent is no longer waiting (prompt answered or gone)', 'system')) {
+          closed += 1;
+        }
+      }
+    } catch (err) {
+      this.logger.warn('Could not close waiting_on_human escalations', {
+        sessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return closed;
   }
 
   // ---------------------------------------------------------------------------

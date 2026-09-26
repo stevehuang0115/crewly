@@ -669,8 +669,17 @@ describe('SessionCommandHelper', () => {
 	});
 
 	describe('dismissInteractivePromptIfNeeded', () => {
-		it('should detect plan mode and send Escape', async () => {
+		it('should NOT send Escape to an idle Claude screen whose footer says "shift+tab to cycle" (#815)', async () => {
 			mockBackend.captureOutput.mockReturnValue('Some output\n❯❯ bypass permissions on (shift+tab to cycle)');
+			const result = await helper.dismissInteractivePromptIfNeeded('test-session');
+			expect(result).toBe(false);
+			expect(mockSession.write).not.toHaveBeenCalled();
+		});
+
+		it('should detect the real plan-approval menu and send Escape', async () => {
+			mockBackend.captureOutput.mockReturnValue(
+				' Claude has written up a plan and is ready to execute. Would you like to proceed?\n ❯ 1. Yes, and use auto mode\n   2. Yes, manually approve edits',
+			);
 			const result = await helper.dismissInteractivePromptIfNeeded('test-session');
 			expect(result).toBe(true);
 			expect(mockSession.write).toHaveBeenCalledWith('\x1b');

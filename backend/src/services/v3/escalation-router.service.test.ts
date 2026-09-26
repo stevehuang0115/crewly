@@ -239,6 +239,53 @@ describe('EscalationRouterService', () => {
     });
   });
 
+  describe('agent waiting on a human (#815)', () => {
+    const input = { sessionName: 'crewly-dev-1', kind: 'permission', evidence: ['screen:permission-prompt'], titleLabel: 'Fix login' };
+
+    it('files one human escalation for the session and tells the owner on Slack', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      jest.spyOn(service, 'listPending').mockResolvedValue([]);
+
+      const id = await service.recordAgentWaitingOnHuman(input);
+
+      expect(id).not.toBeNull();
+      const [, written] = fileIo.atomicWriteJson.mock.calls[0];
+      expect(written).toMatchObject({ source: 'agent_waiting_on_human', target: 'human', status: 'pending' });
+      expect(written.details).toMatchObject({ sessionName: 'crewly-dev-1', kind: 'permission', reason: 'waiting_on_human' });
+      expect(written.summary).toContain('crewly-dev-1');
+      expect(written.summary).toContain('permission prompt');
+      expect(written.workItemId).toBeUndefined();
+      expect(mockSendNotification).toHaveBeenCalledTimes(1);
+    });
+
+    it('reuses the open record for the same session and sends nothing', async () => {
+      const fileIo = jest.requireMock('../../utils/file-io.utils.js') as { atomicWriteJson: jest.Mock };
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      jest.spyOn(service, 'listPending').mockResolvedValue([
+        { id: 'esc-1', status: 'pending', source: 'agent_waiting_on_human', target: 'human', summary: 's', details: { sessionName: 'crewly-dev-1' }, raisedBy: 'system', raisedAt: 't' },
+      ] as never);
+
+      expect(await service.recordAgentWaitingOnHuman(input)).toBe('esc-1');
+      expect(fileIo.atomicWriteJson).not.toHaveBeenCalled();
+      expect(mockSendNotification).not.toHaveBeenCalled();
+    });
+
+    it('closes only that session\'s waiting escalations when the prompt is gone', async () => {
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      jest.spyOn(service, 'listPending').mockResolvedValue([
+        { id: 'esc-1', status: 'pending', source: 'agent_waiting_on_human', details: { sessionName: 'crewly-dev-1' } },
+        { id: 'esc-2', status: 'pending', source: 'agent_waiting_on_human', details: { sessionName: 'other' } },
+        { id: 'esc-3', status: 'pending', source: 'workitem_failed', details: { sessionName: 'crewly-dev-1' } },
+      ] as never);
+      const resolve = jest.spyOn(service, 'resolve').mockResolvedValue({} as never);
+
+      expect(await service.resolveAgentWaitingOnHuman('crewly-dev-1')).toBe(1);
+      expect(resolve).toHaveBeenCalledTimes(1);
+      expect(resolve).toHaveBeenCalledWith('esc-1', expect.stringContaining('no longer waiting'), 'system');
+    });
+  });
+
   describe('escalateFailedWorkItem', () => {
     function makeFailedWI(overrides: Partial<{
       id: string; title: string; type: string; target: string;

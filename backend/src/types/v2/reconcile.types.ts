@@ -8,6 +8,8 @@
  * @module types/v2/reconcile.types
  */
 
+import type { WorkItemBlockSource } from './work-item.types.js';
+
 // ---------------------------------------------------------------------------
 // Reconcile Result
 // ---------------------------------------------------------------------------
@@ -89,6 +91,11 @@ export interface ReconcileCorrection {
   evidence: string;
   /** ISO8601 timestamp */
   correctedAt: string;
+  /**
+   * For a work_item correction INTO `blocked`: who parked it
+   * (WorkItem.blockSource). Set by the waiting_on_human rule (#815).
+   */
+  blockSource?: WorkItemBlockSource;
 }
 
 // ---------------------------------------------------------------------------
@@ -307,6 +314,7 @@ export function createCorrection(params: {
   newState: string;
   reason: string;
   evidence: string;
+  blockSource?: WorkItemBlockSource;
 }): ReconcileCorrection {
   return {
     ...params,

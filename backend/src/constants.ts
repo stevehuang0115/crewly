@@ -609,6 +609,24 @@ export const ACTIVITY_MONITOR_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for the waiting_on_human attention verdict (#815).
+ * See specs/2026-09-26-agent-waiting-on-human.md.
+ */
+export const AGENT_ATTENTION_CONSTANTS = {
+	/** Non-empty lines at the bottom of the screen the dialog rules examine.
+	 *  Dialogs render at the bottom; older answered dialogs sit above it. */
+	BOTTOM_LINES: 20,
+	/** Lines captured from the terminal buffer for the verdict (more than the
+	 *  5 lines the activity diff uses, because a dialog spans ~15 lines). */
+	CAPTURE_LINES: 60,
+	/** How long an agent must stay waiting_on_human before the reconciler moves
+	 *  its running WorkItems to blocked (5 minutes). */
+	BLOCK_WORK_ITEM_AFTER_MS: 300_000,
+	/** WorkItem blockedReason / escalation reason used for this state. */
+	BLOCKED_REASON: 'waiting_on_human',
+} as const;
+
+/**
  * Event bus constants for the agent event pub/sub system.
  * Used by EventBusService for subscription management and notification delivery.
  */

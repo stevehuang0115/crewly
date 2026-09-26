@@ -477,6 +477,21 @@ export class PtySessionBackend implements ISessionBackend {
 	}
 
 	/**
+	 * Get the latest OSC terminal title a session's program set.
+	 *
+	 * @param name - Name of the session
+	 * @returns The title, or '' when the session is unknown or set none
+	 *
+	 * @example
+	 * ```typescript
+	 * backend.getTerminalTitle('dev'); // '✳ Fix login bug'
+	 * ```
+	 */
+	getTerminalTitle(name: string): string {
+		return this.terminalBuffers.get(name)?.getTitle() ?? '';
+	}
+
+	/**
 	 * Get the full terminal buffer content for a session.
 	 *
 	 * @param name - Name of the session
