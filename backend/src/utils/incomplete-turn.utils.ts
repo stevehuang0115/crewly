@@ -23,30 +23,41 @@ export interface IncompleteTurn {
 
 /** What each reason means for the reader, in one sentence. */
 const NOTICE: Record<IncompleteTurn['reason'], string> = {
-  truncated: 'my reply hit the length limit, so it may be cut short',
-  'abnormal-finish': 'my turn was interrupted, so the work above may be unfinished',
-  'steps-exhausted': 'I ran out of steps for this turn, so the work above may be unfinished',
-  'content-filter': 'the model provider refused to continue this turn',
+  truncated: '回复超出了长度上限，可能被截断了',
+  'abnormal-finish': '这一轮做到一半被打断了，上面的内容可能不完整',
+  'steps-exhausted': '这一轮的步数用完了，事情还没做完',
+  'content-filter': '模型服务商拒绝继续这一轮',
   // The turn ended normally; the work did not. Worth its own sentence,
   // because "I ran out of steps" and "I thought I was done but the file is
   // not there" call for different things from the reader.
-  'desktop-unverified': 'part of the desktop task could not be verified, so it may not have actually happened',
+  'desktop-unverified': '桌面上的部分操作没能确认，可能并没有真正完成',
 };
 
 /**
- * Append the "this turn stopped early" line to an agent's reply.
- *
- * @param text - The agent's (possibly partial) text
- * @param incomplete - The runtime's report, or undefined for a healthy turn
- * @returns The text to show, unchanged when the turn finished normally
- *
- * @example
- * appendIncompleteNotice('Creating the team…', { reason: 'abnormal-finish', … })
- * // → 'Creating the team…\n\n_⚠️ my turn was interrupted, … Ask me to continue._'
+ * Paragraphs that are the model thinking aloud between tool calls ("I'll
+ * start by…", "Let me check…"). A finished turn ends with an answer; an
+ * interrupted one only has these, and posting them verbatim showed the owner
+ * an English monologue (2026-09-26, Orc after a 60-step turn).
  */
+const NARRATION = /^(?:I['’]ll|I will|I need to|I have (?:the|now)|I['’]m going to|I am going to|Let me|Let['’]s|Now (?:I|let)|Next,? (?:I|let)|First,? (?:I|let)|OK,? (?:I|let)|Okay,? (?:I|let)|Checking|Looking at)\b/i;
+
+/**
+ * Drop thinking-aloud paragraphs from an interrupted turn's text.
+ *
+ * @param text - Accumulated turn text
+ * @returns The text without narration paragraphs (may be empty)
+ */
+export function stripNarration(text: string): string {
+  return (text ?? '')
+    .split(/\n{2,}/)
+    .filter((para) => !NARRATION.test(para.trim()))
+    .join('\n\n')
+    .trim();
+}
+
 export function appendIncompleteNotice(text: string, incomplete?: IncompleteTurn): string {
   if (!incomplete) return text;
-  const body = (text ?? '').trim();
-  const notice = `_⚠️ Heads up: ${NOTICE[incomplete.reason] ?? 'my turn ended early'}. Ask me to continue if something is missing._`;
+  const body = stripNarration(text ?? '');
+  const notice = `_⚠️ ${NOTICE[incomplete.reason] ?? '这一轮提前结束了'}。要我接着做，回一句「继续」就行。_`;
   return body ? `${body}\n\n${notice}` : notice;
 }
