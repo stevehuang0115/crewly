@@ -17,6 +17,12 @@
  *   looks like a code), the retry keyword, or a reply to an unrecognised
  *   login screen. Everything else goes through the normal chat path.
  * - The broker's `update` / `finished` events.
+ * - {@link HarnessReloginService.startOwnerLogin} — the owner asked for a
+ *   login: 「重新登录 claude」 in the orc DM (parsed by
+ *   {@link HarnessReloginService.handleOwnerReply}, no LLM involved) or the
+ *   orchestrator's `harness-login` skill. Such a flow is *forced*: it runs
+ *   even when the harness is still logged in (switching accounts), skips the
+ *   silent API-key path, and answers in the conversation it was asked in.
  *
  * Rules:
  * - One flow per harness. Repeated detections only add stuck sessions. A
@@ -50,6 +56,7 @@ import {
 } from './harness.types.js';
 import { LOGIN_BROKER_EVENTS, type LoginBrokerService } from './login-broker.service.js';
 import { redactSecrets } from './login-rules.js';
+import { parseOwnerLoginRequest, type OwnerLoginRequest } from './owner-login-request.js';
 
 /** Where an expiry report came from. */
 export type ExpirySource = 'output' | 'screen' | 'status';
@@ -66,16 +73,65 @@ export interface ExpiryReport {
 	source: ExpirySource;
 }
 
+/**
+ * Where an owner-requested login answers: the Slack conversation (and thread)
+ * the owner asked in. `agentSession` is set when that conversation is a DM
+ * with an agent's own bot (the orc's "Crewly Orc" app), whose token must be
+ * used to post there.
+ */
+export interface ReloginReplyTarget {
+	channelId: string;
+	threadTs?: string;
+	agentSession?: string;
+}
+
 /** Sends a Slack DM to the owner. */
 export interface ReloginOwnerNotifier {
 	/**
 	 * Send a DM to the owner.
 	 *
 	 * @param text - Slack mrkdwn text (never contains a secret)
+	 * @param target - Conversation to answer in; absent = the owner's DM with the master bot
 	 * @returns True when delivered
 	 */
-	sendToOwner(text: string): Promise<boolean>;
+	sendToOwner(text: string, target?: ReloginReplyTarget | null): Promise<boolean>;
+	/**
+	 * Whether a DM can be sent right now (Slack connected).
+	 *
+	 * @returns True when {@link sendToOwner} can deliver
+	 */
+	isAvailable?(): boolean;
 }
+
+/** What started a flow. */
+export type ReloginTrigger = 'expiry' | 'owner';
+
+/** Options of an owner-requested login. */
+export interface OwnerLoginOptions {
+	/** The owner wants a different account (only changes the wording) */
+	switchAccount?: boolean;
+	/** Conversation to answer in (null = the owner's master-bot DM) */
+	replyTarget?: ReloginReplyTarget | null;
+	/** Who relayed the request, for logs */
+	requestedBy: 'owner_dm' | 'orchestrator';
+}
+
+/** Result of {@link HarnessReloginService.startOwnerLogin}. */
+export type OwnerLoginResult =
+	| {
+			/** `restarted`: a flow for the harness was running and was started over */
+			status: 'started' | 'restarted';
+			harnessId: HarnessId;
+			/** Whether the owner can be DM'd right now (false = Slack is down) */
+			dmAvailable: boolean;
+	  }
+	| {
+			/** The harness has no link login (Antigravity: API key; Gemini: enterprise only) */
+			status: 'no_broker_login';
+			harnessId: HarnessId;
+			/** What to tell the owner, in Chinese */
+			message: string;
+	  };
 
 /** Restarts agents after a login succeeded. */
 export interface ReloginAgentResumer {
@@ -132,7 +188,23 @@ interface ReloginFlow {
 	screenTimer: NodeJS.Timeout | null;
 	/** The coordinator cancelled the session itself (restart) — do not report it */
 	cancelledByUs: boolean;
+	/** `owner`: the owner asked (forced, owner wording); `expiry`: detected */
+	trigger: ReloginTrigger;
+	/** Owner asked for a different account (wording only) */
+	switchAccount: boolean;
+	/** Where DMs go (null = master-bot DM) */
+	replyTarget: ReloginReplyTarget | null;
 }
+
+/** Options a flow is started (and restarted) with. */
+interface FlowOptions {
+	trigger: ReloginTrigger;
+	switchAccount: boolean;
+	replyTarget: ReloginReplyTarget | null;
+}
+
+/** A detected expiry: not forced, standard wording, master-bot DM. */
+const EXPIRY_FLOW: FlowOptions = { trigger: 'expiry', switchAccount: false, replyTarget: null };
 
 /** Harnesses the coordinator can log in (they have a broker method). */
 function hasBrokerLogin(harnessId: HarnessId): boolean {
@@ -232,21 +304,45 @@ export function stripScreenReplyPrefix(reply: string): string | null {
 	return null;
 }
 
+/** How a DM introduces the login. */
+export interface LoginDmWording {
+	/** The owner asked for this login (not an expiry) */
+	ownerRequested?: boolean;
+	/** The owner asked for a different account */
+	switchAccount?: boolean;
+}
+
+/**
+ * First line of a login DM.
+ *
+ * @param harnessId - Harness
+ * @param waiting - Agents waiting on the login (expiry wording only)
+ * @param wording - Owner-requested / account switch
+ * @returns Slack mrkdwn line
+ */
+function loginDmHeader(harnessId: HarnessId, waiting: readonly string[], wording: LoginDmWording): string {
+	const name = displayName(harnessId);
+	if (!wording.ownerRequested) return `*${name} 登录过期了。* ${describeWaitingAgents(waiting)}`;
+	return wording.switchAccount ? `*换账号登录 ${name}*` : `*登录 ${name}*`;
+}
+
 /**
  * DM with the sign-in link (and Codex's one-time code on its own line).
  *
  * @param session - Broker session (never contains a secret)
  * @param waiting - Agents waiting on the login
+ * @param wording - Owner-requested / account-switch wording (default: expiry)
  * @returns Slack mrkdwn text
  */
-export function formatLinkDm(session: LoginSession, waiting: readonly string[]): string {
-	const name = displayName(session.harnessId);
-	const lines = [`*${name} 登录过期了。* ${describeWaitingAgents(waiting)}`, ''];
+export function formatLinkDm(session: LoginSession, waiting: readonly string[], wording: LoginDmWording = {}): string {
+	const lines = [loginDmHeader(session.harnessId, waiting, wording), ''];
 	if (session.method === 'device') {
 		lines.push('1. 在手机上打开这个链接：', session.url ?? '', '', '2. 输入这个验证码：', session.userCode ?? '', '');
+		if (wording.switchAccount) lines.push('要换账号的话，先在打开的页面里切到要用的那个账号。');
 		lines.push('在手机上完成登录就行，这边会自动继续。');
 	} else {
 		lines.push('1. 在手机上打开这个链接并授权：', session.url ?? '', '');
+		if (wording.switchAccount) lines.push('   要换账号的话，先在打开的页面里切到要用的那个账号再授权。', '');
 		lines.push('2. 把授权后页面显示的代码直接回复在这里（只要代码）。', '');
 		lines.push('Crewly 会自动填进去，agent 自己接着干。');
 	}
@@ -258,12 +354,13 @@ export function formatLinkDm(session: LoginSession, waiting: readonly string[]):
  *
  * @param session - Broker session
  * @param waiting - Agents waiting on the login
+ * @param wording - Owner-requested / account-switch wording (default: expiry)
  * @returns Slack mrkdwn text
  */
-export function formatScreenDm(session: LoginSession, waiting: readonly string[]): string {
+export function formatScreenDm(session: LoginSession, waiting: readonly string[], wording: LoginDmWording = {}): string {
 	const screen = safeForDm(session.screen, HARNESS_CONSTANTS.RELOGIN.DM_SCREEN_MAX_CHARS) || '(empty screen)';
 	return [
-		`*${displayName(session.harnessId)} 登录过期了。* ${describeWaitingAgents(waiting)}`,
+		loginDmHeader(session.harnessId, waiting, wording),
 		'',
 		'Crewly 已经启动了登录，但没认出它的界面。现在显示的是：',
 		'```',
@@ -299,6 +396,50 @@ export function formatSuccessDm(harnessId: HarnessId, result: { resumed: string[
 		text += ` 没能重启：${result.failed.join('、')}。`;
 	}
 	return text;
+}
+
+/**
+ * One-line DM after an owner-requested login succeeded.
+ *
+ * @param harnessId - Harness
+ * @param result - Which agents were restarted onto the new login
+ * @returns Slack mrkdwn text
+ */
+export function formatOwnerSuccessDm(harnessId: HarnessId, result: { resumed: string[]; failed: string[] }): string {
+	let text = `好了：${displayName(harnessId)} 已登录。`;
+	if (result.resumed.length > 0) text += ` ${result.resumed.length} 个 agent 已重启，用上了新登录。`;
+	if (result.failed.length > 0) text += ` 没能重启：${result.failed.join('、')}。`;
+	return text;
+}
+
+/** Harness names the owner can type, for the "which one?" reply. */
+const WHICH_HARNESS_HINT = '回复「重新登录 claude」或「重新登录 codex」（要换账号就说「换个账号登录 claude」）。';
+
+/**
+ * Reply to a login request that named no harness Crewly can log in.
+ *
+ * @param name - What the owner wrote, or null when they named none
+ * @returns Slack mrkdwn text
+ */
+export function formatWhichHarnessDm(name: string | null): string {
+	return name ? `Crewly 没有「${name}」这个编程助手。要登录哪个？${WHICH_HARNESS_HINT}` : `要登录哪个？${WHICH_HARNESS_HINT}`;
+}
+
+/**
+ * Reply for a harness that has no link login.
+ *
+ * @param harnessId - Harness without a broker login method
+ * @returns Slack mrkdwn text
+ */
+export function formatNoBrokerLoginDm(harnessId: HarnessId): string {
+	const name = displayName(harnessId);
+	if (harnessId === HARNESS_CONSTANTS.IDS.ANTIGRAVITY_CLI) {
+		return `${name} 用的是 Gemini API key，不走链接登录。在电脑上运行 \`crewly login antigravity\`，或者在 Crewly 设置页（Setup → 登录）填 key。`;
+	}
+	if (harnessId === HARNESS_CONSTANTS.IDS.GEMINI_CLI) {
+		return `${name} 只给企业版用，Crewly 没法帮它登录。${WHICH_HARNESS_HINT}`;
+	}
+	return `${name} 没有链接登录，Crewly 帮不了它。${WHICH_HARNESS_HINT}`;
 }
 
 /**
@@ -409,14 +550,90 @@ export class HarnessReloginService {
 	}
 
 	/**
-	 * Offer an owner's Slack DM reply to the re-login flows.
+	 * Offer an owner's Slack DM to the re-login coordinator.
+	 *
+	 * Consumed, in this order: the retry keyword (while a flow exists), a
+	 * login code or screen reply for a running flow, and finally an owner
+	 * login request (「重新登录 claude」, "relogin codex" — see
+	 * {@link parseOwnerLoginRequest}), which starts a forced login answered in
+	 * `target`.
 	 *
 	 * @param text - Reply text (never logged)
+	 * @param target - Conversation the owner wrote in (answers go there)
 	 * @returns True when consumed; the caller must then NOT pass it on as a chat message
 	 */
-	handleOwnerReply(text: string): boolean {
-		if (typeof text !== 'string' || this.flows.size === 0) return false;
+	handleOwnerReply(text: string, target: ReloginReplyTarget | null = null): boolean {
+		if (typeof text !== 'string') return false;
+		if (this.flows.size > 0 && this.consumeFlowReply(text)) return true;
 
+		const request = parseOwnerLoginRequest(text);
+		if (!request) return false;
+		void this.handleOwnerLoginRequest(request, target);
+		return true;
+	}
+
+	/**
+	 * Start a login the owner asked for, through the broker: forced (runs
+	 * even when the harness is still logged in — the owner may be switching
+	 * accounts), no silent API key, answered in `replyTarget`. A flow already
+	 * running for the harness is started over with a fresh link.
+	 *
+	 * @param harnessId - Harness to log in
+	 * @param options - Account switch, reply target, who relayed the request
+	 * @returns What happened (never throws)
+	 */
+	startOwnerLogin(harnessId: HarnessId, options: OwnerLoginOptions): OwnerLoginResult {
+		if (!hasBrokerLogin(harnessId)) {
+			return { status: 'no_broker_login', harnessId, message: formatNoBrokerLoginDm(harnessId) };
+		}
+		const existing = this.flows.get(harnessId);
+		const stuck = existing ? new Set(existing.stuck) : new Set<string>();
+		if (existing) {
+			this.clearScreenTimer(existing);
+			this.cancelOwnSession(existing);
+			if (this.flows.get(harnessId) === existing) this.flows.delete(harnessId);
+		}
+		// The owner asked: a quiet period after the last login must not swallow it.
+		this.quietUntil.delete(harnessId);
+		this.logger.info('Owner-requested login started', {
+			harnessId,
+			requestedBy: options.requestedBy,
+			switchAccount: options.switchAccount === true,
+			restarted: Boolean(existing),
+			answersInThread: Boolean(options.replyTarget),
+		});
+		this.begin(harnessId, stuck, {
+			trigger: 'owner',
+			switchAccount: options.switchAccount === true,
+			replyTarget: options.replyTarget ?? null,
+		});
+		const dmAvailable = this.notifier ? (this.notifier.isAvailable?.() ?? true) : false;
+		return { status: existing ? 'restarted' : 'started', harnessId, dmAvailable };
+	}
+
+	/**
+	 * Act on a parsed owner login request from the DM.
+	 *
+	 * @param request - Parsed request
+	 * @param target - Conversation to answer in
+	 */
+	private async handleOwnerLoginRequest(request: OwnerLoginRequest, target: ReloginReplyTarget | null): Promise<void> {
+		if (request.kind === 'unknown') {
+			await this.notify(formatWhichHarnessDm(request.name), target);
+			return;
+		}
+		const result = this.startOwnerLogin(request.harnessId, { switchAccount: request.switchAccount, replyTarget: target, requestedBy: 'owner_dm' });
+		if (result.status === 'no_broker_login') await this.notify(result.message, target);
+	}
+
+	/**
+	 * Offer a DM to the running flows: the retry keyword, a login code, or a
+	 * reply to an unrecognised screen.
+	 *
+	 * @param text - Reply text (never logged)
+	 * @returns True when consumed
+	 */
+	private consumeFlowReply(text: string): boolean {
 		if (isRetryKeyword(text)) {
 			const flows = [...this.flows.values()];
 			const failed = flows.filter((flow) => flow.phase === 'failed');
@@ -525,8 +742,9 @@ export class HarnessReloginService {
 	 *
 	 * @param harnessId - Harness
 	 * @param stuck - Sessions known to be stuck
+	 * @param options - Trigger, wording and reply target (default: a detected expiry)
 	 */
-	private begin(harnessId: HarnessId, stuck: Set<string>): void {
+	private begin(harnessId: HarnessId, stuck: Set<string>, options: FlowOptions = EXPIRY_FLOW): void {
 		const flow: ReloginFlow = {
 			harnessId,
 			phase: 'running',
@@ -539,6 +757,9 @@ export class HarnessReloginService {
 			lastRejection: null,
 			screenTimer: null,
 			cancelledByUs: false,
+			trigger: options.trigger,
+			switchAccount: options.switchAccount,
+			replyTarget: options.replyTarget,
 		};
 		// Registered synchronously: this is the per-harness debounce.
 		this.flows.set(harnessId, flow);
@@ -551,6 +772,12 @@ export class HarnessReloginService {
 	 * @param flow - The flow
 	 */
 	private async run(flow: ReloginFlow): Promise<void> {
+		// The owner asked for this login (possibly to switch accounts): no
+		// "still logged in" check and no silent API key — they want the link.
+		if (flow.trigger === 'owner') {
+			this.startBrokerSession(flow);
+			return;
+		}
 		// An agent's "401" is not proof the login expired — a bad API key or
 		// text typed into the sign-in screen gives one too. Starting a login
 		// then *logs the harness out* (`codex login` clears its credentials):
@@ -568,7 +795,15 @@ export class HarnessReloginService {
 		}
 		if (await this.tryStoredApiKey(flow)) return;
 		if (this.flows.get(flow.harnessId) !== flow) return;
+		this.startBrokerSession(flow);
+	}
 
+	/**
+	 * Start (or adopt) the harness's broker login session for a flow.
+	 *
+	 * @param flow - The flow
+	 */
+	private startBrokerSession(flow: ReloginFlow): void {
 		const method = getBrokerLoginMethod(flow.harnessId);
 		if (!method) return;
 		let session: LoginSession;
@@ -578,14 +813,14 @@ export class HarnessReloginService {
 			const reason = error instanceof Error ? error.message : String(error);
 			this.logger.warn('Re-login: could not start the login', { harnessId: flow.harnessId, error: reason });
 			flow.phase = 'failed';
-			await this.dm(flow, formatFailureDm(flow.harnessId, `Crewly 没能启动登录（${reason}）`));
+			void this.dm(flow, formatFailureDm(flow.harnessId, `Crewly 没能启动登录（${reason}）`));
 			return;
 		}
 		flow.sessionId = session.id;
 		flow.startedAt = Date.parse(session.startedAt) || this.now();
 		flow.screenTimer = setTimeout(() => void this.sendScreenIfUnrecognised(flow), HARNESS_CONSTANTS.RELOGIN.UNRECOGNISED_SCREEN_MS);
 		flow.screenTimer.unref?.();
-		this.logger.info('Re-login broker session started', { harnessId: flow.harnessId, sessionId: session.id, method: method.id });
+		this.logger.info('Re-login broker session started', { harnessId: flow.harnessId, sessionId: session.id, method: method.id, trigger: flow.trigger });
 		// The broker may hand back a session that already shows its link.
 		if (isTerminalLoginState(session.state)) this.handleFinished(session);
 		else this.handleUpdate(session);
@@ -640,7 +875,7 @@ export class HarnessReloginService {
 		if (flow.dm !== 'link' && linkReady) {
 			flow.dm = 'link';
 			this.clearScreenTimer(flow);
-			void this.dm(flow, formatLinkDm(session, this.waitingAgents(flow)));
+			void this.dm(flow, formatLinkDm(session, this.waitingAgents(flow), this.wordingOf(flow)));
 			return;
 		}
 
@@ -709,7 +944,10 @@ export class HarnessReloginService {
 		}
 		for (const name of result.resumed) this.mutedScreens.add(name);
 		this.logger.info('Re-login finished', { harnessId: flow.harnessId, resumed: result.resumed.length, failed: result.failed.length });
-		if (notify) await this.dm(flow, formatSuccessDm(flow.harnessId, result));
+		if (notify) {
+			const text = flow.trigger === 'owner' ? formatOwnerSuccessDm(flow.harnessId, result) : formatSuccessDm(flow.harnessId, result);
+			await this.dm(flow, text);
+		}
 	}
 
 	/**
@@ -721,7 +959,21 @@ export class HarnessReloginService {
 		this.clearScreenTimer(flow);
 		this.cancelOwnSession(flow);
 		if (this.flows.get(flow.harnessId) === flow) this.flows.delete(flow.harnessId);
-		this.begin(flow.harnessId, new Set(flow.stuck));
+		this.begin(flow.harnessId, new Set(flow.stuck), {
+			trigger: flow.trigger,
+			switchAccount: flow.switchAccount,
+			replyTarget: flow.replyTarget,
+		});
+	}
+
+	/**
+	 * DM wording for a flow.
+	 *
+	 * @param flow - The flow
+	 * @returns Owner-requested / account-switch flags
+	 */
+	private wordingOf(flow: ReloginFlow): LoginDmWording {
+		return { ownerRequested: flow.trigger === 'owner', switchAccount: flow.switchAccount };
 	}
 
 	/**
@@ -752,7 +1004,7 @@ export class HarnessReloginService {
 		if (!session || isTerminalLoginState(session.state)) return;
 		flow.dm = 'screen';
 		this.logger.warn('Re-login: login screen not recognised, sending it to the owner', { harnessId: flow.harnessId, sessionId: session.id });
-		await this.dm(flow, formatScreenDm(session, this.waitingAgents(flow)));
+		await this.dm(flow, formatScreenDm(session, this.waitingAgents(flow), this.wordingOf(flow)));
 	}
 
 	/**
@@ -778,16 +1030,27 @@ export class HarnessReloginService {
 	 */
 	private async dm(flow: ReloginFlow, text: string): Promise<void> {
 		flow.lastDmAt = this.now();
+		await this.notify(text, flow.replyTarget, flow.harnessId);
+	}
+
+	/**
+	 * Send a message to the owner (logs when no notifier is wired; never logs the text).
+	 *
+	 * @param text - DM text
+	 * @param target - Conversation to answer in (null = master-bot DM)
+	 * @param harnessId - Harness, for logs
+	 */
+	private async notify(text: string, target: ReloginReplyTarget | null, harnessId?: HarnessId): Promise<void> {
 		if (!this.notifier) {
-			this.logger.warn('Re-login: no Slack DM path to the owner; finish the login from Setup', { harnessId: flow.harnessId });
+			this.logger.warn('Re-login: no Slack DM path to the owner; finish the login from Setup', { harnessId });
 			return;
 		}
 		try {
-			const delivered = await this.notifier.sendToOwner(text);
-			if (!delivered) this.logger.warn('Re-login: the owner DM was not delivered', { harnessId: flow.harnessId });
+			const delivered = await this.notifier.sendToOwner(text, target);
+			if (!delivered) this.logger.warn('Re-login: the owner DM was not delivered', { harnessId });
 		} catch (error) {
 			this.logger.warn('Re-login: sending the owner DM failed', {
-				harnessId: flow.harnessId,
+				harnessId,
 				error: error instanceof Error ? error.message : String(error),
 			});
 		}

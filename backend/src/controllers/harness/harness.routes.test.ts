@@ -21,6 +21,7 @@ describe('createHarnessRouter', () => {
 			{ path: '/:id/install', methods: ['post'] },
 			{ path: '/:id/login', methods: ['post'] },
 			{ path: '/:id/api-key', methods: ['post'] },
+			{ path: '/:id/owner-login', methods: ['post'] },
 		]);
 	});
 });

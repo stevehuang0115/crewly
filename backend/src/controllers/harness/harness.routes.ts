@@ -8,6 +8,7 @@ import { Router } from 'express';
 import type { HarnessService } from '../../services/harness/harness.service.js';
 import { getHarnessService } from '../../services/harness/harness.service.js';
 import { createHarnessController } from './harness.controller.js';
+import { createOwnerLoginHandler } from './owner-login.controller.js';
 
 /**
  * Create the harness router.
@@ -23,6 +24,7 @@ import { createHarnessController } from './harness.controller.js';
  * - POST /:id/install               — start an install job
  * - POST /:id/login                 — start a broker login { method }
  * - POST /:id/api-key               — store an API key { key }
+ * - POST /:id/owner-login           — orchestrator only: start the login the owner asked for { switchAccount? }
  *
  * @param getService - Service accessor (tests inject a fake)
  * @returns Express router for /api/harness
@@ -41,5 +43,6 @@ export function createHarnessRouter(getService: () => HarnessService = getHarnes
   router.post('/:id/install', controller.startInstall);
   router.post('/:id/login', controller.startLogin);
   router.post('/:id/api-key', controller.submitApiKey);
+  router.post('/:id/owner-login', createOwnerLoginHandler());
   return router;
 }

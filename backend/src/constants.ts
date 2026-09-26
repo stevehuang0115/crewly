@@ -3139,6 +3139,18 @@ export const HARNESS_CONSTANTS = {
 		/** Waiting agents named in a DM; the rest are counted */
 		DM_MAX_LISTED_AGENTS: 8,
 	},
+	/**
+	 * Owner-requested logins (「重新登录 claude」 in the orc DM, or the orc's
+	 * `harness-login` skill). specs/onboarding-harness-login.md "Owner-triggered login".
+	 */
+	OWNER_LOGIN: {
+		/** Longest DM (normalised) the deterministic trigger considers; longer text goes to the orc */
+		MAX_TRIGGER_LENGTH: 60,
+		/** How far back an owner message may ask for the login the orc's skill starts */
+		EVIDENCE_LOOKBACK_MS: 30 * 60 * 1000,
+		/** Owner messages read for that evidence */
+		EVIDENCE_MAX_MESSAGES: 50,
+	},
 	/** Claude Code facts */
 	CLAUDE: {
 		OAUTH_TOKEN_ENV: 'CLAUDE_CODE_OAUTH_TOKEN',

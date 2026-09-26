@@ -160,6 +160,7 @@ import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monit
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
 import { getHarnessReloginService } from './services/harness/harness-relogin.service.js';
 import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
+import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { findPackageRoot } from './utils/package-root.js';
 import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils.js';
@@ -1984,7 +1985,13 @@ void (async () => {
 			// restarts the stuck agents once the login is back.
 			try {
 				const relogin = getHarnessReloginService();
-				const reloginDm = new SlackReloginDmService(() => getSlackService());
+				// Answers to an owner-requested login go into the thread it was
+				// asked in — for the orc's own-bot DM that needs the orc bot's token.
+				const reloginDm = new SlackReloginDmService(
+					() => getSlackService(),
+					undefined,
+					(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+				);
 				relogin.setNotifier(reloginDm);
 				relogin.setResumer(new ReloginAgentResumerService({
 					getBackend: () => getSessionBackendSync(),

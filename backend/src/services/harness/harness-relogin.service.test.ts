@@ -9,6 +9,9 @@ import {
 	describeWaitingAgents,
 	formatFailureDm,
 	formatLinkDm,
+	formatNoBrokerLoginDm,
+	formatOwnerSuccessDm,
+	formatWhichHarnessDm,
 	formatRejectedDm,
 	formatScreenDm,
 	formatSuccessDm,
@@ -19,6 +22,7 @@ import {
 	unwrapReply,
 	type HarnessReloginDeps,
 	type ReloginAgentResumer,
+	type ReloginReplyTarget,
 } from './harness-relogin.service.js';
 import { getHarnessService, setHarnessServiceForTesting } from './harness.service.js';
 import type { HarnessId, LoginSession, LoginSessionState, LoginState } from './harness.types.js';
@@ -375,10 +379,15 @@ describe('owner reply routing', () => {
 		expect(broker.inputs).toHaveLength(0);
 	});
 
-	it('passes everything through when no flow exists', () => {
-		const { service } = setup();
+	it('passes everything through when no flow exists, except a login request', async () => {
+		const { service, dms, broker } = setup();
 		expect(service.handleOwnerReply(AUTH_CODE)).toBe(false);
-		expect(service.handleOwnerReply('relogin')).toBe(false);
+		expect(service.handleOwnerReply('hello orc')).toBe(false);
+		// A bare "relogin" with no flow names no harness: asked which one, no login started.
+		expect(service.handleOwnerReply('relogin')).toBe(true);
+		await flush();
+		expect(dms).toEqual([expect.stringMatching(/要登录哪个/)]);
+		expect(broker.startCalls).toHaveLength(0);
 	});
 
 	it('DMs once when the harness rejects the code, and takes the next one', async () => {
@@ -624,6 +633,187 @@ describe('periodic status check of the orc harness', () => {
 		await jest.advanceTimersByTimeAsync(1000);
 		expect(broker.startCalls).toHaveLength(1);
 		service.stop();
+	});
+});
+
+/** The thread in the orc's own-bot DM the owner asked in (incident 2026-09-26). */
+const ORC_THREAD: ReloginReplyTarget = { channelId: 'D0C381XPD3L', threadTs: '1790450776.351799', agentSession: 'crewly-orc' };
+
+/** A coordinator whose notifier records the reply target of every DM. */
+function setupWithTargets(overrides: Partial<HarnessReloginDeps> = {}) {
+	const sent: Array<{ text: string; target: ReloginReplyTarget | null | undefined }> = [];
+	const ctx = setup({
+		notifier: {
+			sendToOwner: jest.fn(async (text: string, target?: ReloginReplyTarget | null) => {
+				sent.push({ text, target });
+				return true;
+			}),
+			isAvailable: () => true,
+		},
+		...overrides,
+	});
+	return { ...ctx, sent };
+}
+
+describe('owner-requested login (DM trigger)', () => {
+	it('owner DM wording: says what is being logged in, not that it expired', () => {
+		const session: LoginSession = {
+			id: 's1',
+			harnessId: 'claude-code',
+			method: 'subscription',
+			state: 'awaiting_user',
+			url: CLAUDE_URL,
+			userCode: null,
+			needsInput: true,
+			message: null,
+			screen: '',
+			startedAt: '',
+			updatedAt: '',
+		};
+		const plain = formatLinkDm(session, [], { ownerRequested: true });
+		expect(plain.split('\n')[0]).toBe('*登录 Claude Code*');
+		expect(plain).not.toMatch(/过期/);
+		expect(plain.split('\n')).toContain(CLAUDE_URL);
+		const switching = formatLinkDm(session, [], { ownerRequested: true, switchAccount: true });
+		expect(switching.split('\n')[0]).toBe('*换账号登录 Claude Code*');
+		expect(switching).toMatch(/切到要用的那个账号/);
+		expect(formatOwnerSuccessDm('claude-code', { resumed: ['a', 'b'], failed: [] })).toBe('好了：Claude Code 已登录。 2 个 agent 已重启，用上了新登录。');
+		expect(formatOwnerSuccessDm('codex-cli', { resumed: [], failed: [] })).toBe('好了：Codex 已登录。');
+		expect(formatWhichHarnessDm(null)).toMatch(/^要登录哪个？/);
+		expect(formatWhichHarnessDm('cursor')).toMatch(/没有「cursor」/);
+		expect(formatNoBrokerLoginDm('antigravity-cli')).toMatch(/Gemini API key/);
+		expect(formatNoBrokerLoginDm('gemini-cli')).toMatch(/企业版/);
+	});
+
+	it('「重新登录 claude」 starts a forced login even while logged in, answers in the thread, routes the code, reports success once', async () => {
+		const { service, broker, sent, resumer, setLoginState } = setupWithTargets();
+		setLoginState('logged_in');
+		expect(service.handleOwnerReply('重新登录 claude', ORC_THREAD)).toBe(true);
+		await flush();
+		// Forced: no "still logged in" skip.
+		expect(broker.startCalls).toEqual([{ harnessId: 'claude-code', method: 'subscription' }]);
+
+		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		await flush();
+		expect(sent).toHaveLength(1);
+		expect(sent[0].target).toEqual(ORC_THREAD);
+		expect(sent[0].text.split('\n')[0]).toBe('*登录 Claude Code*');
+		expect(sent[0].text.split('\n')).toContain(CLAUDE_URL);
+
+		// The owner pastes the code in the same thread.
+		expect(service.handleOwnerReply(AUTH_CODE, ORC_THREAD)).toBe(true);
+		expect(broker.inputs).toEqual([{ id: 's1', text: AUTH_CODE }]);
+
+		broker.finish('s1', 'succeeded', 'Logged in.');
+		await flush();
+		// Every Claude session restarts onto the new login.
+		expect(resumer.resume).toHaveBeenCalledWith(['crewly-orc', 'dev-1']);
+		expect(sent).toHaveLength(2);
+		expect(sent[1]).toEqual({ text: '好了：Claude Code 已登录。 2 个 agent 已重启，用上了新登录。', target: ORC_THREAD });
+	});
+
+	it('「换个账号登录 claude」 uses the account-switch wording', async () => {
+		const { service, broker, sent } = setupWithTargets();
+		expect(service.handleOwnerReply('换个账号登录 claude', ORC_THREAD)).toBe(true);
+		await flush();
+		broker.patch('s1', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		await flush();
+		expect(sent[0].text).toMatch(/^\*换账号登录 Claude Code\*/);
+	});
+
+	it('skips the silent API key: the owner asked for a link', async () => {
+		const { service, broker, credentials, apiKeys } = setupWithTargets();
+		credentials.getClaudeCredentialKind.mockReturnValue('api_key' as never);
+		credentials.read.mockReturnValue({ codex: { openaiApiKey: 'sk-test' } });
+		service.handleOwnerReply('relogin codex', ORC_THREAD);
+		service.handleOwnerReply('relogin claude', ORC_THREAD);
+		await flush();
+		expect(apiKeys.submit).not.toHaveBeenCalled();
+		expect(broker.startCalls.map((c) => c.harnessId)).toEqual(['codex-cli', 'claude-code']);
+	});
+
+	it('starts a running expiry flow over with a fresh link, without a failure DM for the old one', async () => {
+		const { service, broker, sent } = setupWithTargets();
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		await flush();
+		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
+		await flush();
+		expect(sent).toHaveLength(1);
+
+		const result = service.startOwnerLogin('codex-cli', { replyTarget: ORC_THREAD, requestedBy: 'orchestrator' });
+		expect(result).toEqual({ status: 'restarted', harnessId: 'codex-cli', dmAvailable: true });
+		await flush();
+		expect(broker.sessions.get('s1')?.state).toBe('cancelled');
+		expect(broker.startCalls).toHaveLength(2);
+		broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'AB12-CD34' });
+		await flush();
+		expect(sent).toHaveLength(2);
+		expect(sent[1].target).toEqual(ORC_THREAD);
+		expect(sent[1].text).toMatch(/^\*登录 Codex\*/);
+		// The stuck agent from the expiry is still the one resumed.
+		broker.finish('s2', 'succeeded', 'Logged in.');
+		await flush();
+		expect(sent[2].text).toBe('好了：Codex 已登录。 1 个 agent 已重启，用上了新登录。');
+	});
+
+	it('is not swallowed by the quiet period right after a login', async () => {
+		const { service, broker } = setupWithTargets();
+		service.handleOwnerReply('登录 codex', ORC_THREAD);
+		await flush();
+		broker.finish('s1', 'succeeded', 'Logged in.');
+		await flush();
+		expect(service.handleOwnerReply('换个账号登录 codex', ORC_THREAD)).toBe(true);
+		await flush();
+		expect(broker.startCalls).toHaveLength(2);
+	});
+
+	it('a failed owner flow, retried with 「重新登录」, keeps its wording and thread', async () => {
+		const { service, broker, sent } = setupWithTargets();
+		service.handleOwnerReply('换个账号登录 claude', ORC_THREAD);
+		await flush();
+		broker.finish('s1', 'timed_out', 'Login timed out.');
+		await flush();
+		expect(sent[0]).toEqual({ text: expect.stringMatching(/Claude Code 登录没完成/), target: ORC_THREAD });
+		expect(service.handleOwnerReply('重新登录', ORC_THREAD)).toBe(true);
+		await flush();
+		broker.patch('s2', { state: 'awaiting_user', url: CLAUDE_URL, needsInput: true });
+		await flush();
+		expect(sent[1].target).toEqual(ORC_THREAD);
+		expect(sent[1].text).toMatch(/^\*换账号登录 Claude Code\*/);
+	});
+
+	it('asks which harness for an unknown one, and explains harnesses without a link login', async () => {
+		const { service, broker, sent } = setupWithTargets();
+		expect(service.handleOwnerReply('登录 cursor', ORC_THREAD)).toBe(true);
+		expect(service.handleOwnerReply('登录 agy', ORC_THREAD)).toBe(true);
+		expect(service.handleOwnerReply('relogin gemini', ORC_THREAD)).toBe(true);
+		await flush();
+		expect(broker.startCalls).toHaveLength(0);
+		expect(sent.map((m) => m.target)).toEqual([ORC_THREAD, ORC_THREAD, ORC_THREAD]);
+		expect(sent[0].text).toMatch(/没有「cursor」/);
+		expect(sent[1].text).toMatch(/Gemini API key/);
+		expect(sent[2].text).toMatch(/企业版/);
+		expect(service.startOwnerLogin('antigravity-cli', { requestedBy: 'orchestrator' })).toEqual({
+			status: 'no_broker_login',
+			harnessId: 'antigravity-cli',
+			message: formatNoBrokerLoginDm('antigravity-cli'),
+		});
+	});
+
+	it('leaves ordinary messages about logins to the orc', () => {
+		const { service, broker } = setupWithTargets();
+		expect(service.handleOwnerReply('claude 登录了吗', ORC_THREAD)).toBe(false);
+		expect(service.handleOwnerReply('不 我要重新登陆一个账号', ORC_THREAD)).toBe(false);
+		expect(broker.startCalls).toHaveLength(0);
+	});
+
+	it('reports dmAvailable=false when there is no way to reach the owner', () => {
+		const { service } = setup({ notifier: null });
+		expect(service.startOwnerLogin('claude-code', { requestedBy: 'orchestrator' })).toEqual({
+			status: 'started',
+			harnessId: 'claude-code',
+			dmAvailable: false,
+		});
 	});
 });
 
