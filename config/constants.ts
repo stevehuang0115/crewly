@@ -1046,6 +1046,65 @@ export const VERSION_CHECK_CONSTANTS = {
 	REQUEST_TIMEOUT_MS: 5000,
 } as const;
 
+// ========================= AUTO-UPDATE CONSTANTS =========================
+
+/**
+ * Automatic self-update (specs/auto-update.md).
+ *
+ * The backend's AutoUpdateService checks npm for a newer `crewly`, waits for
+ * a quiet window, installs into the prefix the running copy lives in,
+ * verifies the installed version and restarts gracefully. Shared with the
+ * CLI (`crewly update-status`) and `crewly start` (which marks itself as the
+ * restart supervisor for the backend it spawns).
+ */
+export const AUTO_UPDATE_CONSTANTS = {
+	/** Interval between registry checks (ms) — 3 hours */
+	CHECK_INTERVAL_MS: 3 * 60 * 60 * 1000,
+	/** First check after boot (ms) — 10 minutes */
+	FIRST_CHECK_DELAY_MS: 10 * 60 * 1000,
+	/** A registry answer older than this is re-fetched for the auto-update decision (ms) */
+	REGISTRY_MAX_AGE_MS: 30 * 60 * 1000,
+	/** Gap between the two quiet-window probes (ms) */
+	QUIET_CONFIRM_MS: 60 * 1000,
+	/** Retry interval while agents are busy (ms) — 5 minutes */
+	BUSY_RETRY_MS: 5 * 60 * 1000,
+	/**
+	 * After deferring this long, an agent whose workingStatus is stuck at
+	 * in_progress no longer blocks the update; only turns actually in flight
+	 * do (the restart drain handles those anyway) (ms) — 24 hours
+	 */
+	MAX_BUSY_DEFER_MS: 24 * 60 * 60 * 1000,
+	/** Back-off after a failed install or verify (ms) — 6 hours */
+	FAILURE_BACKOFF_MS: 6 * 60 * 60 * 1000,
+	/** Consecutive failures before the owner is told (once per target version) */
+	FAILURE_NOTIFY_THRESHOLD: 2,
+	/** Upper bound for one `npm install -g` (ms) — 10 minutes */
+	INSTALL_TIMEOUT_MS: 10 * 60 * 1000,
+	/** How long the post-restart notice waits for Slack to connect (ms) */
+	NOTIFY_WAIT_MS: 10 * 60 * 1000,
+	/** Poll interval while waiting for Slack (ms) */
+	NOTIFY_POLL_MS: 15 * 1000,
+	/** A pending-upgrade marker older than this is ignored at boot (ms) — 1 day */
+	MARKER_MAX_AGE_MS: 24 * 60 * 60 * 1000,
+	/** Env var: `0`/`false`/`off` forces auto-update off, `1`/`true`/`on` forces it on */
+	ENV_VAR: 'CREWLY_AUTO_UPDATE',
+	/**
+	 * Env var `crewly start` sets on the backend it spawns: the parent respawns
+	 * the backend when it exits with RESTART_REQUESTED, so an upgrade can come back.
+	 */
+	SUPERVISOR_ENV_VAR: 'CREWLY_RESTART_SUPERVISOR',
+	/** Value of SUPERVISOR_ENV_VAR set by `crewly start` */
+	SUPERVISOR_CLI_START: 'cli-start',
+	/** Log file under `<crewlyHome>/logs/` */
+	LOG_FILE: 'auto-update.log',
+	/** Status file under CREWLY_HOME (read by `crewly update-status`) */
+	STATE_FILE: 'auto-update-state.json',
+	/** Marker written before an upgrade restart, read (and removed) on the next boot */
+	MARKER_FILE: 'auto-update-pending.json',
+	/** npm package name */
+	PACKAGE_NAME: 'crewly',
+} as const;
+
 // ========================= MARKETPLACE CONSTANTS =========================
 
 /**

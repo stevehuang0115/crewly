@@ -413,6 +413,22 @@ describe('Settings Types', () => {
       expect(result.errors.some(e => e.includes('autoResumeOnRestart'))).toBe(true);
     });
 
+    it('defaults autoUpdate to on and rejects a non-boolean value', () => {
+      const settings = getDefaultSettings();
+      expect(settings.general.autoUpdate).toBe(true);
+
+      settings.general.autoUpdate = false;
+      expect(validateSettings(settings).valid).toBe(true);
+
+      delete settings.general.autoUpdate;
+      expect(validateSettings(settings).valid).toBe(true);
+
+      (settings.general as unknown as Record<string, unknown>).autoUpdate = 'yes';
+      const result = validateSettings(settings);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain('autoUpdate must be a boolean');
+    });
+
     it('should detect negative checkInIntervalMinutes', () => {
       const settings = getDefaultSettings();
       settings.general.checkInIntervalMinutes = -1;

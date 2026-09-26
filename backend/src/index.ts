@@ -99,7 +99,7 @@ import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -166,6 +166,7 @@ import { getLocalApiBaseUrl, setLocalApiPort } from './utils/local-api-url.utils
 import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
+import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
@@ -2880,6 +2881,11 @@ void (async () => {
 				// Silently ignore — version check is non-critical
 			});
 
+			// Automatic self-update (specs/auto-update.md). Started before the
+			// orchestrator auto-start so an upgrade boot is known when the
+			// "back online" announcement is composed.
+			this.startAutoUpdate();
+
 			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
 			// The legacy `TaskTrackingService.startAutoSync()` is gone — V3
 			// task-pool reconciler owns lifecycle cleanup now.
@@ -3397,7 +3403,10 @@ void (async () => {
 			// running version, enriched with offline duration + replayed count.
 			try {
 				const settings = await getSettingsService().getSettings();
-				if (settings.general.announceOnBoot) {
+				// An auto-upgrade boot sends its own "upgraded to x.y.z" notice;
+				// one message per upgrade, not two.
+				const upgradeBoot = AutoUpdateService.getInstance()?.isUpgradeBoot() === true;
+				if (settings.general.announceOnBoot && !upgradeBoot) {
 					let version = 'unknown';
 					try {
 						version = VersionCheckService.getInstance().getLocalVersion();
@@ -3969,6 +3978,67 @@ void (async () => {
 	}
 
 	/**
+	 * Create and start the AutoUpdateService with the server's live hooks:
+	 * the npm registry check (also refreshing `/health`), the quiet-window
+	 * probe (turns in flight + active agents in_progress), the graceful
+	 * restart, and the owner notification path (SlackService.sendNotification,
+	 * which DMs the workspace owner). Never throws.
+	 */
+	private startAutoUpdate(): void {
+		try {
+			const versionService = VersionCheckService.getInstance();
+			const service = createAutoUpdateService({
+				crewlyHome: this.config.crewlyHome,
+				getSettingEnabled: async () => (await getSettingsService().getSettings()).general.autoUpdate,
+				fetchLatestVersion: async (currentVersion) => {
+					const latest = await versionService.getLatestVersion(currentVersion, {
+						maxAgeMs: AUTO_UPDATE_CONSTANTS.REGISTRY_MAX_AGE_MS,
+					});
+					versionService.recordCheckResult(currentVersion, latest);
+					return latest;
+				},
+				isRestartInProgress: () => {
+					const drain = RestartDrainService.getInstance();
+					return this.isShuttingDown || drain.isDeliveryPaused() || drain.isDraining();
+				},
+				getBusy: async () => {
+					const midTurn = InFlightTurnTracker.getInstance().getMidTurn().map((t) => t.sessionName);
+					const inProgress: string[] = [];
+					const isBusy = (agentStatus: string, workingStatus: string): boolean =>
+						agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE &&
+						workingStatus === CREWLY_CONSTANTS.WORKING_STATUSES.IN_PROGRESS;
+					for (const team of await this.storageService.getTeams()) {
+						for (const member of team.members ?? []) {
+							if (isBusy(member.agentStatus, member.workingStatus)) inProgress.push(member.sessionName);
+						}
+					}
+					const orc = await this.storageService.getOrchestratorStatus().catch(() => null);
+					if (orc && isBusy(orc.agentStatus, orc.workingStatus)) inProgress.push(orc.sessionName);
+					return { midTurn, inProgress };
+				},
+				requestRestart: (reason, exitCode) =>
+					RestartDrainService.getInstance().requestGracefulShutdown({ reason, exitCode }),
+				isNotifyReady: () => getSlackService().isConnected(),
+				notifyOwner: (title, message) =>
+					getSlackService().sendNotification({
+						type: 'project_update',
+						title,
+						message,
+						urgency: 'normal',
+						timestamp: new Date().toISOString(),
+					}),
+				getDeviceName: async () => (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceName,
+			});
+			AutoUpdateService.setInstance(service);
+			service.start();
+		} catch (error) {
+			this.logger.warn('Auto-update not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * Load interrupted turns left by the previous shutdown (fresh ones only).
 	 */
 	private loadInterruptedTurnsAtBoot(): void {
@@ -4409,6 +4479,8 @@ void (async () => {
 		this.isShuttingDown = true;
 		const exitCode = options.exitCode ?? PROCESS_EXIT_CODES.SUCCESS;
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
+
+		AutoUpdateService.getInstance()?.stop();
 
 		// Safe restart: stop delivering, wait for agents mid-turn, persist the rest.
 		// Runs before the force-exit timer below, which only bounds the teardown.

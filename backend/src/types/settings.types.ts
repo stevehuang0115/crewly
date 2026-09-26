@@ -58,6 +58,15 @@ export interface GeneralSettings {
   /** Whether to post a "back online" message to the owner's channel after a restart */
   announceOnBoot: boolean;
 
+  /**
+   * Keep this machine on the latest npm release automatically: install it in
+   * a quiet window and restart gracefully (specs/auto-update.md). Only acts
+   * on npm installs — never on a dev checkout. `CREWLY_AUTO_UPDATE=0` forces
+   * it off regardless of this value. Optional so older settings files merge
+   * to the default (on).
+   */
+  autoUpdate?: boolean;
+
   /** Per-runtime CLI init commands. Key = runtime type, value = CLI command string */
   runtimeCommands: Record<AIRuntime, string>;
 
@@ -346,6 +355,7 @@ export function getDefaultSettings(): CrewlySettings {
       verboseLogging: false,
       autoResumeOnRestart: true,
       announceOnBoot: true,
+      autoUpdate: true,
       runtimeCommands: {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',
@@ -425,6 +435,10 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (typeof settings.general.autoResumeOnRestart !== 'boolean') {
     errors.push('autoResumeOnRestart must be a boolean');
+  }
+
+  if (settings.general.autoUpdate !== undefined && typeof settings.general.autoUpdate !== 'boolean') {
+    errors.push('autoUpdate must be a boolean');
   }
 
   if (settings.general.checkInIntervalMinutes < SETTINGS_CONSTRAINTS.MIN_CHECK_IN_INTERVAL) {

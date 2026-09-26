@@ -156,6 +156,36 @@ describe('VersionCheckService', () => {
 		});
 	});
 
+	describe('getLatestVersion maxAgeMs', () => {
+		it('re-fetches a cache younger than the TTL but older than maxAgeMs', async () => {
+			const service = VersionCheckService.getInstance();
+			jest.spyOn(service, 'getCachedResult').mockReturnValue({
+				latestVersion: '1.0.0',
+				checkedAt: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+			});
+			jest.spyOn(service, 'writeCacheResult').mockImplementation(() => {});
+			const mockFetch = jest.spyOn(globalThis, 'fetch').mockResolvedValue({
+				ok: true,
+				json: async () => ({ version: '1.0.1' }),
+			} as Response);
+
+			expect(await service.getLatestVersion('1.0.0')).toBe('1.0.0');
+			expect(mockFetch).not.toHaveBeenCalled();
+			expect(await service.getLatestVersion('1.0.0', { maxAgeMs: 30 * 60 * 1000 })).toBe('1.0.1');
+			expect(mockFetch).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe('recordCheckResult', () => {
+		it('stores a comparison made elsewhere for /health', () => {
+			const service = VersionCheckService.getInstance();
+			service.recordCheckResult('1.20.143', '1.20.144');
+			expect(service.getCachedCheckResult()).toEqual({ currentVersion: '1.20.143', latestVersion: '1.20.144', updateAvailable: true });
+			service.recordCheckResult('1.20.144', null);
+			expect(service.getCachedCheckResult()?.updateAvailable).toBe(false);
+		});
+	});
+
 	describe('checkForUpdate', () => {
 		it('should return updateAvailable true when latest > current', async () => {
 			const service = VersionCheckService.getInstance();

@@ -100,16 +100,21 @@ export class VersionCheckService {
 	 * reported for up to a day (2026-09-24: /health said latest 1.20.108 on
 	 * 1.20.109).
 	 *
+	 * The auto-updater passes a much shorter `maxAgeMs` than the 24 h TTL so a
+	 * release is noticed within one check interval.
+	 *
 	 * @param currentVersion - The running version, when known
+	 * @param options - `maxAgeMs`: oldest cached answer accepted (defaults to CACHE_TTL_MS)
 	 * @returns The latest version string, or null if the request failed
 	 */
-	async getLatestVersion(currentVersion?: string): Promise<string | null> {
+	async getLatestVersion(currentVersion?: string, options: { maxAgeMs?: number } = {}): Promise<string | null> {
+		const maxAgeMs = options.maxAgeMs ?? VERSION_CHECK_CONSTANTS.CACHE_TTL_MS;
 		// Check cache first
 		const cached = this.getCachedResult();
 		if (cached) {
 			const age = Date.now() - new Date(cached.checkedAt).getTime();
 			const behindUs = !!currentVersion && this.isNewerVersion(currentVersion, cached.latestVersion);
-			if (age < VERSION_CHECK_CONSTANTS.CACHE_TTL_MS && !behindUs) {
+			if (age < maxAgeMs && !behindUs) {
 				return cached.latestVersion;
 			}
 		}
@@ -170,6 +175,21 @@ export class VersionCheckService {
 	 */
 	getCachedCheckResult(): VersionCheckResult | null {
 		return this.cachedResult;
+	}
+
+	/**
+	 * Record a comparison made elsewhere (the auto-updater's periodic check)
+	 * so `/health` reports it without another registry round-trip.
+	 *
+	 * @param currentVersion - Running version
+	 * @param latestVersion - Latest version on npm, or null when unknown
+	 */
+	recordCheckResult(currentVersion: string, latestVersion: string | null): void {
+		this.cachedResult = {
+			currentVersion,
+			latestVersion,
+			updateAvailable: latestVersion !== null && this.isNewerVersion(latestVersion, currentVersion),
+		};
 	}
 
 	/**
