@@ -212,3 +212,21 @@ describe('CodexRuntimeService', () => {
 		});
 	});
 });
+
+describe('codex known start-up prompts (2026-09-26: Kai, Nova stuck on the resume directory picker)', () => {
+	it('answers "Working directory · resume" with Enter (option 1, the session directory)', async () => {
+		const { CODEX_KNOWN_PROMPTS } = await import('./codex-runtime.service.js');
+		const screen = `Working directory · resume
+  Session = latest cwd recorded in the resumed session
+  Current = your current working directory
+› 1. Use session directory (/opt/steamfun-src)
+  2. Use current directory (/usr/lib/node_modules/crewly)
+  enter continue · esc use session · ctrl+c quit`;
+		const flat = screen.replace(/\s+/g, '');
+		const hit = CODEX_KNOWN_PROMPTS.find((p) => p.match.every((re) => re.test(flat)));
+		expect(hit?.id).toBe('codex.resume_working_directory');
+		expect(hit?.keys).toEqual(['Enter']);
+		const idle = '› Ask Codex to do anything'.replace(/\s+/g, '');
+		expect(CODEX_KNOWN_PROMPTS.some((p) => p.match.every((re) => re.test(idle)))).toBe(false);
+	});
+});

@@ -1920,6 +1920,14 @@ export class AgentRegistrationService {
 			}
 			polls++;
 
+			// A known start-up question (codex's resume directory picker) can
+			// appear after the ready banner: answer it instead of timing out
+			// and typing the kickoff into it.
+			if (typeof runtimeService.answerKnownPrompt === 'function' && (await runtimeService.answerKnownPrompt(sessionName, screen))) {
+				await delay(pollMs);
+				continue;
+			}
+
 			if (runtimeService.isReadyForInput(screen)) {
 				this.logger.info('Runtime idle at input prompt — delivering registration instruction', {
 					sessionName,

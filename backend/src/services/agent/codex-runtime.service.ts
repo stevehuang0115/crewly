@@ -1,4 +1,4 @@
-import { RuntimeAgentService } from './runtime-agent.service.abstract.js';
+import { RuntimeAgentService, type KnownRuntimePrompt } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
 import { RUNTIME_TYPES, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
 
@@ -6,6 +6,15 @@ import { RUNTIME_TYPES, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '.
  * OpenAI Codex CLI specific runtime service implementation.
  * Handles Codex CLI initialization, detection, and interaction patterns.
  */
+/** Codex start-up dialogs answered automatically. */
+export const CODEX_KNOWN_PROMPTS: readonly KnownRuntimePrompt[] = [
+	{
+		id: 'codex.resume_working_directory',
+		match: [/Workingdirectory·resume/i, /1\.Usesessiondirectory/i],
+		keys: ['Enter'],
+	},
+];
+
 export class CodexRuntimeService extends RuntimeAgentService {
 	constructor(sessionHelper: SessionCommandHelper, projectRoot: string) {
 		super(sessionHelper, projectRoot);
@@ -33,6 +42,17 @@ export class CodexRuntimeService extends RuntimeAgentService {
 		});
 
 		return hasReadySignal;
+	}
+
+	/**
+	 * `codex resume` asks which working directory to use when the recorded
+	 * session cwd differs from the current one. The recorded one is where
+	 * the agent's work lives, and it is option 1 (pre-selected): Enter.
+	 *
+	 * @returns Codex's known start-up prompts
+	 */
+	protected getKnownPrompts(): readonly KnownRuntimePrompt[] {
+		return CODEX_KNOWN_PROMPTS;
 	}
 
 	/**

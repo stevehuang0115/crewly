@@ -366,6 +366,47 @@ export abstract class RuntimeAgentService {
 	}
 
 	/**
+	 * One-question dialogs this runtime can raise at start-up that have a
+	 * single right answer for an agent. Matched against the screen with all
+	 * whitespace removed (TUIs drop spaces). Override per runtime.
+	 *
+	 * @returns Known prompts with the keys that answer them
+	 */
+	protected getKnownPrompts(): readonly KnownRuntimePrompt[] {
+		return [];
+	}
+
+	/**
+	 * If the screen shows one of {@link getKnownPrompts}, answer it.
+	 * Called from every wait loop (start-up and before the kickoff), so an
+	 * agent never sits on a question nobody is there to answer — the owner
+	 * found Kai on steamfun-ops and Nova here stuck on codex's "Working
+	 * directory · resume" picker (2026-09-26).
+	 *
+	 * @param sessionName - Session
+	 * @param screen - Captured screen text
+	 * @returns True when a prompt was answered
+	 */
+	async answerKnownPrompt(sessionName: string, screen: string): Promise<boolean> {
+		const flat = (screen ?? '').replace(/\s+/g, '');
+		for (const prompt of this.getKnownPrompts()) {
+			if (!prompt.match.every((re) => re.test(flat))) continue;
+			this.logger.info('Known start-up prompt answered', {
+				sessionName,
+				runtimeType: this.getRuntimeType(),
+				prompt: prompt.id,
+			});
+			for (const key of prompt.keys) {
+				if (key === 'Enter') await this.sessionHelper.sendEnter(sessionName);
+				else await this.sessionHelper.sendKey(sessionName, key);
+				await delay(200);
+			}
+			return true;
+		}
+		return false;
+	}
+
+	/**
 	 * Simplified method for waiting for runtime to be ready.
 	 * Checks at regular intervals until timeout, looking for ready patterns in the terminal output.
 	 */
@@ -388,6 +429,13 @@ export abstract class RuntimeAgentService {
 			try {
 				// Capture terminal output
 				const output = this.sessionHelper.capturePane(sessionName);
+
+				// A known one-question dialog (e.g. codex's resume directory
+				// picker) is answered, not waited out.
+				if (await this.answerKnownPrompt(sessionName, output)) {
+					await delay(1000);
+					continue;
+				}
 
 				// Get runtime-specific ready patterns
 				const readyPatterns = this.getRuntimeReadyPatterns();
@@ -873,4 +921,15 @@ export function runtimePathExport(nodeBinDir: string = path.dirname(process.exec
 	const dirs = [nodeBinDir, getUserNpmBinDir()].filter((d, i, a) => d && a.indexOf(d) === i);
 	const quoted = dirs.map((d) => `'${d.replace(/'/g, `'\\''`)}'`).join(':');
 	return `export PATH=${quoted}:"$PATH"`;
+}
+
+
+/** A start-up dialog with one right answer for an unattended agent. */
+export interface KnownRuntimePrompt {
+	/** Stable id for logs */
+	id: string;
+	/** All must match the whitespace-stripped screen */
+	match: readonly RegExp[];
+	/** Keys that answer it ('Enter' or a key name the session helper knows) */
+	keys: readonly string[];
 }
