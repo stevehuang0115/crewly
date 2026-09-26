@@ -54,7 +54,14 @@ A refusal throws `ForbiddenTransitionError` (`reason`, readable `detail`), which
 | no header, `X-Crewly-Caller: dashboard` | `owner` |
 | no header | `agent`, **no session**: can take worker edges, can never review |
 
-The body's `agentId` is never used for identity. **Limitation:** the header comes from the agent's own environment (`lib.sh`), so it is the best identity available now, not an authenticated one. Per-session API tokens (control-plane isolation spec) replace it, and this function is the single place to change.
+The body's `agentId` is never used for identity.
+
+**Known bypasses — this is not authentication.** Both headers are chosen by the caller, and loopback requests need no API token:
+
+1. **Owner by marker.** Any local caller that sends `X-Crewly-Caller: dashboard` *without* `X-Agent-Session` resolves as `owner`, and the owner may verify **any** item.
+2. **Reviewer by header.** Any caller can put the reviewer's session name in `X-Agent-Session` and render that reviewer's verdict (or send `crewly-orc` and act as the orchestrator).
+
+What #813 does close: verdicts by role claim alone, by the body `agentId`, by timers and sweepers, and by the worker on its own item. **The fix for both bypasses is per-session API tokens** (`.crewly/specs/2026-09-24-control-plane-isolation.md`). The server issues each agent session a token, identity is derived from that token rather than from headers, and the owner requires the owner token. `resolveTransitionActor` is the single place to change when those tokens exist.
 
 ## Rendering a verdict
 
