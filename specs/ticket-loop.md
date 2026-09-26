@@ -38,7 +38,8 @@ new store. Storage stays `{projectDataDir}/.crewly/requests/{id}.json`.
 | Field | Type | Notes |
 |---|---|---|
 | `ticketNumber` | number | Monotonic per data dir; displayed `TKT-{n}` (zero-pad 3) |
-| `kind` | `'issue' \| 'feature' \| 'idea'` | Default `feature`; 🐛 → `issue`; `ticket-idea` → `idea` |
+| `kind` | `'issue' \| 'feature' \| 'idea' \| 'question'` | Default `feature`; 🐛 → `issue`; `ticket-idea` → `idea`; a pure information question → `question` (#827: no acceptance step) |
+| `parentTicketId` | `string?` | #827: the ticket whose thread a new ask was said in, or that an agent split it from |
 | `origin` | `{ channel: 'slack-channel' \| 'slack-dm' \| 'chat' \| 'portal' \| 'mobile' \| 'bug-button' \| 'agent' \| 'cron' \| 'mission' \| 'legacy'; ref: string; threadRef?: string; author: string; authorName?: string }` | Where it was said and by whom; replies go back to `threadRef` |
 | `assignee` | string? | Agent session that owns it (pre-filled for a DM) |
 | `acceptance` | `{ text: string; selfCheck?: 'pass' \| 'fail'; evidence?: string }[]` | Phase 2 surfaces it |
@@ -70,10 +71,12 @@ One entry point: `intake(message: IntakeMessage): Promise<Request | null>`.
 - Reuse the existing suppression rules from `SlackOrchestratorBridge.shouldSuppressAutoRequest`
   (continuations, file-only, trivial acks) — move them into the intake service so every
   channel uses the same gate. Add: messages in a thread that already has an open ticket
-  append to that ticket's discussion instead of opening a new one.
+  append to that ticket's discussion instead of opening a new one. *Superseded by #827:
+  only follow-ups append; a new ask opens its own ticket — see "New asks in a thread".*
 - Dedupe by `origin.ref` (`findBySourceConversationItemId`).
 - Classify with the existing `classifyIntent` / `generateRequestTitle`; `query` intent
-  (a question, not a task) does not open a ticket.
+  (a question, not a task) does not open a ticket. *Superseded by #827: request-phrased
+  questions are asks, and pure information questions open `question` tickets.*
 - Emits `request:created` as today (decompose + SLA subscribers keep working).
 - Returns the ticket so the caller can post the receipt.
 
@@ -116,6 +119,7 @@ Log counts. Never delete; archive is append-only.
   Requests from before the ticket loop (no number) only with `includeLegacy=true`.
 - `GET /api/tickets/:tkt` — by `TKT-123`, `123` or id.
 - `POST /api/tickets/:id/dismiss` — the "不用记" action.
+- `POST /api/tickets/:id/split` — #827: move an ask out into its own ticket (agents may call it).
 
 ### Phase 1 as built (implementation notes)
 
@@ -134,8 +138,10 @@ receipt sinks, per-channel intake builders), `types/v2/ticket.types.ts`,
   `authorAgentSession`, and — when the Cloud app's installer is known — the
   author must be that user (other people in the workspace do not file tickets
   in Phase 1; self-hosted socket mode, installer unknown, = any human).
-- **Gate.** Trivial acks, file-only, `query` / `L0` intent, duplicates, and
-  follow-ups (append to the thread's open ticket's `discussion`). Length gate
+- **Gate.** Trivial acks, file-only, status pings, `query` / `L0` intent (unless the
+  ask classifier says it is an ask — #827), duplicates, and follow-ups (append to the
+  thread's newest open ticket's `discussion`; a new ask in the thread opens its own
+  ticket instead — #827). Length gate
   counts CJK characters twice (the old 12-char gate dropped most Chinese asks:
   「把首页改成蓝色」 is 7 characters). A thread whose ticket was dismissed
   stays quiet; a thread whose ticket is `done` may open a new one.
@@ -371,6 +377,93 @@ the board for `TICKET_CONSTANTS.ARCHIVE.AFTER_MS` (30 days), then
 `RequestService.archive` moves the file to `requests/archive/` (never
 deleted; `listAll` reads only the top level). Non-ticket Requests keep the
 24 h purge.
+
+## New asks in a thread (#827, 2026-09-26)
+
+**Why.** On 2026-09-26 the owner made 15+ distinct asks and got 6 tickets. Two rules
+caused it: every message in a thread with an open ticket was appended to that ticket,
+and `classifyIntent` calls many request-phrased questions (「可以去研究一下 X 吗」) `L0`
+or `query`, which intake dropped. The owner likes the ticket loop because he can say
+something and move on; that only held for the first ask in each thread.
+
+**Classifier** — `services/v3/ticket-ask-classifier.ts`, patterns in
+`TICKET_CONSTANTS.ASK`. Deterministic, text only, and every verdict carries the signals
+that fired.
+- *Ask score:* a request verb scores 2 (研究一下 / 看看 + something to look at / 开 issue /
+  发到 / 帮我 / 让 X 去 / research / create issues…). An explicit request construction
+  (你能不能帮我 / 我希望你 / 我建议你) scores 4. An info question (是什么 / 什么意思 /
+  有什么值得…), a new-topic opener (另外 / 新的想法) and an idea (我们也可以 / 要不)
+  each add 1. The owner's quoted text (“能不能帮我做”) is ignored.
+- *Follow score* (the strongest signal counts):
+  - an ack-only message;
+  - a numbered reply to the agent's list (5);
+  - an approval line ("好的 开issue可以的", "好的 部署吧");
+  - the delivery format of the current work (发 pdf / 存到 md / preview);
+  - feedback (基本可以 / 还可以再 / 改一下);
+  - a correction or choice (不对… / 不是… / 方案A);
+  - retry or continue (你再看看 / 继续);
+  - a suggestion tail (…吧？);
+  - "show me" (…给我看看吗);
+  - questions about the agent's own work (你打算 / 你觉得 / 你有数);
+  - clarification or deferral (我只是 / 除非你 / 先留作backlog);
+  - a status ping (在线了吗 / 现在呢 / status);
+  - in a thread, a long spoken reply (weighted length > 300): a follow-up unless it
+    opens a new topic or contains an explicit request.
+- *Verdict:* a new ask only if ask ≥ 2 **and** ask > follow. **Ties append.**
+  Over-splitting (ticket spam plus a review nudge per ticket) is the worse failure,
+  and an agent can split afterwards. A verb-less info question is a `question`. In a
+  thread it also needs a question marker (？/吗/呢/…是什么), so a reflective 「都有什么经验」
+  mid-discussion stays a follow-up. At the top level only acks and status pings count
+  against an ask; the other follow-up signals describe "the work in progress", and
+  only a thread has one.
+
+**Intake** (`ticket-intake.service.ts`):
+- *In a thread with an open ticket:* a new ask or question → `created_in_thread`. The
+  new ticket keeps the same `origin.threadRef`, gets `parentTicketId` = the thread's
+  ticket, and an assignee: the agent addressed, else the thread ticket's assignee.
+  Everything else is appended. Follow-ups append to the thread's newest open ticket.
+- *Under a 待验收 ticket:* 验过了 / 打回 / an ack are handled first, as before. A new ask
+  opens its own ticket and does **not** reopen the answered one; any other follow-up
+  reopens it, as before.
+- *At the top level:* an `L0` / `query` message the classifier calls an ask or
+  question is created (stored as `L1`). A status ping with no ask signal is ignored
+  even when `classifyIntent` calls it actionable.
+- *`question` tickets:* `requiresConfirmation: false` — no 待验收, no nudges, but they
+  are on the board and in the daily summary.
+- *In a finished thread:* a new ticket there also records the finished one as its
+  parent.
+
+**Split** — `TicketIntakeService.split`, `POST /api/tickets/:id/split`, and the
+`split-ticket` agent skill (`--list` shows the follow-ups with their refs). With
+`discussionRef`, the follow-up moves out of the source's discussion into the new
+ticket, which keeps the thread link and parent and is tagged `split`. With `text`, a
+new ticket is opened from text. The line delivered with a ticket message tells the
+agent the skill exists.
+
+**Measured** — in-thread owner messages from real Slack threads, labelled by hand
+(`ticket-ask-classifier.fixtures.json`, scrubbed of local paths). Each row gives the
+asks caught / total, and the follow-ups over-split / total:
+
+| Set | Asks caught | Follow-ups over-split | Notes |
+|---|---|---|---|
+| 09-25/26 (22 thread roots + 89 replies) | 11 / 11 | 0 / 78 | Used to write the rules. Top level: 21 / 22 |
+| 09-23/24 (127 replies) | 34 / 38 | 3 / 89 | Labelled blind; scored 33 wrong before being tuned on too |
+| 09-20..22 (18 replies) | 4 / 7 | 1 / 11 | Labelled blind. Before one rule (corrections / choices) was added after scoring it, 3 follow-ups were over-split |
+
+The honest out-of-sample number is the blind first score of each set, not the tuned
+one. The test pins today's counts as ceilings, so a rule change that trades one
+mistake for three fails.
+
+**Replay** — thread `1790425131.498609` in #C0C2QCGE9K9: 8 asks → 8 tickets (was 2),
+the 3 follow-ups appended, Slack's second deliveries deduplicated
+(`ticket-intake.service.test.ts`, "replay").
+
+**Known limits.**
+- One message = one ticket. 「值得进wiki… / plan mode已死什么意思 / what is an os」 is
+  one ticket, and the agent can split it.
+- Asks that name no verb (「你可以把 finance 的那个 project 也挂上吗」) are missed and
+  appended.
+- Voice transcripts depend on the explicit-request phrases.
 
 ## Phase 4 (summary; specced when started)
 
