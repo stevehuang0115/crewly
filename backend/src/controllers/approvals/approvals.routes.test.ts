@@ -22,15 +22,24 @@ describe('Approvals Routes', () => {
     expect(routes).toEqual(
       expect.arrayContaining([
         { path: '/pending', methods: ['get'] },
+        { path: '/', methods: ['get'] },
         { path: '/:id/approve', methods: ['post'] },
         { path: '/:id/reject', methods: ['post'] },
       ]),
     );
   });
 
-  it('should have exactly 3 routes', () => {
+  it('should have exactly 4 routes', () => {
     const router = createApprovalsRouter();
     const routeCount = router.stack.filter((layer: any) => layer.route).length;
-    expect(routeCount).toBe(3);
+    expect(routeCount).toBe(4);
+  });
+
+  it('GET / (the path crewly-mobile polls) uses the same handler as GET /pending (#817)', () => {
+    const router = createApprovalsRouter();
+    const handlerFor = (p: string) =>
+      (router.stack.find((layer: any) => layer.route?.path === p && layer.route.methods.get) as any)?.route?.stack[0]?.handle;
+    expect(handlerFor('/')).toBeDefined();
+    expect(handlerFor('/')).toBe(handlerFor('/pending'));
   });
 });

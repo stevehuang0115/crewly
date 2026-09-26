@@ -49,11 +49,17 @@ describe('Approvals Controller', () => {
   });
 
   describe('getPendingApprovals', () => {
-    it('should return 503 when queue not initialized', async () => {
+    it('with no queue set at startup, serves the shared singleton instead of 503 (#817)', async () => {
       setApprovalQueueService(null as any);
+      ApprovalQueueService.resetInstance();
+      const shared = ApprovalQueueService.getInstance();
+      shared.enqueue('agent-1', 'edit_file', 'destructive', { path: '/x' });
+
       await getPendingApprovals(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(statusSpy).toHaveBeenCalledWith(503);
+      expect(statusSpy).not.toHaveBeenCalledWith(503);
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: [expect.objectContaining({ sessionName: 'agent-1', toolName: 'edit_file', status: 'pending' })] });
+      ApprovalQueueService.resetInstance();
     });
 
     it('should return all pending approvals', async () => {
@@ -97,12 +103,17 @@ describe('Approvals Controller', () => {
   });
 
   describe('approveRequest', () => {
-    it('should return 503 when queue not initialized', async () => {
+    it('with no queue set at startup, approves on the shared singleton (#817)', async () => {
       setApprovalQueueService(null as any);
-      mockReq.params = { id: 'test' };
+      ApprovalQueueService.resetInstance();
+      const approval = ApprovalQueueService.getInstance().enqueue('agent-1', 'edit_file', 'destructive', {});
+      mockReq.params = { id: approval.id };
+
       await approveRequest(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(statusSpy).toHaveBeenCalledWith(503);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approval.id, status: 'approved' }) });
+      ApprovalQueueService.resetInstance();
     });
 
     it('should approve a pending approval', async () => {
@@ -144,12 +155,17 @@ describe('Approvals Controller', () => {
   });
 
   describe('rejectRequest', () => {
-    it('should return 503 when queue not initialized', async () => {
+    it('with no queue set at startup, rejects on the shared singleton (#817)', async () => {
       setApprovalQueueService(null as any);
-      mockReq.params = { id: 'test' };
+      ApprovalQueueService.resetInstance();
+      const approval = ApprovalQueueService.getInstance().enqueue('agent-1', 'edit_file', 'destructive', {});
+      mockReq.params = { id: approval.id };
+
       await rejectRequest(mockReq as Request, mockRes as Response, mockNext);
 
-      expect(statusSpy).toHaveBeenCalledWith(503);
+      expect(statusSpy).not.toHaveBeenCalled();
+      expect(jsonSpy).toHaveBeenCalledWith({ success: true, data: expect.objectContaining({ id: approval.id, status: 'rejected' }) });
+      ApprovalQueueService.resetInstance();
     });
 
     it('should reject a pending approval with reason', async () => {
