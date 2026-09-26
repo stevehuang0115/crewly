@@ -874,6 +874,49 @@ describe('TaskPoolService', () => {
     });
   });
 
+  describe('onClaimed + patchMetadata (#814 worktree hooks)', () => {
+    it('tells claim listeners about a NEW claim (both claim paths), never delaying or failing it', async () => {
+      const seen: Array<[string, string]> = [];
+      service.onClaimed((wi, agent) => { seen.push([wi.id, agent]); });
+      service.onClaimed(() => { throw new Error('listener boom'); });
+      const a = makeWorkItem({ type: 'cron_run', title: 'a' });
+      const b = makeWorkItem({ type: 'cron_run', title: 'b' });
+      await service.addToPool(a);
+      await service.addToPool(b);
+
+      const first = await service.claimFromPool('agent-a');
+      expect(first?.workItem.id).toBe(a.id);
+      const second = await service.claimSpecificItem('agent-b', b.id);
+      expect(second?.workItem.id).toBe(b.id);
+      await new Promise((r) => setImmediate(r));
+      expect(seen).toEqual([[a.id, 'agent-a'], [b.id, 'agent-b']]);
+
+      // Re-claiming an already-held item is not a new claim.
+      await service.claimFromPool('agent-a');
+      await new Promise((r) => setImmediate(r));
+      expect(seen).toHaveLength(2);
+    });
+
+    it('unsubscribe stops notifications', async () => {
+      const listener = jest.fn();
+      const off = service.onClaimed(listener);
+      off();
+      await service.addToPool(makeWorkItem({ type: 'cron_run', title: 'a' }));
+      await service.claimFromPool('agent-a');
+      await new Promise((r) => setImmediate(r));
+      expect(listener).not.toHaveBeenCalled();
+    });
+
+    it('patchMetadata sets one key, keeps the others, and never changes status', async () => {
+      const wi = makeWorkItem({ type: 'cron_run', title: 'a', metadata: { keep: 1 } });
+      await service.addToPool(wi);
+      const updated = await service.patchMetadata(wi.id, 'worktree', { path: '/x', state: 'ready' });
+      expect(updated?.metadata).toMatchObject({ keep: 1, worktree: { path: '/x', state: 'ready' } });
+      expect(updated?.status).toBe('queued');
+      expect(await service.patchMetadata('no-such-id', 'k', 1)).toBeNull();
+    });
+  });
+
   describe('retargetQueuedItem', () => {
     it('moves a queued item and records where it came from; leaves running work alone', async () => {
       const wi = makeWorkItem({ title: 'metrics', target: 'old-scribe-45506487' });

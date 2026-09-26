@@ -1,0 +1,303 @@
+import os from 'os';
+import path from 'path';
+import { promises as fs } from 'fs';
+import {
+	runGit,
+	getRepoRoot,
+	resolveBaseRef,
+	branchExists,
+	listWorktrees,
+	readIncludeFile,
+	applySharedPaths,
+	ensureExcluded,
+	checkDirty,
+	checkLanded,
+	commitsBeyond,
+	removeWorktree,
+} from './worktree-git.js';
+import { WORKTREE_CONSTANTS } from '../../constants.js';
+
+/** Run git in a test and fail loudly when it fails. */
+async function git(cwd: string, ...args: string[]): Promise<string> {
+	const r = await runGit(cwd, args);
+	if (!r.ok) throw new Error(`git ${args.join(' ')} failed: ${r.stderr}`);
+	return r.stdout.trim();
+}
+
+/** A repo with one commit (a tracked README), author configured locally. */
+async function makeRepo(dir: string): Promise<string> {
+	await fs.mkdir(dir, { recursive: true });
+	await git(dir, 'init', '-q', '-b', 'main');
+	await git(dir, 'config', 'user.email', 't@example.com');
+	await git(dir, 'config', 'user.name', 'T');
+	await git(dir, 'config', 'commit.gpgsign', 'false');
+	await fs.writeFile(path.join(dir, 'README.md'), 'hello\n');
+	await fs.writeFile(path.join(dir, '.gitignore'), '.crewly/\n');
+	await git(dir, 'add', '-A');
+	await git(dir, 'commit', '-q', '-m', 'init');
+	return fs.realpath(dir);
+}
+
+/** Add a worktree the way the service does. */
+async function addWt(repo: string, id: string): Promise<string> {
+	const wt = path.join(repo, WORKTREE_CONSTANTS.DIR, id);
+	await git(repo, 'worktree', 'add', '-q', wt, '-b', `wi/${id}`, 'HEAD');
+	return fs.realpath(wt);
+}
+
+
+// Real git on a loaded machine: checkouts can take seconds each.
+jest.setTimeout(120_000);
+
+describe('worktree-git', () => {
+	let tmp: string;
+	let repo: string;
+
+	beforeEach(async () => {
+		tmp = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'wt-git-')));
+		repo = await makeRepo(path.join(tmp, 'repo'));
+	});
+
+	afterEach(async () => {
+		await fs.rm(tmp, { recursive: true, force: true });
+	});
+
+	describe('repo facts', () => {
+		it('getRepoRoot finds the root from a subdirectory and returns null outside git', async () => {
+			await fs.mkdir(path.join(repo, 'sub'));
+			expect(await getRepoRoot(path.join(repo, 'sub'))).toBe(repo);
+			expect(await getRepoRoot(tmp)).toBeNull();
+		});
+
+		it('resolveBaseRef prefers origin/HEAD and falls back to HEAD', async () => {
+			expect(await resolveBaseRef(repo)).toEqual({ name: 'HEAD', sha: await git(repo, 'rev-parse', 'HEAD') });
+			const clone = path.join(tmp, 'clone');
+			await git(tmp, 'clone', '-q', repo, clone);
+			expect((await resolveBaseRef(clone))?.name).toBe('origin/main');
+		});
+
+		it('branchExists and listWorktrees reflect a new worktree (main checkout excluded)', async () => {
+			expect(await listWorktrees(repo)).toEqual([]);
+			const wt = await addWt(repo, 'wi-1');
+			expect(await branchExists(repo, 'wi/wi-1')).toBe(true);
+			expect(await branchExists(repo, 'wi/nope')).toBe(false);
+			expect(await listWorktrees(repo)).toEqual([wt]);
+			expect(await listWorktrees(tmp)).toBeNull();
+		});
+	});
+
+	describe('.worktreeinclude', () => {
+		it('accepts literal paths only, refuses globs / absolute / .. / .git, and caps the count', async () => {
+			const many = Array.from({ length: WORKTREE_CONSTANTS.INCLUDE_MAX_ENTRIES + 3 }, (_, i) => `f${i}`);
+			await fs.writeFile(path.join(repo, '.worktreeinclude'), ['# comment', '', '.env', 'config/local.json/', '*.env', '/etc/passwd', '../x', 'a/.git/config', '.env', ...many].join('\n'));
+			const list = await readIncludeFile(repo);
+			expect(list.entries.slice(0, 2)).toEqual(['.env', 'config/local.json']);
+			expect(list.entries).toHaveLength(WORKTREE_CONSTANTS.INCLUDE_MAX_ENTRIES);
+			expect(list.truncated).toBe(5); // 53 candidates + 2 already accepted, minus the cap of 50
+			expect(list.rejected.map((r) => r.line)).toEqual(['*.env', '/etc/passwd', '../x', 'a/.git/config']);
+		});
+
+		it('a missing file is an empty list', async () => {
+			expect(await readIncludeFile(repo)).toEqual({ entries: [], rejected: [], truncated: 0 });
+		});
+	});
+
+	describe('applySharedPaths', () => {
+		it('symlinks an untracked heavy dir, copies include files, and neither can be committed', async () => {
+			await fs.mkdir(path.join(repo, 'node_modules', 'pkg'), { recursive: true });
+			await fs.writeFile(path.join(repo, 'node_modules', 'pkg', 'index.js'), 'x');
+			await fs.writeFile(path.join(repo, '.env'), 'SECRET=1\n');
+			// Deliberately NOT gitignored in this repo — the exclude must protect it.
+			const wt = await addWt(repo, 'wi-1');
+			const res = await applySharedPaths(repo, wt, ['node_modules', 'cache'], ['.env', 'missing.json']);
+			expect(res.symlinks).toEqual(['node_modules']);
+			expect(res.copies).toEqual(['.env']);
+			expect(res.skipped.map((s) => s.path)).toEqual(['cache', 'missing.json']);
+			expect((await fs.lstat(path.join(wt, 'node_modules'))).isSymbolicLink()).toBe(true);
+			expect(await fs.readFile(path.join(wt, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('x');
+			expect(await fs.readFile(path.join(wt, '.env'), 'utf8')).toBe('SECRET=1\n');
+
+			await git(wt, 'add', '-A');
+			expect(await git(wt, 'diff', '--cached', '--name-only')).toBe('');
+			expect(await git(wt, 'status', '--porcelain')).toBe('');
+		});
+
+		it('never symlinks a directory the repo tracks (a repo that commits node_modules gets the real checkout)', async () => {
+			await fs.mkdir(path.join(repo, 'node_modules'), { recursive: true });
+			await fs.writeFile(path.join(repo, 'node_modules', 'vendored.js'), 'v');
+			await git(repo, 'add', '-f', 'node_modules');
+			await git(repo, 'commit', '-q', '-m', 'vendor');
+			const wt = await addWt(repo, 'wi-2');
+			const res = await applySharedPaths(repo, wt, ['node_modules'], []);
+			expect(res.symlinks).toEqual([]);
+			expect(res.skipped[0]).toMatchObject({ path: 'node_modules', reason: expect.stringContaining('tracked') });
+			expect((await fs.lstat(path.join(wt, 'node_modules'))).isSymbolicLink()).toBe(false);
+		});
+
+		it('ensureExcluded is idempotent and writes rooted patterns under the marker', async () => {
+			await ensureExcluded(repo, ['node_modules']);
+			await ensureExcluded(repo, ['node_modules', '.env']);
+			const file = await fs.readFile(path.join(repo, '.git', 'info', 'exclude'), 'utf8');
+			expect(file.split('\n').filter((l) => l === '/node_modules')).toHaveLength(1);
+			expect(file.split('\n').filter((l) => l === WORKTREE_CONSTANTS.EXCLUDE_MARKER)).toHaveLength(1);
+			expect(file).toContain('/.env');
+		});
+	});
+
+	describe('checkDirty (destructive-operation guard)', () => {
+		let wt: string;
+		const owned = { symlinks: ['node_modules'], copies: [] as string[] };
+
+		beforeEach(async () => {
+			await fs.mkdir(path.join(repo, 'node_modules'));
+			wt = await addWt(repo, 'wi-d');
+			await applySharedPaths(repo, wt, ['node_modules'], []);
+		});
+
+		it('clean: reports what it examined and excludes exactly our symlink', async () => {
+			const r = await checkDirty(wt, owned);
+			expect(r.state).toBe('clean');
+			expect(r.examined).toBeGreaterThan(0);
+			expect(r.excludedOurs).toBe(1);
+			expect(r.summary).toBe(`${r.examined} path(s) examined, 1 excluded as our symlinks/copies, 0 dirty`);
+		});
+
+		it('a real untracked file next to the symlink still reads dirty', async () => {
+			await fs.writeFile(path.join(wt, 'notes.txt'), 'work in progress');
+			const r = await checkDirty(wt, owned);
+			expect(r.state).toBe('dirty');
+			expect(r.dirtyPaths).toEqual(['notes.txt']);
+		});
+
+		it('an untracked file INSIDE a real (non-symlink) node_modules reads dirty when it is not ours', async () => {
+			await fs.unlink(path.join(wt, 'node_modules'));
+			await fs.mkdir(path.join(wt, 'node_modules'));
+			await fs.writeFile(path.join(wt, 'node_modules', 'x.js'), 'x');
+			const r = await checkDirty(wt, owned);
+			expect(r.state).toBe('dirty');
+			expect(r.dirtyPaths.join(' ')).toContain('was our symlink');
+		});
+
+		it('a modified tracked file reads dirty', async () => {
+			await fs.writeFile(path.join(wt, 'README.md'), 'changed\n');
+			expect((await checkDirty(wt, owned)).dirtyPaths).toEqual(['README.md']);
+		});
+
+		it('only the RECORDED symlink is excluded — an unrecorded one is dirty', async () => {
+			await fs.symlink(path.join(repo, 'README.md'), path.join(wt, 'other-link'));
+			const r = await checkDirty(wt, owned);
+			expect(r.dirtyPaths).toEqual(['other-link']);
+		});
+
+		it('a path that does not exist is UNKNOWN, never clean', async () => {
+			const r = await checkDirty(path.join(repo, WORKTREE_CONSTANTS.DIR, 'no-such-id'), owned);
+			expect(r.state).toBe('unknown');
+			expect(r.summary).toContain('treated as NOT safe');
+		});
+
+		it('a directory that is not a worktree root (git would answer for the parent repo) is UNKNOWN', async () => {
+			const stray = path.join(repo, WORKTREE_CONSTANTS.DIR, 'stray');
+			await fs.mkdir(stray, { recursive: true });
+			expect((await checkDirty(stray, owned)).state).toBe('unknown');
+			await fs.mkdir(path.join(wt, 'sub'));
+			expect((await checkDirty(path.join(wt, 'sub'), owned)).state).toBe('unknown');
+		});
+
+		it('a subdirectory WITH tracked files is still UNKNOWN (git would answer for the whole worktree)', async () => {
+			await fs.mkdir(path.join(repo, 'lib'));
+			await fs.writeFile(path.join(repo, 'lib', 'a.ts'), 'a');
+			await git(repo, 'add', 'lib/a.ts');
+			await git(repo, 'commit', '-q', '-m', 'lib');
+			const wt2 = await addWt(repo, 'wi-sub');
+			await fs.writeFile(path.join(wt2, 'README.md'), 'dirty at the root\n');
+			const r = await checkDirty(path.join(wt2, 'lib'), owned);
+			expect(r).toMatchObject({ state: 'unknown', reason: 'path is not a worktree root' });
+		});
+
+		it('a worktree with 0 tracked files is UNKNOWN — an empty examination is never "clean"', async () => {
+			const empty = path.join(tmp, 'empty');
+			await fs.mkdir(empty);
+			await git(empty, 'init', '-q', '-b', 'main');
+			await git(empty, 'config', 'user.email', 't@example.com');
+			await git(empty, 'config', 'user.name', 'T');
+			await git(empty, 'commit', '-q', '--allow-empty', '--no-gpg-sign', '-m', 'empty');
+			const ewt = await addWt(await fs.realpath(empty), 'e1');
+			const r = await checkDirty(ewt, { symlinks: [], copies: [] });
+			expect(r).toMatchObject({ state: 'unknown', reason: '0 tracked files examined', examined: 0 });
+		});
+
+		it('context: git reports "no differences" for a pathspec matching nothing — which is why the guard never uses one', async () => {
+			// The 2026-08-21 trap. Documented here so nobody "simplifies" the guard into this.
+			const r = await runGit(wt, ['diff', '--quiet', 'HEAD', '--', 'definitely-not-a-real-path']);
+			expect(r.ok).toBe(true);
+			await fs.writeFile(path.join(wt, 'README.md'), 'changed\n');
+			expect((await runGit(wt, ['diff', '--quiet', 'HEAD', '--', 'definitely-not-a-real-path'])).ok).toBe(true);
+			expect((await checkDirty(wt, owned)).state).toBe('dirty');
+		});
+	});
+
+	describe('checkLanded', () => {
+		let origin: string;
+		let clone: string;
+		let wt: string;
+
+		beforeEach(async () => {
+			origin = path.join(tmp, 'origin.git');
+			await git(tmp, 'clone', '-q', '--bare', repo, origin);
+			clone = await fs.realpath(await (async () => { const c = path.join(tmp, 'clone'); await git(tmp, 'clone', '-q', origin, c); return c; })());
+			await git(clone, 'config', 'user.email', 't@example.com');
+			await git(clone, 'config', 'user.name', 'T');
+			await git(clone, 'config', 'commit.gpgsign', 'false');
+			wt = await addWt(clone, 'wi-l');
+		});
+
+		it('no new commits: HEAD is an ancestor of the base → landed', async () => {
+			expect(await checkLanded(wt, 'origin/main')).toMatchObject({ state: 'landed', detail: 'HEAD is an ancestor of origin/main' });
+		});
+
+		it('an unpushed commit with origin reachable → not_landed', async () => {
+			await fs.writeFile(path.join(wt, 'a.txt'), 'a');
+			await git(wt, 'add', 'a.txt');
+			await git(wt, 'commit', '-q', '-m', 'a');
+			expect((await checkLanded(wt, 'origin/main')).state).toBe('not_landed');
+			expect(await commitsBeyond(wt, await git(clone, 'rev-parse', 'origin/main'))).toBe(1);
+		});
+
+		it('pushed under ANY branch name → landed (agents push feature branches, not wi/<id>)', async () => {
+			await fs.writeFile(path.join(wt, 'a.txt'), 'a');
+			await git(wt, 'add', 'a.txt');
+			await git(wt, 'commit', '-q', '-m', 'a');
+			await git(wt, 'push', '-q', 'origin', 'HEAD:refs/heads/feat/whatever');
+			expect(await checkLanded(wt, 'origin/main')).toMatchObject({ state: 'landed', detail: 'HEAD is the tip of a ref on origin' });
+		});
+
+		it('offline and not merged → UNKNOWN (keep), never landed', async () => {
+			await fs.writeFile(path.join(wt, 'a.txt'), 'a');
+			await git(wt, 'add', 'a.txt');
+			await git(wt, 'commit', '-q', '-m', 'a');
+			await git(clone, 'remote', 'set-url', 'origin', path.join(tmp, 'gone.git'));
+			expect(await checkLanded(wt, 'origin/main')).toMatchObject({ state: 'unknown', detail: 'origin unreachable and not merged locally' });
+		});
+	});
+
+	describe('removeWorktree', () => {
+		it('removes a clean worktree (our symlink first) and keeps the branch', async () => {
+			await fs.mkdir(path.join(repo, 'node_modules'));
+			const wt = await addWt(repo, 'wi-r');
+			await applySharedPaths(repo, wt, ['node_modules'], []);
+			const r = await removeWorktree(repo, wt, { symlinks: ['node_modules'], copies: [] });
+			expect(r.ok).toBe(true);
+			await expect(fs.stat(wt)).rejects.toThrow();
+			expect(await branchExists(repo, 'wi/wi-r')).toBe(true);
+			expect(await fs.readdir(path.join(repo, 'node_modules'))).toEqual([]); // the shared source is untouched
+		});
+
+		it('git itself refuses a dirty worktree without force (second line of defence)', async () => {
+			const wt = await addWt(repo, 'wi-x');
+			await fs.writeFile(path.join(wt, 'wip.txt'), 'x');
+			const r = await removeWorktree(repo, wt, { symlinks: [], copies: [] });
+			expect(r.ok).toBe(false);
+			expect(await fs.readFile(path.join(wt, 'wip.txt'), 'utf8')).toBe('x');
+		});
+	});
+});

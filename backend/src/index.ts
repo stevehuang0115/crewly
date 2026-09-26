@@ -192,6 +192,8 @@ import { FissionGuardService, type FissionDataProvider, type BudgetChecker, crea
 import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
+import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
+import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
 import { sessionsToRestore, type RestoreWorkItem } from './services/agent/restore-filter.js';
 import { ProjectMemoryService } from './services/memory/project-memory.service.js';
 import { TaskHistorySubscriber } from './services/memory/task-history.subscriber.js';
@@ -518,6 +520,23 @@ export class CrewlyServer {
 			taskPoolService: TaskPoolService.getInstance(),
 		});
 		taskHistorySubscriber.start();
+
+		// Per-WorkItem git worktrees (#814): observes WorkItem events only
+		// (no status writes). Opt-in per project (Project.worktrees = 'on');
+		// Team.worktrees = 'off' and CREWLY_WORKTREES=off opt out.
+		try {
+			const pool = TaskPoolService.getInstance();
+			const worktreeSubscriber = new WorkItemWorktreeSubscriber({
+				service: new WorkItemWorktreeService({ pool, storage: this.storageService, notify: createTerminalNotifier() }),
+				events: this.eventBusService,
+				pool,
+			});
+			worktreeSubscriber.start();
+		} catch (worktreeErr) {
+			this.logger.warn('Per-WorkItem worktrees failed to start (non-fatal)', {
+				error: (worktreeErr as Error).message,
+			});
+		}
 
 		// P1 Bug B (Pool umbrella WI 72ca743a): Wire RequestService into the
 		// TaskPool singleton so addToPool intrinsically links new WIs into

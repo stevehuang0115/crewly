@@ -135,6 +135,8 @@ export interface Team {
   description?: string;
   members: TeamMember[];
   projectIds: string[];
+  /** `'off'` opts this team's WorkItems out of per-WorkItem worktrees (#814), even on an opted-in project. */
+  worktrees?: 'off';
   createdAt: string;
   updatedAt: string;
 
@@ -267,6 +269,14 @@ export interface Project {
    * stays set even if the chat store is empty.
    */
   firstLaunchedAt?: string;
+  /**
+   * Per-WorkItem git worktrees (#814). `'on'` opts this project in: each
+   * WorkItem targeting it gets `.crewly/worktrees/<id>` on branch
+   * `wi/<id>`. Absent or `'off'` = work in the shared checkout (v1 default).
+   */
+  worktrees?: 'on' | 'off';
+  /** Repo-relative heavy directories to symlink into worktrees (default `['node_modules']`). */
+  worktreeSharedDirs?: string[];
   createdAt: string;
   updatedAt: string;
 }
