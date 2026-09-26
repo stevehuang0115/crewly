@@ -212,6 +212,17 @@ describe('GeneralTab', () => {
       expect(checkbox).not.toBeChecked();
     });
 
+    it('shows automatic updates on by default and toggles it off', () => {
+      render(<GeneralTab />);
+
+      const checkbox = screen.getByLabelText('Automatic Updates');
+      expect(checkbox).toBeChecked();
+
+      fireEvent.click(checkbox);
+
+      expect(checkbox).not.toBeChecked();
+    });
+
     it('should update local state on select change', () => {
       render(<GeneralTab />);
 
@@ -308,6 +319,19 @@ describe('GeneralTab', () => {
 
       await waitFor(() => {
         expect(mockUpdateSettings).toHaveBeenCalled();
+      });
+    });
+
+    it('saves autoUpdate: false when automatic updates are switched off', async () => {
+      render(<GeneralTab />);
+
+      fireEvent.click(screen.getByLabelText('Automatic Updates'));
+      fireEvent.click(screen.getByText('Save Changes'));
+
+      await waitFor(() => {
+        expect(mockUpdateSettings).toHaveBeenCalledWith(
+          expect.objectContaining({ general: expect.objectContaining({ autoUpdate: false }) }),
+        );
       });
     });
 

@@ -28,6 +28,11 @@ export interface GeneralSettings {
   verboseLogging: boolean;
   /** Whether to auto-resume agent sessions on restart */
   autoResumeOnRestart: boolean;
+  /**
+   * Keep this machine on the latest Crewly release automatically (npm installs
+   * only; a dev checkout never updates itself). Undefined means on.
+   */
+  autoUpdate?: boolean;
   /** Per-runtime CLI init commands. Key = runtime type, value = CLI command string */
   runtimeCommands: Record<AIRuntime, string>;
   /** Minutes of inactivity before an agent is automatically suspended (0 = disabled) */

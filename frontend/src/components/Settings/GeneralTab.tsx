@@ -175,6 +175,14 @@ export const GeneralTab: React.FC = () => {
             onChange={(e) => handleChange('general', 'autoResumeOnRestart', e.target.checked)}
           />
 
+          <Toggle
+            id="autoUpdate"
+            label="Automatic Updates"
+            description="Install new Crewly releases automatically when no agent is busy, then restart. npm installs only; CREWLY_AUTO_UPDATE=0 turns it off on a machine."
+            checked={localSettings.general.autoUpdate !== false}
+            onChange={(e) => handleChange('general', 'autoUpdate', e.target.checked)}
+          />
+
           <div>
             <FormLabel htmlFor="checkInInterval">Check-in Interval (minutes)</FormLabel>
             <FormInput
