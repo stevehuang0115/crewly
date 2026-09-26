@@ -45,6 +45,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { TERMINAL_WORK_ITEM_STATUSES } from '../../types/v2/work-item.types.js';
 import { TERMINAL_REQUEST_STATUSES, isValidRequestTransition } from '../../types/v2/index.js';
 import { extractSlackChannelId, extractSlackThreadTs } from './request-sla.subscriber.js';
+import { collectRequestWorkItems, evaluateRequestCompletion } from './request-completion.js';
 
 /**
  * WorkItem statuses that count as "terminal" for the heartbeat's
@@ -388,7 +389,9 @@ export class RequestStatusUpdateSubscriber {
       //       nothing has changed since we last said "still 3 blocked",
       //       so saying it again is noise.
       const items = await this.taskPool.getAllItems();
-      const childWIs = items.filter((wi) => wi.requestId === r.id);
+      // Effective set — includes the replacement of a superseded item, so a
+      // re-routed Request is not "all terminal" while the new item runs.
+      const childWIs = collectRequestWorkItems(r.id, items);
       if (childWIs.length === 0) continue;
 
       // All-terminal guard — when every child WI is terminal but the
@@ -614,10 +617,19 @@ export class RequestStatusUpdateSubscriber {
     // upstream (it's not in TERMINAL_WORKITEM_STATUSES anymore — see
     // the constant definition for the rationale). So success only
     // comes from `done` or `verified` here.
-    const hasSuccess = childWIs.some(
-      (wi) => wi.status === 'done' || wi.status === 'verified',
-    );
-    const target: RequestStatus = hasSuccess ? 'done' : 'cancelled';
+    // "Some child succeeded" is not "delivered": a verified Plan next to a
+    // cancelled Execute is still nothing built (Request d86b5faf,
+    // 2026-09-26). Same rule as the reconciler and the cascade.
+    const completion = evaluateRequestCompletion(childWIs);
+    if (completion.outcome === 'bookkeeping_only' || completion.outcome === 'in_progress') {
+      this.logger.warn('Heartbeat: not closing Request — no deliverable WorkItem was completed', {
+        requestId: request.id,
+        outcome: completion.outcome,
+        reason: completion.reason,
+      });
+      return;
+    }
+    const target: RequestStatus = completion.outcome === 'complete' ? 'done' : 'cancelled';
 
     const log = (extra: Record<string, unknown> = {}) => ({
       requestId: request.id,

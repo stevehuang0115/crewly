@@ -32,6 +32,7 @@ import {
   type Request,
 } from '../../types/v2/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { collectRequestWorkItems, evaluateRequestCompletion } from './request-completion.js';
 
 /**
  * Minimal {@link RequestService} surface the cascade needs. Defining it
@@ -195,7 +196,9 @@ export async function cascadeRequestStatus(
     if (request.status === 'done' || request.status === 'cancelled') return;
 
     const allItems = await deps.taskPool.getAllItems();
-    const allChildItems = allItems.filter((wi) => wi.requestId === requestId);
+    // Effective set: own items plus replacements of superseded cancellations
+    // and unlinked items that name this Request (request-completion.ts).
+    const allChildItems = collectRequestWorkItems(requestId, allItems);
     if (allChildItems.length === 0) return;
 
     // 2026-05-15 dogfood (Steve): Slack Requests with a single
@@ -236,6 +239,18 @@ export async function cascadeRequestStatus(
     // to the orc for a verdict (→ verified, or rejected → rework), after which
     // this cascade completes the Request honestly.
     if (statuses.every((s) => s === 'done' || s === 'verified')) {
+      // All finished is not the same as delivered: Plan/Review bookkeeping
+      // alone produces nothing. Leave the Request open; the reconciler parks
+      // it `blocked` with the reason.
+      const completion = evaluateRequestCompletion(childItems);
+      if (completion.outcome !== 'complete') {
+        logger.warn('Cascade declined to close Request — nothing deliverable was completed', {
+          requestId,
+          outcome: completion.outcome,
+          reason: completion.reason,
+        });
+        return;
+      }
       newStatus = 'done';
     } else if (statuses.some((s) => s === 'running')) {
       newStatus = 'running';

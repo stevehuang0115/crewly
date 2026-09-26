@@ -1398,6 +1398,13 @@ describe('planTasksFromObjective', () => {
     expect(tasks[2].dependsOnTitles).toEqual([tasks[1].title]);
   });
 
+  it('tags Plan/Review as bookkeeping phases and Execute as the work (request completion gate)', () => {
+    const tasks = planTasksFromObjective(
+      'Improve team velocity by 20% and then optimize the reporting pipeline with weekly updates and alerting on regressions',
+    );
+    expect(tasks.map((t) => t.phase)).toEqual(['plan', 'execute', 'review']);
+  });
+
   it('should include acceptance criteria on all tasks', () => {
     const tasks = planTasksFromObjective('Create a new API endpoint');
     for (const task of tasks) {

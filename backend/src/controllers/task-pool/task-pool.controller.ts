@@ -796,9 +796,12 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
  * options were `complete` (requires running) or `DELETE ?force=1` (hard
  * delete with no audit trail).
  *
- * Request body: `{ "reason": "short human-readable why" }`
+ * Request body: `{ "reason": "short human-readable why", "supersededBy"?: "<wiId>" | ["<wiId>", …] }`
  *   `reason` is required. It's persisted on `cancelReason` and surfaces
  *   in the activity timeline so the cancellation isn't an opaque event.
+ *   `supersededBy` names the WorkItem(s) that now carry this work (a
+ *   duplicate / re-routed item). It is stamped on `metadata.supersededBy`
+ *   so the Request's completion check follows the replacement.
  *
  * Responses:
  *   - 200 `{ success: true, workItemId, cancelledFrom }`
@@ -830,7 +833,11 @@ export async function cancelQueuedItem(req: Request, res: Response): Promise<voi
     // `before.status` will read as `'cancelled'` after the await
     // otherwise (caught live 2026-05-28).
     const cancelledFrom = before.status;
-    await getService().cancelQueued(workItemId, reason);
+    const rawSuccessor: unknown = req.body?.supersededBy;
+    const supersededBy = (Array.isArray(rawSuccessor) ? rawSuccessor : [rawSuccessor])
+      .filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+      .map((v) => v.trim());
+    await getService().cancelQueued(workItemId, reason, { supersededBy });
     res.json({
       success: true,
       workItemId,

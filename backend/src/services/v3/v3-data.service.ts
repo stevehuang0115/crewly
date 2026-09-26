@@ -38,6 +38,11 @@ import {
 } from '../../types/intent-task.types.js';
 import { ensureDir, atomicWriteJson } from '../../utils/file-io.utils.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
+import {
+  collectRequestWorkItems,
+  evaluateRequestCompletion,
+  type DecompositionPhase,
+} from './request-completion.js';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 
@@ -732,7 +737,7 @@ export class V3DataService {
 
       const taskPool = TaskPoolService.getInstance();
       const allItems = await taskPool.getAllItems();
-      const childItems = allItems.filter((wi) => wi.requestId === requestId);
+      const childItems = collectRequestWorkItems(requestId, allItems);
 
       if (childItems.length === 0) return;
 
@@ -741,6 +746,8 @@ export class V3DataService {
       let newStatus: RequestStatus;
       const allQueued = statuses.every((s) => s === 'queued' || s === 'scheduled');
       if (statuses.every((s) => s === 'done')) {
+        // Plan/Review bookkeeping alone is not a delivered Request.
+        if (evaluateRequestCompletion(childItems).outcome !== 'complete') return;
         newStatus = 'done';
       } else if (statuses.some((s) => s === 'running')) {
         newStatus = 'running';
@@ -1028,6 +1035,13 @@ export interface PlannedTask {
    * blocked.
    */
   dependsOnTitles?: string[];
+  /**
+   * Role of this task in the plan. `plan` and `review` are bookkeeping around
+   * the work and never, on their own, complete a Request; `execute` is the
+   * work. Stamped onto `WorkItem.metadata.decompositionPhase` at fan-out.
+   * Absent = the task is the work.
+   */
+  phase?: DecompositionPhase;
 }
 
 /**
@@ -1158,6 +1172,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
     return [
       {
         title: `Investigate: ${truncate(objective, 60)}`,
+        phase: 'plan',
         description: `Investigate the root cause of: ${objective}. Reproduce the issue and identify the failing code path.`,
         acceptanceCriteria: [
           'Root cause identified',
@@ -1168,6 +1183,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
       },
       {
         title: `Fix: ${truncate(objective, 60)}`,
+        phase: 'execute',
         description: `Apply a fix for: ${objective}. Ensure the fix addresses the root cause, not just the symptoms.`,
         acceptanceCriteria: [
           'Fix applied and tested locally',
@@ -1178,6 +1194,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
       },
       {
         title: `Verify fix: ${truncate(objective, 60)}`,
+        phase: 'review',
         description: `Verify the fix for: ${objective}. Run full test suite and confirm the issue no longer reproduces.`,
         acceptanceCriteria: [
           'All existing tests pass',
@@ -1216,6 +1233,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
   return [
     {
       title: planTitle,
+      phase: 'plan',
       description: `Create an execution plan for: ${objective}. Break down the work into concrete steps.`,
       acceptanceCriteria: [
         'Execution plan created',
@@ -1226,6 +1244,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
     },
     {
       title: executeTitle,
+      phase: 'execute',
       description: `Execute the plan for: ${objective}. Complete all steps identified in the planning phase.`,
       acceptanceCriteria: [
         'All planned steps completed',
@@ -1237,6 +1256,7 @@ export function planTasksFromObjective(objective: string): PlannedTask[] {
     },
     {
       title: reviewTitle,
+      phase: 'review',
       description: `Review the completed work for: ${objective}. Verify quality, completeness, and alignment with the original objective.`,
       acceptanceCriteria: [
         'Work reviewed for quality',

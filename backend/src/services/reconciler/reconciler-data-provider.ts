@@ -26,6 +26,7 @@ import { ClaimService } from '../task-pool/claim.service.js';
 import { PoolStorage } from '../task-pool/pool-storage.js';
 import { StorageService } from '../core/storage.service.js';
 import { RequestService } from '../v3/request.service.js';
+import { collectRequestWorkItems } from '../v3/request-completion.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
@@ -304,16 +305,18 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
-   * Returns WorkItems belonging to a specific Request.
+   * Returns the WorkItems whose status decides a Request's completion: its own
+   * items plus replacements of superseded cancellations and unlinked items
+   * that name the Request (see `collectRequestWorkItems`).
    *
    * @param requestId - The Request ID
-   * @returns WorkItems for the given request
+   * @returns The Request's effective WorkItems
    */
   async getWorkItemsForRequest(requestId: string): Promise<WorkItem[]> {
     try {
       const pool = TaskPoolService.getInstance();
       const allItems = await pool.getAllItems();
-      return allItems.filter((wi) => wi.requestId === requestId);
+      return collectRequestWorkItems(requestId, allItems);
     } catch (error) {
       this.logger.error('Failed to get WorkItems for request', {
         requestId,

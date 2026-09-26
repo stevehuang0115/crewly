@@ -354,4 +354,48 @@ describe('cascadeRequestStatus', () => {
     expect(updates).toEqual([]);
     expect(notified).toEqual([]);
   });
+  // 2026-09-26, Request d86b5faf — see request-completion.ts.
+  describe('completion gate: finished is not the same as delivered', () => {
+    it('does NOT close when the only verified children are Plan/Review bookkeeping', async () => {
+      const r = makeRequest({ status: 'running' });
+      const { deps, updates, completed } = makeDeps({
+        request: r,
+        pool: [
+          makeWI({ id: 'p', title: 'Plan: x', status: 'verified', metadata: { decompositionPhase: 'plan' } }),
+          makeWI({ id: 'v', title: 'Review: x', status: 'verified', metadata: { decompositionPhase: 'review' } }),
+        ],
+      });
+      await cascadeRequestStatus(r.id, deps);
+      expect(updates).toEqual([]);
+      expect(completed).toEqual([]);
+    });
+
+    it('keeps the Request running while a re-routed replacement (unlinked, named in the title) runs', async () => {
+      const r = makeRequest({ id: 'd86b5faf-4693-4941-aa9b-7216ffb90005', status: 'running' });
+      const { deps, updates } = makeDeps({
+        request: r,
+        pool: [
+          makeWI({ id: 'exec', requestId: r.id, status: 'verified' }),
+          makeWI({ id: 'dup', requestId: r.id, status: 'cancelled', cancelReason: 'Duplicate: re-routed to Ella' }),
+          makeWI({ id: 'ella-new', requestId: undefined, title: `[Request ${r.id} | WorkItem x] GOAL`, status: 'running' }),
+        ],
+      });
+      await cascadeRequestStatus(r.id, deps);
+      // 'running' already → no write; crucially, no `done`.
+      expect(updates).toEqual([]);
+    });
+
+    it('closes once the replacement is verified', async () => {
+      const r = makeRequest({ id: 'd86b5faf-4693-4941-aa9b-7216ffb90005', status: 'running' });
+      const { deps, updates } = makeDeps({
+        request: r,
+        pool: [
+          makeWI({ id: 'exec', requestId: r.id, status: 'verified' }),
+          makeWI({ id: 'ella-new', requestId: undefined, title: `[Request ${r.id} | WorkItem x] GOAL`, status: 'verified' }),
+        ],
+      });
+      await cascadeRequestStatus(r.id, deps);
+      expect(updates).toEqual([[r.id, { status: 'done' }]]);
+    });
+  });
 });

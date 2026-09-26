@@ -1420,10 +1420,27 @@ describe('TaskPoolController', () => {
       const res = mockRes();
       await cancelQueuedItem(req, res);
 
-      expect(mockService.cancelQueued).toHaveBeenCalledWith('wi-1', 'stuck fallback');
+      expect(mockService.cancelQueued).toHaveBeenCalledWith('wi-1', 'stuck fallback', { supersededBy: [] });
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ success: true, workItemId: 'wi-1', cancelledFrom: 'queued', reason: 'stuck fallback' }),
       );
+    });
+
+    it('passes supersededBy (string or array) through to the service', async () => {
+      mockService.findWorkItem.mockResolvedValue({ id: 'wi-1', status: 'queued' });
+      mockService.cancelQueued.mockResolvedValue(undefined);
+
+      await cancelQueuedItem(
+        mockReq({ params: { workItemId: 'wi-1' }, body: { reason: 'duplicate', supersededBy: ' 806dc528 ' } }),
+        mockRes(),
+      );
+      expect(mockService.cancelQueued).toHaveBeenLastCalledWith('wi-1', 'duplicate', { supersededBy: ['806dc528'] });
+
+      await cancelQueuedItem(
+        mockReq({ params: { workItemId: 'wi-1' }, body: { reason: 'duplicate', supersededBy: ['a', '', 7, 'b'] } }),
+        mockRes(),
+      );
+      expect(mockService.cancelQueued).toHaveBeenLastCalledWith('wi-1', 'duplicate', { supersededBy: ['a', 'b'] });
     });
 
     it('returns 400 when reason is missing or empty', async () => {

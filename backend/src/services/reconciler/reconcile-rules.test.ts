@@ -26,10 +26,12 @@ import {
   computeAgentScore,
   runPruningPass,
   detectUndisposedStrandedWorkItems,
+  hasUnresolvedDependencies,
   UNCLAIMED_THRESHOLD_MS,
   MAX_WAKE_ACTIONS_PER_PASS,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import { collectRequestWorkItems } from '../v3/request-completion.js';
 import { createWorkItem, createRequest, createTaskClaim } from '../../types/v2/index.js';
 import type { WorkItem, WorkItemStatus, Request, TaskClaim } from '../../types/v2/index.js';
 import {
@@ -395,6 +397,76 @@ describe('reconcileRequestStatus', () => {
   it('should not touch open request with no WorkItems', () => {
     const request = makeRequest({ status: 'open' });
     expect(reconcileRequestStatus(request, [])).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // 2026-09-26, Request d86b5faf: closed as done on {verified:2, cancelled:2}
+  // while the only real work (re-routed WI 806dc528) was still running.
+  // -------------------------------------------------------------------------
+  describe('does not close a Request whose real work was cancelled or moved', () => {
+    const REQ = 'd86b5faf-4693-4941-aa9b-7216ffb90005';
+    const DUP =
+      'Duplicate/stale: Plan WI 8249a788 already re-routed this Request to Ella as WI 806dc528 with full G+O+E.';
+    const decomposed = { autoDecomposed: true };
+
+    /**
+     * Pool as it stood at 03:49:08 on 2026-09-26.
+     *
+     * @param reroutedStatus - Status of the re-routed WorkItem 806dc528
+     * @returns Pool snapshot
+     */
+    function incidentPool(reroutedStatus: WorkItemStatus): WorkItem[] {
+      return [
+        makeWorkItem({ id: '8249a788-1ea7-4687-ac1a-47d078a34afe', requestId: REQ, title: 'Plan: Fake-door', status: 'verified', metadata: decomposed }),
+        makeWorkItem({ id: '51f24f4c-e1ad-4cce-8359-e3e37526d147', requestId: REQ, title: 'Execute: Fake-door', status: 'verified', metadata: decomposed }),
+        makeWorkItem({ id: '8e7466a2-f36c-4d8e-bfb9-60c880d6027e', requestId: REQ, title: 'Review: Fake-door', status: 'cancelled', metadata: decomposed, cancelReason: DUP }),
+        makeWorkItem({ id: '673193ce-e5eb-45c1-b44d-9ade964fa352', requestId: REQ, title: 'Demand test', status: 'cancelled', cancelReason: DUP }),
+        makeWorkItem({
+          id: '806dc528-acbf-4456-af51-5351fa48fada',
+          title: `[Request ${REQ} | WorkItem 8249a788-1ea7-4687-ac1a-47d078a34afe] GOAL: plan`,
+          status: reroutedStatus,
+        }),
+      ];
+    }
+
+    it('reproduces the incident: stays running while the replacement runs', () => {
+      const request = makeRequest({ id: REQ, status: 'running' });
+      const items = collectRequestWorkItems(REQ, incidentPool('running'));
+      expect(reconcileRequestStatus(request, items)).toBeNull();
+    });
+
+    it('closes once the replacement is verified', () => {
+      const request = makeRequest({ id: REQ, status: 'running' });
+      const correction = reconcileRequestStatus(request, collectRequestWorkItems(REQ, incidentPool('verified')));
+      expect(correction?.newState).toBe('done');
+    });
+
+    it('only Plan/Review bookkeeping finished → blocked, never done', () => {
+      const request = makeRequest({ status: 'running' });
+      const items = [
+        makeWorkItem({ title: 'Plan: x', status: 'verified', metadata: decomposed }),
+        makeWorkItem({ title: 'Execute: x', status: 'cancelled', metadata: decomposed, cancelReason: 'no execution needed' }),
+        makeWorkItem({ title: 'Review: x', status: 'verified', metadata: { decompositionPhase: 'review' } }),
+      ];
+      const correction = reconcileRequestStatus(request, items);
+      expect(correction?.newState).toBe('blocked');
+      expect(correction?.reason).toMatch(/no deliverable WorkItem was completed/);
+    });
+
+    it('a verified Plan next to a cancelled duplicate is not done', () => {
+      const request = makeRequest({ status: 'running' });
+      const items = [
+        makeWorkItem({ title: 'Plan: x', status: 'verified', metadata: decomposed }),
+        makeWorkItem({ status: 'cancelled', cancelReason: 'Duplicate of the Plan' }),
+      ];
+      expect(reconcileRequestStatus(request, items)?.newState).toBe('blocked');
+    });
+
+    it('all WorkItems cancelled → cancelled, not done', () => {
+      const request = makeRequest({ status: 'running' });
+      const items = [makeWorkItem({ status: 'cancelled' }), makeWorkItem({ status: 'cancelled' })];
+      expect(reconcileRequestStatus(request, items)?.newState).toBe('cancelled');
+    });
   });
 
   it('should count cancelled WorkItems as done for completion', () => {
@@ -1085,6 +1157,45 @@ describe('detectRecoverableWorkItems', () => {
     const { corrections, recoverableIds } = detectRecoverableWorkItems([wi], agentMap);
     expect(recoverableIds).toHaveLength(0);
     expect(corrections).toHaveLength(0);
+  });
+
+  // 2026-09-26 (Request d86b5faf): Execute/Review were blocked on Plan, their
+  // target crewly-orc was active, and this rule re-queued them 19s after
+  // creation — Execute then ran (and was verified) before Plan.
+  it('never re-queues a WorkItem still waiting on an unfinished dependency', () => {
+    const plan = makeWorkItem({ id: 'plan', status: 'queued', target: 'crewly-orc' });
+    const execute = makeWorkItem({
+      id: 'execute',
+      status: 'blocked',
+      target: 'crewly-orc',
+      dependsOn: ['plan'],
+      blockedReason: 'Waiting on dependency: Plan',
+    });
+    const review = makeWorkItem({ id: 'review', status: 'blocked', target: 'crewly-orc', dependsOn: ['execute'] });
+    const agentMap = makeAgentMap([['crewly-orc', { status: 'active' }]]);
+
+    const { recoverableIds } = detectRecoverableWorkItems([plan, execute, review], agentMap);
+    expect(recoverableIds).toEqual([]);
+  });
+
+  it('re-queues a dependency-blocked item once its dependency is terminal (or gone from the active set)', () => {
+    const plan = makeWorkItem({ id: 'plan', status: 'verified' });
+    const execute = makeWorkItem({ id: 'execute', status: 'blocked', target: 'agent-1', dependsOn: ['plan'] });
+    const orphaned = makeWorkItem({ id: 'orphaned', status: 'blocked', target: 'agent-1', dependsOn: ['done-and-pruned'] });
+    const agentMap = makeAgentMap([['agent-1', { status: 'active' }]]);
+
+    const { recoverableIds } = detectRecoverableWorkItems([plan, execute, orphaned], agentMap);
+    expect(recoverableIds.sort()).toEqual(['execute', 'orphaned']);
+  });
+
+  it('hasUnresolvedDependencies: only a present, non-terminal dependency blocks', () => {
+    const map = new Map<string, WorkItem>([
+      ['q', makeWorkItem({ id: 'q', status: 'queued' })],
+      ['v', makeWorkItem({ id: 'v', status: 'verified' })],
+    ]);
+    expect(hasUnresolvedDependencies(makeWorkItem({ dependsOn: ['q'] }), map)).toBe(true);
+    expect(hasUnresolvedDependencies(makeWorkItem({ dependsOn: ['v', 'missing'] }), map)).toBe(false);
+    expect(hasUnresolvedDependencies(makeWorkItem({}), map)).toBe(false);
   });
 
   it('should detect blocked WorkItems with agent back online', () => {

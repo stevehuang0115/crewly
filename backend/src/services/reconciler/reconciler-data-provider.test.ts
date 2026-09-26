@@ -269,6 +269,45 @@ describe('LiveReconcilerDataProvider', () => {
   });
 
   // -----------------------------------------------------------------------
+  // getWorkItemsForRequest — the effective set the completion check sees
+  // -----------------------------------------------------------------------
+
+  describe('getWorkItemsForRequest', () => {
+    const REQ = 'd86b5faf-4693-4941-aa9b-7216ffb90005';
+
+    it('includes the re-routed replacement of a duplicate-cancelled item (Request d86b5faf, 2026-09-26)', async () => {
+      const items: Partial<WorkItem>[] = [
+        { id: '8249a788-1ea7-4687-ac1a-47d078a34afe', requestId: REQ, title: 'Plan: x', status: 'verified' },
+        {
+          id: '8e7466a2-f36c-4d8e-bfb9-60c880d6027e',
+          requestId: REQ,
+          title: 'Review: x',
+          status: 'cancelled',
+          cancelReason: 'Duplicate/stale: re-routed this Request to Ella as WI 806dc528.',
+        },
+        // Created by delegate-task with the request id only in its title.
+        { id: '806dc528-acbf-4456-af51-5351fa48fada', title: `[Request ${REQ} | WorkItem 8249a788] GOAL`, status: 'running' },
+        { id: 'other', requestId: 'another-request', title: 'unrelated', status: 'running' },
+      ];
+      mockPool.getAllItems.mockResolvedValue(items);
+
+      const ids = (await provider.getWorkItemsForRequest(REQ)).map((w: WorkItem) => w.id);
+
+      expect(ids).toEqual(expect.arrayContaining([
+        '8249a788-1ea7-4687-ac1a-47d078a34afe',
+        '8e7466a2-f36c-4d8e-bfb9-60c880d6027e',
+        '806dc528-acbf-4456-af51-5351fa48fada',
+      ]));
+      expect(ids).not.toContain('other');
+    });
+
+    it('returns empty on error', async () => {
+      mockPool.getAllItems.mockRejectedValue(new Error('Pool unavailable'));
+      expect(await provider.getWorkItemsForRequest(REQ)).toEqual([]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
   // getActiveRequests
   // -----------------------------------------------------------------------
 

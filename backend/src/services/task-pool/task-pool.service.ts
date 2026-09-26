@@ -42,6 +42,7 @@ import {
 } from '../../types/v2/claim.types.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js';
+import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 
 /**
  * Narrow Request-link contract consumed by {@link TaskPoolService.addToPool}.
@@ -1838,10 +1839,18 @@ export class TaskPoolService {
    * @param workItemId - Target WI id
    * @param reason     - Human-readable explanation; persisted on
    *                     `cancelReason` and surfaces in the UI badge.
+   * @param options    - `supersededBy`: id(s) of the WorkItem(s) that now
+   *                     carry this work. Stamped on `metadata.supersededBy`
+   *                     so the Request's completion check follows the
+   *                     replacement instead of counting this item.
    * @throws if the WI doesn't exist, has an active claim, or is in a
    *         non-cancellable terminal state.
    */
-  async cancelQueued(workItemId: string, reason: string): Promise<void> {
+  async cancelQueued(
+    workItemId: string,
+    reason: string,
+    options: { supersededBy?: string[] } = {},
+  ): Promise<void> {
     const workItem = await this.storage.findWorkItem(workItemId);
     if (!workItem) {
       throw new Error(`WorkItem not found: ${workItemId}`);
@@ -1862,12 +1871,19 @@ export class TaskPoolService {
         c.endReason = `cancelQueued: ${reason}`;
       });
     }
-    await this.transitionStatus(workItemId, 'cancelled', 'system', undefined, reason);
+    const supersededBy = (options.supersededBy ?? []).filter((id) => id && id !== workItemId);
+    const stampSuccessor = supersededBy.length > 0
+      ? (wi: WorkItem) => {
+          wi.metadata = { ...(wi.metadata ?? {}), [SUPERSEDED_BY_METADATA_KEY]: supersededBy };
+        }
+      : undefined;
+    await this.transitionStatus(workItemId, 'cancelled', 'system', stampSuccessor, reason);
     await this.storage.flush();
     this.logger.info('WorkItem cancelled (queued → cancelled)', {
       workItemId,
       reason,
       previousStatus: workItem.status,
+      ...(supersededBy.length > 0 ? { supersededBy } : {}),
     });
   }
 

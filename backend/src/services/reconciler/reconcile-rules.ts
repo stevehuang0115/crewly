@@ -35,6 +35,7 @@ import {
   isWorkItemDisposed,
   isExplicitlyBlocked,
 } from '../../types/v2/work-item.types.js';
+import { evaluateRequestCompletion } from '../v3/request-completion.js';
 
 // ---------------------------------------------------------------------------
 // Agent Health Types (abstraction over existing services)
@@ -232,8 +233,18 @@ export function detectExpiredClaims(
  * Recomputes the correct status for a Request based on its WorkItems' statuses.
  * This is the core "truth recomputation" — events are hints, this is truth.
  *
+ * "All terminal" is not "done". Completion is decided by
+ * {@link evaluateRequestCompletion}: cancelled items never count as delivered
+ * work, and a Request whose only finished items are Plan/Review bookkeeping
+ * is not done — it goes `blocked` so it surfaces instead of closing silently
+ * (2026-09-26, Request d86b5faf closed on `{verified:2, cancelled:2}` while
+ * the re-routed real work was still running). An all-cancelled Request is
+ * `cancelled`, not `done`.
+ *
  * @param request - The Request to reconcile
- * @param workItems - All WorkItems belonging to this Request
+ * @param workItems - The Request's effective WorkItems — its own items plus
+ *   any replacements of superseded cancellations (see
+ *   `collectRequestWorkItems`)
  * @returns Correction if status needs updating, null otherwise
  */
 export function reconcileRequestStatus(
@@ -268,7 +279,7 @@ export function reconcileRequestStatus(
   }
 
   const statuses = workItems.map(wi => wi.status);
-  const allDone = statuses.length > 0 && statuses.every(s => s === 'done' || s === 'verified' || s === 'cancelled');
+  const completion = evaluateRequestCompletion(workItems);
   const anyRunning = statuses.some(s => s === 'running');
   const allBlockedOrFailed = statuses.length > 0 && statuses.every(
     s => s === 'blocked' || s === 'failed' || s === 'cancelled'
@@ -276,9 +287,18 @@ export function reconcileRequestStatus(
   const hasQueued = statuses.some(s => s === 'queued' || s === 'scheduled');
 
   let expectedStatus: RequestStatus = request.status;
+  let completionNote = '';
 
-  if (allDone) {
+  if (completion.outcome === 'complete') {
     expectedStatus = request.requiresConfirmation ? 'waiting_confirmation' : 'done';
+  } else if (completion.outcome === 'nothing_live') {
+    expectedStatus = 'cancelled';
+    completionNote = ` — ${completion.reason}`;
+  } else if (completion.outcome === 'bookkeeping_only') {
+    // Everything that is left is finished, yet nothing was delivered. Not
+    // done; park it where the orchestrator's blocked-request views see it.
+    expectedStatus = 'blocked';
+    completionNote = ` — ${completion.reason}`;
   } else if (anyRunning) {
     expectedStatus = 'running'; // At least one task is actively running
   } else if (hasQueued) {
@@ -295,7 +315,7 @@ export function reconcileRequestStatus(
     entityId: request.id,
     previousState: request.status,
     newState: expectedStatus,
-    reason: `Recomputed from WorkItem statuses: ${JSON.stringify(countByStatus(statuses))}`,
+    reason: `Recomputed from WorkItem statuses: ${JSON.stringify(countByStatus(statuses))}${completionNote}`,
     evidence: `${workItems.length} WorkItems: ${statuses.join(', ')}`,
   });
 }
@@ -712,10 +732,41 @@ export function detectUnverifiedWorkItems(
 // ---------------------------------------------------------------------------
 
 /**
+ * Whether any of a WorkItem's `dependsOn` prerequisites is still unfinished.
+ *
+ * A dependency absent from `workItemMap` is treated as resolved, matching
+ * {@link detectDependencyResolvedWorkItems}: the reconciler's active set
+ * omits `done`/`cancelled` items, so "missing" means "already terminal".
+ *
+ * @param wi - WorkItem to check
+ * @param workItemMap - WorkItems by id (the reconciler's active set)
+ * @returns True when at least one dependency exists and is non-terminal
+ */
+export function hasUnresolvedDependencies(
+  wi: WorkItem,
+  workItemMap: ReadonlyMap<string, WorkItem>,
+): boolean {
+  const dependsOn = wi.dependsOn;
+  if (!dependsOn || dependsOn.length === 0) return false;
+  return dependsOn.some((depId) => {
+    const dep = workItemMap.get(depId);
+    return dep !== undefined && !TERMINAL_WORK_ITEM_STATUSES.has(dep.status);
+  });
+}
+
+/**
  * Detects blocked WorkItems whose assigned agent is now alive,
  * suggesting they can be re-queued for retry.
  *
- * @param workItems - All blocked WorkItems
+ * Only for items blocked by an agent outage. An item blocked on its
+ * `dependsOn` prerequisites waits for {@link detectDependencyResolvedWorkItems}
+ * — its target being online says nothing about whether the prerequisite is
+ * done. (2026-09-26, Request d86b5faf: Execute and Review were blocked on
+ * Plan, their target `crewly-orc` was active, so this rule re-queued both 19s
+ * after creation; the orc then ran Execute before Plan and it was verified.)
+ *
+ * @param workItems - Active WorkItems (the rule inspects the blocked ones and
+ *   uses the rest to resolve dependencies)
  * @param agentHealthMap - Map of agent session → health info
  * @returns Corrections to re-queue recoverable WorkItems
  */
@@ -725,6 +776,7 @@ export function detectRecoverableWorkItems(
 ): { corrections: ReconcileCorrection[]; recoverableIds: string[] } {
   const corrections: ReconcileCorrection[] = [];
   const recoverableIds: string[] = [];
+  const workItemMap = new Map(workItems.map((w) => [w.id, w]));
 
   for (const wi of workItems) {
     if (wi.status !== 'blocked') continue;
@@ -732,6 +784,8 @@ export function detectRecoverableWorkItems(
     // from: the agent is active *because* it just blocked. Re-queuing it
     // here re-dispatched the item every few minutes (2026-09-25, WI 92327d6d).
     if (isExplicitlyBlocked(wi)) continue;
+    // A dependency block is not an outage either — see the JSDoc above.
+    if (hasUnresolvedDependencies(wi, workItemMap)) continue;
     if (wi.retryCount >= wi.maxRetries) continue;
 
     // If the agent is back online, re-queue

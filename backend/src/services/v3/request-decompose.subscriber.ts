@@ -89,6 +89,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { createWorkItem } from '../../types/v2/work-item.types.js';
 import type { PlannedTask } from './v3-data.service.js';
 import { SLA_TRACKER_ID_PATTERN } from './workitem-dispatch.subscriber.js';
+import { DECOMPOSITION_PHASE_METADATA_KEY } from './request-completion.js';
 
 // ---------------------------------------------------------------------------
 // Filter rules
@@ -541,6 +542,8 @@ export class RequestDecomposeSubscriber {
         planStrategy: 'derived-from-RequestService.plan',
         priority: task.priority,
         acceptanceCriteria: task.acceptanceCriteria,
+        // Lets request-completion tell Plan/Review bookkeeping from the work.
+        ...(task.phase ? { [DECOMPOSITION_PHASE_METADATA_KEY]: task.phase } : {}),
       },
     });
   }

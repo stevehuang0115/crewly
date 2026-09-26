@@ -2015,6 +2015,26 @@ describe('TaskPoolService', () => {
       expect(after.cancelReason).toBe('stuck delegate fallback');
     });
 
+    it('stamps metadata.supersededBy when the caller names the replacement', async () => {
+      const wi = makeWorkItem({ target: 'crewly-orc' });
+      await service.addToPool(wi);
+
+      await service.cancelQueued(wi.id, 'duplicate — re-routed', { supersededBy: ['806dc528', wi.id] });
+
+      const after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.status).toBe('cancelled');
+      // The item never names itself as its own successor.
+      expect(after.metadata?.supersededBy).toEqual(['806dc528']);
+    });
+
+    it('leaves metadata untouched when no successor is given', async () => {
+      const wi = makeWorkItem({ target: 'crewly-orc' });
+      await service.addToPool(wi);
+      await service.cancelQueued(wi.id, 'no longer needed');
+      const after = (await service.getAllItems()).find((w) => w.id === wi.id)!;
+      expect(after.metadata?.supersededBy).toBeUndefined();
+    });
+
     it('also accepts a blocked WI (queued/blocked/scheduled all valid)', async () => {
       // Blocked is the dep-resolver landing state; we want it cleanable
       // too, otherwise dep-cycles spam dispatches forever.

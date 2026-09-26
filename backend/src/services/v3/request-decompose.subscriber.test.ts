@@ -340,6 +340,7 @@ describe('RequestDecomposeSubscriber', () => {
             description: 'plan it',
             acceptanceCriteria: ['planned'],
             priority: 'high' as const,
+            phase: 'plan' as const,
           },
           {
             title: 'Execute: foo',
@@ -347,6 +348,7 @@ describe('RequestDecomposeSubscriber', () => {
             acceptanceCriteria: ['done'],
             priority: 'high' as const,
             dependsOnTitles: ['Plan: foo'],
+            phase: 'execute' as const,
           },
           {
             title: 'Review: foo',
@@ -390,6 +392,12 @@ describe('RequestDecomposeSubscriber', () => {
       // Plan: starts unblocked. `dependsOn` may be unset (undefined) or
       // empty array — `createWorkItem` factory chooses one shape and we
       // accept both since the *behaviour* is "no blockers".
+      // The planner's phase is stamped so request completion can tell
+      // Plan/Review bookkeeping from the work; no phase → no stamp.
+      expect(planWi!.metadata?.decompositionPhase).toBe('plan');
+      expect(executeWi!.metadata?.decompositionPhase).toBe('execute');
+      expect(reviewWi!.metadata).not.toHaveProperty('decompositionPhase');
+
       expect(planWi!.status).toBe('queued');
       const planDeps = planWi!.dependsOn ?? [];
       expect(planDeps).toEqual([]);

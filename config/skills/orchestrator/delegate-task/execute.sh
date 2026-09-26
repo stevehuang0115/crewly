@@ -99,6 +99,17 @@ fi
 require_param "to (--to)" "$TO"
 require_param "task (--task)" "$TASK"
 
+# A WorkItem brief quotes its Request as "[Request <uuid> | WorkItem <uuid>]".
+# When the delegator pastes that brief without --request-id, link the new
+# WorkItem to that Request anyway; otherwise the Request's completion check
+# cannot see the work (2026-09-26: WI 806dc528 carried Request d86b5faf only
+# in its title and the Request closed while it was still running).
+if [ -z "$REQUEST_ID" ]; then
+  REQUEST_ID=$(printf '%s\n%s' "$TASK" "$CONTEXT" \
+    | grep -oE '\[Request [0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}' \
+    | head -1 | sed 's/^\[Request //' || true)
+fi
+
 # Request Contract check (P0-3): non-fatal warning when the delegated brief
 # is missing Goal / Expected Outcome / Eval Criteria markers. TLs and workers
 # downstream are entitled to push back per the Brief Reception Protocol when

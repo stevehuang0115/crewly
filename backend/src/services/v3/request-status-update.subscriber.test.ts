@@ -88,10 +88,13 @@ function makeWI(over: Partial<WorkItem> = {}): WorkItem {
     createdAt: over.createdAt ?? now,
     retryCount: 0,
     maxRetries: 3,
-    requestId: over.requestId ?? 'req-x',
+    // An explicit `requestId: undefined` means an unlinked WorkItem.
+    requestId: 'requestId' in over ? over.requestId : 'req-x',
     inputTokens: 0,
     outputTokens: 0,
     cost: 0,
+    ...(over.metadata ? { metadata: over.metadata } : {}),
+    ...(over.cancelReason ? { cancelReason: over.cancelReason } : {}),
   } as WorkItem;
 }
 
@@ -573,6 +576,37 @@ describe('RequestStatusUpdateSubscriber — heartbeat sweep', () => {
     expect(posted).toBe(0);
     expect(posts).toHaveLength(0);
     expect(requestStore.get('req-mixed')!.status).toBe('done');
+  });
+
+  // 2026-09-26, Request d86b5faf: "some child succeeded" closed Requests whose
+  // only success was Plan bookkeeping, or whose real work had moved to a new
+  // WorkItem that was still running.
+  it('does NOT close a stale Request whose only success is Plan/Review bookkeeping', async () => {
+    const wis = [
+      makeWI({ id: 'wi-plan', requestId: 'req-bk', title: 'Plan: x', status: 'verified', metadata: { decompositionPhase: 'plan' } }),
+      makeWI({ id: 'wi-exec', requestId: 'req-bk', title: 'Execute: x', status: 'cancelled', cancelReason: 'not needed' }),
+    ];
+    const r = makeRequest({ id: 'req-bk', status: 'running' });
+    const { sub, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    await sub.runHeartbeat();
+
+    expect(requestStore.get('req-bk')!.status).toBe('running');
+  });
+
+  it('does NOT close while the re-routed replacement of a duplicate is still running', async () => {
+    const REQ = 'd86b5faf-4693-4941-aa9b-7216ffb90005';
+    const wis = [
+      makeWI({ id: 'wi-exec', requestId: REQ, status: 'verified' }),
+      makeWI({ id: 'wi-dup', requestId: REQ, status: 'cancelled', cancelReason: 'Duplicate/stale: re-routed to Ella' }),
+      makeWI({ id: 'wi-new', requestId: undefined, title: `[Request ${REQ} | WorkItem wi-exec] GOAL`, status: 'running' }),
+    ];
+    const r = makeRequest({ id: REQ, status: 'running' });
+    const { sub, requestStore } = makeSubscriber({ request: r, pool: wis });
+
+    await sub.runHeartbeat();
+
+    expect(requestStore.get(REQ)!.status).toBe('running');
   });
 
   it('hops `ready → running → done` when target is done but direct edge is illegal', async () => {

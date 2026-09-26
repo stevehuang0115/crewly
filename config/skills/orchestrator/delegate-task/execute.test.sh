@@ -348,6 +348,44 @@ else
   PASS=$((PASS + 1))
 fi
 
+# --- Test 8: a brief that quotes "[Request <uuid> | WorkItem …]" links the new
+# WorkItem to that Request even without --request-id (2026-09-26, WI 806dc528
+# carried Request d86b5faf only in its title; the Request then closed early).
+REQ_ID="d86b5faf-4693-4941-aa9b-7216ffb90005"
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" \
+  --to crewly-test-bob \
+  --task "[Request ${REQ_ID} | WorkItem 8249a788-1ea7-4687-ac1a-47d078a34afe] GOAL: plan it" \
+  2>&1 || true)
+assert_log_contains "requestId parsed from the quoted brief" "\"requestId\": \"${REQ_ID}\""
+
+# 8b: an explicit --request-id wins over the quoted one
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" \
+  --to crewly-test-bob \
+  --request-id explicit-req \
+  --task "[Request ${REQ_ID} | WorkItem x] GOAL: plan it" \
+  2>&1 || true)
+assert_log_contains "explicit --request-id is kept" '"requestId": "explicit-req"'
+
+# 8c: no quoted Request and no flag → no requestId, and the skill still runs
+> "$CALL_LOG"
+OUT=$(CALL_LOG="$CALL_LOG" CREWLY_ROOT=/tmp/crewly-test \
+  bash "${SKILL_PARENT}/delegate-task/execute.sh" \
+  --to crewly-test-bob \
+  --task "plain task" \
+  2>&1 || true)
+if grep -q '"requestId"' "$CALL_LOG"; then
+  echo "  FAIL: requestId set without a quoted Request"
+  FAIL=$((FAIL + 1))
+else
+  echo "  PASS: no requestId without a quoted Request"
+  PASS=$((PASS + 1))
+fi
+assert_log_contains "add still fires without a quoted Request" "POST /task-pool/add"
+
 # --- Summary ---
 echo ""
 echo "=== Results: $PASS passed, $FAIL failed ==="
