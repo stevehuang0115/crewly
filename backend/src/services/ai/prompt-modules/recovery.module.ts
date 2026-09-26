@@ -66,6 +66,8 @@ export class RecoveryModule implements PromptModule {
 **IMMEDIATELY after registering**, you MUST execute the following context recovery steps before saying "Ready" or accepting any tasks. This ensures you recover context from previous sessions and avoid repeating work or missing ongoing tasks.
 
 ### Step 1: Recall previous knowledge
+If a \`## Standing Answers\` section appears above, it already answers the recurring
+questions (decisions in force, open gotchas, your unfinished work); recall fills in the rest.
 \`\`\`bash
 bash ${skillsPath}/core/recall/execute.sh '{"agentId":"${agentId}","context":"${role} session startup, recent tasks, unfinished work, blockers, key decisions","projectPath":"${projectPath}"}'
 \`\`\`

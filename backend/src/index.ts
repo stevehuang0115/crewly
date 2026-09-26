@@ -99,7 +99,7 @@ import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, STANDING_ANSWERS_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -826,6 +826,37 @@ void (async () => {
 			} catch (reflectErr) {
 				this.logger.warn('Wiki reflect trigger failed to start (non-fatal)', {
 					error: (reflectErr as Error).message,
+				});
+			}
+
+			try {
+				// Standing-answer refresh (#816) on the reflect cadence: raise a
+				// refresh WorkItem for a standing page only when the memory
+				// behind it has moved. No LLM here; the WorkItem's agent writes.
+				// Agent pages are only checked for members that are active, so a
+				// stopped agent is never woken for its own page.
+				// CREWLY_STANDING_REFRESH=false disables it.
+				if (process.env['CREWLY_STANDING_REFRESH'] !== 'false') {
+					const { StandingRefreshService } = await import('./services/memory/standing-refresh.service.js');
+					const { resolveWikiOwner } = await import('./services/wiki/wiki-owner.resolver.js');
+					const standingRefresh = new StandingRefreshService({
+						pool: TaskPoolService.getInstance(),
+						agentSkillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'agent'),
+						listProjects: async () => (await this.storageService.getProjects()).map((p) => p.path).filter(Boolean),
+						listAgents: async () =>
+							(await this.storageService.getTeams())
+								.flatMap((t) => t.members ?? [])
+								.filter((m) => m.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE && m.sessionName)
+								.map((m) => m.sessionName),
+						resolveProjectTarget: (projectPath) => resolveWikiOwner(this.storageService, projectPath),
+					});
+					// Same cadence as the reflect trigger above.
+					const reflectEvery = Number(process.env['CREWLY_WIKI_REFLECT_INTERVAL_MS']);
+					standingRefresh.start(reflectEvery > 0 ? reflectEvery : STANDING_ANSWERS_CONSTANTS.REFRESH_INTERVAL_MS);
+				}
+			} catch (standingErr) {
+				this.logger.warn('Standing-answer refresh failed to start (non-fatal)', {
+					error: (standingErr as Error).message,
 				});
 			}
 

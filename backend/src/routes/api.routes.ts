@@ -59,6 +59,7 @@ import { createConnectorRouter } from '../controllers/connector/connector.routes
 import { createAgentSelfImprovementRouter } from '../controllers/agent-self-improvement/agent-self-improvement.controller.js';
 import taskProjectionRouter from '../controllers/task-projection/task-projection.routes.js';
 import { createActiveWorkRouter } from '../controllers/active-work/active-work.controller.js';
+import { createStandingRouter } from '../controllers/standing/standing.controller.js';
 import { createChatV2Router } from '../controllers/chat-v2/index.js';
 import { getChatV2Service } from '../services/chat-v2/chat-v2.singleton.js';
 import { createOssTeamMembershipValidator } from '../services/chat-v2/chat-v2.team-membership.js';
@@ -253,6 +254,10 @@ export function createApiRoutes(apiController: ApiController): Router {
   // Active-work briefing routes — backs the `core/get-my-active-work` skill
   // (issue #395). Mounted at /api/v3/agents/:sessionName/active-work.
   router.use('/v3/agents', createActiveWorkRouter());
+
+  // Standing-answer pages (#816) — backs the `core/standing-update` skill.
+  // GET /api/standing?projectPath=&sessionName=, PUT /api/standing/:pageId/section.
+  router.use('/standing', createStandingRouter());
 
   // Chat V2 (Agent-First Chat MVP Phase 1) — mounts /api/chat/channels/*
   // Coexists with the legacy /api/chat/{send,messages,conversations,...} routes
