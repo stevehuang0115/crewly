@@ -45,6 +45,7 @@ import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
 import { appendIncompleteNotice } from '../../utils/incomplete-turn.utils.js';
+import { filterAgentTurnReply } from '../../utils/agent-reply-filter.utils.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { SessionMemoryService } from '../memory/session-memory.service.js';
 import { ActiveWorkBriefingService } from './active-work-briefing.service.js';
@@ -4355,8 +4356,22 @@ Loop until done, blocked, or explicitly reassigned:
 							});
 						}
 
+						// A turn report ("I've sent the reply. Here's my status: *What
+						// I did* … *Next step*") or a claim of having sent a link with
+						// no reply tool call in the turn is not an answer: it reached
+						// the owner's Slack DM several times in a row (2026-09-26).
+						// Filtered before the incomplete notice, which stays honest.
+						const turnFilter = filterAgentTurnReply(result.text ?? '', result.toolCalls);
+						if (turnFilter.suppressed) {
+							this.logger.warn('In-process agent turn text not posted', {
+								sessionName,
+								reason: turnFilter.suppressed,
+								textLength: result.text?.length ?? 0,
+								toolCalls: result.toolCalls?.length ?? 0,
+							});
+						}
 						const { text: replyText, stripped: replyHadMarkup } = stripToolCallMarkup(
-							appendIncompleteNotice(result.text ?? '', result.incomplete),
+							appendIncompleteNotice(turnFilter.text, result.incomplete),
 						);
 						if (replyHadMarkup) {
 							this.logger.warn('Stripped tool-call markup from in-process agent response', {

@@ -3880,6 +3880,81 @@ describe('AgentRegistrationService', () => {
 			slackRouteSpy.mockRestore();
 		});
 
+		// 2026-09-26: the orc's turn text — a status report, or a claim of
+		// having sent a link with zero tool calls — reached the owner's DM.
+		it.each([
+			[
+				'a meta status report',
+				"I've sent the reply. Here's my status:\n\n**What the user asked:** 登不了吗\n\n**What I did:** ran the login flow.\n\n**Next step:** wait for the code.",
+			],
+			['a claim of a sent link with no reply tool call', 'I generated a fresh authorization link and sent it via reply-chat.'],
+		])('does not post %s to chat or Slack', async (_name, text) => {
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+			await service.createAgentSession({
+				sessionName: 'crewly-orc',
+				role: 'orchestrator',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text,
+				steps: 1,
+				usage: { input: 100, output: 50 },
+				toolCalls: [],
+				finishReason: 'stop',
+			});
+
+			const chatRouteSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
+			const slackRouteSpy = jest.spyOn(service as any, 'routeInProcessResponseToSlack');
+
+			await service.sendMessageToAgent(
+				'crewly-orc',
+				'[CHAT:a721f48d-e161-4dd4-88cb-ad7487d3313a] 我没有link 你再发一次 [SLACK:D0C381XPD3L:1790450776.351799]',
+				RUNTIME_TYPES.CREWLY_AGENT as any
+			);
+
+			await new Promise(r => setTimeout(r, 50));
+
+			expect(chatRouteSpy).not.toHaveBeenCalled();
+			expect(slackRouteSpy).not.toHaveBeenCalled();
+			chatRouteSpy.mockRestore();
+			slackRouteSpy.mockRestore();
+		});
+
+		it('still posts a genuine answer', async () => {
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+
+			await service.createAgentSession({
+				sessionName: 'crewly-orc',
+				role: 'orchestrator',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text: 'CE 站点四个页面都重新发布好了，配图也带上了。',
+				steps: 1,
+				usage: { input: 100, output: 50 },
+				toolCalls: [],
+				finishReason: 'stop',
+			});
+
+			const chatRouteSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
+
+			await service.sendMessageToAgent(
+				'crewly-orc',
+				'[CHAT:web-conv-9] 部署好了吗',
+				RUNTIME_TYPES.CREWLY_AGENT as any
+			);
+
+			await new Promise(r => setTimeout(r, 50));
+
+			expect(chatRouteSpy).toHaveBeenCalledWith('crewly-orc', 'CE 站点四个页面都重新发布好了，配图也带上了。', 'web-conv-9');
+			chatRouteSpy.mockRestore();
+		});
+
 		it('should NOT auto-route to Slack for non-Slack-sourced messages', async () => {
 			mockReadFile.mockResolvedValue('System prompt');
 			mockAccess.mockRejectedValue(new Error('ENOENT'));

@@ -36,6 +36,25 @@ import {
 } from '../../../constants.js';
 import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
 
+/**
+ * How an in-process agent ends a turn.
+ *
+ * The turn's final text is posted to whoever wrote (Slack DM, chat) when no
+ * reply tool sent the answer. This used to demand "a text summary of
+ * findings, results, and issues encountered, then call report-status" — so
+ * the orchestrator ended every owner conversation with an English status
+ * report ("I've sent the reply. Here's my status: *What the user asked* …
+ * *What I did* … *Next step*"), posted into the owner's DM several times in a
+ * row (2026-09-26).
+ */
+export const CREWLY_AGENT_OUTPUT_REQUIREMENTS =
+  '**IMPORTANT - Output Requirements:**\n'
+  + '- End every turn with a short reply to whoever wrote to you, in their language: the answer or result itself.\n'
+  + '- If you already sent that reply with a reply skill (reply-chat, reply-slack) in this turn, end with no text at all.\n'
+  + '- Never end with a status report ("What the user asked / What I did / Next step / Note on ..."), '
+  + 'and never say you sent something unless a tool actually sent it in this turn.\n'
+  + '- A task another agent assigned you: report its completion with report-status.';
+
 /** Handlers for one in-flight run, awaiting the child's reply. */
 interface PendingRun {
   resolve: (result: AgentRunResult) => void;
@@ -932,9 +951,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
       + 'You have access to the above skills via bash. '
       + 'When asked questions, use your tools to find answers. '
       + 'Maintain conversation context across messages.\n\n'
-      + '**IMPORTANT - Output Requirements:**\n'
-      + 'Each task must end with a text summary of findings, results, and issues encountered, '
-      + 'then call report-status. Never finish with only tool calls and no text output.'
+      + CREWLY_AGENT_OUTPUT_REQUIREMENTS
     );
 
     return sections.join('\n');

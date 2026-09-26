@@ -38,6 +38,7 @@ import {
   MODEL_CONTEXT_WINDOWS,
   resolveMaxOutputTokens,
 } from './types.js';
+import { SUMMARY_FALLBACK_PROMPT, shouldRequestSummaryFallback } from './reply-tool-calls.js';
 
 /**
  * What a provider's finish reason means for the turn, and how to recover.
@@ -1572,9 +1573,11 @@ export class AgentRunnerService {
         this.state.messages.push({ role: 'assistant', content: text });
       }
 
-      // Empty response fallback: if model made tool calls but produced no text summary,
-      // prompt it once more to generate a summary (prevents silent completions)
-      if (!text && toolCalls.length > 0) {
+      // Empty response fallback: if model made tool calls but produced no text,
+      // prompt it once more for a short reply (prevents silent completions).
+      // Skipped when a reply tool already sent the answer: the "summary" that
+      // followed was the status report the owner got as noise (2026-09-26).
+      if (shouldRequestSummaryFallback(text, toolCalls)) {
         console.warn('[AgentRunner] Empty text response after tool calls, requesting summary fallback');
         const fallbackResult = await this.requestSummaryFallback();
         if (fallbackResult) {
@@ -1760,9 +1763,9 @@ export class AgentRunnerService {
       this.state.messages.push({ role: 'assistant', content: finalText });
     }
 
-    // Empty response fallback: if model made tool calls but produced no text summary,
-    // prompt it once more to generate a summary (prevents silent completions)
-    if (!finalText && toolCalls.length > 0) {
+    // Empty response fallback (see the streaming path): a short reply, and
+    // none at all when a reply tool already sent the answer.
+    if (shouldRequestSummaryFallback(finalText, toolCalls)) {
       console.warn('[AgentRunner] Empty text response after tool calls, requesting summary fallback');
       const fallbackResult = await this.requestSummaryFallback();
       if (fallbackResult) {
@@ -1991,24 +1994,21 @@ export class AgentRunnerService {
   }
 
   /**
-   * Request a text summary from the model when the previous response had tool calls
-   * but no text output. Injects a follow-up user message and makes a single
-   * generateText call with no tools to force a text-only response.
+   * Ask the model for a closing reply when the previous response had tool
+   * calls but no text output. Injects {@link SUMMARY_FALLBACK_PROMPT} (a short
+   * reply to the person, in their language — not a status report) and makes a
+   * single generateText call with no tools to force a text-only response.
    *
-   * @returns The summary text, or empty string if the fallback also fails
+   * @returns The reply text, or empty string if the fallback also fails
    */
   private async requestSummaryFallback(): Promise<string> {
     if (!this.model) return '';
 
-    const prompt =
-      '请用文字总结你刚才完成的工作和发现的结果，然后调用report-status汇报。' +
-      'Please summarize what you just did, what you found, and any issues encountered. ' +
-      'Then call report-status to report your status.';
-
-    this.state.messages.push({ role: 'user', content: prompt });
+    this.state.messages.push({ role: 'user', content: SUMMARY_FALLBACK_PROMPT });
 
     try {
-      const fallback = await generateText({
+      const generateFn = this._generateTextFn || (generateText as Function);
+      const fallback = await generateFn({
         model: this.model,
         system: this.state.systemPrompt,
         messages: this.state.messages,

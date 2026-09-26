@@ -136,6 +136,45 @@ describe('AgentRunnerService', () => {
       expect(runner.getHistoryLength()).toBe(1); // only user message
     });
 
+    it('asks for a short user-facing reply (not a status report) when tools ran and no text came back', async () => {
+      mockGenerateText
+        .mockResolvedValueOnce({
+          text: '',
+          steps: [{ toolCalls: [{ toolCallId: 'tc-1', toolName: 'get_team_status', input: {} }], toolResults: [{ toolCallId: 'tc-1', output: {} }] }],
+          usage: { inputTokens: 10, outputTokens: 0 },
+          finishReason: 'stop',
+        })
+        .mockResolvedValueOnce({ text: '两个团队都在跑。', usage: { inputTokens: 5, outputTokens: 5 } });
+
+      const result = await runner.run('团队怎么样');
+
+      expect(result.text).toBe('两个团队都在跑。');
+      expect(mockGenerateText).toHaveBeenCalledTimes(2);
+      const fallbackCall = mockGenerateText.mock.calls[1][0] as { messages: Array<{ role: string; content: string }>; tools?: unknown };
+      expect(fallbackCall.tools).toBeUndefined();
+      // The history array is shared, so find the injected prompt rather than taking the last entry.
+      const prompt = fallbackCall.messages.find((m) => m.role === 'user' && /No status report/.test(String(m.content)));
+      expect(prompt).toBeDefined();
+      expect(fallbackCall.messages.some((m) => /summarize what you just did/i.test(String(m.content)))).toBe(false);
+    });
+
+    it('asks for nothing more when the turn already replied with reply-chat (2026-09-26 status noise)', async () => {
+      mockGenerateText.mockResolvedValueOnce({
+        text: '',
+        steps: [{
+          toolCalls: [{ toolCallId: 'tc-1', toolName: 'bash_exec', input: { command: "bash config/skills/orchestrator/reply-chat/execute.sh '{\"content\":\"好了\"}'" } }],
+          toolResults: [{ toolCallId: 'tc-1', output: { success: true } }],
+        }],
+        usage: { inputTokens: 10, outputTokens: 0 },
+        finishReason: 'stop',
+      });
+
+      const result = await runner.run('帮我重新登陆claude code');
+
+      expect(result.text).toBe('');
+      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+    });
+
     it('should track tool calls across steps', async () => {
       mockGenerateText.mockResolvedValueOnce({
         text: 'Done',

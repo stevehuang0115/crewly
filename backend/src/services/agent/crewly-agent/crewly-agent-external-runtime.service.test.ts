@@ -22,7 +22,7 @@ jest.mock('../../settings/settings.service.js', () => ({
   getSettingsService: jest.fn(() => ({ getSettings: mockGetSettings, getApiKey: mockGetApiKey })),
 }));
 
-import { CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
+import { CREWLY_AGENT_OUTPUT_REQUIREMENTS, CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
 import { CREWLY_AGENT_MANAGED_COMMAND } from '../../../constants.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../../utils/local-api-url.utils.js';
@@ -698,5 +698,15 @@ describe('CrewlyAgentExternalRuntimeService.initializeInProcess — API URL (#77
     await svc.initializeInProcess('crewly-orc', { apiBaseUrl: 'http://127.0.0.1:9999' });
 
     expect(inner.storedConfig?.apiBaseUrl).toBe('http://127.0.0.1:9999');
+  });
+});
+
+describe('CREWLY_AGENT_OUTPUT_REQUIREMENTS', () => {
+  it('asks for a short reply in the writer\'s language, not a status report (2026-09-26 status noise)', () => {
+    expect(CREWLY_AGENT_OUTPUT_REQUIREMENTS).toContain('short reply to whoever wrote to you, in their language');
+    expect(CREWLY_AGENT_OUTPUT_REQUIREMENTS).toContain('end with no text at all');
+    expect(CREWLY_AGENT_OUTPUT_REQUIREMENTS).toContain('Never end with a status report');
+    expect(CREWLY_AGENT_OUTPUT_REQUIREMENTS).toContain('never say you sent something unless a tool actually sent it');
+    expect(CREWLY_AGENT_OUTPUT_REQUIREMENTS).not.toContain('text summary of findings');
   });
 });
