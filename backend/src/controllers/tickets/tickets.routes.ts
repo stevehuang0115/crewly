@@ -13,6 +13,7 @@ import {
   rejectTicket,
   setTicketAcceptance,
   selfCheckTicket,
+  splitTicket,
   patchTicket,
 } from './tickets.controller.js';
 
@@ -27,6 +28,7 @@ import {
  * - POST /:id/reject   — 打回 { reason }
  * - PUT  /:id/acceptance — replace acceptance list
  * - POST /:id/self-check — agent self-check of one criterion
+ * - POST /:id/split    — split an ask out into its own ticket (#827; agents may call)
  * - PATCH /:id         — title / priority / kind / assignee
  * - POST /:id/acceptance, POST /:id/update — the same two, for the relay
  *   (portal / phone), which only carries GET and POST
@@ -42,6 +44,7 @@ export function createTicketsRouter(): Router {
   router.post('/:id/reject', rejectTicket);
   router.put('/:id/acceptance', setTicketAcceptance);
   router.post('/:id/self-check', selfCheckTicket);
+  router.post('/:id/split', splitTicket);
   router.patch('/:id', patchTicket);
   // POST twins: the relay (portal / phone) only carries GET and POST.
   router.post('/:id/acceptance', setTicketAcceptance);

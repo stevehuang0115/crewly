@@ -9,7 +9,8 @@
  */
 
 /** What kind of ask a ticket is. */
-export type TicketKind = 'issue' | 'feature' | 'idea';
+/** `question` (#827): a pure information question — no acceptance step. */
+export type TicketKind = 'issue' | 'feature' | 'idea' | 'question';
 
 /** Board column (derived server-side, never stored). */
 export type TicketBoardColumn = 'idea' | 'todo' | 'in_progress' | 'blocked' | 'to_review' | 'done' | 'cancelled';

@@ -149,6 +149,62 @@ export async function dismissTicket(req: ExpressRequest, res: Response): Promise
   }
 }
 
+/**
+ * POST /api/tickets/:id/split — split an ask out into its own ticket (#827).
+ *
+ * For the agent that receives a ticket carrying an ask that deserved its own.
+ * Agents may call it (it only ever adds a ticket, and the owner still reviews
+ * each one); the caller's `X-Agent-Session` is logged as `by`.
+ *
+ * Body: `{ discussionRef?: string, text?: string, title?: string,
+ *          assignee?: string, question?: boolean }` — one of `discussionRef`
+ * (move that follow-up out) or `text` is required.
+ *
+ * Responses: 201 `{ data: { ticket, source, moved } }` · 400 invalid ·
+ * 404 ticket or discussion entry not found · 409 source has no origin.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export async function splitTicket(req: ExpressRequest, res: Response): Promise<void> {
+  const svc = serviceOr503(res);
+  if (!svc) return;
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() ? v.trim() : undefined);
+  const discussionRef = str(body.discussionRef);
+  const text = str(body.text);
+  if (!discussionRef && !text) {
+    res.status(400).json({ success: false, error: '`discussionRef` or `text` is required', code: 'invalid' });
+    return;
+  }
+  try {
+    const result = await svc.split(req.params.id ?? '', {
+      ...(discussionRef ? { discussionRef } : {}),
+      ...(text ? { text } : {}),
+      ...(str(body.title) ? { title: str(body.title) } : {}),
+      ...(str(body.assignee) ? { assignee: str(body.assignee) } : {}),
+      question: body.question === true,
+      ...(readAgentSessionHeader(req) ? { by: readAgentSessionHeader(req) } : {}),
+    });
+    if (result.ok) {
+      res.status(201).json({ success: true, data: { ticket: result.ticket, source: result.source, moved: result.moved } });
+      return;
+    }
+    const status = result.reason === 'invalid' ? 400 : result.reason === 'no_origin' ? 409 : 404;
+    const error =
+      result.reason === 'not_found'
+        ? `Ticket not found: ${req.params.id}`
+        : result.reason === 'discussion_not_found'
+          ? `No discussion entry ${discussionRef} on that ticket`
+          : result.reason === 'no_origin'
+            ? 'That ticket has no origin thread to split from'
+            : 'Nothing to split';
+    res.status(status).json({ success: false, error, code: result.reason });
+  } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 2 — review
 // ---------------------------------------------------------------------------

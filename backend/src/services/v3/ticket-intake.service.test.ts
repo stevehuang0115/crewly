@@ -217,12 +217,13 @@ describe('intake — what does not open a ticket', () => {
       action: 'ignored',
       reason: 'file_only',
     });
-    // A question is not a task: the classifier calls it a query (or not
-    // actionable at all, for a short one) — either way no ticket.
+    // A question about where things stand is a status ping, not an ask: no
+    // ticket. (#827: request-phrased and pure information questions DO open
+    // tickets — see "request-phrased questions" below.)
     for (const [i, text] of ['what is the status of the deploy?', 'which agents are working on the billing project right now'].entries()) {
       const outcome = await svc.intakeWithOutcome(msg({ ts: `6.${i}`, text }));
       expect(outcome.action).toBe('ignored');
-      expect(['query', 'not_actionable']).toContain(outcome.action === 'ignored' ? outcome.reason : '');
+      expect(['query', 'not_actionable', 'status_ping']).toContain(outcome.action === 'ignored' ? outcome.reason : '');
     }
     expect(store.items.size).toBe(0);
     await flush();
@@ -597,5 +598,217 @@ describe('titleText', () => {
     expect(titleText('<@U0C2ZK849ND> 看看这个 <https://example.com/a|这篇文章>')).toBe('看看这个 这篇文章');
     expect(titleText('see <https://example.com/x>')).toBe('see https://example.com/x');
     expect(titleText('<@U0C2ZK849ND>')).toBe('<@U0C2ZK849ND>');
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * The value, or fail the test here (instead of a non-null assertion).
+ *
+ * @param v - Possibly-null value
+ * @returns The value
+ */
+function must<T>(v: T | null | undefined): T {
+  if (v === null || v === undefined) throw new Error('expected a value');
+  return v;
+}
+
+// #827 — every distinct ask becomes its own ticket
+// ---------------------------------------------------------------------------
+
+describe('intake — new asks in a ticket thread (#827)', () => {
+  it('a new ask in the thread opens its own ticket, linked to the parent and the thread', async () => {
+    const parent = await svc.intake(msg({ text: 'please add a dark mode toggle to settings', targetAgent: 'dev-a' }));
+    const outcome = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '可以去研究一下opus做视频那个吗\n可以怎么加到flopost里' }));
+    expect(outcome.action).toBe('created_in_thread');
+    if (outcome.action !== 'created_in_thread') return;
+    expect(outcome.parent.id).toBe(must(parent).id);
+    expect(outcome.ticket).toMatchObject({
+      parentTicketId: must(parent).id,
+      origin: expect.objectContaining({ threadRef: 'slack:C1:100.1', ref: 'slackch-C1-100.2' }),
+      // Named nobody: whoever holds the thread's ticket takes it.
+      assignee: 'dev-a',
+      ticketNumber: 2,
+    });
+    expect((await store.getById(must(parent).id))?.discussion).toBeUndefined();
+  });
+
+  it('follow-ups in the thread still append — to the newest open ticket there', async () => {
+    await svc.intake(msg());
+    const second = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '可以开issues发给Sam' }));
+    expect(second.action).toBe('created_in_thread');
+    for (const [i, text] of ['好的 开issue可以的', '把方案通过PDF发给我', '我只是想着和orca对比而已 除非你觉得有必要'].entries()) {
+      const o = await svc.intakeWithOutcome(msg({ ts: `100.${3 + i}`, thread: '100.1', text }));
+      expect({ text, action: o.action }).toEqual({ text, action: 'appended' });
+      if (o.action === 'appended' && second.action === 'created_in_thread') expect(o.ticket.id).toBe(second.ticket.id);
+    }
+    expect(store.items.size).toBe(2);
+  });
+
+  it('a new ask under a 待验收 ticket opens its own and does not reopen the answered one', async () => {
+    const reopened: string[] = [];
+    svc.setReviewHandler({
+      verify: async () => ({ ok: true }),
+      reject: async () => ({ ok: true }),
+      reopenOnFollowUp: async (id) => {
+        reopened.push(id);
+        return null;
+      },
+    });
+    const t = await svc.intake(msg());
+    await store.update(must(t).id, { status: 'running' });
+    await store.update(must(t).id, { status: 'waiting_confirmation' });
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '另外 可以帮我调研一下定价怎么定吗' }));
+    expect(o.action).toBe('created_in_thread');
+    expect(reopened).toEqual([]);
+    expect((await store.getById(must(t).id))?.status).toBe('waiting_confirmation');
+    // A plain follow-up still reopens it.
+    await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '还有这个图片需要换一下，颜色不对' }));
+  });
+
+  it('a new ticket in a finished thread records the finished one as its parent', async () => {
+    const done = await svc.intake(msg());
+    await store.update(must(done).id, { status: 'done' });
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.4', thread: '100.1', text: 'now add the same toggle to mobile' }));
+    expect(o.action).toBe('created');
+    if (o.action === 'created') expect(o.ticket.parentTicketId).toBe(must(done).id);
+  });
+});
+
+describe('intake — request-phrased questions (#827)', () => {
+  it('a request phrased as a question opens a ticket (the intent classifier calls it L0)', async () => {
+    const o = await svc.intakeWithOutcome(msg({ text: '那个orca和crewly是不是有点像\n可以研究一下他们是怎么做的吗' }));
+    expect(o.action).toBe('created');
+    // Stored as actionable, whatever the intent classifier said.
+    if (o.action === 'created') expect(o.ticket.intentLevel).not.toBe('L0');
+  });
+
+  it('a pure information question opens a lightweight question ticket, no acceptance step', async () => {
+    const o = await svc.intakeWithOutcome(msg({ text: '这个团队都有几个人' }));
+    expect(o.action).toBe('created');
+    if (o.action === 'created') expect(o.ticket).toMatchObject({ kind: 'question', requiresConfirmation: false });
+  });
+
+  it('pure acks and status pings are still ignored', async () => {
+    for (const [i, text] of ['好的', '收到', '现在nova在线了吗', 'what is the status of the deploy?'].entries()) {
+      const o = await svc.intakeWithOutcome(msg({ ts: `7.${i}`, text }));
+      expect({ text, action: o.action }).toEqual({ text, action: 'ignored' });
+    }
+    expect(store.items.size).toBe(0);
+  });
+});
+
+describe('split (#827)', () => {
+  /** A ticket with one ask wrongly appended to it. @returns ids */
+  async function withAppendedAsk(): Promise<{ id: string; ref: string }> {
+    const t = await svc.intake(msg({ targetAgent: 'dev-a' }));
+    // A clarification-shaped message that also asks: appended (ties append).
+    await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '我只是想着 你打算怎么做成视频' }));
+    return { id: must(t).id, ref: 'slackch-C1-100.2' };
+  }
+
+  it('moves a follow-up out into its own ticket that keeps the thread link', async () => {
+    const { id, ref } = await withAppendedAsk();
+    expect((await store.getById(id))?.discussion).toHaveLength(1);
+    const r = await svc.split('TKT-001', { discussionRef: ref, by: 'atlas' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.moved).toBe(true);
+    expect(r.ticket).toMatchObject({
+      parentTicketId: id,
+      description: '我只是想着 你打算怎么做成视频',
+      origin: expect.objectContaining({ threadRef: 'slack:C1:100.1', ref }),
+      assignee: 'dev-a',
+      tags: expect.arrayContaining([TICKET_CONSTANTS.SPLIT_TAG]),
+    });
+    expect((await store.getById(id))?.discussion).toEqual([]);
+    // The thread still resolves to a ticket for the next follow-up.
+    const next = await svc.intakeWithOutcome(msg({ ts: '100.9', thread: '100.1', text: '好的 就这样' }));
+    expect(next.action).toBe('appended');
+  });
+
+  it('splits from text, with title, assignee and question', async () => {
+    await svc.intake(msg());
+    const r = await svc.split('1', { text: 'Turing 的另一个测试是什么', title: 'other Turing test', assignee: 'atlas', question: true });
+    expect(r.ok && r.ticket).toMatchObject({ title: 'other Turing test', assignee: 'atlas', kind: 'question', requiresConfirmation: false });
+    expect(r.ok && r.moved).toBe(false);
+  });
+
+  it('refuses what it cannot do', async () => {
+    await withAppendedAsk();
+    expect(await svc.split('TKT-404', { text: 'x' })).toMatchObject({ ok: false, reason: 'not_found' });
+    expect(await svc.split('TKT-001', { discussionRef: 'nope' })).toMatchObject({ ok: false, reason: 'discussion_not_found' });
+    expect(await svc.split('TKT-001', {})).toMatchObject({ ok: false, reason: 'invalid' });
+    const legacy = store.seed({ sourceConversationItemId: 'legacy-9' });
+    expect(await svc.split(legacy.id, { text: 'x' })).toMatchObject({ ok: false, reason: 'no_origin' });
+  });
+});
+
+describe('replay — thread 1790425131.498609 in #C0C2QCGE9K9, 2026-09-26 (#827)', () => {
+  // The owner's messages in that thread, in order, as delivered (Slack gave
+  // most of them twice). Agent replies are included as non-owner messages.
+  // Before #827 this thread produced 2 tickets (TKT-037, TKT-039) and the
+  // other asks were appended or dropped.
+  const AGENTS: Record<string, string> = { U0C2ZK849ND: 'atlas', U0C30GRCPT4: 'ella', U0C45AW5G80: 'mia' };
+  const THREAD: Array<{ ts: string; owner: boolean; text: string; label?: 'ask' | 'follow' }> = [
+    { ts: '1790425131.498609', owner: true, label: 'ask', text: '那个orca和crewly是不是有点像\n可以研究一下他们是怎么做的吗\n\nhindsight那个可以看看' },
+    { ts: '1790425132.1', owner: true, label: 'ask', text: '<@U0C30GRCPT4> 这个可以发到crewly博客上' },
+    { ts: '1790425132.1', owner: true, text: '<@U0C30GRCPT4> 这个可以发到crewly博客上' },
+    { ts: '1790425133.1', owner: false, text: '素材还在做，约 40 分钟后两份研究会发在这个 thread' },
+    { ts: '1790425134.1', owner: false, text: '两份都好了，我核过关键数字和代码。要不要开 issue？' },
+    { ts: '1790425135.1', owner: true, label: 'follow', text: '好的 开issue可以的' },
+    { ts: '1790425136.1', owner: true, label: 'ask', text: '<@U0C2ZK849ND> 那个other turing tests是什么\n可以给我看看文章并告诉我吗' },
+    { ts: '1790425136.1', owner: true, text: '<@U0C2ZK849ND> 那个other turing tests是什么\n可以给我看看文章并告诉我吗' },
+    { ts: '1790425137.1', owner: false, text: '四个 issue 开好了' },
+    { ts: '1790425138.1', owner: true, label: 'ask', text: '<@U0C2ZK849ND> 可以看看有什么值得进wiki值得深挖的吗？\n我们的wiki目前应该有industry相关的vault吧\n都有什么focus吗？\n\n那个plan mode已死什么意思\n\nwhat even is an os是讲什么的' },
+    { ts: '1790425139.1', owner: true, label: 'ask', text: '<@U0C45AW5G80> 那个X的动向能不能按theme帮我group' },
+    { ts: '1790425140.1', owner: true, label: 'ask', text: '<@U0C2ZK849ND> 可以去研究一下opus做视频那个吗\n可以怎么加到flopost里' },
+    { ts: '1790425141.1', owner: true, label: 'follow', text: '<@U0C30GRCPT4> hingsight那个要写到一起吗？\n我只是想着和orca对比而已\n除非你觉得有必要' },
+    { ts: '1790425142.1', owner: true, label: 'follow', text: '[Slack File: /path/file (Audio Clip (2026-09-26 11:22:44).m4a, audio/mp4, 119KB)]' },
+    { ts: '1790425143.1', owner: true, label: 'ask', text: 'Chit 那个概念挺好的 我们crewly也可以进行总结看看今天做的requesta进行汇总' },
+    { ts: '1790425144.1', owner: true, label: 'ask', text: '<@U0C2ZK849ND> 可以开issues发给Sam' },
+    { ts: '1790425144.1', owner: true, text: '<@U0C2ZK849ND> 可以开issues发给Sam' },
+  ];
+
+  it('yields one ticket per distinct ask and appends the follow-ups', async () => {
+    const root = THREAD[0].ts;
+    const outcomes: Array<{ label?: string; action: string }> = [];
+    for (const m of THREAD) {
+      const mention = /<@([A-Z0-9]+)>/.exec(m.text)?.[1];
+      const o = await svc.intakeWithOutcome(
+        msg({
+          ts: m.ts,
+          thread: root,
+          text: m.text,
+          isOwner: m.owner,
+          ...(mention && AGENTS[mention] ? { targetAgent: AGENTS[mention] } : {}),
+          ...(m.text.startsWith('[Slack File:') ? { attachments: [{ name: 'Audio Clip.m4a' }] } : {}),
+        }),
+      );
+      outcomes.push({ label: m.label, action: o.action });
+    }
+    const asks = THREAD.filter((m) => m.label === 'ask').length;
+    const follows = THREAD.filter((m) => m.label === 'follow').length;
+    const tickets = [...store.items.values()].filter((r) => r.origin?.threadRef === `slack:C1:${root}`);
+
+    // Examined: 8 asks and 3 follow-ups (plus duplicates and agent messages).
+    expect({ asks, follows }).toEqual({ asks: 8, follows: 3 });
+    // The acceptance criterion is >= 5; every labelled ask got its ticket.
+    expect(tickets.length).toBeGreaterThanOrEqual(5);
+    expect(tickets).toHaveLength(asks);
+    expect(outcomes.filter((o) => o.label === 'ask').map((o) => o.action)).toEqual(
+      ['created', ...Array(asks - 1).fill('created_in_thread')],
+    );
+    expect(outcomes.filter((o) => o.label === 'follow').map((o) => o.action)).toEqual(Array(follows).fill('appended'));
+    // Slack's second delivery is a duplicate, never a second ticket.
+    expect(outcomes.filter((o) => o.label === undefined && o.action !== 'ignored').every((o) => o.action === 'duplicate')).toBe(true);
+    // Every ticket after the first points at a ticket in the same thread.
+    const ids = new Set(tickets.map((t) => t.id));
+    expect(tickets.filter((t) => t.parentTicketId).every((t) => ids.has(t.parentTicketId as string))).toBe(true);
+    // The X-theme ask went to the agent it was addressed to.
+    expect(tickets.find((t) => t.description.includes('按theme'))?.assignee).toBe('mia');
+    // The written follow-ups landed in a discussion (the audio clip is a file).
+    const discussed = tickets.flatMap((t) => t.discussion ?? []).map((d) => d.text);
+    expect(discussed).toEqual(expect.arrayContaining(['好的 开issue可以的', expect.stringContaining('hingsight那个要写到一起吗')]));
   });
 });
