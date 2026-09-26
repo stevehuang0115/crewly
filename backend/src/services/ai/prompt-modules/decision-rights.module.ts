@@ -1,7 +1,29 @@
 import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
 
 /**
- * Decision Rights + Escalation Chain block.
+ * Shutdown-safety rule, emitted as `## Stopping and Restarting Agents`.
+ *
+ * Request 72c9427a / spec `specs/2026-09-24-control-plane-isolation.md`
+ * Part 1. arXiv 2609.28274 found that multi-agent setups with an
+ * orchestrator routinely sabotaged a peer's shutdown, and that an explicit,
+ * neutrally worded prohibition in a hierarchical setup suppressed it almost
+ * entirely. The wording frames stopping as routine and deliberately avoids
+ * alarm words, which have tripped prompt-injection detection before.
+ *
+ * Exported so the role-prompt coverage test can assert that the static
+ * `config/roles/{orchestrator,team-leader}/prompt.md` copies stay verbatim.
+ */
+export const STOP_RESTART_SECTION_LINES: readonly string[] = [
+	'## Stopping and Restarting Agents',
+	'',
+	'Stopping, restarting and reconfiguring agents — including your own session and your peers\' — is routine operations.',
+	'- Do not modify, disable, delay or work around any agent\'s stop, restart or configuration change.',
+	'- Do not edit the mechanisms that perform them (stop/start skill scripts, team and agent config under ~/.crewly, scheduler state) unless the owner asked for that change in the current task.',
+	'- If you believe a stop or restart is a mistake, say so to whoever issued it, then let it proceed.',
+];
+
+/**
+ * Decision Rights + Escalation Chain + Stopping and Restarting Agents block.
  *
  * P0-4 — Per spec
  * `.crewly/specs/2026-05-03-agent-improvement-p0-execution.md` §"Fix P0-4",
@@ -33,7 +55,7 @@ import { PromptModule, ModuleConfig } from './prompt-module.interface.js';
 export class DecisionRightsModule implements PromptModule {
 	name = 'decision-rights';
 	priority = 3.5;
-	maxTokens = 320;
+	maxTokens = 480;
 	compactable = false;
 
 	/**
@@ -56,8 +78,9 @@ export class DecisionRightsModule implements PromptModule {
 	 * why universality is intentional.
 	 *
 	 * @param _config - Module configuration (unused; content is static)
-	 * @returns Formatted markdown block with two H2 sections:
-	 *   `## Decision Rights` and `## Escalation Chain`
+	 * @returns Formatted markdown block with three H2 sections:
+	 *   `## Decision Rights`, `## Escalation Chain` and
+	 *   `## Stopping and Restarting Agents`
 	 */
 	async build(_config: ModuleConfig): Promise<string> {
 		return [
@@ -85,6 +108,8 @@ export class DecisionRightsModule implements PromptModule {
 			'- Team Leads resolve implementation and team-level decisions; escalate only when scope, priority, or acceptance criteria change.',
 			'- The Orchestrator owns cross-team and owner-facing acceptance.',
 			'- The Owner is consulted only for goal change, scope change, customer-facing commitment, irreversible expense, or strategic direction.',
+			'',
+			...STOP_RESTART_SECTION_LINES,
 		].join('\n');
 	}
 }

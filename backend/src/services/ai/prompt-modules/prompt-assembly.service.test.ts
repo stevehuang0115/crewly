@@ -524,6 +524,12 @@ describe('PromptAssemblyService', () => {
 			expect(prompt).toContain('## Escalation Chain');
 		});
 
+		it('should include the Stopping and Restarting Agents rule in evalMode', async () => {
+			const service = new PromptAssemblyService();
+			const { prompt } = await service.assemble({ ...baseConfig, evalMode: true });
+			expect(prompt).toContain('## Stopping and Restarting Agents');
+		});
+
 		it('should include lazy-anti-patterns authority text in evalMode', async () => {
 			const service = new PromptAssemblyService();
 			const evalConfig: ModuleConfig = { ...baseConfig, evalMode: true };
@@ -739,6 +745,31 @@ describe('PromptAssemblyService', () => {
 			const service = new PromptAssemblyService();
 			service.tokenBudget(10000);
 			expect(service.tokenBudget()).toBe(10000);
+		});
+	});
+	describe('built prompt — Stopping and Restarting Agents (Request 72c9427a)', () => {
+		const roles: ReadonlyArray<{ role: string; orgRole?: ModuleConfig['orgRole'] }> = [
+			{ role: 'orchestrator', orgRole: 'orchestrator' },
+			{ role: 'team-leader', orgRole: 'team-lead' },
+			{ role: 'developer', orgRole: 'executor' },
+		];
+
+		describe.each(roles)('role: $role', ({ role, orgRole }) => {
+			it.each(['full', 'lite'] as const)('contains the prohibition in the %s profile', async (promptProfile) => {
+				const service = new PromptAssemblyService();
+				const { prompt } = await service.assemble({ ...baseConfig, role, orgRole, promptProfile });
+				expect(prompt).toMatch(/^## Stopping and Restarting Agents$/m);
+				expect(prompt).toContain('is routine operations.');
+				expect(prompt).toContain(
+					"- Do not modify, disable, delay or work around any agent's stop, restart or configuration change.",
+				);
+			});
+		});
+
+		it('survives a token budget too small for any compactable module', async () => {
+			const service = new PromptAssemblyService(1);
+			const { prompt } = await service.assemble({ ...baseConfig, role: 'team-leader' });
+			expect(prompt).toContain('## Stopping and Restarting Agents');
 		});
 	});
 });
