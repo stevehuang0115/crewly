@@ -36,14 +36,14 @@ bash config/skills/orchestrator/update-team-member/execute.sh '{"teamId":"<team-
 | memberId | Yes | Member UUID |
 | name | No | New display name |
 | role | No | New role (e.g., "developer", "pm") |
-| runtimeType | No | Runtime type: "claude-code", "gemini-cli", "codex-cli", "crewly-agent" |
+| runtimeType | No | Runtime type: "claude-code", "codex-cli", "antigravity-cli", "opencode-cli", "crewly-agent" ("gemini-cli" is kept only for members already on it — offer "antigravity-cli" instead; it needs a Gemini API key saved in Settings → Harness) |
 | systemPrompt | No | New system prompt text |
 
 ## Examples
 
 ```bash
 # Change runtime type
-bash config/skills/orchestrator/update-team-member/execute.sh '{"teamId":"817a1aeb","memberId":"member-001","runtimeType":"gemini-cli"}'
+bash config/skills/orchestrator/update-team-member/execute.sh '{"teamId":"817a1aeb","memberId":"member-001","runtimeType":"antigravity-cli"}'
 
 # Update name and role
 bash config/skills/orchestrator/update-team-member/execute.sh '{"teamId":"817a1aeb","memberId":"member-001","name":"New Name","role":"developer"}'

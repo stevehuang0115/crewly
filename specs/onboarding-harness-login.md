@@ -16,10 +16,12 @@ setup page is built separately against the contract below.
   browser or a localhost callback. Login URLs and codes are always exposed
   through the API (and printed by the CLI). The same routes work through the
   Cloud relay (portal / phone app).
-- Harnesses: Claude Code (`claude-code`), Codex (`codex-cli`), Gemini CLI
-  (`gemini-cli`, detect only). The ids equal the existing `RuntimeType`
-  values. The default is Claude Code. First-time setup installs only the
-  orchestrator's harness.
+- Harnesses: Claude Code (`claude-code`), Codex (`codex-cli`), Antigravity
+  CLI (`antigravity-cli`, Gemini API key only — specs/antigravity-runtime.md)
+  and Gemini CLI (`gemini-cli`, detect only, **retired**: listed only when
+  installed or the orchestrator's harness, as "Gemini CLI (enterprise
+  only)"). The ids equal the existing `RuntimeType` values. The default is
+  Claude Code. First-time setup installs only the orchestrator's harness.
 - The only system tool required is jq. tmux is not needed, because sessions
   use node-pty.
 
@@ -28,21 +30,21 @@ setup page is built separately against the contract below.
 | File | Role |
 |---|---|
 | `harness.types.ts` | Contract types (`HarnessStatus`, `LoginSession`, `InstallJob`, …) and type guards |
-| `harness-registry.ts` | Definitions: display name, binary, npm package, version args, login methods (broker command or API key) |
+| `harness-registry.ts` | Definitions: display name, binary, install spec (npm package, or the vendor's official script for Antigravity), version args, login methods (broker command or API key), `retired` |
 | `harness-exec.utils.ts` | Harness PATH (`~/.crewly/npm-global/bin` first, `~/.local/bin` appended), npm PATH (adds Node's bin dir), shell-free `runCommand` (secrets via stdin) |
 | `harness-status.service.ts` | Installed? (PATH lookup + `--version`), latest (`npm view <pkg> version`, cached 1 h, failures cached 5 min), login state |
-| `harness-install.service.ts` | `npm install -g <pkg>@latest` as an async job with a log. On EACCES/EPERM it retries once with `--prefix <crewlyHome>/npm-global`. One job per harness at a time: a second start returns the running job. |
-| `harness-credentials.store.ts` | `<crewlyHome>/harness-credentials.json`, mode 0600, holds the Claude OAuth token or the Anthropic key. `harnessEnvForAgents()` provides the agent env. |
+| `harness-install.service.ts` | `npm install -g <pkg>@latest` as an async job with a log. On EACCES/EPERM it retries once with `--prefix <crewlyHome>/npm-global`. Script harnesses (Antigravity): the official `https://antigravity.google/cli/install.sh` is downloaded (exact URL, https, no redirects) and run with bash; an installed `agy` runs `agy update` instead. One job per harness at a time: a second start returns the running job. |
+| `harness-credentials.store.ts` | `<crewlyHome>/harness-credentials.json`, mode 0600, holds the Claude OAuth token or the Anthropic key, and the Antigravity Gemini key. `harnessEnvForAgents(env, runtimeType)` provides the agent env (the Gemini key only for antigravity-cli sessions). |
 | `claude-config.utils.ts` | After a Crewly login, sets `hasCompletedOnboarding` and pre-approves an API key (last 20 chars) in `~/.claude.json`, so agent PTYs never stop at Claude's first-run or "use this key?" screens |
 | `login-rules.ts` | Normalization, plus a regex rule set per harness method |
 | `login-broker.service.ts` | Runs the login command in a PTY, applies the rules, and runs the state machine. It is an EventEmitter. |
-| `harness-api-key.service.ts` | API-key login: checks and stores the Anthropic key; Codex goes through `codex login --with-api-key` over stdin |
+| `harness-api-key.service.ts` | API-key login: checks and stores the Anthropic key; Codex goes through `codex login --with-api-key` over stdin; the Antigravity Gemini key is checked against the Gemini models endpoint, stored, and agy is switched to `modelProvider: "gemini"` |
 | `orc-harness.store.ts` | Orchestrator runtime (`teams/orchestrator/config.json` `runtimeType`) + `settings.general.defaultRuntime` |
 | `harness.service.ts` | Facade used by REST and CLI; `getHarnessService()` backend singleton, `createHarnessService()` for the CLI |
 | `controllers/harness/*` | REST at `/api/harness` |
 | `cli/src/utils/harness-engine.ts` | CLI's access: in-process service; login driver = backend REST when running, else in-process |
 | `cli/src/commands/harness-setup.ts` | Shared CLI steps (detect → choose → install → record → login) |
-| `cli/src/commands/harness.ts` | `crewly harness`, `crewly login <claude\|codex>` |
+| `cli/src/commands/harness.ts` | `crewly harness`, `crewly login <claude\|codex\|antigravity>` |
 | `cli/src/commands/onboard.ts` | Web-or-terminal choice, then the steps above, skills, template |
 
 ## REST contract (`/api/harness`)
@@ -96,8 +98,8 @@ The relay presents the owner API token.
 - `GET /harness*`
 - `POST /harness/orc`
 - `POST /harness/login/*`
-- `POST /harness/<id>/install` and `POST /harness/<id>/login` for each of the
-  three ids
+- `POST /harness/<id>/install` and `POST /harness/<id>/login` for each
+  harness id (`HARNESS_IDS`, now including `antigravity-cli`)
 
 `POST /harness/:id/api-key` is deliberately **not** relayed, because a key
 would sit in the Cloud relay queue. API keys are entered on the machine
@@ -118,6 +120,9 @@ would sit in the Cloud relay queue. API keys are entered on the machine
 - **Codex:** `codex login status`. Exit 0 means logged in, with the source
   `chatgpt`, `api_key` or `codex`. A non-zero exit means logged out. If the
   command cannot run, the check falls back to `$CODEX_HOME/auth.json`.
+- **Antigravity CLI:** the Gemini key Crewly stores (`crewly-api-key`), else
+  `GEMINI_API_KEY` in the env; otherwise `logged_out`. An account login in
+  agy's keyring never counts (Crewly does not use Antigravity OAuth).
 - **Gemini CLI:** `~/.gemini/oauth_creds.json` or a Gemini key env var.
   Otherwise the state is `unknown`.
 
@@ -231,7 +236,9 @@ for every agent PTY. It covers the primary spawn, the Step-2 recreation and
 the orchestrator session. It now starts with `harnessEnvForAgents()`:
 
 - `PATH` with `<crewlyHome>/npm-global/bin` first;
-- the stored `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`.
+- the stored `CLAUDE_CODE_OAUTH_TOKEN` or `ANTHROPIC_API_KEY`;
+- for an `antigravity-cli` session only: the stored Gemini key as
+  `GEMINI_API_KEY` and `AGY_CLI_DISABLE_AUTO_UPDATE=true`.
 
 Sessions that already exist keep their env until they are recreated.
 
@@ -306,7 +313,8 @@ hand**.
 ## Not in Phase 1
 
 - Slack DM re-login. Built in Phase 2 (below).
-- Gemini login.
+- Gemini login. (Gemini CLI is now retired for new users; Antigravity CLI
+  takes a Gemini API key — specs/antigravity-runtime.md.)
 - A route that fetches a harness's active session. Instead,
   `POST /:id/login` returns the live one.
 
