@@ -24,6 +24,7 @@ import {
   cascadeCancelChildren,
   detectStaleQueuedWorkItems,
   detectUnclaimedTasks,
+  detectWaitingOnHumanWorkItems,
   selectBestAgent,
   computeAgentScore,
   runPruningPass,
@@ -40,6 +41,10 @@ import {
   TERMINAL_WORK_ITEM_STATUSES,
   LAST_REQUEUED_AT_METADATA_KEY,
   DISPOSITION_METADATA_KEY,
+  WORK_ITEM_BLOCK_SOURCES,
+  isValidWorkItemTransition,
+  isTransitionPermitted,
+  TRANSITION_PERMISSIONS,
 } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -2315,5 +2320,83 @@ describe('detectUnreviewedPastTTL', () => {
   it('honours a custom TTL', () => {
     const wi = makeWorkItem({ status: 'done_by_worker', completedAt: hoursAgo(2) });
     expect(detectUnreviewedPastTTL([wi], NOW, 3600 * 1000).items).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectWaitingOnHumanWorkItems (#815)
+// ---------------------------------------------------------------------------
+describe('detectWaitingOnHumanWorkItems', () => {
+  const NOW = Date.parse('2026-09-26T12:00:00Z');
+  const minsAgo = (m: number): string => new Date(NOW - m * 60_000).toISOString();
+  const waitingBlocked = (): WorkItem => makeWorkItem({
+    status: 'blocked', target: 'agent-1', blockSource: WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
+  });
+
+  it('parks a running item once its agent has waited more than 5 minutes', () => {
+    const wi = makeWorkItem({ status: 'running', target: 'agent-1' });
+    const r = detectWaitingOnHumanWorkItems([wi], makeAgentMap([['agent-1', { waitingOnHumanSince: minsAgo(6) }]]), NOW);
+    expect(r.blockedIds).toEqual([wi.id]);
+    expect(r.corrections[0]).toMatchObject({ previousState: 'running', newState: 'blocked', blockSource: 'waiting_on_human' });
+    expect(r.corrections[0].reason).toMatch(/^waiting_on_human: agent agent-1 .* 6 min/);
+  });
+
+  it('does not park before 5 minutes, or when the agent is not waiting', () => {
+    const wi = makeWorkItem({ status: 'running', target: 'agent-1' });
+    expect(detectWaitingOnHumanWorkItems([wi], makeAgentMap([['agent-1', { waitingOnHumanSince: minsAgo(4) }]]), NOW).corrections).toHaveLength(0);
+    expect(detectWaitingOnHumanWorkItems([wi], makeAgentMap([['agent-1', {}]]), NOW).corrections).toHaveLength(0);
+  });
+
+  it('resumes a waiting_on_human block to running when the agent stops waiting', () => {
+    const wi = waitingBlocked();
+    const r = detectWaitingOnHumanWorkItems([wi], makeAgentMap([['agent-1', {}]]), NOW);
+    expect(r.resumedIds).toEqual([wi.id]);
+    expect(r.corrections[0]).toMatchObject({ previousState: 'blocked', newState: 'running' });
+  });
+
+  it('keeps it blocked while the agent is still waiting', () => {
+    const r = detectWaitingOnHumanWorkItems([waitingBlocked()], makeAgentMap([['agent-1', { waitingOnHumanSince: minsAgo(30) }]]), NOW);
+    expect(r.corrections).toHaveLength(0);
+  });
+
+  it('re-queues (no failure, no retry) when the agent is gone', () => {
+    const wi = waitingBlocked();
+    const r = detectWaitingOnHumanWorkItems([wi], makeAgentMap([['agent-1', { status: 'inactive' }]]), NOW);
+    expect(r.requeuedIds).toEqual([wi.id]);
+    expect(r.corrections[0]).toMatchObject({ previousState: 'blocked', newState: 'queued' });
+    expect(detectWaitingOnHumanWorkItems([wi], new Map(), NOW).requeuedIds).toEqual([wi.id]);
+  });
+
+  it('never touches other blocked items (explicit or system blocks)', () => {
+    const explicit = makeWorkItem({ status: 'blocked', target: 'agent-1', blockSource: WORK_ITEM_BLOCK_SOURCES.EXPLICIT });
+    const system = makeWorkItem({ status: 'blocked', target: 'agent-1' });
+    expect(detectWaitingOnHumanWorkItems([explicit, system], makeAgentMap([['agent-1', {}]]), NOW).corrections).toHaveLength(0);
+  });
+
+  it('the recoverable and dependency rules skip waiting_on_human blocks', () => {
+    const wi = { ...waitingBlocked(), dependsOn: [] as string[] } as WorkItem;
+    expect(detectRecoverableWorkItems([wi], makeAgentMap([['agent-1', {}]])).corrections).toHaveLength(0);
+    const withDep = { ...waitingBlocked(), dependsOn: ['gone'] } as unknown as WorkItem;
+    expect(detectDependencyResolvedWorkItems([withDep], new Map()).corrections).toHaveLength(0);
+  });
+
+  it('blocked -> running is a legal edge, permitted to system only', () => {
+    expect(isValidWorkItemTransition('blocked', 'running')).toBe(true);
+    expect(TRANSITION_PERMISSIONS['blocked→running']).toEqual(new Set(['system']));
+    const item = { status: 'blocked' as const, target: 'agent-1', metadata: {} };
+    expect(isTransitionPermitted(item, 'running', { role: 'system', via: 'reconciler' })).toBe(true);
+    expect(isTransitionPermitted(item, 'running', 'agent')).toBe(false);
+    expect(isTransitionPermitted(item, 'running', 'team_lead')).toBe(false);
+    expect(isTransitionPermitted(item, 'running', undefined)).toBe(false);
+  });
+});
+
+describe('detectUnclaimedTasks — never redeliver into a prompt (#815)', () => {
+  it('does not redeliver to an active, empty agent that is waiting on a human', () => {
+    const wi = makeWorkItem({ status: 'queued', createdAt: new Date(Date.now() - 7 * 60_000).toISOString(), target: 'sora' });
+    const waiting = makeAgentMap([['sora', { activeWorkItemCount: 0, waitingOnHumanSince: new Date().toISOString() }]]);
+    expect(detectUnclaimedTasks([wi], waiting).wakeActions.filter((a) => a.strategy === 'redeliver')).toHaveLength(0);
+    const notWaiting = makeAgentMap([['sora', { activeWorkItemCount: 0 }]]);
+    expect(detectUnclaimedTasks([wi], notWaiting).wakeActions.filter((a) => a.strategy === 'redeliver')).toHaveLength(1);
   });
 });

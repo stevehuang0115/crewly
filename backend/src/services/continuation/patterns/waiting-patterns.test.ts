@@ -93,8 +93,14 @@ describe('waiting-patterns', () => {
 	});
 
 	describe('PLAN_MODE_PATTERNS', () => {
-		it('should match "shift+tab to cycle"', () => {
-			expect(matchesAny(PLAN_MODE_PATTERNS, 'Press shift+tab to cycle options')).toBe(true);
+		it('should NOT match the idle footer "shift+tab to cycle" (#815)', () => {
+			expect(matchesAny(PLAN_MODE_PATTERNS, '  ⏵⏵ auto mode on (shift+tab to cycle)')).toBe(false);
+			expect(matchesAny(PLAN_MODE_PATTERNS, '❯❯ bypass permissions on (shift+tab to cycle)')).toBe(false);
+		});
+
+		it('should match the plan-approval menu text', () => {
+			expect(matchesAny(PLAN_MODE_PATTERNS, 'Claude has written up a plan and is ready to execute.')).toBe(true);
+			expect(matchesAny(PLAN_MODE_PATTERNS, ' Ready to code?')).toBe(true);
 		});
 
 		it('should match "ExitPlanMode"', () => {
@@ -103,10 +109,6 @@ describe('waiting-patterns', () => {
 
 		it('should match "Plan mode"', () => {
 			expect(matchesAny(PLAN_MODE_PATTERNS, 'Plan mode is active')).toBe(true);
-		});
-
-		it('should be case-insensitive for shift+tab pattern', () => {
-			expect(matchesAny(PLAN_MODE_PATTERNS, 'SHIFT+TAB TO CYCLE')).toBe(true);
 		});
 
 		it('should be case-sensitive for ExitPlanMode and Plan mode', () => {

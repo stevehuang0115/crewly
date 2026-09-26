@@ -4,6 +4,7 @@
 
 import { PtySessionBackend } from './pty-session-backend.js';
 import type { PtySession } from './pty-session.js';
+import { PtyTerminalBuffer } from './pty-terminal-buffer.js';
 import type { SessionOptions } from '../session-backend.interface.js';
 
 // Determine the shell to use based on platform
@@ -216,6 +217,23 @@ describe('PtySessionBackend', () => {
 
 			// Output should not be empty (at least shell prompt)
 			expect(typeof output).toBe('string');
+		});
+	});
+
+	describe('getTerminalTitle (#815)', () => {
+		it('should return empty string for non-existent session', () => {
+			expect(backend!.getTerminalTitle('non-existent')).toBe('');
+		});
+
+		it('should return the title held by the session\'s terminal buffer', async () => {
+			// Real PTY output is not needed: the buffer's own test covers OSC
+			// parsing; this checks the backend reads the per-session buffer.
+			const buf = new PtyTerminalBuffer();
+			buf.write('\x1b]0;crewly-title-probe\x07');
+			await buf.flush();
+			(backend as unknown as { terminalBuffers: Map<string, PtyTerminalBuffer> }).terminalBuffers.set('title-session', buf);
+			expect(backend!.getTerminalTitle('title-session')).toBe('crewly-title-probe');
+			buf.dispose();
 		});
 	});
 

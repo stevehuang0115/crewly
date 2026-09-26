@@ -20,7 +20,7 @@ import type {
   ReconcileCorrection,
   WakeAction,
 } from '../../types/v2/index.js';
-import { isExplicitlyBlocked } from '../../types/v2/work-item.types.js';
+import { isExplicitlyBlocked, isWaitingOnHumanBlocked } from '../../types/v2/work-item.types.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { ClaimService } from '../task-pool/claim.service.js';
 import { PoolStorage } from '../task-pool/pool-storage.js';
@@ -30,6 +30,7 @@ import { AgentSuspendService } from '../agent/agent-suspend.service.js';
 import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
+import { getWaiting } from '../monitoring/agent-attention-registry.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -390,6 +391,16 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
+   * When the agent has been blocked on a terminal prompt since (#815).
+   *
+   * @param sessionName - Agent session
+   * @returns ISO time the wait began, or undefined when it is not waiting
+   */
+  private getWaitingOnHumanSince(sessionName: string): string | undefined {
+    return getWaiting(sessionName)?.since;
+  }
+
+  /**
    * Builds the agent health map from StorageService team data.
    *
    * Iterates all teams and members to produce a Map<sessionName, AgentHealth>
@@ -420,6 +431,8 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             teamId: team.id,
             memberId: member.id,
           };
+          const waitingSince = this.getWaitingOnHumanSince(member.sessionName);
+          if (waitingSince) health.waitingOnHumanSince = waitingSince;
 
           healthMap.set(member.sessionName, health);
         }
@@ -519,8 +532,9 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         await pool.updateItemStatus(
           correction.entityId,
           correction.newState as WorkItem['status'],
-          'system',
+          { role: 'system', via: 'reconciler' },
           correction.reason,
+          correction.blockSource,
         );
         this.logger.info('Applied work item correction', {
           workItemId: correction.entityId,
@@ -642,6 +656,10 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       const current = await pool.findWorkItem(workItemId);
       if (current && isExplicitlyBlocked(current)) {
         this.logger.info('Not re-queuing an explicitly blocked work item (stays blocked until unblocked)', { workItemId });
+        return;
+      }
+      if (current && isWaitingOnHumanBlocked(current)) {
+        this.logger.info('Not re-queuing a waiting_on_human work item (resumed when the prompt is gone)', { workItemId });
         return;
       }
       await pool.releaseBack(workItemId, 'reconciler_requeue');
@@ -1038,6 +1056,8 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       for (const member of team.members || []) {
         if (member.agentStatus !== 'active') continue;
         if (member.workingStatus !== 'idle') continue;
+        // Blocked on a prompt reads as "idle" to the output diff; it is not (#815).
+        if (member.sessionName && this.getWaitingOnHumanSince(member.sessionName)) continue;
         if (
           (AGENT_SUSPEND_CONSTANTS.ALWAYS_ON_ROLES as readonly string[]).includes(member.role)
         ) {

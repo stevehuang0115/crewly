@@ -1,0 +1,22 @@
+  it couldn't run directly. It should finish in about 30 seconds, and I'll share the output when it does.
+
+✻ Baked for 18s · done 10:46 AM · 1 shell still running
+
+❯ Write an 800-word essay about ocean tides directly in your reply. No tools.
+
+⏺ The Pull of Distant Bodies: Understanding Ocean Tides
+
+  Twice a day, along nearly every coastline on Earth, the sea draws back and then returns. Fishing boats settle into the
+  mud of a drained harbor, and hours later they float again. Tide pools fill and empty, and beaches lose and regain
+  their width. People have organized their lives around this rhythm for as long as they have lived by the shore. The
+  cause lies hundreds of thousands of kilometers away, in the steady gravitational pull of the Moon and the Sun.
+
+  The Gravitational Engine
+
+  The main cause of tides is the Moon's gravity. It is often said that the Moon simply pulls the ocean toward it, but
+  that account leaves out something important. Gravity weakens with distance, so the Moon pulls hardest on the side of
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏵⏵ auto mode on · 1 shell · esc to interrupt · ← for agents · ↓ to manage

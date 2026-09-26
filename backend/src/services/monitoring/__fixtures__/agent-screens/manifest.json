@@ -1,0 +1,15 @@
+{
+  "_comment": "Real screens captured 2026-09-26 in tmux (120 cols) from Claude Code 2.1.283 and Codex 0.157.1, with paths, host and user names scrubbed. title = the OSC title tmux reported at capture time. Used by agent-attention.test.ts (#815).",
+  "fixtures": [
+    { "file": "claude-bash-permission.txt", "runtime": "claude-code", "title": "✳ Create output directory and timestamp", "expected": "waiting_on_human", "kind": "permission" },
+    { "file": "claude-trust-dialog.txt", "runtime": "claude-code", "title": "host", "expected": "waiting_on_human", "kind": "trust" },
+    { "file": "claude-plan-menu.txt", "runtime": "claude-code", "title": "✳ hello.py print statement", "expected": "waiting_on_human", "kind": "plan" },
+    { "file": "claude-onboarding-menu.txt", "runtime": "claude-code", "title": "host", "expected": "waiting_on_human", "kind": "menu" },
+    { "file": "codex-command-approval.txt", "runtime": "codex-cli", "title": "[ ! ] Action Required | ⠸ | project", "expected": "waiting_on_human", "kind": "permission" },
+    { "file": "codex-trust-dialog.txt", "runtime": "codex-cli", "title": "host", "expected": "waiting_on_human", "kind": "trust" },
+    { "file": "claude-busy.txt", "runtime": "claude-code", "title": "✳ Sleep and echo command", "expected": "busy" },
+    { "file": "codex-busy.txt", "runtime": "codex-cli", "title": "⠧ Create newfile.txt | project", "expected": "busy" },
+    { "file": "claude-idle.txt", "runtime": "claude-code", "title": "✳ Claude Code", "expected": "idle" },
+    { "file": "codex-idle.txt", "runtime": "codex-cli", "title": "Create newfile.txt | project", "expected": "idle" }
+  ]
+}

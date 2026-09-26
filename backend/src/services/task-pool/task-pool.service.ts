@@ -42,6 +42,7 @@ import {
 } from '../../types/v2/work-item.types.js';
 import type {
   WorkItemDisposition,
+  WorkItemBlockSource,
   TransitionActor,
   TransitionActorInput,
 } from '../../types/v2/work-item.types.js';
@@ -2786,6 +2787,12 @@ export class TaskPoolService {
      *   - Ignored for other status transitions.
      */
     reason?: string,
+    /**
+     * Optional `WorkItem.blockSource` to set atomically with a transition
+     * INTO `blocked` (the waiting_on_human rule passes
+     * WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN, #815). Ignored otherwise.
+     */
+    blockSource?: WorkItemBlockSource,
   ): Promise<void> {
     const items = await this.storage.getWorkItems();
     const item = items.find((wi) => wi.id === workItemId);
@@ -2857,6 +2864,9 @@ export class TaskPoolService {
       // explicit blockItem.
       if (newStatus === 'blocked' && typeof reason === 'string' && reason.length > 0) {
         wi.blockedReason = reason;
+      }
+      if (newStatus === 'blocked' && blockSource) {
+        wi.blockSource = blockSource;
       }
       // Ticket loop Phase 3: an agent picks its own unblocked work back up
       // before new work, so remember that this item was blocked.

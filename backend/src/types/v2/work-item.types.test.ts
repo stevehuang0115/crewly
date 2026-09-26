@@ -297,10 +297,10 @@ describe('WorkItem Types', () => {
           for (const to of WORK_ITEM_TRANSITIONS[from]) legal.push(`${from}→${to}`);
         }
         // Report what was examined: an empty edge set would make this vacuous.
-        expect(legal.length).toBe(26);
+        expect(legal.length).toBe(27);
         const missing = legal.filter((k) => !TRANSITION_PERMISSIONS[k]);
         const extra = Object.keys(TRANSITION_PERMISSIONS).filter((k) => !legal.includes(k));
-        expect({ examined: legal.length, missing, extra }).toEqual({ examined: 26, missing: [], extra: [] });
+        expect({ examined: legal.length, missing, extra }).toEqual({ examined: 27, missing: [], extra: [] });
       });
 
       it('refuses an unlisted transition for every actor, system included', () => {

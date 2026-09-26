@@ -34,6 +34,7 @@ import {
   detectExpiredClaims,
   reconcileRequestStatus,
   detectRecoverableWorkItems,
+  detectWaitingOnHumanWorkItems,
   detectRetryableFailedWorkItems,
   detectUndisposedStrandedWorkItems,
   detectDependencyResolvedWorkItems,
@@ -212,6 +213,12 @@ export class ReconcilerService {
       const recoverable = detectRecoverableWorkItems(workItems, agentHealthMap);
       result.corrections.push(...recoverable.corrections);
       result.workItemsRequeued += recoverable.recoverableIds.length;
+
+      // 3a. waiting_on_human (#815): park running work whose agent sits on a
+      // prompt, resume it when the prompt is gone.
+      const waiting = detectWaitingOnHumanWorkItems(workItems, agentHealthMap);
+      result.corrections.push(...waiting.corrections);
+      result.workItemsRequeued += waiting.requeuedIds.length;
 
       // 3b. Auto-retry failed WorkItems with remaining retries
       const retryable = detectRetryableFailedWorkItems(workItems);

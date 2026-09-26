@@ -17,6 +17,7 @@ import {
 import { ReconcilerService } from '../reconciler/reconciler.service.js';
 import type { ReconcilerDataProvider } from '../reconciler/reconciler.service.js';
 import type { AgentHealth } from '../reconciler/reconcile-rules.js';
+import { detectWaitingOnHumanWorkItems, detectRecoverableWorkItems } from '../reconciler/reconcile-rules.js';
 import type { WakeAction, WorkItemStatus } from '../../types/v2/index.js';
 import * as fs from 'fs/promises';
 import * as path from 'path';
@@ -2860,6 +2861,46 @@ describe('TaskPoolService', () => {
       const items = await service.getAllItems();
       const updated = items.find(i => i.id === wi.id);
       expect(updated!.status).toBe('blocked');
+    });
+
+    it('waiting_on_human full cycle: running -> blocked -> running through the real state machine (#815)', async () => {
+      const wi = makeWorkItem({ target: 'agent-leo' });
+      await service.addToPool(wi);
+      await service.claimFromPool('agent-leo');
+      const now = Date.now();
+      const apply = async (corrections: ReturnType<typeof detectWaitingOnHumanWorkItems>['corrections']) => {
+        for (const c of corrections) {
+          await service.updateItemStatus(c.entityId, c.newState as WorkItemStatus, { role: 'system', via: 'reconciler' }, c.reason, c.blockSource);
+        }
+      };
+      const current = async () => (await service.getAllItems()).find((i) => i.id === wi.id)!;
+
+      // Waiting 6 min on a prompt -> parked as blocked, with the waiting_on_human source.
+      const waitingMap = new Map([['agent-leo', {
+        sessionName: 'agent-leo', status: 'active' as const,
+        waitingOnHumanSince: new Date(now - 6 * 60_000).toISOString(),
+      }]]);
+      const park = detectWaitingOnHumanWorkItems([await current()], waitingMap, now);
+      expect(park.blockedIds).toEqual([wi.id]);
+      await apply(park.corrections);
+      const parked = await current();
+      expect(parked.status).toBe('blocked');
+      expect(parked.blockSource).toBe(WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN);
+      expect(parked.blockedReason).toMatch(/^waiting_on_human/);
+      expect(parked.retryCount).toBe(0);
+
+      // The agent-back-online rule must leave it alone (else the two rules fight).
+      const activeMap = new Map([['agent-leo', { sessionName: 'agent-leo', status: 'active' as const }]]);
+      expect(detectRecoverableWorkItems([parked], activeMap).corrections).toHaveLength(0);
+
+      // Prompt answered -> resumed to running, source cleared, still no retry counted.
+      const resume = detectWaitingOnHumanWorkItems([parked], activeMap, now);
+      expect(resume.resumedIds).toEqual([wi.id]);
+      await apply(resume.corrections);
+      const resumed = await current();
+      expect(resumed.status).toBe('running');
+      expect(resumed.blockSource).toBeUndefined();
+      expect(resumed.retryCount).toBe(0);
     });
 
     it('throws for nonexistent item', async () => {
