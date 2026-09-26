@@ -208,6 +208,12 @@ export const RUNTIME_TYPES = {
 	CODEX_CLI: 'codex-cli',
 	/** OpenCode (opencode.ai) — open-source TUI coding agent, issue #306 */
 	OPENCODE_CLI: 'opencode-cli',
+	/**
+	 * Google Antigravity CLI (`agy`), the successor to Gemini CLI for
+	 * individual users. Driven only with a Gemini API key — see
+	 * specs/antigravity-runtime.md for why account (OAuth) login is refused.
+	 */
+	ANTIGRAVITY_CLI: 'antigravity-cli',
 	CREWLY_AGENT: 'crewly-agent',
 } as const;
 
@@ -1506,12 +1512,16 @@ export const CONTEXT_WINDOW_MONITOR_CONSTANTS = {
  * - Gemini CLI: `/compress`
  * - Codex CLI: `/compact`
  * - OpenCode CLI: `/compact`
+ * - Antigravity CLI: none (it compacts by itself)
  */
 export const RUNTIME_COMPACT_COMMANDS: Record<RuntimeType, string> = {
 	'claude-code': '/compact',
 	'gemini-cli': '/compress',
 	'codex-cli': '/compact',
 	'opencode-cli': '/compact',
+	// Antigravity compacts on its own ("Conversation compacted") and has no
+	// compact slash command; its context use is not painted on screen either.
+	'antigravity-cli': '',
 	'crewly-agent': '',
 } as const;
 
@@ -1641,6 +1651,150 @@ export const RUNTIME_INPUT_READY_PATTERNS = {
 			'select auth method',
 			'get started /connect',
 		],
+	},
+	ANTIGRAVITY_CLI: {
+		/**
+		 * Antigravity (`agy` 1.2.x) keeps its `>` input box painted while the
+		 * model runs, and echoes every submitted message as `> text`, so the
+		 * idle signal is the `? for shortcuts` footer (see isPromptLine) and
+		 * these markers veto it: the busy footer / spinner label, the
+		 * double-press exit hint, tool-approval dialogs, and the first-run,
+		 * folder-trust and account sign-in screens. Captured from agy 1.2.11
+		 * in a PTY (2026-09-25); the approval and sign-in strings come from
+		 * the agy binary because they cannot be shown without a model turn or
+		 * an account login.
+		 */
+		NOT_READY_MARKERS: [
+			'esc to cancel',
+			'generating...',
+			'press ctrl+c again to exit',
+			'press ctrl+d again to exit',
+			'run this command?',
+			'accept this file edit?',
+			'do you trust the contents of this project?',
+			'choose your color scheme',
+			'terms of service & data use',
+			'select login method',
+			'you are currently not signed in',
+			'waiting for authentication',
+		],
+	},
+} as const;
+
+/** Reasoning-effort levels `agy --effort` accepts (from `agy --help`, 1.2.11). */
+export const ANTIGRAVITY_EFFORT_LEVELS: readonly string[] = ['low', 'medium', 'high', 'max'];
+
+/**
+ * Facts about Google Antigravity CLI (`agy`) that Crewly relies on.
+ *
+ * Sources: https://antigravity.google/docs/cli/install/ and
+ * https://antigravity.google/docs/cli/headless/ (read 2026-09-25), plus the
+ * screens of agy 1.2.11 captured in a PTY with a sandboxed HOME and a dummy
+ * key. See specs/antigravity-runtime.md.
+ *
+ * Policy: Google prohibits third-party tools from using Antigravity (or
+ * Gemini CLI) product OAuth, so Crewly only ever runs agy with a Gemini API
+ * key: `modelProvider: "gemini"` in agy's settings file plus
+ * `GEMINI_API_KEY` in the environment. With that provider agy "never
+ * establishes an account session", even when the machine has an account
+ * login in its keyring.
+ */
+export const ANTIGRAVITY_CONSTANTS = {
+	/** Binary name on PATH (the installer puts it in ~/.local/bin) */
+	BINARY: 'agy',
+	/**
+	 * Default launch command. `--dangerously-skip-permissions` approves tool
+	 * calls (shell commands included); `--mode=accept-edits` approves file
+	 * edits, which the docs govern separately from tool permissions.
+	 */
+	LAUNCH_COMMAND: 'agy --dangerously-skip-permissions --mode=accept-edits',
+	/** The only env var agy reads a Gemini key from (not GOOGLE_API_KEY, not .env) */
+	API_KEY_ENV: 'GEMINI_API_KEY',
+	/** Stops agy's background self-updater from replacing the binary mid-task */
+	DISABLE_AUTO_UPDATE_ENV: 'AGY_CLI_DISABLE_AUTO_UPDATE',
+	DISABLE_AUTO_UPDATE_VALUE: 'true',
+	/** agy's config dir, relative to $HOME */
+	CONFIG_DIR_SEGMENTS: ['.gemini', 'antigravity-cli'] as readonly string[],
+	/** agy's user settings file inside the config dir */
+	SETTINGS_FILE: 'settings.json',
+	/** Mode agy itself writes its settings file with */
+	SETTINGS_FILE_MODE: 0o600,
+	/** Settings key + the only accepted value that selects the Gemini API key provider */
+	MODEL_PROVIDER_KEY: 'modelProvider',
+	MODEL_PROVIDER_GEMINI: 'gemini',
+	/** Settings key listing folders the user trusted (skips the folder-trust screen) */
+	TRUSTED_WORKSPACES_KEY: 'trustedWorkspaces',
+	/** One `<conversation id>.db` per conversation, created at the first prompt */
+	CONVERSATIONS_DIR: 'conversations',
+	CONVERSATION_FILE_EXT: '.db',
+	/** Workspace path → most recent conversation id (what `agy -c` reads) */
+	LAST_CONVERSATIONS_FILE_SEGMENTS: ['cache', 'last_conversations.json'] as readonly string[],
+	/** Resume flag: `agy --conversation=<id>` (printed by agy itself on exit) */
+	RESUME_FLAG: '--conversation',
+	/** Launch flag that adds a folder to the workspace (repeatable) */
+	ADD_DIR_FLAG: '--add-dir',
+	/** Slash command that adds a folder to a running session's workspace */
+	ADD_DIR_COMMAND: '/add-dir',
+	/**
+	 * How long to look for a fresh agent's conversation id. agy creates the
+	 * conversation only when the first prompt (the registration kickoff)
+	 * arrives, which can be ~90 s after launch.
+	 */
+	CONVERSATION_DISCOVERY_TIMEOUT_MS: 5 * 60 * 1000,
+	CONVERSATION_DISCOVERY_INTERVAL_MS: 2_000,
+	/** Official installer; fetched only from this exact https URL */
+	INSTALL_SCRIPT_URL: 'https://antigravity.google/cli/install.sh',
+	/** Update subcommand, used when agy is already installed */
+	UPDATE_ARGS: ['update'] as readonly string[],
+	/** Where users create a Gemini API key */
+	API_KEY_CONSOLE_URL: 'https://aistudio.google.com/apikey',
+	/** Cheap authenticated call used to check a pasted key (key sent as a header, never in the URL) */
+	GEMINI_API: {
+		MODELS_URL: 'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1',
+		KEY_HEADER: 'x-goog-api-key',
+		CHECK_TIMEOUT_MS: 10_000,
+		/** Statuses that mean the key itself is unusable (400 API_KEY_INVALID, 401, 403 PERMISSION_DENIED) */
+		REJECTED_STATUSES: [400, 401, 403] as readonly number[],
+	},
+	/** Screen text (agy 1.2.11), matched as plain substrings */
+	SCREEN: {
+		/** Idle footer, shown only while the prompt box is empty and nothing runs */
+		IDLE_FOOTER: '? for shortcuts',
+		/** Header line when the Gemini API key provider is active (instead of an account email) */
+		API_KEY_HEADER: 'Gemini API key',
+		/** Placeholder of the empty prompt box in accept-edits mode */
+		ACCEPT_EDITS_PLACEHOLDER: 'Accept-edits mode: file edits auto-approved',
+		/** Folder-trust screen and its pre-selected "yes" option */
+		TRUST_PROMPT: 'Do you trust the contents of this project?',
+		TRUST_ACCEPT_OPTION: 'Yes, I trust this folder',
+		/** First-run onboarding (colour scheme, then Terms of Service and data use) */
+		FIRST_RUN_MARKERS: ['Welcome to Antigravity CLI!', 'Choose your color scheme:', 'Terms of Service & Data Use'] as readonly string[],
+		/** Account sign-in screens (from the binary): agy is NOT on the API-key provider */
+		ACCOUNT_LOGIN_MARKERS: [
+			'Select login method:',
+			'Other sign-in options',
+			'You are currently not signed in.',
+			'Waiting for authentication...',
+			'Select Google Cloud sign-in method:',
+		] as readonly string[],
+		/** agy's own startup refusal when the provider is gemini but the key env var is empty */
+		MISSING_KEY_ERROR: 'but the GEMINI_API_KEY environment variable is not set',
+		/** A rejected key surfaces on the first turn */
+		INVALID_KEY_ERROR: 'API_KEY_INVALID',
+		/** Printed on exit, before `agy --conversation=<id>` */
+		EXIT_RESUME_HINT: 'Resume with -c (or command below):',
+		/** Confirmation of `/add-dir <path>` */
+		ADD_DIR_CONFIRMATION: 'to workspace',
+	},
+	MESSAGES: {
+		NO_API_KEY:
+			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
+		ACCOUNT_LOGIN:
+			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Harness, then start the agent again.',
+		FIRST_RUN:
+			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. In a terminal run `GEMINI_API_KEY=<your key> agy`, finish those screens, type /exit, then start the agent again.',
+		SETTINGS_UNREADABLE:
+			'Crewly could not switch Antigravity CLI to your Gemini API key because ~/.gemini/antigravity-cli/settings.json is not valid JSON. Fix or remove that file, then start the agent again.',
 	},
 } as const;
 

@@ -307,6 +307,7 @@ export class SettingsService {
         'gemini-cli': defaults.general.runtimeCommands['gemini-cli'],
         'codex-cli': defaults.general.runtimeCommands['codex-cli'],
         'opencode-cli': defaults.general.runtimeCommands['opencode-cli'],
+        'antigravity-cli': defaults.general.runtimeCommands['antigravity-cli'],
         'crewly-agent': defaults.general.runtimeCommands['crewly-agent'],
       } satisfies Record<AIRuntime, string>;
     }

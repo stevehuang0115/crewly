@@ -365,6 +365,28 @@ describe('isPromptLine', () => {
 		});
 	});
 
+	describe('Antigravity CLI', () => {
+		// Lines captured from agy 1.2.11 in a 120-column PTY (2026-09-25).
+		const IDLE_FOOTER = '? for shortcuts                                                                      accept-edits · Gemini 3.1 Pro · low';
+
+		it('treats the idle footer as the prompt', () => {
+			expect(isPromptLine(IDLE_FOOTER, RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(true);
+			expect(isPromptLine('? for shortcuts                    Gemini 3.1 Pro · low', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(true);
+		});
+
+		it('does not treat the input box or echoed messages as a prompt', () => {
+			expect(isPromptLine('>', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(false);
+			expect(isPromptLine('> say hello', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(false);
+			expect(isPromptLine('> Accept-edits mode: file edits auto-approved (shift+tab to cycle)', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(false);
+		});
+
+		it('does not match the busy, typing or exit-confirm footers', () => {
+			expect(isPromptLine('esc to cancel                                                                        accept-edits · Gemini 3.1 Pro · low', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(false);
+			expect(isPromptLine('                                                                                     accept-edits · Gemini 3.1 Pro · low', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(false);
+			expect(isPromptLine('press ctrl+c again to exit                                                          Gemini 3.1 Pro · low', RUNTIME_TYPES.ANTIGRAVITY_CLI)).toBe(false);
+		});
+	});
+
 	describe('Gemini CLI', () => {
 		it('should detect > prompt', () => {
 			expect(isPromptLine('> hello', RUNTIME_TYPES.GEMINI_CLI)).toBe(true);
@@ -443,6 +465,13 @@ describe('containsSpinnerOrWorkingIndicator', () => {
 
 	it('should detect spinner ⠹', () => {
 		expect(containsSpinnerOrWorkingIndicator('⠹ working')).toBe(true);
+	});
+
+	it('should detect the 8-dot braille frames Antigravity CLI paints (⣯  Generating...)', () => {
+		expect(containsSpinnerOrWorkingIndicator('⣯  Generating...')).toBe(true);
+		for (const frame of ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷']) {
+			expect(containsSpinnerOrWorkingIndicator(frame)).toBe(true);
+		}
 	});
 
 	it('should detect working indicator ⏺', () => {

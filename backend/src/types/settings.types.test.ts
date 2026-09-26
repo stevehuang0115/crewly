@@ -39,11 +39,12 @@ describe('Settings Types', () => {
       expect(AI_RUNTIMES).toContain('gemini-cli');
       expect(AI_RUNTIMES).toContain('codex-cli');
       expect(AI_RUNTIMES).toContain('opencode-cli');
+      expect(AI_RUNTIMES).toContain('antigravity-cli');
       expect(AI_RUNTIMES).toContain('crewly-agent');
     });
 
-    it('should have exactly 5 runtimes', () => {
-      expect(AI_RUNTIMES).toHaveLength(5);
+    it('should have exactly 6 runtimes', () => {
+      expect(AI_RUNTIMES).toHaveLength(6);
     });
   });
 
@@ -72,6 +73,7 @@ describe('Settings Types', () => {
           'gemini-cli': 'gemini --yolo',
           'codex-cli': 'codex -a never -s danger-full-access',
           'opencode-cli': 'opencode --auto',
+          'antigravity-cli': 'agy --dangerously-skip-permissions --mode=accept-edits',
           'crewly-agent': 'crewly-agent-in-process',
         },
         agentIdleTimeoutMinutes: 10,
@@ -108,6 +110,7 @@ describe('Settings Types', () => {
           'gemini-cli': '/custom/gemini --custom-flag',
           'codex-cli': '/custom/codex --custom-flag',
           'opencode-cli': '/custom/opencode --auto',
+          'antigravity-cli': '/custom/agy --dangerously-skip-permissions',
           'crewly-agent': 'crewly-agent-in-process',
         },
         agentIdleTimeoutMinutes: 15,
@@ -176,6 +179,7 @@ describe('Settings Types', () => {
             'gemini-cli': 'gemini --yolo',
             'codex-cli': 'codex -a never -s danger-full-access',
             'opencode-cli': 'opencode --auto',
+            'antigravity-cli': 'agy --dangerously-skip-permissions --mode=accept-edits',
             'crewly-agent': 'crewly-agent-in-process',
           },
           agentIdleTimeoutMinutes: 10,
@@ -325,6 +329,11 @@ describe('Settings Types', () => {
     it('defaults opencode-cli to `opencode --auto` (auto-approve permissions, issue #306)', () => {
       const defaults = getDefaultSettings();
       expect(defaults.general.runtimeCommands['opencode-cli']).toBe('opencode --auto');
+    });
+
+    it('defaults antigravity-cli to agy approving tools and file edits', () => {
+      const defaults = getDefaultSettings();
+      expect(defaults.general.runtimeCommands['antigravity-cli']).toBe('agy --dangerously-skip-permissions --mode=accept-edits');
     });
 
     it('defaults crewly-agent to the managed binary, NOT the stale in-process sentinel (issue #693)', () => {
@@ -627,6 +636,7 @@ describe('Settings Types', () => {
             'gemini-cli': 'custom-gemini',
             'codex-cli': 'custom-codex',
             'opencode-cli': 'custom-opencode',
+            'antigravity-cli': 'custom-agy',
             'crewly-agent': 'custom-agent',
           },
         },
@@ -680,6 +690,7 @@ describe('Settings Types', () => {
       expect(getAIRuntimeDisplayName('gemini-cli')).toBe('Gemini CLI');
       expect(getAIRuntimeDisplayName('codex-cli')).toBe('Codex CLI');
       expect(getAIRuntimeDisplayName('opencode-cli')).toBe('OpenCode CLI');
+      expect(getAIRuntimeDisplayName('antigravity-cli')).toBe('Antigravity CLI');
     });
 
     it('should handle unknown runtime gracefully', () => {

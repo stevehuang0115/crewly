@@ -38,7 +38,7 @@ export interface TeamMember {
   systemPrompt: string;
   agentStatus: 'inactive' | 'starting' | 'started' | 'active' | 'suspended' | 'activating'; // Connection/registration status (activating is deprecated)
   workingStatus: 'idle' | 'in_progress'; // Activity level status
-  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent'; // AI runtime to use
+  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent'; // AI runtime to use
   /**
    * Per-agent model. For the PTY runtimes this is the name the harness
    * itself accepts and is passed at launch (`claude --model opus`,

@@ -230,7 +230,7 @@ export interface GenerateMemberContextQuery {
  * Request body for updating team member runtime type
  */
 export interface UpdateTeamMemberRuntimeRequestBody {
-  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+  runtimeType: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent';
 }
 
 /**
@@ -240,7 +240,7 @@ export interface TeamMemberUpdate {
   name: string;
   role: string;
   systemPrompt: string;
-  runtimeType?: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+  runtimeType?: 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent';
   /** Per-agent model (see `TeamMember.modelId`) */
   modelId?: string;
   /** Per-agent reasoning effort (see `TeamMember.reasoningEffort`) */

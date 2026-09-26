@@ -28,6 +28,13 @@
       "timeout": 90000,
       "description": "OpenCode open-source TUI coding agent (opencode.ai), any provider/model"
     },
+    "antigravity-cli": {
+      "displayName": "Antigravity CLI",
+      "initScript": "",
+      "welcomeMessage": "? for shortcuts",
+      "timeout": 90000,
+      "description": "Google Antigravity CLI (agy), run with a Gemini API key only"
+    },
     "crewly-agent": {
       "displayName": "Crewly Agent",
       "initScript": "",

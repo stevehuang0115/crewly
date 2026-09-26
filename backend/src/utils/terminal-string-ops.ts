@@ -12,7 +12,11 @@ import { RUNTIME_TYPES, type RuntimeType } from '../constants.js';
 
 // ─── Character sets ───────────────────────────────────────────────────────────
 
-/** Braille spinner characters used by Claude Code to indicate processing. */
+/**
+ * Braille spinner characters that indicate processing: the 6-dot "dots"
+ * frames Claude Code uses, and the 8-dot "dots2" frames Antigravity CLI
+ * paints before `Generating...` (captured from agy 1.2.11: `⣯  Generating...`).
+ */
 const SPINNER_CHARS = new Set([
 	0x280B, // ⠋
 	0x2819, // ⠙
@@ -24,10 +28,27 @@ const SPINNER_CHARS = new Set([
 	0x2827, // ⠧
 	0x2807, // ⠇
 	0x280F, // ⠏
+	0x28FE, // ⣾
+	0x28FD, // ⣽
+	0x28FB, // ⣻
+	0x28BF, // ⢿
+	0x287F, // ⡿
+	0x28DF, // ⣟
+	0x28EF, // ⣯
+	0x28F7, // ⣷
 ]);
 
 /** Filled circle (⏺ U+23FA) — Claude Code working indicator. */
 const WORKING_INDICATOR_CODE = 0x23FA; // ⏺
+
+/**
+ * Antigravity CLI idle footer (lower-cased prefix). agy shows it only while
+ * the prompt box is empty and nothing runs; typing blanks it and a running
+ * turn replaces it with `esc to cancel`. It is agy's prompt signal because
+ * the `>` box stays painted while busy and every submitted message is
+ * echoed as `> text`.
+ */
+const ANTIGRAVITY_IDLE_FOOTER = '? for shortcuts';
 
 /** OpenCode TUI empty-input placeholder (lower-cased prefix, normal mode). */
 const OPENCODE_PROMPT_PLACEHOLDER = 'ask anything';
@@ -416,6 +437,7 @@ export function matchTuiPromptLine(line: string): string | null {
  * Codex CLI:   › or bordered │ ›
  * OpenCode:    no prompt glyph — the input box shows the `Ask anything…`
  *              placeholder (or `Run a command…` in shell mode) when empty
+ * Antigravity: no usable glyph — the `? for shortcuts` idle footer
  *
  * @param line - A single non-empty terminal line (already stripped of ANSI)
  * @param runtimeType - The agent runtime type
@@ -431,6 +453,14 @@ export function isPromptLine(line: string, runtimeType?: RuntimeType): boolean {
 	const isClaudeCode = runtimeType === RUNTIME_TYPES.CLAUDE_CODE;
 	const isCodex = runtimeType === RUNTIME_TYPES.CODEX_CLI;
 	const isOpenCode = runtimeType === RUNTIME_TYPES.OPENCODE_CLI;
+	const isAntigravity = runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI;
+
+	// Antigravity — the idle footer only. `>` lines are its input box (painted
+	// while busy too) or echoes of submitted messages, so glyph rules would
+	// report "idle" in the middle of a turn.
+	if (isAntigravity) {
+		return stripped.toLowerCase().startsWith(ANTIGRAVITY_IDLE_FOOTER);
+	}
 
 	// OpenCode prompts — textual placeholder only. Its TUI paints `>`-quoted
 	// model output and `❯`-style glyphs nowhere near the input box, so the

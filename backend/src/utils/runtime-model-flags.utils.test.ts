@@ -26,7 +26,35 @@ describe('runtime-model-flags', () => {
     });
   });
 
+  describe('buildRuntimeModelFlags — antigravity-cli', () => {
+    it('uses agy --model with an `agy models` slug', () => {
+      expect(buildRuntimeModelFlags('antigravity-cli', 'gemini-3.8-flash-high')).toEqual(['--model', 'gemini-3.8-flash-high']);
+    });
+
+    it('adds --effort only for the levels agy --help lists', () => {
+      expect(buildRuntimeModelFlags('antigravity-cli', undefined, 'max')).toEqual(['--effort', 'max']);
+      expect(buildRuntimeModelFlags('antigravity-cli', 'gemini-3.1-pro-high', 'low')).toEqual([
+        '--model', 'gemini-3.1-pro-high', '--effort', 'low',
+      ]);
+      expect(buildRuntimeModelFlags('antigravity-cli', undefined, 'xhigh')).toEqual([]);
+    });
+  });
+
   describe('injectRuntimeFlags', () => {
+    it('puts agy flags right after the binary, even behind an env prefix', () => {
+      expect(
+        injectRuntimeFlags('AGY_CLI_DISABLE_AUTO_UPDATE=true agy --dangerously-skip-permissions --mode=accept-edits', 'antigravity-cli', [
+          '--model', 'gemini-3.8-flash-high',
+        ]),
+      ).toBe('AGY_CLI_DISABLE_AUTO_UPDATE=true agy --model gemini-3.8-flash-high --dangerously-skip-permissions --mode=accept-edits');
+    });
+
+    it('replaces an agy --model / --effort already in the command', () => {
+      expect(injectRuntimeFlags('agy --model=gemini-3.1-pro-low --effort high --mode=accept-edits', 'antigravity-cli', ['--model', 'x', '--effort', 'low'])).toBe(
+        'agy --model x --effort low --mode=accept-edits',
+      );
+    });
+
     it('places flags right after the binary for every runtime', () => {
       expect(injectRuntimeFlags('claude --dangerously-skip-permissions', 'claude-code', ['--model', 'opus'])).toBe(
         'claude --model opus --dangerously-skip-permissions',

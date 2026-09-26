@@ -7,12 +7,12 @@
  * @module types/settings.types
  */
 
-import { CREWLY_AGENT_MANAGED_COMMAND } from '../constants.js';
+import { ANTIGRAVITY_CONSTANTS, CREWLY_AGENT_MANAGED_COMMAND } from '../constants.js';
 
 /**
  * Available AI runtime options
  */
-export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+export type AIRuntime = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent';
 
 /**
  * Array of all valid AI runtimes
@@ -22,6 +22,7 @@ export const AI_RUNTIMES: readonly AIRuntime[] = [
   'gemini-cli',
   'codex-cli',
   'opencode-cli',
+  'antigravity-cli',
   'crewly-agent',
 ] as const;
 
@@ -353,6 +354,9 @@ export function getDefaultSettings(): CrewlySettings {
         // denied in opencode.json — the OpenCode equivalent of the danger /
         // yolo flags above (issue #306).
         'opencode-cli': 'opencode --auto',
+        // Approves tool calls and file edits; the Gemini API key provider is
+        // forced separately (specs/antigravity-runtime.md).
+        'antigravity-cli': ANTIGRAVITY_CONSTANTS.LAUNCH_COMMAND,
         // The managed external binary (PR #599). NOT 'crewly-agent-in-process'
         // — that stale sentinel shelled out to a non-existent command and
         // exited 127 (issue #693).
@@ -688,6 +692,8 @@ export function getAIRuntimeDisplayName(runtime: AIRuntime): string {
       return 'Codex CLI';
     case 'opencode-cli':
       return 'OpenCode CLI';
+    case 'antigravity-cli':
+      return 'Antigravity CLI';
     case 'crewly-agent':
       return 'Crewly Agent';
     default:

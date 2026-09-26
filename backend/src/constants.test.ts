@@ -7,6 +7,8 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+  ANTIGRAVITY_CONSTANTS,
+  ANTIGRAVITY_EFFORT_LEVELS,
   API_SECURITY_CONSTANTS,
   BROWSER_PROXY_CONSTANTS,
   CLOUD_SYNC_CONSTANTS,
@@ -165,6 +167,64 @@ describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
       expect(marker).toBe(marker.toLowerCase());
       expect(marker).not.toMatch(/\s{2,}/);
     }
+  });
+});
+
+describe('RUNTIME_TYPES (antigravity-cli)', () => {
+  it('registers Antigravity CLI as a PTY runtime', () => {
+    expect(RUNTIME_TYPES.ANTIGRAVITY_CLI).toBe('antigravity-cli');
+  });
+
+  it('has no compact command: agy compacts by itself and has no slash command for it', () => {
+    expect(RUNTIME_COMPACT_COMMANDS['antigravity-cli']).toBe('');
+  });
+
+  it('keeps not-ready markers lower-case and whitespace-collapsed', () => {
+    const markers = RUNTIME_INPUT_READY_PATTERNS.ANTIGRAVITY_CLI.NOT_READY_MARKERS;
+    expect(markers).toEqual(expect.arrayContaining(['esc to cancel', 'generating...', 'select login method']));
+    for (const marker of markers) {
+      expect(marker).toBe(marker.toLowerCase());
+      expect(marker).not.toMatch(/\s{2,}/);
+    }
+  });
+
+  it('never adds an Antigravity sign-in screen to the login-required patterns (the owner must not be asked to sign in)', () => {
+    for (const marker of ANTIGRAVITY_CONSTANTS.SCREEN.ACCOUNT_LOGIN_MARKERS) {
+      const lower = marker.toLowerCase();
+      const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) => set.every((pattern) => lower.includes(pattern.toLowerCase())));
+      expect(matched).toBe(false);
+    }
+  });
+});
+
+describe('ANTIGRAVITY_CONSTANTS', () => {
+  it('launches agy approving tools and file edits', () => {
+    expect(ANTIGRAVITY_CONSTANTS.LAUNCH_COMMAND).toBe('agy --dangerously-skip-permissions --mode=accept-edits');
+  });
+
+  it('selects the Gemini API key provider the way the install docs describe', () => {
+    expect(ANTIGRAVITY_CONSTANTS.CONFIG_DIR_SEGMENTS).toEqual(['.gemini', 'antigravity-cli']);
+    expect(ANTIGRAVITY_CONSTANTS.SETTINGS_FILE).toBe('settings.json');
+    expect(ANTIGRAVITY_CONSTANTS.MODEL_PROVIDER_KEY).toBe('modelProvider');
+    expect(ANTIGRAVITY_CONSTANTS.MODEL_PROVIDER_GEMINI).toBe('gemini');
+    expect(ANTIGRAVITY_CONSTANTS.API_KEY_ENV).toBe('GEMINI_API_KEY');
+  });
+
+  it('fetches the installer only from the official https URL', () => {
+    const url = new URL(ANTIGRAVITY_CONSTANTS.INSTALL_SCRIPT_URL);
+    expect(url.protocol).toBe('https:');
+    expect(url.hostname).toBe('antigravity.google');
+  });
+
+  it('checks keys against the Gemini API with the key in a header', () => {
+    const url = new URL(ANTIGRAVITY_CONSTANTS.GEMINI_API.MODELS_URL);
+    expect(url.hostname).toBe('generativelanguage.googleapis.com');
+    expect(url.search).not.toContain('key=');
+    expect(ANTIGRAVITY_CONSTANTS.GEMINI_API.KEY_HEADER).toBe('x-goog-api-key');
+  });
+
+  it('lists the effort levels agy --help accepts', () => {
+    expect(ANTIGRAVITY_EFFORT_LEVELS).toEqual(['low', 'medium', 'high', 'max']);
   });
 });
 

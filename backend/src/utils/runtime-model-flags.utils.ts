@@ -10,6 +10,7 @@
  * | codex-cli    | `-m <name>`           | `-c model_reasoning_effort="<level>"`     |
  * | gemini-cli   | `-m <name>`           | —                                         |
  * | opencode-cli | `--model <prov/model>`| —                                         |
+ * | antigravity-cli | `--model <slug>`   | `--effort low|medium|high|max`            |
  *
  * `buildRuntimeModelFlags` turns a member's `modelId` / `reasoningEffort`
  * into those flags; `injectRuntimeFlags` places any flag list right after
@@ -20,7 +21,7 @@
  * @module utils/runtime-model-flags
  */
 
-import { RUNTIME_TYPES } from '../constants.js';
+import { ANTIGRAVITY_EFFORT_LEVELS, RUNTIME_TYPES } from '../constants.js';
 
 /** Model names are passed to a shell: only the characters real model ids use. */
 const MODEL_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
@@ -33,6 +34,7 @@ const MODEL_FLAG_NAMES: Record<string, string[]> = {
   [RUNTIME_TYPES.CODEX_CLI]: ['--model', '-m'],
   [RUNTIME_TYPES.GEMINI_CLI]: ['--model', '-m'],
   [RUNTIME_TYPES.OPENCODE_CLI]: ['--model', '-m'],
+  [RUNTIME_TYPES.ANTIGRAVITY_CLI]: ['--model', '--effort'],
 };
 
 /** Runtime binaries, used to find the insertion point in a launch command. */
@@ -42,6 +44,7 @@ const RUNTIME_BINARY_RE: Record<string, RegExp> = {
   [RUNTIME_TYPES.CODEX_CLI]: /\bcodex(?:\s+resume)?\b/,
   [RUNTIME_TYPES.GEMINI_CLI]: /\bgemini\b/,
   [RUNTIME_TYPES.OPENCODE_CLI]: /\bopencode\b/,
+  [RUNTIME_TYPES.ANTIGRAVITY_CLI]: /\bagy\b/,
 };
 
 /**
@@ -71,7 +74,7 @@ export function isSafeReasoningEffort(effort: string | undefined): effort is str
  *
  * @param runtimeType - The member's runtime
  * @param modelId - Model name as the harness expects it (`opus`, `gpt-5.6-sol`, `anthropic/claude-sonnet-4`)
- * @param reasoningEffort - Optional effort level (Claude Code / Codex only)
+ * @param reasoningEffort - Optional effort level (Claude Code / Codex / Antigravity only)
  * @returns Flags to insert after the binary, e.g. `['--model', 'opus']`
  *
  * @example
@@ -97,6 +100,13 @@ export function buildRuntimeModelFlags(
       return model ? ['-m', model] : [];
     case RUNTIME_TYPES.OPENCODE_CLI:
       return model ? ['--model', model] : [];
+    case RUNTIME_TYPES.ANTIGRAVITY_CLI:
+      // Slugs from `agy models` (e.g. gemini-3.8-flash-high). The interactive
+      // TUI falls back to its default model on an unknown slug with a warning.
+      return [
+        ...(model ? ['--model', model] : []),
+        ...(effort && ANTIGRAVITY_EFFORT_LEVELS.includes(effort) ? ['--effort', effort] : []),
+      ];
     default:
       return [];
   }
@@ -117,7 +127,7 @@ function stripFlag(command: string, flagName: string): string {
 
 /**
  * Insert flags into a launch command right after the runtime binary
- * (`claude`, `codex`/`codex resume`, `gemini`, `opencode`). A flag that is
+ * (`claude`, `codex`/`codex resume`, `gemini`, `opencode`, `agy`). A flag that is
  * already present in the command is replaced. When the binary is not found
  * (custom wrapper scripts), the flags go before
  * `--dangerously-skip-permissions` if present, else at the end.

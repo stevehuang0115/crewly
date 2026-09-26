@@ -21,7 +21,7 @@ import type { TemplateRole } from './team-template.types.js';
 // =============================================================================
 
 /** Runtimes a bundle may recommend (equal to RUNTIME_TYPES values). */
-export type BundleRuntimeId = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'crewly-agent';
+export type BundleRuntimeId = 'claude-code' | 'gemini-cli' | 'codex-cli' | 'opencode-cli' | 'antigravity-cli' | 'crewly-agent';
 
 /** Hosted server tier (entry 2 vCPU / 4 GB, standard 4 / 8, advanced 8 / 16). */
 export type BundleServerTier = 'entry' | 'standard' | 'advanced';
