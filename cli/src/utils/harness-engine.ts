@@ -167,7 +167,7 @@ export function createBackendLoginDriver(baseUrl: string = localBackendUrl(), ht
 	const api = `${baseUrl}/api/harness`;
 	return {
 		where: 'backend',
-		start: async (harnessId, method) => unwrap(await http('POST', `${api}/${harnessId}/login`, { method })),
+		start: async (harnessId, method) => unwrap(await http('POST', `${api}/${harnessId}/login`, { method, force: true })),
 		get: async (sessionId) => unwrap(await http('GET', `${api}/login/${encodeURIComponent(sessionId)}`)),
 		input: async (sessionId, text) => unwrap(await http('POST', `${api}/login/${encodeURIComponent(sessionId)}/input`, { text })),
 		cancel: async (sessionId) => unwrap(await http('POST', `${api}/login/${encodeURIComponent(sessionId)}/cancel`)),

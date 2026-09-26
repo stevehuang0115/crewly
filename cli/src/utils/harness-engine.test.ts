@@ -57,7 +57,7 @@ describe('login drivers', () => {
 		await driver.input('s1', 'code#state');
 		await driver.cancel('s1');
 		expect(http.mock.calls).toEqual([
-			['POST', 'http://localhost:8787/api/harness/claude-code/login', { method: 'subscription' }],
+			['POST', 'http://localhost:8787/api/harness/claude-code/login', { method: 'subscription', force: true }],
 			['GET', 'http://localhost:8787/api/harness/login/s1'],
 			['POST', 'http://localhost:8787/api/harness/login/s1/input', { text: 'code#state' }],
 			['POST', 'http://localhost:8787/api/harness/login/s1/cancel'],

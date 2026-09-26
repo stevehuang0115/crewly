@@ -142,7 +142,8 @@ class HarnessService {
    */
   async startLogin(harnessId: HarnessId, method: BrokerLoginMethodId): Promise<LoginSession> {
     return call(
-      () => axios.post<ApiResponse<LoginSession>>(HARNESS_API.login(harnessId), { method }),
+      // The person pressed the button: re-login even if already logged in.
+      () => axios.post<ApiResponse<LoginSession>>(HARNESS_API.login(harnessId), { method, force: true }),
       'Failed to start login',
     );
   }

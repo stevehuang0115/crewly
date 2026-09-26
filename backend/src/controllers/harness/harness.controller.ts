@@ -155,6 +155,23 @@ export function createHarnessController(getService: () => HarnessService = getHa
 				return;
 			}
 			try {
+				// Starting a login logs the harness out first (`codex login`
+				// clears its credentials), so a stray start — or one cancelled —
+				// left a working login signed out (2026-09-26). Only with
+				// `force` (the user explicitly re-logging in) when it is already
+				// logged in.
+				const force = (req.body as { force?: unknown } | undefined)?.force === true;
+				if (!force) {
+					const status = await getService().getStatus(param(req, 'id'));
+					if (status.loginState === 'logged_in') {
+						res.status(409).json({
+							success: false,
+							code: 'already_logged_in',
+							error: `${status.displayName} is already logged in (${status.loginSource ?? 'existing login'}). Send force: true to log in again.`,
+						});
+						return;
+					}
+				}
 				res.json({ success: true, data: getService().startLogin(param(req, 'id'), method) });
 			} catch (error) {
 				sendError(res, error);

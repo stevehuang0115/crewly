@@ -54,6 +54,7 @@ function fakeService() {
 		getInstallJob: jest.fn(() => ({ jobId: 'job-1', harnessId: 'claude-code', state: 'succeeded', log: 'Installed.\n', usedUserPrefix: true })),
 		setOrcHarness: jest.fn(async (id: string) => id),
 		startLogin: jest.fn(() => SESSION),
+		getStatus: jest.fn(async () => ({ ...STATUS, loginState: 'logged_out' })),
 		submitApiKey: jest.fn(async () => ({ ...STATUS, loginState: 'logged_in', loginSource: 'crewly-api-key' })),
 		broker: {
 			get: jest.fn(() => SESSION),
@@ -130,6 +131,18 @@ describe('harness controller', () => {
 		expect(res.body).toEqual({ success: true, data: SESSION });
 		expect(mocks.startLogin).toHaveBeenCalledWith('claude-code', 'subscription');
 		expect((await request(appWith(service)).post('/api/harness/claude-code/login').send({})).status).toBe(400);
+	});
+
+	it('POST /:id/login refuses a harness that is already logged in unless forced (a start logs it out, 2026-09-26)', async () => {
+		const { service, mocks } = fakeService();
+		mocks.getStatus.mockResolvedValue({ ...STATUS, loginState: 'logged_in', loginSource: 'chatgpt' } as never);
+		const refused = await request(appWith(service)).post('/api/harness/codex-cli/login').send({ method: 'device' });
+		expect(refused.status).toBe(409);
+		expect(refused.body.code).toBe('already_logged_in');
+		expect(mocks.startLogin).not.toHaveBeenCalled();
+		const forced = await request(appWith(service)).post('/api/harness/codex-cli/login').send({ method: 'device', force: true });
+		expect(forced.status).toBe(200);
+		expect(mocks.startLogin).toHaveBeenCalledWith('codex-cli', 'device');
 	});
 
 	it('GET /login/:sessionId returns the session', async () => {

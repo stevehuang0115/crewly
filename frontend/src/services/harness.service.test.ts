@@ -70,7 +70,7 @@ describe('harnessService', () => {
     mocked.get.mockResolvedValue({ data: { success: true, data: s } });
 
     await harnessService.startLogin('codex-cli', 'device');
-    expect(mocked.post).toHaveBeenCalledWith('/api/harness/codex-cli/login', { method: 'device' });
+    expect(mocked.post).toHaveBeenCalledWith('/api/harness/codex-cli/login', { method: 'device', force: true });
 
     await harnessService.getLoginSession('s1');
     expect(mocked.get).toHaveBeenCalledWith('/api/harness/login/s1');
