@@ -30,6 +30,7 @@ import { createProvisioningRouter } from '../controllers/provisioning/provisioni
 import { createCloudRouter } from '../controllers/cloud/index.js';
 import { createPrReviewRouter } from '../controllers/pr-review/pr-review.routes.js';
 import { createApprovalsRouter } from '../controllers/approvals/approvals.routes.js';
+import { createAgentHooksRouter } from '../controllers/agent-hooks/agent-hooks.routes.js';
 import { createBrowserRouter } from '../controllers/browser/browser.routes.js';
 import { createCrossMachineRouter } from '../controllers/cross-machine/index.js';
 import { createWebsiteAnalysisRouter } from '../controllers/onboarding/website-analysis.routes.js';
@@ -149,6 +150,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Tool approval management routes for granular tool execution control
   router.use('/approvals', createApprovalsRouter());
+
+  // Agent-status hook events (#815): waiting_on_human signal from Claude Code hooks
+  router.use('/agent-hooks', createAgentHooksRouter());
 
   // Crewly in Chrome routes for browser control
   router.use('/browser', createBrowserRouter());

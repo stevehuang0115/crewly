@@ -323,12 +323,42 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 		'config/skills/orchestrator/start-team',
 		'config/skills/orchestrator/restart-crewly',
 		'config/hooks/control-plane-guard',
+		// #815: the agent-status hook runs on every tool call; an agent must not
+		// be able to silence or rewrite it.
+		'config/hooks/agent-status',
 		'dist',
 	],
 	/** Write-protected files under the install root. */
 	INSTALL_FILES: ['config/skills/_common/lib.sh'],
 	/** Write-protected directories under the agent's project path (whole subtree). */
 	PROJECT_DIRS: ['.claude/agents', '.crewly/triggers'],
+} as const;
+
+/**
+ * Agent-status hook (#815, specs/2026-09-26-agent-waiting-on-human.md): Claude
+ * Code hook events that tell the backend when an agent waits on the user.
+ * Registered in the control-plane guard's per-session settings file, never as
+ * a second settings file, and never on PreToolUse (that event is the guard's).
+ */
+export const AGENT_STATUS_HOOK_CONSTANTS = {
+	/** Hook script, relative to the install root. */
+	HOOK_SCRIPT: 'config/hooks/agent-status/report.sh',
+	/** Hook events the script is registered for. */
+	EVENTS: ['Notification', 'PermissionRequest', 'Stop', 'UserPromptSubmit', 'PostToolUse'],
+	/** Events that carry a tool matcher; they match every tool. */
+	TOOL_EVENTS: ['PermissionRequest', 'PostToolUse'],
+	/** Matcher that selects every tool. */
+	ALL_TOOLS_MATCHER: '*',
+	/** Notification types that mean "waiting on the user". */
+	WAITING_NOTIFICATION_TYPES: ['permission_prompt', 'elicitation_dialog'],
+	/** Every notification type the endpoint accepts (others are rejected). */
+	KNOWN_NOTIFICATION_TYPES: ['permission_prompt', 'elicitation_dialog', 'idle_prompt', 'auth_success'],
+	/** Max length of an accepted event or notification-type identifier. */
+	MAX_IDENTIFIER_LENGTH: 64,
+	/** Sessions whose latest hook signal is kept in memory (oldest dropped past this). */
+	MAX_TRACKED_SESSIONS: 500,
+	/** Accepted X-Agent-Session header value. */
+	SESSION_NAME_PATTERN: /^[A-Za-z0-9._-]{1,128}$/,
 } as const;
 
 /**

@@ -1,6 +1,6 @@
 import { promises as fs } from 'fs';
 import * as path from 'path';
-import { CONTROL_PLANE_GUARD_CONSTANTS } from '../../constants.js';
+import { CONTROL_PLANE_GUARD_CONSTANTS, AGENT_STATUS_HOOK_CONSTANTS } from '../../constants.js';
 
 /**
  * Control-plane guard for Claude Code agent sessions.
@@ -40,14 +40,20 @@ export interface ControlPlanePaths {
 	readDenied: string[];
 }
 
+/** One Claude Code hook group: an optional tool matcher and its commands. */
+export interface HookGroup {
+	matcher?: string;
+	hooks: Array<{ type: 'command'; command: string }>;
+}
+
 /** Shape of the generated Claude Code settings file (the subset we write). */
 export interface ControlPlaneSettings {
 	permissions: { deny: string[] };
 	hooks: {
-		PreToolUse: Array<{
-			matcher: string;
-			hooks: Array<{ type: 'command'; command: string }>;
-		}>;
+		/** The control-plane guard's Bash hook. Nothing else is ever added here. */
+		PreToolUse: Array<HookGroup & { matcher: string }>;
+		/** Agent-status hook events (#815), present only when a status hook is given. */
+		[event: string]: HookGroup[];
 	};
 }
 
@@ -130,11 +136,22 @@ export function toRuleSpecifier(absPath: string, isDirectory: boolean): string {
  * token. Only documented rule forms are emitted: an invalid rule could get
  * the whole settings file rejected, and the Bash hook with it.
  *
+ * The agent-status hook (#815) is merged into the same file, because Claude
+ * Code takes one `--settings`. It is registered only on its own events
+ * (Notification, PermissionRequest, Stop, UserPromptSubmit, PostToolUse) and
+ * never on PreToolUse, so the guard's entry and the deny list are identical
+ * with or without it.
+ *
  * @param paths - Resolved control-plane paths
  * @param hookCommand - Shell command that runs the PreToolUse Bash hook
+ * @param statusHookCommand - Shell command that runs the agent-status hook; omit to leave it out
  * @returns Settings object ready to serialise
  */
-export function buildControlPlaneSettings(paths: ControlPlanePaths, hookCommand: string): ControlPlaneSettings {
+export function buildControlPlaneSettings(
+	paths: ControlPlanePaths,
+	hookCommand: string,
+	statusHookCommand?: string,
+): ControlPlaneSettings {
 	const deny: string[] = [];
 	for (const { path: p, isDirectory } of paths.writeDenied) {
 		deny.push(`Edit(${toRuleSpecifier(p, false)})`);
@@ -142,7 +159,7 @@ export function buildControlPlaneSettings(paths: ControlPlanePaths, hookCommand:
 	}
 	for (const p of paths.readDenied) deny.push(`Read(${toRuleSpecifier(p, false)})`);
 
-	return {
+	const settings: ControlPlaneSettings = {
 		permissions: { deny },
 		hooks: {
 			PreToolUse: [
@@ -153,6 +170,15 @@ export function buildControlPlaneSettings(paths: ControlPlanePaths, hookCommand:
 			],
 		},
 	};
+	if (statusHookCommand) {
+		const S = AGENT_STATUS_HOOK_CONSTANTS;
+		for (const event of S.EVENTS) {
+			const group: HookGroup = { hooks: [{ type: 'command', command: statusHookCommand }] };
+			if ((S.TOOL_EVENTS as readonly string[]).includes(event)) group.matcher = S.ALL_TOOLS_MATCHER;
+			settings.hooks[event] = [group];
+		}
+	}
+	return settings;
 }
 
 /**
@@ -202,6 +228,7 @@ export async function prepareControlPlaneGuard(
 	const pathsPath = path.join(dir, `${stem}${C.PATHS_FILE_SUFFIX}`);
 	const hookScript = path.join(roots.installRoot, C.HOOK_SCRIPT);
 	const hookCommand = `bash ${shellQuote(hookScript)} ${shellQuote(pathsPath)}`;
+	const statusHookCommand = `bash ${shellQuote(path.join(roots.installRoot, AGENT_STATUS_HOOK_CONSTANTS.HOOK_SCRIPT))}`;
 
 	const pathsBody = [
 		`# Crewly control-plane guard — protected paths for ${sessionName}`,
@@ -214,7 +241,7 @@ export async function prepareControlPlaneGuard(
 	await fs.writeFile(pathsPath, pathsBody, 'utf-8');
 	await fs.writeFile(
 		settingsPath,
-		`${JSON.stringify(buildControlPlaneSettings(paths, hookCommand), null, 2)}\n`,
+		`${JSON.stringify(buildControlPlaneSettings(paths, hookCommand, statusHookCommand), null, 2)}\n`,
 		'utf-8',
 	);
 
