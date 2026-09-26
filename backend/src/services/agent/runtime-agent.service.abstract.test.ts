@@ -1049,3 +1049,13 @@ echo "second command"
 		});
 	});
 });
+
+describe('runtimePathExport (2026-09-26, Nova: Intel node first on PATH)', () => {
+	it('puts the backend node dir and the user npm prefix first, keeping $PATH', async () => {
+		const { runtimePathExport } = await import('./runtime-agent.service.abstract.js');
+		const line = runtimePathExport('/opt/node/bin');
+		expect(line.startsWith("export PATH='/opt/node/bin':'")).toBe(true);
+		expect(line.endsWith(':"$PATH"')).toBe(true);
+		expect(runtimePathExport("/we'ird/bin")).toContain("'/we'\\''ird/bin'");
+	});
+});

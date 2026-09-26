@@ -13,6 +13,7 @@ import {
 } from '../../utils/terminal-string-ops.js';
 import { getSettingsService } from '../settings/settings.service.js';
 import { safeReadJson, atomicWriteJson } from '../../utils/file-io.utils.js';
+import { getUserNpmBinDir } from '../harness/harness-exec.utils.js';
 import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
@@ -821,6 +822,15 @@ export abstract class RuntimeAgentService {
 		await this.sessionHelper.sendMessage(sessionName, `cd "${cdPath}"`);
 		await delay(500);
 
+		// The PTY is a login shell: the user's rc files run after Crewly's env
+		// is set and can put another `node` first on PATH. Node-based CLIs
+		// (codex, gemini, opencode) start with `#!/usr/bin/env node`, so they
+		// ran on that one — an Intel node v23 on an Apple-silicon Mac asked for
+		// @openai/codex-darwin-x64 and died (2026-09-26, Nova). Put the node
+		// Crewly itself runs on, and the user npm prefix, first again here.
+		await this.sessionHelper.sendMessage(sessionName, runtimePathExport());
+		await delay(300);
+
 		// Send each command
 		for (const command of commands) {
 			this.logger.info('Sending command to session', {
@@ -834,4 +844,18 @@ export abstract class RuntimeAgentService {
 			await delay(500);
 		}
 	}
+}
+
+
+/**
+ * Shell line that puts the backend's own Node directory and the Crewly user
+ * npm prefix first on PATH, after the login shell's rc files ran.
+ *
+ * @param nodeBinDir - Directory of the Node binary Crewly runs on
+ * @returns `export PATH=...` line (single-quoted dirs, `$PATH` kept)
+ */
+export function runtimePathExport(nodeBinDir: string = path.dirname(process.execPath)): string {
+	const dirs = [nodeBinDir, getUserNpmBinDir()].filter((d, i, a) => d && a.indexOf(d) === i);
+	const quoted = dirs.map((d) => `'${d.replace(/'/g, `'\\''`)}'`).join(':');
+	return `export PATH=${quoted}:"$PATH"`;
 }
