@@ -142,6 +142,7 @@ import { TokenUsageService } from './services/monitoring/token-usage.service.js'
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
 import {
 	apiTokenMiddleware,
+	healthGateMiddleware,
 	socketIoAllowRequest,
 	installWebSocketGate,
 } from './middleware/api-token.middleware.js';
@@ -1492,8 +1493,9 @@ void (async () => {
 
 	private configureRoutes(): void {
 		// API token gate — loopback callers (local skills, local dashboard)
-		// pass; every other address must present the API token. `/health`,
-		// static assets and the SPA shell are outside `/api` and stay open.
+		// pass; every other address must present the API token. Static assets
+		// and the SPA shell are outside `/api` and stay open; `/health` has its
+		// own gate below (#825).
 		this.app.use('/api', apiTokenMiddleware);
 
 		// Agent heartbeat middleware - any API call with X-Agent-Session header updates heartbeat
@@ -1502,8 +1504,10 @@ void (async () => {
 		// API routes
 		this.app.use('/api', createApiRoutes(this.apiController));
 
-		// Health check (enhanced with mode and agent info)
-		this.app.get('/health', (req, res) => {
+		// Health check (enhanced with mode and agent info).
+		// #825: non-loopback callers need the API token (or CREWLY_PUBLIC_HEALTH=1);
+		// loopback reaches this handler exactly as before.
+		this.app.get('/health', healthGateMiddleware, (req, res) => {
 			const versionService = VersionCheckService.getInstance();
 			const cachedCheck = versionService.getCachedCheckResult();
 

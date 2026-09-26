@@ -205,6 +205,46 @@ export function apiTokenMiddleware(req: Request, res: Response, next: NextFuncti
 }
 
 /**
+ * Whether `GET /health` is configured open to everyone (`CREWLY_PUBLIC_HEALTH`).
+ *
+ * @returns True when the env var is `1` or `true`
+ */
+export function isPublicHealthEnabled(): boolean {
+  const v = (process.env[API_SECURITY_CONSTANTS.ENV.PUBLIC_HEALTH] ?? '').trim().toLowerCase();
+  return v === '1' || v === 'true';
+}
+
+/**
+ * Gate for the root `GET /health` (#825).
+ *
+ * - Loopback: passes straight to the handler, untouched (CLI, Docker
+ *   healthchecks, desktop, local dashboard).
+ * - Non-loopback with a valid API token (header, Bearer or cookie): passes.
+ * - Non-loopback without one: the standard 401 token challenge, same as
+ *   `/api`, and nothing about the install is disclosed.
+ * - `CREWLY_PUBLIC_HEALTH=1`: everyone passes (public monitors behind a
+ *   reverse proxy).
+ *
+ * Why: crewly-mobile probes `/health` to choose its LAN transport. While
+ * `/health` answered 200 to anyone, a phone without the token chose LAN and
+ * then got 401 on every `/api` call, never falling back to the relay. A 401
+ * here makes that probe fail, so the app uses the relay, which works.
+ * "Loopback" follows {@link getClientAddress}: the socket address, or the
+ * first `X-Forwarded-For` hop only when `CREWLY_TRUST_PROXY` is set.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ * @param next - Express next
+ */
+export function healthGateMiddleware(req: Request, res: Response, next: NextFunction): void {
+  if (isPublicHealthEnabled() || isLoopbackRequest(req) || hasValidApiToken(req, false)) {
+    next();
+    return;
+  }
+  sendUnauthorized(res);
+}
+
+/**
  * Express middleware for owner-only decisions (OKR approve/reject).
  *
  * Requires the API token EVEN from loopback — agents on the box do not have
