@@ -556,6 +556,23 @@ export class CloudSyncService extends EventEmitter {
     }
   }
 
+  /**
+   * The id the relay knows this machine by: the queue we actually poll.
+   *
+   * The relay attaches handshake metadata (name, teams) to the queue named by
+   * `deviceId`, and the portal lists machines from that. After a 403 the
+   * machine polls a fresh queue, so a handshake still naming the device id
+   * kept the OLD queue looking alive — with all our teams — while nothing
+   * read it. The portal picked it and every request went unanswered
+   * ("Couldn't load your agents", 2026-09-27). Until registration has
+   * settled, the device id is all we have.
+   *
+   * @returns The polled queue id, else the device id
+   */
+  private relayDeviceId(): string {
+    return this.queueId ?? this.config?.deviceId ?? '';
+  }
+
   /** Where a queue id taken after a 403 is remembered. */
   private fallbackQueueFile(): string {
     return join(process.env['CREWLY_HOME'] ?? join(homedir(), '.crewly'), 'cloud', 'relay-queue.json');
@@ -655,7 +672,7 @@ export class CloudSyncService extends EventEmitter {
 
       // Cloud Relay handshake expects: { deviceId, deviceName, teams, version, timestamp }
       const payload: HeartbeatPayload = {
-        deviceId: this.config.deviceId,
+        deviceId: this.relayDeviceId(),
         deviceName: this.config.deviceName,
         status: 'online',
         version: this.version,
@@ -1178,7 +1195,7 @@ export class CloudSyncService extends EventEmitter {
         const teams = await gatherTeamSummaries();
 
         const payload: HeartbeatPayload = {
-          deviceId: this.config.deviceId,
+          deviceId: this.relayDeviceId(),
           deviceName: this.config.deviceName,
           status: 'online',
           version: this.version,

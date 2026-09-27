@@ -678,6 +678,27 @@ describe('CloudSyncService', () => {
       expect(claimedId(0)).toBe('q-remembered');
     });
 
+    it('heartbeats under the queue it polls, so the portal does not pick the dead one', async () => {
+      await fsp.mkdir(path.dirname(queueFile), { recursive: true });
+      await fsp.writeFile(queueFile, JSON.stringify({ queueId: 'q-remembered' }), 'utf-8');
+      const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
+      mockFetch.mockImplementation(async (url) =>
+        typeof url === 'string' && url.includes('/queue/register')
+          ? mockResponse({ success: true, queueId: 'q-remembered', peerQueueId: null })
+          : mockResponse({ success: true }),
+      );
+
+      service.start(configWithJwt);
+      await untilRegisterCalls(1);
+      for (let i = 0; i < 10; i++) await flushPromises();
+      mockFetch.mockClear();
+
+      await service.sendHeartbeat();
+
+      const body = JSON.parse(String((mockFetch.mock.calls[0]?.[1] as { body: string }).body));
+      expect(body.deviceId).toBe('q-remembered');
+    });
+
     it('does not retry a non-403 failure, and records why', async () => {
       const configWithJwt: CloudSyncConfig = { ...testConfig, token: buildJwt({ sub: 'user-abc-123' }) };
       mockFetch.mockImplementation(async (url) =>
