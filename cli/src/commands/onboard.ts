@@ -66,7 +66,7 @@ import {
   pickLoginDriver,
   type LoginDriver,
 } from '../utils/harness-engine.js';
-import { createReadlineIO } from '../utils/prompt-io.js';
+import { askReadline, createReadlineIO } from '../utils/prompt-io.js';
 import { runHarnessSetup, type HarnessSetupResult, type SetupIO } from './harness-setup.js';
 import { askBundleQuestions, cliPackageRoot, deployBundle, loadAnswersFile } from './deploy-bundle.js';
 import { BundleCatalog, bundleTemplateDirs } from '../../../backend/src/services/bundle/bundle-catalog.js';
@@ -192,17 +192,10 @@ export class WizardInputClosedError extends Error {
  * @param rl - Readline interface
  * @param question - The prompt text
  * @returns The user's response string
- * @throws {WizardInputClosedError} When the input closes before an answer arrives
+ * @throws {WizardInputClosedError} When the input closes before an answer arrives, or had already closed
  */
 function ask(rl: ReadlineInterface, question: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const onClose = (): void => reject(new WizardInputClosedError());
-    rl.on('close', onClose);
-    rl.question(question, (answer) => {
-      rl.removeListener('close', onClose);
-      resolve(answer.trim());
-    });
-  });
+  return askReadline(rl, question, () => new WizardInputClosedError());
 }
 
 /**

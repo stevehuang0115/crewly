@@ -31,6 +31,18 @@ crewly init
 crewly start
 ```
 
+**`EACCES: permission denied` from `npm install -g` on Linux?** A system Node (from apt, NodeSource or the official Docker images) keeps its global packages under `/usr/local`, which a normal user cannot write. Do not use `sudo`. Install into your home folder instead, which is what the installer script does, and `crewly upgrade` keeps using that folder:
+
+```bash
+npm install -g --prefix ~/.crewly/npm-global crewly
+echo 'export PATH="$HOME/.crewly/npm-global/bin:$PATH"' >> ~/.bashrc   # ~/.zshrc for zsh
+export PATH="$HOME/.crewly/npm-global/bin:$PATH"
+crewly init
+crewly start
+```
+
+Node installed with nvm, fnm or Homebrew does not need this.
+
 The `init` command walks you through provider selection, installs agent skills, and scaffolds a `.crewly/` directory. Then `crewly start` launches the backend server and opens the web dashboard. From there:
 
 1. Create a **team** with agents assigned to roles
