@@ -3,8 +3,9 @@
  */
 
 import { EventEmitter } from 'events';
-import type { Interface as ReadlineInterface } from 'readline';
-import { createReadlineIO } from './prompt-io.js';
+import { createInterface, type Interface as ReadlineInterface } from 'readline';
+import { PassThrough } from 'stream';
+import { askReadline, createReadlineIO, isReadlineClosedError } from './prompt-io.js';
 
 /**
  * Fake readline answering from a list; records what reached the output.
@@ -63,5 +64,46 @@ describe('createReadlineIO', () => {
 		const { rl } = fakeReadline([]);
 		createReadlineIO(rl as unknown as ReadlineInterface, () => new Error('x'), log).log('hello');
 		expect(log).toHaveBeenCalledWith('hello');
+	});
+
+	it('rejects with the closed-input error when the input had already closed (real readline, no ERR_USE_AFTER_CLOSE crash)', async () => {
+		const input = new PassThrough();
+		const rl = createInterface({ input, output: new PassThrough() });
+		const closed = new Promise<void>((resolve) => rl.once('close', () => resolve()));
+		input.end();
+		await closed;
+
+		const io = createReadlineIO(rl, () => new Error('input closed'));
+		await expect(io.ask('First team? ')).rejects.toThrow('input closed');
+	});
+
+	it('does not leave a close listener behind when question() throws', async () => {
+		const emitter = new EventEmitter();
+		const rl = {
+			question: () => { throw Object.assign(new Error('readline was closed'), { code: 'ERR_USE_AFTER_CLOSE' }); },
+			on: emitter.on.bind(emitter),
+			removeListener: emitter.removeListener.bind(emitter),
+		};
+		await expect(askReadline(rl as unknown as ReadlineInterface, '?', () => new Error('input closed'))).rejects.toThrow('input closed');
+		expect(emitter.listenerCount('close')).toBe(0);
+	});
+
+	it('passes through other errors thrown by question()', async () => {
+		const emitter = new EventEmitter();
+		const rl = {
+			question: () => { throw new Error('boom'); },
+			on: emitter.on.bind(emitter),
+			removeListener: emitter.removeListener.bind(emitter),
+		};
+		await expect(askReadline(rl as unknown as ReadlineInterface, '?', () => new Error('input closed'))).rejects.toThrow('boom');
+	});
+});
+
+describe('isReadlineClosedError', () => {
+	it('is true only for ERR_USE_AFTER_CLOSE', () => {
+		expect(isReadlineClosedError(Object.assign(new Error('x'), { code: 'ERR_USE_AFTER_CLOSE' }))).toBe(true);
+		expect(isReadlineClosedError(new Error('x'))).toBe(false);
+		expect(isReadlineClosedError(null)).toBe(false);
+		expect(isReadlineClosedError('ERR_USE_AFTER_CLOSE')).toBe(false);
 	});
 });

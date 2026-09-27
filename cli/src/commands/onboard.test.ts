@@ -89,10 +89,15 @@ jest.mock('fs', () => ({
 let mockReadlineAnswers: string[] = [];
 let mockReadlineAnswerIndex = 0;
 const mockRlClose = jest.fn();
+/** When true, question() throws like Node's readline does after close (ERR_USE_AFTER_CLOSE). */
+let mockRlClosed = false;
 
 jest.mock('readline', () => ({
   createInterface: () => ({
     question: (_prompt: string, cb: (answer: string) => void) => {
+      if (mockRlClosed) {
+        throw Object.assign(new Error('readline was closed'), { code: 'ERR_USE_AFTER_CLOSE' });
+      }
       const answer = mockReadlineAnswerIndex < mockReadlineAnswers.length
         ? mockReadlineAnswers[mockReadlineAnswerIndex++]
         : '';
@@ -991,6 +996,33 @@ describe('onboard command', () => {
       expect(output).not.toContain('Nothing was set up');
       expect(output).toContain('crewly onboard');
       expect(process.exitCode).toBe(1);
+    });
+
+    it('reports closed input, not a stack trace, when the input already closed before the team prompt (B8 B2d)', async () => {
+      // The input closes during the login step, which reports it and carries
+      // on; the next prompt (first team) then meets a closed readline.
+      mockListTemplates.mockReturnValue([sampleTemplate]);
+      mockRunHarnessSetup.mockImplementation(async () => {
+        mockRlClosed = true;
+        return { harnessId: 'claude-code', installed: true, login: 'pending' };
+      });
+      mockJqFound();
+      mockCheckSkillsInstalled.mockResolvedValue({ installed: 10, total: 10 });
+
+      try {
+        await expect(onboardCommand({ cli: true })).resolves.toBeUndefined();
+      } finally {
+        mockRlClosed = false;
+      }
+
+      const output = logSpy.mock.calls.map((c: unknown[]) => c[0]).join('\n');
+      expect(output).toContain('input closed before setup finished');
+      expect(output).toContain('Setup did not finish');
+      expect(output).toContain('crewly init --yes');
+      expect(output).not.toContain('Setup complete');
+      expect(output).not.toContain('ERR_USE_AFTER_CLOSE');
+      expect(process.exitCode).toBe(1);
+      expect(mockRlClose).toHaveBeenCalled();
     });
 
     it('rejects a pending question with WizardInputClosedError when the input closes', async () => {
