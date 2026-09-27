@@ -26,6 +26,18 @@ Under the hood, Crewly is an open-source multi-agent orchestration platform that
 ## Quick Start
 
 ```bash
+curl -fsSL https://crewlyai.com/install.sh | bash
+```
+
+The installer needs no `sudo`: if your global npm folder is not writable (a system Node on Linux), it installs Crewly under `~/.crewly/npm-global` and adds that to your PATH. Then it runs the setup wizard (the same as `crewly init`). When it finishes, open a new terminal and run:
+
+```bash
+crewly start
+```
+
+**Prefer npm?** With Node from nvm, fnm or Homebrew (your user owns the global npm folder):
+
+```bash
 npm install -g crewly
 crewly init
 crewly start
@@ -40,8 +52,6 @@ export PATH="$HOME/.crewly/npm-global/bin:$PATH"
 crewly init
 crewly start
 ```
-
-Node installed with nvm, fnm or Homebrew does not need this.
 
 The `init` command walks you through provider selection, installs agent skills, and scaffolds a `.crewly/` directory. Then `crewly start` launches the backend server and opens the web dashboard. From there:
 
