@@ -899,6 +899,13 @@ export const ORCHESTRATOR_RESTART_CONSTANTS = {
    * forever, because failed attempts never counted toward the cooldown).
    */
   MAX_CONSECUTIVE_FAILURES: 3,
+  /**
+   * After stopping, one quiet retry this often. The owner is usually away
+   * from the machine: a network blip or a sign-in they later fix from their
+   * phone must not leave the orchestrator down until someone walks up to it.
+   * Equal to the cooldown window so the old attempts have aged out of it.
+   */
+  GAVE_UP_RETRY_MS: 3600000,
 } as const;
 
 // ========================= ORCHESTRATOR HEARTBEAT MONITOR =========================

@@ -179,7 +179,13 @@ export class OrchestratorRestartService {
 	 */
 	async attemptRestart(): Promise<boolean> {
 		if (this.gaveUp) {
-			return false;
+			if (Date.now() - Date.parse(this.gaveUp.at) < ORCHESTRATOR_RESTART_CONSTANTS.GAVE_UP_RETRY_MS) {
+				return false;
+			}
+			// One quiet retry; a single failure stops it again for another period.
+			this.logger.info('Orchestrator auto-restart: periodic retry after stopping', { reason: this.gaveUp.reason });
+			this.gaveUp = null;
+			this.consecutiveFailures = ORCHESTRATOR_RESTART_CONSTANTS.MAX_CONSECUTIVE_FAILURES - 1;
 		}
 
 		if (this.isRestarting) {

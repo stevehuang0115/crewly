@@ -390,6 +390,27 @@ describe('OrchestratorRestartService', () => {
 			expect(await attempt()).toBe(true);
 		});
 
+		it('tries once more after a quiet period, so an away owner is not left without an orchestrator', async () => {
+			service.markGaveUp('Claude Code is not signed in', { blocked: true, attempts: 1 });
+			expect(await attempt()).toBe(false);
+			expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
+
+			jest.advanceTimersByTime(ORCHESTRATOR_RESTART_CONSTANTS.GAVE_UP_RETRY_MS);
+
+			expect(await attempt()).toBe(true);
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledTimes(1);
+			expect(service.getGiveUp()).toBeNull();
+		});
+
+		it('a failed periodic retry stops again at once', async () => {
+			service.markGaveUp('network', { blocked: false, attempts: 3 });
+			jest.advanceTimersByTime(ORCHESTRATOR_RESTART_CONSTANTS.GAVE_UP_RETRY_MS);
+			mockAgentRegistrationService.createAgentSession.mockResolvedValueOnce({ success: false, error: 'still down' });
+
+			expect(await attempt()).toBe(false);
+			expect(service.getGiveUp()?.reason).toBe('still down');
+		});
+
 		it('markGaveUp (used by boot auto-start) blocks restarts and keeps the first reason', async () => {
 			service.markGaveUp('Gemini CLI is not signed in', { blocked: true, attempts: 1 });
 			service.markGaveUp('later reason', { blocked: false, attempts: 5 });
