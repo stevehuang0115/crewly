@@ -175,6 +175,13 @@ export interface Team {
   /** Quality gate configuration for task review. */
   qualityGate?: TeamQualityGate;
 
+  /**
+   * Give-up recovery policy (#841). `giveUpMaxRetries`: how many times a
+   * worker that gives up on a feasible task is sent back with a different
+   * approach before one escalation to the team lead (default 2; 0 = off).
+   */
+  recoveryPolicy?: { giveUpMaxRetries?: number };
+
   // === Organization Model fields ===
 
   /**

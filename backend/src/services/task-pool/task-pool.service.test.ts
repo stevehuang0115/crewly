@@ -2923,6 +2923,20 @@ describe('TaskPoolService', () => {
   // updateItemStatus (V3 integration — used by Reconciler)
   // -----------------------------------------------------------------------
 
+  describe('mergeItemMetadata (#841)', () => {
+    it('merges keys into metadata without touching status or other keys', async () => {
+      const wi = makeWorkItem({ metadata: { keep: 1 } });
+      await service.addToPool(wi);
+      const updated = await service.mergeItemMetadata(wi.id, { stop: { decision: 'retry' } });
+      expect(updated?.status).toBe('queued');
+      expect(updated?.metadata).toEqual({ keep: 1, stop: { decision: 'retry' } });
+    });
+
+    it('returns null for an unknown item', async () => {
+      expect(await service.mergeItemMetadata('ghost', { a: 1 })).toBeNull();
+    });
+  });
+
   describe('updateItemStatus', () => {
     it('updates running item to blocked', async () => {
       const wi = makeWorkItem();

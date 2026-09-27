@@ -19,6 +19,7 @@ import {
   cancelQueuedItem,
   renderVerdict,
   getStats,
+  getGiveUpStats,
   heartbeat,
   extendLease,
   scanExpired,
@@ -41,6 +42,9 @@ export function createTaskPoolRouter(): Router {
 
   // Pool statistics (must be before parameterized routes)
   router.get('/stats', getStats);
+
+  // GET /api/task-pool/give-up-stats — give-ups, retries, retry success rate per team (#841)
+  router.get('/give-up-stats', getGiveUpStats);
 
   // Scan for expired claims
   router.get('/claims/expired', scanExpired);
