@@ -284,10 +284,19 @@ class ApiService {
    * Starts a team by ID, resuming agents with stored session IDs when available.
    *
    * @param teamId - ID of the team to start
-   * @throws Error if the start request fails
+   * @throws Error carrying the server's reason when the start fails, e.g.
+   *   "No team member could start. Dev: Gemini CLI is not signed in…"
+   *   (the backend answers 424 when no member started)
    */
   async startTeam(teamId: string): Promise<void> {
-    await axios.post(`${API_BASE}/teams/${teamId}/start`, {});
+    try {
+      await axios.post(`${API_BASE}/teams/${teamId}/start`, {});
+    } catch (error) {
+      const serverError = axios.isAxiosError(error)
+        ? (error.response?.data as ApiResponse<unknown> | undefined)?.error
+        : undefined;
+      throw serverError ? new Error(serverError) : error;
+    }
   }
 
   /**

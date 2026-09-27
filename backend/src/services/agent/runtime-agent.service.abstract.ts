@@ -17,6 +17,7 @@ import { getUserNpmBinDir } from '../harness/harness-exec.utils.js';
 import { delay } from '../../utils/async.utils.js';
 import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
+import { detectRuntimeCliMissing, isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
 
 /**
@@ -454,6 +455,11 @@ export abstract class RuntimeAgentService {
 					return true;
 				}
 
+				// A CLI the shell cannot find never becomes ready: fail with the
+				// reason instead of waiting out the timeout and every retry.
+				const cliMissing = detectRuntimeCliMissing(output, this.getRuntimeType());
+				if (cliMissing) throw cliMissing;
+
 				// Check for error patterns — fail fast instead of waiting for full timeout
 				const errorPatterns = this.getRuntimeErrorPatterns();
 				const hasError = errorPatterns.some((pattern) => output.includes(pattern));
@@ -468,6 +474,7 @@ export abstract class RuntimeAgentService {
 					return false;
 				}
 			} catch (error) {
+				if (isRuntimeStartupBlockedError(error)) throw error;
 				this.logger.warn('Error while checking runtime ready signal', {
 					sessionName,
 					runtimeType: this.getRuntimeType(),

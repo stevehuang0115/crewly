@@ -3,7 +3,7 @@ import { spawn } from 'child_process';
 import { RuntimeAgentService, type McpConfigResult } from './runtime-agent.service.abstract.js';
 import { SessionCommandHelper } from '../session/index.js';
 import { RUNTIME_TYPES, CLAUDE_FATAL_PATTERNS, CLAUDE_STARTUP_CONSTANTS, RUNTIME_INPUT_READY_PATTERNS, type RuntimeType } from '../../constants.js';
-import { RuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
+import { RuntimeStartupBlockedError, detectRuntimeCliMissing } from './runtime-startup-blocked.error.js';
 import { delay } from '../../utils/async.utils.js';
 
 /**
@@ -90,7 +90,8 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 
 	/**
 	 * Classify terminal output that means Claude Code cannot become ready
-	 * without the user: the root refusal, or the first-run theme picker.
+	 * without the user: the root refusal, the first-run theme picker, or a
+	 * shell that cannot find `claude`.
 	 *
 	 * @param output - Terminal output text
 	 * @returns The blocking error to throw, or null
@@ -102,7 +103,9 @@ export class ClaudeRuntimeService extends RuntimeAgentService {
 		if (CLAUDE_STARTUP_CONSTANTS.FIRST_RUN_MARKERS.some((m) => output.includes(m))) {
 			return new RuntimeStartupBlockedError('first_run_setup', CLAUDE_STARTUP_CONSTANTS.MESSAGES.FIRST_RUN);
 		}
-		return null;
+		// `bash: claude: command not found` (B8 D1): the orchestrator defaulted to
+		// Claude on a machine that only has Gemini and waited out every timeout.
+		return detectRuntimeCliMissing(output, this.getRuntimeType());
 	}
 
 	/**
