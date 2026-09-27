@@ -103,6 +103,9 @@ export interface TeamMember {
   /** #235: Reason the agent last went inactive */
   dropoutReason?: 'idle_exit' | 'update_exit' | 'crash' | 'manual' | 'task_complete' | 'loop_detected' | 'startup_timeout' | 'invalid_role';
 
+  /** Why the last start failed and when; cleared by the next successful start (B8 O2). */
+  lastStartError?: { reason: string; at: string };
+
   // === Architecture Upgrade fields ===
 
   /** Autonomy level: directed (default), bounded, or domain_autonomous */

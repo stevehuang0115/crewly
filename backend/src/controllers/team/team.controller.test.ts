@@ -3067,7 +3067,7 @@ describe('Teams Handlers', () => {
       );
     });
 
-    it('does not retry a start-up blocked on the user (e.g. Claude as root): one attempt, message returned', async () => {
+    it('does not retry a start-up blocked on the user (e.g. Claude as root): one attempt, 424 with the reason', async () => {
       const blocked = {
         success: false,
         error: 'Crewly agents cannot run as root: run Crewly as a normal (non-root) user.',
@@ -3084,10 +3084,81 @@ describe('Teams Handlers', () => {
       );
 
       expect((mockApiContext.agentRegistrationService as any).createAgentSession).toHaveBeenCalledTimes(1);
-      expect(responseMock.status).toHaveBeenCalledWith(500);
+      expect(responseMock.status).toHaveBeenCalledWith(424);
       expect(responseMock.json).toHaveBeenCalledWith(
         expect.objectContaining({ error: expect.stringContaining('cannot run as root') })
       );
+    });
+
+    describe('blocked start vs server error (B8 O1)', () => {
+      const KEY_REASON = 'Antigravity CLI runs in Crewly only with a Gemini API key. Add one in Crewly Settings.';
+
+      it('a missing credential answers 424 with "<member>: <reason>", the team-start shape (#805)', async () => {
+        mockApiContext.agentRegistrationService = {
+          createAgentSession: jest.fn<any>().mockResolvedValue({
+            success: false, error: KEY_REASON, errorCode: 'RUNTIME_STARTUP_BLOCKED',
+          })
+        } as any;
+
+        await teamsHandlers.startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(responseMock.status).toHaveBeenCalledWith(424);
+        expect(responseMock.status).not.toHaveBeenCalledWith(500);
+        expect((responseMock.json as jest.Mock).mock.calls.at(-1)?.[0]).toEqual({
+          success: false,
+          error: `Test Member: ${KEY_REASON}`,
+        });
+      });
+
+      it('an unexpected throw during start still answers 500', async () => {
+        mockApiContext.agentRegistrationService = {
+          createAgentSession: jest.fn<any>().mockRejectedValue(new Error('EIO: disk went away')),
+        } as any;
+
+        await teamsHandlers.startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(responseMock.status).toHaveBeenCalledWith(500);
+        expect(responseMock.status).not.toHaveBeenCalledWith(424);
+      });
+    });
+
+    describe('lastStartError on the member record (B8 O2)', () => {
+      /** The member as last saved, or undefined when nothing was saved. */
+      function lastSavedMember(): TeamMember | undefined {
+        const calls = mockStorageService.saveTeam.mock.calls;
+        const team = calls.at(-1)?.[0] as Team | undefined;
+        return team?.members.find((m) => m.id === 'member-1');
+      }
+
+      it('stores the reason and time when the start fails', async () => {
+        mockApiContext.agentRegistrationService = {
+          createAgentSession: jest.fn<any>().mockResolvedValue({
+            success: false, error: 'Gemini CLI is not signed in', errorCode: 'RUNTIME_STARTUP_BLOCKED',
+          })
+        } as any;
+
+        await teamsHandlers.startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        const saved = lastSavedMember();
+        expect(saved?.lastStartError?.reason).toBe('Gemini CLI is not signed in');
+        expect(Number.isNaN(Date.parse(saved?.lastStartError?.at ?? ''))).toBe(false);
+      });
+
+      it('clears it on the next successful start', async () => {
+        const team = (await mockStorageService.getTeams())[0] as Team;
+        (team.members[0] as TeamMember).lastStartError = { reason: 'old failure', at: '2026-09-27T00:00:00.000Z' };
+        mockStorageService.saveTeam.mockClear();
+        mockApiContext.agentRegistrationService = {
+          createAgentSession: jest.fn<any>().mockResolvedValue({ success: true, sessionName: 'test-session' })
+        } as any;
+
+        await teamsHandlers.startTeamMember.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+
+        expect(mockStorageService.saveTeam).toHaveBeenCalled();
+        const saved = lastSavedMember();
+        expect(saved).toBeDefined();
+        expect(saved?.lastStartError).toBeUndefined();
+      });
     });
 
     it('should fail after all retry attempts', async () => {
