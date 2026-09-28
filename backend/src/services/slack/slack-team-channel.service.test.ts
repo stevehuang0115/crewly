@@ -1032,6 +1032,36 @@ describe('routeInbound', () => {
     );
   });
 
+  // 2026-09-28 #daily-info: a thread post by an agent on another machine
+  // never reaches this one (Cloud drops own-bot events). The thread as Slack
+  // has it is handed to each recipient, its own lines marked.
+  it('hands the Slack thread context to the dispatcher, rendered per recipient, without recording it', async () => {
+    const before = chat.messages.length;
+    const threadContext = Promise.resolve({
+      kind: 'thread' as const,
+      channelId: 'C1',
+      threadTs: '100.1',
+      totalBefore: 2,
+      messages: [
+        { ts: '100.1', isBot: true, authorName: 'Ella (Personal Assistant Team)', userId: 'UELLA', text: 'Email digest: AWS invoice' },
+        { ts: '100.2', isBot: true, authorName: 'Sam', usernameOverride: true, text: 'my earlier note' },
+      ],
+    });
+    await service.routeInbound(inbound({ ts: '100.3', threadTs: '100.1', text: '@sam 看看上面的这些', threadContext }));
+    expect(chat.messages.length).toBe(before + 1); // only the owner's message itself
+    const opts = dispatcher!.dispatchMessage.mock.calls[0][2] as { slackContextFor?: (s: string) => string };
+    const forSam = opts.slackContextFor!('crewly-alpha-sam');
+    expect(forSam).toContain('Ella (Personal Assistant Team) [bot]: Email digest: AWS invoice');
+    expect(forSam).toContain('Sam [bot] (you): my earlier note');
+    expect(opts.slackContextFor!('crewly-alpha-leo')).not.toContain('(you)');
+  });
+
+  it('delivers without a context block when the Slack read gave nothing', async () => {
+    await service.routeInbound(inbound({ ts: '100.3', threadTs: '100.1', text: '@sam hi', threadContext: Promise.resolve(null) }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(dispatcher!.dispatchMessage.mock.calls[0][2]).not.toHaveProperty('slackContextFor');
+  });
+
   it('treats a reply to an unknown Slack thread as a new root keyed by that thread', async () => {
     const reply = await service.routeInbound(inbound({ ts: '300.5', threadTs: '300.1', text: 'late' }));
     expect(reply!.message.threadId).toBeUndefined();

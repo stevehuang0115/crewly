@@ -58,6 +58,7 @@ import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
+import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
 import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 
@@ -1358,9 +1359,21 @@ export class SlackTeamChannelService {
           .join(' · ');
       }
       const ticket = await ticketPromise;
+      // The thread as Slack has it — posts by agents on other machines
+      // included — rendered per recipient so its own lines are marked.
+      const slackContext = await message.threadContext;
       dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket), {
         ...dispatchOptions,
         ...(roster ? { channelRoster: roster } : {}),
+        ...(slackContext
+          ? {
+              slackContextFor: (session: string) =>
+                renderSlackThreadContext(slackContext, {
+                  botUserId: this.deps.identities?.get(session)?.botUserId,
+                  name: members.find((m) => m.sessionName === session)?.name,
+                }),
+            }
+          : {}),
       });
     } else {
       this.logger.warn('No chat dispatcher wired — message persisted but not delivered', {

@@ -407,6 +407,49 @@ describe('ChatV2DispatcherService', () => {
     });
   });
 
+  describe('Slack thread context (2026-09-28, cross-machine thread posts)', () => {
+    const BLOCK = '[Slack thread so far — oldest→newest, 1 message; …]\n  Ella [bot]: digest\n[end of Slack thread — …]';
+
+    it('replaces the local context block, which only holds what this machine saw', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1', channelName: '#daily-info', agentSession: 'atlas', senderId: 'Steve', content: '看看上面的这些',
+        context: [{ senderId: 'Atlas', content: 'older local turn', createdAt: new Date().toISOString() }],
+        slackContext: BLOCK,
+      });
+      expect(prompt).toContain('Ella [bot]: digest');
+      expect(prompt).not.toContain('older local turn');
+      // Block precedes the ask.
+      expect(prompt.indexOf('Ella [bot]: digest')).toBeLessThan(prompt.indexOf('看看上面的这些'));
+    });
+
+    it('a huddle renders it per recipient', async () => {
+      const delivered: Array<{ s: string; m: string }> = [];
+      const dispatcher = new ChatV2DispatcherService({
+        agentSink: { sendMessageToAgent: async (s: string, m: string) => { delivered.push({ s, m }); return { success: true }; } },
+        huddleMembersFor: () => ['atlas', 'sam'],
+      });
+      const channel = makeChannel({ id: 'h1', type: 'huddle', agentSession: undefined });
+      await dispatcher.dispatchMessage(channel, makeMessage({ channelId: 'h1', mentions: ['atlas', 'sam'] }), {
+        slackContextFor: (s) => `CTX-FOR-${s}`,
+      });
+      expect(delivered.find((d) => d.s === 'atlas')?.m).toContain('CTX-FOR-atlas');
+      expect(delivered.find((d) => d.s === 'sam')?.m).toContain('CTX-FOR-sam');
+    });
+
+    it('a DM dispatch carries it; a throwing renderer costs only the block', async () => {
+      const { sink, calls } = makeSink({ success: true });
+      const dispatcher = new ChatV2DispatcherService({ agentSink: sink });
+      await dispatcher.dispatchMessage(makeChannel(), makeMessage(), { slackContextFor: () => BLOCK });
+      expect(calls[0].message).toContain('Ella [bot]: digest');
+
+      const r = await dispatcher.dispatchMessage(makeChannel(), makeMessage(), {
+        slackContextFor: () => { throw new Error('boom'); },
+      });
+      expect(r.dispatched).toBe(true);
+      expect(calls[1].message).toContain('hello there');
+    });
+  });
+
   describe('defaultFormatPrompt — Slack team channel variant', () => {
     it('names reply-channel with --thread when replyVia=reply-channel', () => {
       const prompt = defaultFormatPrompt({

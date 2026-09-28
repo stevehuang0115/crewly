@@ -19,6 +19,7 @@ import {
 import { resetSlackService, getSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
 import type { SlackIncomingMessage } from '../../types/slack.types.js';
+import { setSlackThreadContextService, type SlackThreadContextService } from './slack-thread-context.service.js';
 
 // Mock the orchestrator status module
 jest.mock('../orchestrator/index.js', () => ({
@@ -74,6 +75,8 @@ import { getSlackImageService } from './slack-image.service.js';
 
 describe('SlackOrchestratorBridge', () => {
   beforeEach(() => {
+    // Never reach the real Slack Web API for thread context from tests.
+    setSlackThreadContextService({ getContext: async () => null } as unknown as SlackThreadContextService);
     resetSlackOrchestratorBridge();
     resetSlackService();
     resetChatService();
@@ -1359,6 +1362,118 @@ describe('SlackOrchestratorBridge', () => {
 
       expect(routeInbound).toHaveBeenCalledTimes(1);
       expect(mockQueueService.enqueue).toHaveBeenCalled();
+    });
+  });
+
+  // 2026-09-28 #daily-info: Cloud drops own-bot events, so a thread post by
+  // an agent on another machine never reaches this one. The bridge reads the
+  // thread from Slack and hands it over as prompt context only.
+  describe('Slack thread context', () => {
+    const identityModule = '../slack/slack-agent-identity.service.js';
+    const CTX = {
+      kind: 'thread' as const,
+      channelId: 'C-OTHER',
+      threadTs: '1700000000.000100',
+      totalBefore: 1,
+      messages: [{ ts: '1700000000.000150', isBot: true, authorName: 'Ella (Personal Assistant Team)', userId: 'UELLA', text: 'Email digest: AWS invoice' }],
+    };
+    let getContext: jest.Mock;
+
+    beforeEach(() => {
+      getContext = jest.fn().mockResolvedValue(CTX);
+      setSlackThreadContextService({ getContext } as unknown as SlackThreadContextService);
+    });
+    afterEach(() => {
+      setSlackThreadContextService(null);
+      mockTeamChannels.current = null;
+      jest.restoreAllMocks();
+    });
+
+    /** A bridge whose orchestrator is up and whose queue answers at once. */
+    async function orcBridge() {
+      (isOrchestratorActive as jest.Mock).mockResolvedValue(true);
+      mockChatV2EnsureChannel.mockReturnValue({ id: 'conv-orc', agentSession: 'crewly-orc' });
+      mockChatV2RecordTurn.mockReturnValue({ message: { id: 'm-orc' }, deduped: false });
+      const routeInbound = jest.fn().mockResolvedValue(null);
+      mockTeamChannels.current = { findBySlackChannelId: jest.fn(() => null), routeInbound };
+      // An earlier spy in this file can leave the module mock without its
+      // implementation; pin it so this block does not depend on test order.
+      const teamChannelModule = await import('./slack-team-channel.service.js');
+      (teamChannelModule.getSlackTeamChannelService as unknown as jest.Mock).mockImplementation(() => mockTeamChannels.current);
+      const queue = {
+        enqueue: jest.fn((msg: any) => {
+          msg?.sourceMetadata?.slackResolve?.('orc reply');
+          return { id: 'q-1' };
+        }),
+      };
+      const bridge = new SlackOrchestratorBridge();
+      bridge.setMessageQueueService(queue as any);
+      const slackService = (bridge as any).slackService;
+      jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+      jest.spyOn(slackService, 'getBotToken').mockReturnValue('xoxb-workspace');
+      jest.spyOn(slackService, 'getBotUserId').mockResolvedValue('UORC');
+      jest.spyOn(slackService, 'getConversationContext').mockReturnValue({ conversationId: 'conv-1', channelId: 'C-OTHER', userId: 'U123', threadTs: '1700000000.000100' });
+      await bridge.initialize();
+      return { bridge, slackService, queue, routeInbound };
+    }
+
+    it('the orchestrator gets the thread block; the persisted row does not', async () => {
+      const { bridge, slackService, queue } = await orcBridge();
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', { text: '看看上面的这些', channelId: 'C-OTHER', userId: 'U123', ts: '1700000000.000200', threadTs: '1700000000.000100' });
+      await handled;
+
+      const delivered = String(queue.enqueue.mock.calls[0][0].content);
+      expect(delivered).toContain('Ella (Personal Assistant Team) [bot]: Email digest: AWS invoice');
+      expect(delivered.indexOf('Email digest')).toBeLessThan(delivered.indexOf('看看上面的这些'));
+      const persisted = mockChatV2RecordTurn.mock.calls.map((c) => String(c[0]?.content ?? '')).join('\n');
+      expect(persisted).toContain('看看上面的这些');
+      expect(persisted).not.toContain('Email digest');
+      expect(getContext).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: 'C-OTHER', ts: '1700000000.000200', threadTs: '1700000000.000100' }),
+        ['xoxb-workspace'],
+      );
+    });
+
+    it('the pending read is handed to the team-channel router; the receiving agent\'s token is tried first', async () => {
+      const identities = await import(identityModule);
+      jest.spyOn(identities, 'getSlackAgentIdentityService').mockReturnValue({
+        findByBotUserId: () => null,
+        getInstalled: (s: string) => (s === 'think-tank-atlas' ? { botToken: 'xoxb-atlas', botUserId: 'UATLAS' } : null),
+      } as never);
+      const { bridge, slackService, routeInbound } = await orcBridge();
+      routeInbound.mockResolvedValue({ mapping: { teamId: 't1' } });
+      (mockTeamChannels.current as unknown as { rosterSessions: jest.Mock }).rosterSessions = jest.fn(() => []);
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', {
+        text: '<@UATLAS> 看看上面的这些', channelId: 'C-OTHER', userId: 'U123',
+        ts: '1700000000.000200', threadTs: '1700000000.000100', receivedVia: 'think-tank-atlas',
+      });
+      await handled;
+
+      const passed = routeInbound.mock.calls[0][0] as SlackIncomingMessage;
+      await expect(passed.threadContext).resolves.toEqual(CTX);
+      expect(getContext.mock.calls[0][1]).toEqual(['xoxb-atlas', 'xoxb-workspace']);
+    });
+
+    it('a read that fails still delivers, without a block', async () => {
+      getContext.mockRejectedValue(new Error('boom'));
+      const { bridge, slackService, queue } = await orcBridge();
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', { text: 'follow-up', channelId: 'C-OTHER', userId: 'U123', ts: '1700000000.000200', threadTs: '1700000000.000100' });
+      await handled;
+      const delivered = String(queue.enqueue.mock.calls[0][0].content);
+      expect(delivered).toContain('follow-up');
+      expect(delivered).not.toContain('Slack thread so far');
+    });
+
+    it('a top-level message with no mention reads nothing', async () => {
+      const { bridge, slackService } = await orcBridge();
+      const handled = new Promise<any>((resolve) => bridge.on('message_handled', resolve));
+      slackService.emit('message', { text: 'hello orc', channelId: 'D-ORC', userId: 'U123', ts: '1700000000.000300' });
+      await handled;
+      expect(getContext).not.toHaveBeenCalled();
     });
   });
 

@@ -238,6 +238,14 @@ export interface FormatPromptArgs {
   replyVia?: 'reply-chat' | 'reply-channel';
   /** What was said before, oldest first. Omitted when there is nothing to show. */
   context?: readonly ChatContextTurn[];
+  /**
+   * What the Slack thread (or channel, for a top-level @-mention) actually
+   * says before this message, already rendered for this agent — including
+   * posts by agents on other machines, which never reach the local log.
+   * When set it replaces {@link context}: Slack is the whole conversation,
+   * the local log only the part this machine saw.
+   */
+  slackContext?: string;
   /** Who in the room is awake (Slack rooms with Cloud presence). */
   roomPresence?: string;
   /** The message being delivered — named in a hand-off command. */
@@ -290,6 +298,12 @@ export interface DispatchMessageOptions {
   room?: HuddleRoomState;
   /** One line saying who in the room is awake, for the prompt. */
   roomPresence?: string;
+  /**
+   * The Slack context block for one recipient (see
+   * {@link FormatPromptArgs.slackContext}); a function because lines the
+   * recipient wrote itself are marked. Returns '' for no block.
+   */
+  slackContextFor?: (agentSession: string) => string;
 }
 
 /** What the Slack bridge knows about a room's presence, from this machine's point of view. */
@@ -364,6 +378,23 @@ export function renderChatContext(turns: readonly ChatContextTurn[]): string {
 	].join('\n');
 }
 
+/**
+ * Render the Slack context for one recipient, never throwing: a failure only
+ * costs the block, not the delivery.
+ *
+ * @param options - Dispatch options (may carry `slackContextFor`)
+ * @param agentSession - Recipient
+ * @returns The block, or undefined for none
+ */
+function slackContextOf(options: Pick<DispatchMessageOptions, 'slackContextFor'>, agentSession: string): string | undefined {
+  if (!options.slackContextFor) return undefined;
+  try {
+    return options.slackContextFor(agentSession) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function defaultFormatPrompt(args: FormatPromptArgs): string {
   const { channelId, channelName, senderId, content, clientMessageId, responseMode, threadId, replyVia, channelRoster } = args;
   // Nobody named this agent, so it may be reading someone else's
@@ -422,7 +453,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         : `reply-chat … --interim`;
     replyHint += ' ' + CHAT_REPLY_PACING_HINT.replace('{cmd}', interimCmd);
   }
-  const contextBlock = renderChatContext(args.context ?? []);
+  const contextBlock = args.slackContext || renderChatContext(args.context ?? []);
   return [
     `[CHAT:${channelId}]${idHint} <${senderId}@${channelName}>`,
     ...(args.ticketLine ? [args.ticketLine] : []),
@@ -551,7 +582,7 @@ export class ChatV2DispatcherService {
     // Default to the DM path for any other type (including legacy /
     // missing — `type` is non-null after Phase A migration but defensive
     // here keeps the dispatcher robust).
-    const dmResult = await this.dispatchToAgent(channel, message);
+    const dmResult = await this.dispatchToAgent(channel, message, options);
     return {
       strategy: 'dm',
       dispatched: dmResult.dispatched,
@@ -772,6 +803,7 @@ export class ChatV2DispatcherService {
         wakeRole: wakeRoles.get(sessionName),
         messageId: message.id,
         context: this.contextFor(channel.id, options.threadId),
+        slackContext: slackContextOf(options, sessionName),
         ticketLine: ticketLineOf(message),
       });
 
@@ -948,6 +980,7 @@ export class ChatV2DispatcherService {
   async dispatchToAgent(
     channel: ChatChannelDTO,
     message: ChatMessageDTO,
+    options: Pick<DispatchMessageOptions, 'slackContextFor'> = {},
   ): Promise<DispatchResult> {
     if (message.senderType !== 'user') {
       return { dispatched: false, error: 'not a user-origin message' };
@@ -970,6 +1003,7 @@ export class ChatV2DispatcherService {
           ? (message.metadata.clientMessageId as string)
           : undefined,
       context: this.contextFor(channel.id, message.threadId ?? undefined),
+      slackContext: slackContextOf(options, channel.agentSession),
       ticketLine: ticketLineOf(message),
       slackDmChannelId: slackDmChannelOf(message),
     });
