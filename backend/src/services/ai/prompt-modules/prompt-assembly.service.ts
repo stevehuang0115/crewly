@@ -35,6 +35,7 @@ import { TeamNormsModule } from './team-norms.module.js';
 import { WorkingMemoryModule } from './working-memory.module.js';
 import { ActiveWorkModule } from './active-work.module.js';
 import { SessionBriefingModule } from './session-briefing.module.js';
+import { StandingAnswersModule } from './standing-answers.module.js';
 
 /**
  * Default total token budget for all prompt modules combined.
@@ -166,6 +167,9 @@ export class PromptAssemblyService {
 			// text refers to "the ## Your Active Work section above".
 			new ActiveWorkModule(),
 			new SessionBriefingModule(),
+			// Standing answers (#816 part B, 1.7): settled project knowledge
+			// and the agent's own page, read as files, capped, stale-labelled.
+			new StandingAnswersModule(),
 			new SoulModule(),
 			new ExpertProfileModule(),
 			new RecoveryModule(),

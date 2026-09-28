@@ -43,6 +43,7 @@ export { DefaultExecutionLoopModule } from './default-execution-loop.module.js';
 export { WorkingMemoryModule } from './working-memory.module.js';
 export { ActiveWorkModule, ACTIVE_WORK_HEADING, renderActiveWorkSection } from './active-work.module.js';
 export { SessionBriefingModule } from './session-briefing.module.js';
+export { StandingAnswersModule, STANDING_ANSWERS_HEADING, renderStandingAnswers } from './standing-answers.module.js';
 
 // Context loaders
 export {
