@@ -216,7 +216,8 @@ export function renderReceiptSlack(data: ReceiptData): string {
       hidden += t.asks.length;
       continue;
     }
-    lines.push('', `*${escapeMrkdwn(t.team)}*`);
+    const header = t.lead ? `${t.team}（${t.lead}）` : t.team;
+    lines.push('', `*${escapeMrkdwn(header)}*`);
     for (const a of t.asks.slice(0, room)) lines.push(askLine(a));
     shown += Math.min(room, t.asks.length);
     hidden += Math.max(0, t.asks.length - room);

@@ -47,6 +47,13 @@ const TEAM: Record<string, string> = {
   'personal-assistant': 'Personal Assistant',
   'crewly-orc': 'Orchestrator',
 };
+/** Team → lead's display name (Ava's reference: CE（Owen）, Think Tank（Atlas）, …). */
+const TEAM_LEAD: Record<string, string> = {
+  CE: 'Owen',
+  'Think Tank': 'Atlas',
+  'Crewly Marketing': 'Ella',
+  'Crewly Product': 'Sam',
+};
 
 /** In-memory Request store that stamps each ticket with the message's time. */
 class ReplayStore implements TicketRequestStore {
@@ -126,9 +133,14 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
         workItems: [],
         window,
         teamOf: (s) => TEAM[s] ?? null,
+        teamLeadOf: (t) => TEAM_LEAD[t] ?? null,
         intakeLog: await outcomeLog.read(),
         now: new Date('2026-09-26T18:00:00Z'),
       });
+      if (process.env.REPLAY_TRACE) {
+        // eslint-disable-next-line no-console
+        console.log(`\n[replay 2026-09-26] rendered receipt:\n${renderReceiptSlack(data)}\n`);
+      }
       // The real 9/26 data has no outcome log (it did not exist yet): the
       // receipt says 不详 instead of pretending to know.
       const past = buildReceiptData({ requests: await store.listAll(), workItems: [], window, teamOf: (s) => TEAM[s] ?? null, now: new Date('2026-09-26T18:00:00Z') });
@@ -172,6 +184,11 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
       expect(data.possiblyMissed.map((m) => m.ref)).toHaveLength(REPLAY_POSSIBLY_MISSED);
       expect(renderReceiptSlack(data)).toContain(`你发了 *43 条消息*：${REPLAY_COVERAGE.created} 条成了事项`);
       expect(renderReceiptSlack(data)).toContain(`你提了 *${REPLAY_ASKS} 件事*`);
+      // Team header shows the lead, same as Ava's reference (CE（Owen）, Think Tank（Atlas）).
+      for (const t of data.teams) {
+        if (!TEAM_LEAD[t.team]) continue; // e.g. Personal Assistant: no fixed lead in this fixture
+        expect(renderReceiptSlack(data)).toContain(`*${t.team}（${TEAM_LEAD[t.team]}）*`);
+      }
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }

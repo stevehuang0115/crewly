@@ -3,7 +3,7 @@
  */
 
 import type { Team } from '../../../types/index.js';
-import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, type ReceiptSlackApi } from './owner-receipt.boot.js';
+import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf, type ReceiptSlackApi } from './owner-receipt.boot.js';
 
 /**
  * A fake Slack.
@@ -64,6 +64,33 @@ describe('teamIndexOf', () => {
       ['kai', 'Think Tank'],
       ['nova', 'CE'],
     ]);
+  });
+});
+
+describe('teamLeadIndexOf (Ava\'s reference: CE（Owen）)', () => {
+  it('maps a team name to its leader\'s display name, preferring leaderIds[0] over the deprecated leaderId', () => {
+    const teams = [
+      { name: 'Think Tank', leaderIds: ['m-atlas'], members: [{ id: 'm-atlas', name: 'Atlas' }, { id: 'm-kai', name: 'Kai' }] },
+      { name: 'CE', leaderId: 'm-owen', members: [{ id: 'm-owen', name: 'Owen' }, { id: 'm-nova', name: 'Nova' }] },
+      { name: 'CE-legacy', leaderIds: ['m-owen'], leaderId: 'm-nova', members: [{ id: 'm-owen', name: 'Owen' }, { id: 'm-nova', name: 'Nova' }] },
+    ] as unknown as Team[];
+    expect([...teamLeadIndexOf(teams).entries()]).toEqual([
+      ['Think Tank', 'Atlas'],
+      ['CE', 'Owen'],
+      ['CE-legacy', 'Owen'], // leaderIds[0] wins over the deprecated leaderId
+    ]);
+  });
+
+  it('a team with no leader assigned is absent from the index, not mapped to null', () => {
+    const teams = [{ name: 'Flat Team', members: [{ id: 'm-1', name: 'Solo' }] }] as unknown as Team[];
+    const index = teamLeadIndexOf(teams);
+    expect(index.has('Flat Team')).toBe(false);
+    expect(index.get('Flat Team')).toBeUndefined();
+  });
+
+  it('a leaderId that names nobody on the team is absent from the index (no orphan name)', () => {
+    const teams = [{ name: 'Broken', leaderId: 'no-such-member', members: [{ id: 'm-1', name: 'Solo' }] }] as unknown as Team[];
+    expect(teamLeadIndexOf(teams).has('Broken')).toBe(false);
   });
 });
 

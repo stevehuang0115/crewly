@@ -90,6 +90,29 @@ describe('buildReceiptData — every ticket of the window exactly once, by team'
     expect(tt.find((a) => a.ticketId === question.id)?.isQuestion).toBe(true);
   });
 
+  it('names each team\'s lead when teamLeadOf resolves one (Ava\'s reference: CE（Owen）); unassigned never gets one', () => {
+    const teamLeadOf = (t: string): string | null => ({ 'Think Tank': 'Atlas', 'Crewly Marketing': 'Ella' })[t] ?? null;
+    const data = buildReceiptData({
+      requests: [ticket({ assignee: 'atlas' }), ticket({ assignee: 'ella' }), ticket({})],
+      workItems: [],
+      window: WINDOW,
+      teamOf,
+      teamLeadOf,
+      now: NOW,
+    });
+    // Equal-sized teams tie-break alphabetically (buildReceiptData's own sort).
+    expect(data.teams.map((t) => [t.team, t.lead])).toEqual([
+      ['Crewly Marketing', 'Ella'],
+      ['Think Tank', 'Atlas'],
+      [OWNER_RECEIPT_CONSTANTS.UNASSIGNED_TEAM, null],
+    ]);
+  });
+
+  it('every team\'s lead is null when teamLeadOf is not given at all (backward compatible)', () => {
+    const data = buildReceiptData({ requests: [ticket({ assignee: 'atlas' })], workItems: [], window: WINDOW, teamOf, now: NOW });
+    expect(data.teams.map((t) => t.lead)).toEqual([null]);
+  });
+
   it('counts outcomes over every ask, and they add up to the ask count', () => {
     const tickets = [
       ticket({ assignee: 'atlas', status: 'done' }),

@@ -41,6 +41,8 @@ export interface OwnerReceiptServiceDeps {
   listWorkItems: () => Promise<WorkItem[]>;
   /** session → team name (built once per receipt) */
   loadTeamIndex: () => Promise<Map<string, string>>;
+  /** team name → lead's display name (built once per receipt); absent → no lead shown */
+  loadTeamLeadIndex?: () => Promise<Map<string, string>>;
   /** Slack DM to the owner; null = cannot send (the API still works) */
   sender?: ReceiptSender | null;
   /** State file (default ~/.crewly/owner-receipt.json); null = in memory (tests) */
@@ -124,10 +126,11 @@ export class OwnerReceiptService {
       ...(state.lastSentAt ? { lastSentAt: state.lastSentAt } : {}),
       ...opts,
     });
-    const [requests, workItems, teams, intakeLog] = await Promise.all([
+    const [requests, workItems, teams, teamLeads, intakeLog] = await Promise.all([
       this.deps.listRequests(),
       this.deps.listWorkItems(),
       this.deps.loadTeamIndex(),
+      this.deps.loadTeamLeadIndex ? this.deps.loadTeamLeadIndex() : Promise.resolve(null),
       this.deps.readIntakeLog ? this.deps.readIntakeLog().catch(() => null) : Promise.resolve(null),
     ]);
     const data = buildReceiptData({
@@ -135,6 +138,7 @@ export class OwnerReceiptService {
       workItems,
       window,
       teamOf: (session) => teams.get(session) ?? null,
+      ...(teamLeads ? { teamLeadOf: (team: string) => teamLeads.get(team) ?? null } : {}),
       intakeLog,
       ...(this.deps.cost ? { cost: this.deps.cost } : {}),
       now,

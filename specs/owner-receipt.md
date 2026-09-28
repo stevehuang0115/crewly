@@ -1,6 +1,6 @@
 # Owner receipt — the nightly "小票" (#828, 2026-09-26)
 
-Status: v1 implemented. The format is **not yet approved** by the owner. Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`).
+Status: v1 implemented. **Format approved by the owner 2026-09-28** (「手动的小票，我觉得这个 OK，先这样子吧」, approving Ava's manual reference). Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`); a line-by-line comparison of the automated receipt against it is `.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md`.
 
 ## Goal
 
@@ -84,7 +84,7 @@ API (`/api/owner-receipt`):
 你提了 *N 件事*：✅ a · 👀 b · 🔄 c · ⛔ d · ✖ e    (zeros left out)
 交付：PR x · issue y · 文件 z · 链接 w             (only when there are any)
 
-*<team>*
+*<team>（<lead>）*                                 (lead omitted when unknown: just *<team>*)
 ✅ <his words, shortened> → <link|label> · `file`   (≤ 3 per line, "等 n 项")
 …                                                  (≤ 30 ask lines, then "…另有 N 件，见看板")
 
@@ -117,5 +117,18 @@ The owner's 43 real Slack messages in Ava's window (0:00–14:00 EDT) were run t
 
 - The single "question to answer" per waiting item. Today it is the start of the agent's reply; agents do not yet record the question.
 - A PR "ready to merge" marker, and checking each ✅ link at print time.
-- Closely related asks sharing a line with an (n) count.
+- Closely related asks sharing a line with an (n) count **and a short outcome-summary
+  before the link**. Ava's reference combines several owner messages that are one story
+  into one line (`✅ Nova 登 codex、试出图（2）→ 能直接出图 <thread>`); today's renderer is
+  one line per ticket, and a `done` line shows the deliverable links directly with no
+  separate summary text.
+- Deliverable sub-categories (报告/文章上线/skill/wiki 提交) and a PR opened-vs-merged
+  split. Today `ReceiptDeliverable.kind` has only `pr | issue | file | link`.
+- A `paused`/parked outcome (Ava's ⏸). `RequestStatus` has no such state; adding one
+  ripples through the whole ticket transition table, not just the receipt.
 - The dashboard UI (the API is ready).
+
+**Done since 2026-09-28 (owner approval pass):** the team header now names the lead
+(`*CE（Owen）*`), from `teamLeadOf`/`teamLeadIndexOf` — see
+`.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md` for the
+full side-by-side against Ava's reference and everything still open.

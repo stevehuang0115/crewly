@@ -310,6 +310,12 @@ export interface ReceiptInputs {
   window: ReceiptWindow;
   /** Team name of an agent session, or null when it is in no team */
   teamOf: (session: string) => string | null;
+  /**
+   * The team lead's display name, or null when unknown (Ava's reference:
+   * `CE（Owen）`). Absent entirely → every team's `lead` is null, so the
+   * renderer falls back to `*<team>*` with no parenthetical.
+   */
+  teamLeadOf?: (team: string) => string | null;
   /** Cost policy (default {@link cumulativeMeterCost}) */
   cost?: ReceiptCostSource;
   /**
@@ -436,7 +442,12 @@ export function buildReceiptData(input: ReceiptInputs): ReceiptData {
     .sort(([a, x], [b, y]) =>
       a === OWNER_RECEIPT_CONSTANTS.UNASSIGNED_TEAM ? 1 : b === OWNER_RECEIPT_CONSTANTS.UNASSIGNED_TEAM ? -1 : y.asks.length - x.asks.length || a.localeCompare(b),
     )
-    .map(([team, v]) => ({ team, asks: v.asks, cost: cost(team, v.items, input.window) }));
+    .map(([team, v]) => ({
+      team,
+      lead: team === OWNER_RECEIPT_CONSTANTS.UNASSIGNED_TEAM ? null : (input.teamLeadOf?.(team) ?? null),
+      asks: v.asks,
+      cost: cost(team, v.items, input.window),
+    }));
 
   return {
     window: input.window,

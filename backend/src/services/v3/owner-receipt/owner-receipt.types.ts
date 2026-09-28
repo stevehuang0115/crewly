@@ -71,6 +71,8 @@ export type ReceiptCost =
 export interface ReceiptTeam {
   /** Team name, or {@link OWNER_RECEIPT_CONSTANTS.UNASSIGNED_TEAM} */
   team: string;
+  /** Team lead's display name, when known (Ava's reference: `CE（Owen）`) */
+  lead: string | null;
   asks: ReceiptAsk[];
   cost: ReceiptCost;
 }
