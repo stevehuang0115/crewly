@@ -76,6 +76,7 @@ describe('decideFreshConversation', () => {
     ['same task', { newRoot: 'task-a' }],
     ['busy', { busy: true }],
     ['recent delivery', { recentDelivery: true }],
+    ['already working on it', { alreadyStarted: true }],
     ['other work in progress', { otherActiveRoots: ['task-c'] }],
   ])('does not clear: %s', (reason, override) => {
     expect(decideFreshConversation({ ...base, ...(override as Partial<FreshTaskDecisionInput>) })).toEqual({ clear: false, reason });

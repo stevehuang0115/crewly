@@ -1478,6 +1478,12 @@ export const FRESH_TASK_CONVERSATION_CONSTANTS = {
 	MIN_QUIET_MS: 8_000,
 	/** Skip clearing when someone else delivered a message to the session this recently */
 	RECENT_DELIVERY_MS: 30_000,
+	/**
+	 * A task started longer ago than this is work in progress: a re-delivery
+	 * of it (auto-claim after the lead's direct hand-over) must not clear.
+	 * Auto-claim itself starts the item moments before delivering.
+	 */
+	ALREADY_STARTED_MS: 60_000,
 	/** How long a terminal write/deliver waits for an in-progress clear */
 	WAIT_IF_CLEARING_MAX_MS: 5_000,
 	/** How long to look for the new transcript Claude Code starts after `/clear` */

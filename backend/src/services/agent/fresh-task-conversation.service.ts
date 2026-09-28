@@ -104,6 +104,12 @@ export interface FreshTaskDecisionInput {
   recentDelivery: boolean;
   /** Roots of OTHER work the agent is actively running */
   otherActiveRoots: string[];
+  /**
+   * The agent already started this very task a while ago (e.g. the lead
+   * handed it over directly and this is a re-delivery). Clearing now would
+   * wipe the live context of work in progress.
+   */
+  alreadyStarted?: boolean;
 }
 
 /** The clear decision and why. */
@@ -128,6 +134,7 @@ export function decideFreshConversation(input: FreshTaskDecisionInput): FreshTas
   if (input.previousRoot === input.newRoot) return { clear: false, reason: 'same task' };
   if (input.busy) return { clear: false, reason: 'busy' };
   if (input.recentDelivery) return { clear: false, reason: 'recent delivery' };
+  if (input.alreadyStarted) return { clear: false, reason: 'already working on it' };
   if (input.otherActiveRoots.some((r) => r !== input.newRoot)) return { clear: false, reason: 'other work in progress' };
   return { clear: true, reason: 'new task' };
 }
@@ -443,6 +450,12 @@ export class FreshTaskConversationService {
         busy: busy || active === null,
         recentDelivery,
         otherActiveRoots: (active ?? []).filter((wi) => wi.id !== workItem.id).map((wi) => rootWorkItemId(wi.id)),
+        alreadyStarted: (active ?? []).some(
+          (wi) =>
+            rootWorkItemId(wi.id) === newRoot &&
+            !!wi.startedAt &&
+            this.deps.now() - Date.parse(wi.startedAt) > FRESH_TASK_CONVERSATION_CONSTANTS.ALREADY_STARTED_MS,
+        ),
       });
     }
 
