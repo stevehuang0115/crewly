@@ -1365,6 +1365,49 @@ export const CLOUD_DEVICE_PAIRING_CONSTANTS = {
 } as const;
 
 /**
+ * Cloud disconnect notice: when a signed-in machine cannot talk to Crewly
+ * Cloud for a sustained period (sign-in expired, Cloud unreachable), inbound
+ * Slack messages for its agents queue in Cloud unseen. The notice DMs the
+ * owner on Slack (outbound still works with the local bot tokens) with a
+ * phone-friendly re-login link from `crewly cloud login`, run by Crewly.
+ */
+export const CLOUD_DISCONNECT_NOTICE_CONSTANTS = {
+	/** Kill switch: `CREWLY_CLOUD_DISCONNECT_NOTICE=0` turns the notice off */
+	ENV_SWITCH: 'CREWLY_CLOUD_DISCONNECT_NOTICE',
+	/** No successful Cloud request for this long = disconnected (ms) — 15 min */
+	DISCONNECT_THRESHOLD_MS: 15 * 60 * 1000,
+	/** How often the monitor checks (ms) */
+	CHECK_INTERVAL_MS: 60 * 1000,
+	/** Repeat the notice at most this often while still disconnected (ms) — 6 h */
+	REPEAT_INTERVAL_MS: 6 * 60 * 60 * 1000,
+	/** State file under the Crewly home (last notice, DM message, episode start) */
+	STATE_FILE: 'cloud/disconnect-notice.json',
+	/** Arguments for the CLI login run in a PTY (device pairing, no local browser) */
+	CLI_LOGIN_ARGS: ['cloud', 'login', '--no-browser'],
+	/** CLI entry point relative to the package root */
+	CLI_ENTRY: 'dist/cli/cli/src/index.js',
+	/** How long to wait for the CLI to print its login link before sending the notice without one (ms) */
+	LINK_WAIT_MS: 30 * 1000,
+	/** Hard stop for one CLI login run (ms) — the pairing itself lasts 15 min */
+	LOGIN_TIMEOUT_MS: 16 * 60 * 1000,
+	/** Wait before starting another login run after one could not start (ms) */
+	LOGIN_RETRY_MS: 5 * 60 * 1000,
+	/** How often to read the owner's Slack DM for a reply the CLI asked for (ms) */
+	REPLY_POLL_INTERVAL_MS: 5 * 1000,
+	/** Stop reading replies after this long (ms) */
+	REPLY_MAX_WAIT_MS: 15 * 60 * 1000,
+	/** PTY size for the CLI login (wide so the link is never wrapped) */
+	PTY_COLS: 500,
+	PTY_ROWS: 50,
+	/** Largest PTY output kept for parsing (chars) */
+	RAW_BUFFER_MAX_CHARS: 64 * 1024,
+	/** Slack Web API base */
+	SLACK_API_BASE: 'https://slack.com/api',
+	/** Timeout for one Slack Web API call (ms) */
+	SLACK_REQUEST_TIMEOUT_MS: 15 * 1000,
+} as const;
+
+/**
  * Type helpers for extracting literal types from constants
  */
 export type AgentStatus =

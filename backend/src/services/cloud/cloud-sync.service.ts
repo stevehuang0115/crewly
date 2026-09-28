@@ -25,6 +25,7 @@ import { StorageService } from '../core/storage.service.js';
 import { CLOUD_SYNC_CONSTANTS } from '../../constants.js';
 import type {
   CloudSyncConfig,
+  CloudSyncHealth,
   CloudSyncState,
   SyncDevice,
   SyncTeamSummary,
@@ -166,6 +167,12 @@ export class CloudSyncService extends EventEmitter {
    * Keeps the last 500 IDs; pruned on overflow.
    */
   private processedMessageIds = new Set<string>();
+  /** Epoch ms of the last request Cloud answered successfully (0 = never) */
+  private lastContactAt = 0;
+  /** Epoch ms of the last start() (0 = never started) */
+  private startedAt = 0;
+  /** True when Cloud's last answer was 401/403 and the token refresh failed */
+  private authRejected = false;
   /** Maximum size of the processedMessageIds dedup set */
   private static readonly MAX_DEDUP_IDS = 500;
 
@@ -213,9 +220,17 @@ export class CloudSyncService extends EventEmitter {
       this.logger.warn('CloudSyncService already running, ignoring start()');
       return;
     }
+    // A re-login while in `error` / `auth_expired` (Settings, `crewly cloud
+    // login`, the disconnect notice): the error state keeps its heartbeat and
+    // poll timers, so starting on top of it would run two sets. Reset first.
+    if (this.state === 'error' || this.state === 'auth_expired') {
+      this.stop();
+    }
 
     this.config = config;
     this.state = 'syncing';
+    this.startedAt = Date.now();
+    this.authRejected = false;
     this.heartbeatFailures = 0;
     this.devicePollFailures = 0;
     this.messagePollFailures = 0;
@@ -319,6 +334,27 @@ export class CloudSyncService extends EventEmitter {
    */
   getState(): CloudSyncState {
     return this.state;
+  }
+
+  /**
+   * Connection health for the disconnect monitor: the state, when Cloud last
+   * answered, when sync was started and whether Cloud refused the sign-in.
+   *
+   * @returns Health snapshot (times are epoch ms, null when never)
+   */
+  getHealth(): CloudSyncHealth {
+    return {
+      state: this.state,
+      lastContactAt: this.lastContactAt || null,
+      startedAt: this.startedAt || null,
+      authRejected: this.authRejected,
+    };
+  }
+
+  /** Record a request Cloud answered successfully. */
+  private markContact(): void {
+    this.lastContactAt = Date.now();
+    this.authRejected = false;
   }
 
   /**
@@ -703,6 +739,7 @@ export class CloudSyncService extends EventEmitter {
       }
 
       this.heartbeatFailures = 0;
+      this.markContact();
     } catch (error) {
       this.heartbeatFailures++;
       this.logger.warn('Heartbeat failed', {
@@ -931,6 +968,7 @@ export class CloudSyncService extends EventEmitter {
 
       if (!rawMessages || rawMessages.length === 0) {
         this.messagePollFailures = 0;
+        this.markContact();
         return 0;
       }
 
@@ -996,6 +1034,7 @@ export class CloudSyncService extends EventEmitter {
       await this.ackMessages(messageIds);
 
       this.messagePollFailures = 0;
+      this.markContact();
       this.logger.debug('Polled and processed messages', { count: rawMessages.length });
       return rawMessages.length;
     } catch (error) {
@@ -1218,6 +1257,7 @@ export class CloudSyncService extends EventEmitter {
           this.messagePollFailures = 0;
           this.errorRecoveryAttempts = 0;
           this.state = 'syncing';
+          this.markContact();
 
           if (this.errorRecoveryTimer) {
             clearInterval(this.errorRecoveryTimer);
@@ -1303,6 +1343,7 @@ export class CloudSyncService extends EventEmitter {
       }
 
       this.logger.warn('CloudSyncService token refresh failed — API returned auth error', { status });
+      this.authRejected = true;
       return false;
     } catch (err) {
       this.logger.warn('CloudSyncService token refresh attempt threw', {

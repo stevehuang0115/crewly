@@ -19,6 +19,21 @@ export type CloudSyncState = 'stopped' | 'syncing' | 'error' | 'auth_expired';
 /** Valid cloud sync state values for runtime validation. */
 export const CLOUD_SYNC_STATES = ['stopped', 'syncing', 'error', 'auth_expired'] as const;
 
+/**
+ * Connection health reported by `CloudSyncService.getHealth()` — what the
+ * Cloud disconnect notice decides from.
+ */
+export interface CloudSyncHealth {
+  /** Current service state */
+  state: CloudSyncState;
+  /** Epoch ms of the last request Cloud answered successfully (null = never) */
+  lastContactAt: number | null;
+  /** Epoch ms of the last start() (null = never started) */
+  startedAt: number | null;
+  /** True when Cloud's last answer was 401/403 and the token refresh failed */
+  authRejected: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
