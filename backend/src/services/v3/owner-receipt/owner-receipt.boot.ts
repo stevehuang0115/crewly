@@ -67,6 +67,26 @@ export function teamIndexOf(teams: readonly Team[]): Map<string, string> {
 }
 
 /**
+ * team name → team lead's display name, from the team list (Ava's reference:
+ * `CE（Owen）`). `leaderIds[0]` when set, else the deprecated `leaderId`; a
+ * team with neither (not hierarchical, or no leader assigned) is absent from
+ * the index, so the receipt falls back to `*<team>*` with no parenthetical.
+ *
+ * @param teams - Every team
+ * @returns Index
+ */
+export function teamLeadIndexOf(teams: readonly Team[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const team of teams) {
+    const leaderId = team.leaderIds?.[0] ?? team.leaderId;
+    if (!leaderId) continue;
+    const lead = (team.members ?? []).find((m) => m.id === leaderId);
+    if (lead) index.set(team.name, lead.name);
+  }
+  return index;
+}
+
+/**
  * Check every {@link OWNER_RECEIPT_CONSTANTS.TICK_INTERVAL_MS} whether the
  * receipt is due. Failures are logged, never thrown.
  *

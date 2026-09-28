@@ -97,7 +97,7 @@ import { RequestStatusUpdateSubscriber } from './services/v3/request-status-upda
 import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { OwnerReceiptService, setOwnerReceiptService } from './services/v3/owner-receipt/owner-receipt.service.js';
-import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf } from './services/v3/owner-receipt/owner-receipt.boot.js';
+import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf } from './services/v3/owner-receipt/owner-receipt.boot.js';
 import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
@@ -616,6 +616,7 @@ export class CrewlyServer {
 					listRequests: () => RequestService.getInstance().listAll(),
 					listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
 					loadTeamIndex: async () => teamIndexOf(await StorageService.getInstance().getTeams()),
+					loadTeamLeadIndex: async () => teamLeadIndexOf(await StorageService.getInstance().getTeams()),
 					sender: createSlackOwnerSender(() => getSlackService()),
 					readIntakeLog: () => intakeOutcomeLog.read(),
 				});

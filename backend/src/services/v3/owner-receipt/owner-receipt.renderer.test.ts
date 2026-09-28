@@ -40,6 +40,7 @@ function data(over: Partial<ReceiptData> = {}): ReceiptData {
   const teams: ReceiptTeam[] = over.teams ?? [
     {
       team: 'Think Tank',
+      lead: 'Atlas',
       cost: { status: 'not_tracked', reason: 'cumulative_meter' },
       asks: [
         ask({ deliverables: [{ kind: 'file', ref: '.crewly/specs/2026-09-26-orca-delta.md', label: '2026-09-26-orca-delta.md' }] }),
@@ -49,6 +50,7 @@ function data(over: Partial<ReceiptData> = {}): ReceiptData {
     },
     {
       team: 'Crewly Product',
+      lead: null,
       cost: { status: 'not_tracked', reason: 'cumulative_meter' },
       asks: [
         ask({ text: '开 issue 给 Sam', deliverables: [{ kind: 'issue', ref: 'https://github.com/o/r/issues/828', label: '#828' }] }),
@@ -82,7 +84,7 @@ describe('renderReceiptSlack — the posted format', () => {
       '你提了 *5 件事*：✅ 3 · 🔄 1 · ⛔ 1',
       '交付：issue 1 · 文件 1',
       '',
-      '*Think Tank*',
+      '*Think Tank（Atlas）*',
       '✅ 研究 Orca → `.crewly/specs/2026-09-26-orca-delta.md`',
       '✅ Turing 的另一个测试是什么 → 已答',
       '🔄 Opus 做视频 → Flopost → 在做',
@@ -143,7 +145,7 @@ describe('renderReceiptSlack — safety and length', () => {
 
   it('caps the ask lines for a phone and says how many more', () => {
     const many = Array.from({ length: OWNER_RECEIPT_CONSTANTS.MAX_ASK_LINES + 7 }, (_, i) => ask({ ticketId: `t${i}`, text: `ask ${i}` }));
-    const d = data({ teams: [{ team: 'A', asks: many, cost: { status: 'not_tracked', reason: 'no_data' } }], askCount: many.length });
+    const d = data({ teams: [{ team: 'A', lead: null, asks: many, cost: { status: 'not_tracked', reason: 'no_data' } }], askCount: many.length });
     const text = renderReceiptSlack(d);
     expect(text.split('\n').filter((l) => l.startsWith('✅ ask '))).toHaveLength(OWNER_RECEIPT_CONSTANTS.MAX_ASK_LINES);
     expect(text).toContain('…另有 7 件，见看板');

@@ -66,6 +66,29 @@ describe('OwnerReceiptService', () => {
     expect(text).toContain('你提了 *1 件事*');
   });
 
+  it('names the team lead in the team header when loadTeamLeadIndex is wired (Ava\'s reference: Think Tank（Atlas）)', async () => {
+    const svc = new OwnerReceiptService({
+      listRequests: async () => [ticket(1, '2026-09-26T15:00:00Z')],
+      listWorkItems: async () => [],
+      loadTeamIndex: async () => new Map([['atlas', 'Think Tank']]),
+      loadTeamLeadIndex: async () => new Map([['Think Tank', 'Atlas']]),
+      statePath: null,
+      now: () => NINE_PM,
+    });
+    const { data, text } = await svc.generate();
+    expect(data.teams[0]).toMatchObject({ team: 'Think Tank', lead: 'Atlas' });
+    expect(text).toContain('*Think Tank（Atlas）*');
+  });
+
+  it('no lead shown when loadTeamLeadIndex is not wired at all (backward compatible)', async () => {
+    const clock = { now: NINE_PM };
+    const { svc } = build({ requests: [ticket(1, '2026-09-26T15:00:00Z')], clock });
+    const { data, text } = await svc.generate();
+    expect(data.teams[0]).toMatchObject({ team: 'Think Tank', lead: null });
+    expect(text).toContain('*Think Tank*');
+    expect(text).not.toContain('（Atlas）');
+  });
+
   it('sends at the set local time, once per local day, and the next window starts where this one ended', async () => {
     const clock = { now: new Date('2026-09-27T00:59:00Z') }; // 20:59 EDT
     const requests = [ticket(1, '2026-09-26T15:00:00Z')];
