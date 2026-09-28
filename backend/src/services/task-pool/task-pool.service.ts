@@ -367,6 +367,40 @@ export class TaskPoolService {
   }
 
   /**
+   * Listeners told after a WorkItem is newly claimed (not for an
+   * already-held claim). There is no claim event on the bus; the claim sites
+   * are the HTTP controller, AgentAutoClaim and the boot path, so the hook
+   * lives here. Listeners run fire-and-forget: a slow or failing listener
+   * never delays or fails the claim. Used by the per-WorkItem worktree
+   * service (#814).
+   */
+  private claimListeners: Array<(workItem: WorkItem, agentId: string) => void | Promise<void>> = [];
+
+  /**
+   * Register a claim listener (see {@link claimListeners}).
+   *
+   * @param listener - Called with the claimed WorkItem and the claiming agent
+   * @returns Unsubscribe function
+   */
+  onClaimed(listener: (workItem: WorkItem, agentId: string) => void | Promise<void>): () => void {
+    this.claimListeners.push(listener);
+    return () => {
+      this.claimListeners = this.claimListeners.filter((l) => l !== listener);
+    };
+  }
+
+  /** Fire claim listeners without awaiting them; errors are logged, never thrown. */
+  private notifyClaimed(workItem: WorkItem, agentId: string): void {
+    for (const listener of this.claimListeners) {
+      Promise.resolve()
+        .then(() => listener(workItem, agentId))
+        .catch((err) => {
+          this.logger.warn('Claim listener failed (non-fatal)', { workItemId: workItem.id, error: formatError(err) });
+        });
+    }
+  }
+
+  /**
    * Wire the Request-linker reference used by {@link addToPool} to
    * intrinsically link the new WI into its parent `Request.workItemIds[]`
    * (P1 Bug B — Pool umbrella WI 72ca743a).
@@ -1166,6 +1200,7 @@ export class TaskPoolService {
         title: selected.title,
       });
       await this.noteTicketSelfClaim(claimedItem, agentId);
+      this.notifyClaimed(claimedItem, agentId);
 
       return {
         workItem: claimedItem,
@@ -1261,6 +1296,7 @@ export class TaskPoolService {
 
       this.logger.info('WorkItem claimed (specific)', { workItemId, agentId, claimId: claim.id });
       await this.noteTicketSelfClaim(claimedItem, agentId);
+      this.notifyClaimed(claimedItem, agentId);
 
       return { workItem: claimedItem, claim };
     });
@@ -2705,6 +2741,25 @@ export class TaskPoolService {
       item.metadata = { ...existing, notes };
     });
     this.logger.info('WorkItem handoff', { workItemId, fromAgent, newTarget });
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
+   * Set one top-level metadata key on a WorkItem. Never changes its status
+   * (this is not a transition), so it needs no actor. Used by the worktree
+   * service to record `metadata.worktree` (#814).
+   *
+   * @param workItemId - WorkItem id
+   * @param key - Metadata key
+   * @param value - New value (replaces the old one)
+   * @returns The updated WorkItem, or null when it does not exist
+   */
+  async patchMetadata(workItemId: string, key: string, value: unknown): Promise<WorkItem | null> {
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      const existing = (wi.metadata && typeof wi.metadata === 'object' ? wi.metadata : {}) as Record<string, unknown>;
+      wi.metadata = { ...existing, [key]: value };
+    });
+    if (!ok) return null;
     return (await this.storage.findWorkItem(workItemId)) ?? null;
   }
 

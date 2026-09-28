@@ -897,6 +897,38 @@ export const STANDING_ANSWERS_CONSTANTS = {
 	COMPLETED_LEARNING_PREFIX: 'Task completed:',
 } as const;
 
+/**
+ * Per-WorkItem git worktrees (#814). Opt-in per project in v1
+ * (`Project.worktrees = 'on'`); a team can opt out (`Team.worktrees =
+ * 'off'`); `CREWLY_WORKTREES=off` disables them everywhere.
+ */
+export const WORKTREE_CONSTANTS = {
+	/** Worktrees live here, relative to the repo root (gitignored via .crewly). */
+	DIR: '.crewly/worktrees',
+	/** Per-worktree manifests (symlinks, copies, base) live here, inside DIR. */
+	META_DIR: '.meta',
+	/** Branch name prefix: `wi/<workItemId>`. */
+	BRANCH_PREFIX: 'wi/',
+	/** Repo-root file listing gitignored-but-needed files to copy in. */
+	INCLUDE_FILE: '.worktreeinclude',
+	/** Cap on `.worktreeinclude` entries honoured. */
+	INCLUDE_MAX_ENTRIES: 50,
+	/** Heavy directories symlinked (not copied) from the repo root when present and untracked. */
+	DEFAULT_SHARED_DIRS: ['node_modules'] as readonly string[],
+	/** Marker line for the entries this feature adds to `.git/info/exclude`. */
+	EXCLUDE_MARKER: '# crewly worktree shared paths (#814) — never commit these',
+	/** Timeout for local git commands (checkout of a large repo can take minutes under load). */
+	GIT_TIMEOUT_MS: 10 * 60 * 1000,
+	/** Timeout for `git ls-remote` (offline must not hang the sweep). */
+	REMOTE_TIMEOUT_MS: 15_000,
+	/** Orphan sweep interval. */
+	SWEEP_INTERVAL_MS: 30 * 60 * 1000,
+	/** Kill switch env var; the value `off` disables worktrees everywhere. */
+	ENV_KILL_SWITCH: 'CREWLY_WORKTREES',
+	/** WorkItem metadata key holding the worktree record. */
+	METADATA_KEY: 'worktree',
+} as const;
+
 /** One of {@link WIKI_KB_CONSTANTS.KEEP_BECAUSE}. */
 export type WikiKeepBecause = (typeof WIKI_KB_CONSTANTS.KEEP_BECAUSE)[number];
 

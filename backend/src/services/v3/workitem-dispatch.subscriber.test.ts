@@ -390,4 +390,55 @@ describe('WorkItemDispatchSubscriber', () => {
       expect(mockedAxios.post).toHaveBeenCalledTimes(1);
     });
   });
+
+  describe('worktree hint in the FIRST dispatch brief (#829 review)', () => {
+    /**
+     * `git worktree add` can take seconds — long enough that the old design
+     * (a separate "worktree ready" terminal message once creation finished)
+     * arrived after the agent had already started work in the shared
+     * checkout, reading only the workdir-less first brief. The hint is
+     * computed synchronously (no git I/O beyond WorkItemWorktreeService's
+     * own eligibility lookup) so it can be in the FIRST brief instead.
+     */
+    it('names the workdir in the first dispatch brief when a resolver is wired and resolves a hint', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const resolveHint = jest.fn(async () => ({ workdir: '/repo/.crewly/worktrees/wi-1', branch: 'wi/wi-1' }));
+      svc.setWorktreeHintResolver({ resolveHint });
+      const wi = makeWorkItem({ id: 'wi-1' });
+
+      expect(await svc.dispatchTo(wi)).toBe(true);
+      expect(resolveHint).toHaveBeenCalledWith(wi);
+      const body = (mockedAxios.post.mock.calls[0][1] as { data: string }).data;
+      expect(body).toContain('This WorkItem has its own git worktree. Work ONLY in:');
+      expect(body).toContain('/repo/.crewly/worktrees/wi-1');
+      expect(body).toContain('(branch wi/wi-1)');
+    });
+
+    it('no hint line when the resolver returns null (WorkItem gets no worktree)', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setWorktreeHintResolver({ resolveHint: jest.fn(async () => null) });
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-2' }));
+      expect((mockedAxios.post.mock.calls[0][1] as { data: string }).data).not.toContain('git worktree');
+    });
+
+    it('no hint line, and dispatch still proceeds, when no resolver is wired (default)', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-3' }))).toBe(true);
+      expect((mockedAxios.post.mock.calls[0][1] as { data: string }).data).not.toContain('git worktree');
+    });
+
+    it('a throwing resolver never blocks delivery', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setWorktreeHintResolver({ resolveHint: jest.fn(async () => { throw new Error('boom'); }) });
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-4' }))).toBe(true);
+    });
+
+    it('setWorktreeHintResolver(null) restores the no-hint default', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setWorktreeHintResolver({ resolveHint: jest.fn(async () => ({ workdir: '/x', branch: 'wi/x' })) });
+      svc.setWorktreeHintResolver(null);
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-5' }));
+      expect((mockedAxios.post.mock.calls[0][1] as { data: string }).data).not.toContain('git worktree');
+    });
+  });
 });
