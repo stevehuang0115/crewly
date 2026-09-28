@@ -49,8 +49,18 @@ class TestRuntimeService extends RuntimeAgentService {
 describe('RuntimeAgentService (Abstract)', () => {
 	let service: TestRuntimeService;
 	let mockSessionHelper: jest.Mocked<SessionCommandHelper>;
+	const guardEnvBefore = process.env.CREWLY_CONTROL_PLANE_GUARD;
+
+	afterAll(() => {
+		if (guardEnvBefore === undefined) delete process.env.CREWLY_CONTROL_PLANE_GUARD;
+		else process.env.CREWLY_CONTROL_PLANE_GUARD = guardEnvBefore;
+	});
 
 	beforeEach(() => {
+		// The launch-command tests below assert exact command lines and are not
+		// about the control-plane guard; it is switched on explicitly in its own
+		// describe ('control-plane guard injection').
+		process.env.CREWLY_CONTROL_PLANE_GUARD = '0';
 		mockSessionHelper = {
 			capturePane: jest.fn(),
 			sendKey: jest.fn(),
@@ -387,6 +397,113 @@ echo "second command"
 			const commands = await testService['loadInitScript']('test_script.sh');
 
 			expect(commands).toEqual(['echo "first command"', 'echo "second command"']);
+		});
+	});
+
+	describe('control-plane guard injection (Request 72c9427a)', () => {
+		/** Stub the init script and capture the launched commands. */
+		function stubLaunch(svc: RuntimeAgentService, command: string): jest.SpyInstance {
+			jest.spyOn(svc as any, 'getRuntimeConfig').mockReturnValue({
+				initScript: 'initialize_claude.sh',
+				displayName: 'Claude Code',
+				welcomeMessage: 'Welcome',
+				timeout: 120000,
+				description: 'Claude Code CLI',
+			});
+			jest.spyOn(svc as any, 'loadInitScript').mockResolvedValue([command]);
+			return jest.spyOn(svc as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
+		}
+
+		// prepareControlPlaneGuard() (called from executeRuntimeInitScript) reads the
+		// REAL filesystem via `getCrewlyHomePath()` — only 'fs/promises' is jest.mock'd
+		// above, with just a `readFile` stub, so this describe block's tests were
+		// already writing their generated settings/paths files under the real
+		// developer machine's `~/.crewly/runtime/control-plane/`. WorkItem 70e54fbc:
+		// since the fix enumerates real team directories under `<crewlyHome>/teams`
+		// (control-plane-guard.service.ts listExistingTeamIds), that enumeration must
+		// not depend on whatever teams happen to exist on the machine running the
+		// test. Point CREWLY_HOME at an isolated temp dir with one known team.
+		const realFs = jest.requireActual('fs') as typeof import('fs');
+		const realOs = jest.requireActual('os') as typeof import('os');
+		const realPath = jest.requireActual('path') as typeof import('path');
+		const ORIGINAL_CREWLY_HOME = process.env.CREWLY_HOME;
+		let cpgHome: string;
+		let cpgTeamId: string;
+
+		beforeEach(() => {
+			delete process.env.CREWLY_CONTROL_PLANE_GUARD;
+			jest.spyOn(settingsServiceModule, 'getSettingsService').mockImplementation(() => {
+				throw new Error('settings unavailable');
+			});
+			cpgHome = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), 'cpg-runtime-agent-'));
+			cpgTeamId = 'team-cpg-test';
+			realFs.mkdirSync(realPath.join(cpgHome, 'teams', cpgTeamId), { recursive: true });
+			realFs.writeFileSync(realPath.join(cpgHome, 'teams', cpgTeamId, 'config.json'), '{}\n');
+			process.env.CREWLY_HOME = cpgHome;
+		});
+
+		afterEach(() => {
+			if (ORIGINAL_CREWLY_HOME === undefined) {
+				delete process.env.CREWLY_HOME;
+			} else {
+				process.env.CREWLY_HOME = ORIGINAL_CREWLY_HOME;
+			}
+			realFs.rmSync(cpgHome, { recursive: true, force: true });
+		});
+
+		it('appends --settings <per-session file> after --disallowedTools for Claude Code', async () => {
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-session', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands).toHaveLength(1);
+			expect(commands[0]).toMatch(
+				/^claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode --settings ".*\/runtime\/control-plane\/cpg-session\.settings\.json"$/,
+			);
+		});
+
+		it('the injected settings file exists and holds the deny rules and the Bash hook', async () => {
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-file', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			const settingsPath = /--settings "([^"]+)"/.exec(commands[0])![1];
+			const settings = JSON.parse(realFs.readFileSync(settingsPath, 'utf-8'));
+			// WorkItem 70e54fbc / #798 review: only each existing team's own
+			// config.json is protected, not the whole `teams/**` subtree (a team
+			// dir also holds norms/wiki/prompts/sops/cron-tasks.json, which agents
+			// write routinely). cpgTeamId is the one team fixture seeded above.
+			expect(settings.permissions.deny).toContain(
+				`Edit(/${realPath.join(cpgHome, 'teams', cpgTeamId, 'config.json')})`,
+			);
+			expect(settings.permissions.deny).not.toEqual(
+				expect.arrayContaining([expect.stringMatching(/^Edit\(\/\/.*\/teams\/\*\*\)$/)]),
+			);
+			expect(settings.permissions.deny).toContain('Edit(//test/path/.claude/agents/**)');
+			expect(settings.hooks.PreToolUse[0].matcher).toBe('Bash');
+		});
+
+		it('does not inject when the kill switch CREWLY_CONTROL_PLANE_GUARD=0 is set on the backend', async () => {
+			process.env.CREWLY_CONTROL_PLANE_GUARD = '0';
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-off', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands[0]).not.toContain('--settings');
+		});
+
+		it('keeps an owner-configured --settings instead of adding a second one', async () => {
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions --settings /mine.json');
+			await service.executeRuntimeInitScript('cpg-own', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands[0].match(/--settings/g)).toHaveLength(1);
+			expect(commands[0]).toContain('--settings /mine.json');
+		});
+
+		it('launches unguarded (not blocked) when the settings file cannot be written', async () => {
+			const guard = await import('./control-plane-guard.service.js');
+			jest.spyOn(guard, 'prepareControlPlaneGuard').mockRejectedValueOnce(new Error('EACCES'));
+			const send = stubLaunch(service, 'claude --dangerously-skip-permissions');
+			await service.executeRuntimeInitScript('cpg-err', '/test/path');
+			const [, commands] = send.mock.calls[0] as [string, string[]];
+			expect(commands[0]).toBe('claude --dangerously-skip-permissions --disallowedTools EnterPlanMode,ExitPlanMode');
 		});
 	});
 
