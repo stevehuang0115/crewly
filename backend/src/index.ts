@@ -47,6 +47,7 @@ import { retryWithBackoff } from './services/core/retry.util.js';
 import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
+	CLOUD_DISCONNECT_NOTICE_CONSTANTS,
 	ORCHESTRATOR_ROLE,
 	ORCHESTRATOR_WINDOW_NAME,
 	MESSAGE_QUEUE_CONSTANTS,
@@ -168,6 +169,12 @@ import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
 import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
+import {
+	type CloudDisconnectNoticeService,
+	createCloudDisconnectNoticeService,
+} from './services/cloud/cloud-disconnect-notice.service.js';
+import { isNoticeEnabled } from './services/cloud/cloud-disconnect-notice.utils.js';
+import { createOwnerDirectDm } from './services/slack/slack-owner-direct-dm.js';
 import { LogRotationService } from './services/session/log-rotation.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
@@ -292,6 +299,8 @@ export class CrewlyServer {
 
 	// Shutdown state
 	private isShuttingDown = false;
+	/** Tells the owner on Slack when this machine loses Crewly Cloud */
+	private cloudDisconnectNotice: CloudDisconnectNoticeService | null = null;
 	/** Epoch ms of the last shutdown signal acted on (dedups process-group delivery) */
 	private lastShutdownSignalAt = 0;
 	/** Interrupted turns loaded at boot, resumed once their agents are back */
@@ -2911,6 +2920,10 @@ void (async () => {
 			// "back online" announcement is composed.
 			this.startAutoUpdate();
 
+			// Tell the owner (Slack DM, phone re-login link) when this machine
+			// loses Crewly Cloud — inbound Slack then queues in Cloud unseen.
+			this.startCloudDisconnectNotice();
+
 			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
 			// The legacy `TaskTrackingService.startAutoSync()` is gone — V3
 			// task-pool reconciler owns lifecycle cleanup now.
@@ -4075,6 +4088,53 @@ void (async () => {
 	}
 
 	/**
+	 * Start the Cloud disconnect notice: DM the owner on Slack when this
+	 * machine has lost Crewly Cloud (sign-in expired, Cloud unreachable), with
+	 * a re-login link from `crewly cloud login` run by Crewly itself. The DM
+	 * goes straight through the Slack Web API with the orchestrator's own bot
+	 * (falling back to the workspace bot) — outbound Slack needs no Cloud.
+	 * Off with `CREWLY_CLOUD_DISCONNECT_NOTICE=0`. Never throws.
+	 */
+	private startCloudDisconnectNotice(): void {
+		if (!isNoticeEnabled(process.env[CLOUD_DISCONNECT_NOTICE_CONSTANTS.ENV_SWITCH])) {
+			this.logger.info('Cloud disconnect notice off (CREWLY_CLOUD_DISCONNECT_NOTICE=0)');
+			return;
+		}
+		try {
+			const service = createCloudDisconnectNoticeService({
+				crewlyHome: this.config.crewlyHome,
+				getDm: () => {
+					const slack = getSlackService();
+					const ownerUserId = slack.getOwnerUserId?.() ?? null;
+					const botToken =
+						getSlackAgentIdentityService()?.getInstalled(ORCHESTRATOR_SESSION_NAME)?.botToken ?? slack.getBotToken();
+					return ownerUserId && botToken ? createOwnerDirectDm({ botToken, ownerUserId }) : null;
+				},
+				reconnect: async () => {
+					// The CLI already POSTed /api/cloud/connect; connect again from
+					// the saved config so CloudSync surely runs on the new token
+					// (the CLI may target another port, or sync was mid-error).
+					const { CloudClientService } = await import('./services/cloud/cloud-client.service.js');
+					const { CloudSyncService } = await import('./services/cloud/cloud-sync.service.js');
+					const { performCloudConnect } = await import('./controllers/cloud/cloud.controller.js');
+					const config = await CloudClientService.getInstance().loadPersistedConfig();
+					if (!config) return false;
+					CloudSyncService.getInstance().stop();
+					await performCloudConnect({ cloudUrl: config.cloudUrl, token: config.token, refreshToken: config.refreshToken });
+					return CloudSyncService.getInstance().getState() === 'syncing';
+				},
+				getDeviceName: async () => (await DeviceIdentityService.getInstance().getOrCreateIdentity()).deviceName,
+			});
+			service.start();
+			this.cloudDisconnectNotice = service;
+		} catch (error) {
+			this.logger.warn('Cloud disconnect notice not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * Load interrupted turns left by the previous shutdown (fresh ones only).
 	 */
 	private loadInterruptedTurnsAtBoot(): void {
@@ -4517,6 +4577,7 @@ void (async () => {
 		this.logger.info('Shutting down Crewly server...', { reason: options.reason ?? 'unspecified' });
 
 		AutoUpdateService.getInstance()?.stop();
+		this.cloudDisconnectNotice?.stop();
 
 		// Safe restart: stop delivering, wait for agents mid-turn, persist the rest.
 		// Runs before the force-exit timer below, which only bounds the teardown.

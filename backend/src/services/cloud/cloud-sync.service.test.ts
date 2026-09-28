@@ -868,4 +868,68 @@ describe('CloudSyncService', () => {
       expect(url).toContain(`wait=${CLOUD_SYNC_CONSTANTS.MESSAGE_LONGPOLL_WAIT_MS}`);
     });
   });
+
+  // ----- getHealth + re-login restart (Cloud disconnect notice) ----------
+
+  describe('getHealth and restart after a lost sign-in', () => {
+    it('reports never-contacted before start and records contact on a good heartbeat', async () => {
+      expect(service.getHealth()).toEqual({ state: 'stopped', lastContactAt: null, startedAt: null, authRejected: false });
+      service.start(testConfig);
+      await flushPromises();
+      const health = service.getHealth();
+      expect(health.state).toBe('syncing');
+      expect(health.startedAt).not.toBeNull();
+      expect(health.lastContactAt).not.toBeNull();
+      expect(health.authRejected).toBe(false);
+    });
+
+    it('does not record contact while every request fails', async () => {
+      mockFetch.mockRejectedValue(new Error('Network down'));
+      service.start(testConfig);
+      await flushPromises();
+      await service.sendHeartbeat();
+      expect(service.getHealth()).toMatchObject({ lastContactAt: null, authRejected: false });
+    });
+
+    it('flags authRejected when Cloud refuses and the token refresh fails, clears it on contact', async () => {
+      mockFetch.mockResolvedValue(mockResponse({}, 401));
+      service.start(testConfig);
+      await flushPromises();
+      await service.sendHeartbeat();
+      expect(service.getHealth()).toMatchObject({ lastContactAt: null, authRejected: true });
+
+      mockFetch.mockResolvedValue(mockResponse({ success: true }));
+      await service.sendHeartbeat();
+      expect(service.getHealth().authRejected).toBe(false);
+      expect(service.getHealth().lastContactAt).not.toBeNull();
+    });
+
+    it('start() after auth_expired resets and syncs again (re-login)', async () => {
+      service.start(testConfig);
+      await flushPromises();
+      (service as any).enterAuthExpiredState();
+      expect(service.getState()).toBe('auth_expired');
+
+      service.start({ ...testConfig, token: 'new-token' });
+      await flushPromises();
+      expect(service.getHealth()).toMatchObject({ state: 'syncing', authRejected: false });
+      expect((service as any).config.token).toBe('new-token');
+    });
+
+    it('start() while in error does not leave the old timers running', async () => {
+      service.start(testConfig);
+      await flushPromises();
+      (service as any).state = 'error';
+      (service as any).scheduleErrorRecovery();
+      const oldHeartbeat = (service as any).heartbeatTimer;
+      const clearSpy = jest.spyOn(global, 'clearInterval');
+
+      service.start({ ...testConfig, token: 'new-token' });
+
+      expect(clearSpy).toHaveBeenCalledWith(oldHeartbeat);
+      expect((service as any).errorRecoveryTimer).toBeNull();
+      expect(service.getState()).toBe('syncing');
+      clearSpy.mockRestore();
+    });
+  });
 });
