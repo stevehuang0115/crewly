@@ -20,6 +20,9 @@ export function createApprovalsRouter(): Router {
   // GET /api/approvals/pending — list pending approval requests
   router.get('/pending', getPendingApprovals);
 
+  // GET /api/approvals — same list; the path crewly-mobile polls (#817)
+  router.get('/', getPendingApprovals);
+
   // POST /api/approvals/:id/approve — approve a pending request
   router.post('/:id/approve', approveRequest);
 
