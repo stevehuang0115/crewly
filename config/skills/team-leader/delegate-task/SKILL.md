@@ -43,7 +43,7 @@ Assigns a task to a worker within the Team Leader's subordinate scope. Validates
 | `--task-file` | — | No | Read task description from a file path |
 | `--priority` / `-P` | `priority` | No | Priority: `low`, `normal`, `high` (default: `normal`) |
 | `--context` / `-c` | `context` | No | Additional context for the worker. Scanned for the Request Contract alongside `--task` |
-| `--project` / `-p` | `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
+| `--project` / `-p` | `projectPath` | No | Project path; recorded on the WorkItem (`metadata.projectPath`) |
 | `--team` / `-g` | `teamId` | No | Team ID for hierarchy validation |
 | `--tl-member` | `tlMemberId` | No | TL's member ID for hierarchy validation |
 | `--from` | `fromSession` | No | Delegating TL's session name (for monitoring) |

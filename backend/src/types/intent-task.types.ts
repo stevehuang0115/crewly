@@ -178,7 +178,7 @@ export interface IntentTask {
   tags?: string[];
   /** Optional schedule ID for automatic follow-up checks */
   scheduleId?: string;
-  /** Optional project task ID linking to .crewly/tasks/ project task */
+  /** Optional project ticket id (.crewly/tickets/, e.g. APP-12) this task belongs to */
   projectTaskId?: string;
   /** Order within the message (0-based, for display ordering) */
   order: number;

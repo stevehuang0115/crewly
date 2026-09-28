@@ -682,7 +682,7 @@ describe('onboard command', () => {
       expect(output).toContain('Failed to create');
     });
 
-    it('creates subdirectories: docs, memory, tasks, teams', () => {
+    it('creates subdirectories: docs, memory, tickets, teams', () => {
       mockExistsSync.mockReturnValue(false);
 
       scaffoldCrewlyDirectory('/test/project');
@@ -692,7 +692,7 @@ describe('onboard command', () => {
         expect.arrayContaining([
           expect.stringContaining('docs'),
           expect.stringContaining('memory'),
-          expect.stringContaining('tasks'),
+          expect.stringContaining('tickets'),
           expect.stringContaining('teams'),
         ]),
       );

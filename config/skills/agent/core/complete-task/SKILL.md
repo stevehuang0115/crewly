@@ -87,7 +87,7 @@ Note: a `summary` key inside `output` overrides the top-level `summary`.
 ### Legacy V1 caller (still supported)
 
 ```bash
-bash config/skills/agent/core/complete-task/execute.sh '{"absoluteTaskPath":"/projects/app/.crewly/tasks/in_progress/implement-login.md","sessionName":"dev-1","summary":"Implemented login"}'
+bash config/skills/agent/core/complete-task/execute.sh '{"absoluteTaskPath":"<old task path>","sessionName":"dev-1","summary":"Implemented login"}'
 ```
 
 `absoluteTaskPath` is carried for logging context only; the WorkItem is still

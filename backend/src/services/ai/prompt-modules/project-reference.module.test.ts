@@ -56,7 +56,8 @@ describe('ProjectReferenceModule', () => {
 
 		expect(result).toContain('/Users/user/projects/crewly/.crewly/specs/');
 		expect(result).toContain('/Users/user/projects/crewly/.crewly/goals/goals.md');
-		expect(result).toContain('/Users/user/projects/crewly/.crewly/tasks/');
+		expect(result).toContain('/Users/user/projects/crewly/.crewly/tickets/');
+		expect(result).not.toContain('.crewly/tasks/');
 		expect(result).toContain('/Users/user/projects/crewly/.crewly/knowledge/');
 	});
 });

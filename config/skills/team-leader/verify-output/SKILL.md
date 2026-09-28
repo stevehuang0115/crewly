@@ -43,12 +43,12 @@ Supports two modes:
 
 ### With explicit checks (legacy)
 ```bash
-bash {{SKILLS_PATH}}/team-leader/verify-output/execute.sh '{"taskId":"task-123","taskPath":"/project/.crewly/tasks/m1/done/task.md","workerId":"worker-1","teamId":"team-123","projectPath":"/path/to/project","checks":[{"name":"build","command":"npm run build"},{"name":"tests","command":"npm test"}]}'
+bash {{SKILLS_PATH}}/team-leader/verify-output/execute.sh '{"workItemId":"<WorkItem id>","workerId":"worker-1","teamId":"team-123","projectPath":"/path/to/project","checks":[{"name":"build","command":"npm run build"},{"name":"tests","command":"npm test"}]}'
 ```
 
 ### With template pipeline (recommended)
 ```bash
-bash {{SKILLS_PATH}}/team-leader/verify-output/execute.sh '{"taskId":"task-123","taskPath":"/project/.crewly/tasks/m1/done/task.md","workerId":"worker-1","teamId":"team-123","projectPath":"/path/to/project","templateId":"dev-fullstack"}'
+bash {{SKILLS_PATH}}/team-leader/verify-output/execute.sh '{"workItemId":"<WorkItem id>","workerId":"worker-1","teamId":"team-123","projectPath":"/path/to/project","templateId":"dev-fullstack"}'
 ```
 
 ## Parameters

@@ -625,7 +625,7 @@ export class IntentTaskService {
   /**
    * Get the completion status of a project task based on its linked intent tasks.
    *
-   * @param projectTaskId - The project task ID from .crewly/tasks/
+   * @param projectTaskId - The project ticket id (.crewly/tickets/, e.g. APP-12)
    * @returns ProjectTaskStatus with completion counts, or null if no tasks linked
    */
   getProjectTaskStatus(projectTaskId: string): ProjectTaskStatus | null {
