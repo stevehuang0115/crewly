@@ -906,6 +906,40 @@ describe('generateCommandFile', () => {
 		const content = generateCommandFile('/any/path');
 		expect(content).toContain('cd "$CREWLY_DIR" || {');
 	});
+
+	it.each([0, 1, 143])(
+		'logs the real exit status of the CLI (%i), not the status of `|| true`',
+		(code) => {
+			// Run the wrapper's own wait/record lines, as generated, under bash with
+			// `set -euo pipefail` like the real file, against a child that exits
+			// with `code`. The old `wait || true; EXIT_CODE=$?` always logged 0.
+			const fs = jest.requireActual<typeof import('fs')>('fs');
+			const os = jest.requireActual<typeof import('os')>('os');
+			const path = jest.requireActual<typeof import('path')>('path');
+			const content = generateCommandFile('/any/path');
+			const start = content.indexOf('  NODE_PID=$!');
+			const end = content.indexOf('  sleep 5', start);
+			expect(start).toBeGreaterThan(-1);
+			expect(end).toBeGreaterThan(start);
+			const logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'crewly-wrapper-'));
+			try {
+				const script = [
+					'set -euo pipefail',
+					`LOG_DIR="${logDir}"`,
+					`PIDFILE="${logDir}/crewly.pid"`,
+					`( exit ${code} ) &`,
+					content.slice(start, end),
+				].join('\n');
+				const { spawnSync } = jest.requireActual<typeof import('child_process')>('child_process');
+				const run = spawnSync('bash', ['-c', script], { encoding: 'utf-8' });
+				expect(run.status).toBe(0);
+				const log = fs.readFileSync(path.join(logDir, 'service.log'), 'utf-8');
+				expect(log).toContain(`Crewly exited with code ${code},`);
+			} finally {
+				fs.rmSync(logDir, { recursive: true, force: true });
+			}
+		},
+	);
 });
 
 describe('generateSystemdUnit', () => {

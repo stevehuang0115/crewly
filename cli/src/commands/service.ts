@@ -892,8 +892,11 @@ while true; do
   "$NODE_BIN" dist/cli/cli/src/index.js start >> "$LOG_DIR/service.log" 2>&1 &
   NODE_PID=$!
   echo "$NODE_PID" > "$PIDFILE"
-  wait "$NODE_PID" || true
-  EXIT_CODE=$?
+  # Capture the real exit status. \`wait ... || true; EXIT_CODE=$?\` recorded
+  # the status of \`true\`, so every exit — a crash included — was logged as
+  # "code 0" and service.log could not tell a crash from a requested stop.
+  EXIT_CODE=0
+  wait "$NODE_PID" || EXIT_CODE=$?
   echo "$(date): Crewly exited with code $EXIT_CODE, restarting in 5s..." | tee -a "$LOG_DIR/service.log"
   sleep 5
 done
