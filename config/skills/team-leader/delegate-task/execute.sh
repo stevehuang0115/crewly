@@ -251,6 +251,15 @@ if [ "$DELIVER_OK" = "false" ]; then
   api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" || {
     # Worker likely offline — attempt auto-start if we have team context
     STARTED=false
+    # No --team given: find the team that owns this worker's session, so an
+    # offline worker is still auto-started instead of leaving the WorkItem
+    # queued behind a "could not be auto-started" error.
+    if [ -z "$TEAM_ID" ]; then
+      ALL_TEAMS=$(api_call_full GET "/teams" 2>/dev/null || echo '{}')
+      TEAM_ID=$(echo "$ALL_TEAMS" | jq -r --arg session "$TO" \
+        '[(.data // [])[] | select(any(.members[]?; .sessionName == $session)) | .id] | first // empty' 2>/dev/null || true)
+      TEAM_DATA=""
+    fi
     if [ -n "$TEAM_ID" ]; then
       # Find worker's memberId from team data
       WORKER_MEMBER_ID=""
@@ -266,7 +275,11 @@ if [ "$DELIVER_OK" = "false" ]; then
 
       if [ -n "$WORKER_MEMBER_ID" ]; then
         echo '{"info":"Worker '"$TO"' appears offline — auto-starting..."}' >&2
-        START_RESULT=$(api_call POST "/teams/${TEAM_ID}/members/${WORKER_MEMBER_ID}/start" '{}' 2>/dev/null || true)
+        # Pass the WorkItem so the wake gate can see queued+targeted work
+        # for this worker; without it the start is refused (wake_gate_no_pool_work)
+        # and the WorkItem is left queued with the worker offline.
+        START_BODY=$(jq -n --arg wi "$TASK_ID" 'if $wi == "" then {} else {workItemId: $wi} end')
+        START_RESULT=$(api_call POST "/teams/${TEAM_ID}/members/${WORKER_MEMBER_ID}/start" "$START_BODY" 2>/dev/null || true)
         START_OK=$(echo "$START_RESULT" | jq -r '.success // false' 2>/dev/null || echo "false")
 
         if [ "$START_OK" = "true" ]; then
