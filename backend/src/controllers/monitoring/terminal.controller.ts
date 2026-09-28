@@ -32,7 +32,8 @@ import {
 import type { PendingWorkSummary, HeartbeatState } from '../../services/agent/adaptive-heartbeat.service.js';
 import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heartbeat.service.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
-import { FreshTaskConversationService } from '../../services/agent/fresh-task-conversation.service.js';
+import { FreshTaskConversationService, freshConversationNote } from '../../services/agent/fresh-task-conversation.service.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
 
 /**
  * Bracketed paste mode markers.
@@ -260,14 +261,105 @@ export async function captureTerminal(req: Request, res: Response): Promise<void
  * agent has read it) is skipped. Never throws.
  *
  * @param sessionName - Session about to be written to
+ * @returns Call when the write has finished (ends the in-progress mark that
+ *   keeps a context-cap clear from starting during it)
  */
-async function coordinateWithFreshConversation(sessionName: string): Promise<void> {
+async function coordinateWithFreshConversation(sessionName: string): Promise<() => void> {
 	try {
 		const fresh = FreshTaskConversationService.getInstance();
 		await fresh.waitIfClearing(sessionName);
 		fresh.noteDelivery(sessionName);
+		return fresh.beginDelivery(sessionName);
 	} catch {
 		// Best-effort: delivery must proceed regardless.
+		return () => undefined;
+	}
+}
+
+/** A direct task hand-over prepared by {@link prepareWorkItemHandOver}. */
+interface WorkItemHandOver {
+	/** Text to write (fresh-conversation note + WorkItem id added when cleared) */
+	message: string;
+	/** Call after a successful write */
+	delivered: () => void;
+	/** Call after a failed write: the dispatcher may then deliver it */
+	failed: () => void;
+}
+
+/** Fresh-conversation notes not yet delivered, by `${workItemId}::${session}` (a retry reuses it). */
+const pendingFreshNotes = new Map<string, string>();
+
+/**
+ * Prepare a write that hands a WorkItem's task to an agent directly (e.g.
+ * team-leader delegate-task delivering the brief with its `workItemId`).
+ *
+ *  - Claims the dispatcher's dedup key for (WorkItem, session), so its
+ *    `workitem:queued` push does not deliver the same task again.
+ *  - Runs the fresh-conversation prepare for the WorkItem — a new root on an
+ *    idle Claude Code member saves and clears the old conversation BEFORE
+ *    this first delivery. Same root, busy agent, orchestrator, unknown
+ *    WorkItem or one targeted at another session: no clear.
+ *  - When it cleared, puts the handover note in front and makes sure the text
+ *    carries the WorkItem id (the new conversation id is found by it).
+ *
+ * Without a `workItemId` the write is left alone (no claim, no clear).
+ * Never throws.
+ *
+ * @param sessionName - Session written to
+ * @param workItemId - WorkItem handed over, if the caller named one
+ * @param message - Text to write
+ * @returns The (possibly prefixed) text and the completion callbacks
+ */
+export async function prepareWorkItemHandOver(
+	sessionName: string,
+	workItemId: unknown,
+	message: string,
+): Promise<WorkItemHandOver> {
+	const noop: WorkItemHandOver = { message, delivered: () => undefined, failed: () => undefined };
+	if (typeof workItemId !== 'string' || workItemId.trim() === '') return noop;
+	const id = workItemId.trim();
+	const key = `${id}::${sessionName}`;
+	try {
+		const { TaskPoolService } = await import('../../services/task-pool/task-pool.service.js');
+		const wi: WorkItem | null = await TaskPoolService.getInstance().findWorkItem(id).catch(() => null);
+		if (!wi || (wi.target && wi.target !== sessionName)) {
+			logger.debug('Hand-over names a WorkItem that is not this session\'s — delivering as is', {
+				sessionName,
+				workItemId: id,
+				found: !!wi,
+			});
+			return noop;
+		}
+
+		const { WorkItemDispatchSubscriber } = await import('../../services/v3/workitem-dispatch.subscriber.js');
+		const dispatcher = WorkItemDispatchSubscriber.getInstance();
+		const tookKey = dispatcher.claimDirectDelivery(id, sessionName);
+
+		const result = await FreshTaskConversationService.getInstance().prepareForTask(sessionName, wi);
+		if (result.cleared && result.handoverPath) pendingFreshNotes.set(key, freshConversationNote(result.handoverPath));
+
+		const note = pendingFreshNotes.get(key);
+		let text = message;
+		if (note) {
+			const idLine = message.includes(id) ? '' : `[WorkItem ${id}]\n`;
+			text = `${note}\n${idLine}${message}`;
+		}
+		return {
+			message: text,
+			delivered: () => {
+				pendingFreshNotes.delete(key);
+			},
+			failed: () => {
+				if (tookKey) dispatcher.releaseDirectDelivery(id, sessionName);
+			},
+		};
+	} catch (err) {
+		logger.debug('Work-item hand-over prepare failed (non-fatal) — delivering as is', {
+			sessionName,
+			workItemId: id,
+			error: err instanceof Error ? err.message : String(err),
+		});
+		return noop;
 	}
 }
 
@@ -284,6 +376,9 @@ async function coordinateWithFreshConversation(sessionName: string): Promise<voi
  * Response: { success: true, message: "Data written successfully" }
  */
 export async function writeToSession(req: Request, res: Response): Promise<void> {
+	// Set once the write is under way; run in `finally`.
+	let endDelivery: () => void = () => undefined;
+	let handOver: WorkItemHandOver | null = null;
 	try {
 		const { sessionName } = req.params;
 		const { data } = req.body;
@@ -360,16 +455,15 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			return;
 		}
 
-		await coordinateWithFreshConversation(sessionName);
-
 		// Convert data to string and validate for dangerous control sequences
-		const dataStr = String(data);
-		const validation = validateTerminalInput(dataStr);
+		// (before anything below can clear the agent's conversation).
+		const rawDataStr = String(data);
+		const validation = validateTerminalInput(rawDataStr);
 		if (!validation.isValid) {
 			logger.warn('Terminal input validation failed', {
 				sessionName,
 				error: validation.error,
-				dataLength: dataStr.length,
+				dataLength: rawDataStr.length,
 			});
 			res.status(400).json({
 				success: false,
@@ -377,6 +471,12 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			} as ApiResponse);
 			return;
 		}
+
+		// A write that hands over a WorkItem (`workItemId` in the body) gets the
+		// fresh-conversation prepare and the dispatcher dedup; others do not.
+		handOver = await prepareWorkItemHandOver(sessionName, req.body?.workItemId, rawDataStr);
+		const dataStr = handOver.message;
+		endDelivery = await coordinateWithFreshConversation(sessionName);
 
 		const backend = getSessionBackendSync();
 		if (!backend) {
@@ -523,6 +623,12 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			success: false,
 			error: 'Failed to write to session',
 		} as ApiResponse);
+	} finally {
+		endDelivery();
+		if (handOver) {
+			if (res.statusCode < 400) handOver.delivered();
+			else handOver.failed();
+		}
 	}
 }
 
@@ -844,9 +950,12 @@ function mapKeyToSequence(key: string): string {
  * Response: { success: true, verified: true }
  */
 export async function deliverMessage(this: ApiContext, req: Request, res: Response): Promise<void> {
+	// Set once the delivery is under way; run in `finally`.
+	let endDelivery: () => void = () => undefined;
+	let handOver: WorkItemHandOver | null = null;
 	try {
 		const { sessionName } = req.params;
-		const { message, runtimeType, waitForReady, waitTimeout, force, senderSessionName } = req.body;
+		const { message: rawMessage, runtimeType, waitForReady, waitTimeout, force, senderSessionName, workItemId } = req.body;
 
 		if (!sessionName) {
 			res.status(400).json({
@@ -866,15 +975,15 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			return;
 		}
 
-		if (!message || typeof message !== 'string') {
+		if (!rawMessage || typeof rawMessage !== 'string') {
 			res.status(400).json({
 				success: false,
 				error: 'Message is required and must be a string',
 			} as ApiResponse);
 			return;
 		}
-
-		await coordinateWithFreshConversation(sessionName);
+		// Replaced below by the hand-over text for a local WorkItem hand-over.
+		let message: string = rawMessage;
 
 		// Resolve runtime type: prefer request body, fall back to storage lookup,
 		// then check in-process runtimes (crewly-agent has no PTY session)
@@ -939,6 +1048,15 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			} as ApiResponse);
 			return;
 		}
+
+		// A delivery that hands over a WorkItem (`workItemId` in the body — the
+		// team-leader delegate-task brief) starts a fresh conversation for a
+		// new task BEFORE this first delivery and takes the dispatcher's dedup
+		// key so the `workitem:queued` push does not deliver it again. Without
+		// a `workItemId` nothing is cleared.
+		handOver = await prepareWorkItemHandOver(sessionName, workItemId, message);
+		message = handOver.message;
+		endDelivery = await coordinateWithFreshConversation(sessionName);
 
 		// Force mode: write directly to PTY, skipping waitForReady and verification.
 		// Use when the agent is busy and waitForReady would time out (#113).
@@ -1100,6 +1218,12 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			success: false,
 			error: 'Failed to deliver message',
 		} as ApiResponse);
+	} finally {
+		endDelivery();
+		if (handOver) {
+			if (res.statusCode < 400) handOver.delivered();
+			else handOver.failed();
+		}
 	}
 }
 

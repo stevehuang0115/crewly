@@ -2988,6 +2988,19 @@ void (async () => {
 				});
 			}
 
+			// Idle-boundary context cap for Claude Code members: a long single
+			// task keeps growing its conversation (sessions at 650k–965k per
+			// turn); between turns, save + clear + re-orient it past the cap
+			// (CREWLY_MEMBER_CONTEXT_CAP_TOKENS, default 300k, 0 disables).
+			try {
+				const { FreshTaskConversationService } = await import('./services/agent/fresh-task-conversation.service.js');
+				FreshTaskConversationService.getInstance().startContextCapSweep();
+			} catch (capErr) {
+				this.logger.warn('Member context-cap sweep failed to start (non-critical)', {
+					error: capErr instanceof Error ? capErr.message : String(capErr),
+				});
+			}
+
 			// Bootstrap SOPService at boot (F8 — fix/f8-get-sops-graceful-fallback).
 			// This materialises `~/.crewly/sops/{system,custom}/` and seeds the
 			// `index.json` so the get-sops skill — which sits on every agent's

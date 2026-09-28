@@ -801,6 +801,8 @@ export class TaskPoolService {
         workItemId: workItem.id,
         requestId: workItem.requestId,
         missionId: workItem.missionId,
+        // The dispatcher pushes the task to this session on queue.
+        ...(workItem.target ? { target: workItem.target } : {}),
       });
     } catch (err) {
       this.logger.warn('workitem:queued publish threw', {

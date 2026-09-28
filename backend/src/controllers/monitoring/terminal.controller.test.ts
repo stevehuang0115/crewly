@@ -154,11 +154,32 @@ jest.mock('../../services/agent/adaptive-heartbeat.service.js', () => ({
 // are noted so a clear right after them is skipped.
 const mockFreshWaitIfClearing = jest.fn();
 const mockFreshNoteDelivery = jest.fn();
+const mockFreshBeginDelivery = jest.fn();
+const mockFreshPrepareForTask = jest.fn<(s: string, wi: unknown) => Promise<{ cleared: boolean; handoverPath?: string }>>();
 jest.mock('../../services/agent/fresh-task-conversation.service.js', () => ({
 	FreshTaskConversationService: {
 		getInstance: () => ({
 			waitIfClearing: (...args: unknown[]) => mockFreshWaitIfClearing(...args),
 			noteDelivery: (...args: unknown[]) => mockFreshNoteDelivery(...args),
+			beginDelivery: (...args: unknown[]) => mockFreshBeginDelivery(...args) ?? (() => undefined),
+			prepareForTask: (...args: [string, unknown]) => mockFreshPrepareForTask(...args),
+		}),
+	},
+	freshConversationNote: (p: string) => `Fresh conversation for this task — your earlier work is in ${p} and your wiki; read them only if this task needs it.`,
+}));
+
+// Direct WorkItem hand-over: the WorkItem lookup and the dispatcher's dedup key.
+const mockFindWorkItem = jest.fn<(id: string) => Promise<unknown>>();
+jest.mock('../../services/task-pool/task-pool.service.js', () => ({
+	TaskPoolService: { getInstance: () => ({ findWorkItem: (id: string) => mockFindWorkItem(id) }) },
+}));
+const mockClaimDirectDelivery = jest.fn<(id: string, target: string) => boolean>();
+const mockReleaseDirectDelivery = jest.fn();
+jest.mock('../../services/v3/workitem-dispatch.subscriber.js', () => ({
+	WorkItemDispatchSubscriber: {
+		getInstance: () => ({
+			claimDirectDelivery: (id: string, target: string) => mockClaimDirectDelivery(id, target),
+			releaseDirectDelivery: (...args: unknown[]) => mockReleaseDirectDelivery(...args),
 		}),
 	},
 }));
@@ -1040,6 +1061,120 @@ describe('TerminalController', () => {
 				success: false,
 				error: 'Failed to kill session',
 			});
+		});
+	});
+
+	describe('WorkItem hand-over (fresh conversation before the first delivery)', () => {
+		let mockApiContext: any;
+		const WI = { id: 'wi-new', target: 'test-session', status: 'queued', metadata: {} };
+
+		beforeEach(() => {
+			mockApiContext = {
+				agentRegistrationService: {
+					sendMessageToAgent: jest.fn<() => Promise<any>>().mockResolvedValue({ success: true }),
+					waitForAgentReady: jest.fn<() => Promise<boolean>>().mockResolvedValue(true),
+					getInProcessRuntime: jest.fn<() => any>().mockReturnValue(undefined),
+				},
+			};
+			// statusCode tracks status() like Express does
+			const res: any = { statusCode: 200 };
+			res.status = jest.fn((code: number) => { res.statusCode = code; return res; });
+			res.json = jest.fn(() => res);
+			mockRes = res;
+			mockFindWorkItem.mockResolvedValue(WI);
+			mockClaimDirectDelivery.mockReturnValue(true);
+			mockFreshPrepareForTask.mockResolvedValue({ cleared: false });
+		});
+
+		const deliver = (body: Record<string, unknown>) => {
+			mockReq = { params: { sessionName: 'test-session' } as any, body };
+			return terminalController.deliverMessage.call(mockApiContext, mockReq as Request, mockRes as Response);
+		};
+		const sentText = () => (mockApiContext.agentRegistrationService.sendMessageToAgent.mock.calls[0] as unknown[])[1] as string;
+
+		it('a deliver with a workItemId runs prepareForTask with that WorkItem BEFORE the message is written', async () => {
+			await deliver({ message: 'WorkItem wi-new — do the thing', workItemId: 'wi-new' });
+			expect(mockFreshPrepareForTask).toHaveBeenCalledWith('test-session', WI);
+			expect(mockFreshPrepareForTask.mock.invocationCallOrder[0]).toBeLessThan(
+				mockApiContext.agentRegistrationService.sendMessageToAgent.mock.invocationCallOrder[0],
+			);
+			expect(mockClaimDirectDelivery).toHaveBeenCalledWith('wi-new', 'test-session');
+		});
+
+		it('when it cleared, the handover note goes in front of the task text', async () => {
+			mockFreshPrepareForTask.mockResolvedValue({ cleared: true, handoverPath: '/h/leo.md' });
+			await deliver({ message: 'WorkItem wi-new — do the thing', workItemId: 'wi-new' });
+			expect(sentText()).toBe(
+				'Fresh conversation for this task — your earlier work is in /h/leo.md and your wiki; read them only if this task needs it.\nWorkItem wi-new — do the thing',
+			);
+		});
+
+		it('adds the WorkItem id to a cleared delivery whose text lacks it (the new conversation is found by it)', async () => {
+			mockFreshPrepareForTask.mockResolvedValue({ cleared: true, handoverPath: '/h/leo.md' });
+			await deliver({ message: 'do the thing', workItemId: 'wi-new' });
+			expect(sentText()).toContain('[WorkItem wi-new]\ndo the thing');
+		});
+
+		it('no clear, text untouched, when the service keeps the conversation (same root / busy)', async () => {
+			mockFreshPrepareForTask.mockResolvedValue({ cleared: false });
+			await deliver({ message: 'do the thing', workItemId: 'wi-new' });
+			expect(sentText()).toBe('do the thing');
+		});
+
+		it('without a workItemId nothing is prepared or claimed', async () => {
+			await deliver({ message: 'hello' });
+			expect(mockFreshPrepareForTask).not.toHaveBeenCalled();
+			expect(mockClaimDirectDelivery).not.toHaveBeenCalled();
+			expect(mockFindWorkItem).not.toHaveBeenCalled();
+		});
+
+		it('a WorkItem that is not this session\'s (or unknown) is not prepared', async () => {
+			mockFindWorkItem.mockResolvedValue({ ...WI, target: 'someone-else' });
+			await deliver({ message: 'x', workItemId: 'wi-new' });
+			mockFindWorkItem.mockResolvedValue(null);
+			await deliver({ message: 'x', workItemId: 'wi-gone' });
+			expect(mockFreshPrepareForTask).not.toHaveBeenCalled();
+		});
+
+		it('a failed delivery gives the dedup key back so the dispatcher can still deliver it', async () => {
+			mockApiContext.agentRegistrationService.sendMessageToAgent.mockResolvedValue({ success: false, error: 'x' });
+			await deliver({ message: 'x', workItemId: 'wi-new' });
+			expect(mockReleaseDirectDelivery).toHaveBeenCalledWith('wi-new', 'test-session');
+		});
+
+		it('a retry after a failed first attempt still carries the handover note, and does not clear again', async () => {
+			mockFreshPrepareForTask.mockResolvedValueOnce({ cleared: true, handoverPath: '/h/leo.md' });
+			mockApiContext.agentRegistrationService.sendMessageToAgent.mockResolvedValueOnce({ success: false, error: 'x' });
+			await deliver({ message: 'WorkItem wi-new — go', workItemId: 'wi-new' });
+			(mockRes as any).statusCode = 200;
+			mockFreshPrepareForTask.mockResolvedValue({ cleared: false });
+			await deliver({ message: 'WorkItem wi-new — go', workItemId: 'wi-new', force: false });
+			const second = (mockApiContext.agentRegistrationService.sendMessageToAgent.mock.calls[1] as unknown[])[1] as string;
+			expect(second).toContain('/h/leo.md');
+			// Delivered → note consumed; a later delivery of the same item is plain.
+			await deliver({ message: 'WorkItem wi-new — go', workItemId: 'wi-new' });
+			const third = (mockApiContext.agentRegistrationService.sendMessageToAgent.mock.calls[2] as unknown[])[1] as string;
+			expect(third).toBe('WorkItem wi-new — go');
+		});
+
+		it('a /write with a workItemId gets the same prepare; the dispatcher\'s own /write (no id) does not', async () => {
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { data: 'hello', workItemId: 'wi-new' } };
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+			expect(mockFreshPrepareForTask).toHaveBeenCalledTimes(1);
+			mockReq = { params: { sessionName: 'test-session' } as any, body: { data: '[CREWLY-DISPATCH] ...' } };
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+			expect(mockFreshPrepareForTask).toHaveBeenCalledTimes(1);
+		});
+
+		it('marks the delivery in progress for its whole duration (no context-cap clear meanwhile)', async () => {
+			const end = jest.fn();
+			mockFreshBeginDelivery.mockReturnValue(end);
+			await deliver({ message: 'hello' });
+			expect(mockFreshBeginDelivery).toHaveBeenCalledWith('test-session');
+			expect(end).toHaveBeenCalledTimes(1);
+			expect(end.mock.invocationCallOrder[0]).toBeGreaterThan(
+				mockApiContext.agentRegistrationService.sendMessageToAgent.mock.invocationCallOrder[0],
+			);
 		});
 	});
 

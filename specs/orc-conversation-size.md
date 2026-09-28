@@ -28,3 +28,22 @@ The assembled system prompt is about 10.9k tokens, 1.8% of each turn. So the lev
 - The lifecycle fragment's placeholders are now resolved. The orc used to see a literal `{{ORCHESTRATOR_SKILLS_PATH}}`.
 
 Not changed: the orc's working directory, which is still the first project. The skill hints use relative paths, and moving the orc needs a separate check.
+
+## Members: fresh conversation per task, and the idle-boundary cap
+
+`FreshTaskConversationService` (backend/src/services/agent/fresh-task-conversation.service.ts) keeps Claude Code team members' conversations bounded. It never applies to the orchestrator, and it never clears during a turn.
+
+**How a task reaches a member, and where the clear happens.** A task gets exactly one delivery, and the clear runs once, before that delivery:
+
+- The dispatcher's `workitem:queued` push. `TaskPoolService.publishWorkItemQueued` puts `workItemId` and `target` on the event. `EventBusService.publish` passes both through its `event_published` signal. Before 2026-09-28 the signal carried only eventId, eventType and sessionName, so the listener never fired. `WorkItemDispatchSubscriber.dispatchTo` runs `prepareForTask`, then writes the brief. The queued push skips `crewly-orc`; the reconciler still handles the orc's items.
+- The team-leader direct hand-over (`delegate-task`). The skill creates the WorkItem with `metadata.directDelivery: true`. It then posts `/terminal/:s/deliver` with the full brief, `workItemId`, and the id in the text. The controller (`prepareWorkItemHandOver`) takes the dispatcher's dedup key `(workItemId, target)` and runs `prepareForTask`. If that cleared the conversation, it puts the handover note first. For a direct-delivery item, the queued push waits `DIRECT_DELIVERY_CONSTANTS.GRACE_MS` (90 s). After that it delivers only if the hand-over never landed. A failed hand-over gives the key back. `/write` behaves the same way when it carries a `workItemId`. A deliver or write without one is never cleared.
+
+**Idle-boundary context cap.** One task can run for 1000+ turns. Every 60 s a sweep checks each registered member. It caps a member only when all of these hold:
+
+- its last turn (`lastTurnContextTokens`) is over `CREWLY_MEMBER_CONTEXT_CAP_TOKENS` (default 300k; `0` disables the cap);
+- it is idle (not `in_progress`, and the PTY has been quiet for 30 s or more);
+- nothing is being delivered to it, was delivered to it in the last 30 s, or is queued for it;
+- it has not been capped in the last 20 minutes;
+- it has an active WorkItem.
+
+To cap a member, the sweep writes the handover file, stores a copy through memory so it reaches the wiki, and sends `/clear`. It then writes one `[CREWLY-CONTEXT-CAP]` line that names the WorkItem id and the handover path. The new conversation id is found by that WorkItem id plus the rule that it started after the clear, the same way as after a new-task clear. `AgentRegistrationService.sendMessageToAgent` marks each delivery as in progress while it runs and waits for any running clear to finish, so a clear cannot wipe a message on its way in.

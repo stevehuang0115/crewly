@@ -26,6 +26,15 @@
  * idle and nobody else just wrote to it; any failure falls back to plain
  * delivery — nothing here throws into dispatch.
  *
+ * Idle-boundary context cap: one task can run for 1000+ turns, so a new root
+ * alone does not bound the context. A periodic sweep
+ * ({@link FreshTaskConversationService.startContextCapSweep}) saves and
+ * clears an idle Claude Code member whose last turn carried more than
+ * `CREWLY_MEMBER_CONTEXT_CAP_TOKENS` (300k by default, `0` disables), then
+ * writes one line naming its active WorkItem and the handover. Same safety
+ * rules — never the orchestrator, never mid-turn, never while a message is
+ * queued for or being delivered to it — plus at most one cap per 20 minutes.
+ *
  * @module services/agent/fresh-task-conversation.service
  */
 
@@ -44,6 +53,7 @@ import { buildHandoverSummary, claudeTranscriptPath, lastTurnContextTokens } fro
 import { getSessionStatePersistence } from '../session/session-state-persistence.js';
 import { getSessionBackendSync } from '../session/session-backend.factory.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
+import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import { STANDING_ANSWERS_CONSTANTS } from '../../constants.js';
 
@@ -150,6 +160,99 @@ export function freshConversationNote(handoverPath: string): string {
   return `Fresh conversation for this task — your earlier work is in ${handoverPath} and your wiki; read them only if this task needs it.`;
 }
 
+/**
+ * The context cap for members, from the environment.
+ *
+ * @param env - Environment (tests)
+ * @returns Tokens; 0 means the cap is off. Unset or invalid → the default.
+ */
+export function memberContextCapTokens(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env[FRESH_TASK_CONVERSATION_CONSTANTS.MEMBER_CONTEXT_CAP_ENV];
+  if (raw === undefined || raw.trim() === '') return FRESH_TASK_CONVERSATION_CONSTANTS.MEMBER_CONTEXT_CAP_TOKENS;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 0) return FRESH_TASK_CONVERSATION_CONSTANTS.MEMBER_CONTEXT_CAP_TOKENS;
+  return Math.floor(n);
+}
+
+/** Everything the idle-boundary context-cap decision depends on. */
+export interface ContextCapDecisionInput {
+  /** Agent session */
+  sessionName: string;
+  /** Its runtime */
+  runtimeType?: string;
+  /** Cap in tokens (0 = off) */
+  capTokens: number;
+  /** Env + settings kill-switch of the fresh-conversation feature */
+  enabled: boolean;
+  /** Last turn's context, or null when unknown */
+  contextTokens: number | null;
+  /** Agent is mid-turn */
+  busy: boolean;
+  /** How long the PTY has been quiet (null = unknown) */
+  quietMs: number | null;
+  /** A message is being delivered, was just delivered, or a prepare/clear is running */
+  deliveryActive: boolean;
+  /** Messages are queued for the agent */
+  queuedMessages: boolean;
+  /** When the session was last capped (ms), if ever */
+  lastCapAt: number | null;
+  /** Now (ms) */
+  now: number;
+  /** Id of the WorkItem the agent is on (null = none) */
+  activeWorkItemId: string | null;
+}
+
+/**
+ * Decide whether to cap (save + clear + re-orient) a member's conversation.
+ * Pure; the order of checks is also the order of the logged reasons.
+ *
+ * @param input - Decision inputs
+ * @returns The decision
+ */
+export function decideContextCap(input: ContextCapDecisionInput): FreshTaskDecision {
+  if (input.sessionName === ORCHESTRATOR_SESSION_NAME) return { clear: false, reason: 'orchestrator' };
+  if (input.runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return { clear: false, reason: 'not claude-code' };
+  if (input.capTokens <= 0) return { clear: false, reason: 'cap off' };
+  if (!input.enabled) return { clear: false, reason: 'disabled' };
+  if (input.contextTokens === null || input.contextTokens <= input.capTokens) return { clear: false, reason: 'under cap' };
+  if (
+    input.lastCapAt !== null &&
+    input.now - input.lastCapAt < FRESH_TASK_CONVERSATION_CONSTANTS.CONTEXT_CAP_MIN_INTERVAL_MS
+  ) {
+    return { clear: false, reason: 'rate limited' };
+  }
+  if (input.busy) return { clear: false, reason: 'busy' };
+  if (input.quietMs === null || input.quietMs < FRESH_TASK_CONVERSATION_CONSTANTS.CONTEXT_CAP_MIN_QUIET_MS) {
+    return { clear: false, reason: 'not quiet long enough' };
+  }
+  if (input.deliveryActive) return { clear: false, reason: 'delivery in progress' };
+  if (input.queuedMessages) return { clear: false, reason: 'messages queued' };
+  // The new conversation is found by the WorkItem id in the re-orientation
+  // line; with no WorkItem there is nothing safe to track it by, and the
+  // next task's own prepare will start a fresh conversation anyway.
+  if (!input.activeWorkItemId) return { clear: false, reason: 'no active work item' };
+  return { clear: true, reason: 'context over cap' };
+}
+
+/**
+ * The one line written after a context-cap clear. It must carry the WorkItem
+ * id: the new conversation id is found by it.
+ *
+ * @param args - WorkItem, handover file and the old context size
+ * @returns One line
+ */
+export function contextCapReorientation(args: {
+  workItem: Pick<WorkItem, 'id' | 'title'>;
+  handoverPath: string;
+  contextTokens: number;
+}): string {
+  const title = args.workItem.title.length > 80 ? `${args.workItem.title.slice(0, 77)}...` : args.workItem.title;
+  return (
+    `${FRESH_TASK_CONVERSATION_CONSTANTS.CONTEXT_CAP_TAG} Your conversation reached ${args.contextTokens.toLocaleString('en-US')} tokens, so it was saved and restarted. ` +
+    `You are on WorkItem ${args.workItem.id} ("${title}"). Your handover is in ${args.handoverPath} (also in your wiki) — read it, then continue that WorkItem where you left off.`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Dependencies (injectable for tests)
 // ---------------------------------------------------------------------------
@@ -194,6 +297,14 @@ export interface FreshTaskDeps {
   sleep: (ms: number) => Promise<void>;
   /** Environment */
   env: NodeJS.ProcessEnv;
+  /** Registered agent sessions (context-cap sweep) */
+  listSessions: () => string[];
+  /** Messages are queued for the session and not yet written */
+  hasQueuedMessages: (sessionName: string) => boolean;
+  /** How long the session's PTY has been quiet (ms), or null when unknown */
+  getQuietMs: (sessionName: string) => number | null;
+  /** Write one message into the session (paste + Enter); false when the session is gone */
+  sendMessage: (sessionName: string, text: string) => Promise<boolean>;
 }
 
 /** Statuses that mean the agent is actively on a work item. */
@@ -278,6 +389,28 @@ function defaultDeps(): FreshTaskDeps {
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     env: process.env,
+    listSessions: () => getPersistence()?.getRegisteredSessions() ?? [],
+    hasQueuedMessages: (sessionName) => {
+      try {
+        return SubAgentMessageQueue.getInstance().hasPending(sessionName);
+      } catch {
+        return true;
+      }
+    },
+    getQuietMs: (sessionName) => {
+      const tracker = PtyActivityTrackerService.getInstance();
+      return tracker.hasActivity(sessionName) ? tracker.getIdleTimeMs(sessionName) : null;
+    },
+    sendMessage: async (sessionName, text) => {
+      const session = getSessionBackendSync()?.getSession(sessionName);
+      if (!session) return false;
+      // Same two-step write as the terminal controller's message mode:
+      // pasted text first, Enter separately so paste mode cannot swallow it.
+      session.write(`\x1b[200~${text}\x1b[201~`);
+      await new Promise((resolve) => setTimeout(resolve, Math.min(1000 + Math.ceil(text.length / 10), 5000)));
+      session.write('\r');
+      return true;
+    },
   };
 }
 
@@ -293,8 +426,21 @@ export interface PrepareForTaskResult {
   handoverPath?: string;
 }
 
+/** Result of {@link FreshTaskConversationService.capContextIfNeeded}. */
+export interface ContextCapResult {
+  /** The conversation was saved, cleared and the agent re-oriented */
+  capped: boolean;
+  /** Why (logged; the decision reason when not capped) */
+  reason: string;
+  /** Handover file for the old conversation (when capped) */
+  handoverPath?: string;
+  /** WorkItem the agent was re-oriented on (when capped) */
+  workItemId?: string;
+}
+
 /**
- * Singleton that starts a fresh Claude Code conversation per new task.
+ * Singleton that starts a fresh Claude Code conversation per new task, and
+ * caps a long task's conversation at idle boundaries.
  */
 export class FreshTaskConversationService {
   private static instance: FreshTaskConversationService | null = null;
@@ -306,6 +452,14 @@ export class FreshTaskConversationService {
   private readonly inFlight = new Map<string, Promise<PrepareForTaskResult>>();
   /** Last time a message was written to a session (terminal write / deliver) */
   private readonly lastDelivery = new Map<string, number>();
+  /** Deliveries currently being written to a session (see {@link beginDelivery}) */
+  private readonly deliveriesInFlight = new Map<string, number>();
+  /** Last context-cap clear per session (rate limit) */
+  private readonly lastCapAt = new Map<string, number>();
+  /** Context-cap sweep timer */
+  private capSweepTimer: NodeJS.Timeout | null = null;
+  /** A sweep is running (sweeps never overlap) */
+  private capSweepRunning = false;
 
   private constructor(deps?: Partial<FreshTaskDeps>) {
     this.logger = LoggerService.getInstance().createComponentLogger('FreshTaskConversation');
@@ -335,7 +489,39 @@ export class FreshTaskConversationService {
 
   /** Drop the singleton (tests). */
   public static resetInstance(): void {
+    FreshTaskConversationService.instance?.stopContextCapSweep();
     FreshTaskConversationService.instance = null;
+  }
+
+  /**
+   * Mark a delivery to a session as in progress until the returned function
+   * is called. Neither a new-task clear nor a context-cap clear starts while
+   * one is running: it would wipe the message before the agent reads it.
+   *
+   * @param sessionName - Session being written to
+   * @returns Call when the delivery has finished (idempotent)
+   */
+  beginDelivery(sessionName: string): () => void {
+    this.deliveriesInFlight.set(sessionName, (this.deliveriesInFlight.get(sessionName) ?? 0) + 1);
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      const left = (this.deliveriesInFlight.get(sessionName) ?? 1) - 1;
+      if (left > 0) this.deliveriesInFlight.set(sessionName, left);
+      else this.deliveriesInFlight.delete(sessionName);
+      this.lastDelivery.set(sessionName, this.deps.now());
+    };
+  }
+
+  /**
+   * Whether a delivery is being written to the session right now.
+   *
+   * @param sessionName - Session
+   * @returns True while a {@link beginDelivery} is open
+   */
+  isDelivering(sessionName: string): boolean {
+    return (this.deliveriesInFlight.get(sessionName) ?? 0) > 0;
   }
 
   /**
@@ -425,6 +611,189 @@ export class FreshTaskConversationService {
   }
 
   // -------------------------------------------------------------------------
+  // Idle-boundary context cap
+  // -------------------------------------------------------------------------
+
+  /**
+   * Start the periodic context-cap sweep (idempotent). The timer is unref'd
+   * so it never keeps the process alive.
+   *
+   * @param intervalMs - Sweep interval
+   */
+  startContextCapSweep(intervalMs: number = FRESH_TASK_CONVERSATION_CONSTANTS.CONTEXT_CAP_SWEEP_MS): void {
+    if (this.capSweepTimer) return;
+    this.capSweepTimer = setInterval(() => {
+      void this.runContextCapSweep();
+    }, intervalMs);
+    this.capSweepTimer.unref?.();
+    this.logger.info('Member context-cap sweep started', {
+      intervalMs,
+      capTokens: memberContextCapTokens(this.deps.env),
+    });
+  }
+
+  /** Stop the periodic context-cap sweep. */
+  stopContextCapSweep(): void {
+    if (this.capSweepTimer) clearInterval(this.capSweepTimer);
+    this.capSweepTimer = null;
+  }
+
+  /**
+   * Check every registered session once. Sessions are handled one after
+   * another and sweeps never overlap. Never throws.
+   *
+   * @returns Per-session results (sessions skipped cheaply are omitted)
+   */
+  async runContextCapSweep(): Promise<Record<string, ContextCapResult>> {
+    const results: Record<string, ContextCapResult> = {};
+    if (this.capSweepRunning) return results;
+    if (memberContextCapTokens(this.deps.env) <= 0) return results;
+    this.capSweepRunning = true;
+    try {
+      let sessions: string[] = [];
+      try {
+        sessions = this.deps.listSessions();
+      } catch {
+        sessions = [];
+      }
+      for (const sessionName of sessions) {
+        if (sessionName === ORCHESTRATOR_SESSION_NAME) continue;
+        results[sessionName] = await this.capContextIfNeeded(sessionName);
+      }
+    } finally {
+      this.capSweepRunning = false;
+    }
+    return results;
+  }
+
+  /**
+   * If the member is idle between turns and its last turn carried more than
+   * the cap, save the conversation (handover file + wiki), `/clear` it and
+   * write one line naming its WorkItem and the handover. Runs in the same
+   * per-session chain as {@link prepareForTask}, so terminal writes wait for
+   * it. Never throws.
+   *
+   * @param sessionName - Member session
+   * @returns What happened
+   */
+  async capContextIfNeeded(sessionName: string): Promise<ContextCapResult> {
+    // Never queue behind (or start during) a prepare / another cap.
+    if (this.inFlight.has(sessionName)) return { capped: false, reason: 'clear in progress' };
+    const run = (async (): Promise<PrepareForTaskResult & { cap: ContextCapResult }> => {
+      try {
+        const cap = await this.doCapContext(sessionName);
+        return { cleared: cap.capped, handoverPath: cap.handoverPath, cap };
+      } catch (err) {
+        this.logger.warn('Context-cap check failed (non-fatal)', {
+          sessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        return { cleared: false, cap: { capped: false, reason: 'error' } };
+      }
+    })();
+    this.inFlight.set(sessionName, run);
+    try {
+      return (await run).cap;
+    } finally {
+      if (this.inFlight.get(sessionName) === run) this.inFlight.delete(sessionName);
+    }
+  }
+
+  private async doCapContext(sessionName: string): Promise<ContextCapResult> {
+    const info = this.deps.getSessionInfo(sessionName);
+    const capTokens = memberContextCapTokens(this.deps.env);
+    const base = {
+      sessionName,
+      runtimeType: info?.runtimeType,
+      capTokens,
+      enabled: true,
+      contextTokens: Number.MAX_SAFE_INTEGER,
+      busy: false,
+      quietMs: Number.MAX_SAFE_INTEGER,
+      deliveryActive: false,
+      queuedMessages: false,
+      lastCapAt: null,
+      now: this.deps.now(),
+      activeWorkItemId: 'pending',
+    };
+    // Cheap checks first (orchestrator, runtime, cap off).
+    let decision = decideContextCap(base);
+    if (!decision.clear) return { capped: false, reason: decision.reason };
+    if (!info?.cwd || !info.sessionId) return { capped: false, reason: 'conversation id unknown' };
+
+    const transcript = claudeTranscriptPath({ sessionId: info.sessionId, cwd: info.cwd, claudeHome: this.deps.claudeHome });
+    const contextTokens = fs.existsSync(transcript) ? lastTurnContextTokens(transcript) : null;
+    const last = this.lastDelivery.get(sessionName);
+    const lastCapAt = this.lastCapAt.get(sessionName) ?? null;
+    decision = decideContextCap({ ...base, contextTokens, lastCapAt, now: this.deps.now() });
+    if (!decision.clear) return { capped: false, reason: decision.reason };
+
+    const enabled = freshTaskConversationEnvEnabled(this.deps.env) && (await this.deps.settingEnabled());
+    const busy = enabled ? await this.deps.isBusy(sessionName).catch(() => true) : false;
+    const active = enabled && !busy ? await this.deps.getActiveItems(sessionName).catch(() => null) : [];
+    const current = this.pickCurrentItem(active ?? []);
+    decision = decideContextCap({
+      ...base,
+      contextTokens,
+      lastCapAt,
+      now: this.deps.now(),
+      enabled,
+      busy: busy || active === null,
+      quietMs: this.deps.getQuietMs(sessionName),
+      deliveryActive:
+        this.isDelivering(sessionName) ||
+        (last !== undefined && this.deps.now() - last < FRESH_TASK_CONVERSATION_CONSTANTS.RECENT_DELIVERY_MS),
+      queuedMessages: this.deps.hasQueuedMessages(sessionName),
+      activeWorkItemId: current?.id ?? null,
+    });
+    if (!decision.clear || !current) return { capped: false, reason: decision.reason };
+
+    // Last look right before the clear: anything written since the checks
+    // above means the agent is (about to be) working.
+    if (this.isDelivering(sessionName) || (await this.deps.isBusy(sessionName).catch(() => true))) {
+      return { capped: false, reason: 'busy' };
+    }
+
+    const saved = await this.saveAndClear(sessionName, { cwd: info.cwd, sessionId: info.sessionId }, {
+      lastTask: current.id,
+      why: `because it had grown past ${capTokens.toLocaleString('en-US')} tokens per turn (you are still on the same WorkItem)`,
+    });
+    if (!saved) return { capped: false, reason: 'not cleared' };
+    this.lastCapAt.set(sessionName, this.deps.now());
+
+    const line = contextCapReorientation({ workItem: current, handoverPath: saved.handoverPath, contextTokens: contextTokens as number });
+    // Tracking matches on the WorkItem id in the first message, which the
+    // re-orientation line carries.
+    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, saved.clearAt, current.id);
+    const sent = await this.deps.sendMessage(sessionName, line).catch(() => false);
+    this.lastDelivery.set(sessionName, this.deps.now());
+    this.logger.info('Capped a member conversation at an idle boundary', {
+      sessionName,
+      workItemId: current.id,
+      contextTokens,
+      capTokens,
+      oldSessionId: info.sessionId,
+      handover: saved.handoverPath,
+      reoriented: sent,
+    });
+    return { capped: true, reason: decision.reason, handoverPath: saved.handoverPath, workItemId: current.id };
+  }
+
+  /**
+   * The WorkItem a member is on: running before accepted before proposed,
+   * then the most recently started.
+   */
+  private pickCurrentItem(items: WorkItem[]): WorkItem | null {
+    const rank: Record<string, number> = { running: 0, accepted: 1, proposed: 2 };
+    const sorted = [...items].sort((a, b) => {
+      const r = (rank[a.status] ?? 9) - (rank[b.status] ?? 9);
+      if (r !== 0) return r;
+      return (Date.parse(b.startedAt ?? '') || 0) - (Date.parse(a.startedAt ?? '') || 0);
+    });
+    return sorted[0] ?? null;
+  }
+
+  // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
 
@@ -448,7 +817,9 @@ export class FreshTaskConversationService {
       const enabled = freshTaskConversationEnvEnabled(this.deps.env) && (await this.deps.settingEnabled());
       const busy = enabled ? await this.deps.isBusy(sessionName).catch(() => true) : false;
       const last = this.lastDelivery.get(sessionName);
-      const recentDelivery = last !== undefined && this.deps.now() - last < FRESH_TASK_CONVERSATION_CONSTANTS.RECENT_DELIVERY_MS;
+      const recentDelivery =
+        this.isDelivering(sessionName) ||
+        (last !== undefined && this.deps.now() - last < FRESH_TASK_CONVERSATION_CONSTANTS.RECENT_DELIVERY_MS);
       const active = enabled && !busy ? await this.deps.getActiveItems(sessionName).catch(() => null) : [];
       decision = decideFreshConversation({
         sessionName,
@@ -480,22 +851,57 @@ export class FreshTaskConversationService {
       this.logger.info('New task but the conversation id is unknown — not clearing', { sessionName, newRoot });
       return { cleared: false };
     }
-    const transcript = claudeTranscriptPath({ sessionId: info.sessionId, cwd: info.cwd, claudeHome: this.deps.claudeHome });
+    const saved = await this.saveAndClear(sessionName, { cwd: info.cwd, sessionId: info.sessionId }, {
+      lastTask: previousRoot as string,
+      why: 'when you were given a new task',
+    });
+    if (!saved) return { cleared: false };
+
+    this.logger.info('Started a fresh conversation for a new task', {
+      sessionName,
+      previousRoot,
+      newRoot,
+      oldSessionId: info.sessionId,
+      handover: saved.handoverPath,
+    });
+
+    // 3. Learn the new conversation id in the background.
+    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, saved.clearAt, workItem.id);
+    return { cleared: true, handoverPath: saved.handoverPath };
+  }
+
+  /**
+   * Save the current conversation (handover file + memory/wiki copy, no
+   * agent turn) and write `/clear`. Shared by the new-task and the
+   * context-cap paths.
+   *
+   * @param sessionName - Agent session
+   * @param conv - Its cwd and current conversation id
+   * @param handover - Task the old conversation was on, and why it closed
+   * @returns The handover file and the time `/clear` was written, or null
+   *   when nothing was cleared (transcript missing, session gone)
+   */
+  private async saveAndClear(
+    sessionName: string,
+    conv: { cwd: string; sessionId: string },
+    handover: { lastTask: string; why: string },
+  ): Promise<{ handoverPath: string; clearAt: number } | null> {
+    const transcript = claudeTranscriptPath({ sessionId: conv.sessionId, cwd: conv.cwd, claudeHome: this.deps.claudeHome });
     if (!fs.existsSync(transcript)) {
-      this.logger.info('New task but the transcript is missing — not clearing', { sessionName, transcript });
-      return { cleared: false };
+      this.logger.info('Transcript missing — not clearing', { sessionName, transcript });
+      return null;
     }
 
     // 1. Save the conversation (server-side, no agent turn).
     const summary = buildHandoverSummary(transcript);
-    const handoverPath = this.writeHandover(sessionName, info.sessionId, transcript, previousRoot as string, summary);
-    const memoryText = this.conciseHandover(sessionName, previousRoot as string, handoverPath, summary);
+    const handoverPath = this.writeHandover(sessionName, conv.sessionId, transcript, handover.lastTask, summary, handover.why);
+    const memoryText = this.conciseHandover(sessionName, handover.lastTask, handoverPath, summary);
     void this.deps
       .remember({
         agentId: sessionName,
-        projectPath: info.cwd,
+        projectPath: conv.cwd,
         content: memoryText,
-        title: `Conversation handover — ${sessionName} — task ${previousRoot}`,
+        title: `Conversation handover — ${sessionName} — task ${handover.lastTask}`,
       })
       .catch((err: unknown) => {
         this.logger.debug('Handover memory write failed (non-fatal; the file is on disk)', {
@@ -508,23 +914,12 @@ export class FreshTaskConversationService {
     const clearAt = this.deps.now();
     if (!this.deps.writeToSession(sessionName, '\x1b')) {
       this.logger.info('Session not found — not clearing', { sessionName });
-      return { cleared: false };
+      return null;
     }
     await this.deps.sleep(FRESH_TASK_CONVERSATION_CONSTANTS.ESCAPE_DELAY_MS);
     this.deps.writeToSession(sessionName, `${FRESH_TASK_CONVERSATION_CONSTANTS.CLEAR_COMMAND}\r`);
     await this.deps.sleep(FRESH_TASK_CONVERSATION_CONSTANTS.POST_CLEAR_READY_MS);
-
-    this.logger.info('Started a fresh conversation for a new task', {
-      sessionName,
-      previousRoot,
-      newRoot,
-      oldSessionId: info.sessionId,
-      handover: handoverPath,
-    });
-
-    // 3. Learn the new conversation id in the background.
-    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, clearAt, workItem.id);
-    return { cleared: true, handoverPath };
+    return { handoverPath, clearAt };
   }
 
   /**
@@ -538,6 +933,7 @@ export class FreshTaskConversationService {
     transcript: string,
     previousRoot: string,
     body: string,
+    why: string = 'when you were given a new task',
   ): string {
     const dir = path.join(this.deps.crewlyHome(), ORC_CONVERSATION_CONSTANTS.HANDOVER_DIR);
     fs.mkdirSync(dir, { recursive: true });
@@ -549,7 +945,7 @@ export class FreshTaskConversationService {
       [
         `# Handover from your previous conversation`,
         ``,
-        `Your previous conversation (${oldSessionId}) was closed when you were given a new task; its last task was ${previousRoot}.` +
+        `Your previous conversation (${oldSessionId}) was closed ${why}; its last task was ${previousRoot}.` +
           (tokens !== null ? ` It had grown to ${tokens.toLocaleString('en-US')} tokens per turn.` : ''),
         `Everything Crewly tracks — tasks, teams, OKRs, wiki — is still there; this file keeps only the end of what was said.`,
         `The full transcript: ${transcript}`,

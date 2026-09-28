@@ -12,6 +12,10 @@ import { WorkItemDispatchSubscriber } from './workitem-dispatch.subscriber.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { createWorkItem } from '../../types/v2/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { EventBusService } from '../event-bus/event-bus.service.js';
+import { FreshTaskConversationService } from '../agent/fresh-task-conversation.service.js';
+import { prepareWorkItemHandOver } from '../../controllers/monitoring/terminal.controller.js';
+import { DIRECT_DELIVERY_CONSTANTS } from '../../constants.js';
 
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
@@ -320,6 +324,194 @@ describe('WorkItemDispatchSubscriber', () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('workitem:queued through the real EventBus (id + target reach the dispatcher)', () => {
+    let bus: EventBusService;
+    afterEach(() => bus?.cleanup());
+
+    /** Publish exactly what TaskPoolService.publishWorkItemQueued publishes. */
+    const publishQueued = (wi: WorkItem) =>
+      bus.publish({
+        id: `workitem:queued:${wi.id}`,
+        type: 'workitem:queued',
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: '',
+        newValue: wi.status,
+        changedField: 'taskStatus',
+        workItemId: wi.id,
+        ...(wi.target ? { target: wi.target } : {}),
+      });
+    const settle = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    };
+
+    beforeEach(() => {
+      bus = new EventBusService();
+    });
+
+    it('dispatches a queued WorkItem pushed through the bus exactly once', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setTaskConversationPreparer({ prepareForTask: jest.fn(async () => ({ cleared: false })) });
+      svc.initialize(bus);
+      svc.start();
+      const wi = makeWorkItem({ id: 'wi-bus', target: 'team-ella-1' });
+      jest.spyOn(TaskPoolService, 'getInstance').mockReturnValue({
+        findWorkItem: jest.fn().mockResolvedValue(wi),
+      } as unknown as TaskPoolService);
+
+      publishQueued(wi);
+      await settle();
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(mockedAxios.post.mock.calls[0][0]).toContain('/api/terminal/team-ella-1/write');
+
+      // A later auto-claim hand-off of the same (WI, target) is deduped.
+      expect(await svc.dispatchTo(wi)).toBe(false);
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not push to the orchestrator on queue (the reconciler handles its WorkItems)', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.initialize(bus);
+      svc.start();
+      const find = jest.fn().mockResolvedValue(makeWorkItem({ id: 'wi-orc', target: 'crewly-orc' }));
+      jest.spyOn(TaskPoolService, 'getInstance').mockReturnValue({ findWorkItem: find } as unknown as TaskPoolService);
+      publishQueued(makeWorkItem({ id: 'wi-orc', target: 'crewly-orc' }));
+      await settle();
+      expect(find).not.toHaveBeenCalled();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('direct hand-over (team-leader delegate-task) + queued push: one delivery, one clear', () => {
+    let bus: EventBusService;
+    let clears: number;
+    let prepares: string[];
+    let lastRoot: string | null;
+    const TARGET = 'team-ella-1';
+
+    /** Fresh-conversation stand-in with the real root rule: clear only on a new root. */
+    const fakeFresh = {
+      prepareForTask: jest.fn(async (_s: string, wi: Pick<WorkItem, 'id'>) => {
+        prepares.push(wi.id);
+        const cleared = lastRoot !== null && lastRoot !== wi.id;
+        lastRoot = wi.id;
+        if (cleared) clears += 1;
+        return cleared ? { cleared: true, handoverPath: '/h/ella.md' } : { cleared: false };
+      }),
+    };
+
+    const settle = async () => {
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+    };
+
+    beforeEach(() => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] });
+      bus = new EventBusService();
+      clears = 0;
+      prepares = [];
+      lastRoot = 'previous-task';
+      fakeFresh.prepareForTask.mockClear();
+      jest.spyOn(FreshTaskConversationService, 'getInstance').mockReturnValue(fakeFresh as unknown as FreshTaskConversationService);
+    });
+    afterEach(() => {
+      bus.cleanup();
+      jest.useRealTimers();
+      jest.restoreAllMocks();
+    });
+
+    const setup = (wi: WorkItem) => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setTaskConversationPreparer(fakeFresh);
+      svc.initialize(bus);
+      svc.start();
+      jest.spyOn(TaskPoolService, 'getInstance').mockReturnValue({
+        findWorkItem: jest.fn().mockResolvedValue(wi),
+      } as unknown as TaskPoolService);
+      bus.publish({
+        id: `workitem:queued:${wi.id}`,
+        type: 'workitem:queued',
+        timestamp: new Date().toISOString(),
+        teamId: '',
+        teamName: '',
+        memberId: '',
+        memberName: '',
+        sessionName: '',
+        previousValue: '',
+        newValue: 'queued',
+        changedField: 'taskStatus',
+        workItemId: wi.id,
+        target: wi.target,
+      });
+      return svc;
+    };
+    const direct = (id: string) =>
+      makeWorkItem({ id, target: TARGET, metadata: { [DIRECT_DELIVERY_CONSTANTS.METADATA_FLAG]: true } });
+
+    it('the hand-over delivers and clears once; the queued push never fires', async () => {
+      const wi = direct('wi-tl');
+      setup(wi);
+      await settle();
+      expect(mockedAxios.post).not.toHaveBeenCalled(); // held for the hand-over
+
+      const handOver = await prepareWorkItemHandOver(TARGET, 'wi-tl', 'WorkItem wi-tl — build it');
+      expect(handOver.message).toContain('/h/ella.md');
+      handOver.delivered();
+
+      await jest.advanceTimersByTimeAsync(DIRECT_DELIVERY_CONSTANTS.GRACE_MS + 1_000);
+      await settle();
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      expect(clears).toBe(1);
+      expect(prepares).toEqual(['wi-tl']);
+    });
+
+    it('a hand-over that failed leaves it to the dispatcher, which delivers once without a second clear', async () => {
+      const wi = direct('wi-fail');
+      setup(wi);
+      await settle();
+      const handOver = await prepareWorkItemHandOver(TARGET, 'wi-fail', 'WorkItem wi-fail — build it');
+      handOver.failed();
+
+      await jest.advanceTimersByTimeAsync(DIRECT_DELIVERY_CONSTANTS.GRACE_MS + 1_000);
+      await settle();
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(clears).toBe(1); // the dispatcher's prepare sees the same root
+    });
+
+    it('with no hand-over at all, the dispatcher delivers after the grace window', async () => {
+      setup(direct('wi-none'));
+      await settle();
+      await jest.advanceTimersByTimeAsync(DIRECT_DELIVERY_CONSTANTS.GRACE_MS - 1_000);
+      expect(mockedAxios.post).not.toHaveBeenCalled();
+      await jest.advanceTimersByTimeAsync(2_000);
+      await settle();
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+      expect(clears).toBe(1);
+    });
+
+    it('a hand-over arriving while the dispatcher is mid-dispatch does not take the key again (no second clear)', async () => {
+      // Not flagged: the dispatcher pushes at once, and its write is slow.
+      let release!: () => void;
+      mockedAxios.post.mockImplementation(() => new Promise((r) => { release = () => r({ status: 200, data: {} }); }));
+      const wi = makeWorkItem({ id: 'wi-race', target: TARGET });
+      const svc = setup(wi);
+      await settle();
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+
+      expect(svc.claimDirectDelivery('wi-race', TARGET)).toBe(false);
+      const handOver = await prepareWorkItemHandOver(TARGET, 'wi-race', 'WorkItem wi-race — go');
+      expect(handOver.message).toBe('WorkItem wi-race — go'); // same root: no note, no clear
+      handOver.failed(); // must NOT free the dispatcher's key
+      release();
+      await settle();
+      expect(svc.isDelivered('wi-race', TARGET)).toBe(true);
+      expect(clears).toBe(1);
     });
   });
 

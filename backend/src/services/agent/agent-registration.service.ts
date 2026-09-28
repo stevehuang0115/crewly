@@ -55,6 +55,7 @@ import { ContextWindowMonitorService } from './context-window-monitor.service.js
 import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
 import { SubAgentMessageQueue } from '../messaging/sub-agent-message-queue.service.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { FreshTaskConversationService } from './fresh-task-conversation.service.js';
 import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import {
@@ -4287,6 +4288,9 @@ Loop until done, blocked, or explicitly reassigned:
 		let releaseMutex!: () => void;
 		const currentDelivery = new Promise<void>((r) => { releaseMutex = r; });
 		this.sessionDeliveryMutex.set(sessionName, currentDelivery);
+		// No fresh-conversation / context-cap `/clear` may start while this
+		// message is on its way in (it would be wiped before it is read).
+		const endFreshDelivery = this.beginFreshDelivery(sessionName);
 
 		if (previousDelivery) {
 			this.logger.info('Waiting for in-flight delivery to complete before sending', {
@@ -4297,6 +4301,8 @@ Loop until done, blocked, or explicitly reassigned:
 		}
 
 		try {
+			// A clear that was already running when this started finishes first.
+			await this.waitIfFreshClearing(sessionName);
 			if (!message || typeof message !== 'string') {
 				return {
 					success: false,
@@ -4630,10 +4636,40 @@ Loop until done, blocked, or explicitly reassigned:
 				error: errorMessage,
 			};
 		} finally {
+			endFreshDelivery();
 			releaseMutex();
 			if (this.sessionDeliveryMutex.get(sessionName) === currentDelivery) {
 				this.sessionDeliveryMutex.delete(sessionName);
 			}
+		}
+	}
+
+	/**
+	 * Mark a delivery to a session with the fresh-conversation service so no
+	 * `/clear` starts during it. Never throws.
+	 *
+	 * @param sessionName - Session being written to
+	 * @returns Function ending the mark
+	 */
+	private beginFreshDelivery(sessionName: string): () => void {
+		try {
+			return FreshTaskConversationService.getInstance().beginDelivery(sessionName);
+		} catch {
+			return () => undefined;
+		}
+	}
+
+	/**
+	 * Wait (bounded) for a running fresh-conversation / context-cap clear of
+	 * the session. Never throws.
+	 *
+	 * @param sessionName - Session about to be written to
+	 */
+	private async waitIfFreshClearing(sessionName: string): Promise<void> {
+		try {
+			await FreshTaskConversationService.getInstance().waitIfClearing(sessionName);
+		} catch {
+			// Best-effort: delivery proceeds regardless.
 		}
 	}
 

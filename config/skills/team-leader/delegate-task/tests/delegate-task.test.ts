@@ -150,3 +150,30 @@ describe('delegate-task record-before-delivery (WI 65578471)', () => {
     expect(captured.find((c) => c.path.includes('/notes'))).toBeUndefined();
   });
 });
+
+describe('delegate-task hands the WorkItem over with its id (fresh conversation, single delivery)', () => {
+  const args = ['--to', 'worker-1', '--task', 'do the thing', '--project', '/tmp/proj'];
+
+  it('flags the WorkItem as delivered directly so the queued push holds off', async () => {
+    await runSkill(args);
+    const add = captured.find((c) => c.path.includes('/task-pool/add'));
+    expect((add?.body as { metadata?: Record<string, unknown> })?.metadata?.directDelivery).toBe(true);
+  });
+
+  it('sends the workItemId with the delivery and names it in the text', async () => {
+    await runSkill(args);
+    const deliver = captured.find((c) => c.path.includes('/deliver'));
+    const body = deliver?.body as { workItemId?: string; message?: string };
+    expect(body.workItemId).toBe('wi-created-1');
+    expect(body.message).toContain('WorkItem wi-created-1');
+    expect(body.message).not.toContain('<your WorkItem id>');
+  });
+
+  it('carries the workItemId on the force fallback too', async () => {
+    failDelivery = true;
+    await runSkill(args);
+    const delivers = captured.filter((c) => c.path.includes('/deliver'));
+    expect(delivers.length).toBeGreaterThanOrEqual(2);
+    for (const d of delivers) expect((d.body as { workItemId?: string }).workItemId).toBe('wi-created-1');
+  });
+});

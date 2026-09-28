@@ -212,11 +212,24 @@ POOL_BODY=$(jq -n \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
   --arg requestId "${REQUEST_ID:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
+# metadata.directDelivery: this script delivers the brief itself (below), so
+# the backend's workitem:queued push holds off and only fires if that
+# delivery never lands — the task reaches the worker once.
 
 POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
 POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
 TASK_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
+
+# The delivered text names the WorkItem id: the worker needs it for
+# report-status, and after a fresh-conversation clear the backend finds the
+# new conversation by it. The deliver body carries it too (workItemId), so
+# the backend starts a fresh conversation for a new task before this first
+# delivery and does not push the same task a second time.
+DELIVER_MESSAGE="$TASK_MESSAGE"
+if [ -n "$TASK_ID" ]; then
+  DELIVER_MESSAGE="WorkItem ${TASK_ID} — ${TASK_MESSAGE//<your WorkItem id>/$TASK_ID}"
+fi
 
 if [ "$POOL_OK" != "true" ]; then
   # Unchanged from before the reorder: warn and still attempt delivery.
@@ -241,13 +254,13 @@ fi
 # delivery, so there is nothing here that this literal can honestly be said
 # to mirror. Left exactly as-is rather than attached to a plausible-looking
 # constant that does not actually govern it.
-BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 15000}')
+BODY=$(jq -n --arg message "$DELIVER_MESSAGE" --arg workItemId "$TASK_ID" '{message: $message, waitForReady: true, waitTimeout: 15000} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
 
 DELIVER_OK=true
 api_call POST "/terminal/${TO}/deliver" "$BODY" || DELIVER_OK=false
 
 if [ "$DELIVER_OK" = "false" ]; then
-  FORCE_BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, force: true}')
+  FORCE_BODY=$(jq -n --arg message "$DELIVER_MESSAGE" --arg workItemId "$TASK_ID" '{message: $message, force: true} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
   api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" || {
     # Worker likely offline — attempt auto-start if we have team context
     STARTED=false
@@ -283,7 +296,7 @@ if [ "$DELIVER_OK" = "false" ]; then
           # EVENT_DELIVERY_CONSTANTS.TOTAL_DELIVERY_TIMEOUT, but coincidence
           # of value is not evidence of relationship — eleven constants share
           # 30000. Not claimed as a mirror.
-          RETRY_BODY=$(jq -n --arg message "$TASK_MESSAGE" '{message: $message, waitForReady: true, waitTimeout: 30000}')
+          RETRY_BODY=$(jq -n --arg message "$DELIVER_MESSAGE" --arg workItemId "$TASK_ID" '{message: $message, waitForReady: true, waitTimeout: 30000} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
           api_call POST "/terminal/${TO}/deliver" "$RETRY_BODY" && STARTED=true || {
             # Final fallback: force deliver
             api_call POST "/terminal/${TO}/deliver" "$FORCE_BODY" && STARTED=true || true

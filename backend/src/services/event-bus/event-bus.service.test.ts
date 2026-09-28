@@ -71,6 +71,30 @@ describe('EventBusService', () => {
     jest.useRealTimers();
   });
 
+  describe('event_published signal carries WorkItem correlation (dispatcher on workitem:queued)', () => {
+    it('includes workItemId and target when the event has them', () => {
+      const seen: Array<Record<string, unknown>> = [];
+      eventBus.on('event_published', (e: Record<string, unknown>) => seen.push(e));
+      eventBus.publish(createTestEvent({
+        id: 'workitem:queued:wi-1',
+        type: 'workitem:queued',
+        sessionName: '',
+        workItemId: 'wi-1',
+        target: 'team-ella-1',
+      }));
+      expect(seen).toEqual([
+        { eventId: 'workitem:queued:wi-1', eventType: 'workitem:queued', sessionName: '', workItemId: 'wi-1', target: 'team-ella-1' },
+      ]);
+    });
+
+    it('keeps the old three-field shape for events without them', () => {
+      const seen: Array<Record<string, unknown>> = [];
+      eventBus.on('event_published', (e: Record<string, unknown>) => seen.push(e));
+      eventBus.publish(createTestEvent({ type: 'agent:idle', sessionName: 'agent-x' }));
+      expect(Object.keys(seen[0]).sort()).toEqual(['eventId', 'eventType', 'sessionName']);
+    });
+  });
+
   describe('eventPublished (full event) — index.ts idle drain and InFlightTurnTracker listen to it', () => {
     it('emits the whole event, with its type and session', () => {
       const seen: Array<{ type?: string; sessionName?: string }> = [];

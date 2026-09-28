@@ -215,6 +215,15 @@ describe('TaskPoolService', () => {
         expect(publishCalls[0].newValue).toBe(wi.status);
       });
 
+      it('carries the WorkItem target so the dispatcher can push it on queue', async () => {
+        const publishCalls: any[] = [];
+        service.setEventBusService({ publish: jest.fn((event: any) => publishCalls.push(event)) } as any);
+        const wi = makeWorkItem({ target: 'team-ella-1' });
+        await service.addToPool(wi);
+        expect(publishCalls[0].target).toBe('team-ella-1');
+        expect(publishCalls[0].workItemId).toBe(wi.id);
+      });
+
       it('does NOT publish workitem:queued when no EventBus is wired (legacy/test path)', async () => {
         // No setEventBusService — eventBus stays null, addToPool must not throw.
         const wi = makeWorkItem();

@@ -8,12 +8,16 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   FreshTaskConversationService,
+  contextCapReorientation,
+  decideContextCap,
+  memberContextCapTokens,
   decideFreshConversation,
   freshConversationNote,
   freshTaskConversationEnvEnabled,
   rootWorkItemId,
   type FreshTaskDeps,
   type FreshTaskDecisionInput,
+  type ContextCapDecisionInput,
 } from './fresh-task-conversation.service.js';
 import { claudeTranscriptPath } from './runtime-session-recovery.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -87,6 +91,71 @@ describe('decideFreshConversation', () => {
   });
 });
 
+describe('memberContextCapTokens', () => {
+  it('defaults to 300k; 0 disables; junk falls back to the default', () => {
+    expect(memberContextCapTokens({})).toBe(300_000);
+    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '250000' })).toBe(250_000);
+    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '0' })).toBe(0);
+    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: 'lots' })).toBe(300_000);
+    expect(memberContextCapTokens({ CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '-5' })).toBe(300_000);
+  });
+});
+
+describe('decideContextCap', () => {
+  const base: ContextCapDecisionInput = {
+    sessionName: SESSION,
+    runtimeType: 'claude-code',
+    capTokens: 300_000,
+    enabled: true,
+    contextTokens: 650_000,
+    busy: false,
+    quietMs: 60_000,
+    deliveryActive: false,
+    queuedMessages: false,
+    lastCapAt: null,
+    now: 10_000_000,
+    activeWorkItemId: 'wi-1',
+  };
+  it('caps an idle Claude Code member over the cap that is on a WorkItem', () => {
+    expect(decideContextCap(base)).toEqual({ clear: true, reason: 'context over cap' });
+  });
+  it.each([
+    ['orchestrator', { sessionName: 'crewly-orc' }],
+    ['not claude-code', { runtimeType: 'codex-cli' }],
+    ['cap off', { capTokens: 0 }],
+    ['disabled', { enabled: false }],
+    ['under cap', { contextTokens: 300_000 }],
+    ['under cap', { contextTokens: null }],
+    ['rate limited', { lastCapAt: 10_000_000 - 19 * 60_000 }],
+    ['busy', { busy: true }],
+    ['not quiet long enough', { quietMs: 5_000 }],
+    ['not quiet long enough', { quietMs: null }],
+    ['delivery in progress', { deliveryActive: true }],
+    ['messages queued', { queuedMessages: true }],
+    ['no active work item', { activeWorkItemId: null }],
+  ])('%s: no cap', (reason, override) => {
+    expect(decideContextCap({ ...base, ...(override as Partial<ContextCapDecisionInput>) })).toEqual({ clear: false, reason });
+  });
+  it('the rate limit lapses after 20 minutes', () => {
+    expect(decideContextCap({ ...base, lastCapAt: 10_000_000 - 20 * 60_000 }).clear).toBe(true);
+  });
+});
+
+describe('contextCapReorientation', () => {
+  it('is one tagged line carrying the WorkItem id, its title and the handover path', () => {
+    const line = contextCapReorientation({
+      workItem: { id: 'wi-42', title: 'Build the login page' },
+      handoverPath: '/h/leo.md',
+      contextTokens: 650_123,
+    });
+    expect(line).toBe(
+      '[CREWLY-CONTEXT-CAP] Your conversation reached 650,123 tokens, so it was saved and restarted. ' +
+        'You are on WorkItem wi-42 ("Build the login page"). Your handover is in /h/leo.md (also in your wiki) — read it, then continue that WorkItem where you left off.',
+    );
+    expect(line).not.toContain('\n');
+  });
+});
+
 describe('FreshTaskConversationService', () => {
   let tmp: string;
   let claudeHome: string;
@@ -145,6 +214,13 @@ describe('FreshTaskConversationService', () => {
       now: () => clock,
       sleep: jest.fn(async (ms: number) => { clock += ms; }),
       env: {},
+      listSessions: jest.fn(() => [SESSION]),
+      hasQueuedMessages: jest.fn(() => false),
+      getQuietMs: jest.fn(() => 60_000),
+      sendMessage: jest.fn(async (_s: string, text: string) => {
+        events.push(`send:${text}`);
+        return true;
+      }),
     };
   });
 
@@ -370,6 +446,182 @@ describe('FreshTaskConversationService', () => {
       const started = Date.now();
       await svc.waitIfClearing(SESSION, 30);
       expect(Date.now() - started).toBeLessThan(1_000);
+    });
+  });
+
+  it('a delivery in progress blocks the new-task clear until it ends', async () => {
+    const svc = FreshTaskConversationService.createForTesting(deps);
+    await svc.prepareForTask(SESSION, wi('task-a'));
+    const end = svc.beginDelivery(SESSION);
+    expect(svc.isDelivering(SESSION)).toBe(true);
+    expect((await svc.prepareForTask(SESSION, wi('task-b'))).cleared).toBe(false);
+    end();
+    end(); // idempotent
+    expect(svc.isDelivering(SESSION)).toBe(false);
+  });
+
+  describe('idle-boundary context cap', () => {
+    const ACTIVE: WorkItem = {
+      id: 'wi-long',
+      title: 'Migrate the billing service',
+      target: SESSION,
+      status: 'running',
+      startedAt: new Date(0).toISOString(),
+    } as WorkItem;
+
+    const bigTranscript = (tokens: number) =>
+      writeTranscript(OLD_ID, [
+        { type: 'user', timestamp: 't1', message: { content: 'Migrate billing' } },
+        {
+          type: 'assistant',
+          timestamp: 't2',
+          message: { content: [{ type: 'text', text: 'Step 412 done.' }], usage: { input_tokens: 10, cache_read_input_tokens: tokens } },
+        },
+      ]);
+
+    beforeEach(() => {
+      bigTranscript(650_000);
+      deps.getActiveItems = jest.fn(async () => [ACTIVE]);
+    });
+
+    it('over the cap and idle: handover + remember, then Escape + /clear, then the one-line re-orientation', async () => {
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      const result = await svc.capContextIfNeeded(SESSION);
+
+      expect(result).toMatchObject({ capped: true, workItemId: 'wi-long' });
+      const handover = fs.readFileSync(result.handoverPath as string, 'utf-8');
+      expect(handover).toContain('Step 412 done.');
+      expect(handover).toContain('still on the same WorkItem');
+      const iRemember = events.indexOf('remember');
+      const iClear = events.indexOf(`write:${JSON.stringify('/clear\r')}`);
+      const iSend = events.findIndex((e) => e.startsWith('send:'));
+      expect(iRemember).toBeGreaterThanOrEqual(0);
+      expect(iRemember).toBeLessThan(iClear);
+      expect(iClear).toBeLessThan(iSend);
+      const line = events[iSend].slice('send:'.length);
+      expect(line).toContain('[CREWLY-CONTEXT-CAP]');
+      expect(line).toContain('wi-long');
+      expect(line).toContain(result.handoverPath as string);
+      // Same task: the recorded root is not changed by a cap.
+      expect(svc.getLastRoot(SESSION)).toBeNull();
+      await settle();
+    });
+
+    it('tracks the new conversation by the WorkItem id in the re-orientation line', async () => {
+      clock = Date.now();
+      (deps.sendMessage as jest.Mock).mockImplementation(async (_s: string, text: string) => {
+        const ts = new Date(clock).toISOString();
+        writeTranscript('other-agent', [{ type: 'user', timestamp: ts, message: { content: `talk to ${SESSION}` } }]);
+        writeTranscript('capped-new', [{ type: 'user', timestamp: ts, message: { content: text } }]);
+        return true;
+      });
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      expect((await svc.capContextIfNeeded(SESSION)).capped).toBe(true);
+      await settle();
+      expect(deps.updateSessionId).toHaveBeenCalledWith(SESSION, 'capped-new');
+      expect(deps.clearSessionId).not.toHaveBeenCalled();
+    });
+
+    it('under the cap: nothing', async () => {
+      bigTranscript(250_000);
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      expect(await svc.capContextIfNeeded(SESSION)).toEqual({ capped: false, reason: 'under cap' });
+      expect(deps.writeToSession).not.toHaveBeenCalled();
+    });
+
+    it('honours CREWLY_MEMBER_CONTEXT_CAP_TOKENS (lower cap trips, 0 disables)', async () => {
+      bigTranscript(250_000);
+      let svc = FreshTaskConversationService.createForTesting({ ...deps, env: { CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '200000' } });
+      expect((await svc.capContextIfNeeded(SESSION)).capped).toBe(true);
+      await settle();
+      svc = FreshTaskConversationService.createForTesting({ ...deps, env: { CREWLY_MEMBER_CONTEXT_CAP_TOKENS: '0' } });
+      expect(await svc.capContextIfNeeded(SESSION)).toEqual({ capped: false, reason: 'cap off' });
+      expect(await svc.runContextCapSweep()).toEqual({});
+    });
+
+    it.each([
+      ['busy', { isBusy: async () => true }, 'busy'],
+      ['recently written PTY', { getQuietMs: () => 5_000 }, 'not quiet long enough'],
+      ['queued messages', { hasQueuedMessages: () => true }, 'messages queued'],
+      ['no WorkItem', { getActiveItems: async () => [] }, 'no active work item'],
+      ['fresh-conversation kill switch', { env: { CREWLY_FRESH_TASK_CONVERSATION: 'off' } }, 'disabled'],
+      ['settings off', { settingEnabled: async () => false }, 'disabled'],
+      ['not claude-code', { getSessionInfo: () => ({ runtimeType: 'codex-cli', cwd: CWD, sessionId: OLD_ID }) }, 'not claude-code'],
+    ])('%s: no cap', async (_label, override, reason) => {
+      const svc = FreshTaskConversationService.createForTesting({ ...deps, ...(override as Partial<FreshTaskDeps>) });
+      expect(await svc.capContextIfNeeded(SESSION)).toEqual({ capped: false, reason });
+      expect(deps.writeToSession).not.toHaveBeenCalled();
+      expect(deps.sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('never the orchestrator', async () => {
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      expect(await svc.capContextIfNeeded('crewly-orc')).toEqual({ capped: false, reason: 'orchestrator' });
+    });
+
+    it('not while a message is being delivered or was just delivered', async () => {
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      const end = svc.beginDelivery(SESSION);
+      expect((await svc.capContextIfNeeded(SESSION)).reason).toBe('delivery in progress');
+      end(); // ending counts as a delivery just now
+      expect((await svc.capContextIfNeeded(SESSION)).reason).toBe('delivery in progress');
+      clock += 31_000;
+      expect((await svc.capContextIfNeeded(SESSION)).capped).toBe(true);
+      await settle();
+    });
+
+    it('at most once per 20 minutes per session', async () => {
+      const svc = FreshTaskConversationService.createForTesting(deps);
+      expect((await svc.capContextIfNeeded(SESSION)).capped).toBe(true);
+      await settle();
+      clock += 10 * 60_000;
+      expect(await svc.capContextIfNeeded(SESSION)).toEqual({ capped: false, reason: 'rate limited' });
+      clock += 11 * 60_000;
+      expect((await svc.capContextIfNeeded(SESSION)).capped).toBe(true);
+      await settle();
+    });
+
+    it('re-checks busy right before the clear', async () => {
+      let calls = 0;
+      const svc = FreshTaskConversationService.createForTesting({ ...deps, isBusy: jest.fn(async () => ++calls > 1) });
+      expect(await svc.capContextIfNeeded(SESSION)).toEqual({ capped: false, reason: 'busy' });
+      expect(deps.writeToSession).not.toHaveBeenCalled();
+    });
+
+    it('terminal writes wait for a running cap (it is in the same in-flight chain)', async () => {
+      let release!: () => void;
+      const gate = new Promise<void>((r) => { release = r; });
+      const svc = FreshTaskConversationService.createForTesting({
+        ...deps,
+        sleep: jest.fn(async (ms: number) => {
+          clock += ms;
+          if (ms === 2_000) await gate;
+        }),
+      });
+      const cap = svc.capContextIfNeeded(SESSION);
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      let waited = false;
+      const waiter = svc.waitIfClearing(SESSION, 5_000).then(() => { waited = true; });
+      for (let i = 0; i < 20; i++) await new Promise((r) => setImmediate(r));
+      expect(waited).toBe(false);
+      release();
+      await cap;
+      await waiter;
+      expect(waited).toBe(true);
+      await settle();
+    });
+
+    it('the sweep checks every registered member but not the orchestrator', async () => {
+      const svc = FreshTaskConversationService.createForTesting({ ...deps, listSessions: () => ['crewly-orc', SESSION] });
+      const results = await svc.runContextCapSweep();
+      expect(Object.keys(results)).toEqual([SESSION]);
+      expect(results[SESSION].capped).toBe(true);
+      await settle();
+    });
+
+    it('never throws', async () => {
+      const svc = FreshTaskConversationService.createForTesting({ ...deps, getSessionInfo: () => { throw new Error('boom'); } });
+      await expect(svc.capContextIfNeeded(SESSION)).resolves.toEqual({ capped: false, reason: 'error' });
     });
   });
 
