@@ -45,6 +45,7 @@ import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
 import { createSkillSetupRouter } from '../controllers/skill-setup/skill-setup.routes.js';
 import { createBundleRouter } from '../controllers/bundle/bundle.routes.js';
 import { createReconcilerRouter } from '../controllers/reconciler/reconciler.routes.js';
+import { createWorktreeJanitorRouter } from '../controllers/worktree-janitor/worktree-janitor.routes.js';
 import { createTeamHealthRouter } from '../controllers/team-health/team-health.routes.js';
 import { createFissionRouter } from '../controllers/fission/fission.routes.js';
 import { createMissionPolicyRouter } from '../controllers/mission/mission-policy.routes.js';
@@ -207,6 +208,9 @@ export function createApiRoutes(apiController: ApiController): Router {
 
   // Reconciler routes for status monitoring, manual trigger, and history
   router.use('/reconciler', createReconcilerRouter());
+
+  // Worktree janitor: dry-run listing (GET /worktrees) and manual pass (POST /run)
+  router.use('/worktree-janitor', createWorktreeJanitorRouter());
 
   // Team-Health-Watchdog (THW) — Layer 4 liveness aggregator routes
   router.use('/team-health', createTeamHealthRouter());

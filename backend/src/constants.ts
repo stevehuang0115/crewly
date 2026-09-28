@@ -1046,6 +1046,62 @@ export const NOTIFY_RECONCILIATION_CONSTANTS = {
 } as const;
 
 /**
+ * Constants for the worktree janitor (`WorktreeJanitorService`).
+ *
+ * Agents create a git worktree per code task and never delete it. The janitor
+ * removes a worktree once its work has landed (merged into origin's default
+ * branch, or its PR is MERGED) and nothing is using it. See the service JSDoc
+ * for the full list of removal rules.
+ */
+export const WORKTREE_JANITOR_CONSTANTS = {
+	/** Env kill switch: `CREWLY_WORKTREE_JANITOR=0` (or `off`/`false`) disables the janitor. */
+	ENV_VAR: 'CREWLY_WORKTREE_JANITOR',
+	/** Values of {@link WORKTREE_JANITOR_CONSTANTS.ENV_VAR} that disable it (lower-cased). */
+	DISABLED_VALUES: ['0', 'off', 'false', 'no'] as readonly string[],
+	/** Interval between automatic runs (30 minutes). */
+	INTERVAL_MS: 30 * 60 * 1000,
+	/** Delay before the first automatic run after startup (10 minutes). */
+	FIRST_RUN_DELAY_MS: 10 * 60 * 1000,
+	/** A worktree touched more recently than this is kept (2 hours). */
+	MIN_IDLE_MS: 2 * 60 * 60 * 1000,
+	/**
+	 * Directory, relative to the repo's main worktree, where agent tools
+	 * (Claude Code subagents, Crewly agents) create per-task worktrees.
+	 */
+	AGENT_WORKTREE_DIR: '.claude/worktrees',
+	/**
+	 * Directory name under the system temp dir (`/tmp`, `os.tmpdir()`) that
+	 * the developer role prompt tells agents to put worktrees in.
+	 */
+	TMP_WORKTREE_DIR: 'crewly-worktrees',
+	/**
+	 * Directory owned by the per-WorkItem worktree feature (#814), which does
+	 * its own WorkItem-aware cleanup. The janitor never touches it.
+	 */
+	MANAGED_WORKTREE_DIR: '.crewly/worktrees',
+	/**
+	 * Branch-name prefixes that only agents create. A worktree elsewhere on
+	 * disk is eligible only when its branch starts with one of these.
+	 * `worktree-agent-` is Claude Code's automatic subagent branch.
+	 */
+	AGENT_BRANCH_PREFIXES: ['worktree-agent-'] as readonly string[],
+	/** Branches that are never deleted, whatever the verdict. */
+	PROTECTED_BRANCHES: ['main', 'master', 'develop', 'HEAD'] as readonly string[],
+	/** Timeout of one local git command (ms). */
+	GIT_TIMEOUT_MS: 30_000,
+	/** Timeout of `git fetch` (ms). */
+	FETCH_TIMEOUT_MS: 60_000,
+	/** Timeout of one `gh` call (ms). */
+	GH_TIMEOUT_MS: 20_000,
+	/** Timeout of the process-cwd probe (`lsof`) (ms). */
+	CWD_PROBE_TIMEOUT_MS: 20_000,
+	/** Max PRs `gh pr list --head <branch>` returns per branch. */
+	GH_PR_LIMIT: 20,
+	/** Max bytes of command output kept (stdout/stderr each). */
+	MAX_OUTPUT_BYTES: 16 * 1024 * 1024,
+} as const;
+
+/**
  * Constants for cron next-run computation (`getNextRunTime`).
  */
 export const CRON_SCHEDULE_CONSTANTS = {

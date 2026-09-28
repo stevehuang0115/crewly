@@ -27,7 +27,28 @@ import {
   TRIGGER_ENGINE_CONSTANTS,
   CRON_SCHEDULE_CONSTANTS,
   WHATSAPP_CONSTANTS,
+  WORKTREE_JANITOR_CONSTANTS,
 } from './constants.js';
+
+describe('WORKTREE_JANITOR_CONSTANTS', () => {
+  it('runs every 30 min, first run 10 min after boot, 2 h idle minimum', () => {
+    expect(WORKTREE_JANITOR_CONSTANTS.INTERVAL_MS).toBe(30 * 60 * 1000);
+    expect(WORKTREE_JANITOR_CONSTANTS.FIRST_RUN_DELAY_MS).toBe(10 * 60 * 1000);
+    expect(WORKTREE_JANITOR_CONSTANTS.MIN_IDLE_MS).toBe(2 * 60 * 60 * 1000);
+  });
+
+  it('uses the documented kill switch and never deletes main/master', () => {
+    expect(WORKTREE_JANITOR_CONSTANTS.ENV_VAR).toBe('CREWLY_WORKTREE_JANITOR');
+    expect(WORKTREE_JANITOR_CONSTANTS.DISABLED_VALUES).toContain('0');
+    expect(WORKTREE_JANITOR_CONSTANTS.PROTECTED_BRANCHES).toEqual(expect.arrayContaining(['main', 'master']));
+  });
+
+  it('leaves the #814 per-WorkItem worktree directory alone and only claims agent locations', () => {
+    expect(WORKTREE_JANITOR_CONSTANTS.MANAGED_WORKTREE_DIR).toBe('.crewly/worktrees');
+    expect(WORKTREE_JANITOR_CONSTANTS.AGENT_WORKTREE_DIR).toBe('.claude/worktrees');
+    expect(WORKTREE_JANITOR_CONSTANTS.AGENT_BRANCH_PREFIXES).toEqual(['worktree-agent-']);
+  });
+});
 
 describe('GOOGLE_OAUTH_CONSTANTS', () => {
   describe('DEFAULT_SCOPES', () => {
