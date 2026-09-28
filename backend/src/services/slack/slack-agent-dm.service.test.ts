@@ -37,6 +37,7 @@ function makeDeps(overrides: Partial<SlackAgentDmServiceDeps> = {}) {
     chat: {
       ensureDmChannel: jest.fn(() => ({ channel, created: true })),
       getChannelForBridge: () => channel,
+      getLatestOwnerTurnSource: jest.fn(() => 'slack'),
       recordTurn: jest.fn((args: { content: string }) => ({
         message: { id: 'm1', channelId: channel.id, senderType: 'user', senderId: 'steve', content: args.content } as unknown as ChatMessageDTO,
         channel,
@@ -161,6 +162,64 @@ describe('SlackAgentDmService', () => {
     expect(sent).toHaveLength(2);
     svc.stop();
     await fs.rm(deps.storePath as string, { force: true });
+  });
+
+  describe('reply affinity — an answer goes to Slack only when the owner last spoke there (G6)', () => {
+    it.each([['cloud-talk'], ['crewly-chat'], [null]])('does not mirror when the owner last spoke on %s', async (surface) => {
+      const { deps, sent, emit } = makeDeps();
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      await svc.routeInbound(dm());
+      (deps.chat.getLatestOwnerTurnSource as jest.Mock).mockReturnValue(surface);
+      emit({ id: 'm2', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: 'answer' } as unknown as ChatMessageDTO);
+      await new Promise((r) => setImmediate(r));
+      expect(sent).toEqual([]);
+      expect(deps.chat.getLatestOwnerTurnSource).toHaveBeenCalledWith('chat-ella');
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('follows the owner across surfaces on the real chat store: Slack → mirrored, Talk / dashboard → not', async () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const { ChatV2Service } = require('../chat-v2/chat-v2.service.js') as typeof import('../chat-v2/chat-v2.service.js');
+      const { openChatDatabase } = await import('../chat-v2/sqlite/chat-db.js');
+      const { loadChatV2Config } = await import('../chat-v2/config.js');
+      const chat = new ChatV2Service({
+        config: loadChatV2Config({}),
+        db: openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true }),
+      });
+      const { deps, sent } = makeDeps({ chat });
+      const svc = new SlackAgentDmService(deps);
+      await svc.start();
+      const owner = { userId: 'dev-user-001', source: 'oss' as const };
+      const agent = { userId: 'dev-user-001', agentSession: 'crewly-marketing-ella-e6a6b8ea', source: 'oss' as const };
+      const flush = () => new Promise((r) => setImmediate(r));
+
+      const routed = await svc.routeInbound(dm());
+      const channelId = routed!.link.chatChannelId;
+      chat.sendMessage({ channelId, principal: agent, content: 'reply to slack' });
+      await flush();
+      expect(sent).toHaveLength(1);
+
+      chat.sendMessage({ channelId, principal: owner, content: 'from the phone', origin: 'cloud-talk' });
+      chat.sendMessage({ channelId, principal: agent, content: 'reply to talk' });
+      await flush();
+      expect(sent).toHaveLength(1);
+
+      chat.sendMessage({ channelId, principal: owner, content: 'from the dashboard' });
+      chat.sendMessage({ channelId, principal: agent, content: 'reply to dashboard' });
+      await flush();
+      expect(sent).toHaveLength(1);
+
+      await svc.routeInbound(dm({ ts: '3.0', text: 'back on slack' }));
+      chat.sendMessage({ channelId, principal: agent, content: 'reply to slack again' });
+      await flush();
+      expect(sent).toHaveLength(2);
+      expect((sent[1] as { text: string }).text).toBe('reply to slack again');
+      svc.stop();
+      chat.close();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
   });
 
   describe('duplicate replies', () => {

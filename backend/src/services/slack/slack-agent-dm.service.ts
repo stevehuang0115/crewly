@@ -52,7 +52,10 @@ export interface AgentDmSlackApi {
 }
 
 /** The slice of ChatV2Service this service uses. */
-export type AgentDmChatApi = Pick<ChatV2Service, 'ensureDmChannel' | 'getChannelForBridge' | 'recordTurn' | 'on' | 'off'>;
+export type AgentDmChatApi = Pick<
+  ChatV2Service,
+  'ensureDmChannel' | 'getChannelForBridge' | 'recordTurn' | 'getLatestOwnerTurnSource' | 'on' | 'off'
+>;
 
 /** The slice of SlackAgentIdentityService this service uses. */
 export type AgentDmIdentityApi = Pick<SlackAgentIdentityService, 'getInstalled'>;
@@ -327,6 +330,7 @@ export class SlackAgentDmService {
         slackThreadTs: message.threadTs || message.ts,
         slackTs: message.ts,
         slackUserId: message.userId,
+        ...(message.teamId ? { slackTeamId: message.teamId } : {}),
       },
     });
 
@@ -459,6 +463,18 @@ export class SlackAgentDmService {
       await this.load();
       const link = this.store.links[dto.channelId];
       if (!link) return false;
+      // Reply affinity (specs/unified-conversations-cloud-store.md §A.3 G6):
+      // the DM channel is shared with Crewly Chat and Cloud Talk, so an answer
+      // goes to Slack only when the owner last spoke there. A question asked
+      // on the dashboard or from Cloud Talk is answered where it was asked.
+      const ownerSurface = this.deps.chat.getLatestOwnerTurnSource(dto.channelId);
+      if (ownerSurface !== 'slack') {
+        this.logger.debug('DM reply not mirrored to Slack: the owner last spoke elsewhere', {
+          agentSession: link.agentSession,
+          ownerSurface,
+        });
+        return false;
+      }
       if (!this.deps.slack.isConnected()) return false;
 
       const installed = this.deps.identities.getInstalled(link.agentSession);
