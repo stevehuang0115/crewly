@@ -60,9 +60,17 @@ export const QUESTION_PATTERNS: RegExp[] = [
 /**
  * Patterns indicating agent is stuck in plan mode
  * (Claude Code's interactive approval prompt that cannot be resolved via PTY input)
+ *
+ * Used (as PLAN_MODE_DISMISS_PATTERNS) to decide whether to send ESC before a
+ * message is delivered. Every pattern must be specific to the plan-approval
+ * menu: `shift+tab to cycle` was removed (#815) because it is in the footer of
+ * EVERY idle Claude Code screen ("auto mode on (shift+tab to cycle)"), so ESC
+ * was being sent to idle agents. Pinned by the captured-screen fixtures in
+ * services/monitoring/agent-attention.test.ts.
  */
 export const PLAN_MODE_PATTERNS: RegExp[] = [
-  /shift\+tab\s+to\s+cycle/i,
+  /Claude has written up a plan/i,
+  /Ready to code\?/,
   /ExitPlanMode/,
   /Plan mode/,
 ];

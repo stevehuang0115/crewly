@@ -1,0 +1,22 @@
+
+  Tides shape life as surely as they shape shorelines. In the intertidal zone, crabs, mussels, sea stars, and seaweeds
+  endure alternating hours of immersion and exposure. Their feeding, movement, and reproduction often follow the tide’s
+  rhythm. Birds arrive on exposed flats to search for food, then retreat as the water returns. People organize fishing
+  trips, ferry crossings, beach walks, and port operations around the same cycle. Tidal currents carry sediment, open
+  channels, and nourish wetlands. Over years, these repeated movements help build and reshape the places where land and
+  sea meet.
+
+  Understanding tides matters beyond curiosity. Accurate forecasts help mariners avoid grounding, help communities plan
+  for flooding, and help scientists track changes in coastal ecosystems. Rising global sea levels mean that a high tide
+  can reach farther inland than it once did, even without a storm. In some cities, flooding now arrives when ordinary
+  tides combine with higher background water levels. Tides remind us that the coast is never fixed, even on a calm day.
+  Each shoreline belongs to a moving planetary system, and each daily change connects a local view to the Moon, the Sun,
+  and Earth’s rotation.
+
+  10:50 AM
+                                                  Tip: Use /init to create an AGENTS.md with project-specific guidance.
+
+› Ask Codex to do anything
+
+  GPT-6-Sol medium · /home/user/project
+  ← for agents · ? for shortcuts

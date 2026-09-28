@@ -76,6 +76,12 @@ export class PtyTerminalBuffer {
 	private disposed = false;
 
 	/**
+	 * Latest OSC 0/2 window title the program set ('' until one is set).
+	 * Codex uses it to signal "Action Required"; see services/monitoring/agent-attention.
+	 */
+	private title = '';
+
+	/**
 	 * Create a new terminal buffer.
 	 *
 	 * @param cols - Number of columns (width). Defaults to 80.
@@ -103,6 +109,25 @@ export class PtyTerminalBuffer {
 			scrollback: PTY_CONSTANTS.DEFAULT_SCROLLBACK,
 			allowProposedApi: true,
 		});
+		this.terminal.onTitleChange((title: string) => {
+			this.title = title;
+		});
+	}
+
+	/**
+	 * Get the latest window title the program set with OSC 0 or OSC 2.
+	 *
+	 * @returns The title, or '' if none has been set
+	 *
+	 * @example
+	 * ```typescript
+	 * buffer.write('\x1b]0;[ ! ] Action Required | repo\x07');
+	 * await buffer.flush();
+	 * buffer.getTitle(); // '[ ! ] Action Required | repo'
+	 * ```
+	 */
+	getTitle(): string {
+		return this.title;
 	}
 
 	/**

@@ -86,6 +86,25 @@ describe('PtyTerminalBuffer', () => {
 		});
 	});
 
+	describe('getTitle (#815)', () => {
+		it('is empty until the program sets a title', () => {
+			buffer = new PtyTerminalBuffer();
+			expect(buffer.getTitle()).toBe('');
+		});
+
+		it('tracks OSC 0 and OSC 2 titles, latest wins, and keeps them out of the content', async () => {
+			buffer = new PtyTerminalBuffer();
+			buffer.write('\x1b]0;✳ Claude Code\x07hello\r\n');
+			await buffer.flush();
+			expect(buffer.getTitle()).toBe('✳ Claude Code');
+
+			buffer.write('\x1b]2;[ ! ] Action Required | ⠸ | repo\x1b\\');
+			await buffer.flush();
+			expect(buffer.getTitle()).toBe('[ ! ] Action Required | ⠸ | repo');
+			expect(buffer.getContent()).not.toContain('Action Required');
+		});
+	});
+
 	describe('getContent', () => {
 		it('should return empty string for empty buffer', () => {
 			buffer = new PtyTerminalBuffer();

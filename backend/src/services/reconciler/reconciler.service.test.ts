@@ -13,6 +13,7 @@ import {
   WORK_ITEM_STATUSES,
   WORK_ITEM_TRANSITIONS,
   DISPOSITION_METADATA_KEY,
+  WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
@@ -521,7 +522,9 @@ describe('ReconcilerService', () => {
       service = new ReconcilerService(provider);
 
       await service.runFull();
-      expect(provider.requeueWorkItem).toHaveBeenCalledWith(wi.id);
+      // #820: allowWaitingOnHuman is false for this correction — it has no
+      // blockSource, so it did not come from the waiting_on_human rule.
+      expect(provider.requeueWorkItem).toHaveBeenCalledWith(wi.id, { allowWaitingOnHuman: false });
       // Steve 2026-05-15 dogfood: applyCorrection MUST NOT also run for
       // blocked→queued corrections, otherwise the WI is flipped to
       // queued first and requeueWorkItem's call to `releaseBack` throws
@@ -529,6 +532,45 @@ describe('ReconcilerService', () => {
       // got 'queued'". requeueWorkItem owns the full lifecycle (claim
       // release + status flip + retryCount bump + startedAt clear).
       expect(provider.applyCorrection).not.toHaveBeenCalled();
+    });
+
+    it('#820: requeues a waiting_on_human WorkItem end-to-end when its agent is gone (whole path, not just the pure rule)', async () => {
+      // Regression for the bug found in the #815/#819 PR sweep:
+      // detectWaitingOnHumanWorkItems (the pure rule) correctly emits a
+      // blocked->queued correction when the agent holding a waiting_on_human
+      // item is gone, but the OLD requeueWorkItem refused ANY waiting_on_human
+      // item unconditionally — including this one, which is the rule's own
+      // intended requeue, not a stray other-rule requeue it must guard
+      // against. The item stayed blocked forever while workItemsRequeued
+      // still counted it. Exercising service.runFull() (not
+      // detectWaitingOnHumanWorkItems directly) is what catches this: the
+      // pure rule's corrections looked correct in isolation the whole time.
+      const wi = makeWorkItem({
+        status: 'blocked',
+        blockSource: WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
+        target: 'agent-1',
+        retryCount: 0,
+        maxRetries: 3,
+      });
+      const agentMap = new Map<string, AgentHealth>([
+        ['agent-1', { sessionName: 'agent-1', status: 'inactive', lastSeenAt: new Date().toISOString() }],
+      ]);
+
+      provider = createMockProvider({
+        getActiveWorkItems: jest.fn().mockResolvedValue([wi]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(agentMap),
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service.runFull();
+
+      // The fix: THIS requeue (blockSource waiting_on_human on the
+      // correction) is allowed through, unlike the plain agent-back-online
+      // path above.
+      expect(provider.requeueWorkItem).toHaveBeenCalledWith(wi.id, { allowWaitingOnHuman: true });
+      // The reported count must match a requeue that actually happened —
+      // not just a rule that emitted a correction nobody applied.
+      expect(result.workItemsRequeued).toBeGreaterThanOrEqual(1);
     });
 
     it('dedupes corrections sharing entity+newState in one tick (Steve 2026-05-15)', async () => {
@@ -564,7 +606,7 @@ describe('ReconcilerService', () => {
 
       // Only ONE requeueWorkItem call despite two corrections — dedup wins.
       expect(provider.requeueWorkItem).toHaveBeenCalledTimes(1);
-      expect(provider.requeueWorkItem).toHaveBeenCalledWith('wi-1');
+      expect(provider.requeueWorkItem).toHaveBeenCalledWith('wi-1', { allowWaitingOnHuman: false });
     });
 
     it('should handle correction application errors gracefully', async () => {

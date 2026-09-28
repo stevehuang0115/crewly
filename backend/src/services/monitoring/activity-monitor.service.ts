@@ -6,7 +6,7 @@ import { writeFile, readFile, rename, unlink } from 'fs/promises';
 import { join } from 'path';
 import { existsSync } from 'fs';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
-import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS, RUNTIME_TYPES, type WorkingStatus } from '../../constants.js';
+import { CREWLY_CONSTANTS, CONTINUATION_CONSTANTS, AGENT_IDENTITY_CONSTANTS, PTY_CONSTANTS, ACTIVITY_MONITOR_CONSTANTS, AGENT_ATTENTION_CONSTANTS, RUNTIME_TYPES, type WorkingStatus } from '../../constants.js';
 import { stripAnsiCodes } from '../../utils/terminal-output.utils.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
@@ -14,6 +14,9 @@ import type { AgentEvent } from '../../types/event-bus.types.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { parseRuntimeTokens } from '../monitoring/runtime-token-parser.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
+import { computeAgentAttention } from './agent-attention.js';
+import { markWaiting, clearWaiting } from './agent-attention-registry.js';
+import { EscalationRouterService } from '../v3/escalation-router.service.js';
 
 /**
  * Team Working Status File Structure
@@ -212,6 +215,104 @@ export class ActivityMonitorService {
         this.busyEventEmitted.add(key);
         this.eventBusService.publish(this.buildAgentEvent('agent:busy', now, identity, 'idle', 'in_progress'));
       }
+    }
+  }
+
+  /**
+   * Compute the waiting_on_human verdict for one agent and act on a change.
+   *
+   * Entering the state: records it in the attention registry (read by the
+   * reconciler), publishes `agent:waiting_on_human`, and opens an
+   * escalation in the owner's queue (GET /api/escalations, which
+   * crewly-mobile polls, plus a Slack notice). Leaving it: the reverse.
+   * Screen text is never logged, only rule names.
+   *
+   * @param backend - Session backend to read screen and title from
+   * @param identity - Agent identity for the event
+   * @param now - ISO timestamp of this poll
+   */
+  private async evaluateAttention(
+    backend: ISessionBackend,
+    identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
+    now: string,
+  ): Promise<void> {
+    try {
+      const screen = backend.captureOutput(identity.sessionName, AGENT_ATTENTION_CONSTANTS.CAPTURE_LINES);
+      const title = backend.getTerminalTitle?.(identity.sessionName) ?? '';
+      const result = computeAgentAttention({ screen, title });
+      if (result.verdict !== 'waiting_on_human' || !result.kind) {
+        await this.clearAttention(identity.sessionName, identity, now);
+        return;
+      }
+      const isNew = markWaiting({
+        sessionName: identity.sessionName,
+        kind: result.kind,
+        since: now,
+        evidence: result.evidence,
+        ...(result.titleLabel ? { titleLabel: result.titleLabel } : {}),
+      });
+      if (!isNew) return;
+      this.logger.warn('Agent is waiting on a human (blocked on a prompt)', {
+        sessionName: identity.sessionName,
+        kind: result.kind,
+        evidence: result.evidence,
+        linesExamined: result.linesExamined,
+      });
+      this.eventBusService?.publish(
+        this.buildAgentEvent('agent:waiting_on_human', now, identity, 'working', `waiting_on_human:${result.kind}`),
+      );
+      await EscalationRouterService.getInstance().recordAgentWaitingOnHuman({
+        sessionName: identity.sessionName,
+        kind: result.kind,
+        evidence: result.evidence,
+        ...(result.titleLabel ? { titleLabel: result.titleLabel } : {}),
+      });
+    } catch (error) {
+      this.logger.warn('waiting_on_human evaluation failed (non-fatal)', {
+        sessionName: identity.sessionName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Leave the waiting_on_human state for a session, if it was in it.
+   *
+   * KNOWN GAP (#820, #851): `!cleared` also covers "the registry never knew
+   * this session was waiting" — which is the normal case for every agent
+   * that has simply never been blocked, but is ALSO true right after a
+   * backend restart if the owner answered the prompt while it was down. In
+   * that second case a durable escalation opened before the restart is left
+   * open, because `resolveAgentWaitingOnHuman` below never runs. Not fixed
+   * inline: making it unconditional would add a `listPending()` read to
+   * every poll of every non-waiting agent for a restart-only edge case; see
+   * #851 for the one-time-startup-reconciliation shape that would fix it
+   * without that per-poll cost. The WorkItem itself is unaffected either
+   * way — its own blocked->running transition self-heals via the
+   * reconciler's next poll, independent of this registry.
+   *
+   * @param sessionName - Agent session
+   * @param identity - Agent identity for the event
+   * @param now - ISO timestamp of this poll
+   */
+  private async clearAttention(
+    sessionName: string,
+    identity: { teamId: string; teamName: string; memberId: string; memberName: string; sessionName: string },
+    now: string,
+  ): Promise<void> {
+    const cleared = clearWaiting(sessionName);
+    if (!cleared) return;
+    this.logger.info('Agent is no longer waiting on a human', { sessionName, kind: cleared.kind, since: cleared.since });
+    this.eventBusService?.publish(
+      this.buildAgentEvent('agent:waiting_resolved', now, identity, `waiting_on_human:${cleared.kind}`, 'resolved'),
+    );
+    try {
+      await EscalationRouterService.getInstance().resolveAgentWaitingOnHuman(sessionName);
+    } catch (error) {
+      this.logger.warn('Could not close waiting_on_human escalation (non-fatal)', {
+        sessionName,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
 
@@ -485,8 +586,16 @@ export class ActivityMonitorService {
                 this.lastTerminalOutputs.delete(memberKey);
                 this.busyTransitionTimestamps.delete(memberKey);
                 this.busyEventEmitted.delete(memberKey);
+                await this.clearAttention(member.sessionName, {
+                  teamId: team.id, teamName: team.name, memberId: member.id, memberName: member.name, sessionName: member.sessionName,
+                }, now);
                 continue;
               }
+
+              // waiting_on_human (#815): is the agent blocked on a prompt?
+              await this.evaluateAttention(backend, {
+                teamId: team.id, teamName: team.name, memberId: member.id, memberName: member.name, sessionName: member.sessionName,
+              }, now);
 
               // Get terminal output and check for activity
               const currentOutput = await this.getTerminalOutput(member.sessionName);

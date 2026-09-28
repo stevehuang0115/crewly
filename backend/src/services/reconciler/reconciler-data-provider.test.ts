@@ -704,8 +704,30 @@ describe('LiveReconcilerDataProvider', () => {
       expect(mockPool.updateItemStatus).toHaveBeenCalledWith(
         'wi-1',
         'blocked',
-        'system',
+        { role: 'system', via: 'reconciler' },
         expect.stringContaining('Agent dead'),
+        undefined,
+      );
+    });
+
+    it('passes a correction\'s blockSource through to the pool (#815)', async () => {
+      await provider.applyCorrection({
+        entityType: 'work_item',
+        entityId: 'wi-2',
+        previousState: 'running',
+        newState: 'blocked',
+        reason: 'waiting_on_human: agent x has been waiting on a prompt',
+        evidence: 'waitingOnHumanSince=t',
+        correctedAt: new Date().toISOString(),
+        blockSource: 'waiting_on_human',
+      });
+
+      expect(mockPool.updateItemStatus).toHaveBeenCalledWith(
+        'wi-2',
+        'blocked',
+        { role: 'system', via: 'reconciler' },
+        expect.stringContaining('waiting_on_human'),
+        'waiting_on_human',
       );
     });
 
@@ -921,6 +943,23 @@ describe('LiveReconcilerDataProvider', () => {
     it('still re-queues a system-blocked WorkItem (agent back online)', async () => {
       mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked' });
       await provider.requeueWorkItem('wi-1');
+
+      expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-1', 'reconciler_requeue');
+    });
+
+    // #820: detectWaitingOnHumanWorkItems' own "the agent is gone" requeue
+    // used to be silently refused by this same guard, leaving the item
+    // blocked forever while the reconciler still counted it as requeued.
+    it('refuses a waiting_on_human WorkItem by default (some OTHER rule\'s requeue, e.g. agent-back-online)', async () => {
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'waiting_on_human' });
+      await provider.requeueWorkItem('wi-1');
+
+      expect(mockPool.releaseBack).not.toHaveBeenCalled();
+    });
+
+    it('re-queues a waiting_on_human WorkItem when allowWaitingOnHuman is true (the rule\'s OWN requeue)', async () => {
+      mockPool.findWorkItem.mockResolvedValueOnce({ id: 'wi-1', status: 'blocked', blockSource: 'waiting_on_human' });
+      await provider.requeueWorkItem('wi-1', { allowWaitingOnHuman: true });
 
       expect(mockPool.releaseBack).toHaveBeenCalledWith('wi-1', 'reconciler_requeue');
     });

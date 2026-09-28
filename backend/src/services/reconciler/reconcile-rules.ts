@@ -36,8 +36,11 @@ import {
   DISPOSITION_REQUIRED_STATUSES,
   isWorkItemDisposed,
   isExplicitlyBlocked,
+  isWaitingOnHumanBlocked,
+  WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
 import { evaluateRequestCompletion } from '../v3/request-completion.js';
+import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Agent Health Types (abstraction over existing services)
@@ -61,6 +64,11 @@ export interface AgentHealth {
   teamId?: string;
   /** Member ID within the team */
   memberId?: string;
+  /**
+   * ISO time since which the agent has been blocked on a terminal prompt
+   * (approval, trust, plan menu). Absent when it is not waiting (#815).
+   */
+  waitingOnHumanSince?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +847,9 @@ export function detectRecoverableWorkItems(
     if (isExplicitlyBlocked(wi)) continue;
     // A dependency block is not an outage either — see the JSDoc above.
     if (hasUnresolvedDependencies(wi, workItemMap)) continue;
+    // A waiting_on_human block is resumed by detectWaitingOnHumanWorkItems,
+    // never re-queued: the agent is alive and still holds the work (#815).
+    if (isWaitingOnHumanBlocked(wi)) continue;
     if (wi.retryCount >= wi.maxRetries) continue;
 
     // If the agent is back online, re-queue
@@ -859,6 +870,100 @@ export function detectRecoverableWorkItems(
   }
 
   return { corrections, recoverableIds };
+}
+
+// ---------------------------------------------------------------------------
+// Rule: waiting_on_human (#815)
+// ---------------------------------------------------------------------------
+
+/**
+ * Park and resume WorkItems whose agent is blocked on a terminal prompt.
+ *
+ * - `running` → `blocked` (blockSource `waiting_on_human`) once the target
+ *   agent has been waiting on a human longer than `blockAfterMs`. The agent
+ *   is not making progress, so its work must not read as running.
+ * - `blocked` (that source) → `running` as soon as the agent is no longer
+ *   waiting. Not re-queued while the agent lives, never counted as a
+ *   failure or a retry.
+ * - `blocked` (that source) → `queued` if the agent is gone (inactive or
+ *   missing): nobody holds the work any more.
+ *
+ * The resume goes through the normal →running path, which resets
+ * `startedAt`: time spent waiting on the owner does not use up the item's
+ * stuck-timeout budget.
+ *
+ * @param workItems - Active WorkItems
+ * @param agentHealthMap - Agent health, with `waitingOnHumanSince`
+ * @param now - Current time in ms (injectable for tests)
+ * @param blockAfterMs - Waiting time before a running item is parked
+ * @returns Corrections and the ids parked / resumed
+ */
+export function detectWaitingOnHumanWorkItems(
+  workItems: WorkItem[],
+  agentHealthMap: Map<string, AgentHealth>,
+  now: number = Date.now(),
+  blockAfterMs: number = AGENT_ATTENTION_CONSTANTS.BLOCK_WORK_ITEM_AFTER_MS,
+): { corrections: ReconcileCorrection[]; blockedIds: string[]; resumedIds: string[]; requeuedIds: string[] } {
+  const corrections: ReconcileCorrection[] = [];
+  const blockedIds: string[] = [];
+  const resumedIds: string[] = [];
+  const requeuedIds: string[] = [];
+
+  for (const wi of workItems) {
+    if (!wi.target) continue;
+    const agent = agentHealthMap.get(wi.target);
+    const since = agent?.waitingOnHumanSince;
+    const waitedMs = since ? now - new Date(since).getTime() : 0;
+
+    if (wi.status === 'running' && agent?.status === 'active' && since && waitedMs > blockAfterMs) {
+      corrections.push(createCorrection({
+        entityType: 'work_item',
+        entityId: wi.id,
+        previousState: 'running',
+        newState: 'blocked',
+        reason: `${AGENT_ATTENTION_CONSTANTS.BLOCKED_REASON}: agent ${wi.target} has been waiting on a prompt in its terminal for ${Math.round(waitedMs / 60_000)} min`,
+        evidence: `waitingOnHumanSince=${since}`,
+        blockSource: WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
+      }));
+      blockedIds.push(wi.id);
+    } else if (isWaitingOnHumanBlocked(wi) && agent?.status === 'active' && !since) {
+      corrections.push(createCorrection({
+        entityType: 'work_item',
+        entityId: wi.id,
+        previousState: 'blocked',
+        newState: 'running',
+        reason: `${AGENT_ATTENTION_CONSTANTS.BLOCKED_REASON} cleared: agent ${wi.target} is no longer waiting on a prompt`,
+        evidence: 'waitingOnHumanSince absent',
+      }));
+      resumedIds.push(wi.id);
+    } else if (isWaitingOnHumanBlocked(wi) && (!agent || agent.status === 'inactive')) {
+      // The agent that held the work is gone, so nobody will answer for it.
+      // Hand it back to the queue (not a failure, not a retry).
+      //
+      // blockSource is set here too (not only on the running->blocked
+      // correction above) so the reconciler can tell THIS requeue — the one
+      // this rule itself decided on because the agent is gone — apart from
+      // any other rule's blocked->queued requeue of the SAME item, which
+      // dataProvider.requeueWorkItem must refuse (the agent could still be
+      // alive and holding the prompt). Without this marker both look like
+      // an identical `{ entityType: 'work_item', newState: 'queued',
+      // previousState: 'blocked' }` correction to the provider, so it can't
+      // distinguish "this rule says requeue" from "some other rule says
+      // requeue a waiting_on_human item, which must be refused" (#820).
+      corrections.push(createCorrection({
+        entityType: 'work_item',
+        entityId: wi.id,
+        previousState: 'blocked',
+        newState: 'queued',
+        reason: `${AGENT_ATTENTION_CONSTANTS.BLOCKED_REASON}: agent ${wi.target} is ${agent?.status ?? 'not found'}; re-queued`,
+        evidence: `Agent health check: status=${agent?.status ?? 'missing'}`,
+        blockSource: WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
+      }));
+      requeuedIds.push(wi.id);
+    }
+  }
+
+  return { corrections, blockedIds, resumedIds, requeuedIds };
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,7 +1294,9 @@ export function detectUnclaimedTasks(
   for (const agent of agentHealthMap.values()) {
     if (agent.status === 'suspended' || agent.status === 'inactive') {
       wakableAgents.push(agent);
-    } else if (agent.status === 'active' && (agent.activeWorkItemCount ?? 0) === 0) {
+    } else if (agent.status === 'active' && (agent.activeWorkItemCount ?? 0) === 0 && !agent.waitingOnHumanSince) {
+      // Not while it sits on a prompt: a re-pushed brief would be typed into
+      // the dialog and could answer it (#815).
       activeIdleByTarget.set(agent.sessionName, agent);
     }
   }
@@ -1621,6 +1728,7 @@ export function detectDependencyResolvedWorkItems(
     if (wi.status !== 'blocked') continue;
     // An explicit block waits for an explicit unblock, not for dependencies.
     if (isExplicitlyBlocked(wi)) continue;
+    if (isWaitingOnHumanBlocked(wi)) continue;
 
     // Check if this WorkItem has dependency tracking
     const dependsOn = (wi as any).dependsOn as string[] | undefined;

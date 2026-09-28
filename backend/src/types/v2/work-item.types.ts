@@ -341,6 +341,13 @@ export const SLA_TERMINAL_WORK_ITEM_STATUSES: ReadonlySet<WorkItemStatus> =
 export const WORK_ITEM_BLOCK_SOURCES = {
   /** Blocked through the block API by the agent / a lead: stays blocked until unblocked. */
   EXPLICIT: 'explicit',
+  /**
+   * Parked by the reconciler because the agent sat on a terminal prompt
+   * (approval, trust, plan menu) for too long (#815). Resumed to `running`
+   * automatically when the prompt is gone; never re-queued or counted as a
+   * failure or retry.
+   */
+  WAITING_ON_HUMAN: 'waiting_on_human',
 } as const;
 
 /** A value of {@link WORK_ITEM_BLOCK_SOURCES}. */
@@ -360,6 +367,21 @@ export type WorkItemBlockSource = (typeof WORK_ITEM_BLOCK_SOURCES)[keyof typeof 
  */
 export function isExplicitlyBlocked(wi: Pick<WorkItem, 'status' | 'blockSource'>): boolean {
   return wi.status === 'blocked' && wi.blockSource === WORK_ITEM_BLOCK_SOURCES.EXPLICIT;
+}
+
+/**
+ * Whether a WorkItem was parked because its agent is waiting on a human (#815).
+ *
+ * @param wi - WorkItem (status + blockSource)
+ * @returns True for a `blocked` item with the waiting_on_human block source
+ *
+ * @example
+ * ```typescript
+ * if (isWaitingOnHumanBlocked(wi)) continue; // resumed by the waiting_on_human rule only
+ * ```
+ */
+export function isWaitingOnHumanBlocked(wi: Pick<WorkItem, 'status' | 'blockSource'>): boolean {
+  return wi.status === 'blocked' && wi.blockSource === WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN;
 }
 
 export interface WorkItem {
@@ -595,7 +617,9 @@ export const WORK_ITEM_TRANSITIONS: Record<WorkItemStatus, ReadonlySet<WorkItemS
   // in TRANSITION_PERMISSIONS to TL/orchestrator/system — agents cannot
   // self-revive a running claim.
   running:        new Set(['done', 'done_by_worker', 'failed', 'blocked', 'escalated', 'cancelled', 'queued']),
-  blocked:        new Set(['queued', 'cancelled']),
+  // #815: blocked → running resumes an item the reconciler parked while its
+  // agent waited on a terminal prompt (blockSource 'waiting_on_human').
+  blocked:        new Set(['queued', 'running', 'cancelled']),
   escalated:      new Set(['queued', 'cancelled']),
   done_by_worker: new Set(['verified', 'rejected']),
   verified:       new Set<WorkItemStatus>(),
@@ -806,6 +830,9 @@ export const TRANSITION_PERMISSIONS: Record<string, ReadonlySet<TransitionActorR
   // runs as system.
   'blocked→queued':           new Set(['team_lead', 'orchestrator', 'system']),
   'blocked→cancelled':        new Set(['team_lead', 'orchestrator', 'owner', 'system']),
+  // #815: resume after waiting_on_human — the reconciler only. Agents and
+  // leads unblock through blocked→queued.
+  'blocked→running':          new Set(['system']),
   'escalated→queued':         new Set(['team_lead', 'orchestrator', 'system']),
   'escalated→cancelled':      new Set(['team_lead', 'orchestrator', 'owner', 'system']),
   // --- verdicts (identity-checked, see checkTransitionPermission) ---
