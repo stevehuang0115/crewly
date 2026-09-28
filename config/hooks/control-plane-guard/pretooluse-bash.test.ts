@@ -134,6 +134,56 @@ describe('control-plane guard hook — write forms that are blocked', () => {
 	});
 });
 
+describe('control-plane guard hook — git subcommand parsing (WorkItem 70e54fbc)', () => {
+	// The old code treated ANY word among a `git` command's arguments as if
+	// it might be the subcommand being run, so a commit message containing
+	// "rm" or "restore" (as ordinary English, not a git verb) was wrongly
+	// blocked whenever the message also happened to contain a word that
+	// matched a protected path's relative form. These three mirror the real
+	// commands Sam found wrongly blocked; all must be ALLOWED.
+	it('allows a commit message containing "rm" plus a path-relative word (install cwd)', () => {
+		const r = runHook(
+			'git commit -m "fix config/skills/orchestrator/stop-agent build and rm stale files"',
+		);
+		expect(r.status).toBe(0);
+	});
+
+	it('allows a commit message containing "restore" plus a path-relative word (install cwd)', () => {
+		const r = runHook('git commit -m "restore config/skills/orchestrator/stop-agent after refactor"');
+		expect(r.status).toBe(0);
+	});
+
+	it('allows a commit message containing "rm" plus a path-relative word (~/.crewly cwd)', () => {
+		const r = runHook('git commit -m "fix: rm dead code in teams loader"', { cwd: join(home, '.crewly') });
+		expect(r.status).toBe(0);
+	});
+
+	it('still blocks a real `git rm` naming the protected path', () => {
+		const r = runHook(`git rm ${teamConfig}`);
+		expect(r.status).toBe(2);
+		expect(r.stderr).toContain("'git rm' on it");
+	});
+
+	it('still blocks a real `git restore` naming the protected path', () => {
+		const r = runHook(`git restore --staged -- ${teamConfig}`);
+		expect(r.status).toBe(2);
+		expect(r.stderr).toContain("'git restore' on it");
+	});
+
+	it('still blocks `git checkout` through a -C <dir> global option', () => {
+		const r = runHook(`git -C /tmp checkout -- ${teamConfig}`);
+		expect(r.status).toBe(2);
+		expect(r.stderr).toContain("'git checkout' on it");
+	});
+
+	it('does not let a -c key=value global option hide the real subcommand check, and does not misfire on ordinary text after it', () => {
+		const r = runHook(
+			'git -c user.name=test commit -m "restore config/skills/orchestrator/stop-agent"',
+		);
+		expect(r.status).toBe(0);
+	});
+});
+
 describe('control-plane guard hook — reads that stay allowed', () => {
 	const cases: Array<[string, () => string]> = [
 		['jq', () => `jq '.members' ${teamConfig}`],

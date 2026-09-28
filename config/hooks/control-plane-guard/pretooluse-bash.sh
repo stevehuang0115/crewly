@@ -179,11 +179,40 @@ segment_writes() {
         case "$a" in of=*) word_hits "${a#of=}" "$f" && { echo "'dd of=' onto it"; return 0; } ;; esac
       done ;;
     git)
-      if [ "$any" -eq 0 ]; then
-        for a in "${args[@]}"; do
-          case "$a" in checkout|restore|rm|mv|apply) echo "'git $a' on it"; return 0 ;; esac
-        done
-      fi ;;
+      # Find the REAL git subcommand: the first non-option token after
+      # `git`, skipping global options that take a value (-C <dir>,
+      # -c <key>=<value>) and any other -x/--x option (assumed to take no
+      # separate value token, which covers realistic agent usage).
+      #
+      # Bug this replaces (WorkItem 70e54fbc): the old code treated ANY
+      # word among the git command's arguments as if it might be the
+      # subcommand, so `git commit -m "fix dist build and rm stale files"`
+      # was blocked — "rm" is just a word inside the commit message, not
+      # the subcommand being run. Restricting the match to the actual
+      # subcommand position, and to that subcommand's own arguments (not
+      # unrelated text like -m's message), fixes the false positive while
+      # still catching `git checkout|restore|rm|mv|apply` naming the path.
+      local gi=0
+      while [ "$gi" -lt "${#args[@]}" ]; do
+        case "${args[$gi]}" in
+          -C|-c) gi=$((gi+2)) ;;
+          -*) gi=$((gi+1)) ;;
+          *) break ;;
+        esac
+      done
+      local subcmd="${args[$gi]:-}"
+      case "$subcmd" in
+        checkout|restore|rm|mv|apply)
+          local -a subargs=("${args[@]:$((gi+1))}")
+          local sa
+          for sa in "${subargs[@]}"; do
+            if word_hits "$sa" "$f"; then
+              echo "'git $subcmd' on it"
+              return 0
+            fi
+          done
+          ;;
+      esac ;;
   esac
   return 1
 }
