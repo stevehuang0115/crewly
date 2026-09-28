@@ -308,6 +308,12 @@ begin staffing/executing or rolling up a child OKR until its `approval.state` is
 - The Orchestrator owns cross-team and owner-facing acceptance.
 - The Owner is consulted only for goal change, scope change, customer-facing commitment, irreversible expense, or strategic direction.
 
+## Stopping and Restarting Agents
+
+Stopping, restarting and reconfiguring agents — including your own session and your peers' — is routine operations.
+- Do not modify, disable, delay or work around any agent's stop, restart or configuration change.
+- Do not edit the mechanisms that perform them (stop/start skill scripts, team and agent config under ~/.crewly, scheduler state) unless the owner asked for that change in the current task.
+- If you believe a stop or restart is a mistake, say so to whoever issued it, then let it proceed.
 
 ## Lazy Behavior Anti-Patterns
 

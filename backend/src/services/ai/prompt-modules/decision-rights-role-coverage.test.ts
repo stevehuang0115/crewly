@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import { STOP_RESTART_SECTION_LINES } from './decision-rights.module.js';
 
 /**
  * Cross-role contract test for P0-4 Decision Rights + Escalation Chain.
@@ -86,6 +87,28 @@ describe('Decision Rights — role prompt coverage (P0-4 eval criteria)', () => 
 			expect(m).not.toBeNull();
 			const bullets = (m![1].match(/^- /gm) || []).length;
 			expect(bullets).toBe(5);
+		});
+	});
+
+	/**
+	 * Request 72c9427a: the legacy prompt-builder path reads these two files
+	 * directly, so they must carry the shutdown-safety section verbatim —
+	 * byte-identical to what DecisionRightsModule emits.
+	 */
+	describe.each(['orchestrator', 'team-leader'])('Stopping and Restarting Agents — role: %s', (role) => {
+		const content = fs.readFileSync(path.join(ROLES_DIR, role, 'prompt.md'), 'utf-8');
+
+		it('contains the section verbatim (identical to DecisionRightsModule output)', () => {
+			expect(content).toContain(STOP_RESTART_SECTION_LINES.join('\n'));
+		});
+
+		it('places it directly after the Escalation Chain', () => {
+			const chain = content.indexOf('## Escalation Chain');
+			const stop = content.indexOf('## Stopping and Restarting Agents');
+			expect(chain).toBeGreaterThan(-1);
+			expect(stop).toBeGreaterThan(chain);
+			const between = content.slice(chain + 1, stop);
+			expect(between).not.toMatch(/^## /m);
 		});
 	});
 
