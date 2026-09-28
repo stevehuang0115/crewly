@@ -83,6 +83,13 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$PROJECT_PATH" ] && PROJECT_PATH=$(printf '%s' "$INPUT" | jq -r '.projectPath // empty')
 fi
 
+# #816: Auto-inject projectPath from CREWLY_PROJECT_PATH when not provided,
+# the same default remember applies (#187). Without it a recall from an agent
+# shell searches agent memory only and never sees the project's knowledge.
+if [ -z "$PROJECT_PATH" ] && [ -n "${CREWLY_PROJECT_PATH:-}" ]; then
+  PROJECT_PATH="$CREWLY_PROJECT_PATH"
+fi
+
 require_param "agentId (--agent)" "$AGENT_ID"
 require_param "context (--context)" "$CONTEXT"
 

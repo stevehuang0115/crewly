@@ -18,6 +18,13 @@
  *     the section, registration continues.
  *   - Two agents fetch concurrently → each gets only their own slice.
  *
+ * NOTE (#816): the helper below MIRRORS the registration code instead of
+ * calling it, which is why these tests stayed green while the default
+ * modular-prompt path discarded the briefing. The real path — including the
+ * "not injected" notice that now replaces silent omission on failure — is
+ * covered by the `startup briefings under the modular prompt` block in
+ * agent-registration.service.test.ts.
+ *
  * @module services/agent/active-work-briefing.integration.test
  */
 

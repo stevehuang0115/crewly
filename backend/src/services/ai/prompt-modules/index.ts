@@ -41,6 +41,8 @@ export { RoleBoundaryModule } from './role-boundary.module.js';
 export { RequestContractModule } from './request-contract.module.js';
 export { DefaultExecutionLoopModule } from './default-execution-loop.module.js';
 export { WorkingMemoryModule } from './working-memory.module.js';
+export { ActiveWorkModule, ACTIVE_WORK_HEADING, renderActiveWorkSection } from './active-work.module.js';
+export { SessionBriefingModule } from './session-briefing.module.js';
 
 // Context loaders
 export {

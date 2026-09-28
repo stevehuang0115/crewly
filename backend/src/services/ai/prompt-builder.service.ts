@@ -1260,14 +1260,15 @@ bash ${this.agentSkillsPath}/core/recall/execute.sh '{"agentId":"${sessionName}"
 \`\`\`
 
 ### Step 1.5: Read your active work (authoritative state)
-The system has already injected your current Requests + WorkItems above
-under \`## Your Active Work\` — that section is the source of truth.
-**State always wins over memory.** If a row carries a \`(memory: ...)\` annotation,
-the state value is what you should act on; the memory note flags a divergence
-to investigate, not to override the state.
+Your current Requests + WorkItems are in the \`## Your Active Work\` section above
+(and, when there is one, your session memory is under \`## Your Previous Knowledge\`).
+That section is the source of truth. **State always wins over memory.** If a row
+carries a \`(memory: ...)\` annotation, the state value is what you should act on;
+the memory note flags a divergence to investigate, not to override the state.
 
-Call this skill mid-session if the briefing was truncated (\`... and X more\` marker)
-or stale (>5 minutes since registration, especially after long-running tasks):
+Run this skill now if that section says it was **not injected**, and mid-session if
+the briefing was truncated (\`... and X more\` marker) or stale (>5 minutes since
+registration, especially after long-running tasks):
 \`\`\`bash
 bash ${this.agentSkillsPath}/core/get-my-active-work/execute.sh --session ${sessionName} --role ${role}
 \`\`\`

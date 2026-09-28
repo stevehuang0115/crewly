@@ -1,6 +1,7 @@
 import * as fsMocked from 'fs';
 import { RecoveryModule } from './recovery.module.js';
 import { ModuleConfig } from './prompt-module.interface.js';
+import { ACTIVE_WORK_HEADING } from './active-work.module.js';
 
 // Mock fs for fragment loading
 jest.mock('fs', () => ({
@@ -59,6 +60,18 @@ describe('RecoveryModule', () => {
 		// State precedence rule must be highlighted so the agent does not silently
 		// override the briefing with their own memory.
 		expect(result).toContain('State always wins over memory');
+	});
+
+	it('refers to the Active Work section by the heading ActiveWorkModule emits (#816)', async () => {
+		const result = await module.build(baseConfig);
+
+		expect(result).toContain(`\`${ACTIVE_WORK_HEADING}\` section above`);
+		// The old wording claimed the system "has already injected" the
+		// section unconditionally, which was false on the modular path.
+		expect(result).not.toContain('has already injected');
+		// It must tell the agent what to do when the section is the
+		// "not injected" notice rather than the briefing.
+		expect(result).toMatch(/Run this skill now if that section says it was \*\*not injected\*\*/);
 	});
 
 	it('should include recall command with correct parameters', async () => {

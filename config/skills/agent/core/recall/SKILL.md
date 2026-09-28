@@ -55,7 +55,7 @@ Retrieve stored memories relevant to a given context or query. Use this to look 
 | `--context` / `-c` | `context` | Yes | Search query (or pipe via stdin) |
 | `--scope` / `-s` | `scope` | No | Filter: `project`, `team`, or `global` |
 | `--limit` / `-l` | `limit` | No | Max number of results |
-| `--project` / `-p` | `projectPath` | No | Filter by project path |
+| `--project` / `-p` | `projectPath` | No | Filter by project path (default: `$CREWLY_PROJECT_PATH` when set) |
 
 ## Examples — CLI Flags (preferred)
 
