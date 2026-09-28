@@ -10,6 +10,8 @@
 import { Request, Response } from 'express';
 import * as fs from 'fs/promises';
 import * as path from 'path';
+import { realpathSync } from 'fs';
+import { findPackageRoot } from '../../utils/package-root.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('ExpertController');
@@ -40,15 +42,60 @@ export interface ExpertSummary {
 const SKIP_ENTRIES = new Set(['EXAMPLE.json', 'EXAMPLE.md']);
 
 /**
- * Resolves the absolute path to the config/experts directory.
- * Walks up from the controllers folder to the project root.
+ * Returns the directories to search upward from for the Crewly package root,
+ * most reliable first.
  *
- * @returns Absolute path to config/experts/
+ * Why not `__dirname` alone: the root package.json has `"type": "module"`, so
+ * the compiled backend runs as ESM, where `__dirname` does not exist — reading
+ * it threw a ReferenceError and made GET /api/experts return 500. Nor can this
+ * module use `import.meta.url`: ts-jest compiles it as CommonJS, where
+ * `import.meta` does not compile (see utils/node-require.utils.ts).
+ *
+ * 1. The real path of the entry script (`process.argv[1]`). `crewly start`
+ *    spawns `dist/backend/backend/src/index.js` from inside the package, and
+ *    dev runs `backend/src/index.ts`, so this is inside the package either
+ *    way. realpath follows a global-install bin symlink back into the package.
+ * 2. `__dirname`, when the module runs as CommonJS (tests).
+ * 3. `process.cwd()`.
+ *
+ * @returns Candidate start directories; entries that cannot be computed are omitted
  */
-function getExpertsDir(): string {
-  // backend/src/controllers/expert -> project root
-  const projectRoot = path.resolve(__dirname, '..', '..', '..', '..');
-  return path.join(projectRoot, 'config', 'experts');
+function defaultPackageRootAnchors(): string[] {
+  const anchors: string[] = [];
+  const entry = process.argv[1];
+  if (entry) {
+    try {
+      anchors.push(path.dirname(realpathSync(entry)));
+    } catch {
+      anchors.push(path.dirname(path.resolve(entry)));
+    }
+  }
+  if (typeof __dirname === 'string') anchors.push(__dirname);
+  anchors.push(process.cwd());
+  return anchors;
+}
+
+/**
+ * Resolves the absolute path to the config/experts directory.
+ *
+ * Walks up from each anchor to the package.json named "crewly" (see
+ * findPackageRoot), so the result does not depend on whether the code runs
+ * from backend/src/ or from dist/backend/backend/src/.
+ *
+ * @param anchors - Directories to search upward from, tried in order.
+ *   Defaults to the entry script, the module directory and the cwd.
+ * @returns Absolute path to <package root>/config/experts, or null when no
+ *   anchor lies inside a Crewly package
+ */
+export function resolveExpertsDir(anchors: string[] = defaultPackageRootAnchors()): string | null {
+  for (const anchor of anchors) {
+    try {
+      return path.join(findPackageRoot(anchor), 'config', 'experts');
+    } catch {
+      // Not inside a Crewly package from this anchor; try the next one
+    }
+  }
+  return null;
 }
 
 /**
@@ -63,13 +110,20 @@ function getExpertsDir(): string {
  */
 export async function listExperts(_req: Request, res: Response): Promise<void> {
   try {
-    const expertsDir = getExpertsDir();
-
+    let expertsDir: string | null = null;
     let entries: string[];
     try {
+      expertsDir = resolveExpertsDir();
+      if (!expertsDir) throw new Error('Crewly package root not found');
+      logger.debug('Reading experts directory', { expertsDir });
       entries = await fs.readdir(expertsDir);
-    } catch {
-      // Directory missing is not an error — just means no experts configured
+    } catch (err) {
+      // A missing or unreadable experts directory means no experts are
+      // configured. It is not a server error, so it must never become a 500.
+      logger.warn('Experts directory unavailable; returning no experts', {
+        expertsDir,
+        error: String(err),
+      });
       res.json({ success: true, data: [] });
       return;
     }
