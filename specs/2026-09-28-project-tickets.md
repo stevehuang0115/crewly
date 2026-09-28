@@ -54,8 +54,12 @@ Free text. Humans edit freely.
 
 Rules:
 - **Owned fields.** The service only rewrites the frontmatter keys above (via the `yaml` Document
-  API, so unknown keys and comments survive) and only *appends* lines to the `## Log` section.
-  Everything else is preserved byte-for-byte. If `## Log` is missing it is appended at the end.
+  API, so unknown keys, key order and comments survive; when an owned key changes the YAML
+  printer may normalise spacing inside the frontmatter, e.g. before a trailing comment) and only
+  *appends* lines to the `## Log` section. The body outside the Log is preserved byte-for-byte
+  (the Description / Acceptance sections are replaced only on an explicit update of them). If
+  `## Log` is missing it is appended at the end. The file is never renamed, even when the title
+  changes.
 - **Tolerant reads.** A file that is not `<something>.md`, has no frontmatter, invalid YAML, or
   invalid `id/title/status/priority` is skipped with a warning and reported in `invalid[]` of the
   list response. Nothing crashes.
@@ -193,7 +197,8 @@ prefix).
 ## 7. Skills
 
 - `config/skills/agent/core/project-tickets` (all roles incl. team-leader and orchestrator):
-  `list | show | create | update | claim | release | log`.
+  `list | show | create | update | claim | release | assign | log` (`assign` is refused by the
+  backend unless the caller is the owner, the orchestrator or a lead of a project team).
 - `config/skills/team-leader/assign-ticket` (`tl-assign-ticket`): assign a ticket to a member.
 - Owner → backlog: the orchestrator/TL uses `project-tickets create --project … --source request:TKT-…`
   when the owner asks to "put this in the backlog". No heuristics or classifiers.
@@ -206,8 +211,9 @@ prefix).
 - Scans `.crewly/tasks/**/{open,in_progress}/*.md`; `done/` (and `blocked/`) are not imported.
 - Each file → a `backlog` ticket: title from frontmatter `title` / first `# ` heading / file name;
   priority from frontmatter or `**Priority:**` (critical→P0, high→P1, medium→P2, low→P3, P0–P3 kept);
-  labels from frontmatter `labels` + `milestone:<name>`; the original body (minus its frontmatter)
-  becomes the Description; `## Acceptance Criteria` bullets become checkboxes;
+  labels from frontmatter `labels` + `milestone:<name>`; the original body (minus its frontmatter,
+  headings pushed two levels down so it cannot open sections of its own) becomes the Description;
+  `## Acceptance Criteria` bullets become checkboxes; `createdAt` is the original file's birth time;
   `migratedFrom: .crewly/tasks/<…>.md`, `source: v1-migration`.
 - Originals are never modified or moved.
 - Idempotent: a file whose `migratedFrom` already exists in the tickets folder is skipped.
@@ -224,8 +230,12 @@ prefix).
 | checklist endpoints (`.crewly/tasks/checklist-<id>.json`) | kept — separate quality-gate concern, still used by design-checklist / verify-output |
 | `project-search` over `.crewly/tasks` | switched to project tickets |
 | ProjectDetail Tasks tab (milestone board, Create task / Create milestone, `/api/tasks/create-from-config`, `/api/build-tasks/*`) | replaced by the project-tickets board; dead calls removed |
-| MCP `crewly_assign_task` (fabricated an id) | now creates a real WorkItem through the task pool |
-| prompts / SKILL.md pointing at `.crewly/tasks` | rewritten to the project-tickets guidance |
+| MCP `crewly_assign_task` (fabricated an id) | now creates a real WorkItem via the running backend (`POST /api/task-pool/add`) |
+| prompts / SKILL.md pointing at `.crewly/tasks` (orc role, TL prompt + addon, orc project-start / check-in / assign templates, project-reference module, report-status, complete-task, delegate-task, decompose-goal, verify-output, aggregate-results, developer SOP) | rewritten to the project-tickets guidance |
+| `config/task_starters` build-tasks + e2e-test-plan starters (wrote `.crewly/tasks` milestone folders) | deleted; the removed ProjectDetail buttons were their only caller. `build_spec` kept |
+| new-project scaffolding (`.crewly/tasks/` + sample YAML task), `crewly onboard` scaffolding | now `.crewly/tickets/`, no sample |
+| `TicketModel`, backend `Ticket` / `TicketFilter` types, frontend api.service ticket wrappers | deleted (only served the YAML store) |
+| still mentioning `.crewly/tasks`: historical code comments, `aggregate-results` (reads arbitrary md paths), `FileWatcherService` "tasks" category, `tests/integration/*` self-contained fake routes | left as is — not guidance, or out of scope |
 
 ## 10. Risks
 

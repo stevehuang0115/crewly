@@ -3,7 +3,6 @@ import * as path from 'path';
 import { existsSync, mkdirSync, watch, FSWatcher } from 'fs';
 import { promisify } from 'util';
 import { exec } from 'child_process';
-import { parse as parseYAML, stringify as stringifyYAML } from 'yaml';
 import { Team, TeamMember, Project, ScheduledCheck, ScheduledMessage, MessageDeliveryLog } from '../../types/index.js';
 import { TeamModel, ProjectModel, ScheduledMessageModel, MessageDeliveryLogModel } from '../../models/index.js';
 import { v4 as uuidv4 } from 'uuid';
