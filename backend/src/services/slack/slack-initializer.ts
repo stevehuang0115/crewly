@@ -28,6 +28,7 @@ import {
 } from './slack-source-preference.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { cloudTalkCapabilities } from '../cloud/cloud-talk-inbound.service.js';
+import { waitingActionCapabilities } from '../cloud/waiting-actions-inbound.service.js';
 import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
 import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import * as path from 'path';
@@ -614,7 +615,7 @@ export async function ensureSlackInstanceRegistry(): Promise<SlackInstanceRegist
       getTeamChannels: () => getSlackTeamChannelService(),
       getBoundWorkspaceId: () => getSlackCloudConfigService()?.getConfig()?.workspace.slackTeamId || null,
       isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
-      capabilities: () => cloudTalkCapabilities(),
+      capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities()],
     });
     setSlackInstanceRegistryService(registry);
   }

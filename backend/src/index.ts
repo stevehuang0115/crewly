@@ -303,6 +303,7 @@ export class CrewlyServer {
 	/** Tells the owner on Slack when this machine loses Crewly Cloud */
 	private cloudDisconnectNotice: CloudDisconnectNoticeService | null = null;
 	private conversationCloudSync: import('./services/cloud/conversation-cloud-sync.service.js').ConversationCloudSyncService | null = null;
+	private waitingItemsSync: import('./services/cloud/waiting-items-sync.service.js').WaitingItemsSyncService | null = null;
 	/** Epoch ms of the last shutdown signal acted on (dedups process-group delivery) */
 	private lastShutdownSignalAt = 0;
 	/** Interrupted turns loaded at boot, resumed once their agents are back */
@@ -2277,6 +2278,42 @@ void (async () => {
 							});
 						}
 
+						// "Waiting on you" (specs/unified-conversations-cloud-store.md §F):
+						// the owner's accept / send-back from the portal arrives as a
+						// `waiting_action` push; the handler fetches it with this
+						// machine's token and runs it through the ticket review.
+						// Starting it is what advertises `waiting_actions` to Cloud.
+						try {
+							const [
+								{ WaitingActionsInboundService },
+								{ CloudClientService },
+								{ getWaitingItemsSyncService },
+							] = await Promise.all([
+								import('./services/cloud/waiting-actions-inbound.service.js'),
+								import('./services/cloud/cloud-client.service.js'),
+								import('./services/cloud/waiting-items-sync.service.js'),
+							]);
+							const cloudClient = CloudClientService.getInstance();
+							new WaitingActionsInboundService({
+								source: sync,
+								cloud: {
+									getToken: () => cloudClient.getToken(),
+									getCloudUrl: () => cloudClient.getCloudUrl(),
+									tryRefreshToken: () => cloudClient.tryRefreshToken(),
+								},
+								review: () => getTicketReviewService(),
+								identity: async () => {
+									const id = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+									return { instanceId: id.deviceId, deviceName: id.deviceName };
+								},
+								requestResync: () => getWaitingItemsSyncService()?.requestSync(),
+							}).start();
+						} catch (waitingErr) {
+							this.logger.warn('"Waiting on you" action handler wiring skipped', {
+								error: waitingErr instanceof Error ? waitingErr.message : String(waitingErr),
+							});
+						}
+
 						// Mobile app: generic allowlisted REST passthrough over the same
 						// relay (api_request → local HTTP → api_response). Non-fatal.
 						try {
@@ -2981,6 +3018,10 @@ void (async () => {
 			// specs/unified-conversations-cloud-store.md §B). On by default for a
 			// signed-in machine; CREWLY_CONVERSATION_SYNC=0 turns it off.
 			void this.startConversationCloudSync();
+
+			// "Waiting on you" (§F): tickets in 待验收 go to Crewly Cloud as text
+			// snapshots, so the portal lists them for every machine.
+			void this.startWaitingItemsSync();
 
 			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
 			// The legacy `TaskTrackingService.startAutoSync()` is gone — V3
@@ -4221,12 +4262,14 @@ void (async () => {
 				{ VersionCheckService },
 				{ buildAgentRoster },
 				{ cloudTalkCapabilities },
+				{ waitingActionCapabilities },
 			] = await Promise.all([
 				import('./services/cloud/conversation-cloud-sync.service.js'),
 				import('./services/cloud/cloud-client.service.js'),
 				import('./services/system/version-check.service.js'),
 				import('./services/cloud/agent-roster.utils.js'),
 				import('./services/cloud/cloud-talk-inbound.service.js'),
+				import('./services/cloud/waiting-actions-inbound.service.js'),
 			]);
 			const chat = getChatV2Service();
 			const cloud = CloudClientService.getInstance();
@@ -4247,7 +4290,7 @@ void (async () => {
 				// whether this machine takes `talk_message` — also for machines
 				// without Slack, which never send the registry heartbeat.
 				roster: async () => buildAgentRoster(await this.storageService.getTeams()),
-				capabilities: () => cloudTalkCapabilities(),
+				capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities()],
 				onNewMessage: (listener) => {
 					chat.on('chat_message', listener);
 					return () => chat.off('chat_message', listener);
@@ -4276,6 +4319,73 @@ void (async () => {
 		}
 	}
 
+
+	/**
+	 * Start the "waiting on you" uploader: tickets in 待验收 go to Crewly Cloud
+	 * as text snapshots when they change (and every 5 minutes), so the portal
+	 * lists what waits on the owner across machines. Never throws.
+	 */
+	private async startWaitingItemsSync(): Promise<void> {
+		try {
+			const [
+				{ WaitingItemsSyncService, setWaitingItemsSyncService },
+				{ CloudClientService },
+				{ VersionCheckService },
+				{ buildAgentRoster },
+				{ cloudTalkCapabilities },
+				{ waitingActionCapabilities },
+				{ getTicketIntakeService },
+			] = await Promise.all([
+				import('./services/cloud/waiting-items-sync.service.js'),
+				import('./services/cloud/cloud-client.service.js'),
+				import('./services/system/version-check.service.js'),
+				import('./services/cloud/agent-roster.utils.js'),
+				import('./services/cloud/cloud-talk-inbound.service.js'),
+				import('./services/cloud/waiting-actions-inbound.service.js'),
+				import('./services/v3/ticket-intake.service.js'),
+			]);
+			const cloud = CloudClientService.getInstance();
+			const service = new WaitingItemsSyncService({
+				listWaiting: async () => {
+					const intake = getTicketIntakeService();
+					// Never upload an empty set just because tickets are not wired yet.
+					if (!intake) throw new Error('ticket service is not ready');
+					// Only tickets that can be in 待验收 need their WorkItems looked up
+					// (this runs every 30 s; done / cancelled / no-review tickets never are).
+					const candidates = (await RequestService.getInstance().listAll()).filter(
+						(r) => typeof r.ticketNumber === 'number' && r.requiresConfirmation && r.status !== 'done' && r.status !== 'cancelled',
+					);
+					const rows = await Promise.all(candidates.map((r) => intake.toListItem(r)));
+					return rows.filter((row) => row.column === 'to_review');
+				},
+				cloud: {
+					getToken: () => cloud.getToken(),
+					getCloudUrl: () => cloud.getCloudUrl(),
+					tryRefreshToken: () => cloud.tryRefreshToken(),
+				},
+				identity: async () => {
+					const id = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+					return { instanceId: id.deviceId, deviceName: id.deviceName };
+				},
+				crewlyVersion: async () => VersionCheckService.getInstance().getLocalVersion(),
+				agentNames: async () =>
+					new Map(
+						buildAgentRoster(await this.storageService.getTeams())
+							.filter((a) => a.displayName)
+							.map((a) => [a.agentSession, a.displayName as string]),
+					),
+				capabilities: () => [...cloudTalkCapabilities(), ...waitingActionCapabilities()],
+				onTicketChange: (listener) => RequestService.getInstance().onChange(() => listener()),
+			});
+			setWaitingItemsSyncService(service);
+			service.start();
+			this.waitingItemsSync = service;
+		} catch (error) {
+			this.logger.warn('"Waiting on you" sync not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 	/**
 	 * Load interrupted turns left by the previous shutdown (fresh ones only).
 	 */
@@ -4721,6 +4831,7 @@ void (async () => {
 		AutoUpdateService.getInstance()?.stop();
 		this.cloudDisconnectNotice?.stop();
 		this.conversationCloudSync?.stop();
+		this.waitingItemsSync?.stop();
 
 		// Safe restart: stop delivering, wait for agents mid-turn, persist the rest.
 		// Runs before the force-exit timer below, which only bounds the teardown.

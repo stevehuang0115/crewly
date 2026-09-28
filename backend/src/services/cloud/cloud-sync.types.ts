@@ -172,7 +172,11 @@ export type MessageType =
   // Cloud Talk (Phase 3): Cloud pushes one owner message from the portal's
   // Talk page. `data` is `{v, messageId, clientMessageId, instanceId,
   // agentSession}` — no text; CloudTalkInboundService fetches it from Cloud.
-  | 'talk_message';
+  | 'talk_message'
+  // "Waiting on you" (Phase 5): the owner accepted / sent back a ticket from
+  // the portal. `data` is `{v, actionId, itemId, instanceId, ticketId}` — no
+  // text; WaitingActionsInboundService fetches the action from Cloud.
+  | 'waiting_action';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -192,6 +196,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'chat_event',
   'slack_event',
   'talk_message',
+  'waiting_action',
 ] as const;
 
 /**

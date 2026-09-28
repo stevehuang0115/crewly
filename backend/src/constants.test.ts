@@ -28,6 +28,7 @@ import {
   CRON_SCHEDULE_CONSTANTS,
   WHATSAPP_CONSTANTS,
   WORKTREE_JANITOR_CONSTANTS,
+  WAITING_SYNC_CONSTANTS,
 } from './constants.js';
 
 describe('WORKTREE_JANITOR_CONSTANTS', () => {
@@ -471,3 +472,17 @@ describe('conversation log / sync constants', () => {
 	});
 });
 
+describe('WAITING_SYNC_CONSTANTS ("waiting on you" on Crewly Cloud)', () => {
+	it('match the Cloud routes, relay type and capability', () => {
+		expect(WAITING_SYNC_CONSTANTS.INGEST_PATH).toBe('/api/cloud/conversations/waiting/ingest');
+		expect(WAITING_SYNC_CONSTANTS.ACTIONS_PATH).toBe('/api/cloud/conversations/waiting/actions');
+		expect(WAITING_SYNC_CONSTANTS.RELAY_MESSAGE_TYPE).toBe('waiting_action');
+		expect(WAITING_SYNC_CONSTANTS.CAPABILITY).toBe('waiting_actions');
+	});
+
+	it('debounce changes, check often and resync fully every 5 minutes', () => {
+		expect(WAITING_SYNC_CONSTANTS.DEBOUNCE_MS).toBe(2_000);
+		expect(WAITING_SYNC_CONSTANTS.CHECK_INTERVAL_MS).toBeLessThan(WAITING_SYNC_CONSTANTS.FULL_SYNC_INTERVAL_MS);
+		expect(WAITING_SYNC_CONSTANTS.FULL_SYNC_INTERVAL_MS).toBe(5 * 60 * 1000);
+	});
+});

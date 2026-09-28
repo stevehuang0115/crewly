@@ -162,6 +162,13 @@ export class RequestService {
   private taskPoolService: IWorkItemQueryable | null = null;
 
   /**
+   * Told after every write of a Request file (create, update, archive,
+   * delete) — e.g. the "waiting on you" uploader, which re-reads 待验收 when
+   * a ticket changes. Listener errors are swallowed.
+   */
+  private readonly changeListeners = new Set<(id: string) => void>();
+
+  /**
    * Creates a new RequestService.
    *
    * @param projectPath - Absolute path to the project root
@@ -218,6 +225,34 @@ export class RequestService {
     return this.requestsDir;
   }
 
+  /**
+   * Subscribe to Request writes (create, update, archive, delete).
+   *
+   * @param listener - Called with the Request id after the write landed
+   * @returns Unsubscribe function
+   */
+  public onChange(listener: (id: string) => void): () => void {
+    this.changeListeners.add(listener);
+    return () => {
+      this.changeListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Tell the change listeners; one failing listener never breaks a write.
+   *
+   * @param id - Request id that changed
+   */
+  private emitChange(id: string): void {
+    for (const listener of this.changeListeners) {
+      try {
+        listener(id);
+      } catch (error) {
+        this.logger.debug('Request change listener failed', { id, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // File helpers
   // ---------------------------------------------------------------------------
@@ -252,6 +287,7 @@ export class RequestService {
   private async save(request: Request): Promise<void> {
     await ensureDir(this.requestsDir);
     await atomicWriteJson(this.getFilePath(request.id), request);
+    this.emitChange(request.id);
   }
 
   // ---------------------------------------------------------------------------
@@ -571,6 +607,7 @@ export class RequestService {
       await ensureDir(dir);
       await fs.rename(from, path.join(dir, path.basename(from)));
       this.logger.debug('Request archived', { id });
+      this.emitChange(id);
       return true;
     } catch {
       return false;
@@ -582,6 +619,7 @@ export class RequestService {
     try {
       await fs.unlink(filePath);
       this.logger.debug('Request deleted', { id });
+      this.emitChange(id);
     } catch {
       // File may not exist — ignore
     }
