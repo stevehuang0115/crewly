@@ -982,11 +982,14 @@ describe('AgentRegistrationService', () => {
 				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', expect.anything());
 			});
 
-			it('falls back to the Crewly settings Gemini key when none was saved for Antigravity', async () => {
+			it('falls back to the Crewly settings Gemini key when none was saved for Antigravity — in the spawn env, never typed', async () => {
+				// #806: settings keys (this fallback included) go only into the
+				// PTY's spawn environment (buildApiKeyEnv), same as every other
+				// runtime's keys — never typed via setEnvironmentVariable.
 				await bootAgy();
 				const spawnEnv = mockSessionHelper.createSession.mock.calls[0][2].env;
-				expect(spawnEnv.GEMINI_API_KEY).toBeUndefined();
-				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', 'settings-gemini-key');
+				expect(spawnEnv.GEMINI_API_KEY).toBe('settings-gemini-key');
+				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith('agy-session', 'GEMINI_API_KEY', expect.anything());
 			});
 
 			it('keeps the saved Antigravity key out of other runtimes\' spawn env', () => {
