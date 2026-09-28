@@ -354,6 +354,24 @@ describe('intake — review replies (Phase 2)', () => {
     expect((await store.getById(t!.id))?.status).toBe('running');
   });
 
+  it('an ack routes to the ticket awaiting approval, not a newer sibling ticket in the same thread (#831)', async () => {
+    const review = fakeReview();
+    svc.setReviewHandler(review);
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation' });
+    // A new ask said in the same thread opens its own, newer, non-terminal
+    // ticket (#827) — the thread now holds two open tickets.
+    const child = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '另外 可以帮我调研一下定价怎么定吗' }));
+    expect(child.action).toBe('created_in_thread');
+    // The owner's ack answers the original ask, not the newer sibling. #831:
+    // findThreadTicket picked whichever ticket was newest, so this ack was
+    // silently appended to the child instead of verifying `t` — `t` then
+    // only closed by timeout as "默认通过 · 未验收".
+    const outcome = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '好的' }));
+    expect(outcome.action).toBe('verified');
+    expect(review.calls).toEqual([`verify:${t!.id}`]);
+  });
+
   it('a top-level 验过了 (DMs) accepts the newest 待验收 ticket of the conversation', async () => {
     const review = fakeReview();
     svc.setReviewHandler(review);
@@ -662,8 +680,15 @@ describe('intake — new asks in a ticket thread (#827)', () => {
     expect(o.action).toBe('created_in_thread');
     expect(reopened).toEqual([]);
     expect((await store.getById(must(t).id))?.status).toBe('waiting_confirmation');
-    // A plain follow-up still reopens it.
-    await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '还有这个图片需要换一下，颜色不对' }));
+    // A plain follow-up still reopens it (#831): a waiting_confirmation
+    // ticket keeps routing priority over the newer sibling ticket the
+    // previous message just split off, so an ordinary follow-up lands back
+    // on the ticket the owner still owes an answer on, not on the newest
+    // ticket in the thread.
+    const followUp = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '还有这个图片需要换一下，颜色不对' }));
+    expect(followUp.action).toBe('appended');
+    if (followUp.action === 'appended') expect(followUp.ticket.id).toBe(must(t).id);
+    expect(reopened).toEqual([must(t).id]);
   });
 
   it('a new ticket in a finished thread records the finished one as its parent', async () => {

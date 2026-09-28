@@ -421,10 +421,26 @@ that fired.
 - *In a thread with an open ticket:* a new ask or question → `created_in_thread`. The
   new ticket keeps the same `origin.threadRef`, gets `parentTicketId` = the thread's
   ticket, and an assignee: the agent addressed, else the thread ticket's assignee.
-  Everything else is appended. Follow-ups append to the thread's newest open ticket.
+  Everything else is appended. Follow-ups append to the thread's newest open ticket
+  — **unless** the thread also holds a `waiting_confirmation` ticket, in which case
+  that ticket keeps routing priority (#831, see below).
 - *Under a 待验收 ticket:* 验过了 / 打回 / an ack are handled first, as before. A new ask
   opens its own ticket and does **not** reopen the answered one; any other follow-up
   reopens it, as before.
+- *A thread with two open tickets (#831):* once a new ask has split off its own
+  ticket under a `waiting_confirmation` one (previous bullet), the thread holds two
+  open `Request`s. `findThreadTicket` used to pick whichever was newest, so every
+  reply after the split — a 验过了/打回, a bare 好的, or an ordinary follow-up — landed
+  on the new (newer) ticket instead of the one actually awaiting the owner's answer;
+  the `waiting_confirmation` ticket then only ever closed by silence-timeout as
+  "默认通过 · 未验收" (Phase 2, silence rule below), never by an owner reply that in
+  fact arrived. Fixed: `findThreadTicket` now prefers a `waiting_confirmation` ticket
+  in the thread over any other open ticket, regardless of which is newer. This is
+  deliberate for plain follow-ups too, not only review replies: a thread with an
+  open ticket the owner still owes an answer on has one live conversation, and a
+  message that is not itself a new, distinct ask is presumed to continue it. When no
+  ticket in the thread is `waiting_confirmation`, behaviour is unchanged (newest open
+  ticket wins).
 - *At the top level:* an `L0` / `query` message the classifier calls an ask or
   question is created (stored as `L1`). A status ping with no ask signal is ignored
   even when `classifyIntent` calls it actionable.

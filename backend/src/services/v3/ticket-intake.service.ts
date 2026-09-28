@@ -660,11 +660,31 @@ export class TicketIntakeService {
   }
 
   /**
-   * The ticket already living in this message's thread, if any (open or not).
+   * The ticket a message in this thread should be routed to, if any.
+   *
+   * #827 lets a thread hold more than one open ticket at once (a new ask
+   * said under an existing ticket gets its own, linked, ticket). #831: when
+   * that happens, a `waiting_confirmation` ticket — one the owner still owes
+   * an answer on — must keep priority over a newer sibling ticket, or every
+   * reply in the thread (a review verdict, an ack, or an ordinary follow-up)
+   * lands on whichever ticket is newest instead of the one actually awaiting
+   * approval. Left unfixed, the awaiting ticket never hears back and only
+   * times out as "默认通过 · 未验收" (see `escalation-router.service.ts`) —
+   * exactly the outcome #819's verification gate exists to prevent.
+   *
+   * Deliberate choice: this applies to EVERY message routed through a
+   * thread, including a plain follow-up with no review/ack wording — not
+   * only review replies. A thread with an open ticket the owner still owes
+   * an answer on has one live conversation; a message that isn't itself a
+   * new, distinct ask (see {@link classifyOwnerMessage}) is presumed to be
+   * about that conversation, not about a because-it's-newer sibling ticket.
+   * When nothing in the thread is `waiting_confirmation`, behaviour is
+   * unchanged: prefer any open ticket, newest first (`listAll` is
+   * newest-first), falling back to the newest ticket overall.
    *
    * @param all - Every Request
    * @param message - The message
-   * @returns The newest ticket in the thread, or null
+   * @returns The ticket to route to, or null when the thread has none
    */
   private findThreadTicket(all: readonly Request[], message: IntakeMessage): Request | null {
     const threadRef = message.origin.threadRef;
@@ -675,8 +695,11 @@ export class TicketIntakeService {
         (legacy && r.sourceConversationItemId === legacy),
     );
     if (matches.length === 0) return null;
-    // Prefer an open ticket; otherwise the newest (listAll is newest-first).
-    return matches.find((r) => !TERMINAL_REQUEST_STATUSES.has(r.status)) ?? matches[0];
+    return (
+      matches.find((r) => r.status === 'waiting_confirmation') ??
+      matches.find((r) => !TERMINAL_REQUEST_STATUSES.has(r.status)) ??
+      matches[0]
+    );
   }
 
   /**
