@@ -316,10 +316,17 @@ export function createApiRoutes(apiController: ApiController): Router {
   router.post('/escalations/:id/resolve', async (req, res) => {
     try {
       const { EscalationRouterService } = await import('../services/v3/escalation-router.service.js');
-      const { resolution, resolvedBy } = req.body;
+      const { resolution, resolvedBy, verdict } = req.body;
       if (!resolution) { res.status(400).json({ success: false, error: 'resolution is required' }); return; }
+      // #819: only meaningful for a `tl_verification` escalation (an
+      // unreviewed WorkItem escalated to the owner) — resolve() ignores it
+      // for other escalation sources. Optional; defaults to 'verified'.
+      if (verdict !== undefined && verdict !== 'verified' && verdict !== 'rejected') {
+        res.status(400).json({ success: false, error: "verdict must be 'verified' or 'rejected' when provided" });
+        return;
+      }
       const result = await EscalationRouterService.getInstance().resolve(
-        req.params.id, resolution, resolvedBy || 'user',
+        req.params.id, resolution, resolvedBy || 'user', verdict,
       );
       if (!result) { res.status(404).json({ success: false, error: 'Escalation not found' }); return; }
       res.json({ success: true, data: result });

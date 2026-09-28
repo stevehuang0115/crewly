@@ -40,10 +40,12 @@ jest.mock('../core/logger.service.js', () => ({
 }));
 
 const mockUpdateItemStatus = jest.fn().mockResolvedValue(undefined);
+const mockVerifyItem = jest.fn().mockResolvedValue({ id: 'wi-verified', status: 'verified' });
 jest.mock('../task-pool/task-pool.service.js', () => ({
   TaskPoolService: {
     getInstance: () => ({
       updateItemStatus: mockUpdateItemStatus,
+      verifyItem: mockVerifyItem,
     }),
   },
 }));
@@ -195,6 +197,83 @@ describe('EscalationRouterService', () => {
       const service = EscalationRouterService.getInstance('/tmp/test');
       const result = await service.resolve('nonexistent', 'test', 'user');
       expect(result).toBeNull();
+    });
+  });
+
+  // ─────────────────────────────────────────────────────────────────────
+  // #819: resolving a tl_verification escalation used to call resumeWorkItem
+  // (done_by_worker → queued), an illegal transition swallowed by
+  // resumeWorkItem's try/catch — the escalation was stamped resolved while
+  // the underlying WorkItem stayed stuck unverified forever. It must instead
+  // render the verdict directly, as the owner.
+  // ─────────────────────────────────────────────────────────────────────
+  describe('resolve — tl_verification escalations (#819)', () => {
+    const wi = {
+      id: 'wi-unreviewed-2',
+      title: 'Ship the thing',
+      type: 'delegate',
+      target: 'agent-dev',
+      retryCount: 0,
+      maxRetries: 3,
+      requestId: 'req-10',
+    } as Parameters<EscalationRouterService['escalateUnreviewedToOwner']>[0];
+
+    it('renders an owner verdict instead of resuming to queued (the illegal transition)', async () => {
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.escalateUnreviewedToOwner(wi, 30 * 3_600_000);
+      expect(id).not.toBeNull();
+
+      const resolved = await service.resolve(id!, 'Looks good, approved', 'steve');
+      expect(resolved).not.toBeNull();
+      expect(resolved!.status).toBe('resolved');
+
+      expect(mockUpdateItemStatus).not.toHaveBeenCalledWith('wi-unreviewed-2', 'queued', expect.anything());
+      expect(mockVerifyItem).toHaveBeenCalledWith(
+        'wi-unreviewed-2',
+        expect.objectContaining({ role: 'owner' }),
+        'verified',
+        'Looks good, approved',
+      );
+    });
+
+    it('renders a rejected verdict when the owner explicitly rejects', async () => {
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.escalateUnreviewedToOwner(wi, 30 * 3_600_000);
+      await service.resolve(id!, 'Not done, missing the auth check', 'steve', 'rejected');
+      expect(mockVerifyItem).toHaveBeenCalledWith(
+        'wi-unreviewed-2',
+        expect.objectContaining({ role: 'owner' }),
+        'rejected',
+        'Not done, missing the auth check',
+      );
+    });
+
+    it('is best-effort: the escalation still resolves when the verdict render throws', async () => {
+      mockVerifyItem.mockRejectedValueOnce(new Error('WorkItem not found'));
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.escalateUnreviewedToOwner(wi, 30 * 3_600_000);
+      await expect(service.resolve(id!, 'Approved', 'steve')).resolves.not.toBeNull();
+    });
+
+    it('leaves alignment_request resolution on the resume-to-queued path (unchanged)', async () => {
+      const service = EscalationRouterService.getInstance('/tmp/test');
+      const id = await service.routeAlignmentRequest(
+        {
+          currentTask: 'Task',
+          discoveredIssue: 'Issue',
+          reason: 'high_risk',
+          whyCannotExecute: 'Risky',
+          options: [],
+          recommendation: 'Stop',
+          decisionNeeded: 'Continue?',
+          target: 'human',
+        },
+        'wi-alignment-1',
+        'worker',
+      );
+      await service.resolve(id!, 'Approved, proceed', 'steve');
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-alignment-1', 'queued', expect.objectContaining({ role: 'system' }));
+      expect(mockVerifyItem).not.toHaveBeenCalled();
     });
   });
 
@@ -498,6 +577,22 @@ describe('EscalationRouterService', () => {
       3 * 3_600_000,
     );
     expect(mockEnqueue.mock.calls[0][0].content).toContain('POST /api/task-pool/items/wi-x/verdict');
+  });
+
+  // #819: a raw curl to /verdict carries no X-Agent-Session, so the backend
+  // cannot identify the orchestrator and refuses with 403 not_reviewer. The
+  // message must point at the render-verdict skill (which sends the header
+  // via api_call), not just the bare endpoint.
+  it('the orchestrator verification message points at the render-verdict skill, not a raw curl (#819)', async () => {
+    const service = EscalationRouterService.getInstance('/tmp/test');
+    await service.escalateUnverifiedWorkItem(
+      { id: 'wi-y', title: 't', type: 'delegate', target: 'a', retryCount: 0, maxRetries: 3 } as Parameters<EscalationRouterService['escalateUnverifiedWorkItem']>[0],
+      3 * 3_600_000,
+    );
+    const content = mockEnqueue.mock.calls[0][0].content;
+    expect(content).toContain('config/skills/orchestrator/render-verdict/execute.sh');
+    expect(content).toContain('CREWLY_SESSION_NAME');
+    expect(content).toContain('wi-y');
   });
 
   describe('requestFinalDeliverableReview (final deliverable judgment — P2b)', () => {
