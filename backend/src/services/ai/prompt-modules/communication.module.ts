@@ -1,5 +1,13 @@
 import * as path from 'path';
 import { PromptModule, ModuleConfig, loadRoleFragment } from './prompt-module.interface.js';
+import { SLACK_THREAD_KEY_CONSTANTS } from '../../../constants.js';
+
+/**
+ * The one-thread-per-answer rule every role gets (2026-09-28: an agent
+ * answered an earlier thread's request inside the newest thread, bundled with
+ * the newest question's answer).
+ */
+export const SLACK_THREAD_RULE_SECTION = `### Slack Threads\n${SLACK_THREAD_KEY_CONSTANTS.PROMPT_RULE}`;
 
 /**
  * Communication module — defines how agents communicate across channels.
@@ -35,6 +43,16 @@ export class CommunicationModule implements PromptModule {
 	 * @returns Formatted markdown communication section
 	 */
 	async build(config: ModuleConfig): Promise<string> {
+		return `${await this.buildRoleSection(config)}\n\n${SLACK_THREAD_RULE_SECTION}`;
+	}
+
+	/**
+	 * The role-specific part of the section.
+	 *
+	 * @param config - Module configuration with agent details
+	 * @returns Markdown for the agent's role
+	 */
+	private async buildRoleSection(config: ModuleConfig): Promise<string> {
 		const isOrchestrator = config.role === 'orchestrator';
 		const isTL = config.canDelegate === true;
 

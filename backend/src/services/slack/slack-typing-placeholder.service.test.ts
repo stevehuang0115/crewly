@@ -25,14 +25,14 @@ const key = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: undefined
 const ella = { botToken: 'xoxb-ella', displayName: 'Ella' };
 
 describe('SlackTypingPlaceholderService', () => {
-  it('posts the reply as a new message and removes the placeholder, so Slack notifies the owner', async () => {
+  it('REPLACE_BY_EDIT off (2026-09-23 mode): posts the reply as a new message and removes the placeholder', async () => {
     // An edit raises no unread mark, badge or push: once "working on it…"
     // placeholders were common, the owner could not tell a reply had come.
     const deleted: Array<{ channelId: string; ts: string; botToken?: string }> = [];
     const { slack, sent, updated } = makeSlack({
       deleteMessage: async (channelId, ts, botToken) => { deleted.push({ channelId, ts, botToken }); },
     });
-    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined, replaceByEdit: false });
     await svc.begin({ ...key, threadTs: '9.9' }, ella);
 
     expect(await svc.resolve({ ...key, threadTs: '9.9' }, '做好了', ella)).toBe('replaced');
@@ -46,7 +46,7 @@ describe('SlackTypingPlaceholderService', () => {
 
   it('keeps the reply when the placeholder cannot be removed', async () => {
     const { slack, sent } = makeSlack({ deleteMessage: async () => { throw new Error('message_not_found'); } });
-    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined, replaceByEdit: false });
     await svc.begin(key, ella);
     expect(await svc.resolve(key, 'reply', ella)).toBe('replaced');
     expect(sent.map((m) => m.text)).toContain('reply');
@@ -165,7 +165,7 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     const deleted: string[] = [];
     const { slack, sent, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
     let fire: () => void = () => undefined;
-    const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { fire = fn; return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { fire = fn; return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined, replaceByEdit: false });
     const threaded = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '100.1' };
     await svc.begin(threaded, ella);
     fire();
@@ -185,6 +185,26 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     expect(svc.findOwed('mk-ella', 'D1')).toEqual({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '5.0' });
     expect(svc.findOwed('mk-ella', 'D2')).toBeNull();
     expect(svc.findOwed('mk-ellab', 'D1')).toBeNull();
+  });
+
+  it('findOwed returns the OLDEST owed thread, not the newest (2026-09-28)', async () => {
+    // Answers come in the order the questions were asked; newest-first put
+    // the answer owed in an earlier thread under the latest question.
+    const { slack } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined });
+    const realNow = Date.now;
+    let t = 1_000_000;
+    Date.now = () => t;
+    try {
+      await svc.begin({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'A' }, ella);
+      t += 60_000;
+      await svc.begin({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'B' }, ella);
+    } finally {
+      Date.now = realNow;
+    }
+    expect(svc.findOwed('mk-ella', 'D1')).toEqual({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'A' });
+    await svc.resolve({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'A' }, 'EFT done', ella);
+    expect(svc.findOwed('mk-ella', 'D1')).toEqual({ agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: 'B' });
   });
 
   it('settleTurnWithoutReply takes down pending and timed-out placeholders the agent never answered (2026-09-25)', async () => {
@@ -250,6 +270,7 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
         storePath,
         setTimer: (fn) => { orphanTimers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; },
         clearTimer: () => undefined,
+        replaceByEdit: false,
       });
       expect(after.findOwed('mk-ella', 'D1')).not.toBeNull();
       expect(await after.resolve(key, 'answer after restart', ella)).toBe('replaced');
@@ -262,5 +283,252 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  // 2026-09-28: "Ella is working on it…" stayed under a thread whose two
+  // back-to-back messages Ella had answered in one new message.
+  describe('no placeholder is left behind in an answered thread (edit mode, REPLACE_BY_EDIT on)', () => {
+    const T = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '100.1' };
+    const noTimer = { setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined };
+
+    it('the answer REPLACES the thread\'s placeholder in place (chat.update), no second message', async () => {
+      const deleted: string[] = [];
+      const { slack, sent, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, ...noTimer, replaceByEdit: true });
+      await svc.begin(T, ella);
+      expect(await svc.resolve(T, '收到，按 $145 来…', ella)).toBe('edited');
+      expect(updated).toEqual([{ channelId: 'D1', ts: 'ts-1', text: '收到，按 $145 来…', botToken: 'xoxb-ella' }]);
+      expect(sent).toHaveLength(1); // only the placeholder itself was ever posted
+      expect(deleted).toEqual([]);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('one answer covering several placeholders in the thread: oldest edited into it, the rest deleted', async () => {
+      const deleted: string[] = [];
+      const timers: Array<() => void> = [];
+      const { slack, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined, replaceByEdit: true });
+      await svc.begin(T, ella); // ts-1 for "按 $145 来…"
+      timers[0](); // times out → "still working"
+      await new Promise((r) => setImmediate(r));
+      await svc.begin(T, ella); // ts-2 for "那 Iris 如果加到 HSA…"
+      expect(await svc.resolve(T, '① Iris 挂了 Kearney… ② $145…', ella)).toBe('edited');
+      expect(updated.at(-1)).toMatchObject({ ts: 'ts-1', text: '① Iris 挂了 Kearney… ② $145…' });
+      expect(deleted).toEqual(['ts-2']);
+      expect(svc.owes(T)).toBe(false);
+      expect(svc.findOwed('mk-ella', 'D1')).toBeNull();
+    });
+
+    it('an answer arriving while the placeholder is still being posted replaces it instead of leaving it', async () => {
+      let release: (ts: string) => void = () => undefined;
+      const updated: string[] = [];
+      const svc = new SlackTypingPlaceholderService({
+        slack: {
+          isConnected: () => true,
+          sendMessage: () => new Promise<string>((r) => { release = r; }),
+          updateMessage: async (_c, ts, text) => { updated.push(`${ts}:${text}`); },
+          deleteMessage: async () => undefined,
+        },
+        ...noTimer,
+        replaceByEdit: true,
+      });
+      const begun = svc.begin(T, ella);
+      const answered = svc.resolve(T, 'answer', ella);
+      for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r)); // let the post start
+      release('ts-slow');
+      await begun;
+      expect(await answered).toBe('edited');
+      expect(updated).toEqual(['ts-slow:answer']);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('an interim note racing the final answer: the re-opened placeholder is replaced by the answer, not left under it', async () => {
+      const deleted: string[] = [];
+      const { slack, sent, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, ...noTimer, replaceByEdit: true });
+      await svc.begin(T, ella); // ts-1
+      const interim = svc.resolve(T, '收到，计划：…', ella, { reopen: 'typing' });
+      const final = svc.resolve(T, '做好了', ella);
+      await Promise.all([interim, final]);
+      // ts-1 became the interim note; ts-2 (re-opened placeholder) became the answer.
+      expect(updated).toEqual([
+        { channelId: 'D1', ts: 'ts-1', text: '收到，计划：…', botToken: 'xoxb-ella' },
+        { channelId: 'D1', ts: 'ts-2', text: '做好了', botToken: 'xoxb-ella' },
+      ]);
+      expect(sent.map((m) => m.text)).toEqual(['⚙️ Ella is working on it…', '⚙️ Ella is working on it…']);
+      expect(svc.pendingCount).toBe(0);
+    });
+
+    it('a placeholder too young to settle at turn end gets a second look and is removed unless the agent is mid-turn', async () => {
+      const deleted: string[] = [];
+      const timers: Array<{ fn: () => void; ms: number }> = [];
+      let midTurn = true;
+      const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({
+        slack,
+        setTimer: (fn, ms) => { timers.push({ fn, ms }); return 0 as unknown as ReturnType<typeof setTimeout>; },
+        clearTimer: () => undefined,
+        isAgentMidTurn: () => midTurn,
+      });
+      await svc.begin(T, ella); // timers[0] = timeout
+      const t0 = Date.now();
+      expect(await svc.settleTurnWithoutReply('mk-ella', t0 + 1_000)).toBe(0); // too young
+      const recheck = timers.at(-1)!;
+      expect(recheck.ms).toBeGreaterThan(0);
+      // Only one second look is scheduled per agent.
+      await svc.settleTurnWithoutReply('mk-ella', t0 + 2_000);
+      expect(timers.filter((t) => t !== timers[0])).toHaveLength(1);
+
+      // Agent busy with a new turn at the second look: kept (that turn's end settles it).
+      recheck.fn();
+      await new Promise((r) => setImmediate(r));
+      expect(deleted).toEqual([]);
+
+      // Next turn end, agent resting at the second look: removed.
+      midTurn = false;
+      await svc.settleTurnWithoutReply('mk-ella', t0 + 3_000);
+      expect(timers.at(-1)).not.toBe(recheck);
+      timers.at(-1)!.fn();
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      expect(deleted).toEqual(['ts-1']);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('dropThread: an answer given another way (a file) takes every placeholder in that thread down', async () => {
+      const deleted: string[] = [];
+      const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+      await svc.begin(T, ella);
+      await svc.begin({ ...T, threadTs: 'other' }, ella);
+      expect(await svc.dropThread(T)).toBe(1);
+      expect(deleted).toEqual(['ts-1']);
+      expect(svc.owes(T)).toBe(false);
+      expect(svc.owes({ ...T, threadTs: 'other' })).toBe(true);
+      expect(await svc.dropThread(T)).toBe(0);
+    });
+  });
+
+  // Default mode (REPLACE_BY_EDIT off, 2026-09-28 decision): the answer is a
+  // NEW message — Slack notifies on new messages, not on edits — and every
+  // placeholder in that thread is deleted after it.
+  describe('no placeholder is left behind in an answered thread (default: new message + delete)', () => {
+    const T = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '100.1' };
+    const noTimer = { setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined };
+
+    it('defaults to posting the answer as a new message', async () => {
+      const deleted: string[] = [];
+      const { slack, sent, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+      await svc.begin(T, ella);
+      expect(await svc.resolve(T, '收到，按 $145 来…', ella)).toBe('replaced');
+      expect(sent.map((m) => m.text)).toEqual(['⚙️ Ella is working on it…', '收到，按 $145 来…']);
+      expect(sent[1]).toMatchObject({ threadTs: '100.1', botToken: 'xoxb-ella' });
+      expect(updated).toEqual([]);
+      expect(deleted).toEqual(['ts-1']);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('one answer covering several placeholders in the thread: posted once, ALL placeholders deleted', async () => {
+      const deleted: string[] = [];
+      const timers: Array<() => void> = [];
+      const { slack, sent } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined, replaceByEdit: false });
+      await svc.begin(T, ella); // ts-1 for "按 $145 来…"
+      timers[0](); // → "still working"
+      await new Promise((r) => setImmediate(r));
+      await svc.begin(T, ella); // ts-2 for "那 Iris 如果加到 HSA…"
+      expect(await svc.resolve(T, '① Iris 挂了 Kearney… ② $145…', ella)).toBe('replaced');
+      expect(sent.map((m) => m.text).filter((t) => t.startsWith('①'))).toHaveLength(1);
+      expect(deleted.sort()).toEqual(['ts-1', 'ts-2']);
+      expect(svc.owes(T)).toBe(false);
+      expect(svc.findOwed('mk-ella', 'D1')).toBeNull();
+    });
+
+    it('an answer arriving while the placeholder is still being posted: the placeholder is deleted once its post completes', async () => {
+      let release: (ts: string) => void = () => undefined;
+      const posted: string[] = [];
+      const deleted: string[] = [];
+      let n = 0;
+      const svc = new SlackTypingPlaceholderService({
+        slack: {
+          isConnected: () => true,
+          sendMessage: (m) => {
+            posted.push(m.text);
+            if (n++ === 0) return new Promise<string>((r) => { release = r; });
+            return Promise.resolve(`ts-${n}`);
+          },
+          updateMessage: async () => undefined,
+          deleteMessage: async (_c, ts) => { deleted.push(ts); },
+        },
+        ...noTimer,
+      });
+      const begun = svc.begin(T, ella);
+      const answered = svc.resolve(T, 'answer', ella);
+      for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+      expect(deleted).toEqual([]); // nothing to delete yet — the answer waits
+      release('ts-slow');
+      await begun;
+      expect(await answered).toBe('replaced');
+      expect(posted).toEqual(['⚙️ Ella is working on it…', 'answer']);
+      expect(deleted).toEqual(['ts-slow']);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('an interim note racing the final answer: the re-opened placeholder is deleted after the final answer', async () => {
+      const deleted: string[] = [];
+      const { slack, sent, updated } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+      await svc.begin(T, ella); // ts-1
+      const interim = svc.resolve(T, '收到，计划：…', ella, { reopen: 'typing' });
+      const final = svc.resolve(T, '做好了', ella);
+      await Promise.all([interim, final]);
+      // ts-1 placeholder, ts-2 interim note, ts-3 re-opened placeholder, ts-4 the answer.
+      expect(sent.map((m) => m.text)).toEqual(['⚙️ Ella is working on it…', '收到，计划：…', '⚙️ Ella is working on it…', '做好了']);
+      expect(deleted).toEqual(['ts-1', 'ts-3']);
+      expect(updated).toEqual([]);
+      expect(svc.pendingCount).toBe(0);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('upload path: dropThread deletes every placeholder in the thread (pending and timed out)', async () => {
+      const deleted: string[] = [];
+      const timers: Array<() => void> = [];
+      const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const svc = new SlackTypingPlaceholderService({ slack, setTimer: (fn) => { timers.push(fn); return 0 as unknown as ReturnType<typeof setTimeout>; }, clearTimer: () => undefined });
+      await svc.begin(T, ella); // ts-1
+      timers[0]();
+      await new Promise((r) => setImmediate(r));
+      await svc.begin(T, ella); // ts-2
+      expect(await svc.dropThread(T)).toBe(2);
+      expect(deleted.sort()).toEqual(['ts-1', 'ts-2']);
+      expect(svc.owes(T)).toBe(false);
+    });
+
+    it('slack-post path: a post naming the thread (via SlackAgentPostService → resolve) posts new and deletes the placeholder', async () => {
+      const { SlackAgentPostService } = await import('./slack-agent-post.service.js');
+      const deleted: string[] = [];
+      const { slack: typingSlack, sent: typingSent } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+      const typing = new SlackTypingPlaceholderService({ slack: typingSlack, ...noTimer });
+      const key = { agentSession: 'mk-ella', slackChannelId: 'C0GENERAL', threadTs: '1790000000.000100' };
+      await typing.begin(key, ella); // ts-1
+      const posted: Array<Record<string, unknown>> = [];
+      const svc = new SlackAgentPostService({
+        slack: {
+          isConnected: () => true,
+          sendMessage: async (m: Record<string, unknown>) => { posted.push(m); return '1.1'; },
+          listChannels: async () => [{ id: 'C0GENERAL', name: 'general' }],
+        } as never,
+        storage: { getTeams: async () => [] },
+        identities: null as never,
+        typing,
+      });
+      await svc.post({ agentSession: 'mk-ella', target: 'C0GENERAL', text: 'answer', threadTs: 'C0GENERAL:1790000000.000100' });
+      expect(deleted).toEqual(['ts-1']);
+      expect(typing.owes(key)).toBe(false);
+      // The answer itself went out as a new message in that thread (through the placeholder service).
+      expect(typingSent.at(-1)).toMatchObject({ channelId: 'C0GENERAL', text: 'answer', threadTs: '1790000000.000100' });
+      expect(posted).toEqual([]);
+    });
   });
 });

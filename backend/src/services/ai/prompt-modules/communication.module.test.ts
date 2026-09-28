@@ -25,6 +25,20 @@ describe('CommunicationModule', () => {
 		module = new CommunicationModule();
 	});
 
+	it('every role gets the one-thread-per-answer Slack rule (2026-09-28)', async () => {
+		for (const config of [
+			baseConfig,
+			{ ...baseConfig, role: 'team-leader', canDelegate: true },
+			{ ...baseConfig, role: 'orchestrator' },
+		] as ModuleConfig[]) {
+			const result = await module.build(config);
+			expect(result).toContain('### Slack Threads');
+			expect(result).toContain('[SLACK-THREAD:<key>]');
+			expect(result).toContain('--thread <key>');
+			expect(result).toContain('Never bundle answers for different threads');
+		}
+	});
+
 	it('should have correct metadata', () => {
 		expect(module.name).toBe('communication');
 		expect(module.priority).toBe(8);

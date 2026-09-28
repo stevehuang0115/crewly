@@ -110,7 +110,7 @@ two are told apart. Write ids exactly as Slack shows them.
 | `--target` | `-c` | Channel or person (required) |
 | `--text` | `-m` | Message text (required unless piped or `--text-file`) |
 | `--text-file` | | Read the text from a file |
-| `--thread` | `-t` | Slack thread timestamp to reply inside |
+| `--thread` | `-t` | Slack thread timestamp to reply inside, or the `[SLACK-THREAD:<key>]` key from your prompt |
 | `--json` | `-j` | Raw JSON payload |
 
 ## Environment

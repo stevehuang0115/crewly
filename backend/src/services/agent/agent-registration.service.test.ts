@@ -4064,6 +4064,32 @@ describe('AgentRegistrationService', () => {
 			routeSpy.mockRestore();
 		});
 
+		it('carries the delivered [SLACK-THREAD:<key>] onto the routed answer, so the DM bridge posts it in that thread (2026-09-28)', async () => {
+			mockReadFile.mockResolvedValue('System prompt');
+			mockAccess.mockRejectedValue(new Error('ENOENT'));
+			await service.createAgentSession({
+				sessionName: 'crewly-chat',
+				role: 'developer',
+				runtimeType: RUNTIME_TYPES.CREWLY_AGENT as any,
+			});
+			mockCrewlyRuntime.handleMessage.mockResolvedValueOnce({
+				text: 'EFT 表改好了',
+				steps: 1,
+				usage: { input: 10, output: 5 },
+				toolCalls: [],
+				finishReason: 'stop',
+			});
+			const routeSpy = jest.spyOn(service as any, 'routeInProcessResponseToChat');
+			await service.sendMessageToAgent(
+				'crewly-chat',
+				'[CHAT:conv-123] <Steve@Ella>\n[SLACK-THREAD:D0C31U6JWBF:1790000000.000100]\n把 EFT 表改一下',
+				RUNTIME_TYPES.CREWLY_AGENT as any,
+			);
+			await new Promise(r => setTimeout(r, 50));
+			expect(routeSpy).toHaveBeenCalledWith('crewly-chat', 'EFT 表改好了', 'conv-123', 'D0C31U6JWBF:1790000000.000100');
+			routeSpy.mockRestore();
+		});
+
 		it('should NOT route response to chat for Slack-sourced messages (dedup fix)', async () => {
 			// Setup: create the in-process runtime
 			mockReadFile.mockResolvedValue('System prompt');

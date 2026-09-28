@@ -37,7 +37,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
-import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator } from './chat.controller.js';
+import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator, pickCompletionThreads } from './chat.controller.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 
@@ -1142,6 +1142,32 @@ describe('Chat Controller', () => {
       );
       expect(src).not.toMatch(/RequestTracker\.getInstance\(\)\.setActiveRequest/);
     });
+  });
+});
+
+describe('pickCompletionThreads — a [DONE] goes to the thread it is about (2026-09-28)', () => {
+  const threads = [
+    { channelId: 'C0ONE', threadTs: '1790000000.000100', filePath: 'a' },
+    { channelId: 'C0ONE', threadTs: '1790000500.000200', filePath: 'b' },
+  ];
+
+  it('keeps store order when nothing names a thread', () => {
+    expect(pickCompletionThreads(threads, '[DONE] fixed it')).toEqual(threads);
+  });
+
+  it('a tag in the report puts its thread first', () => {
+    const picked = pickCompletionThreads(threads, '[DONE] EFT form fixed [SLACK-THREAD:C0ONE:1790000500.000200]');
+    expect(picked[0].threadTs).toBe('1790000500.000200');
+    expect(picked).toHaveLength(2);
+  });
+
+  it('an explicit --thread key wins over a tag in the text', () => {
+    const picked = pickCompletionThreads(threads, '[DONE] x [SLACK-THREAD:C0ONE:1790000500.000200]', 'C0ONE:1790000000.000100');
+    expect(picked[0].threadTs).toBe('1790000000.000100');
+  });
+
+  it('a thread the agent was never registered on is ignored', () => {
+    expect(pickCompletionThreads(threads, '[DONE] x [SLACK-THREAD:C0NINE:1790000999.000100]')).toEqual(threads);
   });
 });
 

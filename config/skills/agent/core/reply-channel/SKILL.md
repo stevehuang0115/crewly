@@ -43,7 +43,10 @@ bash config/skills/agent/core/reply-channel/execute.sh \
 `--thread` replies inside an existing thread. When the prompt you received
 came from a **Slack team channel** it names the thread id
 (`--thread <id>`); pass it through so your reply shows up in the same Slack
-thread, under your own name.
+thread, under your own name. `--thread` also takes the Slack thread key from
+a `[SLACK-THREAD:<key>]` tag in your prompt — the reply lands in exactly that
+thread. Answer each thread in its own thread; never bundle answers for
+different threads into one message.
 
 Or with JSON:
 

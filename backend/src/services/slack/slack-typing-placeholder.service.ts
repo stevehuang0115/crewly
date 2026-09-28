@@ -76,6 +76,8 @@ export interface TypingPlaceholder {
   phase: TypingPhase;
   /** The person's message this placeholder answers (gets ✅ when the agent settles without replying) */
   sourceTs?: string;
+  /** When it was posted (ms) — the order replies are owed in */
+  postedAt?: number;
 }
 
 /** Identifies one pending reply: this agent, in this Slack conversation/thread. */
@@ -97,6 +99,14 @@ export interface SlackTypingPlaceholderDeps {
    * "working on it" stayed after the 17:40 restart, 2026-09-25).
    */
   storePath?: string;
+  /**
+   * Whether the agent is in the middle of a turn right now. Consulted when a
+   * placeholder that was too young to take down at turn end is looked at
+   * again; without it the second look takes it down unconditionally.
+   */
+  isAgentMidTurn?: (agentSession: string) => boolean;
+  /** Override for {@link SLACK_TYPING_CONSTANTS.REPLACE_BY_EDIT} (tests). */
+  replaceByEdit?: boolean;
 }
 
 /**
@@ -113,6 +123,15 @@ export class SlackTypingPlaceholderService {
   private readonly expired = new Map<string, { placeholder: TypingPlaceholder; at: number }>();
   /** Placeholders being posted right now (two copies of one message must not post two). */
   private readonly inFlight = new Map<string, Promise<TypingPlaceholder | null>>();
+  /**
+   * One operation at a time per thread. An interim note (take the
+   * placeholder down, put a fresh one back) racing the final answer let the
+   * answer find nothing to replace and then the fresh placeholder appear
+   * under it, where it stayed (2026-09-28).
+   */
+  private readonly locks = new Map<string, Promise<unknown>>();
+  /** Agents with a turn-end second look already scheduled. */
+  private readonly recheckScheduled = new Set<string>();
 
   /**
    * @param deps - Slack slice plus optional timer overrides for tests
@@ -148,9 +167,37 @@ export class SlackTypingPlaceholderService {
     }
     const running = this.inFlight.get(k);
     if (running) return running;
-    const task = this.post(k, key, identity, phase, sourceTs).finally(() => this.inFlight.delete(k));
+    // Behind any answer being posted in this thread right now: the answer
+    // takes down what is there, then this placeholder goes up — never the
+    // other way round.
+    const task = this.withLock(k, async () => {
+      const now = this.pending.get(k);
+      if (now) {
+        if (sourceTs) now.placeholder.sourceTs = sourceTs;
+        return now.placeholder;
+      }
+      return this.post(k, key, identity, phase, sourceTs);
+    }).finally(() => this.inFlight.delete(k));
     this.inFlight.set(k, task);
     return task;
+  }
+
+  /**
+   * Run `fn` after every earlier operation on the same thread has finished.
+   *
+   * @param k - Thread key
+   * @param fn - The operation
+   * @returns Its result
+   */
+  private withLock<T>(k: string, fn: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(k) ?? Promise.resolve();
+    const run = previous.catch(() => undefined).then(fn);
+    const tail = run.catch(() => undefined);
+    this.locks.set(k, tail);
+    void tail.then(() => {
+      if (this.locks.get(k) === tail) this.locks.delete(k);
+    });
+    return run;
   }
 
   /**
@@ -183,9 +230,10 @@ export class SlackTypingPlaceholderService {
   async fail(key: TypingKeyParts): Promise<void> {
     const k = keyOf(key);
     await this.inFlight.get(k);
-    const placeholder = this.take(key);
+    const [placeholder, ...others] = this.takeAll(key);
     if (!placeholder) return;
     await this.edit(placeholder, SLACK_TYPING_CONSTANTS.FAILED_TEXT.replace('{name}', placeholder.displayName));
+    for (const other of others) await this.remove(other);
   }
 
   private textFor(phase: TypingPhase, name: string): string {
@@ -223,6 +271,7 @@ export class SlackTypingPlaceholderService {
         displayName: identity.displayName,
         phase,
         ...(sourceTs ? { sourceTs } : {}),
+        postedAt: Date.now(),
       };
       const setTimer = this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
       const unref = (t: ReturnType<typeof setTimeout>): void => {
@@ -279,63 +328,172 @@ export class SlackTypingPlaceholderService {
   }
 
   /**
-   * Post the reply as a new message and remove the placeholder.
+   * Every placeholder outstanding in one thread (pending and timed out),
+   * oldest first, no longer tracked. Timers are cancelled.
    *
-   * The reply used to be edited into the placeholder. Slack does not notify
-   * anyone of an edit — no unread mark, no badge, no push — so once
-   * "working on it…" placeholders became common the owner could no longer
-   * tell that an answer had arrived (2026-09-23). A new message notifies
-   * like any other. The placeholder is deleted after the reply is up, so
-   * the thread never goes without either.
+   * @param key - Agent + conversation (+ thread)
+   * @returns The placeholders, oldest first
+   */
+  private takeAll(key: TypingKeyParts): TypingPlaceholder[] {
+    const k = keyOf(key);
+    const out: TypingPlaceholder[] = [];
+    // A timed-out placeholder is always the older one: a pending one is only
+    // posted for a key once the previous one has left `pending`.
+    const late = this.expired.get(k);
+    if (late) {
+      this.expired.delete(k);
+      out.push(late.placeholder);
+    }
+    const entry = this.pending.get(k);
+    if (entry) {
+      (this.deps.clearTimer ?? clearTimeout)(entry.timer);
+      if (entry.slowTimer) (this.deps.clearTimer ?? clearTimeout)(entry.slowTimer);
+      this.pending.delete(k);
+      out.push(entry.placeholder);
+    }
+    if (out.length > 0) this.persist();
+    return out;
+  }
+
+  /**
+   * Take one placeholder off Slack: deleted, or — where this bot cannot
+   * delete — edited to the settled note so it no longer reads as pending.
    *
-   * Without a way to delete (older wiring), the placeholder is edited into
-   * the reply as before.
+   * @param placeholder - The placeholder
+   */
+  private async remove(placeholder: TypingPlaceholder): Promise<void> {
+    try {
+      if (this.deps.slack.deleteMessage) {
+        await this.deps.slack.deleteMessage(placeholder.slackChannelId, placeholder.ts, placeholder.botToken);
+      } else {
+        await this.deps.slack.updateMessage(
+          placeholder.slackChannelId,
+          placeholder.ts,
+          SLACK_TYPING_CONSTANTS.SETTLED_TEXT.replace('{name}', placeholder.displayName),
+          undefined,
+          placeholder.botToken,
+        );
+      }
+    } catch (err) {
+      // Already gone (message_not_found) is the common case and harmless.
+      this.logger.debug('Could not take a typing placeholder down', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * The answer for a thread arrived: it takes the place of the thread's
+   * placeholder, and no other placeholder is left in that thread.
+   *
+   * With REPLACE_BY_EDIT (default) the OLDEST placeholder in the thread is
+   * edited into the answer and every other one there is deleted — one
+   * answer covering two messages sent back to back leaves nothing behind
+   * (2026-09-28). Otherwise (the 2026-09-23 behaviour: an edit raises no
+   * notification) the answer is posted as a new message and the
+   * placeholders are deleted after it, so the thread never goes without
+   * either. A failed edit falls back to posting.
+   *
+   * Waits for a placeholder still being posted in that thread, and for any
+   * other operation there, so a placeholder can never go up after the
+   * answer that should have replaced it.
    *
    * @param key - Agent + conversation (+ thread)
    * @param text - The reply
    * @param identity - The agent's bot token
-   * @returns 'replaced' when a placeholder gave way to a new message, 'edited' when it was edited in place, 'posted' when there was none
+   * @param opts - `reopen`: the reply is an interim note — put a fresh placeholder back under it, in the same step
+   * @returns 'edited' when a placeholder became the reply, 'replaced' when the reply was posted and a placeholder removed, 'posted' when there was none
    */
-  async resolve(key: TypingKeyParts, text: string, identity: TypingIdentity): Promise<'replaced' | 'edited' | 'posted'> {
-    const placeholder = this.take(key);
-    if (placeholder && !this.deps.slack.deleteMessage) {
-      try {
-        await this.deps.slack.updateMessage(placeholder.slackChannelId, placeholder.ts, text, undefined, placeholder.botToken);
-        return 'edited';
-      } catch (err) {
-        this.logger.warn('Could not edit the typing placeholder into the reply — posting it instead', {
-          key: keyOf(key),
-          error: err instanceof Error ? err.message : String(err),
-        });
+  async resolve(
+    key: TypingKeyParts,
+    text: string,
+    identity: TypingIdentity,
+    opts: { reopen?: TypingPhase } = {},
+  ): Promise<'replaced' | 'edited' | 'posted'> {
+    const k = keyOf(key);
+    await this.inFlight.get(k);
+    return this.withLock(k, async () => {
+      const [oldest, ...others] = this.takeAll(key);
+      let outcome: 'replaced' | 'edited' | 'posted' | null = null;
+      const byEdit = this.deps.replaceByEdit ?? SLACK_TYPING_CONSTANTS.REPLACE_BY_EDIT;
+      if (oldest && (byEdit || !this.deps.slack.deleteMessage)) {
+        try {
+          await this.deps.slack.updateMessage(oldest.slackChannelId, oldest.ts, text, undefined, oldest.botToken);
+          outcome = 'edited';
+        } catch (err) {
+          this.logger.warn('Could not edit the typing placeholder into the reply — posting it instead', {
+            key: k,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
-    }
-    await this.deps.slack.sendMessage({
-      channelId: key.slackChannelId,
-      text,
-      ...(key.threadTs ? { threadTs: key.threadTs } : {}),
-      ...principalOf(identity),
-      skipChatV2Mirror: true,
+      if (!outcome) {
+        await this.deps.slack.sendMessage({
+          channelId: key.slackChannelId,
+          text,
+          ...(key.threadTs ? { threadTs: key.threadTs } : {}),
+          ...principalOf(identity),
+          skipChatV2Mirror: true,
+        });
+        if (oldest && this.deps.slack.deleteMessage) {
+          try {
+            await this.deps.slack.deleteMessage(oldest.slackChannelId, oldest.ts, oldest.botToken);
+          } catch (err) {
+            // The reply is up; a leftover "working on it…" is untidy, not wrong.
+            this.logger.warn('Could not remove the typing placeholder after posting the reply', {
+              key: k,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+          outcome = 'replaced';
+        } else {
+          outcome = 'posted';
+        }
+      }
+      // One answer covered several messages in this thread: their
+      // placeholders go too.
+      for (const other of others) await this.remove(other);
+      if (others.length > 0) {
+        this.logger.info('Answer covered several placeholders in one thread — extra ones taken down', { key: k, count: others.length });
+      }
+      if (opts.reopen) await this.post(k, key, identity, opts.reopen);
+      return outcome;
     });
-    if (placeholder && this.deps.slack.deleteMessage) {
-      try {
-        await this.deps.slack.deleteMessage(placeholder.slackChannelId, placeholder.ts, placeholder.botToken);
-      } catch (err) {
-        // The reply is up; a leftover "working on it…" is untidy, not wrong.
-        this.logger.warn('Could not remove the typing placeholder after posting the reply', {
-          key: keyOf(key),
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      return 'replaced';
-    }
-    return 'posted';
+  }
+
+  /**
+   * The agent answered in this thread some other way (a file, a post with
+   * its own thread): take every placeholder in the thread down.
+   *
+   * @param key - Agent + conversation (+ thread)
+   * @returns How many were taken down
+   */
+  async dropThread(key: TypingKeyParts): Promise<number> {
+    const k = keyOf(key);
+    await this.inFlight.get(k);
+    return this.withLock(k, async () => {
+      const all = this.takeAll(key);
+      for (const p of all) await this.remove(p);
+      return all.length;
+    });
+  }
+
+  /**
+   * Whether a placeholder (pending or timed out) is outstanding in this thread.
+   *
+   * @param key - Agent + conversation (+ thread)
+   * @returns True when the agent owes an answer there
+   */
+  owes(key: TypingKeyParts): boolean {
+    const k = keyOf(key);
+    return this.pending.has(k) || this.expired.has(k) || this.inFlight.has(k);
   }
 
   /**
    * The conversation an agent still owes an answer in, on one Slack channel
-   * or DM: its pending (or timed-out) placeholder, newest first. An agent that
+   * or DM: its pending (or timed-out) placeholder, OLDEST first. An agent that
    * answers with the `slack-post` skill instead of its reply skill names no
-   * thread; this is where that answer belongs.
+   * thread; this is where that answer belongs. Oldest, because answers come
+   * in the order questions were asked: newest-first put the answer owed in
+   * an earlier thread under the latest question (2026-09-28).
    *
    * @param agentSession - The agent
    * @param slackChannelId - Channel or DM it is posting to
@@ -344,17 +502,17 @@ export class SlackTypingPlaceholderService {
   findOwed(agentSession: string, slackChannelId: string): TypingKeyParts | null {
     this.pruneExpired();
     const candidates: Array<{ key: TypingKeyParts; at: number }> = [];
-    for (const [k, { placeholder }] of this.pending) {
+    for (const [k, { placeholder, startedAt }] of this.pending) {
       if (placeholder.slackChannelId === slackChannelId && k.startsWith(`${agentSession}:`)) {
-        candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at: Number.MAX_SAFE_INTEGER });
+        candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at: placeholder.postedAt ?? startedAt });
       }
     }
     for (const [k, { placeholder, at }] of this.expired) {
       if (placeholder.slackChannelId === slackChannelId && k.startsWith(`${agentSession}:`)) {
-        candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at });
+        candidates.push({ key: { agentSession, slackChannelId, ...(placeholder.threadTs ? { threadTs: placeholder.threadTs } : {}) }, at: placeholder.postedAt ?? at });
       }
     }
-    candidates.sort((a, b) => b.at - a.at);
+    candidates.sort((a, b) => a.at - b.at);
     return candidates[0]?.key ?? null;
   }
 
@@ -374,8 +532,13 @@ export class SlackTypingPlaceholderService {
   async settleTurnWithoutReply(agentSession: string, now: number = Date.now()): Promise<number> {
     const minAge = SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS;
     const victims: TypingPlaceholder[] = [];
+    let youngest: number | null = null;
     for (const [k, entry] of [...this.pending]) {
-      if (!k.startsWith(`${agentSession}:`) || now - entry.startedAt < minAge) continue;
+      if (!k.startsWith(`${agentSession}:`)) continue;
+      if (now - entry.startedAt < minAge) {
+        youngest = Math.max(youngest ?? 0, entry.startedAt);
+        continue;
+      }
       if (this.inFlight.has(k)) continue;
       const clear = this.deps.clearTimer ?? ((t: ReturnType<typeof setTimeout>) => clearTimeout(t));
       clear(entry.timer);
@@ -419,7 +582,30 @@ export class SlackTypingPlaceholderService {
     if (victims.length > 0) {
       this.logger.info('Agent finished its turn without replying — placeholders taken down', { agentSession, count: victims.length });
     }
+    if (youngest !== null) this.scheduleSettleRecheck(agentSession, youngest + minAge + SLACK_TYPING_CONSTANTS.SETTLE_RECHECK_MARGIN_MS);
     return victims.length;
+  }
+
+  /**
+   * A placeholder too young to take down when the turn ended (it may belong
+   * to a message delivered just before the idle signal) gets a second look
+   * once it is old enough: gone then unless the agent is mid-turn — in which
+   * case that turn's own end settles it. Without this it waited for the
+   * agent's next turn, which might be hours away (2026-09-28).
+   *
+   * @param agentSession - Agent whose turn ended
+   * @param at - When (epoch ms) the youngest skipped placeholder is old enough, margin included
+   */
+  private scheduleSettleRecheck(agentSession: string, at: number): void {
+    if (this.recheckScheduled.has(agentSession)) return;
+    this.recheckScheduled.add(agentSession);
+    const setTimer = this.deps.setTimer ?? ((fn, ms) => setTimeout(fn, ms));
+    const t = setTimer(() => {
+      this.recheckScheduled.delete(agentSession);
+      if (this.deps.isAgentMidTurn?.(agentSession)) return;
+      void this.settleTurnWithoutReply(agentSession, Math.max(Date.now(), at)).catch(() => undefined);
+    }, Math.max(0, at - Date.now()));
+    if (typeof (t as { unref?: () => void }).unref === 'function') (t as { unref: () => void }).unref();
   }
 
   /** Save outstanding placeholders (pending + timed out) so a restart can still take them down. */

@@ -875,6 +875,45 @@ export const SLACK_AGENT_DM_CONSTANTS = {
 	 * adapter use, so Slack DMs land in the DM channel the owner already sees.
 	 */
 	OWNER_USER_ID: 'dev-user-001',
+	/**
+	 * Slack threads in one DM still waiting for the agent's answer, oldest
+	 * first. An answer the agent does not attribute goes to the oldest of
+	 * them — never silently to the newest (2026-09-28, Ella: an EFT answer
+	 * owed in thread A landed in thread B). Capped so a DM the agent never
+	 * answers cannot grow the link store without bound.
+	 */
+	MAX_OPEN_THREADS: 20,
+	/**
+	 * A file an agent attaches without naming a thread, this soon after it
+	 * posted an answer, goes into that answer's thread (the file and the
+	 * sentence about it stay together).
+	 */
+	ATTACH_FOLLOWS_REPLY_MS: 2 * 60 * 1000,
+} as const;
+
+/**
+ * Stable per-thread keys for Slack conversations (2026-09-28).
+ *
+ * Every Slack message delivered to an agent carries `[SLACK-THREAD:<key>]`,
+ * `<key>` = `<slack channel id>:<thread root ts>` (a top-level message is its
+ * own thread root). The reply tools (`reply-chat --thread`, `reply-channel
+ * --thread`, `attach-file --thread`, `slack-post --thread`) take the key and
+ * post in exactly that thread, so an answer to an earlier thread is never
+ * posted under the newest one.
+ */
+export const SLACK_THREAD_KEY_CONSTANTS = {
+	/** Tag name as the agent sees it: `[SLACK-THREAD:<key>]` */
+	TAG: 'SLACK-THREAD',
+	/** chat-v2 message metadata field an agent reply's thread key is recorded under */
+	METADATA_KEY: 'slackThreadKey',
+	/**
+	 * One-line rule for every agent's prompt. Kept short: it rides in the
+	 * communication module of every role.
+	 */
+	PROMPT_RULE:
+		'Slack threads: every Slack message you get carries `[SLACK-THREAD:<key>]`. Answer each thread in its own thread — pass that key as `--thread <key>` to reply-chat / reply-channel / attach-file. ' +
+		'When you finish work that was asked for in an earlier thread, post it (and its files) in THAT thread, not the one you were asked in last. ' +
+		'Never bundle answers for different threads into one message: two threads → two replies.',
 } as const;
 
 /**
@@ -1047,6 +1086,25 @@ export const SLACK_TYPING_CONSTANTS = {
 	EXPIRED_KEEP_MS: 24 * 60 * 60 * 1000,
 	/** A placeholder younger than this is not taken down when the turn ends (race with delivery) */
 	SETTLE_MIN_AGE_MS: 30 * 1000,
+	/**
+	 * A placeholder skipped at turn end for being too young is looked at
+	 * again once it is SETTLE_MIN_AGE_MS old, plus this margin — and taken
+	 * down then unless the agent is mid-turn. Without the second look it
+	 * stayed until the agent's NEXT turn ended, which can be hours
+	 * (2026-09-28: "Ella is working on it…" left under an answered thread).
+	 */
+	SETTLE_RECHECK_MARGIN_MS: 2 * 1000,
+	/**
+	 * How an answer replaces its thread's placeholder. `true` = the oldest
+	 * placeholder is edited into the answer (chat.update) and any others in
+	 * the thread are deleted, so nothing is left behind (2026-09-28).
+	 * `false` = the 2026-09-23 behaviour: the answer is posted as a new
+	 * message (Slack notifies on new messages, not on edits) and the
+	 * placeholders are deleted after it.
+	 * Owner-facing default is `false`: a reply must notify (edits don't), and
+	 * the placeholder races that left "working on it…" behind are fixed.
+	 */
+	REPLACE_BY_EDIT: false,
 	/** Fallback text when a settled placeholder cannot be deleted */
 	SETTLED_TEXT: '✓ {name} read this — no reply needed.',
 	/** Reaction put on the person's message when the agent settled it without replying */

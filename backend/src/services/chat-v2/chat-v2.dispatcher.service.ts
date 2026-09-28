@@ -30,6 +30,7 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 import { isSlackDm } from '../orc/orc-reply-route.service.js';
+import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 
 // ---------------------------------------------------------------------------
 // Public contract
@@ -269,6 +270,14 @@ export interface FormatPromptArgs {
    * question went to #pro-think-tank and to the master-bot DM).
    */
   slackDmChannelId?: string;
+  /**
+   * The Slack thread the message came from, as a key (`<channel>:<ts>`).
+   * Rendered as `[SLACK-THREAD:<key>]` under the header and named in the
+   * reply command, so an agent holding messages from several threads of one
+   * DM answers each in its own (2026-09-28: an answer owed in one thread was
+   * posted in the thread the owner wrote in last, bundled with another).
+   */
+  slackThreadKey?: string;
 }
 
 /**
@@ -335,6 +344,19 @@ export function slackDmChannelOf(message: Pick<ChatMessageDTO, 'metadata'>): str
   if (!meta || meta.source !== 'slack') return undefined;
   const id = meta.slackChannelId;
   return typeof id === 'string' && isSlackDm(id) ? id : undefined;
+}
+
+/**
+ * The Slack thread key of a chat-v2 message bridged from Slack.
+ *
+ * @param message - Persisted chat-v2 message
+ * @returns `<slack channel>:<thread root ts>`, or undefined when not from Slack
+ */
+export function slackThreadKeyOf(message: Pick<ChatMessageDTO, 'metadata'>): string | undefined {
+  const meta = message.metadata;
+  if (!meta || meta.source !== 'slack') return undefined;
+  const parts = slackThreadOfMetadata(meta);
+  return parts ? formatSlackThreadKey(parts.slackChannelId, parts.threadTs) : undefined;
 }
 
 /**
@@ -435,8 +457,14 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
       ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
       : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else if (args.slackDmChannelId && mode === 'required') {
+    const threadKey = parseSlackThreadKey(args.slackThreadKey) ? args.slackThreadKey : undefined;
+    const threadArg = threadKey ? ` --thread ${threadKey}` : '';
     replyHint =
       `回复本频道: 这条消息来自 Slack 私信 ${args.slackDmChannelId}。回复目标: conversationId="${channelId}"——用 \`reply-chat\` skill，参数 conversationId="${channelId}"、content="<your reply>"，会发回这个私信。` +
+      (threadKey
+        ? `它在私信的 thread ${threadKey} 里：回复时带上 \`--thread ${threadKey}\`（bash config/skills/agent/core/reply-chat/execute.sh --conversation ${channelId}${threadArg} --sender <you> --text "<your reply>"；发文件用 attach-file --channel ${channelId}${threadArg}）。` +
+          `每个 thread 单独回复：之前别的 thread 里交代的活做完了，发到那个 thread（用它自己的 key），不要和这条的回答合在一条消息里。`
+        : '') +
       `由这条消息引出的后续进度、提问和 [BLOCKED]/[DONE] 汇报也都发到这个 conversationId：不要省略它，不要改用 reply-slack，也不要发到别的频道或会话。`;
   } else {
     replyHint = mode === 'optional'
@@ -454,8 +482,10 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     replyHint += ' ' + CHAT_REPLY_PACING_HINT.replace('{cmd}', interimCmd);
   }
   const contextBlock = args.slackContext || renderChatContext(args.context ?? []);
+  const threadParts = parseSlackThreadKey(args.slackThreadKey);
   return [
     `[CHAT:${channelId}]${idHint} <${senderId}@${channelName}>`,
+    ...(threadParts ? [slackThreadTag(threadParts.slackChannelId, threadParts.threadTs)] : []),
     ...(args.ticketLine ? [args.ticketLine] : []),
     ``,
     ...(contextBlock ? [contextBlock, ``] : []),
@@ -1006,6 +1036,7 @@ export class ChatV2DispatcherService {
       slackContext: slackContextOf(options, channel.agentSession),
       ticketLine: ticketLineOf(message),
       slackDmChannelId: slackDmChannelOf(message),
+      slackThreadKey: slackThreadKeyOf(message),
     });
 
     let result: Awaited<ReturnType<AgentMessageSink['sendMessageToAgent']>>;

@@ -206,6 +206,32 @@ describe('identity', () => {
     await service.post({ agentSession: 'a', target: '#general', text: 'x', threadTs: '100.1' });
     expect(slack.sent[0].threadTs).toBe('100.1');
   });
+
+  it('takes the [SLACK-THREAD:<key>] key from the prompt as --thread and posts in its ts', async () => {
+    await service.post({ agentSession: 'a', target: '#general', text: 'x', threadTs: 'C0GENERAL:1790000000.000100' });
+    expect(slack.sent[0].threadTs).toBe('1790000000.000100');
+  });
+
+  it('a post naming a thread where a placeholder is up replaces that placeholder (2026-09-28)', async () => {
+    const resolved: unknown[][] = [];
+    const svc = new SlackAgentPostService({
+      slack,
+      storage: { getTeams: async () => [] },
+      identities,
+      typing: {
+        findOwed: () => null,
+        owes: (key: { threadTs?: string }) => key.threadTs === '1790000000.000100',
+        resolve: async (...args: unknown[]) => { resolved.push(args); return 'edited' as const; },
+      } as never,
+    });
+    await svc.post({ agentSession: 'a', target: '#general', text: 'answer', threadTs: 'C0GENERAL:1790000000.000100' });
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0][0]).toMatchObject({ agentSession: 'a', threadTs: '1790000000.000100' });
+    expect(slack.sent).toHaveLength(0);
+    // No placeholder there → a plain threaded post.
+    await svc.post({ agentSession: 'a', target: '#general', text: 'x', threadTs: '1790000009.000100' });
+    expect(slack.sent[0].threadTs).toBe('1790000009.000100');
+  });
 });
 
 describe('Slack failures get actionable messages', () => {

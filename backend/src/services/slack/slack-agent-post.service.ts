@@ -29,6 +29,7 @@ import type { SlackChannelInfo, SlackOutgoingMessage } from '../../types/slack.t
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_POST_CONSTANTS } from '../../constants.js';
 import { slackIdentityFor } from './slack-team-channel.service.js';
+import { parseSlackThreadKey } from './slack-thread-key.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
 
 /** The slice of SlackService this service uses. */
@@ -54,7 +55,8 @@ export interface SlackAgentPostServiceDeps {
   storage: AgentPostStorageApi;
   identities?: AgentPostIdentityApi | null;
   /** Placeholders of replies agents owe — a post into such a conversation answers it */
-  typing?: Pick<SlackTypingPlaceholderService, 'findOwed' | 'resolve'> | null;
+  typing?: (Pick<SlackTypingPlaceholderService, 'findOwed' | 'resolve'> &
+    Partial<Pick<SlackTypingPlaceholderService, 'owes'>>) | null;
   /** Links `@Name` to real Slack mentions (agents' bots and known people). */
   linkMentions?: SlackMentionLinker;
 }
@@ -147,7 +149,8 @@ export class SlackAgentPostService {
    *   when Slack is not up, `target_not_found` when the channel or person
    *   cannot be resolved, `slack_error` when Slack refuses the send
    */
-  async post(req: SlackAgentPostRequest): Promise<SlackAgentPostResult> {
+  async post(request: SlackAgentPostRequest): Promise<SlackAgentPostResult> {
+    let req = request;
     const agentSession = (req.agentSession ?? '').trim();
     const target = (req.target ?? '').trim();
     const rawText = req.text ?? '';
@@ -166,6 +169,10 @@ export class SlackAgentPostService {
 
     const { identity, botToken, postedAs } = await this.resolveIdentity(agentSession);
     const { channelId, kind } = await this.resolveTarget(target, botToken);
+    // `--thread` may be the Slack thread key from the agent's prompt
+    // (`<channel>:<ts>`); only its ts means anything to Slack.
+    const namedThread = parseSlackThreadKey(req.threadTs);
+    if (namedThread) req = { ...req, threadTs: namedThread.threadTs };
     // "@Ella" → a real mention. This path posted agent text verbatim, so an
     // agent naming a colleague here never notified them (2026-09-25).
     const text = await this.linkMentions(rawText, channelId);
@@ -175,7 +182,13 @@ export class SlackAgentPostService {
     // that thread and take the placeholder down. Ella answered the owner's
     // in-thread question with this skill and it landed top-level, next to a
     // "⏱ still working" that never went away (2026-09-25).
-    const owed = !req.threadTs ? this.deps.typing?.findOwed(agentSession, channelId) ?? null : null;
+    // A post that names its thread, where a placeholder is up, is that
+    // thread's answer too: it replaces the placeholder rather than landing
+    // beside it (2026-09-28).
+    const namedKey = req.threadTs ? { agentSession, slackChannelId: channelId, threadTs: req.threadTs } : null;
+    const owed = namedKey
+      ? (this.deps.typing?.owes?.(namedKey) ? namedKey : null)
+      : this.deps.typing?.findOwed(agentSession, channelId) ?? null;
     if (owed) {
       try {
         await this.deps.typing!.resolve(owed, text, {

@@ -20,8 +20,10 @@ import { reclassifyOwnerSlackRows, type OwnerIdentity } from './sqlite/unified-l
 import {
   CONVERSATION_LOG_CONSTANTS,
   OWNER_EVIDENCE_METADATA,
+  SLACK_THREAD_KEY_CONSTANTS,
   SLACK_TYPING_CONSTANTS,
 } from '../../constants.js';
+import { formatSlackThreadKey, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
@@ -1665,7 +1667,12 @@ export class ChatV2Service extends EventEmitter {
     // Phase A: validate threadId — must reference an existing message in
     // this channel; refusing dangling thread refs prevents orphan replies
     // and contains UX confusion if the FE composes against a stale id.
-    const threadId = this.validateThreadId(args.threadId, args.channelId);
+    // `reply-channel --thread <slack thread key>`: the agent named the Slack
+    // thread it answers rather than a chat-v2 root message. Kept on the row
+    // for the Slack bridge (which posts into exactly that thread); it is not
+    // a chat-v2 message id, so it must not be validated as one.
+    const slackKey = senderType === 'agent' ? parseSlackThreadKey(args.threadId) : null;
+    const threadId = slackKey ? undefined : this.validateThreadId(args.threadId, args.channelId);
 
     // An agent principal writing into a channel it is not bound to resolves
     // to the channel owner's `user` identity (resolveSender). Keep that, but
@@ -1689,8 +1696,15 @@ export class ChatV2Service extends EventEmitter {
       nowMs: this.now(),
       ...(agentAuthoredAsUser
         ? { metadata: { [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: args.principal.agentSession } }
-        : args.interim && senderType === 'agent'
-          ? { metadata: { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } }
+        : senderType === 'agent' && (args.interim || slackKey)
+          ? {
+              metadata: {
+                ...(args.interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
+                ...(slackKey
+                  ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: formatSlackThreadKey(slackKey.slackChannelId, slackKey.threadTs) }
+                  : {}),
+              },
+            }
           : isTalk
             ? { metadata: { source: 'cloud-talk' } }
             : {}),

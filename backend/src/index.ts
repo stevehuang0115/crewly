@@ -101,6 +101,7 @@ import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLea
 import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
+import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
 import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS } from './constants.js';
@@ -1327,6 +1328,12 @@ void (async () => {
 				// "still working — the reply will follow" that never follows.
 				void getSlackTypingPlaceholderService()
 					?.settleTurnWithoutReply(event.sessionName)
+					.catch(() => undefined);
+				// Same rule for the DM threads it was owed an answer in: one it
+				// chose not to answer must not pull a later unattributed answer
+				// back into it (2026-09-28).
+				void getSlackAgentDmService()
+					?.settleOpenThreads(event.sessionName)
 					.catch(() => undefined);
 
 				// Ticket loop Phase 2: an agent that finished its turn has answered

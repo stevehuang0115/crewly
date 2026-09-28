@@ -593,6 +593,18 @@ describe('ChatV2Service', () => {
       expect(user.metadata?.interim).toBeUndefined();
     });
 
+    it('an agent passing a Slack thread key as threadId records it for the Slack bridge (reply-channel --thread <key>)', () => {
+      const ch = createSam();
+      const msg = service.sendMessage({ channelId: ch.id, principal: agentPrincipal, content: 'EFT done', threadId: 'D0C31U6JWBF:1790000000.000100' });
+      expect(msg.metadata?.slackThreadKey).toBe('D0C31U6JWBF:1790000000.000100');
+      // Not a chat-v2 message id: not validated as one, not stored as the thread root.
+      expect(msg.threadId).toBeUndefined();
+      const both = service.sendMessage({ channelId: ch.id, principal: agentPrincipal, content: 'plan', interim: true, threadId: '[SLACK-THREAD:D0C31U6JWBF:1790000000.000100]' });
+      expect(both.metadata).toMatchObject({ interim: true, slackThreadKey: 'D0C31U6JWBF:1790000000.000100' });
+      // A user cannot smuggle one in: it is validated as an ordinary thread id.
+      expect(() => service.sendMessage({ channelId: ch.id, principal: owner, content: 'x', threadId: 'D0C31U6JWBF:1790000000.000100' })).toThrow();
+    });
+
     it('rejects messages exceeding the byte cap with payload_too_large', () => {
       const ch = createSam();
       const oversize = 'a'.repeat(40000);

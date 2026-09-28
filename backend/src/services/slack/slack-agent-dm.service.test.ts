@@ -454,7 +454,7 @@ describe('SlackAgentDmService', () => {
       begin: async (key, _id, phase) => { calls.push(`begin:${key.threadTs}:${phase}`); return null; },
       setPhase: async () => undefined,
       fail: async () => undefined,
-      resolve: async (key, text) => { calls.push(`resolve:${key.threadTs}:${text}`); return 'replaced' as const; },
+      resolve: async (key, text, _id, opts) => { calls.push(`resolve:${key.threadTs}:${text}${opts?.reopen ? `:reopen-${opts.reopen}` : ''}`); return 'replaced' as const; },
     };
     const svc = new SlackAgentDmService(deps);
     await svc.start();
@@ -463,7 +463,9 @@ describe('SlackAgentDmService', () => {
     await new Promise((r) => setImmediate(r));
     emit({ id: 'f1', channelId: 'chat-ella', senderType: 'agent', senderId: 'crewly-marketing-ella-e6a6b8ea', content: '做好了' } as unknown as ChatMessageDTO);
     await new Promise((r) => setImmediate(r));
-    expect(calls).toEqual(['begin:8.0:typing', 'resolve:8.0:收到，计划：…', 'begin:8.0:typing', 'resolve:8.0:做好了']);
+    // The placeholder is re-opened in the same step as the interim note
+    // (two steps let a fast final answer slip in between, 2026-09-28).
+    expect(calls).toEqual(['begin:8.0:typing', 'resolve:8.0:收到，计划：…:reopen-typing', 'resolve:8.0:做好了']);
     svc.stop();
     await fs.rm(deps.storePath as string, { force: true });
   });
@@ -632,6 +634,236 @@ describe('SlackAgentDmService', () => {
       expect(result).toEqual({ ok: false, reason: 'file too large' });
       svc.stop();
       await fs.rm(deps.storePath as string, { force: true });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Thread routing (2026-09-28, Ella: the EFT answer owed in thread A was
+  // posted in the owner's newer HSA thread B, bundled with B's answer).
+  // -------------------------------------------------------------------------
+  describe('thread routing — every answer lands in the thread it answers', () => {
+    const ELLA = 'crewly-marketing-ella-e6a6b8ea';
+    const DM = 'D0C2YLU8F2A';
+    const A = '1790000000.000100'; // EFT thread
+    const B = '1790000500.000200'; // HSA thread, opened later
+    const agentTurn = (id: string, content: string, extra: Partial<ChatMessageDTO> = {}): ChatMessageDTO =>
+      ({ id, channelId: 'chat-ella', senderType: 'agent', senderId: ELLA, content, ...extra }) as unknown as ChatMessageDTO;
+    const flush = () => new Promise((r) => setImmediate(r));
+    const threadsOf = (sent: unknown[]) => sent.map((m) => (m as { threadTs?: string }).threadTs);
+
+    async function twoOpenThreads(overrides: Partial<SlackAgentDmServiceDeps> = {}) {
+      const h = makeDeps(overrides);
+      const svc = new SlackAgentDmService(h.deps);
+      await svc.start();
+      // A: top-level "fix the EFT PDF". B: a new top-level "你看看这个有没有什么区别？"
+      // sent while Ella is still busy with A.
+      await svc.routeInbound(dm({ ts: A, text: '把 EFT 表改一下' }));
+      await svc.routeInbound(dm({ ts: B, text: '你看看这个有没有什么区别？', hasFiles: true } as Partial<SlackIncomingMessage>));
+      return { ...h, svc };
+    }
+
+    it('a busy agent with two threads open → two separate replies, each in its own thread (keys named)', async () => {
+      const { svc, sent, emit, deps } = await twoOpenThreads();
+      emit(agentTurn('r1', 'HSA 两张图的区别是…', { metadata: { source: 'reply-tool', slackThreadKey: `${DM}:${B}` } }));
+      await flush();
+      emit(agentTurn('r2', 'EFT 表改好了', { metadata: { source: 'reply-tool', slackThreadKey: `${DM}:${A}` } }));
+      await flush();
+      expect(threadsOf(sent)).toEqual([B, A]);
+      expect(sent).toHaveLength(2);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('late completion of thread-A work while the latest inbound is thread B → posts to A', async () => {
+      const { svc, sent, emit, deps } = await twoOpenThreads();
+      // Unattributed: the answer goes to the OLDEST owed thread, never silently to the newest.
+      emit(agentTurn('r1', 'EFT 表改完了，见附件'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A]);
+      // A is answered now; the next unattributed answer is B's.
+      emit(agentTurn('r2', 'HSA 这两张的区别：…'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A, B]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('a reply under a chat-v2 message (ticket nudge: --thread <chatRef.threadRootId>) goes to THAT message\'s Slack thread', async () => {
+      // chat.db 2026-09-27: the nudge for the Codex ticket (thread 1790392986…)
+      // carried threadId=<owner's chat message> but was mirrored into the
+      // newer re-login thread, where the owner answered "不需要了".
+      const roots: Record<string, ChatMessageDTO> = {
+        'owner-msg-A': { id: 'owner-msg-A', metadata: { source: 'slack', slackChannelId: DM, slackThreadTs: A } } as unknown as ChatMessageDTO,
+      };
+      const h = makeDeps();
+      (h.deps.chat as unknown as { getMessageForBridge: (id: string) => ChatMessageDTO | null }).getMessageForBridge = (id) => roots[id] ?? null;
+      const svc = new SlackAgentDmService(h.deps);
+      await svc.start();
+      await svc.routeInbound(dm({ ts: A }));
+      h.emit(agentTurn('r0', 'answer A'));
+      await flush();
+      await svc.routeInbound(dm({ ts: B }));
+      h.emit(agentTurn('r0b', 'answer B'));
+      await flush();
+      // Hours later nothing is owed; the nudge names A's chat root.
+      h.emit(agentTurn('nudge', '上次说的 EFT 表，你看这样行不行？', { threadId: 'owner-msg-A' }));
+      await flush();
+      expect(threadsOf(h.sent)).toEqual([A, B, A]);
+      svc.stop();
+      await fs.rm(h.deps.storePath as string, { force: true });
+    });
+
+    it('a key naming another conversation is ignored, not trusted', async () => {
+      const { svc, sent, emit, deps } = await twoOpenThreads();
+      emit(agentTurn('r1', 'x', { metadata: { source: 'reply-tool', slackThreadKey: `C0OTHER1:${B}` } }));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('an interim note does not settle its thread', async () => {
+      const { svc, sent, emit, deps } = await twoOpenThreads();
+      emit(agentTurn('i1', '收到，EFT 大概 10 分钟', { metadata: { source: 'reply-tool', interim: true } }));
+      await flush();
+      emit(agentTurn('r1', 'EFT 好了'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A, A]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('nothing owed → the thread written in last (the previous behaviour)', async () => {
+      const { svc, sent, emit, deps } = await twoOpenThreads();
+      emit(agentTurn('r1', 'a'));
+      await flush();
+      emit(agentTurn('r2', 'b'));
+      await flush();
+      emit(agentTurn('r3', '另外补充一句：两张图的扣款日期也不同。'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A, B, B]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('the typing placeholder resolved is the one in the answered thread', async () => {
+      const h = makeDeps();
+      const calls: string[] = [];
+      h.deps.typing = {
+        begin: async (key) => { calls.push(`begin:${key.threadTs}`); return null; },
+        setPhase: async () => undefined,
+        fail: async () => undefined,
+        resolve: async (key) => { calls.push(`resolve:${key.threadTs}`); return 'replaced' as const; },
+      };
+      const svc = new SlackAgentDmService(h.deps);
+      await svc.start();
+      await svc.routeInbound(dm({ ts: A }));
+      await svc.routeInbound(dm({ ts: B }));
+      h.emit(agentTurn('r1', 'EFT done', { metadata: { source: 'reply-tool', slackThreadKey: `${DM}:${A}` } }));
+      await flush();
+      expect(calls).toEqual([`begin:${A}`, `begin:${B}`, `resolve:${A}`]);
+      svc.stop();
+      await fs.rm(h.deps.storePath as string, { force: true });
+    });
+
+    it('a follow-up in an already-owed thread keeps its place in line', async () => {
+      const { svc, sent, emit, deps } = await twoOpenThreads();
+      await svc.routeInbound(dm({ ts: '1790000900.000300', threadTs: A, text: '记得用新地址' }));
+      emit(agentTurn('r1', 'EFT 好了'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([A]);
+      expect(svc.findByChatChannelId('chat-ella')?.openThreads?.map((t) => t.threadTs)).toEqual([B]);
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('settleOpenThreads: threads the agent chose not to answer stop counting as owed', async () => {
+      let now = new Date('2026-09-28T10:00:00Z');
+      const { svc, sent, emit, deps } = await twoOpenThreads({ now: () => now });
+      now = new Date('2026-09-28T10:05:00Z');
+      expect(await svc.settleOpenThreads(ELLA)).toBe(2);
+      expect(await svc.settleOpenThreads('someone-else')).toBe(0);
+      emit(agentTurn('r1', 'x'));
+      await flush();
+      expect(threadsOf(sent)).toEqual([B]); // nothing owed → latest
+      svc.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('open threads survive a restart', async () => {
+      const { svc, deps } = await twoOpenThreads();
+      svc.stop();
+      const again = new SlackAgentDmService(deps);
+      await again.start();
+      expect(again.findByChatChannelId('chat-ella')?.openThreads?.map((t) => t.threadTs)).toEqual([A, B]);
+      again.stop();
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    describe('file uploads take the thread they belong to', () => {
+      const attach = (svc: SlackAgentDmService, threadId?: string) =>
+        svc.attachFileForAgent({ chatChannelId: 'chat-ella', agentSession: ELLA, filePath: '/tmp/eft.pdf', ...(threadId ? { threadId } : {}) });
+
+      it('explicit Slack thread key (also as the full tag) → that thread', async () => {
+        const { svc, uploads, deps } = await twoOpenThreads();
+        const r1 = await attach(svc, `${DM}:${A}`);
+        const r2 = await attach(svc, `[SLACK-THREAD:${DM}:${B}]`);
+        expect(uploads.map((u) => u.threadTs)).toEqual([A, B]);
+        expect(r1).toMatchObject({ ok: true, threadTs: A });
+        expect(r2).toMatchObject({ ok: true, threadTs: B });
+        svc.stop();
+        await fs.rm(deps.storePath as string, { force: true });
+      });
+
+      it('no thread named → follows the answer just posted', async () => {
+        const { svc, uploads, emit, deps } = await twoOpenThreads();
+        emit(agentTurn('r1', 'EFT 好了', { metadata: { source: 'reply-tool', slackThreadKey: `${DM}:${A}` } }));
+        await flush();
+        await attach(svc);
+        expect(uploads.map((u) => u.threadTs)).toEqual([A]);
+        svc.stop();
+        await fs.rm(deps.storePath as string, { force: true });
+      });
+
+      it('no thread named and no recent answer → the oldest owed thread, not the newest', async () => {
+        const { svc, uploads, deps } = await twoOpenThreads();
+        await attach(svc);
+        expect(uploads.map((u) => u.threadTs)).toEqual([A]);
+        svc.stop();
+        await fs.rm(deps.storePath as string, { force: true });
+      });
+
+      it('the upload takes the thread\'s "working on it" placeholder down (answered by a file)', async () => {
+        const dropped: Array<Record<string, unknown>> = [];
+        const h = makeDeps();
+        h.deps.typing = {
+          begin: async () => null,
+          setPhase: async () => undefined,
+          fail: async () => undefined,
+          resolve: async () => 'edited' as const,
+          dropThread: async (key) => { dropped.push({ ...key }); return 1; },
+        };
+        const svc = new SlackAgentDmService(h.deps);
+        await svc.start();
+        await svc.routeInbound(dm({ ts: A }));
+        await svc.routeInbound(dm({ ts: B }));
+        await attach(svc, `${DM}:${A}`);
+        expect(dropped).toEqual([{ agentSession: ELLA, slackChannelId: DM, threadTs: A }]);
+        svc.stop();
+        await fs.rm(h.deps.storePath as string, { force: true });
+      });
+
+      it('a recent answer stops counting once the window has passed', async () => {
+        let now = new Date('2026-09-28T10:00:00Z');
+        const { svc, uploads, emit, deps } = await twoOpenThreads({ now: () => now });
+        emit(agentTurn('r1', 'HSA 区别…', { metadata: { source: 'reply-tool', slackThreadKey: `${DM}:${B}` } }));
+        await flush();
+        now = new Date('2026-09-28T10:10:00Z');
+        await attach(svc);
+        expect(uploads.map((u) => u.threadTs)).toEqual([A]);
+        svc.stop();
+        await fs.rm(deps.storePath as string, { force: true });
+      });
     });
   });
 });
