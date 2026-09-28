@@ -13,8 +13,12 @@
  *    member inactive with an empty session name, no projects/owner/parent, and
  *    a creation time inside the incident window. Any single marker is shared
  *    by real teams: on the machine that reported the issue a real team
- *    ("Closie") also has members with empty session names, and a user can
- *    legitimately create a team from the `dtc-viral-content-team` template.
+ *    ("Closie") also has members with empty session names, and a user could
+ *    legitimately create a team from the `dtc-viral-content-team` template
+ *    (this is a fixed historical fingerprint from the 2026-06-12 incident;
+ *    the template itself moved to crewly-pro on 2026-09-28, #816 — that move
+ *    does not affect this hardcoded comparison, which never reads
+ *    config/templates/).
  *  - The directory name must equal the config's `id`, so a mis-filed or
  *    hand-edited team is never touched.
  *  - Nothing is deleted. Matches are MOVED into a backup directory, an

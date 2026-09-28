@@ -338,7 +338,7 @@ function buildTeamConfig(
 
 /**
  * Convert a kebab-case template id → human team name
- * (`"dtc-viral-content-team"` → `"Dtc Viral Content Team"`).
+ * (`"growth-marketing-team"` → `"Growth Marketing Team"`).
  *
  * @param templateId - The kebab-case template id.
  * @returns A title-cased, space-separated name.

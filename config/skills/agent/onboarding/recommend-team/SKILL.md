@@ -70,7 +70,7 @@ bash execute.sh '{
 {
   "success": true,
   "recommendation": {
-    "templateId": "dtc-viral-content-team",
+    "templateId": "growth-marketing-team",
     "agents": [
       { "role": "content-drafter", "responsibilities": "...", "skillIds": [...] },
       { "role": "support-triage",  "responsibilities": "...", "skillIds": [...] }

@@ -27,7 +27,6 @@ For users who installed Crewly BEFORE the v2.1 LLM-wiki landed (2026-05-22+). Th
 | `~/.crewly/agents/<id>/memory.json roleKnowledge[]` | `<project>/.crewly/wiki/llm-curated/{patterns,decisions}/<date>-<slug>.md` (copy; original retained) |
 | `<crewly-src>/config/sops/<role>/*.md` (OSS-distributed) | `~/.crewly/global-wiki/llm-curated/sops/<role>/<slug>.md` (via `migrate/oss-sops`) |
 | `<crewly-src>/config/domain-sops/*.sop.md` | `~/.crewly/global-wiki/llm-curated/sops/domain/<slug>.md` |
-| `<crewly-src>/config/templates/pro-sops/norms/*.md` | `~/.crewly/global-wiki/llm-curated/sops/pro-norms/<slug>.md` |
 
 Per spec §6 the agent's `memory.json` stays put — this skill **copies** its `roleKnowledge` entries to the wiki rather than moving them, so private agent memory keeps working unchanged.
 

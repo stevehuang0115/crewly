@@ -51,14 +51,16 @@ describe('recommendTeam — hardcoded mappings', () => {
     expect(HARDCODED_MAPPING_KEYS.length).toBe(5);
   });
 
-  it('e-commerce + content + support → dtc-viral-content-team (2 agents)', () => {
+  it('e-commerce + content + support → growth-marketing-team (2 agents)', () => {
     const rec = recommendTeam(
       baseCtx('small Shopify skincare shop', [
         'weekly blog content',
         'customer support replies',
       ]),
     );
-    expect(rec.templateId).toBe('dtc-viral-content-team');
+    // dtc-viral-content-team was a paid template, moved to crewly-pro (#816);
+    // growth-marketing-team is the free substitute — see recommend-team.ts.
+    expect(rec.templateId).toBe('growth-marketing-team');
     expect(rec.agents.length).toBe(2);
     expect(rec.source).toBe('hardcoded:ecommerce-content-support');
     expectShape(rec);
@@ -77,7 +79,7 @@ describe('recommendTeam — hardcoded mappings', () => {
     expectShape(rec);
   });
 
-  it('solo SaaS dev → pragmatic-mvp-dev-team (2 agents)', () => {
+  it('solo SaaS dev → web-dev-team (2 agents)', () => {
     const rec = recommendTeam({
       industry: 'solo SaaS founder building a B2B platform',
       scale: 'solo',
@@ -86,13 +88,15 @@ describe('recommendTeam — hardcoded mappings', () => {
         baseTask('weekly metrics digest'),
       ],
     });
-    expect(rec.templateId).toBe('pragmatic-mvp-dev-team');
+    // pragmatic-mvp-dev-team (the solo case) was a paid template, moved to
+    // crewly-pro (#816); web-dev-team now covers both scales — see recommend-team.ts.
+    expect(rec.templateId).toBe('web-dev-team');
     expect(rec.agents.length).toBe(2);
     expect(rec.source).toBe('hardcoded:engineering');
     expectShape(rec);
   });
 
-  it('small dev team → web-dev-team (different template than solo path)', () => {
+  it('small dev team → web-dev-team (same template as the solo path, since #816)', () => {
     const rec = recommendTeam({
       industry: 'small SaaS engineering team building developer tools',
       scale: 'small-team',
@@ -176,6 +180,36 @@ describe('recommendTeam — properties', () => {
       'content', 'support',
     ]);
     expect(recommendTeam(ctx)).toEqual(recommendTeam(ctx));
+  });
+
+  it('never recommends a moved/paid template on this OSS-only install (#816)', () => {
+    // dtc-viral-content-team, customer-loyalty-team, expert-innovation-team
+    // and pragmatic-mvp-dev-team moved to crewly-pro; an OSS install has no
+    // way to provision them, so recommendTeam must never name one — for
+    // every hardcoded mapping (including both scales of 'engineering',
+    // where the solo case used to differ) and the fallback.
+    const MOVED_TEMPLATE_IDS = new Set([
+      'dtc-viral-content-team',
+      'customer-loyalty-team',
+      'expert-innovation-team',
+      'pragmatic-mvp-dev-team',
+    ]);
+    const samples: BusinessContext[] = [
+      baseCtx('shopify', ['support', 'content']),
+      baseCtx('youtube creator', ['video']),
+      { industry: 'saas startup', scale: 'solo', tasks: [baseTask('code review')] },
+      { industry: 'saas startup', scale: 'small-team', tasks: [baseTask('code review')] },
+      { industry: 'saas startup', scale: 'company', tasks: [baseTask('code review')] },
+      baseCtx('helpdesk operations', ['tickets']),
+      baseCtx('growth marketing agency', ['ads']),
+      baseCtx('???', ['???']), // fallback
+    ];
+    for (const s of samples) {
+      const rec = recommendTeam(s);
+      if (MOVED_TEMPLATE_IDS.has(rec.templateId)) {
+        throw new Error(`recommendTeam(${JSON.stringify(s)}) returned moved/paid template "${rec.templateId}"`);
+      }
+    }
   });
 
   it('every recommendation declares a real-looking template id (kebab-case, ≥2 segments)', () => {
