@@ -162,7 +162,7 @@ describe('GiveUpRecoveryService (#841)', () => {
     await pool.addToPool(wi);
     await pool.claimSpecificItem(ORCHESTRATOR_SESSION_NAME, wi.id);
 
-    const out = await svc.complete(wi.id, { summary: 'It is impossible. Gave up.' });
+    const out = await svc.complete(wi.id, { summary: 'It is impossible. Gave up.' }, 'agent');
 
     expect(out.action).toBe('recorded');
     expect(await pool.getAllItems()).toHaveLength(1);
@@ -199,7 +199,7 @@ describe('GiveUpRecoveryService (#841)', () => {
   describe('completions', () => {
     it('a completion whose outcome is a give-up (no delivery) becomes failed + retry, never done_by_worker', async () => {
       const root = await running();
-      const out = await svc.complete(root, { summary: 'Could not get it under the target time. Gave up.' });
+      const out = await svc.complete(root, { summary: 'Could not get it under the target time. Gave up.' }, 'agent');
       expect(out).toMatchObject({ action: 'retry_queued', retryWorkItemId: `${root}:giveup:1` });
       const stopped = await item(root);
       expect(stopped.status).toBe('failed');
@@ -209,7 +209,7 @@ describe('GiveUpRecoveryService (#841)', () => {
 
     it('a delivered completion that mentions "couldn\'t" completes exactly as today', async () => {
       const root = await running();
-      const out = await svc.complete(root, { summary: "Done, PR opened; couldn't reproduce the flaky test, fixed it anyway." });
+      const out = await svc.complete(root, { summary: "Done, PR opened; couldn't reproduce the flaky test, fixed it anyway." }, 'agent');
       expect(out.action).toBe('none');
       const done = await item(root);
       expect(done.status).toBe('done_by_worker');
@@ -220,7 +220,7 @@ describe('GiveUpRecoveryService (#841)', () => {
     it('with the team policy at 0 (feature off), a give-up completion also completes as today', async () => {
       teams = [team(0)];
       const root = await running();
-      const out = await svc.complete(root, { summary: 'It is impossible. Gave up.' });
+      const out = await svc.complete(root, { summary: 'It is impossible. Gave up.' }, 'agent');
       expect(out.action).toBe('recorded');
       expect((await item(root)).status).toBe('done_by_worker');
       expect(await pool.getAllItems()).toHaveLength(1);
@@ -246,7 +246,7 @@ describe('GiveUpRecoveryService (#841)', () => {
     const root = await running();
     await svc.block(root, { agentId: WORKER, reason: GIVE_UP });
     await claim(`${root}:giveup:1`);
-    await pool.completeItem(`${root}:giveup:1`, { summary: 'Done with a different optimizer; PR opened.' });
+    await pool.completeItem(`${root}:giveup:1`, { summary: 'Done with a different optimizer; PR opened.' }, 'agent');
     const other = await running({ title: 'Other' });
     await svc.block(other, { agentId: WORKER, reason: 'Needs your approval to spend $40 on GPUs.' });
 
@@ -258,8 +258,13 @@ describe('GiveUpRecoveryService (#841)', () => {
         escalations: 0, escalatedByCategory: { money: 1 },
       }),
     ]);
-    // The lead verifies the retry: it now counts as a success.
-    await pool.updateItemStatus(`${root}:giveup:1`, 'verified', 'system');
+    // The retry is verified: it now counts as a success. #813's
+    // identity-aware gate requires a role listed for done_by_worker→verified
+    // (team_lead/orchestrator/owner) — 'system' no longer qualifies. This
+    // retry has no `:verify:` companion item in this isolated unit test (no
+    // reviewer of record), so 'owner' is the simplest unconditionally-valid
+    // actor; this test is about the resulting metrics, not verdict identity.
+    await pool.updateItemStatus(`${root}:giveup:1`, 'verified', 'owner');
     stats = computeGiveUpStats(await pool.getAllItems(), teams);
     expect(stats.teams[0]).toMatchObject({ retriesSucceeded: 1, retriesPending: 0, retrySuccessRate: 1 });
     expect(computeGiveUpStats(await pool.getAllItems(), teams, 'nope').teams).toEqual([]);

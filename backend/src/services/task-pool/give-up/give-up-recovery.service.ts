@@ -25,7 +25,7 @@
 
 import { GIVE_UP_RECOVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../../constants.js';
 import type { Team } from '../../../types/index.js';
-import type { WorkItem } from '../../../types/v2/work-item.types.js';
+import type { TransitionActorInput, WorkItem } from '../../../types/v2/work-item.types.js';
 import { pickTeamLead } from '../../../utils/team.utils.js';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
 import { classifyStop, type StopCategory, type StopDecision, type StopSource, type StopVerdict } from './stop-classifier.js';
@@ -77,7 +77,12 @@ export interface StopOutcome {
 /** The pool operations this service needs (a subset of TaskPoolService). */
 export interface GiveUpPool {
   findWorkItem(id: string): Promise<WorkItem | null>;
-  completeItem(id: string, result?: Record<string, unknown>): Promise<void>;
+  // #813: actor is required on the real TaskPoolService.completeItem — a
+  // review item's completion must be able to tell its reviewer from anyone
+  // else. This service is one of that method's callers (the non-give-up
+  // path), so it takes the same required actor and passes it straight
+  // through.
+  completeItem(id: string, result: Record<string, unknown> | undefined, actor: TransitionActorInput): Promise<void>;
   blockItem(id: string, options: { agentId: string; reason?: string }): Promise<void>;
   failItem(id: string, error: string): Promise<void>;
   addToPool(wi: WorkItem): Promise<void>;
@@ -141,9 +146,11 @@ export class GiveUpRecoveryService {
    *
    * @param workItemId - The running item
    * @param result - The worker's completion payload
+   * @param actor - Who is completing it (#813: required by pool.completeItem;
+   *   forwarded on the non-give-up path exactly as the caller resolved it)
    * @returns What was done
    */
-  async complete(workItemId: string, result?: Record<string, unknown>): Promise<StopOutcome> {
+  async complete(workItemId: string, result: Record<string, unknown> | undefined, actor: TransitionActorInput): Promise<StopOutcome> {
     const text = completionText(result);
     const verdict = classifyStop(text, 'complete');
     const before = await this.pool.findWorkItem(workItemId);
@@ -156,7 +163,7 @@ export class GiveUpRecoveryService {
       verdict.decision === 'retry' && before !== null && !isExcludedFromGiveUp(before) &&
       maxRetriesFor(teamOf(await this.loadTeams().catch(() => [] as Team[]), before.target)) > 0;
     if (!enabled) {
-      await this.pool.completeItem(workItemId, result);
+      await this.pool.completeItem(workItemId, result, actor);
       if (verdict.decision !== 'none') await this.record(workItemId, 'complete', verdict, text);
       return { verdict, action: verdict.decision === 'none' ? 'none' : 'recorded' };
     }
