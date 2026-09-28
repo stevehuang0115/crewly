@@ -15,7 +15,13 @@ import { ChannelStore } from './sqlite/channel.store.js';
 import { EventEmitter } from 'events';
 import { MessageStore } from './sqlite/message.store.js';
 import { openChatDatabase, type ChatDatabase } from './sqlite/chat-db.js';
-import { OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS } from '../../constants.js';
+import { CloudOutboxStore } from './sqlite/cloud-outbox.store.js';
+import { reclassifyOwnerSlackRows, type OwnerIdentity } from './sqlite/unified-log.js';
+import {
+  CONVERSATION_LOG_CONSTANTS,
+  OWNER_EVIDENCE_METADATA,
+  SLACK_TYPING_CONSTANTS,
+} from '../../constants.js';
 import {
   CHAT_CHANNEL_TYPES,
   CHAT_CONTENT_TYPES,
@@ -33,6 +39,8 @@ import {
   type ChatMessageRow,
   type ChatPrincipal,
   type ChatSenderType,
+  type ChatTimelineItemDTO,
+  type ChatTimelineResult,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -167,6 +175,13 @@ export interface SendMessageArgs {
   interim?: boolean;
   contentType?: ChatContentType;
   clientMessageId?: string;
+  /**
+   * Surface the message came through when it is not Crewly Chat. Only
+   * `'cloud-talk'` (the portal's Talk page via the relay) is accepted today;
+   * stored as `metadata.source` so the unified log can tell Talk apart
+   * (spec §A.3 G3).
+   */
+  origin?: 'cloud-talk';
   /** Attachment hooks — the store is added in a later step, so pre-resolved DTOs are accepted. */
   attachments?: ChatAttachmentDTO[];
   /**
@@ -222,6 +237,11 @@ export const RECORD_TURN_SOURCES = [
   // approval given on these surfaces is visible to the commitment gate.
   'telegram',
   'google-chat',
+  // Unified conversation log (specs/unified-conversations-cloud-store.md
+  // §A.3 G2/G3): WhatsApp assistant-mode turns (were mis-tagged `slack`) and
+  // Crewly Cloud's Talk page.
+  'whatsapp',
+  'cloud-talk',
 ] as const;
 
 /** Union type of the values in {@link RECORD_TURN_SOURCES}. */
@@ -301,6 +321,7 @@ export class ChatV2Service extends EventEmitter {
   private readonly db: ChatDatabase;
   private readonly channels: ChannelStore;
   private readonly messages: MessageStore;
+  private readonly outbox: CloudOutboxStore;
   private presence: ChatV2ServiceOptions['getPresence'];
   private readonly validateTeamMembership: ChatV2ServiceOptions['validateTeamMembership'];
   private readonly now: () => number;
@@ -311,6 +332,7 @@ export class ChatV2Service extends EventEmitter {
     this.db = options.db ?? openChatDatabase({ dbPath: options.config.storage.dbPath });
     this.channels = new ChannelStore(this.db);
     this.messages = new MessageStore(this.db);
+    this.outbox = new CloudOutboxStore(this.db);
     this.presence = options.getPresence ?? DEFAULT_PRESENCE;
     this.validateTeamMembership = options.validateTeamMembership;
     this.now = options.now ?? Date.now;
@@ -328,6 +350,131 @@ export class ChatV2Service extends EventEmitter {
    */
   setPresenceProvider(getPresence: ChatV2ServiceOptions['getPresence']): void {
     this.presence = getPresence;
+  }
+
+  /**
+   * Wire who the owner is on shared surfaces (their Slack user id and the
+   * workspace this machine serves). Feeds each new row's `sender_kind`,
+   * `ext_ref.slackTeamId` and — in shared Slack channels — whether it may be
+   * synced to Cloud (owner decision O3).
+   *
+   * Also upgrades rows recorded before the owner was known (legacy backfill,
+   * early boot) from `human` to `owner`.
+   *
+   * @param provider - Returns the owner's identity, or null when unknown
+   */
+  setOwnerIdentityProvider(provider: () => OwnerIdentity | null): void {
+    this.messages.setOwnerIdentityProvider(provider);
+    this.reclassifyOwnerRows(provider);
+  }
+
+  /**
+   * Mark the owner's Slack rows as the owner's (see {@link setOwnerIdentityProvider}).
+   * Safe to call repeatedly; never throws.
+   *
+   * @param provider - Owner identity lookup
+   * @returns Rows reclassified
+   */
+  reclassifyOwnerRows(provider: () => OwnerIdentity | null): number {
+    try {
+      const slackUserId = provider()?.slackUserId;
+      return slackUserId ? reclassifyOwnerSlackRows(this.db, slackUserId) : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * The durable Cloud outbox + sync state on this database (the uploader's
+   * only way in; see `ConversationCloudSyncService`).
+   *
+   * @returns The outbox store
+   */
+  getCloudOutbox(): CloudOutboxStore {
+    return this.outbox;
+  }
+
+  /**
+   * Surface of the owner's latest message on a channel — `slack`,
+   * `crewly-chat`, `cloud-talk`, … — or null when the owner never spoke
+   * there. Server-internal read used by the Slack reply-affinity rule (G6).
+   *
+   * @param channelId - chat-v2 channel id
+   * @returns The source, or null
+   */
+  getLatestOwnerTurnSource(channelId: string): string | null {
+    return this.messages.latestOwnerTurnSource(channelId);
+  }
+
+  /**
+   * An agent's merged timeline across every surface — its DMs, Slack
+   * threads, messenger conversations and the huddles it belongs to —
+   * newest first (spec §A.5). Replaces the client-side fan-out over
+   * channels.
+   *
+   * Server-internal read with no per-channel owner check (the OSS backend
+   * serves one owner). An agent principal may read only its own timeline.
+   *
+   * @param args.agentSession - Agent session name
+   * @param args.principal - Caller
+   * @param args.before - Only messages created strictly before this (ms)
+   * @param args.cursor - `nextCursor` of a previous page (wins over `before`)
+   * @param args.limit - Page size (default 50, max 200)
+   * @param args.sources - Only these surfaces
+   * @returns The page and the cursor of the next one
+   * @throws {ChatError} `validation_error` (400) on a bad session / cursor / source
+   * @throws {ChatError} `forbidden` (403) when an agent reads another agent's timeline
+   */
+  getAgentTimeline(args: {
+    agentSession: string;
+    principal: ChatPrincipal;
+    before?: number;
+    cursor?: string | null;
+    limit?: number;
+    sources?: string[];
+  }): ChatTimelineResult {
+    const agentSession = (args.agentSession ?? '').trim();
+    if (!agentSession) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, 'agent session is required');
+    }
+    if (args.principal.agentSession && args.principal.agentSession !== agentSession) {
+      throw new ChatError(CHAT_ERROR_CODES.FORBIDDEN, 403, 'An agent can only read its own timeline');
+    }
+    const sources = (args.sources ?? []).map((s) => s.trim()).filter((s) => s.length > 0);
+    const unknown = sources.filter((s) => !(CONVERSATION_LOG_CONSTANTS.SOURCES as readonly string[]).includes(s));
+    if (unknown.length > 0) {
+      throw new ChatError(CHAT_ERROR_CODES.VALIDATION, 400, `unknown source: ${unknown.join(', ')}`, {
+        allowed: CONVERSATION_LOG_CONSTANTS.SOURCES,
+      });
+    }
+    const requested = typeof args.limit === 'number' && Number.isFinite(args.limit) && args.limit > 0
+      ? Math.floor(args.limit)
+      : CONVERSATION_LOG_CONSTANTS.TIMELINE_DEFAULT_LIMIT;
+    const limit = Math.max(1, Math.min(requested, CONVERSATION_LOG_CONSTANTS.TIMELINE_MAX_LIMIT));
+    let before: { createdAt: number; rowid?: number } | undefined;
+    if (args.cursor) {
+      before = decodeTimelineCursor(args.cursor);
+    } else if (typeof args.before === 'number' && Number.isFinite(args.before)) {
+      before = { createdAt: args.before };
+    }
+
+    const rows = this.messages.listAgentTimeline(agentSession, { before, limit, sources });
+    const items: ChatTimelineItemDTO[] = rows.map((r) => ({
+      ...this.toMessageDTO(r, []),
+      source: r.source ?? 'crewly-chat',
+      direction: r.direction ?? (r.sender_type === 'agent' ? 'out' : r.sender_type === 'system' ? 'internal' : 'in'),
+      senderKind: r.sender_kind ?? (r.sender_type === 'user' ? 'owner' : r.sender_type),
+      agentSession: r.agent_session,
+      extRef: parseExtRef(r.ext_ref),
+      channelName: r.channel_name,
+      channelType: r.channel_type,
+    }));
+    const last = rows[rows.length - 1];
+    return {
+      agentSession,
+      items,
+      nextCursor: rows.length === limit && last ? encodeTimelineCursor(last.created_at, last.rowid) : null,
+    };
   }
 
   /** Release the DB handle. Safe to call during graceful shutdown / in tests. */
@@ -1526,6 +1673,10 @@ export class ChatV2Service extends EventEmitter {
     // speaking — the commitment-approval gate reads `user` rows (#730).
     const agentAuthoredAsUser = senderType === 'user' && !!args.principal.agentSession;
 
+    // Cloud Talk (G3): only an owner-authored turn may carry the tag — an
+    // agent's own write never passes as a Talk message.
+    const isTalk = args.origin === 'cloud-talk' && senderType === 'user' && !agentAuthoredAsUser;
+
     const { row: persisted } = this.messages.insert({
       channelId: args.channelId,
       senderType,
@@ -1540,7 +1691,9 @@ export class ChatV2Service extends EventEmitter {
         ? { metadata: { [OWNER_EVIDENCE_METADATA.AUTHOR_AGENT_SESSION]: args.principal.agentSession } }
         : args.interim && senderType === 'agent'
           ? { metadata: { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } }
-          : {}),
+          : isTalk
+            ? { metadata: { source: 'cloud-talk' } }
+            : {}),
     });
 
     const dto = this.toMessageDTO(persisted, args.attachments ?? []);
@@ -1974,5 +2127,60 @@ export class ChatV2Service extends EventEmitter {
       mentions,
       threadId: row.thread_id ?? undefined,
     };
+  }
+}
+
+/**
+ * Encode a timeline position (created_at + rowid) as an opaque cursor.
+ *
+ * @param createdAt - Message created_at (ms)
+ * @param rowid - Message rowid (tie-breaker)
+ * @returns base64url cursor
+ */
+export function encodeTimelineCursor(createdAt: number, rowid: number): string {
+  return Buffer.from(JSON.stringify({ c: createdAt, r: rowid }), 'utf-8').toString('base64url');
+}
+
+/**
+ * Decode a timeline cursor.
+ *
+ * @param cursor - Cursor from {@link encodeTimelineCursor}
+ * @returns The position
+ * @throws {ChatError} `invalid_cursor` (400) when malformed
+ */
+export function decodeTimelineCursor(cursor: string): { createdAt: number; rowid: number } {
+  try {
+    const parsed = JSON.parse(Buffer.from(cursor, 'base64url').toString('utf-8')) as { c?: unknown; r?: unknown };
+    if (typeof parsed.c !== 'number' || typeof parsed.r !== 'number' || !Number.isFinite(parsed.c) || !Number.isFinite(parsed.r)) {
+      throw new Error('missing fields');
+    }
+    return { createdAt: parsed.c, rowid: parsed.r };
+  } catch (err) {
+    throw new ChatError(
+      CHAT_ERROR_CODES.INVALID_CURSOR,
+      400,
+      `Cursor failed to parse: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * Parse the `ext_ref` column into a flat string map.
+ *
+ * @param raw - Column value
+ * @returns The ids, or null
+ */
+function parseExtRef(raw: string | null): Record<string, string> | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof v === 'string') out[k] = v;
+    }
+    return Object.keys(out).length > 0 ? out : null;
+  } catch {
+    return null;
   }
 }

@@ -320,6 +320,25 @@ describe('ChatV2RelayAdapter', () => {
     expect(msg.content).toBe('hello relay');
   });
 
+  it('sendMessage with origin cloud-talk is recorded as a Cloud Talk turn (G3)', async () => {
+    const ensure = service.ensureDmChannel({
+      agentSession: 'crewly-orc',
+      name: 'Orc',
+      principal: { userId: 'dev-user-001', source: 'oss' },
+    });
+    cloudSync.emitInbound(
+      buildRequestMsg('portal-3', {
+        id: 'r-talk',
+        method: 'sendMessage',
+        params: { channelId: ensure.channel.id, content: 'from talk', clientMessageId: 'talk-1', origin: 'cloud-talk' },
+      }),
+    );
+    await flushMicrotasks();
+    const r = cloudSync.outbound[0].payload as ChatResponsePayload;
+    expect((r.result as { metadata?: Record<string, unknown> }).metadata).toMatchObject({ source: 'cloud-talk' });
+    expect(service.getLatestOwnerTurnSource(ensure.channel.id)).toBe('cloud-talk');
+  });
+
   // ---------------------------------------------------------------------------
   // 2026-05-17 dispatcher-wiring: Portal-sourced user `sendMessage` RPCs must
   // also fire the ChatV2Dispatcher so the bound agent's PTY receives the
