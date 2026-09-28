@@ -81,6 +81,12 @@ describe('OSS template validation', () => {
         expect(data.verificationPipeline).toBeUndefined();
         expect(data.qualityGatesFile).toBeUndefined();
         expect(data.norms).toBeUndefined();
+        // Hierarchical teams (a TL + reporting workers) are a Pro feature
+        // per the workspace CLAUDE.md rule. This test did not check for it
+        // before #816 (2026-09-28) — 4 hierarchical templates had been
+        // sitting in OSS undetected by this file, found only by manual
+        // review; this line guards against that recurring.
+        expect(data.hierarchical).not.toBe(true);
       });
 
       it('does not require a paid tier', () => {

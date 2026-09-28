@@ -149,7 +149,12 @@ const HARDCODED_MAPPINGS: readonly HardcodedMapping[] = [
     build: (ctx) =>
       build(
         'ecommerce-content-support',
-        'dtc-viral-content-team',
+        // dtc-viral-content-team was a paid template, moved to crewly-pro
+        // (2026-09-28, #816). growth-marketing-team is the closest free
+        // substitute (it has a content-drafter role); materialize-team.ts
+        // provisions the team from THIS template's own roles, not from the
+        // RecommendedAgent[] below (that list is preview/fallback-stub only).
+        'growth-marketing-team',
         [
           {
             role: 'content-drafter',
@@ -220,7 +225,10 @@ const HARDCODED_MAPPINGS: readonly HardcodedMapping[] = [
     build: (ctx) =>
       build(
         'engineering',
-        ctx.scale === 'solo' ? 'pragmatic-mvp-dev-team' : 'web-dev-team',
+        // pragmatic-mvp-dev-team (the solo case) was a paid template, moved
+        // to crewly-pro (2026-09-28, #816). web-dev-team is free and already
+        // covers the non-solo case, so it now covers both.
+        'web-dev-team',
         [
           {
             role: 'code-reviewer',
@@ -346,7 +354,7 @@ const HARDCODED_MAPPINGS: readonly HardcodedMapping[] = [
  *     { name: 'customer support replies', tier: 'yes-today' },
  *   ],
  * });
- * // → templateId: 'dtc-viral-content-team', 2 agents, …
+ * // → templateId: 'growth-marketing-team', 2 agents, …
  * ```
  */
 export function recommendTeam(ctx: BusinessContext): TeamRecommendation {

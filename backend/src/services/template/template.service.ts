@@ -510,12 +510,17 @@ export class TemplateService {
         maxRetries: 1,
       } as TeamTemplate['verificationPipeline'];
 
-      // New roles-format flat template (e.g. pragmatic-mvp-dev-team.json): the
-      // `roles` array is already in TeamTemplate shape. Load it directly so the
-      // template's real hierarchy (hierarchyLevel / canDelegate / reportsTo),
-      // skills and runtime survive. Previously these files were silently SKIPPED
-      // because the loader only accepted `members[]`, leaving every roles-format
-      // template — the only ones that define a delegating leader — unregistered.
+      // New roles-format flat template (e.g. a hierarchical team with a
+      // delegating leader): the `roles` array is already in TeamTemplate
+      // shape. Load it directly so the template's real hierarchy
+      // (hierarchyLevel / canDelegate / reportsTo), skills and runtime
+      // survive. Previously these files were silently SKIPPED because the
+      // loader only accepted `members[]`, leaving every roles-format
+      // template — the only ones that define a delegating leader —
+      // unregistered. (The OSS-shipped examples of this format were the
+      // premium templates moved to crewly-pro on 2026-09-28, #816; this
+      // branch is exercised by crewly-pro's own templates now, and by
+      // template.service.test.ts's roles-format fixture.)
       if (Array.isArray(data.roles)) {
         const rolesFromTemplate: TemplateRole[] = data.roles.map((r: Record<string, unknown>) => ({
           ...(r as object),

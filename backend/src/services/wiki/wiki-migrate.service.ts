@@ -100,6 +100,7 @@ export type WikiMigrateSourceType =
   | 'sop-role'
   | 'sop-common'
   | 'sop-domain'
+  /** Legacy only (2026-09-28, #816): no longer produced — kept so an old manifest entry still type-checks. */
   | 'sop-pro-template';
 
 export interface WikiMigrateProposedPage {
@@ -310,16 +311,22 @@ export class WikiMigrateService {
    * into the GLOBAL vault's `llm-curated/sops/` tree so wiki-query can find
    * them. Without this, the org-wide SOPs (content-production-pipeline,
    * git-workflow, blocker-handling, etc.) sit in `<crewly-src>/config/sops/`
-   * + `config/domain-sops/` + `config/templates/pro-sops/` and are invisible
-   * to `wiki-query` — which is why ORC reported "no marketing SOP" despite
-   * the file existing on disk (2026-05-27 incident).
+   * + `config/domain-sops/` and are invisible to `wiki-query` — which is why
+   * ORC reported "no marketing SOP" despite the file existing on disk
+   * (2026-05-27 incident).
    *
    * Routing:
    *   `config/sops/<role>/<n>.md`             → llm-curated/sops/<role>/<n>.md
    *   `config/sops/common/<n>.md`              → llm-curated/sops/common/<n>.md
    *   `config/sops/<n>.md` (no role)           → llm-curated/sops/general/<n>.md
    *   `config/domain-sops/<n>.sop.md`          → llm-curated/sops/domain/<n>.md
-   *   `config/templates/pro-sops/norms/<n>.md` → llm-curated/sops/pro-norms/<n>.md
+   *
+   * `config/templates/pro-sops/norms/` (the `sop-pro-template` source) was
+   * dropped 2026-09-28 (#816): those norms belong to premium templates,
+   * which moved to crewly-pro along with the templates themselves. If Pro
+   * needs its own norms in the vault, that migration belongs on the Pro
+   * side — crewly-pro has no wiki-migrate equivalent yet (checked while
+   * making this change), so it is not done here either.
    *
    * Idempotent via the global vault's manifest. Legacy source files are NEVER
    * deleted. Bootstraps the global vault if missing.
@@ -384,11 +391,6 @@ export class WikiMigrateService {
         type: 'sop-domain',
         relRoot: 'config/domain-sops',
         targetSubdir: () => 'domain',
-      },
-      {
-        type: 'sop-pro-template',
-        relRoot: 'config/templates/pro-sops/norms',
-        targetSubdir: () => 'pro-norms',
       },
     ];
 

@@ -68,7 +68,7 @@ function fallbackOpts(testRoot: string): MaterializeOptions & { __logs: string[]
 }
 
 const sampleRec: TeamRecommendation = {
-  templateId: 'dtc-viral-content-team',
+  templateId: 'growth-marketing-team',
   agents: [
     {
       role: 'content-drafter',
@@ -135,9 +135,9 @@ describe('materializeTeam — live provisioning (default path)', () => {
     };
     await materializeTeam(sampleRec, opts);
     expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe('Dtc Viral Content Team');
+    expect(calls[0].name).toBe('Growth Marketing Team');
     expect(calls[0].owner).toBe('user-aaa');
-    expect(calls[0].rec.templateId).toBe('dtc-viral-content-team');
+    expect(calls[0].rec.templateId).toBe('growth-marketing-team');
   });
 
   it('persists the project onboarding-complete flag (with teamId)', async () => {
@@ -156,7 +156,7 @@ describe('materializeTeam — live provisioning (default path)', () => {
     const logs = opts.__logs;
     expect(logs.length).toBe(3);
     expect(logs[0]).toContain('materializing template');
-    expect(logs[0]).toContain('dtc-viral-content-team');
+    expect(logs[0]).toContain('growth-marketing-team');
     expect(logs[1]).toContain('provisioned LIVE team');
     expect(logs[1]).toContain(LIVE_TEAM.teamId);
     expect(logs[2]).toContain('flipped onboardingComplete');
@@ -179,11 +179,11 @@ describe('materializeTeam — fallback (template not provisionable)', () => {
 
     const parsed = JSON.parse(await fs.readFile(expectedPath, 'utf8'));
     expect(parsed.id).toBe(FIXED_UUID);
-    expect(parsed.templateId).toBe('dtc-viral-content-team');
+    expect(parsed.templateId).toBe('growth-marketing-team');
     expect(parsed.onboardingSource).toBe('hardcoded:ecommerce-content-support');
     expect(parsed.createdBy).toBe('onboarding-v3');
     expect(parsed.createdAt).toBe(FIXED_NOW.toISOString());
-    expect(parsed.name).toBe('Dtc Viral Content Team');
+    expect(parsed.name).toBe('Growth Marketing Team');
   });
 
   it('every agent in the recommendation flows through to members[] (inactive)', async () => {

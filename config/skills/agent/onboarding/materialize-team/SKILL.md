@@ -51,7 +51,7 @@ This skill is callable **only when orc is in `'onboarding'` mode**.
 cat <<'EOF' | bash execute.sh
 {
   "recommendation": {
-    "templateId": "dtc-viral-content-team",
+    "templateId": "growth-marketing-team",
     "agents": [
       { "role": "content-drafter", "responsibilities": "...", "skillIds": ["content-drafter"] },
       { "role": "support-triage",  "responsibilities": "...", "skillIds": ["support-triage"]  }

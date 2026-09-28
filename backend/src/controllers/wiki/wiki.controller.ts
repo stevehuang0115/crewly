@@ -1523,9 +1523,8 @@ export async function cleanupApply(
 /**
  * POST /api/wiki/migrate/oss-sops
  *
- * Migrate OSS-distributed SOPs (`config/sops`, `config/domain-sops`,
- * `config/templates/pro-sops/norms`) into the global vault's
- * `llm-curated/sops/` tree so `wiki-query` can find them.
+ * Migrate OSS-distributed SOPs (`config/sops`, `config/domain-sops`) into
+ * the global vault's `llm-curated/sops/` tree so `wiki-query` can find them.
  *
  * Body: `{ crewlySourceRoot?: string, confirm?: true }`
  *   - When `confirm: true` is set, writes files (apply). Otherwise dry-run.

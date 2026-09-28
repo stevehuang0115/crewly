@@ -41,7 +41,8 @@ describe('POST /api/orchestrator/onboarding/recommend-team', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
-    expect(res.body.recommendation.templateId).toBe('dtc-viral-content-team');
+    // dtc-viral-content-team was a paid template, moved to crewly-pro (#816).
+    expect(res.body.recommendation.templateId).toBe('growth-marketing-team');
     expect(res.body.recommendation.agents.length).toBe(2);
     expect(res.body.recommendation.source).toBe('hardcoded:ecommerce-content-support');
   });

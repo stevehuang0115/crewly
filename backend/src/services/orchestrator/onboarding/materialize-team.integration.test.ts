@@ -9,8 +9,13 @@
  * provisioning).
  *
  * Hermetic via CREWLY_HOME → a tmp dir (set BEFORE any import that constructs
- * the StorageService singleton). Templates load from the repo's
- * config/templates (cwd-relative), so this needs no fixtures.
+ * the StorageService singleton). The roles-format template this test needs
+ * is written to its OWN tmp templates dir and the TemplateService singleton
+ * is pointed at it directly — NOT the repo's real config/templates/, which
+ * (since 2026-09-28, #816: the only OSS roles-format examples were paid
+ * templates that moved to crewly-pro) may have zero roles-format templates
+ * of its own. Depending on "whatever happens to be in config/templates/"
+ * was already fragile; this decouples the test from that entirely.
  *
  * @module services/orchestrator/onboarding/materialize-team.integration.test
  */
@@ -31,10 +36,40 @@ process.env.CREWLY_HOME = TMP_HOME;
 import { materializeTeam } from './materialize-team.js';
 import type { TeamRecommendation } from './recommend-team.js';
 import { StorageService } from '../../core/storage.service.js';
+import { TemplateService } from '../../template/template.service.js';
+
+/** A minimal roles-format template (team-lead + developer, hierarchical) — this test's own fixture, not a real shipped template. */
+const ROLES_FORMAT_FIXTURE = {
+  id: 'test-roles-format-dev-team',
+  name: 'Test Roles-Format Dev Team',
+  description: 'Integration-test fixture proving the roles-format loading path (#816).',
+  version: '1.0.0',
+  category: 'development',
+  hierarchical: true,
+  roles: [
+    {
+      role: 'team-lead',
+      label: 'Team Lead',
+      defaultName: 'Lead',
+      count: 1,
+      hierarchyLevel: 1,
+      canDelegate: true,
+      defaultSkills: ['decompose-goal', 'delegate-task'],
+    },
+    {
+      role: 'developer',
+      label: 'Developer',
+      defaultName: 'Dev',
+      count: 1,
+      hierarchyLevel: 2,
+      reportsTo: 'team-lead',
+      defaultSkills: ['complete-task', 'request-help'],
+    },
+  ],
+};
 
 const softwareRec: TeamRecommendation = {
-  // A real, registered, software dev template (roles-format).
-  templateId: 'pragmatic-mvp-dev-team',
+  templateId: ROLES_FORMAT_FIXTURE.id,
   agents: [
     { role: 'team-lead', responsibilities: 'Lead', skillIds: [] },
     { role: 'developer', responsibilities: 'Build', skillIds: [] },
@@ -43,7 +78,20 @@ const softwareRec: TeamRecommendation = {
   source: 'hardcoded:engineering',
 };
 
+beforeAll(async () => {
+  const templatesDir = path.join(TMP_HOME, 'templates');
+  await fs.mkdir(templatesDir, { recursive: true });
+  await fs.writeFile(path.join(templatesDir, `${ROLES_FORMAT_FIXTURE.id}.json`), JSON.stringify(ROLES_FORMAT_FIXTURE));
+  // Seed the singleton with this test's own templates dir BEFORE
+  // materialize-team's defaultProvisionTeam calls getInstance() with no
+  // args — the singleton then returns THIS instance, not one pointed at
+  // the real repo config/templates/.
+  TemplateService.clearInstance();
+  TemplateService.getInstance(templatesDir);
+});
+
 afterAll(async () => {
+  TemplateService.clearInstance();
   await fs.rm(TMP_HOME, { recursive: true, force: true }).catch(() => {});
 });
 

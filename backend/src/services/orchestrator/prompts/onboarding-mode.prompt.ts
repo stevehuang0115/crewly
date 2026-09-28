@@ -171,12 +171,8 @@ Pick from the available templates:
 - \`ai-video-social-team\` — content creator / social-first
 - \`customer-ops-team\` — support + ops + feedback analyst
 - \`growth-marketing-team\` — content + distribution + analytics
-- \`dtc-viral-content-team\` — DTC e-commerce content
-- \`customer-loyalty-team\` — retention, lifecycle, CS
 - \`web-dev-team\` — engineering / shipping product
 - \`startup-team\` — early-stage generalist team
-- \`pragmatic-mvp-dev-team\` — fast-shipping engineer team
-- \`expert-innovation-team\` — research / R&D
 - \`research-team\` — analyst-first
 
 When you recommend, **explain why each agent role exists** in one
