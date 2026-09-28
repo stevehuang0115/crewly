@@ -25,9 +25,10 @@ import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.s
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
-import { SLACK_AGENT_DM_CONSTANTS } from '../../constants.js';
+import { SLACK_AGENT_DM_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
+import { parseSlackThreadKey, slackThreadOfMetadata } from './slack-thread-key.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
 import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
@@ -56,7 +57,8 @@ export interface AgentDmSlackApi {
 export type AgentDmChatApi = Pick<
   ChatV2Service,
   'ensureDmChannel' | 'getChannelForBridge' | 'recordTurn' | 'getLatestOwnerTurnSource' | 'on' | 'off'
->;
+> &
+  Partial<Pick<ChatV2Service, 'getMessageForBridge'>>;
 
 /** The slice of SlackAgentIdentityService this service uses. */
 export type AgentDmIdentityApi = Pick<SlackAgentIdentityService, 'getInstalled'>;
@@ -74,7 +76,8 @@ export interface SlackAgentDmServiceDeps {
   /** Whether the agent runs on this instance (Cloud fans DMs out to the owner only, but be safe). */
   isLocalAgent?: (agentSession: string) => boolean;
   /** "Is typing…" placeholders; optional (replies are posted plainly without it). */
-  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> | null;
+  typing?: (Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> &
+    Partial<Pick<SlackTypingPlaceholderService, 'dropThread'>>) | null;
   /** Whether the agent's runtime session exists right now (false = it must be woken first). */
   isAgentAwake?: (agentSession: string) => boolean;
   /** Slack user id of the owner, when known — only the owner's DMs file tickets. */
@@ -98,7 +101,40 @@ export interface SlackAgentDmLink {
    * reads as exchanges rather than one flat column (owner, 2026-09-21).
    */
   replyThreadTs?: string;
+  /**
+   * Threads that still owe an answer, oldest first (thread root ts).
+   *
+   * `replyThreadTs` alone is the thread the owner wrote in *last*; used as
+   * the reply target it sent an answer owed in an older thread into the
+   * newest one (2026-09-28). An answer that names no thread goes to the
+   * oldest entry here instead, and leaves it.
+   */
+  openThreads?: SlackAgentDmOpenThread[];
+  /** Thread of the last answer posted, and when — a file sent right after its answer follows it. */
+  lastReply?: { threadTs: string; at: string };
   updatedAt: string;
+}
+
+/** A thread that still owes an answer. */
+export interface SlackAgentDmOpenThread {
+  /** Thread root ts */
+  threadTs: string;
+  /** When the owner's (first unanswered) message in it arrived, ISO-8601 */
+  at: string;
+}
+
+/** Where an outbound post goes, and how that was decided (logged). */
+export interface AgentDmReplyTarget {
+  /** Thread root ts; undefined = top level (a DM with no thread yet) */
+  threadTs?: string;
+  /**
+   * - `key`: the agent named the thread (`--thread <slack thread key>`)
+   * - `thread-root`: the agent replied under a chat-v2 message (`--thread <message id>`) that came from that Slack thread
+   * - `recent-reply`: a file following the answer just posted
+   * - `oldest-open`: unattributed — the oldest thread still owed an answer
+   * - `latest`: unattributed and nothing owed — the thread the owner wrote in last
+   */
+  via: 'key' | 'thread-root' | 'recent-reply' | 'oldest-open' | 'latest';
 }
 
 /** Result of {@link SlackAgentDmService.routeInbound}. */
@@ -224,11 +260,13 @@ export class SlackAgentDmService {
    * it, asked for a PDF, the agent uploads to Drive and sends a link — which
    * it will then correctly explain is all its reply interface can carry.
    *
-   * The file goes out under the agent's own bot, into the thread its written
-   * reply would land in, so the attachment and the sentence about it stay
-   * together.
+   * The file goes out under the agent's own bot, into the thread it belongs
+   * to: the one the agent names (`threadId` — a Slack thread key or the
+   * chat-v2 message it answers), else the answer it just posted, else the
+   * oldest thread still owed an answer. It used to go wherever the owner
+   * wrote last, which put the EFT form into the HSA thread (2026-09-28).
    *
-   * @param input - Chat channel the agent was given, plus the file
+   * @param input - Chat channel the agent was given, plus the file and optional thread
    * @returns What was uploaded, or why it could not be
    */
   async attachFileForAgent(input: {
@@ -238,6 +276,8 @@ export class SlackAgentDmService {
     filename?: string;
     title?: string;
     comment?: string;
+    /** Slack thread key (`<channel>:<ts>`) or chat-v2 message id of the thread */
+    threadId?: string;
   }): Promise<
     | { ok: true; slackChannelId: string; threadTs?: string; fileId?: string; asAgentBot: boolean }
     | { ok: false; reason: string }
@@ -248,6 +288,8 @@ export class SlackAgentDmService {
     const installed = this.deps.identities.getInstalled(link.agentSession);
     if (!installed) return { ok: false, reason: 'agent_has_no_slack_bot' };
 
+    const target = this.resolveReplyTarget(link, { threadRef: input.threadId, forAttachment: true });
+    const threadTs = target.threadTs;
     try {
       const result = await this.deps.slack.uploadFile({
         channelId: link.slackChannelId,
@@ -255,18 +297,27 @@ export class SlackAgentDmService {
         ...(input.filename ? { filename: input.filename } : {}),
         ...(input.title ? { title: input.title } : {}),
         ...(input.comment ? { initialComment: input.comment } : {}),
-        ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}),
+        ...(threadTs ? { threadTs } : {}),
         botToken: installed.botToken,
       });
+      // The file is the agent answering in that thread: no "working on it"
+      // may be left there (2026-09-28).
+      await this.deps.typing?.dropThread?.({
+        agentSession: link.agentSession,
+        slackChannelId: link.slackChannelId,
+        ...(threadTs ? { threadTs } : {}),
+      }).catch(() => 0);
       this.logger.info('Agent attached a file to its Slack DM', {
         agentSession: link.agentSession,
         slackChannelId: link.slackChannelId,
-        threaded: Boolean(link.replyThreadTs),
+        threaded: Boolean(threadTs),
+        threadTs,
+        via: target.via,
       });
       return {
         ok: true,
         slackChannelId: link.slackChannelId,
-        ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}),
+        ...(threadTs ? { threadTs } : {}),
         ...(result.fileId ? { fileId: result.fileId } : {}),
         asAgentBot: true,
       };
@@ -304,13 +355,24 @@ export class SlackAgentDmService {
       principal: { userId: SLACK_AGENT_DM_CONSTANTS.OWNER_USER_ID, source: 'oss' },
     });
 
+    const previous = this.store.links[channel.id];
+    const inboundThreadTs = message.threadTs || message.ts;
+    // Another Slack DM (the owner re-opened the conversation): the old
+    // conversation's threads cannot be posted into from here.
+    const sameConversation = previous?.slackChannelId === message.channelId;
     const link: SlackAgentDmLink = {
       chatChannelId: channel.id,
       agentSession,
       slackChannelId: message.channelId,
       // `ts` when the question was top-level: the answer opens a thread under
       // it instead of landing beside it.
-      ...(message.threadTs || message.ts ? { replyThreadTs: message.threadTs || message.ts } : {}),
+      ...(inboundThreadTs ? { replyThreadTs: inboundThreadTs } : {}),
+      ...(inboundThreadTs
+        ? { openThreads: withOpenThread(sameConversation ? previous?.openThreads : undefined, inboundThreadTs, this.now()) }
+        : sameConversation && previous?.openThreads
+          ? { openThreads: previous.openThreads }
+          : {}),
+      ...(sameConversation && previous?.lastReply ? { lastReply: previous.lastReply } : {}),
       updatedAt: this.now().toISOString(),
     };
     this.store.links[channel.id] = link;
@@ -494,7 +556,9 @@ export class SlackAgentDmService {
         this.logger.warn('Agent has no installed Slack bot — DM reply not mirrored', { agentSession: link.agentSession });
         return false;
       }
-      const key = { agentSession: link.agentSession, slackChannelId: link.slackChannelId, ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}) };
+      // The thread this answer is FOR — not simply where the owner wrote last.
+      const target = this.resolveReplyTarget(link, { dto });
+      const key = { agentSession: link.agentSession, slackChannelId: link.slackChannelId, ...(target.threadTs ? { threadTs: target.threadTs } : {}) };
       const text = toSlackMrkdwn(dto.content);
       // An agent that both posts its answer with a tool and returns the same
       // answer as its turn text produces two chat turns, and both are agent
@@ -519,17 +583,27 @@ export class SlackAgentDmService {
         return false;
       }
       this.rememberSent(link.slackChannelId, text, source);
+      this.noteAnswered(link, target.threadTs, isInterim(dto));
+      if (target.via !== 'latest' || (link.openThreads?.length ?? 0) > 0) {
+        this.logger.info('DM reply routed to its thread', {
+          agentSession: link.agentSession,
+          slackChannelId: link.slackChannelId,
+          threadTs: target.threadTs,
+          via: target.via,
+        });
+      }
       if (this.deps.typing) {
         const identity = { botToken: installed.botToken, displayName: link.agentSession };
-        await this.deps.typing.resolve(key, text, identity);
-        // Interim note → still working: put the placeholder back under it.
-        if (isInterim(dto)) await this.deps.typing.begin(key, identity, 'typing');
+        // Interim note → still working: the placeholder goes back under it,
+        // in the same step (see SlackTypingPlaceholderService.resolve).
+        if (isInterim(dto)) await this.deps.typing.resolve(key, text, identity, { reopen: 'typing' });
+        else await this.deps.typing.resolve(key, text, identity);
         return true;
       }
       await this.deps.slack.sendMessage({
         channelId: link.slackChannelId,
         text,
-        ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}),
+        ...(target.threadTs ? { threadTs: target.threadTs } : {}),
         botToken: installed.botToken,
         skipChatV2Mirror: true,
       });
@@ -542,6 +616,106 @@ export class SlackAgentDmService {
       });
       return false;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Thread routing
+  // -------------------------------------------------------------------------
+
+  /**
+   * Which thread of the DM an outbound post belongs in.
+   *
+   * In order: the Slack thread key the agent named (`--thread <key>`, or the
+   * key recorded on its reply); the Slack thread of the chat-v2 message it
+   * replied under (`--thread <message id>` — ticket nudges use this); for a
+   * file, the answer posted moments ago; the OLDEST thread still owed an
+   * answer; and only when nothing is owed, the thread the owner wrote in
+   * last. A key naming another conversation is ignored rather than trusted.
+   *
+   * @param link - The DM link
+   * @param opts - The reply being mirrored, or an explicit thread reference
+   * @returns Target thread and how it was chosen
+   */
+  resolveReplyTarget(
+    link: SlackAgentDmLink,
+    opts: { dto?: Pick<ChatMessageDTO, 'metadata' | 'threadId'>; threadRef?: string; forAttachment?: boolean },
+  ): AgentDmReplyTarget {
+    const inThisDm = (parts: { slackChannelId: string; threadTs: string } | null): string | undefined =>
+      parts && parts.slackChannelId === link.slackChannelId ? parts.threadTs : undefined;
+
+    const fromKey =
+      inThisDm(parseSlackThreadKey(opts.threadRef)) ??
+      inThisDm(parseSlackThreadKey(opts.dto?.threadId)) ??
+      inThisDm(parseSlackThreadKey(opts.dto?.metadata?.[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]));
+    if (fromKey) return { threadTs: fromKey, via: 'key' };
+
+    const rootId = opts.threadRef && !parseSlackThreadKey(opts.threadRef) ? opts.threadRef : opts.dto?.threadId;
+    if (rootId && this.deps.chat.getMessageForBridge) {
+      try {
+        const root = this.deps.chat.getMessageForBridge(rootId);
+        const ts = inThisDm(slackThreadOfMetadata(root?.metadata));
+        if (ts) return { threadTs: ts, via: 'thread-root' };
+      } catch {
+        /* unknown message — fall through to the heuristics */
+      }
+    }
+
+    if (opts.forAttachment && link.lastReply) {
+      const age = this.now().getTime() - Date.parse(link.lastReply.at);
+      if (Number.isFinite(age) && age >= 0 && age <= SLACK_AGENT_DM_CONSTANTS.ATTACH_FOLLOWS_REPLY_MS) {
+        return { threadTs: link.lastReply.threadTs, via: 'recent-reply' };
+      }
+    }
+
+    const oldest = link.openThreads?.[0];
+    if (oldest) return { threadTs: oldest.threadTs, via: 'oldest-open' };
+    return { ...(link.replyThreadTs ? { threadTs: link.replyThreadTs } : {}), via: 'latest' };
+  }
+
+  /**
+   * An answer went into a thread: it no longer owes one (an interim note
+   * does not count), and a file sent right after follows it there.
+   *
+   * @param link - The DM link (updated in place and persisted)
+   * @param threadTs - Where the answer went
+   * @param interim - Whether it was only an interim note
+   */
+  private noteAnswered(link: SlackAgentDmLink, threadTs: string | undefined, interim: boolean): void {
+    if (!threadTs) return;
+    // In memory first and synchronously: a second answer mirrored right
+    // behind this one must already see this thread as answered.
+    link.lastReply = { threadTs, at: this.now().toISOString() };
+    if (!interim && link.openThreads?.some((t) => t.threadTs === threadTs)) {
+      link.openThreads = link.openThreads.filter((t) => t.threadTs !== threadTs);
+    }
+    void this.persist();
+  }
+
+  /**
+   * The agent finished a turn: threads it left unanswered for longer than
+   * SETTLE_MIN_AGE_MS are ones it chose not to answer ("ok", "谢谢") — the
+   * same rule that takes their "working on it" placeholder down. They stop
+   * counting as owed, so a later unattributed answer is not pulled back
+   * into them.
+   *
+   * @param agentSession - Agent whose turn ended
+   * @returns How many threads were settled
+   */
+  async settleOpenThreads(agentSession: string): Promise<number> {
+    await this.load();
+    const cutoff = this.now().getTime() - SLACK_TYPING_CONSTANTS.SETTLE_MIN_AGE_MS;
+    let settled = 0;
+    for (const link of Object.values(this.store.links)) {
+      if (link.agentSession !== agentSession || !link.openThreads?.length) continue;
+      const keep = link.openThreads.filter((t) => {
+        const at = Date.parse(t.at);
+        return Number.isFinite(at) && at > cutoff;
+      });
+      settled += link.openThreads.length - keep.length;
+      link.openThreads = keep;
+    }
+    if (settled > 0) await this.persist();
+    return settled;
   }
 
   // -------------------------------------------------------------------------
@@ -615,6 +789,25 @@ export class SlackAgentDmService {
   private now(): Date {
     return this.deps.now ? this.deps.now() : new Date();
   }
+}
+
+/**
+ * Add a thread to the owed list, keeping its original place when it is
+ * already there (a follow-up in an owed thread does not make it newer).
+ *
+ * @param open - Current list, oldest first
+ * @param threadTs - Thread that now owes an answer
+ * @param now - Current time
+ * @returns The new list, capped at MAX_OPEN_THREADS (oldest dropped)
+ */
+export function withOpenThread(
+  open: readonly SlackAgentDmOpenThread[] | undefined,
+  threadTs: string,
+  now: Date,
+): SlackAgentDmOpenThread[] {
+  const list = [...(open ?? [])];
+  if (!list.some((t) => t.threadTs === threadTs)) list.push({ threadTs, at: now.toISOString() });
+  return list.slice(-SLACK_AGENT_DM_CONSTANTS.MAX_OPEN_THREADS);
 }
 
 // ---------------------------------------------------------------------------

@@ -40,7 +40,9 @@ import {
 	GEMINI_ERROR_STATE_CONSTANTS,
 	REGISTRATION_DELIVERY_CONSTANTS,
 	ORC_CONVERSATION_CONSTANTS,
+	SLACK_THREAD_KEY_CONSTANTS,
 } from '../../constants.js';
+import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
@@ -467,11 +469,13 @@ export class AgentRegistrationService {
 	 * @param sessionName - Agent session that produced the response
 	 * @param text - Response text from the agent
 	 * @param conversationId - Chat conversation to route the response to
+	 * @param slackThreadKey - Slack thread the delivered message came from, when it named exactly one
 	 */
 	private routeInProcessResponseToChat(
 		sessionName: string,
 		text: string,
 		conversationId: string,
+		slackThreadKey?: string,
 	): void {
 		// LEGACY PATH — chatGateway.processNotifyMessage → ChatService
 		// (JSON files in ~/.crewly/chat/). Kept until Phase 5 data
@@ -497,6 +501,7 @@ export class AgentRegistrationService {
 					sessionName,
 					text,
 					conversationId,
+					slackThreadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: slackThreadKey } : undefined,
 				);
 			})
 			.then((chatMessage) => {
@@ -4357,6 +4362,14 @@ Loop until done, blocked, or explicitly reassigned:
 				// Extract conversationId from [CHAT:xxx] or [GCHAT:xxx ...] prefix for response routing
 				const chatPrefixMatch = message.match(/^\[(?:G?CHAT):([^\]\s]+)[^\]]*\]\s*/);
 				const incomingConversationId = chatPrefixMatch?.[1];
+				// The Slack thread this delivery came from ([SLACK-THREAD:<key>]).
+				// The turn's text answers that thread, so the DM bridge posts it
+				// there rather than in whichever thread was written in last.
+				const incomingThreadKeys = extractSlackThreadKeys(message);
+				const incomingThreadKey =
+					incomingThreadKeys.length === 1
+						? formatSlackThreadKey(incomingThreadKeys[0].slackChannelId, incomingThreadKeys[0].threadTs)
+						: undefined;
 
 				// Extract Slack context from [SLACK:channelId:threadTs] marker if present (Bug 5).
 				// This allows crewly-agent to auto-fill reply_slack with the correct thread.
@@ -4457,7 +4470,11 @@ Loop until done, blocked, or explicitly reassigned:
 						}
 
 						if (replyText && incomingConversationId && !agentAlreadyReplied) {
-							this.routeInProcessResponseToChat(sessionName, replyText, incomingConversationId);
+							if (incomingThreadKey) {
+								this.routeInProcessResponseToChat(sessionName, replyText, incomingConversationId, incomingThreadKey);
+							} else {
+								this.routeInProcessResponseToChat(sessionName, replyText, incomingConversationId);
+							}
 						} else if (agentAlreadyReplied) {
 							this.logger.debug('Skipping chat routing — agent already replied via reply_slack', {
 								sessionName, conversationId: incomingConversationId,

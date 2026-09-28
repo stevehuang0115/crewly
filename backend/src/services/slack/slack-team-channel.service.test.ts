@@ -1806,9 +1806,12 @@ describe('beginWorkingForAgent', () => {
     typing.begin.mockClear();
     await service.mirrorOutbound({ ...base, id: 'i-1', content: 'Got it — plan: …', metadata: { source: 'reply-tool', interim: true } } as ChatMessageDTO);
     const key = { agentSession: 'crewly-alpha-leo', slackChannelId: 'C1', threadTs: '710.1' };
-    expect(typing.begin).toHaveBeenCalledWith(key, { botToken: 'xoxb-leo', displayName: 'Leo' }, 'typing');
-    typing.begin.mockClear();
+    // Re-opened in the same step as the interim note, so a fast final answer
+    // cannot slip in between and leave the new placeholder under it (2026-09-28).
+    expect(typing.resolve).toHaveBeenLastCalledWith(key, 'Got it — plan: …', { botToken: 'xoxb-leo', displayName: 'Leo' }, { reopen: 'typing' });
+    typing.resolve.mockClear();
     await service.mirrorOutbound({ ...base, id: 'f-1', content: 'Done', metadata: { source: 'reply-tool' } } as ChatMessageDTO);
+    expect(typing.resolve).toHaveBeenLastCalledWith(key, 'Done', { botToken: 'xoxb-leo', displayName: 'Leo' });
     expect(typing.begin).not.toHaveBeenCalled();
     typing = null;
   });
@@ -1863,6 +1866,15 @@ describe('attachFileForAgent', () => {
     });
 
     expect(slack.uploads[0].threadTs).toBe('200.1');
+  });
+
+  it('takes a Slack thread key for this channel as --thread; ignores one for another channel (2026-09-28)', async () => {
+    await service.routeInbound(inbound({ ts: '200.1', text: '@sam first' }));
+    await service.routeInbound(inbound({ ts: '300.1', text: '@sam second' }));
+    await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/a.pdf', threadId: 'C1:1790000200.000100' });
+    expect(slack.uploads[0].threadTs).toBe('1790000200.000100');
+    await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/b.pdf', threadId: 'C9OTHER:1790000200.000100' });
+    expect(slack.uploads[1].threadTs).not.toBe('1790000200.000100');
   });
 
   it('uploads as the agent\'s own bot when it has one', async () => {

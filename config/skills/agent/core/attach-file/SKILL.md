@@ -46,7 +46,7 @@ backend resolves the Slack channel, the thread and your bot identity from it.
 | `--name` | no | Filename to show; defaults to the file's own name |
 | `--title` | no | Title shown above the file in Slack |
 | `--comment` | no | A line of text posted with the file |
-| `--thread` | no | Reply inside this thread (same id `reply-channel` takes) |
+| `--thread` | no | The thread the file belongs to: the `[SLACK-THREAD:<key>]` key from your prompt, or the id `reply-channel` takes. **Pass it** when you have more than one thread going — without it the file follows the answer you just posted, else the oldest thread still waiting on you. |
 
 ## When to use it
 

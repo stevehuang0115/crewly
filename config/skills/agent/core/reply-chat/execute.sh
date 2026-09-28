@@ -9,6 +9,7 @@ CONVERSATION_ID=""
 TEXT=""
 SENDER_NAME=""
 SENDER_TYPE="agent"
+SLACK_THREAD=""
 
 # Detect legacy JSON argument as the first parameter
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -24,6 +25,7 @@ while [[ $# -gt 0 ]]; do
     --sender|-s) SENDER_NAME="$2"; shift 2 ;;
     --sender-type) SENDER_TYPE="$2"; shift 2 ;;
     --interim) INTERIM="true"; shift ;;
+    --thread|-T) SLACK_THREAD="$2"; shift 2 ;;
     --json|-j) INPUT_JSON="$2"; shift 2 ;;
     --) shift; break ;;
     *) if [[ -z "$INPUT_JSON" && ${1:0:1} == '{' ]]; then INPUT_JSON="$1"; shift; else error_exit "Unknown argument: $1"; fi ;;
@@ -42,6 +44,7 @@ if [ -n "$INPUT_JSON" ]; then
   SENDER_NAME=${SENDER_NAME:-$(echo "$INPUT_JSON" | jq -r '.senderName // empty')}
   SENDER_TYPE=${SENDER_TYPE:-$(echo "$INPUT_JSON" | jq -r '.senderType // "agent"')}
   INTERIM=${INTERIM:-$(echo "$INPUT_JSON" | jq -r 'if .interim == true then "true" else empty end')}
+  SLACK_THREAD=${SLACK_THREAD:-$(echo "$INPUT_JSON" | jq -r '.thread // .slackThread // empty')}
 fi
 
 require_param "content" "$TEXT"
@@ -56,8 +59,10 @@ BODY=$(jq -n \
   --arg senderType "$SENDER_TYPE" \
   --arg conversationId "$CONVERSATION_ID" \
   --arg interim "${INTERIM:-}" \
+  --arg slackThread "$SLACK_THREAD" \
   '{content: $content, senderName: $senderName, senderType: $senderType} +
    (if $conversationId != "" then {conversationId: $conversationId} else {} end) +
-   (if $interim == "true" then {interim: true} else {} end)')
+   (if $interim == "true" then {interim: true} else {} end) +
+   (if $slackThread != "" then {slackThread: $slackThread} else {} end)')
 
 api_call POST "/chat/agent-response" "$BODY"

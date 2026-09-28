@@ -55,7 +55,8 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
-import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
+import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
+import { parseSlackThreadKey } from './slack-thread-key.js';
 import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
@@ -137,7 +138,8 @@ export interface SlackTeamChannelServiceDeps {
    */
   identities?: TeamChannelIdentityApi | null;
   /** "Is typing…" placeholders for @-mentioned agents; optional. */
-  typing?: Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> | null;
+  typing?: (Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> &
+    Partial<Pick<SlackTypingPlaceholderService, 'dropThread'>>) | null;
   /** Whether an agent's runtime session exists right now (false = it must be woken first). */
   isAgentAwake?: (agentSession: string) => boolean;
   /** Whether an agent session runs on this instance (its own Slack copy is not re-recorded). */
@@ -1839,11 +1841,14 @@ export class SlackTeamChannelService {
         const typingIdentity = installed
           ? { botToken: installed.botToken, displayName: member?.name ?? dto.senderId }
           : { displayName: member?.name ?? dto.senderId, ...slackIdentityFor(member, dto.senderId) };
-        await this.deps.typing.resolve(typingKey, text, typingIdentity);
         // An interim note ("got it — here is the plan"): the agent is still
         // working, so the working-on-it placeholder goes back under it and
-        // the real answer replaces that one (owner, 2026-09-24).
-        if (isInterim(dto)) await this.deps.typing.begin(typingKey, typingIdentity, 'typing');
+        // the real answer replaces that one (owner, 2026-09-24). Done in the
+        // same step as the resolve: as two steps, a final answer landing in
+        // between found nothing to replace and the re-opened placeholder then
+        // stayed under it (2026-09-28).
+        if (isInterim(dto)) await this.deps.typing.resolve(typingKey, text, typingIdentity, { reopen: 'typing' });
+        else await this.deps.typing.resolve(typingKey, text, typingIdentity);
         this.logger.info('Agent reply mirrored to Slack', {
           slackChannel: mapping.slackChannelName,
           sender: dto.senderId,
@@ -2158,6 +2163,13 @@ export class SlackTeamChannelService {
         ...(threadTs ? { threadTs } : {}),
         ...(installed ? { botToken: installed.botToken } : {}),
       });
+      // The file is the agent answering in that thread: no "working on it"
+      // may be left there (2026-09-28).
+      await this.deps.typing?.dropThread?.({
+        agentSession: input.agentSession,
+        slackChannelId: mapping.slackChannelId,
+        ...(threadTs ? { threadTs } : {}),
+      }).catch(() => 0);
       this.logger.info('Agent attached a file to its Slack channel', {
         agentSession: input.agentSession,
         slackChannel: mapping.slackChannelName,
@@ -2179,6 +2191,11 @@ export class SlackTeamChannelService {
   }
 
   private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): string | undefined {
+    // A Slack thread key the agent named (`--thread <channel>:<ts>`), on the
+    // row or as the thread reference itself — only for this channel.
+    const named =
+      parseSlackThreadKey(dto.metadata?.[SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]) ?? parseSlackThreadKey(dto.threadId);
+    if (named && named.slackChannelId === mapping.slackChannelId) return named.threadTs;
     if (dto.threadId) {
       const root = this.deps.chat.getMessageForBridge(dto.threadId);
       const ts = root?.metadata?.slackThreadTs;

@@ -33,6 +33,7 @@ import { SlackConfig, SlackCloudConfig } from '../../types/slack.types.js';
 import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import * as path from 'path';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
@@ -912,6 +913,9 @@ export async function startSlackTeamChannels(): Promise<void> {
       typing = new SlackTypingPlaceholderService({
         slack: getSlackService(),
         storePath: path.join(getCrewlyHomePath(), SLACK_TYPING_CONSTANTS.STORE_FILENAME),
+        // Second look at a placeholder too young to settle at turn end: kept
+        // only while the agent is in a turn (whose end settles it).
+        isAgentMidTurn: (agentSession) => InFlightTurnTracker.getInstance().settle(agentSession),
       });
       setSlackTypingPlaceholderService(typing);
     }
@@ -1013,10 +1017,12 @@ export async function startSlackTeamChannels(): Promise<void> {
           const slackUserId = lastSlackUserIn(getChatV2Service(), chatChannelId);
           if (!slackUserId) return null;
           const botToken = dm ? identities?.getInstalled(dm.agentSession)?.botToken : undefined;
+          // The thread still waiting on the agent, not merely the newest one.
+          const dmThreadTs = dm ? getSlackAgentDmService()?.resolveReplyTarget(dm, {}).threadTs : undefined;
           return {
             slackChannelId,
             slackUserId,
-            ...(dm?.replyThreadTs ? { threadTs: dm.replyThreadTs } : {}),
+            ...(dmThreadTs ? { threadTs: dmThreadTs } : {}),
             ...(botToken ? { botToken } : {}),
           };
         },

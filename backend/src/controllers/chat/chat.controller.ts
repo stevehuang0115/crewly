@@ -21,7 +21,8 @@ import {
 // architecture, only the import surface.
 import { sanitizeMessages, sanitizeMessage } from '../../services/chat/chat-sanitizer.service.js';
 import { getChatHighlightsService } from '../../services/chat/chat-highlights.service.js';
-import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADATA, SLACK_TYPING_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
+import { extractSlackThreadKeys, formatSlackThreadKey, parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
@@ -441,6 +442,7 @@ async function recordChatV2AgentReply(
   content: string,
   headerSession?: string,
   interim = false,
+  slackThreadKey?: string,
 ): Promise<string | null> {
   try {
     const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
@@ -461,7 +463,13 @@ async function recordChatV2AgentReply(
       senderType: 'agent',
       senderId: channel.agentSession,
       content,
-      metadata: { source: 'reply-tool', ...(interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}) },
+      metadata: {
+        source: 'reply-tool',
+        ...(interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
+        // The Slack thread this answer is for (`reply-chat --thread <key>`):
+        // the DM bridge posts it there, not in the thread written in last.
+        ...(slackThreadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: slackThreadKey } : {}),
+      },
     });
     logger.info('Agent reply recorded on chat-v2 channel', {
       senderName,
@@ -479,6 +487,36 @@ async function recordChatV2AgentReply(
     });
     return null;
   }
+}
+
+/**
+ * Order an agent's Slack threads so the one its [DONE] is about comes first.
+ *
+ * The completion notice went to `threads[0]` — the first thread the agent
+ * was ever registered on — whatever the work was for. A report that names
+ * its thread (`--thread <key>` or a `[SLACK-THREAD:<key>]` tag in the text)
+ * now goes there. Only a thread the agent is registered on can be chosen —
+ * a tag cannot send the notice somewhere the agent was never asked from.
+ *
+ * @param threads - Threads the agent is registered on (store order)
+ * @param content - The status report text
+ * @param explicitKey - Key passed with the report, if any
+ * @returns Threads with the named one first; unchanged when none matches
+ */
+export function pickCompletionThreads<T extends { channelId: string; threadTs: string }>(
+  threads: T[],
+  content: string,
+  explicitKey?: string,
+): T[] {
+  const named = [
+    ...(parseSlackThreadKey(explicitKey) ? [parseSlackThreadKey(explicitKey)!] : []),
+    ...extractSlackThreadKeys(content),
+  ];
+  for (const n of named) {
+    const match = threads.find((t) => t.channelId === n.slackChannelId && t.threadTs === n.threadTs);
+    if (match) return [match, ...threads.filter((t) => t !== match)];
+  }
+  return threads;
 }
 
 /**
@@ -510,6 +548,9 @@ export async function agentResponse(
 ): Promise<void> {
   try {
     const { content, senderName, senderType, conversationId } = req.body;
+    // `reply-chat --thread <key>`: the Slack thread this answer belongs to.
+    const threadParts = parseSlackThreadKey(req.body?.slackThread);
+    const slackThreadKey = threadParts ? formatSlackThreadKey(threadParts.slackChannelId, threadParts.threadTs) : undefined;
 
     if (!content || (typeof content === 'string' && content.trim().length === 0)) {
       res.status(400).json({
@@ -622,6 +663,7 @@ export async function agentResponse(
         String(content),
         typeof hdr === 'string' && hdr.length > 0 ? hdr : undefined,
         req.body?.interim === true,
+        slackThreadKey,
       );
       if (recorded) {
         res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });
@@ -637,7 +679,8 @@ export async function agentResponse(
         {
           type: resolvedSenderType as ChatSenderType,
           name: senderName,
-        }
+        },
+        slackThreadKey ? { [SLACK_THREAD_KEY_CONSTANTS.METADATA_KEY]: slackThreadKey } : undefined,
       );
       savedMessageId = savedMessage.id;
 
@@ -734,7 +777,11 @@ export async function agentResponse(
             '../../services/slack/slack-orchestrator-bridge.js'
           );
           const threadStore = getSlackThreadStore();
-          const threads = threadStore ? threadStore.findThreadsForAgent(senderName) : [];
+          const threads = pickCompletionThreads(
+            threadStore ? threadStore.findThreadsForAgent(senderName) : [],
+            content,
+            slackThreadKey,
+          );
           if (threads.length > 0) {
             const bridge = getSlackOrchestratorBridge();
             if (bridge) {

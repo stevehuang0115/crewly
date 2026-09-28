@@ -1642,7 +1642,12 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
     });
 
     if (!result || (!result.ok && result.reason === 'not_a_slack_channel')) {
-      const viaDm = await getSlackAgentDmService()?.attachFileForAgent(attach);
+      // The thread goes along: without it the file landed in whichever DM
+      // thread the owner wrote in last (2026-09-28).
+      const viaDm = await getSlackAgentDmService()?.attachFileForAgent({
+        ...attach,
+        ...(threadId ? { threadId: String(threadId) } : {}),
+      });
       if (viaDm) result = viaDm;
     }
 

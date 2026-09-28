@@ -24,7 +24,7 @@ attach-file — send a file into your Slack channel
   --name <name>    Filename to show in Slack
   --title <title>  Title shown above the file
   --comment <text> A line of text posted with the file
-  --thread <id>    Reply inside this thread
+  --thread <id>    The thread the file belongs to ([SLACK-THREAD:<key>] key, or a chat thread id)
 USAGE
 }
 

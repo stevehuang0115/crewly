@@ -9,6 +9,7 @@ import {
   defaultFormatPrompt,
   renderChatContext,
   slackDmChannelOf,
+  slackThreadKeyOf,
   type AgentMessageSink,
 } from './chat-v2.dispatcher.service.js';
 import type { ChatChannelDTO, ChatMessageDTO } from './types.js';
@@ -614,11 +615,42 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('不要改用 reply-slack');
     });
 
+    it('every Slack message carries its [SLACK-THREAD:<key>] and the reply command passes it (2026-09-28)', async () => {
+      const { sink, calls } = makeSink({ success: true });
+      await new ChatV2DispatcherService({ agentSink: sink }).dispatchMessage(
+        makeChannel({ id: 'a721f48d' }),
+        makeMessage({ channelId: 'a721f48d', metadata: DM_META }),
+      );
+      const lines = calls[0].message.split('\n');
+      // Header unchanged (parsers read `[CHAT:<id>]` from the first line); the tag right under it.
+      expect(lines[0]).toMatch(/^\[CHAT:a721f48d\]/);
+      expect(lines[1]).toBe('[SLACK-THREAD:D0C381XPD3L:1790392986.498639]');
+      expect(calls[0].message).toContain('--thread D0C381XPD3L:1790392986.498639');
+      expect(calls[0].message).toContain('不要和这条的回答合在一条消息里');
+    });
+
+    it('slackThreadKeyOf: Slack turns only', () => {
+      expect(slackThreadKeyOf(makeMessage({ metadata: DM_META }))).toBe('D0C381XPD3L:1790392986.498639');
+      expect(slackThreadKeyOf(makeMessage({ metadata: { source: 'web' } }))).toBeUndefined();
+      expect(slackThreadKeyOf(makeMessage({ metadata: { source: 'slack', slackChannelId: 'D0C381XPD3L' } }))).toBeUndefined();
+      expect(slackThreadKeyOf(makeMessage())).toBeUndefined();
+    });
+
+    it('a malformed key is not rendered', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'c', channelName: 'n', agentSession: 'a', senderId: 's', content: 'x',
+        slackDmChannelId: 'D1ABC', slackThreadKey: 'garbage',
+      });
+      expect(prompt).not.toContain('[SLACK-THREAD:');
+      expect(prompt).not.toContain('--thread garbage');
+    });
+
     it('a web-chat DM keeps the plain hint', async () => {
       const { sink, calls } = makeSink({ success: true });
       await new ChatV2DispatcherService({ agentSink: sink }).dispatchMessage(makeChannel(), makeMessage());
       expect(calls[0].message).toContain('回复本频道: 用 `reply-chat` skill, 参数 conversationId="chan-1"');
       expect(calls[0].message).not.toContain('Slack 私信');
+      expect(calls[0].message).not.toContain('SLACK-THREAD');
     });
   });
 
