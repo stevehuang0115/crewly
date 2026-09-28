@@ -349,6 +349,12 @@ export interface AgentEvent {
    * other event types — never read outside the request handlers.
    */
   requestId?: string;
+
+  /**
+   * Target session of the WorkItem, on `workitem:queued` (the dispatcher
+   * uses it to push the task to that session). Optional elsewhere.
+   */
+  target?: string;
 }
 
 // =============================================================================

@@ -1801,6 +1801,45 @@ export const FRESH_TASK_CONVERSATION_CONSTANTS = {
 	MEMORY_MAX_CHARS: 4_000,
 	/** Members start fresh at launch when their last turn carried this many tokens. Env: CREWLY_MEMBER_FRESH_CONTEXT_TOKENS */
 	MEMBER_FRESH_CONTEXT_TOKENS: 150_000,
+	/**
+	 * Idle-boundary context cap: a Claude Code member (never the orchestrator)
+	 * whose last turn carried more than this many tokens is saved (handover +
+	 * wiki) and cleared between turns, then re-oriented on its WorkItem. One
+	 * long task can otherwise run 1000+ turns at 650k–965k context.
+	 */
+	MEMBER_CONTEXT_CAP_TOKENS: 300_000,
+	/** Env override for {@link MEMBER_CONTEXT_CAP_TOKENS}; `0` disables the cap */
+	MEMBER_CONTEXT_CAP_ENV: 'CREWLY_MEMBER_CONTEXT_CAP_TOKENS',
+	/** At most one context-cap clear per session in this window */
+	CONTEXT_CAP_MIN_INTERVAL_MS: 20 * 60_000,
+	/**
+	 * The PTY must have been quiet this long before a context-cap clear —
+	 * longer than {@link MIN_QUIET_MS} because nothing is waiting on it and a
+	 * turn that merely paused must not be cut.
+	 */
+	CONTEXT_CAP_MIN_QUIET_MS: 30_000,
+	/** How often the context-cap sweep checks members */
+	CONTEXT_CAP_SWEEP_MS: 60_000,
+	/** Tag on the re-orientation line written after a context-cap clear */
+	CONTEXT_CAP_TAG: '[CREWLY-CONTEXT-CAP]',
+} as const;
+
+/**
+ * Cooperation between a direct task hand-over (team-leader delegate-task:
+ * `/task-pool/add`, then `/terminal/:s/deliver` with the full brief) and the
+ * WorkItem dispatcher's `workitem:queued` push, so a task reaches its agent
+ * once and the fresh-conversation clear happens once, before that delivery.
+ */
+export const DIRECT_DELIVERY_CONSTANTS = {
+	/** WorkItem metadata flag set by callers that deliver the task text themselves */
+	METADATA_FLAG: 'directDelivery',
+	/**
+	 * How long the dispatcher holds off a `workitem:queued` push for a
+	 * direct-delivery WorkItem. Covers the delegate-task ladder: deliver
+	 * (15 s ready wait) → force → auto-start + 10 s + deliver (30 s). After
+	 * this, if nobody delivered it, the dispatcher pushes its brief.
+	 */
+	GRACE_MS: 90_000,
 } as const;
 
 /**

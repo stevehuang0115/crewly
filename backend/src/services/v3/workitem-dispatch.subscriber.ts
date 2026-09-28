@@ -29,6 +29,19 @@
  * which is the desired behavior since startup backfill needs to re-fire for
  * the queued WIs that survived the restart.
  *
+ * **Direct hand-overs.** team-leader `delegate-task` creates the WI and then
+ * delivers the full brief itself through `/terminal/:s/deliver` with the
+ * WI id. That deliver claims the same dedup key
+ * ({@link WorkItemDispatchSubscriber.claimDirectDelivery}), and WIs it
+ * creates carry `metadata.directDelivery`, for which the `workitem:queued`
+ * push waits {@link DIRECT_DELIVERY_CONSTANTS.GRACE_MS} and then only fires
+ * if nobody delivered the task — so the task reaches the agent once and the
+ * fresh-conversation clear runs once, before that first delivery.
+ *
+ * **Not the orchestrator.** The `workitem:queued` push skips `crewly-orc`
+ * targets: the orc's WIs keep reaching it through the reconciler (which has
+ * per-item cooldowns), so reviving this listener does not add orc wakes.
+ *
  * @module services/v3/workitem-dispatch.subscriber
  */
 
@@ -38,6 +51,7 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { DIRECT_DELIVERY_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import {
   FreshTaskConversationService,
   freshConversationNote,
@@ -123,6 +137,9 @@ export class WorkItemDispatchSubscriber {
    * double-fire on the same target.
    */
   private readonly dispatched = new Set<string>();
+
+  /** Pending direct-delivery grace timers, keyed like {@link dispatched} */
+  private readonly graceTimers = new Map<string, NodeJS.Timeout>();
 
   /** Composite dedup key — workItem id alone is not enough (see above). */
   private dispatchKey(workItemId: string, target: string): string {
@@ -238,6 +255,7 @@ export class WorkItemDispatchSubscriber {
   }
 
   public static resetInstance(): void {
+    WorkItemDispatchSubscriber.instance?.stop();
     WorkItemDispatchSubscriber.instance = null;
   }
 
@@ -262,10 +280,15 @@ export class WorkItemDispatchSubscriber {
       return;
     }
 
+    // The bus's `event_published` signal carries the WI id and target for
+    // `workitem:queued` (TaskPoolService.publishWorkItemQueued). Before
+    // 2026-09-28 it carried only eventId/eventType/sessionName, so this
+    // listener returned on every event and nothing was pushed on queue.
     this.eventBusService.on('event_published', (payload: unknown) => {
-      const event = payload as { eventType?: string; workItemId?: string };
+      const event = payload as { eventType?: string; workItemId?: string; target?: string };
       if (event?.eventType !== 'workitem:queued') return;
       if (!event.workItemId) return;
+      if (event.target === ORCHESTRATOR_SESSION_NAME) return;
 
       // Fire-and-forget — dispatch must not block the bus.
       this.handleQueuedEvent(event.workItemId).catch((err) => {
@@ -329,6 +352,13 @@ export class WorkItemDispatchSubscriber {
       }
     }
 
+    // Reserve the key before the (slow) prepare + write, so a direct
+    // hand-over of the same task arriving meanwhile does not deliver it a
+    // second time. Released below if the write fails.
+    if (this.dispatched.has(key)) return false;
+    this.dispatched.add(key);
+    this.cancelGraceTimer(key);
+
     // A new task starts in a fresh conversation (old one saved first) so it
     // does not re-read the previous task's history on every turn.
     const freshNote = await this.prepareConversation(workItem);
@@ -344,7 +374,6 @@ export class WorkItemDispatchSubscriber {
           timeout: 5_000,
         },
       );
-      this.dispatched.add(key);
       this.logger.info('Dispatched WorkItem to target session', {
         workItemId: workItem.id,
         target: workItem.target,
@@ -353,8 +382,9 @@ export class WorkItemDispatchSubscriber {
       return true;
     } catch (err) {
       // Common non-fatal cases: 404 (session not found — agent gone),
-      // 503 (backend not ready), connection refused. We do NOT mark
-      // dispatched on failure so a later retry path can succeed.
+      // 503 (backend not ready), connection refused. We do NOT keep the
+      // key on failure so a later retry path can succeed.
+      this.dispatched.delete(key);
       const status = (err as { response?: { status?: number } })?.response?.status;
       this.logger.debug('Dispatch HTTP write failed (non-fatal)', {
         workItemId: workItem.id,
@@ -364,6 +394,61 @@ export class WorkItemDispatchSubscriber {
       });
       return false;
     }
+  }
+
+  /**
+   * Called by a direct hand-over (`/terminal/:s/deliver` or `/write` with a
+   * `workItemId`) right before it writes the task to `target`. Takes the
+   * same dedup key {@link dispatchTo} uses, so the dispatcher will not push
+   * its own brief for this (WI, target) afterwards.
+   *
+   * @param workItemId - WorkItem being handed over
+   * @param target - Session it is written to
+   * @returns True when this call took the key (first delivery); false when
+   *   the dispatcher (or an earlier hand-over) already delivered it
+   */
+  claimDirectDelivery(workItemId: string, target: string): boolean {
+    const key = this.dispatchKey(workItemId, target);
+    // The grace timer is left running: if this hand-over fails and gives the
+    // key back, the timer is what still delivers the task.
+    if (this.dispatched.has(key)) return false;
+    this.dispatched.add(key);
+    return true;
+  }
+
+  /**
+   * Give back a key taken by {@link claimDirectDelivery} when the hand-over
+   * failed, so the dispatcher's fallback (grace timer, reconciler, backfill)
+   * can still deliver the task.
+   *
+   * @param workItemId - WorkItem whose hand-over failed
+   * @param target - Session it was meant for
+   */
+  releaseDirectDelivery(workItemId: string, target: string): void {
+    this.dispatched.delete(this.dispatchKey(workItemId, target));
+  }
+
+  /**
+   * Whether a (WI, target) pair was already delivered in this process.
+   *
+   * @param workItemId - WorkItem id
+   * @param target - Session
+   * @returns True when dispatched or handed over directly
+   */
+  isDelivered(workItemId: string, target: string): boolean {
+    return this.dispatched.has(this.dispatchKey(workItemId, target));
+  }
+
+  /** Stop every pending direct-delivery grace timer (tests / shutdown). */
+  stop(): void {
+    for (const t of this.graceTimers.values()) clearTimeout(t);
+    this.graceTimers.clear();
+  }
+
+  private cancelGraceTimer(key: string): void {
+    const t = this.graceTimers.get(key);
+    if (t) clearTimeout(t);
+    this.graceTimers.delete(key);
   }
 
   /**
@@ -455,6 +540,35 @@ export class WorkItemDispatchSubscriber {
     const wi = await taskPool.findWorkItem(workItemId);
     if (!wi) return;
     if (wi.status !== 'queued') return; // Race: already moved on
+    if (!wi.target || wi.target === ORCHESTRATOR_SESSION_NAME) return;
+
+    // The creator delivers this task itself (delegate-task). Give that
+    // hand-over time to land; push our brief only if it never did.
+    if (wi.metadata?.[DIRECT_DELIVERY_CONSTANTS.METADATA_FLAG] === true) {
+      const key = this.dispatchKey(wi.id, wi.target);
+      if (this.dispatched.has(key) || this.graceTimers.has(key)) return;
+      const timer = setTimeout(() => {
+        this.graceTimers.delete(key);
+        void (async () => {
+          if (this.dispatched.has(key)) return;
+          const now = await TaskPoolService.getInstance().findWorkItem(workItemId);
+          if (!now || now.status !== 'queued' || now.target !== wi.target) return;
+          this.logger.info('Direct hand-over never arrived — dispatching the queued WorkItem', {
+            workItemId,
+            target: now.target,
+          });
+          await this.dispatchTo(now);
+        })().catch((err: unknown) => {
+          this.logger.debug('Deferred dispatch failed (non-fatal)', {
+            workItemId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+      }, DIRECT_DELIVERY_CONSTANTS.GRACE_MS);
+      timer.unref?.();
+      this.graceTimers.set(key, timer);
+      return;
+    }
     await this.dispatchTo(wi);
   }
 

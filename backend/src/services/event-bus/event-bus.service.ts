@@ -266,10 +266,16 @@ export class EventBusService extends EventEmitter {
 
     // Emit event_published for any listener that needs to react to ALL events
     // regardless of subscriptions (e.g., auditor monitoring agent:inactive)
+    // WorkItem correlation rides along when the event has it: the
+    // WorkItemDispatchSubscriber reacts to `workitem:queued` through this
+    // signal and needs the WI id (and target) to push the task. Without them
+    // it silently did nothing on every queued WorkItem (2026-09-28).
     this.emit('event_published', {
       eventId: event.id,
       eventType: event.type,
       sessionName: event.sessionName,
+      ...(event.workItemId ? { workItemId: event.workItemId } : {}),
+      ...(event.target ? { target: event.target } : {}),
     });
     // The full event, under the name index.ts and InFlightTurnTracker
     // subscribe to. Nothing ever emitted it, so those listeners never ran:
