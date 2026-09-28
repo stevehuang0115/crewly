@@ -202,7 +202,7 @@ describe('FreshTaskConversationService', () => {
     await settle();
   });
 
-  it('after /clear, stores the id of the new transcript that mentions the session', async () => {
+  it('after /clear, stores the id of the new transcript that carries this task, not one that only names the agent', async () => {
     const svc = FreshTaskConversationService.createForTesting(deps);
     await svc.prepareForTask(SESSION, wi('task-a'));
     // Another agent sharing the cwd started a conversation too — not ours.
@@ -210,12 +210,18 @@ describe('FreshTaskConversationService', () => {
     (deps.sleep as jest.Mock).mockImplementation(async (ms: number) => {
       clock += ms;
       if (ms === 1_000 && ++polls === 2) {
-        writeTranscript('someone-else', [{ type: 'user', message: { content: 'poll for other-agent' } }]);
-        writeTranscript('new-id', [{ type: 'user', message: { content: `[CREWLY-DISPATCH] {"sessionName":"${SESSION}"}` } }]);
+        const ts = new Date(clock).toISOString();
+        // Another agent's fresh conversation that talks ABOUT this agent (the
+        // 2026-09-28 bug: Atlas was handed Ella's conversation this way).
+        writeTranscript('someone-else', [{ type: 'user', timestamp: ts, message: { content: `ask ${SESSION} about it` } }]);
+        // An older conversation of anyone, written to just now.
+        writeTranscript('older', [{ type: 'user', timestamp: new Date(clock - 3_600_000).toISOString(), message: { content: `task-b ${SESSION}` } }]);
+        writeTranscript('new-id', [{ type: 'user', timestamp: ts, message: { content: `[CREWLY-DISPATCH] WorkItem task-b {"sessionName":"${SESSION}"}` } }]);
         // mtime must be after the clear
         const t = new Date(clock);
         fs.utimesSync(path.join(transcriptDir, 'new-id.jsonl'), t, t);
         fs.utimesSync(path.join(transcriptDir, 'someone-else.jsonl'), t, t);
+        fs.utimesSync(path.join(transcriptDir, 'older.jsonl'), t, t);
       }
     });
     // Real file mtimes are "now"; make the clear time comparable.
