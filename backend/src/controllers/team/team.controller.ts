@@ -306,6 +306,8 @@ interface TeamMemberOperationResult {
   sessionName: string | null;
   status: string;
   error?: string;
+  /** RUNTIME_STARTUP_BLOCKED when the start needs the user (e.g. a missing credential), not a server fault. */
+  errorCode?: string;
 }
 
 /**
@@ -899,7 +901,9 @@ async function _startTeamMemberCore(
         // Only update sessionName if needed, preserve all other fields including agentStatus
         const needsSessionUpdate = finalMember.sessionName !== (createResult.sessionName || sessionName);
 
-        if (needsSessionUpdate) {
+        // O2: a successful start clears the previous start failure.
+        if (needsSessionUpdate || finalMember.lastStartError) {
+          delete finalMember.lastStartError;
           finalMember.sessionName = createResult.sessionName || sessionName;
           finalMember.updatedAt = new Date().toISOString();
 
@@ -930,11 +934,14 @@ async function _startTeamMemberCore(
       const failureTeam = failureTeams.find(t => t.id === team.id);
       const failureMember = failureTeam?.members.find(m => m.id === member.id) as MutableTeamMember | undefined;
 
+      const failureReason = lastError || createResult?.error || `Failed to create team member session after ${MAX_CREATION_RETRIES} attempts`;
       if (failureTeam && failureMember) {
         // Reset to inactive if session creation failed
         failureMember.agentStatus = CREWLY_CONSTANTS.AGENT_STATUSES.INACTIVE;
         failureMember.sessionName = '';
         failureMember.updatedAt = new Date().toISOString();
+        // O2: keep the reason so the dashboard can show it after a refresh.
+        failureMember.lastStartError = { reason: failureReason, at: failureMember.updatedAt };
         await context.storageService.saveTeam(failureTeam);
       }
 
@@ -945,7 +952,8 @@ async function _startTeamMemberCore(
         memberId: member.id,
         sessionName: null,
         status: 'failed',
-        error: lastError || createResult?.error || `Failed to create team member session after ${MAX_CREATION_RETRIES} attempts`
+        error: failureReason,
+        errorCode: createResult?.errorCode,
       };
     }
   } catch (error) {
@@ -2224,6 +2232,14 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
         res.status(400).json({
           success: false,
           error: result.error
+        } as ApiResponse);
+      } else if (result.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE) {
+        // A start the user must unblock (missing credential, first-run setup,
+        // CLI not installed) is not a server error: same status and wording
+        // as the team start (#805).
+        res.status(RUNTIME_STARTUP_CONSTANTS.NONE_STARTED_HTTP_STATUS).json({
+          success: false,
+          error: `${result.memberName}: ${result.error}`
         } as ApiResponse);
       } else {
         res.status(500).json({
