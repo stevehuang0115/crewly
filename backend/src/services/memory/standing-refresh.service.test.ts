@@ -78,6 +78,78 @@ describe('StandingRefreshService', () => {
 		expect(res.skipped.watermark_unchanged).toBe(1);
 	});
 
+	it('retries a refresh that FAILED without writing the page, even though the watermark has not moved', async () => {
+		await make().tick();
+		pool.items[0].status = 'failed'; // closed WITHOUT refreshing the page
+		clock += 6 * HOUR; // past cooldown
+		const res = await make().tick();
+		expect(res.created).toHaveLength(1);
+		expect(res.skipped.watermark_unchanged).toBe(0);
+		expect(pool.items[1].metadata?.['watermark']).toBe('2026-09-20T00:00:00.000Z'); // same watermark as the failed attempt
+		const state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+		expect(state[`project:${projectPath}:decisions-in-force`].retryCount).toBe(1);
+	});
+
+	it('retries a refresh that was CANCELLED without writing the page, the same as a failure', async () => {
+		await make().tick();
+		pool.items[0].status = 'cancelled';
+		clock += 6 * HOUR;
+		const res = await make().tick();
+		expect(res.created).toHaveLength(1);
+	});
+
+	it('a retry still respects the cooldown — it does not fire immediately after the failure', async () => {
+		await make().tick();
+		pool.items[0].status = 'failed';
+		clock += 1 * HOUR; // short of the 6h cooldown
+		const res = await make().tick();
+		expect(res.created).toHaveLength(0);
+		expect(res.skipped.cooldown).toBe(1);
+	});
+
+	it('does not retry forever — stops once REFRESH_MAX_RETRIES is used up, even on repeated failures', async () => {
+		const refresher = make({ cooldownMs: 1 }); // isolate the retry bound from the cooldown
+		await refresher.tick();
+		// REFRESH_MAX_RETRIES is 2: two retries succeed at raising a WorkItem, the third does not.
+		for (let i = 0; i < 2; i++) {
+			pool.items[pool.items.length - 1].status = 'failed';
+			clock += HOUR;
+			const res = await refresher.tick();
+			expect(res.created).toHaveLength(1);
+		}
+		pool.items[pool.items.length - 1].status = 'failed';
+		clock += HOUR;
+		const res = await refresher.tick();
+		expect(res.created).toHaveLength(0);
+		expect(res.skipped.watermark_unchanged).toBe(1);
+	});
+
+	it('a NEW watermark resets the retry count — a fresh failure gets its own retries', async () => {
+		const refresher = make({ cooldownMs: 1 });
+		await refresher.tick();
+		pool.items[0].status = 'failed';
+		clock += HOUR;
+		await refresher.tick(); // retry 1/2 used, for the OLD watermark
+		let state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+		expect(state[`project:${projectPath}:decisions-in-force`].retryCount).toBe(1);
+
+		pool.items[pool.items.length - 1].status = 'failed'; // close the retry too, so it is not still "inflight"
+		await setDecisions([decision('d1', '2026-09-20T00:00:00.000Z'), decision('d2', '2026-09-26T08:00:00.000Z')]); // watermark moves
+		clock += HOUR;
+		await refresher.tick(); // a fresh raise for the NEW watermark — not a retry
+		state = JSON.parse(await fs.readFile(statePath, 'utf8'));
+		expect(state[`project:${projectPath}:decisions-in-force`].retryCount).toBe(0); // reset, not carried over as 2/2
+	});
+
+	it('a "done" close is never treated as a failure to retry', async () => {
+		await make().tick();
+		pool.items[0].status = 'done';
+		clock += 6 * HOUR;
+		const res = await make().tick();
+		expect(res.created).toHaveLength(0);
+		expect(res.skipped.watermark_unchanged).toBe(1);
+	});
+
 	it('raises again once the watermark moves (after the cooldown, with no open WorkItem)', async () => {
 		await make().tick();
 		pool.items[0].status = 'done';

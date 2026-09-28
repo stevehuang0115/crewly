@@ -45,6 +45,7 @@ import { getSessionStatePersistence } from '../session/session-state-persistence
 import { getSessionBackendSync } from '../session/session-backend.factory.js';
 import { PtyActivityTrackerService } from './pty-activity-tracker.service.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { STANDING_ANSWERS_CONSTANTS } from '../../constants.js';
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -392,7 +393,15 @@ export class FreshTaskConversationService {
    * @param workItem - Task being delivered
    * @returns Whether it cleared, and the handover file when it did
    */
-  async prepareForTask(sessionName: string, workItem: Pick<WorkItem, 'id'>): Promise<PrepareForTaskResult> {
+  async prepareForTask(sessionName: string, workItem: Pick<WorkItem, 'id' | 'metadata'>): Promise<PrepareForTaskResult> {
+    // A standing-refresh WorkItem re-raises the page an already-idle member
+    // was working on; it is not a new task for that member's conversation,
+    // so clearing here would /clear a member just to hand it a page refresh.
+    // Never record it as a root either — the next real task must still see
+    // whatever root preceded this refresh.
+    if (workItem.metadata?.['kind'] === STANDING_ANSWERS_CONSTANTS.WORKITEM_KIND) {
+      return { cleared: false };
+    }
     const previous = this.inFlight.get(sessionName);
     const run = (async (): Promise<PrepareForTaskResult> => {
       if (previous) await previous.catch(() => undefined);

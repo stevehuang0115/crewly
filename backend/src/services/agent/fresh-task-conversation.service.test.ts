@@ -17,6 +17,7 @@ import {
 } from './fresh-task-conversation.service.js';
 import { claudeTranscriptPath } from './runtime-session-recovery.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { STANDING_ANSWERS_CONSTANTS } from '../../constants.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -95,7 +96,11 @@ describe('FreshTaskConversationService', () => {
   let deps: FreshTaskDeps;
   let transcriptDir: string;
 
-  const wi = (id: string): Pick<WorkItem, 'id'> => ({ id });
+  const wi = (id: string): Pick<WorkItem, 'id' | 'metadata'> => ({ id });
+  const standingRefreshWi = (id: string): Pick<WorkItem, 'id' | 'metadata'> => ({
+    id,
+    metadata: { kind: STANDING_ANSWERS_CONSTANTS.WORKITEM_KIND },
+  });
 
   /** Let background work (new-conversation tracking) run to completion. */
   const settle = async () => {
@@ -241,6 +246,26 @@ describe('FreshTaskConversationService', () => {
     await settle();
     expect(deps.updateSessionId).not.toHaveBeenCalled();
     expect(deps.clearSessionId).toHaveBeenCalledWith(SESSION);
+  });
+
+  it('a standing-refresh WorkItem never clears, even for an idle member on a different root', async () => {
+    const svc = FreshTaskConversationService.createForTesting(deps);
+    await svc.prepareForTask(SESSION, wi('task-a'));
+    const result = await svc.prepareForTask(SESSION, standingRefreshWi('standing-refresh-page-1'));
+    expect(result).toEqual({ cleared: false });
+    expect(deps.writeToSession).not.toHaveBeenCalled();
+  });
+
+  it('a standing-refresh WorkItem does not overwrite the stored root — the next real task still sees the real previous root', async () => {
+    const svc = FreshTaskConversationService.createForTesting(deps);
+    await svc.prepareForTask(SESSION, wi('task-a'));
+    await svc.prepareForTask(SESSION, standingRefreshWi('standing-refresh-page-1'));
+    expect(svc.getLastRoot(SESSION)).toBe('task-a');
+
+    // The next real task on a different root still triggers a normal clear,
+    // proving the refresh never got recorded as the "previous" root.
+    const result = await svc.prepareForTask(SESSION, wi('task-b'));
+    expect(result.cleared).toBe(true);
   });
 
   it('busy agent: no clear, but the new root is recorded', async () => {

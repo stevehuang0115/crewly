@@ -794,6 +794,13 @@ export const STANDING_ANSWERS_CONSTANTS = {
 	REFRESH_COOLDOWN_MS: 6 * 60 * 60 * 1000,
 	/** At most this many refresh WorkItems per tick (PTY paste-flood guard). */
 	REFRESH_MAX_CREATES_PER_TICK: 2,
+	/**
+	 * A refresh WorkItem that failed or was cancelled without writing the page
+	 * is retried even though the source watermark has not moved again (it
+	 * otherwise would not be re-raised until new memory arrives). Bounded so a
+	 * page that keeps failing does not retry forever.
+	 */
+	REFRESH_MAX_RETRIES: 2,
 	/** Refresh bookkeeping (last raised watermark per page), under CREWLY_HOME. */
 	REFRESH_STATE_FILE: 'standing-refresh-state.json',
 	/** `metadata.kind` of refresh WorkItems. */

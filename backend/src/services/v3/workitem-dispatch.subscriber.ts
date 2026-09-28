@@ -53,7 +53,7 @@ const SERVICE_NAME = 'WorkItemDispatch';
 
 /** Starts a fresh conversation before a new task (see FreshTaskConversationService). */
 type TaskConversationPreparer = {
-  prepareForTask: (sessionName: string, workItem: Pick<WorkItem, 'id'>) => Promise<PrepareForTaskResult>;
+  prepareForTask: (sessionName: string, workItem: Pick<WorkItem, 'id' | 'metadata'>) => Promise<PrepareForTaskResult>;
 };
 
 /** Loopback API used by {@link tl-auto-verify.service.ts} et al. */

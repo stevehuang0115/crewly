@@ -45,6 +45,12 @@ import {
 /** Statuses after which a refresh WorkItem no longer blocks a new one. */
 const CLOSED_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['done', 'verified', 'cancelled', 'failed', 'rejected']);
 
+/**
+ * Statuses meaning the WorkItem closed WITHOUT the page being written — so
+ * `watermark_unchanged` must not block it forever; see {@link RefreshState}.
+ */
+const FAILED_WITHOUT_WRITING_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['failed', 'cancelled']);
+
 /** The pool operations this service needs. */
 export interface RefreshPool {
 	addToPool(workItem: WorkItem): Promise<void>;
@@ -85,7 +91,18 @@ export interface RefreshTickResult {
 
 /** Persisted per-page bookkeeping. */
 interface RefreshState {
-	[pageKey: string]: { watermark: string | null; raisedAt: number };
+	[pageKey: string]: {
+		watermark: string | null;
+		raisedAt: number;
+		/** WorkItem id raised for this watermark, so the next tick can check whether it failed. */
+		workItemId?: string;
+		/**
+		 * Retries already used for this watermark (a fresh watermark resets it
+		 * to 0). Bounded by {@link STANDING_ANSWERS_CONSTANTS.REFRESH_MAX_RETRIES}
+		 * so a page that keeps failing does not retry forever.
+		 */
+		retryCount?: number;
+	};
 }
 
 /**
@@ -159,6 +176,7 @@ export class StandingRefreshService {
 					.filter((wi) => wi.metadata?.['kind'] === STANDING_ANSWERS_CONSTANTS.WORKITEM_KIND && !CLOSED_STATUSES.has(wi.status))
 					.map((wi) => String(wi.metadata?.['pageKey'])),
 			);
+			const itemsById = new Map(items.map((wi) => [wi.id, wi]));
 
 			const candidates: Array<{ def: StandingPageDef; loc: StandingLocation; key: string }> = [
 				...[...new Set(projects)].flatMap((projectPath) =>
@@ -178,10 +196,22 @@ export class StandingRefreshService {
 				result.pagesExamined += 1;
 
 				const prior = state[c.key];
+				const sameWatermark = !!prior && prior.watermark === status.currentWatermark;
+				const priorItem = sameWatermark && prior.workItemId ? itemsById.get(prior.workItemId) : undefined;
+				// A refresh that failed or was cancelled never wrote the page, so
+				// the page is still exactly as stale as it was — retry it even
+				// though the watermark has not moved again, bounded so a page that
+				// keeps failing does not retry forever.
+				const isRetryOfFailure =
+					sameWatermark &&
+					!!priorItem &&
+					FAILED_WITHOUT_WRITING_STATUSES.has(priorItem.status) &&
+					(prior?.retryCount ?? 0) < STANDING_ANSWERS_CONSTANTS.REFRESH_MAX_RETRIES;
+
 				let skip: RefreshSkipReason | null = null;
 				if (status.entriesInScope === 0) skip = 'no_entries';
 				else if (!status.stale) skip = 'fresh';
-				else if (prior && prior.watermark === status.currentWatermark) skip = 'watermark_unchanged';
+				else if (sameWatermark && !isRetryOfFailure) skip = 'watermark_unchanged';
 				else if (inflight.has(c.key)) skip = 'inflight';
 				else if (prior && this.now() - prior.raisedAt < this.cooldownMs) skip = 'cooldown';
 				else if (result.created.length >= this.maxCreatesPerTick) skip = 'tick_cap';
@@ -213,7 +243,12 @@ export class StandingRefreshService {
 					},
 				});
 				await this.options.pool.addToPool(wi);
-				state[c.key] = { watermark: status.currentWatermark, raisedAt: this.now() };
+				state[c.key] = {
+					watermark: status.currentWatermark,
+					raisedAt: this.now(),
+					workItemId: wi.id,
+					retryCount: isRetryOfFailure ? (prior?.retryCount ?? 0) + 1 : 0,
+				};
 				stateChanged = true;
 				result.created.push({ key: c.key, workItemId: wi.id, target, watermark: status.currentWatermark });
 			}
