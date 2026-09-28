@@ -5,6 +5,7 @@
 import { PtySessionBackend } from './pty-session-backend.js';
 import type { PtySession } from './pty-session.js';
 import type { SessionOptions } from '../session-backend.interface.js';
+import { collectSecretEnvValues } from '../../../utils/secret-env.js';
 
 // Determine the shell to use based on platform
 const TEST_SHELL = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
@@ -613,6 +614,37 @@ describe('PtySessionBackend integration', () => {
 			expect(d.registrySize).toBe(1);
 			expect(d.activeSessions).toBe(1);
 			expect(d.deadSessions).toBe(0);
+		});
+	});
+
+	describe('session log secret redaction', () => {
+		/** Feeds one output chunk through the log writer and returns what reached the file */
+		function logChunk(chunk: string, spawnEnv: Record<string, string>): string {
+			const written: string[] = [];
+			const internals = backend as unknown as {
+				sessionLogStreams: Map<string, { destroyed: boolean; write: (d: string) => void }>;
+				sessionLogSecrets: Map<string, ReturnType<typeof collectSecretEnvValues>>;
+				writeToSessionLog: (name: string, data: string) => void;
+			};
+			internals.sessionLogStreams.set('redact-session', { destroyed: false, write: (d) => written.push(d) });
+			internals.sessionLogSecrets.set('redact-session', collectSecretEnvValues(spawnEnv));
+			internals.writeToSessionLog('redact-session', chunk);
+			internals.sessionLogStreams.delete('redact-session');
+			return written.join('');
+		}
+
+		it('masks API keys by pattern and spawn-env secrets by value before writing', () => {
+			const gemini = 'AIzaTESTfakeGeminiKey0123456789abcdefXYZ';
+			const signing = '0123456789abcdef0123456789abcdef'; // plain hex: no pattern can see it
+			const out = logChunk(
+				`export GEMINI_API_KEY="${gemini}"\nSLACK_SIGNING_SECRET=${signing}\nordinary output\n`,
+				{ SLACK_SIGNING_SECRET: signing, CREWLY_ROLE: 'developer' },
+			);
+
+			expect(out).not.toContain(gemini);
+			expect(out).not.toContain(signing);
+			expect(out).toContain('[REDACTED SLACK_SIGNING_SECRET]');
+			expect(out).toContain('ordinary output');
 		});
 	});
 });

@@ -734,6 +734,11 @@ export class PtySession implements ISession {
 	 * an agent could approve its own proposals or hand the token to a
 	 * remote caller.
 	 *
+	 * Backend-only integration secrets (API_SECURITY_CONSTANTS.AGENT_ENV_DENYLIST,
+	 * e.g. the Slack bot token and signing secret) are dropped too: nothing in
+	 * an agent reads them, and an agent running `env` printed them into its
+	 * session log.
+	 *
 	 * @param env - Environment variables object
 	 * @returns Sanitized environment object with string values only
 	 */
@@ -744,7 +749,11 @@ export class PtySession implements ISession {
 		// session and stops saving transcripts (so it can never be resumed).
 		const cleaned = stripNestedClaudeSessionEnv(env);
 		for (const [key, value] of Object.entries(cleaned)) {
-			if (value !== undefined && key !== API_SECURITY_CONSTANTS.ENV.API_TOKEN) {
+			if (
+				value !== undefined &&
+				key !== API_SECURITY_CONSTANTS.ENV.API_TOKEN &&
+				!API_SECURITY_CONSTANTS.AGENT_ENV_DENYLIST.includes(key)
+			) {
 				result[key] = value;
 			}
 		}
