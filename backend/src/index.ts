@@ -176,6 +176,7 @@ import {
 import { isNoticeEnabled } from './services/cloud/cloud-disconnect-notice.utils.js';
 import { createOwnerDirectDm } from './services/slack/slack-owner-direct-dm.js';
 import { LogRotationService } from './services/session/log-rotation.service.js';
+import { WorktreeJanitorService } from './services/worktree/worktree-janitor.service.js';
 import { AuditorSchedulerService } from './services/agent/auditor-scheduler.service.js';
 import { setAuditorSchedulerService } from './controllers/auditor/auditor.controller.js';
 import { AddonLoaderService } from './services/addon/addon-loader.service.js';
@@ -3199,6 +3200,21 @@ void (async () => {
 				});
 			}
 
+			// Worktree janitor (non-critical): removes finished agent worktrees
+			// (merged + clean + idle >2h + nobody inside). Kill switch:
+			// CREWLY_WORKTREE_JANITOR=0.
+			try {
+				if (WorktreeJanitorService.getInstance().start()) {
+					this.logger.info('WorktreeJanitorService scheduled');
+				} else {
+					this.logger.info('WorktreeJanitorService disabled (CREWLY_WORKTREE_JANITOR)');
+				}
+			} catch (error) {
+				this.logger.warn('Failed to start WorktreeJanitorService (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
 			// Start AuditorSchedulerService (non-critical — audit scheduling)
 			// Priority: env var > settings.json > ENABLED_BY_DEFAULT constant
 			const envValue = process.env[AUDITOR_CONSTANTS.ENV_VAR]?.toLowerCase();
@@ -4962,6 +4978,9 @@ void (async () => {
 
 			// Stop log rotation service
 			LogRotationService.getInstance().stop();
+
+			// Stop worktree janitor timers
+			WorktreeJanitorService.getInstance().stop();
 
 			// Stop auditor scheduler
 			AuditorSchedulerService.getInstance().stop();
