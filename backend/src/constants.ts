@@ -3631,6 +3631,31 @@ export const CONVERSATION_SYNC_CONSTANTS = {
 		'免费版保留 7 天，Pro 保留 90 天；消息文字在 Cloud 上加密存储，文件只留在这台机器上。',
 } as const;
 
+/**
+ * Cloud Talk (specs/unified-conversations-cloud-store.md §D.3, Phase 3): the
+ * owner talks to an agent from the Crewly Cloud portal; Cloud pushes a
+ * `talk_message` through the relay and this machine records it in the
+ * agent's DM (source `cloud-talk`) and wakes the agent.
+ */
+export const CLOUD_TALK_CONSTANTS = {
+	/** Relay message `type` Cloud pushes for a Talk message. */
+	RELAY_MESSAGE_TYPE: 'talk_message',
+	/** Capability advertised to Cloud (heartbeat + uploads) once the handler runs. */
+	CAPABILITY: 'talk_message',
+	/** `GET <path>/:messageId?instanceId=` fetches the text; `POST <path>/:messageId/failed` refuses it. */
+	MESSAGE_PATH: '/api/cloud/conversations/talk',
+	/** Delays before retrying a failed fetch (ms); Cloud re-pushes after 5 min anyway. */
+	FETCH_RETRY_DELAYS_MS: [1_000, 5_000, 15_000],
+	/** Timeout of one Cloud call (ms). */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** How often the uploader re-sends this machine's agent roster (ms). */
+	ROSTER_INTERVAL_MS: 5 * 60 * 1000,
+	/** Display name of the orchestrator in the roster (same as its Slack app). */
+	ORCHESTRATOR_DISPLAY_NAME: 'Crewly Orc',
+	/** Ticket-intake origin for a Talk message (the portal). */
+	INTAKE_ORIGIN: 'portal',
+} as const;
+
 // Type helpers
 export type AgentStatus =
 	(typeof CREWLY_CONSTANTS.AGENT_STATUSES)[keyof typeof CREWLY_CONSTANTS.AGENT_STATUSES];

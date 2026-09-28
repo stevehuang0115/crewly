@@ -228,6 +228,13 @@ describe('cloud-sync.types', () => {
     });
   });
 
+  describe('talk_message message type (Cloud Talk)', () => {
+    it('is a valid message type', () => {
+      expect(isMessageType('talk_message')).toBe(true);
+      expect(MESSAGE_TYPES).toContain('talk_message');
+    });
+  });
+
   describe('slack_event message type (Slack v3 — Cloud owns Slack)', () => {
     it('is a valid MessageType so relay polling keeps its type instead of degrading to relay', () => {
       expect(isMessageType('slack_event')).toBe(true);

@@ -42,6 +42,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_CLOUD_CONSTANTS } from '../../constants.js';
 import { SlackIdentityCloudError, type IdentityCloudClient } from './slack-agent-identity.service.js';
 import { teamChannelMembers, orchestratorSyncEntry } from './slack-team-channel.service.js';
+import { buildAgentRoster } from '../cloud/agent-roster.utils.js';
 
 /** The slice of DeviceIdentityService this service needs. */
 export interface RegistryDeviceIdentity {
@@ -88,6 +89,11 @@ export interface SlackInstanceRegistryServiceDeps {
    * machine, and only one machine wakes someone when nobody is.
    */
   isAgentAwake?: (agentSession: string) => boolean;
+  /**
+   * What this machine handles right now (e.g. `talk_message` once the Cloud
+   * Talk handler runs). Reported with every heartbeat.
+   */
+  capabilities?: () => string[];
   /** Crewly version reported to Cloud; read from package.json when omitted. */
   version?: string;
   /** Settings path; defaults to `<CREWLY_HOME>/slack-instance.json`. */
@@ -290,6 +296,7 @@ export class SlackInstanceRegistryService {
     const awakeAgents = isAwake
       ? [...new Set(teams.flatMap((t) => teamChannelMembers(t).map((m) => m.sessionName)))].filter((s) => isAwake(s))
       : undefined;
+    const capabilities = this.deps.capabilities?.();
     return {
       deviceName,
       relayQueueId: this.deps.sync.getQueueId() ?? '',
@@ -309,6 +316,9 @@ export class SlackInstanceRegistryService {
       }).concat(orc ? [{ teamId: orc.teamId, name: orc.name, agents: [orc.agentSession] }] : []),
       ...(rooms ? { rooms } : {}),
       ...(awakeAgents ? { awakeAgents } : {}),
+      // Every agent with its name, under local session names (Cloud Talk).
+      roster: buildAgentRoster(teams),
+      ...(capabilities ? { capabilities } : {}),
       crewlyVersion: version,
     };
   }

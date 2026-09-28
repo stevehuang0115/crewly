@@ -20,6 +20,11 @@
  *   (or `CREWLY_CLOUD_CONVERSATIONS=off`) turns uploading off; the outbox
  *   still fills.
  * - **O4:** text only — attachments go as name / size / mime.
+ * - **Roster (Cloud Talk, Phase 3):** every 5 minutes, and whenever the
+ *   advertised capabilities change, an empty batch carries this machine's
+ *   agent roster and capabilities (`talk_message`), so Cloud lists agents
+ *   that have no messages yet and knows Talk can be sent here — also on
+ *   machines that do not use Slack (and so never send the Slack heartbeat).
  *
  * The wire contract lives in `conversation-ingest.contract.ts`.
  *
@@ -28,7 +33,7 @@
 
 import { gzipSync } from 'zlib';
 import { randomUUID } from 'crypto';
-import { CONVERSATION_SYNC_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { CLOUD_TALK_CONSTANTS, CONVERSATION_SYNC_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type {
   BackfillCursor,
@@ -46,6 +51,7 @@ import {
   isOneOf,
   parseIngestErrorCode,
   parseIngestResponse,
+  type AgentRosterEntry,
   type IngestExt,
   type IngestMessage,
   type IngestMode,
@@ -103,6 +109,10 @@ export interface ConversationCloudSyncDeps {
   reclassifyOwnerRows?: () => void;
   /** O1: tell the owner once that history now syncs. Resolves true when the DM was posted. */
   notifyOwner?: (text: string) => Promise<boolean>;
+  /** This machine's agents, reported every few minutes (Cloud lists them before they have messages). */
+  roster?: () => Promise<AgentRosterEntry[]>;
+  /** What this machine handles right now (e.g. `talk_message`); a change is reported at once. */
+  capabilities?: () => string[];
   /** Environment (kill switch). Defaults to `process.env`. */
   env?: NodeJS.ProcessEnv;
   fetchImpl?: SyncFetch;
@@ -272,6 +282,9 @@ export class ConversationCloudSyncService {
   private lastBackfillAt = 0;
   private lastNoticeAttemptAt = 0;
   private gapLogged = false;
+  /** When the roster last reached Cloud, and the capabilities it carried. */
+  private lastRosterAt = 0;
+  private lastCapabilitiesKey: string | null = null;
 
   constructor(private readonly deps: ConversationCloudSyncDeps) {
     this.logger = deps.logger ?? LoggerService.getInstance().createComponentLogger('ConversationCloudSync');
@@ -387,14 +400,48 @@ export class ConversationCloudSyncService {
     const version = (await this.deps.crewlyVersion?.().catch(() => undefined)) ?? undefined;
     const envelope = { instanceId, deviceName, version };
 
-    // The plan window comes from an empty ingest (spec §B.4).
-    if (!this.deps.outbox.getState(K.RETENTION_DAYS)) {
-      const probe = await this.send(base, token, envelope, 'live', []);
+    // The plan window comes from an empty ingest (spec §B.4); the same empty
+    // batch carries the roster when it is due.
+    const roster = await this.rosterIfDue();
+    if (!this.deps.outbox.getState(K.RETENTION_DAYS) || roster) {
+      const probe = await this.send(base, token, envelope, 'live', [], roster ?? undefined);
       if (!this.settle(probe)) return;
+      if (roster) {
+        this.lastRosterAt = this.now();
+        this.lastCapabilitiesKey = JSON.stringify(roster.capabilities ?? []);
+      }
     }
 
     if (!(await this.drainLive(base, token, envelope))) return;
     await this.backfillStep(base, token, envelope);
+  }
+
+  /**
+   * The roster and capabilities when they are due: every
+   * {@link CLOUD_TALK_CONSTANTS.ROSTER_INTERVAL_MS}, or at once when the
+   * capabilities changed (the Talk handler starting after the uploader).
+   *
+   * @returns The fields to send, or null when nothing is due
+   */
+  private async rosterIfDue(): Promise<{ roster?: AgentRosterEntry[]; capabilities?: string[] } | null> {
+    if (!this.deps.roster && !this.deps.capabilities) return null;
+    let capabilities: string[] | undefined;
+    try {
+      capabilities = this.deps.capabilities?.();
+    } catch {
+      capabilities = undefined;
+    }
+    const capsChanged = capabilities !== undefined && JSON.stringify(capabilities) !== this.lastCapabilitiesKey;
+    if (!capsChanged && this.now() - this.lastRosterAt < CLOUD_TALK_CONSTANTS.ROSTER_INTERVAL_MS) return null;
+    let roster: AgentRosterEntry[] | undefined;
+    try {
+      roster = await this.deps.roster?.();
+    } catch (error) {
+      this.logger.debug('Agent roster unavailable for Crewly Cloud', { error: error instanceof Error ? error.message : String(error) });
+      roster = undefined;
+    }
+    if (!roster && capabilities === undefined) return null;
+    return { ...(roster ? { roster } : {}), ...(capabilities !== undefined ? { capabilities } : {}) };
   }
 
   /**
@@ -528,8 +575,11 @@ export class ConversationCloudSyncService {
     envelope: { instanceId: string; deviceName?: string; version?: string },
     mode: IngestMode,
     messages: IngestMessage[],
+    extras?: { roster?: AgentRosterEntry[]; capabilities?: string[] },
   ): Promise<SendOutcome> {
     const body: IngestRequest = {
+      ...(extras?.roster ? { roster: extras.roster } : {}),
+      ...(extras?.capabilities ? { capabilities: extras.capabilities } : {}),
       instanceId: envelope.instanceId,
       ...(this.deps.homeId ? { homeId: this.deps.homeId } : {}),
       ...(envelope.version ? { crewlyVersion: envelope.version } : {}),
