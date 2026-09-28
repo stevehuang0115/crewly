@@ -1,0 +1,3 @@
+# Crewly: transient files, never commit
+.lock
+*.tmp.*
