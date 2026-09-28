@@ -108,6 +108,29 @@ describe('classifyStop rules', () => {
     });
   });
 
+  describe('PR-sweep table (#843): false RETRY that should escalate, false RETRY that should complete', () => {
+    it.each([
+      ['Blocked: cannot proceed until Sam decides between approach 1 and 2', 'block', 'owner_decision'],
+      ['Blocked: the spec is ambiguous and I cannot tell which behaviour is intended', 'block', 'owner_decision'],
+      ["Blocked: I cannot push to the repo, git rejected my push", 'block', 'permission'],
+      ['Blocked: cannot merge, branch protection requires an approving review', 'block', 'permission'],
+      ['Blocked: upstream vendor API returning wrong data; cannot continue until they fix it', 'block', 'dependency'],
+      ['task description contradicts the acceptance criteria', 'block', 'owner_decision'],
+      ['CI is red on main for unrelated reasons', 'fail', 'unknown'],
+      ['requires hardware I do not have', 'fail', 'unknown'],
+    ] as [string, StopSource, string][])('%s (%s) -> escalate/%s', (text, source, category) => {
+      expect(classifyStop(text, source)).toMatchObject({ decision: 'escalate', category });
+    });
+
+    it.each([
+      ['Investigated: the flake cannot be reproduced; no change needed'],
+      ['Unable to reproduce. Closing as not a bug.'],
+      ['Could not find any usages..., so no migration is necessary'],
+    ])('%s -> none (a completed investigation, not a give-up)', (text) => {
+      expect(classifyStop(text, 'complete')).toMatchObject({ decision: 'none' });
+    });
+  });
+
   it('findExclusion reports each of the added categories (Sam, 2026-09-27)', () => {
     expect(findExclusion('usage limit reached')?.category).toBe('quota');
     expect(findExclusion('drop the table')?.category).toBe('destructive');

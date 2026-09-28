@@ -11,8 +11,9 @@ import { PoolStorage } from '../pool-storage.js';
 import { createWorkItem, getWorkItemDisposition } from '../../../types/v2/work-item.types.js';
 import { detectRetryableFailedWorkItems } from '../../reconciler/reconcile-rules.js';
 import type { Team } from '../../../types/index.js';
-import { GiveUpRecoveryService, completionText, maxRetriesFor, giveUpMetaOf } from './give-up-recovery.service.js';
+import { GiveUpRecoveryService, completionText, maxRetriesFor, giveUpMetaOf, isExcludedFromGiveUp } from './give-up-recovery.service.js';
 import { computeGiveUpStats } from './give-up-stats.js';
+import { ORCHESTRATOR_SESSION_NAME } from '../../../constants.js';
 
 const WORKER = 'crewly-dev-1';
 const LEAD = 'crewly-tl-1';
@@ -117,6 +118,62 @@ describe('GiveUpRecoveryService (#841)', () => {
     expect(last.status).toBe('failed');
     expect(getWorkItemDisposition(last)).toMatchObject({ kind: 'succeeded_by', successorWorkItemId: `${root}:review:gave_up` });
     expect(detectRetryableFailedWorkItems([last]).corrections).toHaveLength(0);
+  });
+
+  it('a give-up stop on the escalation review itself is only recorded — never rebuilt as its own successor', async () => {
+    const root = await running();
+    await svc.block(root, { agentId: WORKER, reason: GIVE_UP }); // -> retry 1
+    await claim(`${root}:giveup:1`);
+    await svc.block(`${root}:giveup:1`, { agentId: WORKER, reason: GIVE_UP }); // -> retry 2
+    await claim(`${root}:giveup:2`);
+    await svc.fail(`${root}:giveup:2`, GIVE_UP); // -> escalate to review
+
+    const reviewId = `${root}:review:gave_up`;
+    expect(await pool.claimSpecificItem(LEAD, reviewId)).not.toBeNull();
+
+    // The lead itself stops on the review with give-up wording. Without the
+    // fix, buildReview(before=review, meta, team) rebuilds a review with the
+    // SAME id (derived from meta.rootWorkItemId, unchanged), addToPool skips
+    // it as a duplicate, and closeStopped(reviewId, reviewId, …) cancels the
+    // escalation citing itself as its own successor.
+    const out = await svc.block(reviewId, { agentId: LEAD, reason: GIVE_UP });
+
+    expect(out).toMatchObject({ action: 'recorded', verdict: { decision: 'retry', category: 'feasibility' } });
+    expect((await pool.getAllItems()).filter((w) => w.id === reviewId)).toHaveLength(1);
+    const review = await item(reviewId);
+    expect(review.status).toBe('blocked');
+    expect(review.metadata?.['stop']).toMatchObject({ source: 'block', decision: 'retry' });
+  });
+
+  it('a give-up block targeted at the orchestrator is only recorded — no retry, no escalation (it has no team lead)', async () => {
+    const wi = createWorkItem({ type: 'delegate', owner: 'agent', title: 'Orchestrate the release', target: ORCHESTRATOR_SESSION_NAME });
+    await pool.addToPool(wi);
+    await pool.claimSpecificItem(ORCHESTRATOR_SESSION_NAME, wi.id);
+
+    const out = await svc.block(wi.id, { agentId: ORCHESTRATOR_SESSION_NAME, reason: GIVE_UP });
+
+    expect(out).toMatchObject({ action: 'recorded', verdict: { decision: 'retry' } });
+    expect(await pool.getAllItems()).toHaveLength(1);
+    expect((await item(wi.id)).status).toBe('blocked');
+  });
+
+  it('a give-up completion targeted at the orchestrator completes as today — not converted to a failed retry', async () => {
+    const wi = createWorkItem({ type: 'delegate', owner: 'agent', title: 'Orchestrate the release', target: ORCHESTRATOR_SESSION_NAME });
+    await pool.addToPool(wi);
+    await pool.claimSpecificItem(ORCHESTRATOR_SESSION_NAME, wi.id);
+
+    const out = await svc.complete(wi.id, { summary: 'It is impossible. Gave up.' });
+
+    expect(out.action).toBe('recorded');
+    expect(await pool.getAllItems()).toHaveLength(1);
+    expect((await item(wi.id)).status).toBe('done_by_worker');
+  });
+
+  it('isExcludedFromGiveUp: orchestrator target, review type, and gave_up reviewReason all exclude; an ordinary worker item does not', () => {
+    expect(isExcludedFromGiveUp(createWorkItem({ type: 'delegate', owner: 'agent', title: 't', target: ORCHESTRATOR_SESSION_NAME }))).toBe(true);
+    expect(isExcludedFromGiveUp(createWorkItem({ type: 'review', owner: 'team_lead', title: 't', target: LEAD }))).toBe(true);
+    expect(isExcludedFromGiveUp({ ...createWorkItem({ type: 'delegate', owner: 'agent', title: 't', target: WORKER }), metadata: { reviewReason: 'gave_up' } })).toBe(true);
+    expect(isExcludedFromGiveUp(createWorkItem({ type: 'delegate', owner: 'agent', title: 't', target: WORKER }))).toBe(false);
   });
 
   it('the lead gets ONE escalation, not one per stop', async () => {

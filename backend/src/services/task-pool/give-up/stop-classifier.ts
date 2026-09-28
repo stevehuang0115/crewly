@@ -123,7 +123,12 @@ export const EXCLUSION_RULES: ReadonlyArray<{ category: Exclude<StopCategory, 'd
     rules: [
       { name: 'permission:access', re: /permission|access denied|forbidden|unauthori[sz]ed|\b40[13]\b|read-only|not a member|no access|lacks? access/i },
       { name: 'permission:credential', re: /credential|api[ _-]?keys?|\btokens?\b|password|passcode|\b2fa\b|oauth|ssh key|secret|log ?in|logging in|logged[ -]?(in|out)|sign(ed|ing)?[ -]?in|re-?login|authenticat|your account/i },
-      { name: 'permission:zh', re: /权限|凭证|凭据|登录|登陆|密码|授权|密钥|令牌|账号/ },
+      // A push/merge blocked by repo governance needs a human with the right
+      // to override it (a maintainer, or whoever owns branch protection) —
+      // never a different coding approach.
+      { name: 'permission:branch-protection', re: /branch protection|protected branch|requires? (an |a )?approv(ing|ed) review|needs? (an |a )?(approving )?review before (it can be )?merg/i },
+      { name: 'permission:push-rejected', re: /push (was )?rejected|git rejected|remote rejected|non-fast-forward|failed to push|cannot push to (the )?repo|can'?t push to (the )?repo/i },
+      { name: 'permission:zh', re: /权限|凭证|凭据|登录|登陆|密码|授权|密钥|令牌|账号|分支保护|推送被拒|需要审批合并/ },
     ],
   },
   {
@@ -131,7 +136,14 @@ export const EXCLUSION_RULES: ReadonlyArray<{ category: Exclude<StopCategory, 'd
     rules: [
       { name: 'owner:your-call', re: /your (call|decision|approval|go[- ]?ahead|sign[- ]?off|answers?|input)|needs? (a |an |the )?(approval|decision|sign[- ]?off|owner|human|steve)|waiting (on|for) (you|your|steve|the owner|approval|a decision)|awaiting (approval|confirmation|your)/i },
       { name: 'owner:choice', re: /which (option|one|path|way|approach) (do you|should)|should i\b|do you want|want me to|(option|path) \(?[ab]\)?.*(option|path) \(?[bc]\)?|\(a\).{0,200}\(b\)|needs_alignment|alignment request|out of scope|scope (change|decision|call)|pick the (fix )?scope|clarif/i },
-      { name: 'owner:zh', re: /拍板|你定|你来定|等你|需要你|请你|确认一下|选哪|要不要|范围|对齐|你决定|你回/ },
+      // "X decides between A and B" — a decision verb, not the noun "decision"
+      // the rule above looks for.
+      { name: 'owner:decide-verb', re: /\b(decides?|deciding|decide)\b.{0,30}\bbetween\b|\bwhich behaviou?r (is|was) intended\b/i },
+      // A spec that is ambiguous, or a description that contradicts its own
+      // acceptance criteria, is a scope question for a human, not something a
+      // different implementation approach can resolve.
+      { name: 'owner:ambiguous', re: /\bambiguous\b|\bunclear (spec|requirement|scope|behaviou?r)\b|\bcannot tell which (behaviou?r|approach|option)\b|(spec|description|requirement)s? contradicts? (the )?(spec|description|requirement|acceptance criteria)/i },
+      { name: 'owner:zh', re: /拍板|你定|你来定|等你|需要你|请你|确认一下|选哪|要不要|范围|对齐|你决定|你回|不清楚|模糊|矛盾/ },
     ],
   },
   {
@@ -148,7 +160,11 @@ export const EXCLUSION_RULES: ReadonlyArray<{ category: Exclude<StopCategory, 'd
 /** Waiting on other work: not a give-up, and not for this classifier to retry. */
 export const DEPENDENCY_RULES: Rule[] = [
   { name: 'dependency:wait', re: /waiting (on|for) (the )?(dependency|dependencies|#\d+|pr\b|another|other (work|agent|team)|[a-z]+-[a-z]+)|blocked by (#\d+|pr\b|the dependency|wi\b|work ?item)|depends on #?\w+/i },
-  { name: 'dependency:zh', re: /等待依赖|依赖.{0,6}(完成|合并)|等.{0,8}(合并|完成)后/ },
+  // "Cannot continue until X" (a vendor, another team, an upstream fix) is a
+  // wait on someone else's action, not a feasibility give-up — retrying with
+  // a different approach cannot make the upstream fix land any sooner.
+  { name: 'dependency:upstream', re: /\bupstream\b.{0,80}\b(fix|resolve|respond|available|working)|\b(cannot|can'?t|won'?t) (continue|proceed|resume)\b.{0,60}\buntil\b|\bwaiting until (they|it|the vendor|upstream)\b/i },
+  { name: 'dependency:zh', re: /等待依赖|依赖.{0,6}(完成|合并)|等.{0,8}(合并|完成)后|上游.{0,20}(修复|解决)|直到.{0,20}(修复|解决|响应)/ },
 ];
 
 /**
@@ -169,7 +185,13 @@ export const DELIVERY_RULES: Rule[] = [
   { name: 'delivered:sha', re: /\b[0-9a-f]{7,40}\b/ },
   { name: 'delivered:path', re: /(findings|specs)\/[\w./-]+|\b[\w-]+\/[\w./-]+\.(md|json|ts|tsx|js|sh|py|txt|csv|pdf|html)\b|\bLog: \S+/i },
   { name: 'delivered:words', re: /\b(done|fixed|merged|verified|shipped|passed|pass|completed|implemented|delivered|landed|pushed|opened|created|published|posted|updated|added|wrote|written|recorded|found|checked|reviewed|sent|logged|reported|flagged|documented|saved|summari[sz]ed|listed|covered|confirmed)\b/i },
-  { name: 'delivered:zh', re: /完成|已修复|已合并|已上线|已提交|搞定|通过|写好|已发|记好|建好|改好/ },
+  // A finished investigation whose conclusion happens to use a "can't/cannot"
+  // word ("the flake cannot be reproduced", "could not find any usages") is
+  // still a completed, reported outcome, not a give-up — the give-up phrase
+  // itself was already blanked by withoutGiveUpPhrases before this runs, so
+  // these look for what is left: the investigator's conclusion.
+  { name: 'delivered:no-action-needed', re: /\bno change(s)? (is |are )?needed\b|\bnot a bug\b|\bno migration (is )?necessary\b|\bnothing (further )?(is |was )?needed\b|\bworking as (intended|designed)\b|\bas designed\b|\bnot necessary\b|\bnothing to (fix|change|migrate)\b/i },
+  { name: 'delivered:zh', re: /完成|已修复|已合并|已上线|已提交|搞定|通过|写好|已发|记好|建好|改好|无需修改|不是bug|不需要迁移/ },
 ];
 
 /** Cap on how much text is classified (and later stored). */

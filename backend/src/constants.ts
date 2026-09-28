@@ -1681,7 +1681,15 @@ export const FRESH_TASK_CONVERSATION_CONSTANTS = {
 	ENV_TOGGLE: 'CREWLY_FRESH_TASK_CONVERSATION',
 	/** Under CREWLY_HOME: `{ [session]: lastDeliveredRootId }` */
 	STATE_FILE: 'fresh-task-conversation.json',
-	/** Id suffixes that mark follow-ups of the same task (retries, verifies, reviews) */
+	/**
+	 * Id suffixes that mark follow-ups of the same task (retries, verifies,
+	 * reviews). Deliberately excludes give-up recovery's `:giveup:N` (#841,
+	 * #843): a give-up retry is meant to be a materially DIFFERENT approach,
+	 * and its WorkItem description already carries the full attempt log, so
+	 * nothing is lost by treating it as a new root — the agent starts that
+	 * retry with a fresh conversation instead of one anchored on the
+	 * reasoning that just failed. See give-up-recovery.service.ts buildRetry.
+	 */
 	ROOT_SUFFIX_MARKERS: [':retry:', ':verify:', ':review:'],
 	/** The Claude Code command that starts a new conversation */
 	CLEAR_COMMAND: '/clear',

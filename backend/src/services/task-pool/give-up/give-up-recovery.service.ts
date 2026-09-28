@@ -149,8 +149,11 @@ export class GiveUpRecoveryService {
     const before = await this.pool.findWorkItem(workItemId);
     // Convert only when retries are on for this worker's team: with the
     // feature off (giveUpMaxRetries 0) a completion stays exactly as today.
+    // Also off for the orchestrator (isExcludedFromGiveUp): it is a
+    // singleton control-plane process, not a bounded-retry worker, and has
+    // no team lead of its own to escalate a review to.
     const enabled =
-      verdict.decision === 'retry' && before !== null &&
+      verdict.decision === 'retry' && before !== null && !isExcludedFromGiveUp(before) &&
       maxRetriesFor(teamOf(await this.loadTeams().catch(() => [] as Team[]), before.target)) > 0;
     if (!enabled) {
       await this.pool.completeItem(workItemId, result);
@@ -207,6 +210,22 @@ export class GiveUpRecoveryService {
   ): Promise<StopOutcome> {
     await this.record(workItemId, source, verdict, text);
     if (verdict.decision !== 'retry' || !before) return { verdict, action: 'recorded' };
+
+    // The escalation review this service itself creates (buildReview) carries
+    // the give-up meta and an id derived from `rootWorkItemId`. If the lead
+    // blocks or fails THAT review with give-up wording, re-running this same
+    // logic on it would rebuild a review with the identical id (addToPool
+    // then silently skips it as a duplicate) and closeStopped(id, id) would
+    // try to cancel the escalation as superseded by itself. A give-up review
+    // has done its job once it reaches a human; it is never itself retried
+    // or re-escalated. The orchestrator is excluded for the same reason
+    // `complete()` excludes it above (see isExcludedFromGiveUp).
+    if (isExcludedFromGiveUp(before)) {
+      this.logger.debug('Give-up handling skipped: item is excluded (a give-up escalation, or targets the orchestrator)', {
+        workItemId, type: before.type, target: before.target, reviewReason: before.metadata?.['reviewReason'],
+      });
+      return { verdict, action: 'recorded' };
+    }
 
     try {
       const teams = await this.loadTeams().catch(() => [] as Team[]);
@@ -297,6 +316,15 @@ export class GiveUpRecoveryService {
 
   /**
    * The retry WorkItem.
+   *
+   * DELIBERATE CHOICE (#843): its id's `:giveup:N` infix is NOT added to
+   * `FRESH_TASK_CONVERSATION_CONSTANTS.ROOT_SUFFIX_MARKERS`, so dispatching
+   * it starts a fresh conversation rather than continuing the one that just
+   * gave up. Reasoning: the whole point of a retry is a materially
+   * DIFFERENT approach (see the instruction below), and the full attempt
+   * log is already written into this WorkItem's own description — nothing
+   * is lost by a clean slate, and a warm conversation risks anchoring the
+   * agent on the reasoning that just failed.
    *
    * @param stopped - The item that gave up
    * @param meta - Attempt log so far
@@ -400,6 +428,28 @@ export class GiveUpRecoveryService {
 export function giveUpMetaOf(wi: WorkItem): GiveUpMeta | null {
   const m = wi.metadata?.[C.GIVE_UP_METADATA_KEY] as GiveUpMeta | undefined;
   return m && typeof m.rootWorkItemId === 'string' && Array.isArray(m.attempts) ? m : null;
+}
+
+/**
+ * Whether a stopped WorkItem is excluded from give-up handling entirely: it
+ * is never retried, never escalated — only recorded, exactly like feature-off.
+ *
+ * Two cases:
+ * - It targets the orchestrator: a singleton control-plane process, not a
+ *   bounded-retry worker. `teamOf()` finds no team for it (the orchestrator
+ *   is not a team member), so `maxRetriesFor(null)` would otherwise fall
+ *   through to the team-less default (2) and give it retries and a review
+ *   escalation it has no team lead to receive.
+ * - It IS a give-up escalation review (buildReview's own output, `type:
+ *   'review'` with `metadata.reviewReason === 'gave_up'`): if the lead
+ *   blocks or fails THAT review with give-up wording, this service must not
+ *   process it again (see the comment at the call site in `afterStop`).
+ *
+ * @param wi - The stopped WorkItem
+ * @returns True when give-up handling must not apply
+ */
+export function isExcludedFromGiveUp(wi: WorkItem): boolean {
+  return wi.target === ORCHESTRATOR_SESSION_NAME || wi.type === 'review' || wi.metadata?.['reviewReason'] === 'gave_up';
 }
 
 /**
