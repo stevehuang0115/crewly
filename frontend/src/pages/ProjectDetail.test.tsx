@@ -3,11 +3,20 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { vi } from 'vitest';
 import { BrowserRouter, MemoryRouter } from 'react-router-dom';
 import { ProjectDetail } from './ProjectDetail';
-import * as apiService from '../services/api.service';
+import { apiService } from '../services/api.service';
 
 // Mock the API service
 vi.mock('../services/api.service');
 const mockedApiService = vi.mocked(apiService);
+
+// The Tasks tab shows project tickets (<project>/.crewly/tickets/)
+const mockListProjectTickets = vi.fn();
+vi.mock('../services/project-tickets.service', () => ({
+  listProjectTickets: (...args: unknown[]) => mockListProjectTickets(...args),
+  createProjectTicket: vi.fn(),
+  updateProjectTicket: vi.fn(),
+  assignProjectTicket: vi.fn(),
+}));
 
 // Mock the TerminalContext
 const mockOpenTerminalWithSession = vi.fn();
@@ -52,15 +61,17 @@ const mockTeams = [
   }
 ];
 
-const mockTasks = [
+const mockTickets = [
   {
-    id: 'task-1',
+    id: 'TP-1',
     title: 'Setup project',
     description: 'Initial project setup',
-    status: 'open',
-    priority: 'high',
-    milestoneId: 'm1_foundation',
-    tasks: ['Initialize repo', 'Setup CI/CD']
+    status: 'ready',
+    priority: 'P1',
+    assignee: null,
+    labels: [],
+    acceptance: [],
+    log: [],
   }
 ];
 
@@ -80,7 +91,7 @@ describe('ProjectDetail Page', () => {
     
     // Setup default API mocks
     mockedApiService.getProject.mockResolvedValue(mockProject);
-    mockedApiService.getAllTasks.mockResolvedValue(mockTasks);
+    mockListProjectTickets.mockResolvedValue({ project: { id: 'project-1', name: 'Test Project', path: '/path/to/test/project' }, tickets: mockTickets, invalid: [] });
     mockedApiService.getTeams.mockResolvedValue(mockTeams);
     
     // Setup fetch mock
@@ -230,7 +241,7 @@ describe('ProjectDetail Page', () => {
       
       // Tasks view should be rendered (check for task-related content)
       await waitFor(() => {
-        // The TasksView component should be rendered
+        // The project tickets board should be rendered
         expect(screen.getByText('Detail').closest('.tab')).not.toHaveClass('tab--active');
       });
 

@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAlert } from '@crewly/ui/Dialog';
 import { FileText } from 'lucide-react';
 import { Button } from '@crewly/ui';
-import { apiService } from '../../services/api.service';
+import { listProjectTickets } from '../../services/project-tickets.service';
 import { DetailViewProps } from './types';
 
 interface ProjectStats {
@@ -20,20 +20,14 @@ const DetailView: React.FC<DetailViewProps> = ({
   onEditGoal, 
   onAddUserJourney, 
   onEditUserJourney, 
-  onBuildSpecs, 
-  onBuildTasks, 
-  buildSpecsWorkflow, 
-  alignmentStatus, 
-  onContinueWithMisalignment, 
-  onViewAlignment, 
-  selectedBuildSpecsTeam, 
-  setSelectedBuildSpecsTeam, 
-  selectedBuildTasksTeam, 
-  setSelectedBuildTasksTeam, 
+  onBuildSpecs,
+  buildSpecsWorkflow,
+  alignmentStatus,
+  onContinueWithMisalignment,
+  onViewAlignment,
+  selectedBuildSpecsTeam,
+  setSelectedBuildSpecsTeam,
   availableTeams,
-  onCreateSpecsTasks,
-  onCreateDevTasks,
-  onCreateE2ETasks 
 }) => {
   const { showSuccess, showError, AlertComponent } = useAlert();
   const [projectStats, setProjectStats] = useState<ProjectStats>({
@@ -64,11 +58,13 @@ const DetailView: React.FC<DetailViewProps> = ({
         }
       }
 
-      // Prototype metrics (progress, completed/total, assigned teams)
+      // Metrics from the project's own backlog (project tickets); cancelled
+      // tickets do not count toward the total.
       try {
-        const tasks = await apiService.getAllTasks(project.id);
-        const total = tasks.length;
-        const completed = tasks.filter((t: any) => t.status === 'done' || t.status === 'completed').length;
+        const { tickets } = await listProjectTickets(project.id);
+        const counted = tickets.filter((t) => t.status !== 'cancelled');
+        const total = counted.length;
+        const completed = counted.filter((t) => t.status === 'done').length;
         const progress = total ? Math.round((completed / total) * 100) : 0;
         const assigned = (availableTeams || []).filter((t: any) => t.projectIds?.includes(project.id) || t.projectIds?.includes(project.name)).length;
         setMetrics({ progressPercent: progress, tasksCompleted: completed, tasksTotal: total, assignedTeams: assigned });
@@ -217,214 +213,6 @@ Describe the main objective and purpose of this project.
 - As a [user type], I want [goal] so that [benefit]
 - As a [user type], I want [goal] so that [benefit]
 `;
-  };
-
-  const handleRetryBuildSpecStep = async (stepId: number) => {
-    // Validate team selection
-    if (!selectedBuildSpecsTeam || selectedBuildSpecsTeam === 'orchestrator') {
-      console.error('No team member selected for step retry');
-      return;
-    }
-    
-    try {
-      // Load the build specs configuration
-      const configResponse = await fetch('/api/build-specs/config');
-      if (!configResponse.ok) {
-        throw new Error('Failed to load Build Specs configuration');
-      }
-      const result = await configResponse.json();
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to load Build Specs configuration');
-      }
-      const config = result.data;
-
-      // Find the specific step in the config
-      const stepConfig = config.steps.find((s: any) => s.id === stepId);
-      if (!stepConfig) {
-        throw new Error(`Step ${stepId} not found in configuration`);
-      }
-
-      // Get the initial goal and user journey content
-      const [goalResponse, journeyResponse] = await Promise.all([
-        fetch(`/api/projects/${project.id}/specs?fileName=initial_goal.md`),
-        fetch(`/api/projects/${project.id}/specs?fileName=initial_user_journey.md`)
-      ]);
-
-      if (!goalResponse.ok || !journeyResponse.ok) {
-        throw new Error('Failed to load initial specifications');
-      }
-
-      const [goalResult, journeyResult] = await Promise.all([
-        goalResponse.json(),
-        journeyResponse.json()
-      ]);
-
-      if (!goalResult.success || !journeyResult.success) {
-        throw new Error('Failed to read initial specifications');
-      }
-
-      const initialGoal = goalResult.data.content;
-      const userJourney = journeyResult.data.content;
-
-      // Get the selected team and member information
-      const [teamId, memberId] = selectedBuildSpecsTeam.split(':');
-      const selectedTeam = availableTeams.find(team => team.id === teamId);
-      const selectedMember = selectedTeam?.members.find((m: any) => m.id === memberId);
-      
-      if (!selectedTeam || !selectedMember) {
-        throw new Error('Selected team member not found');
-      }
-
-      // Get the actual session name for the selected member
-      const targetSessionName = selectedMember.sessionName || selectedMember.name;
-
-      console.log(`Retrying Build Spec Step ${stepId}: ${stepConfig.name} for ${selectedMember.name}`);
-
-      // Send the specific step to the selected team member - backend will handle prompt resolution
-      const promise = fetch('/api/build-specs/retry-step', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          projectId: project.id,
-          stepId: stepId,
-          targetSession: targetSessionName,
-          projectName: project.name,
-          projectPath: project.path,
-          initialGoal,
-          userJourney
-        })
-      });
-      
-      try {
-        const response = await promise;
-        if (response.ok) {
-          const result = await response.json();
-          console.log(`Step ${stepId} retry sent:`, result.message || 'Success');
-          
-          // Show a brief success message
-          console.log(`✓ Retried step ${stepId} for ${selectedMember.name}`);
-        } else {
-          const errorText = await response.text();
-          console.error(`Failed to retry step ${stepId}:`, errorText);
-          
-          // Fallback: if API doesn't exist (404), show that step retry is not available 
-          if (response.status === 404) {
-            console.log('Step retry API not available - backend support needed for individual step retry');
-          }
-        }
-      } catch (networkError) {
-        console.error('Network error retrying step:', networkError);
-      }
-
-    } catch (error) {
-      console.error('Error retrying Build Spec step:', error);
-    }
-  };
-
-  const handleRetryBuildTaskStep = async (stepId: number) => {
-    // Validate team selection
-    if (!selectedBuildTasksTeam || selectedBuildTasksTeam === 'orchestrator') {
-      console.error('No team member selected for Build Tasks step retry');
-      return;
-    }
-    
-    try {
-      // Load the build tasks configuration
-      const configResponse = await fetch('/api/build-tasks/config');
-      if (!configResponse.ok) {
-        throw new Error('Failed to load Build Tasks configuration');
-      }
-      const result = await configResponse.json();
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to load Build Tasks configuration');
-      }
-      const config = result.data;
-
-      // Find the specific step in the config
-      const stepConfig = config.steps.find((s: any) => s.id === stepId);
-      if (!stepConfig) {
-        throw new Error(`Step ${stepId} not found in configuration`);
-      }
-
-      // Get the initial goal and user journey content
-      const [goalResponse, journeyResponse] = await Promise.all([
-        fetch(`/api/projects/${project.id}/specs?fileName=initial_goal.md`),
-        fetch(`/api/projects/${project.id}/specs?fileName=initial_user_journey.md`)
-      ]);
-
-      if (!goalResponse.ok || !journeyResponse.ok) {
-        throw new Error('Failed to load initial specifications');
-      }
-
-      const [goalResult, journeyResult] = await Promise.all([
-        goalResponse.json(),
-        journeyResponse.json()
-      ]);
-
-      if (!goalResult.success || !journeyResult.success) {
-        throw new Error('Failed to read initial specifications');
-      }
-
-      const initialGoal = goalResult.data.content;
-      const userJourney = journeyResult.data.content;
-
-      // Get the selected team and member information
-      const [teamId, memberId] = selectedBuildTasksTeam.split(':');
-      const selectedTeam = availableTeams.find(team => team.id === teamId);
-      const selectedMember = selectedTeam?.members.find((m: any) => m.id === memberId);
-      
-      if (!selectedTeam || !selectedMember) {
-        throw new Error('Selected team member not found');
-      }
-
-      // Get the actual session name for the selected member
-      const targetSessionName = selectedMember.sessionName || selectedMember.name;
-
-      console.log(`Retrying Build Tasks Step ${stepId}: ${stepConfig.name} for ${selectedMember.name}`);
-
-      // Send the specific step to the selected team member - backend will handle prompt resolution
-      const promise = fetch('/api/build-tasks/retry-step', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          projectId: project.id,
-          stepId: stepId,
-          targetSession: targetSessionName,
-          projectName: project.name,
-          projectPath: project.path,
-          initialGoal,
-          userJourney
-        })
-      });
-      
-      try {
-        const response = await promise;
-        if (response.ok) {
-          const result = await response.json();
-          console.log(`Build Tasks Step ${stepId} retry sent:`, result.message || 'Success');
-          
-          // Show a brief success message
-          console.log(`✓ Retried Build Tasks step ${stepId} for ${selectedMember.name}`);
-        } else {
-          const errorText = await response.text();
-          console.error(`Failed to retry Build Tasks step ${stepId}:`, errorText);
-          
-          // Fallback: if API doesn't exist (404), show that step retry is not available 
-          if (response.status === 404) {
-            console.log('Build Tasks step retry API not available - backend support needed for individual step retry');
-          }
-        }
-      } catch (networkError) {
-        console.error('Network error retrying Build Tasks step:', networkError);
-      }
-
-    } catch (error) {
-      console.error('Error retrying Build Tasks step:', error);
-    }
   };
 
   return (

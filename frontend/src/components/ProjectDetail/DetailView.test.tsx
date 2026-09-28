@@ -4,6 +4,12 @@ import { vi } from 'vitest';
 import { DetailView } from './DetailView';
 import { DetailViewProps } from './types';
 
+// Project metrics come from the project's own backlog (project tickets).
+const mockListProjectTickets = vi.fn();
+vi.mock('../../services/project-tickets.service', () => ({
+  listProjectTickets: (...args: unknown[]) => mockListProjectTickets(...args),
+}));
+
 // Mock the fetch function
 global.fetch = vi.fn();
 
@@ -33,38 +39,38 @@ const mockAvailableTeams = [
   {
     id: 'team-1',
     name: 'Development Team',
+    projectIds: ['test-project-1'],
     members: [
       { id: 'member-1', name: 'John Doe', sessionName: 'john-session' }
     ]
   }
 ];
 
-const defaultProps: DetailViewProps = {
+const defaultProps = {
   project: mockProject,
   onAddGoal: vi.fn(),
   onEditGoal: vi.fn(),
   onAddUserJourney: vi.fn(),
   onEditUserJourney: vi.fn(),
   onBuildSpecs: vi.fn(),
-  onBuildTasks: vi.fn(),
   buildSpecsWorkflow: mockBuildSpecsWorkflow,
   alignmentStatus: mockAlignmentStatus,
   onContinueWithMisalignment: vi.fn(),
   onViewAlignment: vi.fn(),
   selectedBuildSpecsTeam: '',
   setSelectedBuildSpecsTeam: vi.fn(),
-  selectedBuildTasksTeam: '',
-  setSelectedBuildTasksTeam: vi.fn(),
   availableTeams: mockAvailableTeams,
-  onCreateSpecsTasks: vi.fn(),
-  onCreateDevTasks: vi.fn(),
-  onCreateE2ETasks: vi.fn()
-};
+} as unknown as DetailViewProps;
 
 describe('DetailView', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    
+    mockListProjectTickets.mockResolvedValue({
+      project: { id: 'test-project-1', name: 'Test Project', path: '/path/to/test/project' },
+      tickets: [{ status: 'done' }, { status: 'in_progress' }, { status: 'cancelled' }],
+      invalid: [],
+    });
+
     // Mock successful API responses
     (fetch as any).mockResolvedValue({
       ok: true,
@@ -82,48 +88,44 @@ describe('DetailView', () => {
     } as Response);
   });
 
-  it('renders project details correctly', async () => {
+  it('renders the details header', async () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     expect(screen.getByText('Project Details')).toBeInTheDocument();
     expect(screen.getByText('Overview and key metrics for your project')).toBeInTheDocument();
-    
-    await waitFor(() => {
-      expect(screen.getByText('Test Project')).toBeInTheDocument();
-      expect(screen.getByText('/path/to/test/project')).toBeInTheDocument();
-    });
   });
 
   it('displays loading state initially', async () => {
+    (fetch as any).mockReturnValue(new Promise(() => {}));
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     expect(screen.getByText('Loading project metrics...')).toBeInTheDocument();
   });
 
-  it('displays project metrics after loading', async () => {
+  it('computes the metrics from project tickets (cancelled ones do not count)', async () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       expect(screen.queryByText('Loading project metrics...')).not.toBeInTheDocument();
     });
 
+    expect(mockListProjectTickets).toHaveBeenCalledWith('test-project-1');
     expect(screen.getByText('Project Metrics')).toBeInTheDocument();
-    expect(screen.getByText('Specification Files')).toBeInTheDocument();
-    expect(screen.getByText('Tasks Defined')).toBeInTheDocument();
-    expect(screen.getByText('Project Status')).toBeInTheDocument();
+    expect(screen.getByText('50%')).toBeInTheDocument();
+    expect(screen.getByText('1/2')).toBeInTheDocument();
   });
 
   it('shows Edit buttons when spec files exist', async () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       const editButtons = screen.getAllByText('Edit');
       expect(editButtons).toHaveLength(2); // One for Goal, one for User Journey
@@ -151,7 +153,7 @@ describe('DetailView', () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       expect(screen.getByText('Add Goal')).toBeInTheDocument();
       expect(screen.getByText('Add User Journey')).toBeInTheDocument();
@@ -178,7 +180,7 @@ describe('DetailView', () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       const addGoalButton = screen.getByText('Add Goal');
       fireEvent.click(addGoalButton);
@@ -191,7 +193,7 @@ describe('DetailView', () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       const editButtons = screen.getAllByText('Edit');
       // Click the first Edit button (Goal section)
@@ -201,94 +203,43 @@ describe('DetailView', () => {
     expect(defaultProps.onEditGoal).toHaveBeenCalledTimes(1);
   });
 
-  it('displays task creation buttons', async () => {
+  it('points task generation at the chat (no dead create buttons)', async () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
-    await waitFor(() => {
-      expect(screen.getByText('Generate Project Tasks')).toBeInTheDocument();
-      expect(screen.getByText('Create Specs Tasks')).toBeInTheDocument();
-      expect(screen.getByText('Create Dev Tasks')).toBeInTheDocument();
-      expect(screen.getByText('Create E2E Tasks')).toBeInTheDocument();
-    });
-  });
 
-  it('calls task creation handlers when buttons are clicked', async () => {
-    await act(async () => {
-      render(<DetailView {...defaultProps} />);
-    });
-    
     await waitFor(() => {
       expect(screen.getByText('Generate Project Tasks')).toBeInTheDocument();
     });
-
-    const specsButton = screen.getByRole('button', { name: /Create Specs Tasks/i });
-    const devButton = screen.getByRole('button', { name: /Create Dev Tasks/i });
-    const e2eButton = screen.getByRole('button', { name: /Create E2E Tasks/i });
-    
-    fireEvent.click(specsButton);
-    fireEvent.click(devButton);
-    fireEvent.click(e2eButton);
-
-    expect(defaultProps.onCreateSpecsTasks).toHaveBeenCalledTimes(1);
-    expect(defaultProps.onCreateDevTasks).toHaveBeenCalledTimes(1);
-    expect(defaultProps.onCreateE2ETasks).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('Open Chat to Generate Tasks')).toBeInTheDocument();
+    expect(screen.queryByText('Create Specs Tasks')).not.toBeInTheDocument();
   });
 
   it('handles API errors gracefully', async () => {
     // Mock console.error to avoid error output in tests
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
-    
+
     // Mock failed API response
     (fetch as any).mockRejectedValue(new Error('API Error'));
 
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       expect(screen.queryByText('Loading project metrics...')).not.toBeInTheDocument();
     });
 
     expect(consoleSpy).toHaveBeenCalledWith('Error loading project stats:', expect.any(Error));
-    
+
     consoleSpy.mockRestore();
-  });
-
-  it('displays project description when available', async () => {
-    await act(async () => {
-      render(<DetailView {...defaultProps} />);
-    });
-    
-    await waitFor(() => {
-      expect(screen.getByText('A test project for unit testing')).toBeInTheDocument();
-    });
-  });
-
-  it('does not display project description section when unavailable', async () => {
-    const propsWithoutDescription = {
-      ...defaultProps,
-      project: {
-        ...mockProject,
-        description: undefined
-      }
-    };
-
-    await act(async () => {
-      render(<DetailView {...propsWithoutDescription} />);
-    });
-    
-    await waitFor(() => {
-      expect(screen.queryByText('A test project for unit testing')).not.toBeInTheDocument();
-    });
   });
 
   it('loads project stats on component mount', async () => {
     await act(async () => {
       render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledWith(`/api/projects/${mockProject.id}/stats`);
     });
@@ -298,7 +249,7 @@ describe('DetailView', () => {
     const { rerender } = await act(async () => {
       return render(<DetailView {...defaultProps} />);
     });
-    
+
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledTimes(1);
     });
@@ -306,12 +257,12 @@ describe('DetailView', () => {
     const newProps = {
       ...defaultProps,
       project: { ...mockProject, id: 'new-project-id' }
-    };
+    } as unknown as DetailViewProps;
 
     await act(async () => {
       rerender(<DetailView {...newProps} />);
     });
-    
+
     await waitFor(() => {
       expect(fetch).toHaveBeenCalledTimes(2);
       expect(fetch).toHaveBeenLastCalledWith('/api/projects/new-project-id/stats');
