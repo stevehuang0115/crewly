@@ -3627,9 +3627,8 @@ export const CONVERSATION_SYNC_CONSTANTS = {
 	},
 	/** One-time owner DM (O1) when history starts syncing. `{device}` is replaced. */
 	NOTICE_TEXT:
-		'Heads-up: your agent conversations on {device} are now kept in Crewly Cloud as well, so you can read them from your phone. ' +
-		'Crewly Cloud keeps them for 7 days on Free and 90 days on Pro; message text is encrypted there, and files stay on this machine. ' +
-		'You can switch this off in your Crewly Cloud settings.',
+		'提醒一下：{device} 上你和 agent 的对话现在也会同步到 Crewly Cloud，这样在手机上就能看到所有机器、所有渠道的对话。' +
+		'免费版保留 7 天，Pro 保留 90 天；消息文字在 Cloud 上加密存储，文件只留在这台机器上。',
 } as const;
 
 // Type helpers
