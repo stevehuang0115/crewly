@@ -4350,7 +4350,13 @@ void (async () => {
 					const intake = getTicketIntakeService();
 					// Never upload an empty set just because tickets are not wired yet.
 					if (!intake) throw new Error('ticket service is not ready');
-					return (await intake.list({ column: 'to_review' })).tickets;
+					// Only tickets that can be in 待验收 need their WorkItems looked up
+					// (this runs every 30 s; done / cancelled / no-review tickets never are).
+					const candidates = (await RequestService.getInstance().listAll()).filter(
+						(r) => typeof r.ticketNumber === 'number' && r.requiresConfirmation && r.status !== 'done' && r.status !== 'cancelled',
+					);
+					const rows = await Promise.all(candidates.map((r) => intake.toListItem(r)));
+					return rows.filter((row) => row.column === 'to_review');
 				},
 				cloud: {
 					getToken: () => cloud.getToken(),
