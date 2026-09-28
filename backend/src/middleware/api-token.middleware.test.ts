@@ -16,6 +16,8 @@ import type { IncomingMessage, Server as HttpServer } from 'http';
 import {
   apiTokenMiddleware,
   requireOwnerToken,
+  healthGateMiddleware,
+  isPublicHealthEnabled,
   isLoopbackAddress,
   isLoopbackRequest,
   getClientAddress,
@@ -207,6 +209,61 @@ describe('api-token.middleware', () => {
       apiTokenMiddleware(makeReq({ url: `/api/teams?token=${TOKEN}`, headers: { host: 'h' } }), res, next);
       expect(next).not.toHaveBeenCalled();
       expect(res.statusCode).toBe(401);
+    });
+  });
+
+  describe('healthGateMiddleware (#825)', () => {
+    beforeEach(() => {
+      delete process.env.CREWLY_PUBLIC_HEALTH;
+    });
+    const run = (req: Request) => {
+      const res = makeRes();
+      const next = jest.fn();
+      healthGateMiddleware(req, res, next);
+      return { res, next };
+    };
+
+    it('loopback passes straight through and the response is not touched', () => {
+      const { res, next } = run(makeReq({ remoteAddress: '127.0.0.1', url: '/health' }));
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toBeUndefined();
+      expect(res.headers).toEqual({});
+    });
+
+    it('a LAN caller without the token gets the 401 challenge and next() is not called', () => {
+      const { res, next } = run(makeReq({ remoteAddress: '192.168.1.20', url: '/health' }));
+      expect(next).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(401);
+      expect(res.body).toMatchObject({ success: false, error: 'unauthorized' });
+    });
+
+    it('a LAN caller with the token passes', () => {
+      const { next } = run(makeReq({ remoteAddress: '192.168.1.20', url: '/health', headers: { 'x-crewly-token': TOKEN } }));
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('a forged X-Forwarded-For: 127.0.0.1 does not open it while trust-proxy is off', () => {
+      const { next, res } = run(makeReq({ remoteAddress: '192.168.1.20', url: '/health', headers: { 'x-forwarded-for': '127.0.0.1' } }));
+      expect(next).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(401);
+    });
+
+    it('CREWLY_PUBLIC_HEALTH=1 lets a LAN caller through without the token', () => {
+      process.env.CREWLY_PUBLIC_HEALTH = '1';
+      const { next } = run(makeReq({ remoteAddress: '192.168.1.20', url: '/health' }));
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      ['1', true], ['true', true], [' TRUE ', true], ['0', false], ['false', false], ['yes', false], ['', false],
+    ])('isPublicHealthEnabled(%j) -> %s', (value, expected) => {
+      process.env.CREWLY_PUBLIC_HEALTH = value;
+      expect(isPublicHealthEnabled()).toBe(expected);
+    });
+
+    it('isPublicHealthEnabled() is false when unset', () => {
+      expect(isPublicHealthEnabled()).toBe(false);
     });
   });
 

@@ -44,6 +44,10 @@ services:
       - NODE_ENV=production
       - WEB_PORT=8787
       - CREWLY_HEADLESS=false
+      # /health answers 401 to non-loopback callers without the API token (#825).
+      # Uncomment to keep it open for an external monitor; note that crewly-mobile
+      # on your Wi-Fi then prefers LAN and cannot fall back to the relay.
+      # - CREWLY_PUBLIC_HEALTH=1
       # Agent runtime: use crewly-agent (in-process, no PTY required)
       - DEFAULT_RUNTIME=crewly-agent
       # Model configuration (set in .env.smb)

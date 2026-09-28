@@ -386,7 +386,9 @@ describe('CrewlyServer headless mode', () => {
 // ---------------------------------------------------------------------------
 
 import { API_SECURITY_CONSTANTS } from './constants.js';
-import { apiTokenMiddleware } from './middleware/api-token.middleware.js';
+import { apiTokenMiddleware, healthGateMiddleware } from './middleware/api-token.middleware.js';
+import { readFileSync } from 'fs';
+import { join as joinPath } from 'path';
 import { resetApiTokenCache } from './services/core/api-token.service.js';
 
 /** Replicates the bindHost resolution in CrewlyServer's constructor. */
@@ -417,16 +419,14 @@ describe('CrewlyServer bindHost + API token gate', () => {
 		expect(resolveBindHost({ bindHost: '::1' })).toBe('::1');
 	});
 
-	it('mounted in front of /api: loopback passes, remote callers need the token, /health stays open', async () => {
+	it('mounted in front of /api: loopback passes, remote callers need the token', async () => {
 		process.env.CREWLY_API_TOKEN = 'idx-test-token';
 		const app = express();
 		app.use('/api', apiTokenMiddleware);
 		app.get('/api/teams', (_req, res) => res.json({ success: true, data: [] }));
-		app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 
 		// supertest connects over loopback → no token needed.
 		expect((await request(app).get('/api/teams')).status).toBe(200);
-		expect((await request(app).get('/health')).status).toBe(200);
 
 		// Simulate a LAN caller by trusting a forwarded address.
 		process.env.CREWLY_TRUST_PROXY = '1';
@@ -439,8 +439,76 @@ describe('CrewlyServer bindHost + API token gate', () => {
 			.set('X-Forwarded-For', '192.168.1.20')
 			.set('X-Crewly-Token', 'idx-test-token');
 		expect(allowed.status).toBe(200);
+	});
 
-		// /health is outside /api and is never gated.
-		expect((await request(app).get('/health').set('X-Forwarded-For', '192.168.1.20')).status).toBe(200);
+	// #825 — DELIBERATE change of the rule this block used to pin ("/health
+	// stays open, even for a forwarded LAN address"). A phone without the
+	// token must not get 200 from /health, or crewly-mobile picks its LAN
+	// transport and then 401s on every /api call instead of using the relay.
+	describe('/health gate (#825)', () => {
+		/** Mount /health exactly as CrewlyServer does: gate, then the handler. */
+		const healthApp = (withGate: boolean) => {
+			const app = express();
+			const handler = (_req: express.Request, res: express.Response) => {
+				res.setHeader('X-Health-Probe', 'v1');
+				res.json({ status: 'healthy', mode: 'standalone', version: '1.20.143', agents: { total: 3, active: 3 }, teamHealth: { status: 'ok', last_sweep_age_ms: 1200 } });
+			};
+			if (withGate) app.get('/health', healthGateMiddleware, handler);
+			else app.get('/health', handler);
+			return app;
+		};
+
+		beforeEach(() => {
+			process.env.CREWLY_API_TOKEN = 'idx-test-token';
+			delete process.env.CREWLY_TRUST_PROXY;
+			delete process.env.CREWLY_PUBLIC_HEALTH;
+		});
+
+		it('loopback: status, headers and body are byte-identical with and without the gate', async () => {
+			const before = await request(healthApp(false)).get('/health');
+			const after = await request(healthApp(true)).get('/health');
+			expect(after.status).toBe(before.status);
+			expect(after.text).toBe(before.text);
+			expect(after.headers['content-type']).toBe(before.headers['content-type']);
+			expect(after.headers['x-health-probe']).toBe('v1');
+			expect(after.headers['www-authenticate']).toBeUndefined();
+		});
+
+		it('trust-proxy OFF: a forged X-Forwarded-For is ignored, the (loopback) socket decides → 200', async () => {
+			const res = await request(healthApp(true)).get('/health').set('X-Forwarded-For', '192.168.1.20');
+			expect(res.status).toBe(200);
+		});
+
+		it('trust-proxy ON: a LAN caller without the token → 401 with the token challenge and no install details', async () => {
+			process.env.CREWLY_TRUST_PROXY = '1';
+			const res = await request(healthApp(true)).get('/health').set('X-Forwarded-For', '192.168.1.20');
+			expect(res.status).toBe(401);
+			expect(res.headers['www-authenticate']).toBe('Crewly-Token');
+			expect(res.body).toMatchObject({ success: false, error: 'unauthorized' });
+			expect(res.text).not.toContain('version');
+		});
+
+		it('trust-proxy ON: a LAN caller WITH the token (header, Bearer or cookie) → 200', async () => {
+			process.env.CREWLY_TRUST_PROXY = '1';
+			const app = healthApp(true);
+			const lan = () => request(app).get('/health').set('X-Forwarded-For', '192.168.1.20');
+			expect((await lan().set('X-Crewly-Token', 'idx-test-token')).status).toBe(200);
+			expect((await lan().set('Authorization', 'Bearer idx-test-token')).status).toBe(200);
+			expect((await lan().set('Cookie', 'crewly_token=idx-test-token')).status).toBe(200);
+			expect((await lan().set('X-Crewly-Token', 'wrong')).status).toBe(401);
+		});
+
+		it('CrewlyServer mounts the gate in front of the real /health handler', () => {
+			// The cases above build their own app; this pins the production wiring.
+			const src = readFileSync(joinPath(__dirname, 'index.ts'), 'utf8');
+			expect(src).toMatch(/this\.app\.get\('\/health', healthGateMiddleware, \(req, res\) => \{/);
+		});
+
+		it('CREWLY_PUBLIC_HEALTH=1 keeps /health open to a LAN caller without the token', async () => {
+			process.env.CREWLY_TRUST_PROXY = '1';
+			process.env.CREWLY_PUBLIC_HEALTH = '1';
+			const res = await request(healthApp(true)).get('/health').set('X-Forwarded-For', '192.168.1.20');
+			expect(res.status).toBe(200);
+		});
 	});
 });

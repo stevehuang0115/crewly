@@ -295,6 +295,12 @@ export const API_SECURITY_CONSTANTS = {
 		TRUST_PROXY: 'CREWLY_TRUST_PROXY',
 		/** Set to `1`/`true` to force headless (no display) detection */
 		HEADLESS: 'CREWLY_HEADLESS',
+		/**
+		 * Set to `1`/`true` to keep `GET /health` open to non-loopback callers
+		 * without the API token (#825). For deployments that monitor /health
+		 * from another machine or through a public reverse proxy.
+		 */
+		PUBLIC_HEALTH: 'CREWLY_PUBLIC_HEALTH',
 	},
 	/** Default bind host — every interface, for backward compatibility */
 	DEFAULT_BIND_HOST: '0.0.0.0',

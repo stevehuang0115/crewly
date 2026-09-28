@@ -226,7 +226,15 @@ types into them — so the API must not be open to the network. The rules:
 - **OKR approvals are owner-only.** `POST /api/missions/:id/approve|reject` require the
   token even from loopback and refuse agent sessions (`403 owner_approval_required`);
   agent PTYs never inherit `CREWLY_API_TOKEN`.
-- `/health` and the static dashboard assets stay open. `POST /api/cloud/mobile-pair`
+- **`/health` needs the token from other addresses too** (since #825). Loopback gets the
+  same response as before. Any other address without the token gets the same `401` as
+  `/api`, so a phone on your Wi-Fi without the token falls back to the Cloud relay instead
+  of picking a LAN connection it cannot use. **If you monitor `/health` from another
+  machine** (uptime checker, load balancer, a reverse proxy in front of Docker), either
+  send the token or set `CREWLY_PUBLIC_HEALTH=1` to keep it open. Behind Docker's port
+  mapping even `curl localhost:8787/health` *on the host* is a non-loopback call; the
+  container's own `HEALTHCHECK` runs inside the container and is unaffected.
+- The static dashboard assets stay open. `POST /api/cloud/mobile-pair`
   is token-gated like everything else (it hands out the Cloud session).
 
 ## Docker
