@@ -166,7 +166,6 @@ describe('Teams Handlers', () => {
       activeProjectsService: mockActiveProjectsService,
       promptTemplateService: mockPromptTemplateService,
       agentRegistrationService: { createAgentSession: jest.fn<any>(), isInProcessRuntimeActive: jest.fn<any>().mockReturnValue(false) } as any,
-      taskAssignmentMonitor: { monitorTask: jest.fn<any>() } as any,
       // taskTrackingService field removed from ApiContext — keep stub via
       // any-cast for legacy tests that reference it through `as any` paths.
       ...({ taskTrackingService: { getAllInProgressTasks: jest.fn<any>() } } as any),

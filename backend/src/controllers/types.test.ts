@@ -14,7 +14,6 @@ describe('Controller Types', () => {
         activeProjectsService: new ActiveProjectsService(),
         promptTemplateService: new PromptTemplateService(),
         agentRegistrationService: {} as any,
-        taskAssignmentMonitor: {} as any,
         taskTrackingService: {} as any,
       };
 
@@ -34,7 +33,6 @@ describe('Controller Types', () => {
         activeProjectsService: new ActiveProjectsService(),
         promptTemplateService: new PromptTemplateService(),
         agentRegistrationService: {} as any,
-        taskAssignmentMonitor: {} as any,
         taskTrackingService: {} as any,
       };
 
@@ -49,7 +47,6 @@ describe('Controller Types', () => {
         activeProjectsService: new ActiveProjectsService(),
         promptTemplateService: new PromptTemplateService(),
         agentRegistrationService: {} as any,
-        taskAssignmentMonitor: {} as any,
         taskTrackingService: {} as any,
       };
 
@@ -66,7 +63,6 @@ describe('Controller Types', () => {
         activeProjectsService: {} as ActiveProjectsService,
         promptTemplateService: {} as PromptTemplateService,
         agentRegistrationService: {} as any,
-        taskAssignmentMonitor: {} as any,
         taskTrackingService: {} as any,
       };
 
@@ -88,7 +84,6 @@ describe('Controller Types', () => {
         activeProjectsService: {} as ActiveProjectsService,
         promptTemplateService: {} as PromptTemplateService,
         agentRegistrationService: {} as any,
-        taskAssignmentMonitor: {} as any,
         taskTrackingService: {} as any,
       };
 

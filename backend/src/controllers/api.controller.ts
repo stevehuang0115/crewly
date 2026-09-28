@@ -8,12 +8,10 @@ import {
 } from '../services/index.js';
 import { ActiveProjectsService } from '../services/index.js';
 import { PromptTemplateService } from '../services/index.js';
-import { TaskAssignmentMonitorService } from '../services/index.js';
 
 export class ApiController {
   public activeProjectsService: ActiveProjectsService;
   public promptTemplateService: PromptTemplateService;
-  public taskAssignmentMonitor: TaskAssignmentMonitorService;
   public agentRegistrationService: AgentRegistrationService;
 
   constructor(
@@ -24,7 +22,6 @@ export class ApiController {
   ) {
     this.activeProjectsService = new ActiveProjectsService(this.storageService);
     this.promptTemplateService = new PromptTemplateService();
-    this.taskAssignmentMonitor = new TaskAssignmentMonitorService(this.tmuxService);
 
     // Create AgentRegistrationService using the public accessor method from TmuxService
     const tmuxCommand = this.tmuxService.getTmuxCommandService();
@@ -230,57 +227,6 @@ export class ApiController {
   public async unassignTeamFromProject(req: Request, res: Response): Promise<void> {
     const { unassignTeamFromProject } = await import('./project/project.controller.js');
     return unassignTeamFromProject.call(this, req, res);
-  }
-
-  // Tickets Methods
-  public async createTicket(req: Request, res: Response): Promise<void> {
-    const { createTicket } = await import('./task-management/tickets.controller.js');
-    return createTicket.call(this, req, res);
-  }
-
-  public async getTickets(req: Request, res: Response): Promise<void> {
-    const { getTickets } = await import('./task-management/tickets.controller.js');
-    return getTickets.call(this, req, res);
-  }
-
-  public async getTicket(req: Request, res: Response): Promise<void> {
-    const { getTicket } = await import('./task-management/tickets.controller.js');
-    return getTicket.call(this, req, res);
-  }
-
-  public async updateTicket(req: Request, res: Response): Promise<void> {
-    const { updateTicket } = await import('./task-management/tickets.controller.js');
-    return updateTicket.call(this, req, res);
-  }
-
-  public async deleteTicket(req: Request, res: Response): Promise<void> {
-    const { deleteTicket } = await import('./task-management/tickets.controller.js');
-    return deleteTicket.call(this, req, res);
-  }
-
-  public async addSubtask(req: Request, res: Response): Promise<void> {
-    const { addSubtask } = await import('./task-management/tickets.controller.js');
-    return addSubtask.call(this, req, res);
-  }
-
-  public async toggleSubtask(req: Request, res: Response): Promise<void> {
-    const { toggleSubtask } = await import('./task-management/tickets.controller.js');
-    return toggleSubtask.call(this, req, res);
-  }
-
-  public async createTicketTemplate(req: Request, res: Response): Promise<void> {
-    const { createTicketTemplate } = await import('./task-management/tickets.controller.js');
-    return createTicketTemplate.call(this, req, res);
-  }
-
-  public async getTicketTemplates(req: Request, res: Response): Promise<void> {
-    const { getTicketTemplates } = await import('./task-management/tickets.controller.js');
-    return getTicketTemplates.call(this, req, res);
-  }
-
-  public async getTicketTemplate(req: Request, res: Response): Promise<void> {
-    const { getTicketTemplate } = await import('./task-management/tickets.controller.js');
-    return getTicketTemplate.call(this, req, res);
   }
 
   // Git Methods

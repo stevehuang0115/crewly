@@ -49,7 +49,6 @@ describe('Git Handlers', () => {
       activeProjectsService: new ActiveProjectsService() as jest.Mocked<ActiveProjectsService>,
       promptTemplateService: new PromptTemplateService() as jest.Mocked<PromptTemplateService>,
       agentRegistrationService: {} as any,
-      taskAssignmentMonitor: {} as any,
       taskTrackingService: {} as any,
     };
 

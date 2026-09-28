@@ -14,7 +14,6 @@ describe('Project Routes', () => {
         saveProject: jest.fn(),
         deleteProject: jest.fn(),
         addProject: jest.fn(),
-        getTickets: jest.fn(),
         getTeams: jest.fn(),
         saveTeam: jest.fn(),
         getScheduledMessages: jest.fn()

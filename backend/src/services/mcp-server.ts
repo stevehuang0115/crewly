@@ -11,7 +11,7 @@
  * Supported tools:
  * - crewly_get_teams — List all teams and their members/status
  * - crewly_create_team — Create a new team with members
- * - crewly_assign_task — Assign a task to a specific agent
+ * - crewly_assign_task — Give a task to a specific agent (creates a WorkItem via the running backend)
  * - crewly_get_status — Get agent/team status
  * - crewly_recall_memory — Search team memory/knowledge
  * - crewly_send_message — Send a message to an agent
@@ -23,6 +23,7 @@ import { StorageService } from './core/storage.service.js';
 import { MemoryService } from './memory/memory.service.js';
 import type { Team, TeamMember } from '../types/index.js';
 import { v4 as uuidv4 } from 'uuid';
+import { getLocalApiBaseUrl } from '../utils/local-api-url.utils.js';
 import { getCredentialStoreService } from './credential/credential-store.service.js';
 import { GeminiCliWorkspaceHelper } from './credential/helpers/gemini-cli-workspace.helper.js';
 import { getSkillExecutorService } from './skill/skill-executor.service.js';
@@ -42,6 +43,11 @@ export const MCP_SERVER_CONSTANTS = {
   },
   /** Tool name prefix for namespacing */
   TOOL_PREFIX: 'crewly',
+  /** crewly_assign_task: WorkItem title / description caps (callers cap description at 500) */
+  ASSIGN_TASK: {
+    TITLE_MAX_CHARS: 120,
+    DESCRIPTION_MAX_CHARS: 500,
+  },
 } as const;
 
 // ========================= Types =========================
@@ -52,6 +58,8 @@ export const MCP_SERVER_CONSTANTS = {
 export interface CrewlyMcpServerConfig {
   /** Path to the crewly home directory (default: ~/.crewly) */
   crewlyHome?: string;
+  /** HTTP client used to reach the local backend (tests inject one) */
+  fetchImpl?: typeof fetch;
 }
 
 /**
@@ -98,6 +106,8 @@ export class CrewlyMcpServer {
   private readonly memory: MemoryService;
   private transport: any | null = null;
   private stdioTransportCtor: (new () => any) | null = null;
+  /** HTTP client for the local backend API (see {@link CrewlyMcpServerConfig.fetchImpl}) */
+  private readonly fetchImpl: typeof fetch;
   private geminiCliHelper: GeminiCliWorkspaceHelper | null = null;
 
   private getGeminiCliHelper(): GeminiCliWorkspaceHelper {
@@ -114,6 +124,7 @@ export class CrewlyMcpServer {
    */
   constructor(config?: CrewlyMcpServerConfig) {
     this.storage = StorageService.getInstance(config?.crewlyHome);
+    this.fetchImpl = config?.fetchImpl ?? ((input, init) => fetch(input, init));
     this.memory = MemoryService.getInstance();
     this.tryInitializeWithRequire();
   }
@@ -396,21 +407,25 @@ export class CrewlyMcpServer {
   }
 
   /**
-   * Handle crewly_assign_task: assign a task to a specific agent.
+   * Handle crewly_assign_task: give a task to a specific agent as a real
+   * WorkItem in the task pool.
    *
-   * This stores the task description on the member's currentTickets field
-   * so the orchestrator or dashboard can pick it up. For direct delivery,
-   * use crewly_send_message to the orchestrator with task instructions.
+   * The MCP server runs in its own process, so it does not touch the pool
+   * file itself — it asks the running Crewly backend
+   * (`POST /api/task-pool/add`), which validates the target, stores the item
+   * and dispatches it to the agent like any delegated work. Until 2026-09-28
+   * this only appended a made-up id to the member's `currentTickets`, which
+   * nothing ever read.
    *
    * @param args - { teamId, memberId, task }
-   * @returns Assignment confirmation
+   * @returns The new WorkItem id, or an error when the backend refuses or is down
    */
   private async handleAssignTask(
     args: Record<string, unknown>,
   ): Promise<ToolResult> {
     const teamId = args.teamId as string;
     const memberId = args.memberId as string;
-    const task = args.task as string;
+    const task = typeof args.task === 'string' ? args.task.trim() : '';
 
     if (!teamId || !memberId || !task) {
       return this.errorResult('teamId, memberId, and task are required');
@@ -429,20 +444,43 @@ export class CrewlyMcpServer {
       );
     }
 
-    // Add task to member's ticket list. Include a uuid tail so two
-    // assignments in the same millisecond can't collide.
-    const ticketId = `mcp-task-${Date.now()}-${uuidv4().slice(0, 8)}`;
-    if (!member.currentTickets) {
-      member.currentTickets = [];
-    }
-    member.currentTickets.push(ticketId);
-    member.updatedAt = new Date().toISOString();
+    const { TITLE_MAX_CHARS, DESCRIPTION_MAX_CHARS } = MCP_SERVER_CONSTANTS.ASSIGN_TASK;
+    const body = {
+      type: 'delegate',
+      owner: 'agent',
+      target: member.sessionName,
+      title: task.split('\n')[0].slice(0, TITLE_MAX_CHARS),
+      description: task.slice(0, DESCRIPTION_MAX_CHARS),
+      briefMarkdown: task,
+      metadata: { source: 'mcp', teamId: team.id, memberId: member.id },
+    };
 
-    await this.storage.saveTeam(team);
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${getLocalApiBaseUrl()}/api/task-pool/add`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      return this.errorResult(
+        `Crewly backend is not reachable (${err instanceof Error ? err.message : String(err)}). Start Crewly and try again.`,
+      );
+    }
+    const payload = (await response.json().catch(() => ({}))) as {
+      success?: boolean;
+      error?: string;
+      errors?: string[];
+      data?: { workItemId?: string; id?: string };
+    };
+    if (!response.ok || payload.success === false) {
+      const reason = payload.error ?? payload.errors?.join('; ') ?? `HTTP ${response.status}`;
+      return this.errorResult(`Could not create the WorkItem: ${reason}`);
+    }
 
     return this.successResult({
       message: `Task assigned to ${member.name} (${member.role}) in team "${team.name}"`,
-      ticketId,
+      workItemId: payload.data?.workItemId ?? payload.data?.id,
       agentSessionName: member.sessionName,
       agentStatus: member.agentStatus,
       task,

@@ -304,50 +304,6 @@ describe('StorageService', () => {
     });
   });
 
-  describe('Ticket Management', () => {
-    test('should parse ticket YAML correctly', async () => {
-      const ticketContent = `---\nid: ticket-1\ntitle: Test Ticket\nstatus: open\npriority: high\n---\n\n## Description\n\nThis is a test ticket.`;
-
-      mockFs.existsSync.mockReturnValue(true);
-      mockFsPromises.readdir.mockResolvedValue(['ticket-1.yaml']);
-      mockFsPromises.readFile.mockResolvedValue(ticketContent);
-
-      const tickets = await storageService.getTickets('/test/project');
-
-      expect(tickets).toHaveLength(1);
-      expect(tickets[0].id).toBe('ticket-1');
-      expect(tickets[0].title).toBe('Test Ticket');
-      expect(tickets[0].status).toBe('open');
-      expect(tickets[0].priority).toBe('high');
-    });
-
-    test('should filter tickets by criteria', async () => {
-      const tickets = [
-        { assignedTo: 'dev-1', status: 'open', priority: 'high' },
-        { assignedTo: 'dev-2', status: 'in_progress', priority: 'low' },
-        { assignedTo: 'dev-1', status: 'done', priority: 'medium' },
-      ];
-
-      // Mock file system to return test tickets
-      mockFs.existsSync.mockReturnValue(true);
-      mockFsPromises.readdir.mockResolvedValue(['t1.yaml', 't2.yaml', 't3.yaml']);
-      
-      tickets.forEach((ticket, index) => {
-        const content = `---\nid: t${index + 1}\nassignedTo: ${ticket.assignedTo}\nstatus: ${ticket.status}\npriority: ${ticket.priority}\n---\n\nTest content`;
-        mockFsPromises.readFile.mockResolvedValueOnce(content);
-      });
-
-      const filtered = await storageService.getTickets('/test/project', {
-        status: 'open',
-        assignedTo: 'dev-1'
-      });
-
-      expect(filtered).toHaveLength(1);
-      expect(filtered[0].status).toBe('open');
-      expect(filtered[0].assignedTo).toBe('dev-1');
-    });
-  });
-
   describe('Atomic File Operations', () => {
     test('should use atomic writes for team config files', async () => {
       const testTeam: Team = {

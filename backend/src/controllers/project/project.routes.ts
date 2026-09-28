@@ -29,7 +29,6 @@ import {
 } from './project.controller.js';
 
 // Import additional controllers for consolidated routes
-import * as ticketHandlers from '../task-management/tickets.controller.js';
 import * as gitHandlers from './git.controller.js';
 import * as taskHandlers from '../task-management/tasks.controller.js';
 import * as orchestratorHandlers from '../orchestrator/orchestrator.controller.js';
@@ -41,8 +40,8 @@ import * as orchestratorHandlers from '../orchestrator/orchestrator.controller.j
  * - Core project CRUD operations and lifecycle management
  * - File and spec management
  * - Team assignment and project statistics
- * - Ticket management (CRUD, templates, subtasks)
- * - Task management from markdown files (milestones, status filtering)
+ * - Task views of the V3 WorkItem pool (milestones, status filtering)
+ *   (project tickets live under /api/project-tickets)
  * - Git integration (status, commits, branches, pull requests)
  * - Legacy endpoint compatibility
  *
@@ -109,30 +108,7 @@ export function createProjectRouter(context: ApiContext): Router {
     return orchestratorHandlers.assignTaskToOrchestrator.call(context, req, res);
   });
 
-  // Ticket management routes
-  router.post('/:projectId/tickets', (req, res) => {
-    return ticketHandlers.createTicket.call(context, req, res);
-  });
-  router.get('/:projectId/tickets', (req, res) => {
-    return ticketHandlers.getTickets.call(context, req, res);
-  });
-  router.get('/:projectId/tickets/:ticketId', (req, res) => {
-    return ticketHandlers.getTicket.call(context, req, res);
-  });
-  router.put('/:projectId/tickets/:ticketId', (req, res) => {
-    return ticketHandlers.updateTicket.call(context, req, res);
-  });
-  router.delete('/:projectId/tickets/:ticketId', (req, res) => {
-    return ticketHandlers.deleteTicket.call(context, req, res);
-  });
-  router.post('/:projectId/tickets/:ticketId/subtasks', (req, res) => {
-    return ticketHandlers.addSubtask.call(context, req, res);
-  });
-  router.patch('/:projectId/tickets/:ticketId/subtasks/:subtaskId/toggle', (req, res) => {
-    return ticketHandlers.toggleSubtask.call(context, req, res);
-  });
-
-  // Task management routes (from markdown files)
+  // Task views (V3 WorkItem pool projection)
   router.get('/:projectId/tasks', (req, res) => {
     return taskHandlers.getAllTasks.call(context, req, res);
   });
@@ -147,17 +123,6 @@ export function createProjectRouter(context: ApiContext): Router {
   });
   router.get('/:projectId/tasks-status', (req, res) => {
     return taskHandlers.getProjectTasksStatus.call(context, req, res);
-  });
-
-  // Ticket template routes
-  router.post('/:projectId/ticket-templates/:templateName', (req, res) => {
-    return ticketHandlers.createTicketTemplate.call(context, req, res);
-  });
-  router.get('/:projectId/ticket-templates', (req, res) => {
-    return ticketHandlers.getTicketTemplates.call(context, req, res);
-  });
-  router.get('/:projectId/ticket-templates/:templateName', (req, res) => {
-    return ticketHandlers.getTicketTemplate.call(context, req, res);
   });
 
   // Git integration routes

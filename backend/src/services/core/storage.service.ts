@@ -4,10 +4,10 @@ import { existsSync, mkdirSync, watch, FSWatcher } from 'fs';
 import { promisify } from 'util';
 import { exec } from 'child_process';
 import { parse as parseYAML, stringify as stringifyYAML } from 'yaml';
-import { Team, TeamMember, Project, Ticket, TicketFilter, ScheduledCheck, ScheduledMessage, MessageDeliveryLog } from '../../types/index.js';
-import { TeamModel, ProjectModel, TicketModel, ScheduledMessageModel, MessageDeliveryLogModel } from '../../models/index.js';
+import { Team, TeamMember, Project, ScheduledCheck, ScheduledMessage, MessageDeliveryLog } from '../../types/index.js';
+import { TeamModel, ProjectModel, ScheduledMessageModel, MessageDeliveryLogModel } from '../../models/index.js';
 import { v4 as uuidv4 } from 'uuid';
-import { CREWLY_CONSTANTS, RUNTIME_TYPES, type AgentStatus, type WorkingStatus, type RuntimeType } from '../../constants.js';
+import { CREWLY_CONSTANTS, PROJECT_TICKET_CONSTANTS, RUNTIME_TYPES, type AgentStatus, type WorkingStatus, type RuntimeType } from '../../constants.js';
 import { LoggerService, ComponentLogger } from './logger.service.js';
 import { TeamsBackupService } from './teams-backup.service.js';
 import { getCrewlyHomePath } from './crewly-home.utils.js';
@@ -899,7 +899,7 @@ export class StorageService {
       const crewlyDir = path.join(resolvedProjectPath, '.crewly');
       if (!existsSync(crewlyDir)) {
         mkdirSync(crewlyDir, { recursive: true });
-        mkdirSync(path.join(crewlyDir, 'tasks'), { recursive: true });
+        mkdirSync(path.join(crewlyDir, PROJECT_TICKET_CONSTANTS.DIR_NAME), { recursive: true });
         mkdirSync(path.join(crewlyDir, 'specs'), { recursive: true });
         mkdirSync(path.join(crewlyDir, 'memory'), { recursive: true });
         mkdirSync(path.join(crewlyDir, 'prompts'), { recursive: true });
@@ -970,139 +970,11 @@ export class StorageService {
     }
   }
 
-  // Ticket management
-  async getTickets(projectPath: string, filter?: TicketFilter): Promise<Ticket[]> {
-    try {
-      const resolvedProjectPath = path.resolve(projectPath);
-      const ticketsDir = path.join(resolvedProjectPath, '.crewly', 'tasks');
-      
-      if (!existsSync(ticketsDir)) {
-        return [];
-      }
-
-      const files = await fs.readdir(ticketsDir);
-      const yamlFiles = files.filter(file => file.endsWith('.yaml') || file.endsWith('.yml'));
-      
-      const tickets: Ticket[] = [];
-      
-      for (const file of yamlFiles) {
-        try {
-          const filePath = path.join(ticketsDir, file);
-          const content = await fs.readFile(filePath, 'utf-8');
-          const ticket = this.parseTicketYAML(content);
-          tickets.push(ticket);
-        } catch (error) {
-          this.logger.error('Error parsing ticket file', { file, error: error instanceof Error ? error.message : String(error) });
-        }
-      }
-
-      // Apply filters
-      let filteredTickets = tickets;
-      if (filter) {
-        if (filter.status) {
-          filteredTickets = filteredTickets.filter(t => t.status === filter.status);
-        }
-        if (filter.assignedTo) {
-          filteredTickets = filteredTickets.filter(t => t.assignedTo === filter.assignedTo);
-        }
-        if (filter.projectId) {
-          filteredTickets = filteredTickets.filter(t => t.projectId === filter.projectId);
-        }
-        if (filter.priority) {
-          filteredTickets = filteredTickets.filter(t => t.priority === filter.priority);
-        }
-      }
-
-      return filteredTickets.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    } catch (error) {
-      this.logger.error('Error reading tickets', { error: error instanceof Error ? error.message : String(error) });
-      return [];
-    }
-  }
-
-  async saveTicket(projectPath: string, ticket: Ticket): Promise<void> {
-    try {
-      const resolvedProjectPath = path.resolve(projectPath);
-      const ticketsDir = path.join(resolvedProjectPath, '.crewly', 'tasks');
-      
-      if (!existsSync(ticketsDir)) {
-        mkdirSync(ticketsDir, { recursive: true });
-      }
-
-      const ticketModel = TicketModel.fromJSON(ticket);
-      const filename = `${ticket.id}.yaml`;
-      const filePath = path.join(ticketsDir, filename);
-      
-      await fs.writeFile(filePath, ticketModel.toYAML());
-    } catch (error) {
-      this.logger.error('Error saving ticket', { error: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
-  }
-
-  async deleteTicket(projectPath: string, ticketId: string): Promise<void> {
-    try {
-      const resolvedProjectPath = path.resolve(projectPath);
-      const ticketsDir = path.join(resolvedProjectPath, '.crewly', 'tasks');
-      const filename = `${ticketId}.yaml`;
-      const filePath = path.join(ticketsDir, filename);
-      
-      if (existsSync(filePath)) {
-        await fs.unlink(filePath);
-      }
-    } catch (error) {
-      this.logger.error('Error deleting ticket', { error: error instanceof Error ? error.message : String(error) });
-      throw error;
-    }
-  }
-
-  private parseTicketYAML(content: string): Ticket {
-    const lines = content.split('\n');
-    let frontmatterEnd = -1;
-    let frontmatterStart = -1;
-
-    // Find YAML frontmatter
-    for (let i = 0; i < lines.length; i++) {
-      if (lines[i].trim() === '---') {
-        if (frontmatterStart === -1) {
-          frontmatterStart = i;
-        } else {
-          frontmatterEnd = i;
-          break;
-        }
-      }
-    }
-
-    let frontmatter: any = {};
-    let description = '';
-
-    if (frontmatterStart !== -1 && frontmatterEnd !== -1) {
-      const yamlContent = lines.slice(frontmatterStart + 1, frontmatterEnd).join('\n');
-      frontmatter = parseYAML(yamlContent) || {};
-      description = lines.slice(frontmatterEnd + 1).join('\n').trim();
-    } else {
-      description = content.trim();
-    }
-
-    return {
-      id: frontmatter.id || uuidv4(),
-      title: frontmatter.title || 'Untitled',
-      description: description,
-      status: frontmatter.status || 'open',
-      assignedTo: frontmatter.assignedTo,
-      priority: frontmatter.priority || 'medium',
-      labels: frontmatter.labels || [],
-      projectId: frontmatter.projectId || '',
-      createdAt: frontmatter.createdAt || new Date().toISOString(),
-      updatedAt: frontmatter.updatedAt || new Date().toISOString(),
-    };
-  }
-
   // File watching
   watchProject(projectPath: string): FSWatcher {
     const resolvedProjectPath = path.resolve(projectPath);
     const crewlyDir = path.join(resolvedProjectPath, '.crewly');
-    
+
     return watch(crewlyDir, { recursive: true }, (eventType, filename) => {
       if (filename) {
         this.logger.info('File change detected', { eventType, filename: filename || 'unknown', projectPath: resolvedProjectPath });
@@ -1187,7 +1059,7 @@ This directory contains Crewly-specific files for **${projectName}** project orc
 ## Structure
 
 - **specs/**: Project specifications and requirements
-- **tasks/**: Task items in YAML + Markdown format  
+- **tickets/**: The project backlog, one markdown file per ticket (commit it with the project)
 - **memory/**: Agent memory and context files
 - **prompts/**: Custom system prompts for team members
 
@@ -1204,54 +1076,12 @@ All files in this directory are monitored by Crewly for real-time updates.
 ## Getting Started
 
 1. Update \`specs/project.md\` with your project requirements
-2. Create task items in \`tasks/\` directory for specific tasks
+2. Add tickets from the dashboard (project, Tasks tab) or ask the orchestrator to put work in the backlog
 3. Customize team member prompts in \`prompts/\` as needed
 4. Let Crewly orchestrate your development workflow!
 `;
 
       await fs.writeFile(readmePath, readmeTemplate, 'utf8');
-
-      // Sample ticket template
-      const sampleTicketPath = path.join(crewlyDir, 'tasks', 'sample-setup-task.yaml');
-      const ticketTemplate = `---
-id: sample-setup-task
-title: Project Setup and Configuration
-status: todo
-priority: high
-assignedTo: ""
-estimatedHours: 4
-createdAt: ${new Date().toISOString()}
-updatedAt: ${new Date().toISOString()}
-tags:
-  - setup
-  - configuration
-  - infrastructure
----
-
-# Project Setup and Configuration
-
-## Description
-Set up the basic project infrastructure and configuration for ${projectName}.
-
-## Acceptance Criteria
-- [ ] Project structure created
-- [ ] Build system configured
-- [ ] Testing framework set up
-- [ ] CI/CD pipeline configured
-- [ ] Documentation structure established
-- [ ] Development environment documented
-
-## Implementation Notes
-This is a foundational task that should be completed first before other development work begins.
-
-## Test Plan
-- Verify build process works correctly
-- Confirm tests can be run successfully
-- Check all documentation is accessible
-- Validate development environment setup instructions
-`;
-
-      await fs.writeFile(sampleTicketPath, ticketTemplate, 'utf8');
 
       this.logger.info('Created Crewly template files for project', { projectName });
     } catch (error) {

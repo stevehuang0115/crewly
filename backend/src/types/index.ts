@@ -288,20 +288,6 @@ export interface Project {
   updatedAt: string;
 }
 
-export interface Ticket {
-  id: string;
-  title: string;
-  description: string;
-  status: 'open' | 'in_progress' | 'review' | 'done' | 'blocked';
-  assignedTo?: string;
-  priority: 'low' | 'medium' | 'high' | 'critical';
-  labels?: string[];
-  projectId: string;
-  createdAt: string;
-  updatedAt: string;
-  // YAML frontmatter + markdown body
-}
-
 export interface SessionInfo {
   sessionName: string;
   pid: number;
@@ -368,13 +354,6 @@ export interface FileChange {
   type: 'created' | 'updated' | 'deleted';
   path: string;
   timestamp: string;
-}
-
-export interface TicketFilter {
-  status?: string;
-  assignedTo?: string;
-  projectId?: string;
-  priority?: string;
 }
 
 export interface TeamMemberConfig {
