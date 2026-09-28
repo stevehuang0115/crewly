@@ -185,6 +185,19 @@ export interface UpdateTeamMemberRequestBody {
   modelId?: string;
   /** Per-agent reasoning effort; `''` clears the override */
   reasoningEffort?: string;
+  /**
+   * Advanced agent-capability fields (config/roles/orchestrator/prompt.md
+   * "Advanced Agent Capabilities"). Declared here so `updateTeamMember`'s
+   * spread-merge is exercised by a typed request, not just an unchecked
+   * `as UpdateTeamMemberRequestBody` cast — WorkItem 70e54fbc / #798 review:
+   * the control-plane guard now blocks direct edits of
+   * `~/.crewly/teams/{teamId}/config.json`, so this is the supported way
+   * to set these fields.
+   */
+  autonomyLevel?: TeamMember['autonomyLevel'];
+  domainSOP?: TeamMember['domainSOP'];
+  riskPolicy?: TeamMember['riskPolicy'];
+  capabilities?: TeamMember['capabilities'];
 }
 
 /**

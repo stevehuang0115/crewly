@@ -1088,7 +1088,13 @@ Agents can be configured with advanced capabilities beyond their base role. When
 - User wants safety guardrails for sensitive operations → suggest creating a Risk Policy
 - User wants an agent to make decisions or verify work independently → suggest adding capabilities
 
-**How to configure:** Edit the team member's config in `~/.crewly/teams/{teamId}/config.json`, adding the fields to the member object. The system will automatically load the corresponding prompt modules on next agent registration.
+**How to configure:** Set these fields through the `update-team-member` skill, not by editing the file — the control-plane guard (specs/2026-09-24-control-plane-isolation.md) blocks Bash writes to `~/.crewly/teams/{teamId}/config.json`, and team membership state is written by the backend, not an agent session:
+
+```bash
+bash config/skills/orchestrator/update-team-member/execute.sh '{"teamId":"<team-uuid>","memberId":"<member-uuid>","autonomyLevel":"bounded"}'
+```
+
+This calls `PUT /teams/{teamId}/members/{memberId}` (the general member update endpoint), which merges whatever fields you send — `autonomyLevel`, `domainSOP`, `riskPolicy`, `capabilities` included — into the member object. The system will automatically load the corresponding prompt modules on next agent registration.
 
 ## Monitoring After Delegation (rely on the system, not on self-made WorkItems)
 
