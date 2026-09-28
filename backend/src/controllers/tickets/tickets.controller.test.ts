@@ -229,3 +229,58 @@ describe('Phase 2 review endpoints', () => {
     expect((await request(app).post('/api/tickets/TKT-001/verify')).status).toBe(503);
   });
 });
+
+/**
+ * The value, or fail the test here (instead of a non-null assertion).
+ *
+ * @param v - Possibly-null value
+ * @returns The value
+ */
+function must<T>(v: T | null | undefined): T {
+  if (v === null || v === undefined) throw new Error('expected a value');
+  return v;
+}
+
+describe('POST /api/tickets/:id/split (#827)', () => {
+  /** A ticket with a follow-up appended to it. @returns the ticket id and the follow-up ref */
+  async function ticketWithFollowUp(): Promise<{ id: string; ref: string }> {
+    const t = await svc.intake(msg('1.0', 'implement csv export'));
+    const follow: IntakeMessage = {
+      ...msg('1.1', '我只是想着 顺便也导出 pdf 格式'),
+      origin: { channel: 'slack-dm', ref: 'slackdm-D1-1.1', threadRef: 'slack:D1:1.0', author: 'U1' },
+    };
+    await svc.intake(follow);
+    return { id: must(t).id, ref: 'slackdm-D1-1.1' };
+  }
+
+  it('an agent moves a follow-up out: 201, same thread, parent recorded, persisted', async () => {
+    const { id, ref } = await ticketWithFollowUp();
+    const res = await request(app)
+      .post('/api/tickets/TKT-001/split')
+      .set('X-Agent-Session', 'ella')
+      .send({ discussionRef: ref, title: 'PDF export' });
+    expect(res.status).toBe(201);
+    expect(res.body.data).toMatchObject({
+      moved: true,
+      ticket: { ticketNumber: 2, title: 'PDF export', parentTicketId: id, origin: { threadRef: 'slack:D1:1.0' } },
+    });
+    // Survives a reload from disk.
+    const reloaded = await requests.getById(res.body.data.ticket.id);
+    expect(reloaded).toMatchObject({ parentTicketId: id, tags: expect.arrayContaining(['split']) });
+    expect((await requests.getById(id))?.discussion ?? []).toHaveLength(0);
+  });
+
+  it('400 without discussionRef or text; 404 for an unknown ticket or entry', async () => {
+    await ticketWithFollowUp();
+    expect((await request(app).post('/api/tickets/TKT-001/split').send({})).status).toBe(400);
+    expect((await request(app).post('/api/tickets/TKT-099/split').send({ text: 'x' })).status).toBe(404);
+    const res = await request(app).post('/api/tickets/TKT-001/split').send({ discussionRef: 'nope' });
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('discussion_not_found');
+  });
+
+  it('503 when the intake is not wired', async () => {
+    setTicketIntakeService(null);
+    expect((await request(app).post('/api/tickets/TKT-001/split').send({ text: 'x' })).status).toBe(503);
+  });
+});

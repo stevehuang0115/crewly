@@ -57,10 +57,12 @@ export const TICKET_KIND_LABEL: Record<TicketKind, string> = {
   issue: '问题',
   feature: '需求',
   idea: '想法',
+  /** #827: a pure information question, no acceptance step */
+  question: '提问',
 };
 
 /** Kinds in display order. */
-export const TICKET_KINDS: readonly TicketKind[] = ['issue', 'feature', 'idea'] as const;
+export const TICKET_KINDS: readonly TicketKind[] = ['issue', 'feature', 'idea', 'question'] as const;
 
 /** Value of the kind filter meaning "every kind". */
 export const TICKET_KIND_FILTER_ALL = 'all' as const;

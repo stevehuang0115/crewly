@@ -134,6 +134,8 @@ export function ticketDeliveryLine(ticket: Pick<Request, 'id' | 'ticketNumber'> 
   return (
     `${marker} (Crewly 内部记录 ${tkt}，只给你看：不要向对方提工单、编号、验收这类词；对方说的 todo / ticket 指他们自己的东西，与此无关。)` +
     ` 为它创建 WorkItem（delegate-task / create-task / decompose-goal）时加上 --request-id ${ticket.id}；回答前可用 ticket-check --ticket ${tkt} 看验收标准。` +
+    // #827: intake appends when unsure; the agent fixes a missed split.
+    `如果这条其实是一件新的事（有自己的交付物），用 split-ticket --ticket ${tkt} --list 把它拆成新工单。` +
     `做完后，如果结果需要对方确认（交付物、改动、要拍板的），在最终回复里用自己的话问一句这样行不行；只是回答问题就不用问。`
   );
 }

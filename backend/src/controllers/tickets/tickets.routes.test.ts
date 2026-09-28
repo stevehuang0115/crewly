@@ -18,6 +18,7 @@ describe('createTicketsRouter', () => {
       { path: '/:id/reject', methods: ['post'] },
       { path: '/:id/acceptance', methods: ['put'] },
       { path: '/:id/self-check', methods: ['post'] },
+      { path: '/:id/split', methods: ['post'] },
       { path: '/:id', methods: ['patch'] },
       { path: '/:id/acceptance', methods: ['post'] },
       { path: '/:id/update', methods: ['post'] },

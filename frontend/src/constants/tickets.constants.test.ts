@@ -61,3 +61,13 @@ describe('tickets constants', () => {
     }
   });
 });
+
+describe('ticket kinds (#827)', () => {
+  it('lists the question kind with its own label, and labels every kind', () => {
+    expect(TICKET_KINDS).toContain('question');
+    expect(TICKET_KIND_LABEL.question).toBe('提问');
+    for (const k of TICKET_KINDS) expect(TICKET_KIND_LABEL[k]).toBeTruthy();
+    // Distinct labels, so a question never reads as an issue (问题).
+    expect(new Set(TICKET_KINDS.map((k) => TICKET_KIND_LABEL[k])).size).toBe(TICKET_KINDS.length);
+  });
+});

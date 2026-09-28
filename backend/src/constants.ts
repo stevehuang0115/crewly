@@ -3132,8 +3132,81 @@ export const TICKET_CONSTANTS = {
 	 * (7 CJK = 14), while "好的收到" (8) does not.
 	 */
 	MIN_WEIGHTED_TEXT_LENGTH: 12,
+	/** Tag on a ticket an agent split out of another (#827) */
+	SPLIT_TAG: 'split',
 	/** A bare "don't track" reply dismisses the ticket it answers */
 	DISMISS_PATTERN: /^\s*(不用记|别记|不用记录|不要记|取消记录|don'?t track|do not track|no ticket)\s*[。.!！]*\s*$/i,
+	/**
+	 * Ask classifier (#827): is an owner message a new ask, or a follow-up on
+	 * the thread's current deliverable? Deterministic, text only. Every
+	 * pattern below was taken from real owner messages of 2026-09-25/26 — see
+	 * ticket-ask-classifier.test.ts for the labelled set. Scoring and the
+	 * tie rule live in ticket-ask-classifier.ts.
+	 */
+	ASK: {
+		/** A request verb: something to go and do (+2 ask) */
+		REQUEST_VERB: /(研究|调研|查一下|查查|搜一下|搜索一下|搜搜|搜一搜|找一下|找找|(看看|看一下|看下)(?!上面|这个|吧|吗|嘛|呢|[？?。!！~]|\s*$)|了解一下|分析一下|深挖|挖一下|总结|汇总|对比|比较一下|开\s*(个|一个|几个)?\s*issues?|提\s*(个|一个)?\s*issues?|发给|发到|做成|生成|加到|添加|帮我|帮忙|给我(讲讲|发|找|整理|列)|给我看看\S|告诉我|按\s*\S{1,12}\s*(分组|归类|group)|\bgroup\b|让\S{1,12}去|monitor|盯一下|提醒我|跑一下|部署|\bresearch\b|look into|dig into|find out|summari[sz]e|\bcompare\b|(open|file|create)\s+(the\s+\S+\s+to\s+)?(an?\s+|github\s+)?issues?|github issues?|write (up|a |an )|\bdraft\b|tell me|explain)/i,
+		/**
+		 * An explicit request construction (+3 ask instead of +2). Survives the
+		 * long-discussion damping: 「你能不能帮我…总结成一个MD文档」 inside a
+		 * voice transcript is still an ask.
+		 */
+		STRONG_REQUEST: /(你能不能帮我|能不能帮我|你能帮我|我希望你|希望.{0,4}你们?(能|可以)|我建议你|需要你去|(?<!谢谢)你帮我(?!\s*draft)|帮我把|创建对应的|创建一个)/,
+		/** A question that asks for information (+1 ask; on its own, a question ticket) */
+		INFO_QUESTION: /(是什么|什么意思|是讲什么|讲的是什么|是啥|怎么回事|区别|有什么值得|有什么可以|能有什么|有哪些|都有什么|有几个|有多少|有没有|what is|what's|what does|what even|how does|how do)/i,
+		/** The message points at something to look at: a link, an image, a file path */
+		REFERENCE: /(https?:\/\/|\[Slack (Image|File):|[\w-]+\/[\w./-]+\.(md|pdf|png|jpe?g))/i,
+		/** A bare 「看看」 (look) — an ask only when it has a reference to look at */
+		LOOK: /(看看|看一下|看下|看一看)/,
+		/** Opens a new topic, near the start (+1 ask) */
+		NEW_TOPIC: /^.{0,6}(另外|还有一个|还有个|另一个|新的想法|有一个新的|对了)/,
+		/** Suggests something new to do (+1 ask) */
+		IDEA: /(我们(crewly)?也可以|我们可以|要不(要)?|不如|可以考虑)/i,
+		/** First line is a numbered reply to the agent's list (+3 follow) */
+		NUMBERED_REPLY: /^\s*(1[.、)）]|1\s|1和|关于1|①)/,
+		/**
+		 * How the CURRENT deliverable should be delivered (+3 follow). Needs a
+		 * delivery verb: a bare `00-plan.md` path is not an instruction.
+		 */
+		DELIVERY_FORMAT: /((发|给我|存|转|用|通过|做成).{0,6}(pdf|md|markdown)|存到|写到.{0,20}(md|文档|issue)|放到|preview|文字稿)/i,
+		/** Clarifies or corrects the work in progress (+2 follow) */
+		CLARIFY: /(我只是|我的意思|我是说|除非你|不是说|不是让你|就是说|没关系|算了|先不|先留|backlog|后面再|以后再|不着急|不用了|不需要|等一下|按你说的|你决定|你来定|你们来定|请你们来|主要是)/,
+		/** Feedback on the current draft (+3 follow) */
+		FEEDBACK: /(基本上?可以|整体看?可以|还可以再|再斟酌|打磨|少了|多了|改成|改一下|基本对)/,
+		/** Asks the agent about its own work or plan (+2 follow) */
+		ABOUT_AGENT_WORK: /(你打算|你觉得|你有数|你看到|你去调研的时候|你那边|你有什么想法|你是怎么|你怎么|你有吗|我前面问|之前问|前面说了|再问一次)/,
+		/**
+		 * Opens by correcting or choosing (+3 follow): 「不对 我要你研究的是…」,
+		 * 「不是前面…」, 「方案A」 — a reply to the agent, never a new ask.
+		 */
+		CORRECTION_OR_CHOICE: /^(不对|不是|不用|sorry|方案\s*[A-Za-z0-9一二三]|选\s*[A-Za-z0-9一二三]|[A-Da-d][。.，,\s]|按推荐|按你推荐)/i,
+		/** 「…给我看看吗」: show me the current thing (+3 follow) */
+		SHOW_ME_TAIL: /给我看看?[吗嘛呢？?\s]*$/,
+		/** Retry / continue the current work (+3 follow): 「你再看看」「按你说的继续挖」 */
+		RETRY_CONTINUE: /(再看看|再看一次|再试试|你再|重新|继续|接着)/,
+		/** Ends as a suggestion about the current work (+3 follow): 「…添加一些截图吧？」 */
+		SUGGEST_TAIL: /吧[？?]?\s*$/,
+		/** Asks where things stand (+3 follow; top level: not an ask) */
+		STATUS_PING: /(在线了吗|好了吗|怎么样了|现在呢|有听吗|进展|进度|到哪了|有数了吗|登陆了吗|登陆过了|在吗|done yet|any update|how'?s it going|\bstatus\b|right now|working on)/i,
+		/**
+		 * A line that approves what the agent proposed: starts with an ack and
+		 * ends in approval ("好的 开issue可以的", "好的 部署吧") (+3 follow)
+		 */
+		APPROVAL_LINE: /^(好的?|行|可以|ok|okay|嗯+|对|对的|没问题|挺好的?)[\s，,。!！]*(\S.{0,24}?(可以的?|就行|没问题|吧)[\s。!！~]*)?$/i,
+		/** A line that is only an acknowledgement (ignored when scoring the rest) */
+		ACK_ONLY_LINE: /^(好的?|行|可以|ok|okay|嗯+|对|对的|没问题|挺好的?|收到|谢谢|thx|thanks)[\s，,。!！~]*$/i,
+		/**
+		 * Weighted length above which a message reads as spoken discussion (a
+		 * voice transcript): a follow-up unless it opens a new topic (+2 follow)
+		 */
+		LONG_DISCUSSION_WEIGHTED_LENGTH: 300,
+		/** Ends like a question (a verb-less question in a thread needs one) */
+		QUESTION_MARK: /([？?吗呢]|是什么|什么意思|是啥|的区别是什么)\s*$/m,
+		/** Quoted text is content, not a request: 接住“能不能帮我做” asks nothing */
+		QUOTED: /“[^”]*”|「[^」]*」|"[^"]*"/g,
+		/** Minimum ask score for a new ask; it must also beat the follow score (ties append) */
+		MIN_ASK_SCORE: 2,
+	},
 	/**
 	 * A top-level "不用记" (no thread) dismisses the latest open ticket from the
 	 * same conversation if it was opened this recently (ms).

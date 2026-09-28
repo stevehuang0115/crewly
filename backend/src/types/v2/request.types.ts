@@ -205,6 +205,12 @@ export interface Request {
    * auto-accept deadline. Silence is acceptance, never verification.
    */
   acceptedBy?: TicketAcceptedBy;
+  /**
+   * The ticket this one came from (#827): a new ask said in another ticket's
+   * thread, or a ticket an agent split off. Both keep the thread link
+   * (`origin.threadRef`) too.
+   */
+  parentTicketId?: string;
 }
 
 /** How a ticket was accepted — see {@link Request.acceptedBy}. */
@@ -234,6 +240,8 @@ export interface CreateRequestInput {
   kind?: TicketKind;
   origin?: TicketOrigin;
   assignee?: string;
+  /** See {@link Request.parentTicketId} */
+  parentTicketId?: string;
 }
 
 /**
@@ -437,5 +445,6 @@ export function createRequest(input: CreateRequestInput): Request {
     ...(input.kind ? { kind: input.kind } : {}),
     ...(input.origin ? { origin: input.origin } : {}),
     ...(input.assignee ? { assignee: input.assignee } : {}),
+    ...(input.parentTicketId ? { parentTicketId: input.parentTicketId } : {}),
   };
 }

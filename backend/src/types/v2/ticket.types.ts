@@ -16,11 +16,15 @@ import type { Request } from './request.types.js';
 // Field types
 // ---------------------------------------------------------------------------
 
-/** What kind of ask a ticket is. */
-export type TicketKind = 'issue' | 'feature' | 'idea';
+/**
+ * What kind of ask a ticket is. `question` (#827) is a pure information
+ * question: a lightweight ticket with no acceptance step, so it still shows in
+ * the daily summary without asking the owner to accept an answer.
+ */
+export type TicketKind = 'issue' | 'feature' | 'idea' | 'question';
 
 /** All valid {@link TicketKind} values. */
-export const TICKET_KINDS: readonly TicketKind[] = ['issue', 'feature', 'idea'] as const;
+export const TICKET_KINDS: readonly TicketKind[] = ['issue', 'feature', 'idea', 'question'] as const;
 
 /** Where a ticket was said. */
 export type TicketOriginChannel =
