@@ -38,6 +38,7 @@ import {
   type UpdateProjectTicketInput,
 } from './project-ticket.service.js';
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
+import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 
 /** WorkItem statuses that still carry the ticket's work. */
 const LIVE_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
@@ -55,7 +56,7 @@ const LIVE_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
 const BUSY_STATUSES: ReadonlySet<WorkItemStatus> = new Set(['queued', 'proposed', 'accepted', 'running']);
 
 /** Pool events that can change a linked ticket. */
-export const PROJECT_TICKET_SYNC_EVENTS = ['task:verified', 'task:done', 'task:rejected', 'task:cancelled', 'task:failed'] as const;
+export const PROJECT_TICKET_SYNC_EVENTS: readonly EventType[] = ['task:verified', 'task:done', 'task:rejected', 'task:cancelled', 'task:failed'];
 
 /** Max ticket claims tried per idle agent (another agent may win a race). */
 const MAX_AUTO_CLAIM_ATTEMPTS = 3;
@@ -214,11 +215,11 @@ export class ProjectTicketWorkflowService {
    * @param intervalMs - Sweep interval (0 disables the timer)
    */
   start(
-    events?: { onInProcess(types: string[], handler: (event: { workItemId?: string }) => unknown): () => void },
+    events?: { onInProcess(types: EventType[], handler: (event: AgentEvent) => void | Promise<void>): () => void },
     intervalMs: number = PROJECT_TICKET_CONSTANTS.SYNC_SWEEP_INTERVAL_MS,
   ): void {
     if (events) {
-      this.unsubscribe = events.onInProcess([...PROJECT_TICKET_SYNC_EVENTS], async (event) => {
+      this.unsubscribe = events.onInProcess([...PROJECT_TICKET_SYNC_EVENTS], async (event: AgentEvent) => {
         if (event?.workItemId) await this.onWorkItemEvent(event.workItemId);
       });
     }

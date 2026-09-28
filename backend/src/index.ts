@@ -3012,6 +3012,13 @@ void (async () => {
 				autoClaimService.initialize(this.eventBusService);
 				await autoClaimService.start();
 				this.logger.info('AgentAutoClaimService started — idle agents will auto-claim work');
+
+				// Project tickets (specs/2026-09-28-project-tickets.md): wire the
+				// workflow singleton (claim / assign / AutoClaim fallback) and keep
+				// tickets in step with their WorkItems — pool events plus a sweep.
+				const { projectTicketWorkflow } = await import('./controllers/project-tickets/project-tickets.controller.js');
+				projectTicketWorkflow().start(this.eventBusService);
+				this.logger.info('Project ticket workflow started — tickets follow their WorkItems');
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
 					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
