@@ -129,6 +129,47 @@ describe('SlackAgentDmService', () => {
     });
   });
 
+  describe('Slack thread context', () => {
+    function capture() {
+      const opts: unknown[] = [];
+      const { deps } = makeDeps({
+        getDispatcher: () => ({ dispatchMessage: async (_c: ChatChannelDTO, _m: ChatMessageDTO, o?: unknown) => { opts.push(o); return { strategy: 'dm', dispatched: true }; } }) as never,
+      });
+      return { deps, opts };
+    }
+
+    it('a threaded DM carries the DM thread, the agent\'s own lines marked', async () => {
+      const { deps, opts } = capture();
+      const svc = new SlackAgentDmService(deps);
+      await svc.routeInbound(dm({
+        ts: '1789781200.000100',
+        threadTs: '1789781178.423669',
+        threadContext: Promise.resolve({
+          kind: 'thread',
+          channelId: 'D0C2YLU8F2A',
+          totalBefore: 2,
+          messages: [
+            { ts: '1789781178.423669', isBot: false, authorName: 'Steve', userId: 'U-steve', text: 'summarise my inbox' },
+            { ts: '1789781190.000100', isBot: true, authorName: 'Ella', userId: 'U-ella', text: 'here is the digest' },
+          ],
+        }),
+      }));
+      const o = opts[0] as { slackContextFor: (s: string) => string };
+      const block = o.slackContextFor('crewly-marketing-ella-e6a6b8ea');
+      expect(block).toContain('Steve: summarise my inbox');
+      expect(block).toContain('Ella [bot] (you): here is the digest');
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+
+    it('a top-level DM is dispatched exactly as before (no options)', async () => {
+      const { deps, opts } = capture();
+      const svc = new SlackAgentDmService(deps);
+      await svc.routeInbound(dm());
+      expect(opts).toEqual([undefined]);
+      await fs.rm(deps.storePath as string, { force: true });
+    });
+  });
+
   it('ignores messages not addressed to a local agent', async () => {
     const { deps, dispatched } = makeDeps({ isLocalAgent: () => false });
     const svc = new SlackAgentDmService(deps);

@@ -339,6 +339,41 @@ export interface SlackFileInfo {
   extractedText?: string;
 }
 
+/** One message of the fetched Slack context. */
+export interface SlackContextMessage {
+  /** Slack message timestamp */
+  ts: string;
+  /** Author user id (bot user id for a bot that posted with its own token) */
+  userId?: string;
+  /** Slack `bot_id` when a bot wrote it */
+  botId?: string;
+  /** Whether a bot / app wrote it */
+  isBot: boolean;
+  /** Display name of the author, resolved */
+  authorName: string;
+  /**
+   * True when the name comes from a per-message `username` override — how an
+   * agent without its own Slack app posts through the workspace bot.
+   */
+  usernameOverride?: boolean;
+  /** Message text with `<@U…>` mentions turned into `@name` */
+  text: string;
+}
+
+/** What {@link SlackThreadContextService.getContext} returns. */
+export interface SlackThreadContext {
+  /** `thread` = `conversations.replies`; `channel` = recent `conversations.history` */
+  kind: 'thread' | 'channel';
+  /** Slack channel id */
+  channelId: string;
+  /** Thread root ts, for a thread */
+  threadTs?: string;
+  /** Messages before the triggering one, oldest first (already capped by count) */
+  messages: SlackContextMessage[];
+  /** How many earlier messages Slack returned before the count cap */
+  totalBefore: number;
+}
+
 /**
  * Incoming Slack message
  */
@@ -395,6 +430,16 @@ export interface SlackIncomingMessage {
    * that agent had been @'d, even though the message was seen before.
    */
   handoffTo?: string;
+  /**
+   * What the Slack thread (or, for a top-level @-mention, the channel) said
+   * before this message, read from Slack at delivery time. Includes posts by
+   * agents on other machines, which Cloud never forwards here (own-bot loop
+   * guard). Prompt context only — never recorded locally. Resolves to null
+   * when not applicable or unreadable, and never rejects. A promise so the
+   * read runs alongside routing (eyes, placeholders) and is awaited only
+   * right before the prompt is built.
+   */
+  threadContext?: Promise<SlackThreadContext | null>;
 }
 
 /**

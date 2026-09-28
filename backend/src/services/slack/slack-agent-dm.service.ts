@@ -19,6 +19,7 @@ import type { SlackIncomingMessage, SlackOutgoingMessage } from '../../types/sla
 import type { Team } from '../../types/index.js';
 import type { ChatV2Service } from '../chat-v2/chat-v2.service.js';
 import type { ChatV2DispatcherService, DispatchMessageResult } from '../chat-v2/chat-v2.dispatcher.service.js';
+import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
 import type { SlackTypingPlaceholderService } from './slack-typing-placeholder.service.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
@@ -374,7 +375,18 @@ export class SlackAgentDmService {
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
-      dispatch = await dispatcher.dispatchMessage(channel, markAndLinkTicket(persisted, ticket));
+      // A threaded DM: the thread as Slack has it (top-level DMs get none).
+      const slackContext = await message.threadContext;
+      dispatch = await dispatcher.dispatchMessage(
+        channel,
+        markAndLinkTicket(persisted, ticket),
+        slackContext
+          ? {
+              slackContextFor: () =>
+                renderSlackThreadContext(slackContext, { botUserId: installed?.botUserId, name: member?.name ?? agentSession }),
+            }
+          : undefined,
+      );
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }

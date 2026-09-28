@@ -48,6 +48,7 @@ import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
 import { getCrossMachineMessageService } from './cross-machine-message.service.js';
 import { getSlackTeamChannelService } from './slack-team-channel.service.js';
 import { getSlackAgentDmService } from './slack-agent-dm.service.js';
+import { contextKindFor, getSlackThreadContextService, renderSlackThreadContext } from './slack-thread-context.service.js';
 import {
   getTicketIntakeService,
   suppressTrivialOrShort,
@@ -189,6 +190,19 @@ export function mentionedBotUserIds(text: string | undefined): string[] {
     if (id && !out.includes(id)) out.push(id);
   }
   return out;
+}
+
+/**
+ * Put the Slack context block in front of the text an agent is handed.
+ * Only the delivered copy carries it; the persisted chat row does not, so
+ * the fetched messages are never recorded locally.
+ *
+ * @param text - The message text
+ * @param block - Rendered Slack context, or empty
+ * @returns The text to deliver
+ */
+export function withContextBlock(text: string, block: string | undefined): string {
+  return block ? `${block}\n\n${text}` : text;
 }
 
 export class SlackOrchestratorBridge extends EventEmitter {
@@ -391,6 +405,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
         }
       }
 
+      // What the Slack thread actually says — including posts by agents on
+      // other machines, which Cloud never forwards here. Prompt context only;
+      // read in the background, awaited right before a prompt is built.
+      this.loadThreadContext(message);
+
       // Get or create conversation context. The bridge works on its own copy
       // carrying this message's Slack ids (G5), so the shared per-thread
       // context is never overwritten by a later message.
@@ -530,6 +549,10 @@ export class SlackOrchestratorBridge extends EventEmitter {
             appendTicketLine(cleanMessage || enrichedText, mentionTicket),
             context,
             message.authorAgentSession,
+            renderSlackThreadContext(await message.threadContext, {
+              botUserId: getSlackAgentIdentityService()?.getInstalled(mentionTarget.sessionName)?.botUserId,
+              name: mentionTarget.name,
+            }),
           );
           // Issue #394: `fromOrcReply` comes from the envelope — only
           // `true` when slackResolve fired with a non-empty body. The
@@ -623,6 +646,7 @@ export class SlackOrchestratorBridge extends EventEmitter {
               appendTicketLine(message.text, ticket),
               context,
               message.authorAgentSession,
+              await this.orchestratorContextBlock(message),
             );
             response = r.response;
             fromOrcReply = r.fromOrcReply;
@@ -898,6 +922,7 @@ Just type naturally to chat with the orchestrator!`;
     message: string,
     context?: SlackConversationContext,
     authorAgentSession?: string,
+    slackContextBlock?: string,
   ): Promise<OrcResponse> {
     try {
       // Check if orchestrator is active before attempting to send
@@ -975,7 +1000,7 @@ Just type naturally to chat with the orchestrator!`;
 
           try {
             this.messageQueueService.enqueue({
-              content: enrichedMessage,
+              content: withContextBlock(enrichedMessage, slackContextBlock),
               conversationId: result.conversation.id,
               source: 'slack',
               sourceMetadata: {
@@ -1080,7 +1105,7 @@ Just type naturally to chat with the orchestrator!`;
 
         try {
           this.messageQueueService!.enqueue({
-            content: enrichedMessage,
+            content: withContextBlock(enrichedMessage, slackContextBlock),
             conversationId: result.conversation.id,
             source: 'slack',
             sourceMetadata: {
@@ -1264,6 +1289,61 @@ Just type naturally to chat with the orchestrator!`;
     }
 
     return getOrchestratorOfflineMessage(true);
+  }
+
+  /**
+   * Read the Slack thread (or, for a top-level @-mention, the channel)
+   * before this message and attach the pending read as `message.threadContext`.
+   *
+   * Cloud drops events written by the account's own bots, so a post by an
+   * agent on another machine never reaches this one; without this, "look at
+   * the items above" pointed at something the agent had never seen
+   * (2026-09-28, #daily-info). Never throws; the promise never rejects.
+   *
+   * @param message - The inbound message (mutated: `threadContext`)
+   */
+  private loadThreadContext(message: SlackIncomingMessage): void {
+    const req = { channelId: message.channelId, ts: message.ts, threadTs: message.threadTs, text: message.text };
+    if (!message.channelId || !message.ts || !contextKindFor(req)) return;
+    try {
+      message.threadContext = getSlackThreadContextService()
+        .getContext(req, this.contextTokenCandidates(message))
+        .catch(() => null);
+    } catch (err) {
+      this.logger.debug('Slack thread context skipped', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * Tokens that can read this message's conversation, best first: the app
+   * that delivered this copy (in the channel by definition), then the same
+   * order file downloads use (DM bot, @-mentioned bots, room agents, the
+   * workspace bot).
+   *
+   * @param message - The inbound message
+   * @returns Distinct tokens
+   */
+  private contextTokenCandidates(message: SlackIncomingMessage): string[] {
+    const receiving = message.receivedVia
+      ? getSlackAgentIdentityService()?.getInstalled(message.receivedVia)?.botToken
+      : undefined;
+    return [...new Set([...(receiving ? [receiving] : []), ...this.fileTokenCandidates(message)])];
+  }
+
+  /**
+   * The Slack context block as the orchestrator should see it (its own
+   * lines marked: its per-machine app when installed, else the workspace bot).
+   *
+   * @param message - The inbound message
+   * @returns The rendered block, or ''
+   */
+  private async orchestratorContextBlock(message: SlackIncomingMessage): Promise<string> {
+    const ctx = await message.threadContext;
+    if (!ctx) return '';
+    const botUserId =
+      getSlackAgentIdentityService()?.getInstalled(this.config.orchestratorSession)?.botUserId ??
+      (await this.slackService.getBotUserId().catch(() => null));
+    return renderSlackThreadContext(ctx, { botUserId });
   }
 
   /**
@@ -2119,12 +2199,16 @@ Just type naturally to chat with the orchestrator!`;
     message: string,
     context?: SlackConversationContext,
     authorAgentSession?: string,
+    slackContextBlock?: string,
   ): Promise<OrcResponse> {
     try {
       // Enrich with Slack context for reply routing
       let enrichedMessage = message;
+      let deliveredMessage = withContextBlock(message, slackContextBlock);
       if (context) {
-        enrichedMessage = `[SLACK_CONTEXT:channelId=${context.channelId},threadTs=${context.threadTs || ''}]\n${message}`;
+        const header = `[SLACK_CONTEXT:channelId=${context.channelId},threadTs=${context.threadTs || ''}]`;
+        enrichedMessage = `${header}\n${message}`;
+        deliveredMessage = `${header}\n${deliveredMessage}`;
       }
 
       // Use message queue for agents that support it, or deliver directly
@@ -2158,7 +2242,7 @@ Just type naturally to chat with the orchestrator!`;
           }, this.config.responseTimeoutMs);
 
           this.messageQueueService!.enqueue({
-            content: enrichedMessage,
+            content: deliveredMessage,
             conversationId: chatResult.conversation.id,
             source: 'slack',
             targetSession: sessionName,
@@ -2190,7 +2274,7 @@ Just type naturally to chat with the orchestrator!`;
       await fetch(`${apiUrl}/api/terminal/${sessionName}/deliver`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: enrichedMessage, force: true }),
+        body: JSON.stringify({ message: deliveredMessage, force: true }),
       });
       return {
         response: 'Message delivered to agent. Response will arrive shortly.',

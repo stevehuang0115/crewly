@@ -1064,6 +1064,62 @@ export const SLACK_TYPING_CONSTANTS = {
 	INTERIM_METADATA_KEY: 'interim',
 } as const;
 
+/**
+ * Slack thread context read at delivery time.
+ *
+ * Cloud drops Slack events written by the account's own bots (loop guard),
+ * so a post by an agent on another machine never reaches this one. When a
+ * message in that thread is then delivered here, the agent is shown what the
+ * thread actually says — fetched read-only from Slack, never recorded
+ * locally (2026-09-28, #daily-info: "@Atlas 看看上面的这些").
+ */
+export const SLACK_THREAD_CONTEXT_CONSTANTS = {
+	/** Whether the Slack context block is fetched at all */
+	ENABLED: true,
+	/** Most messages shown (newest kept) */
+	MAX_MESSAGES: 30,
+	/** Character budget of the whole block's message lines (newest kept) */
+	MAX_CHARS: 12_000,
+	/** Characters kept per message before clipping */
+	PER_MESSAGE_CHARS: 4_000,
+	/** Recent channel messages read before a top-level @-mention */
+	CHANNEL_HISTORY_LIMIT: 15,
+	/** Page size for `conversations.replies` */
+	REPLIES_PAGE_SIZE: 200,
+	/** Most `conversations.replies` pages read for one thread */
+	REPLIES_MAX_PAGES: 5,
+	/** How long one (channel, thread) fetch is reused */
+	CACHE_TTL_MS: 60_000,
+	/** Most cached threads kept */
+	CACHE_MAX_ENTRIES: 200,
+	/** How long a resolved user / bot name is reused */
+	NAME_CACHE_TTL_MS: 60 * 60 * 1000,
+	/** Most distinct users resolved via `users.info` for one block */
+	MAX_NAME_LOOKUPS: 25,
+	/** Per-request timeout; delivery never waits longer than a few of these */
+	FETCH_TIMEOUT_MS: 5_000,
+	/** Back-off after a 429 without a usable Retry-After (ms) */
+	DEFAULT_RETRY_AFTER_MS: 30_000,
+	/** Slack Web API base URL */
+	API_BASE_URL: 'https://slack.com/api',
+	/**
+	 * Slack error codes after which the next candidate token is tried: this
+	 * token's app is not in the conversation or cannot read it.
+	 */
+	TRY_NEXT_TOKEN_ERRORS: [
+		'not_in_channel',
+		'channel_not_found',
+		'missing_scope',
+		'not_authed',
+		'invalid_auth',
+		'token_revoked',
+		'account_inactive',
+		'no_permission',
+	] as readonly string[],
+	/** Message subtypes that are conversation, not channel housekeeping */
+	CONTENT_SUBTYPES: ['bot_message', 'thread_broadcast', 'file_share', 'me_message'] as readonly string[],
+} as const;
+
 export const SLACK_TEAM_CHANNEL_CONSTANTS = {
   /** How long a channel member list is trusted when picking between same-named agents. */
   MEMBER_CACHE_TTL_MS: 5 * 60 * 1000,
