@@ -300,8 +300,8 @@ describe('pickResolveTarget', () => {
     expect(pickResolveTarget('running')).toBe('done');
   });
 
-  it('routes done_by_worker to "verified" (the only success edge from done_by_worker)', () => {
-    expect(pickResolveTarget('done_by_worker')).toBe('verified');
+  it('leaves done_by_worker for its reviewer (#813 — answering the user is not a review)', () => {
+    expect(pickResolveTarget('done_by_worker')).toBeNull();
   });
 
   it('routes other live statuses to "cancelled" (defensive default)', () => {
@@ -326,11 +326,15 @@ describe('pickResolveTarget', () => {
       'done_by_worker',
       'scheduled',
     ];
+    let examined = 0;
     for (const from of liveStatuses) {
       const to = pickResolveTarget(from);
+      if (to === null) continue; // left for its reviewer (#813) — no edge taken
+      examined += 1;
       const allowed = WORK_ITEM_TRANSITIONS[from];
       expect(allowed.has(to)).toBe(true);
     }
+    expect(examined).toBe(liveStatuses.length - 1);
   });
 });
 
@@ -1201,6 +1205,22 @@ describe('RequestSlaSubscriber', () => {
       expect(pool.transitionCalls).toEqual([
         { id: respondToUserWorkItemId(r.id), status: 'done', actor: 'system' },
       ]);
+    });
+
+    it('leaves a done_by_worker SLA WI for its reviewer — no verified transition (#813)', async () => {
+      // This path used to auto-verify: pickResolveTarget('done_by_worker')
+      // returned 'verified' and the transition ran as 'system'.
+      const r = buildRequest();
+      svc.registry.set(r.id, r);
+      bus.publish(buildEvent(r.id));
+      await sub.flushPending();
+
+      pool.setStatus(respondToUserWorkItemId(r.id), 'done_by_worker');
+
+      await sub.markResolvedByThread('1772899923.865659');
+
+      expect(pool.transitionCalls).toEqual([]);
+      expect((await pool.taskPool.findWorkItem(respondToUserWorkItemId(r.id)))?.status).toBe('done_by_worker');
     });
 
     it('keeps the parent Request open when other non-terminal WIs exist (orc decomposed)', async () => {

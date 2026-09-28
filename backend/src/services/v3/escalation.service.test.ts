@@ -1,48 +1,50 @@
 /**
  * Tests for EscalationService — periodic MissionPolicy escalation rule evaluation.
  *
+ * #819: this file imported its test API from 'vitest' (`describe`, `it`,
+ * `vi`, …), but the project's root test runner is jest (jest.config.js;
+ * vitest.config.ts's own header comment says the real vitest suites live
+ * only under frontend/ and packages/chat-ui/). Under jest, `import ... from
+ * 'vitest'` doesn't just fail to compile — it fails at require-time
+ * ("Vitest cannot be imported in a CommonJS module using require()"), so
+ * every test in this file has never actually run via `npm test`. Converted
+ * to jest syntax (`vi.fn`→`jest.fn`, `vi.mock`→`jest.mock`,
+ * `vi.hoisted`→plain `mock`-prefixed consts, matching the working pattern in
+ * escalation-router.service.test.ts) so it runs for real.
+ *
  * @module services/v3/escalation.service.test
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import type { Mission, EscalationRule, MissionPolicy, EscalationContext } from '../../types/v2/index.js';
+import type { Mission, EscalationRule, WorkItem, WorkItemStatus } from '../../types/v2/index.js';
+import { createWorkItem } from '../../types/v2/index.js';
+import type { TriggerActionHandler } from './trigger-engine.service.js';
 
 // ---------------------------------------------------------------------------
-// Hoisted mocks
+// Mocks
 // ---------------------------------------------------------------------------
 
-const {
-  mockGetAllItems,
-  mockUpdateItemStatus,
-  mockReaddir,
-  mockSafeReadJson,
-  mockTriggerCreate,
-  mockTriggerCancel,
-  mockTriggerSetActionHandler,
-} = vi.hoisted(() => ({
-  mockGetAllItems: vi.fn().mockResolvedValue([]),
-  mockUpdateItemStatus: vi.fn().mockResolvedValue(undefined),
-  mockReaddir: vi.fn().mockResolvedValue([]),
-  mockSafeReadJson: vi.fn().mockResolvedValue(null),
-  mockTriggerCreate: vi.fn().mockResolvedValue({ id: 'trigger-esc-001' }),
-  mockTriggerCancel: vi.fn().mockResolvedValue(true),
-  mockTriggerSetActionHandler: vi.fn(),
-}));
+const mockGetAllItems = jest.fn().mockResolvedValue([]);
+const mockUpdateItemStatus = jest.fn().mockResolvedValue(undefined);
+const mockReaddir = jest.fn().mockResolvedValue([]);
+const mockSafeReadJson = jest.fn().mockResolvedValue(null);
+const mockTriggerCreate = jest.fn().mockResolvedValue({ id: 'trigger-esc-001' });
+const mockTriggerCancel = jest.fn().mockResolvedValue(true);
+const mockTriggerSetActionHandler = jest.fn();
 
-vi.mock('../core/logger.service.js', () => ({
+jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
     getInstance: () => ({
       createComponentLogger: () => ({
-        info: vi.fn(),
-        debug: vi.fn(),
-        warn: vi.fn(),
-        error: vi.fn(),
+        info: jest.fn(),
+        debug: jest.fn(),
+        warn: jest.fn(),
+        error: jest.fn(),
       }),
     }),
   },
 }));
 
-vi.mock('../task-pool/task-pool.service.js', () => ({
+jest.mock('../task-pool/task-pool.service.js', () => ({
   TaskPoolService: {
     getInstance: () => ({
       getAllItems: mockGetAllItems,
@@ -51,26 +53,25 @@ vi.mock('../task-pool/task-pool.service.js', () => ({
   },
 }));
 
-vi.mock('../../utils/file-io.utils.js', () => ({
-  ensureDir: vi.fn().mockResolvedValue(undefined),
+jest.mock('../../utils/file-io.utils.js', () => ({
+  ensureDir: jest.fn().mockResolvedValue(undefined),
   safeReadJson: (...args: unknown[]) => mockSafeReadJson(...args),
 }));
 
-vi.mock('fs/promises', () => ({
+jest.mock('fs/promises', () => ({
   readdir: (...args: unknown[]) => mockReaddir(...args),
 }));
 
-// Store the action handler passed to TriggerEngine so we can invoke it in tests
-let capturedTriggerActionHandler: Function | null = null;
-
-vi.mock('./trigger-engine.service.js', () => ({
+jest.mock('./trigger-engine.service.js', () => ({
   TriggerEngine: {
     getInstance: () => ({
       create: mockTriggerCreate,
       cancel: mockTriggerCancel,
       actionHandler: null,
-      setActionHandler: (handler: Function) => {
-        capturedTriggerActionHandler = handler;
+      // Recorded on mockTriggerSetActionHandler for assertions — see
+      // mockTriggerSetActionHandler.mock.calls if a test needs the handler
+      // itself; no test currently invokes it directly.
+      setActionHandler: (handler: TriggerActionHandler) => {
         mockTriggerSetActionHandler(handler);
       },
     }),
@@ -128,22 +129,29 @@ function makeMission(opts: {
 }
 
 /**
- * Creates a test WorkItem stub.
+ * Creates a fully-typed test WorkItem. `createWorkItem` supplies every
+ * required field (createdAt, retryCount, maxRetries, token/cost counters,
+ * …) with real defaults; `status` and `cost` are then overridden since the
+ * factory itself always starts a WorkItem at `queued`/`cost: 0` (they
+ * accrue at runtime, not at creation).
  */
 function makeWorkItem(opts: {
   id?: string;
   missionId?: string;
-  status?: string;
+  status?: WorkItemStatus;
   cost?: number;
-}) {
-  return {
+}): WorkItem {
+  const wi = createWorkItem({
     id: opts.id ?? 'wi-001',
     missionId: opts.missionId ?? 'mission-001',
-    status: opts.status ?? 'running',
-    cost: opts.cost ?? 0,
     type: 'delegate',
     owner: 'orchestrator',
     title: 'Test',
+  });
+  return {
+    ...wi,
+    status: opts.status ?? 'running',
+    cost: opts.cost ?? 0,
   };
 }
 
@@ -156,8 +164,7 @@ describe('EscalationService', () => {
   let policyService: PolicyEnforcementService;
 
   beforeEach(() => {
-    vi.clearAllMocks();
-    capturedTriggerActionHandler = null;
+    jest.clearAllMocks();
     policyService = new PolicyEnforcementService();
     service = new EscalationService(PROJECT_PATH, policyService);
   });
@@ -318,7 +325,7 @@ describe('EscalationService', () => {
     });
 
     it('should call registered action handler for triggered rules', async () => {
-      const handler = vi.fn().mockResolvedValue(undefined);
+      const handler = jest.fn().mockResolvedValue(undefined);
       service.setActionHandler(handler);
 
       const mission = makeMission({
@@ -359,8 +366,9 @@ describe('EscalationService', () => {
 
       await service.evaluate();
 
-      // Should attempt to block the queued item
-      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-queued', 'blocked');
+      // Should attempt to block the queued item, as the system actor (#813:
+      // transitions are identity-checked, so this call always names an actor).
+      expect(mockUpdateItemStatus).toHaveBeenCalledWith('wi-queued', 'blocked', { role: 'system', via: 'escalation-service' });
     });
 
     it('should skip non-active missions', async () => {
@@ -408,39 +416,43 @@ describe('EscalationService', () => {
   // -----------------------------------------------------------------------
 
   describe('buildEscalationContext()', () => {
-    it('should calculate cost from mission WorkItems', async () => {
+    // buildEscalationContext is a pure, synchronous function: it sums over
+    // whatever `missionItems` array it is given and does not fetch or
+    // filter by missionId itself — evaluate() does that once per cycle
+    // (bucketing the whole pool by missionId) so N missions never means
+    // N re-scans of a potentially huge pool. These tests pass the
+    // already-filtered slice directly, the same shape evaluate() builds.
+    it('should calculate cost from the mission WorkItems it is given', () => {
       const mission = makeMission();
-      mockGetAllItems.mockResolvedValue([
+      const missionItems = [
         makeWorkItem({ id: 'wi-1', missionId: 'mission-001', cost: 5 }),
         makeWorkItem({ id: 'wi-2', missionId: 'mission-001', cost: 3 }),
-        makeWorkItem({ id: 'wi-3', missionId: 'other-mission', cost: 100 }),
-      ]);
+      ];
 
-      const context = await service.buildEscalationContext(mission);
+      const context = service.buildEscalationContext(mission, missionItems);
 
-      expect(context.currentCost).toBe(8); // 5 + 3, not including other-mission
+      expect(context.currentCost).toBe(8);
     });
 
-    it('should calculate hours elapsed since creation', async () => {
+    it('should calculate hours elapsed since creation', () => {
       const twoHoursAgo = new Date(Date.now() - 2 * 3600_000).toISOString();
       const mission = makeMission({ createdAt: twoHoursAgo });
-      mockGetAllItems.mockResolvedValue([]);
 
-      const context = await service.buildEscalationContext(mission);
+      const context = service.buildEscalationContext(mission, []);
 
       expect(context.hoursElapsed).toBeGreaterThanOrEqual(1.9);
       expect(context.hoursElapsed).toBeLessThanOrEqual(2.1);
     });
 
-    it('should count failure WorkItems', async () => {
+    it('should count failure WorkItems', () => {
       const mission = makeMission();
-      mockGetAllItems.mockResolvedValue([
+      const missionItems = [
         makeWorkItem({ id: 'wi-1', missionId: 'mission-001', status: 'failed' }),
         makeWorkItem({ id: 'wi-2', missionId: 'mission-001', status: 'done' }),
         makeWorkItem({ id: 'wi-3', missionId: 'mission-001', status: 'failed' }),
-      ]);
+      ];
 
-      const context = await service.buildEscalationContext(mission);
+      const context = service.buildEscalationContext(mission, missionItems);
 
       expect(context.failureCount).toBe(2);
     });

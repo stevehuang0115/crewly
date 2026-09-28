@@ -26,15 +26,26 @@ import type {
 import {
   isWorkItem,
   isValidWorkItemTransition,
-  isTransitionPermitted,
+  checkTransitionPermission,
+  normalizeTransitionActor,
+  describeTransitionActor,
+  getWorkItemReviewer,
+  ForbiddenTransitionError,
+  VERDICT_TRANSITIONS,
+  WORK_ITEM_REVIEWER_KEY,
   LAST_REQUEUED_AT_METADATA_KEY,
   DISPOSITION_METADATA_KEY,
   DISPOSITION_REQUIRED_STATUSES,
   getWorkItemDisposition,
   WORK_ITEM_BLOCK_SOURCES,
   isExplicitlyBlocked,
+  TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
-import type { WorkItemDisposition } from '../../types/v2/work-item.types.js';
+import type {
+  WorkItemDisposition,
+  TransitionActor,
+  TransitionActorInput,
+} from '../../types/v2/work-item.types.js';
 import {
   createTaskClaim,
   type TaskClaim,
@@ -1376,6 +1387,9 @@ export class TaskPoolService {
    *     `done_by_worker` and wake the TL for sign-off.
    *   - All other types (`cron_run`, `notify`, `reconcile`, `check`,
    *     `confirm`, `review`, ...) default to simple completion (`done`).
+   *   - Bridge-auto maintenance items (`metadata.autoCreated`) and
+   *     trigger-fired check-ins (`triggerId`) complete as `done` too —
+   *     nothing reviews them (#813).
    *
    * The default is overridable via `wi.metadata.requiresVerification`:
    *   - `true`  — force verification path even for non-delegate types
@@ -1390,6 +1404,15 @@ export class TaskPoolService {
     const metaFlag = (wi.metadata as { requiresVerification?: boolean } | undefined)?.requiresVerification;
     if (metaFlag === true) return true;
     if (metaFlag === false) return false;
+    // #813: bridge-auto maintenance items get no review item (the bridge
+    // re-scans on its own tick), so parking them in done_by_worker only
+    // stranded them until the TTL auto-verified them. Complete them as done.
+    if (wi.metadata?.['autoCreated'] === true) return false;
+    // #813: a trigger-fired item (schedule-followup / watch-for-event) is a
+    // check-in the agent set for itself, created as `delegate` by default.
+    // Nothing reviewed them — 123 of 293 verified items in the live pool on
+    // 2026-09-26 were these, verified with no review item. Complete as done.
+    if (wi.triggerId) return false;
     return wi.type === 'delegate';
   }
 
@@ -1512,7 +1535,7 @@ export class TaskPoolService {
    */
   async submitForVerification(
     workItemId: string,
-    actorRole: WorkItemOwner,
+    actorRole: TransitionActorInput,
     result?: Record<string, unknown>,
   ): Promise<WorkItem | null> {
     await this.releaseClaim(workItemId, 'submitted_for_verification');
@@ -1565,9 +1588,14 @@ export class TaskPoolService {
    */
   async completeSimpleItem(
     workItemId: string,
-    actorRole: WorkItemOwner,
+    actorRole: TransitionActorInput,
     result?: Record<string, unknown>,
   ): Promise<WorkItem | null> {
+    // #813: completing a review item renders a verdict on its source. Check
+    // that this caller may render it BEFORE the review item itself is marked
+    // done — otherwise a refused verdict leaves a "done" review and a source
+    // that nobody reviewed.
+    const verdictPlan = await this.planReviewVerdict(workItemId, actorRole, result);
     await this.releaseClaim(workItemId, 'completed');
     const updated = await this.transitionStatus(
       workItemId,
@@ -1591,41 +1619,30 @@ export class TaskPoolService {
     //
     // When a verify WI completes (metadata.verifyOf points at its source),
     // propagate the verdict to the source via verifyItem so the source
-    // moves done_by_worker → verified AND its own dependents unblock. Use
-    // the 'system' actor — this is automatic propagation, not a fresh
-    // TL action (the TL action was completing this verify WI).
-    const verifyOf =
-      updated?.metadata && typeof updated.metadata.verifyOf === 'string'
-        ? updated.metadata.verifyOf
-        : undefined;
-    if (verifyOf) {
+    // moves done_by_worker → verified AND its own dependents unblock.
+    // #813: the verdict is rendered AS THE CALLER who completed the review
+    // item (it used to be 'system', which let anyone's completion certify
+    // the source). {@link planReviewVerdict} already checked the caller.
+    if (verdictPlan) {
       try {
-        const source = await this.storage.findWorkItem(verifyOf);
-        if (source && source.status === 'done_by_worker') {
-          // Ticket loop Phase 3: a reviewer can send work back by completing
-          // the review with `verdict: 'rejected'` (+ feedback). Before this,
-          // completing a review always meant "verified" and the bridge's
-          // retry path was unreachable from a reviewer.
-          const rejected = result?.verdict === 'rejected';
-          const feedback =
-            typeof result?.feedback === 'string' && result.feedback.trim()
-              ? result.feedback.trim()
-              : typeof result?.summary === 'string'
-                ? result.summary
-                : undefined;
-          await this.verifyItem(verifyOf, 'system', rejected ? 'rejected' : 'verified', rejected ? feedback : undefined);
-          this.logger.info('Verify WI complete → propagated to source', {
-            verifyWorkItemId: workItemId,
-            sourceWorkItemId: verifyOf,
-            verdict: rejected ? 'rejected' : 'verified',
-          });
-        }
+        await this.verifyItem(
+          verdictPlan.sourceId,
+          verdictPlan.reviewer,
+          verdictPlan.verdict,
+          verdictPlan.verdict === 'rejected' ? verdictPlan.feedback : undefined,
+        );
+        this.logger.info('Verify WI complete → propagated to source', {
+          verifyWorkItemId: workItemId,
+          sourceWorkItemId: verdictPlan.sourceId,
+          verdict: verdictPlan.verdict,
+          reviewer: describeTransitionActor(verdictPlan.reviewer),
+        });
       } catch (err) {
         // Propagation is best-effort — a failed propagate must NOT roll
         // back the verify WI's own completion.
         this.logger.warn('Verify-to-source propagation failed (non-fatal)', {
           verifyWorkItemId: workItemId,
-          sourceWorkItemId: verifyOf,
+          sourceWorkItemId: verdictPlan.sourceId,
           error: err instanceof Error ? err.message : String(err),
         });
       }
@@ -1641,6 +1658,143 @@ export class TaskPoolService {
       this.publishTaskTerminalSuccess('task:done', updated, 'running');
     }
     return updated;
+  }
+
+  /**
+   * The verdict a review item's completion would render on its source, after
+   * checking that the completing caller may render it (#813).
+   *
+   * A review item carries `metadata.verifyOf` = the source WorkItem id. The
+   * caller completes the review as its assignee (`agent` role) or as the
+   * orchestrator; on the source it acts as the REVIEWER, so the verdict is
+   * checked as `team_lead`/`orchestrator` with the caller's session — the
+   * reviewer rule then decides by identity, not by the claimed role.
+   *
+   * @param workItemId - The item being completed
+   * @param actorInput - The caller completing it
+   * @param result - The completion result (`verdict: 'rejected'` sends it back)
+   * @returns The planned verdict, or null when this item reviews nothing that
+   *   is still awaiting review
+   * @throws ForbiddenTransitionError when the caller may not render the verdict
+   */
+  private async planReviewVerdict(
+    workItemId: string,
+    actorInput: TransitionActorInput,
+    result?: Record<string, unknown>,
+  ): Promise<{ sourceId: string; verdict: 'verified' | 'rejected'; reviewer: TransitionActor; feedback?: string } | null> {
+    const reviewItem = await this.storage.findWorkItem(workItemId);
+    const verifyOf =
+      reviewItem?.metadata && typeof reviewItem.metadata.verifyOf === 'string'
+        ? reviewItem.metadata.verifyOf
+        : undefined;
+    if (!verifyOf) return null;
+    const source = await this.storage.findWorkItem(verifyOf);
+    if (!source || source.status !== 'done_by_worker') return null;
+
+    // Ticket loop Phase 3: a reviewer can send work back by completing the
+    // review with `verdict: 'rejected'` (+ feedback).
+    const verdict: 'verified' | 'rejected' = result?.verdict === 'rejected' ? 'rejected' : 'verified';
+    const feedback =
+      typeof result?.feedback === 'string' && result.feedback.trim()
+        ? result.feedback.trim()
+        : typeof result?.summary === 'string'
+          ? result.summary
+          : undefined;
+    const reviewer = TaskPoolService.reviewerActorFor(actorInput);
+    // The review item's assignee is the reviewer of record for its source.
+    await this.assertTransitionPermitted(source, verdict, reviewer, reviewItem?.target);
+    // Persist the reviewer of record so the verdict below (and any later
+    // audit) sees the same identity this check just accepted.
+    if (reviewItem?.target && !getWorkItemReviewer(source)) {
+      await this.storage.updateWorkItem(verifyOf, (wi) => {
+        wi.metadata = { ...(wi.metadata ?? {}), [WORK_ITEM_REVIEWER_KEY]: reviewItem.target };
+      });
+    }
+    return { sourceId: verifyOf, verdict, reviewer, ...(feedback ? { feedback } : {}) };
+  }
+
+  /**
+   * Map the caller of a review item's completion to the actor that renders
+   * the verdict on the source. `agent` → `team_lead` (it is reviewing, not
+   * working); every other role is kept. A missing actor stays missing, so it
+   * is refused.
+   *
+   * @param actorInput - The completing caller
+   * @returns The reviewer actor (or undefined → refused by the gate)
+   */
+  private static reviewerActorFor(actorInput: TransitionActorInput): TransitionActor {
+    const actor = normalizeTransitionActor(actorInput);
+    if (!actor) return actorInput as unknown as TransitionActor;
+    return {
+      ...actor,
+      role: actor.role === 'agent' ? 'team_lead' : actor.role,
+      via: actor.via ?? 'review-item-completion',
+    };
+  }
+
+  /**
+   * Run the closed permission gate for one transition and throw on refusal.
+   *
+   * For the verdict edges, an item that predates reviewer stamping gets its
+   * reviewer from its review item (`<id>:verify:<id>`, targeted at the
+   * reviewer when the bridge created it), so a lead can still review items
+   * that were in flight when #813 shipped.
+   *
+   * @param item - The WorkItem as it is now
+   * @param to - Target status
+   * @param actorInput - The caller
+   * @param reviewerHint - Reviewer of record when the caller already knows it
+   *   (the target of the review item being completed)
+   * @throws ForbiddenTransitionError when refused
+   */
+  private async assertTransitionPermitted(
+    item: WorkItem,
+    to: WorkItemStatus,
+    actorInput: TransitionActorInput,
+    reviewerHint?: string,
+  ): Promise<void> {
+    let subject: Pick<WorkItem, 'status' | 'target' | 'metadata'> = item;
+    if (VERDICT_TRANSITIONS.has(`${item.status}→${to}`) && !getWorkItemReviewer(item)) {
+      const reviewer =
+        reviewerHint ?? (await this.storage.findWorkItem(`${item.id}:verify:${item.id}`))?.target;
+      if (reviewer) {
+        subject = { ...item, metadata: { ...(item.metadata ?? {}), [WORK_ITEM_REVIEWER_KEY]: reviewer } };
+      }
+    }
+    const decision = checkTransitionPermission(subject, to, actorInput);
+    if (!decision.allowed) {
+      const actor = normalizeTransitionActor(actorInput);
+      this.logger.warn('Refused WorkItem transition', {
+        workItemId: item.id,
+        from: item.status,
+        to,
+        actor: describeTransitionActor(actor),
+        reason: decision.reason,
+      });
+      throw new ForbiddenTransitionError(item.id, item.status, to, actor, decision);
+    }
+  }
+
+  /**
+   * Stamp a review-escalation marker on a `done_by_worker` item (#813).
+   *
+   * The marker is what lets the next reviewer in the chain render the verdict
+   * (the orchestrator after {@link REVIEW_ESCALATED_TO_ORC_KEY}), and it
+   * makes each escalation fire once even across a backend restart — the
+   * reconciler used to dedupe in memory only. Status is not touched.
+   *
+   * @param workItemId - The item under review
+   * @param key - Metadata key to stamp (the orc or owner escalation key)
+   * @param at - Timestamp to record (defaults to now)
+   * @returns True when stamped, false when the item is gone or no longer awaiting review
+   */
+  async stampReviewEscalation(workItemId: string, key: string, at: string = new Date().toISOString()): Promise<boolean> {
+    const item = await this.storage.findWorkItem(workItemId);
+    if (!item || item.status !== 'done_by_worker') return false;
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.metadata = { ...(wi.metadata ?? {}), [key]: at };
+    });
+    return !!ok;
   }
 
   /**
@@ -1667,7 +1821,7 @@ export class TaskPoolService {
    */
   async verifyItem(
     workItemId: string,
-    actorRole: WorkItemOwner,
+    actorRole: TransitionActorInput,
     verdict: 'verified' | 'rejected',
     comment?: string,
   ): Promise<WorkItem | null> {
@@ -1682,11 +1836,29 @@ export class TaskPoolService {
       actorRole,
       (wi) => {
         if (comment) wi.error = comment;
+        // #813: record WHO rendered the verdict, so reports can show that a
+        // verified item was reviewed and by whom.
+        const by = normalizeTransitionActor(actorRole);
+        wi.metadata = {
+          ...(wi.metadata ?? {}),
+          reviewedBy: by?.session ?? by?.role,
+          reviewedByRole: by?.role,
+          reviewedAt: new Date().toISOString(),
+        };
       },
     );
     if (verdict === 'verified') {
       await this.resolveBlockedDependents(workItemId);
     }
+    // #819: a verdict rendered THROUGH this method directly (POST /verdict,
+    // or an escalation's owner resolution) never completes the tracking
+    // `<id>:verify:<id>` review item — only the normal "TL completes their
+    // review WorkItem" path does that (via completeSimpleItem's own call
+    // into verifyItem). Left alone, that review item sits open in the
+    // reviewer's queue forever even though its source is already decided.
+    // No-op when the review item was already closed by that normal path
+    // (its status is already terminal by the time we get here).
+    await this.closeReviewItemAfterDirectVerdict(workItemId);
     await this.storage.flush();
     this.logger.info('WorkItem verdict recorded', { workItemId, verdict, actorRole });
     // F1-BRIDGE-1: the `rejected` branch publishes task:rejected so the
@@ -1705,36 +1877,90 @@ export class TaskPoolService {
   }
 
   /**
-   * Legacy facade — picks the verification path for the caller.
+   * Close the review item tracking a source WorkItem's verification, once
+   * the verdict has been rendered directly on the source (#819) — e.g. via
+   * `POST /verdict`, or the owner resolving an escalation — rather than by
+   * completing the review item itself. Without this, `<id>:verify:<id>`
+   * sits open in the reviewer's queue forever, even though its source has
+   * already been verified or rejected.
    *
-   * Existing call sites (REST controller, task-management controllers,
-   * V3 data service) invoke `completeItem(id, result)` without an
-   * explicit actor role. The facade reads the WorkItem, applies the
-   * {@link requiresVerification} policy, and dispatches to either
-   * {@link submitForVerification} (delegate items / explicit opt-in)
-   * or {@link completeSimpleItem} (everything else).
+   * A review item still `running` (claimed by its reviewer) is completed the
+   * same way a reviewer's own completion would ({@link completeSimpleItem});
+   * `planReviewVerdict` is a safe no-op there because the source is no
+   * longer `done_by_worker`, so this can never recurse back into
+   * {@link verifyItem}. A review item never claimed (`queued`/`blocked`/
+   * `scheduled`) is cancelled instead, since `→done` requires `running`.
+   * Already-terminal or missing review items are left alone.
    *
-   * The legacy actor role for these implicit callers is `'agent'`.
-   * Migrations to explicit-actor calls can land in follow-up tickets
-   * without touching the five call sites in this PR.
+   * Best-effort: any failure here is logged, never thrown — the real verdict
+   * on the source has already been recorded, and that must not be
+   * jeopardized by a failure to tidy up a secondary tracking item.
+   *
+   * @param sourceId - The WorkItem whose verdict was just rendered
+   */
+  private async closeReviewItemAfterDirectVerdict(sourceId: string): Promise<void> {
+    const reviewId = `${sourceId}:verify:${sourceId}`;
+    try {
+      const reviewItem = await this.storage.findWorkItem(reviewId);
+      if (!reviewItem || TERMINAL_WORK_ITEM_STATUSES.has(reviewItem.status)) return;
+      if (reviewItem.status === 'running') {
+        await this.completeSimpleItem(reviewId, { role: 'system', via: 'verifyItem:auto-close-review' }, {
+          summary: 'Auto-closed: the verdict was rendered directly on the source it reviews.',
+        });
+      } else {
+        await this.transitionStatus(
+          reviewId,
+          'cancelled',
+          { role: 'system', via: 'verifyItem:auto-close-review' },
+          (wi) => {
+            wi.metadata = {
+              ...(wi.metadata ?? {}),
+              autoClosedReason: 'verdict rendered directly on the source it reviews',
+            };
+          },
+        );
+        await this.storage.flush();
+      }
+    } catch (err) {
+      this.logger.warn('Failed to auto-close review item after a direct verdict (non-fatal)', {
+        sourceId,
+        reviewId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Completion facade — picks the verification path for the caller.
+   *
+   * Reads the WorkItem, applies the {@link requiresVerification} policy, and
+   * dispatches to either {@link submitForVerification} (delegate items /
+   * explicit opt-in) or {@link completeSimpleItem} (everything else).
+   *
+   * #813: the caller's actor is REQUIRED. It used to be hard-coded `'agent'`
+   * with no identity, so a review item's completion could not tell its
+   * reviewer from anyone else. Controllers resolve it server-side (see
+   * `resolveTransitionActor` in the task-pool controller).
    *
    * @param workItemId - WorkItem id
    * @param result - Optional result payload
+   * @param actor - Who is completing it (role + session)
    * @throws When the WorkItem is missing or the underlying transition
-   *   is rejected (invalid state, forbidden actor).
+   *   is rejected (invalid state, forbidden actor, not the reviewer).
    */
   async completeItem(
     workItemId: string,
-    result?: Record<string, unknown>,
+    result: Record<string, unknown> | undefined,
+    actor: TransitionActorInput,
   ): Promise<void> {
     const workItem = await this.storage.findWorkItem(workItemId);
     if (!workItem) {
       throw new Error(`WorkItem not found: ${workItemId}`);
     }
     if (this.requiresVerification(workItem)) {
-      await this.submitForVerification(workItemId, 'agent', result);
+      await this.submitForVerification(workItemId, actor, result);
     } else {
-      await this.completeSimpleItem(workItemId, 'agent', result);
+      await this.completeSimpleItem(workItemId, actor, result);
     }
   }
 
@@ -2630,7 +2856,7 @@ export class TaskPoolService {
   async updateItemStatus(
     workItemId: string,
     newStatus: WorkItemStatus,
-    actorRole: WorkItemOwner = 'system',
+    actorRole: TransitionActorInput,
     /**
      * Optional human-readable reason. Persisted on:
      *   - `WorkItem.cancelReason` when `newStatus === 'cancelled'`
@@ -2670,13 +2896,8 @@ export class TaskPoolService {
       );
     }
 
-    // TRANS-1 V3: enforce per-role permissions. system role always passes.
-    if (!isTransitionPermitted(item.status, newStatus, actorRole)) {
-      throw new Error(
-        `Forbidden transition for WorkItem ${workItemId}: actor='${actorRole}' ` +
-          `not permitted to perform ${item.status} → ${newStatus}.`,
-      );
-    }
+    // TRANS-1 V3 + #813: closed, item-aware permission gate. No role bypasses it.
+    await this.assertTransitionPermitted(item, newStatus, actorRole);
 
     // Capture pre-write status. See transitionStatus's identical block
     // for the writeup — storage.updateWorkItem mutates in place, so
@@ -2791,7 +3012,7 @@ export class TaskPoolService {
   async transitionStatus(
     workItemId: string,
     newStatus: WorkItemStatus,
-    actorRole: WorkItemOwner,
+    actorRole: TransitionActorInput,
     mutator?: (wi: WorkItem) => void,
     /**
      * Optional human-readable reason. Routed by target status:
@@ -2830,12 +3051,7 @@ export class TaskPoolService {
       );
     }
 
-    if (!isTransitionPermitted(item.status, newStatus, actorRole)) {
-      throw new Error(
-        `Forbidden transition for WorkItem ${workItemId}: actor='${actorRole}' ` +
-          `not permitted to perform ${item.status} → ${newStatus}.`,
-      );
-    }
+    await this.assertTransitionPermitted(item, newStatus, actorRole);
 
     // Capture the pre-write status into a local. `storage.updateWorkItem`
     // mutates the same in-memory object that `findWorkItem` returned, so

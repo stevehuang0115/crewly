@@ -23,6 +23,11 @@ import * as path from 'path';
 import * as os from 'os';
 
 // Mock LoggerService
+/** The worker completing its own item (what the controller resolves for a skill call). */
+const AGENT_ACTOR = { role: 'agent' as const, session: 'agent-1', via: 'test' };
+/** The reviewer of record on fixture items (see makeWorkItem). */
+const REVIEWER_ACTOR = { role: 'team_lead' as const, session: 'tl-sam', via: 'test' };
+
 const mockEscalateFailedWorkItem = jest.fn<Promise<string | null>, [unknown, string]>();
 jest.mock('../v3/escalation-router.service.js', () => ({
   EscalationRouterService: {
@@ -56,6 +61,9 @@ function makeWorkItem(overrides?: Record<string, unknown>) {
     type: 'delegate',
     owner: 'agent',
     title: 'Test task',
+    // #813: verdicts are identity-checked, so fixtures carry a reviewer of
+    // record. Tests that override `metadata` drop it on purpose.
+    metadata: { reviewer: REVIEWER_ACTOR.session },
     // Hygiene #3: default target=undefined so existing tests that claim
     // with arbitrary agent ids continue to pass after the target-respect
     // gate landed in claimFromPool / claimSpecificItem. Tests that need
@@ -463,7 +471,7 @@ describe('TaskPoolService', () => {
       // Claim + complete upstream — should auto-unblock downstream
       const claim = await service.claimFromPool('agent-a');
       expect(claim!.workItem.id).toBe(upstream.id);
-      await service.completeItem(upstream.id);
+      await service.completeItem(upstream.id, undefined, AGENT_ACTOR);
 
       const items = await service.getAllItems();
       const after = items.find((wi) => wi.id === downstream.id)!;
@@ -485,14 +493,14 @@ describe('TaskPoolService', () => {
 
       // Complete only depA first
       await service.claimFromPool('agent-a');
-      await service.completeItem(depA.id);
+      await service.completeItem(depA.id, undefined, AGENT_ACTOR);
 
       let items = await service.getAllItems();
       expect(items.find((wi) => wi.id === downstream.id)!.status).toBe('blocked');
 
       // Now complete depB — downstream should unblock
       await service.claimFromPool('agent-b');
-      await service.completeItem(depB.id);
+      await service.completeItem(depB.id, undefined, AGENT_ACTOR);
 
       items = await service.getAllItems();
       expect(items.find((wi) => wi.id === downstream.id)!.status).toBe('queued');
@@ -509,7 +517,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(unrelatedDownstream);
 
       await service.claimFromPool('agent-a');
-      await service.completeItem(otherUpstream.id);
+      await service.completeItem(otherUpstream.id, undefined, AGENT_ACTOR);
 
       const items = await service.getAllItems();
       expect(items.find((wi) => wi.id === unrelatedDownstream.id)!.status).toBe(
@@ -637,10 +645,11 @@ describe('TaskPoolService', () => {
      * @returns Ids
      */
     async function reviewPair(): Promise<{ sourceId: string; reviewId: string }> {
-      const source = makeWorkItem({ title: 'work', target: 'ann' });
+      // No explicit reviewer: the review item's assignee (sam) is the reviewer of record.
+      const source = makeWorkItem({ title: 'work', target: 'ann', metadata: {} });
       await service.addToPool(source);
       await service.claimFromPool('ann');
-      await service.transitionStatus(source.id, 'done_by_worker', 'system');
+      await service.transitionStatus(source.id, 'done_by_worker', 'agent');
       await service.releaseClaim(source.id, 'completed');
       const review = makeWorkItem({ type: 'review', title: 'Verify: work', target: 'sam', metadata: { verifyOf: source.id } });
       await service.addToPool(review);
@@ -650,16 +659,218 @@ describe('TaskPoolService', () => {
 
     it('completing a review normally verifies the source', async () => {
       const { sourceId, reviewId } = await reviewPair();
-      await service.completeSimpleItem(reviewId, 'agent', { summary: 'looks right' });
+      await service.completeSimpleItem(reviewId, { role: 'agent', session: 'sam' }, { summary: 'looks right' });
       expect((await service.getAllItems()).find((w) => w.id === sourceId)?.status).toBe('verified');
     });
 
     it('verdict rejected sends the source back with the feedback', async () => {
       const { sourceId, reviewId } = await reviewPair();
-      await service.completeSimpleItem(reviewId, 'agent', { summary: 'no', verdict: 'rejected', feedback: 'header row missing' });
+      await service.completeSimpleItem(reviewId, { role: 'agent', session: 'sam' }, { summary: 'no', verdict: 'rejected', feedback: 'header row missing' });
       const src = (await service.getAllItems()).find((w) => w.id === sourceId);
       expect(src?.status).toBe('rejected');
       expect(src?.error).toBe('header row missing');
+    });
+  });
+
+  describe('#813 — work is verified only by its reviewer', () => {
+    /**
+     * A delegate item done by `dev-ann`, awaiting review, with a review item
+     * `<id>:verify:<id>` assigned to `tl-sam` (the bridge's shape).
+     *
+     * @param opts.stampReviewer - Also record the reviewer on the source
+     * @returns The source and review ids
+     */
+    async function awaitingReview(opts: { stampReviewer?: boolean } = {}) {
+      const source = makeWorkItem({
+        title: 'deliverable',
+        target: 'dev-ann',
+        metadata: opts.stampReviewer ? { reviewer: 'tl-sam' } : {},
+      });
+      await service.addToPool(source);
+      await service.claimFromPool('dev-ann');
+      await service.submitForVerification(source.id, { role: 'agent', session: 'dev-ann' });
+      const review = makeWorkItem({
+        id: `${source.id}:verify:${source.id}`,
+        type: 'review',
+        title: 'Verify: deliverable',
+        target: 'tl-sam',
+        metadata: { verifyOf: source.id },
+      });
+      await service.addToPool(review);
+      await service.claimFromPool('tl-sam');
+      return { sourceId: source.id, reviewId: review.id };
+    }
+
+    const statusOf = async (id: string) => (await service.findWorkItem(id))?.status;
+
+    describe('verifyItem refuses callers that are not the reviewer', () => {
+      it.each([
+        ['a different team lead', { role: 'team_lead' as const, session: 'tl-other' }, 'not_reviewer'],
+        ['the worker itself, as agent', { role: 'agent' as const, session: 'dev-ann' }, 'role_not_permitted'],
+        ['the worker itself, claiming team_lead', { role: 'team_lead' as const, session: 'dev-ann' }, 'self_review'],
+        ['a bare team_lead role with no identity', 'team_lead' as const, 'not_reviewer'],
+        ['the orchestrator before escalation', { role: 'orchestrator' as const, session: 'crewly-orc' }, 'not_reviewer'],
+        ['system (no timer may certify work)', 'system' as const, 'role_not_permitted'],
+      ])('refuses %s', async (_label, actor, reason) => {
+        const { sourceId } = await awaitingReview();
+        await expect(service.verifyItem(sourceId, actor, 'verified')).rejects.toMatchObject({
+          name: 'ForbiddenTransitionError',
+          reason,
+        });
+        expect(await statusOf(sourceId)).toBe('done_by_worker');
+      });
+
+      it('refuses a missing actor (no default role)', async () => {
+        const { sourceId } = await awaitingReview();
+        await expect(
+          service.verifyItem(sourceId, undefined as unknown as 'team_lead', 'verified'),
+        ).rejects.toMatchObject({ reason: 'missing_actor' });
+        expect(await statusOf(sourceId)).toBe('done_by_worker');
+      });
+
+      it('accepts the reviewer of record (from the review item) and records who reviewed', async () => {
+        const { sourceId } = await awaitingReview();
+        const updated = await service.verifyItem(sourceId, { role: 'team_lead', session: 'tl-sam' }, 'verified');
+        expect(updated?.status).toBe('verified');
+        expect(updated?.metadata).toMatchObject({ reviewedBy: 'tl-sam', reviewedByRole: 'team_lead' });
+      });
+
+      it('accepts the orchestrator once the review is escalated to it', async () => {
+        const { sourceId } = await awaitingReview({ stampReviewer: true });
+        expect(await service.stampReviewEscalation(sourceId, 'verifyEscalatedAt')).toBe(true);
+        const updated = await service.verifyItem(sourceId, { role: 'orchestrator', session: 'crewly-orc' }, 'verified');
+        expect(updated?.status).toBe('verified');
+      });
+
+      it('accepts the owner', async () => {
+        const { sourceId } = await awaitingReview({ stampReviewer: true });
+        expect((await service.verifyItem(sourceId, { role: 'owner' }, 'rejected', 'not yet'))?.status).toBe('rejected');
+      });
+    });
+
+    describe('completing a review item renders the verdict as the caller', () => {
+      it('the assigned reviewer completing it verifies the source', async () => {
+        const { sourceId, reviewId } = await awaitingReview();
+        await service.completeItem(reviewId, { summary: 'checked' }, { role: 'agent', session: 'tl-sam' });
+        expect(await statusOf(sourceId)).toBe('verified');
+        expect((await service.findWorkItem(sourceId))?.metadata).toMatchObject({ reviewer: 'tl-sam', reviewedBy: 'tl-sam' });
+      });
+
+      it.each([
+        ['someone else', { role: 'agent' as const, session: 'dev-bob' }],
+        ['the worker', { role: 'agent' as const, session: 'dev-ann' }],
+        ['a caller with no session', { role: 'agent' as const }],
+      ])('%s completing it is refused, and the review item stays open', async (_label, actor) => {
+        const { sourceId, reviewId } = await awaitingReview();
+        await expect(service.completeItem(reviewId, { summary: 'lgtm' }, actor)).rejects.toMatchObject({
+          name: 'ForbiddenTransitionError',
+        });
+        expect(await statusOf(sourceId)).toBe('done_by_worker');
+        expect(await statusOf(reviewId)).toBe('running');
+      });
+    });
+
+    // #819: a verdict rendered directly on the source (POST /verdict, or the
+    // owner resolving an escalation) used to leave `<id>:verify:<id>` open
+    // in the reviewer's queue forever — only completing the review item
+    // ITSELF closed it. verifyItem must close it too.
+    describe('closing the review item after a direct verdict (#819)', () => {
+      it('a verdict rendered directly (not via completing the review item) closes the open review item', async () => {
+        const { sourceId, reviewId } = await awaitingReview();
+        expect(await statusOf(reviewId)).toBe('running');
+
+        await service.verifyItem(sourceId, { role: 'owner' }, 'verified');
+
+        expect(await statusOf(reviewId)).toBe('done');
+      });
+
+      it('closes the review item on a direct REJECTED verdict too', async () => {
+        const { sourceId, reviewId } = await awaitingReview();
+
+        await service.verifyItem(sourceId, { role: 'owner' }, 'rejected', 'not yet');
+
+        expect(await statusOf(reviewId)).toBe('done');
+      });
+
+      it('cancels a review item that was never claimed (queued), rather than erroring', async () => {
+        const source = makeWorkItem({ title: 'deliverable', target: 'dev-ann', metadata: {} });
+        await service.addToPool(source);
+        await service.claimFromPool('dev-ann');
+        await service.submitForVerification(source.id, { role: 'agent', session: 'dev-ann' });
+        const review = makeWorkItem({
+          id: `${source.id}:verify:${source.id}`,
+          type: 'review',
+          title: 'Verify: deliverable',
+          target: 'tl-sam',
+          metadata: { verifyOf: source.id },
+        });
+        await service.addToPool(review); // never claimed — stays queued
+        expect(await statusOf(review.id)).toBe('queued');
+
+        await service.verifyItem(source.id, { role: 'owner' }, 'verified');
+
+        expect(await statusOf(review.id)).toBe('cancelled');
+      });
+
+      it('a verdict with no review item at all still succeeds (no-op close)', async () => {
+        const wi = makeWorkItem({ type: 'delegate', target: 'dev-ann' });
+        await service.addToPool(wi);
+        await service.claimFromPool('dev-ann');
+        await service.submitForVerification(wi.id, { role: 'agent', session: 'dev-ann' });
+
+        await expect(service.verifyItem(wi.id, { role: 'owner' }, 'verified')).resolves.toMatchObject({
+          status: 'verified',
+        });
+      });
+    });
+
+    describe('no default actor on the status setters', () => {
+      it('updateItemStatus refuses a missing actor', async () => {
+        const wi = makeWorkItem();
+        await service.addToPool(wi);
+        await expect(
+          (service.updateItemStatus as (id: string, s: WorkItemStatus) => Promise<void>)(wi.id, 'cancelled'),
+        ).rejects.toMatchObject({ reason: 'missing_actor' });
+        expect(await statusOf(wi.id)).toBe('queued');
+      });
+
+      it('transitionStatus refuses a missing actor', async () => {
+        const wi = makeWorkItem();
+        await service.addToPool(wi);
+        await expect(
+          service.transitionStatus(wi.id, 'cancelled', undefined as unknown as 'system'),
+        ).rejects.toMatchObject({ reason: 'missing_actor' });
+      });
+    });
+
+    describe('what needs review', () => {
+      it.each([
+        ['a trigger-fired check-in', { triggerId: 'trig-1' }],
+        ['a bridge-auto maintenance item', { metadata: { autoCreated: true } }],
+      ])('%s completes as done, not done_by_worker', async (_label, extra) => {
+        const wi = makeWorkItem({ type: 'delegate', target: 'dev-ann', ...extra });
+        await service.addToPool(wi);
+        await service.claimFromPool('dev-ann');
+        await service.completeItem(wi.id, { summary: 'checked in' }, { role: 'agent', session: 'dev-ann' });
+        expect(await statusOf(wi.id)).toBe('done');
+      });
+
+      it('an explicit requiresVerification still wins for a trigger-fired item', async () => {
+        const wi = makeWorkItem({ type: 'delegate', target: 'dev-ann', triggerId: 'trig-2', metadata: { requiresVerification: true } });
+        await service.addToPool(wi);
+        await service.claimFromPool('dev-ann');
+        await service.completeItem(wi.id, { summary: 'done' }, { role: 'agent', session: 'dev-ann' });
+        expect(await statusOf(wi.id)).toBe('done_by_worker');
+      });
+    });
+
+    it('stampReviewEscalation only stamps items still awaiting review', async () => {
+      const { sourceId } = await awaitingReview();
+      expect(await service.stampReviewEscalation(sourceId, 'reviewOwnerEscalatedAt', '2026-09-26T00:00:00Z')).toBe(true);
+      expect((await service.findWorkItem(sourceId))?.metadata?.reviewOwnerEscalatedAt).toBe('2026-09-26T00:00:00Z');
+      await service.verifyItem(sourceId, { role: 'owner' }, 'verified');
+      expect(await service.stampReviewEscalation(sourceId, 'verifyEscalatedAt')).toBe(false);
+      expect(await service.stampReviewEscalation('ghost', 'verifyEscalatedAt')).toBe(false);
     });
   });
 
@@ -1319,7 +1530,7 @@ describe('TaskPoolService', () => {
         const wi = makeWorkItem({ target: 'agent-leo' });
         await service.addToPool(wi);
         await service.claimFromPool('agent-leo');
-        await service.updateItemStatus(wi.id, 'blocked');
+        await service.updateItemStatus(wi.id, 'blocked', 'system');
 
         await service.releaseBack(wi.id, 'agent back online');
 
@@ -1416,7 +1627,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
 
-      await service.completeItem(wi.id, { output: 'success' });
+      await service.completeItem(wi.id, { output: 'success' }, AGENT_ACTOR);
 
       const items = await service.getAllItems();
       expect(items[0].status).toBe('done');
@@ -1432,7 +1643,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
 
-      await service.completeItem(wi.id, { output: 'draft' });
+      await service.completeItem(wi.id, { output: 'draft' }, AGENT_ACTOR);
 
       const items = await service.getAllItems();
       expect(items[0].status).toBe('done_by_worker');
@@ -1450,7 +1661,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
 
-      await service.completeItem(wi.id);
+      await service.completeItem(wi.id, undefined, AGENT_ACTOR);
 
       const items = await service.getAllItems();
       expect(items[0].status).toBe('done');
@@ -1464,14 +1675,14 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
 
-      await service.completeItem(wi.id);
+      await service.completeItem(wi.id, undefined, AGENT_ACTOR);
 
       const items = await service.getAllItems();
       expect(items[0].status).toBe('done_by_worker');
     });
 
     it('throws when item not found', async () => {
-      await expect(service.completeItem('ghost')).rejects.toThrow(
+      await expect(service.completeItem('ghost', undefined, AGENT_ACTOR)).rejects.toThrow(
         'WorkItem not found',
       );
     });
@@ -1481,7 +1692,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
 
       // queued → done_by_worker is rejected by the state machine
-      await expect(service.completeItem(wi.id)).rejects.toThrow(
+      await expect(service.completeItem(wi.id, undefined, AGENT_ACTOR)).rejects.toThrow(
         /Invalid status transition/,
       );
     });
@@ -1490,7 +1701,7 @@ describe('TaskPoolService', () => {
       const wi = makeWorkItem({ type: 'cron_run' });
       await service.addToPool(wi);
 
-      await expect(service.completeItem(wi.id)).rejects.toThrow(
+      await expect(service.completeItem(wi.id, undefined, AGENT_ACTOR)).rejects.toThrow(
         /Invalid status transition/,
       );
     });
@@ -1724,7 +1935,8 @@ describe('TaskPoolService', () => {
       // unblocks downstream WIs.
 
       // Source Plan WI — delegate type, will go through verification path
-      const plan = makeWorkItem({ type: 'delegate', target: 'agent-leo' });
+      // No explicit reviewer: the verify WI's assignee is the reviewer of record.
+      const plan = makeWorkItem({ type: 'delegate', target: 'agent-leo', metadata: {} });
       await service.addToPool(plan);
       await service.claimFromPool('agent-leo');
       // Worker reports done — Plan lands in done_by_worker
@@ -1749,7 +1961,7 @@ describe('TaskPoolService', () => {
       await service.claimFromPool('agent-tl');
 
       // TL completes the Verify WI
-      await service.completeSimpleItem(verifyWI.id, 'agent');
+      await service.completeSimpleItem(verifyWI.id, { role: 'agent', session: 'agent-tl' });
 
       // Source Plan should now be verified
       const planAfterVerify = (await service.getAllItems()).find((w) => w.id === plan.id);
@@ -1768,7 +1980,7 @@ describe('TaskPoolService', () => {
       await service.claimFromPool('agent-leo');
       await service.submitForVerification(plan.id, 'agent');
       // Manually finalize the source as verified BEFORE the verify WI completes
-      await service.verifyItem(plan.id, 'team_lead', 'verified');
+      await service.verifyItem(plan.id, REVIEWER_ACTOR, 'verified');
 
       // Now the verify WI completes — propagation should bail because
       // the source is already 'verified', not 'done_by_worker'.
@@ -1782,7 +1994,7 @@ describe('TaskPoolService', () => {
       await service.claimFromPool('agent-tl');
 
       await expect(
-        service.completeSimpleItem(verifyWI.id, 'agent'),
+        service.completeSimpleItem(verifyWI.id, { role: 'agent', session: 'agent-tl' }),
       ).resolves.not.toThrow();
     });
   });
@@ -1807,7 +2019,7 @@ describe('TaskPoolService', () => {
     it('transitions done_by_worker → verified for a team_lead actor', async () => {
       const wi = await makeAwaitingVerification();
 
-      const updated = await service.verifyItem(wi.id, 'team_lead', 'verified');
+      const updated = await service.verifyItem(wi.id, REVIEWER_ACTOR, 'verified');
 
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe('verified');
@@ -1819,7 +2031,7 @@ describe('TaskPoolService', () => {
       service.setEventBusService(fakeBus);
       const wi = await makeAwaitingVerification();
 
-      await service.verifyItem(wi.id, 'team_lead', 'verified');
+      await service.verifyItem(wi.id, REVIEWER_ACTOR, 'verified');
 
       const verified = publishCalls.filter((e) => e.type === 'task:verified');
       expect(verified).toHaveLength(1);
@@ -1836,7 +2048,7 @@ describe('TaskPoolService', () => {
     it('transitions done_by_worker → rejected for a team_lead actor with a reviewer comment', async () => {
       const wi = await makeAwaitingVerification();
 
-      const updated = await service.verifyItem(wi.id, 'team_lead', 'rejected', 'Output incomplete');
+      const updated = await service.verifyItem(wi.id, REVIEWER_ACTOR, 'rejected', 'Output incomplete');
 
       expect(updated).not.toBeNull();
       expect(updated!.status).toBe('rejected');
@@ -1855,7 +2067,7 @@ describe('TaskPoolService', () => {
       const wi = await makeAwaitingVerification();
 
       await expect(
-        service.verifyItem(wi.id, 'team_lead', 'cancelled' as 'verified'),
+        service.verifyItem(wi.id, REVIEWER_ACTOR, 'cancelled' as 'verified'),
       ).rejects.toThrow(/Invalid verdict/);
     });
 
@@ -1867,7 +2079,7 @@ describe('TaskPoolService', () => {
       await service.claimFromPool('agent-leo');
       await service.submitForVerification(upstream.id, 'agent');
 
-      await service.verifyItem(upstream.id, 'team_lead', 'verified');
+      await service.verifyItem(upstream.id, REVIEWER_ACTOR, 'verified');
 
       const downstreamAfter = (await service.getAllItems()).find((wi) => wi.id === downstream.id);
       expect(downstreamAfter?.status).toBe('queued');
@@ -1878,7 +2090,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       // never claimed / submitted — still queued
 
-      await expect(service.verifyItem(wi.id, 'team_lead', 'verified'))
+      await expect(service.verifyItem(wi.id, REVIEWER_ACTOR, 'verified'))
         .rejects.toThrow(/Invalid status transition/);
     });
 
@@ -1899,7 +2111,7 @@ describe('TaskPoolService', () => {
         const wi = await makeAwaitingVerification();
         service.setEventBusService(fakeBus);
 
-        await service.verifyItem(wi.id, 'team_lead', 'rejected', 'Output incomplete');
+        await service.verifyItem(wi.id, REVIEWER_ACTOR, 'rejected', 'Output incomplete');
 
         const rejectEvents = publishCalls.filter((e) => e.type === 'task:rejected');
         expect(rejectEvents).toHaveLength(1);
@@ -1918,7 +2130,7 @@ describe('TaskPoolService', () => {
         const wi = await makeAwaitingVerification();
         service.setEventBusService(fakeBus);
 
-        await service.verifyItem(wi.id, 'team_lead', 'verified');
+        await service.verifyItem(wi.id, REVIEWER_ACTOR, 'verified');
 
         const rejectEvents = publishCalls.filter((e) => e.type === 'task:rejected');
         expect(rejectEvents).toHaveLength(0);
@@ -1934,7 +2146,7 @@ describe('TaskPoolService', () => {
         const wi = makeWorkItem({ type: 'delegate' });
         await service.addToPool(wi);
         // Never claimed / submitted — verifyItem on a queued item must throw.
-        await expect(service.verifyItem(wi.id, 'team_lead', 'rejected'))
+        await expect(service.verifyItem(wi.id, REVIEWER_ACTOR, 'rejected'))
           .rejects.toThrow(/Invalid status transition/);
 
         const rejectEvents = publishCalls.filter((e) => e.type === 'task:rejected');
@@ -1945,7 +2157,7 @@ describe('TaskPoolService', () => {
         const wi = await makeAwaitingVerification();
         // No setEventBusService — eventBus stays null, verifyItem must not throw.
         await expect(
-          service.verifyItem(wi.id, 'team_lead', 'rejected', 'no-bus-test'),
+          service.verifyItem(wi.id, REVIEWER_ACTOR, 'rejected', 'no-bus-test'),
         ).resolves.not.toBeNull();
       });
 
@@ -1962,7 +2174,7 @@ describe('TaskPoolService', () => {
 
         const updated = await service.verifyItem(
           wi.id,
-          'team_lead',
+          REVIEWER_ACTOR,
           'rejected',
           'reviewer comment',
         );
@@ -2700,7 +2912,7 @@ describe('TaskPoolService', () => {
       const wi = makeWorkItem();
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
-      await service.completeItem(wi.id);
+      await service.completeItem(wi.id, undefined, AGENT_ACTOR);
 
       const claims = await service.getActiveClaims();
       expect(claims).toHaveLength(0);
@@ -2717,7 +2929,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
       await service.claimFromPool('agent-leo');
 
-      await service.updateItemStatus(wi.id, 'blocked');
+      await service.updateItemStatus(wi.id, 'blocked', 'system');
 
       const items = await service.getAllItems();
       const updated = items.find(i => i.id === wi.id);
@@ -2725,7 +2937,7 @@ describe('TaskPoolService', () => {
     });
 
     it('throws for nonexistent item', async () => {
-      await expect(service.updateItemStatus('ghost-id', 'blocked'))
+      await expect(service.updateItemStatus('ghost-id', 'blocked', 'system'))
         .rejects.toThrow('WorkItem not found');
     });
 
@@ -2734,7 +2946,7 @@ describe('TaskPoolService', () => {
       await service.addToPool(wi);
 
       // queued → done is not a valid direct transition
-      await expect(service.updateItemStatus(wi.id, 'done'))
+      await expect(service.updateItemStatus(wi.id, 'done', 'system'))
         .rejects.toThrow('Invalid status transition');
     });
 
@@ -2864,7 +3076,7 @@ describe('TaskPoolService', () => {
     it('team_lead CAN verify worker output (done_by_worker → verified)', async () => {
       const { id } = await makeRunning();
       await service.transitionStatus(id, 'done_by_worker', 'agent');
-      const verified = await service.transitionStatus(id, 'verified', 'team_lead');
+      const verified = await service.transitionStatus(id, 'verified', REVIEWER_ACTOR);
       expect(verified).not.toBeNull();
       expect(verified!.status).toBe('verified');
     });
@@ -2872,7 +3084,7 @@ describe('TaskPoolService', () => {
     it('team_lead CAN reject worker output with custom mutator carrying the error', async () => {
       const { id } = await makeRunning();
       await service.transitionStatus(id, 'done_by_worker', 'agent');
-      const rejected = await service.transitionStatus(id, 'rejected', 'team_lead', (wi) => {
+      const rejected = await service.transitionStatus(id, 'rejected', REVIEWER_ACTOR, (wi) => {
         wi.error = 'Did not meet acceptance criteria';
       });
       expect(rejected!.status).toBe('rejected');
@@ -2886,7 +3098,7 @@ describe('TaskPoolService', () => {
     it('F-F: agent CANNOT self-revive a rejected WorkItem (rejected → queued)', async () => {
       const { id } = await makeRunning();
       await service.transitionStatus(id, 'done_by_worker', 'agent');
-      await service.transitionStatus(id, 'rejected', 'team_lead');
+      await service.transitionStatus(id, 'rejected', REVIEWER_ACTOR);
       // Attempt agent self-revival — must throw per F-F.
       await expect(
         service.transitionStatus(id, 'queued', 'agent'),
@@ -2896,7 +3108,7 @@ describe('TaskPoolService', () => {
     it('F-F: team_lead CAN re-queue a rejected WorkItem', async () => {
       const { id } = await makeRunning();
       await service.transitionStatus(id, 'done_by_worker', 'agent');
-      await service.transitionStatus(id, 'rejected', 'team_lead');
+      await service.transitionStatus(id, 'rejected', REVIEWER_ACTOR);
       const requeued = await service.transitionStatus(id, 'queued', 'team_lead');
       expect(requeued!.status).toBe('queued');
     });
@@ -2904,7 +3116,7 @@ describe('TaskPoolService', () => {
     it('F-F: orchestrator CAN re-queue a rejected WorkItem', async () => {
       const { id } = await makeRunning();
       await service.transitionStatus(id, 'done_by_worker', 'agent');
-      await service.transitionStatus(id, 'rejected', 'team_lead');
+      await service.transitionStatus(id, 'rejected', REVIEWER_ACTOR);
       const requeued = await service.transitionStatus(id, 'queued', 'orchestrator');
       expect(requeued!.status).toBe('queued');
     });
@@ -2912,7 +3124,7 @@ describe('TaskPoolService', () => {
     it('F-F: system actor (Reconciler) CAN re-queue a rejected WorkItem', async () => {
       const { id } = await makeRunning();
       await service.transitionStatus(id, 'done_by_worker', 'agent');
-      await service.transitionStatus(id, 'rejected', 'team_lead');
+      await service.transitionStatus(id, 'rejected', REVIEWER_ACTOR);
       const requeued = await service.transitionStatus(id, 'queued', 'system');
       expect(requeued!.status).toBe('queued');
     });
@@ -2970,7 +3182,7 @@ describe('TaskPoolService', () => {
       const wi = makeWorkItem();
       await service.addToPool(wi);
       // No third arg — defaults to system per backwards compat.
-      await service.updateItemStatus(wi.id, 'running');
+      await service.updateItemStatus(wi.id, 'running', 'system');
       const items = await service.getAvailableItems();
       // Legacy callers continue to work unchanged.
       expect(items.find((x) => x.id === wi.id)).toBeUndefined(); // no longer queued
@@ -3027,7 +3239,7 @@ describe('TaskPoolService', () => {
         actorRole: Parameters<TaskPoolService['transitionStatus']>[2],
         mutator?: Parameters<TaskPoolService['transitionStatus']>[3],
       ) {
-        calls.push([workItemId, newStatus, actorRole]);
+        calls.push([workItemId, newStatus, typeof actorRole === 'string' ? actorRole : actorRole.role]);
         return original.call(this, workItemId, newStatus, actorRole, mutator);
       };
       return {
@@ -3094,7 +3306,7 @@ describe('TaskPoolService', () => {
       // blocked → queued branch (which already had a TRANS-1 permission
       // entry; this test confirms the same path now flows through the
       // shared transitionStatus helper).
-      await service.updateItemStatus(wi.id, 'blocked');
+      await service.updateItemStatus(wi.id, 'blocked', 'system');
       const { calls, restore } = spyTransitionStatus();
       try {
         await service.releaseBack(wi.id, 'dependency stalled');
@@ -3125,7 +3337,7 @@ describe('TaskPoolService', () => {
 
       const { calls, restore } = spyTransitionStatus();
       try {
-        await service.completeItem(upstream.id);
+        await service.completeItem(upstream.id, undefined, AGENT_ACTOR);
         // The resolver fires inside completeSimpleItem after the
         // upstream completes; we expect a blocked→queued promotion for
         // the downstream item with system actor.
@@ -3204,7 +3416,7 @@ describe('TaskPoolService', () => {
       await service.transitionStatus(wi.id, 'done_by_worker', 'agent', (m) => {
         m.result = { ok: true };
       });
-      await service.transitionStatus(wi.id, 'rejected', 'team_lead', (m) => {
+      await service.transitionStatus(wi.id, 'rejected', REVIEWER_ACTOR, (m) => {
         m.error = 'TL did not accept';
       });
       const rejected = await service.findWorkItem(wi.id);
@@ -3275,12 +3487,12 @@ describe('TaskPoolService', () => {
     it('updateItemStatus path also enforces the invariant on non-terminal landings', async () => {
       const wi = makeWorkItem({ requestId: 'req-update-item' });
       await service.addToPool(wi);
-      await service.updateItemStatus(wi.id, 'running');
-      await service.updateItemStatus(wi.id, 'failed');
+      await service.updateItemStatus(wi.id, 'running', 'system');
+      await service.updateItemStatus(wi.id, 'failed', 'system');
       const failed = await service.findWorkItem(wi.id);
       expect(failed?.completedAt).toBeDefined();
 
-      await service.updateItemStatus(wi.id, 'queued');
+      await service.updateItemStatus(wi.id, 'queued', 'system');
       const requeued = await service.findWorkItem(wi.id);
       expect(requeued?.status).toBe('queued');
       expect(requeued?.completedAt).toBeUndefined();
@@ -3311,7 +3523,7 @@ describe('TaskPoolService', () => {
             await service.addToPool(w);
             await service.transitionStatus(w.id, 'running', 'system');
             await service.transitionStatus(w.id, 'done_by_worker', 'agent');
-            await service.transitionStatus(w.id, 'rejected', 'team_lead');
+            await service.transitionStatus(w.id, 'rejected', REVIEWER_ACTOR);
             return w;
           },
         },
@@ -3501,7 +3713,7 @@ describe('TaskPoolService', () => {
         getActiveClaims: () => service.getActiveClaims(),
         getAgentHealthMap: async () => health,
         applyCorrection: async (c) => {
-          if (c.entityType === 'work_item') await service.updateItemStatus(c.entityId, c.newState as WorkItemStatus);
+          if (c.entityType === 'work_item') await service.updateItemStatus(c.entityId, c.newState as WorkItemStatus, 'system');
         },
         releaseToPool: (id, reason) => service.releaseBack(id, reason),
         requeueWorkItem: (id) => service.releaseBack(id, 'reconciler_requeue'),
@@ -3568,13 +3780,13 @@ describe('TaskPoolService', () => {
       const dep = makeWorkItem({ type: 'cron_run', title: 'dep' });
       await service.addToPool(dep);
       await service.claimFromPool('someone-else');
-      await service.completeItem(dep.id);
+      await service.completeItem(dep.id, undefined, AGENT_ACTOR);
 
       const wi = makeWorkItem({ title: 'has deps', target: AGENT, dependsOn: [dep.id] });
       await service.addToPool(wi);
       // Deps were already done, so it is claimable.
       const current = (await service.getAllItems()).find((w) => w.id === wi.id)!;
-      if (current.status === 'blocked') await service.updateItemStatus(wi.id, 'queued');
+      if (current.status === 'blocked') await service.updateItemStatus(wi.id, 'queued', 'system');
       expect((await service.claimFromPool(AGENT))?.workItem.id).toBe(wi.id);
       await service.blockItem(wi.id, { agentId: AGENT, reason: 'need creds' });
 

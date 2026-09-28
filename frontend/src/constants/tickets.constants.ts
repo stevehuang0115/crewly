@@ -136,6 +136,12 @@ export const TICKET_TEXT = {
   REJECT_BADGE: '打回',
   AUTO_ACCEPT_IN_DAYS: '天后自动验收',
   AUTO_ACCEPT_SOON: '即将自动验收',
+  /** Done card: the owner reviewed it (#813) */
+  ACCEPTED_BY_OWNER: '已验收',
+  /** Done card: silence accepted it — nobody checked it (#813) */
+  ACCEPTED_BY_SILENCE: '默认通过 · 未验收',
+  /** Tooltip for {@link TICKET_TEXT.ACCEPTED_BY_SILENCE} */
+  ACCEPTED_BY_SILENCE_HINT: '到期没有人提出意见，按默认通过关闭；没有人检查过结果',
   DETAIL_LOADING: '加载中…',
   TITLE_LABEL: '标题',
   SAVE: '保存',

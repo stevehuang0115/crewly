@@ -38,11 +38,13 @@ jest.mock('../settings/index.js', () => ({
 // ---------------------------------------------------------------------------
 
 const mockEscalateUnverified = jest.fn().mockResolvedValue(undefined);
+const mockEscalateToOwner = jest.fn().mockResolvedValue('esc-owner');
 
 jest.mock('../v3/escalation-router.service.js', () => ({
   EscalationRouterService: {
     getInstance: () => ({
       escalateUnverifiedWorkItem: mockEscalateUnverified,
+      escalateUnreviewedToOwner: mockEscalateToOwner,
     }),
   },
 }));
@@ -51,11 +53,13 @@ jest.mock('../v3/escalation-router.service.js', () => ({
 // disposition funnel. Stub it so the safety net is observable without standing
 // up the real pool singleton.
 const mockDisposeFailedWorkItem = jest.fn().mockResolvedValue({ kind: 'terminal' });
+const mockStampReviewEscalation = jest.fn().mockResolvedValue(true);
 
 jest.mock('../task-pool/task-pool.service.js', () => ({
   TaskPoolService: {
     getInstance: () => ({
       disposeFailedWorkItem: mockDisposeFailedWorkItem,
+      stampReviewEscalation: mockStampReviewEscalation,
     }),
   },
 }));
@@ -107,6 +111,8 @@ describe('ReconcilerService', () => {
 
   beforeEach(() => {
     jest.useFakeTimers();
+    mockEscalateToOwner.mockClear();
+    mockStampReviewEscalation.mockClear();
     provider = createMockProvider();
     service = new ReconcilerService(provider, {
       fastLoopIntervalMs: 10_000,
@@ -207,11 +213,14 @@ describe('ReconcilerService', () => {
       // (the 24h implicit-acceptance fallback, i.e. ACCEPTED). Summing the
       // old combined `ttlExpiredCount` reported the accepted item to
       // operators as thrown away.
+      // #813: the second outcome no longer exists — an expired
+      // done_by_worker item is left for review and escalated to the owner.
       const now = Date.now();
-      const accepted = makeWorkItem({
-        id: 'ttl-accepted',
+      const awaiting = makeWorkItem({
+        id: 'ttl-awaiting',
         status: 'done_by_worker',
         createdAt: new Date(now - 25 * 3600000).toISOString(),
+        completedAt: new Date(now - 25 * 3600000).toISOString(),
       });
       const discarded = makeWorkItem({
         id: 'ttl-discarded',
@@ -220,24 +229,18 @@ describe('ReconcilerService', () => {
       });
 
       provider = createMockProvider({
-        getActiveWorkItems: jest.fn().mockResolvedValue([accepted, discarded]),
+        getActiveWorkItems: jest.fn().mockResolvedValue([awaiting, discarded]),
       });
       service = new ReconcilerService(provider);
 
       const result = await service.runFull();
 
-      // Exactly one cleaned item: the cancelled one. The auto-verified one
-      // is outside this metric.
       expect(result.staleItemsCleaned).toBe(1);
-
-      // ...but it is NOT silently dropped — the acceptance is still in the
-      // audit trail with its true semantics.
-      const acceptedCorrection = result.corrections.find(
-        (c) => c.entityId === 'ttl-accepted' && c.newState === 'verified',
-      );
-      expect(acceptedCorrection).toBeDefined();
+      expect(result.corrections.find((c) => c.entityId === 'ttl-awaiting')).toBeUndefined();
+      expect(result.corrections.map((c) => c.newState)).not.toContain('verified');
       expect(result.corrections.find((c) => c.entityId === 'ttl-discarded' && c.newState === 'cancelled'))
         .toBeDefined();
+      expect(mockEscalateToOwner).toHaveBeenCalledWith(expect.objectContaining({ id: 'ttl-awaiting' }), expect.any(Number));
     });
 
     it('should detect recoverable blocked WorkItems', async () => {
@@ -655,8 +658,10 @@ describe('ReconcilerService', () => {
       expect(byId.get('wi-failed')!.status).toBe('failed');
       // (a retry-ELIGIBLE failed item is a different path — the retry rule
       // legally requeues it; see the dedicated case below.)
+      // ...an unreviewed item is never passed by the sweeper (#813)...
+      expect(byId.get('wi-dbw')?.status).toBe('done_by_worker');
       // ...while the genuinely stale in-flight work is still cleaned up.
-      expect(byId.get('wi-dbw')!.status).toBe('verified');
+      expect(byId.get('wi-running')?.status).toBe('cancelled');
     });
 
     // ---------------------------------------------------------------------
@@ -761,19 +766,19 @@ describe('ReconcilerService', () => {
 
         await service.runFull();
 
+        // The 96h-old item goes to the orchestrator AND the owner, and the
+        // owner step must not stop the orchestrator step (#813).
         expect(mockEscalateUnverified).toHaveBeenCalled();
+        expect(mockEscalateToOwner).toHaveBeenCalledWith(expect.objectContaining({ id: 'wi-dbw' }), expect.any(Number));
         const applyMock = provider.applyCorrection as jest.Mock;
         expect(applyMock).toHaveBeenCalled();
         expect(mockEscalateUnverified.mock.invocationCallOrder[0])
           .toBeLessThan(applyMock.mock.invocationCallOrder[0]);
       });
 
-      it('only the 24h TTL rule may produce a `verified` correction', async () => {
-        // Liveness half: TTL's implicit-acceptance fallback is intentional and
-        // must still work. Soundness half is the test above — a fresh item
-        // under a dead ancestor gets nothing.
+      it('no rule produces a `verified` correction — an ancient unreviewed item goes to the owner instead (#813)', async () => {
         const stale = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
-        const pool = [makeWorkItem({ id: 'wi-ancient', status: 'done_by_worker', createdAt: stale })];
+        const pool = [makeWorkItem({ id: 'wi-ancient', status: 'done_by_worker', createdAt: stale, completedAt: stale })];
         const byId = new Map(pool.map((wi) => [wi.id, wi]));
 
         provider = strictProvider(pool, byId);
@@ -781,11 +786,39 @@ describe('ReconcilerService', () => {
 
         const result = await service.runFull();
 
-        const verified = result.corrections.filter((c) => c.newState === 'verified');
-        expect(verified).toHaveLength(1);
-        expect(verified[0].entityId).toBe('wi-ancient');
-        expect(verified[0].reason).toContain('TTL');
-        expect(statusOf(byId, 'wi-ancient')).toBe('verified');
+        expect(result.errors).toEqual([]);
+        expect(result.corrections.filter((c) => c.newState === 'verified')).toEqual([]);
+        expect(statusOf(byId, 'wi-ancient')).toBe('done_by_worker');
+        expect(mockStampReviewEscalation).toHaveBeenCalledWith('wi-ancient', 'reviewOwnerEscalatedAt');
+        expect(mockEscalateToOwner).toHaveBeenCalledTimes(1);
+        expect(mockEscalateToOwner.mock.calls[0][0]).toMatchObject({ id: 'wi-ancient' });
+      });
+
+      it('escalates to the owner once: an item already stamped is skipped', async () => {
+        const stale = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+        const pool = [makeWorkItem({
+          id: 'wi-stamped', status: 'done_by_worker', createdAt: stale, completedAt: stale,
+          metadata: { reviewOwnerEscalatedAt: stale },
+        })];
+        provider = strictProvider(pool, new Map(pool.map((wi) => [wi.id, wi])));
+        service = new ReconcilerService(provider);
+
+        await service.runFull();
+
+        expect(mockEscalateToOwner).not.toHaveBeenCalled();
+      });
+
+      it('does not notify the owner when the stamp could not be written (item moved on)', async () => {
+        mockStampReviewEscalation.mockResolvedValue(false);
+        const stale = new Date(Date.now() - 96 * 3600 * 1000).toISOString();
+        const pool = [makeWorkItem({ id: 'wi-gone', status: 'done_by_worker', createdAt: stale, completedAt: stale })];
+        provider = strictProvider(pool, new Map(pool.map((wi) => [wi.id, wi])));
+        service = new ReconcilerService(provider);
+
+        await service.runFull();
+
+        expect(mockEscalateToOwner).not.toHaveBeenCalled();
+        mockStampReviewEscalation.mockResolvedValue(true);
       });
     });
 

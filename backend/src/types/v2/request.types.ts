@@ -199,7 +199,16 @@ export interface Request {
   nudgeCount?: number;
   /** When it was last nudged (ISO-8601) */
   lastNudgeAt?: string;
+  /**
+   * How a done ticket was accepted (#813): `owner` = the owner reviewed it
+   * (验过了 / an OK in the thread); `silence` = nobody objected before the
+   * auto-accept deadline. Silence is acceptance, never verification.
+   */
+  acceptedBy?: TicketAcceptedBy;
 }
+
+/** How a ticket was accepted — see {@link Request.acceptedBy}. */
+export type TicketAcceptedBy = 'owner' | 'silence';
 
 // ---------------------------------------------------------------------------
 // Input Types
@@ -261,6 +270,8 @@ export interface UpdateRequestInput {
   reply?: TicketReply;
   nudgeCount?: number;
   lastNudgeAt?: string;
+  /** How it was accepted (set with `accepted`) — see {@link Request.acceptedBy} */
+  acceptedBy?: TicketAcceptedBy;
   /**
    * The owner accepted it (or it was auto-accepted). Without this a ticket
    * that needs review cannot become `done`: the update is turned into

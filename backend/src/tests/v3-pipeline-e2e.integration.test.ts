@@ -340,7 +340,7 @@ describe('V3 pipeline E2E', () => {
         //    → finds B has dependsOn including A.id → flips B to queued.
         const claimResult = await fixture.taskPool.claimSpecificItem('dev-1', wiA.id);
         expect(claimResult).not.toBeNull();
-        await fixture.taskPool.completeItem(wiA.id, { summary: 'A finished' });
+        await fixture.taskPool.completeItem(wiA.id, { summary: 'A finished' }, { role: 'agent', session: 'dev-1' });
 
         // 3) Verify B is now queued (not blocked). This is the PR #491 fix.
         await waitFor(async () => {

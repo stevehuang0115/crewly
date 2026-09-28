@@ -9,7 +9,7 @@ jest.mock('../services/core/storage.service.js', () => ({
   StorageService: { getInstance: () => ({ findMemberBySessionName }) },
 }));
 
-import { isOwnerDashboardRequest, readAgentSessionHeader, resolveAgentCaller } from './agent-caller.utils.js';
+import { isOwnerDashboardRequest, readAgentSessionHeader, resolveAgentCaller, resolveTransitionActor } from './agent-caller.utils.js';
 
 /** Build a request carrying only the given headers. */
 const req = (headers: Record<string, string | string[]>): Request => ({ headers } as unknown as Request);
@@ -88,5 +88,29 @@ describe('resolveAgentCaller', () => {
       session: 'ghost',
       role: 'worker',
     });
+  });
+});
+
+describe('resolveTransitionActor (#813)', () => {
+  it('an agent session is an agent with that session', () => {
+    expect(resolveTransitionActor(req({ 'x-agent-session': ' tl-sam ' }), 'test')).toEqual({ role: 'agent', session: 'tl-sam', via: 'test' });
+  });
+
+  it('the orchestrator session is the orchestrator', () => {
+    expect(resolveTransitionActor(req({ 'x-agent-session': 'crewly-orc' }), 'test')).toMatchObject({ role: 'orchestrator', session: 'crewly-orc' });
+  });
+
+  it('the dashboard is the owner', () => {
+    expect(resolveTransitionActor(req({ 'x-crewly-caller': 'dashboard' }), 'test')).toEqual({ role: 'owner', via: 'test' });
+  });
+
+  it('an agent session wins over the dashboard marker', () => {
+    expect(resolveTransitionActor(req({ 'x-agent-session': 'dev-1', 'x-crewly-caller': 'dashboard' }), 'test').role).toBe('agent');
+  });
+
+  it('no header and no marker is an agent with no identity — never a reviewer', () => {
+    const actor = resolveTransitionActor(req({}), 'test');
+    expect(actor).toEqual({ role: 'agent', via: 'test' });
+    expect(actor.session).toBeUndefined();
   });
 });
