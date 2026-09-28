@@ -939,6 +939,17 @@ export function detectWaitingOnHumanWorkItems(
     } else if (isWaitingOnHumanBlocked(wi) && (!agent || agent.status === 'inactive')) {
       // The agent that held the work is gone, so nobody will answer for it.
       // Hand it back to the queue (not a failure, not a retry).
+      //
+      // blockSource is set here too (not only on the running->blocked
+      // correction above) so the reconciler can tell THIS requeue — the one
+      // this rule itself decided on because the agent is gone — apart from
+      // any other rule's blocked->queued requeue of the SAME item, which
+      // dataProvider.requeueWorkItem must refuse (the agent could still be
+      // alive and holding the prompt). Without this marker both look like
+      // an identical `{ entityType: 'work_item', newState: 'queued',
+      // previousState: 'blocked' }` correction to the provider, so it can't
+      // distinguish "this rule says requeue" from "some other rule says
+      // requeue a waiting_on_human item, which must be refused" (#820).
       corrections.push(createCorrection({
         entityType: 'work_item',
         entityId: wi.id,
@@ -946,6 +957,7 @@ export function detectWaitingOnHumanWorkItems(
         newState: 'queued',
         reason: `${AGENT_ATTENTION_CONSTANTS.BLOCKED_REASON}: agent ${wi.target} is ${agent?.status ?? 'not found'}; re-queued`,
         evidence: `Agent health check: status=${agent?.status ?? 'missing'}`,
+        blockSource: WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
       }));
       requeuedIds.push(wi.id);
     }

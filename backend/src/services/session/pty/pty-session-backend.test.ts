@@ -4,7 +4,6 @@
 
 import { PtySessionBackend } from './pty-session-backend.js';
 import type { PtySession } from './pty-session.js';
-import { PtyTerminalBuffer } from './pty-terminal-buffer.js';
 import type { SessionOptions } from '../session-backend.interface.js';
 import { collectSecretEnvValues } from '../../../utils/secret-env.js';
 
@@ -221,22 +220,9 @@ describe('PtySessionBackend', () => {
 		});
 	});
 
-	describe('getTerminalTitle (#815)', () => {
-		it('should return empty string for non-existent session', () => {
-			expect(backend!.getTerminalTitle('non-existent')).toBe('');
-		});
-
-		it('should return the title held by the session\'s terminal buffer', async () => {
-			// Real PTY output is not needed: the buffer's own test covers OSC
-			// parsing; this checks the backend reads the per-session buffer.
-			const buf = new PtyTerminalBuffer();
-			buf.write('\x1b]0;crewly-title-probe\x07');
-			await buf.flush();
-			(backend as unknown as { terminalBuffers: Map<string, PtyTerminalBuffer> }).terminalBuffers.set('title-session', buf);
-			expect(backend!.getTerminalTitle('title-session')).toBe('crewly-title-probe');
-			buf.dispose();
-		});
-	});
+	// getTerminalTitle (#815, #820): moved to pty-session-backend-terminal-title.test.ts
+	// (own file, own describe). It needs no real PTY — see that file's header
+	// comment for why it could not stay here.
 
 	describe('getTerminalBuffer', () => {
 		it('should return empty string for non-existent session', () => {

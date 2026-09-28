@@ -650,8 +650,17 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * failures only. The release is recorded in `releaseCount` instead.
    *
    * @param workItemId - The WorkItem ID to re-queue
+   * @param opts - `allowWaitingOnHuman`: true only when THIS call is the
+   *   waiting_on_human rule's own "agent is gone" requeue
+   *   (`detectWaitingOnHumanWorkItems`, blockSource `waiting_on_human` on
+   *   the correction). Every other caller (agent-back-online recovery,
+   *   etc.) must leave a waiting_on_human item alone — the agent could
+   *   still be alive and holding the prompt — which is what the guard
+   *   below refuses by default (#820: without this, the waiting_on_human
+   *   rule's OWN requeue was also refused, leaving the item blocked
+   *   forever while `workItemsRequeued` still counted it as done).
    */
-  async requeueWorkItem(workItemId: string): Promise<void> {
+  async requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean }): Promise<void> {
     try {
       const pool = TaskPoolService.getInstance();
       // Defence in depth: the rules already skip explicit blocks, but the
@@ -661,12 +670,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         this.logger.info('Not re-queuing an explicitly blocked work item (stays blocked until unblocked)', { workItemId });
         return;
       }
-      if (current && isWaitingOnHumanBlocked(current)) {
+      if (current && isWaitingOnHumanBlocked(current) && !opts?.allowWaitingOnHuman) {
         this.logger.info('Not re-queuing a waiting_on_human work item (resumed when the prompt is gone)', { workItemId });
         return;
       }
       await pool.releaseBack(workItemId, 'reconciler_requeue');
-      this.logger.info('Re-queued work item', { workItemId });
+      this.logger.info('Re-queued work item', { workItemId, allowWaitingOnHuman: opts?.allowWaitingOnHuman ?? false });
     } catch (error) {
       this.logger.error('Failed to re-queue work item', {
         workItemId,

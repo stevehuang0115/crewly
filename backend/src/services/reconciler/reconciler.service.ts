@@ -46,6 +46,7 @@ import {
   runPruningPass,
 } from './reconcile-rules.js';
 import type { AgentHealth } from './reconcile-rules.js';
+import { WORK_ITEM_BLOCK_SOURCES } from '../../types/v2/work-item.types.js';
 import { getSettingsService } from '../settings/index.js';
 import { LoggerService } from '../core/logger.service.js';
 
@@ -73,8 +74,12 @@ export interface ReconcilerDataProvider {
   applyCorrection(correction: ReconcileCorrection): Promise<void>;
   /** Release a WorkItem back to the task pool */
   releaseToPool(workItemId: string, reason: string): Promise<void>;
-  /** Re-queue a WorkItem (increment retryCount, set status to queued) */
-  requeueWorkItem(workItemId: string): Promise<void>;
+  /**
+   * Re-queue a WorkItem (increment retryCount, set status to queued).
+   * `allowWaitingOnHuman` must be passed true only for the waiting_on_human
+   * rule's own requeue (see the call site below and the provider's JSDoc).
+   */
+  requeueWorkItem(workItemId: string, opts?: { allowWaitingOnHuman?: boolean }): Promise<void>;
   /** Mark a claim as 'expiring' (lease expired, within grace period) */
   markClaimExpiring(claimId: string): Promise<void>;
   /** Revoke a claim and release its work item back to the pool */
@@ -587,7 +592,15 @@ export class ReconcilerService {
           correction.newState === 'queued' &&
           correction.previousState === 'blocked'
         ) {
-          await this.dataProvider.requeueWorkItem(correction.entityId);
+          // #820: only the waiting_on_human rule's OWN requeue (its
+          // correction carries blockSource 'waiting_on_human' — see
+          // detectWaitingOnHumanWorkItems) is allowed through the
+          // provider's waiting_on_human guard. Any other blocked->queued
+          // correction on a waiting_on_human item (e.g. agent-back-online
+          // recovery matching it too) must still be refused.
+          await this.dataProvider.requeueWorkItem(correction.entityId, {
+            allowWaitingOnHuman: correction.blockSource === WORK_ITEM_BLOCK_SOURCES.WAITING_ON_HUMAN,
+          });
           continue;
         }
 

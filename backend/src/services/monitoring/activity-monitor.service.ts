@@ -278,6 +278,19 @@ export class ActivityMonitorService {
   /**
    * Leave the waiting_on_human state for a session, if it was in it.
    *
+   * KNOWN GAP (#820, #851): `!cleared` also covers "the registry never knew
+   * this session was waiting" — which is the normal case for every agent
+   * that has simply never been blocked, but is ALSO true right after a
+   * backend restart if the owner answered the prompt while it was down. In
+   * that second case a durable escalation opened before the restart is left
+   * open, because `resolveAgentWaitingOnHuman` below never runs. Not fixed
+   * inline: making it unconditional would add a `listPending()` read to
+   * every poll of every non-waiting agent for a restart-only edge case; see
+   * #851 for the one-time-startup-reconciliation shape that would fix it
+   * without that per-poll cost. The WorkItem itself is unaffected either
+   * way — its own blocked->running transition self-heals via the
+   * reconciler's next poll, independent of this registry.
+   *
    * @param sessionName - Agent session
    * @param identity - Agent identity for the event
    * @param now - ISO timestamp of this poll

@@ -9,6 +9,20 @@
  * singleton. State is in memory on purpose: after a backend restart the
  * first monitor poll (≤30s) re-detects a prompt that is still on screen.
  *
+ * KNOWN GAP (#820, filed as #851): the other direction is not yet handled —
+ * if the owner answers the prompt WHILE the backend is down, this registry
+ * comes back up empty and never learns the session was waiting. The durable
+ * `agent_waiting_on_human` escalation opened before the restart
+ * (EscalationRouterService.recordAgentWaitingOnHuman) is then never closed,
+ * because ActivityMonitorService.clearAttention only calls
+ * `resolveAgentWaitingOnHuman` when `clearWaiting()` here finds a matching
+ * entry. The affected WorkItem itself is unaffected — its blocked->running
+ * transition self-heals independently via the reconciler's next poll — only
+ * the owner-facing escalation record can go stale. See #851 for why this
+ * was documented rather than fixed inline (a correct fix costs a
+ * listPending() read on every poll of every non-waiting agent unless done
+ * as a one-time startup reconciliation instead).
+ *
  * @module services/monitoring/agent-attention-registry
  */
 
