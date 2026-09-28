@@ -282,6 +282,28 @@ describe('GoogleChatInitializer', () => {
       );
     });
 
+    it('records the reply it sent back as an orchestrator turn on the same conversation (G1)', async () => {
+      mockRecordTurn.mockClear();
+      mockAdapterSendMessage.mockResolvedValue(undefined);
+      mockEnqueue.mockClear();
+      await initializeGoogleChatIfConfigured({ messageQueueService: mockQueueService });
+      const callback = (mockAdapterInitialize.mock.calls[0][0] as any).onIncomingMessage;
+      callback({ text: 'status?', channelId: 'spaces/abc', userId: 'Steve', threadId: 'threads/456', conversationId: 'spaces/abc', source: 'google-chat' });
+
+      const enqueued = mockEnqueue.mock.calls[0][0] as { sourceMetadata: { googleChatResolve: (r: string) => void } };
+      enqueued.sourceMetadata.googleChatResolve('all green');
+      await new Promise((r) => setTimeout(r, 10));
+
+      expect(mockAdapterSendMessage).toHaveBeenCalledWith('spaces/abc', 'all green', { threadId: 'threads/456' });
+      expect(mockRecordTurn).toHaveBeenCalledWith({
+        channelId: 'gchat-spaces-abc',
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'all green',
+        metadata: { gchatSpace: 'spaces/abc', gchatThread: 'threads/456', source: 'google-chat' },
+      });
+    });
+
     it('callback still enqueues when recording fails', async () => {
       mockEnqueue.mockClear();
       mockRecordTurn.mockImplementationOnce(() => {

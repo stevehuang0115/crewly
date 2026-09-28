@@ -47,6 +47,15 @@ jest.mock('fs', () => ({
   },
 }));
 
+const mockEnsureChannel = jest.fn((args: { conversationId: string }) => ({ id: args.conversationId }));
+const mockRecordTurn = jest.fn((_input: unknown) => ({ message: { id: 'rec-1' }, deduped: false }));
+jest.mock('../../services/chat-v2/chat-v2.singleton.js', () => ({
+  getChatV2Service: () => ({
+    ensureChannelForLegacyConversation: mockEnsureChannel,
+    recordTurn: mockRecordTurn,
+  }),
+}));
+
 import { createMessengerRouter } from './messenger.routes.js';
 
 function mockReq(overrides: Partial<Request> = {}): Request {
@@ -304,6 +313,61 @@ describe('Messenger Routes', () => {
 
         expect(res.status).toHaveBeenCalledWith(400);
       });
+    });
+  });
+
+  describe('send route records the reply in the conversation log (G1)', () => {
+    function getSendHandler(): (req: Request, res: Response, next: NextFunction) => void {
+      const sendLayer = (router as any).stack.find((layer: any) => layer.route?.path === '/:platform/send');
+      return sendLayer.route.stack[0].handle;
+    }
+
+    it('records a Google Chat reply as an agent turn on the space\'s conversation, as the calling agent', async () => {
+      mockGet.mockReturnValue({ sendMessage: jest.fn().mockResolvedValue(undefined as never) });
+      const req = mockReq({
+        params: { platform: 'google-chat' },
+        body: { space: 'spaces/AAAA', text: 'done', threadId: 'spaces/AAAA/threads/T' },
+        headers: { 'x-agent-session': 'crewly-orc' },
+      } as Partial<Request>);
+      const res = mockRes();
+      await getSendHandler()(req, res, jest.fn() as unknown as NextFunction);
+
+      expect(res.json).toHaveBeenCalledWith({ success: true, message: 'Message sent' });
+      expect(mockEnsureChannel).toHaveBeenCalledWith({ conversationId: 'gchat-spaces-AAAA', agentSession: 'crewly-orc' });
+      expect(mockRecordTurn).toHaveBeenCalledWith({
+        channelId: 'gchat-spaces-AAAA',
+        senderType: 'agent',
+        senderId: 'crewly-orc',
+        content: 'done',
+        metadata: { gchatSpace: 'spaces/AAAA', gchatThread: 'spaces/AAAA/threads/T', source: 'google-chat' },
+      });
+    });
+
+    it('records a Telegram reply on the chat\'s conversation', async () => {
+      mockGet.mockReturnValue({ sendMessage: jest.fn().mockResolvedValue(undefined as never) });
+      const req = mockReq({ params: { platform: 'telegram' }, body: { channel: '42', text: 'ok' } });
+      await getSendHandler()(req, mockRes(), jest.fn() as unknown as NextFunction);
+      expect(mockRecordTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ channelId: 'telegram-42', senderType: 'agent', metadata: { telegramChatId: '42', source: 'telegram' } }),
+      );
+    });
+
+    it('leaves Slack to its own bookkeeping', async () => {
+      mockGet.mockReturnValue({ sendMessage: jest.fn().mockResolvedValue(undefined as never) });
+      const req = mockReq({ params: { platform: 'slack' }, body: { channel: 'C1', text: 'ok' } });
+      await getSendHandler()(req, mockRes(), jest.fn() as unknown as NextFunction);
+      expect(mockRecordTurn).not.toHaveBeenCalled();
+    });
+
+    it('still reports success when recording fails', async () => {
+      mockGet.mockReturnValue({ sendMessage: jest.fn().mockResolvedValue(undefined as never) });
+      mockRecordTurn.mockImplementationOnce(() => {
+        throw new Error('db locked');
+      });
+      const req = mockReq({ params: { platform: 'google-chat' }, body: { space: 'spaces/B', text: 'x' } });
+      const res = mockRes();
+      await getSendHandler()(req, res, jest.fn() as unknown as NextFunction);
+      expect(res.json).toHaveBeenCalledWith({ success: true, message: 'Message sent' });
     });
   });
 });

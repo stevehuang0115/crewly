@@ -982,6 +982,18 @@ export async function startSlackTeamChannels(): Promise<void> {
     // Owner notifications must not target an agent app's own DM (the master bot cannot post there).
     getSlackService().isAgentOwnedConversation = (channelId) => !!getSlackAgentDmService()?.findBySlackChannelId(channelId);
     getSlackService().getOwnerUserId = () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null;
+    // Unified conversation log: who the owner is on Slack decides each row's
+    // sender_kind and — in shared channels — whether it may sync to Cloud (O3).
+    try {
+      getChatV2Service().setOwnerIdentityProvider(() => {
+        const workspace = getSlackCloudConfigService()?.getConfig()?.workspace;
+        return { slackUserId: workspace?.installedBy || null, slackTeamId: workspace?.slackTeamId || null };
+      });
+    } catch (error) {
+      logger.warn('Could not wire the owner identity into the conversation log', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     // The Google authorization card needs three things this module owns:
     // which Slack conversation a chat channel came from, a connect link that
     // carries a ticket rather than the Cloud token, and a way to post so

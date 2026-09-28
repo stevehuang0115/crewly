@@ -12,11 +12,14 @@ import {
 import { getWhatsAppService, resetWhatsAppService } from './whatsapp.service.js';
 import { resetChatService, getChatService } from '../chat/chat.service.js';
 
-// Phase 6c migration — bridge now writes via chat-v2 directly
+// Phase 6c migration — bridge now writes via chat-v2 directly. The fakes
+// are shared so tests can see what the bridge recorded.
+const mockEnsureChannel = jest.fn((args: { conversationId: string }) => ({ id: args.conversationId }));
+const mockRecordTurn = jest.fn((_input: unknown) => ({ message: { id: 'm1' }, deduped: false }));
 jest.mock('../chat-v2/chat-v2.singleton.js', () => ({
   getChatV2Service: jest.fn(() => ({
-    ensureChannelForLegacyConversation: jest.fn(() => ({ id: 'test-channel' })),
-    recordTurn: jest.fn(() => ({ message: { id: 'm1' }, deduped: false })),
+    ensureChannelForLegacyConversation: mockEnsureChannel,
+    recordTurn: mockRecordTurn,
   })),
 }));
 
@@ -197,13 +200,6 @@ describe('WhatsAppOrchestratorBridge', () => {
       const bridge = getWhatsAppOrchestratorBridge();
       const service = getWhatsAppService();
 
-      // Mock chatService.sendMessage
-      const chatService = getChatService();
-      jest.spyOn(chatService, 'sendMessage').mockResolvedValue({
-        message: {} as any,
-        conversation: { id: 'conv-1' } as any,
-      });
-
       // Mock MQS — immediately resolve via the whatsappResolve callback
       const mockEnqueue = jest.fn().mockImplementation((msg) => {
         msg.sourceMetadata.whatsappResolve('Orchestrator says hi');
@@ -232,21 +228,54 @@ describe('WhatsAppOrchestratorBridge', () => {
 
       await handled;
 
-      expect(chatService.sendMessage).toHaveBeenCalledWith(
+      // G2: tagged whatsapp (not slack), one stable channel per chat.
+      expect(mockEnsureChannel).toHaveBeenCalledWith({ conversationId: 'whatsapp-555@s.whatsapp.net', agentSession: 'crewly-orc' });
+      expect(mockRecordTurn).toHaveBeenCalledWith(
         expect.objectContaining({
+          channelId: 'whatsapp-555@s.whatsapp.net',
+          senderType: 'user',
           content: 'hello orchestrator',
-          metadata: expect.objectContaining({ source: 'whatsapp' }),
+          metadata: expect.objectContaining({ source: 'whatsapp', chatId: '555@s.whatsapp.net' }),
         }),
       );
       expect(mockEnqueue).toHaveBeenCalledWith(
         expect.objectContaining({
           source: 'whatsapp',
-          conversationId: 'conv-1',
+          conversationId: 'whatsapp-555@s.whatsapp.net',
         }),
       );
       expect(sendSpy).toHaveBeenCalledWith(
         expect.objectContaining({ to: '555@s.whatsapp.net', text: 'Orchestrator says hi' }),
       );
+      // G1: the reply is recorded next to the question.
+      expect(mockRecordTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          channelId: 'whatsapp-555@s.whatsapp.net',
+          senderType: 'agent',
+          senderId: 'crewly-orc',
+          content: 'Orchestrator says hi',
+          metadata: expect.objectContaining({ source: 'whatsapp' }),
+        }),
+      );
+    });
+
+    it('keeps every message of a chat in one channel (no per-message channel)', async () => {
+      const bridge = getWhatsAppOrchestratorBridge();
+      const service = getWhatsAppService();
+      bridge.setMessageQueueService({
+        enqueue: jest.fn().mockImplementation((msg: { sourceMetadata: { whatsappResolve: (r: string) => void } }) => {
+          msg.sourceMetadata.whatsappResolve('ok');
+        }),
+      } as any);
+      jest.spyOn(service, 'sendMessage').mockResolvedValue();
+      await bridge.initialize();
+      for (const id of ['a', 'b']) {
+        const handled = new Promise<void>((resolve) => bridge.once('message_handled', () => resolve()));
+        service.emit('message', { messageId: id, chatId: '777@s.whatsapp.net', from: '777@s.whatsapp.net', text: id, isGroup: false, timestamp: Date.now() });
+        await handled;
+      }
+      const ids = new Set(mockEnsureChannel.mock.calls.map((c) => (c[0] as { conversationId: string }).conversationId));
+      expect([...ids]).toEqual(['whatsapp-777@s.whatsapp.net']);
     });
 
     it('should return offline message when orchestrator is not active', async () => {
@@ -305,9 +334,10 @@ describe('WhatsAppOrchestratorBridge', () => {
       const bridge = getWhatsAppOrchestratorBridge();
       const service = getWhatsAppService();
 
-      // Make chatService.sendMessage throw
-      const chatService = getChatService();
-      jest.spyOn(chatService, 'sendMessage').mockRejectedValue(new Error('DB error'));
+      // Make the chat store throw
+      mockRecordTurn.mockImplementationOnce(() => {
+        throw new Error('DB error');
+      });
 
       bridge.setMessageQueueService({ enqueue: jest.fn() } as any);
 

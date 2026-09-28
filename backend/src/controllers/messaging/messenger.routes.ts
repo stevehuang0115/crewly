@@ -2,7 +2,13 @@ import { Router, Request, Response, NextFunction } from 'express';
 import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
-import { CREWLY_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, CHAT_ROUTING_CONSTANTS } from '../../constants.js';
+import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import {
+  messengerConversationId,
+  recordMessengerAgentReply,
+  type MessengerReplySource,
+} from '../../services/chat-v2/owner-inbound.utils.js';
 import { MessengerRegistryService } from '../../services/messaging/messenger-registry.service.js';
 import { SlackMessengerAdapter } from '../../services/messaging/adapters/slack-messenger.adapter.js';
 import { TelegramMessengerAdapter } from '../../services/messaging/adapters/telegram-messenger.adapter.js';
@@ -21,6 +27,51 @@ const VALID_PLATFORMS: ReadonlySet<string> = new Set<MessengerPlatform>(['slack'
  */
 function validatePlatform(value: string): MessengerPlatform | null {
   return VALID_PLATFORMS.has(value) ? (value as MessengerPlatform) : null;
+}
+
+/** chat-v2 channel prefix + log source of the platforms whose skill replies are recorded. */
+const RECORDED_SKILL_REPLIES: Partial<Record<MessengerPlatform, { prefix: string; source: MessengerReplySource }>> = {
+  'google-chat': { prefix: CHAT_ROUTING_CONSTANTS.GOOGLE_CHAT_CHANNEL_PREFIX, source: 'google-chat' },
+  telegram: { prefix: CHAT_ROUTING_CONSTANTS.TELEGRAM_CHANNEL_PREFIX, source: 'telegram' },
+};
+
+/**
+ * Record a reply an agent sent through `POST /messengers/:platform/send`
+ * (the `reply-gchat` skill and friends) in the conversation log, next to the
+ * owner's message on the same conversation
+ * (specs/unified-conversations-cloud-store.md §A.3 G1). Slack has its own
+ * bookkeeping and Discord has no inbound recording, so both are skipped.
+ * Best-effort: never throws.
+ *
+ * @param platform - Messenger the reply went to
+ * @param channel - Platform conversation id (Google Chat space / Telegram chat id)
+ * @param text - What was sent
+ * @param threadId - Platform thread, when given
+ * @param agentHeader - `X-Agent-Session` of the calling skill, when present
+ */
+function recordSkillReply(
+  platform: MessengerPlatform,
+  channel: string,
+  text: string,
+  threadId: string | undefined,
+  agentHeader: string | string[] | undefined,
+): void {
+  const target = RECORDED_SKILL_REPLIES[platform];
+  if (!target) return;
+  try {
+    recordMessengerAgentReply(getChatV2Service(), {
+      conversationId: messengerConversationId(target.prefix, channel),
+      content: text,
+      source: target.source,
+      ...(typeof agentHeader === 'string' && agentHeader.length > 0 ? { agentSession: agentHeader } : {}),
+      metadata:
+        target.source === 'google-chat'
+          ? { gchatSpace: channel, ...(threadId ? { gchatThread: threadId } : {}) }
+          : { telegramChatId: channel },
+    });
+  } catch {
+    // Recording is best-effort; the message is already sent.
+  }
 }
 
 /**
@@ -128,6 +179,7 @@ export function createMessengerRouter(): Router {
 
       const threadId = req.body?.threadId || req.body?.threadName || undefined;
       await adapter.sendMessage(channel, text, { threadId });
+      recordSkillReply(platform, channel, text, threadId, (req.headers ?? {})['x-agent-session']);
       res.json({ success: true, message: 'Message sent' });
     } catch (error) {
       next(error);

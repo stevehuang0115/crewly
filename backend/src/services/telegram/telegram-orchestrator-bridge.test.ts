@@ -238,6 +238,34 @@ describe('TelegramOrchestratorBridge', () => {
 			);
 		});
 
+		it('records the sent reply as an orchestrator turn next to the question (G1)', async () => {
+			mockTelegramService.sendMessage.mockResolvedValueOnce(901);
+			await bridge.initialize();
+			mockTelegramService.emit('message', {
+				chatId: '12345',
+				messageId: 55,
+				userId: '42',
+				userName: 'Alice',
+				text: 'Hello',
+				timestamp: 1700000000,
+			});
+			await new Promise(resolve => setTimeout(resolve, 10));
+			const enqueueCall = mockQueueService.enqueue.mock.calls[0]![0] as {
+				sourceMetadata: { telegramResolve: (response: string) => void };
+			};
+			enqueueCall.sourceMetadata.telegramResolve('Here is your answer');
+			await new Promise(resolve => setTimeout(resolve, 10));
+
+			expect(mockRecordTurn).toHaveBeenCalledWith({
+				channelId: 'telegram-12345',
+				senderType: 'agent',
+				senderId: 'crewly-orc',
+				content: 'Here is your answer',
+				clientMessageId: 'telegram-out-901',
+				metadata: { telegramChatId: '12345', telegramMessageId: 901, source: 'telegram' },
+			});
+		});
+
 		it('should skip the reply when the orchestrator response is empty', async () => {
 			await bridge.initialize();
 

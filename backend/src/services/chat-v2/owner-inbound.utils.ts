@@ -95,3 +95,107 @@ export function recordMessengerOwnerTurn(
     return null;
   }
 }
+
+/** Messenger surfaces whose agent replies are recorded through {@link recordMessengerAgentReply}. */
+export type MessengerReplySource = 'telegram' | 'google-chat' | 'whatsapp';
+
+/**
+ * Record the orchestrator's reply that a messenger bridge just sent, as an
+ * agent turn on the same chat-v2 channel the owner's message went to.
+ *
+ * Why (specs/unified-conversations-cloud-store.md §A.3 G1): outbound
+ * Telegram / Google Chat / WhatsApp replies reached only the platform and a
+ * thread file, so the machine's conversation log — and Crewly Cloud's copy
+ * of it — held the question without the answer.
+ *
+ * Idempotent when the platform returns a message id:
+ * `clientMessageId = <source>-out-<platformMessageId>`. Best-effort: a
+ * failure returns null and the reply stays delivered.
+ *
+ * @param chat - chat-v2 service (or a test double)
+ * @param args.conversationId - chat-v2 channel id of the conversation
+ * @param args.content - The text that was sent
+ * @param args.source - Which messenger carried it
+ * @param args.agentSession - Agent that answered (defaults to the orchestrator)
+ * @param args.platformMessageId - Platform id of the sent message, when known
+ * @param args.metadata - Extra platform correlation fields
+ * @returns The chat-v2 message id, or null when recording failed
+ */
+export function recordMessengerAgentReply(
+  chat: OwnerInboundChat,
+  args: {
+    conversationId: string;
+    content: string;
+    source: MessengerReplySource;
+    agentSession?: string;
+    platformMessageId?: string | number | null;
+    metadata?: Record<string, unknown>;
+  },
+): string | null {
+  if (!args.content || args.content.trim().length === 0) return null;
+  const agentSession = args.agentSession || ORCHESTRATOR_SESSION_NAME;
+  try {
+    const channel = chat.ensureChannelForLegacyConversation({
+      conversationId: args.conversationId,
+      agentSession: ORCHESTRATOR_SESSION_NAME,
+    });
+    const hasPlatformId =
+      args.platformMessageId !== undefined && args.platformMessageId !== null && String(args.platformMessageId).length > 0;
+    const { message } = chat.recordTurn({
+      channelId: channel.id,
+      senderType: 'agent',
+      senderId: agentSession,
+      content: args.content,
+      ...(hasPlatformId ? { clientMessageId: `${args.source}-out-${String(args.platformMessageId)}` } : {}),
+      metadata: { ...(args.metadata ?? {}), source: args.source },
+    });
+    return message.id;
+  } catch {
+    return null;
+  }
+}
+
+/** The slice of ChatV2Service a Cloud Talk turn needs. */
+export interface CloudTalkChat {
+  ensureDmChannel(args: {
+    agentSession: string;
+    principal: { userId: string; source: 'oss' };
+  }): { channel: ChatChannelDTO };
+  recordTurn(input: RecordTurnInput): RecordTurnResult;
+}
+
+/**
+ * Record a message the owner sent from Crewly Cloud's Talk page into the
+ * agent's DM — the same channel the dashboard and the agent's Slack DM use —
+ * tagged `source: 'cloud-talk'` (spec §A.3 G3, §D.3 step 4).
+ *
+ * The Phase 3 `talk_message` relay handler calls this; it is idempotent on
+ * the Talk `clientMessageId`, so a relay retry records one row. Replies to a
+ * Talk turn stay off Slack through the reply-affinity rule (G6).
+ *
+ * @param chat - chat-v2 service (or a test double)
+ * @param args.agentSession - Agent the owner is talking to
+ * @param args.text - What the owner said
+ * @param args.clientMessageId - Talk message id (`talk-<uuid>`)
+ * @param args.ownerUserId - Owner principal of the DM channel
+ * @returns The persisted turn and the DM channel id
+ * @throws {ChatError} when the channel cannot be created or the text is invalid
+ */
+export function recordCloudTalkTurn(
+  chat: CloudTalkChat,
+  args: { agentSession: string; text: string; clientMessageId: string; ownerUserId: string },
+): RecordTurnResult & { channelId: string } {
+  const { channel } = chat.ensureDmChannel({
+    agentSession: args.agentSession,
+    principal: { userId: args.ownerUserId, source: 'oss' },
+  });
+  const result = chat.recordTurn({
+    channelId: channel.id,
+    senderType: 'user',
+    senderId: args.ownerUserId,
+    content: args.text,
+    clientMessageId: args.clientMessageId,
+    metadata: { source: 'cloud-talk' },
+  });
+  return { ...result, channelId: channel.id };
+}

@@ -1217,6 +1217,7 @@ export class SlackTeamChannelService {
         slackThreadTs,
         slackTs: message.ts,
         slackUserId: message.userId,
+        ...(message.teamId ? { slackTeamId: message.teamId } : {}),
         // Marks the row as agent-authored: the commitment-approval gate must
         // never read a colleague agent's post as owner approval (#730).
         ...(remoteAgent ? { [OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION]: remoteAgent } : {}),
