@@ -433,9 +433,9 @@ export class ProjectTicketWorkflowService {
 
   /**
    * Move a ticket to another status (spec §3–§4). Starting work goes through
-   * {@link claim} / {@link assign}, not here. Leaving `in_progress` for
-   * ready / backlog / cancelled cancels the live WorkItem and clears the
-   * assignee.
+   * {@link claim} / {@link assign}, not here. Moving a ticket out of
+   * `in_progress` by hand cancels its live WorkItem; ready / backlog /
+   * cancelled also clear the assignee and the WorkItem link.
    *
    * @param ref - Project reference
    * @param id - Ticket id
@@ -459,7 +459,10 @@ export class ProjectTicketWorkflowService {
     const clearsWork = to === 'ready' || to === 'backlog' || to === 'cancelled';
     const extra: Partial<ProjectTicketFields> = clearsWork ? { assignee: null, workItemId: null } : {};
     const updated = await this.tickets.transition(project.path, id, to, this.actorName(caller), note, extra);
-    if (current.status === 'in_progress' && clearsWork && current.workItemId) {
+    // A person moving the ticket out of in_progress stops the work: a live
+    // WorkItem is cancelled (one already submitted for review is left to
+    // its reviewer — done_by_worker cannot be cancelled).
+    if (current.status === 'in_progress' && current.workItemId) {
       await this.cancelLiveWorkItem(current.workItemId, `project ticket ${id} moved to ${to} by ${this.actorName(caller)}`);
     }
     return updated;

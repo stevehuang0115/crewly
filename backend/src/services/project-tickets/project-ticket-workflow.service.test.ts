@@ -224,6 +224,22 @@ describe('ProjectTicketWorkflowService', () => {
       expect(pool.items.get(workItem.id)!.status).toBe('cancelled');
     });
 
+    it('stops the work when the owner closes an in-progress ticket by hand, keeping the assignee', async () => {
+      const t = await readyTicket();
+      const { workItem } = await wf.claim('p1', t.id, dev);
+      const done = await wf.transition('p1', t.id, 'done', owner, 'shipped it myself');
+      expect(done).toMatchObject({ status: 'done', assignee: 'app-dev' });
+      expect(pool.items.get(workItem.id)!.status).toBe('cancelled');
+    });
+
+    it('leaves a WorkItem that is already waiting for review to its reviewer', async () => {
+      const t = await readyTicket();
+      const { workItem } = await wf.claim('p1', t.id, dev);
+      pool.set(workItem.id, { status: 'done_by_worker' });
+      await wf.transition('p1', t.id, 'review', owner);
+      expect(pool.items.get(workItem.id)!.status).toBe('done_by_worker');
+    });
+
     it('does not let another member release someone else’s ticket', async () => {
       const t = await readyTicket();
       await wf.claim('p1', t.id, dev);

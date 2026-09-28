@@ -113,8 +113,10 @@ backlog ──▶ ready ──▶ in_progress ──▶ done
 | done | ready |
 | cancelled | backlog |
 
-Leaving `in_progress` for anything but `review/done` cancels the linked WorkItem if it is still live
-(queued/blocked → `cancelQueued`; running → released and cancelled).
+Moving a ticket out of `in_progress` by hand (API / board / skill) cancels the linked WorkItem if it
+is still live (queued/blocked → `cancelQueued`; running → released and cancelled; an item already
+submitted for review is left to its reviewer). `ready`, `backlog` and `cancelled` also clear the
+assignee and the WorkItem link. A hand edit of the file itself does not touch the WorkItem.
 
 ## 4. Who may do what
 
