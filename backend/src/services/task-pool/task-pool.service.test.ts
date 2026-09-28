@@ -770,6 +770,60 @@ describe('TaskPoolService', () => {
       });
     });
 
+    // #819: a verdict rendered directly on the source (POST /verdict, or the
+    // owner resolving an escalation) used to leave `<id>:verify:<id>` open
+    // in the reviewer's queue forever — only completing the review item
+    // ITSELF closed it. verifyItem must close it too.
+    describe('closing the review item after a direct verdict (#819)', () => {
+      it('a verdict rendered directly (not via completing the review item) closes the open review item', async () => {
+        const { sourceId, reviewId } = await awaitingReview();
+        expect(await statusOf(reviewId)).toBe('running');
+
+        await service.verifyItem(sourceId, { role: 'owner' }, 'verified');
+
+        expect(await statusOf(reviewId)).toBe('done');
+      });
+
+      it('closes the review item on a direct REJECTED verdict too', async () => {
+        const { sourceId, reviewId } = await awaitingReview();
+
+        await service.verifyItem(sourceId, { role: 'owner' }, 'rejected', 'not yet');
+
+        expect(await statusOf(reviewId)).toBe('done');
+      });
+
+      it('cancels a review item that was never claimed (queued), rather than erroring', async () => {
+        const source = makeWorkItem({ title: 'deliverable', target: 'dev-ann', metadata: {} });
+        await service.addToPool(source);
+        await service.claimFromPool('dev-ann');
+        await service.submitForVerification(source.id, { role: 'agent', session: 'dev-ann' });
+        const review = makeWorkItem({
+          id: `${source.id}:verify:${source.id}`,
+          type: 'review',
+          title: 'Verify: deliverable',
+          target: 'tl-sam',
+          metadata: { verifyOf: source.id },
+        });
+        await service.addToPool(review); // never claimed — stays queued
+        expect(await statusOf(review.id)).toBe('queued');
+
+        await service.verifyItem(source.id, { role: 'owner' }, 'verified');
+
+        expect(await statusOf(review.id)).toBe('cancelled');
+      });
+
+      it('a verdict with no review item at all still succeeds (no-op close)', async () => {
+        const wi = makeWorkItem({ type: 'delegate', target: 'dev-ann' });
+        await service.addToPool(wi);
+        await service.claimFromPool('dev-ann');
+        await service.submitForVerification(wi.id, { role: 'agent', session: 'dev-ann' });
+
+        await expect(service.verifyItem(wi.id, { role: 'owner' }, 'verified')).resolves.toMatchObject({
+          status: 'verified',
+        });
+      });
+    });
+
     describe('no default actor on the status setters', () => {
       it('updateItemStatus refuses a missing actor', async () => {
         const wi = makeWorkItem();
