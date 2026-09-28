@@ -469,6 +469,9 @@ export class ChatV2RelayAdapter {
             ? (p['mentions'] as string[])
             : undefined,
           threadId: this.optionalString(p, 'threadId'),
+          // Cloud Talk tags its sends so the unified log can tell them from
+          // Crewly Chat (specs/unified-conversations-cloud-store.md §A.3 G3).
+          ...(p['origin'] === 'cloud-talk' ? { origin: 'cloud-talk' as const } : {}),
         });
         // Fire-and-forget dispatch: mirror the HTTP controller's post-ack
         // path so the bound agent's PTY receives a `[CHAT:<id>]` prompt.

@@ -697,6 +697,18 @@ export interface SlackConversationContext {
   startedAt: string;
   lastActivityAt: string;
   messageCount: number;
+  /**
+   * Per-message fields of the inbound message being handled. Set on the
+   * bridge's own copy of the context (never on the shared per-thread one) so
+   * the conversation log keeps the Slack ids of each message
+   * (specs/unified-conversations-cloud-store.md §A.3 G5).
+   */
+  /** Slack ts of the message being handled */
+  messageTs?: string;
+  /** Slack user who wrote the message being handled (`userId` is the thread starter) */
+  messageUserId?: string;
+  /** Slack workspace (team) id of the message being handled */
+  slackTeamId?: string;
 }
 
 /**

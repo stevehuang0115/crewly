@@ -301,6 +301,7 @@ export class CrewlyServer {
 	private isShuttingDown = false;
 	/** Tells the owner on Slack when this machine loses Crewly Cloud */
 	private cloudDisconnectNotice: CloudDisconnectNoticeService | null = null;
+	private conversationCloudSync: import('./services/cloud/conversation-cloud-sync.service.js').ConversationCloudSyncService | null = null;
 	/** Epoch ms of the last shutdown signal acted on (dedups process-group delivery) */
 	private lastShutdownSignalAt = 0;
 	/** Interrupted turns loaded at boot, resumed once their agents are back */
@@ -2924,6 +2925,11 @@ void (async () => {
 			// loses Crewly Cloud — inbound Slack then queues in Cloud unseen.
 			this.startCloudDisconnectNotice();
 
+			// Upload the conversation log to Crewly Cloud (unified conversations,
+			// specs/unified-conversations-cloud-store.md §B). On by default for a
+			// signed-in machine; CREWLY_CONVERSATION_SYNC=0 turns it off.
+			void this.startConversationCloudSync();
+
 			// V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
 			// The legacy `TaskTrackingService.startAutoSync()` is gone — V3
 			// task-pool reconciler owns lifecycle cleanup now.
@@ -4135,6 +4141,66 @@ void (async () => {
 	}
 
 	/**
+	 * Start the conversation uploader: drains chat.db's cloud_outbox to Crewly
+	 * Cloud and backfills the plan window on first sign-in. The owner gets one
+	 * Slack DM (straight through the Web API, like the disconnect notice) the
+	 * first time history reaches Cloud. Never throws.
+	 */
+	private async startConversationCloudSync(): Promise<void> {
+		try {
+			const [
+				{ ConversationCloudSyncService, setConversationCloudSyncService },
+				{ CloudClientService },
+				{ VersionCheckService },
+			] = await Promise.all([
+				import('./services/cloud/conversation-cloud-sync.service.js'),
+				import('./services/cloud/cloud-client.service.js'),
+				import('./services/system/version-check.service.js'),
+			]);
+			const chat = getChatV2Service();
+			const cloud = CloudClientService.getInstance();
+			const service = new ConversationCloudSyncService({
+				outbox: chat.getCloudOutbox(),
+				cloud: {
+					getToken: () => cloud.getToken(),
+					getCloudUrl: () => cloud.getCloudUrl(),
+					tryRefreshToken: () => cloud.tryRefreshToken(),
+				},
+				identity: async () => {
+					const id = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+					return { instanceId: id.deviceId, deviceName: id.deviceName };
+				},
+				homeId: getCrewlyHomeId(this.config.crewlyHome),
+				crewlyVersion: async () => VersionCheckService.getInstance().getLocalVersion(),
+				onNewMessage: (listener) => {
+					chat.on('chat_message', listener);
+					return () => chat.off('chat_message', listener);
+				},
+				reclassifyOwnerRows: () => {
+					const ownerSlackUserId = getSlackService().getOwnerUserId?.() ?? null;
+					chat.reclassifyOwnerRows(() => ({ slackUserId: ownerSlackUserId }));
+				},
+				notifyOwner: async (text) => {
+					const slack = getSlackService();
+					const ownerUserId = slack.getOwnerUserId?.() ?? null;
+					const botToken =
+						getSlackAgentIdentityService()?.getInstalled(ORCHESTRATOR_SESSION_NAME)?.botToken ?? slack.getBotToken();
+					if (!ownerUserId || !botToken) return false;
+					await createOwnerDirectDm({ botToken, ownerUserId }).send(text);
+					return true;
+				},
+			});
+			setConversationCloudSyncService(service);
+			service.start();
+			this.conversationCloudSync = service;
+		} catch (error) {
+			this.logger.warn('Conversation cloud sync not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * Load interrupted turns left by the previous shutdown (fresh ones only).
 	 */
 	private loadInterruptedTurnsAtBoot(): void {
@@ -4578,6 +4644,7 @@ void (async () => {
 
 		AutoUpdateService.getInstance()?.stop();
 		this.cloudDisconnectNotice?.stop();
+		this.conversationCloudSync?.stop();
 
 		// Safe restart: stop delivering, wait for agents mid-turn, persist the rest.
 		// Runs before the force-exit timer below, which only bounds the teardown.

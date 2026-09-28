@@ -47,6 +47,11 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('GET', '/requests?status=running')).toBe(true);
   });
 
+  it('allows reading an agent timeline, not writing to it', () => {
+    expect(isAllowedMobileApiCall('GET', '/chat/agents/ella/timeline?limit=50')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/chat/agents/ella/timeline')).toBe(false);
+  });
+
   it('allows only the human-in-the-loop mutations', () => {
     expect(isAllowedMobileApiCall('POST', '/escalations/abc/resolve')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/approvals/xyz/approve')).toBe(true);

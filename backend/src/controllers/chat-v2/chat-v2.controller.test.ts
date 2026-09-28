@@ -45,6 +45,30 @@ function buildApp() {
 }
 
 describe('chat-v2 controller (REST)', () => {
+  it('GET /api/chat/agents/:session/timeline — merged timeline with source filter and cursor', async () => {
+    const { app, service } = buildApp();
+    try {
+      const dm = service.ensureDmChannel({ agentSession: 'ella', principal: { userId: 'dev-user-001', source: 'oss' } }).channel;
+      for (const [content, source] of [['a', 'web'], ['b', 'slack'], ['c', 'cloud-talk']] as const) {
+        service.recordTurn({ channelId: dm.id, senderType: 'user', senderId: 'Steve', content, metadata: { source } });
+      }
+      const all = await request(app).get('/api/chat/agents/ella/timeline?limit=2');
+      expect(all.status).toBe(200);
+      expect(all.body.data.items.map((i: { content: string }) => i.content)).toEqual(['c', 'b']);
+      expect(all.body.data.items[0]).toMatchObject({ source: 'cloud-talk', direction: 'in', senderKind: 'owner', channelId: dm.id });
+      const next = await request(app).get(`/api/chat/agents/ella/timeline?cursor=${all.body.data.nextCursor}`);
+      expect(next.body.data.items.map((i: { content: string }) => i.content)).toEqual(['a']);
+      const filtered = await request(app).get('/api/chat/agents/ella/timeline?source=slack,crewly-chat');
+      expect(filtered.body.data.items.map((i: { content: string }) => i.content)).toEqual(['b', 'a']);
+      const bad = await request(app).get('/api/chat/agents/ella/timeline?source=fax');
+      expect(bad.status).toBe(400);
+      const other = await request(app).get('/api/chat/agents/ella/timeline').set('X-Agent-Session', 'sam');
+      expect(other.status).toBe(403);
+    } finally {
+      service.close();
+    }
+  });
+
   it('GET /api/chat/channels — returns empty list on a fresh DB', async () => {
     const { app, service } = buildApp();
     try {

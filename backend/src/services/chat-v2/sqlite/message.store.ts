@@ -18,12 +18,14 @@ import { randomUUID } from 'crypto';
 import {
   CHAT_ERROR_CODES,
   ChatError,
+  type ChatChannelType,
   type ChatContentType,
   type ChatMessageCursorPayload,
   type ChatMessageRow,
   type ChatSenderType,
 } from '../types.js';
 import type { ChatDatabase } from './chat-db.js';
+import { deriveUnifiedColumns, type OwnerIdentity } from './unified-log.js';
 
 // ---------------------------------------------------------------------------
 // Constants — shared SELECT column list, single source of truth
@@ -118,6 +120,19 @@ export interface MessageInsertInput {
   id?: string;
 }
 
+/** A timeline row: the message, its unified-log columns, and its channel. */
+export interface AgentTimelineRow extends ChatMessageRow {
+  /** SQLite rowid — the tie-breaker for rows created in the same ms. */
+  rowid: number;
+  source: string | null;
+  direction: string | null;
+  sender_kind: string | null;
+  agent_session: string | null;
+  ext_ref: string | null;
+  channel_name: string;
+  channel_type: ChatChannelType;
+}
+
 /** Result of inserting a message — includes whether this was a dedupe hit. */
 export interface MessageInsertResult {
   row: ChatMessageRow;
@@ -145,7 +160,34 @@ export class MessageStore {
   /** Default page size when caller didn't specify. */
   static readonly DEFAULT_LIMIT = 50;
 
+  /** Who the owner is (Slack user / workspace) — feeds `sender_kind` and `ext_ref`. */
+  private ownerIdentity: () => OwnerIdentity | null = () => null;
+
   constructor(private readonly db: ChatDatabase) {}
+
+  /**
+   * Wire the owner-identity lookup used when deriving the unified-log
+   * columns. Called post-construction because Slack is configured after the
+   * chat store opens.
+   *
+   * @param provider - Returns the owner's identity, or null when unknown
+   */
+  setOwnerIdentityProvider(provider: () => OwnerIdentity | null): void {
+    this.ownerIdentity = provider;
+  }
+
+  /**
+   * Resolve the owner identity without letting a faulty provider break a write.
+   *
+   * @returns The identity, or null
+   */
+  private safeOwnerIdentity(): OwnerIdentity | null {
+    try {
+      return this.ownerIdentity();
+    } catch {
+      return null;
+    }
+  }
 
   /**
    * Insert a message into the channel.
@@ -199,8 +241,10 @@ export class MessageStore {
       // Channel existence check — FK catches it too but we want a typed error
       // with a sensible status code.
       const channel = this.db
-        .prepare('SELECT id, archived_at FROM chat_channels WHERE id = ?')
-        .get(input.channelId) as { id: string; archived_at: number | null } | undefined;
+        .prepare('SELECT id, archived_at, type, agent_session FROM chat_channels WHERE id = ?')
+        .get(input.channelId) as
+        | { id: string; archived_at: number | null; type: ChatChannelType; agent_session: string }
+        | undefined;
       if (!channel) {
         throw new ChatError(
           CHAT_ERROR_CODES.CHANNEL_NOT_FOUND,
@@ -225,12 +269,35 @@ export class MessageStore {
         )
         .get(input.channelId) as { next_seq: number };
 
+      // Unified conversation log columns (spec §A.4). An agent's reply
+      // takes the surface of the latest inbound turn it answers.
+      const latestInboundSource =
+        input.senderType === 'agent'
+          ? ((this.db
+              .prepare(
+                `SELECT source FROM chat_messages
+                 WHERE channel_id = ? AND sender_type = 'user' AND source IS NOT NULL
+                 ORDER BY seq DESC LIMIT 1`,
+              )
+              .get(input.channelId) as { source: string } | undefined)?.source ?? null)
+          : null;
+      const unified = deriveUnifiedColumns({
+        senderType: input.senderType,
+        senderId: input.senderId,
+        metadata: metadataObj,
+        mentions: input.mentions ?? [],
+        channel: { id: channel.id, type: channel.type ?? 'dm', agentSession: channel.agent_session ?? '' },
+        latestInboundSource,
+        owner: this.safeOwnerIdentity(),
+      });
+
       this.db
         .prepare(
           `INSERT INTO chat_messages
              (id, channel_id, seq, sender_type, sender_id, content, content_type,
-              created_at, metadata, mentions, thread_id)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              created_at, metadata, mentions, thread_id,
+              source, direction, sender_kind, agent_session, ext_ref, cloud_sync)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           id,
@@ -244,6 +311,12 @@ export class MessageStore {
           metadataJson,
           mentionsJson,
           threadId,
+          unified.source,
+          unified.direction,
+          unified.senderKind,
+          unified.agentSession,
+          unified.extRef ? JSON.stringify(unified.extRef) : null,
+          unified.cloudSync,
         );
 
       // Touch last_message_at on the parent channel.
@@ -755,6 +828,76 @@ export class MessageStore {
       )
       .get(channelId) as ChatMessageRow | undefined;
     return row ?? null;
+  }
+
+  /**
+   * Surface of the owner's most recent message in a channel — the Slack
+   * reply-affinity rule (spec §A.3 G6) mirrors an agent's answer to Slack only
+   * when the owner last spoke there.
+   *
+   * Rows an agent wrote as a `user` turn (`sender_kind = 'agent'`) and other
+   * people's rows (`human`) are not the owner and are skipped.
+   *
+   * @param channelId - The chat-v2 channel id
+   * @returns The source column (`slack`, `crewly-chat`, `cloud-talk`, …), or null
+   */
+  latestOwnerTurnSource(channelId: string): string | null {
+    const row = this.db
+      .prepare(
+        `SELECT source FROM chat_messages
+         WHERE channel_id = ? AND sender_type = 'user'
+           AND COALESCE(sender_kind, 'owner') = 'owner'
+         ORDER BY seq DESC
+         LIMIT 1`,
+      )
+      .get(channelId) as { source: string | null } | undefined;
+    return row?.source ?? null;
+  }
+
+  /**
+   * One page of an agent's merged timeline across every surface: rows whose
+   * `agent_session` is the agent, plus every row of the huddles the agent is
+   * a member of. Newest first (spec §A.5).
+   *
+   * @param agentSession - Agent session name
+   * @param options.before - Only rows strictly older than this (ms), or a
+   *   `{createdAt, rowid}` position from a previous page
+   * @param options.limit - Page size (already clamped by the caller)
+   * @param options.sources - Restrict to these `source` values
+   * @returns Rows (with their channel's name/type and the rowid used for paging)
+   */
+  listAgentTimeline(
+    agentSession: string,
+    options: { before?: { createdAt: number; rowid?: number }; limit: number; sources?: string[] },
+  ): Array<AgentTimelineRow> {
+    const params: Array<string | number> = [agentSession, agentSession];
+    let where = `(m.agent_session = ? OR m.channel_id IN (
+                    SELECT channel_id FROM chat_channel_members WHERE member_session = ?))`;
+    if (options.before) {
+      if (options.before.rowid !== undefined) {
+        where += ' AND (m.created_at < ? OR (m.created_at = ? AND m.rowid < ?))';
+        params.push(options.before.createdAt, options.before.createdAt, options.before.rowid);
+      } else {
+        where += ' AND m.created_at < ?';
+        params.push(options.before.createdAt);
+      }
+    }
+    if (options.sources && options.sources.length > 0) {
+      where += ` AND m.source IN (${options.sources.map(() => '?').join(', ')})`;
+      params.push(...options.sources);
+    }
+    params.push(options.limit);
+    return this.db
+      .prepare(
+        `SELECT m.rowid AS rowid, ${MESSAGE_SELECT_COLUMNS.split(',').map((c) => `m.${c.trim()}`).join(', ')},
+                m.source, m.direction, m.sender_kind, m.agent_session, m.ext_ref,
+                c.name AS channel_name, c.type AS channel_type
+         FROM chat_messages m JOIN chat_channels c ON c.id = m.channel_id
+         WHERE ${where}
+         ORDER BY m.created_at DESC, m.rowid DESC
+         LIMIT ?`,
+      )
+      .all(...params) as AgentTimelineRow[];
   }
 
   findPendingSlackDelivery(maxAgeMs: number, nowMs?: number): ChatMessageRow[] {

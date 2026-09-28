@@ -31,6 +31,7 @@ import {
  * - `POST   /channels/:id/messages`
  * - `GET    /agents` — directory of agents across all teams
  * - `GET    /presence/:agentId` — live presence for one agent
+ * - `GET    /agents/:session/timeline` — one agent's messages across every surface
  *
  * @param service - Configured ChatV2Service
  * @param deps    - Optional gateway + dispatcher for realtime wiring
@@ -57,6 +58,7 @@ export function createChatV2Router(
   router.post('/channels/:id/messages', requireAuth, handlers.sendMessage);
 
   router.get('/agents', requireAuth, handlers.listAgents);
+  router.get('/agents/:session/timeline', requireAuth, handlers.getAgentTimeline);
   router.get('/presence/:agentId', requireAuth, handlers.getAgentPresence);
 
   return router;

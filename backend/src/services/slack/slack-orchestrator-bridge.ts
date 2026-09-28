@@ -391,12 +391,19 @@ export class SlackOrchestratorBridge extends EventEmitter {
         }
       }
 
-      // Get or create conversation context
-      const context = this.slackService.getConversationContext(
-        message.threadTs || message.ts,
-        message.channelId,
-        message.userId
-      );
+      // Get or create conversation context. The bridge works on its own copy
+      // carrying this message's Slack ids (G5), so the shared per-thread
+      // context is never overwritten by a later message.
+      const context: SlackConversationContext = {
+        ...this.slackService.getConversationContext(
+          message.threadTs || message.ts,
+          message.channelId,
+          message.userId
+        ),
+        messageTs: message.ts,
+        messageUserId: message.userId,
+        ...(message.teamId ? { slackTeamId: message.teamId } : {}),
+      };
 
       // Build enriched text with file references for the agent
       const enrichedText = this.enrichTextWithFiles(message);
@@ -961,6 +968,7 @@ Just type naturally to chat with the orchestrator!`;
                 threadTs: context?.threadTs,
                 userId: context?.userId,
                 authorAgentSession,
+                ...persistIdsOf(context),
               }).conversationId,
             },
           };
@@ -1043,6 +1051,7 @@ Just type naturally to chat with the orchestrator!`;
             threadTs: context?.threadTs,
             userId: context?.userId,
             authorAgentSession,
+            ...persistIdsOf(context),
           }).conversationId,
         },
       };
@@ -1213,6 +1222,7 @@ Just type naturally to chat with the orchestrator!`;
               threadTs: context?.threadTs,
               userId: context?.userId,
               authorAgentSession,
+              ...persistIdsOf(context),
             }).conversationId,
           },
         };
@@ -2129,6 +2139,7 @@ Just type naturally to chat with the orchestrator!`;
               threadTs: context?.threadTs,
               userId: context?.userId,
               authorAgentSession,
+              ...persistIdsOf(context),
             }).conversationId,
           },
         };
@@ -2220,6 +2231,12 @@ Just type naturally to chat with the orchestrator!`;
     userId?: string;
     /** Crewly agent that wrote the Slack message (cross-machine colleague), if any. */
     authorAgentSession?: string;
+    /** Slack ts of the message (G5). */
+    messageTs?: string;
+    /** Slack user id of the author (G5). */
+    slackUserId?: string;
+    /** Slack workspace id (G5). */
+    slackTeamId?: string;
   }): { conversationId: string; messageId: string } {
     const cid =
       args.conversationId ??
@@ -2245,6 +2262,9 @@ Just type naturally to chat with the orchestrator!`;
         source: 'slack',
         slackChannelId: args.channelId,
         slackThreadTs: args.threadTs,
+        ...(args.messageTs ? { slackTs: args.messageTs } : {}),
+        ...(args.slackUserId ? { slackUserId: args.slackUserId } : {}),
+        ...(args.slackTeamId ? { slackTeamId: args.slackTeamId } : {}),
         // An agent's Slack post is stored as a user turn so it is delivered
         // like a colleague's, but it is NOT the owner: tag it so the
         // commitment-approval gate never reads it as owner approval (#730).
@@ -2272,4 +2292,24 @@ export function getSlackOrchestratorBridge(): SlackOrchestratorBridge {
  */
 export function resetSlackOrchestratorBridge(): void {
   bridgeInstance = null;
+}
+
+/**
+ * The per-message Slack ids the conversation log keeps for an inbound turn
+ * (specs/unified-conversations-cloud-store.md §A.3 G5): the message ts, its
+ * author and the workspace. Absent fields are left out.
+ *
+ * @param context - The bridge's copy of the conversation context, if any
+ * @returns Fields to spread into `persistSlackInbound`
+ */
+export function persistIdsOf(
+  context: SlackConversationContext | undefined,
+): { messageTs?: string; slackUserId?: string; slackTeamId?: string } {
+  if (!context) return {};
+  const slackUserId = context.messageUserId ?? context.userId;
+  return {
+    ...(context.messageTs ? { messageTs: context.messageTs } : {}),
+    ...(slackUserId ? { slackUserId } : {}),
+    ...(context.slackTeamId ? { slackTeamId: context.slackTeamId } : {}),
+  };
 }

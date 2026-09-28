@@ -294,6 +294,37 @@ export interface ChatMessageListResult {
   channelId: string;
 }
 
+/**
+ * One entry of an agent's merged timeline
+ * (`GET /api/chat/agents/:session/timeline`, specs/unified-conversations-cloud-store.md §A.5):
+ * the message plus where it happened.
+ */
+export interface ChatTimelineItemDTO extends ChatMessageDTO {
+  /** Surface — slack, crewly-chat, cloud-talk, google-chat, telegram, whatsapp, system, runtime. */
+  source: string;
+  /** `in` (to an agent), `out` (from an agent), `internal`. */
+  direction: string;
+  /** `owner`, `agent`, `human`, `system`. */
+  senderKind: string;
+  /** The agent the message is to/from, when known. */
+  agentSession: string | null;
+  /** External ids (Slack workspace / channel / ts / thread, messenger ids). */
+  extRef: Record<string, string> | null;
+  /** Name of the channel the message lives in. */
+  channelName: string;
+  /** Type of that channel. */
+  channelType: ChatChannelType;
+}
+
+/** Response of the per-agent timeline. */
+export interface ChatTimelineResult {
+  agentSession: string;
+  /** Newest first. */
+  items: ChatTimelineItemDTO[];
+  /** Pass as `cursor` to load the next (older) page; null on the last page. */
+  nextCursor: string | null;
+}
+
 // ---------------------------------------------------------------------------
 // Input shapes (validated at controller; never exposed to DB directly)
 // ---------------------------------------------------------------------------

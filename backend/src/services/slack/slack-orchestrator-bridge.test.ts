@@ -14,6 +14,7 @@ import {
   suppressFileOnly,
   deriveSlackThreadName,
   mentionedBotUserIds,
+  persistIdsOf,
 } from './slack-orchestrator-bridge.js';
 import { resetSlackService, getSlackService } from './slack.service.js';
 import { resetChatService } from '../chat/chat.service.js';
@@ -2771,5 +2772,22 @@ describe('deriveSlackThreadName', () => {
     expect(deriveSlackThreadName('')).toBe('Slack thread');
     expect(deriveSlackThreadName('   ')).toBe('Slack thread');
     expect(deriveSlackThreadName(undefined)).toBe('Slack thread');
+  });
+});
+
+describe('persistIdsOf (G5: Slack ids kept on the orchestrator path)', () => {
+  const base = { threadTs: '1.0', channelId: 'C1', userId: 'U-starter', conversationId: 'slack-C1-1-0', startedAt: '', lastActivityAt: '', messageCount: 1 };
+
+  it('takes the ts, author and workspace of the message being handled', () => {
+    expect(persistIdsOf({ ...base, messageTs: '1.5', messageUserId: 'U-maya', slackTeamId: 'T1' })).toEqual({
+      messageTs: '1.5',
+      slackUserId: 'U-maya',
+      slackTeamId: 'T1',
+    });
+  });
+
+  it('falls back to the thread starter and omits what it does not know', () => {
+    expect(persistIdsOf(base)).toEqual({ slackUserId: 'U-starter' });
+    expect(persistIdsOf(undefined)).toEqual({});
   });
 });

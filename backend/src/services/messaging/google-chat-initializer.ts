@@ -24,7 +24,11 @@ import { cleanGoogleChatResponse } from '../../utils/terminal-output.utils.js';
 import type { MessageQueueService } from './message-queue.service.js';
 import type { IncomingMessage } from './messenger-adapter.interface.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
-import { messengerConversationId, recordMessengerOwnerTurn } from '../chat-v2/owner-inbound.utils.js';
+import {
+  messengerConversationId,
+  recordMessengerAgentReply,
+  recordMessengerOwnerTurn,
+} from '../chat-v2/owner-inbound.utils.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('GoogleChatInitializer');
 
@@ -162,6 +166,17 @@ export function createIncomingCallback(
         const cleaned = cleanGoogleChatResponse(response);
         if (cleaned) {
           await adapter.sendMessage(msg.channelId, cleaned, { threadId: msg.threadId });
+
+          // G1: the reply belongs in the conversation log next to the question.
+          const recorded = recordMessengerAgentReply(getChatV2Service(), {
+            conversationId: messengerConversationId(CHAT_ROUTING_CONSTANTS.GOOGLE_CHAT_CHANNEL_PREFIX, msg.conversationId),
+            content: cleaned,
+            source: 'google-chat',
+            metadata: { gchatSpace: msg.channelId, gchatThread: msg.threadId },
+          });
+          if (!recorded) {
+            logger.warn('Could not record Google Chat reply in chat history', { conversationId: msg.conversationId });
+          }
 
           // Add ✅ reaction after successful reply delivery
           if (msg.messageName) {

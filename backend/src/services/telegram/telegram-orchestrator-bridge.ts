@@ -26,7 +26,11 @@ import { TELEGRAM_CONSTANTS, MESSAGE_QUEUE_CONSTANTS, CHAT_ROUTING_CONSTANTS } f
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { formatError } from '../../utils/format-error.js';
 import { getChatV2Service } from '../chat-v2/chat-v2.singleton.js';
-import { messengerConversationId, recordMessengerOwnerTurn } from '../chat-v2/owner-inbound.utils.js';
+import {
+	messengerConversationId,
+	recordMessengerAgentReply,
+	recordMessengerOwnerTurn,
+} from '../chat-v2/owner-inbound.utils.js';
 
 /**
  * TelegramOrchestratorBridge routes incoming Telegram messages to the
@@ -149,6 +153,31 @@ export class TelegramOrchestratorBridge {
 	}
 
 	/**
+	 * Record the reply just sent to Telegram as an agent turn next to the
+	 * owner's message (specs/unified-conversations-cloud-store.md §A.3 G1).
+	 * Best-effort: a failure is logged and the reply stays delivered.
+	 *
+	 * @param msg - The message being answered
+	 * @param response - The text sent
+	 * @param sentId - Telegram message id of the reply, when known
+	 */
+	private recordReply(msg: TelegramIncomingMessage, response: string, sentId: number | undefined): void {
+		const recorded = recordMessengerAgentReply(getChatV2Service(), {
+			conversationId: messengerConversationId(CHAT_ROUTING_CONSTANTS.TELEGRAM_CHANNEL_PREFIX, msg.chatId),
+			content: response,
+			source: 'telegram',
+			platformMessageId: sentId,
+			metadata: {
+				telegramChatId: msg.chatId,
+				...(sentId !== undefined ? { telegramMessageId: sentId } : {}),
+			},
+		});
+		if (!recorded) {
+			this.logger.warn('Could not record Telegram reply in chat history', { chatId: msg.chatId });
+		}
+	}
+
+	/**
 	 * Enqueue a Telegram message into the message queue with a resolve callback.
 	 *
 	 * @param msg - The incoming message to enqueue
@@ -202,7 +231,8 @@ export class TelegramOrchestratorBridge {
 			await this.threadStore.appendBotReply(msg.chatId, response);
 
 			// Send reply back to Telegram
-			await this.telegramService.sendMessage(msg.chatId, response, msg.messageId);
+			const sentId = await this.telegramService.sendMessage(msg.chatId, response, msg.messageId);
+			this.recordReply(msg, response, sentId);
 		} catch (error) {
 			this.logger.error('Failed to deliver response to Telegram', {
 				error: formatError(error),

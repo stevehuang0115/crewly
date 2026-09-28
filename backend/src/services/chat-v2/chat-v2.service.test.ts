@@ -2317,4 +2317,125 @@ describe('ChatV2Service', () => {
       expect(service.getChannelActivity(b.id)).toEqual({ lastOwnerMessageAt: null, lastReplyAt: 9000 });
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Unified conversation log (specs/unified-conversations-cloud-store.md §A)
+  // -------------------------------------------------------------------------
+
+  describe('unified conversation log', () => {
+    it('accepts the whatsapp and cloud-talk sources', () => {
+      const ch = createSam();
+      expect(() =>
+        service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'x', content: 'hi', metadata: { source: 'whatsapp' } }),
+      ).not.toThrow();
+      expect(() =>
+        service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'x', content: 'hi', metadata: { source: 'cloud-talk' } }),
+      ).not.toThrow();
+    });
+
+    it('tags a relayed Cloud Talk send so it is not mistaken for Crewly Chat (G3)', () => {
+      const ch = createSam();
+      const talk = service.sendMessage({ channelId: ch.id, principal: owner, content: 'from the phone', origin: 'cloud-talk' });
+      const web = service.sendMessage({ channelId: ch.id, principal: owner, content: 'from the dashboard' });
+      expect(talk.metadata?.source).toBe('cloud-talk');
+      expect(web.metadata?.source).toBeUndefined();
+      expect(service.getLatestOwnerTurnSource(ch.id)).toBe('crewly-chat');
+    });
+
+    it('never lets an agent write pass as a Cloud Talk turn', () => {
+      const ch = createSam();
+      const reply = service.sendMessage({ channelId: ch.id, principal: agentPrincipal, content: 'on it', origin: 'cloud-talk' });
+      expect(reply.senderType).toBe('agent');
+      expect(reply.metadata?.source).toBeUndefined();
+    });
+
+    it('reports the surface of the owner\'s latest turn, skipping other people and agents', () => {
+      const ch = createSam();
+      expect(service.getLatestOwnerTurnSource(ch.id)).toBeNull();
+      service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'Steve', content: 'q', metadata: { source: 'slack', slackChannelId: 'D1' } });
+      service.recordTurn({ channelId: ch.id, senderType: 'agent', senderId: 'sess-a', content: 'a', metadata: { source: 'reply-tool' } });
+      service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'x', content: 'agent as user', metadata: { source: 'slack', authorAgentSession: 'sam' } });
+      expect(service.getLatestOwnerTurnSource(ch.id)).toBe('slack');
+      service.recordTurn({ channelId: ch.id, senderType: 'user', senderId: 'Steve', content: 'q2', metadata: { source: 'cloud-talk' } });
+      expect(service.getLatestOwnerTurnSource(ch.id)).toBe('cloud-talk');
+    });
+
+    it('upgrades the owner\'s earlier shared-channel rows when the owner becomes known', () => {
+      const huddle = service.createHuddle({ name: 'daily', memberSessions: ['sess-a'], principal: owner });
+      service.recordTurn({
+        channelId: huddle.id,
+        senderType: 'user',
+        senderId: 'Steve',
+        content: 'morning',
+        metadata: { source: 'slack', slackUserId: 'U-owner', slackChannelId: 'C1' },
+      });
+      expect(service.getCloudOutbox().count()).toBe(0);
+      service.setOwnerIdentityProvider(() => ({ slackUserId: 'U-owner' }));
+      expect(service.getCloudOutbox().count()).toBe(1);
+    });
+
+    describe('getAgentTimeline (§A.5)', () => {
+      let clock = 0;
+      beforeEach(() => {
+        service.close();
+        db = openChatDatabase({ dbPath: ':memory:', inMemory: true, skipIntegrityCheck: true });
+        clock = 0;
+        service = new ChatV2Service({ config: loadChatV2Config({}), db, now: () => (clock += 10) });
+      });
+
+      /** Seed a DM, a Slack orchestrator thread (other agent), and a huddle the agent is in. */
+      function seed() {
+        const dm = service.ensureDmChannel({ agentSession: 'ella', principal: owner }).channel;
+        const orc = service.ensureChannelForLegacyConversation({ conversationId: 'slack-C1-1.0', agentSession: 'crewly-orc' });
+        const huddle = service.createHuddle({ name: 'daily', memberSessions: ['ella', 'sam'], principal: owner });
+        service.recordTurn({ channelId: dm.id, senderType: 'user', senderId: 'Steve', content: 'dm q', metadata: { source: 'web' } });
+        service.recordTurn({ channelId: orc.id, senderType: 'user', senderId: 'U1', content: 'orc q', metadata: { source: 'slack' } });
+        service.recordTurn({ channelId: huddle.id, senderType: 'user', senderId: 'Maya', content: 'room chatter', metadata: { source: 'slack', slackUserId: 'U-maya' } });
+        service.recordTurn({ channelId: dm.id, senderType: 'agent', senderId: 'ella', content: 'dm a', metadata: { source: 'reply-tool' } });
+        service.recordTurn({ channelId: dm.id, senderType: 'user', senderId: 'Steve', content: 'talk q', metadata: { source: 'cloud-talk' } });
+        return { dm, huddle };
+      }
+
+      it('merges the agent\'s DM and its huddles, newest first, with surface fields', () => {
+        const { dm, huddle } = seed();
+        const res = service.getAgentTimeline({ agentSession: 'ella', principal: owner });
+        expect(res.items.map((i) => i.content)).toEqual(['talk q', 'dm a', 'room chatter', 'dm q']);
+        expect(res.items[0]).toMatchObject({ source: 'cloud-talk', direction: 'in', senderKind: 'owner', channelId: dm.id, channelType: 'dm' });
+        expect(res.items[1]).toMatchObject({ source: 'crewly-chat', direction: 'out', senderKind: 'agent', agentSession: 'ella' });
+        expect(res.items[2]).toMatchObject({ channelId: huddle.id, channelName: 'daily', channelType: 'huddle', senderKind: 'human' });
+        expect(res.nextCursor).toBeNull();
+      });
+
+      it('pages with a cursor, and with before=<ms>', () => {
+        seed();
+        const first = service.getAgentTimeline({ agentSession: 'ella', principal: owner, limit: 2 });
+        expect(first.items.map((i) => i.content)).toEqual(['talk q', 'dm a']);
+        const second = service.getAgentTimeline({ agentSession: 'ella', principal: owner, limit: 2, cursor: first.nextCursor });
+        expect(second.items.map((i) => i.content)).toEqual(['room chatter', 'dm q']);
+        const before = service.getAgentTimeline({ agentSession: 'ella', principal: owner, before: first.items[1].createdAt });
+        expect(before.items.map((i) => i.content)).toEqual(['room chatter', 'dm q']);
+      });
+
+      it('filters by source', () => {
+        seed();
+        const res = service.getAgentTimeline({ agentSession: 'ella', principal: owner, sources: ['cloud-talk', 'slack'] });
+        expect(res.items.map((i) => i.content)).toEqual(['talk q', 'room chatter']);
+        expect(() => service.getAgentTimeline({ agentSession: 'ella', principal: owner, sources: ['fax'] })).toThrow(/unknown source/);
+      });
+
+      it('lets an agent read only its own timeline', () => {
+        seed();
+        expect(() =>
+          service.getAgentTimeline({ agentSession: 'ella', principal: { userId: 'x', agentSession: 'sam', source: 'oss' } }),
+        ).toThrow(ChatError);
+        expect(
+          service.getAgentTimeline({ agentSession: 'ella', principal: { userId: 'x', agentSession: 'ella', source: 'oss' } }).items,
+        ).toHaveLength(4);
+      });
+
+      it('rejects a malformed cursor', () => {
+        expect(() => service.getAgentTimeline({ agentSession: 'ella', principal: owner, cursor: 'nope' })).toThrow(/Cursor/);
+      });
+    });
+  });
 });

@@ -23,6 +23,20 @@ import type {
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, WHATSAPP_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { recordMessengerAgentReply } from '../chat-v2/owner-inbound.utils.js';
+
+/**
+ * Stable chat-v2 channel id of a WhatsApp conversation — one channel per
+ * chat, never one per message (specs/unified-conversations-cloud-store.md
+ * §A.3 G2). Same shape as `WhatsAppService.getConversationContext`, so
+ * history recorded before this fix stays in the same channel.
+ *
+ * @param chatId - WhatsApp chat JID (`<number>@s.whatsapp.net`)
+ * @returns `whatsapp-<chatId>`
+ */
+export function whatsappConversationId(chatId: string | undefined): string {
+  return `whatsapp-${chatId || 'unknown'}`;
+}
 
 /**
  * Bridge configuration
@@ -201,8 +215,7 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
       }
 
       // Store message in canonical chat-v2 store
-      const conversationId =
-        context?.conversationId ?? `whatsapp-${context?.chatId ?? 'unknown'}-${Date.now()}`;
+      const conversationId = context?.conversationId ?? whatsappConversationId(context?.chatId);
       const channel = this.chatV2.ensureChannelForLegacyConversation({
         conversationId,
         agentSession: 'crewly-orc',
@@ -213,10 +226,10 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
         senderId: context?.chatId ?? 'whatsapp-user',
         content: message,
         metadata: {
-          source: 'slack',  // closest enum value; whatsapp is treated as a similar inbound surface
+          source: 'whatsapp',
           chatId: context?.chatId,
           contactName: context?.contactName,
-        } as Record<string, unknown> & { source: 'slack' },
+        },
       });
       const result = { conversation: { id: channel.id } };
 
@@ -275,8 +288,7 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
     const mqService = this.messageQueueService;
     if (mqService) {
       try {
-        const conversationId =
-          context?.conversationId ?? `whatsapp-${context?.chatId ?? 'unknown'}-${Date.now()}`;
+        const conversationId = context?.conversationId ?? whatsappConversationId(context?.chatId);
         const channel = this.chatV2.ensureChannelForLegacyConversation({
           conversationId,
           agentSession: 'crewly-orc',
@@ -287,10 +299,10 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
           senderId: context?.chatId ?? 'whatsapp-user',
           content: enrichedMessage,
           metadata: {
-            source: 'slack',  // closest enum value; whatsapp is an inbound surface
+            source: 'whatsapp',
             chatId: context?.chatId,
             contactName: context?.contactName,
-          } as Record<string, unknown> & { source: 'slack' },
+          },
         });
         const result = { conversation: { id: channel.id } };
 
@@ -346,6 +358,16 @@ export class WhatsAppOrchestratorBridge extends EventEmitter {
 
     try {
       await this.whatsappService.sendMessage({ to: chatId, text: trimmed });
+      // G1: the reply belongs in the conversation log next to the question.
+      const recorded = recordMessengerAgentReply(this.chatV2, {
+        conversationId: whatsappConversationId(chatId),
+        content: trimmed,
+        source: 'whatsapp',
+        metadata: { chatId },
+      });
+      if (!recorded) {
+        this.logger.warn('Could not record WhatsApp reply in chat history', { chatId });
+      }
     } catch (err) {
       this.logger.error('Failed to send WhatsApp response', {
         error: err instanceof Error ? err.message : String(err),

@@ -7,6 +7,8 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+	CONVERSATION_LOG_CONSTANTS,
+	CONVERSATION_SYNC_CONSTANTS,
   ANTIGRAVITY_CONSTANTS,
   ANTIGRAVITY_EFFORT_LEVELS,
   API_SECURITY_CONSTANTS,
@@ -431,3 +433,20 @@ describe('ONBOARDING_CONSTANTS (first-run checklist)', () => {
     }
   });
 });
+
+describe('conversation log / sync constants', () => {
+	it('match the spec batching and pause values', () => {
+		expect(CONVERSATION_SYNC_CONSTANTS.BATCH_MAX_MESSAGES).toBe(50);
+		expect(CONVERSATION_SYNC_CONSTANTS.BATCH_MAX_BYTES).toBe(256 * 1024);
+		expect(CONVERSATION_SYNC_CONSTANTS.BACKOFF_MAX_MS).toBe(5 * 60 * 1000);
+		expect(CONVERSATION_SYNC_CONSTANTS.UNAVAILABLE_RETRY_MS).toBe(60 * 60 * 1000);
+		expect(CONVERSATION_SYNC_CONSTANTS.ENV_SWITCH).toBe('CREWLY_CONVERSATION_SYNC');
+	});
+
+	it('list every surface Cloud accepts', () => {
+		expect(CONVERSATION_LOG_CONSTANTS.SOURCES).toEqual(
+			expect.arrayContaining(['slack', 'crewly-chat', 'cloud-talk', 'google-chat', 'telegram', 'whatsapp', 'system', 'runtime']),
+		);
+	});
+});
+

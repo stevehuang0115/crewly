@@ -16,6 +16,7 @@ import { existsSync, mkdirSync } from 'fs';
 import { createBareModuleRequire } from '../../../utils/node-require.utils.js';
 import { loadNativeAddonOrFatal } from '../../../utils/native-binding.utils.js';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
+import { applyUnifiedLogUpgrades } from './unified-log.js';
 
 // ---------------------------------------------------------------------------
 // Lazy better-sqlite3 loader — avoids a hard native-module dep at import time
@@ -638,6 +639,15 @@ export function openChatDatabase(options: OpenChatDatabaseOptions): ChatDatabase
     upgradeReport.legacyIndexDropped
   ) {
     logger.info('Chat DB Phase A schema upgrade applied', upgradeReport);
+  }
+
+  // Unified conversation log (specs/unified-conversations-cloud-store.md
+  // §A.4): source / direction / sender_kind / agent_session / ext_ref /
+  // cloud_sync columns, the cloud_outbox + its triggers, and a one-time
+  // backfill of rows written before them.
+  const unifiedReport = applyUnifiedLogUpgrades(db);
+  if (unifiedReport.columnsAdded.length > 0 || unifiedReport.rowsBackfilled > 0) {
+    logger.info('Chat DB unified-log upgrade applied', unifiedReport);
   }
 
   if (!options.skipIntegrityCheck) {

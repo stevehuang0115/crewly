@@ -3551,6 +3551,86 @@ export const SKILL_SETUP_CONSTANTS = {
 	} as Readonly<Record<string, readonly string[]>>,
 } as const;
 
+/**
+ * Unified conversation log (specs/unified-conversations-cloud-store.md §A).
+ * Column vocabularies for the first-class copies of what used to live only
+ * in `chat_messages.metadata`.
+ */
+export const CONVERSATION_LOG_CONSTANTS = {
+	/** `chat_messages.source` values — which surface a message belongs to. */
+	SOURCES: ['slack', 'crewly-chat', 'cloud-talk', 'google-chat', 'telegram', 'whatsapp', 'system', 'runtime'],
+	/** `chat_messages.direction` values: to an agent, from an agent, or neither. */
+	DIRECTIONS: ['in', 'out', 'internal'],
+	/** `chat_messages.sender_kind` values. */
+	SENDER_KINDS: ['owner', 'agent', 'human', 'system'],
+	/** Channel id prefixes of messenger conversations (legacy rows carry no reliable source tag). */
+	CHANNEL_PREFIXES: {
+		SLACK: 'slack-',
+		WHATSAPP: 'whatsapp-',
+		TELEGRAM: 'telegram-',
+		GOOGLE_CHAT: 'gchat-',
+	},
+	/** Rows rewritten per transaction when backfilling legacy rows. */
+	BACKFILL_BATCH_SIZE: 2000,
+	/** Default / maximum page size of the per-agent timeline. */
+	TIMELINE_DEFAULT_LIMIT: 50,
+	TIMELINE_MAX_LIMIT: 200,
+} as const;
+
+/**
+ * Machine → Cloud conversation upload (specs/unified-conversations-cloud-store.md §B).
+ * The wire contract itself lives in `services/cloud/conversation-ingest.contract.ts`.
+ */
+export const CONVERSATION_SYNC_CONSTANTS = {
+	/** Kill switch: `CREWLY_CONVERSATION_SYNC=0` (or `off` / `false`) stops uploading. */
+	ENV_SWITCH: 'CREWLY_CONVERSATION_SYNC',
+	/** The spec's name for the same switch (`CREWLY_CLOUD_CONVERSATIONS=off`); honoured too. */
+	ENV_SWITCH_ALT: 'CREWLY_CLOUD_CONVERSATIONS',
+	/** Flush when this many messages are waiting. */
+	BATCH_MAX_MESSAGES: 50,
+	/** Flush when the batch reaches this many bytes of JSON (before gzip). */
+	BATCH_MAX_BYTES: 256 * 1024,
+	/** Flush a partial batch after it has waited this long (ms). */
+	BATCH_MAX_WAIT_MS: 2_000,
+	/** Periodic wake-up even without new messages (ms). */
+	TICK_INTERVAL_MS: 10_000,
+	/** First retry delay after a failure (ms); doubles up to the max. */
+	BACKOFF_INITIAL_MS: 1_000,
+	/** Longest retry delay after repeated failures (ms) — 5 min. */
+	BACKOFF_MAX_MS: 5 * 60 * 1000,
+	/** Retry interval while Cloud has no ingest endpoint (404) or refused sync (403) — 1 h. */
+	UNAVAILABLE_RETRY_MS: 60 * 60 * 1000,
+	/** Rows read from chat_messages per backfill page. */
+	BACKFILL_PAGE_SIZE: 500,
+	/** Largest backfill request (bytes of JSON before gzip); Cloud accepts 8 MB inflated. */
+	BACKFILL_BATCH_MAX_BYTES: 4 * 1024 * 1024,
+	/** At most one backfill request per this many ms (live batches go first). */
+	BACKFILL_MIN_INTERVAL_MS: 1_000,
+	/** Retention assumed until Cloud reports one (days) — the free plan's window. */
+	DEFAULT_RETENTION_DAYS: 7,
+	/** Largest outbox kept while disconnected; older rows are dropped with a gap marker. */
+	OUTBOX_MAX_ROWS: 200_000,
+	/** Outbox rows older than this are dropped (ms) — the longest plan window, 90 days. */
+	OUTBOX_MAX_AGE_MS: 90 * 24 * 60 * 60 * 1000,
+	/** Timeout of one ingest request (ms). */
+	REQUEST_TIMEOUT_MS: 30_000,
+	/** `cloud_sync_state` keys. */
+	STATE_KEYS: {
+		ACCOUNT_ID: 'accountId',
+		BACKFILL_DONE_AT: 'backfillDoneAt',
+		BACKFILL_CURSOR: 'backfillCursor',
+		BACKFILL_RETENTION_DAYS: 'backfillRetentionDays',
+		RETENTION_DAYS: 'retentionDays',
+		NOTICE_SENT_AT: 'noticeSentAt',
+		GAP_AT: 'gapAt',
+		LAST_INGEST_AT: 'lastIngestAt',
+	},
+	/** One-time owner DM (O1) when history starts syncing. `{device}` is replaced. */
+	NOTICE_TEXT:
+		'提醒一下：{device} 上你和 agent 的对话现在也会同步到 Crewly Cloud，这样在手机上就能看到所有机器、所有渠道的对话。' +
+		'免费版保留 7 天，Pro 保留 90 天；消息文字在 Cloud 上加密存储，文件只留在这台机器上。',
+} as const;
+
 // Type helpers
 export type AgentStatus =
 	(typeof CREWLY_CONSTANTS.AGENT_STATUSES)[keyof typeof CREWLY_CONSTANTS.AGENT_STATUSES];
