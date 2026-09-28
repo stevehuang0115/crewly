@@ -3,6 +3,29 @@ import * as path from 'path';
 import { CONTROL_PLANE_GUARD_CONSTANTS } from '../../constants.js';
 
 /**
+ * List the team directories that exist under `<crewlyHome>/teams` right now.
+ *
+ * The Bash hook needs literal paths, not globs, so protecting exactly
+ * `teams/*\/config.json` (spec Part 2) means resolving the `*` at guard-prep
+ * time against whatever teams already exist. A team created after this
+ * session launched is not yet in the list — out of scope for this fix,
+ * flagged in specs/2026-09-24-control-plane-isolation.md's coverage limits.
+ *
+ * @param crewlyHome - Crewly home directory (`~/.crewly`, or `$CREWLY_HOME`)
+ * @returns Directory names under `teams/` (team ids); empty if the directory
+ *   does not exist yet (a fresh install with no teams) or cannot be read
+ */
+async function listExistingTeamIds(crewlyHome: string): Promise<string[]> {
+	const teamsDir = path.join(crewlyHome, CONTROL_PLANE_GUARD_CONSTANTS.TEAMS_DIR_NAME);
+	try {
+		const entries = await fs.readdir(teamsDir, { withFileTypes: true });
+		return entries.filter((e) => e.isDirectory()).map((e) => e.name);
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Control-plane guard for Claude Code agent sessions.
  *
  * Request 72c9427a, spec `specs/2026-09-24-control-plane-isolation.md` Part 3.
@@ -76,15 +99,30 @@ export function isControlPlaneGuardEnabled(env: NodeJS.ProcessEnv = process.env)
  * Duplicates are dropped, e.g. when the project path is the install root.
  *
  * @param roots - Crewly home, install root and optional project path
+ * @param existingTeamIds - Team directory names to protect `config.json` for
+ *   (spec Part 2 protects `teams/*\/config.json`, not the whole `teams/`
+ *   subtree — a team directory also holds `norms/`, `wiki/`, `prompts/`,
+ *   `sops/` and `cron-tasks.json`, which agents write routinely). Pass the
+ *   ids returned by {@link listExistingTeamIds}; defaults to none, so
+ *   calling this without them protects no team config (documented, not a
+ *   silent gap — `prepareControlPlaneGuard` always supplies them).
  * @returns Write-denied paths (with a directory flag) and read-denied files
  *
  * @example
  * ```ts
- * const { writeDenied } = resolveControlPlanePaths({ crewlyHome: '/h/.crewly', installRoot: '/opt/crewly' });
- * // writeDenied includes { path: '/h/.crewly/teams', isDirectory: true }
+ * const { writeDenied } = resolveControlPlanePaths(
+ *   { crewlyHome: '/h/.crewly', installRoot: '/opt/crewly' },
+ *   ['team-0001'],
+ * );
+ * // writeDenied includes { path: '/h/.crewly/teams/team-0001/config.json', isDirectory: false }
+ * // writeDenied does NOT include '/h/.crewly/teams' itself — reads and
+ * // writes to team-0001/wiki, norms, prompts, sops, cron-tasks.json stay allowed.
  * ```
  */
-export function resolveControlPlanePaths(roots: ControlPlaneRoots): ControlPlanePaths {
+export function resolveControlPlanePaths(
+	roots: ControlPlaneRoots,
+	existingTeamIds: readonly string[] = [],
+): ControlPlanePaths {
 	const C = CONTROL_PLANE_GUARD_CONSTANTS;
 	const seen = new Set<string>();
 	const writeDenied: ControlPlanePaths['writeDenied'] = [];
@@ -97,6 +135,9 @@ export function resolveControlPlanePaths(roots: ControlPlaneRoots): ControlPlane
 
 	for (const d of C.CREWLY_HOME_DIRS) add(path.join(roots.crewlyHome, d), true);
 	for (const f of C.CREWLY_HOME_FILES) add(path.join(roots.crewlyHome, f), false);
+	for (const teamId of existingTeamIds) {
+		add(path.join(roots.crewlyHome, C.TEAMS_DIR_NAME, teamId, C.TEAM_CONFIG_FILE_NAME), false);
+	}
 	for (const d of C.INSTALL_DIRS) add(path.join(roots.installRoot, d), true);
 	for (const f of C.INSTALL_FILES) add(path.join(roots.installRoot, f), false);
 	if (roots.projectPath) {
@@ -195,7 +236,8 @@ export async function prepareControlPlaneGuard(
 		return { enabled: false, reason: `${C.KILL_SWITCH_ENV}=${C.KILL_SWITCH_OFF_VALUE}` };
 	}
 
-	const paths = resolveControlPlanePaths(roots);
+	const existingTeamIds = await listExistingTeamIds(roots.crewlyHome);
+	const paths = resolveControlPlanePaths(roots, existingTeamIds);
 	const dir = path.join(roots.crewlyHome, C.RUNTIME_DIR);
 	const stem = toSafeFileStem(sessionName);
 	const settingsPath = path.join(dir, `${stem}${C.SETTINGS_FILE_SUFFIX}`);

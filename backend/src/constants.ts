@@ -310,8 +310,27 @@ export const CONTROL_PLANE_GUARD_CONSTANTS = {
 	SETTINGS_FLAG: '--settings',
 	/** Claude Code tool the PreToolUse hook is attached to. */
 	HOOK_TOOL_MATCHER: 'Bash',
-	/** Write-protected directories under CREWLY_HOME (whole subtree). */
-	CREWLY_HOME_DIRS: ['teams', 'triggers', 'runtime/control-plane'],
+	/**
+	 * Write-protected directories under CREWLY_HOME (whole subtree).
+	 *
+	 * `teams` is deliberately NOT here (WorkItem 70e54fbc / #798 review):
+	 * specs/2026-09-24-control-plane-isolation.md Part 2 protects only
+	 * `teams/*\/config.json`, not the whole subtree. A team directory also
+	 * holds `norms/`, `wiki/`, `prompts/`, `sops/` and `cron-tasks.json` —
+	 * files agents write routinely (`remember`, `record-learning`,
+	 * norm/SOP authoring, follow-up scheduling). Blanket-protecting `teams`
+	 * would block all of that. See TEAM_CONFIG_FILE_NAME below for how the
+	 * narrower rule is built (one entry per existing team, resolved at
+	 * guard-prep time since the hook needs literal paths, not globs).
+	 */
+	CREWLY_HOME_DIRS: ['triggers', 'runtime/control-plane'],
+	/**
+	 * Directory under CREWLY_HOME holding one subdirectory per team, each
+	 * expected to contain a `config.json` (see TEAM_CONFIG_FILE_NAME).
+	 */
+	TEAMS_DIR_NAME: 'teams',
+	/** File name, within each team's directory, that the guard protects. */
+	TEAM_CONFIG_FILE_NAME: 'config.json',
 	/** Write-protected files under CREWLY_HOME. */
 	CREWLY_HOME_FILES: [
 		'recurring-checks.json',

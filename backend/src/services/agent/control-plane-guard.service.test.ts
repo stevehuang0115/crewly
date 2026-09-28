@@ -33,11 +33,12 @@ describe('control-plane-guard.service', () => {
 	});
 
 	describe('resolveControlPlanePaths', () => {
-		const { writeDenied, readDenied } = resolveControlPlanePaths(roots);
+		const { writeDenied, readDenied } = resolveControlPlanePaths(roots, ['team-a', 'team-b']);
 		const byPath = new Map(writeDenied.map((p) => [p.path, p.isDirectory]));
 
 		it.each([
-			['/h/.crewly/teams', true],
+			['/h/.crewly/teams/team-a/config.json', false],
+			['/h/.crewly/teams/team-b/config.json', false],
 			['/h/.crewly/triggers', true],
 			['/h/.crewly/runtime/control-plane', true],
 			['/h/.crewly/recurring-checks.json', false],
@@ -88,6 +89,24 @@ describe('control-plane-guard.service', () => {
 			const missing = installEntries.filter((p) => !existsSync(p.path)).map((p) => p.path);
 			expect(missing).toEqual([]);
 		});
+
+		// WorkItem 70e54fbc / #798 review: the whole `teams/` subtree used to be
+		// write-denied, which also blocked norms/wiki/prompts/sops/cron-tasks.json
+		// — files agents write routinely. The guard now protects only each
+		// existing team's own config.json (spec Part 2: `teams/*/config.json`).
+		it('does NOT protect the teams directory itself, only each team config.json', () => {
+			expect(byPath.has('/h/.crewly/teams')).toBe(false);
+		});
+
+		it('does not protect a team not passed in (out of scope for this session — documented limit)', () => {
+			expect(byPath.has('/h/.crewly/teams/team-c/config.json')).toBe(false);
+		});
+
+		it('protects nothing under teams/ when no team ids are given', () => {
+			const r = resolveControlPlanePaths({ crewlyHome: '/h/.crewly', installRoot: '/opt/crewly' });
+			expect(r.writeDenied.some((p) => p.path.includes(`${path.sep}teams${path.sep}`))).toBe(false);
+			expect(r.writeDenied.some((p) => p.path.endsWith(`${path.sep}teams`))).toBe(false);
+		});
 	});
 
 	describe('toRuleSpecifier', () => {
@@ -96,15 +115,16 @@ describe('control-plane-guard.service', () => {
 		});
 
 		it('adds /** for a directory', () => {
-			expect(toRuleSpecifier('/h/.crewly/teams', true)).toBe('//h/.crewly/teams/**');
+			expect(toRuleSpecifier('/h/.crewly/triggers', true)).toBe('//h/.crewly/triggers/**');
 		});
 	});
 
 	describe('buildControlPlaneSettings', () => {
-		const settings = buildControlPlaneSettings(resolveControlPlanePaths(roots), 'bash hook.sh paths');
+		const settings = buildControlPlaneSettings(resolveControlPlanePaths(roots, ['team-a']), 'bash hook.sh paths');
 
-		it('denies Edit on the team config subtree and the stop-agent skill', () => {
-			expect(settings.permissions.deny).toContain('Edit(//h/.crewly/teams/**)');
+		it('denies Edit on each team config.json (not the whole teams subtree) and the stop-agent skill', () => {
+			expect(settings.permissions.deny).toContain('Edit(//h/.crewly/teams/team-a/config.json)');
+			expect(settings.permissions.deny).not.toContain('Edit(//h/.crewly/teams/**)');
 			expect(settings.permissions.deny).toContain('Edit(//opt/crewly/config/skills/orchestrator/stop-agent/**)');
 		});
 
@@ -153,18 +173,31 @@ describe('control-plane-guard.service', () => {
 		});
 
 		it('writes the settings file and the paths list, and reports the count', async () => {
+			const teamDir = path.join(home, 'teams', 'team-a');
+			mkdirSync(teamDir, { recursive: true });
+			writeFileSync(path.join(teamDir, 'config.json'), '{}\n');
 			const r = await prepareControlPlaneGuard('crewly-dev-001', { crewlyHome: home, installRoot: REPO_ROOT }, {});
 			expect(r.enabled).toBe(true);
 			if (!r.enabled) return;
 			expect(r.settingsPath).toBe(path.join(home, 'runtime', 'control-plane', 'crewly-dev-001.settings.json'));
 			const settings = JSON.parse(readFileSync(r.settingsPath, 'utf-8')) as ControlPlaneSettings;
-			expect(settings.permissions.deny).toContain(`Edit(/${path.join(home, 'teams')}/**)`);
+			expect(settings.permissions.deny).toContain(`Edit(/${path.join(teamDir, 'config.json')})`);
+			expect(settings.permissions.deny).not.toContain(`Edit(/${path.join(home, 'teams')}/**)`);
 			expect(settings.hooks.PreToolUse[0].hooks[0].command).toBe(
 				`bash '${path.join(REPO_ROOT, CONTROL_PLANE_GUARD_CONSTANTS.HOOK_SCRIPT)}' '${r.pathsPath}'`,
 			);
 			const listed = readFileSync(r.pathsPath, 'utf-8').split('\n').filter((l) => l && !l.startsWith('#'));
 			expect(listed.length).toBe(r.protectedCount);
-			expect(listed).toContain(path.join(home, 'teams'));
+			expect(listed).toContain(path.join(teamDir, 'config.json'));
+			expect(listed).not.toContain(path.join(home, 'teams'));
+		});
+
+		it('protects nothing under teams/ when the directory does not exist yet (fresh install)', async () => {
+			const r = await prepareControlPlaneGuard('crewly-dev-002', { crewlyHome: home, installRoot: REPO_ROOT }, {});
+			expect(r.enabled).toBe(true);
+			if (!r.enabled) return;
+			const listed = readFileSync(r.pathsPath, 'utf-8').split('\n').filter((l) => l && !l.startsWith('#'));
+			expect(listed.some((l) => l.includes(`${path.sep}teams${path.sep}`))).toBe(false);
 		});
 
 		it('puts its own generated files under a protected directory', async () => {
@@ -182,12 +215,13 @@ describe('control-plane-guard.service', () => {
 			expect(existsSync(path.join(home, 'runtime'))).toBe(false);
 		});
 
-		it('end to end: the generated hook command blocks a team-config write and allows a read', async () => {
+		it('end to end: the generated hook command blocks a team-config write, allows a read, and allows writes elsewhere in the team dir', async () => {
+			const teamDir = path.join(home, 'teams', 't1');
+			const cfg = path.join(teamDir, 'config.json');
+			mkdirSync(teamDir, { recursive: true });
+			writeFileSync(cfg, '{}\n');
 			const r = await prepareControlPlaneGuard('e2e', { crewlyHome: home, installRoot: REPO_ROOT }, {});
 			if (!r.enabled) throw new Error('expected enabled');
-			const cfg = path.join(home, 'teams', 't1', 'config.json');
-			mkdirSync(path.dirname(cfg), { recursive: true });
-			writeFileSync(cfg, '{}\n');
 			const hookCommand = JSON.parse(readFileSync(r.settingsPath, 'utf-8')).hooks.PreToolUse[0].hooks[0].command as string;
 			const run = (command: string) =>
 				spawnSync('bash', ['-c', hookCommand], {
@@ -205,6 +239,14 @@ describe('control-plane-guard.service', () => {
 
 			const stopSkill = run('echo "exit 0" > config/skills/orchestrator/stop-agent/execute.sh');
 			expect(stopSkill.status).toBe(2);
+
+			// WorkItem 70e54fbc: this used to be blocked too, when the whole
+			// `teams/` subtree was write-denied. `remember`/`record-learning`
+			// write exactly this kind of file.
+			const wikiWrite = run(`echo x > ${path.join(teamDir, 'wiki', 'note.md')}`);
+			expect(wikiWrite.status).toBe(0);
+			const cronWrite = run(`echo x > ${path.join(teamDir, 'cron-tasks.json')}`);
+			expect(cronWrite.status).toBe(0);
 		});
 	});
 
