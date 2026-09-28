@@ -9,6 +9,7 @@
 
 import { checkGhPrerequisites, getGhUsername, submitToGitHub } from './gh-submit.js';
 import type { SkillManifest } from './package-validator.js';
+import * as fs from 'fs';
 
 // Mock child_process
 const mockExecSync = jest.fn();
@@ -41,14 +42,26 @@ jest.mock('fs', () => {
     ...actual,
     writeFileSync: jest.fn(),
     unlinkSync: jest.fn(),
+    readdirSync: jest.fn(),
   };
 });
+
+/** Dirent stand-in for the mocked readdirSync */
+function fileEntry(name: string): { name: string; isFile: () => boolean } {
+  return { name, isFile: () => true };
+}
 
 describe('gh-submit', () => {
   const mockConsole = jest.spyOn(console, 'log').mockImplementation();
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // A current-layout skill: SKILL.md + execute.sh
+    (fs.readdirSync as unknown as jest.Mock).mockReturnValue([
+      fileEntry('execute.sh'),
+      fileEntry('SKILL.md'),
+      { name: 'assets', isFile: () => false },
+    ]);
   });
 
   afterAll(() => {
@@ -144,6 +157,28 @@ describe('gh-submit', () => {
       expect(calls).toContainEqual(expect.stringContaining('gh repo fork'));
       expect(calls).toContainEqual(expect.stringContaining('gh repo clone'));
       expect(calls).toContainEqual(expect.stringContaining('gh pr create'));
+    });
+
+    it('lists the files actually in the skill directory in the PR body (SKILL.md layout)', async () => {
+      mockExecSync.mockReturnValue('https://github.com/stevehuang0115/crewly/pull/44');
+
+      await submitToGitHub('/path/to/test-skill', testManifest);
+
+      const body = String((fs.writeFileSync as unknown as jest.Mock).mock.calls[0][1]);
+      expect(body).toContain('- `config/skills/agent/marketplace/test-skill/SKILL.md`');
+      expect(body).toContain('- `config/skills/agent/marketplace/test-skill/execute.sh`');
+      expect(body).not.toContain('skill.json');
+      expect(body).not.toContain('instructions.md');
+      expect(body).not.toContain('/assets`');
+    });
+
+    it('fails before any gh command when the skill directory cannot be read', async () => {
+      (fs.readdirSync as unknown as jest.Mock).mockImplementation(() => {
+        throw new Error('ENOENT: no such file or directory');
+      });
+
+      await expect(submitToGitHub('/path/to/missing-skill', testManifest)).rejects.toThrow('ENOENT');
+      expect(mockExecSync).not.toHaveBeenCalled();
     });
 
     it('should handle fork already exists gracefully', async () => {
