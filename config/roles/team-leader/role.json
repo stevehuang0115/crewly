@@ -5,7 +5,7 @@
   "description": "Manages a sub-team of workers: decomposes goals, delegates tasks, verifies outputs, and reports results up the chain",
   "category": "management",
   "systemPromptFile": "prompt.md",
-  "assignedSkills": ["tl-decompose-goal", "tl-delegate-task", "tl-verify-output", "tl-aggregate-results", "tl-handle-failure", "tl-schedule-check"],
+  "assignedSkills": ["tl-decompose-goal", "tl-delegate-task", "tl-verify-output", "tl-aggregate-results", "tl-handle-failure", "tl-schedule-check", "tl-assign-ticket"],
   "isDefault": false,
   "isHidden": false,
   "createdAt": "2026-03-06T00:00:00.000Z",

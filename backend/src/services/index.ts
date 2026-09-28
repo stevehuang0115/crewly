@@ -13,14 +13,10 @@ export { ContextWindowMonitorService } from './agent/context-window-monitor.serv
 
 // Project Services  
 export { ActiveProjectsService } from './project/active-projects.service.js';
-export { TaskService } from './project/task.service.js';
-export { TaskFolderService } from './project/task-folder.service.js';
-export { TicketEditorService } from './project/ticket-editor.service.js';
 
 // Monitoring Services
 export { ActivityMonitorService } from './monitoring/activity-monitor.service.js';
 export { MonitoringService } from './monitoring/monitoring.service.js';
-export { TaskAssignmentMonitorService } from './monitoring/task-assignment-monitor.service.js';
 export { TeamActivityWebSocketService } from './monitoring/team-activity-websocket.service.js';
 export { TeamsJsonWatcherService } from './monitoring/teams-json-watcher.service.js';
 

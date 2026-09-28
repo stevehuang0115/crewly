@@ -59,7 +59,6 @@ describe('Projects Handlers', () => {
       activeProjectsService: mockActiveProjectsService,
       promptTemplateService: new PromptTemplateService() as jest.Mocked<PromptTemplateService>,
       agentRegistrationService: {} as any,
-      taskAssignmentMonitor: {} as any,
       taskTrackingService: {} as any,
     };
 

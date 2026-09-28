@@ -1,4 +1,4 @@
-import { Project, Team, Ticket } from '../../types';
+import { Project, Team } from '../../types';
 
 export interface FileTreeNode {
   name: string;
@@ -11,7 +11,8 @@ export interface FileTreeNode {
 export interface ProjectDetailState {
   project: Project | null;
   assignedTeams: Team[];
-  tickets: Ticket[];
+  /** Open (not cancelled) project tickets */
+  ticketCount: number;
   loading: boolean;
   error: string | null;
 }
@@ -28,20 +29,6 @@ export interface ProjectStats {
   hasInitialGoalMd: boolean;
   hasInitialUserJourneyMd: boolean;
   specFiles: string[];
-}
-
-export interface TaskFormData {
-  title: string;
-  status: string;
-  priority: string;
-  targetRole: string;
-  milestone: string;
-  description: string;
-}
-
-export interface MilestoneFormData {
-  name: string;
-  description: string;
 }
 
 export type TabType = 'detail' | 'editor' | 'tasks' | 'teams';
@@ -66,51 +53,13 @@ export interface DetailViewProps {
   onAddUserJourney: () => void;
   onEditUserJourney: () => void;
   onBuildSpecs: () => void;
-  onBuildTasks: () => void;
   buildSpecsWorkflow: BuildSpecsWorkflow;
   alignmentStatus: AlignmentStatus;
   onContinueWithMisalignment: () => void;
   onViewAlignment: () => void;
   selectedBuildSpecsTeam: string;
   setSelectedBuildSpecsTeam: (value: string) => void;
-  selectedBuildTasksTeam: string;
-  setSelectedBuildTasksTeam: (value: string) => void;
   availableTeams: any[];
-  onCreateSpecsTasks: () => void;
-  onCreateDevTasks: () => void;
-  onCreateE2ETasks: () => void;
-}
-
-export interface TasksViewProps {
-  project: Project;
-  tickets: any[];
-  onTicketsUpdate: () => void;
-  onCreateSpecsTasks: () => void;
-  onCreateDevTasks: () => void;
-  onCreateE2ETasks: () => void;
-  loading: boolean;
-  onTaskClick: (task: any) => void;
-  onTaskAssign: (task: any) => void;
-  onTaskUnblock: (task: any) => void;
-  taskAssignmentLoading: string | null;
-  taskUnblockLoading: string | null;
-}
-
-export interface TaskColumnProps {
-  title: string;
-  count: number;
-  tasks: any[];
-  status: string;
-  onTaskClick: (task: any) => void;
-  onTaskAssign: (task: any) => void;
-  onTaskUnblock: (task: any) => void;
-  taskAssignmentLoading: string | null;
-  taskUnblockLoading: string | null;
-  taskAssignments: Map<string, any>;
-  onCreateTaskClick?: () => void;
-  totalCount?: number;
-  onLoadMore?: () => void;
-  avatarMap?: Record<string, string>;
 }
 
 // EditorView specific types
@@ -152,20 +101,3 @@ export interface TeamsViewProps {
   onEditTeam?: (teamId: string) => void;
 }
 
-// TaskCreateModal specific types
-export interface TaskCreateFormData {
-  title: string;
-  description: string;
-  priority: 'low' | 'medium' | 'high';
-  assignedTo: string;
-}
-
-export interface TaskCreateModalProps {
-  onClose: () => void;
-  onSubmit: (ticketData: {
-    title: string;
-    description: string;
-    priority: 'low' | 'medium' | 'high';
-    assignedTo?: string;
-  }) => void;
-}

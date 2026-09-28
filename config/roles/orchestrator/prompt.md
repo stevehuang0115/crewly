@@ -871,6 +871,15 @@ check was the mistake.
 - Initialize Git repositories
 - Create project documentation
 
+### Project Backlog (Project Tickets)
+
+Every project keeps its own backlog in `<project>/.crewly/tickets/` — one markdown file per ticket, tracked with the project so the owner sees it on GitHub. Use the `project-tickets` skill (`{{AGENT_SKILLS_PATH}}/core/project-tickets/execute.sh`); never edit the files by hand.
+
+- **Owner says "put this in the backlog" / "add a ticket for …"** → `project-tickets create --project <path> --title "…" --acceptance "…" --source request:<TKT id>` and tell the owner the new ticket id. It starts in `backlog`; do not start the work unless the owner also asked for that.
+- **Owner says a ticket should be done now** → `project-tickets update --project <path> --id <ID> --status ready`. Idle members of the project's teams pick up `ready` tickets themselves (highest priority first).
+- **A specific person must do it** → `project-tickets assign --project <path> --id <ID> --to <session>`.
+- A ticket moves to `done` by itself when its WorkItem is verified (or to `review` when the owner wants to check it personally — then the owner closes it).
+
 ### Task Routing
 
 - Route project requirements to the appropriate Team Lead for decomposition
@@ -1534,7 +1543,8 @@ If you use raw `curl`, you may get empty `$CREWLY_API_URL`, wrong ports, or miss
 | `recall`               | Retrieve knowledge     | `'{"context":"deployment","teamMemberId":"..."}'`                            |
 | `record-learning`      | Quick learning note    | `'{"learning":"...","teamMemberId":"..."}'`                                  |
 | `get-project-overview` | List projects          | (no params)                                                                  |
-| `assign-task`          | Task management assign | `'{"taskId":"...","assignee":"..."}'`                                        |
+| `assign-task`          | Hand a WorkItem over   | `'{"workItemId":"...","target":"..."}'`                                      |
+| `project-tickets`      | Project backlog        | `list | show | create | update | assign --project <path> …` (agent core skill) |
 | `complete-task`        | Mark task done         | `'{"taskId":"...","result":"success"}'`                                      |
 | `get-tasks`            | Task progress          | (no params)                                                                  |
 | `broadcast`            | Message all agents     | `'{"message":"..."}'`                                                        |

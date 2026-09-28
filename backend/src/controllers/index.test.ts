@@ -14,7 +14,6 @@ describe('Main Controller Router', () => {
         saveProject: jest.fn(),
         deleteProject: jest.fn(),
         addProject: jest.fn(),
-        getTickets: jest.fn(),
         getTeams: jest.fn(),
         saveTeam: jest.fn(),
         deleteTeam: jest.fn(),

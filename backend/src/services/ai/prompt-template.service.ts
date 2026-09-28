@@ -83,19 +83,21 @@ export class PromptTemplateService {
       return messageMatch[1].replace(/\\"/g, '"'); // Unescape quotes
     }
     
-    // Fallback if extraction fails
+    // Fallback if extraction fails: point the member at the project ticket
+    // (specs/2026-09-28-project-tickets.md), not the retired .crewly/tasks files.
     return `📋 TASK ASSIGNMENT - ${data.taskTitle}
 
-**Task File:** \`${data.projectPath}/.crewly/tasks/${data.taskMilestone || 'general'}/open/${data.taskId}.md\`
+**Ticket:** ${data.taskId} in \`${data.projectPath}/.crewly/tickets/\`
 **Priority:** ${data.taskPriority || 'medium'}
 
 Please:
-1. Read the complete task file above for full specifications
-2. Call accept_task to move it to in_progress:
-   accept_task({ absoluteTaskPath: '${data.projectPath}/.crewly/tasks/${data.taskMilestone || 'general'}/open/${data.taskId}.md', memberId: '[your_member_id]' })
-3. Follow exact deliverables and file locations specified in the task file
+1. Read the full ticket (description, acceptance criteria, log):
+   project-tickets show --project '${data.projectPath}' --id ${data.taskId}
+2. Claim it so it is yours and you get its WorkItem:
+   project-tickets claim --project '${data.projectPath}' --id ${data.taskId}
+3. Deliver what the acceptance criteria ask, then complete the WorkItem as usual.
 
-CRITICAL: Read the actual task file, not this summary!`;
+CRITICAL: Read the ticket, not this summary!`;
   }
 
 

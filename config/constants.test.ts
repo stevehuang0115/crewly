@@ -564,3 +564,21 @@ describe('CLOUD_DEVICE_PAIRING_CONSTANTS', () => {
     expect(index.CLOUD_DEVICE_PAIRING_CONSTANTS.LOCAL_ENDPOINTS.STATUS).toBe('/api/cloud/device/status');
   });
 });
+
+describe('PROJECT_TICKET_CONSTANTS', () => {
+  it('lists the ticket statuses in board order and the P0–P3 priorities', async () => {
+    const { PROJECT_TICKET_CONSTANTS: C } = await import('./constants.js');
+    expect(C.STATUSES).toEqual(['backlog', 'ready', 'in_progress', 'review', 'done', 'cancelled']);
+    expect(C.PRIORITIES).toEqual(['P0', 'P1', 'P2', 'P3']);
+    expect(C.STATUSES).toContain(C.DEFAULT_STATUS);
+    expect(C.PRIORITIES).toContain(C.DEFAULT_PRIORITY);
+  });
+
+  it('imports only unfinished v1 folders and re-includes the tickets folder after ignoring .crewly/*', async () => {
+    const { PROJECT_TICKET_CONSTANTS: C } = await import('./constants.js');
+    expect(C.MIGRATION_STATUS_FOLDERS).toEqual(['open', 'in_progress']);
+    const block: readonly string[] = C.GITIGNORE_BLOCK;
+    expect(block.indexOf('.crewly/*')).toBeLessThan(block.indexOf('!.crewly/tickets/'));
+    expect(block.indexOf('!.crewly/')).toBeLessThan(block.indexOf('.crewly/*'));
+  });
+});

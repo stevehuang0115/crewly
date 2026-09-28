@@ -1,6 +1,6 @@
 ---
 name: Decompose Goal
-description: "Break down a high-level objective from the Orchestrator into specific, actionable sub-tasks for workers. Creates task files in the project's .crewly/tasks/ directory."
+description: "Break down a high-level objective from the Orchestrator into specific, actionable sub-tasks for workers. Creates one WorkItem per sub-task in the task pool."
 version: 1.0.0
 category: management
 skillType: claude-skill
@@ -26,7 +26,7 @@ execution:
 
 # Decompose Goal
 
-Breaks down a high-level objective from the Orchestrator into specific, actionable sub-tasks for workers. Each sub-task is created as a task file in the project's `.crewly/tasks/` directory.
+Breaks down a high-level objective from the Orchestrator into specific, actionable sub-tasks for workers. Each sub-task is created as a WorkItem in the task pool. (For the project's own long-lived backlog use the `project-tickets` skill instead.)
 
 ## When to Use
 
@@ -89,8 +89,8 @@ Where `/tmp/decompose.json` contains:
   "objective": "Build user authentication module",
   "tasksCreated": 2,
   "tasks": [
-    { "title": "Implement JWT token service", "requiredRole": "backend-developer", "taskPath": "/project/.crewly/tasks/...", "taskId": "abc123", "priority": "high" },
-    { "title": "Build login form component", "requiredRole": "frontend-developer", "taskPath": "/project/.crewly/tasks/...", "taskId": "def456", "priority": "high" }
+    { "title": "Implement JWT token service", "requiredRole": "backend-developer", "workItemId": "abc123", "priority": "high" },
+    { "title": "Build login form component", "requiredRole": "frontend-developer", "workItemId": "def456", "priority": "high" }
   ],
   "errors": []
 }

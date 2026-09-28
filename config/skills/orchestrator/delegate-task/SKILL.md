@@ -42,7 +42,7 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--task-file` | — | No | Read task description from a file path |
 | `--priority` / `-P` | `priority` | No | Priority: `low`, `normal`, `high` (default: `normal`) |
 | `--context` / `-c` | `context` | No | Additional context for the task. Scanned for the Request Contract alongside `--task` |
-| `--project` / `-p` | `projectPath` | No | Project path; creates task file in `.crewly/tasks/` |
+| `--project` / `-p` | `projectPath` | No | Project path; recorded on the WorkItem (`metadata.projectPath`) |
 | `--team` / `-g` | `teamId` | No | Team ID for cross-team validation |
 | `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
 | `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
@@ -93,7 +93,7 @@ It does NOT set up a recurring check — the reconciler escalates stalled or unv
 ```bash
 bash config/skills/orchestrator/delegate-task/execute.sh '{"to":"agent-joe","task":"Implement user auth","priority":"high","projectPath":"/path/to/project"}'
 ```
-Also creates a task file in the project's `.crewly/tasks/` directory.
+The WorkItem carries the project path. For work that belongs in the project's own backlog, create a project ticket instead (`project-tickets create`) and let the team pick it up or assign it.
 
 ### Example 3: Cross-team delegation with a longer fallback (2× an 8 h ETA)
 ```bash
@@ -135,7 +135,8 @@ Error messages are output to **stdout** (JSON format) so the orchestrator can re
 
 ## Related Skills
 
-- `assign-task` — for formal task tracking in the management system (file-based kanban)
+- `assign-task` — hand an existing WorkItem to another agent
+- `project-tickets` — the project's own backlog (`<project>/.crewly/tickets/`): create, assign, claim
 - `send-message` — for simple messages without task structure
 - `watch-for-event` — the `agent:idle_after_task` watch that completes the §3.0 loop (not created by this skill)
 - `cancel-followup` — cancel the fallback trigger once the deliverable is verified

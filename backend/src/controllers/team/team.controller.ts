@@ -1674,11 +1674,16 @@ export async function getTeamWorkload(this: ApiContext, req: Request, res: Respo
     const team = teams.find(t => t.id === id);
     if (!team) { res.status(404).json({ success: false, error: 'Team not found' } as ApiResponse); return; }
     const projects = await this.storageService.getProjects();
+    // Project tickets (specs/2026-09-28-project-tickets.md) the team owns or
+    // one of its members is assigned to, across the team's projects.
+    const { ProjectTicketService } = await import('../../services/project-tickets/project-ticket.service.js');
+    const sessions = new Set(team.members.flatMap((m) => [m.sessionName, m.agentId].filter((s): s is string => !!s)));
     let assignedTickets = 0; let completedTickets = 0;
-    for (const project of projects) {
-      const tickets = await this.storageService.getTickets(project.path, { assignedTo: id });
-      assignedTickets += tickets.length;
-      completedTickets += tickets.filter((t) => t.status === 'done').length;
+    for (const project of projects.filter((p) => (team.projectIds ?? []).includes(p.id))) {
+      const { tickets } = await ProjectTicketService.getInstance().list(project.path).catch(() => ({ tickets: [] as Array<{ status: string; team: string | null; assignee: string | null }> }));
+      const mine = tickets.filter((t) => t.status !== 'cancelled' && (t.team === id || (t.assignee !== null && sessions.has(t.assignee))));
+      assignedTickets += mine.length;
+      completedTickets += mine.filter((t) => t.status === 'done').length;
     }
     res.json({ success: true, data: { teamId: id, teamName: team.name, assignedTickets, completedTickets, workloadPercentage: assignedTickets > 0 ? Math.round((completedTickets / assignedTickets) * 100) : 0 } } as ApiResponse);
   } catch (error) {

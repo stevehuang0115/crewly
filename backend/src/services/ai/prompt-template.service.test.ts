@@ -130,19 +130,20 @@ More content after
       const result = await service.getTeamMemberTaskAssignmentPrompt(mockTaskData);
 
       expect(result).toContain('📋 TASK ASSIGNMENT - Test Task');
-      expect(result).toContain('**Task File:** `/test/project/.crewly/tasks/sprint-1/open/task-001.md`');
+      expect(result).toContain('**Ticket:** task-001 in `/test/project/.crewly/tickets/`');
       expect(result).toContain('**Priority:** high');
-      expect(result).toContain('accept_task({ absoluteTaskPath: \'/test/project/.crewly/tasks/sprint-1/open/task-001.md\', memberId: \'[your_member_id]\' })');
+      expect(result).toContain("project-tickets claim --project '/test/project' --id task-001");
+      expect(result).not.toContain('.crewly/tasks');
     });
 
-    it('should use default milestone in fallback template', async () => {
+    it('points at the project ticket even without a milestone', async () => {
       const dataWithoutMilestone = { ...mockTaskData, taskMilestone: undefined };
       const templateWithoutMessage = 'No message pattern found';
       (readFile as jest.Mock).mockResolvedValue(templateWithoutMessage);
 
       const result = await service.getTeamMemberTaskAssignmentPrompt(dataWithoutMilestone);
 
-      expect(result).toContain('/general/open/task-001.md');
+      expect(result).toContain("project-tickets show --project '/test/project' --id task-001");
     });
 
     it('should use default priority in fallback template', async () => {

@@ -47,6 +47,12 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('GET', '/requests?status=running')).toBe(true);
   });
 
+  it('carries project tickets but not the v1 migration', () => {
+    expect(isAllowedMobileApiCall('GET', '/project-tickets/p1')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/project-tickets/p1/APP-1/transition')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/project-tickets-migrate/p1')).toBe(false);
+  });
+
   it('allows reading an agent timeline, not writing to it', () => {
     expect(isAllowedMobileApiCall('GET', '/chat/agents/ella/timeline?limit=50')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/chat/agents/ella/timeline')).toBe(false);

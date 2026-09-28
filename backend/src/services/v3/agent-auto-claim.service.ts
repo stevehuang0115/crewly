@@ -62,6 +62,14 @@ const DEBOUNCE_MS = 3_000;
 /** Service identifier for logging */
 const SERVICE_NAME = 'AgentAutoClaim';
 
+/** What an auto-claim took. */
+export interface AutoClaimResult {
+  workItemId: string;
+  score: number;
+  /** Set when the work is a project ticket the agent picked up (no direct work was waiting) */
+  projectTicketId?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Service
 // ---------------------------------------------------------------------------
@@ -229,11 +237,13 @@ export class AgentAutoClaimService {
    * 2. Get agent health info
    * 3. Score each item for this agent using computeAgentScore()
    * 4. Claim the highest-scoring item above the threshold
+   * 5. Nothing claimed → pick up a `ready` project ticket
+   *    ({@link tryProjectTicketClaim})
    *
    * @param agentSessionName - Agent to find work for
    * @returns The claim result, or null if nothing suitable
    */
-  async tryAutoClaimForAgent(agentSessionName: string): Promise<{ workItemId: string; score: number } | null> {
+  async tryAutoClaimForAgent(agentSessionName: string): Promise<AutoClaimResult | null> {
     const taskPool = TaskPoolService.getInstance();
 
     // Get available unclaimed items, excluding SLA tracker WIs.
@@ -247,7 +257,7 @@ export class AgentAutoClaimService {
     const availableItems = (await taskPool.getAvailableItems()).filter(
       (wi) => !SLA_TRACKER_ID_PATTERN.test(wi.id),
     );
-    if (availableItems.length === 0) return null;
+    if (availableItems.length === 0) return this.tryProjectTicketClaim(agentSessionName);
 
     // Build agent health info for scoring
     const agentHealth = await this.getAgentHealth(agentSessionName);
@@ -267,7 +277,7 @@ export class AgentAutoClaimService {
       }
     }
 
-    if (scored.length === 0) return null;
+    if (scored.length === 0) return this.tryProjectTicketClaim(agentSessionName);
 
     // Items this agent may take at all (a target set to someone else can
     // never be claimed — picking one used to end the attempt and starve the
@@ -294,7 +304,7 @@ export class AgentAutoClaimService {
       // Race: claimed by someone else between read and claim — try the next.
       this.logger.debug('Auto-claim race: item already claimed', { workItemId: wi.id, agentSessionName });
     }
-    if (!result || !best) return null;
+    if (!result || !best) return this.tryProjectTicketClaim(agentSessionName);
 
     this.logger.info('Auto-claimed WorkItem for idle agent', {
       workItemId: best.workItem.id,
@@ -331,6 +341,51 @@ export class AgentAutoClaimService {
     }
 
     return { workItemId: best.workItem.id, score: best.score };
+  }
+
+  /**
+   * Fallback after the direct claim found nothing: pick up the best `ready`
+   * project ticket of the agent's teams' projects
+   * (specs/2026-09-28-project-tickets.md §5). The workflow service skips it
+   * when the agent still has WorkItems of its own or already works a ticket,
+   * so the existing claim order always comes first.
+   *
+   * @param agentSessionName - Idle agent
+   * @returns The claim, or null when there is no ticket to take
+   */
+  private async tryProjectTicketClaim(agentSessionName: string): Promise<AutoClaimResult | null> {
+    try {
+      const { ProjectTicketWorkflowService } = await import('../project-tickets/project-ticket-workflow.service.js');
+      const workflow = ProjectTicketWorkflowService.getInstance();
+      if (!workflow) return null;
+      const health = await this.getAgentHealth(agentSessionName);
+      if (!health || (health.status !== 'active' && health.status !== 'started')) return null;
+      const started = await workflow.claimNextForAgent(agentSessionName);
+      if (!started) return null;
+      this.logger.info('Idle agent picked up a project ticket', {
+        agentSessionName,
+        ticketId: started.ticket.id,
+        workItemId: started.workItem.id,
+      });
+      if (started.claimed) {
+        const { WorkItemDispatchSubscriber } = await import('./workitem-dispatch.subscriber.js');
+        await WorkItemDispatchSubscriber.getInstance()
+          .dispatchTo(started.workItem)
+          .catch((err: unknown) => {
+            this.logger.warn('Post-claim dispatch failed for a project ticket', {
+              workItemId: started.workItem.id,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          });
+      }
+      return { workItemId: started.workItem.id, score: 0, projectTicketId: started.ticket.id };
+    } catch (err) {
+      this.logger.debug('Project ticket auto-claim failed (non-fatal)', {
+        agentSessionName,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   /**

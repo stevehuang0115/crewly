@@ -75,8 +75,9 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'crewly_assign_task',
     description:
-      'Assign a task to a specific agent by sending it a message via the ' +
-      'message queue. The agent will receive the task content as input.',
+      'Give a task to a specific agent. Creates a WorkItem in the Crewly ' +
+      'task pool (through the running backend) that is dispatched to the ' +
+      'agent; returns its workItemId.',
     inputSchema: {
       type: 'object' as const,
       properties: {

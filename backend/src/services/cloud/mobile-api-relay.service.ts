@@ -136,6 +136,13 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'POST', prefix: '/escalations/' }, // …/:id/resolve
   { method: 'POST', prefix: '/approvals/' },   // …/:id/approve|reject
   { method: 'POST', prefix: '/tickets/' },     // …/:id/dismiss|verify|reject|acceptance|update|self-check
+  // Project tickets (specs/2026-09-28-project-tickets.md): the project's own
+  // backlog. Reads, plus create / update / transition / assign / log from the
+  // portal. The v1 migration lives on `/project-tickets-migrate/` on purpose
+  // so it stays machine-only. Note `/project-tickets/` (with the slash) —
+  // `/project-tickets-migrate` must not match the POST prefix.
+  { method: 'GET', prefix: '/project-tickets' },
+  { method: 'POST', prefix: '/project-tickets/' },
   // WhatsApp reply drafts: the owner reviews and sends / discards from the
   // phone or portal (reading the inbox itself stays on the machine).
   { method: 'GET', prefix: '/whatsapp/drafts' },

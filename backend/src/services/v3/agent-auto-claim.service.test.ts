@@ -75,6 +75,20 @@ jest.mock('../core/logger.service.js', () => ({
   },
 }));
 
+// Project tickets fallback (specs/2026-09-28-project-tickets.md §5).
+const mockClaimNextForAgent = jest.fn().mockResolvedValue(null);
+let mockWorkflowInstalled = true;
+jest.mock('../project-tickets/project-ticket-workflow.service.js', () => ({
+  ProjectTicketWorkflowService: {
+    getInstance: () => (mockWorkflowInstalled ? { claimNextForAgent: mockClaimNextForAgent } : null),
+  },
+}));
+const mockDispatchTo = jest.fn().mockResolvedValue(true);
+jest.mock('./workitem-dispatch.subscriber.js', () => ({
+  SLA_TRACKER_ID_PATTERN: /^request:.+:respond_to_user$/,
+  WorkItemDispatchSubscriber: { getInstance: () => ({ dispatchTo: mockDispatchTo }) },
+}));
+
 jest.mock('../reconciler/reconcile-rules.js', () => ({
   computeAgentScore: jest.fn().mockReturnValue({
     skillMatch: 25,
@@ -116,6 +130,58 @@ describe('AgentAutoClaimService', () => {
 
       const result = await service.tryAutoClaimForAgent('agent-1');
       expect(result).toBeNull();
+    });
+
+    describe('project ticket fallback', () => {
+      afterEach(() => {
+        mockWorkflowInstalled = true;
+      });
+
+      it('picks up a ready project ticket when no direct work waits, and dispatches it', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockGetAvailableItems.mockResolvedValueOnce([]);
+        const workItem = { id: 'wi-t', target: 'agent-1' };
+        mockClaimNextForAgent.mockResolvedValueOnce({ ticket: { id: 'APP-3' }, workItem, claimed: true });
+        const result = await service.tryAutoClaimForAgent('agent-1');
+        expect(result).toEqual({ workItemId: 'wi-t', score: 0, projectTicketId: 'APP-3' });
+        expect(mockClaimNextForAgent).toHaveBeenCalledWith('agent-1');
+        expect(mockDispatchTo).toHaveBeenCalledWith(workItem);
+      });
+
+      it('never runs when a direct WorkItem was claimed', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        const items = [{ id: 'wi-1', title: 'Task', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: new Date().toISOString() }];
+        mockGetAvailableItems.mockResolvedValueOnce(items);
+        mockClaimSpecificItem.mockResolvedValueOnce({ workItem: items[0], claim: { id: 'c' } });
+        await service.tryAutoClaimForAgent('agent-1');
+        expect(mockClaimNextForAgent).not.toHaveBeenCalled();
+      });
+
+      it('runs after the direct candidates were all lost to races', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockGetAvailableItems.mockResolvedValueOnce([
+          { id: 'wi-1', title: 'Task', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: new Date().toISOString() },
+        ]);
+        mockClaimSpecificItem.mockResolvedValueOnce(null);
+        await service.tryAutoClaimForAgent('agent-1');
+        expect(mockClaimNextForAgent).toHaveBeenCalledWith('agent-1');
+      });
+
+      it('is inert before boot wires the workflow, and swallows its errors', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockWorkflowInstalled = false;
+        expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
+        mockWorkflowInstalled = true;
+        mockClaimNextForAgent.mockRejectedValueOnce(new Error('disk'));
+        expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
+      });
+
+      it('skips agents that are not active', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        service.initialize({ on: jest.fn() }, async () => new Map([['agent-1', { sessionName: 'agent-1', status: 'inactive' as const }]]));
+        expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
+        expect(mockClaimNextForAgent).not.toHaveBeenCalled();
+      });
     });
 
     it('should claim best-scoring item for agent', async () => {

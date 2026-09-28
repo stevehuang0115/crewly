@@ -41,7 +41,7 @@ execution:
 
 Proactively notify the orchestrator when a task is done, blocked, or failed. Use this skill to keep the orchestrator informed without waiting for a scheduled check-in.
 
-When `status` is `done` and a `taskPath` is provided, the task file is automatically moved from `in_progress/` to `done/` in the project's `.crewly/tasks/` directory.
+Pass the `workItemId` of the work you are reporting on (from your `[CREWLY-DISPATCH]` notice or `get-my-tasks`) so the right WorkItem is closed. When that WorkItem belongs to a project ticket, the ticket follows it (done once the WorkItem is verified). The old `taskPath` field is still accepted but no longer moves any file.
 
 ## Parameters
 
@@ -113,7 +113,7 @@ bash execute.sh --session dev-1 --status done --summary-file /tmp/summary.txt --
 ## Examples — Legacy JSON (backward compatible)
 
 ```bash
-bash execute.sh '{"sessionName":"dev-1","status":"done","summary":"Finished implementing auth module","taskPath":"/path/.crewly/tasks/delegated/in_progress/implement_auth_1234.md"}'
+bash execute.sh '{"sessionName":"dev-1","status":"done","summary":"Finished implementing auth module","workItemId":"<your WorkItem id>"}'
 ```
 
 ## Output

@@ -47,7 +47,7 @@ bash ${config.agentSkillsPath}/core/get-sops/execute.sh '{"context":"<describe y
 ### Project Knowledge
 - Project specs: \`${config.projectPath}/.crewly/specs/\`
 - Active goals: \`${config.projectPath}/.crewly/goals/goals.md\`
-- Task management: \`${config.projectPath}/.crewly/tasks/\`
+- Project backlog (tickets, tracked with the project): \`${config.projectPath}/.crewly/tickets/\` — read and change them with the project-tickets skill, not by hand
 - Knowledge base: \`${config.projectPath}/.crewly/knowledge/\``;
 	}
 }

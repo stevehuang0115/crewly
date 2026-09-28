@@ -38,7 +38,7 @@ Compiles results from all worker sub-tasks into a structured markdown report for
 ## Usage
 
 ```bash
-bash {{SKILLS_PATH}}/team-leader/aggregate-results/execute.sh '{"teamId":"team-123","objective":"Build auth module","reportType":"final","taskPaths":["/project/.crewly/tasks/m1/done/task1.md","/project/.crewly/tasks/m1/done/task2.md"],"projectPath":"/path/to/project"}'
+bash {{SKILLS_PATH}}/team-leader/aggregate-results/execute.sh '{"teamId":"team-123","objective":"Build auth module","reportType":"final","taskPaths":["/path/to/report-1.md","/path/to/report-2.md"],"projectPath":"/path/to/project"}'
 ```
 
 ## Parameters

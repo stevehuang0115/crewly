@@ -441,78 +441,64 @@ describe('CrewlyMcpServer', () => {
   // ========================= crewly_assign_task =========================
 
   describe('crewly_assign_task', () => {
-    it('should assign a task to a member', async () => {
-      const team = createTestTeam();
-      mockGetTeams.mockResolvedValue([team]);
+    let fetchSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      fetchSpy = jest.spyOn(global, 'fetch');
+    });
+
+    afterEach(() => {
+      fetchSpy.mockRestore();
+    });
+
+    function reply(status: number, body: unknown): void {
+      fetchSpy.mockResolvedValueOnce({ ok: status >= 200 && status < 300, status, json: async () => body } as Response);
+    }
+
+    it('creates a real WorkItem for the member through the backend', async () => {
+      mockGetTeams.mockResolvedValue([createTestTeam()]);
+      reply(201, { success: true, data: { workItemId: 'wi-42', id: 'wi-42', status: 'queued' } });
 
       const result = await callTool(handlers, 'crewly_assign_task', {
         teamId: 'team-1',
         memberId: 'member-1',
-        task: 'Build the login page',
+        task: 'Build the login page\nwith OAuth',
       });
 
       expect(result.isError).toBeUndefined();
-      const data = parseResult(result) as { ticketId: string; task: string };
-      expect(data.ticketId).toMatch(/^mcp-task-/);
-      expect(data.task).toBe('Build the login page');
-      expect(mockSaveTeam).toHaveBeenCalled();
+      const data = parseResult(result) as { workItemId: string; task: string };
+      expect(data.workItemId).toBe('wi-42');
+      const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+      expect(url).toMatch(/\/api\/task-pool\/add$/);
+      const body = JSON.parse(String(init.body));
+      expect(body).toMatchObject({ type: 'delegate', owner: 'agent', title: 'Build the login page', briefMarkdown: 'Build the login page\nwith OAuth' });
+      expect(body.target).toBe(createTestTeam().members[0].sessionName);
+      // No more fabricated ids on the member record
+      expect(mockSaveTeam).not.toHaveBeenCalled();
     });
 
-    it('should return error for non-existent team', async () => {
-      mockGetTeams.mockResolvedValue([]);
-
-      const result = await callTool(handlers, 'crewly_assign_task', {
-        teamId: 'bad-team',
-        memberId: 'member-1',
-        task: 'Something',
-      });
+    it('reports the backend refusal', async () => {
+      mockGetTeams.mockResolvedValue([createTestTeam()]);
+      reply(400, { success: false, error: 'Unknown target session', code: 'unknown_target_session' });
+      const result = await callTool(handlers, 'crewly_assign_task', { teamId: 'team-1', memberId: 'member-1', task: 'x' });
       expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('Unknown target session');
     });
 
-    it('should return error for non-existent member', async () => {
-      const team = createTestTeam();
-      mockGetTeams.mockResolvedValue([team]);
-
-      const result = await callTool(handlers, 'crewly_assign_task', {
-        teamId: 'team-1',
-        memberId: 'nonexistent',
-        task: 'Something',
-      });
+    it('says so when the backend is not running', async () => {
+      mockGetTeams.mockResolvedValue([createTestTeam()]);
+      fetchSpy.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+      const result = await callTool(handlers, 'crewly_assign_task', { teamId: 'team-1', memberId: 'member-1', task: 'x' });
       expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('not reachable');
     });
 
-    it('should return error when required params are missing', async () => {
-      const result = await callTool(handlers, 'crewly_assign_task', {
-        teamId: 'team-1',
-      });
-      expect(result.isError).toBe(true);
-    });
-
-    it('generates distinct ticket ids for concurrent assignments (R2)', async () => {
-      // uuid mock returns a constant value, so same-call ticket tails would
-      // normally collide. Temporarily un-mock so we get real uuids for this
-      // test and can verify the shape "mcp-task-<timestamp>-<hash>".
-      jest.isolateModules(() => {});
-      const team = createTestTeam();
-      mockGetTeams.mockResolvedValue([team]);
-
-      const r1 = await callTool(handlers, 'crewly_assign_task', {
-        teamId: 'team-1', memberId: 'member-1', task: 't1',
-      });
-      const r2 = await callTool(handlers, 'crewly_assign_task', {
-        teamId: 'team-1', memberId: 'member-1', task: 't2',
-      });
-
-      const id1 = (parseResult(r1) as { ticketId: string }).ticketId;
-      const id2 = (parseResult(r2) as { ticketId: string }).ticketId;
-      // Both IDs start with the expected prefix and include a suffix tail
-      expect(id1).toMatch(/^mcp-task-\d+-/);
-      expect(id2).toMatch(/^mcp-task-\d+-/);
-      // The uuid mock returns 'test-uuid-1234' → .slice(0,8) = 'test-uui'.
-      // We still exercise the format; two real calls at the same ms would
-      // get the same random slice under the mock — this test mainly pins
-      // the format string, not non-collision (which relies on real uuid).
-      expect(id1.split('-').length).toBeGreaterThanOrEqual(4);
+    it('should return error for non-existent team or member, and missing params', async () => {
+      mockGetTeams.mockResolvedValue([createTestTeam()]);
+      expect((await callTool(handlers, 'crewly_assign_task', { teamId: 'bad-team', memberId: 'member-1', task: 'x' })).isError).toBe(true);
+      expect((await callTool(handlers, 'crewly_assign_task', { teamId: 'team-1', memberId: 'nobody', task: 'x' })).isError).toBe(true);
+      expect((await callTool(handlers, 'crewly_assign_task', { teamId: 'team-1' })).isError).toBe(true);
+      expect(fetchSpy).not.toHaveBeenCalled();
     });
   });
 

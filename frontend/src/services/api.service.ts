@@ -6,7 +6,7 @@
  */
 
 import axios from 'axios';
-import { Project, Team, Ticket, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
+import { Project, Team, ApiResponse, PreviousSession, TeamsBackupStatus, TeamsRestoreResult, QueueStatus, QueuedMessage, CloudStatus, CloudConnectResult, SessionUsageSummary, TaskUsageSummary, ExpertSummary } from '../types';
 import type { CronTask, CreateCronTaskRequest, UpdateCronTaskRequest, TeamAgentStatusFile } from '../types/cron-task.types';
 import type { AuthTokenResponse, UserProfile, LicenseStatus } from '../types/auth.types';
 import type {
@@ -366,65 +366,6 @@ class ApiService {
       return await this.setupOrchestratorPromise;
     } finally {
       this.setupOrchestratorPromise = null;
-    }
-  }
-
-  // ============ Ticket Methods ============
-
-  /**
-   * Fetches all tickets for a project.
-   *
-   * @param projectId - Project ID
-   * @returns Promise resolving to array of tickets
-   */
-  async getProjectTickets(projectId: string): Promise<Ticket[]> {
-    const response = await axios.get<ApiResponse<Ticket[]>>(`${API_BASE}/projects/${projectId}/tickets`);
-    return response.data.data || [];
-  }
-
-  /**
-   * Creates a new ticket in a project.
-   *
-   * @param projectId - ID of the project
-   * @param ticket - Ticket data (without auto-generated fields)
-   * @returns Promise resolving to the created ticket
-   * @throws Error if creation fails
-   */
-  async createTicket(projectId: string, ticket: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt'>): Promise<Ticket> {
-    const response = await axios.post<ApiResponse<Ticket>>(`${API_BASE}/projects/${projectId}/tickets`, ticket);
-    if (!response.data.success || !response.data.data) {
-      throw new Error(response.data.error || 'Failed to create ticket');
-    }
-    return response.data.data;
-  }
-
-  /**
-   * Updates an existing ticket.
-   *
-   * @param id - Ticket ID
-   * @param updates - Partial ticket data to update
-   * @returns Promise resolving to the updated ticket
-   * @throws Error if update fails
-   */
-  async updateTicket(id: string, updates: Partial<Ticket>): Promise<Ticket> {
-    const response = await axios.patch<ApiResponse<Ticket>>(`${API_BASE}/tickets/${id}`, updates);
-    if (!response.data.success || !response.data.data) {
-      throw new Error(response.data.error || 'Failed to update ticket');
-    }
-    return response.data.data;
-  }
-
-  /**
-   * Deletes a ticket from a project.
-   *
-   * @param projectId - ID of the project
-   * @param ticketId - ID of the ticket to delete
-   * @throws Error if deletion fails
-   */
-  async deleteTicket(projectId: string, ticketId: string): Promise<void> {
-    const response = await axios.delete<ApiResponse<void>>(`${API_BASE}/projects/${projectId}/tickets/${ticketId}`);
-    if (!response.data.success) {
-      throw new Error(response.data.error || 'Failed to delete ticket');
     }
   }
 

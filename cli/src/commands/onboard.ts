@@ -56,7 +56,7 @@ import {
   type TeamTemplate,
 } from '../utils/templates.js';
 import { CLI_CONSTANTS } from '../constants.js';
-import { HARNESS_CONSTANTS } from '../../../backend/src/constants.js';
+import { HARNESS_CONSTANTS, PROJECT_TICKET_CONSTANTS } from '../../../backend/src/constants.js';
 import type { HarnessService } from '../../../backend/src/services/harness/harness.service.js';
 import {
   createCliHarnessService,
@@ -695,7 +695,7 @@ export function createTeamFromTemplate(template: TeamTemplate, runtimeType: stri
  * - .crewly/
  * - .crewly/docs/
  * - .crewly/memory/
- * - .crewly/tasks/
+ * - .crewly/tickets/ (the project backlog, see specs/2026-09-28-project-tickets.md)
  * - .crewly/teams/
  *
  * If a template is provided, copies goals.md and team.json from the
@@ -720,7 +720,7 @@ export function scaffoldCrewlyDirectory(projectDir: string = process.cwd(), temp
 
   try {
     if (!alreadyExisted) {
-      const subdirs = ['docs', 'memory', 'tasks', 'teams'];
+      const subdirs = ['docs', 'memory', PROJECT_TICKET_CONSTANTS.DIR_NAME, 'teams'];
       for (const subdir of subdirs) {
         mkdirSync(join(crewlyDir, subdir), { recursive: true });
       }

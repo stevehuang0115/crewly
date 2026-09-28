@@ -48,22 +48,6 @@ describe('Services Index Module', () => {
       const { ActiveProjectsService } = await import('./project/active-projects.service.js');
       expect(ActiveProjectsService).toBeDefined();
     });
-
-    /**
-     * Test that task service can be imported
-     */
-    it('should export TaskService', async () => {
-      const { TaskService } = await import('./project/task.service.js');
-      expect(TaskService).toBeDefined();
-    });
-
-    /**
-     * Test that task folder service can be imported
-     */
-    it('should export TaskFolderService', async () => {
-      const { TaskFolderService } = await import('./project/task-folder.service.js');
-      expect(TaskFolderService).toBeDefined();
-    });
   });
 
   describe('Monitoring Services', () => {

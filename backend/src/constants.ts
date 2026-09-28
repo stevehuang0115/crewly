@@ -25,10 +25,14 @@ import {
   SAFE_RESTART_CONSTANTS as CONFIG_SAFE_RESTART_CONSTANTS,
   WEB_CONSTANTS as CONFIG_WEB_CONSTANTS,
   API_SECURITY_CONSTANTS as CONFIG_API_SECURITY_CONSTANTS,
+  PROJECT_TICKET_CONSTANTS as CONFIG_PROJECT_TICKET_CONSTANTS,
 } from '../../config/constants.js';
 
 // Re-export the cross-domain constants for backend use
 export const PROCESS_EXIT_CODES = CONFIG_PROCESS_EXIT_CODES;
+
+/** Project tickets (specs/2026-09-28-project-tickets.md) — see config/constants.ts. */
+export const PROJECT_TICKET_CONSTANTS = CONFIG_PROJECT_TICKET_CONSTANTS;
 
 /**
  * Safe restart: drain in-flight agent turns before a shutdown kills the PTYs,

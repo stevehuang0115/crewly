@@ -1421,6 +1421,71 @@ export const CLOUD_DISCONNECT_NOTICE_CONSTANTS = {
 } as const;
 
 /**
+ * Project tickets (specs/2026-09-28-project-tickets.md): a project's own
+ * backlog, one markdown file per ticket under `<project>/.crewly/tickets/`,
+ * tracked in git. Shared by the backend service, the CLI migration command
+ * and (mirrored) the frontend board.
+ */
+export const PROJECT_TICKET_CONSTANTS = {
+	/** Folder inside the project's `.crewly` data dir */
+	DIR_NAME: 'tickets',
+	/** Repo-relative folder, used for git tracking checks */
+	REPO_RELATIVE_DIR: '.crewly/tickets',
+	/** Counter file (tracked): `{ "prefix": "CRW", "next": 13 }` */
+	COUNTER_FILENAME: '.counter.json',
+	/** Cross-process lockfile (ignored by the folder's own .gitignore) */
+	LOCK_FILENAME: '.lock',
+	/** The folder's own .gitignore (keeps the lock and temp files out of version control) */
+	FOLDER_GITIGNORE_CONTENT: '# Crewly: transient files, never commit\n.lock\n*.tmp.*\n',
+	/** A lockfile older than this is considered left behind by a crashed writer (ms) */
+	LOCK_STALE_MS: 30 * 1000,
+	/** Wait between lock attempts (ms) */
+	LOCK_RETRY_MS: 25,
+	/** Give up acquiring the lock after this long (ms) */
+	LOCK_TIMEOUT_MS: 10 * 1000,
+	/** Ticket statuses, in board order */
+	STATUSES: ['backlog', 'ready', 'in_progress', 'review', 'done', 'cancelled'] as const,
+	/** Priorities, highest first */
+	PRIORITIES: ['P0', 'P1', 'P2', 'P3'] as const,
+	/** Priority of a ticket created without one */
+	DEFAULT_PRIORITY: 'P2',
+	/** Status of a ticket created without one (and of every worker-created ticket) */
+	DEFAULT_STATUS: 'backlog',
+	/** Fallback id prefix when the project name has no letters/digits */
+	FALLBACK_PREFIX: 'T',
+	/** Max characters of the id prefix derived from the project name */
+	MAX_PREFIX_LENGTH: 4,
+	/** Max characters of the slug in the file name */
+	MAX_SLUG_LENGTH: 48,
+	/** Section headings the service reads / writes */
+	SECTIONS: {
+		DESCRIPTION: 'Description',
+		ACCEPTANCE: 'Acceptance criteria',
+		LOG: 'Log',
+	},
+	/** `source` value stamped by the v1 migration */
+	MIGRATION_SOURCE: 'v1-migration',
+	/** v1 status folders whose files are imported (done/ and blocked/ are not) */
+	MIGRATION_STATUS_FOLDERS: ['open', 'in_progress'] as const,
+	/** v1 task root inside the project's `.crewly` data dir */
+	MIGRATION_V1_DIR: 'tasks',
+	/** Lines appended to the project's .gitignore when the tickets folder is ignored */
+	GITIGNORE_BLOCK: [
+		'# Crewly project tickets are tracked (specs/2026-09-28-project-tickets.md)',
+		'!.crewly/',
+		'.crewly/*',
+		'!.crewly/tickets/',
+		'!.crewly/tickets/**',
+	] as const,
+	/** WorkItem metadata key linking a WorkItem to its project ticket */
+	WORK_ITEM_METADATA_KEY: 'projectTicket',
+	/** How often the sweep reconciles tickets with their WorkItems (ms) */
+	SYNC_SWEEP_INTERVAL_MS: 60 * 1000,
+	/** Successor hops followed from a ticket's WorkItem before giving up */
+	MAX_SUCCESSOR_HOPS: 8,
+} as const;
+
+/**
  * Type helpers for extracting literal types from constants
  */
 export type AgentStatus =

@@ -1,21 +1,20 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useLocation, useNavigate, Link } from 'react-router-dom';
-import { UserPlus, Play, FolderOpen, CheckSquare, FileText, Plus, Trash2, UserMinus, Info, ExternalLink, Square, ChevronDown, ChevronRight } from 'lucide-react';
-import { Project, Team, Ticket } from '../types';
+import { UserPlus, Play, FolderOpen, CheckSquare, Info, ExternalLink, Square, ChevronDown, ChevronRight } from 'lucide-react';
+import { Project, Team } from '../types';
 import { apiService } from '../services/api.service';
+import { listProjectTickets } from '../services/project-tickets.service';
 import { TeamAssignmentModal } from '../components/Modals/TeamAssignmentModal';
-import { TaskDetailModal } from '../components/Modals/TaskDetailModal';
 import { MarkdownEditor } from '../components/MarkdownEditor/MarkdownEditor';
 import { useTerminal } from '../contexts/TerminalContext';
-import { Button, useAlert, useConfirm, Dropdown, FormPopup, FormGroup, FormRow, FormLabel, FormInput, FormTextarea, FormHelp } from '@crewly/ui';
+import { Button, useAlert, useConfirm, FormPopup, FormGroup, FormLabel, FormTextarea, FormHelp } from '@crewly/ui';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { OverflowMenu } from '@crewly/ui/OverflowMenu';
 import { Tabs, TabList, TabTrigger } from '@crewly/ui/Tabs';
 import { DetailView } from '../components/ProjectDetail/DetailView';
-import { TasksView } from '../components/ProjectDetail/TasksView';
+import { ProjectTicketsView } from '../components/ProjectDetail/ProjectTicketsView';
 import { EditorView } from '../components/ProjectDetail/EditorView';
 import { TeamsView } from '../components/ProjectDetail/TeamsView';
-import { TaskCreateModal } from '../components/ProjectDetail/TaskCreateModal';
 import { inProgressTasksService } from '../services/in-progress-tasks.service';
 import { TaskFlowView } from '../components/Hierarchy';
 import type { TaskFlowItem } from '../components/Hierarchy';
@@ -26,7 +25,8 @@ type ProjectTab = 'detail' | 'editor' | 'tasks' | 'teams';
 interface ProjectDetailState {
   project: Project | null;
   assignedTeams: Team[];
-  tickets: Ticket[];
+  /** Open (not cancelled) project tickets — the Tasks tab badge */
+  ticketCount: number;
   loading: boolean;
   error: string | null;
 }
@@ -64,15 +64,6 @@ export const ProjectDetail: React.FC = () => {
   const [isUserJourneyModalOpen, setIsUserJourneyModalOpen] = useState(false);
   const [goalContent, setGoalContent] = useState('');
   const [userJourneyContent, setUserJourneyContent] = useState('');
-  const [isTaskDetailModalOpen, setIsTaskDetailModalOpen] = useState(false);
-  const [selectedTaskForDetail, setSelectedTaskForDetail] = useState<any>(null);
-  const [taskAssignmentLoading, setTaskAssignmentLoading] = useState<string | null>(null);
-  const [taskUnblockLoading, setTaskUnblockLoading] = useState<string | null>(null);
-  const [taskAssignedMemberDetails, setTaskAssignedMemberDetails] = useState<{
-    memberName?: string;
-    sessionName?: string;
-    teamName?: string;
-  }>({});
   const [buildSpecsWorkflow, setBuildSpecsWorkflow] = useState<{
     isActive: boolean;
     steps: Array<{
@@ -89,7 +80,7 @@ export const ProjectDetail: React.FC = () => {
   const [state, setState] = useState<ProjectDetailState>({
     project: null,
     assignedTeams: [],
-    tickets: [],
+    ticketCount: 0,
     loading: true,
     error: null
   });
@@ -101,11 +92,7 @@ export const ProjectDetail: React.FC = () => {
   });
 
   const [selectedBuildSpecsTeam, setSelectedBuildSpecsTeam] = useState<string>('');
-  const [selectedBuildTasksTeam, setSelectedBuildTasksTeam] = useState<string>('');
   const [availableTeams, setAvailableTeams] = useState<any[]>([]);
-  const [isCreateTaskModalOpen, setIsCreateTaskModalOpen] = useState(false);
-  const [isCreateMilestoneModalOpen, setIsCreateMilestoneModalOpen] = useState(false);
-  const [selectedMilestoneFilter, setSelectedMilestoneFilter] = useState<string | null>(null);
   const [taskFlowItems, setTaskFlowItems] = useState<TaskFlowItem[]>([]);
   const [showTaskFlow, setShowTaskFlow] = useState(false);
 
@@ -113,6 +100,11 @@ export const ProjectDetail: React.FC = () => {
   useEffect(() => {
     setActiveTab(getTabFromHash());
   }, [getTabFromHash]);
+
+  /** Keep the Tasks tab badge in step with the tickets board (stable for the board's effect). */
+  const handleTicketCountChange = useCallback((count: number) => {
+    setState(prev => (prev.ticketCount === count ? prev : { ...prev, ticketCount: count }));
+  }, []);
 
   // Update hash when activeTab changes
   const updateActiveTab = (tab: ProjectTab) => {
@@ -245,9 +237,13 @@ export const ProjectDetail: React.FC = () => {
     try {
       setState(prev => ({ ...prev, loading: true, error: null }));
       
-      const [project, tasks] = await Promise.all([
+      // Project tickets (<project>/.crewly/tickets/) — only the count is
+      // needed here; the Tasks tab loads the board itself.
+      const [project, ticketCount] = await Promise.all([
         apiService.getProject(projectId),
-        apiService.getAllTasks(projectId)  // Load tasks from project-specific markdown files
+        listProjectTickets(projectId)
+          .then((r) => r.tickets.filter((t) => t.status !== 'cancelled').length)
+          .catch(() => 0),
       ]);
       
       // Get assigned teams based on project data
@@ -266,7 +262,7 @@ export const ProjectDetail: React.FC = () => {
       setState({
         project,
         assignedTeams,
-        tickets: tasks,  // Use tasks from markdown files
+        ticketCount,
         loading: false,
         error: null
       });
@@ -362,306 +358,6 @@ export const ProjectDetail: React.FC = () => {
       showError(
         'Failed to stop project: ' + (error instanceof Error ? error.message : 'Unknown error'),
         'Stop Project Failed'
-      );
-    } finally {
-      setState(prev => ({ ...prev, loading: false }));
-    }
-  };
-
-  // Task interaction handlers
-  const handleTaskClick = async (task: any) => {
-    setSelectedTaskForDetail(task);
-    setIsTaskDetailModalOpen(true);
-
-    // Load assigned member details if task is in progress
-    if (task.status === 'in_progress' || task.path?.includes('/in_progress/')) {
-      try {
-        const memberDetails = await inProgressTasksService.getTaskAssignedMemberDetails(
-          task.path || task.filePath || ''
-        );
-        setTaskAssignedMemberDetails(memberDetails);
-      } catch (error) {
-        console.error('Failed to load task assigned member details:', error);
-        setTaskAssignedMemberDetails({});
-      }
-    } else {
-      setTaskAssignedMemberDetails({});
-    }
-  };
-
-  const handleTaskAssign = async (task: any) => {
-    if (!state.project) return;
-    
-    try {
-      setTaskAssignmentLoading(task.id);
-      
-      // Check if orchestrator session exists (using lightweight health check)
-      const response = await fetch(`/api/orchestrator/health`);
-      if (!response.ok) {
-        throw new Error('Failed to check orchestrator status');
-      }
-      
-      const status = await response.json();
-      if (!status.success || !status.data || !status.data.orchestrator || !status.data.orchestrator.running) {
-        showError('Orchestrator session is not running. Please start the orchestrator first.', 'Assignment Failed');
-        return;
-      }
-
-      // Assign task to orchestrator
-      const assignResponse = await fetch(`/api/projects/${state.project.id}/assign-task`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          taskId: task.id,
-          taskTitle: task.title,
-          taskDescription: task.description,
-          taskPriority: task.priority,
-          taskMilestone: task.milestoneId,
-          projectName: state.project.name,
-          projectPath: state.project.path
-        }),
-      });
-
-      if (assignResponse.ok) {
-        const result = await assignResponse.json();
-        showSuccess(
-          `Task "${task.title}" has been assigned to the orchestrator team.`,
-          'Task Assigned'
-        );
-      } else {
-        const error = await assignResponse.json();
-        throw new Error(error.error || 'Failed to assign task');
-      }
-
-    } catch (error) {
-      console.error('Failed to assign task:', error);
-      showError(
-        'Failed to assign task: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        'Assignment Failed'
-      );
-    } finally {
-      setTaskAssignmentLoading(null);
-    }
-  };
-
-  const handleTaskUnblock = async (task: any) => {
-    if (!state.project) return;
-
-    try {
-      setTaskUnblockLoading(task.id);
-
-      // V3-only as of spec 2026-05-06-task-management-v1-deprecation.md.
-      // Replaces v1 `/task-management/unblock` (which moved a `.md` file
-      // back to delegated/) with V3's release-back-to-pool flow.
-      const unblockResponse = await fetch(`/api/task-pool/release/${encodeURIComponent(task.id)}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          reason: 'Unblocked via UI for reassignment',
-        }),
-      });
-
-      if (unblockResponse.ok) {
-        const result = await unblockResponse.json();
-        showSuccess(
-          `Task "${task.title}" has been unblocked and moved to open for reassignment.`,
-          'Task Unblocked'
-        );
-        // Refresh the tasks list
-        await loadProjectData(state.project.id);
-      } else {
-        const error = await unblockResponse.json();
-        throw new Error(error.error || 'Failed to unblock task');
-      }
-
-    } catch (error) {
-      console.error('Failed to unblock task:', error);
-      showError(
-        'Failed to unblock task: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        'Unblock Failed'
-      );
-    } finally {
-      setTaskUnblockLoading(null);
-    }
-  };
-
-  const handleCreateSpecsTasks = async () => {
-    if (!state.project) return;
-    
-    showConfirm(
-      'Create Specs Tasks?\n\nThis will generate specification-focused tasks using the TPM role. The orchestrator will analyze project requirements and create detailed specification tasks.',
-      async () => await executeCreateSpecsTasks(),
-      {
-        title: 'Create Specs Tasks',
-        confirmText: 'Create Specs Tasks',
-        type: 'info'
-      }
-    );
-  };
-
-  const executeCreateSpecsTasks = async () => {
-    if (!state.project) return;
-    
-    try {
-      setState(prev => ({ ...prev, loading: true }));
-      
-      const response = await fetch('/api/tasks/create-from-config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          projectId: state.project.id,
-          projectName: state.project.name,
-          projectPath: state.project.path,
-          configType: 'build_spec_prompt'
-        })
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Reload project data to show new tasks
-        await loadProjectData(state.project.id);
-        
-        showSuccess(
-          result.message || 'Specs tasks created successfully! Tasks have been assigned to the orchestrator for TPM assignment.',
-          'Specs Tasks Created'
-        );
-      } else {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to create specs tasks');
-      }
-      
-    } catch (error) {
-      console.error('Failed to create specs tasks:', error);
-      showError(
-        'Failed to create specs tasks: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        'Create Specs Tasks Failed'
-      );
-    } finally {
-      setState(prev => ({ ...prev, loading: false }));
-    }
-  };
-
-  const handleCreateDevTasks = async () => {
-    if (!state.project) return;
-    
-    showConfirm(
-      'Create Dev Tasks?\n\nThis will generate development-focused tasks using the dev role. The orchestrator will create detailed development and implementation tasks.',
-      async () => await executeCreateDevTasks(),
-      {
-        title: 'Create Dev Tasks',
-        confirmText: 'Create Dev Tasks',
-        type: 'info'
-      }
-    );
-  };
-
-  const executeCreateDevTasks = async () => {
-    if (!state.project) return;
-    
-    try {
-      setState(prev => ({ ...prev, loading: true }));
-      
-      const response = await fetch('/api/tasks/create-from-config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          projectId: state.project.id,
-          projectName: state.project.name,
-          projectPath: state.project.path,
-          configType: 'build_tasks_prompt',
-          targetRole: 'dev'
-        })
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Reload project data to show new tasks
-        await loadProjectData(state.project.id);
-        
-        showSuccess(
-          result.message || 'Dev tasks created successfully! Tasks have been assigned to the orchestrator for developer assignment.',
-          'Dev Tasks Created'
-        );
-      } else {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to create dev tasks');
-      }
-      
-    } catch (error) {
-      console.error('Failed to create dev tasks:', error);
-      showError(
-        'Failed to create dev tasks: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        'Create Dev Tasks Failed'
-      );
-    } finally {
-      setState(prev => ({ ...prev, loading: false }));
-    }
-  };
-
-  const handleCreateE2ETasks = async () => {
-    if (!state.project) return;
-    
-    showConfirm(
-      'Create E2E Tasks?\n\nThis will generate end-to-end testing tasks using the QA role. The system will analyze your project type and create appropriate E2E testing tasks with technology recommendations.',
-      async () => await executeCreateE2ETasks(),
-      {
-        title: 'Create E2E Tasks',
-        confirmText: 'Create E2E Tasks',
-        type: 'info'
-      }
-    );
-  };
-
-  const executeCreateE2ETasks = async () => {
-    if (!state.project) return;
-    
-    try {
-      setState(prev => ({ ...prev, loading: true }));
-      
-      const response = await fetch('/api/tasks/create-from-config', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          projectId: state.project.id,
-          projectName: state.project.name,
-          projectPath: state.project.path,
-          configType: 'build_e2e_test_plan_prompt',
-          targetRole: 'qa'
-        })
-      });
-      
-      if (response.ok) {
-        const result = await response.json();
-        
-        // Reload project data to show new tasks
-        await loadProjectData(state.project.id);
-        
-        showSuccess(
-          result.message || 'E2E tasks created successfully! Tasks have been assigned to the orchestrator for QA assignment.',
-          'E2E Tasks Created'
-        );
-      } else {
-        const error = await response.json();
-        throw new Error(error.error || 'Failed to create E2E tasks');
-      }
-      
-    } catch (error) {
-      console.error('Failed to create E2E tasks:', error);
-      showError(
-        'Failed to create E2E tasks: ' + (error instanceof Error ? error.message : 'Unknown error'),
-        'Create E2E Tasks Failed'
       );
     } finally {
       setState(prev => ({ ...prev, loading: false }));
@@ -956,148 +652,6 @@ export const ProjectDetail: React.FC = () => {
     }
   };
 
-  const handleBuildTasks = async () => {
-    if (!state.project) return;
-    
-    showConfirm(
-      'This will generate detailed project tasks organized by milestone phases. The selected team member will analyze specifications and create milestone directories with detailed task files. Continue?',
-      async () => await executeBuildTasks(),
-      {
-        title: 'Build Tasks',
-        confirmText: 'Start Build Tasks',
-        type: 'info'
-      }
-    );
-  };
-
-  const executeBuildTasks = async () => {
-    if (!state.project) return;
-    
-    // Validate team selection
-    if (!selectedBuildTasksTeam || selectedBuildTasksTeam === 'orchestrator') {
-      showError('Please select a team member first. Build Tasks must be assigned to an existing team member.');
-      return;
-    }
-    
-    try {
-      // Load the build tasks configuration
-      const configResponse = await fetch('/api/build-tasks/config');
-      if (!configResponse.ok) {
-        throw new Error('Failed to load Build Tasks configuration');
-      }
-      const result = await configResponse.json();
-      if (!result.success) {
-        throw new Error(result.error || 'Failed to load Build Tasks configuration');
-      }
-      const config = result.data;
-
-      // Get the initial goal and user journey content
-      const [goalResponse, journeyResponse] = await Promise.all([
-        fetch(`/api/projects/${state.project.id}/specs?fileName=initial_goal.md`),
-        fetch(`/api/projects/${state.project.id}/specs?fileName=initial_user_journey.md`)
-      ]);
-
-      if (!goalResponse.ok || !journeyResponse.ok) {
-        throw new Error('Failed to load initial specifications');
-      }
-
-      const [goalResult, journeyResult] = await Promise.all([
-        goalResponse.json(),
-        journeyResponse.json()
-      ]);
-
-      if (!goalResult.success || !journeyResult.success) {
-        throw new Error('Failed to read initial specifications');
-      }
-
-      const initialGoal = goalResult.data.content;
-      const userJourney = journeyResult.data.content;
-
-      // Get the selected team and member information
-      console.log('Using selected team member for Build Tasks:', selectedBuildTasksTeam);
-      const [teamId, memberId] = selectedBuildTasksTeam.split(':');
-      
-      const selectedTeam = availableTeams.find(team => team.id === teamId);
-      const selectedMember = selectedTeam?.members.find((m: any) => m.id === memberId);
-      
-      if (!selectedTeam || !selectedMember) {
-        throw new Error('Selected team member not found');
-      }
-      
-      console.log('Selected team:', selectedTeam.name, 'Member:', selectedMember.name);
-
-      // Process workflow steps
-      const steps = config.steps;
-
-      // Get the actual session name for the selected member
-      const targetSessionName = selectedMember.sessionName || selectedMember.name;
-      console.log('Target session name for Build Tasks:', targetSessionName);
-
-      // Send all steps as scheduled messages to the selected team member
-      const stepPromises = [];
-      
-      for (let i = 0; i < steps.length; i++) {
-        const step = steps[i];
-        
-        console.log(`Scheduling Build Tasks Step ${step.id}: ${step.name} with ${step.delayMinutes} minute delay...`);
-        
-        const promise = fetch('/api/build-tasks/retry-step', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            projectId: state.project!.id,
-            stepId: step.id,
-            targetSession: targetSessionName,
-            projectName: state.project!.name,
-            projectPath: state.project!.path,
-            initialGoal,
-            userJourney
-          })
-        });
-        
-        stepPromises.push(promise.then(async (response) => {
-          if (response.ok) {
-            const result = await response.json();
-            console.log(`Build Tasks Step ${step.id} scheduled:`, result.message);
-            return { stepId: step.id, success: true, message: result.message };
-          } else {
-            const error = await response.text();
-            console.error(`Build Tasks Step ${step.id} failed:`, error);
-            return { stepId: step.id, success: false, error };
-          }
-        }));
-      }
-
-      // Wait for all step requests to complete
-      const responses = await Promise.all(stepPromises);
-      
-      // Check if all steps were successful
-      const allSuccessful = responses.every(response => response.success);
-
-      if (allSuccessful) {
-        // Auto-expand terminal to show selected member's session
-        openTerminalWithSession(targetSessionName);
-        
-        // Show success message
-        const totalSteps = steps.length;
-        const maxDelayMinutes = Math.max(...steps.map(s => s.delayMinutes));
-        
-        showSuccess(
-          `Build Tasks process sent to ${selectedMember.name}!\n\n📋 ${totalSteps} steps sent to ${selectedTeam.name}\n⏱️ Final step in ${maxDelayMinutes} minutes\n\n🔍 Monitor ${selectedMember.name}'s terminal for progress.\n\nThis will create milestone directories and detailed task files in .crewly/tasks/`,
-          'Build Tasks Started'
-        );
-      } else {
-        throw new Error('Some Build Tasks steps failed to schedule');
-      }
-
-    } catch (error) {
-      console.error('Error building tasks:', error);
-      showError('Failed to build tasks: ' + (error instanceof Error ? error.message : 'Unknown error'));
-    }
-  };
-
   const executeBuildSpecs = async () => {
     if (!state.project) return;
     
@@ -1355,7 +909,7 @@ export const ProjectDetail: React.FC = () => {
     );
   }
 
-  const { project, assignedTeams, tickets } = state;
+  const { project, assignedTeams, ticketCount } = state;
 
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
@@ -1417,16 +971,6 @@ export const ProjectDetail: React.FC = () => {
                 label: 'Assign Team',
                 onClick: handleAssignTeams
               },
-              ...(activeTab === 'tasks' ? [
-                {
-                  label: 'Create Task',
-                  onClick: () => setIsCreateTaskModalOpen(true)
-                },
-                {
-                  label: 'Create Milestone',
-                  onClick: () => setIsCreateMilestoneModalOpen(true)
-                }
-              ] : []),
               {
                 label: 'Delete Project',
                 onClick: handleDeleteProject,
@@ -1443,7 +987,7 @@ export const ProjectDetail: React.FC = () => {
         <TabList aria-label="Project sections">
           <TabTrigger value="detail" icon={<Info className="w-4 h-4" />}>Detail</TabTrigger>
           <TabTrigger value="editor" icon={<FolderOpen className="w-4 h-4" />}>Editor</TabTrigger>
-          <TabTrigger value="tasks" icon={<CheckSquare className="w-4 h-4" />}>Tasks ({tickets.length})</TabTrigger>
+          <TabTrigger value="tasks" icon={<CheckSquare className="w-4 h-4" />}>Tasks ({ticketCount})</TabTrigger>
           <TabTrigger value="teams" icon={<UserPlus className="w-4 h-4" />}>Teams ({assignedTeams.length})</TabTrigger>
         </TabList>
       </Tabs>
@@ -1458,19 +1002,13 @@ export const ProjectDetail: React.FC = () => {
             onAddUserJourney={handleAddUserJourney}
             onEditUserJourney={handleEditUserJourney}
             onBuildSpecs={handleBuildSpecs}
-            onBuildTasks={handleBuildTasks}
             buildSpecsWorkflow={buildSpecsWorkflow}
             alignmentStatus={alignmentStatus}
             onContinueWithMisalignment={handleContinueWithMisalignment}
             onViewAlignment={handleViewAlignment}
             selectedBuildSpecsTeam={selectedBuildSpecsTeam}
             setSelectedBuildSpecsTeam={setSelectedBuildSpecsTeam}
-            selectedBuildTasksTeam={selectedBuildTasksTeam}
-            setSelectedBuildTasksTeam={setSelectedBuildTasksTeam}
             availableTeams={availableTeams}
-            onCreateSpecsTasks={handleCreateSpecsTasks}
-            onCreateDevTasks={handleCreateDevTasks}
-            onCreateE2ETasks={handleCreateE2ETasks}
             key={project.updatedAt} // Force re-render when project updates
           />
         ) : activeTab === 'editor' ? (
@@ -1503,19 +1041,10 @@ export const ProjectDetail: React.FC = () => {
               </div>
             )}
 
-            <TasksView
+            <ProjectTicketsView
               project={project}
-              tickets={tickets}
-              onTicketsUpdate={() => loadProjectData(project.id)}
-              onCreateSpecsTasks={handleCreateSpecsTasks}
-              onCreateDevTasks={handleCreateDevTasks}
-              onCreateE2ETasks={handleCreateE2ETasks}
-              loading={state.loading}
-              onTaskClick={handleTaskClick}
-              onTaskAssign={handleTaskAssign}
-              onTaskUnblock={handleTaskUnblock}
-              taskAssignmentLoading={taskAssignmentLoading}
-              taskUnblockLoading={taskUnblockLoading}
+              teams={assignedTeams}
+              onCountChange={handleTicketCountChange}
             />
           </div>
         ) : (
@@ -1547,18 +1076,6 @@ export const ProjectDetail: React.FC = () => {
           onClose={() => setIsMarkdownEditorOpen(false)}
         />
       )}
-
-      {/* Task Detail Modal */}
-      <TaskDetailModal
-        isOpen={isTaskDetailModalOpen}
-        onClose={() => {
-          setIsTaskDetailModalOpen(false);
-          setSelectedTaskForDetail(null);
-        }}
-        task={selectedTaskForDetail}
-        onAssign={handleTaskAssign}
-        taskAssignmentLoading={taskAssignmentLoading}
-      />
 
       {/* Goal Modal */}
       {isGoalModalOpen && (

@@ -1,6 +1,5 @@
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import type { StorageService } from '../core/storage.service.js';
+import { ProjectTicketService } from '../project-tickets/project-ticket.service.js';
 
 /**
  * Represents a single search result from a project search query
@@ -10,41 +9,49 @@ export interface ProjectSearchResult {
   id: string;
   /** Project name */
   name: string;
-  /** Whether the match was on the project name or a task filename */
+  /** Whether the match was on the project name or one of its tickets */
   matchType: 'project_name' | 'task_name';
-  /** The human-readable task name (only for task_name matches) */
+  /** The ticket title (only for task_name matches) */
   taskName?: string;
-  /** Relative path to the task file within .crewly/tasks/ (only for task_name matches) */
+  /** Ticket file name inside `.crewly/tickets/` (only for task_name matches) */
   taskPath?: string;
-  /** Parent milestone folder name (only for task_name matches) */
-  milestone?: string;
+  /** Ticket id, e.g. `APP-12` (only for task_name matches) */
+  ticketId?: string;
+  /** Ticket status (only for task_name matches) */
+  status?: string;
 }
 
+/** The part of the ticket store the search needs (injectable for tests). */
+export type ProjectTicketLister = Pick<ProjectTicketService, 'list'>;
+
 /**
- * Service for searching across project names and task filenames.
+ * Service for searching across project names and project tickets
+ * (`<project>/.crewly/tickets/`, specs/2026-09-28-project-tickets.md).
  *
- * Scans the storage-backed project list and each project's `.crewly/tasks/`
- * directory to find matches against a user-supplied query string.
+ * The retired `.crewly/tasks/` md files are no longer searched.
  */
 export class ProjectSearchService {
   private storageService: StorageService;
+  private tickets: ProjectTicketLister;
 
   /**
    * Creates a new ProjectSearchService instance
    *
    * @param storageService - The storage service used to retrieve project metadata
+   * @param tickets - Project ticket store (defaults to the process singleton)
    */
-  constructor(storageService: StorageService) {
+  constructor(storageService: StorageService, tickets: ProjectTicketLister = ProjectTicketService.getInstance()) {
     this.storageService = storageService;
+    this.tickets = tickets;
   }
 
   /**
-   * Searches project names and task filenames for the given query.
+   * Searches project names and ticket ids / titles for the given query.
    *
    * The search is case-insensitive. Results are sorted so that project_name
-   * matches appear before task_name matches.
+   * matches appear before ticket matches.
    *
-   * @param query - The search term to match against project names and task filenames
+   * @param query - The search term
    * @returns Array of search results sorted with project_name matches first
    *
    * @example
@@ -60,82 +67,50 @@ export class ProjectSearchService {
     const results: ProjectSearchResult[] = [];
 
     for (const project of projects) {
-      // Check project name
       if (project.name.toLowerCase().includes(lowerQuery)) {
-        results.push({
-          id: project.id,
-          name: project.name,
-          matchType: 'project_name',
-        });
+        results.push({ id: project.id, name: project.name, matchType: 'project_name' });
       }
-
-      // Scan task files
-      const taskResults = await this.searchTaskFiles(project.id, project.name, project.path, lowerQuery);
-      results.push(...taskResults);
+      results.push(...(await this.searchTickets(project.id, project.name, project.path, lowerQuery)));
     }
 
-    // Sort: project_name matches first, then task_name matches
     results.sort((a, b) => {
       if (a.matchType === b.matchType) return 0;
       return a.matchType === 'project_name' ? -1 : 1;
     });
-
     return results;
   }
 
   /**
-   * Scans a project's .crewly/tasks/ directory recursively for .md files
-   * whose filenames match the query.
+   * Match a project's tickets by id or title.
    *
    * @param projectId - The project ID to associate with results
    * @param projectName - The project name to associate with results
    * @param projectPath - Absolute filesystem path to the project root
    * @param lowerQuery - The lowercased search query
-   * @returns Array of task_name search results
+   * @returns Ticket matches (an unreadable folder yields none)
    */
-  private async searchTaskFiles(
+  private async searchTickets(
     projectId: string,
     projectName: string,
     projectPath: string,
     lowerQuery: string,
   ): Promise<ProjectSearchResult[]> {
-    const tasksDir = path.join(projectPath, '.crewly', 'tasks');
-    const results: ProjectSearchResult[] = [];
-
-    let entries: string[];
+    let list;
     try {
-      entries = await fs.readdir(tasksDir, { recursive: true }) as unknown as string[];
+      list = await this.tickets.list(projectPath);
     } catch {
-      // Directory may not exist — gracefully return empty
-      return results;
+      return [];
     }
-
-    for (const entry of entries) {
-      // Only consider .md files
-      if (!entry.endsWith('.md')) continue;
-
-      const fileName = path.basename(entry, '.md');
-      // Derive human-readable task name: strip trailing timestamp pattern (_YYYYMMDD_HHmmss or similar)
-      const taskName = fileName.replace(/_\d{8,}.*$/, '').replace(/_/g, ' ');
-
-      if (fileName.toLowerCase().includes(lowerQuery) || taskName.toLowerCase().includes(lowerQuery)) {
-        // Derive milestone from parent folder path
-        const parentDir = path.dirname(entry);
-        const parts = parentDir.split(path.sep);
-        // The milestone is the first directory component (e.g., m0_defining_project)
-        const milestone = parts[0] && parts[0] !== '.' ? parts[0] : undefined;
-
-        results.push({
-          id: projectId,
-          name: projectName,
-          matchType: 'task_name',
-          taskName,
-          taskPath: entry,
-          milestone,
-        });
-      }
-    }
-
-    return results;
+    return list.tickets
+      .filter((t) => t.id.toLowerCase().includes(lowerQuery) || t.title.toLowerCase().includes(lowerQuery))
+      .map((t) => ({
+        id: projectId,
+        name: projectName,
+        matchType: 'task_name' as const,
+        taskName: t.title,
+        taskPath: t.fileName,
+        ticketId: t.id,
+        status: t.status,
+      }));
   }
 }

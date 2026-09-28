@@ -21,7 +21,9 @@ import * as path from 'path';
 import { promisify } from 'util';
 import { exec, spawn } from 'child_process';
 import { ProjectModel, TeamModel } from '../../models/index.js';
-import { ContextLoaderService, TicketEditorService, TaskService } from '../../services/index.js';
+import { ContextLoaderService } from '../../services/index.js';
+import { ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
+import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import { ApiResponse, Project, TeamMember } from '../../types/index.js';
 import { getFileIcon, countFiles } from '../utils/file-utils.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
@@ -30,6 +32,24 @@ import { LoggerService } from '../../services/core/logger.service.js';
 const logger = LoggerService.getInstance().createComponentLogger('ProjectController');
 
 const execAsync = promisify(exec);
+
+/**
+ * The project's own tickets that count toward its progress: everything in
+ * <project>/.crewly/tickets/ except cancelled ones
+ * (specs/2026-09-28-project-tickets.md). A folder that cannot be read counts
+ * as empty.
+ *
+ * @param projectPath - Project root
+ * @returns Non-cancelled tickets
+ */
+async function countedProjectTickets(projectPath: string): Promise<ProjectTicket[]> {
+	try {
+		const { tickets } = await ProjectTicketService.getInstance().list(projectPath);
+		return tickets.filter((t) => t.status !== 'cancelled');
+	} catch {
+		return [];
+	}
+}
 
 /**
  * File tree node structure for project file listing
@@ -201,7 +221,7 @@ export async function getProjectStatus(
 			res.status(404).json({ success: false, error: 'Project not found' } as ApiResponse);
 			return;
 		}
-		const tickets = await this.storageService.getTickets(project.path);
+		const tickets = await countedProjectTickets(project.path);
 		const activeTickets = tickets.filter((t) => t.status !== 'done');
 		res.json({
 			success: true,
@@ -847,7 +867,7 @@ export async function getProjectCompletion(
 			res.status(404).json({ success: false, error: 'Project not found' } as ApiResponse);
 			return;
 		}
-		const tickets = await this.storageService.getTickets(project.path);
+		const tickets = await countedProjectTickets(project.path);
 		const completedTickets = tickets.filter((t) => t.status === 'done');
 		const completionRate =
 			tickets.length > 0 ? Math.round((completedTickets.length / tickets.length) * 100) : 0;
@@ -957,9 +977,7 @@ export async function getProjectStats(
 			// specs folder missing; keep defaults
 		}
 
-		const tickets = await this.storageService.getTickets(resolvedProjectPath, {
-			projectId: id,
-		});
+		const tickets = await countedProjectTickets(resolvedProjectPath);
 		const taskCount = tickets.length;
 
 		const stats = {
@@ -1311,8 +1329,8 @@ export async function cleanupProjectScheduledMessages(
 /**
  * GET /api/projects/search?q=keyword
  *
- * Search across project names and task filenames within their .crewly/tasks/
- * directories. Returns matching projects and tasks with match source annotation.
+ * Search across project names and project tickets (.crewly/tickets/, id or
+ * title). Returns matching projects and tickets with match source annotation.
  *
  * @param req - Request with query param: { q: string }
  * @param res - Response with array of ProjectSearchResult

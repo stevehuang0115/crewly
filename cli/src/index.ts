@@ -25,6 +25,7 @@ import { doctorCommand } from './commands/doctor.js';
 import { updateStatusCommand } from './commands/update-status.js';
 import { pairCommand } from './commands/pair.js';
 import { tokenCommand } from './commands/token.js';
+import { ticketsCommand, type TicketsOptions } from './commands/tickets.js';
 import { loginCommand, statusCommand as cloudStatusCommand, logoutCommand, type LoginOptions } from './commands/cloud.js';
 import { DEFAULT_WEB_PORT } from './constants.js';
 import { getLocalVersion, registerCliModuleDir } from './utils/version-check.js';
@@ -243,6 +244,18 @@ program
   .option('--host <host>', 'Host to use in the --url link (default: first LAN IPv4)')
   .option('--port <port>', 'Port to use in the --url link (default: WEB_PORT or 8787)')
   .action(tokenCommand);
+
+program
+  .command('tickets <action> [projectPath]')
+  .description('Project tickets (<project>/.crewly/tickets/): list | migrate. migrate imports unfinished v1 .crewly/tasks files as backlog tickets — a dry run unless --apply')
+  .option('--apply', 'migrate: write the tickets (default: dry run)')
+  .option('--milestone <name...>', 'migrate: only these v1 milestone folders (repeatable)')
+  .option('--status <status>', 'list: only this status')
+  .option('--name <name>', 'Project name for the ticket id prefix (default: the registered name, else the folder name)')
+  .option('--json', 'Print JSON')
+  .action(async (action: string, projectPath: string | undefined, options: TicketsOptions) => {
+    process.exitCode = await ticketsCommand(action, projectPath, options);
+  });
 
 const cloudCmd = program
   .command('cloud')

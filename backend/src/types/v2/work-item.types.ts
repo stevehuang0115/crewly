@@ -523,7 +523,7 @@ export interface WorkItem {
   targetSource?: 'assigned' | 'claim' | 'escalated';
   /** Trigger ID that created or will wake this WorkItem */
   triggerId?: string;
-  /** Link to ProjectTask (for durable project work) */
+  /** Project ticket id (.crewly/tickets/) this item works on — set with metadata.projectTicket */
   projectTaskId?: string;
   /** Link to Mission (for autonomy-generated work) */
   missionId?: string;
