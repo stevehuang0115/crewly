@@ -360,5 +360,32 @@ describe('validatePackage', () => {
       expect(result.errors).toEqual([]);
       expect(result).toMatchObject({ valid: true, layout: 'SKILL.md', manifest: { id: 'code-review' } });
     });
+
+    describe('setup block', () => {
+      const setup = { steps: [{ id: 'whisper-cli', type: 'command', check: { commands: ['whisper-cli'] }, install: { linux: { script: 'install-whisper.sh' } } }] };
+
+      /**
+       * A skill.json-layout `setup` error names its source as "skill.json"
+       * because that literal was hard-coded — never `${src}` — regardless of
+       * which layout actually supplied the manifest. Same setup block, SKILL.md
+       * layout, must name "SKILL.md frontmatter" instead.
+       */
+      it('names the frontmatter, not skill.json, as the source of a setup-block error', () => {
+        const dir = createSkill({
+          'SKILL.md': skillMd(`setup:\n  steps:\n    - id: whisper-cli\n      type: command\n      check:\n        commands:\n          - whisper-cli\n      install:\n        linux:\n          script: install-whisper.sh\n${VALID_FRONTMATTER}`),
+          'execute.sh': '#!/bin/bash',
+        });
+
+        const result = validatePackage(dir);
+        expect(result.errors).toEqual([
+          'SKILL.md frontmatter setup step "whisper-cli" names install script install-whisper.sh, which is not in the skill directory',
+        ]);
+      });
+
+      it('still names skill.json as the source for the legacy layout', () => {
+        const dir = createSkill({ 'skill.json': validManifest({ setup }), 'execute.sh': '#!/bin/bash', 'instructions.md': '# x' });
+        expect(validatePackage(dir).errors).toEqual(['skill.json setup step "whisper-cli" names install script install-whisper.sh, which is not in the skill directory']);
+      });
+    });
   });
 });

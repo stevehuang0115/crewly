@@ -224,12 +224,12 @@ export function validatePackage(skillDir: string): ValidationResult {
   // install script it names must ship with the skill.
   if (manifest.setup !== undefined) {
     const setup = validateSetupManifest(manifest.setup);
-    errors.push(...setup.errors.map((e) => `skill.json ${e}`));
+    errors.push(...setup.errors.map((e) => `${src} ${e}`));
     for (const step of setup.manifest?.steps ?? []) {
       if (step.type !== 'command') continue;
       for (const recipe of Object.values(step.install ?? {})) {
         if (recipe?.script && !existsSync(path.join(absDir, recipe.script))) {
-          errors.push(`skill.json setup step "${step.id}" names install script ${recipe.script}, which is not in the skill directory`);
+          errors.push(`${src} setup step "${step.id}" names install script ${recipe.script}, which is not in the skill directory`);
         }
       }
     }
