@@ -154,7 +154,10 @@ immediately; assignment leaves it `queued`, and the normal dispatch path wakes t
 **AutoClaim order:** an idle agent first takes WorkItems targeted at it (existing claim policy, order
 unchanged). Only when that yields nothing, and the agent is not already the assignee of an
 `in_progress` project ticket, it claims the highest-priority `ready` ticket (P0 first, then oldest)
-of its teams' projects, then is dispatched like any auto-claimed item.
+of its teams' projects, then is dispatched like any auto-claimed item. Skipped while the agent
+still has queued/running WorkItems of its own. A team lead is not auto-fed tickets in a team that
+has other members (leads delegate; they may still claim or assign explicitly); a lead who is the
+only member of its team is treated like any member.
 
 **Sync (WorkItem → ticket)**, run on `task:verified | task:done | task:rejected | task:cancelled |
 task:failed` for items with `metadata.projectTicket`, and by the 60 s sweep for every `in_progress`

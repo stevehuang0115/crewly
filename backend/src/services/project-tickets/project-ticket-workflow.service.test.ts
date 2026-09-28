@@ -340,6 +340,13 @@ describe('ProjectTicketWorkflowService', () => {
       expect(await wf.claimNextForAgent('app-dev')).toBeNull();
     });
 
+    it('does not feed tickets to a lead who has workers, but does to a solo lead', async () => {
+      await readyTicket();
+      expect(await wf.claimNextForAgent('app-lead')).toBeNull();
+      teams.push({ id: 't-solo', name: 'Solo', members: [member('m-solo', 'solo-lead', { role: 'team-leader' })], projectIds: ['p1'], createdAt: '', updatedAt: '' });
+      expect((await wf.claimNextForAgent('solo-lead'))?.ticket.assignee).toBe('solo-lead');
+    });
+
     it('never runs for the orchestrator or an unknown session', async () => {
       await readyTicket();
       expect(await wf.claimNextForAgent('crewly-orc')).toBeNull();

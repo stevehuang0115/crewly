@@ -547,12 +547,21 @@ export class ProjectTicketWorkflowService {
    * §5): highest priority, then oldest, across its teams' projects. Skipped
    * when the agent already works a ticket or still has WorkItems of its own.
    *
+   * A team lead is not fed tickets automatically in a team that has other
+   * members — leads delegate (they can still claim or assign explicitly). A
+   * lead who is the only member of its team is treated like any member.
+   *
    * @param session - Idle agent
    * @returns The started work, or null
    */
   async claimNextForAgent(session: string): Promise<StartedTicketWork | null> {
     if (!session || session === ORCHESTRATOR_SESSION_NAME) return null;
-    const teams = (await this.directory.getTeams()).filter((t) => !t.archived && (t.members ?? []).some((m) => isSession(m, session)));
+    const teams = (await this.directory.getTeams()).filter((t) => {
+      if (t.archived) return false;
+      const me = (t.members ?? []).find((m) => isSession(m, session));
+      if (!me) return false;
+      return !isTeamLead(t, me) || (t.members ?? []).length === 1;
+    });
     if (teams.length === 0) return null;
     const pool = await this.pool.getAllItems();
     if (pool.some((wi) => wi.target === session && BUSY_STATUSES.has(wi.status))) return null;
