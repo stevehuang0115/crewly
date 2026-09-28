@@ -190,3 +190,9 @@ chrome-extension/
 chrome-extension.OBSOLETE-*/
 # Runtime message-queue data (not source)
 queue/
+
+# Crewly project tickets are tracked (specs/2026-09-28-project-tickets.md)
+!.crewly/
+.crewly/*
+!.crewly/tickets/
+!.crewly/tickets/**
