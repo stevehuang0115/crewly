@@ -1101,8 +1101,10 @@ export const SLACK_TYPING_CONSTANTS = {
 	 * `false` = the 2026-09-23 behaviour: the answer is posted as a new
 	 * message (Slack notifies on new messages, not on edits) and the
 	 * placeholders are deleted after it.
+	 * Owner-facing default is `false`: a reply must notify (edits don't), and
+	 * the placeholder races that left "working on it…" behind are fixed.
 	 */
-	REPLACE_BY_EDIT: true,
+	REPLACE_BY_EDIT: false,
 	/** Fallback text when a settled placeholder cannot be deleted */
 	SETTLED_TEXT: '✓ {name} read this — no reply needed.',
 	/** Reaction put on the person's message when the agent settled it without replying */
