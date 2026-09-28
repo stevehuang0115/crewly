@@ -713,6 +713,28 @@ export const ACTIVITY_MONITOR_CONSTANTS = {
 } as const;
 
 /**
+ * Give-up recovery (#841, specs/2026-09-27-give-up-recovery.md): when a worker
+ * stops on a feasibility give-up, queue a retry with a different approach,
+ * bounded per root WorkItem, then one escalation to the team lead.
+ */
+export const GIVE_UP_RECOVERY_CONSTANTS = {
+	/** Retries per root WorkItem when the team sets no recoveryPolicy. */
+	DEFAULT_MAX_RETRIES: 2,
+	/** Retry WorkItem id: `${rootId}${RETRY_ID_INFIX}${attempt}`. */
+	RETRY_ID_INFIX: ':giveup:',
+	/** Escalation review WorkItem id: `${rootId}${REVIEW_ID_SUFFIX}`. */
+	REVIEW_ID_SUFFIX: ':review:gave_up',
+	/** WorkItem.metadata key for the recorded stop classification. */
+	STOP_METADATA_KEY: 'stop',
+	/** WorkItem.metadata key for the attempt log carried by retries. */
+	GIVE_UP_METADATA_KEY: 'giveUp',
+	/** Characters of stop text kept per attempt. */
+	MAX_REASON_CHARS: 2000,
+	/** Audit label for transitions this feature makes. */
+	ACTOR_VIA: 'give-up-recovery',
+} as const;
+
+/**
  * Event bus constants for the agent event pub/sub system.
  * Used by EventBusService for subscription management and notification delivery.
  */
@@ -1691,7 +1713,15 @@ export const FRESH_TASK_CONVERSATION_CONSTANTS = {
 	ENV_TOGGLE: 'CREWLY_FRESH_TASK_CONVERSATION',
 	/** Under CREWLY_HOME: `{ [session]: lastDeliveredRootId }` */
 	STATE_FILE: 'fresh-task-conversation.json',
-	/** Id suffixes that mark follow-ups of the same task (retries, verifies, reviews) */
+	/**
+	 * Id suffixes that mark follow-ups of the same task (retries, verifies,
+	 * reviews). Deliberately excludes give-up recovery's `:giveup:N` (#841,
+	 * #843): a give-up retry is meant to be a materially DIFFERENT approach,
+	 * and its WorkItem description already carries the full attempt log, so
+	 * nothing is lost by treating it as a new root — the agent starts that
+	 * retry with a fresh conversation instead of one anchored on the
+	 * reasoning that just failed. See give-up-recovery.service.ts buildRetry.
+	 */
 	ROOT_SUFFIX_MARKERS: [':retry:', ':verify:', ':review:'],
 	/** The Claude Code command that starts a new conversation */
 	CLEAR_COMMAND: '/clear',

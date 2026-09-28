@@ -2638,6 +2638,22 @@ export class TaskPoolService {
   }
 
   /**
+   * Shallow-merge keys into a WorkItem's metadata (no status change).
+   *
+   * @param workItemId - WorkItem id
+   * @param patch - Keys to set on `metadata`
+   * @returns The updated WorkItem, or null if not found
+   */
+  async mergeItemMetadata(workItemId: string, patch: Record<string, unknown>): Promise<WorkItem | null> {
+    const ok = await this.storage.updateWorkItem(workItemId, (wi) => {
+      wi.metadata = { ...(wi.metadata ?? {}), ...patch };
+    });
+    if (!ok) return null;
+    await this.storage.flush();
+    return (await this.storage.findWorkItem(workItemId)) ?? null;
+  }
+
+  /**
    * Re-point a queued WorkItem at another agent (its target went stale).
    * Only `queued` items move: running work belongs to whoever holds it.
    *

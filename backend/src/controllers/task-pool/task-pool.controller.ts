@@ -19,6 +19,8 @@ import {
 import { TaskProjectionService } from '../../services/v3/task-projection.service.js';
 import { ServiceContractGate } from '../../services/v3/service-contract-gate.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
+import { GiveUpRecoveryService, type StopOutcome } from '../../services/task-pool/give-up/give-up-recovery.service.js';
+import { computeGiveUpStats } from '../../services/task-pool/give-up/give-up-stats.js';
 import type { TokenUsage } from '../../types/v3/task-record.types.js';
 import {
   WORK_ITEM_TYPES,
@@ -122,6 +124,43 @@ function handleServiceError(res: Response, error: unknown): void {
  */
 function getService(): TaskPoolService {
   return TaskPoolService.getInstance();
+}
+
+/** Give-up recovery (#841); built lazily over the pool singleton, injectable for tests. */
+let giveUpRecovery: GiveUpRecoveryService | null = null;
+
+/**
+ * The give-up recovery service the worker stop endpoints go through (#841).
+ *
+ * @returns The service, created on first use over the TaskPoolService singleton
+ */
+function getGiveUp(): GiveUpRecoveryService {
+  if (!giveUpRecovery) {
+    giveUpRecovery = new GiveUpRecoveryService({
+      pool: getService(),
+      loadTeams: () => StorageService.getInstance().getTeams(),
+    });
+  }
+  return giveUpRecovery;
+}
+
+/**
+ * Replace the give-up recovery service (tests), or reset it with null.
+ *
+ * @param service - Service to use, or null to rebuild lazily
+ */
+export function setGiveUpRecoveryService(service: GiveUpRecoveryService | null): void {
+  giveUpRecovery = service;
+}
+
+/**
+ * Response fields describing what give-up recovery did, when it did anything.
+ *
+ * @param outcome - Recovery outcome
+ * @returns `{ giveUp }` or nothing
+ */
+function giveUpFields(outcome: StopOutcome): Record<string, unknown> {
+  return outcome.action === 'none' ? {} : { giveUp: outcome };
 }
 
 /**
@@ -672,7 +711,22 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
         session: actor.session,
       });
     }
-    await getService().completeItem(workItemId, result, actor);
+    // #841: a completion whose outcome is a give-up (no delivery) is recorded
+    // as failed and retried with a different approach; others go through
+    // pool.completeItem with the resolved actor (#813) exactly as before —
+    // GiveUpRecoveryService.complete() makes that call itself when the
+    // completion is not a give-up.
+    const outcome = await getGiveUp().complete(workItemId, result, actor);
+    if (outcome.action === 'retry_queued' || outcome.action === 'escalated_to_lead') {
+      res.json({
+        success: true,
+        message: outcome.action === 'retry_queued'
+          ? `WorkItem ${workItemId} recorded as a give-up; retry ${outcome.retryWorkItemId} queued with a different approach`
+          : `WorkItem ${workItemId} recorded as a give-up; retries used up, escalated to the lead as ${outcome.reviewWorkItemId}`,
+        ...giveUpFields(outcome),
+      });
+      return;
+    }
 
     // V3.1: Project task completion
     const projection = getProjection();
@@ -693,7 +747,7 @@ export async function completeItem(req: Request, res: Response): Promise<void> {
     // NOTE: Request status cascade is handled by V3DataService.onTaskCompleted
     // via the EventBus — no duplicate cascade needed here.
 
-    res.json({ success: true, message: `WorkItem ${workItemId} completed` });
+    res.json({ success: true, message: `WorkItem ${workItemId} completed`, ...giveUpFields(outcome) });
   } catch (error) {
     handleServiceError(res, error);
   }
@@ -735,7 +789,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
 
     // Explicit block: releases the claim and stays blocked until unblocked
     // (POST /task-pool/release/:id). The reconciler no longer re-queues it.
-    await getService().blockItem(workItemId, { agentId, reason });
+    const outcome = await getGiveUp().block(workItemId, { agentId, reason });
 
     // V3.1: Project task blocked
     const projection = getProjection();
@@ -747,7 +801,7 @@ export async function blockItem(req: Request, res: Response): Promise<void> {
       }
     }
 
-    res.json({ success: true, message: `WorkItem ${workItemId} blocked` });
+    res.json({ success: true, message: `WorkItem ${workItemId} blocked`, ...giveUpFields(outcome) });
   } catch (error) {
     // Use the shared mapper rather than an inline not-found/500 split.
     // `updateItemStatus` throws "Invalid status transition ..." when the item
@@ -790,7 +844,7 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
       return;
     }
 
-    await getService().failItem(workItemId, errorMsg || 'unknown error');
+    const outcome = await getGiveUp().fail(workItemId, errorMsg || 'unknown error');
 
     // V3.1: Project task failure
     const projection = getProjection();
@@ -802,7 +856,7 @@ export async function failItemHandler(req: Request, res: Response): Promise<void
       }
     }
 
-    res.json({ success: true, message: `WorkItem ${workItemId} failed` });
+    res.json({ success: true, message: `WorkItem ${workItemId} failed`, ...giveUpFields(outcome) });
   } catch (error) {
     handleServiceError(res, error);
   }
@@ -1600,4 +1654,29 @@ function parseQueryFilters(req: Request): PoolFilters | undefined {
   }
 
   return filters;
+}
+
+// ---------------------------------------------------------------------------
+// GET /api/task-pool/give-up-stats — Give-up metrics per team (#841)
+// ---------------------------------------------------------------------------
+
+/**
+ * Give-up count, retries and retry success rate per team (#841).
+ *
+ * Query: `teamId` (optional) to return one team.
+ *
+ * @param req - Express request
+ * @param res - Express response
+ */
+export async function getGiveUpStats(req: Request, res: Response): Promise<void> {
+  try {
+    const teamId = typeof req.query.teamId === 'string' && req.query.teamId ? req.query.teamId : undefined;
+    const [items, teams] = await Promise.all([
+      getService().getAllItems(),
+      StorageService.getInstance().getTeams(),
+    ]);
+    res.json({ success: true, data: computeGiveUpStats(items, teams, teamId) });
+  } catch (error) {
+    handleServiceError(res, error);
+  }
 }

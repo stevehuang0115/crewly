@@ -1,0 +1,509 @@
+{
+ "_comment": "Stop messages for the #841 classifier. real=true texts are scrubbed excerpts of real Crewly stops (chat.db, message-queue history, task pool) with emails/URLs/ids/home paths removed and person names generalised; synthetic=true are labelled constructions. expected: retry|escalate|none.",
+ "fixtures": [
+  {
+   "id": "real-copyright-sermons",
+   "source": "block",
+   "expected": "escalate",
+   "category": "legal",
+   "origin": "queue history 2026-09-27 (think-tank researcher, WI fe2421ae)",
+   "synthetic": false,
+   "text": "[BLOCKED] Agent think-tank-sage-2ffacc8f: BLOCKED (needs_alignment) on WI fe2421ae. what_tried: located all 3 Secret Sauce sermons (9/13 hThdXqANUqk 37:57; 9/20 RQDJS7vztG0 30:52; 9/27 yQFmCGCxSaU) and confirmed English captions exist. what_failed: the brief asks for full cleaned verbatim transcripts of copyrighted sermons, which I will not reproduce. what_needed: agent-a to choose A (timestamped outline with YouTube deep links, Scripture refs, a few short key lines), B (links plus refs only) or C (the owner uses YouTube transcript). partial_result: metadata and video IDs above; nothing written to s…"
+  },
+  {
+   "id": "real-copyright-subtitles",
+   "source": "block",
+   "expected": "escalate",
+   "category": "legal",
+   "origin": "chat 2026-09-24",
+   "synthetic": false,
+   "text": "更正上一条最后一句：字幕全文是 EO 的版权内容，我不整份转发。你要是想回看原话，我可以给你一份带时间点的提纲，每段配一两句关键原话，点时间点就能跳回视频里对应的位置。"
+  },
+  {
+   "id": "real-pricing-decision",
+   "source": "block",
+   "expected": "escalate",
+   "category": "money",
+   "origin": "chat 2026-05 (orchestrator)",
+   "synthetic": false,
+   "text": "不动，换 anchor 话术（部门外包 vs VA）。 • *Path B（不推荐）*：加 Pro Lite $299/mo 抢 1-2 人 solo — 风险：KR2 MRR ceiling 下移、稀释 KR1 pilot 单价、和 Anthropic-SMB 价格档贴身 hand-to-hand。 *我推荐 A* — 两个独立团队同推一致 + 和你 4/13 OKR「优先付费商业化」对得上。但这是 pricing model 单点，等你拍板。 --- *5 条下游 action 等你拍板后启动*（先告诉你存在，不动"
+  },
+  {
+   "id": "real-api-keys-empty",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "2 件等你拍板*（不紧急）： *1) CrewlyNode1 的 API keys 是空的* agent-s peek 了 `/home/user/.crewly/.env`：变量名都对（`ANTHROPIC_API_KEY` / `CREWLY_CLOUD_API_KEY` / `GOOGLE_API_KEY`），但 *3 个值都是 0 长度*。Phase 1 部署时只埋了占位符，Phase 2 填 key 的步骤从来没跑。/proc/<pid>/environ 也验证了 — engine 进程 boot 起来了但拿不到 au"
+  },
+  {
+   "id": "real-cf-credentials-missing",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "chat 2026-05 (CE worker blocker)",
+   "synthetic": false,
+   "text": "ra 卡了 — 需要你 30 秒动作* *她 22:07Z claim WI, 22:11Z 报 BLOCKER*: 找不到 CF credentials. 试了 5 个路径全失败: 1. CLOUDFLARE_API_TOKEN 不在任何 app-node env 2. 不在 shell rc / config.env 3. kubectl 现在坏了 (doctl exit 1, ce-prod 没 context) 4. ~/.crewly state 没存 5. Chrome 桥到 dash.cloudflare.com 了 — *但你登出了 CF*, read-text 显示 login form 我之前说「agent-v 应该有 CF API token」是我假设错了, 道歉. *Before-snapshot 已确认*: posts."
+  },
+  {
+   "id": "real-cf-token-not-on-workstation",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "chat 2026-05 (CE TL blocker)",
+   "synthetic": false,
+   "text": "agent-o hit a credential gate. Status + decision: *Blocker:* CF API token not on Owens workstation (not in shell env, ~/.crewly/config.env, project .env, or do-provision secrets). Token only lives in deployed prod (k8s / app-node injection). *Decision (mine, your brief authorized it):*"
+  },
+  {
+   "id": "real-x-password",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "X 登录页 — 你 Chrome 当前应该是 `<url> *不能*:我没有你的 X 账号密码，也不应该有 — 凭据应该由你本人在 Chrome 里输入 (或者 Chrome 自带 password manager 自动填)。 *你下一步*: 1. 切到 Chrome 看登录页 2. 自己输入账号密码 (或让 Chrome autofill) + 处理 2FA 如果有 3. 登录完成后 ping 我「登好了」"
+  },
+  {
+   "id": "real-x-login-choice",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "你 Chrome 没登录 X — navigate 到 article 直接被重定向到 `x.com/i/flow/login`. X Premium/X Article 都要登录态才能看正文。 *你定下一步*: *(A)* 你在 Chrome 里手动登录 X，再 ping 我，我重新 navigate. *(B)* 你自己看一眼 Article 截图发到这条 thread，我直接给 agent-i 做解读. *(C)* 跳过这条 — 仅凭推文 metadata 不够支撑解读. 等你定."
+  },
+  {
+   "id": "real-prod-nginx-no-authority",
+   "source": "block",
+   "expected": "escalate",
+   "category": "destructive",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "跟 5/15 CrewlyNode1 的 v1 layout 完全不一样. 已经存到知识库. *🔥 2 个需要你定的事:* *1. ESTestNode nginx :80 → 502 修不修?* agent-s root-caused: `/etc/nginx/sites-enabled/crewlyai.com` 现在 `proxy_pass 127.0.0.1:3000`, 但 OSS 在 :8787 listening. 改 :3000 → :8787 大概率就好. 但她不敢动 — *是生产域 crewlyai.com 的 nginx*, 没你授权她不碰. → 「改 :8787 我担保」/「"
+  },
+  {
+   "id": "real-k8s-delete-credentials",
+   "source": "block",
+   "expected": "escalate",
+   "category": "destructive",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "guide 0%）、8 天窗口限制 + 3 个解法。 *还需要你亲自动手的两件小事*（agent-o 凭证不够） 1. credentialed shell 里 `kubectl delete` 清掉 guide 在 `do-sfo2-ce-k8s-prod-2022` 上的 Deployment/Service/ConfigMap/Secret 残骸。ingress 301 已经 live，这步只是清 k8s。命令在 `.crewly/findings/2026-05-15-guide-decommission.md`。 2.（可选 5 分钟）CF d"
+  },
+  {
+   "id": "real-cf-paid-upgrade",
+   "source": "fail",
+   "expected": "escalate",
+   "category": "money",
+   "origin": "chat 2026-05 (a result the agent could not get without paying)",
+   "synthetic": false,
+   "text": "CF Pro 套餐最多只能看 8 天 retention，真正的 30 天基线拿不到（要付费升级才能看更长） *顺带发现*: guide.careerengine.us 是一个独立的 404 s"
+  },
+  {
+   "id": "real-rotate-credentials",
+   "source": "block",
+   "expected": "escalate",
+   "category": "destructive",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "ire 兴趣 / 大码 niche 证据 / KR4-3 模板 $5k MRR) 出现, 我会主动 ping 你。 *一个 hygiene 提醒不能漏 (与策略选择无关)*: agent-a 备忘录 §5 标过 *SEV-1 — closie-services.env 在 git-tracked 仓库里明文存 MongoDB / Google OAuth / JWT / DigitalOcean Spaces / Gemini API key / admin 密码*。无论 web 自用模式, 这些凭证暴露的风险不变。建议安排 1 人日轮换全部凭证 (the owner 自己或派工)。不轮换的话, 任何 git 历史泄漏都会立刻拿到生产 Mongo + Gemini quota。这一项排进哪周, 你定。 *agent-a 接下来转去读 CE v0.3-fill* (你刚说的 trigger)."
+  },
+  {
+   "id": "real-config-commit-owner",
+   "source": "block",
+   "expected": "escalate",
+   "category": "owner_decision",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "，需要单独立项。 **agent-a v3 [NEED-DATA-OWEN]**（posts/guide 历史 pageviews）因 GA 坏了从 GA 拿不到；历史数据永久丢失。当下流量可以从 3 个 proxy 估算 — Cloudflare Analytics / GSC / ceappnode1/2 nginx 日志。要不要让 agent-v 去拉？ ⚠️ agent-v 没动配置 — 按任务约束「config 提交 = the owner 拍板」，等你回 (a) 还是 (b) 后再 redeploy。"
+  },
+  {
+   "id": "real-codex-login-choice",
+   "source": "block",
+   "expected": "escalate",
+   "category": "owner_decision",
+   "origin": "chat 2026-09-26 (orchestrator summary of a stuck agent)",
+   "synthetic": false,
+   "text": "from her logs): Crewly spawns the **global npm** codex binary at `/usr/local/lib/node_modules/@openai/codex/.../vendor/.../codex` → **ENOENT**. A working `codex-cli 0.157.1` exists at your nvm path, but Crewly isn't using it. - Fix: reinstall `@openai/codex` at the global path Crewly uses → log in → restart agent-n. - **Needs your call:** login via (a) ChatGPT device-code (recommended) or (b) OpenAI API key. **2. Fake-door de"
+  },
+  {
+   "id": "real-three-decisions",
+   "source": "block",
+   "expected": "escalate",
+   "category": "owner_decision",
+   "origin": "chat 2026-09-23",
+   "synthetic": false,
+   "text": "agent-a (research lead) has finished everything he can and is idle, waiting on your answers. Nothing else is running. Three decisions: *1. Evals — two questions* - Should the G+O+E contract change apply to *all* work, or only client-facing deliverables? - Go/no-go on the ~100-item error-discovery experiment? → *"
+  },
+  {
+   "id": "real-fix-scope",
+   "source": "block",
+   "expected": "escalate",
+   "category": "owner_decision",
+   "origin": "chat 2026-09-18",
+   "synthetic": false,
+   "text": "ID isn't reaching the skill script, so the header gets silently dropped. *Status:* Workaround is in place, Think Tank is unblocked, nothing is on fire. I verified the root cause in the code myself. Waiting on the owner to pick the fix scope (minimal vs. full runtime change). Separately — my earlier"
+  },
+  {
+   "id": "real-sponsor-greenlight",
+   "source": "block",
+   "expected": "escalate",
+   "category": "external_action",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "TL;DR：智库推荐 Hybrid B+C (newsletter 主线 + KR4 模板并行)，2 周可见第一笔付费 send。决策权在你——选 (a) Hybrid / (b) B-only / (c) C-only / (d) counter-option。如 5/17 前没回复，默认按 Hybrid 走但 sponsor outreach 暂停等你 greenlight。 详细看 CE thread。"
+  },
+  {
+   "id": "real-read-x-article",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "chat 2026-05",
+   "synthetic": false,
+   "text": "X Article 必须登录 X 才能读，公开 WebFetch 拿到的全是 HTTP 402 (X 现在对未登录请求几乎全锁). • Crewly Chrome 桥接现在 offline (你的 Chrome 没开/扩展没连上 relay). • 战略团队两个 agent (agent-i, agent-e) 此刻都 inactive — 但即便我现在叫醒 agent-i，她也需要走 Crewly Chrome 才能登录拿到全文. *我需要你定一下走法* *(A)* 你这边打开 Chrome (开着 Crewly 扩展)，我立刻 dispatch 给 agent-i，她用"
+  },
+  {
+   "id": "real-usage-limit",
+   "source": "fail",
+   "expected": "escalate",
+   "category": "quota",
+   "origin": "this agent session 2026-09-26 (runtime usage-limit notice)",
+   "synthetic": false,
+   "text": "Usage limit reached. Your subagents keep going; wrap up this turn, then tell the user the limit was reached, what is done and what is left."
+  },
+  {
+   "id": "real-dependency-wait",
+   "source": "block",
+   "expected": "escalate",
+   "category": "dependency",
+   "origin": "task pool blockedReason (2026-09)",
+   "synthetic": false,
+   "text": "Waiting on dependency: Plan: open a separate wiki vault for personal development notes"
+  },
+  {
+   "id": "syn-cant-needs-card",
+   "source": "block",
+   "expected": "escalate",
+   "category": "money",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "I can't finish this, it needs your card to upgrade the plan."
+  },
+  {
+   "id": "syn-impossible-without-login",
+   "source": "block",
+   "expected": "escalate",
+   "category": "permission",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Impossible to scrape the dashboard without logging in to your account."
+  },
+  {
+   "id": "syn-no-way-legal",
+   "source": "fail",
+   "expected": "escalate",
+   "category": "legal",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "There is no way to include the full article text; it is copyrighted."
+  },
+  {
+   "id": "syn-cant-deploy-prod",
+   "source": "block",
+   "expected": "escalate",
+   "category": "destructive",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Cannot finish without deploying to production, which is irreversible. Your call."
+  },
+  {
+   "id": "syn-rate-limited",
+   "source": "fail",
+   "expected": "escalate",
+   "category": "quota",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Unable to continue: 429 Too Many Requests from the API, rate limit hit."
+  },
+  {
+   "id": "syn-disk-full",
+   "source": "fail",
+   "expected": "escalate",
+   "category": "environment",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Could not build: ENOSPC no space left on device."
+  },
+  {
+   "id": "syn-tool-missing",
+   "source": "fail",
+   "expected": "escalate",
+   "category": "environment",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Cannot run the tests: pytest: command not found."
+  },
+  {
+   "id": "syn-email-customer",
+   "source": "block",
+   "expected": "escalate",
+   "category": "external_action",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Can't resolve this without emailing the customer directly. Should I?"
+  },
+  {
+   "id": "syn-pii",
+   "source": "block",
+   "expected": "escalate",
+   "category": "privacy",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "I can't finish the list without collecting people's home addresses and phone numbers."
+  },
+  {
+   "id": "syn-unsafe",
+   "source": "block",
+   "expected": "escalate",
+   "category": "safety",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "I won't write this exploit; it is unsafe."
+  },
+  {
+   "id": "syn-zh-money",
+   "source": "block",
+   "expected": "escalate",
+   "category": "money",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "做不到，需要你付费开通会员才能继续。"
+  },
+  {
+   "id": "syn-zh-decision",
+   "source": "block",
+   "expected": "escalate",
+   "category": "owner_decision",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "这个方案行不通，要不要换方向？你来定。"
+  },
+  {
+   "id": "syn-force-push",
+   "source": "block",
+   "expected": "escalate",
+   "category": "destructive",
+   "origin": "synthetic (adversarial: give-up cue + exclusion)",
+   "synthetic": true,
+   "text": "Can't land it without a force-push to main."
+  },
+  {
+   "id": "real-gpt2-record",
+   "source": "block",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "#841 example (AI Engineer talk, Prime Intellect 2026-09): Claude Code stopping on a feasible record; wording paraphrased from the issue",
+   "synthetic": false,
+   "text": "Stopping. The GPT-2 training-speed record cannot be beaten; I don't think it's possible with this approach."
+  },
+  {
+   "id": "syn-impossible-bench",
+   "source": "block",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "It is impossible to get the benchmark under 2 seconds; I tried three optimizations and none helped."
+  },
+  {
+   "id": "syn-cant-repro",
+   "source": "fail",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "I can't reproduce the flaky test after 20 runs, giving up."
+  },
+  {
+   "id": "syn-no-way-algo",
+   "source": "block",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "There is no way to make this algorithm run in linear time."
+  },
+  {
+   "id": "syn-unable-parse",
+   "source": "fail",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "Unable to parse the legacy file format; the structure makes it impossible."
+  },
+  {
+   "id": "syn-wont-work",
+   "source": "block",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "None of the approaches work, the layout doesn't work on narrow screens. Giving up."
+  },
+  {
+   "id": "syn-zh-cant",
+   "source": "block",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "这个性能目标做不到，试了几种办法都不行。"
+  },
+  {
+   "id": "syn-zh-impossible",
+   "source": "fail",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "不可能在现有架构下实现，放弃了。"
+  },
+  {
+   "id": "syn-complete-gave-up",
+   "source": "complete",
+   "expected": "retry",
+   "category": "feasibility",
+   "origin": "synthetic (feasibility give-up, no exclusion)",
+   "synthetic": true,
+   "text": "Could not get the model to converge below the target loss. Gave up."
+  },
+  {
+   "id": "real-delivered-0db27b6f",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 0db27b6f completion summary",
+   "synthetic": false,
+   "text": "Reminder posted to the owner in thread a4cdfbb2 (msg 644ab0a2). The GA4 Admin API shows property 501814742 and its stream are still named \"the owner's Prompt\", and the stream defaultUri is still stevesprompt.com. Asked the owner to rename both (the read-only SA cannot). agent-d's 9am run (a84cdf77) was already verified PASS."
+  },
+  {
+   "id": "real-delivered-d799c8cd",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem d799c8cd completion summary",
+   "synthetic": false,
+   "text": "DONE: ~/Desktop/projects/steveswiki/.crewly/wiki/llm-curated/family/kazdin-parent-training.md (new file only; frontmatter mirrors parenting-style-evidence; the index.md modification in steveswiki git status is NOT mine). 8 sections in order. SPOT-CHECKED verbatim against PubMed abstracts: (1) Kaminski 2008 (PMID 18205039, 77 evals, ages 0-7: larger effects = positive interaction, time-out, consistency, practising with own child in session); (2) Tarver 2014 (PMID 24842197, 11 RCTs, self-directed SMD 1.01 on parent report, NOT upheld on blinded observation). Also verified: Kazdin 1992 RCT, Rabbitt/Kazdin 2016 reduced-contact RCT, Mingebach 2018 SMD 0.46, Deci 1999, Leung 2015 HK PCIT RCT (ERIC), Kazdin quotes (New Haven Register 2008 time-out 1 min; Slate 2016). Coursera module list read directly from course page 2026-09-24: 4 modules, ~6.7h video, Chinese subtitles; watch-first list = 8 videos ~1.9h. KEY FINDINGS: no study tests the Coursera course itself; free-audit status could NOT be verified logged-out; Yale Parenting Center not taking new clients and site unreachable (80% claim labelled seller-source). Section 4 = 2-week program sequencing the scenario card's 5 items (practice first, then praise+points, time-out last), separate 3yo/7yo columns, one number = yells/day."
+  },
+  {
+   "id": "real-delivered-1d3735f3",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 1d3735f3 completion summary",
+   "synthetic": false,
+   "text": "PR #807 (fix/publish-accepts-skill-md, 9b77a368). crewly publish now accepts SKILL.md+execute.sh or legacy skill.json+instructions.md+execute.sh. When neither exists, the error names both layouts. Metadata comes from readSkillManifest in config/skills/marketplace-registry.ts, the registry generator's reader (the 8339f728 installer only downloads files and never parses metadata). E1: on origin/main, publish --dry-run on code-review fails with 'Missing required file: skill.json'. E2: it passes on the branch, as does legacy xhs-downloader; a dir with neither fails with the new message; the built dist binary behaves the same. E3: 114/114 tests. A wholesale revert does not compile, so I used surgical mutations: the validator gives 9 named SKILL.md failures with legacy tests staying green; the archive-creator gives 2 named failures. Restore was clean. E4: the Cloud server already accepts SKILL.md as descriptor (services registry.controller.ts:122-126) and the payload is [SKILL.md, execute.sh]. No server change is needed and nothing outside cli/ changed. E5: CONTRIBUTING_SKILLS.md updated; CLI help never mentioned skill.json. Flagged, not changed: seed-marketplace.ts:119 still reads skill.json; 4 marketplace skills (claude-skill/mcp) without execute.sh still can't publish, and that is a product call."
+  },
+  {
+   "id": "real-delivered-4d5471a5",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 4d5471a5 completion summary",
+   "synthetic": false,
+   "text": "Verified two product PRs and one restart fix, all independently confirmed. DONE: - PR #806 (fix/no-secrets-in-pty, head a030ac5d) — OPEN/MERGEABLE/CLEAN. Secrets no longer transit PTY; go only via spawn env on all 4 start/recreate paths. Setters refuse secret names; Slack tokens stripped; session logs redact. Mutation test: 14 new failures on revert, 0 on head. - PR #807 (fix/publish-accepts-skill-md, head 9b77a368) — OPEN/MERGEABLE/CLEAN. crewly publish accepts SKILL.md; legacy skill.json still works. E1 reproduced on main; E2 passes on branch dist; E3 55/55 across 4 suites. - agent-m restart-fix — commit 8972f512 on fix/restart-forensics-logging; evidence in .crewly/findings/2026-09-25-b8-fix-evidence/. ISSUES: - Open security debt: Gemini key still plaintext in 43/103 session logs (TL said 38; measured 43), still being written as of 23:05 last night. #806 stops new leaks but does not clean old ones — needs a separate remediation task. - Skill bug: cancel-followup / list-my-followups fail with \"Cannot resolve owning team from CREWLY_SESSION_NAME\" for orchestrator sessions. - Escalation queue: ~60+ backed-up tl_verification escalations, duplicates, orphans. - Unresolved: fallback WorkItems 4d5471a5 and 2d2b8949 were claimed by another agent before I could (available: 0); pool query returned POOL_QUERY_FAILED, follow-up empty — final disposition unconfirmed. - Process: earlier to"
+  },
+  {
+   "id": "real-delivered-7734b3a4",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 7734b3a4 completion summary",
+   "synthetic": false,
+   "text": "X @stevesprompt content read, done. Files in .crewly/research/steve-content/: x-notes.md (analysis), x-employer-flags.md (list), x-posts-dump.md plus x-own-posts.json (raw, all 1,045 recovered posts). METHOD: the fxtwitter timeline only returns 183 posts, so I added 1,145 status IDs from the Wayback CDX and fetched each one (1,049 OK, 119 now 404). KEY FINDINGS: (1) No archive before 2025-11: 1,045 of 1,244 posts recovered, all but 4 from 2025-11-14 to 2026-03-06, so 2012-2024 could not be sampled; probably deleted. (2) 1,029 of the posts are English and 1 is Chinese. [方向2] and [方向3] are covered in depth (2025 recap with side-hustle filters, 8-point energy playbook, Crewly launch, $200 per month for 31 agents); [方向1] is thin (polls only, no case, STEAM Fun never named). (3) Nothing lands: the 170 standalone posts have a median of 94 views; the best original is the side-hustle retro at 2,485 views / 25 likes; real reach came from replies to big accounts (143,515 views under @levelsio). All themes have a median of 75-128 views. (4) Voice shift: 70% of Jan-Feb replies reuse the same phrases (plumbing / orchestrator / Spot on), matching his Flopost AI-reply tests. Inferred AI-drafted; two replies falsely say he LEFT Google after 7 years (still live). (5) Employer exposure: the bio names his Google Search title next to Crewly; a 2026-03-03 work-trip thread names L8+ colleagues and c"
+  },
+  {
+   "id": "real-delivered-c7ae6090",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem c7ae6090 completion summary",
+   "synthetic": false,
+   "text": "(1) agent-d 9am post (1c987e6b) has 搜索 + 改动效果; both SEO rows show 还差 14 天 (window 9/25-10/8); only error is the known registered-users token gap. (2) Day plan posted to the owner in thread edc5f8f1 (msg d0f280d9). Plan corrected vs stale brief: agent-l GEO audit already delivered last night; delegated today: agent-l zh of #60 (preview), agent-d M10/M13 stills, Grace info@ triage (Grace auto-started). Asks sent: approve 4 previews, full GSC access for request-indexing #60, demo Slack workspace for M7/M8. Omitted pt/es and capture-skill free-vs-Pro asks: could not verify their context today; raise next time with sources."
+  },
+  {
+   "id": "real-delivered-f97486c9",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem f97486c9 completion summary",
+   "synthetic": false,
+   "text": "No new leads found in the connected Gmail or calendar. The check is incomplete: info@ is on Zoho, which I cannot read, and the /business Book-a-call form sends no data (only setSubmitted). Both went to agent-e for the owner to decide. Log: ops/marketing/sales/inbox-checks.md"
+  },
+  {
+   "id": "real-delivered-d3001708",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem d3001708 completion summary",
+   "synthetic": false,
+   "text": "PDF: /home/user/Desktop/projects/crewly-projects/crewly/.crewly/research/latent-space-openrouter/OpenRouter-Latent-Space-2026-09-25.pdf — 34 pages. Relabelled turns: 258 shown in the body (+66 relabelled filler turns removed), all listed by timestamp in Appendix A; 2 kept with the original label and marked (speaker uncertain), at 00:28:29 and 00:55:51. Finding: the Alex/Anjney labels are swapped for almost the whole episode, not just often; the labels are correct only at 00:00:08-00:00:17 and 00:28:33-00:30:10. Source markdown: openrouter-transcript.md in the same folder. Structure: title block; 7 key points with 24 timestamps, all verified present in the body; table of contents from the 17 official show-notes chapters; H2 per chapter plus 7 transcript sub-headings; Appendix A relabels, B 24 term fixes (Cloud->Claude, Klein->Cline, Rue code->Roo Code, EIE->AIE, sub->pub-sub, E 2->DALL-E 2, etc.; uncertain ones like Louis Vicchi and the real Han left as-is and listed), C editing notes. Eval checks: closing through 01:20:35 present; all 418 non-filler source turns programmatically confirmed in the PDF text, none dropped; 106 removed turns are only filler or cut-off stubs (Yeah/Yes/Right/Okay/You/The...). 5 random spot-checks (00:08:35, 00:04:13, 00:28:45, 01:05:55, 01:09:09) match in both text and speaker. Merged fragments keep their original stamps inline in grey. Caveat"
+  },
+  {
+   "id": "real-delivered-2b4e0ce1",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 2b4e0ce1 completion summary",
+   "synthetic": false,
+   "text": "DONE: topic A industry evidence. Files: .crewly/research/2026-09-26-topicA-industry-evidence.md + .pdf (2 pages, Chinese, renders). Every number verified at primary source (MIT NANDA PDF, BCG 2025/2026, Microsoft WTI 2025, KPMG Q4 2024 deck, IBM CEO Study 2025, Deloitte 2025-26, Writer 2025, Gallup Aug 2025) with sample/date/link. McKinsey unreachable from this machine, so NOT cited; Gartner 30% checked only via its press-release URL, quote dropped. VERDICTS: (1) exploration via volunteers = 有部分佐证 (common and works: NANDA shadow AI 90% vs 40% official, best deployments started from power users; but leaders are NOT patient: WTI 53%). (2) motivation not ability = 有部分佐证 (not in goals: KPMG only 19% have GenAI in performance track; no time: WTI 80%; but Deloitte ranks worker skills the #1 barrier, BCG only 36% adequately trained). (3) scaling needs OKR/time/staff/budget = 有部分佐证 (IBM: only 16% scaled, 67% of CEOs cite right people and incentives; but NANDA says less on resources, more on accountable ownership; internal builds succeed half as often as partnerships). Counter-evidence section (4 items) and 3 questions for the owner included (middle stage of champion + accountable owner; where saved time goes; separating wont / cant / afraid). No drafting, no employer mention, nothing posted to Slack. Levie lead used only to find IBM data."
+  },
+  {
+   "id": "real-delivered-433c6be9",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 433c6be9 completion summary",
+   "synthetic": false,
+   "text": "DONE: topic A round 2. Files: .crewly/research/2026-09-26-topicA-round2.md + .pdf (2 pages, Chinese, renders). McKinsey now VERIFIED (Nov 2025 edition n=1,993; Mar 2025 edition based on the 2024 survey, n=1,491) via a fetch proxy of the official PDFs. Part A: A1 learning gap = strong but NANDA-only; A2 front-office budget skew (about 70%) = NANDA-only; A3 data = supported but not the top barrier (Informatica: 67% cannot move half of pilots to production, data-quality trust 38%; a search summary misattributed 43%, which is really reliability of results); A4 compliance 28 to 38% as a barrier (Deloitte, n=2,773) and structural change in only Tech and Media (NANDA); A5 fewer than 1 in 5 track KPIs (McKinsey); A6 funnel 60/20/5%, large companies 9+ months vs 90 days mid-market, but no data on the cost of the last 30%; A7 waiting for the next model = NO direct evidence (METR 7-month doubling and Epoch 9-900x/yr price decline are indirect; NANDA says the model is not the bottleneck); A8 bottleneck moves downstream: Faros review +91% with no org impact, METR RCT 19% slower, NBER Denmark null on earnings. DORA numbers unverified (form-gated). Part B: 8 items with strength labels; weak/mixed = measurement, reinvesting saved time, and addressing fear (redesign raises fear, 46% vs 34%). Part C: 3 questions (large companies slower vs less successful: McKinsey and NANDA conflict; model capab"
+  },
+  {
+   "id": "real-delivered-ea8a00c6",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem ea8a00c6 completion summary",
+   "synthetic": false,
+   "text": "Fallback check ran. crewly-web #72 blog post is NOT live: <url> returns 404 (also 404 on /zh/ and /es/ variants). Blog index, RSS feed, and sitemap.xml (30 URLs) contain only the 5 pre-existing posts — no orca-hindsight entry in any locale. OG image cannot be checked because the page does not exist. Release appears NOT deployed. No user-facing reply sent (restart instructions: no status chatter); flagging for next active turn / owner decision."
+  },
+  {
+   "id": "real-delivered-c2409236",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem c2409236 completion summary",
+   "synthetic": false,
+   "text": "XHS vs YouTube evidence done: /home/user/Desktop/projects/crewly-projects/crewly/.crewly/research/2026-09-26-xhs-vs-youtube-evidence.md. 5 sections, each ends with an implication for the owner, plus a for/against table, evidence gaps and 2 cheap tests. Headlines: (1) XHS gives early signal fast (career and indie-dev accounts reached 1K from one viral note and 10K in 3–5 months; the owner already has 1,747 followers and one note with 1,069 likes), while YouTube starts from 14 subscribers and the fast cases were all full-time. (2) XHS cannot catch leads: the 2025-03-12 导流 rules ban WeChat IDs, links and QR codes, and the official lead tools need a 专业号 plus ad spend. YouTube has direct consulting-inquiry cases (Nate Herk self-reports up to 8 qualified leads a day). (3) YouTube auto-dubs Chinese into English, so one Chinese video could reach English viewers; there is no evidence it builds B2B trust. (4) XHS audience: 70% female, 50% born after 1995; no data on SMB owners. Pew: 84% of US adults use YouTube. (5) Risks: on XHS, fully AI-run accounts get banned, so no agent auto-posting or auto-replies; AI labels are required; the owner's account shows 'IP 美国' and the China/international split may cut his reach (UNVERIFIED, needs a test). On YouTube, the 2025-07 'inauthentic content' rule applies. Employer exposure is content-driven on both. Gaps: no recruiter-visibility data, no primary p"
+  },
+  {
+   "id": "real-delivered-19976273",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 19976273 completion summary",
+   "synthetic": false,
+   "text": "Pilot done: 3 candidates (Greg Isenberg AI roll-ups, Hamel Husain non-model failures, Aakash/Wade Foster volume vs judgment), each with a why and an angle. agent-l could not post (not a member of 3e4b40f2), so agent-e posted it as msg 8b89dfed."
+  },
+  {
+   "id": "real-delivered-4c02771e",
+   "source": "complete",
+   "expected": "none",
+   "category": "delivered",
+   "origin": "task pool verified WorkItem 4c02771e completion summary",
+   "synthetic": false,
+   "text": "deepseek-usage fire 3/7 (2026-09-27): run ok (~/.crewly/tmp/deepseek-usage/20260927-123554.*). Still only the orchestrator on DeepSeek; no Marketing shadow member; totalUsage fix not on origin/main (agent-runner L1598/L1787 still result.usage). Marketing proxy $8-$221/mo flash ($380 all-peak). Asked agent-e now to decide the 10/2 final: the shadow member cannot get a week of data by 10/2; I recommend keeping 10/2 provisional."
+  }
+ ]
+}

@@ -35,7 +35,9 @@ export type ReviewReason =
   /** BRIDGE-1 V2: source WorkItem rejected `>=` DEFAULT_MAX_RETRIES times. Escalates to TL. */
   | 'max_retries_exceeded'
   /** BRIDGE-1: source WorkItem entered `blocked` status; TL must unblock or re-scope. */
-  | 'task_blocked';
+  | 'task_blocked'
+  /** #841: a worker gave up after the team's give-up retries; TL gets the attempt log. */
+  | 'gave_up';
 
 /**
  * Enumerated values of {@link ReviewReason} for runtime iteration / validation.
@@ -48,6 +50,7 @@ export const REVIEW_REASONS: readonly ReviewReason[] = [
   'phase_complete',
   'max_retries_exceeded',
   'task_blocked',
+  'gave_up',
 ] as const;
 
 /**

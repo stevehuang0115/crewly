@@ -21,6 +21,8 @@ import {
   blockItem,
   scoreItem,
   renderVerdict,
+  getGiveUpStats,
+  setGiveUpRecoveryService,
 } from './task-pool.controller.js';
 import { ForbiddenTransitionError } from '../../types/v2/work-item.types.js';
 import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/task-pool.service.js';
@@ -72,6 +74,11 @@ const mockService = {
   blockItem: jest.fn(),
   scoreItem: jest.fn(),
   verifyItem: jest.fn(),
+  // #841 give-up recovery goes through these
+  failItem: jest.fn(),
+  mergeItemMetadata: jest.fn().mockResolvedValue(null),
+  transitionStatus: jest.fn().mockResolvedValue(null),
+  disposeFailedWorkItem: jest.fn().mockResolvedValue(null),
 };
 
 (TaskPoolService.getInstance as any) = jest.fn().mockReturnValue(mockService);
@@ -79,6 +86,7 @@ const mockService = {
 // #615: StorageService.findMemberBySessionName backs addItem's target check.
 const mockStorage = {
   findMemberBySessionName: jest.fn(),
+  getTeams: jest.fn().mockResolvedValue([]),
 };
 (StorageService.getInstance as any) = jest.fn().mockReturnValue(mockStorage);
 
@@ -1673,6 +1681,67 @@ describe('scoreItem', () => {
       );
       expect(res.status).toHaveBeenCalledWith(403);
       expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code: 'transition_not_reviewer' }));
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // #841 give-up recovery through the stop endpoints
+  // -----------------------------------------------------------------------
+
+  describe('give-up recovery (#841)', () => {
+    const running = { id: 'wi-g', type: 'delegate', owner: 'agent', title: 'Beat the record', description: 'brief', status: 'running', target: 'dev-1', retryCount: 0, maxRetries: 3, createdAt: '', inputTokens: 0, outputTokens: 0, cost: 0 };
+
+    beforeEach(() => {
+      setGiveUpRecoveryService(null);
+      // Earlier suites leave rejecting implementations on these shared mocks.
+      for (const fn of [mockService.blockItem, mockService.failItem, mockService.completeItem, mockService.addToPool, mockService.setOutput]) {
+        fn.mockReset().mockResolvedValue(undefined);
+      }
+      mockService.findWorkItem.mockReset().mockResolvedValue(running);
+      mockStorage.getTeams.mockResolvedValue([]);
+    });
+
+    it('a give-up block reports the queued retry in the response', async () => {
+      const res = mockRes();
+      await blockItem(mockReq({ params: { workItemId: 'wi-g' }, body: { agentId: 'dev-1', reason: 'It is impossible to beat the record.' } }), res);
+      expect(mockService.addToPool).toHaveBeenCalledWith(expect.objectContaining({ id: 'wi-g:giveup:1', target: 'dev-1' }));
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        giveUp: expect.objectContaining({ action: 'retry_queued', retryWorkItemId: 'wi-g:giveup:1' }),
+      }));
+    });
+
+    it('a give-up completion is NOT completed: it is failed + retried, and the response says so', async () => {
+      const res = mockRes();
+      await completeItem(mockReq({ params: { workItemId: 'wi-g' }, body: { agentId: 'dev-1', result: { summary: 'Could not get under the target. Gave up.' } } }), res);
+      expect(mockService.completeItem).not.toHaveBeenCalled();
+      expect(mockService.failItem).toHaveBeenCalledWith('wi-g', 'Could not get under the target. Gave up.');
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        success: true,
+        message: expect.stringContaining('recorded as a give-up'),
+        giveUp: expect.objectContaining({ action: 'retry_queued' }),
+      }));
+    });
+
+    it('a normal completion is unchanged and carries no giveUp field', async () => {
+      const res = mockRes();
+      await completeItem(mockReq({ params: { workItemId: 'wi-g' }, body: { agentId: 'dev-1', result: { summary: 'Implemented and tested.' } } }), res);
+      expect(mockService.completeItem).toHaveBeenCalled();
+      const body = res.json.mock.calls[0][0];
+      expect(body).toMatchObject({ success: true, message: 'WorkItem wi-g completed' });
+      expect(body.giveUp).toBeUndefined();
+    });
+
+    it('GET /give-up-stats returns per-team counts and what was examined', async () => {
+      mockService.getAllItems.mockResolvedValue([
+        { ...running, status: 'cancelled', metadata: { stop: { decision: 'retry', category: 'feasibility' } } },
+      ]);
+      const res = mockRes();
+      await getGiveUpStats(mockReq({ query: {} }), res);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        data: expect.objectContaining({ examined: 1, teams: [expect.objectContaining({ teamId: 'unassigned', giveUps: 1 })] }),
+      });
     });
   });
 });

@@ -16,11 +16,12 @@ describe('ReviewReason types', () => {
         'phase_complete',
         'max_retries_exceeded',
         'task_blocked',
+        'gave_up',
       ]);
     });
 
     it('contains exactly 6 reasons (2 BRIDGE-1 additions over REVIEW-1 baseline)', () => {
-      expect(REVIEW_REASONS).toHaveLength(6);
+      expect(REVIEW_REASONS).toHaveLength(7);
     });
   });
 
