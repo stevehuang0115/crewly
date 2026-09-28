@@ -9,6 +9,8 @@ import {
   isOneOf,
   parseIngestErrorCode,
   parseIngestResponse,
+  parseTalkFetchResponse,
+  parseTalkRelayData,
 } from './conversation-ingest.contract.js';
 import { CONVERSATION_LOG_CONSTANTS } from '../../constants.js';
 
@@ -79,5 +81,35 @@ describe('conversation ingest contract', () => {
     expect(isOneOf(CONVERSATION_SOURCES, 'slack')).toBe(true);
     expect(isOneOf(CONVERSATION_SOURCES, 'fax')).toBe(false);
     expect(isOneOf(CONVERSATION_SOURCES, 3)).toBe(false);
+  });
+});
+
+describe('Cloud Talk wire helpers', () => {
+  const push = { v: 1, messageId: '65f0c0ffee', clientMessageId: 'talk-1', instanceId: 'dev-a', agentSession: 'ella' };
+
+  it('accepts a talk_message push and rejects malformed ones', () => {
+    expect(parseTalkRelayData(push)).toEqual(push);
+    expect(parseTalkRelayData({ ...push, extra: 'ignored' })).toEqual(push);
+    for (const bad of [null, 'x', [], { ...push, messageId: '' }, { ...push, clientMessageId: 'has space' }, { ...push, instanceId: 7 }, { ...push, agentSession: undefined }]) {
+      expect(parseTalkRelayData(bad)).toBeNull();
+    }
+  });
+
+  it('parses the Talk fetch answer and refuses an unusable one', () => {
+    const data = { ...push, text: 'hi', inputMode: 'voice', createdAt: '2026-09-28T00:00:00.000Z', delivery: 'sent' };
+    expect(parseTalkFetchResponse({ success: true, data })).toEqual({
+      messageId: '65f0c0ffee',
+      clientMessageId: 'talk-1',
+      instanceId: 'dev-a',
+      agentSession: 'ella',
+      text: 'hi',
+      inputMode: 'voice',
+      createdAt: '2026-09-28T00:00:00.000Z',
+      delivery: 'sent',
+    });
+    expect(parseTalkFetchResponse({ success: true, data: { ...data, inputMode: 'x', delivery: 'weird' } })).toMatchObject({ delivery: 'sent' });
+    expect(parseTalkFetchResponse({ success: true, data: { ...data, text: '  ' } })).toBeNull();
+    expect(parseTalkFetchResponse({ success: false })).toBeNull();
+    expect(parseTalkFetchResponse(null)).toBeNull();
   });
 });

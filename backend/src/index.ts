@@ -100,7 +100,7 @@ import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -2225,6 +2225,57 @@ void (async () => {
 						chatRelayAdapter.start();
 						this.logger.info('ChatV2RelayAdapter started — Cloud Portal can now drive chat-v2 via relay');
 
+						// Cloud Talk (specs/unified-conversations-cloud-store.md §D.3):
+						// Cloud pushes `talk_message`; the handler fetches the text with
+						// this machine's token, records it in the agent's DM as
+						// `cloud-talk` and hands it to the agent like a Crewly Chat DM.
+						// Starting it is what advertises `talk_message` to Cloud.
+						try {
+							const [
+								{ CloudTalkInboundService },
+								{ CloudClientService },
+								{ buildAgentRoster },
+								{ intakeChatV2OwnerMessage },
+								{ getTicketIntakeService },
+							] = await Promise.all([
+								import('./services/cloud/cloud-talk-inbound.service.js'),
+								import('./services/cloud/cloud-client.service.js'),
+								import('./services/cloud/agent-roster.utils.js'),
+								import('./services/v3/ticket-channel-hooks.js'),
+								import('./services/v3/ticket-intake.service.js'),
+							]);
+							const cloudClient = CloudClientService.getInstance();
+							const talkInbound = new CloudTalkInboundService({
+								source: sync,
+								cloud: {
+									getToken: () => cloudClient.getToken(),
+									getCloudUrl: () => cloudClient.getCloudUrl(),
+									tryRefreshToken: () => cloudClient.tryRefreshToken(),
+								},
+								chat: chatService,
+								identity: async () => {
+									const id = await DeviceIdentityService.getInstance().getOrCreateIdentity();
+									return { instanceId: id.deviceId, deviceName: id.deviceName };
+								},
+								deliver: async (channel, message) => {
+									const toDispatch = await intakeChatV2OwnerMessage(
+										getTicketIntakeService(),
+										channel,
+										message,
+										CLOUD_TALK_CONSTANTS.INTAKE_ORIGIN,
+									);
+									await chatDispatcher.dispatchMessage(channel, toDispatch);
+								},
+								agentExists: async (agentSession) =>
+									buildAgentRoster(await this.storageService.getTeams()).some((a) => a.agentSession === agentSession),
+							});
+							talkInbound.start();
+						} catch (talkErr) {
+							this.logger.warn('Cloud Talk handler wiring skipped', {
+								error: talkErr instanceof Error ? talkErr.message : String(talkErr),
+							});
+						}
+
 						// Mobile app: generic allowlisted REST passthrough over the same
 						// relay (api_request → local HTTP → api_response). Non-fatal.
 						try {
@@ -4152,10 +4203,14 @@ void (async () => {
 				{ ConversationCloudSyncService, setConversationCloudSyncService },
 				{ CloudClientService },
 				{ VersionCheckService },
+				{ buildAgentRoster },
+				{ cloudTalkCapabilities },
 			] = await Promise.all([
 				import('./services/cloud/conversation-cloud-sync.service.js'),
 				import('./services/cloud/cloud-client.service.js'),
 				import('./services/system/version-check.service.js'),
+				import('./services/cloud/agent-roster.utils.js'),
+				import('./services/cloud/cloud-talk-inbound.service.js'),
 			]);
 			const chat = getChatV2Service();
 			const cloud = CloudClientService.getInstance();
@@ -4172,6 +4227,11 @@ void (async () => {
 				},
 				homeId: getCrewlyHomeId(this.config.crewlyHome),
 				crewlyVersion: async () => VersionCheckService.getInstance().getLocalVersion(),
+				// Cloud Talk: every agent (listed before it has messages) and
+				// whether this machine takes `talk_message` — also for machines
+				// without Slack, which never send the registry heartbeat.
+				roster: async () => buildAgentRoster(await this.storageService.getTeams()),
+				capabilities: () => cloudTalkCapabilities(),
 				onNewMessage: (listener) => {
 					chat.on('chat_message', listener);
 					return () => chat.off('chat_message', listener);

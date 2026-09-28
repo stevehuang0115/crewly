@@ -207,6 +207,13 @@ export interface SlackInstanceRegistryPayload {
   rooms?: Array<{ channelId: string; agents: string[] }>;
   /** Agents running right now (1.20.88+) */
   awakeAgents?: string[];
+  /**
+   * Every agent on this machine with its display name (Cloud Talk): Cloud
+   * lists agents that have no messages yet. Local session names.
+   */
+  roster?: Array<{ agentSession: string; displayName?: string; role?: string; teamName?: string }>;
+  /** What this machine handles, e.g. `talk_message` */
+  capabilities?: string[];
   crewlyVersion: string;
 }
 

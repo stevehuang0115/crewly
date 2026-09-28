@@ -137,6 +137,18 @@ export interface IngestRequest {
   batchId?: string;
   mode?: IngestMode;
   messages: IngestMessage[];
+  /** Every agent on this machine (Phase 3) — Cloud lists them before they have messages. */
+  roster?: AgentRosterEntry[];
+  /** What this machine handles (`talk_message`). */
+  capabilities?: string[];
+}
+
+/** One agent on this machine, as Cloud's `GET /agents` lists it. */
+export interface AgentRosterEntry {
+  agentSession: string;
+  displayName?: string;
+  role?: string;
+  teamName?: string;
 }
 
 /** Parsed 200 response (fields Cloud leaves out come back null / 0). */
@@ -224,4 +236,93 @@ export function parseIngestErrorCode(body: unknown): string | null {
  */
 export function isOneOf<T extends string>(values: readonly T[], value: unknown): value is T {
   return typeof value === 'string' && (values as readonly string[]).includes(value);
+}
+
+// ---------------------------------------------------------------------------
+// Cloud Talk (Phase 3) — mirrors AUTH:conversations/contract.ts
+// ---------------------------------------------------------------------------
+
+/** `clientMessageId` charset Cloud accepts for Talk (a uuid or `talk-<uuid>`). */
+export const TALK_CLIENT_MESSAGE_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** `data` of a `talk_message` relay push. No text: it is fetched from Cloud. */
+export interface TalkRelayData {
+  v: 1;
+  /** Cloud's id of the stored message */
+  messageId: string;
+  clientMessageId: string;
+  /** The machine it is for (this machine's device id) */
+  instanceId: string;
+  agentSession: string;
+}
+
+/** `GET /api/cloud/conversations/talk/:messageId?instanceId=` → `data`. */
+export interface TalkFetchResponse {
+  messageId: string;
+  clientMessageId: string;
+  instanceId: string;
+  agentSession: string;
+  text: string;
+  inputMode?: 'voice' | 'text';
+  createdAt: string;
+  delivery: 'queued' | 'sent' | 'delivered' | 'failed';
+}
+
+/**
+ * Whether a value is a plain object.
+ *
+ * @param value - Anything
+ * @returns True for a non-array object
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * Whether a value is a non-empty string of at most `max` characters.
+ *
+ * @param value - Anything
+ * @param max - Longest accepted length
+ * @returns True when usable as an id
+ */
+function nonEmpty(value: unknown, max = 256): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= max;
+}
+
+/**
+ * Validate the `data` of a `talk_message` push. Never throws.
+ *
+ * @param raw - `IncomingMessage.payload`
+ * @returns The push, or null when it is not one
+ */
+export function parseTalkRelayData(raw: unknown): TalkRelayData | null {
+  if (!isRecord(raw)) return null;
+  const { messageId, clientMessageId, instanceId, agentSession } = raw;
+  if (!nonEmpty(messageId, 64) || !nonEmpty(agentSession) || !nonEmpty(instanceId, 128)) return null;
+  if (typeof clientMessageId !== 'string' || !TALK_CLIENT_MESSAGE_ID_PATTERN.test(clientMessageId)) return null;
+  return { v: 1, messageId, clientMessageId, instanceId, agentSession };
+}
+
+/**
+ * Validate Cloud's answer to the Talk fetch. Never throws.
+ *
+ * @param raw - Parsed JSON body
+ * @returns The message, or null when the body is not usable
+ */
+export function parseTalkFetchResponse(raw: unknown): TalkFetchResponse | null {
+  const data = isRecord(raw) && isRecord(raw['data']) ? raw['data'] : null;
+  if (!data) return null;
+  const { messageId, clientMessageId, instanceId, agentSession, text, inputMode, createdAt, delivery } = data;
+  if (!nonEmpty(messageId, 64) || !nonEmpty(clientMessageId, 128) || !nonEmpty(instanceId, 128) || !nonEmpty(agentSession)) return null;
+  if (typeof text !== 'string' || text.trim().length === 0) return null;
+  return {
+    messageId,
+    clientMessageId,
+    instanceId,
+    agentSession,
+    text,
+    ...(inputMode === 'voice' || inputMode === 'text' ? { inputMode } : {}),
+    createdAt: typeof createdAt === 'string' ? createdAt : '',
+    delivery: delivery === 'queued' || delivery === 'sent' || delivery === 'delivered' || delivery === 'failed' ? delivery : 'sent',
+  };
 }

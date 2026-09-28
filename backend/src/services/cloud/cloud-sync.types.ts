@@ -168,7 +168,11 @@ export type MessageType =
   // payload to the instance that should handle it. `data` is a
   // SlackCloudEventEnvelope (see types/slack.types.ts); handled by
   // SlackService.handleCloudEnvelope via the cloud transport.
-  | 'slack_event';
+  | 'slack_event'
+  // Cloud Talk (Phase 3): Cloud pushes one owner message from the portal's
+  // Talk page. `data` is `{v, messageId, clientMessageId, instanceId,
+  // agentSession}` — no text; CloudTalkInboundService fetches it from Cloud.
+  | 'talk_message';
 
 /** Valid message type values for runtime validation. */
 export const MESSAGE_TYPES: readonly MessageType[] = [
@@ -187,6 +191,7 @@ export const MESSAGE_TYPES: readonly MessageType[] = [
   'chat_response',
   'chat_event',
   'slack_event',
+  'talk_message',
 ] as const;
 
 /**

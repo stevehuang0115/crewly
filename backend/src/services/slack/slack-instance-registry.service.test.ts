@@ -162,8 +162,29 @@ describe('payload', () => {
         // otherwise share the orchestrator's app, bot and DM.
         { teamId: 'orchestrator@device-1', name: 'steve-mbp', agents: ['crewly-orc@device-1'] },
       ],
+      // Every agent with its name under local session names (Cloud Talk lists
+      // agents before they have any messages).
+      roster: [
+        { agentSession: 'crewly-orc', displayName: 'Crewly Orc', role: 'orchestrator' },
+        { agentSession: 'alpha-kai-1234', displayName: 'Kai', role: 'developer', teamName: 'Alpha' },
+        { agentSession: 'alpha-mia-1234', displayName: 'Mia', role: 'qa', teamName: 'Alpha' },
+        { agentSession: 'alpha-zed-1234', displayName: 'Zed', role: 'developer', teamName: 'Beta' },
+      ],
       crewlyVersion: '1.16.0',
     });
+  });
+
+  it('reports what the machine handles (talk_message once the Cloud Talk handler runs)', async () => {
+    let caps: string[] = [];
+    const service = new SlackInstanceRegistryService({
+      ...(makeService() as unknown as { deps: ConstructorParameters<typeof SlackInstanceRegistryService>[0] }).deps,
+      capabilities: () => caps,
+    });
+    expect((await service.buildPayload()).capabilities).toEqual([]);
+    caps = ['talk_message'];
+    expect((await service.buildPayload()).capabilities).toEqual(['talk_message']);
+    // Without the dependency (older wiring) the field is left out.
+    expect(await makeService().buildPayload()).not.toHaveProperty('capabilities');
   });
 
   it('reports ad-hoc rooms and who is awake, when it can tell', async () => {

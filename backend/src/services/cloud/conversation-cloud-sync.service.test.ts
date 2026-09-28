@@ -39,7 +39,16 @@ interface Call {
 type Reply = { status: number; body?: unknown } | ((req: IngestRequest) => { status: number; body?: unknown });
 
 /** Harness: real chat store, fake Cloud, controllable clock. */
-function setup(opts: { env?: NodeJS.ProcessEnv; token?: string | null; notify?: ConversationCloudSyncDeps['notifyOwner']; clock?: number } = {}) {
+function setup(
+  opts: {
+    env?: NodeJS.ProcessEnv;
+    token?: string | null;
+    notify?: ConversationCloudSyncDeps['notifyOwner'];
+    clock?: number;
+    roster?: ConversationCloudSyncDeps['roster'];
+    capabilities?: ConversationCloudSyncDeps['capabilities'];
+  } = {},
+) {
   let clock = opts.clock ?? 1_000_000_000_000;
   const chat = new ChatV2Service({
     config: loadChatV2Config({}),
@@ -81,6 +90,8 @@ function setup(opts: { env?: NodeJS.ProcessEnv; token?: string | null; notify?: 
     homeId: 'home-1',
     crewlyVersion: async () => '1.21.0',
     notifyOwner: opts.notify,
+    roster: opts.roster,
+    capabilities: opts.capabilities,
     env: opts.env ?? {},
     fetchImpl: fetchImpl as unknown as ConversationCloudSyncDeps['fetchImpl'],
     now: () => clock,
@@ -614,5 +625,52 @@ describe('helpers', () => {
         1,
       ),
     ).toBeNull();
+  });
+
+  describe('roster probe (Cloud Talk)', () => {
+    it('sends the roster and capabilities on an empty batch, then every 5 minutes, and at once when capabilities change', async () => {
+      let caps: string[] = [];
+      const roster = jest.fn(async () => [{ agentSession: 'crewly-orc', displayName: 'Crewly Orc' }, { agentSession: 'ella', displayName: 'Ella' }]);
+      const h = setup({ roster, capabilities: () => caps });
+      h.liveOnly();
+      await h.svc.syncNow();
+      expect(h.calls).toHaveLength(1);
+      expect(h.calls[0]!.body).toMatchObject({ messages: [], roster: [{ agentSession: 'crewly-orc' }, { agentSession: 'ella' }], capabilities: [] });
+
+      await h.svc.syncNow();
+      expect(h.calls).toHaveLength(1); // not due
+
+      caps = ['talk_message']; // the Talk handler started
+      await h.svc.syncNow();
+      expect(h.calls).toHaveLength(2);
+      expect(h.calls[1]!.body.capabilities).toEqual(['talk_message']);
+
+      h.tick(5 * 60 * 1000);
+      await h.svc.syncNow();
+      expect(h.calls).toHaveLength(3);
+      expect(roster).toHaveBeenCalledTimes(3);
+    });
+
+    it('rides on the retention probe of a fresh machine instead of a second request', async () => {
+      const h = setup({ roster: async () => [{ agentSession: 'crewly-orc' }], capabilities: () => ['talk_message'] });
+      const o = h.outbox;
+      o.setState(K.ACCOUNT_ID, 'acct-1');
+      o.setState(K.BACKFILL_DONE_AT, '1');
+      o.setState(K.BACKFILL_RETENTION_DAYS, '90');
+      await h.svc.syncNow();
+      expect(h.calls).toHaveLength(1);
+      expect(h.calls[0]!.body).toMatchObject({ messages: [], roster: [{ agentSession: 'crewly-orc' }], capabilities: ['talk_message'] });
+    });
+
+    it('retries the roster after a failed probe', async () => {
+      const h = setup({ roster: async () => [{ agentSession: 'crewly-orc' }], capabilities: () => ['talk_message'] });
+      h.liveOnly();
+      h.replies.push({ status: 502 });
+      await h.svc.syncNow();
+      h.tick(10 * 60 * 1000);
+      await h.svc.syncNow();
+      expect(h.calls).toHaveLength(2);
+      expect(h.calls[1]!.body.roster).toEqual([{ agentSession: 'crewly-orc' }]);
+    });
   });
 });
