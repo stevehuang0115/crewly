@@ -39,6 +39,7 @@ import {
   getWorkItemDisposition,
   WORK_ITEM_BLOCK_SOURCES,
   isExplicitlyBlocked,
+  TERMINAL_WORK_ITEM_STATUSES,
 } from '../../types/v2/work-item.types.js';
 import type {
   WorkItemDisposition,
@@ -1849,6 +1850,15 @@ export class TaskPoolService {
     if (verdict === 'verified') {
       await this.resolveBlockedDependents(workItemId);
     }
+    // #819: a verdict rendered THROUGH this method directly (POST /verdict,
+    // or an escalation's owner resolution) never completes the tracking
+    // `<id>:verify:<id>` review item — only the normal "TL completes their
+    // review WorkItem" path does that (via completeSimpleItem's own call
+    // into verifyItem). Left alone, that review item sits open in the
+    // reviewer's queue forever even though its source is already decided.
+    // No-op when the review item was already closed by that normal path
+    // (its status is already terminal by the time we get here).
+    await this.closeReviewItemAfterDirectVerdict(workItemId);
     await this.storage.flush();
     this.logger.info('WorkItem verdict recorded', { workItemId, verdict, actorRole });
     // F1-BRIDGE-1: the `rejected` branch publishes task:rejected so the
@@ -1864,6 +1874,60 @@ export class TaskPoolService {
       }
     }
     return updated;
+  }
+
+  /**
+   * Close the review item tracking a source WorkItem's verification, once
+   * the verdict has been rendered directly on the source (#819) — e.g. via
+   * `POST /verdict`, or the owner resolving an escalation — rather than by
+   * completing the review item itself. Without this, `<id>:verify:<id>`
+   * sits open in the reviewer's queue forever, even though its source has
+   * already been verified or rejected.
+   *
+   * A review item still `running` (claimed by its reviewer) is completed the
+   * same way a reviewer's own completion would ({@link completeSimpleItem});
+   * `planReviewVerdict` is a safe no-op there because the source is no
+   * longer `done_by_worker`, so this can never recurse back into
+   * {@link verifyItem}. A review item never claimed (`queued`/`blocked`/
+   * `scheduled`) is cancelled instead, since `→done` requires `running`.
+   * Already-terminal or missing review items are left alone.
+   *
+   * Best-effort: any failure here is logged, never thrown — the real verdict
+   * on the source has already been recorded, and that must not be
+   * jeopardized by a failure to tidy up a secondary tracking item.
+   *
+   * @param sourceId - The WorkItem whose verdict was just rendered
+   */
+  private async closeReviewItemAfterDirectVerdict(sourceId: string): Promise<void> {
+    const reviewId = `${sourceId}:verify:${sourceId}`;
+    try {
+      const reviewItem = await this.storage.findWorkItem(reviewId);
+      if (!reviewItem || TERMINAL_WORK_ITEM_STATUSES.has(reviewItem.status)) return;
+      if (reviewItem.status === 'running') {
+        await this.completeSimpleItem(reviewId, { role: 'system', via: 'verifyItem:auto-close-review' }, {
+          summary: 'Auto-closed: the verdict was rendered directly on the source it reviews.',
+        });
+      } else {
+        await this.transitionStatus(
+          reviewId,
+          'cancelled',
+          { role: 'system', via: 'verifyItem:auto-close-review' },
+          (wi) => {
+            wi.metadata = {
+              ...(wi.metadata ?? {}),
+              autoClosedReason: 'verdict rendered directly on the source it reviews',
+            };
+          },
+        );
+        await this.storage.flush();
+      }
+    } catch (err) {
+      this.logger.warn('Failed to auto-close review item after a direct verdict (non-fatal)', {
+        sourceId,
+        reviewId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

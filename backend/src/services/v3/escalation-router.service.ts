@@ -305,15 +305,35 @@ export class EscalationRouterService {
   /**
    * Resolve a pending human escalation.
    *
+   * #819: `tl_verification` escalations (raised by
+   * {@link escalateUnreviewedToOwner}) target a WorkItem that is
+   * `done_by_worker` — awaiting review, never paused. The old code always
+   * called {@link resumeWorkItem}, whose `done_by_worker → queued`
+   * transition is illegal (not in `TRANSITION_PERMISSIONS`) and was silently
+   * swallowed: the escalation was stamped `resolved` while the WorkItem
+   * stayed stuck, unverified, forever. Only `alignment_request` escalations
+   * (raised by {@link routeAlignmentRequest}, which actually calls
+   * {@link pauseWorkItem}) get resumed to `queued`. A `tl_verification`
+   * escalation instead renders the verdict directly, with the owner as
+   * actor — the transition matrix always allows `owner` regardless of who
+   * the recorded reviewer is (see `checkTransitionPermission`), so this
+   * never hits the same illegal-transition trap.
+   *
    * @param escalationId - The escalation to resolve
-   * @param resolution - What the human decided
+   * @param resolution - What the human decided (free text; also used as the
+   *   verdict comment when this resolves a `tl_verification` escalation)
    * @param resolvedBy - Who resolved it (user ID or name)
+   * @param verdict - For a `tl_verification` escalation only: `'verified'`
+   *   or `'rejected'`. Defaults to `'verified'` — resolving an escalation is
+   *   an approval unless the owner says otherwise. Ignored for other
+   *   escalation sources.
    * @returns The updated escalation, or null if not found
    */
   async resolve(
     escalationId: string,
     resolution: string,
     resolvedBy: string,
+    verdict?: 'verified' | 'rejected',
   ): Promise<PendingEscalation | null> {
     const escalation = await this.loadEscalation(escalationId);
     if (!escalation) return null;
@@ -325,18 +345,56 @@ export class EscalationRouterService {
 
     await this.saveEscalation(escalation);
 
-    // Resume paused work item if applicable
     if (escalation.workItemId) {
-      await this.resumeWorkItem(escalation.workItemId);
+      if (escalation.source === 'tl_verification') {
+        await this.renderOwnerVerdict(escalation.workItemId, verdict ?? 'verified', resolution);
+      } else {
+        // Resume paused work item if applicable
+        await this.resumeWorkItem(escalation.workItemId);
+      }
     }
 
     this.logger.info('Escalation resolved', {
       escalationId,
       resolvedBy,
       workItemId: escalation.workItemId,
+      source: escalation.source,
+      ...(escalation.source === 'tl_verification' ? { verdict: verdict ?? 'verified' } : {}),
     });
 
     return escalation;
+  }
+
+  /**
+   * Render a verdict on a `done_by_worker` WorkItem as the owner (#819).
+   *
+   * The owner is always permitted to verify or reject a WorkItem regardless
+   * of who its recorded reviewer is — this is the escape hatch of last
+   * resort for an item that has already been escalated all the way up.
+   * Best-effort: a failure is logged, never thrown, so a resolve() call
+   * always records the escalation as resolved even if the underlying
+   * WorkItem verdict could not be rendered (e.g. it was deleted, or somehow
+   * left `done_by_worker` already).
+   *
+   * @param workItemId - The WorkItem to verdict
+   * @param verdict - `'verified'` or `'rejected'`
+   * @param comment - The owner's resolution text, recorded on the verdict
+   */
+  private async renderOwnerVerdict(
+    workItemId: string,
+    verdict: 'verified' | 'rejected',
+    comment?: string,
+  ): Promise<void> {
+    try {
+      const taskPool = (await import('../task-pool/task-pool.service.js')).TaskPoolService.getInstance();
+      await taskPool.verifyItem(workItemId, { role: 'owner', via: 'escalation-router:resolve' }, verdict, comment);
+    } catch (err) {
+      this.logger.warn('Owner verdict render failed (non-fatal)', {
+        workItemId,
+        verdict,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -674,6 +732,9 @@ export class EscalationRouterService {
       '  (b) If it falls short, reject with concrete fix instructions → the team reworks it',
       '',
       `Record it: POST /api/task-pool/items/${wi.id}/verdict {"verdict":"verified"|"rejected","comment":"…"}`,
+      '#819: that endpoint identifies you from X-Agent-Session — a raw curl has none and gets',
+      '403 not_reviewer. Run the skill instead, which sends the header for you:',
+      `  CREWLY_SESSION_NAME=<your session> bash config/skills/orchestrator/render-verdict/execute.sh '{"workItemId":"${wi.id}","verdict":"verified"|"rejected","comment":"…"}'`,
       'You may render this verdict now that it is escalated to you. It will never pass by itself.',
       '',
       `Escalation id: ${escalationId}`,
