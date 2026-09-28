@@ -198,6 +198,7 @@ export interface ChatV2ControllerHandlers {
   createHuddle: (req: Request, res: Response) => void;
   listAgents: (req: Request, res: Response) => void | Promise<void>;
   getAgentPresence: (req: Request, res: Response) => void | Promise<void>;
+  getAgentTimeline: (req: Request, res: Response) => void;
 }
 
 /**
@@ -691,5 +692,29 @@ export function createChatV2Controller(
         }
       }
     },
+
+    /**
+     * `GET /agents/:session/timeline?before=<ms>&cursor=&limit=50&source=slack,cloud-talk`
+     * — one agent's messages across every surface, newest first
+     * (specs/unified-conversations-cloud-store.md §A.5). `source` (or
+     * `sources`) is a comma-separated filter.
+     */
+    getAgentTimeline: (req, res) =>
+      runHandler(res, () => {
+        const principal = principalFromRequest(req);
+        const q = req.query;
+        const beforeRaw = typeof q.before === 'string' ? Number(q.before) : undefined;
+        const limitRaw = typeof q.limit === 'string' ? Number.parseInt(q.limit, 10) : undefined;
+        const sourceRaw = typeof q.source === 'string' ? q.source : typeof q.sources === 'string' ? q.sources : '';
+        const result = service.getAgentTimeline({
+          agentSession: req.params.session ?? '',
+          principal,
+          before: Number.isFinite(beforeRaw) ? beforeRaw : undefined,
+          cursor: typeof q.cursor === 'string' && q.cursor.length > 0 ? q.cursor : null,
+          limit: Number.isFinite(limitRaw) ? limitRaw : undefined,
+          sources: sourceRaw ? sourceRaw.split(',') : [],
+        });
+        res.json({ success: true, data: result });
+      }),
   };
 }

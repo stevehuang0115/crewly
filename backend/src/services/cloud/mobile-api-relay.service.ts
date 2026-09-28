@@ -91,6 +91,10 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   { method: 'GET', prefix: '/projects' },   // list + /:id + /:id/status|stats
   { method: 'GET', prefix: '/wiki/' },      // vaults/tree/page/search reads
   { method: 'GET', prefix: '/chat/' },      // LAN-parity chat reads (messages incl. ?cursor=)
+  // An agent's merged timeline across surfaces (specs/unified-conversations-cloud-store.md
+  // §A.5). Already under `/chat/`; listed on its own so narrowing that entry
+  // never drops the portal's timeline during the Cloud-store rollout.
+  { method: 'GET', prefix: '/chat/agents/' },
   // Slack team channels — the portal manages them for an instance the
   // owner is not sitting at (create/link a channel, see status, agent bots).
   { method: 'GET', prefix: '/slack/team-channels' },
