@@ -96,6 +96,9 @@ import {
 import { RequestStatusUpdateSubscriber } from './services/v3/request-status-update.subscriber.js';
 import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
+import { OwnerReceiptService, setOwnerReceiptService } from './services/v3/owner-receipt/owner-receipt.service.js';
+import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf } from './services/v3/owner-receipt/owner-receipt.boot.js';
+import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
@@ -542,9 +545,12 @@ export class CrewlyServer {
 		// Failure-isolated: tickets are an addition — messages are delivered
 		// whether or not this is wired.
 		try {
+			// #828 coverage: every owner message's fate, for the receipt's coverage line.
+			const intakeOutcomeLog = new IntakeOutcomeLog(RequestService.getInstance().getRequestsDir());
 			const ticketIntake = new TicketIntakeService({
 				requests: RequestService.getInstance(),
 				findWorkItem: (id) => TaskPoolService.getInstance().findWorkItem(id),
+				outcomeLog: intakeOutcomeLog,
 			});
 			ticketIntake.setReceiptSink(
 				'chat-v2',
@@ -568,6 +574,21 @@ export class CrewlyServer {
 				}),
 			);
 			setTicketIntakeService(ticketIntake);
+
+			// #828: the owner's nightly receipt — built from tickets + WorkItems,
+			// DMed at his local time (default 21:00, can be turned off), and the
+			// same data at GET /api/owner-receipt for the dashboard.
+			{
+				const receipt = new OwnerReceiptService({
+					listRequests: () => RequestService.getInstance().listAll(),
+					listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
+					loadTeamIndex: async () => teamIndexOf(await StorageService.getInstance().getTeams()),
+					sender: createSlackOwnerSender(() => getSlackService()),
+					readIntakeLog: () => intakeOutcomeLog.read(),
+				});
+				setOwnerReceiptService(receipt);
+				startOwnerReceiptSchedule(receipt);
+			}
 			TaskPoolService.getInstance().setTicketResolver((sessionName) =>
 				resolveTicketIdForSession(InFlightTurnTracker.getInstance(), sessionName),
 			);

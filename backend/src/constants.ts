@@ -3111,6 +3111,34 @@ export const SELF_IMPROVEMENT_CONSTANTS = {
 } as const;
 
 /**
+ * Daily owner receipt (#828): one phone-readable message every evening with
+ * every ask of the window, its outcome and link, what waits on the owner, and
+ * what it cost. See specs/owner-receipt.md.
+ */
+export const OWNER_RECEIPT_CONSTANTS = {
+	/** Default local send time (HH:MM, 24h) */
+	DEFAULT_TIME: '21:00',
+	/** Default owner time zone (same default as team-health off-hours) */
+	DEFAULT_TIMEZONE: 'America/New_York',
+	/** How often the scheduler checks whether it is time (ms) */
+	TICK_INTERVAL_MS: 60 * 1000,
+	/** Settings + last-sent state, under ~/.crewly */
+	STATE_FILENAME: 'owner-receipt.json',
+	/** An ask is shortened to this many characters (CJK count double) */
+	MAX_ASK_WEIGHTED_LENGTH: 56,
+	/** A waiting-on-you question is shortened to this many characters */
+	MAX_QUESTION_WEIGHTED_LENGTH: 90,
+	/** Ask lines in the Slack message before "另有 N 件" (phone length) */
+	MAX_ASK_LINES: 30,
+	/** Waiting-on-you lines before "另有 N 件" */
+	MAX_WAITING_LINES: 12,
+	/** 「可能漏记」 lines: appended messages that still read like a request (#828 coverage) */
+	MAX_POSSIBLY_MISSED: 5,
+	/** Team label for a ticket nobody is assigned to */
+	UNASSIGNED_TEAM: '未分配',
+} as const;
+
+/**
  * Ticket loop (specs/ticket-loop.md, Phase 1): owner messages become tickets
  * (a `Request` with a TKT number), receipts go back where the owner spoke,
  * and WorkItems link back to the ticket.
@@ -3122,6 +3150,13 @@ export const TICKET_CONSTANTS = {
 	NUMBER_PAD: 3,
 	/** Counter file inside the requests dir (no `.json`, so listAll never reads it) */
 	COUNTER_FILENAME: '.ticket-counter',
+	/**
+	 * #828 coverage: one JSON line per owner message intake handled
+	 * (created / appended / ignored + reason), next to the Request files. The
+	 * first line records when counting started, so a window that begins
+	 * earlier is reported as unknown (不详), never as 0.
+	 */
+	INTAKE_LOG_FILENAME: '.intake-outcomes.jsonl',
 	/** Tag every ticket carries */
 	TAG: 'ticket',
 	/** Tag added when the owner said "don't track" */

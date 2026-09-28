@@ -27,6 +27,7 @@ import {
   type UpdateRequestInput,
 } from '../../types/v2/request.types.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
+import { MemoryIntakeOutcomeLog } from './ticket-intake-log.js';
 import { RequestService, setRequestServiceEventBus } from './request.service.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 
@@ -835,5 +836,44 @@ describe('replay — thread 1790425131.498609 in #C0C2QCGE9K9, 2026-09-26 (#827)
     // The written follow-ups landed in a discussion (the audio clip is a file).
     const discussed = tickets.flatMap((t) => t.discussion ?? []).map((d) => d.text);
     expect(discussed).toEqual(expect.arrayContaining(['好的 开issue可以的', expect.stringContaining('hingsight那个要写到一起吗')]));
+  });
+});
+
+describe('outcome log (#828 coverage)', () => {
+  it('records every owner message once: created, appended (request signals flagged), ignored with the reason', async () => {
+    const log = new MemoryIntakeOutcomeLog('2026-09-01T00:00:00Z');
+    svc = new TicketIntakeService({ requests: store, outcomeLog: log });
+    await svc.intakeWithOutcome(msg({ text: 'please add a dark mode toggle to settings' }));
+    await svc.intakeWithOutcome(msg({ ts: '100.1', text: 'please add a dark mode toggle to settings' })); // duplicate
+    await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '好的 开issue可以的' })); // approval: appended, request verb present
+    await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '没关系，按你说的来' })); // appended, no ask signal
+    await svc.intakeWithOutcome(msg({ ts: '100.4', text: '好的' })); // ignored
+    await svc.intakeWithOutcome(msg({ ts: '100.5', text: 'the agent said so', isOwner: false })); // not the owner: not counted
+
+    expect(log.events.map((e) => [e.action, e.reason ?? null, e.askSignal ?? false])).toEqual([
+      ['created', null, false],
+      ['appended', null, true],
+      ['appended', null, false],
+      ['ignored', 'trivial_or_short', false],
+    ]);
+    const suspect = log.events[1];
+    expect(suspect).toMatchObject({ ticketNumber: 1, text: '好的 开issue可以的' });
+    expect(log.events[2].text).toBeUndefined();
+  });
+
+  it('never stores a secret in the logged text', async () => {
+    const log = new MemoryIntakeOutcomeLog('2026-09-01T00:00:00Z');
+    svc = new TicketIntakeService({ requests: store, outcomeLog: log });
+    await svc.intake(msg());
+    await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '好的 用这个 token ghp_abcdefghijklmnopqrstuvwxyz123456 发给他就可以的' }));
+    expect(JSON.stringify(log.events)).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz123456');
+  });
+
+  it('a failing log never stops intake', async () => {
+    svc = new TicketIntakeService({
+      requests: store,
+      outcomeLog: { record: async () => { throw new Error('disk full'); }, read: async () => ({ startedAt: null, events: [] }) },
+    });
+    expect((await svc.intakeWithOutcome(msg())).action).toBe('created');
   });
 });
