@@ -514,7 +514,7 @@ export class FreshTaskConversationService {
     });
 
     // 3. Learn the new conversation id in the background.
-    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, clearAt);
+    void this.trackNewConversation(sessionName, info.cwd, info.sessionId, clearAt, workItem.id);
     return { cleared: true, handoverPath };
   }
 
@@ -569,17 +569,20 @@ export class FreshTaskConversationService {
    * store its id; if none shows up in time, clear the stored id so a restart
    * starts fresh rather than resuming the pre-clear conversation.
    *
-   * A candidate is a `.jsonl` in the agent's transcript directory, modified
-   * since the clear, not the old id, not claimed by another session, and
-   * mentioning this session's name (the dispatch text written right after the
-   * clear carries it) — several agents can share one cwd.
+   * A candidate is a `.jsonl` in the agent's transcript directory that was
+   * STARTED after the clear (its first entry, not just a later write), is not
+   * the old id or claimed by another session, and contains this task's
+   * work-item id — the dispatch text written right after the clear carries
+   * it. Several agents share one cwd and their transcripts mention each
+   * other's session names, so matching on the name alone picked another
+   * agent's conversation (Atlas resumed Ella's, 2026-09-28).
    */
-  private async trackNewConversation(sessionName: string, cwd: string, oldId: string, clearAt: number): Promise<void> {
+  private async trackNewConversation(sessionName: string, cwd: string, oldId: string, clearAt: number, workItemId: string): Promise<void> {
     try {
       const dir = path.dirname(claudeTranscriptPath({ sessionId: oldId, cwd, claudeHome: this.deps.claudeHome }));
       const deadline = clearAt + FRESH_TASK_CONVERSATION_CONSTANTS.NEW_SESSION_DETECT_MS;
       while (this.deps.now() <= deadline) {
-        const found = this.findNewTranscript(dir, sessionName, oldId, clearAt);
+        const found = this.findNewTranscript(dir, sessionName, oldId, clearAt, workItemId);
         if (found) {
           this.deps.updateSessionId(sessionName, found);
           this.logger.info('Recorded the conversation id started by /clear', { sessionName, sessionId: found });
@@ -610,7 +613,7 @@ export class FreshTaskConversationService {
    *
    * @returns The new conversation id, or null
    */
-  private findNewTranscript(dir: string, sessionName: string, oldId: string, clearAt: number): string | null {
+  private findNewTranscript(dir: string, sessionName: string, oldId: string, clearAt: number, workItemId: string): string | null {
     let entries: string[];
     try {
       entries = fs.readdirSync(dir).filter((f) => f.endsWith('.jsonl'));
@@ -631,14 +634,39 @@ export class FreshTaskConversationService {
       }
       // One second of slack for filesystem timestamp granularity.
       if (mtime < clearAt - 1_000) continue;
-      if (!this.fileMentions(file, sessionName)) continue;
+      if (!this.startedAfter(file, clearAt - 1_000)) continue;
+      if (!this.fileMentions(file, workItemId)) continue;
       candidates.push({ id, mtime });
     }
     candidates.sort((a, b) => b.mtime - a.mtime);
     return candidates[0]?.id ?? null;
   }
 
-  /** Whether the start of a transcript mentions the session name. */
+  /**
+   * Whether a transcript's first timestamped entry is at or after `since`,
+   * i.e. the conversation began after the clear rather than being an older
+   * one that happened to be written to recently.
+   */
+  private startedAfter(file: string, since: number): boolean {
+    try {
+      const fd = fs.openSync(file, 'r');
+      try {
+        const buf = Buffer.alloc(Math.min(64 * 1024, fs.fstatSync(fd).size));
+        fs.readSync(fd, buf, 0, buf.length, 0);
+        for (const line of buf.toString('utf-8').split('\n')) {
+          const m = /"timestamp":"([^"]+)"/.exec(line);
+          if (m) return Date.parse(m[1]) >= since;
+        }
+        return false;
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch {
+      return false;
+    }
+  }
+
+  /** Whether the start of a transcript contains the given text. */
   private fileMentions(file: string, needle: string): boolean {
     const MAX_BYTES = 256 * 1024;
     try {
