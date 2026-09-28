@@ -14,6 +14,7 @@
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import { TERMINAL_WORK_ITEM_STATUSES, type WorkItem } from '../../types/v2/work-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,6 +47,16 @@ const SERVICE_NAME = 'TLAutoVerify';
 /** Timeout for the direct terminal write to the TL session. */
 const TL_WRITE_TIMEOUT_MS = 5_000;
 
+/**
+ * When the worker's task was just reported done, the bridge's `Verify:` item
+ * may not exist yet (it is created from the same completion). Wait this long
+ * once before deciding the task has no Verify item.
+ */
+const VERIFY_ITEM_DEFER_MS = 3_000;
+
+/** Marker in the bridge's deterministic verification ids (`<id>:verify:<id>`). */
+const VERIFY_ID_MARKER = ':verify:';
+
 /** How the verify instruction reached the TL. */
 type DeliveryPath = 'tl-terminal' | 'orchestrator-queue';
 
@@ -58,6 +69,8 @@ export class TLAutoVerifyService {
   private readonly logger: ComponentLogger;
   private eventBusService: { on: (event: string, handler: (...args: unknown[]) => void) => void } | null = null;
   private teamsProvider: (() => Promise<TeamInfo[]>) | null = null;
+  private poolItemsProvider: (() => Promise<WorkItem[]>) | null = null;
+  private verifyDeferMs = VERIFY_ITEM_DEFER_MS;
 
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('TLAutoVerify');
@@ -76,13 +89,21 @@ export class TLAutoVerifyService {
 
   /**
    * Initialize with EventBus and team data source.
+   *
+   * @param eventBusService - Bus whose `event_published` signal is watched
+   * @param teamsProvider - Team source (defaults to GET /api/teams)
+   * @param options - `poolItemsProvider` reads the task pool (defaults to
+   *   TaskPoolService); `verifyDeferMs` overrides the wait for a Verify item
    */
   initialize(
     eventBusService: { on: (event: string, handler: (...args: unknown[]) => void) => void },
     teamsProvider?: () => Promise<TeamInfo[]>,
+    options: { poolItemsProvider?: () => Promise<WorkItem[]>; verifyDeferMs?: number } = {},
   ): void {
     this.eventBusService = eventBusService;
     this.teamsProvider = teamsProvider ?? null;
+    this.poolItemsProvider = options.poolItemsProvider ?? null;
+    if (typeof options.verifyDeferMs === 'number') this.verifyDeferMs = options.verifyDeferMs;
   }
 
   /**
@@ -100,11 +121,12 @@ export class TLAutoVerifyService {
         sessionName?: string;
         teamId?: string;
         taskId?: string;
+        workItemId?: string;
       };
       if (!event?.eventType || !event?.sessionName) return;
 
       if (event.eventType === 'task:done' || event.eventType === 'task:completed') {
-        this.onWorkerTaskCompleted(event.sessionName, event.teamId, event.taskId).catch((err) => {
+        this.onWorkerTaskCompleted(event.sessionName, event.teamId, event.taskId ?? event.workItemId).catch((err) => {
           this.logger.debug('Auto-verify trigger failed (non-fatal)', {
             error: err instanceof Error ? err.message : String(err),
           });
@@ -132,6 +154,18 @@ export class TLAutoVerifyService {
     const tlInfo = await this.findTeamLeaderForWorker(workerSessionName, teamId);
     if (!tlInfo) {
       this.logger.debug('No TL found for worker — skipping auto-verify', { workerSessionName });
+      return;
+    }
+
+    // The bridge already gives the reviewer a `Verify:` work item for work the
+    // worker reported done; an [AUTO-VERIFY] message on top wakes the TL a
+    // second time for the same deliverable. Only tasks without one get it.
+    if (await this.hasVerifyItem(workerSessionName, taskId)) {
+      this.logger.debug('Skipping [AUTO-VERIFY] — a Verify work item covers this task', {
+        workerSessionName,
+        taskId,
+        tlSession: tlInfo.tlSessionName,
+      });
       return;
     }
 
@@ -173,6 +207,55 @@ export class TLAutoVerifyService {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  /**
+   * Whether the bridge has created — or is about to create — a `Verify:` work
+   * item for this completion. With a task id that is `<id>:verify:<id>`;
+   * without one, any open Verify item whose source the worker ran. When the
+   * worker's item has just reached `done_by_worker` and its Verify item is
+   * not there yet, wait {@link VERIFY_ITEM_DEFER_MS} once and look again.
+   * Pool read failures count as "no Verify item" so the TL still hears.
+   *
+   * @param workerSessionName - Worker whose task completed
+   * @param taskId - Completed task / WorkItem id, when known
+   * @returns True when a Verify item covers the task
+   */
+  private async hasVerifyItem(workerSessionName: string, taskId?: string): Promise<boolean> {
+    const read = async (): Promise<WorkItem[]> => {
+      try {
+        if (this.poolItemsProvider) return await this.poolItemsProvider();
+        const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+        return await TaskPoolService.getInstance().getAllItems();
+      } catch {
+        return [];
+      }
+    };
+    const covered = (items: WorkItem[]): boolean => {
+      if (taskId) return items.some((wi) => wi.id === `${taskId}${VERIFY_ID_MARKER}${taskId}`);
+      const byId = new Map(items.map((wi) => [wi.id, wi]));
+      return items.some((wi) => {
+        if (!wi.id.includes(VERIFY_ID_MARKER) || TERMINAL_WORK_ITEM_STATUSES.has(wi.status)) return false;
+        const sourceId = wi.id.slice(0, wi.id.indexOf(VERIFY_ID_MARKER));
+        return byId.get(sourceId)?.target === workerSessionName;
+      });
+    };
+    const pending = (items: WorkItem[]): boolean => {
+      const ids = new Set(items.map((wi) => wi.id));
+      return items.some(
+        (wi) =>
+          wi.status === 'done_by_worker' &&
+          (taskId ? wi.id === taskId : wi.target === workerSessionName) &&
+          !ids.has(`${wi.id}${VERIFY_ID_MARKER}${wi.id}`),
+      );
+    };
+
+    let items = await read();
+    if (covered(items)) return true;
+    if (!pending(items)) return false;
+    await new Promise((resolve) => setTimeout(resolve, this.verifyDeferMs));
+    items = await read();
+    return covered(items);
   }
 
   /**

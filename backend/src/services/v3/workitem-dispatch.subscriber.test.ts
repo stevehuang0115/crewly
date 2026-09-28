@@ -346,4 +346,48 @@ describe('WorkItemDispatchSubscriber', () => {
       expect(body.data).toContain('"sessionName":"crewly-product-quinn-47ce967d"');
     });
   });
+
+  describe('fresh conversation per task', () => {
+    it('prepares the conversation before the write and prefixes the note when cleared', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const order: string[] = [];
+      const prepareForTask = jest.fn(async () => {
+        order.push('prepare');
+        return { cleared: true, handoverPath: '/h/leo.md' };
+      });
+      mockedAxios.post.mockImplementation(async () => {
+        order.push('write');
+        return { status: 200, data: { success: true } };
+      });
+      svc.setTaskConversationPreparer({ prepareForTask });
+      const wi = makeWorkItem({ id: 'wi-fresh' });
+
+      expect(await svc.dispatchTo(wi)).toBe(true);
+      expect(prepareForTask).toHaveBeenCalledWith(wi.target, wi);
+      expect(order).toEqual(['prepare', 'write']);
+      const body = mockedAxios.post.mock.calls[0][1] as { data: string };
+      const lines = body.data.split('\n');
+      expect(lines[1]).toBe('Fresh conversation for this task — your earlier work is in /h/leo.md and your wiki; read them only if this task needs it.');
+      expect(lines[2]).toContain('[CREWLY-DISPATCH] WorkItem wi-fresh');
+    });
+
+    it('no note when nothing was cleared, and a failing preparer never blocks delivery', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      svc.setTaskConversationPreparer({ prepareForTask: jest.fn(async () => ({ cleared: false })) });
+      await svc.dispatchTo(makeWorkItem({ id: 'wi-a' }));
+      expect((mockedAxios.post.mock.calls[0][1] as { data: string }).data).not.toContain('Fresh conversation');
+
+      svc.setTaskConversationPreparer({ prepareForTask: jest.fn(async () => { throw new Error('boom'); }) });
+      expect(await svc.dispatchTo(makeWorkItem({ id: 'wi-b' }))).toBe(true);
+    });
+
+    it('batch reminders do not prepare (they cover already-delivered work)', async () => {
+      const svc = WorkItemDispatchSubscriber.getInstance();
+      const prepareForTask = jest.fn(async () => ({ cleared: false }));
+      svc.setTaskConversationPreparer({ prepareForTask });
+      await svc.redispatchMany([makeWorkItem({ id: 'wi-1' }), makeWorkItem({ id: 'wi-2' })]);
+      expect(prepareForTask).not.toHaveBeenCalled();
+      expect(mockedAxios.post).toHaveBeenCalledTimes(1);
+    });
+  });
 });

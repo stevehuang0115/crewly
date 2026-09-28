@@ -2624,17 +2624,35 @@ void (async () => {
 								triggerId,
 								requestId: template.requestId,
 							});
-							await TaskPoolService.getInstance().addToPool(workItem);
+							// Each fire is a full wake-up for the target. Skip it when the same
+							// work is still open: an identical item from an earlier fire, or —
+							// for an idle-verify watcher — the bridge's Verify item for that
+							// worker (agent:idle_after_task fires on every busy→idle).
+							const { findOpenDuplicateWorkItem, findCoveringVerifyItem } = await import('./utils/trigger-workitem-dedupe.utils.js');
+							const poolItems = await TaskPoolService.getInstance().getAllItems().catch(() => []);
+							const draft = { target: workItem.target, owner: workItem.owner, title: workItem.title };
+							const duplicate = findOpenDuplicateWorkItem(poolItems, draft)
+								?? findCoveringVerifyItem(poolItems, trigger, draft);
+							if (duplicate) {
+								logger.debug('TriggerEngine: WorkItem skipped — same work already open', {
+									triggerId,
+									target: workItem.target,
+									title: workItem.title,
+									existingWorkItemId: duplicate.id,
+								});
+							} else {
+								await TaskPoolService.getInstance().addToPool(workItem);
 
-							// Project as a trigger_action TaskRecord
-							await taskProjection.createRecord({
-								title: workItem.title,
-								type: 'trigger_action',
-								ownerAgent: 'system',
-								triggerId,
-								workItemId: workItem.id,
-							});
-							logger.info('TriggerEngine: WorkItem enqueued', { triggerId, workItemId: workItem.id });
+								// Project as a trigger_action TaskRecord
+								await taskProjection.createRecord({
+									title: workItem.title,
+									type: 'trigger_action',
+									ownerAgent: 'system',
+									triggerId,
+									workItemId: workItem.id,
+								});
+								logger.info('TriggerEngine: WorkItem enqueued', { triggerId, workItemId: workItem.id });
+							}
 						} catch (err) {
 							logger.warn('TriggerEngine: createWorkItem failed', {
 								triggerId,

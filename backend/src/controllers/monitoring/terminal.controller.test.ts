@@ -150,6 +150,19 @@ jest.mock('../../services/agent/adaptive-heartbeat.service.js', () => ({
 	},
 }));
 
+// Fresh-conversation coordination: writes wait for an in-flight /clear and
+// are noted so a clear right after them is skipped.
+const mockFreshWaitIfClearing = jest.fn();
+const mockFreshNoteDelivery = jest.fn();
+jest.mock('../../services/agent/fresh-task-conversation.service.js', () => ({
+	FreshTaskConversationService: {
+		getInstance: () => ({
+			waitIfClearing: (...args: unknown[]) => mockFreshWaitIfClearing(...args),
+			noteDelivery: (...args: unknown[]) => mockFreshNoteDelivery(...args),
+		}),
+	},
+}));
+
 // Mock fs
 jest.mock('fs', () => ({
 	existsSync: jest.fn().mockReturnValue(false),
@@ -407,6 +420,23 @@ describe('TerminalController', () => {
 	});
 
 	describe('writeToSession', () => {
+		it('waits for an in-flight fresh-conversation clear and notes the delivery before writing', async () => {
+			const order: string[] = [];
+			mockFreshWaitIfClearing.mockImplementation(async () => { order.push('wait'); });
+			mockFreshNoteDelivery.mockImplementation(() => { order.push('note'); });
+			mockSession.write.mockImplementation(() => { order.push('write'); });
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				body: { data: 'hello' },
+			};
+
+			await terminalController.writeToSession(mockReq as Request, mockRes as Response);
+
+			expect(mockFreshWaitIfClearing).toHaveBeenCalledWith('test-session');
+			expect(mockFreshNoteDelivery).toHaveBeenCalledWith('test-session');
+			expect(order).toEqual(['wait', 'note', 'write']);
+		});
+
 		it('should write data to session with carriage return in default mode', async () => {
 			mockReq = {
 				params: { sessionName: 'test-session' } as any,
@@ -1028,6 +1058,21 @@ describe('TerminalController', () => {
 					getInProcessRuntime: jest.fn<() => any>().mockReturnValue(undefined),
 				},
 			};
+		});
+
+		it('waits for an in-flight fresh-conversation clear before delivering', async () => {
+			mockReq = {
+				params: { sessionName: 'test-session' } as any,
+				body: { message: 'Hello agent' },
+			};
+
+			await terminalController.deliverMessage.call(mockApiContext, mockReq as Request, mockRes as Response);
+
+			expect(mockFreshWaitIfClearing).toHaveBeenCalledWith('test-session');
+			expect(mockFreshNoteDelivery).toHaveBeenCalledWith('test-session');
+			expect(mockFreshWaitIfClearing.mock.invocationCallOrder[0]).toBeLessThan(
+				mockApiContext.agentRegistrationService.sendMessageToAgent.mock.invocationCallOrder[0],
+			);
 		});
 
 		it('should deliver message successfully via reliable endpoint', async () => {

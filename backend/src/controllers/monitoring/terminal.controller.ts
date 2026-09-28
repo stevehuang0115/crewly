@@ -32,6 +32,7 @@ import {
 import type { PendingWorkSummary, HeartbeatState } from '../../services/agent/adaptive-heartbeat.service.js';
 import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heartbeat.service.js';
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
+import { FreshTaskConversationService } from '../../services/agent/fresh-task-conversation.service.js';
 
 /**
  * Bracketed paste mode markers.
@@ -253,6 +254,24 @@ export async function captureTerminal(req: Request, res: Response): Promise<void
 }
 
 /**
+ * Coordinate a write with the fresh-conversation-per-task clear: wait
+ * (bounded) while a `/clear` is running for the session so this message is
+ * not wiped by it, then note the write so a clear right after it (before the
+ * agent has read it) is skipped. Never throws.
+ *
+ * @param sessionName - Session about to be written to
+ */
+async function coordinateWithFreshConversation(sessionName: string): Promise<void> {
+	try {
+		const fresh = FreshTaskConversationService.getInstance();
+		await fresh.waitIfClearing(sessionName);
+		fresh.noteDelivery(sessionName);
+	} catch {
+		// Best-effort: delivery must proceed regardless.
+	}
+}
+
+/**
  * Write data to a terminal session.
  *
  * @param req - Express request object with sessionName param and data in body
@@ -340,6 +359,8 @@ export async function writeToSession(req: Request, res: Response): Promise<void>
 			} as ApiResponse);
 			return;
 		}
+
+		await coordinateWithFreshConversation(sessionName);
 
 		// Convert data to string and validate for dangerous control sequences
 		const dataStr = String(data);
@@ -852,6 +873,8 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			} as ApiResponse);
 			return;
 		}
+
+		await coordinateWithFreshConversation(sessionName);
 
 		// Resolve runtime type: prefer request body, fall back to storage lookup,
 		// then check in-process runtimes (crewly-agent has no PTY session)

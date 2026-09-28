@@ -127,9 +127,10 @@ Any time you dispatch work — POST a Request that hands off to a TL, escalate t
      --filter-session <tl-or-orc-session> \
      --title "TL/ORC idle — Request resolution check" \
      --description "Per §3.0: <TL/ORC> went idle on Request <id>. Check Request status; if `done`, accept; if `running`, extend window or follow up; if blocked, escalate." \
-     --max-fires 3 \
+     --max-fires 1 \
      --max-idle-fires 3
    ```
+   The automatic "Verify:" item already covers workers who report done; this watcher only exists to catch a worker that went idle without reporting, so it fires once (`--max-fires 1`).
 
 2. **Schedule a fallback** at roughly **2× expected ETA** via `schedule-followup` — `agent:idle` is best-effort; PM cycles are long enough that missed events compound:
    ```bash

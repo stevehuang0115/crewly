@@ -105,9 +105,10 @@ When you create a child WorkItem for a peer Worker, hand off via `send-message` 
      --filter-session <peer-session> \
      --title "Peer idle — child WorkItem check" \
      --description "Per §3.0: <peer> went idle on <child workitem id / message ref>. Check whether their reply landed in your inbox or whether the child WorkItem flipped to done." \
-     --max-fires 3 \
+     --max-fires 1 \
      --max-idle-fires 3
    ```
+   The automatic "Verify:" item already covers workers who report done; this watcher only exists to catch a worker that went idle without reporting, so it fires once (`--max-fires 1`).
    > Use `agent:idle_after_task` (not the generic `agent:idle`) so the
    > subscription is NOT consumed by the peer's registration-idle event
    > if they were just started for this delegation.

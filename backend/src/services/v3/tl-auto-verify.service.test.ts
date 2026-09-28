@@ -145,7 +145,7 @@ describe('TLAutoVerifyService delivery routing', () => {
   it('delivers the [AUTO-VERIFY] instruction directly to the TL terminal, not the orchestrator queue', async () => {
     mockAxiosPost.mockResolvedValue({ status: 200, data: {} });
     const service = TLAutoVerifyService.getInstance();
-    service.initialize({ on: jest.fn() }, async () => hierarchicalTeams);
+    service.initialize({ on: jest.fn() }, async () => hierarchicalTeams, { poolItemsProvider: async () => [] });
 
     await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
 
@@ -161,7 +161,7 @@ describe('TLAutoVerifyService delivery routing', () => {
   it('falls back to the orchestrator queue when the TL terminal write fails', async () => {
     mockAxiosPost.mockRejectedValue(Object.assign(new Error('Not Found'), { response: { status: 404 } }));
     const service = TLAutoVerifyService.getInstance();
-    service.initialize({ on: jest.fn() }, async () => hierarchicalTeams);
+    service.initialize({ on: jest.fn() }, async () => hierarchicalTeams, { poolItemsProvider: async () => [] });
 
     await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
 
@@ -187,11 +187,88 @@ describe('TLAutoVerifyService delivery routing', () => {
       },
     ];
     const service = TLAutoVerifyService.getInstance();
-    service.initialize({ on: jest.fn() }, async () => teams);
+    service.initialize({ on: jest.fn() }, async () => teams, { poolItemsProvider: async () => [] });
 
     await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
 
     expect(mockAxiosPost).not.toHaveBeenCalled();
     expect(mockEnqueue).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('TLAutoVerifyService — no duplicate of the bridge Verify item', () => {
+  const teams = [
+    {
+      id: 'team-1',
+      name: 'Dev Team',
+      hierarchical: true,
+      members: [
+        { id: 'tl-1', sessionName: 'tl-session', role: 'team-leader', hierarchyLevel: 1 },
+        { id: 'worker-1', sessionName: 'worker-session', role: 'developer', parentMemberId: 'tl-1', hierarchyLevel: 2 },
+      ],
+    },
+  ];
+  const item = (id: string, target: string, status: string) =>
+    ({ id, target, status, title: id, type: 'delegate', owner: 'team_lead' }) as any;
+
+  beforeEach(() => {
+    TLAutoVerifyService.resetInstance();
+    jest.clearAllMocks();
+    mockAxiosPost.mockReset();
+    mockAxiosPost.mockResolvedValue({ status: 200, data: {} });
+  });
+
+  it('skips [AUTO-VERIFY] when the Verify item for the task exists', async () => {
+    const service = TLAutoVerifyService.getInstance();
+    service.initialize({ on: jest.fn() }, async () => teams, {
+      poolItemsProvider: async () => [item('task-42', 'worker-session', 'done_by_worker'), item('task-42:verify:task-42', 'tl-session', 'queued')],
+    });
+    await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
+    expect(mockAxiosPost).not.toHaveBeenCalled();
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('without a task id, skips when an open Verify item covers the worker', async () => {
+    const service = TLAutoVerifyService.getInstance();
+    service.initialize({ on: jest.fn() }, async () => teams, {
+      poolItemsProvider: async () => [item('t1', 'worker-session', 'done_by_worker'), item('t1:verify:t1', 'tl-session', 'running')],
+    });
+    await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', undefined);
+    expect(mockAxiosPost).not.toHaveBeenCalled();
+  });
+
+  it('waits for a Verify item the bridge is about to create', async () => {
+    let calls = 0;
+    const service = TLAutoVerifyService.getInstance();
+    service.initialize({ on: jest.fn() }, async () => teams, {
+      verifyDeferMs: 5,
+      poolItemsProvider: async () => {
+        calls += 1;
+        const source = item('task-42', 'worker-session', 'done_by_worker');
+        return calls === 1 ? [source] : [source, item('task-42:verify:task-42', 'tl-session', 'queued')];
+      },
+    });
+    await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
+    expect(calls).toBe(2);
+    expect(mockAxiosPost).not.toHaveBeenCalled();
+  });
+
+  it('still sends [AUTO-VERIFY] for a task that never gets a Verify item', async () => {
+    const service = TLAutoVerifyService.getInstance();
+    service.initialize({ on: jest.fn() }, async () => teams, {
+      verifyDeferMs: 5,
+      poolItemsProvider: async () => [item('task-42', 'worker-session', 'done_by_worker')],
+    });
+    await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
+    expect(mockAxiosPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('a pool read failure does not suppress the message', async () => {
+    const service = TLAutoVerifyService.getInstance();
+    service.initialize({ on: jest.fn() }, async () => teams, {
+      poolItemsProvider: async () => { throw new Error('boom'); },
+    });
+    await (service as any).onWorkerTaskCompleted('worker-session', 'team-1', 'task-42');
+    expect(mockAxiosPost).toHaveBeenCalledTimes(1);
   });
 });

@@ -38,6 +38,11 @@ import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import type { TeamBudgetGateService } from '../budget/team-budget-gate.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
+import {
+  FreshTaskConversationService,
+  freshConversationNote,
+  type PrepareForTaskResult,
+} from '../agent/fresh-task-conversation.service.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -45,6 +50,11 @@ import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 
 /** Service identifier for logs and the X-Agent-Session caller header. */
 const SERVICE_NAME = 'WorkItemDispatch';
+
+/** Starts a fresh conversation before a new task (see FreshTaskConversationService). */
+type TaskConversationPreparer = {
+  prepareForTask: (sessionName: string, workItem: Pick<WorkItem, 'id'>) => Promise<PrepareForTaskResult>;
+};
 
 /** Loopback API used by {@link tl-auto-verify.service.ts} et al. */
 
@@ -114,6 +124,13 @@ export class WorkItemDispatchSubscriber {
    */
   private teamBudgetGate: Pick<TeamBudgetGateService, 'checkForSession'> | null = null;
 
+  /**
+   * Fresh-conversation preparer consulted right before a brief is written.
+   * Defaults to the {@link FreshTaskConversationService} singleton; tests
+   * inject a stub via {@link setTaskConversationPreparer}.
+   */
+  private taskConversationPreparer: TaskConversationPreparer | null = null;
+
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger(SERVICE_NAME);
   }
@@ -126,6 +143,37 @@ export class WorkItemDispatchSubscriber {
    */
   setTeamBudgetGate(gate: Pick<TeamBudgetGateService, 'checkForSession'> | null): void {
     this.teamBudgetGate = gate;
+  }
+
+  /**
+   * Override the fresh-conversation preparer (tests), or `null` to restore
+   * the default singleton.
+   *
+   * @param preparer - Preparer implementation
+   */
+  setTaskConversationPreparer(preparer: TaskConversationPreparer | null): void {
+    this.taskConversationPreparer = preparer;
+  }
+
+  /**
+   * Give the target a fresh conversation when this is a new task (Claude
+   * Code members only; the service decides). Never throws.
+   *
+   * @param workItem - WI about to be written (target set)
+   * @returns The note to put in front of the brief, or null
+   */
+  private async prepareConversation(workItem: WorkItem): Promise<string | null> {
+    try {
+      const preparer = this.taskConversationPreparer ?? FreshTaskConversationService.getInstance();
+      const result = await preparer.prepareForTask(workItem.target as string, workItem);
+      return result.cleared && result.handoverPath ? freshConversationNote(result.handoverPath) : null;
+    } catch (err) {
+      this.logger.debug('Fresh-conversation prepare failed (non-fatal)', {
+        workItemId: workItem.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
   }
 
   public static getInstance(): WorkItemDispatchSubscriber {
@@ -227,7 +275,10 @@ export class WorkItemDispatchSubscriber {
       }
     }
 
-    const message = this.buildDispatchMessage(workItem);
+    // A new task starts in a fresh conversation (old one saved first) so it
+    // does not re-read the previous task's history on every turn.
+    const freshNote = await this.prepareConversation(workItem);
+    const message = this.buildDispatchMessage(workItem, freshNote);
 
     try {
       await axios.post(
@@ -301,6 +352,11 @@ export class WorkItemDispatchSubscriber {
     if (batch.length === 1) return this.redispatch(batch[0]);
 
     for (const wi of batch) this.dispatched.delete(this.dispatchKey(wi.id, target));
+    // No fresh-conversation prepare here: a batch is a reminder for work that
+    // was already delivered to this agent, so its context is what the agent
+    // needs; clearing would drop it. (A single-item reminder goes through
+    // dispatchTo, where only a root different from the last delivered one
+    // can clear — and never while other work is running.)
     const message = this.buildBatchDispatchMessage(batch, target);
     try {
       await axios.post(
@@ -432,13 +488,14 @@ export class WorkItemDispatchSubscriber {
     ].join('\n');
   }
 
-  private buildDispatchMessage(workItem: WorkItem): string {
+  private buildDispatchMessage(workItem: WorkItem, freshNote: string | null = null): string {
     const titleSnippet = workItem.title.length > 80
       ? workItem.title.substring(0, 77) + '...'
       : workItem.title;
 
     return [
       '',
+      ...(freshNote ? [freshNote] : []),
       `[CREWLY-DISPATCH] WorkItem ${workItem.id} queued for you (type=${workItem.type}).`,
       `  Title: ${titleSnippet}`,
       '  Run poll-tasks to claim:',

@@ -1454,6 +1454,58 @@ export const ORC_CONVERSATION_CONSTANTS = {
 	HANDOVER_DIR: 'handover',
 } as const;
 
+/**
+ * Fresh conversation per new task for Claude Code team members (never the
+ * orchestrator): before a work item with a different root than the last one
+ * is delivered, the old conversation is saved (handover file + memory) and
+ * `/clear`ed, so a small new task does not re-read hundreds of thousands of
+ * tokens of unrelated history on every turn.
+ */
+export const FRESH_TASK_CONVERSATION_CONSTANTS = {
+	/** Kill-switch env var; `0` / `false` / `off` disables the feature */
+	ENV_TOGGLE: 'CREWLY_FRESH_TASK_CONVERSATION',
+	/** Under CREWLY_HOME: `{ [session]: lastDeliveredRootId }` */
+	STATE_FILE: 'fresh-task-conversation.json',
+	/** Id suffixes that mark follow-ups of the same task (retries, verifies, reviews) */
+	ROOT_SUFFIX_MARKERS: [':retry:', ':verify:', ':review:'],
+	/** The Claude Code command that starts a new conversation */
+	CLEAR_COMMAND: '/clear',
+	/** Pause between Escape and the command (same as context compaction) */
+	ESCAPE_DELAY_MS: 200,
+	/** Wait after `/clear` for the prompt to come back before the task is written */
+	POST_CLEAR_READY_MS: 2_000,
+	/** PTY must have been quiet at least this long for the agent to count as idle */
+	MIN_QUIET_MS: 8_000,
+	/** Skip clearing when someone else delivered a message to the session this recently */
+	RECENT_DELIVERY_MS: 30_000,
+	/** How long a terminal write/deliver waits for an in-progress clear */
+	WAIT_IF_CLEARING_MAX_MS: 5_000,
+	/** How long to look for the new transcript Claude Code starts after `/clear` */
+	NEW_SESSION_DETECT_MS: 30_000,
+	/** Poll interval while looking for the new transcript */
+	NEW_SESSION_POLL_MS: 1_000,
+	/** Cap on the handover text stored through memory (mirrored into the wiki) */
+	MEMORY_MAX_CHARS: 4_000,
+	/** Members start fresh at launch when their last turn carried this many tokens. Env: CREWLY_MEMBER_FRESH_CONTEXT_TOKENS */
+	MEMBER_FRESH_CONTEXT_TOKENS: 150_000,
+} as const;
+
+/**
+ * Default model for Claude Code team members that have no `modelId`: members
+ * with a reviewer above them run on Sonnet, leads (and anyone without a
+ * reviewer) keep Claude Code's own default (Opus). Never the orchestrator.
+ */
+export const MEMBER_MODEL_DEFAULT_CONSTANTS = {
+	/** Model passed to reviewed members when nothing else is set */
+	DEFAULT_REVIEWED_MEMBER_MODEL: 'sonnet',
+	/** Env override for that model; `''` or `off` disables the default entirely */
+	ENV_OVERRIDE: 'CREWLY_MEMBER_DEFAULT_MODEL',
+	/** Roles that lead a team and therefore keep the runtime default */
+	LEAD_ROLES: ['team-leader', 'tech-lead'],
+	/** Rejections of the same task after which the reviewer is told about the upgrade option */
+	UPGRADE_HINT_AFTER_REJECTIONS: 2,
+} as const;
+
 export const CHAT_CONTEXT_CONSTANTS = {
 	/** Whether preceding messages are included at all */
 	ENABLED: true,

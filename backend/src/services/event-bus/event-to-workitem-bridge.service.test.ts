@@ -488,6 +488,79 @@ describe('EventToWorkItemBridge', () => {
       expect(retryWI.metadata?.triggerSource).not.toBe('cron');
       bridge.stop();
     });
+
+    describe('model-upgrade hint for a worker on the Sonnet default', () => {
+      const teamWithLeo = (leoOverrides: Record<string, unknown> = {}): Team => {
+        const base = buildTeam();
+        return {
+          ...base,
+          members: [
+            ...base.members,
+            {
+              ...base.members[0],
+              id: 'leo-1',
+              name: 'Leo',
+              sessionName: 'crewly-product-leo-member-n',
+              role: 'developer',
+              hierarchyLevel: 2,
+              canDelegate: false,
+              parentMemberId: 'tl-1',
+              ...leoOverrides,
+            } as Team['members'][number],
+          ],
+        };
+      };
+      const HINT = 'Leo runs on Sonnet and was sent back twice for this';
+
+      it('first rejection: no hint', async () => {
+        const taskPool = buildFakeTaskPool([buildWorkItem({ retryCount: 0 })]);
+        const { bridge, bus } = buildBridge({ taskPool, loadTeam: async () => teamWithLeo() });
+        bridge.start();
+        bus.publish(buildEvent({ type: 'task:rejected' }));
+        await bridge.flushPending();
+        expect(taskPool.addCalls[0].metadata?.reviewerNote).toBeUndefined();
+        bridge.stop();
+      });
+
+      it('second rejection: the retry carries the hint and the next Verify item shows it', async () => {
+        const taskPool = buildFakeTaskPool([buildWorkItem({ retryCount: 1 })]);
+        const { bridge, bus } = buildBridge({ taskPool, loadTeam: async () => teamWithLeo() });
+        bridge.start();
+        bus.publish(buildEvent({ type: 'task:rejected' }));
+        await bridge.flushPending();
+        const retry = taskPool.addCalls[0];
+        expect(String(retry.metadata?.reviewerNote)).toContain(HINT);
+        expect(String(retry.metadata?.reviewerNote)).toContain('only change it after the owner says yes');
+
+        // The retry is done by the worker → the reviewer's Verify item includes the hint.
+        taskPool.items.set(retry.id, { ...retry, status: 'done_by_worker' });
+        bus.publish(buildEvent({ id: 'evt-2', type: 'task:done_by_worker', workItemId: retry.id }));
+        await bridge.flushPending();
+        const verify = taskPool.addCalls.find((wi) => wi.id === `${retry.id}:verify:${retry.id}`);
+        expect(verify?.description).toContain(HINT);
+        bridge.stop();
+      });
+
+      it('escalation text includes the hint', async () => {
+        const taskPool = buildFakeTaskPool([buildWorkItem({ retryCount: 3 })]);
+        const { bridge, bus } = buildBridge({ taskPool, loadTeam: async () => teamWithLeo() });
+        bridge.start();
+        bus.publish(buildEvent({ type: 'task:rejected' }));
+        await bridge.flushPending();
+        expect(taskPool.addCalls[0].description).toContain(HINT);
+        bridge.stop();
+      });
+
+      it('no hint when the worker has an explicit model', async () => {
+        const taskPool = buildFakeTaskPool([buildWorkItem({ retryCount: 1 })]);
+        const { bridge, bus } = buildBridge({ taskPool, loadTeam: async () => teamWithLeo({ modelId: 'sonnet' }) });
+        bridge.start();
+        bus.publish(buildEvent({ type: 'task:rejected' }));
+        await bridge.flushPending();
+        expect(taskPool.addCalls[0].metadata?.reviewerNote).toBeUndefined();
+        bridge.stop();
+      });
+    });
   });
 
   // -------------------------------------------------------------------------

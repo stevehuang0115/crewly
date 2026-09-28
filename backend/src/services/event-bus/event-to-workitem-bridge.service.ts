@@ -61,7 +61,8 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { pickTeamLead } from '../../utils/team.utils.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { MEMBER_MODEL_DEFAULT_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { defaultModelForMember } from '../../utils/member-default-model.utils.js';
 import { formatError } from '../../utils/format-error.js';
 import {
   type WorkItem,
@@ -449,7 +450,8 @@ export class EventToWorkItemBridge {
         `Worker ${sourceWI.target ?? '(unknown)'} reported done on ${sourceWI.id}. Verify the deliverable.\n` +
         `Accept: complete this item normally. Send it back: complete it with ` +
         `output {"verdict":"rejected","feedback":"<what is wrong>"} — the worker gets a retry with your feedback.` +
-        (sourceWI.requestId ? `\nIt belongs to ticket ${sourceWI.requestId}: ticket-check --ticket ${sourceWI.requestId} shows its acceptance criteria.` : ''),
+        (sourceWI.requestId ? `\nIt belongs to ticket ${sourceWI.requestId}: ticket-check --ticket ${sourceWI.requestId} shows its acceptance criteria.` : '') +
+        (typeof sourceWI.metadata?.['reviewerNote'] === 'string' ? `\n${sourceWI.metadata['reviewerNote']}` : ''),
       sourceWI,
       missionId: sourceWI.missionId,
       requestId: sourceWI.requestId,
@@ -487,6 +489,10 @@ export class EventToWorkItemBridge {
     }
 
     const cap = sourceWI.maxRetries > 0 ? sourceWI.maxRetries : DEFAULT_MAX_RETRIES;
+    // Shown to the reviewer (escalation text now, or the next Verify item via
+    // the retry's metadata) when a worker on the default Sonnet keeps getting
+    // the same task sent back.
+    const upgradeHint = await this.modelUpgradeHint(sourceWI).catch(() => null);
 
     if (sourceWI.retryCount >= cap) {
       // V2 escalation path
@@ -506,7 +512,8 @@ export class EventToWorkItemBridge {
         title: `Escalation: ${sourceWI.title} rejected ${sourceWI.retryCount}x`,
         description:
           `Source WorkItem ${sourceWI.id} has been rejected ${sourceWI.retryCount} times ` +
-          `(cap = ${cap}). TL must re-scope, reassign, or cancel.`,
+          `(cap = ${cap}). TL must re-scope, reassign, or cancel.` +
+          (upgradeHint ? `\n${upgradeHint}` : ''),
         sourceWI,
         missionId: sourceWI.missionId,
         requestId: sourceWI.requestId,
@@ -557,6 +564,7 @@ export class EventToWorkItemBridge {
         idempotencyKey: retryId, // V1 (per-handler)
         sourceWorkItemId: sourceWI.id,
         retryAttempt,
+        ...(upgradeHint ? { reviewerNote: upgradeHint } : {}),
       },
     });
     await this.taskPool.addToPool(retryWI);
@@ -988,6 +996,35 @@ export class EventToWorkItemBridge {
       if (c?.sessionName && c.sessionName !== worker) return c.sessionName;
     }
     return null;
+  }
+
+  /**
+   * The line that tells the reviewer a worker on the default Sonnet model was
+   * sent back repeatedly for the same task, so the reviewer can propose an
+   * Opus upgrade to the owner. Nothing is changed automatically.
+   *
+   * @param sourceWI - The rejected item (its `retryCount` + 1 = rejections so far)
+   * @returns The hint, or null when fewer rejections, no member found, or the
+   *   worker is not on the reviewed-member default
+   */
+  private async modelUpgradeHint(sourceWI: WorkItem): Promise<string | null> {
+    const rejections = (sourceWI.retryCount ?? 0) + 1;
+    if (rejections < MEMBER_MODEL_DEFAULT_CONSTANTS.UPGRADE_HINT_AFTER_REJECTIONS) return null;
+    const worker = sourceWI.target;
+    if (!worker) return null;
+    const teamId = (sourceWI.metadata?.['teamId'] as string | undefined) ?? null;
+    const team = teamId ? await this.loadTeam(teamId) : await this.teamOfWorker(worker);
+    const member = team?.members?.find((m) => m.sessionName === worker);
+    if (!team || !member) return null;
+    const model = defaultModelForMember(team, member);
+    if (!model) return null;
+    const label = model.toLowerCase() === 'sonnet' ? 'Sonnet' : model;
+    const name = member.name || worker;
+    return (
+      `${name} runs on ${label} and was sent back twice for this. If the gap is capability rather than ` +
+      `missing information, propose to the owner (in your own words, one line) to move ${name} to Opus; ` +
+      `only change it after the owner says yes.`
+    );
   }
 
   /**

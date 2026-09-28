@@ -32,7 +32,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { randomUUID } from 'crypto';
-import { ANTIGRAVITY_CONSTANTS, RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS } from '../../constants.js';
+import { ANTIGRAVITY_CONSTANTS, RUNTIME_TYPES, ORC_CONVERSATION_CONSTANTS, FRESH_TASK_CONVERSATION_CONSTANTS } from '../../constants.js';
 import { getAntigravityConfigDir } from '../../utils/antigravity-settings.utils.js';
 
 /**
@@ -644,4 +644,16 @@ export function buildHandoverSummary(filePath: string): string {
 export function orcFreshContextTokens(env: NodeJS.ProcessEnv = process.env): number {
   const raw = Number(env['CREWLY_ORC_FRESH_CONTEXT_TOKENS']);
   return Number.isFinite(raw) && raw > 0 ? raw : ORC_CONVERSATION_CONSTANTS.FRESH_CONTEXT_TOKENS;
+}
+
+/**
+ * The threshold at which a team member (not the orchestrator) starts a fresh
+ * conversation at launch instead of resuming its old one.
+ *
+ * @param env - Environment (tests)
+ * @returns Tokens
+ */
+export function memberFreshContextTokens(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env['CREWLY_MEMBER_FRESH_CONTEXT_TOKENS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : FRESH_TASK_CONVERSATION_CONSTANTS.MEMBER_FRESH_CONTEXT_TOKENS;
 }

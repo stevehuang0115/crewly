@@ -385,6 +385,19 @@ describe('SessionStatePersistence', () => {
 		});
 	});
 
+	describe('clearSessionId', () => {
+		it('forgets the stored conversation id so the next launch starts fresh', () => {
+			persistence.registerSession('cleared', { cwd: '/home/user/project', command: '/bin/zsh' }, RUNTIME_TYPES.CLAUDE_CODE, 'dev');
+			persistence.updateSessionId('cleared', 'old-conv');
+			persistence.clearSessionId('cleared');
+			expect(persistence.getSessionId('cleared')).toBeUndefined();
+		});
+
+		it('is a no-op for an unknown session', () => {
+			expect(() => persistence.clearSessionId('nope')).not.toThrow();
+		});
+	});
+
 	describe('updateSessionId', () => {
 		it('should update Claude session ID for a registered session', () => {
 			const options: SessionOptions = {

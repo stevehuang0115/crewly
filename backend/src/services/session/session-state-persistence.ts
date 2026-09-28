@@ -218,6 +218,26 @@ export class SessionStatePersistence {
 	}
 
 	/**
+	 * Forget the stored conversation id so the next launch starts a fresh
+	 * conversation instead of resuming this one. Used when the running
+	 * conversation was replaced (e.g. Claude Code `/clear`) and the new id
+	 * could not be learned.
+	 *
+	 * @param name - Session name
+	 */
+	clearSessionId(name: string): void {
+		const metadata = this.sessionMetadata.get(name);
+		if (!metadata || metadata.claudeSessionId === undefined) return;
+		delete metadata.claudeSessionId;
+		this.logger.info('Cleared Claude session ID for persistence', { name });
+		this.autoSave().catch((err) => {
+			this.logger.warn('Auto-save after session ID clear failed', {
+				error: err instanceof Error ? err.message : String(err),
+			});
+		});
+	}
+
+	/**
 	 * Get the Claude session ID for a registered session.
 	 *
 	 * @param name - Session name
