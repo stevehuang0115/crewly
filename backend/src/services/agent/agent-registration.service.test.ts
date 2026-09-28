@@ -294,6 +294,34 @@ describe('AgentRegistrationService', () => {
 		}
 	});
 
+	describe('closeOversizedConversation (fresh conversation at launch)', () => {
+		const recovery = require('./runtime-session-recovery.js');
+		let tokensSpy: jest.SpiedFunction<typeof recovery.lastTurnContextTokens>;
+		beforeEach(() => {
+			tokensSpy = jest.spyOn(recovery, 'lastTurnContextTokens');
+		});
+		afterEach(() => tokensSpy.mockRestore());
+
+		it('starts a member fresh above the member threshold (150k) with a handover', () => {
+			tokensSpy.mockReturnValue(200_000);
+			const fresh = (service as any).closeOversizedConversation('team-dev-1', RUNTIME_TYPES.CLAUDE_CODE, 'conv-1', '/proj');
+			expect(fresh).toBe(true);
+			expect((service as any).pendingHandovers.get('team-dev-1')).toMatchObject({ tokens: 200_000 });
+		});
+
+		it('keeps a member conversation below the threshold, and the orchestrator below 300k', () => {
+			tokensSpy.mockReturnValue(120_000);
+			expect((service as any).closeOversizedConversation('team-dev-1', RUNTIME_TYPES.CLAUDE_CODE, 'conv-1', '/proj')).toBe(false);
+			tokensSpy.mockReturnValue(200_000);
+			expect((service as any).closeOversizedConversation('crewly-orc', RUNTIME_TYPES.CLAUDE_CODE, 'conv-1', '/proj')).toBe(false);
+		});
+
+		it('never applies to other runtimes', () => {
+			tokensSpy.mockReturnValue(900_000);
+			expect((service as any).closeOversizedConversation('team-dev-1', RUNTIME_TYPES.CODEX_CLI, 'conv-1', '/proj')).toBe(false);
+		});
+	});
+
 	describe('initializeAgentWithRegistration', () => {
 		it('should succeed when runtime is ready after cleanup and reinit', async () => {
 			// Mock runtime ready after reinit

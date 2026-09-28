@@ -67,6 +67,15 @@ export interface GeneralSettings {
    */
   autoUpdate?: boolean;
 
+  /**
+   * Start a fresh Claude Code conversation (with a saved handover) when a team
+   * member gets a task unrelated to its previous one, instead of carrying the
+   * whole history into every turn. Never applies to the orchestrator.
+   * `CREWLY_FRESH_TASK_CONVERSATION=0` forces it off regardless of this value.
+   * Optional so older settings files merge to the default (on).
+   */
+  freshConversationPerTask?: boolean;
+
   /** Per-runtime CLI init commands. Key = runtime type, value = CLI command string */
   runtimeCommands: Record<AIRuntime, string>;
 
@@ -356,6 +365,7 @@ export function getDefaultSettings(): CrewlySettings {
       autoResumeOnRestart: true,
       announceOnBoot: true,
       autoUpdate: true,
+      freshConversationPerTask: true,
       runtimeCommands: {
         'claude-code': 'claude --dangerously-skip-permissions',
         'gemini-cli': 'gemini --yolo',
@@ -439,6 +449,10 @@ export function validateSettings(settings: CrewlySettings): SettingsValidationRe
 
   if (settings.general.autoUpdate !== undefined && typeof settings.general.autoUpdate !== 'boolean') {
     errors.push('autoUpdate must be a boolean');
+  }
+
+  if (settings.general.freshConversationPerTask !== undefined && typeof settings.general.freshConversationPerTask !== 'boolean') {
+    errors.push('freshConversationPerTask must be a boolean');
   }
 
   if (settings.general.checkInIntervalMinutes < SETTINGS_CONSTRAINTS.MIN_CHECK_IN_INTERVAL) {

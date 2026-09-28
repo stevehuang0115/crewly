@@ -13,6 +13,7 @@ import {
   claudeTranscriptPath,
   lastTurnContextTokens,
   orcFreshContextTokens,
+  memberFreshContextTokens,
   conversationExists,
   discoverAntigravityConversationId,
   discoverCodexSessionId,
@@ -336,5 +337,11 @@ describe('an orchestrator conversation too big to carry on', () => {
     expect(orcFreshContextTokens({})).toBe(300_000);
     expect(orcFreshContextTokens({ CREWLY_ORC_FRESH_CONTEXT_TOKENS: '500000' })).toBe(500_000);
     expect(orcFreshContextTokens({ CREWLY_ORC_FRESH_CONTEXT_TOKENS: 'nope' })).toBe(300_000);
+  });
+
+  it('members start fresh above 150k unless the environment says otherwise', () => {
+    expect(memberFreshContextTokens({})).toBe(150_000);
+    expect(memberFreshContextTokens({ CREWLY_MEMBER_FRESH_CONTEXT_TOKENS: '200000' })).toBe(200_000);
+    expect(memberFreshContextTokens({ CREWLY_MEMBER_FRESH_CONTEXT_TOKENS: '-1' })).toBe(150_000);
   });
 });

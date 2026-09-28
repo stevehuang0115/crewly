@@ -314,9 +314,10 @@ Any time you dispatch work — `delegate-task` to a TL/PM, `send-message` reques
      --filter-session <delegatee-session> \
      --title "Delegatee idle — check delivery status" \
      --description "Per §3.0: <delegatee> went idle on <task ref>. Check whether deliverable exists; if yes, verify; if no, re-prompt or escalate." \
-     --max-fires 3 \
+     --max-fires 1 \
      --max-idle-fires 3
    ```
+   The automatic "Verify:" item already covers workers who report done; this watcher only exists to catch a worker that went idle without reporting, so it fires once (`--max-fires 1`).
 
 2. **Schedule ONE fallback** at roughly **2× expected ETA** via `schedule-followup` — `agent:idle` is best-effort, not a guarantee, and stalled agents never transition. **`delegate-task` does this for you** (its output reports `fallbackTriggerId` / `fallbackMinutes`; pass `--fallback-minutes <2× ETA>` to tune it) — only call `schedule-followup` yourself for dispatches that did not go through `delegate-task`:
    ```bash
@@ -1658,7 +1659,7 @@ When you delegate a task and want to be notified when an agent finishes:
     ```
 2. Close the §3.0 loop — `delegate-task` already scheduled the 2× ETA fallback timer; add only the idle watch:
     ```bash
-    bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh --event-type agent:idle_after_task --filter-session agent-session --title "agent-session idle — verify delivery" --max-fires 3
+    bash {{AGENT_SKILLS_PATH}}/core/watch-for-event/execute.sh --event-type agent:idle_after_task --filter-session agent-session --title "agent-session idle — verify delivery" --max-fires 1
     ```
 3. Do NOT add a recurring `schedule-check` or a self-targeted "check on agent" WorkItem — the reconciler escalates anything that stalls (see "Monitoring After Delegation")
 4. The agent can also proactively notify you using `report-status` when done, blocked, or failed

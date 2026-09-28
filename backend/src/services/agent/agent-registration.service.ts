@@ -43,6 +43,7 @@ import {
 } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
+import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
 import { appendIncompleteNotice } from '../../utils/incomplete-turn.utils.js';
 import { filterAgentTurnReply } from '../../utils/agent-reply-filter.utils.js';
@@ -93,6 +94,7 @@ import {
 	conversationExists,
 	lastTurnContextTokens,
 	orcFreshContextTokens,
+	memberFreshContextTokens,
 	planRuntimeSessionFlags,
 	waitForAntigravityConversationId,
 	waitForCodexSessionId,
@@ -923,11 +925,12 @@ export class AgentRegistrationService {
 			});
 		}
 		const storedSessionId = persistence?.getSessionId(sessionName) ?? null;
-		// An orchestrator whose conversation has grown too big starts over here,
-		// at a restart, rather than re-reading it on every turn.
+		// A Claude Code agent (orchestrator or member) whose conversation has
+		// grown too big starts over here, at a launch, rather than re-reading it
+		// on every turn.
 		const freshInstead =
 			autoResume && storedSessionId && cwd
-				? this.closeOversizedOrcConversation(sessionName, runtimeType, storedSessionId, cwd)
+				? this.closeOversizedConversation(sessionName, runtimeType, storedSessionId, cwd)
 				: false;
 		const plan = planRuntimeSessionFlags({
 			runtimeType,
@@ -958,13 +961,16 @@ export class AgentRegistrationService {
 	}
 
 	/**
-	 * Decide whether the orchestrator's stored conversation is too big to
+	 * Decide whether a Claude Code agent's stored conversation is too big to
 	 * resume, and if so write the handover file its fresh one will read.
 	 *
-	 * Only the orchestrator, only Claude Code, and only here — at a launch —
-	 * so a conversation is never cut in the middle of anything. Its real
-	 * state (tasks, teams, OKRs, wiki) lives in Crewly and is read back at
-	 * startup; the handover keeps the tail of what was said.
+	 * The orchestrator's threshold is {@link orcFreshContextTokens} (300k);
+	 * team members use {@link memberFreshContextTokens} (150k) — their tasks
+	 * are narrower and a fresh conversation per task is the norm for them.
+	 * Only Claude Code, and only here — at a launch — so a conversation is
+	 * never cut in the middle of anything. Real state (tasks, teams, OKRs,
+	 * wiki) lives in Crewly and is read back at startup; the handover keeps
+	 * the tail of what was said.
 	 *
 	 * @param sessionName - Session being launched
 	 * @param runtimeType - Its runtime
@@ -972,16 +978,17 @@ export class AgentRegistrationService {
 	 * @param cwd - Its working directory
 	 * @returns True when it should start fresh instead
 	 */
-	private closeOversizedOrcConversation(
+	private closeOversizedConversation(
 		sessionName: string,
 		runtimeType: string,
 		storedSessionId: string,
 		cwd: string,
 	): boolean {
-		if (sessionName !== ORCHESTRATOR_SESSION_NAME || runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return false;
+		if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return false;
+		const isOrc = sessionName === ORCHESTRATOR_SESSION_NAME;
 		const transcript = claudeTranscriptPath({ sessionId: storedSessionId, cwd });
 		const tokens = lastTurnContextTokens(transcript);
-		const threshold = orcFreshContextTokens();
+		const threshold = isOrc ? orcFreshContextTokens() : memberFreshContextTokens();
 		if (tokens === null || tokens < threshold) return false;
 		try {
 			const dir = path.join(getCrewlyHomePath(), ORC_CONVERSATION_CONSTANTS.HANDOVER_DIR);
@@ -1003,7 +1010,7 @@ export class AgentRegistrationService {
 				'utf-8',
 			);
 			this.pendingHandovers.set(sessionName, { path: file, tokens });
-			this.logger.info('Orchestrator conversation too big to resume — starting fresh with a handover', {
+			this.logger.info('Conversation too big to resume — starting fresh with a handover', {
 				sessionName,
 				tokens,
 				threshold,
@@ -1011,7 +1018,7 @@ export class AgentRegistrationService {
 			});
 			return true;
 		} catch (err) {
-			this.logger.warn('Could not write the orchestrator handover — resuming the old conversation', {
+			this.logger.warn('Could not write the handover — resuming the old conversation', {
 				sessionName,
 				error: err instanceof Error ? err.message : String(err),
 			});
@@ -3468,7 +3475,7 @@ Loop until done, blocked, or explicitly reassigned:
 						// then the member's own model / effort choice.
 						runtimeFlags = [
 							...(await this.resolveRuntimeFlags(role, runtimeType, member.skillOverrides, member.excludedRoleSkills)),
-							...this.resolveModelFlags(sessionName, runtimeType, member.modelId, member.reasoningEffort),
+							...this.resolveModelFlags(sessionName, runtimeType, effectiveMemberModelId(team, { ...member, runtimeType }), member.reasoningEffort),
 						];
 						break;
 					}
@@ -3489,7 +3496,7 @@ Loop until done, blocked, or explicitly reassigned:
 					if (member) {
 						runtimeFlags = [
 							...(await this.resolveRuntimeFlags(role, runtimeType, member.skillOverrides, member.excludedRoleSkills)),
-							...this.resolveModelFlags(sessionName, runtimeType, member.modelId, member.reasoningEffort),
+							...this.resolveModelFlags(sessionName, runtimeType, effectiveMemberModelId(team, { ...member, runtimeType }), member.reasoningEffort),
 						];
 						break;
 					}
