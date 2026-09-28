@@ -414,11 +414,41 @@ echo "second command"
 			return jest.spyOn(svc as any, 'sendShellCommandsToSession').mockResolvedValue(undefined);
 		}
 
+		// prepareControlPlaneGuard() (called from executeRuntimeInitScript) reads the
+		// REAL filesystem via `getCrewlyHomePath()` — only 'fs/promises' is jest.mock'd
+		// above, with just a `readFile` stub, so this describe block's tests were
+		// already writing their generated settings/paths files under the real
+		// developer machine's `~/.crewly/runtime/control-plane/`. WorkItem 70e54fbc:
+		// since the fix enumerates real team directories under `<crewlyHome>/teams`
+		// (control-plane-guard.service.ts listExistingTeamIds), that enumeration must
+		// not depend on whatever teams happen to exist on the machine running the
+		// test. Point CREWLY_HOME at an isolated temp dir with one known team.
+		const realFs = jest.requireActual('fs') as typeof import('fs');
+		const realOs = jest.requireActual('os') as typeof import('os');
+		const realPath = jest.requireActual('path') as typeof import('path');
+		const ORIGINAL_CREWLY_HOME = process.env.CREWLY_HOME;
+		let cpgHome: string;
+		let cpgTeamId: string;
+
 		beforeEach(() => {
 			delete process.env.CREWLY_CONTROL_PLANE_GUARD;
 			jest.spyOn(settingsServiceModule, 'getSettingsService').mockImplementation(() => {
 				throw new Error('settings unavailable');
 			});
+			cpgHome = realFs.mkdtempSync(realPath.join(realOs.tmpdir(), 'cpg-runtime-agent-'));
+			cpgTeamId = 'team-cpg-test';
+			realFs.mkdirSync(realPath.join(cpgHome, 'teams', cpgTeamId), { recursive: true });
+			realFs.writeFileSync(realPath.join(cpgHome, 'teams', cpgTeamId, 'config.json'), '{}\n');
+			process.env.CREWLY_HOME = cpgHome;
+		});
+
+		afterEach(() => {
+			if (ORIGINAL_CREWLY_HOME === undefined) {
+				delete process.env.CREWLY_HOME;
+			} else {
+				process.env.CREWLY_HOME = ORIGINAL_CREWLY_HOME;
+			}
+			realFs.rmSync(cpgHome, { recursive: true, force: true });
 		});
 
 		it('appends --settings <per-session file> after --disallowedTools for Claude Code', async () => {
@@ -436,9 +466,17 @@ echo "second command"
 			await service.executeRuntimeInitScript('cpg-file', '/test/path');
 			const [, commands] = send.mock.calls[0] as [string, string[]];
 			const settingsPath = /--settings "([^"]+)"/.exec(commands[0])![1];
-			const realFs = jest.requireActual('fs') as typeof import('fs');
 			const settings = JSON.parse(realFs.readFileSync(settingsPath, 'utf-8'));
-			expect(settings.permissions.deny).toEqual(expect.arrayContaining([expect.stringMatching(/^Edit\(\/\/.*\/teams\/\*\*\)$/)]));
+			// WorkItem 70e54fbc / #798 review: only each existing team's own
+			// config.json is protected, not the whole `teams/**` subtree (a team
+			// dir also holds norms/wiki/prompts/sops/cron-tasks.json, which agents
+			// write routinely). cpgTeamId is the one team fixture seeded above.
+			expect(settings.permissions.deny).toContain(
+				`Edit(/${realPath.join(cpgHome, 'teams', cpgTeamId, 'config.json')})`,
+			);
+			expect(settings.permissions.deny).not.toEqual(
+				expect.arrayContaining([expect.stringMatching(/^Edit\(\/\/.*\/teams\/\*\*\)$/)]),
+			);
 			expect(settings.permissions.deny).toContain('Edit(//test/path/.claude/agents/**)');
 			expect(settings.hooks.PreToolUse[0].matcher).toBe('Bash');
 		});
