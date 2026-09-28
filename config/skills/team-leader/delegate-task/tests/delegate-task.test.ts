@@ -31,6 +31,8 @@ let baseUrl: string;
 let captured: Captured[];
 /** When true the stub fails every delivery attempt. */
 let failDelivery = false;
+/** When true the stub knows a team that owns worker-1. */
+let teamsKnown = false;
 
 /**
  * Runs the skill with the stub API wired in.
@@ -73,6 +75,16 @@ beforeAll((done) => {
         res.end(JSON.stringify({ success: true }));
         return;
       }
+      if (teamsKnown && path.endsWith('/api/teams') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: [{ id: 'team-1', members: [{ id: 'm-worker', sessionName: 'worker-1' }] }] }));
+        return;
+      }
+      if (teamsKnown && path.endsWith('/api/teams/team-1') && req.method === 'GET') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: true, data: { id: 'team-1', members: [{ id: 'm-worker', sessionName: 'worker-1' }] } }));
+        return;
+      }
       if (path.includes('/task-pool/add')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ success: true, data: { id: 'wi-created-1' } }));
@@ -90,7 +102,7 @@ beforeAll((done) => {
 
 afterAll((done) => { server.close(() => done()); });
 
-beforeEach(() => { captured = []; failDelivery = false; });
+beforeEach(() => { captured = []; failDelivery = false; teamsKnown = false; });
 
 /** Index of the first captured call whose path matches, or -1. */
 const indexOf = (needle: string): number =>
@@ -149,4 +161,18 @@ describe('delegate-task record-before-delivery (WI 65578471)', () => {
     await runSkill(args);
     expect(captured.find((c) => c.path.includes('/notes'))).toBeUndefined();
   });
+});
+
+describe('delegate-task auto-start of an offline worker', () => {
+  const args = ['--to', 'worker-1', '--task', 'do the thing', '--project', '/tmp/proj'];
+
+  it('starts the worker via the team start path, passing the workItemId, even without --team', async () => {
+    failDelivery = true;
+    teamsKnown = true;
+    await runSkill(args);
+
+    const start = captured.find((c) => /\/teams\/team-1\/members\/m-worker\/start/.test(c.path));
+    expect(start).toBeDefined();
+    expect((start?.body as { workItemId?: string })?.workItemId).toBe('wi-created-1');
+  }, 60_000);
 });

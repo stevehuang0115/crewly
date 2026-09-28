@@ -71,25 +71,8 @@ assert_eq "exits with error code" "1" "$EXIT_CODE"
 # ---------------------------------------------------------------------------
 echo "Test 3: Role-based type defaults"
 
-get_types_for_role() {
-  local role="$1"
-  local types=""
-  case "${role}" in
-    developer)
-      types="delegate,project_task,review"
-      ;;
-    researcher|analyst)
-      types="delegate,check,review"
-      ;;
-    team_lead|team-lead)
-      types="delegate,project_task,review,check"
-      ;;
-    *)
-      types="delegate,project_task"
-      ;;
-  esac
-  echo "$types"
-}
+source "$SCRIPT_DIR/types-for-role.sh"
+get_types_for_role() { poll_types_for_role "$1"; }
 
 assert_eq "developer types" "delegate,project_task,review" "$(get_types_for_role developer)"
 assert_eq "researcher types" "delegate,check,review" "$(get_types_for_role researcher)"
@@ -97,6 +80,63 @@ assert_eq "analyst types" "delegate,check,review" "$(get_types_for_role analyst)
 assert_eq "team_lead types" "delegate,project_task,review,check" "$(get_types_for_role team_lead)"
 assert_eq "team-lead types" "delegate,project_task,review,check" "$(get_types_for_role team-lead)"
 assert_eq "unknown role types" "delegate,project_task" "$(get_types_for_role designer)"
+
+# Every role that actually exists in config/roles must be classified here.
+# A new role directory without an entry fails this test on purpose, so a role
+# can never again silently fall to the default (team-leader did: TLs never
+# received review items).
+ROLES_DIR="$SCRIPT_DIR/../../../../roles"
+CHECKED_ROLES=0
+for d in "$ROLES_DIR"/*/; do
+  r=$(basename "$d")
+  CHECKED_ROLES=$((CHECKED_ROLES + 1))
+  got=$(get_types_for_role "$r")
+  case "$r" in
+    team-leader|tpm|product-manager) want="delegate,project_task,review,check" ;;
+    developer|backend-developer|frontend-developer|fullstack-dev|qa|qa-engineer|architect|auditor) want="delegate,project_task,review" ;;
+    designer|generalist|ops|orchestrator|sales|support|content-strategist|researcher|ux-designer|_common) want="" ;;
+    *) want="UNCLASSIFIED" ;;
+  esac
+  if [ "$want" = "UNCLASSIFIED" ]; then
+    assert_eq "role '$r' is classified in the poll-tasks test" "classified" "UNCLASSIFIED"
+  elif [ -n "$want" ]; then
+    assert_eq "role '$r' default types" "$want" "$got"
+  fi
+done
+assert_eq "role directories examined (>0)" "yes" "$([ "$CHECKED_ROLES" -gt 0 ] && echo yes || echo no)"
+echo "  ($CHECKED_ROLES role dirs checked)"
+
+# TLs must be able to see review items with no explicit types
+assert_contains "team-leader gets review" "review" "$(get_types_for_role team-leader)"
+
+# --- Refusal text: a fake server answers the targeted claim with slot_occupied ---
+FAKE_PORT=$((20000 + RANDOM % 20000))
+python3 - "$FAKE_PORT" >/dev/null 2>&1 <<'PY' &
+import sys, json
+from http.server import BaseHTTPRequestHandler, HTTPServer
+class H(BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def _send(self, code, obj):
+        b = json.dumps(obj).encode()
+        self.send_response(code); self.send_header('Content-Type','application/json'); self.end_headers(); self.wfile.write(b)
+    def do_GET(self):
+        self._send(200, {"success": True, "count": 1, "data": [{"id": "wi-queued", "title": "T", "description": ""}]})
+    def do_POST(self):
+        self.rfile.read(int(self.headers.get('Content-Length', 0)))
+        self._send(404, {"success": False, "error": "WorkItem wi-queued not claimable: tl already has WorkItem wi-running running",
+                         "reason": "slot_occupied", "blockingWorkItemId": "wi-running"})
+HTTPServer(('127.0.0.1', int(sys.argv[1])), H).serve_forever()
+PY
+FAKE_PID=$!; disown
+sleep 1
+OUT=$(CREWLY_API_URL="http://127.0.0.1:$FAKE_PORT" CREWLY_SESSION_NAME=tl bash "$SCRIPT_DIR/execute.sh" '{"sessionName":"tl","role":"team-leader"}' 2>/dev/null | tail -n 40) || true
+kill "$FAKE_PID" 2>/dev/null || true
+assert_json_field "refusal carries reason" "$OUT" '.reason' "slot_occupied"
+assert_json_field "refusal names the blocking item" "$OUT" '.blockingWorkItemId' "wi-running"
+assert_contains "refusal text is the real reason" "already has WorkItem wi-running" "$OUT"
+if printf '%s' "$OUT" | grep -q "claimed by another agent"; then
+  assert_eq "no misleading 'claimed by another agent'" "absent" "present"
+fi
 
 # ---------------------------------------------------------------------------
 # Test 4: Skill matching logic

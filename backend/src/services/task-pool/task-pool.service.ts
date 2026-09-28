@@ -1036,6 +1036,104 @@ export class TaskPoolService {
   }
 
   /**
+   * Claim slot a WorkItem occupies. An agent may hold ONE active claim per
+   * slot: `work` (delegate, project_task, ...) and `review` (review items).
+   * Review/verify items arrive while the reviewer is mid-task by definition,
+   * so they get their own slot instead of forcing release/claim gymnastics.
+   *
+   * @param wi - The WorkItem (or just its type)
+   * @returns 'review' for review items, otherwise 'work'
+   */
+  private claimSlotOf(wi: Pick<WorkItem, 'type'> | undefined): 'work' | 'review' {
+    return wi?.type === 'review' ? 'review' : 'work';
+  }
+
+  /**
+   * Active claims held by an agent together with their WorkItems.
+   *
+   * @param agentId - Agent session name
+   * @returns Held claims (active only), each with its WorkItem when found
+   */
+  private async heldClaims(
+    agentId: string,
+  ): Promise<Array<{ claim: TaskClaim; workItem: WorkItem | undefined }>> {
+    const claims = (await this.storage.getClaims()).filter(
+      (c) => c.agentId === agentId && c.status === 'active',
+    );
+    const out: Array<{ claim: TaskClaim; workItem: WorkItem | undefined }> = [];
+    for (const claim of claims) {
+      out.push({ claim, workItem: await this.storage.findWorkItem(claim.workItemId) });
+    }
+    return out;
+  }
+
+  /**
+   * Explain why a targeted claim of `workItemId` by `agentId` would be
+   * refused, so callers never have to guess between "not queued", "target
+   * mismatch", "slot busy" and "agent not active". Read-only.
+   *
+   * @param agentId - Agent that tried to claim
+   * @param workItemId - WorkItem it tried to claim
+   * @returns Machine-readable code, human message, and the blocking WorkItem id when relevant
+   */
+  async explainClaimRefusal(
+    agentId: string,
+    workItemId: string,
+  ): Promise<{ code: string; message: string; blockingWorkItemId?: string }> {
+    if (this.isAgentActive) {
+      const alive = await this.isAgentActive(agentId).catch(() => false);
+      if (!alive) {
+        return {
+          code: 'agent_not_active',
+          message: `agent ${agentId} has no active session (register-self first)`,
+        };
+      }
+    }
+    const wi = await this.storage.findWorkItem(workItemId);
+    if (!wi) {
+      return { code: 'not_found', message: `WorkItem ${workItemId} does not exist` };
+    }
+    const claims = await this.storage.getClaims();
+    const holder = claims.find((c) => c.workItemId === workItemId && c.status === 'active');
+    if (holder) {
+      return {
+        code: 'already_claimed',
+        message: `WorkItem ${workItemId} is already claimed by ${holder.agentId}`,
+      };
+    }
+    if (wi.status !== 'queued') {
+      return {
+        code: 'not_queued',
+        message: `WorkItem ${workItemId} is ${wi.status}, not queued`,
+      };
+    }
+    if (wi.target && wi.target !== agentId) {
+      return {
+        code: 'target_mismatch',
+        message: `WorkItem ${workItemId} is targeted at ${wi.target}, not ${agentId}`,
+      };
+    }
+    const slot = this.claimSlotOf(wi);
+    const blocking = (await this.heldClaims(agentId)).find(
+      (h) => this.claimSlotOf(h.workItem) === slot,
+    );
+    if (blocking) {
+      return {
+        code: 'slot_occupied',
+        message:
+          `${agentId} already has WorkItem ${blocking.claim.workItemId} running; ` +
+          `only one ${slot === 'review' ? 'review' : 'non-review'} item can be held at a time. ` +
+          `Finish or release ${blocking.claim.workItemId} first`,
+        blockingWorkItemId: blocking.claim.workItemId,
+      };
+    }
+    return {
+      code: 'not_claimable',
+      message: `WorkItem ${workItemId} is not claimable by ${agentId} (ticket lock or team gate)`,
+    };
+  }
+
+  /**
    * Claims the next available WorkItem from the pool for an agent.
    *
    * Selection strategy: FIFO among matching unclaimed 'queued' items.
@@ -1083,26 +1181,24 @@ export class TaskPoolService {
         }
       }
 
-      // Check if agent already has an active claim
-      const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
-      if (existingClaim) {
-        // Issue #513 — Steve 2026-05-15. Previously this returned
-        // null, which the controller mapped to 404 "No available
-        // WorkItem matching filters". That was misleading: the caller
-        // DOES have a WorkItem (the one they already claimed), they
-        // just couldn't see it without grepping pool.json. Return the
-        // held claim + its WorkItem with `alreadyHeld: true` so the
-        // skill / agent can recognize the situation.
+      // Claim slots: one active claim per slot (work / review). A held claim
+      // only blocks candidates of its own slot; when every slot that could
+      // serve this poll is occupied we return the held item (issue #513).
+      const held = await this.heldClaims(agentId);
+      const occupied = new Set(held.map((h) => this.claimSlotOf(h.workItem)));
+      const existingClaim = held[0]?.claim;
+      let heldWorkItem: WorkItem | undefined = held[0]?.workItem;
+      const reviewOnly =
+        !!filters?.types && filters.types.length > 0 && filters.types.every((t) => t === 'review');
+      const onlyOtherSlotUseful = occupied.has('work') && !occupied.has('review');
+      if (existingClaim && !(onlyOtherSlotUseful && (reviewOnly || !filters?.types || filters.types.includes('review')))) {
         this.logger.info('Agent already has an active claim — returning existing', {
           agentId,
           existingClaimId: existingClaim.id,
           existingWorkItemId: existingClaim.workItemId,
         });
-        const heldWorkItem = await this.storage.findWorkItem(existingClaim.workItemId);
         if (!heldWorkItem) {
-          // Held claim exists but WI is missing — orphan state. Best we
-          // can do is fall through to the empty-pool null so the agent
-          // doesn't think they own a phantom item. Log so we notice.
+          // Held claim exists but WI is missing — orphan state.
           this.logger.warn('Orphan claim — claim exists but WorkItem missing', {
             agentId,
             existingClaimId: existingClaim.id,
@@ -1138,7 +1234,10 @@ export class TaskPoolService {
       // even if a future code path bypasses this filter.
       const targetRespectingCandidates = workItems
         .filter((wi) => wi.status === 'queued' && !claimedIds.has(wi.id))
-        .filter((wi) => !wi.target || wi.target === agentId);
+        .filter((wi) => !wi.target || wi.target === agentId)
+        // Slot rule: the agent already holds a work item, so only a review
+        // item (the free slot) may be claimed alongside it.
+        .filter((wi) => !occupied.has('work') || this.claimSlotOf(wi) === 'review');
 
       // Claim order: FIFO, or the ticket policy's order + lock when wired.
       const candidates = await this.orderClaimCandidates(
@@ -1147,6 +1246,9 @@ export class TaskPoolService {
       );
 
       if (candidates.length === 0) {
+        if (existingClaim && heldWorkItem) {
+          return { workItem: heldWorkItem, claim: existingClaim, alreadyHeld: true };
+        }
         return null;
       }
 
@@ -1237,11 +1339,14 @@ export class TaskPoolService {
         }
       }
 
-      const existingClaim = await this.storage.findActiveClaimByAgent(agentId);
-      if (existingClaim) return null;
-
       const workItem = await this.storage.findWorkItem(workItemId);
       if (!workItem || workItem.status !== 'queued') return null;
+
+      // One active claim per slot (work / review) — see claimSlotOf.
+      const slotHeld = (await this.heldClaims(agentId)).find(
+        (h) => this.claimSlotOf(h.workItem) === this.claimSlotOf(workItem),
+      );
+      if (slotHeld) return null;
 
       // Hygiene #3 — target-respect gate. Refuse to claim a WI whose
       // existing target is set to a different agent. This prevents the
