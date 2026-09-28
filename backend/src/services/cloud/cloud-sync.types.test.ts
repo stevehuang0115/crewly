@@ -235,6 +235,13 @@ describe('cloud-sync.types', () => {
     });
   });
 
+  describe('waiting_action message type ("waiting on you")', () => {
+    it('is a valid message type', () => {
+      expect(isMessageType('waiting_action')).toBe(true);
+      expect(MESSAGE_TYPES).toContain('waiting_action');
+    });
+  });
+
   describe('slack_event message type (Slack v3 — Cloud owns Slack)', () => {
     it('is a valid MessageType so relay polling keeps its type instead of degrading to relay', () => {
       expect(isMessageType('slack_event')).toBe(true);

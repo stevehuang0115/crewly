@@ -149,6 +149,28 @@ describe('RequestService', () => {
     jest.clearAllMocks();
   });
 
+  describe('onChange', () => {
+    it('tells listeners after create and update, survives a throwing listener, and unsubscribes', async () => {
+      const service = RequestService.getInstance('/tmp/test-project');
+      const seen: string[] = [];
+      service.onChange(() => {
+        throw new Error('boom');
+      });
+      const off = service.onChange((id) => seen.push(id));
+      const r = await service.create({
+        sourceConversationItemId: 'conv-change',
+        title: 'Watch me',
+        description: 'd',
+        classification: 'simple',
+      } as never);
+      await service.update(r.id, { title: 'Watched' });
+      expect(seen).toEqual([r.id, r.id]);
+      off();
+      await service.update(r.id, { title: 'Unwatched' });
+      expect(seen).toHaveLength(2);
+    });
+  });
+
   describe('create', () => {
     it('should create a Request with valid input', async () => {
       const service = RequestService.getInstance('/tmp/test-project');

@@ -3712,6 +3712,44 @@ export const CLOUD_TALK_CONSTANTS = {
 	INTAKE_ORIGIN: 'portal',
 } as const;
 
+/**
+ * "Waiting on you" synced to Crewly Cloud (specs/unified-conversations-cloud-store.md §F, Phase 5):
+ * tickets in 待验收 are uploaded as text snapshots; the owner's accept /
+ * send-back from the portal comes back as a `waiting_action` relay push.
+ */
+export const WAITING_SYNC_CONSTANTS = {
+	/** Machine → Cloud snapshot upload. */
+	INGEST_PATH: '/api/cloud/conversations/waiting/ingest',
+	/** `GET <path>/:actionId?instanceId=` fetches an action; `POST <path>/:actionId/result` reports it. */
+	ACTIONS_PATH: '/api/cloud/conversations/waiting/actions',
+	/** Relay message `type` Cloud pushes for an owner action. */
+	RELAY_MESSAGE_TYPE: 'waiting_action',
+	/** Capability advertised to Cloud (heartbeat + uploads) once the action handler runs. */
+	CAPABILITY: 'waiting_actions',
+	/** Gather ticket changes this long before uploading (ms). */
+	DEBOUNCE_MS: 2_000,
+	/** Recompute the set this often and upload when it changed (catches WorkItem-driven changes) (ms). */
+	CHECK_INTERVAL_MS: 30_000,
+	/** Full snapshot (Cloud drops anything not in it) at least this often (ms). */
+	FULL_SYNC_INTERVAL_MS: 5 * 60 * 1000,
+	/** Backoff after a failed upload: first delay and cap (ms). */
+	BACKOFF_INITIAL_MS: 5_000,
+	BACKOFF_MAX_MS: 5 * 60 * 1000,
+	/** 404 / 503 / 400 from Cloud: try again after this long (ms). */
+	UNAVAILABLE_RETRY_MS: 60 * 60 * 1000,
+	/** Timeout of one Cloud call (ms). */
+	REQUEST_TIMEOUT_MS: 15_000,
+	/** Longest title / excerpt sent (chars; Cloud truncates beyond its own limits too). */
+	MAX_TITLE_CHARS: 500,
+	MAX_EXCERPT_CHARS: 2_000,
+	/** Delays before retrying a failed action fetch (ms); Cloud re-pushes after 5 min anyway. */
+	FETCH_RETRY_DELAYS_MS: [1_000, 5_000, 15_000],
+	/** Actions already carried out are remembered this long, so a re-push only re-reports (ms). */
+	DONE_ACTIONS_TTL_MS: 24 * 60 * 60 * 1000,
+	/** Most remembered actions. */
+	DONE_ACTIONS_MAX: 500,
+} as const;
+
 // Type helpers
 export type AgentStatus =
 	(typeof CREWLY_CONSTANTS.AGENT_STATUSES)[keyof typeof CREWLY_CONSTANTS.AGENT_STATUSES];
