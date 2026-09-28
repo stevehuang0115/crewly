@@ -18,7 +18,23 @@
 import path from 'path';
 import { execFile } from 'child_process';
 import { promises as fs } from 'fs';
+import { createHash } from 'crypto';
 import { WORKTREE_CONSTANTS } from '../../constants.js';
+
+/**
+ * SHA-256 of a file's content, or null when it cannot be read (removed,
+ * permissions). Used to tell an edited `.worktreeinclude` copy from an
+ * untouched one — the copy is untracked, so `git status` never sees it.
+ *
+ * @param p - Absolute file path
+ */
+async function hashFile(p: string): Promise<string | null> {
+	try {
+		return createHash('sha256').update(await fs.readFile(p)).digest('hex');
+	} catch {
+		return null;
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Running git
@@ -97,15 +113,23 @@ export interface BaseRef {
 }
 
 /**
- * The base a new worktree branches from: the remote default branch
+ * The base a new worktree branches from.
+ *
+ * `preferredBranch` (e.g. `wi/<workerId>` for a verify/retry/review
+ * WorkItem's own worktree) is tried FIRST when given and it resolves — a
+ * verifier must see the worker's own commits, including ones never pushed
+ * to `origin`, not a snapshot of `origin/main` from before the worker even
+ * started (#829 review). Falls back to the remote default branch
  * (`origin/HEAD` → e.g. `origin/main`) when known, else the repo's HEAD.
  *
  * @param repo - Repo root
- * @returns The base, or null when neither resolves
+ * @param preferredBranch - Tried before the normal fallback chain, when given
+ * @returns The base, or null when nothing resolves
  */
-export async function resolveBaseRef(repo: string): Promise<BaseRef | null> {
+export async function resolveBaseRef(repo: string, preferredBranch?: string): Promise<BaseRef | null> {
 	const remoteHead = await runGit(repo, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD']);
-	const candidates = remoteHead.ok && remoteHead.stdout.trim() ? [remoteHead.stdout.trim(), 'HEAD'] : ['HEAD'];
+	const fallback = remoteHead.ok && remoteHead.stdout.trim() ? [remoteHead.stdout.trim(), 'HEAD'] : ['HEAD'];
+	const candidates = preferredBranch ? [preferredBranch, ...fallback] : fallback;
 	for (const name of candidates) {
 		const sha = await runGit(repo, ['rev-parse', '--verify', '--quiet', `${name}^{commit}`]);
 		if (sha.ok && sha.stdout.trim()) return { name, sha: sha.stdout.trim() };
@@ -122,6 +146,29 @@ export async function resolveBaseRef(repo: string): Promise<BaseRef | null> {
  */
 export async function branchExists(repo: string, branch: string): Promise<boolean> {
 	return (await runGit(repo, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`])).ok;
+}
+
+/**
+ * A WorkItem id, made safe as a git ref component and a path segment.
+ *
+ * A verify/retry/review WorkItem's id contains ':' (e.g. `abc:verify:def`),
+ * which `git check-ref-format` rejects — `git worktree add -b wi/abc:verify:def`
+ * fails outright, so that WorkItem would silently get no worktree at all.
+ * Replaces every character git disallows in a ref component (control chars,
+ * space, `~^:?*[\`), collapses a leading/trailing `.` or `/` and a `..` run
+ * (also disallowed), and guards the empty-string and lone-`@` edge cases.
+ *
+ * @param id - Raw WorkItem id
+ * @returns A string safe to use for both the branch name and the worktree path
+ */
+export function sanitizeWorktreeId(id: string): string {
+	const cleaned = id
+		.replace(/[\x00-\x1f\x7f\s~^:?*[\\]/g, '-')
+		.replace(/@\{/g, '-')
+		.replace(/\.\.+/g, '-')
+		.replace(/^[./]+|[./]+$/g, '')
+		.replace(/\.lock$/, '-lock');
+	return cleaned && cleaned !== '@' ? cleaned : `wi-${id.length}`;
 }
 
 /**
@@ -206,6 +253,13 @@ export interface SharedPathsResult {
 	symlinks: string[];
 	/** Repo-relative files copied from `.worktreeinclude` (ours to remove). */
 	copies: string[];
+	/**
+	 * SHA-256 of each copy's content right after copying, keyed by its
+	 * repo-relative path — the baseline {@link checkDirty} and
+	 * {@link removeWorktree} compare against, so an agent's own edit to a
+	 * copy (e.g. `.env`) is never silently deleted as "just our copy".
+	 */
+	copyHashes: Record<string, string>;
 	/** Paths not applied, with why. */
 	skipped: Array<{ path: string; reason: string }>;
 }
@@ -226,7 +280,7 @@ export interface SharedPathsResult {
  * @returns What was symlinked, copied and skipped
  */
 export async function applySharedPaths(repo: string, worktree: string, sharedDirs: readonly string[], includes: readonly string[]): Promise<SharedPathsResult> {
-	const result: SharedPathsResult = { symlinks: [], copies: [], skipped: [] };
+	const result: SharedPathsResult = { symlinks: [], copies: [], copyHashes: {}, skipped: [] };
 	const apply = async (rel: string, kind: 'symlink' | 'copy'): Promise<void> => {
 		const src = path.join(repo, rel);
 		const dest = path.join(worktree, rel);
@@ -264,6 +318,8 @@ export async function applySharedPaths(repo: string, worktree: string, sharedDir
 		} else {
 			await fs.copyFile(src, dest);
 			result.copies.push(rel);
+			const hash = await hashFile(dest);
+			if (hash) result.copyHashes[rel] = hash;
 		}
 	};
 	for (const dir of sharedDirs) await apply(dir.replace(/\\/g, '/').replace(/\/+$/, ''), 'symlink');
@@ -307,6 +363,15 @@ export async function ensureExcluded(repo: string, rels: readonly string[]): Pro
 export interface OwnedPaths {
 	symlinks: readonly string[];
 	copies: readonly string[];
+	/**
+	 * SHA-256 of each copy's content as applied ({@link SharedPathsResult.copyHashes}).
+	 * A copy whose current content no longer matches is an agent's edit, not
+	 * "just our copy" — {@link checkDirty} flags it, {@link removeWorktree}
+	 * refuses to delete it. Absent (older manifests, or a copy this map has
+	 * no entry for) falls back to the pre-#829-review behaviour: existence
+	 * alone excludes it.
+	 */
+	copyHashes?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -444,12 +509,23 @@ export async function checkDirty(worktree: string, owned: OwnedPaths): Promise<D
 		}
 	}
 	for (const rel of owned.copies) {
+		const dest = path.join(wtReal, rel);
+		let exists = true;
 		try {
-			await fs.lstat(path.join(wtReal, rel));
-			excludedOurs += 1;
+			await fs.lstat(dest);
 		} catch {
-			// removed: nothing to lose
+			exists = false; // removed: nothing to lose
 		}
+		if (!exists) continue;
+		const recordedHash = owned.copyHashes?.[rel];
+		if (recordedHash) {
+			const currentHash = await hashFile(dest);
+			if (currentHash !== recordedHash) {
+				dirty.push(`${rel} (was our copy; content edited since)`);
+				continue;
+			}
+		}
+		excludedOurs += 1;
 	}
 	const examined = trackedCount + entries.length + hiddenChecked;
 	return {
@@ -521,15 +597,38 @@ export async function commitsBeyond(worktree: string, baseSha: string): Promise<
 
 /**
  * Remove our own symlinks/copies, then `git worktree remove` WITHOUT force.
- * Callers must have run the guards first; git's own refusal on a dirty tree
- * is a second line of defence.
+ *
+ * Callers must have run {@link checkDirty} first (the primary guard). This
+ * is a second line of defence specifically for a `.worktreeinclude` copy:
+ * unlike an ordinary untracked file, a copy is deliberately added to
+ * `info/exclude` (so an UNTOUCHED one never blocks a normal removal) — which
+ * means git's own dirty check for `worktree remove` does not see an EDITED
+ * one either (git's worktree-remove check, like `git status`, does not
+ * count ignored files). So git refusing on its own is not a safe backstop
+ * here the way it is for a plain untracked file; this function checks every
+ * copy's content BEFORE touching anything, and refuses outright, leaving
+ * the whole worktree untouched, if any changed.
  *
  * @param repo - Repo root
  * @param worktree - Worktree path
  * @param owned - Paths this feature created
- * @returns git's result
+ * @returns git's result, or a synthetic failure when an edited copy blocked it
  */
 export async function removeWorktree(repo: string, worktree: string, owned: OwnedPaths): Promise<GitResult> {
+	for (const rel of owned.copies) {
+		const p = path.join(worktree, rel);
+		let isFile = false;
+		try {
+			isFile = (await fs.lstat(p)).isFile();
+		} catch {
+			continue; // already gone — nothing to lose
+		}
+		if (!isFile) continue;
+		const recordedHash = owned.copyHashes?.[rel];
+		if (recordedHash && (await hashFile(p)) !== recordedHash) {
+			return { ok: false, code: -1, stdout: '', stderr: `refusing to remove: ${rel} was our copy but its content was edited since` };
+		}
+	}
 	for (const rel of owned.symlinks) {
 		const p = path.join(worktree, rel);
 		try {
@@ -539,12 +638,7 @@ export async function removeWorktree(repo: string, worktree: string, owned: Owne
 		}
 	}
 	for (const rel of owned.copies) {
-		const p = path.join(worktree, rel);
-		try {
-			if ((await fs.lstat(p)).isFile()) await fs.unlink(p);
-		} catch {
-			// already gone
-		}
+		await fs.unlink(path.join(worktree, rel)).catch(() => undefined);
 	}
 	return runGit(repo, ['worktree', 'remove', worktree]);
 }

@@ -56,6 +56,18 @@ type TaskConversationPreparer = {
   prepareForTask: (sessionName: string, workItem: Pick<WorkItem, 'id' | 'metadata'>) => Promise<PrepareForTaskResult>;
 };
 
+/**
+ * The deterministic workdir a WorkItem would get from its own git worktree
+ * (see WorkItemWorktreeService.resolveHint) — computed up front, without
+ * waiting for `git worktree add` to finish, so the FIRST dispatch brief can
+ * already name it (#829 review: a later, separate "worktree ready" terminal
+ * message arrives too late — the agent has already started in the shared
+ * checkout by then).
+ */
+type WorktreeHintResolver = {
+  resolveHint: (workItem: Pick<WorkItem, 'id' | 'target' | 'metadata'>) => Promise<{ workdir: string; branch: string } | null>;
+};
+
 /** Loopback API used by {@link tl-auto-verify.service.ts} et al. */
 
 /**
@@ -131,6 +143,14 @@ export class WorkItemDispatchSubscriber {
    */
   private taskConversationPreparer: TaskConversationPreparer | null = null;
 
+  /**
+   * Worktree hint resolver consulted right before a brief is written.
+   * No default singleton (WorkItemWorktreeService is not one) — `null` until
+   * the backend boot path wires it with {@link setWorktreeHintResolver}, and
+   * every WorkItem simply gets no hint until then.
+   */
+  private worktreeHintResolver: WorktreeHintResolver | null = null;
+
   private constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger(SERVICE_NAME);
   }
@@ -156,6 +176,18 @@ export class WorkItemDispatchSubscriber {
   }
 
   /**
+   * Wire (or disable with `null`) the worktree hint resolver used by
+   * {@link dispatchTo} to name the workdir in the first dispatch brief.
+   * Called from the backend boot path with the same WorkItemWorktreeService
+   * instance {@link WorkItemWorktreeSubscriber} uses.
+   *
+   * @param resolver - Resolver implementation, or null to disable hints
+   */
+  setWorktreeHintResolver(resolver: WorktreeHintResolver | null): void {
+    this.worktreeHintResolver = resolver;
+  }
+
+  /**
    * Give the target a fresh conversation when this is a new task (Claude
    * Code members only; the service decides). Never throws.
    *
@@ -169,6 +201,28 @@ export class WorkItemDispatchSubscriber {
       return result.cleared && result.handoverPath ? freshConversationNote(result.handoverPath) : null;
     } catch (err) {
       this.logger.debug('Fresh-conversation prepare failed (non-fatal)', {
+        workItemId: workItem.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * The workdir a WorkItem's own worktree would give it, named up front —
+   * before `git worktree add` has necessarily finished — so the agent never
+   * starts in the shared checkout while waiting for a separate, later
+   * notification. Never throws.
+   *
+   * @param workItem - WI about to be dispatched
+   * @returns The hint, or null when it gets no worktree (or no resolver is wired)
+   */
+  private async resolveWorktreeHint(workItem: WorkItem): Promise<{ workdir: string; branch: string } | null> {
+    if (!this.worktreeHintResolver) return null;
+    try {
+      return await this.worktreeHintResolver.resolveHint(workItem);
+    } catch (err) {
+      this.logger.debug('Worktree hint resolve failed (non-fatal)', {
         workItemId: workItem.id,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -278,7 +332,8 @@ export class WorkItemDispatchSubscriber {
     // A new task starts in a fresh conversation (old one saved first) so it
     // does not re-read the previous task's history on every turn.
     const freshNote = await this.prepareConversation(workItem);
-    const message = this.buildDispatchMessage(workItem, freshNote);
+    const worktreeHint = await this.resolveWorktreeHint(workItem);
+    const message = this.buildDispatchMessage(workItem, freshNote, worktreeHint);
 
     try {
       await axios.post(
@@ -488,7 +543,11 @@ export class WorkItemDispatchSubscriber {
     ].join('\n');
   }
 
-  private buildDispatchMessage(workItem: WorkItem, freshNote: string | null = null): string {
+  private buildDispatchMessage(
+    workItem: WorkItem,
+    freshNote: string | null = null,
+    worktreeHint: { workdir: string; branch: string } | null = null,
+  ): string {
     const titleSnippet = workItem.title.length > 80
       ? workItem.title.substring(0, 77) + '...'
       : workItem.title;
@@ -498,6 +557,13 @@ export class WorkItemDispatchSubscriber {
       ...(freshNote ? [freshNote] : []),
       `[CREWLY-DISPATCH] WorkItem ${workItem.id} queued for you (type=${workItem.type}).`,
       `  Title: ${titleSnippet}`,
+      ...(worktreeHint
+        ? [
+            `  This WorkItem has its own git worktree. Work ONLY in:`,
+            `    ${worktreeHint.workdir}`,
+            `  (branch ${worktreeHint.branch}). cd there before editing; do not edit the shared checkout directly.`,
+          ]
+        : []),
       '  Run poll-tasks to claim:',
       `    bash $AGENT_SKILLS_PATH/core/poll-tasks/execute.sh '{"sessionName":"${workItem.target}"}'`,
       '',

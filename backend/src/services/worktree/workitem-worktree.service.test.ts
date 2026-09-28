@@ -200,10 +200,78 @@ describe('WorkItemWorktreeService', () => {
 		});
 
 		it('records a failure on the WorkItem instead of throwing', async () => {
-			// A branch name git refuses (the id contains "..").
-			const record = await service.ensureWorktree(pool.add({ id: 'bad..id', target: 'dev-1' }));
+			// Occupy the exact path `git worktree add` would use with a plain
+			// file, so the git command itself fails (id sanitization — see the
+			// tests below — no longer makes an id-shaped failure available).
+			await fs.mkdir(path.dirname(wtPath('w1')), { recursive: true });
+			await fs.writeFile(wtPath('w1'), 'occupied');
+			const record = await service.ensureWorktree(pool.add({ id: 'w1', target: 'dev-1' }));
 			expect(record?.state).toBe('failed');
-			expect(notes('bad..id').join(' ')).toContain('worktree not created');
+			expect(notes('w1').join(' ')).toContain('worktree not created');
+		});
+
+		it('sanitizes an id with a verify/retry/review suffix (colons) into a valid branch and worktree, instead of getting no worktree at all', async () => {
+			const id = 'abc123:verify:def456';
+			const record = await service.ensureWorktree(pool.add({ id, target: 'dev-1' }));
+			expect(record?.state).toBe('ready');
+			expect(record?.branch).not.toContain(':');
+			expect(record?.path).not.toContain(':');
+			expect(await branchExists(repo, record!.branch)).toBe(true);
+			expect(await git(record!.path, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe(record!.branch);
+		});
+
+		it('sanitizes an id git would otherwise refuse outright (".." is an invalid ref component)', async () => {
+			const record = await service.ensureWorktree(pool.add({ id: 'bad..id', target: 'dev-1' }));
+			expect(record?.state).toBe('ready');
+			expect(record?.branch).not.toContain('..');
+		});
+
+		it('a verify WorkItem\'s worktree bases on the WORKER\'s own branch, not origin/main, so a verifier sees the worker\'s unpushed commits (#829 review)', async () => {
+			const worker = await service.ensureWorktree(pool.add({ id: 'w1', target: 'dev-1' }));
+			await fs.writeFile(path.join(worker!.workdir, 'work.txt'), 'unpushed work');
+			await git(worker!.workdir, 'add', 'work.txt');
+			await git(worker!.workdir, 'commit', '-q', '-m', 'worker commit, never pushed to origin/main');
+
+			const verifyRecord = await service.ensureWorktree(pool.add({ id: 'w1:verify:w1', target: 'dev-2' }));
+			expect(verifyRecord?.baseRef).toBe('wi/w1');
+			expect(await git(verifyRecord!.path, 'log', '--format=%s', '-1')).toBe('worker commit, never pushed to origin/main');
+			expect(await fs.readFile(path.join(verifyRecord!.workdir, 'work.txt'), 'utf8')).toBe('unpushed work');
+		});
+
+		it('a verify WorkItem whose worker never got a worktree falls back to origin/main normally', async () => {
+			const record = await service.ensureWorktree(pool.add({ id: 'no-such-worker:verify:no-such-worker', target: 'dev-2' }));
+			expect(record?.state).toBe('ready');
+			expect(record?.baseRef).toBe('origin/main');
+		});
+	});
+
+	describe('resolveHint (the workdir a dispatch brief can name up front, without creating anything)', () => {
+		it('matches ensureWorktree\'s own workdir/branch exactly, and creates nothing', async () => {
+			const wi = pool.add({ id: 'w1', target: 'dev-1' });
+			const hint = await service.resolveHint(wi);
+			expect(hint).toEqual({ workdir: wtPath('w1'), branch: 'wi/w1' });
+			await expect(fs.stat(wtPath('w1'))).rejects.toThrow(); // nothing created
+			expect(notify).not.toHaveBeenCalled();
+
+			const record = await service.ensureWorktree(wi);
+			expect(record).toMatchObject({ workdir: hint!.workdir, branch: hint!.branch });
+		});
+
+		it('sanitizes a verify/retry/review id the same way ensureWorktree does', async () => {
+			const hint = await service.resolveHint(pool.add({ id: 'abc123:verify:def456', target: 'dev-1' }));
+			expect(hint?.branch).not.toContain(':');
+			expect(hint?.workdir).not.toContain(':');
+		});
+
+		it('null for a WorkItem that gets no worktree — same eligibility rules as ensureWorktree', async () => {
+			delete projects[0].worktrees;
+			expect(await service.resolveHint(pool.add({ id: 'w1', target: 'dev-1' }))).toBeNull();
+		});
+
+		it('points at the project subdirectory inside the worktree, same as ensureWorktree', async () => {
+			projects[0].path = path.join(repo, 'app');
+			const hint = await service.resolveHint(pool.add({ id: 'w1', target: 'dev-1' }));
+			expect(hint?.workdir).toBe(path.join(wtPath('w1'), 'app'));
 		});
 	});
 
@@ -326,6 +394,18 @@ describe('WorkItemWorktreeService', () => {
 	});
 
 	describe('sweep (orphans)', () => {
+		it('CREWLY_WORKTREES=off skips the sweep entirely, not just new worktrees (#829 review)', async () => {
+			// A leftover worktree that WOULD be swept if the switch were on.
+			const wi = pool.add({ id: 'w1', target: 'dev-1' });
+			await service.ensureWorktree(wi);
+			wi.status = 'cancelled';
+
+			const off = new WorkItemWorktreeService({ pool, storage, notify, env: { CREWLY_WORKTREES: 'off' } });
+			const report = await off.sweep();
+			expect(report).toEqual({ reposExamined: 0, repos: [], skipped: 'kill_switch' });
+			await expect(fs.stat(wtPath('w1'))).resolves.toBeDefined(); // untouched
+		});
+
 		it('a pre-created worktree whose WorkItem was never claimed is removed once the WorkItem is terminal, and counted', async () => {
 			const wi = pool.add({ id: 'w1', target: 'dev-1' });
 			await service.ensureWorktree(wi);

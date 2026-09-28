@@ -526,12 +526,26 @@ export class CrewlyServer {
 		// Team.worktrees = 'off' and CREWLY_WORKTREES=off opt out.
 		try {
 			const pool = TaskPoolService.getInstance();
+			const worktreeService = new WorkItemWorktreeService({ pool, storage: this.storageService, notify: createTerminalNotifier() });
 			const worktreeSubscriber = new WorkItemWorktreeSubscriber({
-				service: new WorkItemWorktreeService({ pool, storage: this.storageService, notify: createTerminalNotifier() }),
+				service: worktreeService,
 				events: this.eventBusService,
 				pool,
 			});
 			worktreeSubscriber.start();
+			// So the FIRST [CREWLY-DISPATCH] brief can already name the workdir
+			// (git worktree add can take seconds — long enough for a separate,
+			// later "worktree ready" message to arrive after the agent has
+			// already started in the shared checkout; #829 review).
+			void import('./services/v3/workitem-dispatch.subscriber.js')
+				.then(({ WorkItemDispatchSubscriber }) => {
+					WorkItemDispatchSubscriber.getInstance().setWorktreeHintResolver(worktreeService);
+				})
+				.catch((err) => {
+					this.logger.warn('Could not wire worktree hints into WorkItemDispatchSubscriber (non-fatal)', {
+						error: (err as Error).message,
+					});
+				});
 		} catch (worktreeErr) {
 			this.logger.warn('Per-WorkItem worktrees failed to start (non-fatal)', {
 				error: (worktreeErr as Error).message,

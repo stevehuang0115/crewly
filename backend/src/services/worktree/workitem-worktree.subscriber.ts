@@ -78,7 +78,11 @@ export class WorkItemWorktreeSubscriber {
 			events.onInProcess('workitem:queued', (event) => {
 				this.track(async () => {
 					const wi = event.workItemId ? await pool.findWorkItem(event.workItemId) : null;
-					if (wi?.target) await service.ensureWorktree(wi);
+					// No terminal notify here — WorkItemDispatchSubscriber's
+					// resolveHint() already puts the workdir in the FIRST
+					// [CREWLY-DISPATCH] brief for this same event; a second,
+					// separate message is redundant at best (Sam, #829 review).
+					if (wi?.target) await service.ensureWorktree(wi, { notify: false });
 				}, 'pre-create');
 			}),
 		);

@@ -6,6 +6,7 @@ import {
 	getRepoRoot,
 	resolveBaseRef,
 	branchExists,
+	sanitizeWorktreeId,
 	listWorktrees,
 	readIncludeFile,
 	applySharedPaths,
@@ -76,6 +77,23 @@ describe('worktree-git', () => {
 			expect((await resolveBaseRef(clone))?.name).toBe('origin/main');
 		});
 
+		describe('resolveBaseRef preferredBranch (#829 review: a verify worktree must see the worker\'s own commits)', () => {
+			it('a preferred branch that exists wins over origin/HEAD and HEAD', async () => {
+				await git(repo, 'branch', 'wi/worker-1');
+				await fs.writeFile(path.join(repo, 'extra.txt'), 'x');
+				await git(repo, 'add', '-A');
+				await git(repo, 'commit', '-q', '-m', 'more work on HEAD, not on the preferred branch');
+				const workerSha = await git(repo, 'rev-parse', 'wi/worker-1');
+				expect(await resolveBaseRef(repo, 'wi/worker-1')).toEqual({ name: 'wi/worker-1', sha: workerSha });
+			});
+
+			it('falls back to the normal chain when the preferred branch does not exist', async () => {
+				const r = await resolveBaseRef(repo, 'wi/no-such-branch');
+				expect(r?.name).toBe('HEAD');
+				expect(r?.sha).toBe(await git(repo, 'rev-parse', 'HEAD'));
+			});
+		});
+
 		it('branchExists and listWorktrees reflect a new worktree (main checkout excluded)', async () => {
 			expect(await listWorktrees(repo)).toEqual([]);
 			const wt = await addWt(repo, 'wi-1');
@@ -112,6 +130,9 @@ describe('worktree-git', () => {
 			const res = await applySharedPaths(repo, wt, ['node_modules', 'cache'], ['.env', 'missing.json']);
 			expect(res.symlinks).toEqual(['node_modules']);
 			expect(res.copies).toEqual(['.env']);
+			// A hash recorded for a later dirty-check to compare against (#829 review):
+			// unlike existence alone, this catches an agent editing a copy's content.
+			expect(res.copyHashes['.env']).toMatch(/^[0-9a-f]{64}$/);
 			expect(res.skipped.map((s) => s.path)).toEqual(['cache', 'missing.json']);
 			expect((await fs.lstat(path.join(wt, 'node_modules'))).isSymbolicLink()).toBe(true);
 			expect(await fs.readFile(path.join(wt, 'node_modules', 'pkg', 'index.js'), 'utf8')).toBe('x');
@@ -181,6 +202,55 @@ describe('worktree-git', () => {
 		it('a modified tracked file reads dirty', async () => {
 			await fs.writeFile(path.join(wt, 'README.md'), 'changed\n');
 			expect((await checkDirty(wt, owned)).dirtyPaths).toEqual(['README.md']);
+		});
+
+		describe('an edited .worktreeinclude copy is never mistaken for "just our copy" (#829 review)', () => {
+			let cwt: string;
+			let cowned: { symlinks: string[]; copies: string[]; copyHashes: Record<string, string> };
+
+			beforeEach(async () => {
+				await fs.writeFile(path.join(repo, '.env'), 'TOKEN=original\n');
+				cwt = await addWt(repo, 'wi-copy');
+				const shared = await applySharedPaths(repo, cwt, [], ['.env']);
+				cowned = { symlinks: [], copies: shared.copies, copyHashes: shared.copyHashes };
+			});
+
+			it('unedited: excluded as ours (clean)', async () => {
+				const r = await checkDirty(cwt, cowned);
+				expect(r.state).toBe('clean');
+				expect(r.excludedOurs).toBe(1);
+			});
+
+			it('edited: reads dirty, not excluded — content differs from the recorded hash', async () => {
+				await fs.writeFile(path.join(cwt, '.env'), 'TOKEN=agent-added-a-real-secret\n');
+				const r = await checkDirty(cwt, cowned);
+				expect(r.state).toBe('dirty');
+				expect(r.dirtyPaths.join(' ')).toContain('.env (was our copy; content edited since)');
+				expect(r.excludedOurs).toBe(0);
+			});
+
+			it('no recorded hash (older manifest): falls back to existence-only, same as before #829', async () => {
+				const r = await checkDirty(cwt, { symlinks: [], copies: cowned.copies }); // no copyHashes
+				expect(r.state).toBe('clean');
+				expect(r.excludedOurs).toBe(1);
+			});
+
+			it('removeWorktree itself refuses outright and touches nothing — git\'s own check does not catch this (it is IGNORED, not untracked) (defence in depth)', async () => {
+				await fs.writeFile(path.join(cwt, '.env'), 'TOKEN=agent-added-a-real-secret\n');
+				const r = await removeWorktree(repo, cwt, cowned);
+				expect(r.ok).toBe(false);
+				expect(r.stderr).toContain('.env');
+				expect(r.stderr).toContain('edited');
+				expect(await fs.readFile(path.join(cwt, '.env'), 'utf8')).toBe('TOKEN=agent-added-a-real-secret\n');
+				// The worktree itself is untouched too — this must not be a partial removal.
+				await expect(fs.stat(cwt)).resolves.toBeDefined();
+			});
+
+			it('removeWorktree deletes an UNedited copy normally', async () => {
+				const r = await removeWorktree(repo, cwt, cowned);
+				expect(r.ok).toBe(true);
+				await expect(fs.stat(path.join(cwt, '.env'))).rejects.toThrow();
+			});
 		});
 
 		describe('exact recorded paths, never a name pattern (#829 review)', () => {
@@ -369,5 +439,53 @@ describe('worktree-git', () => {
 			expect(r.ok).toBe(false);
 			expect(await fs.readFile(path.join(wt, 'wip.txt'), 'utf8')).toBe('x');
 		});
+	});
+});
+
+describe('sanitizeWorktreeId', () => {
+	/** git's own opinion of whether `name` is a valid ref component (the authority — not our own regex). */
+	async function gitAcceptsAsRef(name: string): Promise<boolean> {
+		return (await runGit(os.tmpdir(), ['check-ref-format', '--branch', name])).ok;
+	}
+
+	it('a plain id (no special characters) passes through unchanged', async () => {
+		expect(sanitizeWorktreeId('w1')).toBe('w1');
+		expect(sanitizeWorktreeId('a1b2c3d4-e5f6-7890-abcd-ef1234567890')).toBe('a1b2c3d4-e5f6-7890-abcd-ef1234567890');
+	});
+
+	it('a verify/retry/review id (colons) becomes a ref git actually accepts', async () => {
+		const id = 'abc123:verify:def456';
+		const safe = sanitizeWorktreeId(id);
+		expect(safe).not.toContain(':');
+		expect(await gitAcceptsAsRef(safe)).toBe(true);
+	});
+
+	it.each([
+		['bad..id', '..'], // git refuses a ".." run
+		['bad~id', '~'],
+		['bad^id', '^'],
+		['bad?id', '?'],
+		['bad*id', '*'],
+		['bad[id', '['],
+		['bad id', ' '],
+		['bad\\id', '\\'],
+		['.leading-dot', '.'],
+		['trailing-dot.', '.'],
+		['trailing-slash/', '/'],
+		['ends.lock', '.lock'],
+		['@', '@'],
+	])('"%s" (contains %s, which git rejects) sanitizes into a ref git accepts', async (id) => {
+		const safe = sanitizeWorktreeId(id);
+		expect(await gitAcceptsAsRef(safe)).toBe(true);
+	});
+
+	it('is deterministic — the same id always sanitizes to the same ref (so branch and worktree path stay paired)', () => {
+		const id = 'abc:verify:def';
+		expect(sanitizeWorktreeId(id)).toBe(sanitizeWorktreeId(id));
+	});
+
+	it('never returns the empty string', () => {
+		expect(sanitizeWorktreeId('')).not.toBe('');
+		expect(sanitizeWorktreeId(':::')).not.toBe('');
 	});
 });

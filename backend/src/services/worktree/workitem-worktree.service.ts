@@ -29,7 +29,7 @@
 
 import path from 'path';
 import { promises as fs } from 'fs';
-import { WORKTREE_CONSTANTS } from '../../constants.js';
+import { WORKTREE_CONSTANTS, FRESH_TASK_CONVERSATION_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
@@ -38,6 +38,7 @@ import {
 	getRepoRoot,
 	resolveBaseRef,
 	branchExists,
+	sanitizeWorktreeId,
 	listWorktrees,
 	readIncludeFile,
 	applySharedPaths,
@@ -71,6 +72,8 @@ export interface WorktreeRecord {
 	symlinks: string[];
 	/** Repo-relative `.worktreeinclude` files copied in. */
 	copies: string[];
+	/** SHA-256 of each copy's content as applied — see {@link SharedPathsResult.copyHashes}. */
+	copyHashes?: Record<string, string>;
 	state: 'creating' | 'ready' | 'failed' | 'removed' | 'kept';
 	createdAt: string;
 	/** Last cleanup/sweep verdict, human-readable. */
@@ -145,6 +148,8 @@ export interface SweepRepoReport {
 export interface SweepReport {
 	reposExamined: number;
 	repos: SweepRepoReport[];
+	/** Set (and reposExamined left 0) when the sweep did not run at all. */
+	skipped?: 'kill_switch';
 }
 
 /** Construction options. */
@@ -201,7 +206,7 @@ export class WorkItemWorktreeService {
 	 * @param wi - WorkItem
 	 * @returns The repo, or why not
 	 */
-	async resolveTarget(wi: WorkItem): Promise<WorktreeTarget> {
+	async resolveTarget(wi: Pick<WorkItem, 'id' | 'metadata' | 'target'>): Promise<WorktreeTarget> {
 		if ((this.env[WORKTREE_CONSTANTS.ENV_KILL_SWITCH] ?? '').toLowerCase() === 'off') return { ok: false, reason: 'kill_switch' };
 		const [projects, teams] = await Promise.all([this.options.storage.getProjects(), this.options.storage.getTeams()]);
 		const team = wi.target ? teams.find((t) => (t.members ?? []).some((m) => m.sessionName === wi.target)) : undefined;
@@ -231,31 +236,78 @@ export class WorkItemWorktreeService {
 	 * Create the WorkItem's worktree if it should have one (idempotent).
 	 *
 	 * @param wi - WorkItem (queued with a target, or just claimed)
+	 * @param opts - `notify: false` suppresses the terminal `[CREWLY-WORKTREE]`
+	 *   message once ready. Used for the `workitem:queued` pre-create path,
+	 *   where {@link resolveHint} already puts the workdir in the FIRST
+	 *   `[CREWLY-DISPATCH]` brief — a second, separate message there is at
+	 *   best redundant and at worst arrives late (#829 review). The
+	 *   create-on-claim path (an agent claiming its own WorkItem, with no
+	 *   dispatch brief at all) keeps the default `true`.
 	 * @returns The record, or null when the WorkItem gets no worktree
 	 */
-	async ensureWorktree(wi: WorkItem): Promise<WorktreeRecord | null> {
+	async ensureWorktree(wi: WorkItem, opts: { notify?: boolean } = {}): Promise<WorktreeRecord | null> {
 		const target = await this.resolveTarget(wi);
 		if (!target.ok) {
 			this.logger.debug('No worktree for WorkItem', { workItemId: wi.id, reason: target.reason });
 			return null;
 		}
-		return this.exclusive(target.repo, () => this.create(wi, target.repo, target.project));
+		return this.exclusive(target.repo, () => this.create(wi, target.repo, target.project, opts.notify ?? true));
+	}
+
+	/**
+	 * The workdir + branch a WorkItem WOULD get, without creating anything.
+	 *
+	 * `git worktree add` (inside {@link ensureWorktree}) can take seconds —
+	 * long enough that the FIRST `[CREWLY-DISPATCH]` brief for a newly-queued
+	 * WorkItem goes out before it finishes, telling the agent nothing about a
+	 * worktree; the agent starts working in the shared checkout, and a later
+	 * `[CREWLY-WORKTREE]` terminal message arrives too late to matter (#829
+	 * review). The workdir path is deterministic — it only needs the same
+	 * project/team eligibility lookup {@link resolveTarget} already does, no
+	 * git I/O beyond `resolveTarget`'s own repo-root check — so the dispatch
+	 * brief can name it immediately, up front, every time.
+	 *
+	 * @param wi - WorkItem about to be (or already) dispatched
+	 * @returns The workdir + branch it gets, or null when it gets no worktree
+	 */
+	async resolveHint(wi: Pick<WorkItem, 'id' | 'metadata' | 'target'>): Promise<{ workdir: string; branch: string } | null> {
+		const target = await this.resolveTarget(wi);
+		if (!target.ok) return null;
+		const { workdir, branch } = await this.computePaths(wi.id, target.repo, target.project);
+		return { workdir, branch };
+	}
+
+	/** Deterministic path/branch/workdir for a WorkItem in a repo (no I/O beyond a realpath). */
+	private async computePaths(workItemId: string, repo: string, project: Project): Promise<{ wtPath: string; branch: string; workdir: string }> {
+		// A verify/retry/review id contains ':' (abc:verify:def), which git
+		// rejects as a ref component — sanitize before it becomes a branch name
+		// or a worktree path, so those WorkItems still get a worktree.
+		const safeId = sanitizeWorktreeId(workItemId);
+		const wtPath = path.join(repo, WORKTREE_CONSTANTS.DIR, safeId);
+		const branch = `${WORKTREE_CONSTANTS.BRANCH_PREFIX}${safeId}`;
+		const rel = path.relative(repo, await realpathOrResolve(project.path));
+		const workdir = rel && !rel.startsWith('..') ? path.join(wtPath, rel) : wtPath;
+		return { wtPath, branch, workdir };
 	}
 
 	/** Body of {@link ensureWorktree}, run inside the repo's queue. */
-	private async create(wi: WorkItem, repo: string, project: Project): Promise<WorktreeRecord> {
+	private async create(wi: WorkItem, repo: string, project: Project, notify: boolean): Promise<WorktreeRecord> {
 		const existing = await this.readManifest(repo, wi.id);
 		if (existing && existing.state !== 'removed' && existing.state !== 'failed' && (await exists(existing.path))) return existing;
 
-		const wtPath = path.join(repo, WORKTREE_CONSTANTS.DIR, wi.id);
-		const branch = `${WORKTREE_CONSTANTS.BRANCH_PREFIX}${wi.id}`;
-		const base = await resolveBaseRef(repo);
-		const rel = path.relative(repo, await realpathOrResolve(project.path));
+		const { wtPath, branch, workdir } = await this.computePaths(wi.id, repo, project);
+		// A verify/retry/review WorkItem's worktree bases on the WORKER's own
+		// branch when it exists, not origin/main — otherwise a verifier only
+		// ever sees a pre-work snapshot, never the worker's actual (possibly
+		// unpushed) commits (#829 review).
+		const workerId = workerIdOf(wi.id);
+		const workerBranch = workerId ? `${WORKTREE_CONSTANTS.BRANCH_PREFIX}${sanitizeWorktreeId(workerId)}` : undefined;
+		const base = await resolveBaseRef(repo, workerBranch);
 		const record: WorktreeRecord = {
 			workItemId: wi.id,
 			repo,
 			path: wtPath,
-			workdir: rel && !rel.startsWith('..') ? path.join(wtPath, rel) : wtPath,
+			workdir,
 			branch,
 			baseRef: base?.name ?? 'HEAD',
 			baseSha: base?.sha ?? '',
@@ -282,6 +334,7 @@ export class WorkItemWorktreeService {
 		const shared = await applySharedPaths(repo, wtPath, project.worktreeSharedDirs ?? WORKTREE_CONSTANTS.DEFAULT_SHARED_DIRS, includes.entries);
 		record.symlinks = shared.symlinks;
 		record.copies = shared.copies;
+		record.copyHashes = shared.copyHashes;
 		record.state = 'ready';
 		await this.record(record);
 		this.logger.info('Worktree ready', {
@@ -295,7 +348,7 @@ export class WorkItemWorktreeService {
 			includeRejected: includes.rejected,
 			includeTruncated: includes.truncated,
 		});
-		if (wi.target && this.options.notify) {
+		if (notify && wi.target && this.options.notify) {
 			await this.options
 				.notify(
 					wi.target,
@@ -419,6 +472,15 @@ export class WorkItemWorktreeService {
 	 * @returns Per-repo tallies
 	 */
 	async sweep(): Promise<SweepReport> {
+		// ensureWorktree()/resolveTarget() already honour this per-call; the
+		// sweep timer has no such gate, so a project left un-swept while the
+		// switch is off looked, until now, identical to "nothing to sweep"
+		// (#829 review — the kill switch must stop EVERYTHING, not just new
+		// worktrees).
+		if ((this.env[WORKTREE_CONSTANTS.ENV_KILL_SWITCH] ?? '').toLowerCase() === 'off') {
+			this.logger.debug('Worktree sweep skipped — CREWLY_WORKTREES=off');
+			return { reposExamined: 0, repos: [], skipped: 'kill_switch' };
+		}
 		const projects = await this.options.storage.getProjects();
 		const repos = new Set<string>();
 		for (const p of projects) {
@@ -542,6 +604,30 @@ export class WorkItemWorktreeService {
 		this.chains.set(repo, run);
 		return run;
 	}
+}
+
+/**
+ * The worker's own WorkItem id, when `workItemId` is a retry/verify/review
+ * follow-up of it (built as `<workerId>:verify:<workerId>` etc. — see
+ * event-to-workitem-bridge.service.ts and tl-auto-verify.service.ts). Same
+ * markers FreshTaskConversationService.rootWorkItemId() strips to find the
+ * task root, kept in sync deliberately: both need "which WorkItem did this
+ * follow-up come from".
+ *
+ * @param workItemId - WorkItem id
+ * @returns The worker's id, or null when `workItemId` names no follow-up
+ * @example
+ * workerIdOf('abc:verify:abc'); // 'abc'
+ * workerIdOf('abc:retry:2');    // 'abc'
+ * workerIdOf('abc');            // null
+ */
+function workerIdOf(workItemId: string): string | null {
+	let cut = -1;
+	for (const marker of FRESH_TASK_CONVERSATION_CONSTANTS.ROOT_SUFFIX_MARKERS) {
+		const i = workItemId.indexOf(marker);
+		if (i > 0 && (cut === -1 || i < cut)) cut = i;
+	}
+	return cut === -1 ? null : workItemId.slice(0, cut);
 }
 
 /** Resolve symlinks when the path exists; otherwise normalise it. */

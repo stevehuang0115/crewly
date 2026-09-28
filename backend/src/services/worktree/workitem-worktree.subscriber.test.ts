@@ -61,7 +61,13 @@ describe('WorkItemWorktreeSubscriber', () => {
 		expect(service.ensureWorktree.mock.calls[0][0].id).toBe('targeted');
 	});
 
-	it('creates on claim (covers untargeted pool items)', async () => {
+	it('pre-create suppresses the terminal notify — the dispatch brief names the workdir instead (#829 review)', async () => {
+		bus.emit('workitem:queued', 'targeted');
+		await sub.idle();
+		expect(service.ensureWorktree).toHaveBeenCalledWith(expect.objectContaining({ id: 'targeted' }), { notify: false });
+	});
+
+	it('creates on claim (covers untargeted pool items) — notify stays on, there is no dispatch brief for a self-claim', async () => {
 		claimListeners[0](items.pooled as WorkItem, 'dev-2');
 		await sub.idle();
 		expect(service.ensureWorktree).toHaveBeenCalledWith(items.pooled);
