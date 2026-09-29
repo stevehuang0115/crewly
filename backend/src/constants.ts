@@ -2082,6 +2082,48 @@ export const BROWSER_SESSION_CONSTANTS = {
 	RETAIN_FINISHED_MS: 10 * 60 * 1000,
 } as const;
 
+/**
+ * Owner input into a browser session the owner has taken over
+ * (`POST /api/browser/sessions/:id/input`). The owner is usually on a phone,
+ * tapping a picture of the page, so every limit here is about keeping one tap
+ * or one "Send" a single bounded action.
+ */
+export const BROWSER_OWNER_INPUT_CONSTANTS = {
+	/** Longest text one `type` may carry (characters) */
+	MAX_TEXT_LENGTH: 2_000,
+	/** Longest URL one `navigate` may carry (characters) */
+	MAX_URL_LENGTH: 4_096,
+	/** Largest single scroll step either way (CSS px) */
+	MAX_SCROLL_PX: 5_000,
+	/**
+	 * How long a measured viewport is trusted before a tap measures again
+	 * (ms). Each measurement is a round trip to the extension, which over the
+	 * relay is the slowest part of a tap.
+	 */
+	VIEWPORT_CACHE_MS: 15_000,
+	/** Keys the owner can press from the control bar */
+	KEYS: ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowUp', 'ArrowDown'] as const,
+	/** How far an arrow key scrolls when focus is not in a text field (CSS px) */
+	ARROW_SCROLL_PX: 40,
+	/** Command timeout for one owner action (ms) */
+	COMMAND_TIMEOUT_MS: 15_000,
+	/**
+	 * Pause after a tap, key or Back before the fresh frame is captured (ms),
+	 * so the picture sent back shows what the action did rather than the
+	 * instant before it. Navigation needs none: it waits for the page load.
+	 */
+	SETTLE_BEFORE_FRAME_MS: 350,
+	/**
+	 * Page-quiet wait before a tap is clicked (ms). The extension's click
+	 * waits for the page to go idle (default up to 2 s) because an agent
+	 * clicks blind; the owner is looking at the page, so a tap should land
+	 * when they tapped.
+	 */
+	TAP_IDLE_QUIET_MS: 50,
+	/** Longest the extension may wait for that quiet before clicking (ms) */
+	TAP_IDLE_MAX_WAIT_MS: 300,
+} as const;
+
 export const CLAUDE_TRANSCRIPT_SYNC_CONSTANTS = {
 	/** How often to read the unread tail of each agent's transcript (ms) */
 	SYNC_INTERVAL_MS: 60_000,

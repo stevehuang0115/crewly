@@ -47,6 +47,13 @@ describe('isAllowedMobileApiCall', () => {
     expect(isAllowedMobileApiCall('GET', '/requests?status=running')).toBe(true);
   });
 
+  it('carries the owner driving a browser they took over, but not the agent driving endpoints', () => {
+    expect(isAllowedMobileApiCall('POST', '/browser/sessions/pia/take-control')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/browser/sessions/pia/input')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/browser/click')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/browser/navigate')).toBe(false);
+  });
+
   it('carries project tickets but not the v1 migration', () => {
     expect(isAllowedMobileApiCall('GET', '/project-tickets/p1')).toBe(true);
     expect(isAllowedMobileApiCall('POST', '/project-tickets/p1/APP-1/transition')).toBe(true);
