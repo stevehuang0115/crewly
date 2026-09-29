@@ -11,6 +11,7 @@
 import { EventBusService } from './event-bus.service.js';
 import {
   EventToWorkItemBridge,
+  withRejectionFeedback,
   CronRecursionError,
   BridgeTeamLeadResolutionError,
   assertNoCronFromCron,
@@ -956,6 +957,37 @@ describe('EventToWorkItemBridge — review routing (ticket-loop Phase 3)', () =>
     bus.publish(buildEvent({ type: 'task:rejected', newValue: 'rejected' }));
     await bridge.flushPending();
     const retry = taskPool.addCalls.find((w) => w.id.includes(':retry:'));
-    expect(retry?.description).toBe('export csv\n\nSent back by the reviewer: the header row is missing');
+    expect(retry?.description).toBe(
+      '## Rejection feedback (attempt 1)\n\nthe header row is missing\n\n---\n## Original brief\n\nexport csv',
+    );
+    expect(retry?.briefMarkdown).toBeUndefined();
+  });
+
+  it('retry carries rejection feedback above the brief in description AND briefMarkdown', async () => {
+    const rejected = buildWorkItem({
+      status: 'rejected',
+      error: 'add the footer',
+      description: 'short',
+      briefMarkdown: '# Long brief\nbody',
+    });
+    const taskPool = buildFakeTaskPool([rejected]);
+    const { bridge, bus } = buildBridge({ taskPool });
+    bridge.start();
+    bus.publish(buildEvent({ type: 'task:rejected', newValue: 'rejected' }));
+    await bridge.flushPending();
+    const retry = taskPool.addCalls.find((w) => w.id.includes(':retry:'));
+    for (const field of [retry?.description, retry?.briefMarkdown]) {
+      expect(field?.startsWith('## Rejection feedback (attempt 1)\n\nadd the footer')).toBe(true);
+    }
+    expect(retry?.briefMarkdown).toContain('## Original brief\n\n# Long brief\nbody');
+  });
+
+  it('a repeated rejection replaces the old feedback instead of stacking it', () => {
+    const first = withRejectionFeedback('brief', 'fix A', 1);
+    const second = withRejectionFeedback(first, 'fix B', 2);
+    expect(second).toBe('## Rejection feedback (attempt 2)\n\nfix B\n\n---\n## Original brief\n\nbrief');
+    expect(second).not.toContain('fix A');
+    expect(withRejectionFeedback('brief', undefined, 1)).toBe('brief');
+    expect(withRejectionFeedback(undefined, undefined, 1)).toBeUndefined();
   });
 });
