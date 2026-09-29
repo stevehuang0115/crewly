@@ -12,6 +12,7 @@ import { harnessService } from '../services/harness.service';
 import type { BrokerLoginMethodId, HarnessId, LoginSession } from '../types/harness.types';
 import { isTerminalLoginState } from '../types/harness.types';
 import { HARNESS_TIMING } from '../constants/harness.constants';
+import { markHarnessLoggedIn } from '../utils/harness-login-marks';
 
 export interface UseLoginSessionResult {
   /** Current session (null before start / after reset) */
@@ -125,9 +126,11 @@ export function useLoginSession(harnessId: HarnessId, onSucceeded?: () => void):
   useEffect(() => {
     if (session?.state === 'succeeded' && notifiedRef.current !== session.id) {
       notifiedRef.current = session.id;
+      // Lets the "Sign-in needed" banner drop sign-ins detected before now.
+      markHarnessLoggedIn(harnessId);
       onSucceededRef.current?.();
     }
-  }, [session]);
+  }, [session, harnessId]);
 
   return { session, error, busy, start, sendInput, cancel, reset };
 }

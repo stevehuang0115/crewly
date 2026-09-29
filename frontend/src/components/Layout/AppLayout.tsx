@@ -4,6 +4,7 @@ import { Terminal, Menu, X } from 'lucide-react';
 import { Navigation } from './Navigation';
 import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
 import { OrchestratorStatusBanner } from '../OrchestratorStatusBanner';
+import { PendingLoginsBanner } from '../PendingLoginsBanner';
 import { UpdateBanner } from '../UpdateBanner';
 
 import { SessionResumePopup } from '../SessionResumePopup';
@@ -83,6 +84,8 @@ export const AppLayout: React.FC = () => {
 
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <UpdateBanner />
+          {/* "An agent needs you to sign in" — in the content column, never under the sidebar. */}
+          <PendingLoginsBanner />
           <OrchestratorStatusBanner />
           <div className={clsx(
             'flex-1 min-h-0',

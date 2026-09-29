@@ -2183,6 +2183,17 @@ export const LOGIN_REQUIRED_PATTERN_SETS: string[][] = [
 ];
 
 /**
+ * Screen text that means the runtime has just *finished* signing in. The
+ * capture window can still hold the earlier sign-in screen above it, so
+ * these veto a {@link LOGIN_REQUIRED_PATTERN_SETS} match and let the
+ * "Sign-in needed" flag clear. Lower-case substrings.
+ */
+export const LOGIN_COMPLETED_MARKERS: readonly string[] = [
+	// Codex 0.158 post-login notice ("✓ Signed in with your ChatGPT account … Press enter to continue")
+	'signed in with your chatgpt account',
+];
+
+/**
  * Constants for first-run / device-code login detection and notification
  * in `OAuthReloginMonitorService`.
  */

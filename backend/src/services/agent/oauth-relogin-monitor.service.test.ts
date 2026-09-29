@@ -675,6 +675,15 @@ describe('OAuthReloginMonitorService', () => {
 			expect(service.detectLoginRequired(CODEX_IDLE_SCREEN)).toBeNull();
 		});
 
+		it('returns null once codex shows its post-login notice, even with the old sign-in screen still captured', () => {
+			const screen = `${CODEX_DEVICE_CODE_SCREEN}
+  >_ Welcome to Codex, OpenAI's command-line coding agent
+  ✓ Signed in with your ChatGPT account
+  Before you start:
+  Press enter to continue`;
+			expect(service.detectLoginRequired(screen)).toBeNull();
+		});
+
 		it('returns null for empty input', () => {
 			expect(service.detectLoginRequired('')).toBeNull();
 		});

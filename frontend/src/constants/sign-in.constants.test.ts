@@ -20,4 +20,14 @@ describe('sign-in.constants', () => {
   it('exposes the chip label', () => {
     expect(SIGN_IN_CONSTANTS.CHIP_LABEL).toBe('Sign-in needed');
   });
+
+  it('re-checks harness login state more often than the pending poll, with distinct storage keys', () => {
+    expect(SIGN_IN_CONSTANTS.HARNESS_RECHECK_INTERVAL_MS).toBeLessThanOrEqual(SIGN_IN_CONSTANTS.PENDING_POLL_INTERVAL_MS);
+    const keys = [
+      SIGN_IN_CONSTANTS.DISMISSED_STORAGE_KEY,
+      SIGN_IN_CONSTANTS.LOGIN_MARKS_STORAGE_KEY,
+      SIGN_IN_CONSTANTS.LAST_STATES_STORAGE_KEY,
+    ];
+    expect(new Set(keys).size).toBe(keys.length);
+  });
 });

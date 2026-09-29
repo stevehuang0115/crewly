@@ -19,4 +19,12 @@ export const SIGN_IN_CONSTANTS = {
   COPIED_FEEDBACK_MS: 2_000,
   /** Chip label */
   CHIP_LABEL: 'Sign-in needed',
+  /** How often the banner re-checks harness login state (and the pending list) */
+  HARNESS_RECHECK_INTERVAL_MS: 30_000,
+  /** localStorage key: dismissed pending-login set (dismissal lasts until the set changes) */
+  DISMISSED_STORAGE_KEY: 'crewly.pendingLogins.dismissedKey',
+  /** localStorage key: per-harness "a login completed at" marks */
+  LOGIN_MARKS_STORAGE_KEY: 'crewly.harnessLogin.completedAt',
+  /** localStorage key: last harness login states this browser saw */
+  LAST_STATES_STORAGE_KEY: 'crewly.harnessLogin.lastStates',
 } as const;

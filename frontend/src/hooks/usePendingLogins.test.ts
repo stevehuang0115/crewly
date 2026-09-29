@@ -85,4 +85,21 @@ describe('usePendingLogins', () => {
     await waitFor(() => expect(result.current.isLoading).toBe(false));
     expect(result.current.pending).toEqual([]);
   });
+
+  it('re-fetches when the window regains focus or becomes visible', async () => {
+    mockedGet.mockResolvedValue({ data: { success: true, data: [entry], count: 1 } });
+    renderHook(() => usePendingLogins(60_000));
+    await waitFor(() => expect(mockedGet).toHaveBeenCalledTimes(1));
+
+    mockedGet.mockResolvedValue({ data: { success: true, data: [], count: 0 } });
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await waitFor(() => expect(mockedGet).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'));
+    });
+    await waitFor(() => expect(mockedGet).toHaveBeenCalledTimes(3));
+  });
 });
