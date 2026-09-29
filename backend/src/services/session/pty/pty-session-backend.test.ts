@@ -5,6 +5,7 @@
 import { PtySessionBackend } from './pty-session-backend.js';
 import type { PtySession } from './pty-session.js';
 import type { SessionOptions } from '../session-backend.interface.js';
+import { StreamingSecretRedactor } from '../../../utils/secret-redactor.js';
 import { collectSecretEnvValues } from '../../../utils/secret-env.js';
 
 // Determine the shell to use based on platform
@@ -622,26 +623,27 @@ describe('PtySessionBackend integration', () => {
 	});
 
 	describe('session log secret redaction', () => {
-		/** Feeds one output chunk through the log writer and returns what reached the file */
-		function logChunk(chunk: string, spawnEnv: Record<string, string>): string {
+		/** Feeds output chunks through the log writer, closes the log, and returns what reached the file */
+		function logChunks(chunks: string[], spawnEnv: Record<string, string>): string {
 			const written: string[] = [];
 			const internals = backend as unknown as {
-				sessionLogStreams: Map<string, { destroyed: boolean; write: (d: string) => void }>;
-				sessionLogSecrets: Map<string, ReturnType<typeof collectSecretEnvValues>>;
+				sessionLogStreams: Map<string, { destroyed: boolean; write: (d: string) => void; end: () => void }>;
+				sessionLogRedactors: Map<string, StreamingSecretRedactor>;
 				writeToSessionLog: (name: string, data: string) => void;
+				closeSessionLogStream: (name: string) => void;
 			};
-			internals.sessionLogStreams.set('redact-session', { destroyed: false, write: (d) => written.push(d) });
-			internals.sessionLogSecrets.set('redact-session', collectSecretEnvValues(spawnEnv));
-			internals.writeToSessionLog('redact-session', chunk);
-			internals.sessionLogStreams.delete('redact-session');
+			internals.sessionLogStreams.set('redact-session', { destroyed: false, write: (d) => written.push(d), end: () => undefined });
+			internals.sessionLogRedactors.set('redact-session', new StreamingSecretRedactor(collectSecretEnvValues(spawnEnv)));
+			for (const chunk of chunks) internals.writeToSessionLog('redact-session', chunk);
+			internals.closeSessionLogStream('redact-session');
 			return written.join('');
 		}
 
 		it('masks API keys by pattern and spawn-env secrets by value before writing', () => {
 			const gemini = 'AIzaTESTfakeGeminiKey0123456789abcdefXYZ';
 			const signing = '0123456789abcdef0123456789abcdef'; // plain hex: no pattern can see it
-			const out = logChunk(
-				`export GEMINI_API_KEY="${gemini}"\nSLACK_SIGNING_SECRET=${signing}\nordinary output\n`,
+			const out = logChunks(
+				[`export GEMINI_API_KEY="${gemini}"\nSLACK_SIGNING_SECRET=${signing}\nordinary output\n`],
 				{ SLACK_SIGNING_SECRET: signing, CREWLY_ROLE: 'developer' },
 			);
 
@@ -649,6 +651,23 @@ describe('PtySessionBackend integration', () => {
 			expect(out).not.toContain(signing);
 			expect(out).toContain('[REDACTED SLACK_SIGNING_SECRET]');
 			expect(out).toContain('ordinary output');
+		});
+
+		it('masks a secret split across output chunks (echoed a few characters at a time)', () => {
+			const key = 'sk-deepseekTESTfake0123456789abcdef';
+			const line = `DEEPSEEK_API_KEY=${key} ${'xoxb-' + '123456789012-TESTfakeSlackBotToken'} \n$ `;
+			const chunks = line.match(/.{1,3}/gs) ?? [];
+			const out = logChunks(chunks, {});
+
+			expect(out).not.toContain(key);
+			expect(out).not.toContain('TESTfakeSlackBotToken');
+			expect(out).toContain('DEEPSEEK_API_KEY=[REDACTED]');
+			expect(out.endsWith('$ ')).toBe(true);
+		});
+
+		it('writes the held-back tail when the log closes', () => {
+			const out = logChunks(['ready', ' prompt>'], {});
+			expect(out).toBe('ready prompt>');
 		});
 	});
 });

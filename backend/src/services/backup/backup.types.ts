@@ -23,6 +23,28 @@ export const BACKUP_SCHEMA_VERSION = 1;
  */
 export const DEFAULT_PROJECT_FILE_EXCLUDES: readonly string[] = ['node_modules', '.crewly', '.DS_Store'];
 
+/**
+ * Directory names never captured, at ANY depth of CREWLY_HOME or a project's
+ * `.crewly/`. `logs` covers `~/.crewly/logs/sessions/*.log` — the raw agent
+ * PTY transcripts, which held API keys and Slack tokens before #806 (and are
+ * still only redacted best-effort) — plus service/skill-setup logs; `sessions`
+ * covers per-agent runtime transcripts. Logs are machine-local noise, not
+ * workspace state: excluded rather than redacted.
+ */
+export const BACKUP_EXCLUDED_DIR_NAMES: readonly string[] = ['sessions', 'logs', '.orchestrator-state'];
+
+/**
+ * File-name suffixes never captured, at any depth: JSONL transcripts/event
+ * logs and stray `*.log` files outside a `logs/` directory (PTY output that
+ * landed elsewhere). Applies to CREWLY_HOME and each project's `.crewly/`,
+ * not to project source trees (`includeProjectFiles`), which are the user's
+ * own files.
+ */
+export const BACKUP_EXCLUDED_FILE_SUFFIXES: readonly string[] = ['.jsonl', '.log'];
+
+/** Shell history files never captured, at any depth (they held typed-in API keys). */
+export const BACKUP_EXCLUDED_FILE_NAMES: readonly string[] = ['.bash_history', '.zsh_history', '.sh_history', '.history'];
+
 /** Archive path prefix for a project's source files: `projects/<id>/files/`. */
 export const PROJECT_FILES_ARCHIVE_DIR = 'files';
 

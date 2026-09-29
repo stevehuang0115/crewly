@@ -149,6 +149,42 @@ describe('TmuxCommandService', () => {
 		});
 	});
 
+	describe('createSession spawn env', () => {
+		beforeEach(() => {
+			mockSpawn.mockImplementation((_command: string, args: string[]) => {
+				if (args[0] === 'list-sessions') return createMockProcess('test-session\n');
+				if (args[0] === 'capture-pane') return createMockProcess('pane content\n');
+				return createMockProcess('', 0);
+			});
+		});
+
+		/** The shell-command argument tmux new-session was given */
+		function startCommand(): string {
+			const call = mockSpawn.mock.calls.find((c: unknown[]) => (c[1] as string[])[0] === 'new-session');
+			const args = call?.[1] as string[];
+			return args[args.length - 1];
+		}
+
+		it('starts the shell with history off and the caller env, quoted', async () => {
+			await service.createSession('test-session', '/tmp', undefined, { CREWLY_SESSION_NAME: 'dev-1', CREWLY_ROLE: "it's" });
+			const cmd = startCommand();
+			expect(cmd.startsWith('env ')).toBe(true);
+			expect(cmd).toContain("HISTFILE='/dev/null'");
+			expect(cmd).toContain("SAVEHIST='0'");
+			expect(cmd).toContain("HISTCONTROL='ignorespace'");
+			expect(cmd).toContain("CREWLY_SESSION_NAME='dev-1'");
+			expect(cmd).toContain("CREWLY_ROLE='it'\\''s'");
+			expect(cmd.endsWith(' /bin/bash')).toBe(true);
+		});
+
+		it('refuses a secret in the start env before tmux runs', async () => {
+			await expect(
+				service.createSession('test-session', '/tmp', undefined, { OPENAI_API_KEY: 'sk-TESTfake0123456789abcdefghij' })
+			).rejects.toThrow(/OPENAI_API_KEY/);
+			expect(mockSpawn).not.toHaveBeenCalled();
+		});
+	});
+
 	describe('setEnvironmentVariable (dormant - tmux robosend removed)', () => {
 		it('should throw because tmux_robosend.sh has been removed', async () => {
 			await expect(

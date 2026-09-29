@@ -20,6 +20,7 @@ import { publishCommand } from './commands/publish.js';
 import { seedMarketplaceCommand } from './commands/seed-marketplace.js';
 import { serviceCommand } from './commands/service.js';
 import { backupCommandAndExit } from './commands/backup.js';
+import { securityCommand, type SecurityOptions } from './commands/security.js';
 import { desktopCommand } from './commands/desktop.js';
 import { doctorCommand } from './commands/doctor.js';
 import { updateStatusCommand } from './commands/update-status.js';
@@ -244,6 +245,15 @@ program
   .option('--host <host>', 'Host to use in the --url link (default: first LAN IPv4)')
   .option('--port <port>', 'Port to use in the --url link (default: WEB_PORT or 8787)')
   .action(tokenCommand);
+
+program
+  .command('security <action>')
+  .description('Security maintenance: scrub-logs masks API keys/tokens in session logs and ~/.bash_history / ~/.zsh_history — a dry run (counts only) unless --apply')
+  .option('--apply', 'scrub-logs: rewrite the files (default: dry run)')
+  .option('--no-shell-history', 'scrub-logs: leave shell history files alone')
+  .action(async (action: string, options: SecurityOptions) => {
+    process.exitCode = await securityCommand(action, options);
+  });
 
 program
   .command('tickets <action> [projectPath]')

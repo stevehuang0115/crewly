@@ -268,7 +268,7 @@ describe('SessionCommandHelper', () => {
 	describe('setEnvironmentVariable', () => {
 		it('should write export command', async () => {
 			await helper.setEnvironmentVariable('test-session', 'MY_VAR', 'my_value');
-			expect(mockSession.write).toHaveBeenCalledWith('export MY_VAR="my_value"\r');
+			expect(mockSession.write).toHaveBeenCalledWith(' export MY_VAR="my_value"\r');
 		});
 
 		it.each(['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'SLACK_BOT_TOKEN'])(

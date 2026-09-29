@@ -21,6 +21,7 @@ import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { SESSION_COMMAND_DELAYS, EVENT_DELIVERY_CONSTANTS, TERMINAL_PATTERNS, PLAN_MODE_DISMISS_PATTERNS } from '../../constants.js';
 import { delay } from '../../utils/async.utils.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
+import { quietShellLine } from '../../utils/shell-history.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 
 /**
@@ -451,8 +452,8 @@ export class SessionCommandHelper {
 		assertNotSecretEnvKey(key);
 		const session = this.getSessionOrThrow(sessionName);
 
-		// Export the variable
-		session.write(`export ${key}="${value}"\r`);
+		// Export the variable — space-prefixed so the line stays out of shell history
+		session.write(`${quietShellLine(`export ${key}="${value}"`)}\r`);
 		this.logger.debug('Set environment variable', { sessionName, key });
 		await delay(SESSION_COMMAND_DELAYS.ENV_VAR_DELAY);
 	}

@@ -716,7 +716,7 @@ describe('AgentRegistrationService', () => {
 			);
 		});
 
-		it('should set environment variables after creating session', async () => {
+		it('passes the identity env at spawn and types no export into the shell', async () => {
 			mockSessionHelper.sessionExists
 				.mockReturnValueOnce(false)  // Initial check
 				.mockReturnValueOnce(true);  // After creation check
@@ -733,22 +733,27 @@ describe('AgentRegistrationService', () => {
 			// Session should be created successfully
 			expect(result.success).toBe(true);
 
-			// Environment variables should be set
-			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith(
+			// Identity env goes in with the spawn env…
+			expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
 				'test-session',
-				'CREWLY_SESSION_NAME',
-				'test-session'
+				expect.anything(),
+				expect.objectContaining({
+					env: expect.objectContaining({
+						CREWLY_SESSION_NAME: 'test-session',
+						CREWLY_ROLE: 'developer',
+						CREWLY_API_URL: expect.any(String),
+						CREWLY_PROJECT_PATH: expect.any(String),
+						CREWLY_INSTALL_DIR: expect.any(String),
+					}),
+				}),
 			);
-			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith(
-				'test-session',
-				'CREWLY_ROLE',
-				'developer'
-			);
+			// …and nothing is typed in as `export` (it would echo into scrollback and history)
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 		});
 
 		// #777: agents must reach the instance that launched them, whatever
 		// port it runs on — not the default 8787.
-		it('hands the agent CREWLY_API_URL for the port this instance runs on (spawn env + export)', async () => {
+		it('hands the agent CREWLY_API_URL for the port this instance runs on (spawn env)', async () => {
 			setLocalApiPort(8797);
 			try {
 				mockSessionHelper.sessionExists
@@ -769,16 +774,7 @@ describe('AgentRegistrationService', () => {
 						env: expect.objectContaining({ CREWLY_API_URL: 'http://localhost:8797' }),
 					}),
 				);
-				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith(
-					'test-session',
-					'CREWLY_API_URL',
-					'http://localhost:8797'
-				);
-				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
-					'test-session',
-					'CREWLY_API_URL',
-					'http://localhost:8787'
-				);
+				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 			} finally {
 				resetLocalApiPortForTesting();
 			}
@@ -809,11 +805,12 @@ describe('AgentRegistrationService', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith(
+			expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
 				'test-session',
-				'CLAUDE_CODE_ENABLE_TELEMETRY',
-				'1'
+				expect.anything(),
+				expect.objectContaining({ env: expect.objectContaining({ CLAUDE_CODE_ENABLE_TELEMETRY: '1' }) }),
 			);
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 		});
 
 		it('should NOT set CLAUDE_CODE_ENABLE_TELEMETRY when tokenTracking is disabled', async () => {
@@ -841,11 +838,9 @@ describe('AgentRegistrationService', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
-				'test-session',
-				'CLAUDE_CODE_ENABLE_TELEMETRY',
-				'1'
-			);
+			const spawnEnv = (mockSessionHelper.createSession.mock.calls[0][2] as { env: Record<string, string> }).env;
+			expect(spawnEnv).not.toHaveProperty('CLAUDE_CODE_ENABLE_TELEMETRY');
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 		});
 
 		it('should NOT set CLAUDE_CODE_ENABLE_TELEMETRY for non-claude-code runtimes even when tokenTracking is enabled', async () => {
@@ -872,11 +867,9 @@ describe('AgentRegistrationService', () => {
 			});
 
 			expect(result.success).toBe(true);
-			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalledWith(
-				'test-session',
-				'CLAUDE_CODE_ENABLE_TELEMETRY',
-				'1'
-			);
+			const spawnEnv = (mockSessionHelper.createSession.mock.calls[0][2] as { env: Record<string, string> }).env;
+			expect(spawnEnv).not.toHaveProperty('CLAUDE_CODE_ENABLE_TELEMETRY');
+			expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 		});
 
 		it('#306: should boot an opencode-cli agent through its own runtime service, provision AGENTS.md and inject the same API keys as codex-cli', async () => {
@@ -1066,8 +1059,13 @@ describe('AgentRegistrationService', () => {
 				for (const key of Object.values(FAKE_KEYS)) {
 					expect(sent).not.toContain(key);
 				}
-				// Non-secret CREWLY_* exports are still typed, as before
-				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('keyed-session', 'CREWLY_SESSION_NAME', 'keyed-session');
+				// Non-secret CREWLY_* identity rides in the spawn env too — nothing is typed
+				expect(mockSessionHelper.createSession).toHaveBeenCalledWith(
+					'keyed-session',
+					expect.anything(),
+					expect.objectContaining({ env: expect.objectContaining({ CREWLY_SESSION_NAME: 'keyed-session' }) }),
+				);
+				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 			});
 
 			// codex-cli separately: its registration-prompt delivery (after the keys are
@@ -1115,7 +1113,8 @@ describe('AgentRegistrationService', () => {
 				for (const key of Object.values(FAKE_KEYS)) {
 					expect(sent).not.toContain(key);
 				}
-				expect(mockSessionHelper.setEnvironmentVariable).toHaveBeenCalledWith('keyed-session', 'CREWLY_SESSION_NAME', 'keyed-session');
+				// Identity rides in the spawn env; nothing is typed in as `export`
+				expect(mockSessionHelper.setEnvironmentVariable).not.toHaveBeenCalled();
 			});
 		});
 

@@ -18,6 +18,7 @@ import { PTY_CONSTANTS, API_SECURITY_CONSTANTS } from '../../../constants.js';
 import { LoggerService, ComponentLogger } from '../../core/logger.service.js';
 import { stripNestedClaudeSessionEnv } from '../../agent/runtime-session-recovery.js';
 import { createBareModuleRequire } from '../../../utils/node-require.utils.js';
+import { historyOffSpawnEnv } from '../../../utils/shell-history.js';
 import {
 	ensureSpawnHelperExecutable,
 	findLoadedNodePtyDir,
@@ -334,9 +335,13 @@ export class PtySession implements ISession {
 			rows: options.rows ?? DEFAULT_TERMINAL_ROWS,
 		});
 
-		// Merge process environment with session-specific environment
+		// Merge process environment with session-specific environment.
+		// History-off vars (HISTFILE=/dev/null, …) sit between the two so an
+		// agent shell never writes ~/.bash_history / ~/.zsh_history, while a
+		// caller that passes its own HISTFILE still wins.
 		const sessionEnv: Record<string, string> = {
 			...this.sanitizeEnv(process.env),
+			...historyOffSpawnEnv(),
 			...options.env,
 			// Set TERM for proper terminal emulation
 			TERM: 'xterm-256color',

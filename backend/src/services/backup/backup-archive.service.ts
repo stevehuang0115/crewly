@@ -25,6 +25,9 @@ import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import {
+  BACKUP_EXCLUDED_DIR_NAMES,
+  BACKUP_EXCLUDED_FILE_NAMES,
+  BACKUP_EXCLUDED_FILE_SUFFIXES,
   BACKUP_SCHEMA_VERSION,
   DEFAULT_PROJECT_FILE_EXCLUDES,
   PROJECT_FILES_ARCHIVE_DIR,
@@ -61,12 +64,21 @@ const GLOBAL_EXCLUDE_TOPLEVEL = new Set<string>([
   'chat.db-shm',
 ]);
 
-/** Directory names excluded at ANY depth (runtime/session/log noise). */
-const EXCLUDE_DIR_ANYWHERE = new Set<string>(['sessions', 'logs', '.orchestrator-state']);
+/** Directory names excluded at ANY depth (runtime/session/log noise, incl. logs/sessions PTY transcripts). */
+const EXCLUDE_DIR_ANYWHERE = new Set<string>(BACKUP_EXCLUDED_DIR_NAMES);
 
-/** True for files excluded at any depth (ephemeral session logs). */
-function isExcludedFile(name: string): boolean {
-  return name.endsWith('.jsonl');
+/** Shell history file names excluded at any depth. */
+const EXCLUDE_FILE_NAMES = new Set<string>(BACKUP_EXCLUDED_FILE_NAMES);
+
+/**
+ * True for files excluded at any depth: JSONL transcripts, stray `*.log`
+ * files (raw PTY output can carry secrets) and shell history files.
+ *
+ * @param name - File name (no directory)
+ * @returns True when the file must not be archived
+ */
+export function isExcludedBackupFile(name: string): boolean {
+  return EXCLUDE_FILE_NAMES.has(name) || BACKUP_EXCLUDED_FILE_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
 /** Minimal project record read from projects.json. */
@@ -191,7 +203,7 @@ export class BackupArchiveService {
         const childRel = rel ? `${rel}/${e.name}` : e.name;
         if (e.isDirectory()) {
           await walk(path.join(absDir, e.name), childRel, false);
-        } else if (e.isFile() && !isExcludedFile(e.name)) {
+        } else if (e.isFile() && !isExcludedBackupFile(e.name)) {
           out.push(childRel);
         }
       }
@@ -290,7 +302,7 @@ export class BackupArchiveService {
           if (e.isDirectory() && EXCLUDE_DIR_ANYWHERE.has(e.name)) continue;
           const childRel = rel ? `${rel}/${e.name}` : e.name;
           if (e.isDirectory()) await walk(path.join(absDir, e.name), childRel);
-          else if (e.isFile() && !isExcludedFile(e.name)) {
+          else if (e.isFile() && !isExcludedBackupFile(e.name)) {
             const archivePath = `projects/${proj.id}/.crewly/${childRel}`;
             files.push(await this.stageFile(crewlyDir, childRel, staging, archivePath));
           }

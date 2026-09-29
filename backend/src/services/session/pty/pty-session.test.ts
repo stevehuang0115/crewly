@@ -155,6 +155,54 @@ describe('PtySession', () => {
 			}
 		});
 
+		it('spawns every PTY with shell history off and the caller env (CREWLY_*) intact', () => {
+			const previous = process.env.HISTFILE;
+			process.env.HISTFILE = '/home/me/.bash_history'; // inherited from the backend's own shell
+			let spawnedEnv: Record<string, string> | undefined;
+			const restoreSpawn = _setPtySpawnImplForTesting(((
+				_file: string,
+				_args: string | string[],
+				options: pty.IPtyForkOptions,
+			): pty.IPty => {
+				spawnedEnv = options.env as Record<string, string>;
+				return makeStubPty();
+			}) as unknown as typeof pty.spawn);
+			try {
+				session = new PtySession('test-session', TEST_CWD, createTestOptions({
+					env: { CREWLY_SESSION_NAME: 'dev-1', CREWLY_ROLE: 'developer' },
+				}));
+				expect(spawnedEnv?.HISTFILE).toBe('/dev/null');
+				expect(spawnedEnv?.SAVEHIST).toBe('0');
+				expect(spawnedEnv?.HISTCONTROL).toBe('ignorespace');
+				// HISTSIZE/HISTFILESIZE=0 could truncate the user's own history file
+				expect(spawnedEnv).not.toHaveProperty('HISTFILESIZE');
+				expect(spawnedEnv?.CREWLY_SESSION_NAME).toBe('dev-1');
+				expect(spawnedEnv?.CREWLY_ROLE).toBe('developer');
+			} finally {
+				restoreSpawn();
+				if (previous === undefined) delete process.env.HISTFILE;
+				else process.env.HISTFILE = previous;
+			}
+		});
+
+		it('lets an explicit caller HISTFILE win over the history-off default', () => {
+			let spawnedEnv: Record<string, string> | undefined;
+			const restoreSpawn = _setPtySpawnImplForTesting(((
+				_file: string,
+				_args: string | string[],
+				options: pty.IPtyForkOptions,
+			): pty.IPty => {
+				spawnedEnv = options.env as Record<string, string>;
+				return makeStubPty();
+			}) as unknown as typeof pty.spawn);
+			try {
+				session = new PtySession('test-session', TEST_CWD, createTestOptions({ env: { HISTFILE: '/tmp/h' } }));
+				expect(spawnedEnv?.HISTFILE).toBe('/tmp/h');
+			} finally {
+				restoreSpawn();
+			}
+		});
+
 		// Regression: 2026-05-23 incident — node-pty's "posix_spawnp failed"
 		// was bubbling up to the user on transient process-table pressure.
 		// We now retry up to 4 times with backoff (150/400/1000 ms).

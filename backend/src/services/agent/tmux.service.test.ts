@@ -125,7 +125,8 @@ describe('TmuxService', () => {
 			expect(mockTmuxCommand.createSession).toHaveBeenCalledWith(
 				'orchestrator',
 				'/test/project',
-				'main'
+				'main',
+				{ CREWLY_SESSION_NAME: 'orchestrator', CREWLY_ROLE: 'orchestrator' }
 			);
 		});
 
@@ -259,7 +260,12 @@ describe('TmuxService', () => {
 			expect(result.success).toBe(true);
 			expect(result.sessionName).toBe('test-dev');
 			expect(result.message).toBe('Team member session created successfully');
-			expect(mockTmuxCommand.createSession).toHaveBeenCalledWith('test-dev', '/test/project');
+			expect(mockTmuxCommand.createSession).toHaveBeenCalledWith('test-dev', '/test/project', undefined, {
+				CREWLY_SESSION_NAME: 'test-dev',
+				CREWLY_ROLE: 'developer',
+			});
+			// Identity rides in the spawn env; nothing is typed in as `export`
+			expect(mockTmuxCommand.setEnvironmentVariable).not.toHaveBeenCalled();
 			expect(mockAgentRegistration.initializeAgentWithRegistration).toHaveBeenCalledWith(
 				'test-dev',
 				'developer',
