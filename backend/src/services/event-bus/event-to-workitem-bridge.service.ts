@@ -150,10 +150,8 @@ export function withRejectionFeedback(
   const base = brief === undefined ? undefined : stripRejectionFeedback(brief);
   const note = feedback?.trim();
   if (!note) return base;
-  return (
-    `${REJECTION_FEEDBACK_HEADING}${attempt})\n\n${note}\n\n---\n` +
-    `${ORIGINAL_BRIEF_HEADING}\n\n${base ?? ''}`
-  ).trimEnd();
+  const head = `${REJECTION_FEEDBACK_HEADING}${attempt})\n\n${note}`;
+  return base ? `${head}\n\n---\n${ORIGINAL_BRIEF_HEADING}\n\n${base}` : head;
 }
 
 /**
@@ -605,7 +603,9 @@ export class EventToWorkItemBridge {
       // The reviewer's verdict comment lands on the source's `error`; without
       // it the retry is the same brief again and the worker repeats itself.
       description: withRejectionFeedback(sourceWI.description, sourceWI.error, retryAttempt),
-      briefMarkdown: withRejectionFeedback(sourceWI.briefMarkdown, sourceWI.error, retryAttempt),
+      briefMarkdown: sourceWI.briefMarkdown === undefined
+        ? undefined
+        : withRejectionFeedback(sourceWI.briefMarkdown, sourceWI.error, retryAttempt),
       sourceWI,
       missionId: sourceWI.missionId,
       requestId: sourceWI.requestId,
