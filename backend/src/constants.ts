@@ -1417,8 +1417,57 @@ export const WORKTREE_JANITOR_CONSTANTS = {
 	INTERVAL_MS: 30 * 60 * 1000,
 	/** Delay before the first automatic run after startup (10 minutes). */
 	FIRST_RUN_DELAY_MS: 10 * 60 * 1000,
-	/** A worktree touched more recently than this is kept (2 hours). */
+	/**
+	 * A worktree in a known agent location (`<repo>/.claude/worktrees/`,
+	 * `<tmp>/crewly-worktrees/`, or a `worktree-agent-*` branch) touched more
+	 * recently than this is kept (2 hours).
+	 */
 	MIN_IDLE_MS: 2 * 60 * 60 * 1000,
+	/** Any other linked worktree touched more recently than this is kept (24 hours). */
+	MIN_IDLE_OTHER_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A Claude Code session scratch dir (`<tmp>/claude-<uid>/<slug>/<uuid>/`)
+	 * touched more recently than this is kept (3 days).
+	 */
+	SCRATCH_MIN_IDLE_MS: 3 * 24 * 60 * 60 * 1000,
+	/** In low-disk mode every idle threshold is divided by this factor… */
+	LOW_DISK_IDLE_DIVISOR: 2,
+	/** …but never drops below this (2 hours). */
+	LOW_DISK_MIN_IDLE_FLOOR_MS: 2 * 60 * 60 * 1000,
+	/** Prefix of Claude Code's per-user temp root under the temp dir (`claude-<uid>`). */
+	SCRATCH_ROOT_PREFIX: 'claude-',
+	/** Extra temp dirs where the per-user Claude root may live besides os.tmpdir(). */
+	SCRATCH_TMP_DIRS: ['/private/tmp', '/tmp'] as readonly string[],
+	/** Session dir name pattern under `<root>/<project-slug>/` (a UUID). */
+	SCRATCH_SESSION_DIR_PATTERN: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+	/** How deep under a session dir git repos are searched for. */
+	SCRATCH_REPO_SEARCH_DEPTH: 3,
+	/** How many levels of a session dir count for its "last touched" time. */
+	SCRATCH_MTIME_DEPTH: 2,
+	/** Directory names never descended into while searching for repos. */
+	SEARCH_SKIP_DIRS: ['node_modules', '.git'] as readonly string[],
+	/** How deep under each temp root linked worktrees are searched for (repo discovery). */
+	DISCOVERY_DEPTH: 4,
+	/** Cap on directories visited per temp root during repo discovery. */
+	DISCOVERY_MAX_DIRS: 20_000,
+	/** Interval of the low-disk check (10 minutes). */
+	LOW_DISK_CHECK_INTERVAL_MS: 10 * 60 * 1000,
+	/** Free space below this on the CREWLY_HOME volume triggers a low-disk pass (15 GB). */
+	LOW_DISK_BYTES: 15 * 1024 ** 3,
+	/** Free space below this is urgent (5 GB). */
+	CRITICAL_DISK_BYTES: 5 * 1024 ** 3,
+	/** A low-disk check does not start another pass within this time of the last one (30 minutes). */
+	LOW_DISK_PASS_GAP_MS: 30 * 60 * 1000,
+	/** Owner notice about low disk at most this often (24 hours). */
+	LOW_DISK_NOTIFY_INTERVAL_MS: 24 * 60 * 60 * 1000,
+	/** Urgent owner notice (below CRITICAL_DISK_BYTES) at most this often (6 hours). */
+	CRITICAL_DISK_NOTIFY_INTERVAL_MS: 6 * 60 * 60 * 1000,
+	/** How many of the biggest kept items the owner notice lists. */
+	LOW_DISK_REPORT_ITEMS: 5,
+	/** Timeout of one `du -sk` size probe (ms). */
+	DU_TIMEOUT_MS: 60_000,
+	/** State file under CREWLY_HOME remembering when the owner was last told about low disk. */
+	STATE_FILENAME: 'disk-janitor-state.json',
 	/**
 	 * Directory, relative to the repo's main worktree, where agent tools
 	 * (Claude Code subagents, Crewly agents) create per-task worktrees.
@@ -1436,8 +1485,8 @@ export const WORKTREE_JANITOR_CONSTANTS = {
 	MANAGED_WORKTREE_DIR: '.crewly/worktrees',
 	/**
 	 * Branch-name prefixes that only agents create. A worktree elsewhere on
-	 * disk is eligible only when its branch starts with one of these.
-	 * `worktree-agent-` is Claude Code's automatic subagent branch.
+	 * disk with such a branch counts as an agent location (2 h idle threshold
+	 * instead of 24 h). `worktree-agent-` is Claude Code's automatic subagent branch.
 	 */
 	AGENT_BRANCH_PREFIXES: ['worktree-agent-'] as readonly string[],
 	/** Branches that are never deleted, whatever the verdict. */

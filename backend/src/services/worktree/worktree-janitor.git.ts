@@ -39,7 +39,8 @@ export interface RunCommandOptions {
  * Run a command without a shell and never throw.
  *
  * Git and gh are told never to prompt (no credential dialogs, no pager), so a
- * periodic background job cannot hang on input.
+ * periodic background job cannot hang on input, and git takes no optional
+ * locks (a status never rewrites the index).
  *
  * @param file - Executable (e.g. `git`, `gh`, or an absolute path)
  * @param args - Arguments
@@ -66,6 +67,9 @@ export function runCommand(file: string, args: string[], options: RunCommandOpti
 						...process.env,
 						GIT_TERMINAL_PROMPT: '0',
 						GIT_PAGER: 'cat',
+						// `git status` must not rewrite the index: that would bump its
+						// mtime (resetting the idle clock) and contend with agents' git.
+						GIT_OPTIONAL_LOCKS: '0',
 						GH_PROMPT_DISABLED: '1',
 						GH_NO_UPDATE_NOTIFIER: '1',
 						...(options.env ?? {}),
@@ -269,4 +273,167 @@ export function isJanitorDisabled(env: NodeJS.ProcessEnv = process.env): boolean
 	const raw = env[WORKTREE_JANITOR_CONSTANTS.ENV_VAR];
 	if (raw === undefined) return false;
 	return WORKTREE_JANITOR_CONSTANTS.DISABLED_VALUES.includes(raw.trim().toLowerCase());
+}
+
+/**
+ * Main worktree of the repo a linked worktree belongs to, read from the
+ * worktree's `.git` file (`gitdir: <main>/.git/worktrees/<name>`). Returns
+ * null for anything else: a `.git` directory (a normal clone), a submodule
+ * (`gitdir: …/.git/modules/…`), or an unreadable file.
+ *
+ * @param dir - Directory that may be a linked worktree
+ * @returns Absolute path of the main worktree, or null
+ *
+ * @example
+ * ```typescript
+ * // /tmp/visa-cm-wt/.git contains "gitdir: /src/ce-core/.git/worktrees/visa-cm-wt"
+ * mainRepoOfLinkedWorktree('/tmp/visa-cm-wt'); // '/src/ce-core'
+ * ```
+ */
+export function mainRepoOfLinkedWorktree(dir: string): string | null {
+	try {
+		const dotGit = path.join(dir, '.git');
+		if (!fs.lstatSync(dotGit).isFile()) return null;
+		const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
+		if (!m) return null;
+		const gitDir = path.resolve(dir, m[1]);
+		const worktreesDir = path.dirname(gitDir);
+		if (path.basename(worktreesDir) !== 'worktrees') return null;
+		const commonDir = path.dirname(worktreesDir);
+		if (path.basename(commonDir) !== '.git') return null;
+		return path.dirname(commonDir);
+	} catch {
+		return null;
+	}
+}
+
+/** A git checkout found on disk. */
+export interface FoundRepo {
+	/** Directory holding `.git` */
+	path: string;
+	/** `dir` for a `.git` directory (clone / main worktree), `file` for a `.git` file (linked worktree or submodule) */
+	kind: 'dir' | 'file';
+}
+
+/**
+ * Find git checkouts under `root` without following symlinks. A directory
+ * with a `.git` directory or file is a checkout and is not descended into;
+ * `node_modules` and `.git` are never descended into.
+ *
+ * @param root - Directory to search (itself included, at depth 0)
+ * @param maxDepth - Deepest level searched (root = 0)
+ * @param maxDirs - Stop after visiting this many directories
+ * @returns Checkouts found, in walk order
+ */
+export function findGitCheckouts(root: string, maxDepth: number, maxDirs = Number.POSITIVE_INFINITY): FoundRepo[] {
+	const out: FoundRepo[] = [];
+	let visited = 0;
+	const walk = (dir: string, depth: number): void => {
+		if (visited >= maxDirs) return;
+		visited++;
+		let dotGit: fs.Stats | null = null;
+		try {
+			dotGit = fs.lstatSync(path.join(dir, '.git'));
+		} catch {
+			// not a checkout
+		}
+		if (dotGit && (dotGit.isDirectory() || dotGit.isFile())) {
+			out.push({ path: dir, kind: dotGit.isDirectory() ? 'dir' : 'file' });
+			return;
+		}
+		if (depth >= maxDepth) return;
+		let entries: fs.Dirent[];
+		try {
+			entries = fs.readdirSync(dir, { withFileTypes: true });
+		} catch {
+			return;
+		}
+		for (const e of entries) {
+			// Dirent.isDirectory() is false for symlinks, so links are never followed.
+			if (!e.isDirectory() || WORKTREE_JANITOR_CONSTANTS.SEARCH_SKIP_DIRS.includes(e.name)) continue;
+			walk(path.join(dir, e.name), depth + 1);
+		}
+	};
+	walk(root, 0);
+	return out;
+}
+
+/**
+ * Main worktrees of every repo that owns a linked worktree somewhere under
+ * the given roots (e.g. `/tmp/claude-501/visa-cm-wt` → `~/src/ce-core`), so
+ * repos that are not registered projects still get their temp worktrees
+ * cleaned.
+ *
+ * @param roots - Temp roots to scan (missing roots are skipped)
+ * @returns De-duplicated main-worktree paths
+ */
+export function discoverLinkedWorktreeRepos(roots: readonly string[]): string[] {
+	const out = new Set<string>();
+	for (const root of roots) {
+		if (!fs.existsSync(root)) continue;
+		const found = findGitCheckouts(root, WORKTREE_JANITOR_CONSTANTS.DISCOVERY_DEPTH, WORKTREE_JANITOR_CONSTANTS.DISCOVERY_MAX_DIRS);
+		for (const f of found) {
+			if (f.kind !== 'file') continue;
+			const main = mainRepoOfLinkedWorktree(f.path);
+			if (main && fs.existsSync(main)) out.add(main);
+		}
+	}
+	return [...out];
+}
+
+/**
+ * Newest mtime (ms) of `dir` and everything within `depth` levels below it,
+ * using lstat (symlinks are not followed).
+ *
+ * @param dir - Directory
+ * @param depth - Levels below `dir` to include (0 = only `dir`)
+ * @returns Newest mtime in ms, or null when `dir` cannot be stat'ed
+ */
+export function latestTreeMtimeMs(dir: string, depth: number): number | null {
+	let newest: number | null = null;
+	const visit = (p: string, level: number): void => {
+		let st: fs.Stats;
+		try {
+			st = fs.lstatSync(p);
+		} catch {
+			return;
+		}
+		if (newest === null || st.mtimeMs > newest) newest = st.mtimeMs;
+		if (level >= depth || !st.isDirectory()) return;
+		let names: string[];
+		try {
+			names = fs.readdirSync(p);
+		} catch {
+			return;
+		}
+		for (const n of names) visit(path.join(p, n), level + 1);
+	};
+	visit(dir, 0);
+	return newest;
+}
+
+/**
+ * Disk usage of a path in bytes (`du -sk`, which does not follow symlinks).
+ *
+ * @param p - File or directory
+ * @returns Bytes, or null when `du` failed or timed out
+ */
+export async function diskUsageBytes(p: string): Promise<number | null> {
+	const r = await runCommand('du', ['-sk', p], { timeoutMs: WORKTREE_JANITOR_CONSTANTS.DU_TIMEOUT_MS });
+	const kb = Number.parseInt(r.stdout.trim().split(/\s+/)[0] ?? '', 10);
+	return Number.isFinite(kb) ? kb * 1024 : null;
+}
+
+/**
+ * Human-readable size (`1.8 GB`, `512 MB`).
+ *
+ * @param bytes - Size in bytes
+ * @returns Short string with one decimal for GB
+ */
+export function formatBytes(bytes: number): string {
+	const gb = bytes / 1024 ** 3;
+	if (gb >= 1) return `${gb.toFixed(1)} GB`;
+	const mb = bytes / 1024 ** 2;
+	if (mb >= 1) return `${Math.round(mb)} MB`;
+	return `${Math.round(bytes / 1024)} KB`;
 }

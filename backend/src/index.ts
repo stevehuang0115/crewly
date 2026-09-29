@@ -3365,10 +3365,24 @@ void (async () => {
 				});
 			}
 
-			// Worktree janitor (non-critical): removes finished agent worktrees
-			// (merged + clean + idle >2h + nobody inside). Kill switch:
+			// Disk janitor (non-critical): removes finished worktrees (merged +
+			// clean + idle + nobody inside), stale Claude Code scratch dirs, and
+			// watches free disk space — low-disk notices go to the owner through
+			// the usual Slack owner-notification path. Kill switch:
 			// CREWLY_WORKTREE_JANITOR=0.
 			try {
+				WorktreeJanitorService.getInstance().setLowDiskNotifier(async ({ title, message, urgent }) => {
+					const slack = getSlackService();
+					if (!slack.isConnected()) return false;
+					await slack.sendNotification({
+						type: 'alert',
+						title,
+						message,
+						urgency: urgent ? 'critical' : 'normal',
+						timestamp: new Date().toISOString(),
+					});
+					return true;
+				});
 				if (WorktreeJanitorService.getInstance().start()) {
 					this.logger.info('WorktreeJanitorService scheduled');
 				} else {
