@@ -3,7 +3,7 @@
  *
  * Endpoints, copy and link builders for the steps after the harness
  * (specs/onboarding-harness-login.md, Phase 3): first team → first task →
- * Crewly Cloud → Slack, on `/setup` and the dashboard "开始使用" card.
+ * Crewly Cloud → Slack, on `/setup` and the dashboard "Get started" card.
  *
  * @module constants/onboarding-checklist.constants
  */
@@ -42,26 +42,26 @@ export const AUTH_CALLBACK_NEXT_PARAM = 'next';
 /** Crewly Cloud's Google sign-in start (redirects back to any http(s) callback with ?token=&refreshToken=). */
 export const CLOUD_GOOGLE_START_URL = `${CLOUD_API_BASE}/cloud/google/start`;
 
-/** Chinese-first title per checklist step. */
+/** Title per checklist step. */
 export const CHECKLIST_STEP_LABELS: Record<ChecklistStepId, string> = {
-  harness: '登录编程助手',
-  team: '建第一个团队',
-  first_task: '派第一件事',
-  cloud: '连接 Crewly Cloud',
-  slack: '连接 Slack',
+  harness: 'Sign in to a coding harness',
+  team: 'Create your first team',
+  first_task: 'Give it a first task',
+  cloud: 'Connect Crewly Cloud',
+  slack: 'Connect Slack',
 };
 
 /** One-line hint per checklist step (shown until the step is done). */
 export const CHECKLIST_STEP_HINTS: Record<ChecklistStepId, string> = {
-  harness: 'AI 员工靠它干活，先装好并登录。',
-  team: '推荐个人助理，也可以选营销团队或先空着。',
-  first_task: '一句话告诉团队要做什么。',
-  cloud: '手机随时管、自动备份，Slack 也靠它。',
-  slack: '在 Slack 里直接和团队说话。',
+  harness: 'Your AI teammates work through it. Install it and sign in first.',
+  team: 'Personal Assistant is recommended; you can also pick Marketing or start empty.',
+  first_task: 'Tell the team what to do in one sentence.',
+  cloud: 'Manage from your phone, automatic backups, and needed for Slack.',
+  slack: 'Talk to your team right from Slack.',
 };
 
 /** Short labels of the whole `/setup` flow (harness steps + checklist steps). */
-export const SETUP_FLOW_STEPS: readonly string[] = ['编程助手', 'Orc', '登录', '团队', '第一件事', 'Cloud', 'Slack', '完成'];
+export const SETUP_FLOW_STEPS: readonly string[] = ['Harness', 'Orc', 'Sign in', 'Team', 'First task', 'Cloud', 'Slack', 'Done'];
 
 /**
  * Whether a path is a same-origin path that is safe to navigate to

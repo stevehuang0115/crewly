@@ -8,7 +8,7 @@
 import React from 'react';
 import { render, screen, fireEvent, act } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { CloudDevicePairingPanel, PAIRING_LABELS_ZH } from './CloudDevicePairingPanel';
+import { CloudDevicePairingPanel } from './CloudDevicePairingPanel';
 import { cloudDevicePairingService } from '../services/cloud-device-pairing.service';
 import { CLOUD_DEVICE_PAIRING_POLL_MS } from '../constants/cloud.constants';
 
@@ -62,13 +62,13 @@ describe('CloudDevicePairingPanel', () => {
     expect(onConnected).toHaveBeenCalledWith('free');
   });
 
-  it('autoStart begins immediately (setup step, Chinese copy)', async () => {
+  it('autoStart begins immediately (setup step)', async () => {
     svc.start.mockResolvedValue(PENDING);
     await act(async () => {
-      render(<CloudDevicePairingPanel autoStart labels={PAIRING_LABELS_ZH} />);
+      render(<CloudDevicePairingPanel autoStart />);
     });
     expect(svc.start).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('等待你在手机上批准…')).toBeInTheDocument();
+    expect(screen.getByText('Waiting for you to approve on your phone…')).toBeInTheDocument();
   });
 
   it('cancel stops waiting and offers a new link', async () => {

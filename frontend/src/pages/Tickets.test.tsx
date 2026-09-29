@@ -69,18 +69,18 @@ describe('Tickets page', () => {
   it('renders the six columns with counts and cards in the right column', async () => {
     render(<Tickets now={NOW} />);
     const review = await screen.findByTestId('tickets-column-to_review');
-    const labels = ['想法', '待处理', '进行中', '阻塞', '待验收', '已完成'];
+    const labels = ['Ideas', 'To do', 'In progress', 'Blocked', 'To review', 'Done'];
     for (const l of labels) expect(screen.getByRole('region', { name: l })).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: '已取消' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Cancelled' })).toBeNull();
 
     expect(within(review).getByText('修登录按钮')).toBeInTheDocument();
     expect(within(review).getByText('已修复')).toBeInTheDocument();
-    expect(within(review).getByText('3天后自动验收')).toBeInTheDocument();
-    expect(within(review).getByText('打回 ×1')).toBeInTheDocument();
+    expect(within(review).getByText('Auto-accepts in 3 days')).toBeInTheDocument();
+    expect(within(review).getByText('Sent back ×1')).toBeInTheDocument();
     expect(within(screen.getByTestId('tickets-column-todo')).getByText('写周报')).toBeInTheDocument();
     // Server count, not the number of rows on the page.
     expect(within(screen.getByTestId('tickets-column-done')).getByText('5')).toBeInTheDocument();
-    expect(within(screen.getByTestId('tickets-column-blocked')).getByText('暂无')).toBeInTheDocument();
+    expect(within(screen.getByTestId('tickets-column-blocked')).getByText('Nothing here')).toBeInTheDocument();
   });
 
   it('keeps horizontal scrolling inside the board container', async () => {
@@ -93,7 +93,7 @@ describe('Tickets page', () => {
   it('shows an empty state when there are no tickets', async () => {
     mocked.fetchTickets.mockResolvedValue({ tickets: [], columns: {} });
     render(<Tickets />);
-    expect(await screen.findByText('还没有工单')).toBeInTheDocument();
+    expect(await screen.findByText('No tickets yet')).toBeInTheDocument();
   });
 
   it('shows a load error', async () => {
@@ -105,14 +105,14 @@ describe('Tickets page', () => {
   it('filters by kind', async () => {
     render(<Tickets />);
     await screen.findByTestId('tickets-board');
-    fireEvent.click(screen.getByRole('radio', { name: '问题' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Issue' }));
     await waitFor(() => expect(mocked.fetchTickets).toHaveBeenLastCalledWith({ kind: 'issue' }));
   });
 
   it('searches with q after a debounce', async () => {
     render(<Tickets />);
     await screen.findByTestId('tickets-board');
-    fireEvent.change(screen.getByLabelText('搜索工单…'), { target: { value: '登录' } });
+    fireEvent.change(screen.getByLabelText('Search tickets…'), { target: { value: '登录' } });
     await waitFor(() => expect(mocked.fetchTickets).toHaveBeenLastCalledWith({ q: '登录' }), {
       timeout: TICKETS_SEARCH_DEBOUNCE_MS * 5,
     });
@@ -127,7 +127,7 @@ describe('Tickets page', () => {
     expect(mocked.fetchTickets.mock.calls.length).toBeGreaterThan(before);
   });
 
-  it('opens the detail drawer on a card and refreshes after 验过了', async () => {
+  it('opens the detail drawer on a card and refreshes after Verified', async () => {
     render(<Tickets now={NOW} />);
     fireEvent.click(await screen.findByRole('button', { name: /TKT-002/ }));
     const drawer = await screen.findByTestId('ticket-detail-drawer');
@@ -135,19 +135,19 @@ describe('Tickets page', () => {
     expect(await within(drawer).findByDisplayValue('修登录按钮')).toBeInTheDocument();
 
     const callsBefore = mocked.fetchTickets.mock.calls.length;
-    fireEvent.click(within(drawer).getByRole('button', { name: '验过了' }));
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Verified' }));
     await waitFor(() => expect(mocked.verifyTicket).toHaveBeenCalledWith('b'));
     await waitFor(() => expect(mocked.fetchTickets.mock.calls.length).toBeGreaterThan(callsBefore));
     await waitFor(() => expect(screen.queryByTestId('ticket-detail-drawer')).toBeNull());
   });
 
-  it('打回 from the board requires a reason', async () => {
+  it('Send back from the board requires a reason', async () => {
     render(<Tickets now={NOW} />);
     fireEvent.click(await screen.findByRole('button', { name: /TKT-002/ }));
     const drawer = await screen.findByTestId('ticket-detail-drawer');
-    fireEvent.click(await within(drawer).findByRole('button', { name: '打回' }));
-    fireEvent.click(within(drawer).getByRole('button', { name: '确认打回' }));
-    expect(await within(drawer).findByText('请填写打回原因')).toBeInTheDocument();
+    fireEvent.click(await within(drawer).findByRole('button', { name: 'Send back' }));
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Confirm send back' }));
+    expect(await within(drawer).findByText('Please give a reason for sending it back')).toBeInTheDocument();
     expect(mocked.rejectTicket).not.toHaveBeenCalled();
   });
 });

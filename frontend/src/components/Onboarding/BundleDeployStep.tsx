@@ -135,22 +135,22 @@ export const BundleDeployStep: React.FC<BundleDeployStepProps> = ({ templateId, 
 
   if (loadError) {
     return (
-      <Alert variant="error" title="无法读取这个方案">
+      <Alert variant="error" title="Couldn't load this bundle">
         <div className="space-y-2">
           <p>{loadError}</p>
           <div className="flex gap-2">
             <Button type="button" size="sm" variant="secondary" icon={RefreshCw} onClick={() => void load()}>
-              重试
+              Retry
             </Button>
             <Button type="button" size="sm" variant="ghost" icon={ArrowLeft} onClick={onBack}>
-              换一个
+              Choose another
             </Button>
           </div>
         </div>
       </Alert>
     );
   }
-  if (!bundle) return <LoadingSpinner centered text="正在读取方案…" />;
+  if (!bundle) return <LoadingSpinner centered text="Loading bundle…" />;
 
   if (deployment) {
     const finished = isDeploymentFinished(deployment);
@@ -159,7 +159,7 @@ export const BundleDeployStep: React.FC<BundleDeployStepProps> = ({ templateId, 
     return (
       <div className="space-y-4" data-testid="bundle-progress">
         <p className="text-sm text-text-secondary-dark">
-          {finished ? `「${bundle.label}」已部署。` : `正在部署「${bundle.label}」…`}
+          {finished ? `"${bundle.label}" is deployed.` : `Deploying "${bundle.label}"…`}
         </p>
         <ul className="space-y-2">
           {deployment.steps.map((step) => (
@@ -174,15 +174,15 @@ export const BundleDeployStep: React.FC<BundleDeployStepProps> = ({ templateId, 
           ))}
         </ul>
         {toConnect.length > 0 && (
-          <Alert variant="info" size="sm" title="还要连上这些服务（手机上也能点）">
+          <Alert variant="info" size="sm" title="Connect these services too (you can do it from your phone)">
             <ul className="space-y-1" data-testid="bundle-connect-list">
               {toConnect.map((c) => (
                 <li key={c.id}>
                   <a className="text-primary underline" href={c.connectPath}>
                     {c.id}
-                    {c.products.length > 0 ? `（${c.products.join('、')}）` : ''}
+                    {c.products.length > 0 ? ` (${c.products.join(', ')})` : ''}
                   </a>
-                  {c.required ? '' : '（可选）'}：{c.why}
+                  {c.required ? '' : ' (optional)'}: {c.why}
                 </li>
               ))}
             </ul>
@@ -197,11 +197,11 @@ export const BundleDeployStep: React.FC<BundleDeployStepProps> = ({ templateId, 
           <div className="flex flex-col gap-2 sm:flex-row">
             {hasFailures && (
               <Button type="button" variant="secondary" icon={RefreshCw} loading={submitting} onClick={() => void retry()} data-testid="bundle-retry">
-                重试出错的步骤
+                Retry failed steps
               </Button>
             )}
             <Button type="button" fullWidth onClick={finish} data-testid="bundle-finish">
-              下一步
+              Next
             </Button>
           </div>
         )}
@@ -220,7 +220,7 @@ export const BundleDeployStep: React.FC<BundleDeployStepProps> = ({ templateId, 
         <p className="mt-2 whitespace-pre-line text-sm text-text-secondary-dark">{bundle.ownerSummary}</p>
         {bundle.ownerDoes.length > 0 && (
           <div className="mt-2 text-sm text-text-secondary-dark">
-            <p className="font-medium text-text-primary-dark">你需要做的：</p>
+            <p className="font-medium text-text-primary-dark">What you need to do:</p>
             <ul className="list-disc pl-5">
               {bundle.ownerDoes.map((line) => (
                 <li key={line}>{line}</li>
@@ -229,19 +229,19 @@ export const BundleDeployStep: React.FC<BundleDeployStepProps> = ({ templateId, 
           </div>
         )}
         <p className="mt-2 text-xs text-text-secondary-dark">
-          成员：{bundle.teams.flatMap((t) => t.members.map((m) => `${m.name}（${m.title}）`)).join('、')}
+          Members: {bundle.teams.flatMap((t) => t.members.map((m) => `${m.name} (${m.title})`)).join(', ')}
         </p>
       </div>
       <BundleQuestionsForm
         questions={bundle.questions}
-        submitLabel={`部署「${bundle.label}」`}
+        submitLabel={`Deploy "${bundle.label}"`}
         submitting={submitting}
         error={error}
         serverProblems={problems}
         onSubmit={(answers) => void deploy(answers)}
       />
       <Button type="button" variant="ghost" icon={ArrowLeft} onClick={onBack}>
-        换一个
+        Choose another
       </Button>
     </div>
   );

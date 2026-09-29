@@ -4000,12 +4000,12 @@ export const ONBOARDING_CONSTANTS = {
 	/** Display copy for the Blank starter (templates carry their own) */
 	BLANK_STARTER: {
 		NAME: 'Blank',
-		LABEL: '空白',
-		TAGLINE: '只有 Orc（总调度），先不建团队。需要时让 Orc 帮你组队。',
+		LABEL: 'Blank',
+		TAGLINE: 'Just the Orc (the orchestrator), no team yet. Ask the Orc to put a team together when you need one.',
 		SUGGESTIONS: [
-			'帮我想想：我每周重复做的事里，哪些可以交给 AI 团队？',
-			'我想做一个小项目，先问我几个问题，再建议我需要什么样的团队。',
-			'介绍一下你能做什么，给我 3 个今天就能开始的例子。',
+			'Help me think: which of the things I repeat every week could an AI team take over?',
+			'I want to start a small project. Ask me a few questions first, then suggest the team I need.',
+			'Tell me what you can do, with 3 examples I could start today.',
 		] as readonly string[],
 	},
 	/** Longest first task accepted */

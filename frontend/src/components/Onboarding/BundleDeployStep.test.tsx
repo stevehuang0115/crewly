@@ -84,9 +84,9 @@ describe('BundleDeployStep', () => {
     render(<BundleDeployStep templateId="smb-marketing-team" onBack={vi.fn()} onDone={vi.fn()} />);
     expect(await screen.findByText('每天早上给你一份简报')).toBeInTheDocument();
     expect(screen.getByText('在手机上点头')).toBeInTheDocument();
-    expect(screen.getByText(/Ava（营销负责人）/)).toBeInTheDocument();
-    expect(screen.getByText('Crewly Agent（DeepSeek）')).toBeInTheDocument();
-    expect(screen.getByText('部署「小老板营销团队」')).toBeInTheDocument();
+    expect(screen.getByText(/Ava \(营销负责人\)/)).toBeInTheDocument();
+    expect(screen.getByText('Crewly Agent (DeepSeek)')).toBeInTheDocument();
+    expect(screen.getByText('Deploy "小老板营销团队"')).toBeInTheDocument();
   });
 
   it('deploys with the answers, follows the job and hands the main team back', async () => {
@@ -96,10 +96,10 @@ describe('BundleDeployStep', () => {
     render(<BundleDeployStep templateId="smb-marketing-team" onBack={vi.fn()} onDone={onDone} pollIntervalMs={5} />);
     await answerAndDeploy();
     expect(svc.apply).toHaveBeenCalledWith('smb-marketing-team', { business_name: '小周咖啡' });
-    expect(screen.getByText('正在部署「小老板营销团队」…')).toBeInTheDocument();
+    expect(screen.getByText('Deploying "小老板营销团队"…')).toBeInTheDocument();
     await waitFor(() => expect(svc.getJob).toHaveBeenCalledWith('job-1'));
-    expect(await screen.findByText('「小老板营销团队」已部署。')).toBeInTheDocument();
-    expect(screen.getByTestId('bundle-step-slack')).toHaveTextContent('稍后自动完成');
+    expect(await screen.findByText('"小老板营销团队" is deployed.')).toBeInTheDocument();
+    expect(screen.getByTestId('bundle-step-slack')).toHaveTextContent('Finishes automatically later');
     expect(screen.getByText('canva')).toHaveAttribute('href', '/connections?platform=canva');
     fireEvent.click(screen.getByTestId('bundle-finish'));
     expect(onDone).toHaveBeenCalledWith({
@@ -137,11 +137,11 @@ describe('BundleDeployStep', () => {
     const onBack = vi.fn();
     render(<BundleDeployStep templateId="x" onBack={onBack} onDone={vi.fn()} />);
     expect(await screen.findByText('没有找到方案')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('换一个'));
+    fireEvent.click(screen.getByText('Choose another'));
     expect(onBack).toHaveBeenCalled();
     svc.getBundle.mockResolvedValue({ bundle: BUNDLE, deployment: null });
     await act(async () => {
-      fireEvent.click(screen.getByText('重试'));
+      fireEvent.click(screen.getByText('Retry'));
     });
     expect(await screen.findByText('每天早上给你一份简报')).toBeInTheDocument();
   });

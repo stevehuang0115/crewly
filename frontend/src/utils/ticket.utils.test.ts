@@ -46,12 +46,12 @@ describe('groupTicketsByColumn', () => {
 describe('daysUntilAutoAccept / autoAcceptLabel', () => {
   it('rounds partial days up', () => {
     expect(daysUntilAutoAccept('2026-09-26T12:00:00Z', NOW)).toBe(3);
-    expect(autoAcceptLabel('2026-09-27T00:00:00Z', NOW)).toBe('3天后自动验收');
+    expect(autoAcceptLabel('2026-09-27T00:00:00Z', NOW)).toBe('Auto-accepts in 3 days');
   });
 
   it('says soon when due or past', () => {
     expect(daysUntilAutoAccept('2026-09-20T00:00:00Z', NOW)).toBe(0);
-    expect(autoAcceptLabel('2026-09-20T00:00:00Z', NOW)).toBe('即将自动验收');
+    expect(autoAcceptLabel('2026-09-20T00:00:00Z', NOW)).toBe('Auto-accepts soon');
   });
 
   it('returns null without a (valid) deadline', () => {
@@ -63,8 +63,8 @@ describe('daysUntilAutoAccept / autoAcceptLabel', () => {
 
 describe('formatOrigin', () => {
   it('names the channel and the author', () => {
-    expect(formatOrigin({ channel: 'slack-dm', author: 'U1', authorName: 'Steve' })).toBe('Slack 私信 · Steve');
-    expect(formatOrigin({ channel: 'chat', author: 'owner' })).toBe('聊天 · owner');
+    expect(formatOrigin({ channel: 'slack-dm', author: 'U1', authorName: 'Steve' })).toBe('Slack DM · Steve');
+    expect(formatOrigin({ channel: 'chat', author: 'owner' })).toBe('Chat · owner');
   });
 
   it('shows unknown channels as-is and null for no origin', () => {
@@ -93,7 +93,7 @@ describe('toAcceptanceInputs', () => {
 
 describe('ticketErrorMessage', () => {
   it('translates known refusal codes', () => {
-    expect(ticketErrorMessage(new TicketApiError('x', 409, 'open_work'))).toBe('还有未完成的工作项，暂时不能验收');
+    expect(ticketErrorMessage(new TicketApiError('x', 409, 'open_work'))).toBe('Some work items are still open, so it cannot be accepted yet');
   });
 
   it('falls back to the message', () => {

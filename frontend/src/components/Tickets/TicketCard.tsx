@@ -1,10 +1,11 @@
 /**
  * TicketCard — one ticket on the board.
  *
- * Shows TKT, title, P-label, kind and assignee; for 待验收 also the agent's
- * answer excerpt and the "N天后自动验收" countdown; a "打回 ×N" badge when
- * the ticket has been sent back; for 已完成, whether the owner reviewed it
- * (已验收) or silence accepted it (默认通过 · 未验收, #813).
+ * Shows TKT, title, P-label, kind and assignee; for "To review" also the
+ * agent's answer excerpt and the "Auto-accepts in N days" countdown; a
+ * "Sent back ×N" badge when the ticket has been sent back; for "Done",
+ * whether the owner reviewed it (Accepted) or silence accepted it
+ * (Auto-accepted · not reviewed, #813).
  *
  * @module components/Tickets/TicketCard
  */

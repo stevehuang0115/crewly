@@ -1,7 +1,7 @@
 /**
  * FirstTaskStep
  *
- * First-run step "派第一件事": one text box and three example tasks from
+ * First-run step "Give it a first task": one text box and three example tasks from
  * the chosen starter. The task goes to the orchestrator through the owner's
  * chat path (`POST /api/onboarding/first-task`), addressed to the new team.
  *
@@ -60,8 +60,8 @@ export const FirstTaskStep: React.FC<FirstTaskStepProps> = ({ suggestions, teamI
 
   if (sent) {
     return (
-      <Alert variant="success" title="已交给 Orc" data-testid="first-task-sent">
-        {sent.message ? '等 Orc 上线就会开始处理。' : 'Orc 会安排团队去做，进展会在聊天和 Slack 里告诉你。'}
+      <Alert variant="success" title="Handed to the Orc" data-testid="first-task-sent">
+        {sent.message ? 'The Orc starts on it as soon as it is online.' : 'The Orc will get the team on it and report progress in chat and Slack.'}
       </Alert>
     );
   }
@@ -69,19 +69,19 @@ export const FirstTaskStep: React.FC<FirstTaskStepProps> = ({ suggestions, teamI
   return (
     <div className="space-y-3" data-testid="first-task-step">
       <p className="text-sm text-text-secondary-dark">
-        {teamName ? `交给「${teamName}」` : '交给 Orc'}，一句话说清楚就行。
+        {teamName ? `For "${teamName}"` : 'For the Orc'}: one sentence is enough.
       </p>
       <FormTextarea
-        aria-label="第一件事"
+        aria-label="First task"
         rows={4}
         maxLength={FIRST_TASK_MAX_LENGTH}
-        placeholder="例如：每天早上 8 点给我一份简报"
+        placeholder="e.g. Send me a briefing every morning at 8"
         value={text}
         onChange={(e) => setText(e.target.value)}
       />
       {suggestions.length > 0 && (
         <div className="space-y-2">
-          <p className="text-xs text-text-secondary-dark">试试这些：</p>
+          <p className="text-xs text-text-secondary-dark">Try one of these:</p>
           <div className="flex flex-col gap-2">
             {suggestions.map((s) => (
               <Button
@@ -104,7 +104,7 @@ export const FirstTaskStep: React.FC<FirstTaskStepProps> = ({ suggestions, teamI
         </Alert>
       )}
       <Button type="button" fullWidth icon={Send} loading={sending} disabled={!trimmed} onClick={() => void send()} data-testid="first-task-send">
-        派出去
+        Send it
       </Button>
     </div>
   );

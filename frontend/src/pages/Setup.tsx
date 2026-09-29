@@ -3,21 +3,21 @@
  *
  * Lets a non-technical user finish Crewly setup in the browser — on the
  * machine or from a phone:
- *   1. 编程助手 — see which harnesses are installed, install / update one
+ *   1. Harness — see which harnesses are installed, install / update one
  *      (Claude Code pre-selected) with a live log.
  *   2. Orc — choose the harness the orchestrator runs on.
- *   3. 登录 — log in to that harness via the login broker or an API key.
- *   4. 团队 — first team from a starter: Personal Assistant (recommended),
+ *   3. Sign in — log in to that harness via the login broker or an API key.
+ *   4. Team — first team from a starter: Personal Assistant (recommended),
  *      Marketing, or Blank (the orchestrator only).
- *   5. 第一件事 — one text box + three examples; sent to the orchestrator.
+ *   5. First task — one text box + three examples; sent to the orchestrator.
  *   6. Cloud — connect Crewly Cloud (Google sign-in that returns here, or
  *      paste the token from the portal's token page).
  *   7. Slack — one-click install through Crewly Cloud.
- *   8. 完成.
+ *   8. Done.
  *
  * Steps 4-7 are skippable. `?step=team|first_task|cloud|slack` opens the
- * page at that step (the dashboard "开始使用" card, the Cloud / Slack return
- * URLs, and `crewly onboard` use it). "稍后再说 / Skip for now" sets a
+ * page at that step (the dashboard "Get started" card, the Cloud / Slack return
+ * URLs, and `crewly onboard` use it). "Skip for now" sets a
  * localStorage flag so the first-run redirect (SetupRedirectGuard) doesn't loop.
  *
  * @module pages/Setup
@@ -129,7 +129,7 @@ const StepNav: React.FC<{ onBack: () => void; onNext: () => void; nextLabel: str
 }) => (
   <div className="mt-6 flex justify-between gap-3">
     <Button type="button" variant="ghost" icon={ArrowLeft} onClick={onBack}>
-      上一步
+      Back
     </Button>
     <Button type="button" variant={primary ? 'primary' : 'secondary'} icon={ArrowRight} iconPosition="right" onClick={onNext}>
       {nextLabel}
@@ -178,7 +178,7 @@ export const Setup: React.FC = () => {
     };
   }, [step, taskTarget, checklist, checklistLoading]);
 
-  /** "稍后再说": remember the choice and leave. */
+  /** "Skip for now": remember the choice and leave. */
   const handleSkip = (): void => {
     setSetupSkipped(true);
     navigate(SETUP_DONE_ROUTE, { replace: true });
@@ -218,9 +218,9 @@ export const Setup: React.FC = () => {
     ) : (
       <Alert variant="error" size="sm">
         <div className="space-y-2">
-          <p>无法读取设置清单。</p>
+          <p>Couldn&apos;t load the setup checklist.</p>
           <Button type="button" size="sm" variant="secondary" icon={RefreshCw} onClick={onChecklistChanged}>
-            重试
+            Retry
           </Button>
         </div>
       </Alert>
@@ -228,13 +228,13 @@ export const Setup: React.FC = () => {
 
   /** Harness steps need the harness overview. */
   const renderHarnessGate = (): React.ReactNode => {
-    if (loading) return <LoadingSpinner centered text="正在检查编程助手…" />;
+    if (loading) return <LoadingSpinner centered text="Checking coding harnesses…" />;
     return (
-      <Alert variant="error" title="无法读取编程助手状态 / Couldn't load harness status">
+      <Alert variant="error" title="Couldn't load harness status">
         <div className="space-y-2">
           <p>{error}</p>
           <Button type="button" size="sm" variant="secondary" icon={RefreshCw} onClick={() => void refresh()}>
-            重试 / Retry
+            Retry
           </Button>
         </div>
       </Alert>
@@ -250,8 +250,8 @@ export const Setup: React.FC = () => {
         return (
           <>
             <StepHeading
-              title="选择并安装编程助手"
-              subtitle="Crewly 的 AI 员工通过编程助手工作。推荐 Claude Code。Pick and install a coding harness."
+              title="Pick and install a coding harness"
+              subtitle="Crewly's AI teammates work through a coding harness. Claude Code is recommended."
             />
             <HarnessList
               harnesses={harnesses}
@@ -262,11 +262,11 @@ export const Setup: React.FC = () => {
             />
             <div className="mt-6 flex justify-end">
               <Button type="button" icon={ArrowRight} iconPosition="right" disabled={!anyInstalled} onClick={goToOrcStep}>
-                下一步
+                Next
               </Button>
             </div>
             {!anyInstalled && (
-              <p className="mt-2 text-right text-xs text-text-secondary-dark">安装至少一个后才能继续。Install at least one to continue.</p>
+              <p className="mt-2 text-right text-xs text-text-secondary-dark">Install at least one to continue.</p>
             )}
           </>
         );
@@ -274,7 +274,7 @@ export const Setup: React.FC = () => {
       case STEP.ORC:
         return (
           <>
-            <StepHeading title="Orc 用哪个编程助手？" subtitle="The orchestrator (Orc) coordinates your team. Choose its harness." />
+            <StepHeading title="Which harness should the Orc use?" subtitle="The orchestrator (Orc) coordinates your team. Choose its harness." />
             <OrcHarnessPicker harnesses={harnesses} value={orcChoice} onChange={setOrcChoice} disabled={savingOrc} />
             {error && (
               <Alert variant="error" size="sm" className="mt-3">
@@ -283,7 +283,7 @@ export const Setup: React.FC = () => {
             )}
             <div className="mt-6 flex justify-between gap-3">
               <Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => setStep(STEP.HARNESS)}>
-                上一步
+                Back
               </Button>
               <Button
                 type="button"
@@ -293,7 +293,7 @@ export const Setup: React.FC = () => {
                 disabled={!orcChoice}
                 onClick={() => void confirmOrc()}
               >
-                下一步
+                Next
               </Button>
             </div>
           </>
@@ -303,15 +303,15 @@ export const Setup: React.FC = () => {
         const loggedIn = orcHarness?.loginState === 'logged_in';
         return (
           <>
-            <StepHeading title="登录" subtitle="Sign in so the orchestrator can work." />
+            <StepHeading title="Sign in" subtitle="Sign in so the orchestrator can work." />
             {orcHarness ? (
               <HarnessLoginCard harness={orcHarness} onLoggedIn={() => void refresh()} onHarnessUpdated={replaceHarness} />
             ) : (
-              <Alert variant="warning" size="sm">请先回到上一步选择 Orc 的编程助手。</Alert>
+              <Alert variant="warning" size="sm">Go back one step and choose the Orc&apos;s harness first.</Alert>
             )}
             <div className="mt-6 flex justify-between gap-3">
               <Button type="button" variant="ghost" icon={ArrowLeft} onClick={() => setStep(STEP.ORC)}>
-                上一步
+                Back
               </Button>
               <Button
                 type="button"
@@ -320,7 +320,7 @@ export const Setup: React.FC = () => {
                 iconPosition="right"
                 onClick={() => setStep(STEP.TEAM)}
               >
-                {loggedIn ? '下一步' : '稍后登录'}
+                {loggedIn ? 'Next' : 'Sign in later'}
               </Button>
             </div>
           </>
@@ -331,14 +331,14 @@ export const Setup: React.FC = () => {
         const existing = findStep(checklist, 'team')?.detail.teams ?? [];
         return (
           <>
-            <StepHeading title="建第一个团队" subtitle="Pick a starter team. You can add more later." />
+            <StepHeading title="Create your first team" subtitle="Pick a starter team. You can add more later." />
             {existing.length > 0 && (
               <Alert variant="success" size="sm" className="mb-3">
-                已有团队：{existing.map((t) => t.name).join('、')}。可以直接下一步，也可以再建一个。
+                Existing teams: {existing.map((t) => t.name).join(', ')}. You can go straight to the next step or create another.
               </Alert>
             )}
             <StarterTeamStep onDone={onTeamDone} />
-            <StepNav onBack={() => setStep(STEP.LOGIN)} onNext={() => setStep(STEP.TASK)} nextLabel="跳过" primary={false} />
+            <StepNav onBack={() => setStep(STEP.LOGIN)} onNext={() => setStep(STEP.TASK)} nextLabel="Skip" primary={false} />
           </>
         );
       }
@@ -346,10 +346,10 @@ export const Setup: React.FC = () => {
       case STEP.TASK:
         return (
           <>
-            <StepHeading title="派第一件事" subtitle="Give your team its first task." />
+            <StepHeading title="Give your team its first task" subtitle="One sentence is enough." />
             {taskTarget?.bundle && (
               <Alert variant="success" size="sm" className="mb-3" data-testid="setup-bundle-first-week">
-                第一周的工作已经排好，团队会按天开始做。还想加一件事，也可以写在下面。
+                The first week of work is already planned and the team will start day by day. Want to add something else? Write it below.
               </Alert>
             )}
             {taskTarget ? (
@@ -368,7 +368,7 @@ export const Setup: React.FC = () => {
             <StepNav
               onBack={() => setStep(STEP.TEAM)}
               onNext={() => setStep(STEP.CLOUD)}
-              nextLabel={taskSent ? '下一步' : '跳过'}
+              nextLabel={taskSent ? 'Next' : 'Skip'}
               primary={taskSent}
             />
           </>
@@ -378,10 +378,10 @@ export const Setup: React.FC = () => {
         const cloud = findStep(checklist, 'cloud');
         return (
           <>
-            <StepHeading title="连接 Crewly Cloud" subtitle="Manage Crewly from your phone; needed for Slack." />
+            <StepHeading title="Connect Crewly Cloud" subtitle="Manage Crewly from your phone; needed for Slack." />
             {cloudError && !cloud?.done && (
               <Alert variant="warning" size="sm" className="mb-3">
-                登录没有完成（{cloudError}），可以再试一次或改用复制粘贴。
+                Sign-in didn&apos;t finish ({cloudError}). Try again, or use copy and paste instead.
               </Alert>
             )}
             {cloud ? (
@@ -397,7 +397,7 @@ export const Setup: React.FC = () => {
             <StepNav
               onBack={() => setStep(STEP.TASK)}
               onNext={() => setStep(STEP.SLACK)}
-              nextLabel={cloud?.done ? '下一步' : '跳过'}
+              nextLabel={cloud?.done ? 'Next' : 'Skip'}
               primary={!!cloud?.done}
             />
           </>
@@ -408,7 +408,7 @@ export const Setup: React.FC = () => {
         const slack = findStep(checklist, 'slack');
         return (
           <>
-            <StepHeading title="连接 Slack" subtitle="Talk to your team from Slack." />
+            <StepHeading title="Connect Slack" subtitle="Talk to your team from Slack." />
             {slack ? (
               <SlackConnectStep
                 connected={slack.done}
@@ -422,7 +422,7 @@ export const Setup: React.FC = () => {
             <StepNav
               onBack={() => setStep(STEP.CLOUD)}
               onNext={() => setStep(STEP.DONE)}
-              nextLabel={slack?.done ? '下一步' : '跳过'}
+              nextLabel={slack?.done ? 'Next' : 'Skip'}
               primary={!!slack?.done}
             />
           </>
@@ -435,11 +435,11 @@ export const Setup: React.FC = () => {
           <div className="space-y-4" data-testid="setup-done">
             <div className="text-center">
               <CheckCircle2 className="mx-auto h-12 w-12 text-emerald-400" />
-              <StepHeading title="设置完成" subtitle="You're ready to use Crewly." />
+              <StepHeading title="Setup complete" subtitle="You're ready to use Crewly." />
             </div>
             {orcHarness && badge && (
               <p className="text-center text-sm text-text-secondary-dark">
-                Orc 使用 <span className="font-semibold text-text-primary-dark">{harnessDisplayName(orcHarness)}</span>{' '}
+                The Orc uses <span className="font-semibold text-text-primary-dark">{harnessDisplayName(orcHarness)}</span>{' '}
                 <Badge variant={badge.variant}>{badge.label}</Badge>
               </p>
             )}
@@ -448,19 +448,19 @@ export const Setup: React.FC = () => {
                 {checklist.steps.map((s) => (
                   <li key={s.id} className="flex items-center gap-2 text-sm">
                     {s.done ? (
-                      <CheckCircle2 className="h-4 w-4 text-emerald-400" aria-label="已完成" />
+                      <CheckCircle2 className="h-4 w-4 text-emerald-400" aria-label="Done" />
                     ) : (
-                      <Circle className="h-4 w-4 text-text-secondary-dark" aria-label="未完成" />
+                      <Circle className="h-4 w-4 text-text-secondary-dark" aria-label="Not done" />
                     )}
                     <span className={s.done ? 'text-text-primary-dark' : 'text-text-secondary-dark'}>{CHECKLIST_STEP_LABELS[s.id]}</span>
                   </li>
                 ))}
               </ul>
             )}
-            <p className="text-center text-xs text-text-secondary-dark">没做完的步骤会留在首页的「开始使用」里；登录过期时，可在「设置 → Harness」里重新登录。</p>
+            <p className="text-center text-xs text-text-secondary-dark">Unfinished steps stay in the &quot;Get started&quot; card on the dashboard. If a login expires, sign in again under Settings → Harness.</p>
             <div className="text-center">
               <Button type="button" size="default" onClick={() => navigate(SETUP_DONE_ROUTE, { replace: true })}>
-                进入 Crewly
+                Open Crewly
               </Button>
             </div>
           </div>
@@ -474,18 +474,18 @@ export const Setup: React.FC = () => {
       <div className="mx-auto w-full max-w-2xl">
         <header className="mb-6 flex items-center justify-between gap-3">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">Crewly 初始设置</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Crewly setup</h1>
             <p className="text-sm text-text-secondary-dark">First-run setup</p>
           </div>
           {step !== STEP.DONE && (
             <Button type="button" variant="link" onClick={handleSkip} data-testid="setup-skip">
-              稍后再说 / Skip for now
+              Skip for now
             </Button>
           )}
         </header>
         {/* Phone: a compact counter; wider screens: the full indicator. */}
         <p className="mb-4 text-sm text-text-secondary-dark sm:hidden" data-testid="setup-step-counter">
-          第 {step + 1}/{SETUP_FLOW_STEPS.length} 步 · {SETUP_FLOW_STEPS[step]}
+          Step {step + 1}/{SETUP_FLOW_STEPS.length} · {SETUP_FLOW_STEPS[step]}
         </p>
         <div className="mb-6 hidden overflow-x-auto sm:block">
           <StepIndicator steps={[...SETUP_FLOW_STEPS]} currentStep={step} />

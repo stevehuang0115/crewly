@@ -3,7 +3,7 @@
  *
  * Shows the editable title, priority and kind; origin and description; the
  * agent's answer and the discussion; the acceptance criteria (editable); and
- * the owner's actions 验过了 / 打回 (reason required) / 不用记. Server
+ * the owner's actions Verified / Send back (reason required) / Dismiss. Server
  * refusals are shown inline. Every successful action calls `onChanged` so
  * the board refreshes right away.
  *
@@ -162,7 +162,7 @@ export const TicketDetailDrawer: React.FC<TicketDetailDrawerProps> = ({ ticketId
     if (!ok) throw new Error('acceptance save failed');
   };
 
-  /** Submit 打回 — refuses an empty reason without calling the server. */
+  /** Submit a send-back — refuses an empty reason without calling the server. */
   const handleConfirmReject = (): void => {
     if (!ticketId) return;
     const reason = rejectReason.trim();
@@ -345,14 +345,12 @@ export const TicketDetailDrawer: React.FC<TicketDetailDrawerProps> = ({ ticketId
             <div className="flex flex-wrap gap-1">
               {(board.rejectCount ?? 0) > 0 && (
                 <Badge variant="error" size="sm">
-                  {board.rejectCount}
-                  {TICKET_TEXT.REJECTED_TIMES}
+                  {TICKET_TEXT.REJECTED_TIMES} ×{board.rejectCount}
                 </Badge>
               )}
               {(board.submitCount ?? 0) > 0 && (
                 <Badge size="sm">
-                  {board.submitCount}
-                  {TICKET_TEXT.SUBMITTED_TIMES}
+                  {TICKET_TEXT.SUBMITTED_TIMES} ×{board.submitCount}
                 </Badge>
               )}
               {countdown && (

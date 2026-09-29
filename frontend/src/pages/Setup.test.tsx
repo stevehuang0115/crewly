@@ -100,33 +100,33 @@ describe('Setup page', () => {
     svc.setOrcHarness.mockResolvedValue('claude-code');
     render(<Setup />);
 
-    expect(await screen.findByText('选择并安装编程助手')).toBeInTheDocument();
+    expect(await screen.findByText('Pick and install a coding harness')).toBeInTheDocument();
     expect(screen.getByTestId('step-indicator')).toBeInTheDocument();
     const claudeRadio = screen.getAllByRole('radio').find((r) => (r as HTMLInputElement).value === 'claude-code') as HTMLInputElement;
     expect(claudeRadio.checked).toBe(true);
 
-    await click('下一步');
-    expect(screen.getByText('Orc 用哪个编程助手？')).toBeInTheDocument();
+    await click('Next');
+    expect(screen.getByText('Which harness should the Orc use?')).toBeInTheDocument();
     expect((screen.getByDisplayValue('claude-code') as HTMLInputElement).checked).toBe(true);
 
-    await click('下一步');
+    await click('Next');
     expect(svc.setOrcHarness).toHaveBeenCalledWith('claude-code');
     expect(screen.getByTestId('harness-login-card-claude-code')).toBeInTheDocument();
-    expect(screen.getByTestId('login-start')).toHaveTextContent('用 Claude 订阅登录');
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in with your Claude subscription');
 
-    await click('稍后登录');
+    await click('Sign in later');
     expect(await screen.findByTestId('starter-team-step')).toBeInTheDocument();
-    expect(screen.getByText('建第一个团队')).toBeInTheDocument();
-    await click('跳过'); // team
-    expect(screen.getByText('派第一件事')).toBeInTheDocument();
-    await click('跳过'); // first task
-    expect(screen.getByText('连接 Crewly Cloud')).toBeInTheDocument();
-    await click('跳过'); // cloud
-    expect(screen.getByText('连接 Slack')).toBeInTheDocument();
-    await click('跳过'); // slack
+    expect(screen.getByText('Create your first team')).toBeInTheDocument();
+    await click('Skip'); // team
+    expect(screen.getByText('Give your team its first task')).toBeInTheDocument();
+    await click('Skip'); // first task
+    expect(screen.getByText('Connect Crewly Cloud')).toBeInTheDocument();
+    await click('Skip'); // cloud
+    expect(screen.getByText('Connect Slack')).toBeInTheDocument();
+    await click('Skip'); // slack
     expect(screen.getByTestId('setup-done')).toBeInTheDocument();
-    expect(screen.getByTestId('setup-done-checklist')).toHaveTextContent('登录编程助手');
-    await click('进入 Crewly');
+    expect(screen.getByTestId('setup-done-checklist')).toHaveTextContent('Sign in to a coding harness');
+    await click('Open Crewly');
     expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true });
   });
 
@@ -134,24 +134,24 @@ describe('Setup page', () => {
     svc.getStatus.mockResolvedValue(makeOverview({ orcHarness: null }));
     svc.setOrcHarness.mockResolvedValue('codex-cli');
     render(<Setup />);
-    await screen.findByText('选择并安装编程助手');
+    await screen.findByText('Pick and install a coding harness');
     fireEvent.click(screen.getAllByRole('radio').find((r) => (r as HTMLInputElement).value === 'codex-cli') as HTMLElement);
-    await click('下一步');
+    await click('Next');
     expect((screen.getByDisplayValue('codex-cli') as HTMLInputElement).checked).toBe(true);
-    await click('下一步');
+    await click('Next');
     expect(svc.setOrcHarness).toHaveBeenCalledWith('codex-cli');
     expect(screen.getByTestId('harness-login-card-codex-cli')).toBeInTheDocument();
-    expect(screen.getByTestId('login-start')).toHaveTextContent('用 ChatGPT 账号登录');
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in with ChatGPT');
   });
 
-  it('does not re-save an unchanged orc harness and shows 下一步 when logged in', async () => {
+  it('does not re-save an unchanged orc harness and shows Next when logged in', async () => {
     svc.getStatus.mockResolvedValue(makeOverview({ orcHarness: 'claude-code' }));
     render(<Setup />);
-    await screen.findByText('选择并安装编程助手');
-    await click('下一步');
-    await click('下一步');
+    await screen.findByText('Pick and install a coding harness');
+    await click('Next');
+    await click('Next');
     expect(svc.setOrcHarness).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: /下一步/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Next/ })).toBeInTheDocument();
   });
 
   it('blocks step 1 until a harness is installed', async () => {
@@ -159,25 +159,25 @@ describe('Setup page', () => {
       makeOverview({ orcHarness: null, harnesses: [makeHarness({ installed: false, version: null }), GEMINI] }),
     );
     render(<Setup />);
-    await screen.findByText('选择并安装编程助手');
-    expect(screen.getByRole('button', { name: /下一步/ })).toBeDisabled();
+    await screen.findByText('Pick and install a coding harness');
+    expect(screen.getByRole('button', { name: /Next/ })).toBeDisabled();
   });
 
   it('stays on the orc step when saving fails', async () => {
     svc.getStatus.mockResolvedValue(makeOverview({ orcHarness: null }));
     svc.setOrcHarness.mockRejectedValue(new Error('config is read-only'));
     render(<Setup />);
-    await screen.findByText('选择并安装编程助手');
-    await click('下一步');
-    await click('下一步');
+    await screen.findByText('Pick and install a coding harness');
+    await click('Next');
+    await click('Next');
     expect(screen.getByText('config is read-only')).toBeInTheDocument();
-    expect(screen.getByText('Orc 用哪个编程助手？')).toBeInTheDocument();
+    expect(screen.getByText('Which harness should the Orc use?')).toBeInTheDocument();
   });
 
   it('"Skip for now" sets the skip flag and leaves', async () => {
     svc.getStatus.mockResolvedValue(makeOverview({ orcHarness: null }));
     render(<Setup />);
-    await screen.findByText('选择并安装编程助手');
+    await screen.findByText('Pick and install a coding harness');
     fireEvent.click(screen.getByTestId('setup-skip'));
     expect(window.localStorage.getItem(SETUP_SKIP_STORAGE_KEY)).toBe('1');
     expect(mockNavigate).toHaveBeenCalledWith('/', { replace: true });
@@ -187,8 +187,8 @@ describe('Setup page', () => {
     svc.getStatus.mockRejectedValueOnce(new Error('backend down')).mockResolvedValueOnce(makeOverview());
     render(<Setup />);
     expect(await screen.findByText('backend down')).toBeInTheDocument();
-    await click(/重试/);
-    expect(await screen.findByText('选择并安装编程助手')).toBeInTheDocument();
+    await click(/Retry/);
+    expect(await screen.findByText('Pick and install a coding harness')).toBeInTheDocument();
   });
 
   // -------------------------------------------------------------------------
@@ -211,14 +211,14 @@ describe('Setup page', () => {
       fireEvent.click(screen.getByTestId('starter-create'));
     });
     expect(onboarding.createStarterTeam).toHaveBeenCalledWith('personal-assistant-team');
-    expect(screen.getByText('派第一件事')).toBeInTheDocument();
+    expect(screen.getByText('Give your team its first task')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: STARTERS[0].suggestions[0] }));
     await act(async () => {
       fireEvent.click(screen.getByTestId('first-task-send'));
     });
     expect(onboarding.sendFirstTask).toHaveBeenCalledWith(STARTERS[0].suggestions[0], 't1');
-    await click('下一步');
-    expect(screen.getByText('连接 Crewly Cloud')).toBeInTheDocument();
+    await click('Next');
+    expect(screen.getByText('Connect Crewly Cloud')).toBeInTheDocument();
   });
 
   it('deploys a solution bundle from the team step; the first-task step says the first week is planned', async () => {
@@ -256,7 +256,7 @@ describe('Setup page', () => {
     await act(async () => {
       fireEvent.click(screen.getByTestId('bundle-finish'));
     });
-    expect(screen.getByText('派第一件事')).toBeInTheDocument();
+    expect(screen.getByText('Give your team its first task')).toBeInTheDocument();
     expect(screen.getByTestId('setup-bundle-first-week')).toBeInTheDocument();
     expect(onboarding.createStarterTeam).not.toHaveBeenCalled();
   });
@@ -268,14 +268,14 @@ describe('Setup page', () => {
     expect(await screen.findByTestId('cloud-connect-step')).toBeInTheDocument();
     // Device pairing leads the step: the owner approves from a phone.
     expect(await screen.findByTestId('cloud-pairing-code')).toHaveTextContent('ABCD-2345');
-    expect(screen.getByTestId('setup-step-counter')).toHaveTextContent('第 6/8 步 · Cloud');
+    expect(screen.getByTestId('setup-step-counter')).toHaveTextContent('Step 6/8 · Cloud');
   });
 
   it('shows a Cloud sign-in error carried back by the callback page', async () => {
     mockSearchParams = new URLSearchParams('step=cloud&error=access_denied');
     svc.getStatus.mockResolvedValue(makeOverview());
     render(<Setup />);
-    expect(await screen.findByText(/登录没有完成（access_denied）/)).toBeInTheDocument();
+    expect(await screen.findByText(/Sign-in didn't finish \(access_denied\)/)).toBeInTheDocument();
   });
 
   it('shows a checklist load error with retry on the Cloud step', async () => {
@@ -283,8 +283,8 @@ describe('Setup page', () => {
     onboarding.getChecklist.mockRejectedValueOnce(new Error('down')).mockResolvedValueOnce(makeChecklist(['harness']));
     svc.getStatus.mockResolvedValue(makeOverview());
     render(<Setup />);
-    expect(await screen.findByText('无法读取设置清单。')).toBeInTheDocument();
-    await click('重试');
+    expect(await screen.findByText("Couldn't load the setup checklist.")).toBeInTheDocument();
+    await click('Retry');
     expect(await screen.findByTestId('cloud-connect-step')).toBeInTheDocument();
   });
 
@@ -293,7 +293,7 @@ describe('Setup page', () => {
     svc.getStatus.mockResolvedValue(makeOverview());
     render(<Setup />);
     await screen.findByTestId('slack-needs-cloud');
-    await click('去连接 Crewly Cloud');
+    await click('Connect Crewly Cloud');
     expect(screen.getByTestId('cloud-connect-step')).toBeInTheDocument();
   });
 
@@ -302,7 +302,7 @@ describe('Setup page', () => {
     onboarding.getChecklist.mockResolvedValue(makeChecklist(['harness', 'team']));
     svc.getStatus.mockResolvedValue(makeOverview());
     render(<Setup />);
-    await waitFor(() => expect(screen.getByText(/交给「Personal Assistant」/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/For "Personal Assistant"/)).toBeInTheDocument());
     expect(screen.getByRole('button', { name: STARTERS[0].suggestions[2] })).toBeInTheDocument();
   });
 });

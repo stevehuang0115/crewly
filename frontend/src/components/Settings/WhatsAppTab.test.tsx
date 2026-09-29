@@ -186,11 +186,11 @@ describe('WhatsAppTab', () => {
       });
     }
 
-    it('explains inbox mode in Chinese and English with the linked-device note', async () => {
+    it('explains inbox mode (English) with the linked-device note', async () => {
       routeFetch({});
       render(<WhatsAppTab />);
       await waitFor(() => {
-        expect(screen.getByText('只读+起草，发送前需要你确认；不会自动回复任何人。')).toBeInTheDocument();
+        expect(screen.getByText('Inbox mode')).toBeInTheDocument();
       });
       expect(screen.getByText(/never auto-replies to anyone/)).toBeInTheDocument();
       expect(screen.getByText(/linked device/)).toBeInTheDocument();
@@ -248,7 +248,7 @@ describe('WhatsAppTab', () => {
       expect(screen.getByText('Yes, 8 works!')).toBeInTheDocument();
       expect(screen.getByText(/Ann/)).toBeInTheDocument();
 
-      fireEvent.click(screen.getByRole('button', { name: '发送 W12' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Send W12' }));
 
       await waitFor(() => expect(screen.queryByTestId('whatsapp-draft-W12')).not.toBeInTheDocument());
       expect(posts).toHaveLength(1);
@@ -272,7 +272,7 @@ describe('WhatsAppTab', () => {
       render(<WhatsAppTab />);
       await waitFor(() => expect(screen.getByTestId('whatsapp-draft-W12')).toBeInTheDocument());
 
-      fireEvent.click(screen.getByRole('button', { name: '丢弃 W12' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Discard W12' }));
 
       await waitFor(() => expect(screen.queryByTestId('whatsapp-draft-W12')).not.toBeInTheDocument());
       expect(posted).toEqual(['/api/whatsapp/drafts/d-1/discard']);
@@ -287,7 +287,7 @@ describe('WhatsAppTab', () => {
       render(<WhatsAppTab />);
       await waitFor(() => expect(screen.getByTestId('whatsapp-draft-W12')).toBeInTheDocument());
 
-      fireEvent.click(screen.getByRole('button', { name: '发送 W12' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Send W12' }));
 
       await waitFor(() => expect(screen.getByText('WhatsApp is not connected')).toBeInTheDocument());
       expect(screen.getByTestId('whatsapp-draft-W12')).toBeInTheDocument();

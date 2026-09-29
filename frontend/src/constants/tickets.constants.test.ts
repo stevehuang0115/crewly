@@ -35,7 +35,7 @@ describe('tickets constants', () => {
   it('shows six columns in board order, without cancelled', () => {
     expect(TICKET_BOARD_COLUMN_ORDER).toEqual(['idea', 'todo', 'in_progress', 'blocked', 'to_review', 'done']);
     expect(TICKET_BOARD_COLUMN_ORDER.map((c) => TICKET_COLUMN_LABEL[c])).toEqual([
-      '想法', '待处理', '进行中', '阻塞', '待验收', '已完成',
+      'Ideas', 'To do', 'In progress', 'Blocked', 'To review', 'Done',
     ]);
   });
 
@@ -51,8 +51,8 @@ describe('tickets constants', () => {
   });
 
   it('labels acceptance sources and checks', () => {
-    expect(TICKET_ACCEPTANCE_SOURCE_LABEL).toMatchObject({ reject: '打回', decompose: '拆解', owner: '我' });
-    expect(TICKET_ACCEPTANCE_CHECK_LABEL).toEqual({ auto: '自动', judgment: '人工' });
+    expect(TICKET_ACCEPTANCE_SOURCE_LABEL).toMatchObject({ reject: 'Sent back', decompose: 'Breakdown', owner: 'Me' });
+    expect(TICKET_ACCEPTANCE_CHECK_LABEL).toEqual({ auto: 'Auto', judgment: 'Manual' });
   });
 
   it('has text for every refusal code', () => {
@@ -65,9 +65,9 @@ describe('tickets constants', () => {
 describe('ticket kinds (#827)', () => {
   it('lists the question kind with its own label, and labels every kind', () => {
     expect(TICKET_KINDS).toContain('question');
-    expect(TICKET_KIND_LABEL.question).toBe('提问');
+    expect(TICKET_KIND_LABEL.question).toBe('Question');
     for (const k of TICKET_KINDS) expect(TICKET_KIND_LABEL[k]).toBeTruthy();
-    // Distinct labels, so a question never reads as an issue (问题).
+    // Distinct labels, so a question never reads as an issue.
     expect(new Set(TICKET_KINDS.map((k) => TICKET_KIND_LABEL[k])).size).toBe(TICKET_KINDS.length);
   });
 });

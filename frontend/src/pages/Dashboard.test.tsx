@@ -148,7 +148,7 @@ describe('Dashboard Page', () => {
   });
 
   describe('Layout', () => {
-    it('shows the 开始使用 checklist card', async () => {
+    it('shows the Get started checklist card', async () => {
       render(
         <TestWrapper>
           <Dashboard />

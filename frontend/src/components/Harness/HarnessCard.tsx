@@ -47,7 +47,7 @@ export const HarnessCard: React.FC<HarnessCardProps> = ({
   const loginBadge = LOGIN_STATE_BADGES[harness.loginState];
   const canInstall = !harness.installed || harness.updateAvailable || job?.state === 'failed';
   const installLabel =
-    job?.state === 'failed' ? '重试安装' : harness.installed ? '更新 / Update' : '安装 / Install';
+    job?.state === 'failed' ? 'Retry install' : harness.installed ? 'Update' : 'Install';
 
   const title = (
     <span className="font-semibold text-text-primary-dark">{harnessDisplayName(harness)}</span>
@@ -78,12 +78,12 @@ export const HarnessCard: React.FC<HarnessCardProps> = ({
           )}
           <div className="mt-2 flex flex-wrap items-center gap-2">
             {harness.installed ? (
-              <Badge variant="success">已安装{harness.version ? ` v${harness.version}` : ''}</Badge>
+              <Badge variant="success">Installed{harness.version ? ` v${harness.version}` : ''}</Badge>
             ) : (
-              <Badge variant="default">未安装 / Not installed</Badge>
+              <Badge variant="default">Not installed</Badge>
             )}
             {harness.installed && harness.updateAvailable && (
-              <Badge variant="info">可更新{harness.latestVersion ? ` → v${harness.latestVersion}` : ''}</Badge>
+              <Badge variant="info">Update available{harness.latestVersion ? ` → v${harness.latestVersion}` : ''}</Badge>
             )}
             {harness.installed && <Badge variant={loginBadge.variant}>{loginBadge.label}</Badge>}
             {harness.installed && harness.loginSource && (
@@ -101,7 +101,7 @@ export const HarnessCard: React.FC<HarnessCardProps> = ({
             onClick={() => void start()}
             className="shrink-0 self-start"
           >
-            {running ? '安装中…' : installLabel}
+            {running ? 'Installing…' : installLabel}
           </Button>
         )}
       </div>
@@ -115,15 +115,15 @@ export const HarnessCard: React.FC<HarnessCardProps> = ({
       {job && <InstallLog log={job.log} />}
 
       {job?.state === 'succeeded' && (
-        <Alert variant="success" size="sm" className="mt-3" title="安装完成 / Installed">
+        <Alert variant="success" size="sm" className="mt-3" title="Installed">
           {job.usedUserPrefix
-            ? '已安装到你的用户目录，不需要管理员权限。Installed to your user folder (no admin rights needed).'
-            : `${harness.displayName} 已就绪。`}
+            ? 'Installed to your user folder (no admin rights needed).'
+            : `${harness.displayName} is ready.`}
         </Alert>
       )}
       {job?.state === 'failed' && !error && (
-        <Alert variant="error" size="sm" className="mt-3" title="安装失败 / Install failed">
-          请查看上面的日志后重试。Check the log above and try again.
+        <Alert variant="error" size="sm" className="mt-3" title="Install failed">
+          Check the log above and try again.
         </Alert>
       )}
     </Card>

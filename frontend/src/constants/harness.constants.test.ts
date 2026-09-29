@@ -57,9 +57,9 @@ describe('harness.constants', () => {
     expect(API_KEY_CONSOLE_URLS['claude-code']?.url).toBe('https://console.anthropic.com/settings/keys');
   });
 
-  it('prefers Chinese method labels and falls back to the backend label', () => {
-    expect(loginMethodLabel('claude-code', 'subscription', 'x')).toBe('用 Claude 订阅登录');
-    expect(loginMethodLabel('codex-cli', 'device', 'x')).toBe('用 ChatGPT 账号登录');
+  it('prefers local method labels and falls back to the backend label', () => {
+    expect(loginMethodLabel('claude-code', 'subscription', 'x')).toBe('Sign in with your Claude subscription');
+    expect(loginMethodLabel('codex-cli', 'device', 'x')).toBe('Sign in with ChatGPT');
     expect(loginMethodLabel('gemini-cli', 'device', 'Backend label')).toBe('Backend label');
   });
 
@@ -70,7 +70,7 @@ describe('harness.constants', () => {
 
   it('orders Antigravity CLI before the retired Gemini CLI and labels its key login', () => {
     expect(HARNESS_ORDER).toEqual(['claude-code', 'codex-cli', 'antigravity-cli', 'gemini-cli']);
-    expect(loginMethodLabel('antigravity-cli', 'api_key', 'Gemini API key')).toBe('使用 Gemini API Key');
+    expect(loginMethodLabel('antigravity-cli', 'api_key', 'Gemini API key')).toBe('Use a Gemini API key');
     expect(API_KEY_CONSOLE_URLS['antigravity-cli']?.url).toBe('https://aistudio.google.com/apikey');
     expect(API_KEY_PLACEHOLDERS['antigravity-cli']).toBe('AIza…');
   });

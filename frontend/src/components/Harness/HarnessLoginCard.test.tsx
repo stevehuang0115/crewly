@@ -28,19 +28,19 @@ describe('HarnessLoginCard', () => {
 
   it('Claude Code (logged out): subscription first, can switch to API key', () => {
     render(<HarnessLoginCard harness={makeHarness({ loginState: 'logged_out' })} />);
-    expect(screen.getByText('登录 Claude Code')).toBeInTheDocument();
-    expect(screen.getByTestId('login-start')).toHaveTextContent('用 Claude 订阅登录');
+    expect(screen.getByText('Sign in to Claude Code')).toBeInTheDocument();
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in with your Claude subscription');
 
-    fireEvent.click(screen.getByRole('radio', { name: '使用 API Key' }));
+    fireEvent.click(screen.getByRole('radio', { name: 'Use an API key' }));
     expect(screen.getByTestId('api-key-form')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /console.anthropic.com/ })).toBeInTheDocument();
   });
 
   it('Codex: ChatGPT device login and OpenAI API key', () => {
     render(<HarnessLoginCard harness={CODEX} />);
-    expect(screen.getByTestId('login-start')).toHaveTextContent('用 ChatGPT 账号登录');
-    fireEvent.click(screen.getByRole('radio', { name: '使用 OpenAI API Key' }));
-    expect(screen.getByLabelText('使用 OpenAI API Key')).toHaveAttribute('type', 'password');
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in with ChatGPT');
+    fireEvent.click(screen.getByRole('radio', { name: 'Use an OpenAI API key' }));
+    expect(screen.getByLabelText('Use an OpenAI API key')).toHaveAttribute('type', 'password');
   });
 
   it('starts the device method for Codex', async () => {
@@ -57,10 +57,10 @@ describe('HarnessLoginCard', () => {
 
   it('logged in: shows status and a re-login button that reveals the methods', () => {
     render(<HarnessLoginCard harness={makeHarness({ loginSource: 'Claude Max' })} />);
-    expect(screen.getByText('已登录')).toBeInTheDocument();
-    expect(screen.getByText(/已通过 Claude Max 登录/)).toBeInTheDocument();
+    expect(screen.getByText('Signed in')).toBeInTheDocument();
+    expect(screen.getByText(/Signed in via Claude Max/)).toBeInTheDocument();
     expect(screen.queryByTestId('login-start')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /重新登录/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Sign in again/ }));
     expect(screen.getByTestId('login-start')).toBeInTheDocument();
   });
 
@@ -69,8 +69,8 @@ describe('HarnessLoginCard', () => {
     svc.setApiKey.mockResolvedValue(updated);
     const onHarnessUpdated = vi.fn();
     render(<HarnessLoginCard harness={makeHarness({ loginState: 'logged_out' })} onHarnessUpdated={onHarnessUpdated} />);
-    fireEvent.click(screen.getByRole('radio', { name: '使用 API Key' }));
-    fireEvent.change(screen.getByLabelText('使用 API Key'), { target: { value: 'sk-ant-1' } });
+    fireEvent.click(screen.getByRole('radio', { name: 'Use an API key' }));
+    fireEvent.change(screen.getByLabelText('Use an API key'), { target: { value: 'sk-ant-1' } });
     await act(async () => {
       fireEvent.submit(screen.getByTestId('api-key-form'));
     });
@@ -79,12 +79,12 @@ describe('HarnessLoginCard', () => {
 
   it('Gemini: detect only, no login methods', () => {
     render(<HarnessLoginCard harness={{ ...GEMINI, installed: true }} />);
-    expect(screen.getByText(/暂不支持在网页登录 Gemini CLI/)).toBeInTheDocument();
+    expect(screen.getByText(/Browser sign-in isn't available for Gemini CLI yet/)).toBeInTheDocument();
     expect(screen.queryByTestId('login-start')).not.toBeInTheDocument();
   });
 
   it('not installed: asks to install first', () => {
     render(<HarnessLoginCard harness={GEMINI} />);
-    expect(screen.getByText(/请先安装 Gemini CLI/)).toBeInTheDocument();
+    expect(screen.getByText(/Install Gemini CLI first/)).toBeInTheDocument();
   });
 });

@@ -67,6 +67,6 @@ describe('OrcHarnessPicker', () => {
 
   it('shows an empty state when nothing is installed', () => {
     render(<OrcHarnessPicker harnesses={[GEMINI]} value={null} onChange={vi.fn()} />);
-    expect(screen.getByText('还没有安装任何编程助手')).toBeInTheDocument();
+    expect(screen.getByText('No coding harness installed yet')).toBeInTheDocument();
   });
 });

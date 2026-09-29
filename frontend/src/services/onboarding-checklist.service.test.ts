@@ -87,7 +87,7 @@ describe('onboardingChecklistService', () => {
 
   it('throws a fallback message on an empty success', async () => {
     mocked.get.mockResolvedValue({ data: { success: true } });
-    await expect(onboardingChecklistService.getChecklist()).rejects.toThrow('无法读取设置清单');
+    await expect(onboardingChecklistService.getChecklist()).rejects.toThrow("Couldn't load the setup checklist");
   });
 
   it('rethrows non-axios errors', async () => {

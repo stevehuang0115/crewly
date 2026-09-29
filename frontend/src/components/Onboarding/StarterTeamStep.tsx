@@ -1,7 +1,7 @@
 /**
  * StarterTeamStep
  *
- * First-run step "建第一个团队": pick a starter — Personal Assistant
+ * First-run step "Create your first team": pick a starter — Personal Assistant
  * (recommended, pre-selected), Marketing, a solution bundle, or Blank (the
  * orchestrator only). Templates are created through
  * `POST /api/onboarding/starter-team`; a solution bundle opens
@@ -93,17 +93,17 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
 
   if (loadError) {
     return (
-      <Alert variant="error" title="无法读取团队模板">
+      <Alert variant="error" title="Couldn't load team templates">
         <div className="space-y-2">
           <p>{loadError}</p>
           <Button type="button" size="sm" variant="secondary" icon={RefreshCw} onClick={() => void load()}>
-            重试
+            Retry
           </Button>
         </div>
       </Alert>
     );
   }
-  if (!starters) return <LoadingSpinner centered text="正在读取团队模板…" />;
+  if (!starters) return <LoadingSpinner centered text="Loading team templates…" />;
   if (deployingBundle) {
     return <BundleDeployStep templateId={deployingBundle} onBack={() => setDeployingBundle(null)} onDone={onDone} />;
   }
@@ -112,7 +112,7 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
 
   return (
     <div className="space-y-3" data-testid="starter-team-step">
-      <div role="radiogroup" aria-label="第一个团队" className="space-y-3">
+      <div role="radiogroup" aria-label="First team" className="space-y-3">
         {starters.map((starter) => {
           const active = starter.id === selected;
           return (
@@ -138,14 +138,14 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
                   <div className="flex flex-wrap items-center gap-2">
                     <span className="font-semibold text-text-primary-dark">{starter.label}</span>
                     <span className="text-xs text-text-secondary-dark">{starter.name}</span>
-                    {starter.recommended && <Badge variant="primary">推荐</Badge>}
-                    {starter.kind === 'bundle' && <Badge variant="info">成套方案</Badge>}
+                    {starter.recommended && <Badge variant="primary">Recommended</Badge>}
+                    {starter.kind === 'bundle' && <Badge variant="info">Bundle</Badge>}
                   </div>
                   <p className="mt-1 text-sm text-text-secondary-dark">{starter.tagline}</p>
                   {starter.members.length > 0 && (
                     <p className="mt-2 flex items-center gap-1 text-xs text-text-secondary-dark">
                       <Users className="h-3.5 w-3.5 shrink-0" aria-hidden />
-                      {starter.members.map((m) => m.name).join('、')}
+                      {starter.members.map((m) => m.name).join(', ')}
                     </p>
                   )}
                 </div>
@@ -161,7 +161,7 @@ export const StarterTeamStep: React.FC<StarterTeamStepProps> = ({ onDone }) => {
         </Alert>
       )}
       <Button type="button" fullWidth loading={creating} disabled={!chosen} onClick={() => void create()} data-testid="starter-create">
-        {chosen?.members.length === 0 ? '先只用 Orc' : chosen?.kind === 'bundle' ? `下一步：填写「${chosen.label}」的信息` : `创建「${chosen?.label ?? ''}」`}
+        {chosen?.members.length === 0 ? 'Start with just the Orc' : chosen?.kind === 'bundle' ? `Next: details for "${chosen.label}"` : `Create "${chosen?.label ?? ''}"`}
       </Button>
     </div>
   );

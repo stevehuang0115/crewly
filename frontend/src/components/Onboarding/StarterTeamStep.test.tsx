@@ -47,8 +47,8 @@ describe('StarterTeamStep', () => {
 
     const pa = await screen.findByTestId('starter-personal-assistant-team');
     expect(pa).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByText('推荐')).toBeInTheDocument();
-    expect(screen.getByText('Assistant、Researcher')).toBeInTheDocument();
+    expect(screen.getByText('Recommended')).toBeInTheDocument();
+    expect(screen.getByText('Assistant, Researcher')).toBeInTheDocument();
 
     await act(async () => {
       fireEvent.click(screen.getByTestId('starter-create'));
@@ -68,7 +68,7 @@ describe('StarterTeamStep', () => {
     render(<StarterTeamStep onDone={onDone} />);
     fireEvent.click(await screen.findByTestId('starter-blank'));
     expect(screen.getByTestId('starter-blank')).toHaveAttribute('aria-checked', 'true');
-    expect(screen.getByTestId('starter-create')).toHaveTextContent('先只用 Orc');
+    expect(screen.getByTestId('starter-create')).toHaveTextContent('Start with just the Orc');
     await act(async () => {
       fireEvent.click(screen.getByTestId('starter-create'));
     });
@@ -97,7 +97,7 @@ describe('StarterTeamStep', () => {
     render(<StarterTeamStep onDone={vi.fn()} />);
     expect(await screen.findByText('offline')).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '重试' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     });
     expect(await screen.findByTestId('starter-personal-assistant-team')).toBeInTheDocument();
   });
@@ -118,8 +118,8 @@ describe('StarterTeamStep', () => {
     const onDone = vi.fn();
     render(<StarterTeamStep onDone={onDone} />);
     fireEvent.click(await screen.findByTestId('starter-smb-marketing-team'));
-    expect(screen.getByText('成套方案')).toBeInTheDocument();
-    expect(screen.getByTestId('starter-create')).toHaveTextContent('下一步：填写「小老板营销团队」的信息');
+    expect(screen.getByText('Bundle')).toBeInTheDocument();
+    expect(screen.getByTestId('starter-create')).toHaveTextContent('Next: details for "小老板营销团队"');
     fireEvent.click(screen.getByTestId('starter-create'));
     expect(svc.createStarterTeam).not.toHaveBeenCalled();
     expect(screen.getByTestId('bundle-deploy-mock')).toHaveTextContent('smb-marketing-team');

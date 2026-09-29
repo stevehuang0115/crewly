@@ -21,9 +21,9 @@ describe('HarnessList', () => {
     render(<HarnessList harnesses={harnesses} />);
     const claude = screen.getByTestId('harness-card-claude-code');
     expect(within(claude).getByText('Claude Code')).toBeInTheDocument();
-    expect(within(claude).getByText('已登录')).toBeInTheDocument();
-    expect(within(screen.getByTestId('harness-card-codex-cli')).getByText('未登录')).toBeInTheDocument();
-    expect(within(screen.getByTestId('harness-card-gemini-cli')).getByText('未安装 / Not installed')).toBeInTheDocument();
+    expect(within(claude).getByText('Signed in')).toBeInTheDocument();
+    expect(within(screen.getByTestId('harness-card-codex-cli')).getByText('Not signed in')).toBeInTheDocument();
+    expect(within(screen.getByTestId('harness-card-gemini-cli')).getByText('Not installed')).toBeInTheDocument();
     expect(screen.queryByRole('radio')).not.toBeInTheDocument();
   });
 
@@ -47,7 +47,7 @@ describe('HarnessList', () => {
         ]}
       />,
     );
-    expect(screen.getByText(/Missing jq/)).toBeInTheDocument();
+    expect(screen.getByText(/Missing system tool: jq/)).toBeInTheDocument();
     expect(screen.getByText('brew install jq')).toBeInTheDocument();
     expect(screen.queryByText(/Missing git/)).not.toBeInTheDocument();
   });

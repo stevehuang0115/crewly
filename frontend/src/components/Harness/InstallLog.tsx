@@ -32,7 +32,7 @@ export const InstallLog: React.FC<InstallLogProps> = ({ log }) => {
       ref={ref}
       role="log"
       aria-live="polite"
-      aria-label="安装日志 / Install log"
+      aria-label="Install log"
       data-testid="install-log"
       className="mt-3 max-h-48 overflow-auto rounded-2xl border border-border-dark bg-background-dark p-3 font-mono text-xs leading-relaxed text-text-secondary-dark whitespace-pre-wrap break-all"
     >

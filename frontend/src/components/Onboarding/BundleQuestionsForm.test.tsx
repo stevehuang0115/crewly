@@ -34,8 +34,8 @@ describe('BundleQuestionsForm', () => {
     fireEvent.change(screen.getByLabelText(/公司或品牌叫什么/), { target: { value: '小周咖啡' } });
     fireEvent.click(screen.getByTestId('bundle-deploy'));
     expect(onSubmit).not.toHaveBeenCalled();
-    expect(screen.getByTestId('bundle-missing-what_you_sell')).toHaveTextContent('这一项必填');
-    expect(screen.getByTestId('bundle-missing-platforms')).toHaveTextContent('请至少选一个');
+    expect(screen.getByTestId('bundle-missing-what_you_sell')).toHaveTextContent('This field is required');
+    expect(screen.getByTestId('bundle-missing-platforms')).toHaveTextContent('Pick at least one');
     expect(screen.queryByTestId('bundle-missing-business_name')).not.toBeInTheDocument();
   });
 
@@ -61,7 +61,7 @@ describe('BundleQuestionsForm', () => {
     expect(screen.getByTestId('bundle-missing-what_you_sell')).toBeInTheDocument();
   });
 
-  it('a required select starts on 请选择', () => {
+  it('a required select starts on Select…', () => {
     render(
       <BundleQuestionsForm
         questions={[{ id: 'tz', label: '时区', type: 'select', required: true, options: [{ value: 'Asia/Shanghai', label: '北京时间' }] }]}

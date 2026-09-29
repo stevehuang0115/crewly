@@ -3,7 +3,7 @@
  *
  * Radio list of the installed harnesses; the chosen one runs the
  * orchestrator (orc). Controlled: the parent decides whether a change is
- * saved immediately (Settings) or on "下一步" (setup).
+ * saved immediately (Settings) or on "Next" (setup).
  *
  * @module components/Harness/OrcHarnessPicker
  */
@@ -61,14 +61,14 @@ export const OrcHarnessPicker: React.FC<OrcHarnessPickerProps> = ({ harnesses, v
       <EmptyState
         compact
         icon={Bot}
-        title="还没有安装任何编程助手"
-        description="先安装 Claude Code、Codex 或 Antigravity CLI，再回来选择。Install a harness first."
+        title="No coding harness installed yet"
+        description="Install Claude Code, Codex or Antigravity CLI first, then come back to choose."
       />
     );
   }
 
   return (
-    <div role="radiogroup" aria-label="Orc 使用的编程助手" className="space-y-2" data-testid="orc-harness-picker">
+    <div role="radiogroup" aria-label="Orc harness" className="space-y-2" data-testid="orc-harness-picker">
       {installed.map((h) => {
         const checked = value === h.id;
         const badge = LOGIN_STATE_BADGES[h.loginState];
@@ -90,7 +90,7 @@ export const OrcHarnessPicker: React.FC<OrcHarnessPickerProps> = ({ harnesses, v
                 className="h-4 w-4 accent-[var(--crewly-primary)]"
               />
               <span className="font-medium text-text-primary-dark truncate">{harnessDisplayName(h)}</span>
-              {h.id === DEFAULT_ORC_HARNESS && <span className="text-xs text-text-secondary-dark">推荐</span>}
+              {h.id === DEFAULT_ORC_HARNESS && <span className="text-xs text-text-secondary-dark">Recommended</span>}
             </span>
             <Badge variant={badge.variant}>{badge.label}</Badge>
           </label>

@@ -207,7 +207,7 @@ export interface TemplateOnboarding {
   order: number;
   /** The default starter (exactly one template sets this) */
   recommended: boolean;
-  /** Short Chinese display name, e.g. 个人助理 */
+  /** Short display name, e.g. Personal Assistant */
   label: string;
   /** One-line pitch shown under the label */
   tagline: string;

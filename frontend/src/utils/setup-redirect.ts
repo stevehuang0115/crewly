@@ -2,7 +2,7 @@
  * First-run Setup Redirect
  *
  * Decides whether the app should send the user to `/setup` on load, and
- * manages the "稍后再说 / Skip for now" flag that stops the redirect from
+ * manages the "Skip for now" flag that stops the redirect from
  * looping. localStorage access is wrapped because it throws in private
  * modes / sandboxed iframes.
  *

@@ -29,16 +29,16 @@ describe('TicketCard', () => {
     expect(screen.getByText('TKT-007')).toBeInTheDocument();
     expect(screen.getByText('修登录按钮')).toBeInTheDocument();
     expect(screen.getByText('P1')).toBeInTheDocument();
-    expect(screen.getByText('问题')).toBeInTheDocument();
+    expect(screen.getByText('Issue')).toBeInTheDocument();
     expect(screen.getByText('crewly-atlas')).toBeInTheDocument();
   });
 
-  it('shows 未分配 without an assignee', () => {
+  it('shows Unassigned without an assignee', () => {
     render(<TicketCard ticket={row({ assignee: null })} onOpen={vi.fn()} />);
-    expect(screen.getByText('未分配')).toBeInTheDocument();
+    expect(screen.getByText('Unassigned')).toBeInTheDocument();
   });
 
-  it('in 待验收 shows the answer excerpt and the auto-accept countdown', () => {
+  it('in To review shows the answer excerpt and the auto-accept countdown', () => {
     render(
       <TicketCard
         ticket={row({
@@ -51,10 +51,10 @@ describe('TicketCard', () => {
       />,
     );
     expect(screen.getByTestId('ticket-reply-excerpt')).toHaveTextContent('已经修好了');
-    expect(screen.getByTestId('ticket-auto-accept')).toHaveTextContent('2天后自动验收');
+    expect(screen.getByTestId('ticket-auto-accept')).toHaveTextContent('Auto-accepts in 2 days');
   });
 
-  it('does not show the excerpt or countdown outside 待验收', () => {
+  it('does not show the excerpt or countdown outside To review', () => {
     render(
       <TicketCard
         ticket={row({ reply: { at: '', by: 'a', messageId: 'm', excerpt: 'x' }, autoAcceptAt: '2026-09-26T00:00:00Z' })}
@@ -66,25 +66,25 @@ describe('TicketCard', () => {
     expect(screen.queryByTestId('ticket-auto-accept')).toBeNull();
   });
 
-  it('shows 打回 ×N only when rejected', () => {
+  it('shows Sent back ×N only when rejected', () => {
     const { rerender } = render(<TicketCard ticket={row({ rejectCount: 0 })} onOpen={vi.fn()} />);
     expect(screen.queryByTestId('ticket-reject-badge')).toBeNull();
     rerender(<TicketCard ticket={row({ rejectCount: 2 })} onOpen={vi.fn()} />);
-    expect(screen.getByTestId('ticket-reject-badge')).toHaveTextContent('打回 ×2');
+    expect(screen.getByTestId('ticket-reject-badge')).toHaveTextContent('Sent back ×2');
   });
 
-  it('on a done card, labels silence as 默认通过 · 未验收 — accepted, not verified (#813)', () => {
+  it('on a done card, labels silence as Auto-accepted · not reviewed — accepted, not verified (#813)', () => {
     render(<TicketCard ticket={row({ column: 'done', status: 'done', acceptedBy: 'silence' })} onOpen={vi.fn()} />);
     const badge = screen.getByTestId('ticket-accepted-by');
     expect(badge).toHaveAttribute('data-accepted-by', 'silence');
-    expect(screen.getByText('默认通过 · 未验收')).toHaveAttribute('title', expect.stringContaining('没有人检查过'));
-    expect(screen.queryByText('已验收')).not.toBeInTheDocument();
+    expect(screen.getByText('Auto-accepted · not reviewed')).toHaveAttribute('title', expect.stringContaining('nobody checked'));
+    expect(screen.queryByText('Accepted')).not.toBeInTheDocument();
   });
 
-  it('on a done card, labels an owner review as 已验收', () => {
+  it('on a done card, labels an owner review as Accepted', () => {
     render(<TicketCard ticket={row({ column: 'done', status: 'done', acceptedBy: 'owner' })} onOpen={vi.fn()} />);
     expect(screen.getByTestId('ticket-accepted-by')).toHaveAttribute('data-accepted-by', 'owner');
-    expect(screen.getByText('已验收')).toBeInTheDocument();
+    expect(screen.getByText('Accepted')).toBeInTheDocument();
   });
 
   it('shows no acceptance label outside the done column or when unknown', () => {
