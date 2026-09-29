@@ -11,7 +11,14 @@ import * as path from 'path';
 import { WorktreeJanitorService, type WorktreeJanitorOptions, type JanitorRunSummary } from './worktree-janitor.service.js';
 import { WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
 
-const THREE_HOURS = 3 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
+const THREE_HOURS = 3 * HOUR;
+const GB = 1024 ** 3;
+
+/** statfs stub reporting `freeGb` GB free. */
+function statfsWith(freeGb: () => number) {
+	return async () => ({ bavail: Math.round(freeGb() * GB) / 4096, bsize: 4096 });
+}
 
 /** Isolated git env: no user/system config (signing, hooks), fixed identity. */
 const GIT_ENV: NodeJS.ProcessEnv = {
@@ -87,6 +94,10 @@ function janitor(fx: Fixture, overrides: WorktreeJanitorOptions = {}): WorktreeJ
 		ghBin: null,
 		now: () => Date.now() + THREE_HOURS,
 		tmpRoots: [],
+		scratchRoots: [],
+		statfs: statfsWith(() => 100),
+		statePath: null,
+		sizeOf: async () => GB,
 		env: {},
 		logger: { info: jest.fn(), warn: jest.fn() },
 		...overrides,
@@ -325,16 +336,36 @@ describe('WorktreeJanitorService', () => {
 		});
 	});
 
-	describe('which worktrees are agent worktrees', () => {
-		it('keeps a merged worktree outside .claude/worktrees on a human branch', async () => {
+	describe('worktrees outside the agent locations', () => {
+		it('removes a landed, clean worktree at an arbitrary path once idle 24h', async () => {
 			const wt = addWorktree(fx, path.join(fx.root, 'repo-wt-805'), 'fix/805');
 			landOnOrigin(wt);
+			const summary = await janitor(fx, { now: () => Date.now() + 25 * HOUR }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ reason: 'merged', removed: true, branchDeleted: true });
+			expect(fs.existsSync(wt)).toBe(false);
+		});
+
+		it('keeps it while idle for less than 24h (2h is only for agent locations)', async () => {
+			const wt = addWorktree(fx, path.join(fx.root, 'repo-wt-806'), 'fix/806');
+			landOnOrigin(wt);
 			const summary = await janitor(fx).run();
-			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'not-agent-worktree' });
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'recent' });
+			expect(verdictFor(summary, wt)?.detail).toContain('other location');
 			expect(fs.existsSync(wt)).toBe(true);
 		});
 
-		it('removes a merged worktree elsewhere when its branch has an agent-only prefix', async () => {
+		it('keeps a dirty or unlanded worktree at an arbitrary path however old', async () => {
+			const dirty = addWorktree(fx, path.join(fx.root, 'wt-dirty'), 'fix/dirty');
+			landOnOrigin(dirty);
+			fs.writeFileSync(path.join(dirty, 'scratch.txt'), 'x\n');
+			const open = addWorktree(fx, path.join(fx.root, 'wt-open'), 'fix/open');
+			const summary = await janitor(fx, { now: () => Date.now() + 30 * 24 * HOUR }).run();
+			expect(verdictFor(summary, dirty)).toMatchObject({ decision: 'keep', reason: 'dirty' });
+			expect(verdictFor(summary, open)).toMatchObject({ decision: 'keep', reason: 'not-merged' });
+			expect(fs.existsSync(dirty) && fs.existsSync(open)).toBe(true);
+		});
+
+		it('uses the 2h threshold for a worktree-agent-* branch anywhere', async () => {
 			const wt = addWorktree(fx, path.join(fx.root, 'elsewhere'), 'worktree-agent-abc123');
 			landOnOrigin(wt);
 			const summary = await janitor(fx).run();
@@ -346,6 +377,37 @@ describe('WorktreeJanitorService', () => {
 			const wt = addWorktree(fx, path.join(tmpRoot, WORKTREE_JANITOR_CONSTANTS.TMP_WORKTREE_DIR, 'sam-task'), 'feat/sam-task');
 			landOnOrigin(wt);
 			const summary = await janitor(fx, { tmpRoots: [tmpRoot] }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ reason: 'merged', removed: true });
+		});
+
+		it('halves the 24h threshold when disk is low (12h idle is enough)', async () => {
+			const wt = addWorktree(fx, path.join(fx.root, 'wt-low'), 'fix/low');
+			landOnOrigin(wt);
+			const now = () => Date.now() + 13 * HOUR;
+			const normal = await janitor(fx, { now }).plan();
+			expect(verdictFor(normal, wt)).toMatchObject({ decision: 'keep', reason: 'recent' });
+			const low = await janitor(fx, { now, statfs: statfsWith(() => 10) }).run();
+			expect(low.lowDisk).toBe(true);
+			expect(verdictFor(low, wt)).toMatchObject({ reason: 'merged', removed: true });
+		});
+
+		it('never goes below 2h for agent locations in low-disk mode', async () => {
+			const wt = addWorktree(fx, agentPath(fx, 'floor'), 'feat/floor');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, { now: () => Date.now() + 1.5 * HOUR, statfs: statfsWith(() => 1) }).run();
+			expect(verdictFor(summary, wt)).toMatchObject({ decision: 'keep', reason: 'recent' });
+		});
+
+		it('discovers a repo that is not registered through its worktree in a temp root', async () => {
+			const tmpRoot = path.join(fx.root, 'claude-tmp');
+			const wt = addWorktree(fx, path.join(tmpRoot, 'visa-cm-wt'), 'feat/visa');
+			landOnOrigin(wt);
+			const summary = await janitor(fx, {
+				listRepoPaths: async () => [],
+				scratchRoots: [tmpRoot],
+				now: () => Date.now() + 25 * HOUR,
+			}).run();
+			expect(summary.repos.map((r) => fs.realpathSync(r))).toEqual([fs.realpathSync(fx.repo)]);
 			expect(verdictFor(summary, wt)).toMatchObject({ reason: 'merged', removed: true });
 		});
 
@@ -397,6 +459,109 @@ describe('WorktreeJanitorService', () => {
 			jest.advanceTimersByTime(WORKTREE_JANITOR_CONSTANTS.INTERVAL_MS * 3);
 			expect(runSpy).toHaveBeenCalledTimes(2);
 		});
+
+		it('checks free disk every LOW_DISK_CHECK_INTERVAL_MS once started', () => {
+			jest.useFakeTimers();
+			const j = janitor(fx);
+			const checkSpy = jest.spyOn(j, 'checkDisk').mockResolvedValue({ freeBytesBefore: null, freeBytesAfter: null, ranPass: false, notified: null });
+			jest.spyOn(j, 'run').mockResolvedValue({} as JanitorRunSummary);
+			j.start();
+			jest.advanceTimersByTime(WORKTREE_JANITOR_CONSTANTS.LOW_DISK_CHECK_INTERVAL_MS);
+			expect(checkSpy).toHaveBeenCalledTimes(1);
+			j.stop();
+			jest.advanceTimersByTime(WORKTREE_JANITOR_CONSTANTS.LOW_DISK_CHECK_INTERVAL_MS * 3);
+			expect(checkSpy).toHaveBeenCalledTimes(1);
+		});
+	});
+
+	describe('low-disk guard', () => {
+		function guarded(freeGb: () => number, clock: { t: number }, notify: jest.Mock, extra: WorktreeJanitorOptions = {}) {
+			return janitor(fx, { statfs: statfsWith(freeGb), now: () => clock.t, notifyOwner: notify, ...extra });
+		}
+
+		it('does nothing while free space is above 15 GB', async () => {
+			const notify = jest.fn().mockResolvedValue(true);
+			const clock = { t: Date.now() };
+			const j = guarded(() => 40, clock, notify);
+			const runSpy = jest.spyOn(j, 'run');
+			const r = await j.checkDisk();
+			expect(r).toMatchObject({ ranPass: false, notified: null, freeBytesBefore: 40 * GB });
+			expect(runSpy).not.toHaveBeenCalled();
+			expect(notify).not.toHaveBeenCalled();
+		});
+
+		it('below 15 GB runs a pass at once, then tells the owner at most once per 24h with the biggest kept items', async () => {
+			const notify = jest.fn().mockResolvedValue(true);
+			const clock = { t: Date.now() + THREE_HOURS };
+			const kept = addWorktree(fx, agentPath(fx, 'unmerged'), 'feat/unmerged');
+			const j = guarded(() => 10, clock, notify, { sizeOf: async (p) => (p === kept || fs.realpathSync(p) === fs.realpathSync(kept) ? 3 * GB : GB) });
+			const first = await j.checkDisk();
+			expect(first).toMatchObject({ ranPass: true, notified: 'normal' });
+			expect(j.getLastSummary()?.lowDisk).toBe(true);
+			const notice = notify.mock.calls[0][0];
+			expect(notice.urgent).toBe(false);
+			expect(notice.message).toContain('10.0 GB free');
+			expect(notice.message).toMatch(/unmerged \(3\.0 GB\) — has work that is not merged yet/);
+			expect(notice.message).not.toMatch(/ticket/i);
+
+			clock.t += 20 * 60 * 1000; // within the pass gap: no new pass, no new notice
+			expect(await j.checkDisk()).toMatchObject({ ranPass: false, notified: null });
+			clock.t += 12 * HOUR;
+			expect(await j.checkDisk()).toMatchObject({ ranPass: true, notified: null });
+			clock.t += 12 * HOUR;
+			expect(await j.checkDisk()).toMatchObject({ notified: 'normal' });
+			expect(notify).toHaveBeenCalledTimes(2);
+		});
+
+		it('below 5 GB sends an urgent notice, repeated at most every 6h', async () => {
+			const notify = jest.fn().mockResolvedValue(true);
+			const clock = { t: Date.now() };
+			const j = guarded(() => 3, clock, notify);
+			expect(await j.checkDisk()).toMatchObject({ notified: 'urgent' });
+			expect(notify.mock.calls[0][0]).toMatchObject({ urgent: true, title: expect.stringMatching(/URGENT/) });
+			clock.t += 5 * HOUR;
+			expect(await j.checkDisk()).toMatchObject({ notified: null });
+			clock.t += 1 * HOUR;
+			expect(await j.checkDisk()).toMatchObject({ notified: 'urgent' });
+		});
+
+		it('does not notify when the pass freed enough space', async () => {
+			const notify = jest.fn().mockResolvedValue(true);
+			let free = 10;
+			const j = guarded(() => free, { t: Date.now() }, notify);
+			jest.spyOn(j, 'run').mockImplementation(async () => {
+				free = 30;
+				return {} as JanitorRunSummary;
+			});
+			expect(await j.checkDisk()).toMatchObject({ ranPass: true, freeBytesAfter: 30 * GB, notified: null });
+			expect(notify).not.toHaveBeenCalled();
+		});
+
+		it('retries the notice on the next check when delivery failed', async () => {
+			const notify = jest.fn().mockResolvedValueOnce(false).mockResolvedValue(true);
+			const clock = { t: Date.now() };
+			const j = guarded(() => 10, clock, notify);
+			expect(await j.checkDisk()).toMatchObject({ notified: null });
+			clock.t += 10 * 60 * 1000;
+			expect(await j.checkDisk()).toMatchObject({ notified: 'normal' });
+		});
+
+		it('remembers the last notice in the state file across instances', async () => {
+			const statePath = path.join(fx.root, 'state.json');
+			const notify = jest.fn().mockResolvedValue(true);
+			const clock = { t: Date.now() };
+			await guarded(() => 10, clock, notify, { statePath }).checkDisk();
+			clock.t += HOUR;
+			expect(await guarded(() => 10, clock, notify, { statePath }).checkDisk()).toMatchObject({ notified: null });
+			expect(notify).toHaveBeenCalledTimes(1);
+		});
+
+		it('is stopped by the kill switch', async () => {
+			const notify = jest.fn().mockResolvedValue(true);
+			const j = guarded(() => 1, { t: Date.now() }, notify, { env: { CREWLY_WORKTREE_JANITOR: '0' } });
+			expect(await j.checkDisk()).toMatchObject({ ranPass: false, notified: null });
+			expect(notify).not.toHaveBeenCalled();
+		});
 	});
 
 	describe('dry run and summary', () => {
@@ -420,8 +585,10 @@ describe('WorktreeJanitorService', () => {
 			});
 			const summary = await j.run();
 			expect(summary.repos).toHaveLength(1);
-			expect(logger.info).toHaveBeenCalledTimes(1);
+			// One line for the worktrees, one for the scratch sweep.
+			expect(logger.info).toHaveBeenCalledTimes(2);
 			expect(logger.info.mock.calls[0][0]).toMatch(/^Worktree janitor: removed 0, kept 2 \(.*not-merged: 1.*\)/);
+			expect(logger.info.mock.calls[1][0]).toMatch(/^Scratch janitor: removed 0 session dir\(s\), freed 0 KB, kept 0/);
 			expect(j.getLastSummary()).toBe(summary);
 
 			const failing = janitor(fx, { listRepoPaths: async () => { throw new Error('boom'); } });

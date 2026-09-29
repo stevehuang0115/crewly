@@ -19,6 +19,9 @@ function summary(overrides: Partial<JanitorRunSummary> = {}): JanitorRunSummary 
 		kept: 1,
 		keptReasons: { 'main-worktree': 1 },
 		worktrees: [],
+		lowDisk: false,
+		freeBytes: 20 * 1024 ** 3,
+		scratch: null,
 		...overrides,
 	};
 }
@@ -31,18 +34,23 @@ function appWith(service: Partial<WorktreeJanitorService>) {
 
 describe('worktree janitor routes', () => {
 	it('GET /worktrees returns the dry-run plan with the kill-switch state and last run', async () => {
-		const plan = summary({ dryRun: true, wouldRemove: 2 });
+		const scratch = { roots: ['/tmp/claude-501'], removed: 0, wouldRemove: 1, kept: 0, freedBytes: 0, keptReasons: {}, sessions: [] };
+		const plan = summary({ dryRun: true, wouldRemove: 2, scratch });
 		const last = summary({ removed: 3 });
+		const disk = { path: '/home/u/.crewly', freeBytes: 12 * 1024 ** 3, level: 'low' };
 		const service = {
 			plan: jest.fn().mockResolvedValue(plan),
 			run: jest.fn(),
 			isDisabled: jest.fn().mockReturnValue(false),
 			getLastSummary: jest.fn().mockReturnValue(last),
+			diskStatus: jest.fn().mockResolvedValue(disk),
 		};
 		const res = await request(appWith(service)).get('/api/worktree-janitor/worktrees');
 		expect(res.status).toBe(200);
 		expect(res.body.success).toBe(true);
 		expect(res.body.data).toMatchObject({ dryRun: true, wouldRemove: 2, disabled: false, lastRun: { removed: 3 } });
+		expect(res.body.data.scratch).toMatchObject({ wouldRemove: 1, roots: ['/tmp/claude-501'] });
+		expect(res.body.data.disk).toEqual(disk);
 		expect(service.run).not.toHaveBeenCalled();
 	});
 
