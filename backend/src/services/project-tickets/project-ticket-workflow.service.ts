@@ -24,6 +24,7 @@ import {
   type WorkItemStatus,
 } from '../../types/v2/work-item.types.js';
 import {
+  normalizeProjectTicketPriority,
   projectTicketPriorityRank,
   readProjectTicketLink,
   type ProjectTicket,
@@ -38,6 +39,7 @@ import {
   type UpdateProjectTicketInput,
 } from './project-ticket.service.js';
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
+import { decideDelegationTicketRoute, delegationTicketTitle } from './delegation-ticket-route.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
 
 /** WorkItem statuses that still carry the ticket's work. */
@@ -74,13 +76,14 @@ export type ProjectTicketAccess = 'owner' | 'orchestrator' | 'lead' | 'member' |
 
 /** The subset of the task pool this service uses. */
 export interface ProjectTicketPool {
-  addToPool(workItem: WorkItem): Promise<void>;
+  addToPool(workItem: WorkItem, options?: { creatorSession?: string }): Promise<void>;
   claimSpecificItem(agentId: string, workItemId: string): Promise<{ workItem: WorkItem } | null>;
   findWorkItem(workItemId: string): Promise<WorkItem | null>;
   getAllItems(): Promise<WorkItem[]>;
   cancelQueued(workItemId: string, reason: string): Promise<void>;
   transitionStatus(workItemId: string, status: WorkItemStatus, actor: 'system', mutator?: (wi: WorkItem) => void, reason?: string): Promise<WorkItem | null>;
   releaseClaim(workItemId: string, endReason: string): Promise<void>;
+  mergeItemMetadata(workItemId: string, patch: Record<string, unknown>): Promise<WorkItem | null>;
 }
 
 /** The subset of storage this service uses. */
@@ -104,6 +107,42 @@ export interface StartedTicketWork {
   workItem: WorkItem;
   /** True when the WorkItem was claimed for the assignee right away */
   claimed: boolean;
+}
+
+/** A delegated WorkItem routed through a ticket (spec §11). */
+export interface RoutedDelegation {
+  ticket: ProjectTicket;
+  /** The delegated WorkItem as added to the pool, now carrying `metadata.projectTicket` */
+  workItem: WorkItem;
+  project: Project;
+  /** True when the ticket was created for this delegation */
+  createdTicket: boolean;
+}
+
+/** Inputs of {@link ProjectTicketWorkflowService.routeDelegation}. */
+export interface RouteDelegationInput {
+  /** The WorkItem the delegate skill is adding (built, not yet in the pool) */
+  workItem: WorkItem;
+  /** The delegator (X-Agent-Session or `metadata.delegatedBy`); absent = owner / unknown */
+  callerSession?: string;
+  /** `--ticket <ID>` */
+  ticketId?: string;
+  /** Options passed through to the pool's add */
+  addOptions?: { creatorSession?: string };
+}
+
+/** Options of the internal work start. */
+interface StartWorkOptions {
+  /** Claim the WorkItem for the assignee right away */
+  self: boolean;
+  /** Statuses work may start from */
+  allowed: ProjectTicketStatus[];
+  /** Use this WorkItem (a delegation) instead of building one from the ticket */
+  prepared?: (t: ProjectTicket) => WorkItem;
+  /** Passed through to the pool's add */
+  addOptions?: { creatorSession?: string };
+  /** Log lines written before the assignment line */
+  logFirst?: string[];
 }
 
 /** What {@link ProjectTicketWorkflowService.syncTicket} did. */
@@ -603,6 +642,181 @@ export class ProjectTicketWorkflowService {
   }
 
   // ---------------------------------------------------------------------------
+  // Delegation through tickets (spec §11)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Route a delegated WorkItem through a project ticket, or leave it alone.
+   *
+   * When {@link decideDelegationTicketRoute} says `route`, the WorkItem is
+   * added to the pool here (under the ticket folder lock, through the same
+   * path as {@link assign}) instead of by the caller:
+   * - with `ticketId`: that ticket (must be `backlog`/`ready`, no live
+   *   WorkItem, caller owner/orc/lead) is assigned to the target;
+   * - without: a ticket is created from the delegation (title, brief,
+   *   target's team, priority) and assigned to the target at once.
+   * The WorkItem keeps all its fields; `metadata.projectTicket` (plus
+   * `projectId` / `projectPath` / `teamId` when missing) is added.
+   *
+   * @param input - WorkItem, delegator, optional ticket, add options
+   * @returns The routed delegation, or null when the caller should add the WorkItem itself
+   * @throws ProjectTicketError when a named ticket cannot take this delegation
+   */
+  async routeDelegation(input: RouteDelegationInput): Promise<RoutedDelegation | null> {
+    const { workItem, callerSession } = input;
+    const ticketId = input.ticketId?.trim() || undefined;
+    const target = typeof workItem.target === 'string' ? workItem.target.trim() : '';
+    const candidates = target ? await this.projectsOfAgent(target) : [];
+    const decision = decideDelegationTicketRoute({
+      workItem,
+      callerSession,
+      explicitTicketId: ticketId,
+      targetProjectIds: candidates.map((c) => c.project.id),
+    });
+    if (decision.action === 'refuse') throw new ProjectTicketError(400, decision.reason);
+    if (decision.action === 'skip') {
+      this.logger.debug('Delegation not routed through a project ticket', { workItemId: workItem.id, target, reason: decision.reason });
+      return null;
+    }
+
+    const choice = await this.pickDelegationProject(candidates, workItem, ticketId);
+    if (!choice) {
+      if (ticketId) throw new ProjectTicketError(404, `Ticket ${ticketId} not found in any project of ${target}'s teams`);
+      this.logger.info('Delegation not routed: target works on several projects and none was named', { workItemId: workItem.id, target });
+      return null;
+    }
+    const { project } = choice;
+    const caller: ProjectTicketCaller = callerSession ? { session: callerSession } : {};
+    const actor = this.actorName(caller);
+
+    if (ticketId) {
+      const { access } = await this.accessOf(caller, project);
+      this.requireAccess(access, ['owner', 'orchestrator', 'lead'], `delegate ticket ${ticketId}`);
+      const ticket = await this.tickets.get(project.path, ticketId);
+      if (!ticket) throw new ProjectTicketError(404, `Ticket not found: ${ticketId}`);
+      const teamId = await this.eligibleTeamOf(project, ticket, target);
+      if (!teamId) throw new ProjectTicketError(403, `${target} is not on a team that works on ${ticket.id}`);
+      const started = await this.startWork(project, ticket.id, target, actor, teamId, {
+        self: false,
+        allowed: ['backlog', 'ready'],
+        prepared: (t) => this.linkDelegatedItem(workItem, project, t, teamId),
+        addOptions: input.addOptions,
+        logFirst: [`delegated by ${actor}`],
+      });
+      return { ticket: started.ticket, workItem: started.workItem, project, createdTicket: false };
+    }
+
+    const teamId = choice.teamId;
+    const brief = workItem.briefMarkdown || workItem.description || '';
+    // A ticket store that cannot be written must not stop delegation itself:
+    // the WorkItem is then added as before, without a ticket.
+    let created: ProjectTicket;
+    try {
+      created = await this.tickets.create(
+        project.path,
+        project.name,
+        {
+          title: delegationTicketTitle(workItem.title),
+          description: brief,
+          team: teamId,
+          priority: normalizeProjectTicketPriority(workItem.metadata?.priority) ?? undefined,
+          status: 'backlog',
+          source: callerSession ? `agent:${callerSession}` : 'owner',
+          requestId: workItem.requestId ?? null,
+        },
+        actor,
+      );
+    } catch (err) {
+      this.logger.warn('Could not create a ticket for a delegation; adding the WorkItem without one', {
+        projectPath: project.path,
+        workItemId: workItem.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+    try {
+      const started = await this.startWork(project, created.id, target, actor, teamId, {
+        self: false,
+        allowed: ['backlog'],
+        prepared: (t) => this.linkDelegatedItem(workItem, project, t, teamId),
+        addOptions: input.addOptions,
+        logFirst: [`created from delegation by ${actor}`],
+      });
+      this.logger.info('Delegation routed through a new project ticket', { projectPath: project.path, id: created.id, workItemId: started.workItem.id });
+      return { ticket: started.ticket, workItem: started.workItem, project, createdTicket: true };
+    } catch (err) {
+      // The delegation did not start: do not leave an orphan backlog ticket behind.
+      await this.tickets
+        .transition(project.path, created.id, 'cancelled', 'crewly', `delegation could not start: ${err instanceof Error ? err.message : String(err)}`)
+        .catch(() => undefined);
+      throw err;
+    }
+  }
+
+  /**
+   * Link a live WorkItem that is already in flight to a ticket (spec §11).
+   *
+   * The ticket must not be done/cancelled and must have no other live
+   * WorkItem; the WorkItem must be live and carry no other ticket. The item
+   * gets `metadata.projectTicket`; the ticket becomes `in_progress` (a ticket
+   * in `review` stays there), assignee = the item's target, workItemId set.
+   *
+   * @param ref - Project reference
+   * @param id - Ticket id
+   * @param workItemId - The live WorkItem
+   * @param caller - Owner, orchestrator or a lead of a project team
+   * @returns Updated ticket and WorkItem
+   * @throws ProjectTicketError(400/403/404/409)
+   */
+  async link(ref: string, id: string, workItemId: string, caller: ProjectTicketCaller): Promise<{ ticket: ProjectTicket; workItem: WorkItem }> {
+    const project = await this.resolveProject(ref);
+    const { access } = await this.accessOf(caller, project);
+    this.requireAccess(access, ['owner', 'orchestrator', 'lead'], 'link WorkItems to tickets');
+    const wiId = String(workItemId ?? '').trim();
+    if (!wiId) throw new ProjectTicketError(400, 'workItemId is required');
+    const actor = this.actorName(caller);
+    let linked: WorkItem | null = null;
+    let wroteMetadata = false;
+    try {
+      const ticket = await this.tickets.mutate(project.path, id, actor, async (t) => {
+        if (t.status === 'done' || t.status === 'cancelled') {
+          throw new ProjectTicketError(409, `${t.id} is ${t.status}; reopen it before linking work to it`);
+        }
+        const wi = await this.pool.findWorkItem(wiId);
+        if (!wi) throw new ProjectTicketError(404, `WorkItem not found: ${wiId}`);
+        if (!LIVE_STATUSES.has(wi.status)) throw new ProjectTicketError(409, `WorkItem ${wi.id} is ${wi.status}; only live work can be linked`);
+        const existing = readProjectTicketLink(wi.metadata);
+        const sameTicket = !!existing && existing.id === t.id && path.resolve(existing.projectPath) === path.resolve(project.path);
+        if (existing && !sameTicket) throw new ProjectTicketError(409, `WorkItem ${wi.id} already works ticket ${existing.id}`);
+        const live = await this.findLiveLinkedWorkItem(project.path, t);
+        if (live && live.id !== wi.id) throw new ProjectTicketError(409, `${t.id} is already being worked in WorkItem ${live.id}`);
+        linked = wi;
+        if (sameTicket && t.workItemId === wi.id) return null;
+        if (!sameTicket) {
+          const updated = await this.pool.mergeItemMetadata(wi.id, {
+            [PROJECT_TICKET_CONSTANTS.WORK_ITEM_METADATA_KEY]: { projectPath: project.path, id: t.id },
+          });
+          if (!updated) throw new ProjectTicketError(404, `WorkItem not found: ${wi.id}`);
+          wroteMetadata = true;
+          linked = updated;
+        }
+        const status: ProjectTicketStatus = t.status === 'review' ? 'review' : 'in_progress';
+        return {
+          fields: { status, workItemId: wi.id, ...(wi.target ? { assignee: wi.target } : {}) },
+          log: [`linked to WorkItem ${wi.id} (${wi.status}${wi.target ? `, ${wi.target}` : ''}) by ${actor}`],
+        };
+      });
+      this.logger.info('Project ticket linked to a WorkItem', { projectPath: project.path, id, workItemId: wiId });
+      return { ticket, workItem: linked as unknown as WorkItem };
+    } catch (err) {
+      if (wroteMetadata) {
+        await this.pool.mergeItemMetadata(wiId, { [PROJECT_TICKET_CONSTANTS.WORK_ITEM_METADATA_KEY]: undefined }).catch(() => undefined);
+      }
+      throw err;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Sync (WorkItem → ticket)
   // ---------------------------------------------------------------------------
 
@@ -731,7 +945,7 @@ export class ProjectTicketWorkflowService {
     assignee: string,
     actor: string,
     teamId: string,
-    options: { self: boolean; allowed: ProjectTicketStatus[] },
+    options: StartWorkOptions,
   ): Promise<StartedTicketWork> {
     let created: WorkItem | null = null;
     let ticket: ProjectTicket;
@@ -743,11 +957,14 @@ export class ProjectTicketWorkflowService {
         if (t.team && t.team !== teamId) throw new ProjectTicketError(403, `${t.id} belongs to team ${t.team}`);
         const live = await this.findLiveLinkedWorkItem(project.path, t);
         if (live) throw new ProjectTicketError(409, `${t.id} is already being worked in WorkItem ${live.id}`);
-        created = this.buildWorkItem(project, t, assignee, teamId);
-        await this.pool.addToPool(created);
+        created = options.prepared ? options.prepared(t) : this.buildWorkItem(project, t, assignee, teamId);
+        await this.pool.addToPool(created, options.addOptions);
         return {
           fields: { status: 'in_progress', assignee, workItemId: created.id },
-          log: [options.self ? `claimed by ${assignee} — WorkItem ${created.id}` : `assigned to ${assignee} — WorkItem ${created.id}`],
+          log: [
+            ...(options.logFirst ?? []),
+            options.self ? `claimed by ${assignee} — WorkItem ${created.id}` : `assigned to ${assignee} — WorkItem ${created.id}`,
+          ],
         };
       });
     } catch (err) {
@@ -902,6 +1119,78 @@ export class ProjectTicketWorkflowService {
     } catch (err) {
       this.logger.warn('Could not cancel the linked WorkItem', { workItemId, error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  /**
+   * Projects an agent's (non-archived) teams work on, with the team.
+   *
+   * @param session - Agent session
+   * @returns One entry per project (first team wins)
+   */
+  private async projectsOfAgent(session: string): Promise<Array<{ project: Project; teamId: string }>> {
+    const teams = (await this.directory.getTeams()).filter((t) => !t.archived && (t.members ?? []).some((m) => isSession(m, session)));
+    if (teams.length === 0) return [];
+    const projects = await this.directory.getProjects();
+    const out: Array<{ project: Project; teamId: string }> = [];
+    for (const team of teams) {
+      for (const pid of team.projectIds ?? []) {
+        const project = projects.find((p) => p.id === pid);
+        if (project && !out.some((o) => o.project.id === pid)) out.push({ project, teamId: team.id });
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Which of the target's projects a delegation belongs to: the one matching
+   * the item's `metadata.projectPath`, else the only one, else (with a
+   * ticket id) the one holding that ticket.
+   *
+   * @param candidates - Target's projects
+   * @param wi - Delegated WorkItem
+   * @param ticketId - Explicit ticket, if any
+   * @returns The choice, or null when it cannot be told
+   */
+  private async pickDelegationProject(
+    candidates: Array<{ project: Project; teamId: string }>,
+    wi: WorkItem,
+    ticketId: string | undefined,
+  ): Promise<{ project: Project; teamId: string } | null> {
+    const wanted = typeof wi.metadata?.projectPath === 'string' && wi.metadata.projectPath ? path.resolve(wi.metadata.projectPath) : null;
+    const byPath = wanted ? candidates.find((c) => path.resolve(c.project.path) === wanted) : undefined;
+    if (ticketId) {
+      const ordered = byPath ? [byPath, ...candidates.filter((c) => c !== byPath)] : candidates;
+      for (const c of ordered) {
+        if (await this.tickets.get(c.project.path, ticketId).catch(() => null)) return c;
+      }
+      return null;
+    }
+    if (byPath) return byPath;
+    return candidates.length === 1 ? candidates[0] : null;
+  }
+
+  /**
+   * The delegated WorkItem with the ticket link added; every other field is
+   * kept as the delegator built it.
+   *
+   * @param wi - Delegated WorkItem
+   * @param project - Project
+   * @param t - Ticket
+   * @param teamId - Target's team on the project
+   * @returns WorkItem to add
+   */
+  private linkDelegatedItem(wi: WorkItem, project: Project, t: ProjectTicket, teamId: string): WorkItem {
+    const meta = wi.metadata ?? {};
+    return {
+      ...wi,
+      metadata: {
+        ...meta,
+        [PROJECT_TICKET_CONSTANTS.WORK_ITEM_METADATA_KEY]: { projectPath: project.path, id: t.id },
+        ...(meta.projectId ? {} : { projectId: project.id }),
+        ...(meta.projectPath ? {} : { projectPath: project.path }),
+        ...(meta.teamId ? {} : { teamId }),
+      },
+    };
   }
 
   /**

@@ -78,6 +78,39 @@ describe('project tickets × real task pool', () => {
     expect(after.workItemId).toBe(started.workItem.id);
   });
 
+  it('delegation without --ticket → auto-created ticket → worker done → lead verifies → ticket done', async () => {
+    const delegated = createWorkItem({
+      type: 'delegate',
+      owner: 'team_lead',
+      target: 'dev-ann',
+      title: 'Provider directory v1',
+      briefMarkdown: 'Goal: a provider directory.',
+      metadata: { priority: 'high', requiresVerification: true },
+    });
+    const routed = await wf.routeDelegation({ workItem: delegated, callerSession: 'tl-sam', addOptions: { creatorSession: 'tl-sam' } });
+    expect(routed?.ticket).toMatchObject({ status: 'in_progress', assignee: 'dev-ann', workItemId: delegated.id, priority: 'P1' });
+    const inPool = await pool.findWorkItem(delegated.id);
+    expect(inPool).toMatchObject({ type: 'delegate', status: 'queued', metadata: { projectTicket: { projectPath: project.path, id: routed!.ticket.id } } });
+
+    await pool.claimSpecificItem('dev-ann', delegated.id);
+    await pool.completeItem(delegated.id, { summary: 'done' }, { role: 'agent', session: 'dev-ann' });
+    expect((await pool.findWorkItem(delegated.id))?.status).toBe('done_by_worker');
+    const review = createWorkItem({
+      id: `${delegated.id}:verify:${delegated.id}`,
+      type: 'review',
+      owner: 'team_lead',
+      target: 'tl-sam',
+      title: 'Verify',
+      metadata: { verifyOf: delegated.id },
+    });
+    await pool.addToPool(review);
+    await pool.claimFromPool('tl-sam');
+    await pool.verifyItem(delegated.id, { role: 'team_lead', session: 'tl-sam' }, 'verified');
+
+    await wf.onWorkItemEvent(review.id);
+    expect((await wf.get('p1', routed!.ticket.id)).status).toBe('done');
+  });
+
   it('owner cancels a running ticket → WorkItem cancelled and the agent is free to claim again', async () => {
     const a = await wf.create('p1', { title: 'A', status: 'ready' }, {});
     const b = await wf.create('p1', { title: 'B', status: 'ready' }, {});

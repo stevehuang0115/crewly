@@ -47,7 +47,25 @@ The script auto-resolves `config/skills/...` references to absolute paths so del
 | `--task-type` | `taskType` | No | Task type: `general`, `technical` (default: `general`) |
 | `--force-cross-team` | `forceCrossTeam` | No | Allow cross-team delegation |
 | `--request-id` / `-R` | `requestId` | No | Ticket (Request) this work is for — the id or `TKT-123` from the `[TICKET:TKT-123 <id>]` line of the message you are acting on. Links the WorkItem into `Request.workItemIds[]`. Omit it and the WorkItem is still linked when your current turn has exactly one ticket |
+| `--ticket` | `ticket` | No | Project ticket this work is for (e.g. `APP-12`). Without it a ticket is created for you when the target works on a project — see Project tickets |
 | `--fallback-minutes` | — | No | Minutes until the ONE §3.0 fallback check fires for this delegation (default `120` ≈ 2× a TL milestone ETA). `0` disables it. Not cancelled on completion — keep it at 2× ETA, never a poll interval |
+
+## Project tickets
+
+Work for a teammate on a project always runs through a project ticket
+(`<project>/.crewly/tickets/`, spec `2026-09-28-project-tickets.md` §11):
+
+- `--ticket APP-12` — that ticket (must be `backlog` or `ready`, with no other
+  live WorkItem) is assigned to `--to` and this WorkItem becomes its work. A
+  ticket that is already being worked, done, cancelled or unknown is refused:
+  nothing is delivered and the reason is printed.
+- no `--ticket` — a ticket is created from this delegation (title, brief,
+  the target's team, priority) and set `in_progress` for the target. The
+  output names it (`projectTicket`).
+
+No ticket is made for work you target at yourself, review/verify items,
+system or scheduled items, or targets whose team has no project. Work already
+in flight without a ticket: `project-tickets link --project P --id APP-12 --work-item <id>`.
 
 ## Usage — CLI Flags (preferred)
 

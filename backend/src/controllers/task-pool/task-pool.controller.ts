@@ -34,10 +34,13 @@ import {
 import { formatError } from '../../utils/format-error.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { LoggerService } from '../../services/core/logger.service.js';
-import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS } from '../../constants.js';
 import { readAgentSessionHeader, resolveTransitionActor } from '../../utils/agent-caller.utils.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import { isTicketNumberRef } from '../../types/v2/ticket.types.js';
+import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
+import type { RoutedDelegation } from '../../services/project-tickets/project-ticket-workflow.service.js';
+import { projectTicketWorkflow } from '../project-tickets/project-tickets.controller.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TaskPoolController');
 
@@ -293,6 +296,35 @@ async function normalizeTicketRequestId(body: Record<string, unknown>): Promise<
 }
 
 /**
+ * Take the project ticket id (`delegate-task --ticket`) off a task-pool body,
+ * so it never lands on the WorkItem as a stray field.
+ *
+ * @param body - Request body (mutated)
+ * @returns The ticket id, or undefined
+ */
+function takeProjectTicketId(body: Record<string, unknown>): string | undefined {
+  const key = PROJECT_TICKET_CONSTANTS.DELEGATION_TICKET_BODY_KEY;
+  const raw = body[key];
+  delete body[key];
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+}
+
+/**
+ * The delegator of a WorkItem: the X-Agent-Session header, else the
+ * `metadata.delegatedBy` a delegating skill stamps.
+ *
+ * @param req - Request
+ * @param wi - WorkItem being added
+ * @returns Session name, or undefined (owner / unknown)
+ */
+function delegatorOf(req: Request, wi: WorkItem): string | undefined {
+  const header = readAgentSessionHeader(req);
+  if (header) return header;
+  const stamped = wi.metadata?.[PROJECT_TICKET_CONSTANTS.DELEGATION_CALLER_METADATA_KEY];
+  return typeof stamped === 'string' && stamped.trim() ? stamped.trim() : undefined;
+}
+
+/**
  * Adds a WorkItem to the Task Pool.
  *
  * HTTP entry point for the V3 pull-mode task path. Used by delegate-task
@@ -336,6 +368,9 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       res.status(400).json({ success: false, error: 'Request body must be a WorkItem object' });
       return;
     }
+
+    // Project tickets §11: `delegate-task --ticket <ID>`.
+    const projectTicketId = takeProjectTicketId(body as Record<string, unknown>);
 
     // Ticket loop: skills may pass the displayed `TKT-123` as --request-id.
     const ticketRefError = await normalizeTicketRequestId(body as Record<string, unknown>);
@@ -406,9 +441,30 @@ export async function addItem(req: Request, res: Response): Promise<void> {
       return;
     }
 
+    // Project tickets §11: delegating project work to a teammate goes through
+    // a project ticket — the named one, or one created for it. The workflow
+    // then adds the WorkItem itself (under the ticket folder lock).
+    const addOptions = { creatorSession: readAgentSessionHeader(req) };
+    let routed: RoutedDelegation | null = null;
+    try {
+      routed = await projectTicketWorkflow().routeDelegation({
+        workItem,
+        callerSession: delegatorOf(req, workItem),
+        ticketId: projectTicketId,
+        addOptions,
+      });
+    } catch (err) {
+      if (err instanceof ProjectTicketError) {
+        res.status(err.status).json({ success: false, error: err.message, code: PROJECT_TICKET_CONSTANTS.DELEGATION_REFUSED_CODE });
+        return;
+      }
+      throw err;
+    }
+
     // Ticket loop §3: an item created by an agent without --request-id is
     // linked to the ticket of that agent's current turn, when there is one.
-    await getService().addToPool(workItem, { creatorSession: readAgentSessionHeader(req) });
+    if (routed) workItem = routed.workItem;
+    else await getService().addToPool(workItem, addOptions);
 
     // V3.1: Project WorkItem entry as a TaskRecord
     const projection = getProjection();
@@ -426,7 +482,22 @@ export async function addItem(req: Request, res: Response): Promise<void> {
     res.status(201).json({
       success: true,
       message: `WorkItem ${workItem.id} added to pool`,
-      data: { workItemId: workItem.id, id: workItem.id, status: workItem.status },
+      data: {
+        workItemId: workItem.id,
+        id: workItem.id,
+        status: workItem.status,
+        ...(routed
+          ? {
+              projectTicket: {
+                id: routed.ticket.id,
+                status: routed.ticket.status,
+                projectPath: routed.project.path,
+                project: routed.project.name,
+                created: routed.createdTicket,
+              },
+            }
+          : {}),
+      },
     });
   } catch (error) {
     handleServiceError(res, error);

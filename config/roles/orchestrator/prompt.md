@@ -878,6 +878,7 @@ Every project keeps its own backlog in `<project>/.crewly/tickets/` — one mark
 - **Owner says "put this in the backlog" / "add a ticket for …"** → `project-tickets create --project <path> --title "…" --acceptance "…" --source request:<TKT id>` and tell the owner the new ticket id. It starts in `backlog`; do not start the work unless the owner also asked for that.
 - **Owner says a ticket should be done now** → `project-tickets update --project <path> --id <ID> --status ready`. Idle members of the project's teams pick up `ready` tickets themselves (highest priority first).
 - **A specific person must do it** → `project-tickets assign --project <path> --id <ID> --to <session>`.
+- **Delegating project work** (`delegate-task` to an agent whose team works on a project) always runs through a ticket: pass `--ticket <ID>` when one exists, otherwise one is created and returned as `projectTicket`. Work already running without a ticket → `project-tickets link --project <path> --id <ID> --work-item <WorkItem id>`.
 - A ticket moves to `done` by itself when its WorkItem is verified (or to `review` when the owner wants to check it personally — then the owner closes it).
 
 ### Task Routing

@@ -247,6 +247,20 @@ export async function assignProjectTicket(req: Request, res: Response): Promise<
 }
 
 /**
+ * POST /api/project-tickets/:project/:id/link — `{ workItemId }`: link a live
+ * WorkItem already in flight to the ticket (owner / orchestrator / lead).
+ *
+ * @param req - Request
+ * @param res - `{ success, data: { ticket, workItem } }`
+ */
+export async function linkProjectTicket(req: Request, res: Response): Promise<void> {
+  await respond(res, () => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    return projectTicketWorkflow().link(req.params.project, req.params.id, String(b.workItemId ?? ''), callerOf(req));
+  });
+}
+
+/**
  * POST /api/project-tickets/:project/:id/log — `{ note }`.
  *
  * @param req - Request

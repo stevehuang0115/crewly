@@ -37,6 +37,8 @@ class H(BaseHTTPRequestHandler):
     def do_POST(self):
         n = int(self.headers.get('content-length', '0')); body = json.loads(self.rfile.read(n).decode() or '{}')
         self.record(body)
+        if self.path.endswith('/link'):
+            return self.reply(200, {'success': True, 'data': {'workItem': {'id': body.get('workItemId')}, 'ticket': dict(T, status='in_progress', assignee='dev-bo', workItemId=body.get('workItemId'))}})
         if self.path.endswith('/claim'):
             return self.reply(200, {'success': True, 'data': {'claimed': True, 'workItem': {'id': 'wi-9'}, 'ticket': dict(T, status='in_progress', assignee='dev-ann', workItemId='wi-9')}})
         if 'forbidden' in self.path:
@@ -105,6 +107,15 @@ check "assign: missing to" "$(run_err assign --project p1 --id APP-1 | grep -c '
 OUT=$(run log --project p1 --id APP-1 --note "halfway")
 check "log: body" "$(last '.body | tostring')" '{"note":"halfway"}'
 check "log: last line" "$(printf '%s' "$OUT" | jq -r .lastLog)" "b · dev · note"
+
+# --- link (orchestrator / lead): tie a live WorkItem to a ticket ---
+OUT=$(run link --project p1 --id APP-1 --work-item wi-42)
+check "link: path" "$(last .path)" "/api/project-tickets/p1/APP-1/link"
+check "link: body" "$(last '.body | tostring')" '{"workItemId":"wi-42"}'
+check "link: output" "$(printf '%s' "$OUT" | jq -c '[.workItemId, .ticket.status, .ticket.workItemId]')" '["wi-42","in_progress","wi-42"]'
+run '{"action":"link","project":"p1","id":"APP-1","workItemId":"wi-43"}' >/dev/null
+check "link json" "$(last '.body | tostring')" '{"workItemId":"wi-43"}'
+check "link: missing work item" "$(run_err link --project p1 --id APP-1 | grep -c 'work-item')" "1"
 
 # --- errors ---
 check "missing action" "$(run_err | grep -c 'Missing action')" "1"

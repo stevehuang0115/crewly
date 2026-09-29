@@ -1483,6 +1483,19 @@ export const PROJECT_TICKET_CONSTANTS = {
 	SYNC_SWEEP_INTERVAL_MS: 60 * 1000,
 	/** Successor hops followed from a ticket's WorkItem before giving up */
 	MAX_SUCCESSOR_HOPS: 8,
+	/**
+	 * Delegation through tickets (spec §11): the task-pool body field naming the
+	 * project ticket a delegated WorkItem works (`delegate-task --ticket`).
+	 */
+	DELEGATION_TICKET_BODY_KEY: 'projectTicketId',
+	/** WorkItem metadata key a delegating skill uses to name the delegator when no X-Agent-Session header is sent */
+	DELEGATION_CALLER_METADATA_KEY: 'delegatedBy',
+	/** WorkItem types that are delegations of work to someone (the only ones routed through tickets) */
+	DELEGATION_WORK_ITEM_TYPES: ['delegate'] as const,
+	/** Max characters of a ticket title derived from a delegation's title */
+	DELEGATION_TITLE_MAX_CHARS: 120,
+	/** Error `code` of a task-pool add refused by the ticket rules (skills stop instead of delivering) */
+	DELEGATION_REFUSED_CODE: 'project_ticket_refused',
 } as const;
 
 /**

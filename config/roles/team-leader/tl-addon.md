@@ -33,6 +33,7 @@ Use when: Orchestrator sends a new objective. Creates one WorkItem per sub-task 
 bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"to":"worker-session","task":"implement feature","priority":"high","teamId":"{{TEAM_ID}}","tlMemberId":"{{MEMBER_ID}}","projectPath":"{{PROJECT_PATH}}"}'
 ```
 Use when: After decompose-goal, or when handle-failure says reassign. Validates hierarchy before delegation.
+Project work for a worker always runs through a project ticket: add `"ticket":"APP-12"` (or `--ticket APP-12`) when a ticket exists; otherwise one is created for you and printed. Refused (nothing delivered) when that ticket is already being worked or closed.
 
 #### 3. verify-output — Check completed work quality
 ```bash
@@ -88,6 +89,8 @@ Use when: A specific worker should take a specific ticket of the project backlog
 
 #### Project backlog (project tickets)
 Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown file per ticket, tracked in git). Use the `project-tickets` skill to list, read, create and update tickets. Workers pick up `ready` tickets by themselves when idle; you decide what is `ready`, you may assign (`assign-ticket`), and you review the work through the normal verification item. Worker-created tickets land in `backlog` until you or the owner make them ready.
+
+**Every piece of project work for a worker has a ticket.** Delegate with `--ticket <ID>` when the ticket exists (or `assign-ticket`); without it `delegate-task` creates one for you. Work already running without a ticket: `project-tickets link --project {{PROJECT_PATH}} --id <ID> --work-item <WorkItem id>`. Backlog tickets that should be picked up next: `update --status ready`. Reminders you set for yourself get no ticket.
 
 ---
 

@@ -11,6 +11,7 @@ import {
   claimProjectTicket,
   createProjectTicket,
   getProjectTicket,
+  linkProjectTicket,
   listMyProjectTickets,
   listProjectTickets,
   logProjectTicket,
@@ -32,6 +33,7 @@ import {
  * - POST /:project/:id/claim      — the calling agent claims it
  * - POST /:project/:id/assign     — `{ assignee, start? }`
  * - POST /:project/:id/log        — `{ note }`
+ * - POST /:project/:id/link       — `{ workItemId }` (link work already in flight)
  *
  * @returns Express router for /api/project-tickets
  */
@@ -46,6 +48,7 @@ export function createProjectTicketsRouter(): Router {
   router.post('/:project/:id/claim', claimProjectTicket);
   router.post('/:project/:id/assign', assignProjectTicket);
   router.post('/:project/:id/log', logProjectTicket);
+  router.post('/:project/:id/link', linkProjectTicket);
   return router;
 }
 

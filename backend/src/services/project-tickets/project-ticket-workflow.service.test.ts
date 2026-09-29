@@ -43,6 +43,12 @@ class FakePool implements ProjectTicketPool {
     wi.status = 'running';
     return { workItem: { ...wi } };
   }
+  mergeItemMetadata = jest.fn(async (id: string, patch: Record<string, unknown>) => {
+    const wi = this.items.get(id);
+    if (!wi) return null;
+    wi.metadata = { ...(wi.metadata ?? {}), ...patch };
+    return { ...wi };
+  });
   async findWorkItem(id: string): Promise<WorkItem | null> {
     return this.items.get(id) ?? null;
   }
@@ -393,6 +399,223 @@ describe('ProjectTicketWorkflowService', () => {
       const u = await wf.update('p1', t.id, { priority: 'P0', status: 'ready' }, lead, 'groomed');
       expect(u).toMatchObject({ priority: 'P0', status: 'ready' });
       await expect(wf.update('p1', t.id, { title: 'y' }, outsider)).rejects.toMatchObject({ status: 403 });
+    });
+  });
+  describe('delegation through tickets (spec §11)', () => {
+    let seq = 0;
+    /** A delegate WorkItem as the delegate-task skill builds it. */
+    function delegation(patch: Partial<WorkItem> = {}): WorkItem {
+      seq += 1;
+      return {
+        id: `wi-del-${seq}`,
+        type: 'delegate',
+        owner: 'team_lead',
+        target: 'app-dev',
+        title: 'Build the list page\nGoal: …',
+        description: 'New task from Team Leader …',
+        briefMarkdown: 'Build the list page.\n\nGoal: users see the list.',
+        status: 'queued',
+        createdAt: 'now',
+        retryCount: 0,
+        maxRetries: 3,
+        inputTokens: 0,
+        outputTokens: 0,
+        cost: 0,
+        metadata: { priority: 'high', directDelivery: true },
+        ...patch,
+      };
+    }
+
+    it('without --ticket: creates a ticket, assigns it, and links the delegated item as is', async () => {
+      const wi = delegation();
+      const routed = await wf.routeDelegation({ workItem: wi, callerSession: 'app-lead', addOptions: { creatorSession: 'app-lead' } });
+      expect(routed).not.toBeNull();
+      expect(routed!.createdTicket).toBe(true);
+      expect(routed!.ticket).toMatchObject({
+        title: 'Build the list page',
+        status: 'in_progress',
+        assignee: 'app-dev',
+        workItemId: wi.id,
+        team: 't-app',
+        priority: 'P1',
+        source: 'agent:app-lead',
+      });
+      expect(routed!.ticket.description).toContain('users see the list');
+      expect(routed!.ticket.log.join('\n')).toContain('created from delegation by app-lead');
+      const stored = pool.items.get(wi.id)!;
+      // Delegate fields untouched, only the link (+ project/team) added.
+      expect(stored).toMatchObject({ type: 'delegate', owner: 'team_lead', target: 'app-dev', title: wi.title, briefMarkdown: wi.briefMarkdown, status: 'queued' });
+      expect(stored.metadata).toMatchObject({
+        priority: 'high',
+        directDelivery: true,
+        projectTicket: { projectPath: project.path, id: routed!.ticket.id },
+        projectId: 'p1',
+        projectPath: project.path,
+        teamId: 't-app',
+      });
+    });
+
+    it('passes the add options through to the pool', async () => {
+      const spy = jest.spyOn(pool, 'addToPool');
+      await wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead', addOptions: { creatorSession: 'app-lead' } });
+      expect(spy).toHaveBeenCalledWith(expect.objectContaining({ type: 'delegate' }), { creatorSession: 'app-lead' });
+    });
+
+    it('with --ticket: assigns that backlog/ready ticket through the assign path', async () => {
+      const t = await wf.create('p1', { title: 'List pages C' }, owner);
+      const wi = delegation();
+      const routed = await wf.routeDelegation({ workItem: wi, callerSession: 'app-lead', ticketId: t.id });
+      expect(routed!.createdTicket).toBe(false);
+      expect(routed!.ticket).toMatchObject({ id: t.id, status: 'in_progress', assignee: 'app-dev', workItemId: wi.id, title: 'List pages C' });
+      expect(routed!.ticket.log.join('\n')).toMatch(/delegated by app-lead[\s\S]*assigned to app-dev — WorkItem wi-del-/);
+      expect(pool.items.get(wi.id)!.metadata).toMatchObject({ projectTicket: { projectPath: project.path, id: t.id } });
+    });
+
+    it('with --ticket: refuses a ticket that already has a live WorkItem, and adds nothing', async () => {
+      const t = await readyTicket();
+      await wf.claim('p1', t.id, qa);
+      const before = pool.items.size;
+      await expect(wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead', ticketId: t.id })).rejects.toMatchObject({ status: 409 });
+      expect(pool.items.size).toBe(before);
+    });
+
+    it('with --ticket: refuses a done ticket', async () => {
+      const t = await readyTicket();
+      await wf.transition('p1', t.id, 'cancelled', owner);
+      await expect(wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead', ticketId: t.id })).rejects.toMatchObject({ status: 409 });
+      const d = await readyTicket({ title: 'done one' });
+      const s = await wf.claim('p1', d.id, dev);
+      pool.set(s.workItem.id, { status: 'verified' });
+      await wf.syncTicket(project.path, d.id);
+      await expect(wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead', ticketId: d.id })).rejects.toMatchObject({ status: 409 });
+    });
+
+    it('with --ticket: refuses a self-target, a target with no project, an unknown ticket, and a member caller', async () => {
+      const t = await readyTicket();
+      await expect(wf.routeDelegation({ workItem: delegation({ target: 'app-lead' }), callerSession: 'app-lead', ticketId: t.id })).rejects.toMatchObject({ status: 400 });
+      teams.push({ id: 't-free', name: 'Free', members: [member('m-free', 'free-agent')], projectIds: [], createdAt: '', updatedAt: '' });
+      await expect(wf.routeDelegation({ workItem: delegation({ target: 'free-agent' }), callerSession: 'app-lead', ticketId: t.id })).rejects.toMatchObject({ status: 400 });
+      await expect(wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead', ticketId: 'APP-999' })).rejects.toMatchObject({ status: 404 });
+      await expect(wf.routeDelegation({ workItem: delegation({ target: 'app-qa' }), callerSession: 'app-dev', ticketId: t.id })).rejects.toMatchObject({ status: 403 });
+      expect(pool.items.size).toBe(0);
+    });
+
+    it('without --ticket: leaves self-reminders, review items, system items and no-project targets alone', async () => {
+      teams.push({ id: 't-free', name: 'Free', members: [member('m-free', 'free-agent')], projectIds: [], createdAt: '', updatedAt: '' });
+      const cases: Array<[WorkItem, string | undefined]> = [
+        [delegation({ target: 'app-lead', title: 'Push Vera' }), 'app-lead'],
+        [delegation({ metadata: { verifyOf: 'wi-x' } }), 'app-lead'],
+        [delegation({ owner: 'system' }), undefined],
+        [delegation({ target: 'free-agent' }), 'app-lead'],
+        [delegation({ type: 'review' }), 'app-lead'],
+      ];
+      for (const [wi, caller] of cases) expect(await wf.routeDelegation({ workItem: wi, callerSession: caller })).toBeNull();
+      expect(pool.items.size).toBe(0);
+      expect((await wf.list('p1')).tickets).toHaveLength(0);
+    });
+
+    it('picks the project from metadata.projectPath when the target works on several', async () => {
+      teams[0].projectIds = ['p1', 'p2'];
+      expect(await wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead' })).toBeNull();
+      const routed = await wf.routeDelegation({ workItem: delegation({ metadata: { projectPath: other.path } }), callerSession: 'app-lead' });
+      expect(routed!.project.id).toBe('p2');
+    });
+
+    it('cancels the new ticket when the WorkItem cannot be added', async () => {
+      jest.spyOn(pool, 'addToPool').mockRejectedValueOnce(new Error('team budget exceeded'));
+      await expect(wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead' })).rejects.toThrow('team budget exceeded');
+      const [t] = (await wf.list('p1')).tickets;
+      expect(t.status).toBe('cancelled');
+    });
+
+    it('falls back to a plain delegation when the ticket cannot be created', async () => {
+      jest.spyOn(tickets, 'create').mockRejectedValueOnce(new Error('read-only fs'));
+      expect(await wf.routeDelegation({ workItem: delegation(), callerSession: 'app-lead' })).toBeNull();
+    });
+
+    it('the existing sync closes an auto-created ticket when its WorkItem is verified (via its review item)', async () => {
+      const wi = delegation({ metadata: { requiresVerification: true } });
+      const routed = await wf.routeDelegation({ workItem: wi, callerSession: 'app-lead' });
+      pool.set(wi.id, { status: 'done_by_worker' });
+      await pool.addToPool({ ...delegation({ owner: 'agent', target: 'app-lead' }), id: 'wi-review', metadata: { verifyOf: wi.id } });
+      pool.set(wi.id, { status: 'verified' });
+      await wf.onWorkItemEvent('wi-review');
+      const t = await wf.get('p1', routed!.ticket.id);
+      expect(t.status).toBe('done');
+      expect(t.log.at(-1)).toContain(`WorkItem ${wi.id} verified → done`);
+    });
+  });
+
+  describe('link (spec §11)', () => {
+    function live(id: string, patch: Partial<WorkItem> = {}): WorkItem {
+      const wi: WorkItem = {
+        id, type: 'delegate', owner: 'team_lead', target: 'app-dev', title: 'Deploy 485', status: 'running',
+        createdAt: '', retryCount: 0, maxRetries: 3, inputTokens: 0, outputTokens: 0, cost: 0, metadata: {}, ...patch,
+      };
+      pool.items.set(id, wi);
+      return wi;
+    }
+
+    it('links a running item: in_progress, assignee, workItemId, metadata, Log', async () => {
+      const t = await wf.create('p1', { title: 'Deploy 485' }, owner);
+      live('wi-run');
+      const { ticket, workItem } = await wf.link('p1', t.id, 'wi-run', lead);
+      expect(ticket).toMatchObject({ status: 'in_progress', assignee: 'app-dev', workItemId: 'wi-run' });
+      expect(ticket.log.at(-1)).toContain('linked to WorkItem wi-run (running, app-dev) by app-lead');
+      expect(workItem.metadata).toMatchObject({ projectTicket: { projectPath: project.path, id: t.id } });
+      expect(pool.items.get('wi-run')!.status).toBe('running');
+      // idempotent
+      expect((await wf.link('p1', t.id, 'wi-run', lead)).ticket.log).toHaveLength(ticket.log.length);
+    });
+
+    it('keeps a ticket in review', async () => {
+      const t = await readyTicket();
+      await wf.claim('p1', t.id, dev);
+      await wf.transition('p1', t.id, 'review', owner);
+      live('wi-rev', { status: 'done_by_worker' });
+      expect((await wf.link('p1', t.id, 'wi-rev', owner)).ticket.status).toBe('review');
+    });
+
+    it('then syncs like any linked ticket', async () => {
+      const t = await wf.create('p1', { title: 'x' }, owner);
+      live('wi-s');
+      await wf.link('p1', t.id, 'wi-s', { session: 'crewly-orc' });
+      pool.set('wi-s', { status: 'verified' });
+      await wf.onWorkItemEvent('wi-s');
+      expect((await wf.get('p1', t.id)).status).toBe('done');
+    });
+
+    it('refuses: done/cancelled ticket, finished item, item on another ticket, ticket with another live item, members', async () => {
+      const done = await wf.create('p1', { title: 'c' }, owner);
+      await wf.transition('p1', done.id, 'cancelled', owner);
+      live('wi-a');
+      await expect(wf.link('p1', done.id, 'wi-a', lead)).rejects.toMatchObject({ status: 409 });
+
+      const t = await wf.create('p1', { title: 'x' }, owner);
+      live('wi-old', { status: 'verified' });
+      await expect(wf.link('p1', t.id, 'wi-old', lead)).rejects.toMatchObject({ status: 409 });
+      await expect(wf.link('p1', t.id, 'wi-missing', lead)).rejects.toMatchObject({ status: 404 });
+
+      live('wi-other', { metadata: { projectTicket: { projectPath: project.path, id: 'APP-77' } } });
+      await expect(wf.link('p1', t.id, 'wi-other', lead)).rejects.toMatchObject({ status: 409 });
+
+      const busy = await readyTicket();
+      await wf.claim('p1', busy.id, qa);
+      await expect(wf.link('p1', busy.id, 'wi-a', lead)).rejects.toMatchObject({ status: 409 });
+
+      await expect(wf.link('p1', t.id, 'wi-a', dev)).rejects.toMatchObject({ status: 403 });
+      expect(pool.items.get('wi-a')!.metadata).toEqual({});
+    });
+
+    it('removes the link from the item again when the ticket write fails', async () => {
+      const t = await wf.create('p1', { title: 'x' }, owner);
+      live('wi-f');
+      jest.spyOn(tickets, 'mutate').mockImplementationOnce(async (p, id, _actor, compute) => {
+        await compute((await tickets.get(p, id))!);
+        throw new Error('disk full');
+      });
+      await expect(wf.link('p1', t.id, 'wi-f', owner)).rejects.toThrow('disk full');
+      expect(pool.items.get('wi-f')!.metadata?.projectTicket).toBeUndefined();
     });
   });
 });

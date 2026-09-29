@@ -1,6 +1,6 @@
 ---
 name: Project Tickets
-description: A project's own backlog — list, read, create, update, claim, release and log project tickets (markdown files in <project>/.crewly/tickets/, tracked in git).
+description: A project's own backlog — list, read, create, update, claim, release, assign, link and log project tickets (markdown files in <project>/.crewly/tickets/, tracked in git).
 version: 1.0.0
 category: task-management
 skillType: claude-skill
@@ -125,3 +125,19 @@ bash execute.sh assign --project P --id APP-12 --to worker-session --no-start
 Only the owner, the orchestrator or a lead of a team on the project may
 assign, and only to members of those teams (a person's name is recorded
 without a WorkItem). Team leads also have the `assign-ticket` skill.
+
+## Link work already in flight (orchestrator / team lead)
+
+```bash
+bash execute.sh link --project P --id APP-12 --work-item <WorkItem id>
+```
+
+For a WorkItem that is already queued or running without a ticket (e.g. it was
+delegated before tickets were used). The ticket becomes `in_progress` (a ticket
+in `review` stays there), its assignee is the WorkItem's target, and it closes
+by itself when that WorkItem is verified. Refused when the ticket is done or
+cancelled, the WorkItem is finished or already works another ticket, or the
+ticket already has another live WorkItem.
+
+New delegations need no `link`: `delegate-task` puts work for a teammate on a
+project through a ticket by itself (pass `--ticket APP-12` to use an existing one).
