@@ -104,6 +104,43 @@ class TestCannibalization(Base):
         self.assertEqual(S.find_cannibalization(rows, 10, 30)[0], [])
 
 
+# ------------------------------------------------------------------ urlNormalize
+NORM = {"stripScheme": True, "localePrefixes": ["en", "zh"]}
+
+
+class TestUrlNormalize(Base):
+    def test_norm_url_scheme_and_locale_variants_are_one_page(self):
+        keys = {S.norm_url(u, NORM) for u in ("http://example.com/x", "https://example.com/en/x/",
+                                              "https://example.com/zh/x", "https://example.com/x#a")}
+        self.assertEqual(keys, {"https://example.com/x"})
+        self.assertEqual(S.norm_url("https://example.com/en", NORM), "https://example.com/")
+        self.assertNotEqual(S.norm_url("https://example.com/english", NORM), "https://example.com/")
+        self.assertNotEqual(S.norm_url("https://example.com/es/x", NORM), S.norm_url("https://example.com/x", NORM))
+
+    def test_default_keeps_variants_separate(self):
+        self.assertNotEqual(S.norm_url("http://example.com/x"), S.norm_url("https://example.com/x"))
+        self.assertNotEqual(S.norm_url("https://example.com/en/x"), S.norm_url("https://example.com/x"))
+
+    def test_cannibalization_ignores_scheme_and_locale_variants_of_one_page(self):
+        rows = [row(["crewly", "https://example.com/"], 100, 5, 3), row(["crewly", "http://example.com/en"], 60, 2, 4),
+                row(["crewly", "https://example.com/zh/"], 40, 1, 5)]
+        self.assertEqual(len(S.find_cannibalization(rows, 10, 30)[0]), 1)             # noisy without the option
+        self.assertEqual(S.find_cannibalization(rows, 10, 30, NORM)[0], [])            # one page with it
+        rows.append(row(["crewly", "https://example.com/portal"], 50, 2, 6))
+        found = S.find_cannibalization(rows, 10, 30, NORM)[0]
+        self.assertEqual(len(found[0]["pages"]), 2)                                    # real 2nd page still caught
+        self.assertEqual(found[0]["pages"][0]["impressions"], 200)                     # variants summed
+
+    def test_page_report_merges_variants_into_one_card(self):
+        sm = "<urlset><url><loc>https://example.com/x</loc><lastmod>2026-08-01</lastmod></url></urlset>"
+        gsc = {("page",): [row(["https://example.com/x"], 100, 5, 3.0), row(["http://example.com/en/x"], 100, 5, 5.0)]}
+        net = FakeNet(pages={"https://example.com/sitemap.xml": sm}, gsc=gsc)
+        code, out, _ = run(["page-report", "--url", "http://example.com/en/x"], net, self.cfg_file({"urlNormalize": NORM}))
+        self.assertEqual(code, 0)
+        self.assertIn("/x  imp 200  clicks 10  pos 4.0", out)
+        self.assertIn("examined: 1 URL(s) (1 in sitemap, 1 with Search Console rows)", out)
+
+
 # ------------------------------------------------------------------ gsc-report
 class TestGscReport(Base):
     def gsc(self):

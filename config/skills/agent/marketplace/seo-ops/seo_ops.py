@@ -283,18 +283,45 @@ def windows(days, today=None):
     return start, end, p_end - dt.timedelta(days=days - 1), p_end
 
 
-def norm_url(u):
+def norm_url(u, opts=None):
+    """Canonical page key. opts = config urlNormalize: {stripScheme, localePrefixes}.
+
+    stripScheme: http and https count as one page. localePrefixes: /en/x and /x
+    (and /zh/x) count as one page (hreflang sites)."""
+    opts = opts or {}
     u = u.split("#")[0]
     p = urllib.parse.urlsplit(u)
     path = p.path.rstrip("/") or "/"
-    return urllib.parse.urlunsplit((p.scheme.lower(), p.netloc.lower(), path, p.query, ""))
+    scheme = "https" if opts.get("stripScheme") else p.scheme.lower()
+    prefixes = {x.strip("/").lower() for x in opts.get("localePrefixes", []) if x.strip("/")}
+    if prefixes:
+        first = path.lstrip("/").split("/", 1)
+        if first[0].lower() in prefixes:
+            path = "/" + (first[1] if len(first) > 1 else "")
+            path = path.rstrip("/") or "/"
+    return urllib.parse.urlunsplit((scheme, p.netloc.lower(), path, p.query, ""))
 
 
-def find_cannibalization(query_page_rows, min_page_imp, min_total_imp):
+def merge_page_rows(rows, opts=None):
+    """Collapse GSC page rows that normalise to the same page (impression-weighted position)."""
+    acc = {}
+    for r in rows:
+        k = norm_url(r["keys"][0], opts)
+        a = acc.setdefault(k, {"keys": [k], "clicks": 0, "impressions": 0, "pos_w": 0.0})
+        a["clicks"] += r["clicks"]
+        a["impressions"] += r["impressions"]
+        a["pos_w"] += r["position"] * r["impressions"]
+    return {k: {"keys": a["keys"], "clicks": a["clicks"], "impressions": a["impressions"],
+                "ctr": a["clicks"] / a["impressions"] if a["impressions"] else 0,
+                "position": a["pos_w"] / a["impressions"] if a["impressions"] else 0}
+            for k, a in acc.items()}
+
+
+def find_cannibalization(query_page_rows, min_page_imp, min_total_imp, url_opts=None):
     """A query served by 2+ distinct pages. Returns (findings, queries_examined)."""
     by_query = defaultdict(lambda: defaultdict(lambda: {"impressions": 0, "clicks": 0, "pos_w": 0.0}))
     for r in query_page_rows:
-        q, page = r["keys"][0], norm_url(r["keys"][1])
+        q, page = r["keys"][0], norm_url(r["keys"][1], url_opts)
         d = by_query[q][page]
         d["impressions"] += r["impressions"]
         d["clicks"] += r["clicks"]
@@ -327,7 +354,7 @@ def analyse_queries(q_now, q_prev, qp_rows, cfg):
     def growth(r):
         return r["impressions"] - prev.get(r["keys"][0], {"impressions": 0})["impressions"]
     rising = [r for r in sorted(q_now, key=growth, reverse=True) if growth(r) > 0][:t["risingTop"]]
-    cannibal, examined = find_cannibalization(qp, t["cannibalMinPageImpressions"], t["cannibalMinTotalImpressions"])
+    cannibal, examined = find_cannibalization(qp, t["cannibalMinPageImpressions"], t["cannibalMinTotalImpressions"], cfg.get("urlNormalize"))
     return {
         "queries_examined": len(q_now), "query_page_rows_examined": len(qp),
         "cannibal_queries_examined": examined,
@@ -410,7 +437,7 @@ def parse_sitemap_xml(xml):
     return urls, children
 
 
-def load_sitemap(net, url):
+def load_sitemap(net, url, url_opts=None):
     status, xml = net.get(url)
     if status != 200:
         raise SeoOpsError("Could not read sitemap %s (HTTP %d)." % (url, status), EXIT_GATE)
@@ -419,7 +446,7 @@ def load_sitemap(net, url):
         s2, x2 = net.get(child)
         if s2 == 200:
             urls.update(parse_sitemap_xml(x2)[0])
-    return {norm_url(u): lm for u, lm in urls.items()}
+    return {norm_url(u, url_opts): lm for u, lm in urls.items()}
 
 
 def diagnose_page(url, row, age_days, in_sitemap, t):
@@ -447,14 +474,15 @@ def cmd_page_report(args, cfg, net, today=None):
     today = today or dt.date.today()
     t = cfg["thresholds"]
     require_keys(cfg, ["sitemapUrl"], "page-report")
-    sitemap = load_sitemap(net, cfg["sitemapUrl"])
+    sitemap = load_sitemap(net, cfg["sitemapUrl"], cfg.get("urlNormalize"))
     start, end, _, _ = windows(args.days, today)
     px = compile_patterns(cfg["exclusions"]["pages"], "exclusions.pages")
-    pages = {norm_url(r["keys"][0]): r for r in gsc_rows(net, cfg, start, end, ["page"])}
-    explicit = [norm_url(u) for u in (args.url or [])]
+    uo = cfg.get("urlNormalize")
+    pages = merge_page_rows(gsc_rows(net, cfg, start, end, ["page"]), uo)
+    explicit = [norm_url(u, uo) for u in (args.url or [])]
     if args.urls_file:
         with open(args.urls_file, encoding="utf-8") as f:
-            explicit += [norm_url(x.strip()) for x in f if x.strip() and not x.startswith("#")]
+            explicit += [norm_url(x.strip(), uo) for x in f if x.strip() and not x.startswith("#")]
     urls = explicit or sorted(sitemap)
     if args.include:
         inc = re.compile(args.include)
@@ -725,8 +753,8 @@ def prepublish(html, url, cfg, sitemap_locs=None, targets=(), today=None):
         inner.discard(norm_url(url))
     rep.add("SEO", "internal links", "PASS" if len(inner) >= 2 else "FAIL", "%d" % len(inner))
     if sitemap_locs is not None and url:
-        rep.add("SEO", "in sitemap", "PASS" if norm_url(url) in sitemap_locs else "FAIL",
-                "" if norm_url(url) in sitemap_locs else "not in sitemap (a draft may not be yet: re-run after publish)")
+        rep.add("SEO", "in sitemap", "PASS" if norm_url(url, cfg.get("urlNormalize")) in sitemap_locs else "FAIL",
+                "" if norm_url(url, cfg.get("urlNormalize")) in sitemap_locs else "not in sitemap (a draft may not be yet: re-run after publish)")
     types = {t for n in jsonld_nodes(ex.jsonld_raw) for t in node_types(n)}
     art = {"Article", "NewsArticle", "BlogPosting", "TechArticle", "HowTo", "FAQPage", "Product"} & types
     rep.add("SEO", "structured data", "PASS" if art else "WARN", ", ".join(sorted(types)) or "none")
@@ -765,7 +793,7 @@ def cmd_prepublish(args, cfg, net, today=None):
     locs = None
     if cfg.get("sitemapUrl") and url:
         try:
-            locs = set(load_sitemap(net, cfg["sitemapUrl"]))
+            locs = set(load_sitemap(net, cfg["sitemapUrl"], cfg.get("urlNormalize")))
         except SeoOpsError as e:
             print("(sitemap check skipped: %s)" % e, file=sys.stderr)
     rep = prepublish(html, url, cfg, locs, args.target or [], today)

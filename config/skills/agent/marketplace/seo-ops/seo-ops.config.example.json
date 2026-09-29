@@ -10,6 +10,7 @@
   },
   "publishMethod": "Open a blog PR on <org>/<site-repo>; a human merges it.",
   "maxPagesPerDay": 1,
+  "urlNormalize": { "stripScheme": true, "localePrefixes": ["en", "zh"] },
   "thresholds": {
     "lowCtrBelow": 0.35,
     "nearMissMinImpressions": 40,

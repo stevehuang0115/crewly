@@ -60,6 +60,7 @@ Copy `seo-ops.config.example.json` next to your project and fill it in:
 | `sitemapUrl` | Sitemap or sitemap index URL |
 | `exclusions.queries` / `exclusions.pages` | Regexes (case-insensitive) dropped from every report (brand terms, `site:` checks, admin paths) |
 | `publishMethod` | Free text shown to you after each command, e.g. "open a blog PR on <org>/web" |
+| `urlNormalize` | `{"stripScheme": true, "localePrefixes": ["en","zh"]}`: http/https and `/en/x` vs `/x` count as ONE page in cannibalization, page-report and the sitemap check. Set it on hreflang sites, otherwise locale variants show up as false cannibalization |
 | `maxPagesPerDay` | Pattern-queue release limit (default 1) |
 | `thresholds`, `prepublish`, `liveDiff`, `patternQueue` | Optional tuning, see the example file |
 
