@@ -1,0 +1,46 @@
+{
+  "siteUrl": "https://example.com",
+  "gscProperty": "sc-domain:example.com",
+  "ga4PropertyId": "123456789",
+  "credentialsPath": "SEO_OPS_GOOGLE_CREDENTIALS",
+  "sitemapUrl": "https://example.com/sitemap.xml",
+  "exclusions": {
+    "queries": ["^site:", "example\\s*(inc|com)$"],
+    "pages": ["/tag/", "/admin"]
+  },
+  "publishMethod": "Open a blog PR on <org>/<site-repo>; a human merges it.",
+  "maxPagesPerDay": 1,
+  "urlNormalize": { "stripScheme": true, "localePrefixes": ["en", "zh"] },
+  "thresholds": {
+    "lowCtrBelow": 0.35,
+    "nearMissMinImpressions": 40,
+    "pageNoImpressionsAfterDays": 7
+  },
+  "prepublish": {
+    "headTerms": ["example product"],
+    "authorityLinkPattern": "\\.(gov|edu)(/|$|\\?)"
+  },
+  "liveDiff": { "maxTextShrinkPct": 30 },
+  "patternQueue": {
+    "statePath": ".seo-ops/pattern-queue.json",
+    "template": "pattern-template.example.md",
+    "variables": {
+      "category": [
+        { "value": "EB-1", "aliases": ["eb1", "eb-1"] },
+        { "value": "F2A", "aliases": ["f2a"] }
+      ],
+      "country": [
+        { "value": "China", "aliases": ["china", "chinese"] },
+        { "value": "India", "aliases": ["india"] }
+      ],
+      "locale": ["en", "zh"]
+    },
+    "seeds": [{ "category": "EB-1", "country": "China" }],
+    "demand": { "days": 28, "minImpressions": 50 },
+    "similarity": { "threshold": 0.9, "ignoreKeys": ["label"] },
+    "dataSource": { "url": "https://example.com/api/pattern-data?category={category}&country={country}" },
+    "parent": { "dataSource": { "url": "https://example.com/api/pattern-data?category=all&country=all" } },
+    "localeVariable": "locale",
+    "localesCountTogether": true
+  }
+}

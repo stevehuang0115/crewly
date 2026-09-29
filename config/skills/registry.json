@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-25T15:19:59.383Z",
+  "lastUpdated": "2026-09-29T01:47:07.718Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -903,12 +903,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-02-22T23:57:06.027Z",
-      "updatedAt": "2026-09-25T15:19:59.383Z",
+      "updatedAt": "2026-09-29T01:43:29.904Z",
       "source": "config/skills/agent/marketplace/nano-banana-image",
       "assets": {
         "archive": "config/skills/agent/marketplace/nano-banana-image",
         "checksum": "",
-        "sizeBytes": 4048
+        "sizeBytes": 3944
       },
       "metadata": {
         "skillType": "claude-skill",
@@ -923,7 +923,6 @@
           "ai image"
         ],
         "files": [
-          ".env",
           ".env.example",
           "generate.sh",
           "SKILL.md"
@@ -1403,6 +1402,58 @@
         ],
         "files": [
           "execute.sh",
+          "SKILL.md"
+        ]
+      }
+    },
+    {
+      "id": "seo-ops",
+      "type": "skill",
+      "name": "SEO Ops",
+      "description": "Search Console-driven SEO operations for any site: query patterns (low-CTR top-3, near-miss 4-20, rising queries, keyword cannibalization), per-URL report cards, pre-publish SEO/AEO checks, a gated programmatic-page queue, and a live-diff gate that stops agents from removing things from live pages. Use when auditing organic search, deciding what to rewrite, or before changing a live page. For writing posts use seo-blog-writer instead.",
+      "author": "Crewly",
+      "version": "1.0.0",
+      "category": "development",
+      "tags": [
+        "seo",
+        "aeo",
+        "search-console",
+        "marketing",
+        "content"
+      ],
+      "license": "MIT",
+      "downloads": 0,
+      "rating": 0,
+      "createdAt": "2026-09-29T01:43:29.904Z",
+      "updatedAt": "2026-09-29T01:47:07.718Z",
+      "source": "config/skills/agent/marketplace/seo-ops",
+      "assets": {
+        "archive": "config/skills/agent/marketplace/seo-ops",
+        "checksum": "",
+        "sizeBytes": 95495
+      },
+      "metadata": {
+        "skillType": "claude-skill",
+        "assignableRoles": [
+          "marketing",
+          "content-strategist",
+          "generalist",
+          "developer",
+          "fullstack-dev"
+        ],
+        "triggers": [
+          "seo report",
+          "search console",
+          "keyword cannibalization",
+          "pre-publish seo check",
+          "programmatic seo pages",
+          "live page diff"
+        ],
+        "files": [
+          "execute.sh",
+          "pattern-template.example.md",
+          "seo_ops.py",
+          "seo-ops.config.example.json",
           "SKILL.md"
         ]
       }
