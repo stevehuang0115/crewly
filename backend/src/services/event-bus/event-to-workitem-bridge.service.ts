@@ -113,6 +113,49 @@ export type WorkItemAutoSource = 'event' | 'cron' | 'manual';
 // Errors
 // ---------------------------------------------------------------------------
 
+/** Heading of the rejection-feedback block a retry brief opens with. */
+const REJECTION_FEEDBACK_HEADING = '## Rejection feedback (attempt ';
+/** Heading that separates the feedback block from the original brief. */
+const ORIGINAL_BRIEF_HEADING = '## Original brief';
+
+/**
+ * Remove a feedback block a previous retry put in front of a brief, so a
+ * repeated rejection shows only the latest feedback instead of stacking.
+ *
+ * @param text - A description or brief, possibly already carrying a block
+ * @returns The original brief with any leading feedback block removed
+ */
+function stripRejectionFeedback(text: string): string {
+  if (!text.startsWith(REJECTION_FEEDBACK_HEADING)) return text;
+  const marker = `\n${ORIGINAL_BRIEF_HEADING}\n\n`;
+  const at = text.indexOf(marker);
+  return at === -1 ? text : text.slice(at + marker.length);
+}
+
+/**
+ * Put the reviewer's rejection feedback ABOVE the original brief, clearly
+ * delimited, so the worker reads what to change before the unchanged ask.
+ * Replaces (never appends to) feedback from an earlier rejection.
+ *
+ * @param brief - The source WorkItem's description or briefMarkdown
+ * @param feedback - The reviewer's comment (stored on the source's `error`)
+ * @param attempt - The retry attempt number being created
+ * @returns The new brief; `brief` unchanged (minus stale feedback) when there is none
+ */
+export function withRejectionFeedback(
+  brief: string | undefined,
+  feedback: string | undefined,
+  attempt: number,
+): string | undefined {
+  const base = brief === undefined ? undefined : stripRejectionFeedback(brief);
+  const note = feedback?.trim();
+  if (!note) return base;
+  return (
+    `${REJECTION_FEEDBACK_HEADING}${attempt})\n\n${note}\n\n---\n` +
+    `${ORIGINAL_BRIEF_HEADING}\n\n${base ?? ''}`
+  ).trimEnd();
+}
+
 /**
  * Thrown when a cron-sourced WorkItem attempts to create another cron-recurring
  * WorkItem. Encoded as a named error so tests + observability can distinguish
@@ -561,9 +604,8 @@ export class EventToWorkItemBridge {
       title: `Retry ${retryAttempt}/${cap}: ${sourceWI.title}`,
       // The reviewer's verdict comment lands on the source's `error`; without
       // it the retry is the same brief again and the worker repeats itself.
-      description: sourceWI.error
-        ? `${sourceWI.description ?? ''}\n\nSent back by the reviewer: ${sourceWI.error}`.trim()
-        : sourceWI.description,
+      description: withRejectionFeedback(sourceWI.description, sourceWI.error, retryAttempt),
+      briefMarkdown: withRejectionFeedback(sourceWI.briefMarkdown, sourceWI.error, retryAttempt),
       sourceWI,
       missionId: sourceWI.missionId,
       requestId: sourceWI.requestId,
@@ -864,6 +906,7 @@ export class EventToWorkItemBridge {
     target: string | undefined;
     title: string;
     description?: string;
+    briefMarkdown?: string;
     sourceWI: WorkItem | null;
     missionId?: string;
     requestId?: string;
@@ -879,6 +922,7 @@ export class EventToWorkItemBridge {
       target: args.target,
       title: args.title,
       description: args.description,
+      briefMarkdown: args.briefMarkdown,
       status: 'queued',
       createdAt: now,
       retryCount: args.retryCount,
