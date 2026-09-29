@@ -31,7 +31,7 @@ describe('SlackConnectStep', () => {
   it('asks for Crewly Cloud first', () => {
     const onGoToCloud = vi.fn();
     render(<SlackConnectStep connected={false} cloudConnected={false} onGoToCloud={onGoToCloud} onConnected={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: '去连接 Crewly Cloud' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connect Crewly Cloud' }));
     expect(onGoToCloud).toHaveBeenCalled();
     expect(svc.refreshSlack).not.toHaveBeenCalled();
   });
@@ -40,7 +40,7 @@ describe('SlackConnectStep', () => {
     svc.getSlackInstallUrl.mockResolvedValue('https://api.crewlyai.com/api/cloud/slack/install?token=x');
     const navigateTo = vi.fn();
     render(<SlackConnectStep connected={false} cloudConnected onGoToCloud={vi.fn()} onConnected={vi.fn()} navigateTo={navigateTo} />);
-    expect(screen.getByRole('link', { name: /更多 Slack 设置/ })).toHaveAttribute('href', SLACK_SETTINGS_PATH);
+    expect(screen.getByRole('link', { name: /More Slack settings/ })).toHaveAttribute('href', SLACK_SETTINGS_PATH);
     await act(async () => {
       fireEvent.click(screen.getByTestId('slack-install'));
     });

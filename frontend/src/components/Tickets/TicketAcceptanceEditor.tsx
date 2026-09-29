@@ -1,8 +1,8 @@
 /**
  * TicketAcceptanceEditor — the live acceptance criteria of one ticket.
  *
- * Each criterion shows its source (打回 / 拆解 / 我 / Agent), how it is
- * checked (自动 / 人工) and the agent's self-check and evidence. Criteria can
+ * Each criterion shows its source (Sent back / Breakdown / Me / Agent), how
+ * it is checked (Auto / Manual) and the agent's self-check and evidence. Criteria can
  * be added and removed; every change sends the full list to
  * `PUT /api/tickets/:id/acceptance` through `onSave`.
  *

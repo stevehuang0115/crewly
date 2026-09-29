@@ -1,6 +1,6 @@
 /**
  * Onboarding barrel exports: the step indicator and the first-run checklist
- * steps used by `/setup` and the dashboard "开始使用" card.
+ * steps used by `/setup` and the dashboard "Get started" card.
  *
  * The old modal wizard (OnboardingWizard: template → review → cloud →
  * launch) was removed in Phase 3; `/setup` replaced it.

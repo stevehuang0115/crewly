@@ -114,7 +114,7 @@ export function fetchTicket(id: string): Promise<TicketDetailResponse> {
 }
 
 /**
- * 验过了 — accept the ticket.
+ * Verified — accept the ticket.
  *
  * @param id - Ticket id
  * @returns The updated ticket
@@ -124,7 +124,7 @@ export function verifyTicket(id: string): Promise<unknown> {
 }
 
 /**
- * 打回 — send the ticket back with a reason.
+ * Send back — send the ticket back with a reason.
  *
  * @param id - Ticket id
  * @param reason - Why (required, non-blank)
@@ -138,7 +138,7 @@ export function rejectTicket(id: string, reason: string): Promise<unknown> {
 }
 
 /**
- * 不用记 — cancel the ticket.
+ * Dismiss — cancel the ticket.
  *
  * @param id - Ticket id
  * @returns The updated ticket

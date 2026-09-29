@@ -3,9 +3,10 @@
  *
  * Polls `GET /api/oauth/pending` — every agent session currently parked on
  * a runtime sign-in screen — so the app can show a global "Sign-in needed"
- * banner. Polls once a minute; the list is small and only changes when a
- * runtime's OAuth token expires, so a WebSocket subscription is not worth
- * the extra plumbing.
+ * banner. Polls once a minute and again whenever the tab regains focus or
+ * becomes visible (the owner typically signs in in another tab, then comes
+ * back); the list is small and only changes when a runtime's OAuth token
+ * expires, so a WebSocket subscription is not worth the extra plumbing.
  *
  * @module hooks/usePendingLogins
  */
@@ -63,9 +64,19 @@ export function usePendingLogins(
     const timer = setInterval(() => {
       void refresh();
     }, intervalMs);
+    const onFocus = (): void => {
+      void refresh();
+    };
+    const onVisibility = (): void => {
+      if (document.visibilityState === 'visible') void refresh();
+    };
+    window.addEventListener('focus', onFocus);
+    document.addEventListener('visibilitychange', onVisibility);
     return () => {
       isMountedRef.current = false;
       clearInterval(timer);
+      window.removeEventListener('focus', onFocus);
+      document.removeEventListener('visibilitychange', onVisibility);
     };
   }, [refresh, intervalMs]);
 

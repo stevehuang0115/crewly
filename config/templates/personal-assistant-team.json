@@ -17,12 +17,12 @@
   "onboarding": {
     "order": 1,
     "recommended": true,
-    "label": "个人助理",
-    "tagline": "帮你盯邮件、日程和消息，每天早上一份简报，回复先拟稿、你点头再发。",
+    "label": "Personal Assistant",
+    "tagline": "Keeps an eye on your email, calendar and messages: a briefing every morning, and replies drafted for your OK before they go out.",
     "suggestions": [
-      "每天早上 8 点给我一份简报：今天的日程、需要我回复的邮件和快到期的事。",
-      "帮我整理收件箱：哪些邮件需要我回复，先帮我把回复拟好，我确认后再发。",
-      "提醒我这周要办的事，并帮我查一下附近评价好的牙医。"
+      "Send me a briefing every morning at 8: today's schedule, emails I need to answer, and anything coming due.",
+      "Sort my inbox: which emails need a reply? Draft the replies and send them once I confirm.",
+      "Remind me what I need to get done this week, and find a well-reviewed dentist nearby."
     ]
   }
 }

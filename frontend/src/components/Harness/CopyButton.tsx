@@ -2,61 +2,53 @@
  * CopyButton
  *
  * Small button that copies a value to the clipboard and briefly shows
- * "已复制". Clipboard failures (insecure origin, denied permission) are
- * swallowed; the value stays visible for manual copying.
+ * "Copied". Works on plain-HTTP origins too (see `utils/clipboard`); when
+ * the browser still refuses, it says "Select and copy manually" instead of
+ * silently doing nothing — the value stays on screen, selectable.
  *
  * @module components/Harness/CopyButton
  */
 
-import React, { useEffect, useRef, useState } from 'react';
-import { Check, Copy } from 'lucide-react';
+import React from 'react';
+import { AlertCircle, Check, Copy } from 'lucide-react';
 import { Button } from '@crewly/ui';
 import { HARNESS_TIMING } from '../../constants/harness.constants';
+import { CLIPBOARD_CONSTANTS } from '../../constants/clipboard.constants';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
 
 export interface CopyButtonProps {
   /** Text to copy */
   value: string;
-  /** Accessible label */
+  /** Button label (also the accessible label) */
   label?: string;
 }
 
 /**
- * Copy-to-clipboard button with transient confirmation.
+ * Copy-to-clipboard button with transient success / failure feedback.
  *
  * @param props - {@link CopyButtonProps}
  * @returns Button element
  */
-export const CopyButton: React.FC<CopyButtonProps> = ({ value, label = '复制' }) => {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+export const CopyButton: React.FC<CopyButtonProps> = ({ value, label = CLIPBOARD_CONSTANTS.COPY_LABEL }) => {
+  const { status, copy } = useCopyToClipboard(HARNESS_TIMING.COPIED_FEEDBACK_MS);
 
-  useEffect(() => () => {
-    if (timer.current) clearTimeout(timer.current);
-  }, []);
-
-  /** Copy the value and show the confirmation. */
-  const handleCopy = async (): Promise<void> => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopied(true);
-      if (timer.current) clearTimeout(timer.current);
-      timer.current = setTimeout(() => setCopied(false), HARNESS_TIMING.COPIED_FEEDBACK_MS);
-    } catch {
-      // Clipboard unavailable: the value is on screen to copy by hand.
-    }
-  };
+  const text =
+    status === 'copied' ? CLIPBOARD_CONSTANTS.COPIED_LABEL : status === 'failed' ? CLIPBOARD_CONSTANTS.FAILED_LABEL : label;
+  const icon = status === 'copied' ? Check : status === 'failed' ? AlertCircle : Copy;
 
   return (
     <Button
       type="button"
       variant="secondary"
       size="sm"
-      icon={copied ? Check : Copy}
-      onClick={handleCopy}
+      icon={icon}
+      onClick={() => void copy(value)}
       aria-label={label}
+      aria-live="polite"
       data-testid="copy-button"
+      data-copy-status={status}
     >
-      {copied ? '已复制' : label}
+      {text}
     </Button>
   );
 };

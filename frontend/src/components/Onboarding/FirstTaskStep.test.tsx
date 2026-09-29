@@ -27,41 +27,41 @@ describe('FirstTaskStep', () => {
     svc.sendFirstTask.mockResolvedValue(SENT);
     const onSent = vi.fn();
     render(<FirstTaskStep suggestions={SUGGESTIONS} teamId="t1" teamName="Personal Assistant" onSent={onSent} />);
-    expect(screen.getByText(/交给「Personal Assistant」/)).toBeInTheDocument();
+    expect(screen.getByText(/For "Personal Assistant"/)).toBeInTheDocument();
     expect(screen.getByTestId('first-task-send')).toBeDisabled();
 
     fireEvent.click(screen.getByRole('button', { name: SUGGESTIONS[1] }));
-    expect(screen.getByLabelText('第一件事')).toHaveValue(SUGGESTIONS[1]);
+    expect(screen.getByLabelText('First task')).toHaveValue(SUGGESTIONS[1]);
     await act(async () => {
       fireEvent.click(screen.getByTestId('first-task-send'));
     });
     expect(svc.sendFirstTask).toHaveBeenCalledWith(SUGGESTIONS[1], 't1');
     expect(onSent).toHaveBeenCalledWith(SENT);
-    expect(screen.getByTestId('first-task-sent')).toHaveTextContent('已交给 Orc');
+    expect(screen.getByTestId('first-task-sent')).toHaveTextContent('Handed to the Orc');
   });
 
   it('sends typed text (trimmed) to the orchestrator when there is no team', async () => {
     svc.sendFirstTask.mockResolvedValue({ ...SENT, teamId: null, message: 'Orchestrator is currently offline.' });
     render(<FirstTaskStep suggestions={[]} teamId={null} teamName={null} onSent={vi.fn()} />);
-    expect(screen.getByText(/交给 Orc/)).toBeInTheDocument();
-    fireEvent.change(screen.getByLabelText('第一件事'), { target: { value: '  Plan my week  ' } });
+    expect(screen.getByText(/For the Orc/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('First task'), { target: { value: '  Plan my week  ' } });
     await act(async () => {
       fireEvent.click(screen.getByTestId('first-task-send'));
     });
     expect(svc.sendFirstTask).toHaveBeenCalledWith('Plan my week', null);
-    expect(screen.getByTestId('first-task-sent')).toHaveTextContent('等 Orc 上线');
+    expect(screen.getByTestId('first-task-sent')).toHaveTextContent('as soon as it is online');
   });
 
   it('shows a send error and keeps the text', async () => {
     svc.sendFirstTask.mockRejectedValue(new Error('Orchestrator is not running.'));
     const onSent = vi.fn();
     render(<FirstTaskStep suggestions={SUGGESTIONS} teamId="t1" teamName="PA" onSent={onSent} />);
-    fireEvent.change(screen.getByLabelText('第一件事'), { target: { value: 'Hi' } });
+    fireEvent.change(screen.getByLabelText('First task'), { target: { value: 'Hi' } });
     await act(async () => {
       fireEvent.click(screen.getByTestId('first-task-send'));
     });
     expect(screen.getByText('Orchestrator is not running.')).toBeInTheDocument();
-    expect(screen.getByLabelText('第一件事')).toHaveValue('Hi');
+    expect(screen.getByLabelText('First task')).toHaveValue('Hi');
     expect(onSent).not.toHaveBeenCalled();
   });
 });

@@ -32,6 +32,7 @@ import {
 	OAUTH_RELOGIN_CONSTANTS,
 	OAUTH_ERROR_PATTERN_SETS,
 	LOGIN_REQUIRED_PATTERN_SETS,
+	LOGIN_COMPLETED_MARKERS,
 	LOGIN_REQUIRED_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
 	RUNTIME_TYPES,
@@ -389,6 +390,9 @@ export class OAuthReloginMonitorService {
 			patternSet.every((pattern) => lower.includes(pattern.toLowerCase()))
 		);
 		if (!matched) return null;
+		// Login just finished (e.g. codex's "Signed in with your ChatGPT
+		// account" notice) while the old sign-in screen is still in the capture.
+		if (LOGIN_COMPLETED_MARKERS.some((marker) => lower.includes(marker))) return null;
 
 		return {
 			url: this.extractHttpsUrl(clean, false),

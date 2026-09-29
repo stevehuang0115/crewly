@@ -431,7 +431,7 @@ function LiveTeamChatPageBody({
     [onEnsureDm, refresh],
   );
 
-  // "拉群" — create a multi-agent group chat, then refresh the channel list
+  // "New group" — create a multi-agent group chat, then refresh the channel list
   // and jump into it. Huddles are workspace-agnostic so they surface in the
   // current workspace's "Group Chats" section immediately.
   const handleCreateGroup = useCallback(

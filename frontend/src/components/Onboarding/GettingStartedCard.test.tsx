@@ -40,8 +40,8 @@ describe('GettingStartedCard', () => {
   it('lists the five steps with progress and continues at the first open one', () => {
     withChecklist(makeChecklist(['harness', 'team']));
     render(<GettingStartedCard />);
-    expect(screen.getByText('开始使用')).toBeInTheDocument();
-    expect(screen.getByText('已完成 2/5 步')).toBeInTheDocument();
+    expect(screen.getByText('Get started')).toBeInTheDocument();
+    expect(screen.getByText('2/5 steps done')).toBeInTheDocument();
     expect(screen.getByTestId('getting-started-step-harness')).toBeDisabled();
     fireEvent.click(screen.getByTestId('getting-started-continue'));
     expect(mockNavigate).toHaveBeenCalledWith('/setup?step=first_task');

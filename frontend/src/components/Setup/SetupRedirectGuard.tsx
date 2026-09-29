@@ -4,7 +4,7 @@
  * Mounted once inside the router. On app load it checks `GET /api/harness`
  * and sends the user to `/setup` when setup is incomplete (no orc harness,
  * orc harness not installed, or known to be logged out). It never fires
- * from `/setup` or `/auth*`, when the user chose "稍后再说 / Skip for now",
+ * from `/setup` or `/auth*`, when the user chose "Skip for now",
  * or when the status request fails (e.g. waiting on the API token).
  *
  * @module components/Setup/SetupRedirectGuard

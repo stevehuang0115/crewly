@@ -25,6 +25,10 @@ vi.mock('../OrchestratorStatusBanner', () => ({
   OrchestratorStatusBanner: () => <div data-testid="orchestrator-banner">Orchestrator Banner</div>
 }));
 
+vi.mock('../PendingLoginsBanner', () => ({
+  PendingLoginsBanner: () => <div data-testid="pending-logins-banner">Pending Logins Banner</div>
+}));
+
 vi.mock('../UpdateBanner', () => ({
   UpdateBanner: () => null
 }));
@@ -67,6 +71,17 @@ describe('AppLayout', () => {
 
     expect(screen.getByTestId('navigation')).toBeInTheDocument();
     expect(screen.getByTestId('orchestrator-banner')).toBeInTheDocument();
+  });
+
+  it('renders the sign-in banner inside the main content column, above the orchestrator banner', () => {
+    renderWithProviders(<AppLayout />);
+
+    const banner = screen.getByTestId('pending-logins-banner');
+    const main = banner.closest('main');
+    expect(main).not.toBeNull();
+    // Same column as the orchestrator banner, not a viewport-wide overlay.
+    expect(main).toContainElement(screen.getByTestId('orchestrator-banner'));
+    expect(banner.compareDocumentPosition(screen.getByTestId('orchestrator-banner')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it('renders terminal toggle button', () => {

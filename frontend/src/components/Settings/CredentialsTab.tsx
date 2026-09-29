@@ -31,6 +31,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import { useCredentials } from '../../hooks/useCredentials';
+import { copyText } from '../../utils/clipboard';
 import {
   CredentialSummary,
   AddApiKeyRequest,
@@ -569,23 +570,11 @@ const AddGoogleOAuthModal: React.FC<AddGoogleOAuthModalProps> = ({
 
   const handleCopyLink = async () => {
     if (!authUrl) return;
-    try {
-      await navigator.clipboard.writeText(authUrl);
+    // copyText also works on plain-HTTP origins (no navigator.clipboard).
+    if (await copyText(authUrl)) {
       setLinkCopied(true);
-    } catch {
-      // Fallback for older browsers / iframes without clipboard permission
-      const el = document.createElement('textarea');
-      el.value = authUrl;
-      document.body.appendChild(el);
-      el.select();
-      try {
-        document.execCommand('copy');
-        setLinkCopied(true);
-      } catch {
-        setError('Could not copy to clipboard. Copy the link manually.');
-      } finally {
-        document.body.removeChild(el);
-      }
+    } else {
+      setError('Could not copy to clipboard. Select the link and copy it manually.');
     }
   };
 

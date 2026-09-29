@@ -24,17 +24,17 @@ export const BUNDLE_POLL_INTERVAL_MS = 1500;
 
 /** Owner-facing state of a step. */
 export const BUNDLE_STEP_STATUS_LABELS: Record<BundleStepStatus, string> = {
-  queued: '等待',
-  running: '进行中',
-  done: '完成',
-  failed: '出错',
-  pending: '稍后自动完成',
-  skipped: '跳过',
+  queued: 'Waiting',
+  running: 'In progress',
+  done: 'Done',
+  failed: 'Failed',
+  pending: 'Finishes automatically later',
+  skipped: 'Skipped',
 };
 
 /** Runtime ids → owner-facing names. */
 export const BUNDLE_RUNTIME_LABELS: Record<string, string> = {
-  'crewly-agent': 'Crewly Agent（DeepSeek）',
+  'crewly-agent': 'Crewly Agent (DeepSeek)',
   'claude-code': 'Claude Code',
   'codex-cli': 'Codex',
   'gemini-cli': 'Gemini CLI',
@@ -44,7 +44,7 @@ export const BUNDLE_RUNTIME_LABELS: Record<string, string> = {
 
 /** Hosted server tiers → owner-facing names. */
 export const BUNDLE_SERVER_TIER_LABELS: Record<string, string> = {
-  entry: '入门（2 核 4 GB）',
-  standard: '标准（4 核 8 GB）',
-  advanced: '进阶（8 核 16 GB）',
+  entry: 'Entry (2 vCPU, 4 GB)',
+  standard: 'Standard (4 vCPU, 8 GB)',
+  advanced: 'Advanced (8 vCPU, 16 GB)',
 };

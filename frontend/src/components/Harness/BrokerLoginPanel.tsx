@@ -6,11 +6,11 @@
  * terminal and extracts the URL / one-time code / prompts from the screen;
  * this panel shows them and sends back what the user types.
  *
- * - URL → big "打开授权页面" button (new tab)
- * - userCode → large code + copy, "完成后这里会自动继续"
- * - needsInput → "把页面上给你的代码粘贴到这里" + 提交
- * - awaiting_user with none of the above → collapsible raw "终端内容" + free-text box
- * - failed / timed_out → message + 重试
+ * - URL → big "Open the sign-in page" button (new tab)
+ * - userCode → large code + copy, "this page continues on its own"
+ * - needsInput → "Paste the code from the page here" + Submit
+ * - awaiting_user with none of the above → collapsible raw "Terminal output" + free-text box
+ * - failed / timed_out → message + Retry
  *
  * @module components/Harness/BrokerLoginPanel
  */
@@ -25,13 +25,14 @@ import { useLoginSession } from '../../hooks/useLoginSession';
 import { harnessService } from '../../services/harness.service';
 import { isSafeHttpUrl } from '../../utils/safe-url';
 import { CopyButton } from './CopyButton';
+import { selectElementText } from '../../utils/clipboard';
 
 export interface BrokerLoginPanelProps {
   /** Harness to log in to */
   harnessId: HarnessId;
   /** Broker method */
   method: BrokerLoginMethodId;
-  /** Label of the start button (e.g. "用 Claude 订阅登录") */
+  /** Label of the start button (e.g. "Sign in with your Claude subscription") */
   label: string;
   /** Called once when the login succeeds */
   onSucceeded?: () => void;
@@ -121,20 +122,20 @@ const AwaitingUser: React.FC<AwaitingUserProps> = ({ session, busy, sendInput })
     return (
       <div className="space-y-3" data-testid="login-fallback">
         <p className="text-sm text-text-secondary-dark">
-          没能自动识别登录画面，请根据下面的终端内容操作。We couldn't read the login screen automatically.
+          We couldn&apos;t read the sign-in screen automatically. Follow the terminal output below.
         </p>
         <details className="rounded-2xl border border-border-dark bg-background-dark" open>
-          <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-text-primary-dark">终端内容</summary>
+          <summary className="cursor-pointer px-3 py-2 text-sm font-medium text-text-primary-dark">Terminal output</summary>
           <pre
             className="max-h-64 overflow-auto border-t border-border-dark p-3 font-mono text-xs text-text-secondary-dark whitespace-pre-wrap break-all"
             data-testid="login-screen"
           >
-            {session.screen || '（空）'}
+            {session.screen || '(empty)'}
           </pre>
         </details>
         <TextSubmitForm
-          label="发送到终端 / Send to terminal"
-          submitLabel="发送"
+          label="Send to terminal"
+          submitLabel="Send"
           busy={busy}
           onSubmit={sendInput}
           mono
@@ -149,7 +150,7 @@ const AwaitingUser: React.FC<AwaitingUserProps> = ({ session, busy, sendInput })
       {url && (
         <div className="space-y-2">
           <Button type="button" fullWidth icon={ExternalLink} onClick={() => openInNewTab(url)} data-testid="login-open-url">
-            打开授权页面
+            Open the sign-in page
           </Button>
           <p className="text-xs text-text-secondary-dark break-all">{url}</p>
         </div>
@@ -157,19 +158,23 @@ const AwaitingUser: React.FC<AwaitingUserProps> = ({ session, busy, sendInput })
 
       {session.userCode && (
         <div className="rounded-2xl border border-border-dark bg-background-dark p-4 text-center space-y-3" data-testid="login-user-code">
-          <p className="text-xs text-text-secondary-dark">验证码 / One-time code</p>
-          <p className="font-mono text-3xl font-bold tracking-widest text-text-primary-dark select-all break-all">
+          <p className="text-xs text-text-secondary-dark">One-time code</p>
+          <p
+            className="font-mono text-3xl font-bold tracking-widest text-text-primary-dark select-all cursor-text break-all"
+            data-testid="login-user-code-value"
+            onClick={(e) => selectElementText(e.currentTarget)}
+          >
             {session.userCode}
           </p>
-          <CopyButton value={session.userCode} label="复制验证码" />
-          <p className="text-sm text-text-secondary-dark">在打开的页面输入这个验证码，完成后这里会自动继续</p>
+          <CopyButton value={session.userCode} label="Copy code" />
+          <p className="text-sm text-text-secondary-dark">Enter this code on the page that opened. This page continues on its own when you are done.</p>
         </div>
       )}
 
       {session.needsInput && (
         <TextSubmitForm
-          label="把页面上给你的代码粘贴到这里"
-          submitLabel="提交 / Submit"
+          label="Paste the code from the page here"
+          submitLabel="Submit"
           busy={busy}
           onSubmit={sendInput}
           testId="login-code-input"
@@ -230,14 +235,14 @@ export const BrokerLoginPanel: React.FC<BrokerLoginPanelProps> = ({ harnessId, m
       )}
 
       {session.state === 'succeeded' && (
-        <Alert variant="success" size="sm" title="登录成功 / Signed in">
-          {session.message || '现在可以使用了。'}
+        <Alert variant="success" size="sm" title="Signed in">
+          {session.message || 'You are ready to go.'}
         </Alert>
       )}
 
       {failed && (
         <Alert variant="error" size="sm" title={LOGIN_SESSION_STATE_LABELS[session.state]}>
-          {session.message || '请重试。Please try again.'}
+          {session.message || 'Please try again.'}
         </Alert>
       )}
 
@@ -254,12 +259,12 @@ export const BrokerLoginPanel: React.FC<BrokerLoginPanelProps> = ({ harnessId, m
       <div className="flex flex-wrap gap-2">
         {(failed || session.state === 'cancelled') && (
           <Button type="button" icon={RotateCcw} loading={busy} onClick={() => void start(method)}>
-            重试 / Retry
+            Retry
           </Button>
         )}
         {live && (
           <Button type="button" variant="ghost" size="sm" disabled={busy} onClick={() => void cancel()}>
-            取消 / Cancel
+            Cancel
           </Button>
         )}
       </div>

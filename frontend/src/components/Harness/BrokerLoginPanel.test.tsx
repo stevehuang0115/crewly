@@ -64,26 +64,26 @@ describe('BrokerLoginPanel', () => {
     svc.sendLoginInput.mockResolvedValue(makeSession({ state: 'verifying' }));
     const onSucceeded = vi.fn();
 
-    render(<BrokerLoginPanel harnessId="claude-code" method="subscription" label="用 Claude 订阅登录" onSucceeded={onSucceeded} />);
-    expect(screen.getByTestId('login-start')).toHaveTextContent('用 Claude 订阅登录');
+    render(<BrokerLoginPanel harnessId="claude-code" method="subscription" label="Sign in with your Claude subscription" onSucceeded={onSucceeded} />);
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in with your Claude subscription');
     await clickStart();
     expect(svc.startLogin).toHaveBeenCalledWith('claude-code', 'subscription');
-    expect(screen.getByText('正在启动登录…')).toBeInTheDocument();
+    expect(screen.getByText('Starting sign-in…')).toBeInTheDocument();
 
     await tick();
     fireEvent.click(screen.getByTestId('login-open-url'));
     expect(openSpy).toHaveBeenCalledWith(url, '_blank', 'noopener,noreferrer');
 
-    const input = screen.getByLabelText('把页面上给你的代码粘贴到这里') as HTMLInputElement;
+    const input = screen.getByLabelText('Paste the code from the page here') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'abc#def' } });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /提交/ }));
+      fireEvent.click(screen.getByRole('button', { name: /Submit/ }));
     });
     expect(svc.sendLoginInput).toHaveBeenCalledWith('sess-1', 'abc#def');
-    expect(screen.getByText('正在验证…')).toBeInTheDocument();
+    expect(screen.getByText('Verifying…')).toBeInTheDocument();
 
     await tick();
-    expect(screen.getByText('登录成功 / Signed in')).toBeInTheDocument();
+    expect(screen.getByText('Signed in')).toBeInTheDocument();
     expect(onSucceeded).toHaveBeenCalledTimes(1);
   });
 
@@ -95,18 +95,18 @@ describe('BrokerLoginPanel', () => {
       .mockResolvedValueOnce(makeSession({ harnessId: 'codex-cli', method: 'device', url: 'https://auth.openai.com/codex/device', userCode: 'WXYZ-1234' }))
       .mockResolvedValueOnce(makeSession({ harnessId: 'codex-cli', method: 'device', state: 'succeeded' }));
 
-    render(<BrokerLoginPanel harnessId="codex-cli" method="device" label="用 ChatGPT 账号登录" />);
+    render(<BrokerLoginPanel harnessId="codex-cli" method="device" label="Sign in with ChatGPT" />);
     await clickStart();
     expect(svc.startLogin).toHaveBeenCalledWith('codex-cli', 'device');
     expect(screen.getByText('WXYZ-1234')).toBeInTheDocument();
     expect(screen.getByTestId('copy-button')).toBeInTheDocument();
-    expect(screen.getByText('在打开的页面输入这个验证码，完成后这里会自动继续')).toBeInTheDocument();
+    expect(screen.getByText('Enter this code on the page that opened. This page continues on its own when you are done.')).toBeInTheDocument();
     expect(screen.getByTestId('login-open-url')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
 
     await tick();
     await tick();
-    expect(screen.getByText('登录成功 / Signed in')).toBeInTheDocument();
+    expect(screen.getByText('Signed in')).toBeInTheDocument();
   });
 
   it('does not render a link for an unsafe URL', async () => {
@@ -124,10 +124,10 @@ describe('BrokerLoginPanel', () => {
     await clickStart();
     expect(screen.getByText('Login window closed')).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+      fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
     });
     expect(svc.startLogin).toHaveBeenCalledTimes(2);
-    expect(screen.getByText('正在启动登录…')).toBeInTheDocument();
+    expect(screen.getByText('Starting sign-in…')).toBeInTheDocument();
   });
 
   it('unrecognised screen: shows the raw terminal text and sends raw input', async () => {
@@ -136,12 +136,12 @@ describe('BrokerLoginPanel', () => {
     render(<BrokerLoginPanel harnessId="claude-code" method="subscription" label="go" />);
     await clickStart();
 
-    expect(screen.getByText('终端内容')).toBeInTheDocument();
+    expect(screen.getByText('Terminal output')).toBeInTheDocument();
     expect(screen.getByTestId('login-screen')).toHaveTextContent('Select login method:');
-    const input = screen.getByLabelText('发送到终端 / Send to terminal') as HTMLInputElement;
+    const input = screen.getByLabelText('Send to terminal') as HTMLInputElement;
     fireEvent.change(input, { target: { value: '1' } });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: '发送' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Send' }));
     });
     expect(svc.sendLoginInput).toHaveBeenCalledWith('sess-1', '1');
     expect(input.value).toBe('');
@@ -152,10 +152,10 @@ describe('BrokerLoginPanel', () => {
     const { unmount } = render(<BrokerLoginPanel harnessId="claude-code" method="subscription" label="go" />);
     await clickStart();
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /取消/ }));
+      fireEvent.click(screen.getByRole('button', { name: /Cancel/ }));
     });
     expect(svc.cancelLogin).toHaveBeenCalledWith('sess-1');
-    expect(screen.getByText('已取消')).toBeInTheDocument();
+    expect(screen.getByText('Cancelled')).toBeInTheDocument();
     unmount();
     // Already terminal: no second cancel on unmount.
     expect(svc.cancelLogin).toHaveBeenCalledTimes(1);

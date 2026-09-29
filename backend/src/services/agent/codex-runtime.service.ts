@@ -13,6 +13,50 @@ export const CODEX_KNOWN_PROMPTS: readonly KnownRuntimePrompt[] = [
 		match: [/Workingdirectory·resume/i, /1\.Usesessiondirectory/i],
 		keys: ['Enter'],
 	},
+	/**
+	 * First TUI start after `codex login` (0.158): "Welcome to Codex … Signed
+	 * in with your ChatGPT account … Before you start: … Press enter to
+	 * continue". Only one answer exists.
+	 */
+	{
+		id: 'codex.first_run_notice',
+		match: [/Beforeyoustart/i, /Pressentertocontinue/i],
+		keys: ['Enter'],
+	},
+	/**
+	 * First start in a folder codex has not seen (0.158): "Trust this folder?
+	 * … › 1. Trust and continue  2. Back to Agent Command Center". The agent
+	 * already runs with `-s danger-full-access` in its own project folder, and
+	 * the other choice leaves the TUI with nobody to drive it. Only answered
+	 * while option 1 is the highlighted one.
+	 */
+	{
+		id: 'codex.trust_folder',
+		match: [/Trustthisfolder\?/i, /›1\.Trustandcontinue/i],
+		keys: ['Enter'],
+	},
+	/**
+	 * "Update available! … › 1. Update now (runs `npm install …`) 2. Skip
+	 * 3. Skip until next version". The pre-selected answer would run an
+	 * install in the middle of an agent start, so pick "Skip" (Down, Enter);
+	 * upgrades stay the owner's call. Only while option 1 is highlighted.
+	 */
+	{
+		id: 'codex.update_available',
+		match: [/Updateavailable!/i, /›1\.Updatenow/i, /Skipuntilnextversion/i],
+		keys: ['Down', 'Enter'],
+	},
+	/**
+	 * Model migration notice ("Codex just got an upgrade. Introducing
+	 * gpt-6-sol … Try new model / Use existing model"). Keep the model the
+	 * owner configured (Down, Enter) rather than silently switching models
+	 * — and cost — for them. Only while "Try new model" is highlighted.
+	 */
+	{
+		id: 'codex.model_migration',
+		match: [/Codexjustgotanupgrade/i, /›(?:1\.)?Trynewmodel/i, /Useexistingmodel/i],
+		keys: ['Down', 'Enter'],
+	},
 ];
 
 export class CodexRuntimeService extends RuntimeAgentService {
@@ -45,9 +89,10 @@ export class CodexRuntimeService extends RuntimeAgentService {
 	}
 
 	/**
-	 * `codex resume` asks which working directory to use when the recorded
-	 * session cwd differs from the current one. The recorded one is where
-	 * the agent's work lives, and it is option 1 (pre-selected): Enter.
+	 * Start-up dialogs with one right answer for an unattended agent: the
+	 * `codex resume` working-directory picker, the first-run notice after
+	 * sign-in, folder trust, update-available and model-migration notices
+	 * (see {@link CODEX_KNOWN_PROMPTS}).
 	 *
 	 * @returns Codex's known start-up prompts
 	 */

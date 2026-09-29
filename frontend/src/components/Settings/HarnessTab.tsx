@@ -39,16 +39,16 @@ export const HarnessTab: React.FC = () => {
   const { overview, loading, error, refresh, setOrcHarness, savingOrc, replaceHarness } = useHarnessStatus();
 
   if (loading) {
-    return <LoadingSpinner centered text="正在检查编程助手…" data-testid="harness-tab-loading" />;
+    return <LoadingSpinner centered text="Checking coding harnesses…" data-testid="harness-tab-loading" />;
   }
 
   if (!overview) {
     return (
-      <Alert variant="error" title="无法读取编程助手状态 / Couldn't load harness status">
+      <Alert variant="error" title="Couldn't load harness status">
         <div className="space-y-2">
           <p>{error}</p>
           <Button type="button" size="sm" variant="secondary" icon={RefreshCw} onClick={() => void refresh()}>
-            重试 / Retry
+            Retry
           </Button>
         </div>
       </Alert>
@@ -72,9 +72,9 @@ export const HarnessTab: React.FC = () => {
 
       <section>
         <div className="flex items-start justify-between gap-3">
-          <SectionHeading title="编程助手" subtitle="Coding harnesses installed on this machine" />
+          <SectionHeading title="Coding harnesses" subtitle="Installed on this machine" />
           <Button type="button" size="sm" variant="ghost" icon={RefreshCw} onClick={() => void refresh()}>
-            刷新
+            Refresh
           </Button>
         </div>
         <HarnessList
@@ -85,7 +85,7 @@ export const HarnessTab: React.FC = () => {
       </section>
 
       <section>
-        <SectionHeading title="Orc 使用的编程助手" subtitle="Which harness the orchestrator runs on" />
+        <SectionHeading title="Orc harness" subtitle="Which harness the orchestrator runs on" />
         <OrcHarnessPicker
           harnesses={overview.harnesses}
           value={overview.orcHarness}
@@ -96,7 +96,7 @@ export const HarnessTab: React.FC = () => {
 
       {loginHarnesses.length > 0 && (
         <section>
-          <SectionHeading title="登录" subtitle="Sign in again here when a login expires" />
+          <SectionHeading title="Sign in" subtitle="Sign in again here when a login expires" />
           <div className="space-y-3">
             {loginHarnesses.map((h) => (
               <HarnessLoginCard

@@ -46,7 +46,7 @@ export const HarnessList: React.FC<HarnessListProps> = ({
 
   return (
     <div className="space-y-3" data-testid="harness-list">
-      <div role={onSelect ? 'radiogroup' : undefined} aria-label={onSelect ? '选择编程助手' : undefined} className="space-y-3">
+      <div role={onSelect ? 'radiogroup' : undefined} aria-label={onSelect ? 'Choose a coding harness' : undefined} className="space-y-3">
         {harnesses.map((h) => (
           <HarnessCard
             key={h.id}
@@ -59,8 +59,8 @@ export const HarnessList: React.FC<HarnessListProps> = ({
         ))}
       </div>
       {missingTools.map((tool) => (
-        <Alert key={tool.id} variant="warning" size="sm" title={`缺少系统工具 ${tool.id} / Missing ${tool.id}`}>
-          <span>部分技能需要它。安装方法：</span>
+        <Alert key={tool.id} variant="warning" size="sm" title={`Missing system tool: ${tool.id}`}>
+          <span>Some skills need it. Install with:</span>
           <code className="ml-1 rounded bg-background-dark px-1.5 py-0.5 font-mono text-xs">{tool.installHint}</code>
         </Alert>
       ))}

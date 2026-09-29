@@ -18,7 +18,7 @@ import { harnessService } from '../../services/harness.service';
 export interface ApiKeyFormProps {
   /** Harness the key is for */
   harnessId: HarnessId;
-  /** Field label (e.g. "使用 OpenAI API Key") */
+  /** Field label (e.g. "Use an OpenAI API key") */
   label: string;
   /** Called with the updated harness status after a successful save */
   onSaved?: (status: HarnessStatus) => void;
@@ -56,7 +56,7 @@ export const ApiKeyForm: React.FC<ApiKeyFormProps> = ({ harnessId, label, onSave
       setSaved(true);
       onSaved?.(status);
     } catch (err) {
-      setError(err instanceof Error ? err.message : '保存失败 / Save failed');
+      setError(err instanceof Error ? err.message : 'Save failed');
     } finally {
       setSaving(false);
     }
@@ -88,19 +88,19 @@ export const ApiKeyForm: React.FC<ApiKeyFormProps> = ({ harnessId, label, onSave
             rel="noopener noreferrer"
             className="inline-flex items-center gap-1 text-sm text-primary hover:underline underline-offset-2"
           >
-            在 {consoleLink.label} 获取 Key
+            Get a key from {consoleLink.label}
             <ExternalLink className="h-3.5 w-3.5" />
           </a>
         ) : (
           <span />
         )}
         <Button type="submit" size="sm" loading={saving} disabled={!key.trim() || saving}>
-          保存 / Save
+          Save
         </Button>
       </div>
       {saved && (
         <Alert variant="success" size="sm">
-          API Key 已保存。Key saved.
+          API key saved.
         </Alert>
       )}
       {error && (

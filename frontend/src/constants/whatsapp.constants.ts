@@ -37,8 +37,7 @@ export const WHATSAPP_DEFAULT_CONNECT_MODE: WhatsAppMode = WHATSAPP_MODES.INBOX;
 
 /** Owner-facing copy for the inbox-mode explainer. */
 export const WHATSAPP_INBOX_COPY = Object.freeze({
-  TITLE: '收件箱模式 · Inbox mode',
-  ZH: '只读+起草，发送前需要你确认；不会自动回复任何人。',
+  TITLE: 'Inbox mode',
   EN: 'Read-only + drafts: nothing is sent until you confirm, and Crewly never auto-replies to anyone.',
   TOS:
     'Connects as a linked device through an unofficial client (like WhatsApp Web). WhatsApp does not allow automated messaging and may ban numbers that do it, which is why every send waits for you.',

@@ -50,6 +50,35 @@ describe('SignInNeededChip', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /code copied/i })).toBeInTheDocument());
   });
 
+  it('on a plain-HTTP origin, copies via execCommand; if that fails too, asks for a manual copy', async () => {
+    Object.defineProperty(window, 'isSecureContext', { value: false, configurable: true, writable: true });
+    const execCommand = vi.fn().mockReturnValue(true);
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true, writable: true });
+    try {
+      render(<SignInNeededChip loginRequired={loginRequired} />);
+      fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));
+      fireEvent.click(screen.getByRole('button', { name: /copy code to clipboard/i }));
+      await waitFor(() => expect(screen.getByText('Copied')).toBeInTheDocument());
+      expect(mockClipboard.writeText).not.toHaveBeenCalled();
+      expect(execCommand).toHaveBeenCalledWith('copy');
+
+      execCommand.mockReturnValue(false);
+      fireEvent.click(screen.getByRole('button', { name: /code copied/i }));
+      await waitFor(() => expect(screen.getByText('Select and copy manually')).toBeInTheDocument());
+    } finally {
+      Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true });
+    }
+  });
+
+  it('selects the whole code when it is tapped', () => {
+    render(<SignInNeededChip loginRequired={loginRequired} />);
+    fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));
+    const code = screen.getByTestId('sign-in-code');
+    expect(code.className).toMatch(/select-all/);
+    fireEvent.click(code);
+    expect(window.getSelection()?.toString()).toBe('FBVZ-MJHKK');
+  });
+
   it('explains when no URL or code was captured', () => {
     render(<SignInNeededChip loginRequired={{ url: null, code: null, detectedAt: 'not-a-date' }} />);
     fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));

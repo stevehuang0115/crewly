@@ -21,8 +21,8 @@ describe('ApiKeyForm', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('renders a password field and the Anthropic console link', () => {
-    render(<ApiKeyForm harnessId="claude-code" label="使用 API Key" />);
-    expect(screen.getByLabelText('使用 API Key')).toHaveAttribute('type', 'password');
+    render(<ApiKeyForm harnessId="claude-code" label="Use an API key" />);
+    expect(screen.getByLabelText('Use an API key')).toHaveAttribute('type', 'password');
     expect(screen.getByRole('link', { name: /console.anthropic.com/ })).toHaveAttribute(
       'href',
       'https://console.anthropic.com/settings/keys',
@@ -30,28 +30,28 @@ describe('ApiKeyForm', () => {
   });
 
   it('for Antigravity: Google AI Studio link, an AIza placeholder and the API-key-only note', () => {
-    render(<ApiKeyForm harnessId="antigravity-cli" label="使用 Gemini API Key" />);
-    expect(screen.getByLabelText('使用 Gemini API Key')).toHaveAttribute('placeholder', 'AIza…');
+    render(<ApiKeyForm harnessId="antigravity-cli" label="Use a Gemini API key" />);
+    expect(screen.getByLabelText('Use a Gemini API key')).toHaveAttribute('placeholder', 'AIza…');
     expect(screen.getByRole('link', { name: /Google AI Studio/ })).toHaveAttribute('href', 'https://aistudio.google.com/apikey');
     expect(screen.getByTestId('api-key-note')).toHaveTextContent('never your Google account login');
   });
 
   it('shows no note for harnesses without one', () => {
-    render(<ApiKeyForm harnessId="codex-cli" label="使用 OpenAI API Key" />);
+    render(<ApiKeyForm harnessId="codex-cli" label="Use an OpenAI API key" />);
     expect(screen.queryByTestId('api-key-note')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('使用 OpenAI API Key')).toHaveAttribute('placeholder', 'sk-…');
+    expect(screen.getByLabelText('Use an OpenAI API key')).toHaveAttribute('placeholder', 'sk-…');
   });
 
   it('clears the key on submit, saves it and reports the new status', async () => {
     let resolve: (v: ReturnType<typeof makeHarness>) => void = () => {};
     svc.setApiKey.mockImplementation(() => new Promise((r) => (resolve = r)));
     const onSaved = vi.fn();
-    render(<ApiKeyForm harnessId="claude-code" label="使用 API Key" onSaved={onSaved} />);
-    const input = screen.getByLabelText('使用 API Key') as HTMLInputElement;
+    render(<ApiKeyForm harnessId="claude-code" label="Use an API key" onSaved={onSaved} />);
+    const input = screen.getByLabelText('Use an API key') as HTMLInputElement;
 
     fireEvent.change(input, { target: { value: '  sk-ant-secret  ' } });
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /保存/ }));
+      fireEvent.click(screen.getByRole('button', { name: /Save/ }));
     });
     // Cleared before the request resolves.
     expect(input.value).toBe('');
@@ -61,14 +61,14 @@ describe('ApiKeyForm', () => {
       resolve(makeHarness({ loginState: 'logged_in' }));
     });
     expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ loginState: 'logged_in' }));
-    expect(screen.getByText(/API Key 已保存/)).toBeInTheDocument();
+    expect(screen.getByText(/API key saved/)).toBeInTheDocument();
     expect(screen.queryByDisplayValue(/sk-ant-secret/)).not.toBeInTheDocument();
   });
 
   it('shows an error and keeps the field empty on failure', async () => {
     svc.setApiKey.mockRejectedValue(new Error('invalid key'));
-    render(<ApiKeyForm harnessId="codex-cli" label="使用 OpenAI API Key" />);
-    const input = screen.getByLabelText('使用 OpenAI API Key') as HTMLInputElement;
+    render(<ApiKeyForm harnessId="codex-cli" label="Use an OpenAI API key" />);
+    const input = screen.getByLabelText('Use an OpenAI API key') as HTMLInputElement;
     fireEvent.change(input, { target: { value: 'sk-bad' } });
     await act(async () => {
       fireEvent.submit(screen.getByTestId('api-key-form'));
@@ -79,7 +79,7 @@ describe('ApiKeyForm', () => {
 
   it('does not submit an empty key', async () => {
     render(<ApiKeyForm harnessId="codex-cli" label="k" />);
-    expect(screen.getByRole('button', { name: /保存/ })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /Save/ })).toBeDisabled();
     await act(async () => {
       fireEvent.submit(screen.getByTestId('api-key-form'));
     });

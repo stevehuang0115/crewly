@@ -29,17 +29,17 @@ describe('HarnessCard', () => {
         harness={makeHarness({ version: '2.0.1', updateAvailable: true, latestVersion: '2.1.0', loginState: 'logged_out' })}
       />,
     );
-    expect(screen.getByText('已安装 v2.0.1')).toBeInTheDocument();
-    expect(screen.getByText('可更新 → v2.1.0')).toBeInTheDocument();
-    expect(screen.getByText('未登录')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /更新/ })).toBeInTheDocument();
+    expect(screen.getByText('Installed v2.0.1')).toBeInTheDocument();
+    expect(screen.getByText('Update available → v2.1.0')).toBeInTheDocument();
+    expect(screen.getByText('Not signed in')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Update/ })).toBeInTheDocument();
   });
 
   it('shows not-installed state with an install button and no login badge', () => {
     render(<HarnessCard harness={makeHarness({ installed: false, version: null })} />);
-    expect(screen.getByText('未安装 / Not installed')).toBeInTheDocument();
-    expect(screen.queryByText('已登录')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /安装/ })).toBeInTheDocument();
+    expect(screen.getByText('Not installed')).toBeInTheDocument();
+    expect(screen.queryByText('Signed in')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Install/ })).toBeInTheDocument();
   });
 
   it('hides the button when installed and up to date', () => {
@@ -72,11 +72,11 @@ describe('HarnessCard', () => {
       );
 
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: /安装/ }));
+        fireEvent.click(screen.getByRole('button', { name: /Install/ }));
       });
       expect(svc.startInstall).toHaveBeenCalledWith('codex-cli');
       expect(screen.getByTestId('install-log')).toBeInTheDocument();
-      expect(screen.getByText('安装中…')).toBeInTheDocument();
+      expect(screen.getByText('Installing…')).toBeInTheDocument();
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000);
@@ -87,7 +87,7 @@ describe('HarnessCard', () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
       expect(screen.getByTestId('install-log').textContent).toContain('added 1 package');
-      expect(screen.getByText(/已安装到你的用户目录/)).toBeInTheDocument();
+      expect(screen.getByText(/Installed to your user folder/)).toBeInTheDocument();
       expect(onInstallFinished).toHaveBeenCalledWith(expect.objectContaining({ state: 'succeeded' }));
     });
 
@@ -96,13 +96,13 @@ describe('HarnessCard', () => {
       svc.getInstallJob.mockResolvedValueOnce({ state: 'failed', log: 'EACCES', usedUserPrefix: false });
       render(<HarnessCard harness={makeHarness({ installed: false, version: null })} />);
       await act(async () => {
-        fireEvent.click(screen.getByRole('button', { name: /安装/ }));
+        fireEvent.click(screen.getByRole('button', { name: /Install/ }));
       });
       await act(async () => {
         await vi.advanceTimersByTimeAsync(1000);
       });
-      expect(screen.getByText('安装失败 / Install failed')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: '重试安装' })).toBeInTheDocument();
+      expect(screen.getByText('Install failed')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Retry install' })).toBeInTheDocument();
     });
   });
 });

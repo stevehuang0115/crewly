@@ -11,8 +11,7 @@
  *    connects by itself; the panel sees `connected` and calls `onConnected`.
  *
  * No token ever passes through this page. Used by `/setup`'s Cloud step
- * (Chinese copy, starts on its own) and Settings → Cloud (English copy,
- * starts on a click).
+ * (starts on its own) and Settings → Cloud (starts on a click).
  *
  * @module components/CloudDevicePairingPanel
  */
@@ -23,6 +22,7 @@ import { CheckCircle2, ExternalLink, Smartphone } from 'lucide-react';
 import { Alert, Button } from '@crewly/ui';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { cloudDevicePairingService, type CloudDevicePairingStatus } from '../services/cloud-device-pairing.service';
+import { selectElementText } from '../utils/clipboard';
 import { CLOUD_DEVICE_PAIRING_POLL_MS, CLOUD_DEVICE_PAIRING_QR_SIZE } from '../constants/cloud.constants';
 
 /** Copy for one language. */
@@ -40,22 +40,7 @@ export interface CloudDevicePairingLabels {
   retry: string;
 }
 
-/** Chinese copy (first-run setup). */
-export const PAIRING_LABELS_ZH: CloudDevicePairingLabels = {
-  start: '用手机连接 Crewly Cloud',
-  intro: '不用在这台电脑前：用手机扫码或打开链接，登录后点「批准」，这台电脑会自己连上。',
-  scan: '用手机扫码，或打开：',
-  code: '核对这个代码',
-  waiting: '等待你在手机上批准…',
-  cancel: '取消',
-  connected: (tier) => `已连接 Crewly Cloud${tier ? `（${tier}）` : ''}`,
-  expired: '链接已过期，重新生成一个。',
-  denied: '在 crewlyai.com 上被拒绝了。',
-  cancelled: '已取消。',
-  retry: '重新生成',
-};
-
-/** English copy (Settings). */
+/** English copy (first-run setup and Settings). */
 export const PAIRING_LABELS_EN: CloudDevicePairingLabels = {
   start: 'Connect with your phone',
   intro: 'No need to be at this machine: scan the code or open the link on your phone, sign in and tap Approve. This machine connects by itself.',
@@ -170,7 +155,11 @@ export const CloudDevicePairingPanel: React.FC<CloudDevicePairingPanelProps> = (
             {status.verificationUrl} <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
           </a>
           <p className="text-xs text-text-secondary-dark">{labels.code}</p>
-          <p className="font-mono text-2xl font-bold tracking-widest text-text-primary-dark" data-testid="cloud-pairing-code">
+          <p
+            className="font-mono text-2xl font-bold tracking-widest text-text-primary-dark select-all cursor-text break-all"
+            data-testid="cloud-pairing-code"
+            onClick={(e) => selectElementText(e.currentTarget)}
+          >
             {status.userCode}
           </p>
         </div>

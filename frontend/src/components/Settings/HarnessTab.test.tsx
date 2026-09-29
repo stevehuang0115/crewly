@@ -81,7 +81,7 @@ describe('HarnessTab', () => {
     render(<HarnessTab />);
     expect(await screen.findByText('backend down')).toBeInTheDocument();
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /重试/ }));
+      fireEvent.click(screen.getByRole('button', { name: /Retry/ }));
     });
     expect(await screen.findByTestId('harness-tab')).toBeInTheDocument();
   });

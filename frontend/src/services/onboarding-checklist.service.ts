@@ -55,7 +55,7 @@ class OnboardingChecklistService {
    * @returns The checklist
    */
   async getChecklist(): Promise<OnboardingChecklist> {
-    return call(() => axios.get<ApiResponse<OnboardingChecklist>>(ONBOARDING_API.CHECKLIST), '无法读取设置清单');
+    return call(() => axios.get<ApiResponse<OnboardingChecklist>>(ONBOARDING_API.CHECKLIST), "Couldn't load the setup checklist");
   }
 
   /**
@@ -65,7 +65,7 @@ class OnboardingChecklistService {
    * @returns The checklist after the change
    */
   async setDismissed(dismissed: boolean): Promise<OnboardingChecklist> {
-    return call(() => axios.post<ApiResponse<OnboardingChecklist>>(ONBOARDING_API.DISMISS, { dismissed }), '操作失败');
+    return call(() => axios.post<ApiResponse<OnboardingChecklist>>(ONBOARDING_API.DISMISS, { dismissed }), 'Request failed');
   }
 
   /**
@@ -76,7 +76,7 @@ class OnboardingChecklistService {
   async getStarters(): Promise<OnboardingStarter[]> {
     const data = await call(
       () => axios.get<ApiResponse<{ starters: OnboardingStarter[] }>>(ONBOARDING_API.STARTERS),
-      '无法读取团队模板',
+      "Couldn't load team templates",
     );
     return data.starters;
   }
@@ -90,7 +90,7 @@ class OnboardingChecklistService {
   async createStarterTeam(starterId: string): Promise<StarterTeamResult> {
     return call(
       () => axios.post<ApiResponse<StarterTeamResult>>(ONBOARDING_API.STARTER_TEAM, { starterId }),
-      '创建团队失败',
+      "Couldn't create the team",
     );
   }
 
@@ -104,7 +104,7 @@ class OnboardingChecklistService {
   async sendFirstTask(text: string, teamId?: string | null): Promise<FirstTaskResult> {
     return call(
       () => axios.post<ApiResponse<FirstTaskResult>>(ONBOARDING_API.FIRST_TASK, { text, ...(teamId ? { teamId } : {}) }),
-      '发送失败',
+      'Send failed',
     );
   }
 
@@ -122,7 +122,7 @@ class OnboardingChecklistService {
           token,
           ...(refreshToken ? { refreshToken } : {}),
         }),
-      '连接 Crewly Cloud 失败',
+      "Couldn't connect Crewly Cloud",
     );
   }
 
@@ -138,7 +138,7 @@ class OnboardingChecklistService {
         axios.get<ApiResponse<{ url: string }>>(ONBOARDING_API.SLACK_INSTALL_URL, {
           params: { returnUrl },
         }),
-      '无法获取 Slack 安装链接',
+      "Couldn't get the Slack install link",
     );
     return data.url;
   }
@@ -155,7 +155,7 @@ class OnboardingChecklistService {
         axios.get<ApiResponse<{ connected: boolean; cloudConnected: boolean }>>(ONBOARDING_API.SLACK_CLOUD_STATUS, {
           params: { refresh: '1' },
         }),
-      '无法读取 Slack 状态',
+      "Couldn't load Slack status",
     );
   }
 }

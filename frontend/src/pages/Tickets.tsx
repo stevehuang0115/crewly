@@ -1,9 +1,9 @@
 /**
  * Tickets page — the ticket board (specs/ticket-loop.md, Phase 2).
  *
- * Columns 想法 / 待处理 / 进行中 / 阻塞 / 待验收 / 已完成 with counts, a search
+ * Columns Ideas / To do / In progress / Blocked / To review / Done with counts, a search
  * box (`q`) and a kind filter. Clicking a card opens the detail drawer, where
- * the owner accepts (验过了), sends back (打回) or dismisses (不用记). The board
+ * the owner accepts (Verified), sends back or dismisses. The board
  * polls every {@link TICKETS_POLL_INTERVAL_MS} and refreshes after any action.
  *
  * On narrow screens the columns scroll sideways inside the board container,
@@ -41,7 +41,7 @@ import { groupTicketsByColumn, ticketErrorMessage } from '../utils/ticket.utils'
 /** Kind filter value. */
 type KindFilter = TicketKind | typeof TICKET_KIND_FILTER_ALL;
 
-/** Kind filter options: 全部 + each kind. */
+/** Kind filter options: All + each kind. */
 const KIND_FILTER_OPTIONS: SegmentedOption<KindFilter>[] = [
   { value: TICKET_KIND_FILTER_ALL, label: TICKET_KIND_FILTER_ALL_LABEL },
   ...TICKET_KINDS.map((k) => ({ value: k as KindFilter, label: TICKET_KIND_LABEL[k] })),

@@ -2,7 +2,7 @@
  * useOnboardingChecklist Hook
  *
  * Loads `GET /api/onboarding/checklist` and exposes refresh + dismiss.
- * Shared by the `/setup` checklist steps and the dashboard "开始使用" card.
+ * Shared by the `/setup` checklist steps and the dashboard "Get started" card.
  *
  * @module hooks/useOnboardingChecklist
  */

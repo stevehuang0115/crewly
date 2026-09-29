@@ -5,7 +5,7 @@
  * Connects the owner's WhatsApp account via QR code pairing. Connecting uses
  * inbox mode: Crewly reads and drafts replies, never sends without the
  * owner's confirmation, and never auto-replies. Pending reply drafts are
- * listed here with 发送 / 丢弃 buttons (owner calls — no agent header).
+ * listed here with Send / Discard buttons (owner calls — no agent header).
  *
  * @module components/Settings/WhatsAppTab
  */
@@ -75,8 +75,7 @@ function toPendingDrafts(value: unknown): PendingDraft[] {
 const InboxModeNotice: React.FC = () => (
   <div className="bg-background-dark border border-border-dark rounded-lg p-4 space-y-1" data-testid="whatsapp-inbox-notice">
     <h3 className="text-xs font-semibold text-text-secondary-dark uppercase tracking-wide">{WHATSAPP_INBOX_COPY.TITLE}</h3>
-    <p className="text-sm">{WHATSAPP_INBOX_COPY.ZH}</p>
-    <p className="text-sm text-text-secondary-dark">{WHATSAPP_INBOX_COPY.EN}</p>
+    <p className="text-sm">{WHATSAPP_INBOX_COPY.EN}</p>
     <p className="text-xs text-text-secondary-dark">{WHATSAPP_INBOX_COPY.TOS}</p>
   </div>
 );
@@ -363,7 +362,7 @@ export const WhatsAppTab: React.FC = () => {
       {/* Pending reply drafts — the owner sends or discards each one */}
       <div className="bg-background-dark border border-border-dark rounded-lg p-5" data-testid="whatsapp-drafts">
         <h3 className="text-xs font-semibold text-text-secondary-dark uppercase tracking-wide mb-3">
-          待发送草稿 · Pending drafts
+          Pending drafts
         </h3>
         {drafts.length === 0 ? (
           <p className="text-sm text-text-secondary-dark">
@@ -397,9 +396,9 @@ export const WhatsAppTab: React.FC = () => {
                     onClick={() => handleDraftAction(draft, 'send')}
                     disabled={busyDraftId !== null}
                     loading={busyDraftId === draft.id}
-                    aria-label={`发送 ${draft.code}`}
+                    aria-label={`Send ${draft.code}`}
                   >
-                    发送
+                    Send
                   </Button>
                   <Button
                     size="sm"
@@ -407,9 +406,9 @@ export const WhatsAppTab: React.FC = () => {
                     icon={Trash2}
                     onClick={() => handleDraftAction(draft, 'discard')}
                     disabled={busyDraftId !== null}
-                    aria-label={`丢弃 ${draft.code}`}
+                    aria-label={`Discard ${draft.code}`}
                   >
-                    丢弃
+                    Discard
                   </Button>
                 </div>
               </li>

@@ -80,7 +80,7 @@ export const SETUP_DONE_ROUTE = '/';
 /** Paths the first-run redirect never fires from. */
 export const SETUP_REDIRECT_EXEMPT_PREFIXES: readonly string[] = [SETUP_ROUTE, '/auth'];
 
-/** localStorage key set by "稍后再说 / Skip for now" so the setup redirect doesn't loop. */
+/** localStorage key set by "Skip for now" so the setup redirect doesn't loop. */
 export const SETUP_SKIP_STORAGE_KEY = 'crewly_setup_skipped';
 
 /** Where each harness's API keys are created. */
@@ -102,20 +102,20 @@ export const API_KEY_PLACEHOLDERS: Partial<Record<HarnessId, string>> = {
  */
 export const API_KEY_NOTES: Partial<Record<HarnessId, string>> = {
   'antigravity-cli':
-    'Crewly 只用 Gemini API Key 运行 Antigravity，不会用你的 Google 账号登录（Google 不允许第三方工具这样做）。保存后，本机 ~/.gemini/antigravity-cli/settings.json 会切换为 API Key 模式。Crewly runs Antigravity with a Gemini API key only — never your Google account login.',
+    'Crewly runs Antigravity with a Gemini API key only — never your Google account login (Google does not allow third-party tools to do that). After you save, ~/.gemini/antigravity-cli/settings.json on this machine switches to API-key mode.',
 };
 
-/** Chinese-first labels per `${harnessId}:${methodId}`; falls back to the backend label. */
+/** Labels per `${harnessId}:${methodId}`; falls back to the backend label. */
 export const LOGIN_METHOD_LABELS: Record<string, string> = {
-  'claude-code:subscription': '用 Claude 订阅登录',
-  'claude-code:api_key': '使用 API Key',
-  'codex-cli:device': '用 ChatGPT 账号登录',
-  'codex-cli:api_key': '使用 OpenAI API Key',
-  'antigravity-cli:api_key': '使用 Gemini API Key',
+  'claude-code:subscription': 'Sign in with your Claude subscription',
+  'claude-code:api_key': 'Use an API key',
+  'codex-cli:device': 'Sign in with ChatGPT',
+  'codex-cli:api_key': 'Use an OpenAI API key',
+  'antigravity-cli:api_key': 'Use a Gemini API key',
 };
 
 /**
- * Label for a login method, preferring the Chinese copy.
+ * Label for a login method, preferring the local copy.
  *
  * @param harnessId - Harness id
  * @param methodId - Method id
@@ -128,19 +128,19 @@ export function loginMethodLabel(harnessId: string, methodId: HarnessLoginMethod
 
 /** Badge copy + variant for each harness login state. */
 export const LOGIN_STATE_BADGES: Record<HarnessLoginState, { label: string; variant: 'success' | 'warning' | 'default' }> = {
-  logged_in: { label: '已登录', variant: 'success' },
-  logged_out: { label: '未登录', variant: 'warning' },
-  unknown: { label: '登录状态未知', variant: 'default' },
+  logged_in: { label: 'Signed in', variant: 'success' },
+  logged_out: { label: 'Not signed in', variant: 'warning' },
+  unknown: { label: 'Sign-in status unknown', variant: 'default' },
 };
 
 /** Status line per login session state. */
 export const LOGIN_SESSION_STATE_LABELS: Record<LoginSessionState, string> = {
-  starting: '正在启动登录…',
-  awaiting_user: '等待你完成授权',
-  verifying: '正在验证…',
-  succeeded: '登录成功',
-  failed: '登录失败',
-  timed_out: '登录超时',
-  cancelled: '已取消',
+  starting: 'Starting sign-in…',
+  awaiting_user: 'Waiting for you to authorize',
+  verifying: 'Verifying…',
+  succeeded: 'Signed in',
+  failed: 'Sign-in failed',
+  timed_out: 'Sign-in timed out',
+  cancelled: 'Cancelled',
 };
 

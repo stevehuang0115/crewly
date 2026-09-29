@@ -105,7 +105,7 @@ export const BundleQuestionsForm: React.FC<BundleQuestionsFormProps> = ({
             {q.type === 'select' && (
               <FormSelect id={inputId} value={typeof value === 'string' ? value : ''} error={bad} onChange={(e) => set(q.id, e.target.value)}>
                 {!q.required && q.default === '' && <option value="">—</option>}
-                {q.required && <option value="">请选择</option>}
+                {q.required && <option value="">Select…</option>}
                 {(q.options ?? []).map((o) => (
                   <option key={o.value} value={o.value}>
                     {o.label ?? o.value}
@@ -136,7 +136,7 @@ export const BundleQuestionsForm: React.FC<BundleQuestionsFormProps> = ({
             {q.help && <FormHelp>{q.help}</FormHelp>}
             {bad && (
               <p className="mt-1 text-xs text-red-400" role="alert" data-testid={`bundle-missing-${q.id}`}>
-                {q.type === 'multiselect' ? '请至少选一个' : '这一项必填'}
+                {q.type === 'multiselect' ? 'Pick at least one' : 'This field is required'}
               </p>
             )}
           </FormGroup>

@@ -1,7 +1,7 @@
 /**
  * SlackConnectStep
  *
- * First-run step "连接 Slack". Reuses the existing one-click install through
+ * First-run step "Connect Slack". Reuses the existing one-click install through
  * Crewly Cloud (`GET /api/slack/cloud/install-url`, the same flow as
  * Connections → Slack): the Slack OAuth round-trip happens on Crewly Cloud,
  * so it works from a phone, and Slack returns to `/setup?step=slack`, where
@@ -67,8 +67,8 @@ export const SlackConnectStep: React.FC<SlackConnectStepProps> = ({
 
   if (connected) {
     return (
-      <Alert variant="success" icon={CheckCircle2} title="已连接 Slack" data-testid="slack-connected">
-        在 Slack 里私信 Crewly 或在团队频道 @ 它就行。
+      <Alert variant="success" icon={CheckCircle2} title="Slack connected" data-testid="slack-connected">
+        DM Crewly in Slack, or @ it in a team channel.
       </Alert>
     );
   }
@@ -77,10 +77,10 @@ export const SlackConnectStep: React.FC<SlackConnectStepProps> = ({
     return (
       <div className="space-y-3" data-testid="slack-needs-cloud">
         <Alert variant="info" size="sm">
-          Slack 通过 Crewly Cloud 安装，请先连接 Crewly Cloud。
+          Slack is installed through Crewly Cloud. Connect Crewly Cloud first.
         </Alert>
         <Button type="button" variant="secondary" fullWidth onClick={onGoToCloud}>
-          去连接 Crewly Cloud
+          Connect Crewly Cloud
         </Button>
       </div>
     );
@@ -101,17 +101,17 @@ export const SlackConnectStep: React.FC<SlackConnectStepProps> = ({
 
   return (
     <div className="space-y-3" data-testid="slack-connect-step">
-      <p className="text-sm text-text-secondary-dark">把 Crewly 装进你的 Slack 工作区，之后在 Slack 里就能派活、看进展。</p>
+      <p className="text-sm text-text-secondary-dark">Add Crewly to your Slack workspace to hand out work and follow progress from Slack.</p>
       {error && (
         <Alert variant="error" size="sm">
           {error}
         </Alert>
       )}
       <Button type="button" fullWidth icon={MessageSquare} loading={busy} onClick={() => void install()} data-testid="slack-install">
-        在 Slack 里安装 Crewly
+        Install Crewly in Slack
       </Button>
       <a href={SLACK_SETTINGS_PATH} className="inline-flex items-center gap-1 text-xs text-primary underline">
-        更多 Slack 设置 <ExternalLink className="h-3 w-3" aria-hidden />
+        More Slack settings <ExternalLink className="h-3 w-3" aria-hidden />
       </a>
     </div>
   );

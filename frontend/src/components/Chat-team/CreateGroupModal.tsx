@@ -1,5 +1,5 @@
 /**
- * CreateGroupModal — "拉群": pull multiple agents into one group chat.
+ * CreateGroupModal — "New group": pull multiple agents into one group chat.
  *
  * Fetches the agent directory (`GET /api/chat/agents`), lets the user pick a
  * name + ≥2 agents, and hands the selection back via `onCreate`. The actual

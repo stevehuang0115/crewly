@@ -1,7 +1,7 @@
 /**
  * GettingStartedCard
  *
- * The dashboard's persistent "开始使用" checklist: harness → first team →
+ * The dashboard's persistent "Get started" checklist: harness → first team →
  * first task → Crewly Cloud → Slack, each read from the live system
  * (`GET /api/onboarding/checklist`). Shown until every step is done or the
  * owner hides it (stored on the backend, so the phone and the laptop agree).
@@ -50,12 +50,12 @@ export const GettingStartedCard: React.FC = () => {
     <Card padding="none" className="p-4 sm:p-5" data-testid="getting-started-card">
       <div className="mb-3 flex items-start justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-text-primary-dark">开始使用</h2>
+          <h2 className="text-lg font-semibold text-text-primary-dark">Get started</h2>
           <p className="text-sm text-text-secondary-dark">
-            已完成 {checklist.doneCount}/{checklist.total} 步
+            {checklist.doneCount}/{checklist.total} steps done
           </p>
         </div>
-        <IconButton icon={X} aria-label="隐藏开始使用清单" title="隐藏" onClick={() => void setDismissed(true)} data-testid="getting-started-dismiss" />
+        <IconButton icon={X} aria-label="Hide the get started checklist" title="Hide" onClick={() => void setDismissed(true)} data-testid="getting-started-dismiss" />
       </div>
       <div className="mb-4 h-1.5 w-full overflow-hidden rounded-full bg-background-dark" aria-hidden>
         <div className="h-full rounded-full bg-primary transition-all" style={{ width: `${(checklist.doneCount / Math.max(1, checklist.total)) * 100}%` }} />
@@ -71,9 +71,9 @@ export const GettingStartedCard: React.FC = () => {
               data-testid={`getting-started-step-${step.id}`}
             >
               {step.done ? (
-                <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" aria-label="已完成" />
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-emerald-400" aria-label="Done" />
               ) : (
-                <Circle className="h-5 w-5 shrink-0 text-text-secondary-dark" aria-label="未完成" />
+                <Circle className="h-5 w-5 shrink-0 text-text-secondary-dark" aria-label="Not done" />
               )}
               <span className="min-w-0 flex-1">
                 <span className={step.done ? 'block text-sm text-text-secondary-dark line-through' : 'block text-sm font-medium text-text-primary-dark'}>
@@ -88,7 +88,7 @@ export const GettingStartedCard: React.FC = () => {
       </ul>
       {next && (
         <Button type="button" fullWidth className="mt-3" onClick={() => navigate(stepRoute(next.id))} data-testid="getting-started-continue">
-          继续：{CHECKLIST_STEP_LABELS[next.id]}
+          Continue: {CHECKLIST_STEP_LABELS[next.id]}
         </Button>
       )}
     </Card>

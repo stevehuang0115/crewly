@@ -51,26 +51,26 @@ export function daysUntilAutoAccept(autoAcceptAt: string | null | undefined, now
 }
 
 /**
- * The "N天后自动验收" label.
+ * The "Auto-accepts in N days" label.
  *
  * @param autoAcceptAt - ISO time, or null
  * @param now - Current time in ms
  * @returns Label, or null when there is no deadline
  *
  * @example
- * autoAcceptLabel('2026-09-27T00:00:00Z', Date.parse('2026-09-24T00:00:00Z')) // '3天后自动验收'
+ * autoAcceptLabel('2026-09-27T00:00:00Z', Date.parse('2026-09-24T00:00:00Z')) // 'Auto-accepts in 3 days'
  */
 export function autoAcceptLabel(autoAcceptAt: string | null | undefined, now: number = Date.now()): string | null {
   const days = daysUntilAutoAccept(autoAcceptAt, now);
   if (days === null) return null;
-  return days <= 0 ? TICKET_TEXT.AUTO_ACCEPT_SOON : `${days}${TICKET_TEXT.AUTO_ACCEPT_IN_DAYS}`;
+  return days <= 0 ? TICKET_TEXT.AUTO_ACCEPT_SOON : `${TICKET_TEXT.AUTO_ACCEPT_IN_DAYS} ${days} ${days === 1 ? 'day' : 'days'}`;
 }
 
 /**
  * Describe where a ticket came from.
  *
  * @param origin - Ticket origin, or null
- * @returns e.g. `Slack 私信 · Steve`, or null
+ * @returns e.g. `Slack DM · Steve`, or null
  */
 export function formatOrigin(origin: TicketOrigin | null | undefined): string | null {
   if (!origin) return null;
@@ -105,7 +105,7 @@ export function toAcceptanceInputs(acceptance: TicketAcceptance[] | undefined): 
  * Turn anything thrown by the tickets service into a message for the user.
  *
  * @param err - Thrown value
- * @returns Chinese text for known refusal codes, else the server's message
+ * @returns English text for known refusal codes, else the server's message
  */
 export function ticketErrorMessage(err: unknown): string {
   if (isTicketApiError(err) && err.code && TICKET_ERROR_TEXT[err.code]) {

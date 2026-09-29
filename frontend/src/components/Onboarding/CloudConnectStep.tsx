@@ -1,7 +1,7 @@
 /**
  * CloudConnectStep
  *
- * First-run step "连接 Crewly Cloud", built for an owner who is usually NOT
+ * First-run step "Connect Crewly Cloud", built for an owner who is usually NOT
  * at the machine:
  *
  * 1. **Device pairing** (primary, starts by itself —
@@ -30,7 +30,7 @@ import { CheckCircle2, Cloud, ExternalLink } from 'lucide-react';
 import { Alert, Button, FormInput, FormLabel } from '@crewly/ui';
 import { onboardingChecklistService } from '../../services/onboarding-checklist.service';
 import { buildCloudSignInUrl, setupStepPath } from '../../constants/onboarding-checklist.constants';
-import { CloudDevicePairingPanel, PAIRING_LABELS_ZH } from '../CloudDevicePairingPanel';
+import { CloudDevicePairingPanel, PAIRING_LABELS_EN } from '../CloudDevicePairingPanel';
 
 export interface CloudConnectStepProps {
   /** This machine is connected to Crewly Cloud */
@@ -66,8 +66,8 @@ export const CloudConnectStep: React.FC<CloudConnectStepProps> = ({
 
   if (connected) {
     return (
-      <Alert variant="success" icon={CheckCircle2} title="已连接 Crewly Cloud" data-testid="cloud-connected">
-        {tier ? `当前套餐：${tier}。` : ''}可以在手机上用 Crewly 了。
+      <Alert variant="success" icon={CheckCircle2} title="Connected to Crewly Cloud" data-testid="cloud-connected">
+        {tier ? `Plan: ${tier}. ` : ''}You can use Crewly from your phone now.
       </Alert>
     );
   }
@@ -91,11 +91,11 @@ export const CloudConnectStep: React.FC<CloudConnectStepProps> = ({
   return (
     <div className="space-y-4" data-testid="cloud-connect-step">
       <ul className="space-y-1 text-sm text-text-secondary-dark">
-        <li>· 在手机上随时查看和指挥团队</li>
-        <li>· 自动备份，换电脑也能恢复</li>
-        <li>· 连接 Slack 需要先连 Cloud</li>
+        <li>· Check on and direct your team from your phone</li>
+        <li>· Automatic backups you can restore on a new computer</li>
+        <li>· Slack needs Cloud connected first</li>
       </ul>
-      <CloudDevicePairingPanel autoStart labels={PAIRING_LABELS_ZH} onConnected={() => onConnected()} />
+      <CloudDevicePairingPanel autoStart labels={PAIRING_LABELS_EN} onConnected={() => onConnected()} />
 
       <div className="space-y-1 border-t border-border-dark pt-3">
         <Button
@@ -106,31 +106,31 @@ export const CloudConnectStep: React.FC<CloudConnectStepProps> = ({
           onClick={() => navigateTo(buildCloudSignInUrl(window.location.origin, setupStepPath('cloud')))}
           data-testid="cloud-sign-in"
         >
-          或者：在这个浏览器里用 Google 登录
+          Or sign in with Google in this browser
         </Button>
-        <p className="text-xs text-text-secondary-dark">登录后会自动回到这一页。</p>
+        <p className="text-xs text-text-secondary-dark">You come back to this page after signing in.</p>
       </div>
 
       {!showPaste ? (
         <Button type="button" variant="link" onClick={() => setShowPaste(true)} data-testid="cloud-show-paste">
-          没有自动回来？改用复制粘贴
+          Didn&apos;t come back? Use copy and paste instead
         </Button>
       ) : (
         <div className="space-y-3 rounded-2xl border border-border-dark p-3" data-testid="cloud-paste">
           <p className="text-sm text-text-secondary-dark">
-            1. 打开{' '}
+            1. Open the{' '}
             <a href={tokenPageSignInUrl} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-primary underline">
-              Crewly Cloud 登录页 <ExternalLink className="h-3 w-3" aria-hidden />
+              Crewly Cloud sign-in page <ExternalLink className="h-3 w-3" aria-hidden />
             </a>
-            ，登录后会显示两段 token。
+            . After you sign in it shows two tokens.
           </p>
-          <p className="text-sm text-text-secondary-dark">2. 分别复制过来：</p>
+          <p className="text-sm text-text-secondary-dark">2. Copy each of them here:</p>
           <div className="space-y-1">
             <FormLabel htmlFor="cloud-token">Token</FormLabel>
             <FormInput id="cloud-token" autoComplete="off" spellCheck={false} value={token} onChange={(e) => setToken(e.target.value)} />
           </div>
           <div className="space-y-1">
-            <FormLabel htmlFor="cloud-refresh-token">Refresh token（保持长期登录）</FormLabel>
+            <FormLabel htmlFor="cloud-refresh-token">Refresh token (keeps you signed in)</FormLabel>
             <FormInput
               id="cloud-refresh-token"
               autoComplete="off"
@@ -140,7 +140,7 @@ export const CloudConnectStep: React.FC<CloudConnectStepProps> = ({
             />
           </div>
           {!refreshToken.trim() && token.trim() && (
-            <p className="text-xs text-yellow-400">没有 refresh token 的话，大约一小时后需要重新登录。</p>
+            <p className="text-xs text-yellow-400">Without a refresh token you will need to sign in again in about an hour.</p>
           )}
           {error && (
             <Alert variant="error" size="sm">
@@ -148,7 +148,7 @@ export const CloudConnectStep: React.FC<CloudConnectStepProps> = ({
             </Alert>
           )}
           <Button type="button" fullWidth loading={saving} disabled={!token.trim()} onClick={() => void save()} data-testid="cloud-paste-save">
-            连接
+            Connect
           </Button>
         </div>
       )}

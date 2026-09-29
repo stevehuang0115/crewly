@@ -48,7 +48,7 @@ describe('CloudConnectStep', () => {
       expect(pairing.start).toHaveBeenCalledTimes(1);
       expect(screen.getByTestId('cloud-pairing-code')).toHaveTextContent('ABCD-2345');
       expect(screen.getByTestId('cloud-pairing-link')).toHaveAttribute('href', PENDING.verificationUrl);
-      expect(screen.getByText('等待你在手机上批准…')).toBeInTheDocument();
+      expect(screen.getByText('Waiting for you to approve on your phone…')).toBeInTheDocument();
 
       await act(async () => {
         await vi.advanceTimersByTimeAsync(CLOUD_DEVICE_PAIRING_POLL_MS);
@@ -86,11 +86,11 @@ describe('CloudConnectStep', () => {
       render(<CloudConnectStep connected={false} tier={null} tokenPageSignInUrl={TOKEN_PAGE_URL} onConnected={onConnected} />);
     });
     fireEvent.click(screen.getByTestId('cloud-show-paste'));
-    expect(screen.getByRole('link', { name: /Crewly Cloud 登录页/ })).toHaveAttribute('href', TOKEN_PAGE_URL);
+    expect(screen.getByRole('link', { name: /Crewly Cloud sign-in page/ })).toHaveAttribute('href', TOKEN_PAGE_URL);
     expect(screen.getByTestId('cloud-paste-save')).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText('Token'), { target: { value: ' tok ' } });
-    expect(screen.getByText(/大约一小时后需要重新登录/)).toBeInTheDocument();
+    expect(screen.getByText(/sign in again in about an hour/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText(/Refresh token/), { target: { value: ' ref ' } });
     await act(async () => {
       fireEvent.click(screen.getByTestId('cloud-paste-save'));

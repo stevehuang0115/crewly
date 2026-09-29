@@ -25,9 +25,9 @@ describe('whatsapp.constants', () => {
     expect(WHATSAPP_DEFAULT_CONNECT_MODE).toBe(WHATSAPP_MODES.INBOX);
   });
 
-  it('states the owner-confirmation and no-auto-reply promise in both languages', () => {
-    expect(WHATSAPP_INBOX_COPY.ZH).toContain('发送前需要你确认');
-    expect(WHATSAPP_INBOX_COPY.ZH).toContain('不会自动回复任何人');
+  it('states the owner-confirmation and no-auto-reply promise', () => {
+    expect(WHATSAPP_INBOX_COPY.TITLE).toBe('Inbox mode');
+    expect(WHATSAPP_INBOX_COPY.EN).toMatch(/nothing is sent until you confirm/);
     expect(WHATSAPP_INBOX_COPY.EN).toMatch(/never auto-replies/);
     expect(WHATSAPP_INBOX_COPY.TOS).toMatch(/linked device/);
   });

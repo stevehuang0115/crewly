@@ -73,7 +73,7 @@ class BundleService {
   async getBundle(templateId: string): Promise<{ bundle: BundleDetail; deployment: BundleDeployment | null }> {
     return call(
       () => axios.get<ApiResponse<{ bundle: BundleDetail; deployment: BundleDeployment | null }>>(BUNDLE_API.detail(templateId)),
-      '无法读取这个方案',
+      "Couldn't load this bundle",
     );
   }
 
@@ -93,7 +93,7 @@ class BundleService {
           answers,
           ...(runtime ? { runtime } : {}),
         }),
-      '部署失败',
+      'Deploy failed',
     );
     return data.deployment;
   }
@@ -105,7 +105,7 @@ class BundleService {
    * @returns The deployment
    */
   async getJob(jobId: string): Promise<BundleDeployment> {
-    return call(() => axios.get<ApiResponse<BundleDeployment>>(BUNDLE_API.job(jobId)), '无法读取部署进度');
+    return call(() => axios.get<ApiResponse<BundleDeployment>>(BUNDLE_API.job(jobId)), "Couldn't load deploy progress");
   }
 }
 
