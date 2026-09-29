@@ -86,6 +86,40 @@ describe('RuntimeAgentService (Abstract)', () => {
 		service = new TestRuntimeService(mockSessionHelper, '/test/project');
 	});
 
+	describe('sendShellCommandsToSession — shell history stays off', () => {
+		const shellBefore = process.env.SHELL;
+		afterEach(() => {
+			if (shellBefore === undefined) delete process.env.SHELL;
+			else process.env.SHELL = shellBefore;
+		});
+
+		it('types the history-off line first and space-prefixes every other line', async () => {
+			process.env.SHELL = '/bin/zsh';
+			await service['sendShellCommandsToSession']('s1', ['claude --dangerously-skip-permissions'], '/proj');
+
+			const typed = mockSessionHelper.sendMessage.mock.calls.map((c) => c[1]);
+			expect(typed[0]).toMatch(/^ unset HISTFILE;/);
+			expect(typed[0]).toContain('setopt HIST_IGNORE_SPACE');
+			expect(typed[0]).toContain('set +o history');
+			expect(typed[1]).toBe(' cd "/proj"');
+			expect(typed[2]).toMatch(/^ export PATH=/);
+			expect(typed[3]).toBe(' claude --dangerously-skip-permissions');
+			for (const line of typed) {
+				expect(line.startsWith(' ')).toBe(true);
+				expect(line).not.toMatch(/export \w*(API_KEY|TOKEN|SECRET)=/);
+			}
+		});
+
+		it('skips the history-off line for a shell it does not know, still space-prefixing', async () => {
+			process.env.SHELL = '/usr/local/bin/nu';
+			await service['sendShellCommandsToSession']('s1', ['codex'], '/proj');
+
+			const typed = mockSessionHelper.sendMessage.mock.calls.map((c) => c[1]);
+			expect(typed[0]).toBe(' cd "/proj"');
+			expect(typed[typed.length - 1]).toBe(' codex');
+		});
+	});
+
 	describe('constructor', () => {
 		it('should initialize with session helper and project root', () => {
 			expect(service['sessionHelper']).toBe(mockSessionHelper);

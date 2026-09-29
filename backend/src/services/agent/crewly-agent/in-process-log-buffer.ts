@@ -19,6 +19,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { CREWLY_CONSTANTS, LOG_ROTATION_CONSTANTS } from '../../../constants.js';
+import { collectSecretEnvValues, type SecretEnvValue } from '../../../utils/secret-env.js';
+import { redactSecrets } from '../../../utils/secret-redactor.js';
 
 /**
  * Single log entry from an in-process agent session.
@@ -64,6 +66,9 @@ export class InProcessLogBuffer extends EventEmitter {
   private logStreams = new Map<string, fs.WriteStream>();
   /** Resolved path to ~/.crewly/logs/sessions/ */
   private sessionLogsDir: string;
+
+  /** Cached exact secret values from the backend env (see getKnownSecrets) */
+  private knownSecrets: readonly SecretEnvValue[] | null = null;
 
   constructor() {
     super();
@@ -282,6 +287,17 @@ export class InProcessLogBuffer extends EventEmitter {
   }
 
   /**
+   * Exact secret values held in the backend env, masked in every log line.
+   * Computed once (lazily) — the backend env does not gain secrets at runtime.
+   *
+   * @returns Secret values, longest first
+   */
+  private getKnownSecrets(): readonly SecretEnvValue[] {
+    if (!this.knownSecrets) this.knownSecrets = collectSecretEnvValues(process.env);
+    return this.knownSecrets;
+  }
+
+  /**
    * Write a formatted log entry to the session's file stream.
    * Non-blocking, fire-and-forget — errors are silently ignored.
    *
@@ -294,7 +310,9 @@ export class InProcessLogBuffer extends EventEmitter {
     if (!stream) return;
 
     try {
-      stream.write(`${entry.timestamp} ${formattedLine}\n`);
+      // Entries are whole lines, so the stateless redactor is enough here
+      // (no chunk boundaries to carry across).
+      stream.write(redactSecrets(`${entry.timestamp} ${formattedLine}\n`, this.getKnownSecrets()));
     } catch {
       // Non-fatal — disk logging is best-effort
     }

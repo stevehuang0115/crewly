@@ -146,6 +146,7 @@ crewly upgrade       # Upgrade to latest version
 crewly install [id]  # Install a skill from marketplace
 crewly search [q]    # Search skill marketplace
 crewly token         # Print the API token remote callers must send (--url: dashboard link)
+crewly security scrub-logs  # Count API keys/tokens left in session logs + shell history (--apply: mask them)
 ```
 
 ## Configuration

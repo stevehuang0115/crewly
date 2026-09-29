@@ -22,8 +22,8 @@ import { execSync } from 'child_process';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
-import { redactSensitive } from '../../wiki/wiki-redaction.js';
-import { collectSecretEnvValues, redactSecretEnvValues, type SecretEnvValue } from '../../../utils/secret-env.js';
+import { collectSecretEnvValues } from '../../../utils/secret-env.js';
+import { StreamingSecretRedactor } from '../../../utils/secret-redactor.js';
 
 /**
  * Point-in-time PTY/FD health snapshot for observability.
@@ -99,10 +99,12 @@ export class PtySessionBackend implements ISessionBackend {
 	private sessionLogStreams: Map<string, fs.WriteStream> = new Map();
 
 	/**
-	 * Per session: the secret values (from the backend env and the session's
-	 * spawn env) masked by value before anything is written to its log.
+	 * Per session: the streaming redactor every byte passes through before it
+	 * is written to the session log. It masks secrets by name, by shape and by
+	 * exact value (backend env + the session's spawn env), and holds back the
+	 * tail of each chunk so a secret split across two chunks is still caught.
 	 */
-	private sessionLogSecrets: Map<string, SecretEnvValue[]> = new Map();
+	private sessionLogRedactors: Map<string, StreamingSecretRedactor> = new Map();
 
 	/**
 	 * Directory for persistent session log files
@@ -271,7 +273,7 @@ export class PtySessionBackend implements ISessionBackend {
 
 		// Open persistent session log file stream (append mode with restart separator)
 		this.openSessionLogStream(name);
-		this.sessionLogSecrets.set(name, collectSecretEnvValues(process.env, options.env));
+		this.sessionLogRedactors.set(name, new StreamingSecretRedactor(collectSecretEnvValues(process.env, options.env)));
 
 		// Pipe session output to terminal buffer and record activity for idle detection.
 		// Recording here (at session creation) ensures activity is tracked even when
@@ -902,12 +904,14 @@ export class PtySessionBackend implements ISessionBackend {
 	 * Write ANSI-stripped, secret-redacted terminal data to a session's
 	 * persistent log file.
 	 *
-	 * Secrets matching SECRET_PATTERNS (Google `AIza…`, OpenAI/Anthropic `sk-…`,
-	 * GitHub/Slack tokens, …) are masked before writing, and so is the exact
-	 * value of every secret-named variable in the backend env or the session's
-	 * spawn env (which catches secrets no pattern recognises). This is a backstop:
-	 * keys are no longer typed into sessions at all, and a secret split across
-	 * two output chunks is not caught here.
+	 * Everything goes through the session's StreamingSecretRedactor
+	 * (utils/secret-redactor): `NAME=value` for secret names, raw token shapes
+	 * (Google `AIza…`, OpenAI/Anthropic `sk-…`, Slack `xox…`/`xapp-…`, GitHub
+	 * `ghp_…`/`github_pat_…`, …) and the exact value of every secret-named
+	 * variable in the backend env or the session's spawn env. The redactor
+	 * carries the unfinished last word into the next chunk, so a secret split
+	 * across two output chunks is still masked; the carry is written when the
+	 * log closes. This is a backstop: keys are no longer typed into sessions.
 	 *
 	 * @param sessionName - Name of the session
 	 * @param data - Raw terminal data (with ANSI codes)
@@ -924,7 +928,13 @@ export class PtySessionBackend implements ISessionBackend {
 
 		// Only write if there's content after stripping
 		if (stripped.length > 0) {
-			stream.write(redactSecretEnvValues(redactSensitive(stripped), this.sessionLogSecrets.get(sessionName) ?? []));
+			let redactor = this.sessionLogRedactors.get(sessionName);
+			if (!redactor) {
+				redactor = new StreamingSecretRedactor(collectSecretEnvValues(process.env));
+				this.sessionLogRedactors.set(sessionName, redactor);
+			}
+			const safe = redactor.push(stripped);
+			if (safe.length > 0) stream.write(safe);
 		}
 	}
 
@@ -935,16 +945,20 @@ export class PtySessionBackend implements ISessionBackend {
 	 */
 	private closeSessionLogStream(sessionName: string): void {
 		const stream = this.sessionLogStreams.get(sessionName);
+		const redactor = this.sessionLogRedactors.get(sessionName);
 		if (stream) {
 			try {
 				if (!stream.destroyed) {
+					// Write the redactor's held-back tail (already masked) before closing
+					const tail = redactor?.flush() ?? '';
+					if (tail.length > 0) stream.write(tail);
 					stream.end();
 				}
 			} catch {
 				// Ignore close errors
 			}
 			this.sessionLogStreams.delete(sessionName);
-			this.sessionLogSecrets.delete(sessionName);
 		}
+		this.sessionLogRedactors.delete(sessionName);
 	}
 }

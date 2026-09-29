@@ -4358,3 +4358,83 @@ export type WorkingStatus =
 	(typeof CREWLY_CONSTANTS.WORKING_STATUSES)[keyof typeof CREWLY_CONSTANTS.WORKING_STATUSES];
 export type RuntimeType = (typeof RUNTIME_TYPES)[keyof typeof RUNTIME_TYPES];
 export type AgentId = string; // Agent identifier type for heartbeat service
+
+/**
+ * Secret redaction for persisted terminal output (session logs, scrub of old
+ * logs and shell history). See utils/secret-redactor.
+ */
+export const SECRET_REDACTION_CONSTANTS = {
+	/**
+	 * Secret variable names masked in `NAME=value` even if the generic suffix
+	 * rule (utils/secret-env isSecretEnvKey) ever changed. Upper-case.
+	 */
+	KNOWN_SECRET_ENV_NAMES: [
+		'GEMINI_API_KEY',
+		'GOOGLE_GENERATIVE_AI_API_KEY',
+		'OPENAI_API_KEY',
+		'ANTHROPIC_API_KEY',
+		'DEEPSEEK_API_KEY',
+		'CLAUDE_CODE_OAUTH_TOKEN',
+		'SLACK_BOT_TOKEN',
+		'SLACK_APP_TOKEN',
+		'SLACK_USER_TOKEN',
+		'SLACK_SIGNING_SECRET',
+		'CREWLY_API_TOKEN',
+	] as readonly string[],
+	/** Name families masked in `NAME=value` (tested against the upper-cased name). */
+	SECRET_NAME_PATTERNS: [/^SLACK_\w*_TOKEN$/, /^CREWLY_\w*_TOKEN$/, /(?:^|_)PRIVATE_KEY$/] as readonly RegExp[],
+	/**
+	 * Longest whitespace-free tail the streaming redactor holds back between
+	 * chunks before it forces a cut. Far above any credential's length.
+	 */
+	MAX_CARRY_CHARS: 4096,
+	/** Tail kept after a forced cut — above any credential's length (≈250 chars). */
+	MIN_FORCED_CARRY_CHARS: 512,
+} as const;
+
+/**
+ * Shell history is kept off in agent PTYs: whatever an agent shell runs
+ * (and anything Crewly types into it) must never land in ~/.bash_history or
+ * ~/.zsh_history. Two layers:
+ *
+ * - SPAWN_ENV is merged into every PTY's spawn environment. It works for a
+ *   shell whose rc files leave these alone.
+ * - DISABLE_COMMAND is typed (space-prefixed) as the first line of the
+ *   runtime init sequence, after the rc files ran — macOS /etc/zshrc
+ *   unconditionally sets HISTFILE, which beats the spawn env. `unset HISTFILE`
+ *   stops bash and zsh from ever writing a history file; bash additionally
+ *   turns history recording off.
+ *
+ * HISTSIZE / HISTFILESIZE are deliberately NOT set to 0: when a user's
+ * ~/.bashrc re-points HISTFILE at ~/.bash_history but leaves HISTFILESIZE
+ * alone, bash truncates that file to HISTFILESIZE (defaulting to HISTSIZE)
+ * lines — an inherited 0 would wipe the user's own history.
+ */
+export const SHELL_HISTORY_CONSTANTS = {
+	/** Env merged into every PTY spawn (callers' own env still wins). */
+	SPAWN_ENV: {
+		/** bash + zsh: where history is written — nowhere */
+		HISTFILE: '/dev/null',
+		/** zsh: number of lines saved to HISTFILE */
+		SAVEHIST: '0',
+		/** bash: lines starting with a space are not recorded */
+		HISTCONTROL: 'ignorespace',
+	} as Readonly<Record<string, string>>,
+	/** POSIX-shell line typed first into an agent shell (bash, zsh, sh, dash, ksh). */
+	DISABLE_COMMAND:
+		'unset HISTFILE; if [ -n "$ZSH_VERSION" ]; then setopt HIST_IGNORE_SPACE; SAVEHIST=0; elif [ -n "$BASH_VERSION" ]; then set +o history; fi',
+	/** fish: an empty fish_history keeps history in memory only. */
+	FISH_DISABLE_COMMAND: "set -g fish_history ''",
+	/** Shells that understand DISABLE_COMMAND (basename of $SHELL). */
+	POSIX_SHELLS: ['bash', 'zsh', 'sh', 'dash', 'ksh', 'mksh'] as readonly string[],
+	/** Prefix for every line Crewly types into a shell (kept out of history by ignorespace / HIST_IGNORE_SPACE). */
+	TYPED_LINE_PREFIX: ' ',
+} as const;
+
+/** One-time scrub of secrets already on disk (`crewly security scrub-logs`). */
+export const SECRET_SCRUB_CONSTANTS = {
+	/** Shell history files (relative to the user's home) that are scrubbed */
+	SHELL_HISTORY_FILES: ['.bash_history', '.zsh_history', '.sh_history', '.history'] as readonly string[],
+	/** settings.json under CREWLY_HOME, whose apiKeys are masked by exact value */
+	SETTINGS_FILE: 'settings.json',
+} as const;

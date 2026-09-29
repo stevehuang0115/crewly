@@ -20,6 +20,7 @@ import { toCodexResumeCommand } from './runtime-session-recovery.js';
 import { detectRuntimeCliMissing, isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { quietShellLine, shellHistoryDisableLine } from '../../utils/shell-history.js';
 import {
 	prepareControlPlaneGuard,
 	applyControlPlaneSettingsFlag,
@@ -945,8 +946,18 @@ export abstract class RuntimeAgentService {
 			cdPath,
 		});
 
+		// History off first, after the rc files ran (macOS /etc/zshrc sets
+		// HISTFILE itself, beating the spawn env): nothing typed below, nor
+		// anything the agent runs in this shell, may reach ~/.bash_history or
+		// ~/.zsh_history. Every typed line is also space-prefixed.
+		const historyOffLine = shellHistoryDisableLine();
+		if (historyOffLine) {
+			await this.sessionHelper.sendMessage(sessionName, historyOffLine);
+			await delay(300);
+		}
+
 		// Send cd command (includes Enter automatically)
-		await this.sessionHelper.sendMessage(sessionName, `cd "${cdPath}"`);
+		await this.sessionHelper.sendMessage(sessionName, quietShellLine(`cd "${cdPath}"`));
 		await delay(500);
 
 		// The PTY is a login shell: the user's rc files run after Crewly's env
@@ -955,7 +966,7 @@ export abstract class RuntimeAgentService {
 		// ran on that one — an Intel node v23 on an Apple-silicon Mac asked for
 		// @openai/codex-darwin-x64 and died (2026-09-26, Nova). Put the node
 		// Crewly itself runs on, and the user npm prefix, first again here.
-		await this.sessionHelper.sendMessage(sessionName, runtimePathExport());
+		await this.sessionHelper.sendMessage(sessionName, quietShellLine(runtimePathExport()));
 		await delay(300);
 
 		// Send each command
@@ -966,8 +977,8 @@ export abstract class RuntimeAgentService {
 				command,
 			});
 
-			// Send command (includes Enter automatically)
-			await this.sessionHelper.sendMessage(sessionName, command);
+			// Send command (includes Enter automatically), kept out of history
+			await this.sessionHelper.sendMessage(sessionName, quietShellLine(command));
 			await delay(500);
 		}
 	}

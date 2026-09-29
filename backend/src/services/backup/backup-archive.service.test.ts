@@ -51,6 +51,11 @@ beforeEach(async () => {
   await fs.mkdir(path.join(home, 'agents', 'sess-a', 'sessions'), { recursive: true });
   await fs.writeFile(path.join(home, 'agents', 'sess-a', 'self-model.json'), '{"v":1}', 'utf8'); // IN
   await fs.writeFile(path.join(home, 'agents', 'sess-a', 'sessions', 'x.jsonl'), 'line', 'utf8'); // OUT (dir + .jsonl)
+  // Raw agent PTY transcripts — held API keys before #806 (OUT)
+  await fs.mkdir(path.join(home, 'logs', 'sessions'), { recursive: true });
+  await fs.writeFile(path.join(home, 'logs', 'sessions', 'dev-1.log'), 'export GEMINI_API_KEY=AIzaTESTfake', 'utf8');
+  await fs.writeFile(path.join(home, 'agents', 'sess-a', 'stray-pty.log'), 'pty output', 'utf8'); // OUT (*.log anywhere)
+  await fs.writeFile(path.join(home, 'agents', 'sess-a', '.bash_history'), 'export X=1', 'utf8'); // OUT (shell history)
 
   // ── A git-backed project with .crewly data ──
   await fs.mkdir(path.join(projectPath, '.crewly', 'wiki'), { recursive: true });
@@ -102,6 +107,29 @@ describe('BackupArchiveService.createArchive', () => {
     expect(globalPaths.some((p) => p.startsWith('home/teams-backup-history/'))).toBe(false);
     expect(globalPaths.some((p) => p.endsWith('.jsonl'))).toBe(false);
     expect(globalPaths.some((p) => p.includes('/sessions/'))).toBe(false);
+    expect(globalPaths.some((p) => p.endsWith('.log'))).toBe(false);
+    expect(globalPaths.some((p) => p.endsWith('.bash_history'))).toBe(false);
+  });
+
+  it('never puts session logs or their contents into the archive bytes', async () => {
+    const svc = new BackupArchiveService(silentLogger);
+    const outPath = path.join(outDir, 'nolog.tar.gz');
+    await svc.createArchive({ homePath: home, outPath, excludeChatDb: true, createdAt: CREATED_AT });
+    const listing = execFileSync('tar', ['-tzf', outPath], { encoding: 'utf8' });
+    expect(listing).not.toMatch(/logs\/sessions/);
+    expect(listing).not.toMatch(/\.log$/m);
+    const extracted = await fs.mkdtemp(path.join(os.tmpdir(), 'nolog-x-'));
+    execFileSync('tar', ['-xzf', outPath, '-C', extracted]);
+    const grep = (dir: string): Promise<boolean> =>
+      fs.readdir(dir, { withFileTypes: true }).then(async (entries) => {
+        for (const e of entries) {
+          const p = path.join(dir, e.name);
+          if (e.isDirectory() ? await grep(p) : (await fs.readFile(p)).includes('AIzaTESTfake')) return true;
+        }
+        return false;
+      });
+    expect(await grep(extracted)).toBe(false);
+    await fs.rm(extracted, { recursive: true, force: true });
   });
 
   it('records each project with git provenance and excludes project logs', async () => {

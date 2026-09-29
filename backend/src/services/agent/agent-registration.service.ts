@@ -3287,6 +3287,24 @@ Loop until done, blocked, or explicitly reassigned:
 	}
 
 	/**
+	 * Telemetry env for a PTY runtime: `CLAUDE_CODE_ENABLE_TELEMETRY=1` for
+	 * Claude Code when token tracking is on in settings. Passed at spawn (it
+	 * used to be typed in as an `export` after the shell started).
+	 *
+	 * @param runtimeType - Runtime the session will run
+	 * @returns Env map to merge into the spawn env (empty when off)
+	 */
+	private async buildTelemetryEnv(runtimeType: RuntimeType): Promise<Record<string, string>> {
+		if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return {};
+		try {
+			const settings = await getSettingsService().getSettings();
+			return settings.general?.tokenTracking ? { [ENV_CONSTANTS.CLAUDE_CODE_ENABLE_TELEMETRY]: '1' } : {};
+		} catch {
+			return {};
+		}
+	}
+
+	/**
 	 * The identity environment every agent PTY is spawned with.
 	 *
 	 * One source of truth for the primary spawn path, the Step-2 full
@@ -3966,21 +3984,23 @@ Loop until done, blocked, or explicitly reassigned:
 			});
 
 			try {
-				// The identity variables go in at spawn time as well as via the
-				// typed `export`s below. The exports are typed into the shell
-				// right after spawn; when the shell is still initialising they
-				// can be lost, and every skill then runs without
-				// CREWLY_SESSION_NAME — no X-Agent-Session header, and
-				// reply-channel fails with a misleading 404 (Think Tank, 2026-09-18).
+				// Everything the agent shell needs goes in at spawn time — nothing
+				// is typed in as `export`. Identity (CREWLY_SESSION_NAME, CREWLY_ROLE,
+				// CREWLY_API_URL, CREWLY_PROJECT_PATH, CREWLY_INSTALL_DIR): typed
+				// exports could be lost while the shell was still initialising, and
+				// every skill then ran without CREWLY_SESSION_NAME (Think Tank,
+				// 2026-09-18); they also echoed into scrollback and shell history.
 				// Same env object as the Step-2 recreation path (buildAgentIdentityEnv).
 				//
 				// API keys go ONLY into the spawn environment. They used to be typed
 				// in as `export KEY="…"`, which echoed the key into the PTY: it then
-				// sat in scrollback, in ~/.crewly/logs/sessions/*.log and in the
-				// terminal-output API. setEnvironmentVariable now refuses secrets.
+				// sat in scrollback, in ~/.crewly/logs/sessions/*.log, in
+				// ~/.bash_history and in the terminal-output API.
+				// setEnvironmentVariable refuses secrets.
 				const apiKeyEnv = await this.buildApiKeyEnv(runtimeType);
+				const telemetryEnv = await this.buildTelemetryEnv(runtimeType);
 				const createdSession = await sessionHelper.createSession(sessionName, cwdToUse, {
-					env: { ...this.buildAgentIdentityEnv(sessionName, role, cwdToUse, runtimeType), ...apiKeyEnv },
+					env: { ...this.buildAgentIdentityEnv(sessionName, role, cwdToUse, runtimeType), ...telemetryEnv, ...apiKeyEnv },
 				});
 				this.logger.info('PTY session created successfully', {
 					sessionName,
@@ -4023,52 +4043,10 @@ Loop until done, blocked, or explicitly reassigned:
 				});
 			}
 
-			// Set environment variables for MCP connection
-			await sessionHelper.setEnvironmentVariable(
-				sessionName,
-				ENV_CONSTANTS.CREWLY_SESSION_NAME,
-				sessionName
-			);
-			await sessionHelper.setEnvironmentVariable(
-				sessionName,
-				ENV_CONSTANTS.CREWLY_ROLE,
-				role
-			);
-			await sessionHelper.setEnvironmentVariable(
-				sessionName,
-				ENV_CONSTANTS.CREWLY_API_URL,
-				getLocalApiBaseUrl()
-			);
-			// #187: Set project path so memory skills can auto-inject it
-			await sessionHelper.setEnvironmentVariable(
-				sessionName,
-				ENV_CONSTANTS.CREWLY_PROJECT_PATH,
-				cwdToUse
-			);
-			// #222: Set install dir so agents can resolve skill paths regardless of CWD
-			await sessionHelper.setEnvironmentVariable(
-				sessionName,
-				ENV_CONSTANTS.CREWLY_INSTALL_DIR,
-				this.projectRoot
-			);
-
-			// API keys were passed in the spawn environment above (buildApiKeyEnv),
-			// never typed into the PTY. The Antigravity-harness-key and
-			// codex-has-own-login overrides that used to live here now live in
-			// buildApiKeyEnv() itself, since that is the only place keys are
-			// resolved for this (primary) spawn path.
-			const settingsService = getSettingsService();
-
-			// Token tracking telemetry — inject env vars for runtimes that need them
-			const settings = await settingsService.getSettings();
-			if (settings.general?.tokenTracking && runtimeType === RUNTIME_TYPES.CLAUDE_CODE) {
-				await sessionHelper.setEnvironmentVariable(
-					sessionName,
-					ENV_CONSTANTS.CLAUDE_CODE_ENABLE_TELEMETRY,
-					'1'
-				);
-				this.logger.debug('Token tracking enabled: set CLAUDE_CODE_ENABLE_TELEMETRY=1', { sessionName });
-			}
+			// Identity, telemetry and API-key env all went in with the spawn env
+			// above (buildAgentIdentityEnv / buildTelemetryEnv / buildApiKeyEnv);
+			// nothing is typed into the shell here. The Antigravity-harness-key and
+			// codex-has-own-login overrides live in buildApiKeyEnv() itself.
 
 			this.logger.info('Agent session created and environment variables set, initializing with registration', {
 				sessionName,

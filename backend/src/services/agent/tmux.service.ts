@@ -212,7 +212,11 @@ export class TmuxService extends EventEmitter {
 			await this.tmuxCommand.createSession(
 				config.sessionName,
 				config.projectPath,
-				config.windowName
+				config.windowName,
+				{
+					[ENV_CONSTANTS.CREWLY_SESSION_NAME]: config.sessionName,
+					[ENV_CONSTANTS.CREWLY_ROLE]: ORCHESTRATOR_ROLE,
+				}
 			);
 
 			this.logger.info('Orchestrator session created', { sessionName: config.sessionName });
@@ -452,14 +456,16 @@ export class TmuxService extends EventEmitter {
 			await new Promise((resolve) => setTimeout(resolve, 1000));
 
 			// Create new tmux session
+			// Identity env goes in at spawn (never typed in as `export`).
 			await this.tmuxCommand.createSession(
 				sessionName,
-				config.projectPath || process.cwd()
+				config.projectPath || process.cwd(),
+				undefined,
+				{
+					[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
+					[ENV_CONSTANTS.CREWLY_ROLE]: config.role,
+				}
 			);
-
-			// Set environment variables for MCP connection
-			await this.tmuxCommand.setEnvironmentVariable(sessionName, ENV_CONSTANTS.CREWLY_SESSION_NAME, sessionName);
-			await this.tmuxCommand.setEnvironmentVariable(sessionName, ENV_CONSTANTS.CREWLY_ROLE, config.role);
 
 			// Use the optimized agent registration system for initialization
 			const initResult = await this.agentRegistration.initializeAgentWithRegistration(
@@ -567,14 +573,16 @@ export class TmuxService extends EventEmitter {
 			await this.tmuxCommand.killSession(sessionName);
 
 			// Create new tmux session
+			// Identity env goes in at spawn (never typed in as `export`).
 			await this.tmuxCommand.createSession(
 				sessionName,
-				config.projectPath || process.cwd()
+				config.projectPath || process.cwd(),
+				undefined,
+				{
+					[ENV_CONSTANTS.CREWLY_SESSION_NAME]: sessionName,
+					[ENV_CONSTANTS.CREWLY_ROLE]: config.role,
+				}
 			);
-
-			// Set environment variables for MCP connection
-			await this.tmuxCommand.setEnvironmentVariable(sessionName, ENV_CONSTANTS.CREWLY_SESSION_NAME, sessionName);
-			await this.tmuxCommand.setEnvironmentVariable(sessionName, ENV_CONSTANTS.CREWLY_ROLE, config.role);
 
 			// Get runtime type from config or default to claude-code
 			const runtimeType = config.runtimeType || 'claude-code';

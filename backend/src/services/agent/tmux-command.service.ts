@@ -3,6 +3,7 @@ import * as path from 'path';
 import { accessSync } from 'fs';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
 import { assertNotSecretEnvKey } from '../../utils/secret-env.js';
+import { historyOffSpawnEnv, quietShellLine, shellQuote } from '../../utils/shell-history.js';
 import { SessionInfo } from '../../types/index.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 
@@ -935,14 +936,31 @@ export class TmuxCommandService {
 	}
 
 	/**
-	 * Create a new tmux session
+	 * Create a new tmux session.
+	 *
+	 * The shell is started through `env` with shell history off
+	 * (utils/shell-history) plus the caller's env, so nothing has to be typed
+	 * into the pane as `export` afterwards. Secret names are refused here too:
+	 * tmux shows the pane's start command in `tmux list-panes -F
+	 * '#{pane_start_command}'`.
+	 *
+	 * @param sessionName - tmux session name
+	 * @param workingDirectory - Start directory
+	 * @param windowName - Optional window name
+	 * @param env - Optional non-secret env for the shell (e.g. CREWLY_SESSION_NAME)
+	 * @throws Error when `env` contains a secret name
 	 */
 	async createSession(
 		sessionName: string,
 		workingDirectory: string,
-		windowName?: string
+		windowName?: string,
+		env: Record<string, string> = {}
 	): Promise<void> {
 		const shell = CREWLY_CONSTANTS.SESSIONS.DEFAULT_SHELL;
+		for (const key of Object.keys(env)) assertNotSecretEnvKey(key);
+		const assignments = Object.entries({ ...historyOffSpawnEnv(), ...env })
+			.filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
+			.map(([key, value]) => `${key}=${shellQuote(String(value ?? ''))}`);
 		const createCommand = [
 			'new-session',
 			'-d',
@@ -950,7 +968,7 @@ export class TmuxCommandService {
 			sessionName,
 			'-c',
 			workingDirectory,
-			shell,
+			['env', ...assignments, shell].join(' '),
 		];
 
 		await this.executeTmuxCommand(createCommand);
@@ -1034,8 +1052,9 @@ export class TmuxCommandService {
 	async setEnvironmentVariable(sessionName: string, key: string, value: string): Promise<void> {
 		assertNotSecretEnvKey(key);
 		this.logger.debug('🔍 Setting environment variable:', { sessionName, key });
-		// Use robust script approach for reliable message sending (includes Enter key automatically)
-		await this.sendMessage(sessionName, `export ${key}="${value}"`);
+		// Use robust script approach for reliable message sending (includes Enter key automatically).
+		// Space-prefixed so the line stays out of shell history.
+		await this.sendMessage(sessionName, quietShellLine(`export ${key}="${value}"`));
 		this.logger.info('✅ Environment variable set successfully', { sessionName, key });
 	}
 

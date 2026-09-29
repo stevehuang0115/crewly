@@ -172,6 +172,25 @@ describe('InProcessLogBuffer', () => {
     });
   });
 
+  describe('secret redaction in the persisted log', () => {
+    it('masks secrets in every line written to the session log file', () => {
+      const written: string[] = [];
+      const internals = buffer as unknown as {
+        logStreams: Map<string, { write: (d: string) => void; end: () => void }>;
+        writeToFile: (name: string, entry: { timestamp: string }, line: string) => void;
+      };
+      internals.logStreams.set('redact-inproc', { write: (d) => written.push(d), end: () => undefined });
+      const key = 'sk-ant-api03-TESTfakeAnthropicKey0123456789';
+      internals.writeToFile('redact-inproc', { timestamp: '2026-09-29T00:00:00.000Z' }, `bash_exec: ANTHROPIC_API_KEY=${key} TOKEN_COUNT=5`);
+      internals.logStreams.delete('redact-inproc');
+
+      const out = written.join('');
+      expect(out).not.toContain(key);
+      expect(out).toContain('ANTHROPIC_API_KEY=[REDACTED]');
+      expect(out).toContain('TOKEN_COUNT=5');
+    });
+  });
+
   describe('file persistence', () => {
     const sessionLogsDir = path.join(
       os.homedir(),
