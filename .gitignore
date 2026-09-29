@@ -196,3 +196,6 @@ queue/
 .crewly/*
 !.crewly/tickets/
 !.crewly/tickets/**
+
+# Also ignore node_modules when it is a symlink (a trailing-slash rule only matches directories)
+node_modules
