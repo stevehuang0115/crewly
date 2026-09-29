@@ -450,9 +450,17 @@ export class RequestService {
       submitted = request.status !== 'waiting_confirmation';
     }
 
+    // A stale-closed ticket whose agent answered after all (ticket loop,
+    // 2026-09-28): the one way out of `cancelled`, and only for stale ones.
+    const reopeningStale =
+      updates.reopenStale === true &&
+      updates.status === 'running' &&
+      request.status === 'cancelled' &&
+      request.tags.includes(TICKET_CONSTANTS.STALE.TAG);
+
     // Validate status transition if status is being updated
     if (updates.status && updates.status !== request.status) {
-      if (!isValidRequestTransition(request.status, updates.status)) {
+      if (!reopeningStale && !isValidRequestTransition(request.status, updates.status)) {
         throw new Error(
           `Invalid status transition: ${request.status} -> ${updates.status}`,
         );
@@ -475,12 +483,16 @@ export class RequestService {
       // with the original (pre-fix) behavior. Production wiring runs before
       // any user-facing close path.
       if (updates.status === 'done' && request.workItemIds.length > 0) {
-        await this.assertAllChildrenTerminal(request);
+        await this.assertAllChildrenTerminal(request, updates.accepted === true && updates.ignoreDeadChildren === true);
       }
 
       request.status = updates.status;
       if (updates.status === 'done' || updates.status === 'cancelled') {
         request.completedAt = new Date().toISOString();
+      }
+      if (reopeningStale) {
+        request.completedAt = undefined;
+        request.tags = request.tags.filter((t) => t !== TICKET_CONSTANTS.STALE.TAG);
       }
       if (updates.status === 'waiting_confirmation' && typeof request.ticketNumber === 'number') submitted = true;
     }
@@ -546,10 +558,12 @@ export class RequestService {
    * complete.
    *
    * @param request - The Request whose children to verify
+   * @param ignoreDead - The ticket was accepted: children in a dead status
+   *   ({@link TICKET_CONSTANTS.DEAD_WORK_ITEM_STATUSES}) do not block
    * @throws {@link RequestStillHasOpenChildrenError} when any child is
    *   non-terminal.
    */
-  private async assertAllChildrenTerminal(request: Request): Promise<void> {
+  private async assertAllChildrenTerminal(request: Request, ignoreDead = false): Promise<void> {
     if (!this.taskPoolService) {
       // Graceful degrade — preserve pre-fix behavior when the gate hasn't
       // been wired yet (test scaffold, unusual boot order). Production
@@ -569,7 +583,7 @@ export class RequestService {
     const openChildIds: string[] = [];
     for (let i = 0; i < children.length; i++) {
       const wi = children[i];
-      if (wi !== null && !TERMINAL_WORK_ITEM_STATUSES.has(wi.status)) {
+      if (wi !== null && !TERMINAL_WORK_ITEM_STATUSES.has(wi.status) && !(ignoreDead && TICKET_CONSTANTS.DEAD_WORK_ITEM_STATUSES.includes(wi.status))) {
         openChildIds.push(wi.id);
       }
     }

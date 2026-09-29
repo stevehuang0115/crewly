@@ -286,6 +286,19 @@ export interface UpdateRequestInput {
    * `waiting_confirmation` instead. Not stored.
    */
   accepted?: boolean;
+  /**
+   * With `accepted`: WorkItems in a dead status
+   * ({@link TICKET_CONSTANTS.DEAD_WORK_ITEM_STATUSES} — a rejected verify
+   * superseded by its retry, a failed attempt) do not hold the ticket out of
+   * `done`. Live ones (queued, running, …) still do. Not stored.
+   */
+  ignoreDeadChildren?: boolean;
+  /**
+   * Reopen a ticket that was closed as stale (`cancelled` + the stale tag)
+   * straight to `running`: its agent answered after all. Ignored for any
+   * other cancelled ticket. Not stored.
+   */
+  reopenStale?: boolean;
 }
 
 // ---------------------------------------------------------------------------

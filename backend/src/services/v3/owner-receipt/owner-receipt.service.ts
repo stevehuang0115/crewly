@@ -21,7 +21,7 @@ import { safeReadJson, modifyJsonFile } from '../../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../../core/logger.service.js';
 import { getCrewlyHomePath } from '../../core/crewly-home.utils.js';
 import { redactSensitive } from '../../wiki/wiki-redaction.js';
-import { buildReceiptData, localDate, localParts, resolveReceiptWindow, type ReceiptCostSource } from './owner-receipt-data.js';
+import { buildReceiptData, isReceiptEmpty, localDate, localParts, resolveReceiptWindow, type ReceiptCostSource } from './owner-receipt-data.js';
 import { renderReceiptSlack } from './owner-receipt.renderer.js';
 import type { IntakeLogReading } from '../ticket-intake-log.js';
 import {
@@ -43,6 +43,8 @@ export interface OwnerReceiptServiceDeps {
   loadTeamIndex: () => Promise<Map<string, string>>;
   /** team name → lead's display name (built once per receipt); absent → no lead shown */
   loadTeamLeadIndex?: () => Promise<Map<string, string>>;
+  /** session → agent display name (built once per receipt); absent → decisions name the team */
+  loadAgentNameIndex?: () => Promise<Map<string, string>>;
   /** Slack DM to the owner; null = cannot send (the API still works) */
   sender?: ReceiptSender | null;
   /** State file (default ~/.crewly/owner-receipt.json); null = in memory (tests) */
@@ -63,10 +65,14 @@ export interface GenerateOptions {
   mode?: 'since_last_receipt' | 'local_day';
 }
 
-/** What {@link OwnerReceiptService.send} did. */
+/**
+ * What {@link OwnerReceiptService.send} did. `nothing_to_say`: nothing
+ * notable was done and nothing waits on the owner, so no receipt went out
+ * (2026-09-28) — the window still moves, as after a send.
+ */
 export type SendResult =
   | { sent: true; text: string; data: ReceiptData }
-  | { sent: false; reason: 'no_sender' | 'sender_failed'; text: string; data: ReceiptData };
+  | { sent: false; reason: 'no_sender' | 'sender_failed' | 'nothing_to_say'; text: string; data: ReceiptData };
 
 /** Nightly owner receipt. */
 export class OwnerReceiptService {
@@ -126,12 +132,13 @@ export class OwnerReceiptService {
       ...(state.lastSentAt ? { lastSentAt: state.lastSentAt } : {}),
       ...opts,
     });
-    const [requests, workItems, teams, teamLeads, intakeLog] = await Promise.all([
+    const [requests, workItems, teams, teamLeads, intakeLog, agentNames] = await Promise.all([
       this.deps.listRequests(),
       this.deps.listWorkItems(),
       this.deps.loadTeamIndex(),
       this.deps.loadTeamLeadIndex ? this.deps.loadTeamLeadIndex() : Promise.resolve(null),
       this.deps.readIntakeLog ? this.deps.readIntakeLog().catch(() => null) : Promise.resolve(null),
+      this.deps.loadAgentNameIndex ? this.deps.loadAgentNameIndex().catch(() => null) : Promise.resolve(null),
     ]);
     const data = buildReceiptData({
       requests,
@@ -139,6 +146,7 @@ export class OwnerReceiptService {
       window,
       teamOf: (session) => teams.get(session) ?? null,
       ...(teamLeads ? { teamLeadOf: (team: string) => teamLeads.get(team) ?? null } : {}),
+      ...(agentNames ? { agentNameOf: (session: string) => agentNames.get(session) ?? null } : {}),
       intakeLog,
       ...(this.deps.cost ? { cost: this.deps.cost } : {}),
       now,
@@ -195,6 +203,12 @@ export class OwnerReceiptService {
    */
   private async sendNow(): Promise<SendResult> {
     const { data, text } = await this.generate();
+    if (isReceiptEmpty(data) || !text) {
+      // Nothing done worth telling, nothing waiting on him: no message at all.
+      await this.markSent(data);
+      this.logger.info('Owner receipt skipped (nothing to say)', { from: data.window.from, to: data.window.to });
+      return { sent: false, reason: 'nothing_to_say', text, data };
+    }
     if (!this.deps.sender) return { sent: false, reason: 'no_sender', text, data };
     let ok = false;
     try {
@@ -203,14 +217,29 @@ export class OwnerReceiptService {
       this.logger.warn('Owner receipt could not be sent', { error: err instanceof Error ? err.message : String(err) });
     }
     if (!ok) return { sent: false, reason: 'sender_failed', text, data };
+    await this.markSent(data);
+    this.logger.info('Owner receipt sent', {
+      highlights: data.highlights.length,
+      decisions: data.decisionsTotal,
+      from: data.window.from,
+      to: data.window.to,
+    });
+    return { sent: true, text, data };
+  }
+
+  /**
+   * Move the window: the next receipt starts where this one ended, and today
+   * counts as done.
+   *
+   * @param data - The receipt that went out (or was skipped)
+   */
+  private async markSent(data: ReceiptData): Promise<void> {
     const state = await this.getState();
     await this.writeState({
       ...state,
       lastSentAt: data.window.to,
       lastSentLocalDate: localDate(new Date(data.window.to), state.settings.timezone),
     });
-    this.logger.info('Owner receipt sent', { asks: data.askCount, waiting: data.waiting.length, from: data.window.from, to: data.window.to });
-    return { sent: true, text, data };
   }
 
   /**

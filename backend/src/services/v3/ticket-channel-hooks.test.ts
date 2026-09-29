@@ -360,6 +360,15 @@ describe('slackIntakeMessage', () => {
     expect(reply.receipt).toEqual({ kind: 'slack', slackChannelId: 'C1', threadTs: '1.0', messageTs: '2.0' });
   });
 
+  it('marks a reply inside a thread (and only that) as a thread reply', () => {
+    expect(slackIntakeMessage({ ...base, threadTs: '1.0' }, 'team-channel').isThreadReply).toBe(true);
+    expect(slackIntakeMessage(base, 'team-channel').isThreadReply).toBeUndefined();
+    // Slack sets thread_ts = ts on a thread's root message.
+    expect(slackIntakeMessage({ ...base, threadTs: '2.0' }, 'team-channel').isThreadReply).toBeUndefined();
+    expect(chatV2IntakeMessage(channel(), chatMsg({ id: 'm-2', threadId: 'm-1' }), 'chat')?.isThreadReply).toBe(true);
+    expect(chatV2IntakeMessage(channel(), chatMsg(), 'chat')?.isThreadReply).toBeUndefined();
+  });
+
   it('legacy bridge @agent route gets no SLA tag (the orc is not the one answering)', () => {
     expect(slackIntakeMessage(base, 'legacy-bridge', { targetAgent: 'dev-1' }).tags).toBeUndefined();
   });

@@ -3,7 +3,7 @@
  */
 
 import type { Team } from '../../../types/index.js';
-import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf, type ReceiptSlackApi } from './owner-receipt.boot.js';
+import { agentNameIndexOf, createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf, type ReceiptSlackApi } from './owner-receipt.boot.js';
 
 /**
  * A fake Slack.
@@ -91,6 +91,19 @@ describe('teamLeadIndexOf (Ava\'s reference: CE（Owen）)', () => {
   it('a leaderId that names nobody on the team is absent from the index (no orphan name)', () => {
     const teams = [{ name: 'Broken', leaderId: 'no-such-member', members: [{ id: 'm-1', name: 'Solo' }] }] as unknown as Team[];
     expect(teamLeadIndexOf(teams).has('Broken')).toBe(false);
+  });
+});
+
+describe('agentNameIndexOf', () => {
+  it('maps each member session to its display name', () => {
+    const teams = [
+      { name: 'Think Tank', members: [{ sessionName: 'think-tank-atlas', name: 'Atlas' }, { sessionName: '', name: 'Nobody' }] },
+      { name: 'CE', members: [{ sessionName: 'ce-owen', name: 'Owen' }] },
+    ] as unknown as Team[];
+    expect([...agentNameIndexOf(teams)]).toEqual([
+      ['think-tank-atlas', 'Atlas'],
+      ['ce-owen', 'Owen'],
+    ]);
   });
 });
 

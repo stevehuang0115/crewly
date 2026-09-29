@@ -12,6 +12,7 @@ describe('createTicketsRouter', () => {
     const routes = stack.filter((l) => l.route).map((l) => ({ path: l.route!.path, methods: Object.keys(l.route!.methods) }));
     expect(routes).toEqual([
       { path: '/', methods: ['get'] },
+      { path: '/cleanup', methods: ['post'] },
       { path: '/:tkt', methods: ['get'] },
       { path: '/:id/dismiss', methods: ['post'] },
       { path: '/:id/verify', methods: ['post'] },

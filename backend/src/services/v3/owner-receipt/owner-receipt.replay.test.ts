@@ -145,7 +145,8 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
       // receipt says 不详 instead of pretending to know.
       const past = buildReceiptData({ requests: await store.listAll(), workItems: [], window, teamOf: (s) => TEAM[s] ?? null, now: new Date('2026-09-26T18:00:00Z') });
       expect(past.coverage).toEqual({ status: 'unknown', reason: 'not_recorded' });
-      expect(renderReceiptSlack(past)).toContain('不详');
+      // …and the Slack receipt says nothing about it (2026-09-28: no 不详 lines).
+      expect(renderReceiptSlack(past)).not.toContain('不详');
       const ids = data.teams.flatMap((t) => t.asks.map((a) => a.ticketId));
       const perTeam = Object.fromEntries(data.teams.map((t) => [t.team, t.asks.length]));
 
@@ -170,9 +171,9 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
       expect(AVA_ASK_MESSAGES).toHaveLength(25);
       // Precision: every ticket the replay opened is one of Ava's asks.
       expect(falseTickets).toEqual([]);
-      // Recall, pinned: the 12 missed messages are listed in AVA_MISSED with why.
+      // Recall, pinned: the 14 missed messages are listed in AVA_MISSED with why.
       expect(missed.sort()).toEqual(Object.keys(AVA_MISSED).sort());
-      // 31 = 13 tickets + 12 missed messages + 6 from Ava splitting 4 messages.
+      // 31 = 11 tickets + 14 missed messages + 6 from Ava splitting 4 messages.
       expect(data.askCount).toBe(REPLAY_ASKS);
       expect(REPLAY_ASKS + missed.length + AVA_MULTI_ASK_EXTRA).toBe(31);
 
@@ -182,13 +183,15 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
       console.log(`[replay 2026-09-26] coverage ${JSON.stringify(cov)}; 可能漏记 ${data.possiblyMissed.length}: ${JSON.stringify(data.possiblyMissed.map((m) => m.text))}`);
       expect(cov).toEqual({ status: 'known', messages: 43, ...REPLAY_COVERAGE });
       expect(data.possiblyMissed.map((m) => m.ref)).toHaveLength(REPLAY_POSSIBLY_MISSED);
-      expect(renderReceiptSlack(data)).toContain(`你发了 *43 条消息*：${REPLAY_COVERAGE.created} 条成了事项`);
-      expect(renderReceiptSlack(data)).toContain(`你提了 *${REPLAY_ASKS} 件事*`);
-      // Team header shows the lead, same as Ava's reference (CE（Owen）, Think Tank（Atlas）).
-      for (const t of data.teams) {
-        if (!TEAM_LEAD[t.team]) continue; // e.g. Personal Assistant: no fixed lead in this fixture
-        expect(renderReceiptSlack(data)).toContain(`*${t.team}（${TEAM_LEAD[t.team]}）*`);
-      }
+      // The data still names each team's lead (API view)…
+      for (const t of data.teams) if (TEAM_LEAD[t.team]) expect(t.lead).toBe(TEAM_LEAD[t.team]);
+      // …but the Slack receipt (2026-09-28 redesign) lists outcomes and
+      // decisions only. In this replay no agent answered yet (the fixture
+      // has the owner's words only), so nothing was done and nothing waits on
+      // him: no receipt is sent at all.
+      expect(data.highlights).toEqual([]);
+      expect(data.decisionsTotal).toBe(0);
+      expect(renderReceiptSlack(data)).toBe('');
     } finally {
       fs.rmSync(dir, { recursive: true, force: true });
     }
@@ -196,13 +199,13 @@ describe('replay — 2026-09-26, the owner\'s real messages → tickets → rece
 });
 
 /** The replay's ask count today (pinned so a change is visible; see the test). */
-const REPLAY_ASKS = 13;
+const REPLAY_ASKS = 11;
 
 /** What the coverage line says for the replay (43 messages). */
-const REPLAY_COVERAGE = { created: 13, appended: 25, ignored: 5 };
+const REPLAY_COVERAGE = { created: 11, appended: 27, ignored: 5 };
 
 /** Appended messages with request signals (the 可能漏记 list, before the cap of 5). */
-const REPLAY_POSSIBLY_MISSED = 10;
+const REPLAY_POSSIBLY_MISSED = 12;
 
 /**
  * The 25 messages Ava counts as opening an ask (detail.md §3), as
@@ -236,4 +239,8 @@ const AVA_MISSED: Record<string, string> = {
   '1790425131.498609@15:03': 'clarification (我只是想着和orca对比而已)',
   '1790369526.643189@15:21': 'long spoken discussion on topic A',
   '1790369526.643189@17:36': 'feedback on the current draft (基本上可以，但是还可以再斟酌打磨)',
+  // 2026-09-28: a short reply in a ticket's thread is an answer, not a new
+  // ticket (the owner found #827's split too eager); the agent can split it.
+  '1790425131.498609@12:38': 'short reply in the thread (这个可以发到crewly博客上) — appended since 2026-09-28',
+  '1790425131.498609@17:37': 'short reply in the thread (可以开issues发给Sam) — appended since 2026-09-28',
 };

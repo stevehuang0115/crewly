@@ -67,6 +67,21 @@ export function teamIndexOf(teams: readonly Team[]): Map<string, string> {
 }
 
 /**
+ * session → agent display name (「Atlas」), from the team list: a decision on
+ * the receipt names who is asking.
+ *
+ * @param teams - Every team
+ * @returns Index
+ */
+export function agentNameIndexOf(teams: readonly Team[]): Map<string, string> {
+  const index = new Map<string, string>();
+  for (const team of teams) {
+    for (const m of team.members ?? []) if (m.sessionName && m.name) index.set(m.sessionName, m.name);
+  }
+  return index;
+}
+
+/**
  * team name → team lead's display name, from the team list (Ava's reference:
  * `CE（Owen）`). `leaderIds[0]` when set, else the deprecated `leaderId`; a
  * team with neither (not hierarchical, or no leader assigned) is absent from

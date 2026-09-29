@@ -1,0 +1,675 @@
+{
+ "_about": "Shaped on the owner's ticket data of 2026-09-28 (receipt sent 21:00 EDT = 2026-09-29T01:00:50Z): the shapes are real — 待验收 tickets from 9/26 that nudges never closed (TKT-004/017/029/031/051), an answer recorded from another team (TKT-017, TKT-051), a ticket addressed to an agent on another machine but answered by Atlas (TKT-095), unassigned tickets Owen answered (TKT-093/094), follow-up answers that had become tickets (TKT-071/084), a running ticket idle for 3 days (TKT-053), and August test-leak Requests. Texts are paraphrased and scrubbed of personal details.",
+ "window": {
+  "from": "2026-09-28T04:00:00.000Z",
+  "to": "2026-09-29T01:00:50.931Z",
+  "basis": "since_last_receipt",
+  "timezone": "America/New_York"
+ },
+ "teams": {
+  "think-tank-atlas": "Think Tank",
+  "crewly-marketing-ella": "Crewly Marketing",
+  "ce-owen": "CE",
+  "crewly-product-team-sam": "crewly-product-team"
+ },
+ "agentNames": {
+  "think-tank-atlas": "Atlas",
+  "crewly-marketing-ella": "Ella",
+  "ce-owen": "Owen",
+  "crewly-product-team-sam": "Sam"
+ },
+ "requests": [
+  {
+   "id": "tkt-004",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500004.000100",
+   "title": "我觉得还可以再开一个对应的 wiki vault，放个人发展的内容",
+   "description": "我觉得还可以再开一个对应的 wiki vault，放个人发展的内容",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "research",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-26T21:50:00.000Z",
+   "updatedAt": "2026-09-28T22:14:00.000Z",
+   "ticketNumber": 4,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500004.000100",
+    "threadRef": "slack:C0TEST1:1790500004.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "think-tank-atlas",
+   "reply": {
+    "at": "2026-09-26T22:11:00.000Z",
+    "by": "think-tank-atlas",
+    "messageId": "m-4",
+    "excerpt": "vault 建好了，按你说的分了三块：阅读、复盘、计划。以后你说的相关内容都进这里。"
+   },
+   "submittedAt": "2026-09-26T22:11:21.000Z",
+   "submitCount": 1,
+   "nudgeCount": 2,
+   "result": "vault 建好了，按你说的分了三块：阅读、复盘、计划。以后你说的相关内容都进这里。"
+  },
+  {
+   "id": "tkt-017",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500017.000100",
+   "title": "我和你可以每天都进行问答，更新我的思路和想法，这个每天要做的事情你明白了吗",
+   "description": "我和你可以每天都进行问答，更新我的思路和想法，这个每天要做的事情你明白了吗",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "communication",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-25T04:32:00.000Z",
+   "updatedAt": "2026-09-28T19:30:00.000Z",
+   "ticketNumber": 17,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500017.000100",
+    "threadRef": "slack:C0TEST2:1790500017.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "think-tank-atlas",
+   "reply": {
+    "at": "2026-09-25T18:06:00.000Z",
+    "by": "crewly-marketing-ella",
+    "messageId": "m-17",
+    "excerpt": "Steve, one thing from you: the Crewly Marketing Calendar ID (Google Calendar web > the calendar > Settings)?"
+   },
+   "submittedAt": "2026-09-26T18:21:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 2,
+   "result": "Steve, one thing from you: the Crewly Marketing Calendar ID (Google Calendar web > the calendar > Settings)?"
+  },
+  {
+   "id": "tkt-029",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500029.000100",
+   "title": "我们那个草稿有包含效果图吗",
+   "description": "我们那个草稿有包含效果图吗",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-26T17:00:00.000Z",
+   "updatedAt": "2026-09-28T19:30:00.000Z",
+   "ticketNumber": 29,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500029.000100",
+    "threadRef": "slack:C0TEST2:1790500029.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "ce-owen",
+   "reply": {
+    "at": "2026-09-27T16:04:00.000Z",
+    "by": "ce-owen",
+    "messageId": "m-29",
+    "excerpt": "律所今天没有新回信，也没有退信，其余四家都是邀约后第 4 天。"
+   },
+   "submittedAt": "2026-09-26T17:22:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 2,
+   "result": "律所今天没有新回信，也没有退信，其余四家都是邀约后第 4 天。"
+  },
+  {
+   "id": "tkt-031",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500031.000100",
+   "title": "这个团队都有几个人",
+   "description": "这个团队都有几个人",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-26T03:20:00.000Z",
+   "updatedAt": "2026-09-28T03:23:00.000Z",
+   "ticketNumber": 31,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500031.000100",
+    "threadRef": "slack:C0TEST1:1790500031.000100",
+    "author": "U-OWNER"
+   },
+   "reply": {
+    "at": "2026-09-26T03:20:37.000Z",
+    "by": "ce-owen",
+    "messageId": "m-31",
+    "excerpt": "CE 团队有 3 个 agent：Owen、Vera、Nova。"
+   },
+   "submittedAt": "2026-09-26T03:21:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 2,
+   "result": "CE 团队有 3 个 agent：Owen、Vera、Nova。"
+  },
+  {
+   "id": "tkt-051",
+   "sourceConversationItemId": "slackch-C0TEST0-1790500051.000100",
+   "title": "从刚才对小红书账号的调研，你对他说的那些观点怎么看？",
+   "description": "从刚才对小红书账号的调研，你对他说的那些观点怎么看？",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "research",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-27T02:26:00.000Z",
+   "updatedAt": "2026-09-28T04:15:00.000Z",
+   "ticketNumber": 51,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST0-1790500051.000100",
+    "threadRef": "slack:C0TEST0:1790500051.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "think-tank-atlas",
+   "reply": {
+    "at": "2026-09-27T03:11:00.000Z",
+    "by": "crewly-marketing-ella",
+    "messageId": "m-51",
+    "excerpt": "@Ella (Personal Assistant Team) 早报 X 板块请加一段「今天可以回的」，从明天的早报开始，这样行吗？"
+   },
+   "submittedAt": "2026-09-27T04:14:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 1,
+   "result": "@Ella (Personal Assistant Team) 早报 X 板块请加一段「今天可以回的」，从明天的早报开始，这样行吗？"
+  },
+  {
+   "id": "tkt-071",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500071.000100",
+   "title": "可以改到10:30吗",
+   "description": "可以改到10:30吗",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T03:30:00.000Z",
+   "updatedAt": "2026-09-28T03:33:00.000Z",
+   "ticketNumber": 71,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500071.000100",
+    "threadRef": "slack:C0TEST2:1790500071.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "ce-owen",
+   "reply": {
+    "at": "2026-09-28T03:30:54.000Z",
+    "by": "ce-owen",
+    "messageId": "m-71",
+    "excerpt": "改好了，以后每晚 10:30 发。"
+   },
+   "submittedAt": "2026-09-28T03:33:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "改好了，以后每晚 10:30 发。"
+  },
+  {
+   "id": "tkt-073",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500073.000100",
+   "title": "<@U0C2ZK849ND> 看看 <https://mp.weixin.qq.",
+   "description": "<@U0C2ZK849ND> 看看 <https://mp.weixin.qq.com/s/example|这篇>",
+   "status": "done",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "research",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T13:10:00.000Z",
+   "updatedAt": "2026-09-28T13:46:00.000Z",
+   "ticketNumber": 73,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500073.000100",
+    "threadRef": "slack:C0TEST1:1790500073.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "think-tank-atlas",
+   "reply": {
+    "at": "2026-09-28T13:40:00.000Z",
+    "by": "think-tank-atlas",
+    "messageId": "m-73",
+    "excerpt": "看了。这篇讲的是一家公司怎么用 AI 做广告视频，我拆成了三步，写在 .crewly/specs/2026-09-28-muse-ad-video.md"
+   },
+   "completedAt": "2026-09-28T13:46:00.000Z",
+   "result": "看了。这篇讲的是一家公司怎么用 AI 做广告视频，我拆成了三步，写在 .crewly/specs/2026-09-28-muse-ad-video.md"
+  },
+  {
+   "id": "tkt-084",
+   "sourceConversationItemId": "slackch-C0TEST0-1790500084.000100",
+   "title": "A 论文那个 开个Issue吧 放到backlog B 也是放到backlog ",
+   "description": "A 论文那个 开个Issue吧 放到backlog B 也是放到backlog C 改一下标题",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "debugging",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T22:28:00.000Z",
+   "updatedAt": "2026-09-28T22:29:00.000Z",
+   "ticketNumber": 84,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST0-1790500084.000100",
+    "threadRef": "slack:C0TEST0:1790500084.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "think-tank-atlas",
+   "reply": {
+    "at": "2026-09-28T22:29:54.000Z",
+    "by": "think-tank-atlas",
+    "messageId": "m-84",
+    "excerpt": "三件都办好了：A、B 进了 backlog，C 的标题改成了「AI 原生的第一步」。"
+   },
+   "submittedAt": "2026-09-28T22:29:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "三件都办好了：A、B 进了 backlog，C 的标题改成了「AI 原生的第一步」。"
+  },
+  {
+   "id": "tkt-086",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500086.000100",
+   "title": "好的 存下来 但是关键要知道怎么才能实现 我们现在有 flopost 这个工具",
+   "description": "好的 存下来 但是关键要知道怎么才能实现 我们现在有 flopost 这个工具",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "code_change",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T19:30:00.000Z",
+   "updatedAt": "2026-09-28T19:34:00.000Z",
+   "ticketNumber": 86,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500086.000100",
+    "threadRef": "slack:C0TEST2:1790500086.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "think-tank-atlas",
+   "reply": {
+    "at": "2026-09-28T19:33:00.000Z",
+    "by": "think-tank-atlas",
+    "messageId": "m-86",
+    "excerpt": "存下来了。实现上分两步：先用 flopost 出分镜，再接动效模板，写在 .crewly/specs/2026-09-28-flopost-motion.md。先做第一步可以吗？"
+   },
+   "submittedAt": "2026-09-28T19:34:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "存下来了。实现上分两步：先用 flopost 出分镜，再接动效模板，写在 .crewly/specs/2026-09-28-flopost-motion.md。先做第一步可以吗？"
+  },
+  {
+   "id": "tkt-088",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500088.000100",
+   "title": "这种文体适合linkedin嘛",
+   "description": "这种文体适合linkedin嘛",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T20:40:00.000Z",
+   "updatedAt": "2026-09-28T21:23:00.000Z",
+   "ticketNumber": 88,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500088.000100",
+    "threadRef": "slack:C0TEST1:1790500088.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "crewly-marketing-ella",
+   "reply": {
+    "at": "2026-09-28T20:44:31.000Z",
+    "by": "crewly-marketing-ella",
+    "messageId": "m-88",
+    "excerpt": "英文版好了，照 v10 译的，没加新内容，约 2,600 字符（LinkedIn 上限 3,000）。今天周一，可以直接复制发：\n\nYour team uses AI every day."
+   },
+   "submittedAt": "2026-09-28T21:23:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "英文版好了，照 v10 译的，没加新内容，约 2,600 字符（LinkedIn 上限 3,000）。今天周一，可以直接复制发：\n\nYour team uses AI every day."
+  },
+  {
+   "id": "tkt-093",
+   "sourceConversationItemId": "slackch-C0TEST0-1790500093.000100",
+   "title": "<https://mp.weixin.qq.com/s/example2>",
+   "description": "<https://mp.weixin.qq.com/s/example2>",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "deployment",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-29T00:25:00.000Z",
+   "updatedAt": "2026-09-29T00:25:30.000Z",
+   "ticketNumber": 93,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST0-1790500093.000100",
+    "threadRef": "slack:C0TEST0:1790500093.000100",
+    "author": "U-OWNER"
+   },
+   "reply": {
+    "at": "2026-09-29T00:26:28.000Z",
+    "by": "ce-owen",
+    "messageId": "m-93",
+    "excerpt": "M2 已发布：<https://visa.example.com/analysis/preview/1|预览>，现在是新标题，两台服务器都返回新内容。"
+   },
+   "submittedAt": "2026-09-29T00:25:30.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "M2 已发布：<https://visa.example.com/analysis/preview/1|预览>，现在是新标题，两台服务器都返回新内容。"
+  },
+  {
+   "id": "tkt-094",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500094.000100",
+   "title": "<@U0C2ZK849ND> 看看这个 <https://x.com/examp",
+   "description": "<@U0C2ZK849ND> 看看这个 <https://x.com/example/status/1>",
+   "status": "done",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "research",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T23:50:00.000Z",
+   "updatedAt": "2026-09-28T23:58:20.000Z",
+   "ticketNumber": 94,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500094.000100",
+    "threadRef": "slack:C0TEST1:1790500094.000100",
+    "author": "U-OWNER"
+   },
+   "reply": {
+    "at": "2026-09-28T23:58:00.000Z",
+    "by": "ce-owen",
+    "messageId": "m-94",
+    "excerpt": "一半是。这篇长文（12 步教程）自己的结论就是：提示词只占 10%，剩下是素材和剪辑。"
+   },
+   "completedAt": "2026-09-28T23:58:20.000Z",
+   "result": "一半是。这篇长文（12 步教程）自己的结论就是：提示词只占 10%，剩下是素材和剪辑。"
+  },
+  {
+   "id": "tkt-095",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500095.000100",
+   "title": "小红书那篇，帮我把定稿写出来",
+   "description": "小红书那篇，帮我把定稿写出来",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-29T00:10:00.000Z",
+   "updatedAt": "2026-09-29T00:41:00.000Z",
+   "ticketNumber": 95,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500095.000100",
+    "threadRef": "slack:C0TEST2:1790500095.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "personal-assistant-team-ella-remote",
+   "reply": {
+    "at": "2026-09-29T00:40:00.000Z",
+    "by": "think-tank-atlas",
+    "messageId": "m-95",
+    "excerpt": "定稿写好了，标题「老板这周只做一件事」。发 10/2 周五那一期可以吗？"
+   },
+   "submittedAt": "2026-09-29T00:41:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "定稿写好了，标题「老板这周只做一件事」。发 10/2 周五那一期可以吗？"
+  },
+  {
+   "id": "tkt-097",
+   "sourceConversationItemId": "slackch-C0TEST1-1790500097.000100",
+   "title": "帮我起草给律所的回信",
+   "description": "帮我起草给律所的回信",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T16:00:00.000Z",
+   "updatedAt": "2026-09-28T16:31:00.000Z",
+   "ticketNumber": 97,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST1-1790500097.000100",
+    "threadRef": "slack:C0TEST1:1790500097.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "ce-owen",
+   "reply": {
+    "at": "2026-09-28T16:30:00.000Z",
+    "by": "ce-owen",
+    "messageId": "m-97",
+    "excerpt": "回信草稿好了，语气偏正式。今天发还是明早发？"
+   },
+   "submittedAt": "2026-09-28T16:31:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "回信草稿好了，语气偏正式。今天发还是明早发？"
+  },
+  {
+   "id": "tkt-098",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500098.000100",
+   "title": "帮我把 GA4 日报改到每晚 11:30 跑",
+   "description": "帮我把 GA4 日报改到每晚 11:30 跑",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "code_change",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T17:00:00.000Z",
+   "updatedAt": "2026-09-28T17:21:00.000Z",
+   "ticketNumber": 98,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500098.000100",
+    "threadRef": "slack:C0TEST2:1790500098.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "crewly-marketing-ella",
+   "reply": {
+    "at": "2026-09-28T17:20:00.000Z",
+    "by": "crewly-marketing-ella",
+    "messageId": "m-98",
+    "excerpt": "改好了，每晚 11:30（美东）跑，结果发 #marketing。"
+   },
+   "submittedAt": "2026-09-28T17:21:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "改好了，每晚 11:30（美东）跑，结果发 #marketing。"
+  },
+  {
+   "id": "tkt-099",
+   "sourceConversationItemId": "slackch-C0TEST0-1790500099.000100",
+   "title": "帮我部署一下官网的新首页",
+   "description": "帮我部署一下官网的新首页",
+   "status": "waiting_confirmation",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "deployment",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-28T18:00:00.000Z",
+   "updatedAt": "2026-09-28T18:41:00.000Z",
+   "ticketNumber": 99,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST0-1790500099.000100",
+    "threadRef": "slack:C0TEST0:1790500099.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "crewly-product-team-sam",
+   "reply": {
+    "at": "2026-09-28T18:40:00.000Z",
+    "by": "crewly-product-team-sam",
+    "messageId": "m-99",
+    "excerpt": "新首页部署好了，两台都更新了。要把旧的 A/B 实验关掉吗？"
+   },
+   "submittedAt": "2026-09-28T18:41:00.000Z",
+   "submitCount": 1,
+   "nudgeCount": 0,
+   "result": "新首页部署好了，两台都更新了。要把旧的 A/B 实验关掉吗？"
+  },
+  {
+   "id": "tkt-053",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500053.000100",
+   "title": "我们现在是不是每天都有发产品的数据报表？能不能改成每晚11:30",
+   "description": "我们现在是不是每天都有发产品的数据报表？能不能改成每晚11:30",
+   "status": "running",
+   "priority": "normal",
+   "requiresConfirmation": true,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "ticket",
+    "slack-channel"
+   ],
+   "createdAt": "2026-09-25T20:00:00.000Z",
+   "updatedAt": "2026-09-25T21:44:25.000Z",
+   "ticketNumber": 53,
+   "kind": "feature",
+   "origin": {
+    "channel": "slack-channel",
+    "ref": "slackch-C0TEST2-1790500053.000100",
+    "threadRef": "slack:C0TEST2:1790500053.000100",
+    "author": "U-OWNER"
+   },
+   "assignee": "crewly-marketing-ella",
+   "reply": {
+    "at": "2026-09-25T21:44:25.000Z",
+    "by": "crewly-marketing-ella",
+    "messageId": "m-53",
+    "excerpt": "在改了。"
+   }
+  },
+  {
+   "id": "legacy-200",
+   "sourceConversationItemId": "slackch-C0TEST2-1790500200.000100",
+   "title": "hello orchestrator",
+   "description": "hello orchestrator",
+   "status": "open",
+   "priority": "normal",
+   "requiresConfirmation": false,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "chat-ui"
+   ],
+   "createdAt": "2026-08-08T18:10:00.000Z",
+   "updatedAt": "2026-08-08T18:10:00.000Z"
+  },
+  {
+   "id": "legacy-201",
+   "sourceConversationItemId": "slackch-C0TEST0-1790500201.000100",
+   "title": "Test message",
+   "description": "Test message",
+   "status": "open",
+   "priority": "normal",
+   "requiresConfirmation": false,
+   "workItemIds": [],
+   "intentLevel": "L1",
+   "intentCategory": "other",
+   "tags": [
+    "chat-ui"
+   ],
+   "createdAt": "2026-08-22T05:06:00.000Z",
+   "updatedAt": "2026-08-22T05:06:00.000Z"
+  }
+ ]
+}

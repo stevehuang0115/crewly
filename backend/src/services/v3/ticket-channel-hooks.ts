@@ -486,6 +486,7 @@ export function chatV2IntakeMessage(
     ...(channel.type === 'dm' && channel.agentSession ? { targetAgent: channel.agentSession } : {}),
     ...(orcRouted && message.threadId ? { legacyThreadParentRef: buildChatV2SourceId(channel.id, message.threadId) } : {}),
     ...(orcRouted ? { tags: ['chat-v2'] } : {}),
+    ...(message.threadId ? { isThreadReply: true } : {}),
     receipt: { kind: 'chat-v2', chatChannelId: channel.id, threadId: root },
   };
 }
@@ -580,7 +581,7 @@ export function slackIntakeMessage(
       ...(input.userName ? { authorName: input.userName } : {}),
     },
     conversationRef: slackConversationRef(input.slackChannelId),
-    ...(isReply ? { legacyThreadParentRef: `${prefix}-${input.slackChannelId}-${root}` } : {}),
+    ...(isReply ? { legacyThreadParentRef: `${prefix}-${input.slackChannelId}-${root}`, isThreadReply: true } : {}),
     ...(input.hasFiles ? { attachments: [{}] } : {}),
     ...(options.targetAgent ? { targetAgent: options.targetAgent } : {}),
     // `slack` makes the SLA subscriber put a respond-to-user WorkItem on the

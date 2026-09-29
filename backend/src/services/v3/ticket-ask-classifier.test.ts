@@ -68,6 +68,11 @@ describe('classifyOwnerMessage — real follow-ups and acks stay on the ticket',
     ['方案A\n可以把steveswiki的project path添加到你这个团队里'], // picks an option
     ['Ella说的人设基本对的\n对的 就是可以顺势接住“能不能帮我做”'], // the ask is only quoted
     ['OK 这个可以先留作backlog\n你10月24号以后提醒我'], // deferral
+    // 2026-09-28: what to do with the thing just discussed (DISPOSITION)
+    ['A 论文那个 开个Issue吧 放到backlog B 也是放到backlog C 改一下标题'],
+    ['加到flopost的backlog'],
+    ['提醒我明天做这件事'],
+    ['好的 存下来 但是关键要知道怎么才能实现'],
   ])('%s → appended', (text) => {
     const c = classifyOwnerMessage(text, { inThread: true });
     expect({ text, verdict: c.verdict }).toEqual({ text, verdict: 'follow_up' });

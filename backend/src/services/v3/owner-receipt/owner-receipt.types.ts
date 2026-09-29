@@ -130,6 +130,37 @@ export interface ReceiptPossiblyMissed {
   at: string;
 }
 
+/**
+ * One 「今天做完的」 line (2026-09-28 redesign): what got done, as an outcome
+ * in the agent's words — never the owner's ask.
+ */
+export interface ReceiptHighlight {
+  ticketId: string;
+  /** Team (or the orchestrator's label) that actually did it; null when unknown */
+  team: string | null;
+  /** The outcome, one short line from the agent's answer (redacted, no links or paths) */
+  summary: string;
+  /** Deliverables found in the answer (the line prefers tickets that have some) */
+  deliverableCount: number;
+  completedAt: string;
+}
+
+/**
+ * One 「需要你决定的」 line: something genuinely blocked on the owner, phrased
+ * as the question he is asked.
+ */
+export interface ReceiptDecision {
+  /** Ticket or WorkItem id */
+  id: string;
+  source: 'ticket_review' | 'owner_escalation';
+  /** Who asks: the agent's name, else its team; null when unknown */
+  from: string | null;
+  /** The question, one short line (redacted) */
+  question: string;
+  /** When it started waiting */
+  since: string;
+}
+
 /** Everything a receipt says. */
 export interface ReceiptData {
   window: ReceiptWindow;
@@ -147,6 +178,12 @@ export interface ReceiptData {
   coverage: ReceiptCoverage;
   /** Appended messages that still read like a request, oldest first (all of them) */
   possiblyMissed: ReceiptPossiblyMissed[];
+  /** 「今天做完的」: the best few outcomes of the window (at most MAX_HIGHLIGHTS) */
+  highlights: ReceiptHighlight[];
+  /** 「需要你决定的」: the first few things blocked on the owner (at most MAX_DECISIONS) */
+  decisions: ReceiptDecision[];
+  /** How many things are blocked on the owner in all (the rest: 「另有 N 件，在看板上」) */
+  decisionsTotal: number;
   generatedAt: string;
 }
 

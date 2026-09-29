@@ -2,6 +2,15 @@
 
 Status: v1 implemented. **Format approved by the owner 2026-09-28** (「手动的小票，我觉得这个 OK，先这样子吧」, approving Ava's manual reference). Builds on the ticket loop (`specs/ticket-loop.md`, #827: every ask becomes a ticket; `kind: question`; `parentTicketId`). Reference: Ava's hand-made receipt of 2026-09-26 (`.crewly/research/2026-09-26-owner-receipt/`); a line-by-line comparison of the automated receipt against it is `.crewly/research/2026-09-26-owner-receipt/automated-vs-manual-2026-09-28.md`.
 
+> **Superseded 2026-09-28 for the Slack text — see `specs/ticket-calm.md` §4.**
+> The first automated receipt (14 asks, 17 「等你拍板」, TKT numbers, the owner's
+> words cut off) overwhelmed him and he turned it off. The Slack message is now
+> at most ten lines: 「今天做完的」 (≤3 outcomes in the agent's words, by the team
+> that did it) and 「需要你决定的」 (≤3 questions + 「另有 N 件，在看板上」); no ticket
+> numbers, no raw owner text, no 不详/没记 lines; nothing is sent when there is
+> nothing to say. The data layer below (asks, coverage, cost) still feeds
+> `GET /api/owner-receipt`.
+
 ## Goal
 
 Every evening the owner gets one phone-readable message:

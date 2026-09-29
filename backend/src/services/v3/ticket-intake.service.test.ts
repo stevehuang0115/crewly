@@ -276,11 +276,15 @@ describe('intake — threads', () => {
     expect(outcome.action === 'appended' && outcome.ticket.id === legacy.id).toBe(true);
   });
 
-  it('a finished thread may open a new ticket', async () => {
+  it('a recently finished thread still takes follow-ups; only an old one may open a new ticket (2026-09-28)', async () => {
     const created = await svc.intake(msg());
-    await store.update(created!.id, { status: 'done' });
-    const outcome = await svc.intakeWithOutcome(msg({ ts: '100.4', thread: '100.1', text: 'now add the same toggle to mobile' }));
-    expect(outcome.action).toBe('created');
+    await store.update(created!.id, { status: 'done', completedAt: new Date().toISOString() } as UpdateRequestInput);
+    const recent = await svc.intakeWithOutcome(msg({ ts: '100.4', thread: '100.1', text: 'now add the same toggle to mobile' }));
+    expect(recent.action).toBe('appended');
+    const item = store.items.get(created!.id)!;
+    item.completedAt = new Date(Date.now() - TICKET_CONSTANTS.FOLLOW_UP.RECENT_TICKET_MS - 60_000).toISOString();
+    const old = await svc.intakeWithOutcome(msg({ ts: '100.5', thread: '100.1', text: 'now add the same toggle to the tablet app' }));
+    expect(old.action).toBe('created');
   });
 });
 
@@ -344,15 +348,31 @@ describe('intake — review replies (Phase 2)', () => {
     expect(review.calls).toEqual([`verify:${t!.id}`, `reject:${t2!.id}:少了表头:thread`]);
   });
 
-  it('any other owner message in a 待验收 thread reopens it and is appended', async () => {
+  it('any other owner message in a 待验收 thread (not 打回) is his OK, and is kept in the discussion (2026-09-28)', async () => {
     const review = fakeReview();
     svc.setReviewHandler(review);
     const t = await svc.intake(msg());
     await store.update(t!.id, { status: 'waiting_confirmation' });
     const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
+    expect(o.action).toBe('verified');
+    expect(review.calls).toEqual([`verify:${t!.id}`]);
+    const after = await store.getById(t!.id);
+    expect(after?.status).toBe('done');
+    expect(after?.discussion?.map((d) => d.text)).toEqual(['can you also add it to the mobile app']);
+  });
+
+  it('when the OK cannot be taken yet (live work), the follow-up reopens it instead', async () => {
+    const calls: string[] = [];
+    svc.setReviewHandler({
+      verify: async (ref) => (calls.push(`verify:${ref}`), { ok: false }),
+      reject: async () => ({ ok: true }),
+      reopenOnFollowUp: async (id) => (calls.push(`reopen:${id}`), store.update(id, { status: 'running' })),
+    });
+    const t = await svc.intake(msg());
+    await store.update(t!.id, { status: 'waiting_confirmation' });
+    const o = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: 'can you also add it to the mobile app' }));
     expect(o.action).toBe('appended');
-    expect(review.calls).toEqual([`reopen:${t!.id}`]);
-    expect((await store.getById(t!.id))?.status).toBe('running');
+    expect(calls).toEqual([`verify:${t!.id}`, `reopen:${t!.id}`]);
   });
 
   it('an ack routes to the ticket awaiting approval, not a newer sibling ticket in the same thread (#831)', async () => {
@@ -654,7 +674,7 @@ describe('intake — new asks in a ticket thread (#827)', () => {
 
   it('follow-ups in the thread still append — to the newest open ticket there', async () => {
     await svc.intake(msg());
-    const second = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '可以开issues发给Sam' }));
+    const second = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '另外 你能不能帮我把定价方案写成一页纸' }));
     expect(second.action).toBe('created_in_thread');
     for (const [i, text] of ['好的 开issue可以的', '把方案通过PDF发给我', '我只是想着和orca对比而已 除非你觉得有必要'].entries()) {
       const o = await svc.intakeWithOutcome(msg({ ts: `100.${3 + i}`, thread: '100.1', text }));
@@ -662,6 +682,23 @@ describe('intake — new asks in a ticket thread (#827)', () => {
       if (o.action === 'appended' && second.action === 'created_in_thread') expect(o.ticket.id).toBe(second.ticket.id);
     }
     expect(store.items.size).toBe(2);
+  });
+
+  it('short answers and decisions in a thread never open a ticket (2026-09-28)', async () => {
+    const parent = await svc.intake(msg());
+    for (const [i, text] of [
+      '可以开issues发给Sam',
+      'A 论文那个 开个Issue吧 放到backlog B 也是放到backlog C 改一下标题',
+      '提醒我明天做这件事',
+      '是绿卡',
+      '这个团队都有几个人',
+      '可以改到10:30吗',
+    ].entries()) {
+      const o = await svc.intakeWithOutcome(msg({ ts: `100.${2 + i}`, thread: '100.1', text }));
+      expect({ text, action: o.action }).toEqual({ text, action: 'appended' });
+      if (o.action === 'appended') expect(o.ticket.id).toBe(must(parent).id);
+    }
+    expect(store.items.size).toBe(1);
   });
 
   it('a new ask under a 待验收 ticket opens its own and does not reopen the answered one', async () => {
@@ -681,20 +718,21 @@ describe('intake — new asks in a ticket thread (#827)', () => {
     expect(o.action).toBe('created_in_thread');
     expect(reopened).toEqual([]);
     expect((await store.getById(must(t).id))?.status).toBe('waiting_confirmation');
-    // A plain follow-up still reopens it (#831): a waiting_confirmation
+    // A plain follow-up still lands on it (#831): a waiting_confirmation
     // ticket keeps routing priority over the newer sibling ticket the
     // previous message just split off, so an ordinary follow-up lands back
     // on the ticket the owner still owes an answer on, not on the newest
-    // ticket in the thread.
+    // ticket in the thread — and, not being 打回, it is his OK (2026-09-28).
     const followUp = await svc.intakeWithOutcome(msg({ ts: '100.3', thread: '100.1', text: '还有这个图片需要换一下，颜色不对' }));
-    expect(followUp.action).toBe('appended');
-    if (followUp.action === 'appended') expect(followUp.ticket.id).toBe(must(t).id);
-    expect(reopened).toEqual([must(t).id]);
+    expect(followUp.action).toBe('verified');
+    if (followUp.action === 'verified') expect(followUp.ticket.id).toBe(must(t).id);
+    expect(reopened).toEqual([]);
   });
 
-  it('a new ticket in a finished thread records the finished one as its parent', async () => {
+  it('a new ticket in a long-finished thread records the finished one as its parent', async () => {
     const done = await svc.intake(msg());
     await store.update(must(done).id, { status: 'done' });
+    store.items.get(must(done).id)!.completedAt = new Date(Date.now() - TICKET_CONSTANTS.FOLLOW_UP.RECENT_TICKET_MS - 60_000).toISOString();
     const o = await svc.intakeWithOutcome(msg({ ts: '100.4', thread: '100.1', text: 'now add the same toggle to mobile' }));
     expect(o.action).toBe('created');
     if (o.action === 'created') expect(o.ticket.parentTicketId).toBe(must(done).id);
@@ -778,7 +816,9 @@ describe('replay — thread 1790425131.498609 in #C0C2QCGE9K9, 2026-09-26 (#827)
   const AGENTS: Record<string, string> = { U0C2ZK849ND: 'atlas', U0C30GRCPT4: 'ella', U0C45AW5G80: 'mia' };
   const THREAD: Array<{ ts: string; owner: boolean; text: string; label?: 'ask' | 'follow' }> = [
     { ts: '1790425131.498609', owner: true, label: 'ask', text: '那个orca和crewly是不是有点像\n可以研究一下他们是怎么做的吗\n\nhindsight那个可以看看' },
-    { ts: '1790425132.1', owner: true, label: 'ask', text: '<@U0C30GRCPT4> 这个可以发到crewly博客上' },
+    // 2026-09-28: a short reply in the thread is an answer to the agent, not a
+    // ticket of its own (the owner found #827's split too eager).
+    { ts: '1790425132.1', owner: true, label: 'follow', text: '<@U0C30GRCPT4> 这个可以发到crewly博客上' },
     { ts: '1790425132.1', owner: true, text: '<@U0C30GRCPT4> 这个可以发到crewly博客上' },
     { ts: '1790425133.1', owner: false, text: '素材还在做，约 40 分钟后两份研究会发在这个 thread' },
     { ts: '1790425134.1', owner: false, text: '两份都好了，我核过关键数字和代码。要不要开 issue？' },
@@ -792,7 +832,7 @@ describe('replay — thread 1790425131.498609 in #C0C2QCGE9K9, 2026-09-26 (#827)
     { ts: '1790425141.1', owner: true, label: 'follow', text: '<@U0C30GRCPT4> hingsight那个要写到一起吗？\n我只是想着和orca对比而已\n除非你觉得有必要' },
     { ts: '1790425142.1', owner: true, label: 'follow', text: '[Slack File: /path/file (Audio Clip (2026-09-26 11:22:44).m4a, audio/mp4, 119KB)]' },
     { ts: '1790425143.1', owner: true, label: 'ask', text: 'Chit 那个概念挺好的 我们crewly也可以进行总结看看今天做的requesta进行汇总' },
-    { ts: '1790425144.1', owner: true, label: 'ask', text: '<@U0C2ZK849ND> 可以开issues发给Sam' },
+    { ts: '1790425144.1', owner: true, label: 'follow', text: '<@U0C2ZK849ND> 可以开issues发给Sam' },
     { ts: '1790425144.1', owner: true, text: '<@U0C2ZK849ND> 可以开issues发给Sam' },
   ];
 
@@ -817,8 +857,8 @@ describe('replay — thread 1790425131.498609 in #C0C2QCGE9K9, 2026-09-26 (#827)
     const follows = THREAD.filter((m) => m.label === 'follow').length;
     const tickets = [...store.items.values()].filter((r) => r.origin?.threadRef === `slack:C1:${root}`);
 
-    // Examined: 8 asks and 3 follow-ups (plus duplicates and agent messages).
-    expect({ asks, follows }).toEqual({ asks: 8, follows: 3 });
+    // Examined: 6 asks and 5 follow-ups (plus duplicates and agent messages).
+    expect({ asks, follows }).toEqual({ asks: 6, follows: 5 });
     // The acceptance criterion is >= 5; every labelled ask got its ticket.
     expect(tickets.length).toBeGreaterThanOrEqual(5);
     expect(tickets).toHaveLength(asks);
@@ -835,7 +875,9 @@ describe('replay — thread 1790425131.498609 in #C0C2QCGE9K9, 2026-09-26 (#827)
     expect(tickets.find((t) => t.description.includes('按theme'))?.assignee).toBe('mia');
     // The written follow-ups landed in a discussion (the audio clip is a file).
     const discussed = tickets.flatMap((t) => t.discussion ?? []).map((d) => d.text);
-    expect(discussed).toEqual(expect.arrayContaining(['好的 开issue可以的', expect.stringContaining('hingsight那个要写到一起吗')]));
+    expect(discussed).toEqual(
+      expect.arrayContaining(['好的 开issue可以的', expect.stringContaining('hingsight那个要写到一起吗'), expect.stringContaining('可以开issues发给Sam')]),
+    );
   });
 });
 
@@ -875,5 +917,127 @@ describe('outcome log (#828 coverage)', () => {
       outcomeLog: { record: async () => { throw new Error('disk full'); }, read: async () => ({ startedAt: null, events: [] }) },
     });
     expect((await svc.intakeWithOutcome(msg())).action).toBe('created');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 2026-09-28 — answers to an agent are follow-ups, not tickets
+// ---------------------------------------------------------------------------
+
+describe('intake — follow-ups instead of new tickets (2026-09-28)', () => {
+  /**
+   * A Slack DM from the owner to an agent (every message top level).
+   *
+   * @param ts - Message ts
+   * @param text - Text
+   * @returns Intake message
+   */
+  function dm(ts: string, text: string): IntakeMessage {
+    return {
+      text,
+      isOwner: true,
+      origin: { channel: 'slack-dm', ref: `slackdm-D1-${ts}`, threadRef: `slack:D1:${ts}`, author: 'U-owner' },
+      conversationRef: 'slack:D1',
+      targetAgent: 'atlas',
+    };
+  }
+
+  /**
+   * A reply in a channel thread an agent started (its morning brief, its
+   * question): no ticket has that thread.
+   *
+   * @param ts - Message ts
+   * @param text - Text
+   * @returns Intake message
+   */
+  function agentThreadReply(ts: string, text: string): IntakeMessage {
+    return {
+      ...msg({ ts, thread: '500.0', text }),
+      origin: { channel: 'slack-channel', ref: `slackch-C1-500.0-msg-${ts}`, threadRef: 'slack:C1:500.0', author: 'U-owner' },
+      legacyThreadParentRef: 'slackch-C1-500.0',
+      isThreadReply: true,
+    };
+  }
+
+  it('a DM answer right after a ticket is appended to it', async () => {
+    const t = must(await svc.intake(dm('10.0', '帮我查一下 Raptive 的申请条件，整理成一页')));
+    for (const [i, text] of ['是绿卡', '提醒我明天做这件事', '对 就按第二种来 不用再问了'].entries()) {
+      const o = await svc.intakeWithOutcome(dm(`10.${i + 1}`, text));
+      expect({ text, action: o.action }).toEqual({ text, action: 'appended' });
+      if (o.action === 'appended') expect(o.ticket.id).toBe(t.id);
+    }
+    expect(store.items.size).toBe(1);
+    expect((await store.getById(t.id))?.discussion?.map((d) => d.text)).toEqual(['是绿卡', '提醒我明天做这件事', '对 就按第二种来 不用再问了']);
+  });
+
+  it('a short answer is not a bare ack: 「是绿卡」「对 就按第二种来」 are kept, 「好的」 is not written', () => {
+    expect(suppressTrivialOrShort('好的！')).toBe('trivial_or_short');
+    expect(suppressTrivialOrShort('👍')).toBe('trivial_or_short');
+    // Still too short to open a ticket on its own…
+    expect(suppressTrivialOrShort('是绿卡')).toBe('trivial_or_short');
+    // …but no longer mistaken for 「是」 + punctuation (the old `\W*` tail).
+    expect(suppressTrivialOrShort('对 就按第二种来 不用再问了')).toBeNull();
+  });
+
+  it('a genuinely new ask in the DM still opens its own ticket', async () => {
+    await svc.intake(dm('10.0', '帮我查一下 Raptive 的申请条件，整理成一页'));
+    const o = await svc.intakeWithOutcome(dm('10.1', '另外你能不能帮我把下周的会议日程整理成表格发给我'));
+    expect(o.action).toBe('created');
+  });
+
+  it('after the DM window a new message is judged on its own again', async () => {
+    const t = must(await svc.intake(dm('10.0', '帮我查一下 Raptive 的申请条件，整理成一页')));
+    const item = store.items.get(t.id)!;
+    const old = new Date(Date.now() - TICKET_CONSTANTS.FOLLOW_UP.DM_WINDOW_MS - 60_000).toISOString();
+    item.createdAt = old;
+    item.updatedAt = old;
+    const o = await svc.intakeWithOutcome(dm('20.0', '帮我部署一下最新版本到服务器上'));
+    expect(o.action).toBe('created');
+  });
+
+  it('a DM follow-up on a 待验收 ticket is the OK', async () => {
+    const calls: string[] = [];
+    svc.setReviewHandler({
+      verify: async (ref) => (calls.push(`verify:${ref}`), { ok: true, ticket: await store.update(ref, { status: 'done' }) }),
+      reject: async () => ({ ok: true }),
+      reopenOnFollowUp: async () => null,
+    });
+    const t = must(await svc.intake(dm('10.0', '帮我draft一封给律所的回信')));
+    await store.update(t.id, { status: 'waiting_confirmation' });
+    const o = await svc.intakeWithOutcome(dm('10.1', '发了 请持续关注他们的回复吧'));
+    expect(o.action).toBe('verified');
+    expect(calls).toEqual([`verify:${t.id}`]);
+  });
+
+  it('a channel is not a DM: a top-level channel message is judged on its own', async () => {
+    await svc.intake(msg({ ts: '600.0', text: 'please add a dark mode toggle to settings' }));
+    const o = await svc.intakeWithOutcome(msg({ ts: '600.1', text: 'please add a light mode toggle to the mobile app too' }));
+    expect(o.action).toBe('created');
+  });
+
+  it('a reply in a thread an agent started is an answer to the agent, not a ticket', async () => {
+    for (const [i, text] of [
+      '发了 请持续关注我的X吧',
+      'A 论文那个 开个Issue吧 放到backlog B 也是放到backlog C 改一下标题',
+      'OK 把所有最晚发的都要在10:30前发 之后我可能就睡觉了',
+      '可以改到10:30吗',
+    ].entries()) {
+      const o = await svc.intakeWithOutcome(agentThreadReply(`500.${i + 1}`, text));
+      expect({ text, o }).toEqual({ text, o: { action: 'ignored', reason: 'thread_reply' } });
+    }
+    expect(store.items.size).toBe(0);
+  });
+
+  it('a genuinely new ask in an agent thread still opens a ticket', async () => {
+    const o = await svc.intakeWithOutcome(agentThreadReply('500.9', '你能不能帮我把这周的 GA4 数据整理成一个表发给 Ella'));
+    expect(o.action).toBe('created');
+  });
+
+  it('a Slack redelivery of an appended follow-up is a duplicate, not a second entry', async () => {
+    const t = must(await svc.intake(msg()));
+    await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '我只是想着和orca对比而已' }));
+    const again = await svc.intakeWithOutcome(msg({ ts: '100.2', thread: '100.1', text: '我只是想着和orca对比而已' }));
+    expect(again.action).toBe('duplicate');
+    expect((await store.getById(t.id))?.discussion).toHaveLength(1);
   });
 });

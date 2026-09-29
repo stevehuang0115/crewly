@@ -134,6 +134,11 @@ export async function sendReceiptNow(req: ExpressRequest, res: Response): Promis
       res.json({ success: true, data: { sent: true, askCount: result.data.askCount, window: result.data.window } });
       return;
     }
+    if (result.reason === 'nothing_to_say') {
+      // Nothing done worth telling and nothing waiting on the owner: skipped, not failed.
+      res.json({ success: true, data: { sent: false, skipped: true, reason: result.reason, window: result.data.window } });
+      return;
+    }
     res.status(result.reason === 'no_sender' ? 503 : 502).json({
       success: false,
       error: result.reason === 'no_sender' ? 'Slack is not connected; nothing was sent' : 'Slack did not accept the message',

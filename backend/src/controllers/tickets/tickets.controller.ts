@@ -10,6 +10,7 @@
  * - PUT  /api/tickets/:id/acceptance { items }         — replace acceptance list (Phase 2)
  * - POST /api/tickets/:id/self-check { index, result, evidence } — agent self-check (Phase 2)
  * - PATCH /api/tickets/:id           { title, priority, kind, assignee } — board edits (Phase 2)
+ * - POST /api/tickets/cleanup        { apply?, includeLegacy? } — one-time cleanup of the pile (dry run by default)
  *
  * @module controllers/tickets/tickets.controller
  */
@@ -28,6 +29,8 @@ import {
   type TicketPatch,
 } from '../../services/v3/ticket-review.service.js';
 import type { TicketAcceptanceCheck } from '../../types/v2/ticket.types.js';
+import { RequestService } from '../../services/v3/request.service.js';
+import { runTicketCleanup, type TicketCleanupStore } from '../../services/v3/ticket-hygiene.js';
 
 /**
  * The wired intake service, or a 503 when boot has not wired it.
@@ -383,4 +386,46 @@ export async function patchTicket(req: ExpressRequest, res: Response): Promise<v
     return;
   }
   await runReview(res, (svc) => svc.patch(req.params.id ?? '', patch));
+}
+
+/**
+ * POST /api/tickets/cleanup — the one-time cleanup of the ticket pile
+ * (specs/ticket-calm.md §3). Owner only.
+ *
+ * **Dry run unless `apply: true`.** Accepts every 待验收 ticket answered more
+ * than a day ago (as silence now would) and closes every open / running one
+ * idle for three days as stale. Idempotent: a second run changes nothing.
+ *
+ * Body: `{ apply?: boolean, includeLegacy?: boolean }` (`includeLegacy`
+ * default true: pre-ticket Requests that went stale are closed too).
+ *
+ * @param req - Express request
+ * @param res - `{ success, data: TicketCleanupReport }`, 400 or 403
+ * @param store - Request store (injectable for tests)
+ */
+export async function cleanupTickets(
+  req: ExpressRequest,
+  res: Response,
+  store: TicketCleanupStore = RequestService.getInstance(),
+): Promise<void> {
+  if (refuseAgent(req, res, 'clean up tickets')) return;
+  const body = (req.body ?? {}) as { apply?: unknown; includeLegacy?: unknown };
+  if (body.apply !== undefined && typeof body.apply !== 'boolean') {
+    res.status(400).json({ success: false, error: '`apply` must be true or false' });
+    return;
+  }
+  if (body.includeLegacy !== undefined && typeof body.includeLegacy !== 'boolean') {
+    res.status(400).json({ success: false, error: '`includeLegacy` must be true or false' });
+    return;
+  }
+  try {
+    const report = await runTicketCleanup(store, {
+      now: Date.now(),
+      apply: body.apply === true,
+      ...(body.includeLegacy === false ? { includeLegacy: false } : {}),
+    });
+    res.json({ success: true, data: report });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 }

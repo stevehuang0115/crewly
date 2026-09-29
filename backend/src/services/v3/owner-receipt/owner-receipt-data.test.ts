@@ -8,6 +8,13 @@ import { OWNER_RECEIPT_CONSTANTS } from '../../../constants.js';
 import {
   askLineOf,
   buildReceiptData,
+  fitLine,
+  isMisrouted,
+  isReceiptEmpty,
+  ownerQuestionOf,
+  summarizeOutcome,
+  teamLabeller,
+  ticketTeamOf,
   cumulativeMeterCost,
   extractDeliverables,
   localDate,
@@ -302,3 +309,136 @@ describe('askLineOf', () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// 2026-09-28 redesign: highlights, decisions, who did it
+// ---------------------------------------------------------------------------
+
+describe('who did it (team grouping)', () => {
+  const label = teamLabeller(teamOf);
+
+  it('the assignee\'s team when the assignee is ours; the answering agent\'s when not', () => {
+    expect(ticketTeamOf(ticket({ assignee: 'atlas' }), [], label)).toBe('Think Tank');
+    // Addressed to an agent on another machine (a shared room), answered here by Atlas.
+    const remote = ticket({ assignee: 'personal-assistant-team-ella-47a2e6e2', reply: { at: 'x', by: 'atlas', messageId: 'm', excerpt: 'e' } });
+    expect(ticketTeamOf(remote, [], label)).toBe('Think Tank');
+    // Nobody assigned, Owen (CE) answered: not 未分配.
+    expect(ticketTeamOf(ticket({ reply: { at: 'x', by: 'nova', messageId: 'm', excerpt: 'e' } }), [], label)).toBe('CE');
+    expect(ticketTeamOf(ticket({}), [item({ target: 'ella' })], label)).toBe('Crewly Marketing');
+    expect(ticketTeamOf(ticket({ assignee: 'crewly-orc' }), [], label)).toBe(OWNER_RECEIPT_CONSTANTS.ORCHESTRATOR_LABEL);
+    expect(ticketTeamOf(ticket({}), [], label)).toBeNull();
+  });
+
+  it('asks are grouped by that team too (no Atlas ticket under another team)', () => {
+    const remote = ticket({ assignee: 'personal-assistant-team-ella-47a2e6e2', reply: { at: 'x', by: 'atlas', messageId: 'm', excerpt: 'e' } });
+    const d = buildReceiptData({ requests: [remote], workItems: [], window: WINDOW, teamOf, now: NOW });
+    expect(d.teams.map((t) => t.team)).toEqual(['Think Tank']);
+  });
+
+  it('an answer from another team than the assignee\'s is misrouted', () => {
+    const reply = (by: string) => ({ at: 'x', by, messageId: 'm', excerpt: 'e' });
+    expect(isMisrouted(ticket({ assignee: 'atlas', reply: reply('atlas') }), label)).toBe(false);
+    expect(isMisrouted(ticket({ assignee: 'atlas', reply: reply('ella') }), label)).toBe(true);
+    expect(isMisrouted(ticket({ assignee: 'atlas', reply: reply('someone-remote') }), label)).toBe(true);
+    expect(isMisrouted(ticket({ reply: reply('ella') }), label)).toBe(false);
+    // Addressed to another machine's agent, answered here: ours, not misrouted.
+    expect(isMisrouted(ticket({ assignee: 'personal-assistant-team-ella-47a2e6e2', reply: reply('atlas') }), label)).toBe(false);
+  });
+});
+
+describe('wording helpers', () => {
+  it('summarizeOutcome takes the first line that says something, in Chinese, without links, paths or marks', () => {
+    expect(summarizeOutcome('*结论*\n• 每天早上 8 点问你一个问题，已经设好')).toBe('每天早上 8 点问你一个问题，已经设好');
+    expect(summarizeOutcome('看了。这篇长文自己的结论就是：提示词只占 10%')).toBe('这篇长文自己的结论就是：提示词只占 10%');
+    // The path goes with its 「路径是」; the short 「存好了。」 opener goes too.
+    expect(summarizeOutcome('存好了，路径是 crewly/.crewly/specs/x.md 。这个目录不进公开仓库')).toBe('这个目录不进公开仓库');
+    expect(summarizeOutcome('Your team uses AI every day.\n英文版好了，照 v10 译的，没加新内容。可以直接复制发：')).toBe('英文版好了，照 v10 译的，没加新内容。');
+    expect(summarizeOutcome('<@U1> 看 <https://x.com/a|这条>：')).toBe('');
+    expect(summarizeOutcome(undefined)).toBe('');
+  });
+
+  it('ownerQuestionOf finds the last question, drops its lead-in, and is null when nothing is asked', () => {
+    expect(ownerQuestionOf('两个办法。要你定的只剩一件：每周一次聊天还是每月一场圆桌，哪个现实？')).toBe('每周一次聊天还是每月一场圆桌，哪个现实？');
+    expect(ownerQuestionOf('做完了。报告在 wiki 里。')).toBeNull();
+    expect(ownerQuestionOf('直接在这里回要改的地方就行，我改完在这里给你定稿。')).toBeNull();
+  });
+
+  it('fitLine cuts at a phrase boundary, not inside a number', () => {
+    const long = '英文版好了，照 v10 译的，没加新内容，约 2,600 字符（LinkedIn 上限 3,000），段落更短，结尾加了三个 hashtag';
+    const cut = fitLine(long, 40);
+    expect(cut).toBe('英文版好了，照 v10 译的，没加新内容');
+    expect(fitLine('短句')).toBe('短句');
+  });
+});
+
+describe('highlights (今天做完的)', () => {
+  const done = (over: Partial<Request>): Request =>
+    ticket({ status: 'done', completedAt: '2026-09-26T16:00:00.000Z', assignee: 'atlas', ...over });
+
+  it('takes done tickets of the window, in the agent\'s words, at most three, one per team first, work with files first', () => {
+    const d = buildReceiptData({
+      requests: [
+        done({ description: '老板的原话 A', result: 'Think Tank 的第一件做完了，结论写进了 wiki' }),
+        done({ description: '老板的原话 B', result: 'Think Tank 的第二件也做完了，报告见 .crewly/research/b.md', completedAt: '2026-09-26T17:00:00.000Z' }),
+        done({ assignee: 'ella', result: '周五的小红书定稿了，标题按你说的改好' }),
+        done({ assignee: 'nova', result: 'M2 发布了，两台服务器都返回新内容' }),
+        done({ result: '昨天做完的不算在今天里面', completedAt: '2026-09-25T16:00:00.000Z' }),
+        done({ result: '三天没动静被关掉的不算', tags: ['ticket', 'stale'] }),
+        done({ result: '别的团队的回答不算', reply: { at: 'x', by: 'ella', messageId: 'm', excerpt: '别的团队的回答不算' } }),
+      ],
+      workItems: [],
+      window: WINDOW,
+      teamOf,
+      now: NOW,
+    });
+    expect(d.highlights.map((h) => [h.team, h.summary])).toEqual([
+      ['Think Tank', 'Think Tank 的第二件也做完了，报告'],
+      ['Crewly Marketing', '周五的小红书定稿了，标题按你说的改好'],
+      ['CE', 'M2 发布了，两台服务器都返回新内容'],
+    ]);
+    expect(JSON.stringify(d.highlights)).not.toContain('老板的原话');
+  });
+});
+
+describe('decisions (需要你决定的)', () => {
+  const waiting = (over: Partial<Request>): Request =>
+    ticket({
+      status: 'waiting_confirmation',
+      assignee: 'atlas',
+      submittedAt: '2026-09-26T20:00:00.000Z',
+      reply: { at: '2026-09-26T20:00:00.000Z', by: 'atlas', messageId: 'm', excerpt: '草稿好了。要不要再正式一点？' },
+      ...over,
+    });
+
+  it('only what is genuinely blocked on him, phrased as the question, oldest first, at most three', () => {
+    const d = buildReceiptData({
+      requests: [
+        waiting({ submittedAt: '2026-09-26T18:00:00.000Z' }),
+        waiting({ reply: { at: 'x', by: 'atlas', messageId: 'm', excerpt: '周报写好了，放在 wiki 里。' } }),
+        waiting({ submittedAt: '2026-09-22T00:00:00.000Z' }), // older than 3 days: off the list
+        waiting({ reply: { at: 'x', by: 'ella', messageId: 'm', excerpt: '别的团队：日历 ID 给我一下？' } }), // misrouted
+        waiting({ requiresConfirmation: false }), // a question ticket: nothing to review
+        waiting({ submittedAt: '2026-09-26T21:00:00.000Z' }),
+        waiting({ submittedAt: '2026-09-26T22:00:00.000Z' }),
+      ],
+      workItems: [
+        item({ status: 'done_by_worker', target: 'nova', title: '发布 M2', metadata: { [REVIEW_ESCALATED_TO_OWNER_KEY]: '2026-09-26T19:00:00.000Z' }, output: { summary: 'M2 可以发了吗？' } }),
+      ],
+      window: WINDOW,
+      teamOf,
+      agentNameOf: (s) => ({ atlas: 'Atlas', nova: 'Nova' })[s] ?? null,
+      now: NOW,
+    });
+    expect(d.decisionsTotal).toBe(5);
+    expect(d.decisions.map((x) => [x.from, x.question])).toEqual([
+      ['Atlas', '要不要再正式一点？'],
+      ['Nova', 'M2 可以发了吗？'],
+      ['Atlas', '周报写好了，放在 wiki 里，这样可以吗？'],
+    ]);
+  });
+
+  it('an empty receipt: nothing done, nothing blocked', () => {
+    const d = buildReceiptData({ requests: [ticket({ status: 'open' })], workItems: [], window: WINDOW, teamOf, now: NOW });
+    expect(isReceiptEmpty(d)).toBe(true);
+  });
+});
