@@ -103,10 +103,24 @@ export function readSkillManifest(skillDir: string): SkillManifest | null {
 }
 
 /**
- * Files a skill must not ship: tests (`*.test.*`), test fixtures (`mock-*`)
- * and packaging hints (`.crewlyignore`).
+ * Local junk that must never reach the registry, whatever a developer has on
+ * disk: dotfiles (a real `.env` with secrets, `.DS_Store`) except committed
+ * `*.example` templates such as `.env.example`, and Python bytecode
+ * (`__pycache__`, `*.pyc`) left behind by running a skill's tests.
+ * Also keeps `sizeBytes` identical on every machine.
  */
-export const SKILL_FILE_EXCLUDES: ReadonlyArray<RegExp> = [/\.test\./, /^mock-/, /^\.crewlyignore$/];
+export const SKILL_JUNK_FILES: ReadonlyArray<RegExp> = [/^\.(?!.*\.example$)/, /^__pycache__$/, /\.pyc$/];
+
+/**
+ * Files a skill must not ship: local junk (SKILL_JUNK_FILES), tests
+ * (`*.test.*`), test fixtures (`mock-*`) and packaging hints (`.crewlyignore`).
+ */
+export const SKILL_FILE_EXCLUDES: ReadonlyArray<RegExp> = [
+	...SKILL_JUNK_FILES,
+	/\.test\./,
+	/^mock-/,
+	/^\.crewlyignore$/,
+];
 
 /**
  * The files the CLI should download for a skill: every regular file directly
@@ -133,9 +147,10 @@ export function listSkillFiles(skillDir: string): string[] {
 		.sort((a, b) => a.localeCompare(b));
 }
 
-/** Total size in bytes of the regular files directly inside a directory. */
+/** Total size in bytes of the regular files directly inside a directory, ignoring local junk. */
 function directorySize(dir: string): number {
 	return readdirSync(dir)
+		.filter((f) => !SKILL_JUNK_FILES.some((re) => re.test(f)))
 		.map((f) => statSync(path.join(dir, f)))
 		.filter((s) => s.isFile())
 		.reduce((sum, s) => sum + s.size, 0);
