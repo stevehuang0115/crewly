@@ -87,7 +87,7 @@ top-5 with CTR < 5%. Pages under 7 days old get numbers only (Search Console lag
 `--inspect` asks Google (Search Console URL Inspection API, same read-only `webmasters.readonly` scope) about every URL with 0 impressions past the age threshold, and replaces the ambiguous `no-impressions` with:
 - `not-indexed`: verdict is not PASS; the message carries Google's `coverageState`. **The only verdict that may put a URL on a Request Indexing list.**
 - `indexed-no-impressions`: verdict PASS; message gives the last crawl date. The problem is ranking/demand: improve the page or its links, do NOT request indexing.
-- `canonical-mismatch` (any inspected page): Google's canonical differs from the URL (compared after `urlNormalize`).
+- `canonical-mismatch` (on an inspected page): Google's canonical differs from the URL (compared after `urlNormalize`).
 
 Rule: only `not-indexed` pages go on a Request Indexing list. Quota: the API allows 2000 inspections/day and 600/min per property; `--inspect` stops at `inspectMax` (default 50) and prints `inspected: N ... M skipped over the cap` with the skipped URLs, never silently. Without `--inspect` no inspection request is sent.
 `--json out.json` also writes the report card as JSON (`property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `index` = `{verdict, coverageState, lastCrawlTime, googleCanonical}` when `--inspect` inspected the page, else `null`, plus `ga4[]` when `--ga4` ran), the same convention as `gsc-report --json`.

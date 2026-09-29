@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "lastUpdated": "2026-09-29T14:27:29.419Z",
+  "lastUpdated": "2026-09-29T14:31:32.829Z",
   "cdnBaseUrl": "https://raw.githubusercontent.com/stevehuang0115/crewly/main",
   "source": "github",
   "items": [
@@ -1425,12 +1425,12 @@
       "downloads": 0,
       "rating": 0,
       "createdAt": "2026-09-29T01:43:29.904Z",
-      "updatedAt": "2026-09-29T14:27:29.419Z",
+      "updatedAt": "2026-09-29T14:31:32.829Z",
       "source": "config/skills/agent/marketplace/seo-ops",
       "assets": {
         "archive": "config/skills/agent/marketplace/seo-ops",
         "checksum": "",
-        "sizeBytes": 110351
+        "sizeBytes": 110458
       },
       "metadata": {
         "skillType": "claude-skill",

@@ -503,8 +503,6 @@ def diagnose_page(url, row, age_days, in_sitemap, t, index=None, url_opts=None):
             v.append(("no-impressions", "0 impressions after %d days: not enough to tell; run with --inspect to check index status "
                       "(0 impressions does not mean not indexed)" % age_days))
         return v
-    if index is not None:
-        v += [x for x in inspect_verdicts(url, index, url_opts) if x[0] == "canonical-mismatch"]
     if row["position"] > t["pageBadPosition"]:
         v.append(("bad-position", "average position %.1f > %d: topic is searched but this page is not competitive; add first-hand sources and links" % (row["position"], t["pageBadPosition"])))
     if row["position"] <= t["pageTopPosition"] and imp >= t["pageLowCtrMinImpressions"] and row["ctr"] < t["pageLowCtr"]:
