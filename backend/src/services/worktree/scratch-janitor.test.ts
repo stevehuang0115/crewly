@@ -203,7 +203,7 @@ describe('scratch janitor', () => {
 		fs.symlinkSync(outside, path.join(root, '-linked-slug'));
 		fs.mkdirSync(path.join(root, '-slug2'));
 		fs.symlinkSync(path.join(outside, UUID_A), path.join(root, '-slug2', UUID_B));
-		expect(listSessionDirs(root)).toEqual([]);
+		expect(await listSessionDirs(root)).toEqual([]);
 		await sweepScratch(input());
 		expect(fs.existsSync(path.join(outside, UUID_A, 'precious.txt'))).toBe(true);
 		expect(fs.existsSync(path.join(root, 'visa-cm-wt'))).toBe(true);

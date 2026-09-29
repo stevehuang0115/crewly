@@ -43,11 +43,13 @@ import { WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
 import {
 	canonicalPath,
 	diskUsageBytes,
+	EventLoopYielder,
 	findGitCheckouts,
 	isPathInside,
 	latestTreeMtimeMs,
 	latestWorktreeMtimeMs,
 	parsePorcelainWorktrees,
+	readGitFilePointer,
 	type CommandResult,
 	type FoundRepo,
 } from './worktree-janitor.git.js';
@@ -162,25 +164,28 @@ export function defaultScratchRoots(uid?: number, tmpDir: string = os.tmpdir()):
 
 /**
  * Session dirs (`<root>/<slug>/<uuid>`) under a root. Symlinked slugs or
- * session dirs are skipped, as is anything not matching the pattern.
+ * session dirs are skipped, as is anything not matching the pattern. Async;
+ * yields to the event loop every few entries.
  *
  * @param root - A scratch root (real path)
  * @returns Absolute session dirs
  */
-export function listSessionDirs(root: string): string[] {
+export async function listSessionDirs(root: string): Promise<string[]> {
 	const out: string[] = [];
+	const yielder = new EventLoopYielder();
 	let slugs: fs.Dirent[];
 	try {
-		slugs = fs.readdirSync(root, { withFileTypes: true });
+		slugs = await fs.promises.readdir(root, { withFileTypes: true });
 	} catch {
 		return out;
 	}
 	for (const slug of slugs) {
+		await yielder.tick();
 		if (!slug.isDirectory()) continue;
 		const slugDir = path.join(root, slug.name);
 		let sessions: fs.Dirent[];
 		try {
-			sessions = fs.readdirSync(slugDir, { withFileTypes: true });
+			sessions = await fs.promises.readdir(slugDir, { withFileTypes: true });
 		} catch {
 			continue;
 		}
@@ -193,15 +198,8 @@ export function listSessionDirs(root: string): string[] {
 }
 
 /** Git dir of a checkout (`.git` dir, or the one a `.git` file points to). */
-function gitDirOf(repo: FoundRepo): string | null {
-	const dotGit = path.join(repo.path, '.git');
-	if (repo.kind === 'dir') return dotGit;
-	try {
-		const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
-		return m ? path.resolve(repo.path, m[1]) : null;
-	} catch {
-		return null;
-	}
+async function gitDirOf(repo: FoundRepo): Promise<string | null> {
+	return repo.kind === 'dir' ? path.join(repo.path, '.git') : readGitFilePointer(repo.path);
 }
 
 /**
@@ -212,7 +210,7 @@ function gitDirOf(repo: FoundRepo): string | null {
  * @returns Verdict (not yet acted on)
  */
 export async function evaluateSessionDir(dir: string, input: ScratchSweepInput): Promise<ScratchVerdict> {
-	const repos = findGitCheckouts(dir, WORKTREE_JANITOR_CONSTANTS.SCRATCH_REPO_SEARCH_DEPTH);
+	const repos = await findGitCheckouts(dir, WORKTREE_JANITOR_CONSTANTS.SCRATCH_REPO_SEARCH_DEPTH);
 	const base = { path: dir, repos: repos.map((r) => r.path), removed: false };
 	const keep = (reason: ScratchReason, detail?: string, idleMs?: number): ScratchVerdict => ({
 		...base,
@@ -222,13 +220,13 @@ export async function evaluateSessionDir(dir: string, input: ScratchSweepInput):
 		...(idleMs !== undefined ? { idleMs } : {}),
 	});
 
-	let newest = latestTreeMtimeMs(dir, WORKTREE_JANITOR_CONSTANTS.SCRATCH_MTIME_DEPTH);
+	let newest = await latestTreeMtimeMs(dir, WORKTREE_JANITOR_CONSTANTS.SCRATCH_MTIME_DEPTH);
 	for (const r of repos) {
-		const m = latestWorktreeMtimeMs(r.path, gitDirOf(r));
+		const gd = await gitDirOf(r);
+		const m = latestWorktreeMtimeMs(r.path, gd);
 		if (m !== null && (newest === null || m > newest)) newest = m;
-		const gd = gitDirOf(r);
 		if (gd) {
-			const logs = latestTreeMtimeMs(path.join(gd, 'logs'), WORKTREE_JANITOR_CONSTANTS.SCRATCH_MTIME_DEPTH);
+			const logs = await latestTreeMtimeMs(path.join(gd, 'logs'), WORKTREE_JANITOR_CONSTANTS.SCRATCH_MTIME_DEPTH);
 			if (logs !== null && (newest === null || logs > newest)) newest = logs;
 		}
 	}
@@ -289,7 +287,7 @@ export async function sweepScratch(input: ScratchSweepInput): Promise<ScratchSwe
 	};
 	const sizeOf = input.sizeOf ?? diskUsageBytes;
 	for (const root of summary.roots) {
-		for (const dir of listSessionDirs(root)) {
+		for (const dir of await listSessionDirs(root)) {
 			let v: ScratchVerdict;
 			try {
 				v = await evaluateSessionDir(dir, input);
@@ -315,14 +313,14 @@ export async function sweepScratch(input: ScratchSweepInput): Promise<ScratchSwe
 /** Delete one session dir after re-checking it is a real dir inside its root. */
 async function removeSessionDir(root: string, v: ScratchVerdict, sizeOf: (p: string) => Promise<number | null>): Promise<void> {
 	try {
-		const st = fs.lstatSync(v.path);
-		if (!st.isDirectory() || st.isSymbolicLink() || !fs.realpathSync(v.path).startsWith(root + path.sep)) {
+		const st = await fs.promises.lstat(v.path);
+		if (!st.isDirectory() || st.isSymbolicLink() || !(await fs.promises.realpath(v.path)).startsWith(root + path.sep)) {
 			v.error = 'not a real directory inside the scratch root';
 			return;
 		}
 		const size = await sizeOf(v.path);
 		// fs.rm removes symlinks themselves, never their targets.
-		fs.rmSync(v.path, { recursive: true, force: true });
+		await fs.promises.rm(v.path, { recursive: true, force: true });
 		v.removed = true;
 		if (size !== null) v.freedBytes = size;
 	} catch (err) {

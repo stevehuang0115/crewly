@@ -1450,6 +1450,8 @@ export const WORKTREE_JANITOR_CONSTANTS = {
 	DISCOVERY_DEPTH: 4,
 	/** Cap on directories visited per temp root during repo discovery. */
 	DISCOVERY_MAX_DIRS: 20_000,
+	/** Filesystem walks yield to the event loop (one setImmediate) after this many entries. */
+	YIELD_EVERY_ENTRIES: 50,
 	/** Interval of the low-disk check (10 minutes). */
 	LOW_DISK_CHECK_INTERVAL_MS: 10 * 60 * 1000,
 	/** Free space below this on the CREWLY_HOME volume triggers a low-disk pass (15 GB). */

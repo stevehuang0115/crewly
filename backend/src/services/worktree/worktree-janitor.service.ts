@@ -641,7 +641,7 @@ export class WorktreeJanitorService {
 		const registered = await (this.opts.listRepoPaths ?? defaultListRepoPaths)().catch(() => [] as string[]);
 		let discovered: string[] = [];
 		try {
-			discovered = discoverLinkedWorktreeRepos([...this.tmpRoots(), ...this.scratchRoots()]);
+			discovered = await discoverLinkedWorktreeRepos([...this.tmpRoots(), ...this.scratchRoots()]);
 		} catch {
 			// discovery is best effort
 		}

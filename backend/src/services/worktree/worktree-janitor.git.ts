@@ -276,6 +276,51 @@ export function isJanitorDisabled(env: NodeJS.ProcessEnv = process.env): boolean
 }
 
 /**
+ * Yield to the event loop every YIELD_EVERY_ENTRIES calls, so a long
+ * filesystem walk never holds up Slack, relay polls or PTY I/O.
+ */
+export class EventLoopYielder {
+	private count = 0;
+
+	/**
+	 * Count one unit of work; every YIELD_EVERY_ENTRIES units, wait one
+	 * `setImmediate` turn.
+	 *
+	 * @returns Resolves when the caller may continue
+	 */
+	async tick(): Promise<void> {
+		this.count++;
+		if (this.count % WORKTREE_JANITOR_CONSTANTS.YIELD_EVERY_ENTRIES === 0) {
+			await new Promise<void>((resolve) => setImmediate(resolve));
+		}
+	}
+}
+
+/** lstat that resolves null instead of throwing. */
+async function lstatOrNull(p: string): Promise<fs.Stats | null> {
+	try {
+		return await fs.promises.lstat(p);
+	} catch {
+		return null;
+	}
+}
+
+/**
+ * Git dir a `.git` file points to (`gitdir: <path>`), resolved against `dir`.
+ *
+ * @param dir - Directory holding the `.git` file
+ * @returns Absolute git dir, or null when there is no readable `.git` file
+ */
+export async function readGitFilePointer(dir: string): Promise<string | null> {
+	try {
+		const m = /^gitdir:\s*(.+?)\s*$/m.exec(await fs.promises.readFile(path.join(dir, '.git'), 'utf-8'));
+		return m ? path.resolve(dir, m[1]) : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Main worktree of the repo a linked worktree belongs to, read from the
  * worktree's `.git` file (`gitdir: <main>/.git/worktrees/<name>`). Returns
  * null for anything else: a `.git` directory (a normal clone), a submodule
@@ -287,24 +332,19 @@ export function isJanitorDisabled(env: NodeJS.ProcessEnv = process.env): boolean
  * @example
  * ```typescript
  * // /tmp/visa-cm-wt/.git contains "gitdir: /src/ce-core/.git/worktrees/visa-cm-wt"
- * mainRepoOfLinkedWorktree('/tmp/visa-cm-wt'); // '/src/ce-core'
+ * await mainRepoOfLinkedWorktree('/tmp/visa-cm-wt'); // '/src/ce-core'
  * ```
  */
-export function mainRepoOfLinkedWorktree(dir: string): string | null {
-	try {
-		const dotGit = path.join(dir, '.git');
-		if (!fs.lstatSync(dotGit).isFile()) return null;
-		const m = /^gitdir:\s*(.+?)\s*$/m.exec(fs.readFileSync(dotGit, 'utf-8'));
-		if (!m) return null;
-		const gitDir = path.resolve(dir, m[1]);
-		const worktreesDir = path.dirname(gitDir);
-		if (path.basename(worktreesDir) !== 'worktrees') return null;
-		const commonDir = path.dirname(worktreesDir);
-		if (path.basename(commonDir) !== '.git') return null;
-		return path.dirname(commonDir);
-	} catch {
-		return null;
-	}
+export async function mainRepoOfLinkedWorktree(dir: string): Promise<string | null> {
+	const st = await lstatOrNull(path.join(dir, '.git'));
+	if (!st?.isFile()) return null;
+	const gitDir = await readGitFilePointer(dir);
+	if (!gitDir) return null;
+	const worktreesDir = path.dirname(gitDir);
+	if (path.basename(worktreesDir) !== 'worktrees') return null;
+	const commonDir = path.dirname(worktreesDir);
+	if (path.basename(commonDir) !== '.git') return null;
+	return path.dirname(commonDir);
 }
 
 /** A git checkout found on disk. */
@@ -318,25 +358,23 @@ export interface FoundRepo {
 /**
  * Find git checkouts under `root` without following symlinks. A directory
  * with a `.git` directory or file is a checkout and is not descended into;
- * `node_modules` and `.git` are never descended into.
+ * `node_modules` and `.git` are never descended into. Fully async; yields to
+ * the event loop every few directories.
  *
  * @param root - Directory to search (itself included, at depth 0)
  * @param maxDepth - Deepest level searched (root = 0)
  * @param maxDirs - Stop after visiting this many directories
  * @returns Checkouts found, in walk order
  */
-export function findGitCheckouts(root: string, maxDepth: number, maxDirs = Number.POSITIVE_INFINITY): FoundRepo[] {
+export async function findGitCheckouts(root: string, maxDepth: number, maxDirs = Number.POSITIVE_INFINITY): Promise<FoundRepo[]> {
 	const out: FoundRepo[] = [];
+	const yielder = new EventLoopYielder();
 	let visited = 0;
-	const walk = (dir: string, depth: number): void => {
+	const walk = async (dir: string, depth: number): Promise<void> => {
 		if (visited >= maxDirs) return;
 		visited++;
-		let dotGit: fs.Stats | null = null;
-		try {
-			dotGit = fs.lstatSync(path.join(dir, '.git'));
-		} catch {
-			// not a checkout
-		}
+		await yielder.tick();
+		const dotGit = await lstatOrNull(path.join(dir, '.git'));
 		if (dotGit && (dotGit.isDirectory() || dotGit.isFile())) {
 			out.push({ path: dir, kind: dotGit.isDirectory() ? 'dir' : 'file' });
 			return;
@@ -344,17 +382,17 @@ export function findGitCheckouts(root: string, maxDepth: number, maxDirs = Numbe
 		if (depth >= maxDepth) return;
 		let entries: fs.Dirent[];
 		try {
-			entries = fs.readdirSync(dir, { withFileTypes: true });
+			entries = await fs.promises.readdir(dir, { withFileTypes: true });
 		} catch {
 			return;
 		}
 		for (const e of entries) {
 			// Dirent.isDirectory() is false for symlinks, so links are never followed.
 			if (!e.isDirectory() || WORKTREE_JANITOR_CONSTANTS.SEARCH_SKIP_DIRS.includes(e.name)) continue;
-			walk(path.join(dir, e.name), depth + 1);
+			await walk(path.join(dir, e.name), depth + 1);
 		}
 	};
-	walk(root, 0);
+	await walk(root, 0);
 	return out;
 }
 
@@ -362,20 +400,20 @@ export function findGitCheckouts(root: string, maxDepth: number, maxDirs = Numbe
  * Main worktrees of every repo that owns a linked worktree somewhere under
  * the given roots (e.g. `/tmp/claude-501/visa-cm-wt` → `~/src/ce-core`), so
  * repos that are not registered projects still get their temp worktrees
- * cleaned.
+ * cleaned. Visits at most DISCOVERY_MAX_DIRS directories per root.
  *
  * @param roots - Temp roots to scan (missing roots are skipped)
  * @returns De-duplicated main-worktree paths
  */
-export function discoverLinkedWorktreeRepos(roots: readonly string[]): string[] {
+export async function discoverLinkedWorktreeRepos(roots: readonly string[]): Promise<string[]> {
 	const out = new Set<string>();
 	for (const root of roots) {
-		if (!fs.existsSync(root)) continue;
-		const found = findGitCheckouts(root, WORKTREE_JANITOR_CONSTANTS.DISCOVERY_DEPTH, WORKTREE_JANITOR_CONSTANTS.DISCOVERY_MAX_DIRS);
+		if (!(await lstatOrNull(root))) continue;
+		const found = await findGitCheckouts(root, WORKTREE_JANITOR_CONSTANTS.DISCOVERY_DEPTH, WORKTREE_JANITOR_CONSTANTS.DISCOVERY_MAX_DIRS);
 		for (const f of found) {
 			if (f.kind !== 'file') continue;
-			const main = mainRepoOfLinkedWorktree(f.path);
-			if (main && fs.existsSync(main)) out.add(main);
+			const main = await mainRepoOfLinkedWorktree(f.path);
+			if (main && (await lstatOrNull(main))) out.add(main);
 		}
 	}
 	return [...out];
@@ -383,37 +421,36 @@ export function discoverLinkedWorktreeRepos(roots: readonly string[]): string[] 
 
 /**
  * Newest mtime (ms) of `dir` and everything within `depth` levels below it,
- * using lstat (symlinks are not followed).
+ * using lstat (symlinks are not followed). Async; yields every few entries.
  *
  * @param dir - Directory
  * @param depth - Levels below `dir` to include (0 = only `dir`)
  * @returns Newest mtime in ms, or null when `dir` cannot be stat'ed
  */
-export function latestTreeMtimeMs(dir: string, depth: number): number | null {
+export async function latestTreeMtimeMs(dir: string, depth: number): Promise<number | null> {
 	let newest: number | null = null;
-	const visit = (p: string, level: number): void => {
-		let st: fs.Stats;
-		try {
-			st = fs.lstatSync(p);
-		} catch {
-			return;
-		}
+	const yielder = new EventLoopYielder();
+	const visit = async (p: string, level: number): Promise<void> => {
+		await yielder.tick();
+		const st = await lstatOrNull(p);
+		if (!st) return;
 		if (newest === null || st.mtimeMs > newest) newest = st.mtimeMs;
 		if (level >= depth || !st.isDirectory()) return;
 		let names: string[];
 		try {
-			names = fs.readdirSync(p);
+			names = await fs.promises.readdir(p);
 		} catch {
 			return;
 		}
-		for (const n of names) visit(path.join(p, n), level + 1);
+		for (const n of names) await visit(path.join(p, n), level + 1);
 	};
-	visit(dir, 0);
+	await visit(dir, 0);
 	return newest;
 }
 
 /**
- * Disk usage of a path in bytes (`du -sk`, which does not follow symlinks).
+ * Disk usage of a path in bytes (`du -sk` in a child process, so the event
+ * loop is never blocked; `du` does not follow symlinks).
  *
  * @param p - File or directory
  * @returns Bytes, or null when `du` failed or timed out
