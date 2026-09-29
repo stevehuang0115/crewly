@@ -48,6 +48,7 @@ import {
 	stopBrowserSession,
 	takeBrowserControl,
 	releaseBrowserControl,
+	sendOwnerBrowserInput,
 	resolveBrowserPending,
 } from './browser.controller.js';
 
@@ -166,6 +167,9 @@ export function createBrowserRouter(): Router {
 	// two can never drive the same page at once.
 	router.post('/sessions/:id/take-control', takeBrowserControl);
 	router.post('/sessions/:id/release-control', releaseBrowserControl);
+	// The owner's own taps, text and keys while they hold the wheel — so an
+	// owner on a phone can actually drive, not just lock the agent out.
+	router.post('/sessions/:id/input', sendOwnerBrowserInput);
 	router.post('/sessions/:id/pending/:pendingId', resolveBrowserPending);
 
 	return router;

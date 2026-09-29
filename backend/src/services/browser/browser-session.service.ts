@@ -640,6 +640,30 @@ export class BrowserSessionService {
 	}
 
 	/**
+	 * Record something the owner did while holding the wheel.
+	 *
+	 * The description is written by the caller and must already be safe to
+	 * show: for typing that means a character count, never the text — the
+	 * owner is usually entering a password. Status and control are left as
+	 * they are; the owner still has the browser.
+	 *
+	 * @param agentSession - Session the owner is driving
+	 * @param description - What they did, e.g. `You typed 12 characters`
+	 * @param url - Where the page is going, for a navigation
+	 * @returns The updated session, or undefined when there is none or the
+	 *          owner does not hold it
+	 */
+	noteOwnerAction(agentSession: string, description: string, url?: string): BrowserSession | undefined {
+		const session = this.sessions.get(agentSession);
+		if (!session || session.control !== 'owner') return undefined;
+		session.lastAction = description;
+		session.lastActionAt = Date.now();
+		if (url) session.url = url;
+		this.dirty.add(agentSession);
+		return { ...session };
+	}
+
+	/**
 	 * Give the wheel back to the agent.
 	 *
 	 * Any action that was held is dropped rather than resumed: the owner has

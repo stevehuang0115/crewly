@@ -13,8 +13,19 @@ import { BrowserBridgeService, type BrowserCommandResponse } from '../../service
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
+import {
+	parseOwnerInput,
+	planOwnerInput,
+	describeOwnerInput,
+	ownerInputLogFields,
+	parseViewportProbe,
+	estimateViewportFromFrame,
+	VIEWPORT_PROBE_SCRIPT,
+	type OwnerInput,
+	type Viewport,
+} from '../../services/browser/owner-browser-input.js';
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
-import { BROWSER_BRIDGE_CONSTANTS } from '../../constants.js';
+import { BROWSER_BRIDGE_CONSTANTS, BROWSER_OWNER_INPUT_CONSTANTS, BROWSER_SESSION_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../../services/core/logger.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('BrowserController');
@@ -1157,6 +1168,220 @@ export function takeBrowserControl(req: Request, res: Response): void {
 		return;
 	}
 	res.json({ success: true, data: { session } });
+}
+
+/**
+ * Send one command for the owner, straight to a tab.
+ *
+ * The owner has no agent session, so this does not go through
+ * {@link sendToolCommand}: that path derives the tab from the calling agent's
+ * binding and runs the agent gate, and neither applies. It uses the same two
+ * transports the live-view capturer uses — the direct extension socket, else
+ * the relay proxy — and the same dispatch log line, which records the tool and
+ * tab but never the params (they carry what the owner typed).
+ *
+ * @param tool - Extension tool name
+ * @param params - Tool params, including the target `tabId`
+ * @returns The extension's response
+ * @throws When no transport is available or every one failed
+ */
+async function sendOwnerCommand(tool: string, params: Record<string, unknown>): Promise<BrowserCommandResponse> {
+	const bridge = BrowserBridgeService.getInstance();
+	const proxy = BrowserProxyService.getInstance();
+	const tabId = typeof params.tabId === 'number' ? params.tabId : null;
+	const timeoutMs = BROWSER_OWNER_INPUT_CONSTANTS.COMMAND_TIMEOUT_MS;
+	const errors: string[] = [];
+
+	if (bridge.isConnected()) {
+		try {
+			const result = await bridge.sendCommand(tool, params, timeoutMs);
+			logDispatch('direct-ws', tool, undefined, undefined, tabId, 'ok');
+			return result;
+		} catch (err) {
+			logDispatch('direct-ws', tool, undefined, undefined, tabId, (err as Error).message);
+			errors.push(`direct-ws: ${(err as Error).message}`);
+		}
+	}
+	if (proxy.isAvailable()) {
+		try {
+			const result = await proxy.sendCommand(tool, params, undefined, timeoutMs);
+			logDispatch('proxy-relay', tool, undefined, undefined, tabId, 'ok');
+			return result;
+		} catch (err) {
+			logDispatch('proxy-relay', tool, undefined, undefined, tabId, (err as Error).message);
+			errors.push(`proxy-relay: ${(err as Error).message}`);
+		}
+	}
+	if (errors.length === 0) logDispatch('none', tool, undefined, undefined, tabId, 'no browser connected');
+	throw new Error(
+		errors.length > 0
+			? `All connection paths failed: ${errors.join('; ')}`
+			: 'No Chrome browser connected. Please connect the Crewly Chrome Extension first.',
+	);
+}
+
+/** Measured viewports per session, so every tap is not an extra round trip. */
+const viewportCache = new Map<string, { viewport: Viewport; at: number }>();
+
+/**
+ * The CSS viewport of a session's tab, for mapping a tap.
+ *
+ * Measured in the page when possible; when the page cannot be measured (a
+ * restricted page, a transport hiccup) it is estimated from the frame the
+ * owner tapped and the capture settings, which is right whenever the
+ * extension applied its downscale.
+ *
+ * @param sessionId - Session being driven
+ * @param tabId - Its tab
+ * @param frameWidth - Natural width of the frame the owner tapped
+ * @param frameHeight - Natural height of that frame
+ * @returns The viewport in CSS pixels
+ */
+async function viewportFor(sessionId: string, tabId: number, frameWidth: number, frameHeight: number): Promise<Viewport> {
+	const cached = viewportCache.get(sessionId);
+	if (cached && Date.now() - cached.at <= BROWSER_OWNER_INPUT_CONSTANTS.VIEWPORT_CACHE_MS) return cached.viewport;
+
+	try {
+		const probe = await sendOwnerCommand('executeJs', { code: VIEWPORT_PROBE_SCRIPT, tabId });
+		const measured = probe.success ? parseViewportProbe(probe.result) : null;
+		if (measured) {
+			viewportCache.set(sessionId, { viewport: measured, at: Date.now() });
+			return measured;
+		}
+	} catch {
+		// Fall through to the estimate.
+	}
+	const dpr = getBrowserSessions().getFrame(sessionId)?.devicePixelRatio;
+	return estimateViewportFromFrame(frameWidth, frameHeight, dpr, BROWSER_SESSION_CONSTANTS.FRAME_SCALE);
+}
+
+/** Forget cached viewports (tests). */
+export function clearOwnerViewportCache(): void {
+	viewportCache.clear();
+}
+
+/**
+ * POST /api/browser/sessions/:id/input
+ * Drive the browser as the owner, while the owner holds the wheel.
+ *
+ * "Take control" used to lock the agent out and then leave the owner — who is
+ * usually on a phone, not at the machine — with a picture they could not
+ * touch. This is the other half: a tap on the frame, text, a key, a scroll, a
+ * URL or Back, carried out on the session's own tab through the same
+ * extension operations an agent uses. The agent gate is bypassed here and
+ * only here, because the person driving is the one the gate protects.
+ *
+ * Refused unless:
+ * - the caller is not an agent (an `X-Agent-Session` header is a 403), and
+ * - the owner currently holds this session (`control === 'owner'`, else 409).
+ *
+ * Typed text is never logged, stored or echoed back: the session records
+ * "You typed N characters" and the log records the length.
+ *
+ * Replies with the updated session and, when one could be taken, a fresh
+ * frame, so the phone sees the result without waiting for its next poll.
+ *
+ * @param req - Express request with `:id` and an {@link OwnerInput} body
+ * @param res - Express response
+ */
+export async function sendOwnerBrowserInput(req: Request, res: Response): Promise<void> {
+	if (extractAgentSession(req)) {
+		res.status(403).json({
+			success: false,
+			code: 'agent_not_owner',
+			error: 'Only the owner can drive a browser they have taken over. Agents use the normal browser tools.',
+		});
+		return;
+	}
+
+	const sessionId = req.params.id;
+	const sessions = getBrowserSessions();
+	const session = sessions.getSession(sessionId);
+	if (!session) {
+		res.status(404).json({ success: false, error: 'No browser session for that agent' });
+		return;
+	}
+	if (session.control !== 'owner') {
+		res.status(409).json({
+			success: false,
+			code: 'not_owner_control',
+			error: 'Take control of this browser first.',
+		});
+		return;
+	}
+
+	const parsed = parseOwnerInput(req.body);
+	if (!parsed.ok) {
+		res.status(400).json({ success: false, code: 'invalid_input', error: parsed.error });
+		return;
+	}
+	const input: OwnerInput = parsed.input;
+
+	const tabId = BrowserBridgeService.getInstance().getBinding(sessionId)?.tabId ?? session.tabId;
+	if (typeof tabId !== 'number') {
+		res.status(409).json({
+			success: false,
+			code: 'no_bound_tab',
+			error: 'This agent has no browser tab right now, so there is nothing to drive.',
+		});
+		return;
+	}
+
+	try {
+		const viewport =
+			input.kind === 'tap' ? await viewportFor(sessionId, tabId, input.frameWidth, input.frameHeight) : undefined;
+		const command = planOwnerInput(input, viewport);
+		const result = await sendOwnerCommand(command.tool, { ...command.params, tabId });
+
+		const failure = classifyExtensionFailure(result);
+		const insertFailed =
+			command.tool === 'insertText' &&
+			(result.result as { success?: unknown } | undefined)?.success === false;
+		if (result.success === false || insertFailed) {
+			logger.warn('Owner browser input failed', { sessionId, ...ownerInputLogFields(input) });
+			res.status(failure?.status ?? 502).json({
+				success: false,
+				...(failure ? { code: failure.code } : { code: 'input_failed' }),
+				// The extension's message names the operation, never its text.
+				error: result.error ?? (result.result as { error?: string } | undefined)?.error ?? 'The browser did not accept that',
+			});
+			return;
+		}
+
+		logger.info('Owner drove a browser session', { sessionId, tabId, ...ownerInputLogFields(input) });
+		sessions.noteOwnerAction(sessionId, describeOwnerInput(input), input.kind === 'navigate' ? input.url : undefined);
+
+		if (input.kind !== 'navigate' && input.kind !== 'type') {
+			await new Promise((resolve) => setTimeout(resolve, BROWSER_OWNER_INPUT_CONSTANTS.SETTLE_BEFORE_FRAME_MS));
+		}
+		await sessions.captureFrame(sessionId);
+		const frame = sessions.getFrame(sessionId);
+
+		res.setHeader('Cache-Control', 'no-store, private');
+		res.json({
+			success: true,
+			data: {
+				session: sessions.getSession(sessionId),
+				...(frame
+					? {
+							frame: {
+								base64: frame.base64,
+								mimeType: frame.mimeType,
+								capturedAt: frame.capturedAt,
+								...(frame.devicePixelRatio !== undefined ? { devicePixelRatio: frame.devicePixelRatio } : {}),
+							},
+						}
+					: {}),
+			},
+		});
+	} catch (err) {
+		logger.warn('Owner browser input could not be delivered', {
+			sessionId,
+			...ownerInputLogFields(input),
+			error: (err as Error).message,
+		});
+		res.status(503).json({ success: false, code: 'NO_BROWSER_CLIENT', error: (err as Error).message });
+	}
 }
 
 /**

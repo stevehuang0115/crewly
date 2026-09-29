@@ -105,9 +105,11 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // Live browser view. Reads let an owner who is not at this machine see
   // what an agent is doing in a browser; the writes under /browser/sessions
   // are the owner-side controls only — stop, take the wheel, give it back,
-  // answer a held action. The driving endpoints (/browser/navigate,
-  // /browser/click, …) are deliberately NOT here: those are how an agent
-  // acts, and nothing on the internet should be able to act as one.
+  // answer a held action, and `/browser/sessions/:id/input` (the owner's own
+  // taps and typing, accepted only while the owner has taken the wheel). The
+  // agent driving endpoints (/browser/navigate, /browser/click, …) are
+  // deliberately NOT here: those are how an agent acts, and nothing on the
+  // internet should be able to act as one.
   { method: 'GET', prefix: '/browser/sessions' },
   { method: 'POST', prefix: '/browser/sessions' },
   // "Back up now" from the portal: start a cloud backup of this machine and
