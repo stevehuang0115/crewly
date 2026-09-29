@@ -67,6 +67,43 @@ describe('listSkillFiles', () => {
 	});
 });
 
+describe('local junk never reaches the registry', () => {
+	const junk = {
+		'x/SKILL.md': '---\nname: X\n---\n',
+		'x/execute.sh': 'echo\n',
+		'x/.env.example': 'KEY=\n',
+		'x/.env': 'SECRET=1\n',
+		'x/.DS_Store': 'junk',
+		'x/module.pyc': 'bytecode',
+		'x/__pycache__/module.cpython-314.pyc': 'bytecode',
+	};
+
+	it('listSkillFiles skips .env, dotfiles, __pycache__ and .pyc but keeps .env.example', () => {
+		const root = fixture(junk);
+		try {
+			expect(listSkillFiles(path.join(root, 'x'))).toEqual(['.env.example', 'execute.sh', 'SKILL.md']);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('the registry entry is identical with or without junk on disk (files and sizeBytes)', () => {
+		const { 'x/.env': _e, 'x/.DS_Store': _d, 'x/module.pyc': _p, 'x/__pycache__/module.cpython-314.pyc': _c, ...clean } = junk;
+		const withJunk = fixture(Object.fromEntries(Object.entries(junk).map(([k, v]) => [`${M}/${k}`, v])));
+		const without = fixture(Object.fromEntries(Object.entries(clean).map(([k, v]) => [`${M}/${k}`, v])));
+		try {
+			const a = buildRegistry(withJunk, null, 'T').registry.items[0];
+			const b = buildRegistry(without, null, 'T').registry.items[0];
+			expect(a.metadata.files).toEqual(['.env.example', 'execute.sh', 'SKILL.md']);
+			expect(a.assets.sizeBytes).toBe(b.assets.sizeBytes);
+			expect(a).toEqual(b);
+		} finally {
+			rmSync(withJunk, { recursive: true, force: true });
+			rmSync(without, { recursive: true, force: true });
+		}
+	});
+});
+
 describe('buildRegistry — setup blocks', () => {
 	it('copies a skill.json setup block into metadata.setup, and leaves skills without one unchanged', () => {
 		const setup = { estimatedMinutes: 2, steps: [{ id: 'ffmpeg', type: 'command', check: { commands: ['ffmpeg'] } }] };
@@ -198,7 +235,7 @@ describe('committed config/skills/registry.json', () => {
 			}
 		}
 		expect(mismatches).toEqual([]);
-		expect(SKILL_FILE_EXCLUDES.length).toBe(3);
+		expect(SKILL_FILE_EXCLUDES.length).toBe(6);
 	});
 
 	it('never lists a nested path (older CLIs cannot create subdirectories)', () => {
