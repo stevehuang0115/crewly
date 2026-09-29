@@ -31,13 +31,15 @@ let review: TicketReviewService;
  */
 async function ticket(
   n: number,
-  opts: { channel?: TicketOriginChannel; assignee?: string; chatChannelId?: string; messageId?: string } = {},
+  opts: { channel?: TicketOriginChannel; assignee?: string; chatChannelId?: string; messageId?: string; description?: string } = {},
 ): Promise<Request> {
   const channel = opts.channel ?? 'slack-channel';
   const t = await requests.create({
     sourceConversationItemId: `src-${n}`,
     title: `ticket ${n}`,
-    description: `please do thing ${n}`,
+    // A deliverable by default (a report to write), so the answer waits for the
+    // owner; plain questions close on the answer (see 'plain answers close').
+    description: opts.description ?? `帮我写一份报告 ${n}`,
     ticketNumber: n,
     origin: { channel, ref: `src-${n}`, threadRef: `slack:C1:${n}.0`, author: 'U1' },
     requiresConfirmation: !TICKET_CONSTANTS.REVIEW.NO_REVIEW_ORIGINS.includes(channel),
@@ -274,6 +276,75 @@ describe('auto-accept', () => {
   });
 });
 
+describe('plain answers close (2026-09-28: only deliverables wait for the owner)', () => {
+  it('an answer to a plain ask closes the ticket as done, tagged answered, with no acceptedBy', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1', description: '看看这个 https://x.com/a/status/1' });
+    await review.onChatMessage(agentMsg('ch1', 'atlas', '这篇讲的是 agent 记忆的三种做法，我们已经有第一种。', 'm1'));
+    const [submitted] = await review.onAgentIdle('atlas');
+    expect(submitted).toMatchObject({ id: t.id, status: 'done' });
+    expect(submitted.tags).toContain(TICKET_CONSTANTS.REVIEW.ANSWERED_TAG);
+    expect(submitted.acceptedBy).toBeUndefined();
+  });
+
+  it('a question ticket (这个团队都有几个人) closes on the answer', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1', description: '这个团队都有几个人' });
+    await review.onChatMessage(agentMsg('ch1', 'owen', 'CE 团队有 3 个 agent：Owen、Vera、Nova。', 'm1'));
+    const [submitted] = await review.onAgentIdle('owen');
+    expect(submitted.status).toBe('done');
+    expect(t.id).toBe(submitted.id);
+  });
+
+  it('an answer that asks the owner something waits for him', async () => {
+    await ticket(1, { chatChannelId: 'ch1', messageId: 'm1', description: '你怎么看路易斯哥的观点' });
+    await review.onChatMessage(agentMsg('ch1', 'atlas', '两个办法可以叠着用，每周一次还是每月一次，你定？', 'm1'));
+    const [submitted] = await review.onAgentIdle('atlas');
+    expect(submitted.status).toBe('waiting_confirmation');
+  });
+
+  it('a deliverable (a draft to send) waits for the owner', async () => {
+    await ticket(1, { chatChannelId: 'ch1', messageId: 'm1', description: '帮我draft一个微信的回信' });
+    await review.onChatMessage(agentMsg('ch1', 'atlas', '草稿在这里：……', 'm1'));
+    const [submitted] = await review.onAgentIdle('atlas');
+    expect(submitted.status).toBe('waiting_confirmation');
+  });
+});
+
+describe('stale tickets (open / running idle for 3 days)', () => {
+  it('closes an idle ticket as stale with a note; recent ones stay', async () => {
+    const idle = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    const created = Date.parse(idle.createdAt);
+    clock = created + TICKET_CONSTANTS.STALE.AFTER_MS - 60_000;
+    expect((await review.sweep()).staleClosed).toBe(0);
+    clock = created + TICKET_CONSTANTS.STALE.AFTER_MS + 60_000;
+    expect((await review.sweep()).staleClosed).toBe(1);
+    const after = await requests.getById(idle.id);
+    expect(after?.status).toBe('cancelled');
+    expect(after?.tags).toContain(TICKET_CONSTANTS.STALE.TAG);
+    expect(after?.discussion?.at(-1)).toMatchObject({ author: TICKET_CONSTANTS.STALE.NOTE_AUTHOR, text: TICKET_CONSTANTS.STALE.NOTE });
+  });
+
+  it('does not close a ticket whose WorkItems are still live', async () => {
+    const t = await ticket(1);
+    openWork.set(t.id, 1);
+    clock = Date.parse(t.createdAt) + TICKET_CONSTANTS.STALE.AFTER_MS + 60_000;
+    expect((await review.sweep()).staleClosed).toBe(0);
+    expect((await requests.getById(t.id))?.status).toBe('open');
+  });
+
+  it('the agent answering in its thread reopens a stale ticket', async () => {
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    clock = Date.parse(t.createdAt) + TICKET_CONSTANTS.STALE.AFTER_MS + 60_000;
+    await review.sweep();
+    expect((await requests.getById(t.id))?.status).toBe('cancelled');
+    const reopened = await review.onChatMessage(agentMsg('ch1', 'atlas', '补上了，报告在这里', 'm1'));
+    expect(reopened).toMatchObject({ id: t.id, status: 'running', reply: { by: 'atlas' } });
+    expect(reopened?.tags).not.toContain(TICKET_CONSTANTS.STALE.TAG);
+    // A dismissed (不用记) ticket is never reopened this way.
+    await requests.update(t.id, { status: 'cancelled', tags: [...reopened!.tags, TICKET_CONSTANTS.DISMISSED_TAG] });
+    expect(await review.onChatMessage(agentMsg('ch1', 'atlas', 'again', 'm1'))).toBeNull();
+  });
+});
+
 describe('acceptance, self-check, patch', () => {
   it('setAcceptance keeps removed criteria with removedAt and adds new ones as the owner’s', async () => {
     const t = await ticket(1);
@@ -308,7 +379,7 @@ describe('acceptance, self-check, patch', () => {
 });
 
 describe('follow-up by the agent (owner, 2026-09-24)', () => {
-  it('nudges the answering agent twice, a day apart, then accepts', async () => {
+  it('nudges the answering agent once, then silence accepts 24h after the answer', async () => {
     const nudges: Array<[string, string]> = [];
     const r = new TicketReviewService({
       requests,
@@ -320,31 +391,50 @@ describe('follow-up by the agent (owner, 2026-09-24)', () => {
     await r.noteChatTurn(t.id, { id: 'm1', channelId: 'ch1' });
     await r.onChatMessage(agentMsg('ch1', 'atlas', 'done: report', 'm1'));
     await r.onAgentIdle('atlas');
-    const day = TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS;
+    const submittedAt = Date.parse((await requests.getById(t.id))!.submittedAt!);
 
-    clock += day - 60_000;
+    clock = submittedAt + TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS - 60_000;
     await r.sweep();
     expect(nudges).toHaveLength(0);
 
-    clock += 120_000;
+    clock = submittedAt + TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS + 60_000;
     await r.sweep();
     expect(nudges).toHaveLength(1);
     expect(nudges[0][0]).toBe('atlas');
     expect((await requests.getById(t.id))?.nudgeCount).toBe(1);
 
-    clock += day + 60_000;
+    // No second nudge (MAX_NUDGES = 1), still waiting just before the deadline.
+    clock = submittedAt + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS - 60_000;
     await r.sweep();
-    expect(nudges).toHaveLength(2);
+    expect(nudges).toHaveLength(1);
     expect((await requests.getById(t.id))?.status).toBe('waiting_confirmation');
 
-    clock += day + 60_000;
+    clock = submittedAt + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS + 60_000;
     await r.sweep();
     const after = await requests.getById(t.id);
     expect(after?.status).toBe('done');
     expect(after?.tags).toContain(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG);
     // #813: silence is acceptance, never a review.
     expect(after?.acceptedBy).toBe('silence');
-    expect(nudges).toHaveLength(2);
+    expect(nudges).toHaveLength(1);
+  });
+
+  it('the deadline counts from the answer: a nudge that never went out does not hold it (2026-09-28)', async () => {
+    const r = new TicketReviewService({
+      requests,
+      fallbackAgent: 'crewly-orc',
+      now: () => new Date(clock),
+      nudgeAgent: async () => {
+        throw new Error('agent offline');
+      },
+    });
+    const t = await ticket(1, { chatChannelId: 'ch1', messageId: 'm1' });
+    await r.onChatMessage(agentMsg('ch1', 'atlas', 'done: report', 'm1'));
+    await r.onAgentIdle('atlas');
+    const submittedAt = Date.parse((await requests.getById(t.id))!.submittedAt!);
+    clock = submittedAt + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS + 60_000;
+    expect((await r.sweep()).autoAccepted).toBe(1);
+    expect((await requests.getById(t.id))?.status).toBe('done');
   });
 
   it('the nudge speaks to the agent, points at the thread, and forbids ticket words toward the owner', async () => {

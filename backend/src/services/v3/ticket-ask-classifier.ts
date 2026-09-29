@@ -136,6 +136,7 @@ export function classifyOwnerMessage(rawText: string, ctx: AskContext): AskClass
     if (P.CORRECTION_OR_CHOICE.test(content[0] ?? '')) bump('correction_or_choice', 3);
     if (P.RETRY_CONTINUE.test(body)) bump('retry_continue', 3);
     if (P.SUGGEST_TAIL.test(body)) bump('suggest_tail', 3);
+    if (P.DISPOSITION.test(body)) bump('disposition', 3);
   }
 
   // --- ask signals: they add up ---

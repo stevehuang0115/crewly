@@ -298,10 +298,12 @@ the owner never sees ticket mechanics.
   (`REVIEW.ACK_PATTERN`) accepts; top-level (DMs) only while the question is
   recent (< `NUDGE_AFTER_MS` since submit / last nudge). 验过了 / 打回 still work.
 - **Silence.** The sweep nudges the answering agent (`nudgeAgent` →
-  `sendMessageToAgent`, `nudgeText`) `NUDGE_AFTER_MS` (24 h) after the answer
-  and again 24 h later (`MAX_NUDGES` = 2), each time telling it to ask once
-  more in the original thread if the result needs an OK; 24 h after the last
-  nudge the ticket is accepted (`auto_accepted`, `acceptedBy: 'silence'`). A new answer resets the count.
+  `sendMessageToAgent`, `nudgeText`) once, `NUDGE_AFTER_MS` (12 h) after the
+  answer, telling it to ask in the original thread if the result needs an OK;
+  `AUTO_ACCEPT_MS` (24 h) after the answer the ticket is accepted
+  (`auto_accepted`, `acceptedBy: 'silence'`). (2026-09-28, `specs/ticket-calm.md`:
+  was two nudges a day apart, 72 h+ in all.) Plain answers never get here —
+  they close on the answer; see `specs/ticket-calm.md`.
 
 **No auto-decomposition for tickets** (2026-09-24 log review):
 `RequestDecomposeSubscriber.shouldDecompose` skips any Request with a

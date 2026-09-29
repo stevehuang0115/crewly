@@ -10,9 +10,18 @@
  *
  * - opens a new ticket (a `Request` with a TKT number, `kind`, `origin`,
  *   `assignee`) and posts ONE receipt where it was said;
- * - is a reply in a thread that already has a ticket: a follow-up on that
- *   work is appended to its discussion; a NEW ask opens its own ticket in the
- *   same thread, linked to the parent (#827, {@link classifyOwnerMessage});
+ * - is a reply in a thread that already has a ticket — open, waiting for the
+ *   owner, or finished within {@link TICKET_CONSTANTS.FOLLOW_UP.RECENT_TICKET_MS}:
+ *   a follow-up, an answer or a decision is appended to its discussion (and
+ *   on a 待验收 ticket counts as the owner's OK); only a genuinely new ask
+ *   opens its own ticket in the same thread, linked to the parent (#827,
+ *   {@link isGenuinelyNewAsk});
+ * - is a DM reply soon after the conversation's latest ticket
+ *   ({@link TICKET_CONSTANTS.FOLLOW_UP.DM_WINDOW_MS}): the same, for
+ *   conversations where every message is top level;
+ * - is a reply in a thread an agent started (no ticket): an answer to the
+ *   agent, ignored unless it is a genuinely new ask (2026-09-28: 「发了」
+ *   「A 论文那个 开个Issue吧」 had become tickets of their own);
  * - is "不用记" (don't track) and dismisses the ticket it answers;
  * - is noise (trivial ack, file only, a status ping, agent-authored) and is
  *   ignored. Request-phrased questions ("可以去研究一下 X 吗") are asks, and a
@@ -28,7 +37,8 @@ import * as path from 'path';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { modifyJsonFile } from '../../utils/file-io.utils.js';
 import { TICKET_CONSTANTS } from '../../constants.js';
-import { classifyOwnerMessage, weightedTextLength, type AskClassification } from './ticket-ask-classifier.js';
+import { askText, classifyOwnerMessage, weightedTextLength, type AskClassification } from './ticket-ask-classifier.js';
+import { ticketLastActivity } from './ticket-hygiene.js';
 import type { IntakeLogEvent, IntakeOutcomeRecorder } from './ticket-intake-log.js';
 import { redactSensitive } from '../wiki/wiki-redaction.js';
 import {
@@ -66,10 +76,13 @@ import {
 
 /**
  * Trimmed-text regex for trivial acknowledgement messages — anchored,
- * case-insensitive, allows trailing punctuation. Matches "ok", "好的",
- * "thx", "👍", etc.
+ * case-insensitive, allows trailing punctuation, spaces and emoji. Matches
+ * "ok", "好的", "thx", "👍", etc.
+ *
+ * The tail used to be `\W*`, and CJK characters are all `\W`: 「是绿卡」
+ * 「对 就按第二种来 不用再问了」 read as a bare 「是」/「对」 and were dropped.
  */
-const TRIVIAL_ACK_PATTERN = /^(ok|okay|好的|好|收到|thx|thanks|thank you|谢谢|多谢|👍|✅|got it|sure|yes|是|对|对的|嗯|嗯嗯|行)\W*$/iu;
+const TRIVIAL_ACK_PATTERN = /^(ok|okay|好的|好|收到|thx|thanks|thank you|谢谢|多谢|👍|✅|got it|sure|yes|是|对|对的|嗯|嗯嗯|行)[\s\p{P}\p{S}]*$/iu;
 
 /**
  * Trimmed-text regex matching the synthetic `[Slack File: …]` lines the
@@ -140,6 +153,31 @@ export function isDismissText(text: string): boolean {
   return TICKET_CONSTANTS.DISMISS_PATTERN.test(text);
 }
 
+/**
+ * Whether a reply in an existing conversation (a ticket's thread, an agent's
+ * thread, a DM right after a ticket) is a genuinely new ask that deserves its
+ * own ticket (2026-09-28). Stricter than the classifier's `new_ask` alone:
+ *
+ * - a question stays in the conversation (the agent answers it there);
+ * - a short reply (≤ {@link TICKET_CONSTANTS.FOLLOW_UP.SHORT_REPLY_WEIGHTED_LENGTH}
+ *   weighted) is an answer — 「可以改到10:30吗」 — unless it says 「帮我…」
+ *   outright or opens a new topic.
+ *
+ * @param text - The owner's message
+ * @param ask - Its in-thread classification
+ * @returns True when it opens a ticket of its own
+ *
+ * @example
+ * ```typescript
+ * isGenuinelyNewAsk('A 论文那个 开个Issue吧 放到backlog', classifyOwnerMessage(t, { inThread: true })); // false
+ * ```
+ */
+export function isGenuinelyNewAsk(text: string, ask: AskClassification): boolean {
+  if (ask.verdict !== 'new_ask') return false;
+  if (ask.signals.includes('strong_request') || ask.signals.includes('new_topic')) return true;
+  return weightedTextLength(askText(text)) > TICKET_CONSTANTS.FOLLOW_UP.SHORT_REPLY_WEIGHTED_LENGTH;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -194,6 +232,11 @@ export interface IntakeMessage {
   legacyThreadParentRef?: string;
   /** Extra tags (e.g. `slack` / `chat-v2` for the SLA subscriber) */
   tags?: readonly string[];
+  /**
+   * The message is a reply inside a thread (not the thread's root). A reply
+   * in a thread with no ticket answers whoever started it — an agent.
+   */
+  isThreadReply?: boolean;
   /** Where to post the receipt; omitted = no receipt */
   receipt?: ReceiptTarget;
 }
@@ -504,8 +547,11 @@ export class TicketIntakeService {
       return { action: 'dismissed', ticket: result.ticket };
     }
 
-    // Same message twice (Slack redelivery, two event types).
-    const duplicate = all.find((r) => r.sourceConversationItemId === message.origin.ref);
+    // Same message twice (Slack redelivery, two event types) — whether it
+    // opened a ticket or was appended to one.
+    const duplicate = all.find(
+      (r) => r.sourceConversationItemId === message.origin.ref || (r.discussion ?? []).some((d) => d.ref === message.origin.ref),
+    );
     if (duplicate) return { action: 'duplicate', ticket: duplicate };
 
     // A follow-up in a thread that already has a ticket.
@@ -516,28 +562,31 @@ export class TicketIntakeService {
     const ack = TICKET_CONSTANTS.REVIEW.ACK_PATTERN.test(text);
     if (threadTicket) {
       if (TERMINAL_REQUEST_STATUSES.has(threadTicket.status)) {
-        // Only a dismissed thread stays quiet; a finished one may open a new ticket.
+        // A dismissed thread stays quiet.
         if (threadTicket.tags.includes(TICKET_CONSTANTS.DISMISSED_TAG)) {
           return this.ignored(message, 'thread_dismissed');
         }
+        // A recently finished ticket's thread is still its conversation: the
+        // owner answering the agent, choosing, parking it — not a new ticket.
+        if (this.finishedRecently(threadTicket)) {
+          const ask = classifyOwnerMessage(text, { inThread: true });
+          if (isGenuinelyNewAsk(text, ask)) return this.createInThread(all, message, text, threadTicket, ask);
+          return this.appendToTicket(threadTicket, message, text);
+        }
+        // An old thread: a new conversation (it may open a ticket below).
       } else if (threadTicket.status === 'waiting_confirmation' && this.review) {
         if (review) return this.applyReview(threadTicket, review);
         if (ack) return this.applyReview(threadTicket, { action: 'verify' });
         // A new ask does not reopen the answered one: it gets its own ticket.
         const ask = classifyOwnerMessage(text, { inThread: true });
-        if (ask.verdict === 'new_ask' || ask.verdict === 'question') {
-          return this.createInThread(all, message, text, threadTicket, ask);
-        }
-        // Anything else from the owner: the agent is back on it.
-        await this.review.reopenOnFollowUp(threadTicket.id);
-        return this.appendToTicket(threadTicket, message, text);
+        if (isGenuinelyNewAsk(text, ask)) return this.createInThread(all, message, text, threadTicket, ask);
+        // Anything else from the owner that is not 打回 is his OK (2026-09-28).
+        return this.acceptOnFollowUp(threadTicket, message, text);
       } else {
-        // #827: a thread is not one ticket. A new ask said in it opens its
-        // own; when unsure the classifier appends (ties go to follow-up).
+        // #827: a thread is not one ticket — but only a genuinely new ask
+        // opens its own; answers, choices and questions stay in this one.
         const ask = classifyOwnerMessage(text, { inThread: true });
-        if (ask.verdict === 'new_ask' || ask.verdict === 'question') {
-          return this.createInThread(all, message, text, threadTicket, ask);
-        }
+        if (isGenuinelyNewAsk(text, ask)) return this.createInThread(all, message, text, threadTicket, ask);
         return this.appendToTicket(threadTicket, message, text);
       }
     }
@@ -558,10 +607,28 @@ export class TicketIntakeService {
       if (inReview && (review || recent)) return this.applyReview(inReview, review ?? { action: 'verify' });
     }
 
+    // A DM reply right after the conversation's latest ticket is its
+    // follow-up — short answers too (「是绿卡」 answers the agent's question).
+    if (!threadTicket && text && !TRIVIAL_ACK_PATTERN.test(text)) {
+      const recent = this.recentConversationTicket(all, message);
+      if (recent && !isGenuinelyNewAsk(text, classifyOwnerMessage(text, { inThread: true }))) {
+        if (recent.status === 'waiting_confirmation' && this.review) return this.acceptOnFollowUp(recent, message, text);
+        return this.appendToTicket(recent, message, text);
+      }
+    }
+
     const trivial = suppressTrivialOrShort(text);
     if (trivial) return this.ignored(message, trivial);
     const fileOnly = suppressFileOnly(text, (message.attachments?.length ?? 0) > 0);
     if (fileOnly) return this.ignored(message, fileOnly);
+
+    if (!threadTicket) {
+      // A reply in a thread an agent started (a brief, a question): the owner
+      // is answering it. Only a genuinely new ask becomes a ticket.
+      if (message.isThreadReply && !isGenuinelyNewAsk(text, classifyOwnerMessage(text, { inThread: true }))) {
+        return this.ignored(message, 'thread_reply');
+      }
+    }
 
     // Lazy: v3-data pulls in the pool and storage singletons, which the Slack
     // modules that import this service must not load at module time.
@@ -789,10 +856,73 @@ export class TicketIntakeService {
   }
 
   /**
+   * Whether a finished ticket finished recently enough that its thread is
+   * still its conversation ({@link TICKET_CONSTANTS.FOLLOW_UP.RECENT_TICKET_MS}).
+   *
+   * @param ticket - A done or cancelled ticket
+   * @returns True when follow-ups in its thread still belong to it
+   */
+  private finishedRecently(ticket: Request): boolean {
+    const at = Date.parse(ticket.completedAt ?? ticket.updatedAt);
+    return Number.isFinite(at) && this.now().getTime() - at < TICKET_CONSTANTS.FOLLOW_UP.RECENT_TICKET_MS;
+  }
+
+  /**
+   * In a DM-like conversation (every message top level), the ticket a reply
+   * most likely follows up: the conversation's ticket with the latest
+   * activity, if that was within {@link TICKET_CONSTANTS.FOLLOW_UP.DM_WINDOW_MS}.
+   * Dismissed tickets never take follow-ups.
+   *
+   * @param all - Every Request
+   * @param message - The message
+   * @returns The ticket, or null
+   */
+  private recentConversationTicket(all: readonly Request[], message: IntakeMessage): Request | null {
+    const conversation = message.conversationRef;
+    if (!conversation || !TICKET_CONSTANTS.FOLLOW_UP.DM_ORIGINS.includes(message.origin.channel)) return null;
+    const cutoff = this.now().getTime() - TICKET_CONSTANTS.FOLLOW_UP.DM_WINDOW_MS;
+    let best: Request | null = null;
+    let bestAt = -Infinity;
+    for (const r of all) {
+      if (typeof r.ticketNumber !== 'number' || !this.conversationMatches(r, conversation)) continue;
+      if (r.tags.includes(TICKET_CONSTANTS.DISMISSED_TAG) || r.tags.includes(TICKET_CONSTANTS.STALE.TAG)) continue;
+      const at = ticketLastActivity(r);
+      if (at >= cutoff && at > bestAt) {
+        best = r;
+        bestAt = at;
+      }
+    }
+    return best;
+  }
+
+  /**
+   * An owner follow-up on a 待验收 ticket that is not 打回 (2026-09-28): it is
+   * his OK. The ticket is accepted and the message kept in its discussion;
+   * when it cannot be accepted yet (live work), the agent is back on it.
+   *
+   * @param ticket - The 待验收 ticket
+   * @param message - The follow-up
+   * @param text - Trimmed text
+   * @returns `verified`, or `appended` when it could not be accepted
+   */
+  private async acceptOnFollowUp(ticket: Request, message: IntakeMessage, text: string): Promise<IntakeOutcome> {
+    const review = this.review;
+    if (!review) return this.appendToTicket(ticket, message, text);
+    const result = await review.verify(ticket.id);
+    if (!result.ok) {
+      const reopened = (await review.reopenOnFollowUp(ticket.id)) ?? ticket;
+      return this.appendToTicket(reopened, message, text);
+    }
+    const appended = await this.appendToTicket(result.ticket ?? ticket, message, text);
+    return { action: 'verified', ticket: appended.action === 'appended' ? appended.ticket : ticket };
+  }
+
+  /**
    * Append a follow-up to a ticket's discussion.
    *
-   * Trivial follow-ups ("好的") are not written, but the message still belongs
-   * to the ticket (so the delivered copy carries its marker).
+   * Pure acknowledgements ("好的", "thanks") are not written, but the message
+   * still belongs to the ticket (so the delivered copy carries its marker).
+   * Short answers are written: 「是绿卡」 is what the agent asked for.
    *
    * @param ticket - The open ticket
    * @param message - The follow-up
@@ -800,7 +930,9 @@ export class TicketIntakeService {
    * @returns `appended` outcome
    */
   private async appendToTicket(ticket: Request, message: IntakeMessage, text: string): Promise<IntakeOutcome> {
-    if (suppressTrivialOrShort(text) || text.length === 0) return { action: 'appended', ticket };
+    if (text.length === 0 || TRIVIAL_ACK_PATTERN.test(text) || suppressFileOnly(text, (message.attachments?.length ?? 0) > 0)) {
+      return { action: 'appended', ticket };
+    }
     const discussion = [
       ...(ticket.discussion ?? []),
       {
@@ -1088,11 +1220,7 @@ export class TicketIntakeService {
           : r.acceptedBy ?? (r.tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) ? 'silence' : null),
       autoAcceptAt:
         r.status === 'waiting_confirmation' && r.submittedAt && ticketNeedsReview(r)
-          ? new Date(
-              Date.parse(r.lastNudgeAt ?? r.submittedAt) +
-                TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS *
-                  (TICKET_CONSTANTS.REVIEW.MAX_NUDGES - (r.nudgeCount ?? 0) + 1),
-            ).toISOString()
+          ? new Date(Date.parse(r.submittedAt) + TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS).toISOString()
           : null,
     };
   }

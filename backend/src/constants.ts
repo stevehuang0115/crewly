@@ -3480,6 +3480,21 @@ export const OWNER_RECEIPT_CONSTANTS = {
 	MAX_POSSIBLY_MISSED: 5,
 	/** Team label for a ticket nobody is assigned to */
 	UNASSIGNED_TEAM: '未分配',
+	/**
+	 * The redesigned receipt (owner, 2026-09-28: 14 asks + 17 「等你拍板」 with
+	 * ticket numbers was overwhelming): at most this many 「今天做完的」 lines…
+	 */
+	MAX_HIGHLIGHTS: 3,
+	/** …and this many 「需要你决定的」 lines; the rest is 「另有 N 件，在看板上」 */
+	MAX_DECISIONS: 3,
+	/** A deliverable older than this is no longer put in front of the owner (ms) */
+	DECISION_MAX_AGE_MS: 3 * 24 * 60 * 60 * 1000,
+	/** One receipt line is cut (at a phrase boundary) to this weighted length */
+	MAX_LINE_WEIGHTED_LENGTH: 64,
+	/** A summary line shorter than this (weighted) says nothing; the next line is used */
+	MIN_SUMMARY_WEIGHTED_LENGTH: 12,
+	/** How the orchestrator is named on the receipt (it is in no team) */
+	ORCHESTRATOR_LABEL: 'Orc',
 } as const;
 
 /**
@@ -3565,6 +3580,14 @@ export const TICKET_CONSTANTS = {
 		RETRY_CONTINUE: /(再看看|再看一次|再试试|你再|重新|继续|接着)/,
 		/** Ends as a suggestion about the current work (+3 follow): 「…添加一些截图吧？」 */
 		SUGGEST_TAIL: /吧[？?]?\s*$/,
+		/**
+		 * What to do with the thing just discussed (+3 follow, in a thread):
+		 * park it, keep it, remind me — 「A 论文那个 开个Issue吧 放到backlog」
+		 * 「加到flopost的backlog」「好的 存下来」「提醒我明天做这件事」.
+		 * The owner deciding about the agent's output, not a new unit of work
+		 * (owner, 2026-09-28: these had become tickets of their own).
+		 */
+		DISPOSITION: /(backlog|存下来|记下来|记一下|收进|放到|提醒我)/i,
 		/** Asks where things stand (+3 follow; top level: not an ask) */
 		STATUS_PING: /(在线了吗|好了吗|怎么样了|现在呢|有听吗|进展|进度|到哪了|有数了吗|登陆了吗|登陆过了|在吗|done yet|any update|how'?s it going|\bstatus\b|right now|working on)/i,
 		/**
@@ -3633,16 +3656,37 @@ export const TICKET_CONSTANTS = {
 		NO_REVIEW_CATEGORIES: ['communication'] as readonly string[],
 		/** Tag on a ticket that closed because nobody objected in time */
 		AUTO_ACCEPTED_TAG: 'auto_accepted',
-		/** 待验收 this long with no word from the owner → accepted (ms) */
-		AUTO_ACCEPT_MS: 72 * 60 * 60 * 1000,
+		/**
+		 * 待验收 this long after the answer with no word from the owner →
+		 * accepted (ms). A hard deadline from `submittedAt`, whatever the nudges
+		 * did (owner, 2026-09-28: 43 tickets sat in 待验收; the old 24h → nudge →
+		 * 24h → nudge → 24h chain took 72h+ and restarted on every re-answer).
+		 */
+		AUTO_ACCEPT_MS: 24 * 60 * 60 * 1000,
 		/**
 		 * The agent that answered asks the owner itself (owner, 2026-09-24):
-		 * with no word from the owner this long after the answer (or the last
-		 * nudge), the agent is nudged to follow up once more in the thread.
+		 * with no word from the owner this long after the answer, the agent is
+		 * nudged once to follow up in the thread, before the auto-accept.
 		 */
-		NUDGE_AFTER_MS: 24 * 60 * 60 * 1000,
+		NUDGE_AFTER_MS: 12 * 60 * 60 * 1000,
 		/** Nudges before silence counts as acceptance */
-		MAX_NUDGES: 2,
+		MAX_NUDGES: 1,
+		/** Tag on a ticket closed as soon as it was answered (nothing to review) */
+		ANSWERED_TAG: 'answered',
+		/**
+		 * The owner's ask names a deliverable someone has to look at before it
+		 * counts: a document, an email or a reply to send, a draft, a form, code,
+		 * a deploy, money, anything sent out in his name. Only these (or an
+		 * answer that asks him something) wait in 待验收; a plain answer closes.
+		 */
+		DELIVERABLE_ASK: /(写|起草|草稿|draft|邮件|email|e-mail|回信|回复他|回复她|回他|回她|文档|\bdoc\b|pdf|ppt|表格|sheet|表单|\bform\b|填|代码|\bcode\b|\bPR\b|pull request|部署|deploy|上线|发布|publish|发出去|发送|发给|发到|寄|付款|支付|转账|报价|合同|申请|提交|实现|implement|修复|\bfix\b|改成|改一下|做一个|做个|做成|建一个|加一个|添加|设置|配置)/i,
+		/** Intent categories that always need a look (a change was made) */
+		DELIVERABLE_CATEGORIES: ['code_change', 'deployment'] as readonly string[],
+		/**
+		 * The answer asks the owner something (a decision or an OK) — then the
+		 * ticket is waiting on him even without a deliverable.
+		 */
+		OWNER_QUESTION: /(行吗|行不行|可以吗|好吗|对吗|要不要[^。！\n]{0,24}[？?]|要吗|需要吗|同意吗|你来定|由你定|你定吧|你定一下|你定[？?]|你选|选哪个|哪个(好|更|现实)[^。！\n]{0,12}[？?]|怎么选|\bOK\b\s*[?？]|sound good|shall I|should I|do you want)/i,
 		/**
 		 * A plain acknowledgement from the owner in a ticket's thread while the
 		 * agent is waiting for their OK counts as the OK (「好的」「可以」「行」).
@@ -3665,6 +3709,53 @@ export const TICKET_CONSTANTS = {
 		/** WorkItem title for a rework sent from the board */
 		REWORK_TITLE: (tkt: string) => `打回 ${tkt}`,
 	},
+	/**
+	 * Follow-ups vs new tickets (owner, 2026-09-28): an answer to an agent's
+	 * question — 「发了」「是绿卡」「A 论文那个 开个Issue吧」 — belongs to the
+	 * conversation it answers, never to a ticket of its own.
+	 */
+	FOLLOW_UP: {
+		/**
+		 * A thread whose ticket finished (answered, accepted) this recently
+		 * still takes follow-ups into that ticket instead of opening a new one.
+		 */
+		RECENT_TICKET_MS: 3 * 24 * 60 * 60 * 1000,
+		/**
+		 * In a DM (every message is top level) a reply this soon after the
+		 * conversation's latest ticket activity is a follow-up to that ticket.
+		 */
+		DM_WINDOW_MS: 2 * 60 * 60 * 1000,
+		/** Origins where every message is top level (DM-like conversations) */
+		DM_ORIGINS: ['slack-dm', 'chat', 'portal', 'mobile'] as readonly string[],
+		/**
+		 * A reply this short (weighted, CJK double) is an answer, not a new
+		 * ask, unless it says 「帮我…」 outright: 「可以改到10:30吗」.
+		 */
+		SHORT_REPLY_WEIGHTED_LENGTH: 24,
+	},
+	/**
+	 * Tickets nobody touched for this long are closed as stale (owner,
+	 * 2026-09-28): open / running with no activity; the agent reopens one by
+	 * answering in its thread.
+	 */
+	STALE: {
+		AFTER_MS: 3 * 24 * 60 * 60 * 1000,
+		/** Tag on a ticket closed as stale */
+		TAG: 'stale',
+		/** Statuses that go stale */
+		STATUSES: ['open', 'ready', 'running'] as readonly string[],
+		/** Discussion note left on a ticket closed as stale */
+		NOTE: '3 天没有动静，自动关闭。负责的 agent 在原对话里回复即可重新打开。',
+		/** Author of that note */
+		NOTE_AUTHOR: 'crewly',
+	},
+	/**
+	 * WorkItem statuses that no longer hold a ticket open once the ticket is
+	 * accepted: a verify that was rejected and superseded by its retry, a
+	 * failed attempt. The #467 gate treats them as open, which kept accepted
+	 * tickets out of done for good (TKT-017: two `rejected` WorkItems).
+	 */
+	DEAD_WORK_ITEM_STATUSES: ['rejected', 'failed'] as readonly string[],
 	/** Metadata key the dispatcher reads the delivered-message marker from */
 	MESSAGE_MARKER_METADATA_KEY: 'ticketMarker',
 	/** Metadata key on a chat-v2 receipt row */

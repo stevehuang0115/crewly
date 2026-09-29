@@ -17,10 +17,18 @@
  *   acceptance criterion (#763: criteria grow from real review) and, when the
  *   owner sent it back from the board rather than the thread, a rework
  *   WorkItem is queued for whoever answered.
+ * - **Only deliverables wait.** An answer closes the ticket at once (tagged
+ *   `answered`) unless {@link answerNeedsOwner} says the owner has to look at
+ *   something — a document, an email, a draft, a form, code, a deploy,
+ *   money — or the answer asks him a question (2026-09-28).
  * - **Silence accepts.** 待验收 for {@link TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS}
- *   with no word → done, tagged `auto_accepted` and `acceptedBy: 'silence'`
- *   (#813: accepted, not verified — the board labels it so). The owner is
- *   never pinged.
+ *   (24h, a hard deadline from the answer) with no word → done, tagged
+ *   `auto_accepted` and `acceptedBy: 'silence'` (#813: accepted, not
+ *   verified — the board labels it so). The owner is never pinged; the agent
+ *   is nudged once before that to ask in its own words.
+ * - **Stale closes.** open / running with no activity for
+ *   {@link TICKET_CONSTANTS.STALE.AFTER_MS} → cancelled, tagged `stale`, with a
+ *   note; the agent answering in its thread reopens it.
  *
  * The `done` gate itself lives in {@link RequestService.update}: without
  * `accepted`, a ticket that needs review cannot become done by any path.
@@ -48,6 +56,7 @@ import {
   parseTicketNumber,
   ticketNeedsReview,
 } from '../../types/v2/ticket.types.js';
+import { answerNeedsOwner, isStaleTicket, staleCloseUpdate } from './ticket-hygiene.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -190,14 +199,30 @@ export class TicketReviewService {
           !TERMINAL_REQUEST_STATUSES.has(r.status) &&
           (!r.assignee || r.assignee === message.senderId || message.threadId !== undefined),
       );
-      if (inChannel.length === 0) return null;
-      const ticket = message.threadId
-        ? inChannel.find((r) => r.chatRef?.threadRootId === message.threadId || r.chatRef?.messageId === message.threadId) ?? null
-        : inChannel[0]; // listAll is newest-first
-      if (!ticket) return null;
+      const inThread = (r: Request): boolean =>
+        r.chatRef?.threadRootId === message.threadId || r.chatRef?.messageId === message.threadId;
       const excerpt = message.content.trim().slice(0, TICKET_CONSTANTS.REVIEW.REPLY_EXCERPT_MAX);
+      const reply = { at: this.now().toISOString(), by: message.senderId, messageId: message.id, excerpt };
+      // The agent answered a ticket that was closed as stale: it is back on.
+      const stale = message.threadId
+        ? all.find(
+            (r) =>
+              typeof r.ticketNumber === 'number' &&
+              r.status === 'cancelled' &&
+              r.tags.includes(TICKET_CONSTANTS.STALE.TAG) &&
+              r.chatRef?.channelId === message.channelId &&
+              inThread(r),
+          )
+        : undefined;
+      if (stale && !inChannel.some(inThread)) {
+        this.logger.info('Stale ticket reopened by its agent', { tkt: tkt(stale), by: message.senderId });
+        return this.deps.requests.update(stale.id, { status: 'running', reopenStale: true, reply });
+      }
+      if (inChannel.length === 0) return null;
+      const ticket = message.threadId ? inChannel.find(inThread) ?? null : inChannel[0]; // listAll is newest-first
+      if (!ticket) return null;
       const updated = await this.deps.requests.update(ticket.id, {
-        reply: { at: this.now().toISOString(), by: message.senderId, messageId: message.id, excerpt },
+        reply,
         // Somebody is on it.
         ...(ticket.status === 'open' || ticket.status === 'ready' ? { status: 'running' as const } : {}),
       });
@@ -221,47 +246,71 @@ export class TicketReviewService {
    *
    * @returns What changed
    */
-  async sweep(): Promise<{ submitted: number; autoAccepted: number }> {
+  async sweep(): Promise<{ submitted: number; autoAccepted: number; staleClosed: number }> {
     return this.serial(async () => {
       const settleBefore = this.now().getTime() - TICKET_CONSTANTS.REVIEW.SUBMIT_SETTLE_MS;
       const submitted = await this.submitAnswered((t) => !!t.reply && Date.parse(t.reply.at) <= settleBefore);
       const now = this.now().getTime();
       let autoAccepted = 0;
       let nudged = 0;
+      let staleClosed = 0;
       for (const t of await this.deps.requests.listAll()) {
-        if (t.status !== 'waiting_confirmation' || !ticketNeedsReview(t) || !t.submittedAt) continue;
-        const agent = t.reply?.by ?? t.assignee;
-        if (this.deps.nudgeAgent && agent) {
-          // The agent asks the owner itself; silence gets it to ask again, up
-          // to MAX_NUDGES times, and only then counts as acceptance.
-          const since = Date.parse(t.lastNudgeAt ?? t.submittedAt);
-          if (now - since < TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS) continue;
-          if ((t.nudgeCount ?? 0) < TICKET_CONSTANTS.REVIEW.MAX_NUDGES) {
-            const ok = await this.deps
-              .nudgeAgent(agent, nudgeText(t, now))
-              .then(() => true)
-              .catch((err: unknown) => {
-                this.logger.debug('Nudge could not be delivered', { id: t.id, error: errText(err) });
-                return false;
-              });
-            if (ok) {
-              await this.deps.requests.update(t.id, { nudgeCount: (t.nudgeCount ?? 0) + 1, lastNudgeAt: new Date(now).toISOString() });
-              nudged += 1;
-            }
-            continue;
-          }
-        } else if (now - Date.parse(t.submittedAt) < TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS) {
+        if (typeof t.ticketNumber === 'number' && isStaleTicket(t, now)) {
+          if (await this.closeStale(t, now)) staleClosed += 1;
           continue;
         }
-        const tags = [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG])];
-        const r = await this.accept(t, tags);
-        if (r.ok) autoAccepted += 1;
+        if (t.status !== 'waiting_confirmation' || !ticketNeedsReview(t) || !t.submittedAt) continue;
+        // Silence accepts: a hard deadline from the answer, whatever the nudges did.
+        if (now - Date.parse(t.submittedAt) >= TICKET_CONSTANTS.REVIEW.AUTO_ACCEPT_MS) {
+          const tags = [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG])];
+          const r = await this.accept(t, tags);
+          if (r.ok) autoAccepted += 1;
+          else this.logger.debug('Auto-accept refused', { id: t.id, reason: r.reason });
+          continue;
+        }
+        // Before that, the agent asks the owner itself (up to MAX_NUDGES times).
+        const agent = t.reply?.by ?? t.assignee;
+        if (!this.deps.nudgeAgent || !agent) continue;
+        if ((t.nudgeCount ?? 0) >= TICKET_CONSTANTS.REVIEW.MAX_NUDGES) continue;
+        if (now - Date.parse(t.lastNudgeAt ?? t.submittedAt) < TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS) continue;
+        const ok = await this.deps
+          .nudgeAgent(agent, nudgeText(t, now))
+          .then(() => true)
+          .catch((err: unknown) => {
+            this.logger.debug('Nudge could not be delivered', { id: t.id, error: errText(err) });
+            return false;
+          });
+        if (ok) {
+          await this.deps.requests.update(t.id, { nudgeCount: (t.nudgeCount ?? 0) + 1, lastNudgeAt: new Date(now).toISOString() });
+          nudged += 1;
+        }
       }
-      if (submitted.length > 0 || autoAccepted > 0 || nudged > 0) {
-        this.logger.info('Ticket review sweep', { submitted: submitted.length, autoAccepted, nudged });
+      if (submitted.length > 0 || autoAccepted > 0 || nudged > 0 || staleClosed > 0) {
+        this.logger.info('Ticket review sweep', { submitted: submitted.length, autoAccepted, nudged, staleClosed });
       }
-      return { submitted: submitted.length, autoAccepted };
+      return { submitted: submitted.length, autoAccepted, staleClosed };
     });
+  }
+
+  /**
+   * Close a ticket nobody touched for {@link TICKET_CONSTANTS.STALE.AFTER_MS}
+   * (cancelled + `stale` + a note). Skipped while one of its WorkItems is
+   * still live — then somebody is on it.
+   *
+   * @param t - The ticket
+   * @param now - Current time (ms)
+   * @returns True when it was closed
+   */
+  private async closeStale(t: Request, now: number): Promise<boolean> {
+    try {
+      if (this.deps.openWorkItemCount && (await this.deps.openWorkItemCount(t.id)) > 0) return false;
+      await this.deps.requests.update(t.id, staleCloseUpdate(t, new Date(now).toISOString()));
+      this.logger.info('Ticket closed as stale', { tkt: tkt(t), status: t.status });
+      return true;
+    } catch (err) {
+      this.logger.debug('Stale ticket could not be closed', { id: t.id, error: errText(err) });
+      return false;
+    }
   }
 
   /**
@@ -280,9 +329,22 @@ export class TicketReviewService {
       if (this.deps.openWorkItemCount && (await this.deps.openWorkItemCount(t.id)) > 0) continue;
       try {
         // `done` without `accepted`: the RequestService gate turns it into
-        // 待验收 when the ticket needs review.
+        // 待验收 when the ticket needs review. A plain answer (nothing for the
+        // owner to look at) closes right here (2026-09-28).
         const base = t.status === 'ready' ? await this.deps.requests.update(t.id, { status: 'running' }) : t;
-        const updated = await this.deps.requests.update(base.id, { status: 'done', result: t.reply.excerpt });
+        const closeNow = ticketNeedsReview(t) && !answerNeedsOwner(t);
+        const updated = await this.deps.requests.update(
+          base.id,
+          closeNow
+            ? {
+                status: 'done',
+                result: t.reply.excerpt,
+                accepted: true,
+                ignoreDeadChildren: true,
+                tags: [...new Set([...t.tags, TICKET_CONSTANTS.REVIEW.ANSWERED_TAG])],
+              }
+            : { status: 'done', result: t.reply.excerpt },
+        );
         out.push(updated);
         this.logger.info('Ticket answered', { tkt: tkt(updated), status: updated.status, by: t.reply.by });
         if (updated.status === 'done') await this.receiptDone(updated);
@@ -330,7 +392,7 @@ export class TicketReviewService {
       }
       // #813: silence is recorded as acceptance, never as a review.
       const acceptedBy = tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) ? 'silence' : 'owner';
-      const updated = await this.deps.requests.update(current.id, { status: 'done', accepted: true, acceptedBy, tags });
+      const updated = await this.deps.requests.update(current.id, { status: 'done', accepted: true, ignoreDeadChildren: true, acceptedBy, tags });
       this.logger.info('Ticket accepted', { tkt: tkt(updated), auto: tags.includes(TICKET_CONSTANTS.REVIEW.AUTO_ACCEPTED_TAG) });
       await this.receiptDone(updated);
       return { ok: true, ticket: updated };

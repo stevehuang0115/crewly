@@ -108,6 +108,44 @@ describe('RequestService — ticket review gate (ticket-loop Phase 2)', () => {
     expect(done.completedAt).toEqual(expect.any(String));
   });
 
+  it('an accepted ticket is not held open by dead WorkItems (rejected / failed), only by live ones (2026-09-28)', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const t = await makeTicket();
+    const status: Record<string, WorkItem['status']> = { dead: 'rejected', gone: 'failed', ok: 'verified' };
+    for (const id of Object.keys(status)) await service.linkWorkItem(t.id, id);
+    service.setTaskPoolService({
+      findWorkItem: async (id: string) => ({ ...createWorkItem({ type: 'delegate', owner: 'agent', title: 'x' }), id, status: status[id] }),
+    });
+    await service.update(t.id, { status: 'running' });
+    await service.update(t.id, { status: 'done' }); // → 待验收
+    // Without the flag the #467 gate still refuses.
+    await expect(service.update(t.id, { status: 'done', accepted: true })).rejects.toBeInstanceOf(RequestStillHasOpenChildrenError);
+    expect((await service.update(t.id, { status: 'done', accepted: true, ignoreDeadChildren: true })).status).toBe('done');
+
+    const live = await makeTicket({ sourceConversationItemId: 'live' });
+    await service.linkWorkItem(live.id, 'running-one');
+    status['running-one'] = 'running';
+    await service.update(live.id, { status: 'running' });
+    await expect(service.update(live.id, { status: 'done', accepted: true, ignoreDeadChildren: true })).rejects.toBeInstanceOf(
+      RequestStillHasOpenChildrenError,
+    );
+    service.setTaskPoolService(null);
+  });
+
+  it('reopenStale brings a stale-closed ticket back to running; any other cancelled ticket stays closed', async () => {
+    const service = RequestService.getInstance('/tmp/test-project');
+    const stale = await makeTicket({ tags: ['ticket', 'stale'] });
+    await service.update(stale.id, { status: 'cancelled' });
+    const back = await service.update(stale.id, { status: 'running', reopenStale: true });
+    expect(back.status).toBe('running');
+    expect(back.tags).not.toContain('stale');
+    expect(back.completedAt).toBeUndefined();
+
+    const dismissed = await makeTicket({ sourceConversationItemId: 'd', tags: ['ticket', 'dismissed'] });
+    await service.update(dismissed.id, { status: 'cancelled' });
+    await expect(service.update(dismissed.id, { status: 'running', reopenStale: true })).rejects.toThrow('Invalid status transition');
+  });
+
   it('cron tickets and plain Requests close directly', async () => {
     const service = RequestService.getInstance('/tmp/test-project');
     const cron = await makeTicket({ origin: { channel: 'cron', ref: 'c', author: 'system' } });

@@ -284,3 +284,30 @@ describe('POST /api/tickets/:id/split (#827)', () => {
     expect((await request(app).post('/api/tickets/TKT-001/split').send({ text: 'x' })).status).toBe(503);
   });
 });
+
+describe('POST /api/tickets/cleanup (specs/ticket-calm.md §3)', () => {
+  it('is a dry run unless apply: true, then accepts old 待验收 tickets; a second run changes nothing', async () => {
+    const t = await svc.intake(msg('1.0', '帮我写一份周报'));
+    await requests.update(t!.id, { status: 'running' });
+    await requests.update(t!.id, { status: 'done' }); // the review gate → 待验收
+    await requests.update(t!.id, { submittedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString() });
+
+    const dry = await request(app).post('/api/tickets/cleanup').send({});
+    expect(dry.status).toBe(200);
+    expect(dry.body.data).toMatchObject({ applied: false, accept: 1, stale: 0 });
+    expect((await requests.getById(t!.id))?.status).toBe('waiting_confirmation');
+
+    const applied = await request(app).post('/api/tickets/cleanup').send({ apply: true });
+    expect(applied.body.data).toMatchObject({ applied: true, accept: 1, failed: [] });
+    expect(await requests.getById(t!.id)).toMatchObject({ status: 'done', acceptedBy: 'silence' });
+
+    const again = await request(app).post('/api/tickets/cleanup').send({ apply: true });
+    expect(again.body.data).toMatchObject({ accept: 0, stale: 0, actions: [] });
+  });
+
+  it('is owner-only and validates its body', async () => {
+    expect((await request(app).post('/api/tickets/cleanup').set('X-Agent-Session', 'ella').send({})).status).toBe(403);
+    expect((await request(app).post('/api/tickets/cleanup').send({ apply: 'yes' })).status).toBe(400);
+    expect((await request(app).post('/api/tickets/cleanup').send({ includeLegacy: 1 })).status).toBe(400);
+  });
+});

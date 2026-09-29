@@ -97,7 +97,7 @@ import { RequestStatusUpdateSubscriber } from './services/v3/request-status-upda
 import { RequestCascadeSubscriber } from './services/v3/request-cascade.subscriber.js';
 import { setRequestServiceEventBus, RequestService } from './services/v3/request.service.js';
 import { OwnerReceiptService, setOwnerReceiptService } from './services/v3/owner-receipt/owner-receipt.service.js';
-import { createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf } from './services/v3/owner-receipt/owner-receipt.boot.js';
+import { agentNameIndexOf, createSlackOwnerSender, startOwnerReceiptSchedule, teamIndexOf, teamLeadIndexOf } from './services/v3/owner-receipt/owner-receipt.boot.js';
 import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
@@ -618,6 +618,7 @@ export class CrewlyServer {
 					listWorkItems: () => TaskPoolService.getInstance().getAllItems(),
 					loadTeamIndex: async () => teamIndexOf(await StorageService.getInstance().getTeams()),
 					loadTeamLeadIndex: async () => teamLeadIndexOf(await StorageService.getInstance().getTeams()),
+					loadAgentNameIndex: async () => agentNameIndexOf(await StorageService.getInstance().getTeams()),
 					sender: createSlackOwnerSender(() => getSlackService()),
 					readIntakeLog: () => intakeOutcomeLog.read(),
 				});
@@ -632,9 +633,15 @@ export class CrewlyServer {
 			const ticketReview = new TicketReviewService({
 				requests: RequestService.getInstance(),
 				fallbackAgent: ORCHESTRATOR_SESSION_NAME,
+				// Live work only: a rejected verify superseded by its retry, or a
+				// failed attempt, no longer means somebody is on it (TKT-017/021/053
+				// sat for days behind `rejected` WorkItems).
 				openWorkItemCount: async (requestId) =>
 					(await TaskPoolService.getInstance().getAllItems()).filter(
-						(wi) => wi.requestId === requestId && !TERMINAL_WORK_ITEM_STATUSES.has(wi.status),
+						(wi) =>
+							wi.requestId === requestId &&
+							!TERMINAL_WORK_ITEM_STATUSES.has(wi.status) &&
+							!TICKET_CONSTANTS.DEAD_WORK_ITEM_STATUSES.includes(wi.status),
 					).length,
 				createRework: async ({ ticket, reason, target }) => {
 					const tkt = formatTicketNumber(ticket.ticketNumber ?? 0);

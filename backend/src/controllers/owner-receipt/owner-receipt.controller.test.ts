@@ -19,7 +19,13 @@ let senderOk: boolean;
 beforeEach(() => {
   sent = [];
   senderOk = true;
-  const t = { ...createRequest({ sourceConversationItemId: 'r1', title: 't', description: '研究 Orca', ticketNumber: 1 }), createdAt: '2026-09-26T15:00:00Z', status: 'done' as const };
+  const t = {
+    ...createRequest({ sourceConversationItemId: 'r1', title: 't', description: '研究 Orca', ticketNumber: 1 }),
+    createdAt: '2026-09-26T15:00:00Z',
+    completedAt: '2026-09-26T15:30:00Z',
+    status: 'done' as const,
+    result: '研究完了：Orca 和我们有三点不同，写进了 wiki',
+  };
   setOwnerReceiptService(
     new OwnerReceiptService({
       listRequests: async () => [t],
@@ -42,7 +48,7 @@ describe('GET /api/owner-receipt', () => {
     const res = await request(app).get('/api/owner-receipt');
     expect(res.status).toBe(200);
     expect(res.body.data.receipt).toMatchObject({ askCount: 1, window: { basis: 'local_day' } });
-    expect(res.body.data.text).toContain('研究 Orca');
+    expect(res.body.data.text).toContain('Orca 和我们有三点不同');
   });
 
   it('takes an explicit window and a mode, and rejects bad ones', async () => {
