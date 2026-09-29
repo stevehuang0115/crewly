@@ -16,6 +16,7 @@
 #   bash execute.sh release --project P --id APP-12 [--note "why"]
 #   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]   (owner / orc / lead)
 #   bash execute.sh log     --project P --id APP-12 --note "progress"
+#   bash execute.sh link    --project P --id APP-12 --work-item <WorkItem id>   (owner / orc / lead)
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
 # P = project id, name, or absolute path.
@@ -39,6 +40,9 @@ Usage:
   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]
                                                               Orchestrator / team lead: put someone on it
   bash execute.sh log     --project P --id APP-12 --note "…"  Add a progress note to the ticket's Log
+  bash execute.sh link    --project P --id APP-12 --work-item <id>
+                                                              Orchestrator / team lead: tie work already in
+                                                              flight (a live WorkItem) to this ticket
 
 P = project id, name or absolute path. Workers' new tickets start in backlog;
 the owner, the orchestrator or a team lead makes them ready.
@@ -46,7 +50,7 @@ EOF_USAGE
 }
 
 ACTION=""; PROJECT=""; ID=""; TITLE=""; DESCRIPTION=""; PRIORITY=""; LABELS=""; TEAM=""
-STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"
+STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"; WORK_ITEM=""
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
 
@@ -70,6 +74,7 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   ACCEPTANCE_JSON=$(printf '%s' "$J" | jq -c 'if (.acceptance|type) == "array" then .acceptance else null end')
   ASSIGNEE=$(printf '%s' "$J" | jq -r '.to // .assignee // empty')
   START=$(printf '%s' "$J" | jq -r 'if .start == false then "false" else "true" end')
+  WORK_ITEM=$(printf '%s' "$J" | jq -r '.workItemId // .workItem // empty')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
 
@@ -91,13 +96,15 @@ while [[ $# -gt 0 ]]; do
     --owner-review)  OWNER_REVIEW="true"; shift ;;
     --to|--assignee) [ $# -ge 2 ] || error_exit "--to requires a value";         ASSIGNEE="$2"; shift 2 ;;
     --no-start)      START="false"; shift ;;
+    --work-item|--work-item-id|--workItemId)
+                     [ $# -ge 2 ] || error_exit "--work-item requires a value";   WORK_ITEM="$2"; shift 2 ;;
     --full)          shift ;;
     --help|-h)       print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
 done
 
-[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log"; }
+[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log | link"; }
 
 # URL-encode a path segment (project paths contain slashes).
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
@@ -176,7 +183,13 @@ case "$ACTION" in
     BODY=$(jq -n --arg note "$NOTE" '{note: $note}')
     api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/log" "$BODY" | jq '{success, lastLog: (.data.log | last)}'
     ;;
+  link)
+    require_param "project" "$PROJECT"; require_param "id" "$ID"; require_param "work-item" "$WORK_ITEM"
+    BODY=$(jq -n --arg wi "$WORK_ITEM" '{workItemId: $wi}')
+    api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/link" "$BODY" \
+      | jq "{success, workItemId: .data.workItem.id, ticket: (.data.ticket | ${TICKET_ROW})}"
+    ;;
   *)
-    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log)"
+    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log | link)"
     ;;
 esac

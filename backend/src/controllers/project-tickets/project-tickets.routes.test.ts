@@ -14,6 +14,10 @@ describe('project tickets routers', () => {
     for (const r of routesOf(createProjectTicketsRouter())) expect(r).toMatch(/^(get|post) /);
   });
 
+  it('exposes the link endpoint', () => {
+    expect(routesOf(createProjectTicketsRouter())).toContain('post /:project/:id/link');
+  });
+
   it('keeps the migration on its own prefix', () => {
     expect(routesOf(createProjectTicketsMigrationRouter())).toEqual(['post /:project']);
   });

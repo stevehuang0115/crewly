@@ -22,8 +22,12 @@ function member(id: string, sessionName: string, role = 'developer'): TeamMember
   return { id, name: id, sessionName, role, systemPrompt: '', agentStatus: 'active', workingStatus: 'idle', runtimeType: 'claude-code', createdAt: '', updatedAt: '' } as TeamMember;
 }
 
+/** Items of the current fake pool (tests seed in-flight WorkItems here). */
+let poolItems = new Map<string, WorkItem>();
+
 function fakePool(): ProjectTicketPool {
   const items = new Map<string, WorkItem>();
+  poolItems = items;
   return {
     addToPool: async (wi) => void items.set(wi.id, { ...wi }),
     claimSpecificItem: async (agent, id) => {
@@ -41,6 +45,12 @@ function fakePool(): ProjectTicketPool {
       return wi ?? null;
     },
     releaseClaim: async () => undefined,
+    mergeItemMetadata: async (id, patch) => {
+      const wi = items.get(id);
+      if (!wi) return null;
+      wi.metadata = { ...(wi.metadata ?? {}), ...patch };
+      return { ...wi };
+    },
   };
 }
 
@@ -88,7 +98,21 @@ describe('project tickets API', () => {
       'post /:project/:id/claim',
       'post /:project/:id/assign',
       'post /:project/:id/log',
+      'post /:project/:id/link',
     ]);
+  });
+
+  it('links an in-flight WorkItem (lead), refuses members and finished items', async () => {
+    await request(app).post('/api/project-tickets/p1').send({ title: 'Deploy' });
+    poolItems.set('wi-live', { id: 'wi-live', type: 'delegate', owner: 'team_lead', target: 'dev-ann', title: 'Deploy', status: 'running', createdAt: '', retryCount: 0, maxRetries: 3, inputTokens: 0, outputTokens: 0, cost: 0 });
+    poolItems.set('wi-done', { ...poolItems.get('wi-live')!, id: 'wi-done', status: 'verified' });
+    expect((await request(app).post('/api/project-tickets/p1/APP-1/link').set('X-Agent-Session', 'dev-ann').send({ workItemId: 'wi-live' })).status).toBe(403);
+    expect((await request(app).post('/api/project-tickets/p1/APP-1/link').set('X-Agent-Session', 'tl-sam').send({ workItemId: 'wi-done' })).status).toBe(409);
+    expect((await request(app).post('/api/project-tickets/p1/APP-1/link').set('X-Agent-Session', 'tl-sam').send({})).status).toBe(400);
+    const res = await request(app).post('/api/project-tickets/p1/APP-1/link').set('X-Agent-Session', 'tl-sam').send({ workItemId: 'wi-live' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.ticket).toMatchObject({ status: 'in_progress', assignee: 'dev-ann', workItemId: 'wi-live' });
+    expect(poolItems.get('wi-live')!.metadata).toMatchObject({ projectTicket: { projectPath: project.path, id: 'APP-1' } });
   });
 
   it('owner creates, lists, reads, updates and moves a ticket', async () => {

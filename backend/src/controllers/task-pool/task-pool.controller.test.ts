@@ -29,6 +29,8 @@ import { TaskPoolService, WorkItemClaimedError } from '../../services/task-pool/
 import { StorageService } from '../../services/core/storage.service.js';
 import { TeamBudgetExceededError } from '../../services/budget/team-budget-gate.service.js';
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
+import { ProjectTicketWorkflowService } from '../../services/project-tickets/project-ticket-workflow.service.js';
+import { ProjectTicketError } from '../../services/project-tickets/project-ticket.service.js';
 // Express types used for mock helpers below
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1026,53 @@ describe('TaskPoolController', () => {
       expect(body.data.workItemId).toBe(addedWI.id);
       expect(body.data.id).toBe(addedWI.id);
       expect(body.data.status).toBe('queued');
+    });
+
+    describe('project tickets (delegation through tickets)', () => {
+      const routeDelegation = jest.fn();
+      beforeEach(() => {
+        routeDelegation.mockReset();
+        ProjectTicketWorkflowService.setInstance({ routeDelegation } as unknown as ProjectTicketWorkflowService);
+      });
+      afterEach(() => ProjectTicketWorkflowService.setInstance(null));
+
+      const body = () => ({ type: 'delegate', owner: 'team_lead', target: 'crewly-product-leo', title: 'Do X', projectTicketId: 'APP-3' });
+
+      it('lets the workflow add a routed item and reports the ticket', async () => {
+        routeDelegation.mockImplementation(async ({ workItem }) => ({
+          workItem: { ...workItem, metadata: { projectTicket: { projectPath: '/p', id: 'APP-3' } } },
+          ticket: { id: 'APP-3', status: 'in_progress' },
+          project: { path: '/p', name: 'App' },
+          createdTicket: false,
+        }));
+        const res = mockRes();
+        await addItem(mockReq({ headers: { 'x-agent-session': 'tl-sam' }, body: body() }), res);
+        expect(res.status).toHaveBeenCalledWith(201);
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+        const input = routeDelegation.mock.calls[0][0];
+        expect(input).toMatchObject({ callerSession: 'tl-sam', ticketId: 'APP-3', addOptions: { creatorSession: 'tl-sam' } });
+        expect(input.workItem).not.toHaveProperty('projectTicketId');
+        expect(res.json.mock.calls[0][0].data.projectTicket).toEqual({ id: 'APP-3', status: 'in_progress', projectPath: '/p', project: 'App', created: false });
+      });
+
+      it('adds the item itself when the workflow does not route it; falls back to metadata.delegatedBy', async () => {
+        routeDelegation.mockResolvedValue(null);
+        const res = mockRes();
+        await addItem(mockReq({ body: { ...body(), projectTicketId: undefined, metadata: { delegatedBy: 'tl-sam' } } }), res);
+        expect(res.status).toHaveBeenCalledWith(201);
+        expect(routeDelegation.mock.calls[0][0].callerSession).toBe('tl-sam');
+        expect(mockService.addToPool).toHaveBeenCalledTimes(1);
+        expect(res.json.mock.calls[0][0].data.projectTicket).toBeUndefined();
+      });
+
+      it('refuses with project_ticket_refused and adds nothing', async () => {
+        routeDelegation.mockRejectedValue(new ProjectTicketError(409, 'APP-3 is already being worked in WorkItem wi-1'));
+        const res = mockRes();
+        await addItem(mockReq({ headers: { 'x-agent-session': 'tl-sam' }, body: body() }), res);
+        expect(res.status).toHaveBeenCalledWith(409);
+        expect(res.json.mock.calls[0][0]).toMatchObject({ success: false, code: 'project_ticket_refused', error: expect.stringContaining('already being worked') });
+        expect(mockService.addToPool).not.toHaveBeenCalled();
+      });
     });
 
     describe('ticket loop', () => {
