@@ -5919,7 +5919,17 @@ Loop until done, blocked, or explicitly reassigned:
 				// Skip Antigravity too: its idle placeholder and the `> text` echo
 				// of every submitted message sit on `>` lines, and Enter during a
 				// turn can cancel it; its deliveries are verified on the prompt box.
-				if (runtimeType === RUNTIME_TYPES.GEMINI_CLI || runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI) {
+				// Skip Codex: its empty composer shows a rotating suggestion
+				// ("Ask Codex to do anything", "Explain this codebase", ...) on the
+				// `›` line, indistinguishable from typed text once the dim styling is
+				// lost, so every scan of a working Codex agent pressed Tab+Enter
+				// (47 times in one turn). Tab queues input in Codex; real Enter drops
+				// are still caught by Part 2, which matches the text actually sent.
+				if (
+					runtimeType === RUNTIME_TYPES.GEMINI_CLI ||
+					runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI ||
+					runtimeType === RUNTIME_TYPES.CODEX_CLI
+				) {
 					continue;
 				}
 

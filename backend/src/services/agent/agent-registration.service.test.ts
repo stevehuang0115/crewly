@@ -3696,6 +3696,37 @@ describe('AgentRegistrationService', () => {
 			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
 		});
 
+		it('should skip Codex sessions in TUI prompt-line scanning (composer placeholder is not stuck text)', async () => {
+			const tuiRegistry = (service as any).tuiSessionRegistry;
+			tuiRegistry.set('codex-tui', RUNTIME_TYPES.CODEX_CLI);
+
+			// A working Codex agent: the empty composer shows its placeholder suggestion
+			mockSessionHelper.capturePane.mockReturnValue(
+				'• Working (13m 52s • esc to interrupt)\n\n\n› Ask Codex to do anything\n\n  gpt-6-sol medium · ~/repo\n'
+			);
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.sendEnter).not.toHaveBeenCalled();
+			expect(mockSessionHelper.sendKey).not.toHaveBeenCalled();
+		});
+
+		it('should still recover a tracked message stuck in a Codex composer (Part 2)', async () => {
+			(service as any).tuiSessionRegistry.set('codex-tui', RUNTIME_TYPES.CODEX_CLI);
+			const snippet = 'Please fix the coin icons in body-3 now';
+			(service as any).sentMessageTracker.set('codex-tui', [{
+				snippet,
+				sentAt: Date.now() - 20000,
+				recovered: false,
+				recoveryAttempts: 0,
+			}]);
+			mockSessionHelper.capturePane.mockReturnValue(`output\n› ${snippet}\n`);
+
+			await (service as any).scanForStuckMessages();
+
+			expect(mockSessionHelper.sendEnter).toHaveBeenCalledWith('codex-tui');
+		});
+
 		it('should still scan non-Gemini sessions when Gemini sessions are present', async () => {
 			const tracker = (service as any).sentMessageTracker;
 			const tuiRegistry = (service as any).tuiSessionRegistry;
