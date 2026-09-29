@@ -62,6 +62,7 @@ Copy `seo-ops.config.example.json` next to your project and fill it in:
 | `exclusions.queries` / `exclusions.pages` | Regexes (case-insensitive) dropped from every report (brand terms, `site:` checks, admin paths) |
 | `publishMethod` | Free text shown to you after each command, e.g. "open a blog PR on <org>/web" |
 | `urlNormalize` | `{"stripScheme": true, "localePrefixes": ["en","zh"]}`: http/https and `/en/x` vs `/x` count as ONE page in cannibalization, page-report and the sitemap check. Set it on hreflang sites, otherwise locale variants show up as false cannibalization |
+| `inspectMax` | Optional, default 50. Most URLs `page-report --inspect` sends to the URL Inspection API per run (quota 2000/day, 600/min per property) |
 | `maxPagesPerDay` | Pattern-queue release limit (default 1) |
 | `thresholds`, `prepublish`, `liveDiff`, `patternQueue` | Optional tuning, see the example file |
 
@@ -80,10 +81,16 @@ Search Console for the last N days (ending 3 days ago, vs the previous N). Four 
 3. Fastest-rising queries (new ones flagged): topic candidates.
 4. **Keyword cannibalization**: a query served by 2+ pages (each with 10+ impressions). Pick the winner, point the others at it.
 
-### `page-report [--url U ... | --urls-file F] [--include REGEX] [--days 28] [--ga4] [--json out.json]`
-Report card per URL (default: every sitemap URL). Flags: not in sitemap; 0 impressions after 7 days; average position > 20;
+### `page-report [--url U ... | --urls-file F] [--include REGEX] [--days 28] [--ga4] [--inspect] [--json out.json]`
+Report card per URL (default: every sitemap URL). Flags: not in sitemap; 0 impressions after 7 days (`no-impressions`: **does not mean unindexed**); average position > 20;
 top-5 with CTR < 5%. Pages under 7 days old get numbers only (Search Console lags 2-3 days). Age comes from sitemap `lastmod`; unknown age is reported, not guessed.
-`--json out.json` also writes the report card as JSON (`property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `ga4[]` when `--ga4` ran), the same convention as `gsc-report --json`.
+`--inspect` asks Google (Search Console URL Inspection API, same read-only `webmasters.readonly` scope) about every URL with 0 impressions past the age threshold, and replaces the ambiguous `no-impressions` with:
+- `not-indexed`: verdict is not PASS; the message carries Google's `coverageState`. **The only verdict that may put a URL on a Request Indexing list.**
+- `indexed-no-impressions`: verdict PASS; message gives the last crawl date. The problem is ranking/demand: improve the page or its links, do NOT request indexing.
+- `canonical-mismatch` (any inspected page): Google's canonical differs from the URL (compared after `urlNormalize`).
+
+Rule: only `not-indexed` pages go on a Request Indexing list. Quota: the API allows 2000 inspections/day and 600/min per property; `--inspect` stops at `inspectMax` (default 50) and prints `inspected: N ... M skipped over the cap` with the skipped URLs, never silently. Without `--inspect` no inspection request is sent.
+`--json out.json` also writes the report card as JSON (`property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `index` = `{verdict, coverageState, lastCrawlTime, googleCanonical}` when `--inspect` inspected the page, else `null`, plus `ga4[]` when `--ga4` ran), the same convention as `gsc-report --json`.
 
 ### `prepublish-check (--url U | --file draft.html [--canonical-url U]) [--target "query"] [--brief]`
 SEO (title, description, canonical, h1/h2, body length, internal links, sitemap, structured data) and AEO

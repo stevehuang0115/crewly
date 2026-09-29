@@ -21,8 +21,9 @@ TODAY = dt.date(2026, 9, 29)
 class FakeNet:
     """Serves canned GET pages and Search Console rows keyed by dimensions."""
 
-    def __init__(self, pages=None, gsc=None, ga4=None):
+    def __init__(self, pages=None, gsc=None, ga4=None, inspect=None):
         self.pages, self.gsc, self.ga4 = pages or {}, gsc or {}, ga4
+        self.inspect, self.inspect_calls = inspect or {}, []
         self.gets = []
         self.ga4_bodies = []
 
@@ -34,6 +35,9 @@ class FakeNet:
         return 200, v
 
     def post_json(self, url, body, scope, what, email_hint=None):
+        if "urlInspection" in url:
+            self.inspect_calls.append((url, body, scope))
+            return {"inspectionResult": {"indexStatusResult": self.inspect.get(body["inspectionUrl"], {})}}
         if "analyticsdata" in url:
             self.ga4_bodies.append(body)
             return self.ga4
@@ -257,6 +261,89 @@ class TestPageReport(Base):
         code, out, _ = run(["page-report", "--include", "^nomatch$"], net, self.cfg_file())
         self.assertEqual(code, S.EXIT_GATE)
         self.assertIn("0 URLs", out)
+
+
+INDEXED = {"verdict": "PASS", "coverageState": "Submitted and indexed", "lastCrawlTime": "2026-09-20T03:04:05Z",
+           "googleCanonical": "https://example.com/old"}
+
+
+class TestPageReportInspect(Base):
+    def _net(self, inspect):
+        return FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc={}, inspect=inspect)
+
+    def test_pass_is_indexed_no_impressions_and_never_says_request_indexing(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        code, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], net, self.cfg_file())
+        self.assertEqual(code, 0)
+        self.assertIn("[indexed-no-impressions]", out)
+        self.assertIn("last crawl 2026-09-20", out)
+        self.assertIn("do NOT request indexing", out)
+        self.assertNotIn("[not-indexed]", out)
+        self.assertNotIn("[no-impressions]", out)
+
+    def test_fail_and_neutral_are_not_indexed_with_coverage_state(self):
+        for verdict in ("FAIL", "NEUTRAL"):
+            net = self._net({"https://example.com/old": {"verdict": verdict, "coverageState": "Discovered - currently not indexed"}})
+            _, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], net, self.cfg_file())
+            self.assertIn("[not-indexed]", out, verdict)
+            self.assertIn("Discovered - currently not indexed", out)
+            self.assertNotIn("[indexed-no-impressions]", out)
+
+    def test_canonical_mismatch_is_flagged_and_normalized_match_is_not(self):
+        net = self._net({"https://example.com/old": dict(INDEXED, googleCanonical="https://example.com/other")})
+        _, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], net, self.cfg_file())
+        self.assertIn("[canonical-mismatch]", out)
+        self.assertIn("https://example.com/other", out)
+        same = self._net({"https://example.com/old": dict(INDEXED, googleCanonical="http://example.com/old/")})
+        _, out, _ = run(["page-report", "--url", "https://example.com/old", "--inspect"], same,
+                        self.cfg_file({"urlNormalize": {"stripScheme": True}}))
+        self.assertNotIn("[canonical-mismatch]", out)
+
+    def test_request_uses_property_scope_and_original_url(self):
+        net = self._net({"https://example.com/en/old": INDEXED})
+        run(["page-report", "--url", "https://example.com/en/old", "--inspect"], net,
+            self.cfg_file({"urlNormalize": NORM}))
+        url, body, scope = net.inspect_calls[0]
+        self.assertEqual(url, "https://searchconsole.googleapis.com/v1/urlInspection/index:inspect")
+        self.assertEqual(body, {"inspectionUrl": "https://example.com/en/old", "siteUrl": "sc-domain:example.com"})
+        self.assertEqual(scope, S.GSC_SCOPE)
+
+    def test_inspect_max_caps_and_reports_inspected_and_skipped(self):
+        urls = ["https://example.com/old", "https://example.com/lowctr", "https://example.com/deep"]
+        net = self._net({u: INDEXED for u in urls})
+        argv = ["page-report", "--inspect"] + [x for u in urls for x in ("--url", u)]
+        _, out, _ = run(argv, net, self.cfg_file({"inspectMax": 2}))
+        self.assertEqual(len(net.inspect_calls), 2)
+        self.assertIn("inspected: 2 URL(s)", out)
+        self.assertIn("1 skipped over the cap: https://example.com/deep", out)
+
+    def test_only_zero_impression_old_pages_are_inspected(self):
+        gsc = {("page",): [row(["https://example.com/lowctr"], 400, 4, 2.0)]}
+        net = FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc=gsc, inspect={})
+        run(["page-report", "--inspect", "--url", "https://example.com/lowctr", "--url", "https://example.com/new"],
+            net, self.cfg_file())
+        self.assertEqual(net.inspect_calls, [])
+
+    def test_no_inspection_request_without_flag(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        code, out, _ = run(["page-report", "--url", "https://example.com/old"], net, self.cfg_file())
+        self.assertEqual(code, 0)
+        self.assertEqual(net.inspect_calls, [])
+        self.assertIn("[no-impressions]", out)
+
+    def test_without_flag_wording_points_to_inspect(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        _, out, _ = run(["page-report", "--url", "https://example.com/old"], net, self.cfg_file())
+        self.assertIn("run with --inspect", out)
+        self.assertNotIn("inspected:", out)
+
+    def test_json_has_index_when_inspected_and_null_otherwise(self):
+        net = self._net({"https://example.com/old": INDEXED})
+        p1, p2 = os.path.join(self.tmp, "a.json"), os.path.join(self.tmp, "b.json")
+        run(["page-report", "--url", "https://example.com/old", "--inspect", "--json", p1], net, self.cfg_file())
+        run(["page-report", "--url", "https://example.com/old", "--json", p2], net, self.cfg_file())
+        self.assertEqual(json.loads(read(p1))["pages"][0]["index"], INDEXED)
+        self.assertIsNone(json.loads(read(p2))["pages"][0]["index"])
 
 
 GA4_DATA = {"rows": [{"dimensionValues": [{"value": "/en/x"}], "metricValues": [{"value": "12"}]}]}
