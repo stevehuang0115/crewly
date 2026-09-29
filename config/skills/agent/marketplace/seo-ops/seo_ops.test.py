@@ -24,6 +24,7 @@ class FakeNet:
     def __init__(self, pages=None, gsc=None, ga4=None):
         self.pages, self.gsc, self.ga4 = pages or {}, gsc or {}, ga4
         self.gets = []
+        self.ga4_bodies = []
 
     def get(self, url, timeout=30):
         self.gets.append(url)
@@ -34,6 +35,7 @@ class FakeNet:
 
     def post_json(self, url, body, scope, what, email_hint=None):
         if "analyticsdata" in url:
+            self.ga4_bodies.append(body)
             return self.ga4
         rows = self.gsc.get(tuple(body["dimensions"]), [])
         if body["startDate"] < self.gsc.get("_split", "0000"):
@@ -255,6 +257,56 @@ class TestPageReport(Base):
         code, out, _ = run(["page-report", "--include", "^nomatch$"], net, self.cfg_file())
         self.assertEqual(code, S.EXIT_GATE)
         self.assertIn("0 URLs", out)
+
+
+GA4_DATA = {"rows": [{"dimensionValues": [{"value": "/en/x"}], "metricValues": [{"value": "12"}]}]}
+
+
+class TestPageReportGa4AndJson(Base):
+    def _net(self):
+        return FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc={}, ga4=GA4_DATA)
+
+    def test_ga4_request_carries_hostname_filter_when_configured(self):
+        net = self._net()
+        code, out, _ = run(["page-report", "--url", "https://example.com/old", "--ga4"], net,
+                           self.cfg_file({"ga4PropertyId": "1", "ga4HostName": "crewlyai.com"}))
+        self.assertEqual(code, 0)
+        flt = json.dumps(net.ga4_bodies[0]["dimensionFilter"])
+        self.assertIn('"fieldName": "hostName"', flt)
+        self.assertIn('"matchType": "EXACT"', flt)
+        self.assertIn('"value": "crewlyai.com"', flt)
+        self.assertIn("Organic Search", flt)  # the channel filter is kept
+        self.assertIn("host crewlyai.com", out)
+
+    def test_ga4_request_has_no_hostname_filter_when_unset(self):
+        net = self._net()
+        run(["page-report", "--url", "https://example.com/old", "--ga4"], net, self.cfg_file({"ga4PropertyId": "1"}))
+        self.assertEqual(len(net.ga4_bodies), 1)
+        self.assertNotIn("hostName", json.dumps(net.ga4_bodies[0]))
+
+    def test_json_output_is_parseable_and_has_the_page_rows(self):
+        gsc = {("page",): [row(["https://example.com/lowctr"], 400, 4, 2.0)]}
+        net = FakeNet(pages={"https://example.com/sitemap.xml": SITEMAP}, gsc=gsc, ga4=GA4_DATA)
+        out_path = os.path.join(self.tmp, "pages.json")
+        code, _, _ = run(["page-report", "--url", "https://example.com/lowctr", "--url", "https://example.com/old",
+                          "--ga4", "--json", out_path], net, self.cfg_file({"ga4PropertyId": "1"}))
+        self.assertEqual(code, 0)
+        data = json.loads(read(out_path))
+        self.assertEqual(data["examined"], 2)
+        by_url = {p["url"]: p for p in data["pages"]}
+        self.assertEqual(by_url["https://example.com/lowctr"]["impressions"], 400)
+        self.assertIn("low-ctr", [v["code"] for v in by_url["https://example.com/lowctr"]["verdicts"]])
+        self.assertIsNone(by_url["https://example.com/old"]["position"])
+        self.assertEqual(data["ga4"], [{"path": "/en/x", "sessions": 12}])
+
+    def test_prepublish_self_link_is_excluded_under_url_normalize(self):
+        html = GOOD.replace("</body>", '<a href="https://example.com/best-crm">self</a></body>')
+        cfg = S.deep_merge(S.DEFAULTS, {"urlNormalize": NORM})
+        a = S.prepublish(html, "https://example.com/en/best-crm", cfg, None, today=TODAY)
+        b = S.prepublish(html, "https://example.com/en/best-crm", S.DEFAULTS, None, today=TODAY)
+        n = lambda rep: next(x for x in rep.rows if x[1] == "internal links")  # noqa: E731
+        self.assertEqual(n(a)[3], "2")  # the self-link (un-prefixed spelling) is not counted
+        self.assertEqual(n(b)[3], "3")  # without urlNormalize it is, by design
 
 
 # ------------------------------------------------------------------ prepublish

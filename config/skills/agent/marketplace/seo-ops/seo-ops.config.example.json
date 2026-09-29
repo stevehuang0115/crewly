@@ -2,6 +2,7 @@
   "siteUrl": "https://example.com",
   "gscProperty": "sc-domain:example.com",
   "ga4PropertyId": "123456789",
+  "ga4HostName": "example.com",
   "credentialsPath": "SEO_OPS_GOOGLE_CREDENTIALS",
   "sitemapUrl": "https://example.com/sitemap.xml",
   "exclusions": {

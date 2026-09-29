@@ -56,6 +56,7 @@ Copy `seo-ops.config.example.json` next to your project and fill it in:
 | `siteUrl` | Site origin, e.g. `https://example.com` |
 | `gscProperty` | `sc-domain:example.com` or a URL-prefix property |
 | `ga4PropertyId` | GA4 property id (used by `page-report --ga4`) |
+| `ga4HostName` | Optional. Exact hostname (e.g. `crewlyai.com`); when set, `page-report --ga4` only counts sessions on that host. Use it when one GA4 property serves several hostnames. Unset = whole property |
 | `credentialsPath` | **Name of the env var** holding the key file path. Never the key, never a path |
 | `sitemapUrl` | Sitemap or sitemap index URL |
 | `exclusions.queries` / `exclusions.pages` | Regexes (case-insensitive) dropped from every report (brand terms, `site:` checks, admin paths) |
@@ -79,9 +80,10 @@ Search Console for the last N days (ending 3 days ago, vs the previous N). Four 
 3. Fastest-rising queries (new ones flagged): topic candidates.
 4. **Keyword cannibalization**: a query served by 2+ pages (each with 10+ impressions). Pick the winner, point the others at it.
 
-### `page-report [--url U ... | --urls-file F] [--include REGEX] [--days 28] [--ga4]`
+### `page-report [--url U ... | --urls-file F] [--include REGEX] [--days 28] [--ga4] [--json out.json]`
 Report card per URL (default: every sitemap URL). Flags: not in sitemap; 0 impressions after 7 days; average position > 20;
 top-5 with CTR < 5%. Pages under 7 days old get numbers only (Search Console lags 2-3 days). Age comes from sitemap `lastmod`; unknown age is reported, not guessed.
+`--json out.json` also writes the report card as JSON (`property`, `start`, `end`, `examined`, `flagged`, `pages[]` with `url`, `impressions`, `clicks`, `position`, `ageDays`, `inSitemap`, `verdicts[]`, plus `ga4[]` when `--ga4` ran), the same convention as `gsc-report --json`.
 
 ### `prepublish-check (--url U | --file draft.html [--canonical-url U]) [--target "query"] [--brief]`
 SEO (title, description, canonical, h1/h2, body length, internal links, sitemap, structured data) and AEO
