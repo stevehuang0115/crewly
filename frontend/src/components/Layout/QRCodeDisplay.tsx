@@ -1,12 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import { QRCodeSVG } from 'qrcode.react';
-import { QrCode, X, Wifi, Copy, Check } from 'lucide-react';
+import { QrCode, X, Wifi, Copy, Check, AlertCircle } from 'lucide-react';
 import { Button, IconButton } from '@crewly/ui/Button';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Popup } from '@crewly/ui/Popup';
 import clsx from 'clsx';
 import axios from 'axios';
+import { CLIPBOARD_CONSTANTS } from '../../constants/clipboard.constants';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { selectElementText } from '../../utils/clipboard';
 
 interface LocalIpResponse {
   success: boolean;
@@ -36,7 +39,8 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ isCollapsed }) => 
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { status: copyStatus, copy } = useCopyToClipboard();
+  const copied = copyStatus === 'copied';
 
   /**
    * Fetches the local IP address from the backend API.
@@ -78,31 +82,14 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ isCollapsed }) => 
    */
   const handleCloseModal = useCallback(() => {
     setIsModalOpen(false);
-    setCopied(false);
   }, []);
 
   /**
    * Copies the URL to clipboard.
    */
-  const handleCopyUrl = useCallback(async () => {
-    if (localUrl) {
-      try {
-        await navigator.clipboard.writeText(localUrl);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      } catch (err) {
-        // Fallback for older browsers
-        const textArea = document.createElement('textarea');
-        textArea.value = localUrl;
-        document.body.appendChild(textArea);
-        textArea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textArea);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 2000);
-      }
-    }
-  }, [localUrl]);
+  const handleCopyUrl = useCallback(() => {
+    if (localUrl) void copy(localUrl);
+  }, [localUrl, copy]);
 
   // Close modal on Escape key
   useEffect(() => {
@@ -179,15 +166,18 @@ export const QRCodeDisplay: React.FC<QRCodeDisplayProps> = ({ isCollapsed }) => 
               {/* URL with Copy Button */}
               <div className="mt-4 w-full">
                 <div className="flex items-center gap-2 bg-background-dark rounded-2xl p-3">
-                  <code className="flex-1 text-sm text-primary truncate">
+                  <code
+                    className="flex-1 text-sm text-primary truncate select-all cursor-text"
+                    onClick={(e) => selectElementText(e.currentTarget)}
+                  >
                     {localUrl}
                   </code>
                   <IconButton
-                    icon={copied ? Check : Copy}
+                    icon={copied ? Check : copyStatus === 'failed' ? AlertCircle : Copy}
                     size="sm"
                     onClick={handleCopyUrl}
                     className={copied ? 'text-green-500' : ''}
-                    title={copied ? 'Copied!' : 'Copy URL'}
+                    title={copied ? 'Copied!' : copyStatus === 'failed' ? CLIPBOARD_CONSTANTS.FAILED_LABEL : 'Copy URL'}
                     aria-label={copied ? 'URL copied' : 'Copy URL to clipboard'}
                   />
                 </div>

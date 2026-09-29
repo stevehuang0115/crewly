@@ -11,10 +11,13 @@
  */
 
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { KeyRound, Copy, Check, ExternalLink } from 'lucide-react';
+import { KeyRound, Copy, Check, ExternalLink, AlertCircle } from 'lucide-react';
 import { Button } from '@crewly/ui/Button';
 import type { LoginRequiredInfo } from '../types';
 import { SIGN_IN_CONSTANTS } from '../constants/sign-in.constants';
+import { CLIPBOARD_CONSTANTS } from '../constants/clipboard.constants';
+import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
+import { selectElementText } from '../utils/clipboard';
 
 export interface SignInNeededChipProps {
   /** The pending sign-in to surface */
@@ -25,25 +28,6 @@ export interface SignInNeededChipProps {
   className?: string;
   /** Where the panel opens relative to the chip */
   align?: 'left' | 'right';
-}
-
-/**
- * Copy text to the clipboard, falling back to a hidden textarea for
- * browsers without the async clipboard API.
- *
- * @param text - Text to copy
- */
-async function copyToClipboard(text: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text);
-  } catch {
-    const textArea = document.createElement('textarea');
-    textArea.value = text;
-    document.body.appendChild(textArea);
-    textArea.select();
-    document.execCommand('copy');
-    document.body.removeChild(textArea);
-  }
 }
 
 /**
@@ -59,9 +43,9 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
   align = 'left',
 }) => {
   const [open, setOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { status: copyStatus, copy } = useCopyToClipboard(SIGN_IN_CONSTANTS.COPIED_FEEDBACK_MS);
+  const copied = copyStatus === 'copied';
   const rootRef = useRef<HTMLDivElement>(null);
-  const copiedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Close on outside click / Escape.
   useEffect(() => {
@@ -80,18 +64,11 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
     };
   }, [open]);
 
-  useEffect(() => () => {
-    if (copiedTimer.current) clearTimeout(copiedTimer.current);
-  }, []);
-
   const handleCopy = useCallback(async (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!loginRequired.code) return;
-    await copyToClipboard(loginRequired.code);
-    setCopied(true);
-    if (copiedTimer.current) clearTimeout(copiedTimer.current);
-    copiedTimer.current = setTimeout(() => setCopied(false), SIGN_IN_CONSTANTS.COPIED_FEEDBACK_MS);
-  }, [loginRequired.code]);
+    await copy(loginRequired.code);
+  }, [loginRequired.code, copy]);
 
   const toggle = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -145,17 +122,28 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
 
           {loginRequired.code ? (
             <div className="flex items-center justify-between gap-2 rounded-lg bg-background-dark border border-border-dark px-2 py-1.5">
-              <code className="font-mono tracking-widest text-base" data-testid="sign-in-code">{loginRequired.code}</code>
+              <code
+                className="font-mono tracking-widest text-base select-all cursor-text break-all"
+                data-testid="sign-in-code"
+                onClick={(e) => selectElementText(e.currentTarget)}
+              >
+                {loginRequired.code}
+              </code>
               <Button
                 type="button"
                 variant="ghost"
                 size="xs"
-                icon={copied ? Check : Copy}
+                icon={copied ? Check : copyStatus === 'failed' ? AlertCircle : Copy}
                 onClick={handleCopy}
                 className={copied ? 'bg-green-500/10 text-green-400 hover:text-green-400' : ''}
                 aria-label={copied ? 'Code copied' : 'Copy code to clipboard'}
+                aria-live="polite"
               >
-                {copied ? 'Copied' : 'Copy'}
+                {copied
+                  ? CLIPBOARD_CONSTANTS.COPIED_LABEL
+                  : copyStatus === 'failed'
+                    ? CLIPBOARD_CONSTANTS.FAILED_LABEL
+                    : CLIPBOARD_CONSTANTS.COPY_LABEL}
               </Button>
             </div>
           ) : (

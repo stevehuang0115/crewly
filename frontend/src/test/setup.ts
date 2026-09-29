@@ -31,3 +31,8 @@ Object.defineProperty(window, 'matchMedia', {
     dispatchEvent: vi.fn(),
   })),
 })
+// jsdom leaves `isSecureContext` undefined; tests run as a localhost origin
+// (a secure context). Tests of the plain-HTTP clipboard fallback override it.
+if (typeof window !== 'undefined' && window.isSecureContext === undefined) {
+  Object.defineProperty(window, 'isSecureContext', { value: true, configurable: true, writable: true })
+}

@@ -14,6 +14,9 @@ import { SecurityArchDiagram } from './SecurityArchDiagram';
 import { ComparisonStrip } from './ComparisonStrip';
 import { Card } from '@crewly/ui/Card';
 import { Button } from '@crewly/ui/Button';
+import { CLIPBOARD_CONSTANTS } from '../../constants/clipboard.constants';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { selectElementText } from '../../utils/clipboard';
 
 /** Pillar definitions matching spec section 2.1 */
 const PILLARS = [
@@ -51,7 +54,8 @@ const DOCS_URL = 'https://docs.crewlyai.com';
  */
 export const SecurityLandingSection: React.FC = () => {
   const [activePillar, setActivePillar] = useState<PillarId>('pty');
-  const [copied, setCopied] = useState(false);
+  const { status: copyStatus, copy } = useCopyToClipboard();
+  const copied = copyStatus === 'copied';
 
   const handleSeeHow = useCallback((id: PillarId) => {
     setActivePillar(id);
@@ -62,15 +66,9 @@ export const SecurityLandingSection: React.FC = () => {
     }
   }, []);
 
-  const handleCopy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText('npx crewly init');
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Fallback: select text for manual copy
-    }
-  }, []);
+  const handleCopy = useCallback(() => {
+    void copy('npx crewly init');
+  }, [copy]);
 
   return (
     <section
@@ -125,15 +123,21 @@ export const SecurityLandingSection: React.FC = () => {
         {/* Command + Copy */}
         <Card variant="outlined" padding="none" className="inline-flex items-center gap-2 bg-surface-dark border-border-dark px-4 py-3 mb-6">
           <span className="text-text-secondary-dark select-none" aria-hidden="true">$</span>
-          <code className="font-mono text-sm text-emerald-300">npx crewly init</code>
+          <code
+            className="font-mono text-sm text-emerald-300 select-all cursor-text"
+            onClick={(e) => selectElementText(e.currentTarget)}
+          >
+            npx crewly init
+          </code>
           <Button
             variant="secondary"
             size="sm"
             onClick={handleCopy}
             className="ml-2 text-xs"
             aria-label={copied ? 'Copied to clipboard' : 'Copy command to clipboard'}
+            aria-live="polite"
           >
-            {copied ? 'Copied!' : 'Copy'}
+            {copied ? 'Copied!' : copyStatus === 'failed' ? CLIPBOARD_CONSTANTS.FAILED_LABEL : 'Copy'}
           </Button>
         </Card>
 

@@ -13,7 +13,7 @@
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
-import { Copy, Check, QrCode } from 'lucide-react';
+import { Copy, Check, QrCode, AlertCircle } from 'lucide-react';
 import { Alert } from '@crewly/ui/Alert';
 import { Button, IconButton } from '@crewly/ui/Button';
 import { FormLabel } from '@crewly/ui/Form';
@@ -21,6 +21,9 @@ import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { Modal, ModalFooter } from '@crewly/ui/Modal';
 import { QRCodeSVG } from 'qrcode.react';
 import { CLOUD_TOKEN_KEY } from '../../constants/cloud.constants';
+import { CLIPBOARD_CONSTANTS } from '../../constants/clipboard.constants';
+import { useCopyToClipboard } from '../../hooks/useCopyToClipboard';
+import { selectElementText } from '../../utils/clipboard';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -98,7 +101,7 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
   const [sharedSecret, setSharedSecret] = useState('');
   const [connectStatus, setConnectStatus] = useState<ConnectStatus>('idle');
   const [errorMessage, setErrorMessage] = useState('');
-  const [copiedField, setCopiedField] = useState<'code' | 'secret' | null>(null);
+  const { status: copyStatus, copiedKey, copy } = useCopyToClipboard();
   const [showQr, setShowQr] = useState(false);
 
   /**
@@ -109,7 +112,6 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
       // Reset state when closing
       setConnectStatus('idle');
       setErrorMessage('');
-      setCopiedField(null);
       setShowQr(false);
       return;
     }
@@ -156,20 +158,28 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
   }, [isOpen]);
 
   /**
-   * Copy a value to the clipboard and show a brief confirmation.
+   * Copy a value to the clipboard and show a brief confirmation (or a
+   * manual-copy hint when the browser refuses, e.g. plain HTTP).
    *
    * @param value - The string to copy
    * @param field - Which field was copied (for UI feedback)
    */
-  const handleCopy = useCallback(async (value: string, field: 'code' | 'secret') => {
-    try {
-      await navigator.clipboard.writeText(value);
-      setCopiedField(field);
-      setTimeout(() => setCopiedField(null), 2000);
-    } catch {
-      // Fallback: select text for manual copy
-    }
-  }, []);
+  const handleCopy = useCallback(
+    (value: string, field: 'code' | 'secret') => {
+      void copy(value, field);
+    },
+    [copy],
+  );
+
+  /**
+   * Icon for a field's copy button.
+   *
+   * @param field - Field
+   * @returns Lucide icon
+   */
+  const copyIcon = (field: 'code' | 'secret') =>
+    copiedKey !== field ? Copy : copyStatus === 'copied' ? Check : copyStatus === 'failed' ? AlertCircle : Copy;
+  const copiedField = copyStatus === 'copied' ? copiedKey : null;
 
   if (!isOpen) return null;
 
@@ -203,13 +213,14 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
           <FormLabel>Pairing Code</FormLabel>
           <div className="flex items-center gap-2">
             <code
-              className="flex-1 px-3 py-2 text-lg font-mono font-bold tracking-widest text-text-primary-dark bg-background-dark border border-border-dark rounded-2xl text-center select-all"
+              className="flex-1 px-3 py-2 text-lg font-mono font-bold tracking-widest text-text-primary-dark bg-background-dark border border-border-dark rounded-2xl text-center select-all cursor-text"
               data-testid="invite-pairing-code"
+              onClick={(e) => selectElementText(e.currentTarget)}
             >
               {pairingCode}
             </code>
             <IconButton
-              icon={copiedField === 'code' ? Check : Copy}
+              icon={copyIcon('code')}
               onClick={() => handleCopy(pairingCode, 'code')}
               className={copiedField === 'code' ? 'text-emerald-400' : ''}
               aria-label="Copy pairing code"
@@ -223,13 +234,14 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
           <FormLabel>Shared Secret</FormLabel>
           <div className="flex items-center gap-2">
             <code
-              className="flex-1 px-3 py-2 text-xs font-mono text-text-primary-dark bg-background-dark border border-border-dark rounded-2xl break-all select-all"
+              className="flex-1 px-3 py-2 text-xs font-mono text-text-primary-dark bg-background-dark border border-border-dark rounded-2xl break-all select-all cursor-text"
               data-testid="invite-shared-secret"
+              onClick={(e) => selectElementText(e.currentTarget)}
             >
               {sharedSecret}
             </code>
             <IconButton
-              icon={copiedField === 'secret' ? Check : Copy}
+              icon={copyIcon('secret')}
               onClick={() => handleCopy(sharedSecret, 'secret')}
               className={`shrink-0 ${copiedField === 'secret' ? 'text-emerald-400' : ''}`}
               aria-label="Copy shared secret"
@@ -237,6 +249,16 @@ export const InviteDeviceModal: React.FC<InviteDeviceModalProps> = ({ isOpen, on
             />
           </div>
         </div>
+
+        {copyStatus !== 'idle' && (
+          <p
+            className={`text-xs ${copyStatus === 'copied' ? 'text-emerald-400' : 'text-amber-300'}`}
+            aria-live="polite"
+            data-testid="invite-copy-feedback"
+          >
+            {copyStatus === 'copied' ? CLIPBOARD_CONSTANTS.COPIED_LABEL : CLIPBOARD_CONSTANTS.FAILED_LABEL}
+          </p>
+        )}
 
         {/* QR Code toggle */}
         <div>

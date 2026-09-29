@@ -23,6 +23,7 @@ import { CheckCircle2, ExternalLink, Smartphone } from 'lucide-react';
 import { Alert, Button } from '@crewly/ui';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { cloudDevicePairingService, type CloudDevicePairingStatus } from '../services/cloud-device-pairing.service';
+import { selectElementText } from '../utils/clipboard';
 import { CLOUD_DEVICE_PAIRING_POLL_MS, CLOUD_DEVICE_PAIRING_QR_SIZE } from '../constants/cloud.constants';
 
 /** Copy for one language. */
@@ -170,7 +171,11 @@ export const CloudDevicePairingPanel: React.FC<CloudDevicePairingPanelProps> = (
             {status.verificationUrl} <ExternalLink className="h-3 w-3 shrink-0" aria-hidden />
           </a>
           <p className="text-xs text-text-secondary-dark">{labels.code}</p>
-          <p className="font-mono text-2xl font-bold tracking-widest text-text-primary-dark" data-testid="cloud-pairing-code">
+          <p
+            className="font-mono text-2xl font-bold tracking-widest text-text-primary-dark select-all cursor-text break-all"
+            data-testid="cloud-pairing-code"
+            onClick={(e) => selectElementText(e.currentTarget)}
+          >
             {status.userCode}
           </p>
         </div>

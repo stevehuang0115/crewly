@@ -25,6 +25,7 @@ import { useLoginSession } from '../../hooks/useLoginSession';
 import { harnessService } from '../../services/harness.service';
 import { isSafeHttpUrl } from '../../utils/safe-url';
 import { CopyButton } from './CopyButton';
+import { selectElementText } from '../../utils/clipboard';
 
 export interface BrokerLoginPanelProps {
   /** Harness to log in to */
@@ -158,7 +159,11 @@ const AwaitingUser: React.FC<AwaitingUserProps> = ({ session, busy, sendInput })
       {session.userCode && (
         <div className="rounded-2xl border border-border-dark bg-background-dark p-4 text-center space-y-3" data-testid="login-user-code">
           <p className="text-xs text-text-secondary-dark">验证码 / One-time code</p>
-          <p className="font-mono text-3xl font-bold tracking-widest text-text-primary-dark select-all break-all">
+          <p
+            className="font-mono text-3xl font-bold tracking-widest text-text-primary-dark select-all cursor-text break-all"
+            data-testid="login-user-code-value"
+            onClick={(e) => selectElementText(e.currentTarget)}
+          >
             {session.userCode}
           </p>
           <CopyButton value={session.userCode} label="复制验证码" />
