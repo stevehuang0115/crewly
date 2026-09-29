@@ -230,3 +230,104 @@ describe('codex known start-up prompts (2026-09-26: Kai, Nova stuck on the resum
 		expect(CODEX_KNOWN_PROMPTS.some((p) => p.match.every((re) => re.test(idle)))).toBe(false);
 	});
 });
+
+describe('codex 0.158 first-run screens (owner stuck on "Press enter to continue" after codex login)', () => {
+	/**
+	 * Returns the known prompt a screen matches, the same way
+	 * answerKnownPrompt does (whitespace stripped).
+	 *
+	 * @param screen - Captured screen
+	 * @returns Matching prompt id, or undefined
+	 */
+	async function matchScreen(screen: string): Promise<{ id: string; keys: readonly string[] } | undefined> {
+		const { CODEX_KNOWN_PROMPTS } = await import('./codex-runtime.service.js');
+		const flat = screen.replace(/\s+/g, '');
+		return CODEX_KNOWN_PROMPTS.find((p) => p.match.every((re) => re.test(flat)));
+	}
+
+	it('answers the post-sign-in "Before you start … Press enter to continue" notice with Enter', async () => {
+		const screen = `  >_ Welcome to Codex, OpenAI's command-line coding agent
+
+  ✓ Signed in with your ChatGPT account
+
+  Before you start:
+
+  Decide how much autonomy you want to grant Codex
+  For more details see the Codex docs
+
+  Codex can make mistakes
+  Review the code it writes and commands it runs
+
+  Powered by your ChatGPT account
+  Uses your plan's rate limits and training data preferences
+
+  Press enter to continue`;
+		const hit = await matchScreen(screen);
+		expect(hit?.id).toBe('codex.first_run_notice');
+		expect(hit?.keys).toEqual(['Enter']);
+	});
+
+	it('trusts the agent folder when "Trust and continue" is the highlighted option', async () => {
+		const screen = `  Folder access
+  /opt/project
+
+  Trust this folder? Codex can read, edit, and run files here, subject to your permission settings.
+
+› 1. Trust and continue
+  2. Back to Agent Command Center
+
+  enter continue · esc back`;
+		const hit = await matchScreen(screen);
+		expect(hit?.id).toBe('codex.trust_folder');
+		expect(hit?.keys).toEqual(['Enter']);
+		// Cursor moved elsewhere: leave it alone rather than pick the wrong one.
+		expect(await matchScreen(screen.replace('› 1.', '  1.').replace('  2. Back', '› 2. Back'))).toBeUndefined();
+	});
+
+	it('skips (not installs) on the update-available prompt', async () => {
+		const screen = `  ✨ Update available! 0.158.0 -> 0.159.0
+  Release notes: https://github.com/openai/codex/releases/latest
+
+› 1. Update now (runs \`npm install -g @openai/codex\`)
+  2. Skip
+  3. Skip until next version
+
+  Press enter to continue`;
+		const hit = await matchScreen(screen);
+		expect(hit?.id).toBe('codex.update_available');
+		expect(hit?.keys).toEqual(['Down', 'Enter']);
+	});
+
+	it('keeps the configured model on the model-migration notice', async () => {
+		const screen = `  Codex just got an upgrade. Introducing gpt-6-sol.
+  We recommend switching from gpt-5.6-sol to gpt-6-sol.
+
+› 1. Try new model
+  2. Use existing model`;
+		const hit = await matchScreen(screen);
+		expect(hit?.id).toBe('codex.model_migration');
+		expect(hit?.keys).toEqual(['Down', 'Enter']);
+		expect(await matchScreen(screen.replace('› 1. Try', '  1. Try').replace('  2. Use', '› 2. Use'))).toBeUndefined();
+	});
+
+	it('does not fire on the idle prompt or the sign-in screen', async () => {
+		expect(await matchScreen('› Ask Codex to do anything\n  model: gpt-6-sol')).toBeUndefined();
+		expect(
+			await matchScreen(`Welcome to Codex, OpenAI's command-line coding agent
+  Sign in with ChatGPT to use Codex as part of your paid plan
+› 1. Sign in with ChatGPT
+  2. Sign in with Device Code
+  Press enter to continue`),
+		).toBeUndefined();
+	});
+
+	it('answerKnownPrompt sends each key in order', async () => {
+		const { CodexRuntimeService } = await import('./codex-runtime.service.js');
+		const helper = { sendEnter: jest.fn().mockResolvedValue(undefined), sendKey: jest.fn().mockResolvedValue(undefined) };
+		const svc = new CodexRuntimeService(helper as never, '/tmp');
+		const answered = await svc.answerKnownPrompt('s', `Update available!\n› 1. Update now (runs x)\n 2. Skip\n 3. Skip until next version`);
+		expect(answered).toBe(true);
+		expect(helper.sendKey).toHaveBeenCalledWith('s', 'Down');
+		expect(helper.sendEnter).toHaveBeenCalledWith('s');
+	});
+});
