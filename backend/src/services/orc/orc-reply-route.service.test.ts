@@ -189,3 +189,30 @@ describe('OrcReplyRouteService', () => {
     expect(svc.resolveConversationReply(ORC, 'conv-1', { now: T0 + max + 1 }).action).toBe('as-requested');
   });
 });
+
+describe('turn origin carries the thread the answer belongs in (owner-message guarantee §B)', () => {
+  beforeEach(() => OrcReplyRouteService.resetInstance());
+
+  it('parses the [SLACK-THREAD:<key>] tag every Slack delivery carries', () => {
+    const origin = parseInboundOrigin('[CHAT:dm-ella] <steve@Ella>\n[SLACK-THREAD:D0DM:1790000000.000100]\n\nhi');
+    expect(origin).toEqual({ conversationId: 'dm-ella', slackThreadKey: 'D0DM:1790000000.000100' });
+  });
+
+  it('records the chat thread the dispatcher reports — now, or for a delivery still queued', () => {
+    const svc = OrcReplyRouteService.getInstance();
+    svc.noteDelivery('ella', '[CHAT:room-1] <steve@room>\n\nq1');
+    svc.noteOriginThread('ella', 'room-1', 'root-1');
+    expect(svc.getLastOrigin('ella')?.chatThreadId).toBe('root-1');
+
+    // A hint for another conversation arrives before its (queued) delivery.
+    svc.noteOriginThread('ella', 'room-2', 'root-2');
+    expect(svc.getLastOrigin('ella')?.conversationId).toBe('room-1');
+    svc.noteDelivery('ella', '[CHAT:room-2] <steve@room>\n\nq2');
+    expect(svc.getLastOrigin('ella')).toEqual(expect.objectContaining({ conversationId: 'room-2', chatThreadId: 'root-2' }));
+
+    // A DM delivery has no thread.
+    svc.noteDelivery('ella', '[CHAT:dm-ella] <steve@Ella>\n\nq3');
+    svc.noteOriginThread('ella', 'dm-ella', undefined);
+    expect(svc.getLastOrigin('ella')?.chatThreadId).toBeUndefined();
+  });
+});

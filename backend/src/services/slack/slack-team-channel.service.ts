@@ -1654,6 +1654,7 @@ export class SlackTeamChannelService {
         threadTs: pending.threadTs,
         text: SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE,
         skipChatV2Mirror: true,
+        notAnAnswer: true,
         ...(botToken ? { botToken } : {}),
       });
     } catch (err) {
@@ -2627,6 +2628,7 @@ export class SlackTeamChannelService {
         threadTs: message.threadTs || message.ts,
         text: `${lines.join('\n')}\n${rosterHint}\n_（消息已经发给全队；只有被正确 @ 的成员会被要求必须回复。）_`,
         skipChatV2Mirror: true,
+        notAnAnswer: true,
       })
       .catch(() => undefined);
   }

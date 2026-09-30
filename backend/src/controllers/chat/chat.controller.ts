@@ -239,6 +239,25 @@ export async function sendChatMessageToOrchestrator(input: ChatToOrchestratorInp
     }
   }
 
+  // The owner's message now waits for the orchestrator's answer: watched
+  // until it comes (specs/2026-09-30-owner-message-guarantee.md).
+  if (!agentSession && orchestratorStatus.forwarded) {
+    try {
+      const { getOwnerMessageWatchdog } = await import('../../services/messaging/owner-message-watchdog.service.js');
+      getOwnerMessageWatchdog()?.track({
+        surface: 'chat',
+        chatChannelId: result.conversation.id,
+        messageId: result.message.id,
+        responsible: ORCHESTRATOR_SESSION_NAME,
+        recipients: [ORCHESTRATOR_SESSION_NAME],
+        required: true,
+        text: content,
+      });
+    } catch {
+      /* watchdog is best-effort */
+    }
+  }
+
   return { result, orchestrator: orchestratorStatus };
 }
 
@@ -626,6 +645,152 @@ async function recordSlackRoomAgentReply(input: {
 }
 
 /**
+ * Whether `agentSession` may answer in chat-v2 conversation `conversationId`:
+ * its own DM channel, or a huddle / room it is a member of.
+ *
+ * @param agentSession - Replying agent
+ * @param conversationId - chat-v2 channel id
+ * @returns True when it is the agent's own conversation
+ */
+export async function isAgentsOwnConversation(agentSession: string, conversationId: string): Promise<boolean> {
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(conversationId);
+    if (!channel || channel.archivedAt) return false;
+    if (channel.type === 'dm') return channel.agentSession === agentSession;
+    return chatV2.queryHuddleMembersForDispatch(conversationId).includes(agentSession);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Deliver an agent's answer into a chat-v2 conversation over the right
+ * transport — the one reply path behind `reply` (and the tolerant fallback of
+ * `agent-response`), specs/2026-09-30-owner-message-guarantee.md §B:
+ *  - its own DM channel → the agent's turn there (mirrored to the Slack DM
+ *    when the owner wrote from Slack, shown in the portal otherwise), in the
+ *    Slack thread `thread` names;
+ *  - a Slack room → the same row `reply-channel` writes, posted as the agent's
+ *    bot in the owner's thread;
+ *  - any other huddle it is a member of → an agent turn in `thread`.
+ *
+ * @param input - Conversation, thread (Slack thread key or chat-v2 message id), agent, text, interim flag
+ * @returns The persisted message id, or null when the conversation is not the agent's
+ */
+export async function deliverAgentReplyToConversation(input: {
+  conversationId: string;
+  thread?: string;
+  agentSession: string;
+  content: string;
+  interim?: boolean;
+}): Promise<string | null> {
+  const slackKey = parseSlackThreadKey(input.thread);
+  const formattedKey = slackKey ? formatSlackThreadKey(slackKey.slackChannelId, slackKey.threadTs) : undefined;
+  const dm = await recordChatV2AgentReply(
+    input.conversationId,
+    input.agentSession,
+    input.content,
+    input.agentSession,
+    input.interim === true,
+    formattedKey,
+  );
+  if (dm) return dm;
+  const room = await recordSlackRoomAgentReply({
+    channelId: input.conversationId,
+    senderName: input.agentSession,
+    content: input.content,
+    headerSession: input.agentSession,
+    interim: input.interim === true,
+    rawThread: input.thread,
+  });
+  if (room) return room;
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(input.conversationId);
+    if (!channel || channel.archivedAt || channel.type === 'dm') return null;
+    if (!chatV2.queryHuddleMembersForDispatch(input.conversationId).includes(input.agentSession)) return null;
+    let threadId: string | undefined;
+    if (input.thread && !slackKey) {
+      const named = chatV2.getMessageForBridge(input.thread);
+      if (named && named.channelId === input.conversationId) threadId = named.threadId ?? named.id;
+    }
+    const { message } = chatV2.recordTurn({
+      channelId: input.conversationId,
+      senderType: 'agent',
+      senderId: input.agentSession,
+      content: input.content,
+      ...(threadId ? { threadId } : {}),
+      metadata: {
+        source: 'reply-tool',
+        ...(input.interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
+      },
+    });
+    try {
+      const { notifyChatV2AgentReply } = await import('../chat-v2/chat-v2.controller.js');
+      notifyChatV2AgentReply(message);
+    } catch {
+      /* SLA auto-resolve is best-effort */
+    }
+    logger.info('Agent reply recorded in its huddle', {
+      agentSession: input.agentSession,
+      channelId: input.conversationId,
+      threadId,
+      messageId: message.id,
+    });
+    return message.id;
+  } catch (err) {
+    logger.warn('Could not record the agent reply in its huddle', {
+      channelId: input.conversationId,
+      agentSession: input.agentSession,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * A substantive answer that would otherwise be filed as a status report:
+ * when the agent owes the owner an answer in its turn-origin conversation
+ * (the watchdog tracks it), deliver it there instead of swallowing it.
+ *
+ * @param agentSession - Replying agent
+ * @param content - Its text
+ * @param interim - Interim note
+ * @returns The persisted message id and conversation, or null to keep the status path
+ */
+async function deliverOwedAnswerToOrigin(
+  agentSession: string,
+  content: string,
+  interim: boolean,
+): Promise<{ messageId: string; conversationId: string } | null> {
+  if (isAgentStatusMarker(content)) return null;
+  const origin = OrcReplyRouteService.getInstance().getLastOrigin(agentSession);
+  if (!origin) return null;
+  const { getOwnerMessageWatchdog } = await import('../../services/messaging/owner-message-watchdog.service.js');
+  const owed = getOwnerMessageWatchdog()
+    ?.owedBy(agentSession)
+    .some((e) => e.chatChannelId === origin.conversationId);
+  if (!owed) return null;
+  const messageId = await deliverAgentReplyToConversation({
+    conversationId: origin.conversationId,
+    thread: origin.slackThreadKey ?? origin.chatThreadId,
+    agentSession,
+    content,
+    interim,
+  });
+  if (!messageId) return null;
+  logger.warn('Agent answer with missing/wrong ids delivered to the owner conversation it was asked in (not filed as status)', {
+    agentSession,
+    conversationId: origin.conversationId,
+    messageId,
+  });
+  return { messageId, conversationId: origin.conversationId };
+}
+
+/**
  * Order an agent's Slack threads so the one its [DONE] is about comes first.
  *
  * The completion notice went to `threads[0]` — the first thread the agent
@@ -832,6 +997,19 @@ export async function agentResponse(
       });
       if (roomReply) {
         res.status(201).json({ success: true, data: { messageId: roomReply, conversationId: resolvedConversationId } });
+        return;
+      }
+    }
+
+    // The answer would be filed as a status report (no conversation, a
+    // legacy/foreign id): if the agent owes the owner an answer where its
+    // turn came from, it goes there (specs/2026-09-30-owner-message-guarantee.md §B).
+    if (isAgentSender && !isOrchestratorSelfReport && !isAgentStatusMarker(String(content))) {
+      const hdr = readAgentSessionHeader(req);
+      const replier = hdr && !headerContradictsSender ? hdr : String(senderName);
+      const owed = await deliverOwedAnswerToOrigin(replier, String(content), req.body?.interim === true);
+      if (owed) {
+        res.status(201).json({ success: true, data: { messageId: owed.messageId, conversationId: owed.conversationId, reroutedToOrigin: true } });
         return;
       }
     }

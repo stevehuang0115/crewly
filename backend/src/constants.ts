@@ -1439,6 +1439,78 @@ export const ORC_STATUS_FORWARDING = {
 } as const;
 
 /**
+ * Unanswered-owner-message watchdog (specs/2026-09-30-owner-message-guarantee.md).
+ *
+ * Every owner message delivered to an agent here ends in an answer or in one
+ * plain-words note saying who it is waiting on and why.
+ */
+export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
+	/** T1: no answer and no working placeholder → re-deliver to the responsible agent */
+	NUDGE_AFTER_MS: 10 * 60 * 1000,
+	/** T2: still nothing → one note in the thread */
+	NOTE_AFTER_MS: 20 * 60 * 1000,
+	/** A nudge always gets at least this long before the note follows it */
+	MIN_NOTE_GAP_AFTER_NUDGE_MS: 5 * 60 * 1000,
+	/** A visibly-working agent (placeholder showing + mid-turn) is left alone at most this long */
+	BUSY_EXTEND_CAP_MS: 60 * 60 * 1000,
+	/** Evaluation cadence */
+	TICK_MS: 30 * 1000,
+	/** How often agent display names (used only in notes) are re-read */
+	NAME_REFRESH_MS: 5 * 60 * 1000,
+	/** Entries older than this when restored after downtime are dropped, not noted */
+	STALE_DROP_MS: 6 * 60 * 60 * 1000,
+	/** Cap on open entries (oldest dropped with a warning) */
+	MAX_ENTRIES: 500,
+	/**
+	 * Answers seen in a thread are remembered this long: an agent can answer
+	 * before the dispatch that delivered the message returns (a fast agent
+	 * while a colleague in the same room is still cold-starting).
+	 */
+	RECENT_ANSWER_KEEP_MS: 15 * 60 * 1000,
+	/** Recently resolved keys remembered for dedupe (a hand-off re-dispatch must not re-track) */
+	MAX_RESOLVED_KEYS: 2000,
+	/** Characters of the owner's message quoted in logs, the debug list and the nudge */
+	PREVIEW_CHARS: 200,
+	/** Persisted state under CREWLY_HOME */
+	STORE_FILENAME: 'owner-message-watchdog.json',
+	/**
+	 * Whole-message acknowledgements that need no answer (compared after
+	 * lower-casing and stripping whitespace/punctuation). Approval words such
+	 * as 可以 / 行 are deliberately absent: they usually ask for action.
+	 */
+	ACK_WORDS: [
+		'好', '好的', '好滴', '好嘞', '好哒', '嗯', '嗯嗯', '收到', '知道了', '了解',
+		'谢谢', '谢了', '多谢', '谢谢你', '感谢', '好的谢谢', '好谢谢', '辛苦了',
+		'ok', 'okay', 'k', 'kk', 'okok', 'ok谢谢', 'thanks', 'thank you', 'thankyou', 'thx', 'ty', 'got it', 'cool', 'nice',
+		'👍', '🙏', '👌', '✅', '❤️', '🙂', '😊', '👍👍',
+	] as readonly string[],
+	/** Nudge delivered to the responsible agent ({waited} = minutes) */
+	NUDGE_TEXT:
+		'[REMINDER] 这条来自 owner 的消息已经 {waited} 分钟没有回复了。现在回复它：`{replyCmd}`——会自动发回这条消息来的地方。' +
+		'如果已经在别处回答过，或者确实不需要回复，运行 `{noneCmd}`。',
+	/** Note texts (from Crewly's own bot). {name} = agent display name. */
+	NOTE_LOGIN_TEXT: '⏳ {name} 还没回复你：{runtime} 需要重新登录。回复「重新登录 {runtimeCmd}」即可。',
+	NOTE_ASLEEP_TEXT: '⏳ {name} 还没回复你：它没在运行，叫醒也失败了（{detail}）。',
+	NOTE_ERROR_TEXT: '⏳ {name} 还没回复你：消息没送到（{detail}）。',
+	NOTE_BUSY_CAP_TEXT: '⏳ {name} 还在处理你这条消息（已经 {waited} 分钟）。',
+	NOTE_SILENT_TEXT: '⏳ {name} 收到了你的消息，但 {waited} 分钟了还没回复；已经提醒过它。',
+} as const;
+
+/**
+ * The single `reply` entry point (specs/2026-09-30-owner-message-guarantee.md §B).
+ */
+export const AGENT_REPLY_CONSTANTS = {
+	/** The skill every delivered message names */
+	SKILL_PATH: 'config/skills/agent/core/reply/execute.sh',
+	/**
+	 * First line of every delivered reply hint. {identity} = the
+	 * `CREWLY_SESSION_NAME=<session> ` prefix (or empty).
+	 */
+	HINT_LINE:
+		'回复: `{identity}bash config/skills/agent/core/reply/execute.sh "<你的回复>"` —— 会自动发回这条消息来的地方（私信、频道 thread、网页聊天都一样）。不需要回复就运行 `{identity}bash config/skills/agent/core/reply/execute.sh --none`。',
+} as const;
+
+/**
  * Owner-facing OKR guidance (OKROwnerGuidanceService): approval nudges and
  * the weekly digest.
  */

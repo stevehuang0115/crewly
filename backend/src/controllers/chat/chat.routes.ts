@@ -28,6 +28,7 @@ import {
   getThreadStatusByKey,
   handleGetHighlights,
 } from './chat.controller.js';
+import { agentReply } from './agent-reply.controller.js';
 
 /**
  * Creates chat router with all chat-related endpoints.
@@ -46,6 +47,10 @@ export function createChatRouter(context?: ApiContext): Router {
 
   // Agent response endpoint (for bash skills to post messages directly)
   router.post('/agent-response', agentResponse);
+
+  // One reply entry point: the answer goes back where the message came from
+  // (specs/2026-09-30-owner-message-guarantee.md §B)
+  router.post('/reply', agentReply);
 
   // Highlights
   router.get('/highlights', handleGetHighlights);

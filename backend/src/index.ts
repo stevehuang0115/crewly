@@ -47,6 +47,7 @@ import { retryWithBackoff } from './services/core/retry.util.js';
 import {
 	CREWLY_CONSTANTS,
 	ORCHESTRATOR_SESSION_NAME,
+	OWNER_MESSAGE_WATCHDOG_CONSTANTS,
 	CLOUD_DISCONNECT_NOTICE_CONSTANTS,
 	ORCHESTRATOR_ROLE,
 	ORCHESTRATOR_WINDOW_NAME,
@@ -164,6 +165,7 @@ import { OrchestratorHeartbeatMonitorService } from './services/orchestrator/orc
 import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor.service.js';
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
+import { OrcReplyRouteService } from './services/orc/orc-reply-route.service.js';
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
 import { getHarnessReloginService } from './services/harness/harness-relogin.service.js';
 import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
@@ -2291,7 +2293,27 @@ void (async () => {
 						const res = await activateAgentBySession(this.apiController, agentSession);
 						return res.success;
 					},
+					// Every owner message that reached an agent is watched until
+					// it is answered (specs/2026-09-30-owner-message-guarantee.md).
+					onDispatched: async (channel, message, result) => {
+						const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+						const watchdog = getOwnerMessageWatchdog();
+						if (!watchdog || !result.dispatched) return;
+						const { trackInputFromDispatch } = await import('./services/messaging/owner-message-watchdog.wiring.js');
+						let leader: string | null = null;
+						if (channel.type === 'huddle') {
+							const members = new Set(chatService.queryHuddleMembersForDispatch(channel.id));
+							const { resolveHuddleLeader } = await import('./services/chat-v2/huddle-leader.js');
+							leader = members.size > 0 ? await resolveHuddleLeader(await this.storageService.getTeams(), members) : null;
+						}
+						const input = trackInputFromDispatch(channel, message, result, {
+							ownerSlackUserId: getSlackService().getOwnerUserId?.() ?? null,
+							leader,
+						});
+						if (input) watchdog.track(input);
+					},
 				});
+				await this.startOwnerMessageWatchdog(chatService);
 				this.chatV2Gateway = chatGateway;
 				this.chatV2Dispatcher = chatDispatcher;
 				// The chat-v2 router mounted earlier reads realtime deps from
@@ -4807,6 +4829,96 @@ void (async () => {
 	 */
 	/** Last time a session was woken for queued messages (loop guard). */
 	private readonly queuedWakeAt = new Map<string, number>();
+
+	/**
+	 * Start the unanswered-owner-message watchdog and feed it what the owner
+	 * can see: Slack posts (any bot, any machine), chat-v2 agent turns,
+	 * working-status changes. Placeholder answered/settled signals are wired
+	 * where the placeholder service is built (slack-initializer).
+	 * specs/2026-09-30-owner-message-guarantee.md
+	 *
+	 * @param chatV2 - The chat-v2 service (turn events, system notes)
+	 */
+	private async startOwnerMessageWatchdog(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
+		try {
+			const wiring = await import('./services/messaging/owner-message-watchdog.wiring.js');
+			const { ActivityMonitorService } = await import('./services/monitoring/activity-monitor.service.js');
+			const activity = ActivityMonitorService.getInstance();
+			const names = new Map<string, string>();
+			const refreshNames = async (): Promise<void> => {
+				try {
+					for (const team of await this.storageService.getTeams()) {
+						for (const m of team.members ?? []) if (m.sessionName && m.name) names.set(m.sessionName, m.name);
+					}
+				} catch {
+					/* names are cosmetic */
+				}
+			};
+			await refreshNames();
+			const watchdog = wiring.createOwnerMessageWatchdog({
+				crewlyHome: this.config.crewlyHome,
+				sendToAgent: (session, text) => this.apiController.agentRegistrationService.sendMessageToAgent(session, text),
+				sessionExists: (session) => {
+					try {
+						return getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						return false;
+					}
+				},
+				activate: async (session) => {
+					const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+					return activateAgentBySession(this.apiController, session);
+				},
+				enqueueForOrchestrator: (input) => {
+					this.messageQueueService.enqueue(input as Parameters<MessageQueueService['enqueue']>[0]);
+				},
+				isBusy: (session) => activity.getObservedWorkingStatus(session) === 'in_progress',
+				loginRequired: (session) => OAuthReloginMonitorService.getInstance().getLoginRequired(session) ?? null,
+				displayNameOf: (session) => (session === ORCHESTRATOR_SESSION_NAME ? 'Orc' : names.get(session) ?? session),
+				slack: () => getSlackService(),
+				owesThread: (slackChannelId, threadTs) => getSlackTypingPlaceholderService()?.owesThread(slackChannelId, threadTs) ?? false,
+				agentDmBotToken: (slackChannelId) => {
+					const link = getSlackAgentDmService()?.findBySlackChannelId(slackChannelId);
+					return link ? getSlackAgentIdentityService()?.getInstalled(link.agentSession)?.botToken : undefined;
+				},
+				botTokenOf: (session) => getSlackAgentIdentityService()?.getInstalled(session)?.botToken,
+				recordChatNote: (chatChannelId, threadId, text) => {
+					try {
+						chatV2.recordTurn({
+							channelId: chatChannelId,
+							senderType: 'system',
+							senderId: 'crewly',
+							content: text,
+							...(threadId ? { threadId } : {}),
+							metadata: { source: 'system', [wiring.OWNER_WATCHDOG_NOTE_METADATA_KEY]: true },
+						});
+						return true;
+					} catch {
+						return false;
+					}
+				},
+				noteOriginThread: (session, chatChannelId, threadId) =>
+					OrcReplyRouteService.getInstance().noteOriginThread(session, chatChannelId, threadId),
+			});
+			// Names only appear in notes; a periodic refresh is plenty.
+			const namesTimer = setInterval(() => void refreshNames(), OWNER_MESSAGE_WATCHDOG_CONSTANTS.NAME_REFRESH_MS);
+			namesTimer.unref?.();
+			chatV2.on('chat_message', (dto: import('./services/chat-v2/types.js').ChatMessageDTO) => wiring.onChatTurn(watchdog, dto));
+			const slack = getSlackService();
+			slack.on('outbound', (post: { channelId: string; threadTs?: string; notAnAnswer?: boolean; kind?: string }) =>
+				wiring.onSlackOutbound(watchdog, post),
+			);
+			slack.on('message', (message: { channelId: string; threadTs?: string; authorAgentSession?: string }) =>
+				wiring.onSlackInbound(watchdog, message),
+			);
+			activity.onWorkingStatusChange((session, status) => watchdog.noteAgentTurn(session, status === 'in_progress'));
+			this.logger.info('Owner message watchdog started', { tracked: watchdog.size });
+		} catch (error) {
+			this.logger.warn('Owner message watchdog not started', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
 
 	/**
 	 * An agent went down with messages still queued for it: start it again so
