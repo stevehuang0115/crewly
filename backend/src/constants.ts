@@ -1422,6 +1422,20 @@ export const ORC_STATUS_FORWARDING = {
 	 * structured reports, unknown formats) is forwarded.
 	 */
 	PROGRESS_ONLY_MARKERS: /^\s*\[(IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
+	/**
+	 * A report-status line: the agent is talking to the orchestrator, not
+	 * answering a person. Anything else posted to `agent-response` is content
+	 * someone is waiting for — routing it to the orchestrator as "status"
+	 * swallows it (2026-09-30, #steamfun运维组: Avery's whole answer to the
+	 * owner went to the orc and never reached Slack).
+	 */
+	STATUS_MARKERS:
+		/^\s*\[(DONE|COMPLETED|COMPLETE|DELIVERED|IDLE|BLOCKED|FAILED|ERROR|STATUS REPORT|STATUS|PROGRESS|IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
+	/**
+	 * How long after the owner @'d an agent in a Slack room that agent's
+	 * reply (with no thread named) is taken as the answer to that message.
+	 */
+	RECENT_ROOM_REQUEST_WINDOW_MS: 6 * 60 * 60 * 1000,
 } as const;
 
 /**

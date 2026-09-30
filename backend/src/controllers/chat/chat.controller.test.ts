@@ -812,6 +812,155 @@ describe('Chat Controller', () => {
     });
 
     /**
+     * 2026-09-30, #steamfun运维组: the owner @'d Avery (Codex) in a Slack
+     * room. Her shell carried the orchestrator's CREWLY_SESSION_NAME, so
+     * reply-channel was refused; she fell back to reply-chat with the room's
+     * conversation id and the thread's root message id. agent-response took
+     * the full answer for a status report and queued it for the orchestrator;
+     * nothing reached Slack.
+     */
+    describe('an agent answer into a Slack room is delivered as the agent, not swallowed as status', () => {
+      const AVERY = 'steamfun-portal-team-avery-member-1';
+      const IVY = 'steam-fun-content-team-ivy-dd6a9b2b';
+      const ANSWER = '基于当前看板，真正处于 open/blocked 的只有 7 条。需要整理和决策的内容如下：\n\n一、TKT644 …';
+      let enqueue: jest.Mock;
+      let warn: jest.SpyInstance;
+
+      /**
+       * The room as production had it: a Slack-mapped huddle (listed as the
+       * channel's legacy conversation too) and the owner's @Avery message.
+       *
+       * @returns The huddle id and the owner message (thread root) id
+       */
+      async function setupRoom(): Promise<{ roomId: string; rootId: string }> {
+        const chatV2 = getChatV2Service();
+        const room = chatV2.createHuddle({
+          name: '#C0C1PRK997H',
+          purpose: 'Slack channel #C0C1PRK997H',
+          memberSessions: [IVY, AVERY],
+          principal: { userId: 'system', source: 'oss' },
+        });
+        const { message: root } = chatV2.recordTurn({
+          channelId: room.id,
+          senderType: 'user',
+          senderId: 'U0ALXV0ARC6',
+          content: '<@U0C2VV5LBPF> 基于我们现在还open/blocked的tickets里面 你可以汇总一下需要整理什么东西',
+          mentions: [AVERY],
+          metadata: { source: 'slack', slackChannelId: 'C0C1PRK997H', slackThreadTs: '1790797403.858689', slackTs: '1790797403.858689' },
+        });
+        const { setSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+        setSlackTeamChannelService({
+          findByChatChannelId: (id: string) =>
+            id === room.id
+              ? { teamId: 'adhoc:C0C1PRK997H', slackChannelId: 'C0C1PRK997H', slackChannelName: 'C0C1PRK997H', chatChannelId: room.id, createdAt: '', autoCreated: false }
+              : null,
+        } as never);
+        const { StorageService } = await import('../../services/core/storage.service.js');
+        jest.spyOn(StorageService.getInstance(), 'getTeams').mockResolvedValue([
+          { id: 't-portal', name: 'SteamFun Portal Team', members: [{ id: 'm1', name: 'Avery', sessionName: AVERY, role: 'operations' }] },
+          { id: 't-content', name: 'Steam Fun Content Team', members: [{ id: 'm2', name: 'Ivy', sessionName: IVY, role: 'executor' }] },
+        ] as never);
+        return { roomId: room.id, rootId: root.id };
+      }
+
+      beforeEach(async () => {
+        enqueue = jest.fn();
+        setMessageQueueService({ enqueue } as any);
+        const { ComponentLogger } = await import('../../services/core/logger.service.js');
+        warn = jest.spyOn(ComponentLogger.prototype, 'warn');
+      });
+
+      afterEach(async () => {
+        setMessageQueueService(null as any);
+        const { setSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+        setSlackTeamChannelService(null);
+        jest.restoreAllMocks();
+      });
+
+      it('the incident: orc header + "Avery" + room id + root message id → Avery\'s turn in the owner\'s thread', async () => {
+        const { roomId, rootId } = await setupRoom();
+        const seen: Array<{ senderType: string; senderId: string; threadId?: string; content: string }> = [];
+        getChatV2Service().on('chat_message', (m) =>
+          seen.push({ senderType: m.senderType, senderId: m.senderId, threadId: m.threadId, content: m.content }),
+        );
+
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', 'crewly-orc')
+          .send({ content: ANSWER, senderName: 'Avery', conversationId: roomId, slackThread: rootId });
+
+        expect(response.status).toBe(201);
+        expect(response.body.data.messageId).toBeDefined();
+        // The same row reply-channel writes: an agent turn by Avery, threaded
+        // under the owner's message — the Slack mirror posts it as her bot
+        // into that thread and replaces her placeholder.
+        expect(seen).toEqual([{ senderType: 'agent', senderId: AVERY, threadId: rootId, content: ANSWER }]);
+        expect(enqueue).not.toHaveBeenCalled();
+        // The wrong identity in the header is called out.
+        expect(warn.mock.calls.some(([msg]) => /wrong CREWLY_SESSION_NAME/.test(String(msg)))).toBe(true);
+      });
+
+      it('with no thread named, answers the latest message that @\'d the agent here; interim notes stay interim', async () => {
+        const { roomId, rootId } = await setupRoom();
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', AVERY)
+          .send({ content: '我先按看板筛一遍，整理好后一次性发。', senderName: 'Avery', senderType: 'agent', conversationId: roomId, interim: true });
+
+        expect(response.status).toBe(201);
+        const row = getChatV2Service().getMessageForBridge(response.body.data.messageId);
+        expect(row?.senderId).toBe(AVERY);
+        expect(row?.threadId).toBe(rootId);
+        expect(row?.metadata?.interim).toBe(true);
+        expect(enqueue).not.toHaveBeenCalled();
+      });
+
+      it('a status marker from the same agent in the same room still goes to the orchestrator', async () => {
+        const { roomId, rootId } = await setupRoom();
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', AVERY)
+          .send({ content: '[DONE] Agent Avery: 汇总已发', senderName: 'Avery', senderType: 'agent', conversationId: roomId, slackThread: rootId });
+
+        expect(response.status).toBe(201);
+        expect(response.body.data.messageId).toBeUndefined();
+        expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ source: 'system_event', conversationId: roomId }));
+        expect(warn.mock.calls.some(([msg]) => /Substantive agent content/.test(String(msg)))).toBe(false);
+      });
+
+      it('an agent that is not in the room, or was never asked there, keeps the status path', async () => {
+        const { roomId } = await setupRoom();
+        const stranger = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', 'someone-else-1')
+          .send({ content: ANSWER, senderName: 'someone-else-1', senderType: 'agent', conversationId: roomId });
+        expect(stranger.body.data.messageId).toBeUndefined();
+
+        // Ivy is a member but nobody @'d her and she named no thread.
+        const unasked = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', IVY)
+          .send({ content: '我也看了一下', senderName: 'Ivy', senderType: 'agent', conversationId: roomId });
+        expect(unasked.body.data.messageId).toBeUndefined();
+        expect(enqueue).toHaveBeenCalledTimes(2);
+      });
+
+      it('an unrelated conversation is unchanged, and substantive content routed as status is a WARN', async () => {
+        const conversation = await chatService.createNewConversation('Some orchestrator thread');
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({ content: 'Here is the full analysis you asked for: …', senderName: 'kai', senderType: 'agent', conversationId: conversation.id });
+
+        expect(response.status).toBe(201);
+        expect(response.body.data.messageId).toBeUndefined();
+        expect(enqueue).toHaveBeenCalledTimes(1);
+        const substantive = warn.mock.calls.filter(([msg]) => /Substantive agent content routed to the orchestrator/.test(String(msg)));
+        expect(substantive).toHaveLength(1);
+        expect(substantive[0][1]).toEqual(expect.objectContaining({ senderName: 'kai', conversationId: conversation.id }));
+      });
+    });
+
+    /**
      * 2026-09-26: the owner asked the orc a question in a Slack DM; a
      * WorkItem-dispatch system turn right after it posted the answer (with
      * the owner's pending question in it) to #think-tank.

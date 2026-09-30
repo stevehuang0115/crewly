@@ -466,10 +466,28 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('--channel huddle-1');
       expect(prompt).toContain('--thread msg-root');
       expect(prompt).not.toContain('reply-chat');
+      // The command carries the recipient's identity: a Codex agent's shell
+      // inherited the orchestrator's CREWLY_SESSION_NAME, so its reply-channel
+      // was refused and the answer never reached Slack (2026-09-30).
+      expect(prompt).toContain('CREWLY_SESSION_NAME=sess-a bash config/skills/agent/core/reply-channel/execute.sh --channel huddle-1 --thread msg-root');
+      expect(prompt).toContain('不要删');
       // Multi-agent threads must converge (owner, 2026-09-19): two rounds
       // each, the team leader writes the conclusion, then silence.
       expect(prompt).toContain('最多发言两轮');
       expect(prompt).toContain('「结论」');
+    });
+
+    it('leaves the identity prefix out when the session name is not shell-safe', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'bad; rm -rf /',
+        senderId: 'U1',
+        content: 'hi',
+        replyVia: 'reply-channel',
+      });
+      expect(prompt).not.toContain('CREWLY_SESSION_NAME=');
+      expect(prompt).toContain('bash config/skills/agent/core/reply-channel/execute.sh --channel huddle-1');
     });
 
     it('omits --thread when no threadId and keeps the optional wording for non-mentioned members', () => {
