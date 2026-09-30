@@ -27,6 +27,7 @@ import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { SLACK_AGENT_DM_CONSTANTS, SLACK_THREAD_KEY_CONSTANTS, SLACK_TYPING_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
+import { isOwnerAuthored, deliveredSessions, type SlackAutoWorkingService } from './slack-auto-working.service.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { parseSlackThreadKey, slackThreadOfMetadata } from './slack-thread-key.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
@@ -78,6 +79,11 @@ export interface SlackAgentDmServiceDeps {
   /** "Is typing…" placeholders; optional (replies are posted plainly without it). */
   typing?: (Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> &
     Partial<Pick<SlackTypingPlaceholderService, 'dropThread'>>) | null;
+  /**
+   * Harness-posted "working on it": if the DM's placeholder is not showing
+   * when the agent starts on the owner's message, it is posted then; optional.
+   */
+  autoWorking?: Pick<SlackAutoWorkingService, 'watch'> | null;
   /** Whether the agent's runtime session exists right now (false = it must be woken first). */
   isAgentAwake?: (agentSession: string) => boolean;
   /** Slack user id of the owner, when known — only the owner's DMs file tickets. */
@@ -429,6 +435,19 @@ export class SlackAgentDmService {
       await typing.begin(typingKey, { botToken: installed!.botToken, displayName: member?.name ?? agentSession }, awake ? 'typing' : 'waking', message.ts);
     }
 
+    // The placeholder above may not be showing (its post failed, Slack
+    // blipped): the agent starting on the owner's message posts it then.
+    const autoWatch =
+      typing && this.deps.autoWorking && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+        ? this.deps.autoWorking.watch({
+            slackChannelId: typingKey.slackChannelId,
+            threadTs: typingKey.threadTs,
+            sourceTs: message.ts,
+            candidates: [agentSession],
+            identityFor: () => ({ botToken: installed!.botToken, displayName: member?.name ?? agentSession }),
+          })
+        : null;
+
     // Ticket loop (specs/ticket-loop.md §2): an owner's ask in an agent's DM
     // is a ticket assigned to that agent. The receipt goes into the DM thread
     // under the agent's own bot (the workspace bot cannot see this DM).
@@ -452,6 +471,7 @@ export class SlackAgentDmService {
     } else {
       this.logger.warn('No chat dispatcher wired — DM persisted but not delivered', { agentSession });
     }
+    autoWatch?.delivered(deliveredSessions(dispatch, agentSession));
     if (typing) {
       if (dispatch?.dispatched) await typing.setPhase(typingKey, 'typing');
       else await typing.fail(typingKey);

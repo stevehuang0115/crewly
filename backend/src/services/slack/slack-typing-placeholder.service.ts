@@ -132,6 +132,8 @@ export class SlackTypingPlaceholderService {
   private readonly locks = new Map<string, Promise<unknown>>();
   /** Agents with a turn-end second look already scheduled. */
   private readonly recheckScheduled = new Set<string>();
+  /** Told when a thread gets a placeholder or an answer (see {@link onThreadActivity}). */
+  private readonly threadListeners = new Set<(slackChannelId: string, threadTs?: string) => void>();
 
   /**
    * @param deps - Slack slice plus optional timer overrides for tests
@@ -157,6 +159,7 @@ export class SlackTypingPlaceholderService {
     sourceTs?: string,
   ): Promise<TypingPlaceholder | null> {
     if (!this.deps.slack.isConnected()) return null;
+    this.notifyThread(key);
     const k = keyOf(key);
     const existing = this.pending.get(k);
     if (existing) {
@@ -180,6 +183,31 @@ export class SlackTypingPlaceholderService {
     }).finally(() => this.inFlight.delete(k));
     this.inFlight.set(k, task);
     return task;
+  }
+
+  /**
+   * Be told whenever a thread gets a placeholder (posted by anyone — the
+   * agent's `--working`, the router, the harness) or an answer. The
+   * harness's own "working on it" watch uses this to stand down.
+   *
+   * @param listener - Called with the Slack channel and thread
+   * @returns Unsubscribe function
+   */
+  onThreadActivity(listener: (slackChannelId: string, threadTs?: string) => void): () => void {
+    this.threadListeners.add(listener);
+    return () => {
+      this.threadListeners.delete(listener);
+    };
+  }
+
+  private notifyThread(key: TypingKeyParts): void {
+    for (const listener of this.threadListeners) {
+      try {
+        listener(key.slackChannelId, key.threadTs);
+      } catch (err) {
+        this.logger.debug('Thread activity listener threw', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
   }
 
   /**
@@ -409,6 +437,7 @@ export class SlackTypingPlaceholderService {
     opts: { reopen?: TypingPhase } = {},
   ): Promise<'replaced' | 'edited' | 'posted'> {
     const k = keyOf(key);
+    this.notifyThread(key);
     await this.inFlight.get(k);
     return this.withLock(k, async () => {
       const [oldest, ...others] = this.takeAll(key);
@@ -468,6 +497,7 @@ export class SlackTypingPlaceholderService {
    */
   async dropThread(key: TypingKeyParts): Promise<number> {
     const k = keyOf(key);
+    this.notifyThread(key);
     await this.inFlight.get(k);
     return this.withLock(k, async () => {
       const all = this.takeAll(key);

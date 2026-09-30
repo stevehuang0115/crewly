@@ -30,6 +30,7 @@ import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } 
 import type { Request } from '../../types/v2/request.types.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
+import { isOwnerAuthored, deliveredSessions, type SlackAutoWorkingService } from './slack-auto-working.service.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import { isTeamLead } from '../../utils/team.utils.js';
 import * as path from 'path';
@@ -141,6 +142,11 @@ export interface SlackTeamChannelServiceDeps {
   /** "Is typing…" placeholders for @-mentioned agents; optional. */
   typing?: (Pick<SlackTypingPlaceholderService, 'begin' | 'resolve' | 'setPhase' | 'fail'> &
     Partial<Pick<SlackTypingPlaceholderService, 'dropThread'>>) | null;
+  /**
+   * Harness-posted "working on it": watches an owner's message and posts the
+   * placeholder for the first recipient that starts working on it; optional.
+   */
+  autoWorking?: Pick<SlackAutoWorkingService, 'watch'> | null;
   /** Whether an agent's runtime session exists right now (false = it must be woken first). */
   isAgentAwake?: (agentSession: string) => boolean;
   /** Whether an agent session runs on this instance (its own Slack copy is not re-recorded). */
@@ -1360,6 +1366,27 @@ export class SlackTeamChannelService {
       }
     }
 
+    // Recipients who were only told get no placeholder above; the first of
+    // them that starts working on an owner's message gets one posted for it
+    // by the harness (2026-09-30: Owen, 3.5 min of nothing in #pro-ce).
+    const autoWatch =
+      this.deps.autoWorking && this.deps.typing && isOwnerAuthored(message, this.deps.getOwnerUserId?.())
+        ? this.deps.autoWorking.watch({
+            slackChannelId: message.channelId,
+            threadTs: slackThreadTs,
+            sourceTs: message.ts,
+            candidates: [...new Set([...(planned ? [...planned.keys()] : []), ...members.map((m) => m.sessionName)])],
+            identityFor: (session) => {
+              const member = members.find((m) => m.sessionName === session);
+              const installed = this.deps.identities?.getInstalled(session);
+              const displayName = member?.name ?? session;
+              return installed
+                ? { botToken: installed.botToken, displayName }
+                : { displayName, ...slackIdentityFor(member, session) };
+            },
+          })
+        : null;
+
     const dispatcher = this.deps.getDispatcher();
     let dispatch: DispatchMessageResult | null = null;
     if (dispatcher) {
@@ -1399,6 +1426,8 @@ export class SlackTeamChannelService {
     if (resolved.unknown.length > 0) {
       await this.postUnknownMentionHint(message, resolved.unknown, candidates);
     }
+
+    autoWatch?.delivered(deliveredSessions(dispatch));
 
     // Dispatch is done: each placeholder now reflects whether its agent
     // actually holds the message.

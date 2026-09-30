@@ -101,6 +101,7 @@ import { agentNameIndexOf, createSlackOwnerSender, startOwnerReceiptSchedule, te
 import { IntakeOutcomeLog } from './services/v3/ticket-intake-log.js';
 import { getSlackService } from './services/slack/slack.service.js';
 import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-placeholder.service.js';
+import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.service.js';
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
@@ -1306,6 +1307,12 @@ void (async () => {
 		this.eventBusService.on('eventPublished', (event: { type: string; sessionName?: string }) => {
 			if (event.type === 'agent:inactive' && event.sessionName) {
 				this.wakeIfMessagesQueued(event.sessionName);
+			}
+			// A turn started: the harness's "working on it" watch may be waiting
+			// for it (the ActivityMonitor tells it sooner; this covers other
+			// busy sources). Repeats are harmless — a watch ends on first use.
+			if (event.type === 'agent:busy' && event.sessionName) {
+				getSlackAutoWorkingService()?.noteBusy(event.sessionName);
 			}
 			if (event.type === 'agent:idle' && event.sessionName) {
 				try {

@@ -1191,6 +1191,21 @@ export const SLACK_TYPING_CONSTANTS = {
 	 * does not count it as the answer (owner, 2026-09-24).
 	 */
 	INTERIM_METADATA_KEY: 'interim',
+	/**
+	 * How long after an owner's Slack message was delivered the harness
+	 * watches its recipients for a turn to start. The first recipient seen
+	 * going busy in that window gets the "working on it" placeholder posted
+	 * for it — no longer left to the agent calling `reply-channel --working`
+	 * (2026-09-30: Owen worked 3.5 min on a #pro-ce message with nothing
+	 * showing). 60 s, not 30: busy is observed by the 30 s ActivityMonitor
+	 * poll, so a turn that starts right after delivery can be seen up to one
+	 * poll later, and the PTY write itself takes a few seconds.
+	 */
+	AUTO_WORKING_WINDOW_MS: 60 * 1000,
+	/** A watched delivery that never reports its outcome is dropped after this (cold starts take 1–2 min) */
+	AUTO_WORKING_DELIVERY_MAX_MS: 10 * 60 * 1000,
+	/** Deliveries still watched at once; the oldest is dropped past this */
+	AUTO_WORKING_MAX_WATCHES: 200,
 } as const;
 
 /**
