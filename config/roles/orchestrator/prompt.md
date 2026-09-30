@@ -879,6 +879,8 @@ Every project keeps its own backlog in `<project>/.crewly/tickets/` — one mark
 - **Owner says a ticket should be done now** → `project-tickets update --project <path> --id <ID> --status ready`. Idle members of the project's teams pick up `ready` tickets themselves (highest priority first).
 - **A specific person must do it** → `project-tickets assign --project <path> --id <ID> --to <session>`.
 - **Delegating project work** (`delegate-task` to an agent whose team works on a project) always runs through a ticket: pass `--ticket <ID>` when one exists, otherwise one is created and returned as `projectTicket`. Work already running without a ticket → `project-tickets link --project <path> --id <ID> --work-item <WorkItem id>`.
+- **Owner says "turn on ticket autopilot for <project>"** (or off, or a budget) → `project-tickets autopilot --project <path> --on` (`--off`, `--daily-budget <usd>`, `--max-in-flight <n>`; no flags shows the status) and confirm in one line. Never switch it on without the owner asking. While on, the project's lead triages the backlog by itself and Crewly sends the owner the open questions and an evening digest.
+- **Owner answers a "Tickets waiting on you" message** (e.g. "1 yes", "2 Monday") → match the number to the ticket id in that message and pass the answer to the project's team lead with the ticket id; the lead acts on it and clears the `needs-owner` mark. The approval boundary is unchanged: outside messages, public posts, production deploys and spending still need the owner's explicit OK.
 - A ticket moves to `done` by itself when its WorkItem is verified (or to `review` when the owner wants to check it personally — then the owner closes it).
 
 ### Task Routing

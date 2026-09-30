@@ -7,15 +7,18 @@
 
 import { Router } from 'express';
 import {
+  askOwnerProjectTicket,
   assignProjectTicket,
   claimProjectTicket,
   createProjectTicket,
   getProjectTicket,
+  getTicketAutopilot,
   linkProjectTicket,
   listMyProjectTickets,
   listProjectTickets,
   logProjectTicket,
   migrateProjectTickets,
+  setTicketAutopilot,
   transitionProjectTicket,
   updateProjectTicket,
 } from './project-tickets.controller.js';
@@ -34,6 +37,7 @@ import {
  * - POST /:project/:id/assign     — `{ assignee, start? }`
  * - POST /:project/:id/log        — `{ note }`
  * - POST /:project/:id/link       — `{ workItemId }` (link work already in flight)
+ * - POST /:project/:id/ask-owner  — `{ question }` / `{ clear: true }` (needs-owner mark)
  *
  * @returns Express router for /api/project-tickets
  */
@@ -49,6 +53,7 @@ export function createProjectTicketsRouter(): Router {
   router.post('/:project/:id/assign', assignProjectTicket);
   router.post('/:project/:id/log', logProjectTicket);
   router.post('/:project/:id/link', linkProjectTicket);
+  router.post('/:project/:id/ask-owner', askOwnerProjectTicket);
   return router;
 }
 
@@ -63,5 +68,22 @@ export function createProjectTicketsRouter(): Router {
 export function createProjectTicketsMigrationRouter(): Router {
   const router = Router();
   router.post('/:project', migrateProjectTickets);
+  return router;
+}
+
+/**
+ * Router for the ticket autopilot switch (specs/2026-09-30-ticket-autopilot.md),
+ * outside the `/project-tickets/` prefix: it is an owner / orchestrator
+ * setting, and project settings are not writable over the mobile relay.
+ *
+ * - GET  /:project — settings + status
+ * - POST /:project — `{ enabled?, driver?, dailyBudgetUsd?, maxInFlightPerMember? }`
+ *
+ * @returns Express router for /api/project-ticket-autopilot
+ */
+export function createTicketAutopilotRouter(): Router {
+  const router = Router();
+  router.get('/:project', getTicketAutopilot);
+  router.post('/:project', setTicketAutopilot);
   return router;
 }

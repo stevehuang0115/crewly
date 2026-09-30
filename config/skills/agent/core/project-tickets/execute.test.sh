@@ -31,6 +31,8 @@ class H(BaseHTTPRequestHandler):
             if self.path.count('/') >= 4 and not self.path.split('?')[0].endswith('%2Fapp'):
                 return self.reply(200, {'success': True, 'data': T})
             return self.reply(200, {'success': True, 'data': {'project': {'id': 'p1'}, 'tickets': [T], 'invalid': []}})
+        if self.path.startswith('/api/project-ticket-autopilot/'):
+            return self.reply(200, {'success': True, 'data': {'settings': {'enabled': False}}})
         if self.path.startswith('/api/project-tickets'):
             return self.reply(200, {'success': True, 'data': [{'project': {'id': 'p1'}, 'tickets': [T]}]})
         return self.reply(404, {'success': False, 'error': 'nope'})
@@ -116,6 +118,26 @@ check "link: output" "$(printf '%s' "$OUT" | jq -c '[.workItemId, .ticket.status
 run '{"action":"link","project":"p1","id":"APP-1","workItemId":"wi-43"}' >/dev/null
 check "link json" "$(last '.body | tostring')" '{"workItemId":"wi-43"}'
 check "link: missing work item" "$(run_err link --project p1 --id APP-1 | grep -c 'work-item')" "1"
+
+# --- ask-owner (orchestrator / lead): needs-owner mark with a one-line question ---
+run ask-owner --project p1 --id APP-1 --question "Send the draft to the partners?" >/dev/null
+check "ask-owner: path" "$(last .path)" "/api/project-tickets/p1/APP-1/ask-owner"
+check "ask-owner: body" "$(last '.body | tostring')" '{"question":"Send the draft to the partners?"}'
+run ask-owner --project p1 --id APP-1 --clear --note "owner said yes" >/dev/null
+check "ask-owner: clear" "$(last '.body | tostring')" '{"clear":true,"note":"owner said yes"}'
+check "ask-owner: missing question" "$(run_err ask-owner --project p1 --id APP-1 | grep -c 'question')" "1"
+
+# --- autopilot (owner / orchestrator): show or change the switch ---
+OUT=$(run autopilot --project p1)
+check "autopilot show: GET" "$(last '[.method, .path] | tostring')" '["GET","/api/project-ticket-autopilot/p1"]'
+check "autopilot show: output" "$(printf '%s' "$OUT" | jq -c '.autopilot.settings')" '{"enabled":false}'
+run autopilot --project p1 --on --daily-budget 12.5 --max-in-flight 2 >/dev/null
+check "autopilot on: POST" "$(last '[.method, .path] | tostring')" '["POST","/api/project-ticket-autopilot/p1"]'
+check "autopilot on: body" "$(last '.body | tostring')" '{"enabled":true,"dailyBudgetUsd":12.5,"maxInFlightPerMember":2}'
+run autopilot --project p1 --off --driver default >/dev/null
+check "autopilot off: body" "$(last '.body | tostring')" '{"enabled":false,"driver":null}'
+run '{"action":"autopilot","project":"p1","enabled":true,"driver":"ce-owen"}' >/dev/null
+check "autopilot json: body" "$(last '.body | tostring')" '{"enabled":true,"driver":"ce-owen"}'
 
 # --- errors ---
 check "missing action" "$(run_err | grep -c 'Missing action')" "1"

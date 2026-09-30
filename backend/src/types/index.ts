@@ -1,3 +1,5 @@
+import type { TicketAutopilotSettings } from './ticket-autopilot.types.js';
+
 /**
  * Role types available for team members.
  * 'team-leader' manages a sub-team of workers in hierarchical mode.
@@ -284,6 +286,11 @@ export interface Project {
   worktrees?: 'on' | 'off';
   /** Repo-relative heavy directories to symlink into worktrees (default `['node_modules']`). */
   worktreeSharedDirs?: string[];
+  /**
+   * Ticket autopilot switch (specs/2026-09-30-ticket-autopilot.md). Absent =
+   * off. Changed only by the owner or the orchestrator.
+   */
+  ticketAutopilot?: TicketAutopilotSettings;
   createdAt: string;
   updatedAt: string;
 }

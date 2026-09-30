@@ -194,6 +194,7 @@ fork the harness verification flow.
 | POST | `/project-tickets/:project/:id/assign` | `{ assignee, start? }` | TL/owner/orc; `start:false` only records the assignee |
 | POST | `/project-tickets/:project/:id/log` | `{ note }` | append a Log line |
 | POST | `/project-tickets/:project/:id/link` | `{ workItemId }` | owner/orc/TL: link a live WorkItem already in flight (§11) |
+| POST | `/project-tickets/:project/:id/ask-owner` | `{ question }` / `{ clear: true, note? }` | owner/orc/TL: `needs-owner` mark (§12) |
 | POST | `/project-tickets-migrate/:project` | `{ apply?, milestones?[] }` | v1 migration (dry-run unless `apply: true`) |
 
 All mutations are POST so the relay can carry them; the mobile/portal relay allowlist gets
@@ -203,8 +204,9 @@ prefix).
 ## 7. Skills
 
 - `config/skills/agent/core/project-tickets` (all roles incl. team-leader and orchestrator):
-  `list | show | create | update | claim | release | assign | log | link` (`assign` and `link` are
-  refused by the backend unless the caller is the owner, the orchestrator or a lead of a project team).
+  `list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot` (`assign`, `link` and `ask-owner` are
+  refused by the backend unless the caller is the owner, the orchestrator or a lead of a project team;
+  `autopilot` unless it is the owner or the orchestrator — §12).
 - `delegate-task` (team-leader and orchestrator) takes `--ticket <ID>`; see §11.
 - `config/skills/team-leader/assign-ticket` (`tl-assign-ticket`): assign a ticket to a member.
 - Owner → backlog: the orchestrator/TL uses `project-tickets create --project … --source request:TKT-…`
@@ -322,3 +324,12 @@ teammate always has a ticket (pass `--ticket` when one exists, otherwise one is 
 `addToPool` callers (triggers, reconciler, review items) do not pass through the endpoint and are
 untouched.
 
+
+## 12. Ticket autopilot (2026-09-30)
+
+A per-project switch (default off) that wakes the project's lead with one `ticket_triage` WorkItem
+to groom the backlog while someone on the team is idle, with brakes (one live triage, 30-minute
+cadence, daily USD budget, in-progress cap per member) and phone-first owner notices (batched
+`needs-owner` questions, an evening digest). The approval boundary is unchanged. Adds the
+`ask-owner` endpoint (`POST /project-tickets/:project/:id/ask-owner`, owner / orc / lead) and the
+`needs-owner` label. Full design: `specs/2026-09-30-ticket-autopilot.md`.

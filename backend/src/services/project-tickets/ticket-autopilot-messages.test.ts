@@ -1,0 +1,150 @@
+/**
+ * Tests for the ticket autopilot texts: the triage brief (with the
+ * boundaries), the owner's batched questions and the evening digest.
+ */
+import * as fs from 'fs';
+import * as path from 'path';
+import type { ProjectTicket } from '../../types/project-ticket.types.js';
+import {
+  TICKET_AUTOPILOT_BOUNDARIES,
+  buildBudgetPausedMessage,
+  buildDigestMessage,
+  buildOwnerQuestionsMessage,
+  buildTriageBrief,
+  formatAge,
+} from './ticket-autopilot-messages.js';
+
+const NOW = Date.parse('2026-09-30T10:00:00.000Z');
+
+function ticket(id: string, extra: Partial<ProjectTicket> = {}): ProjectTicket {
+  return {
+    id,
+    title: `Title ${id}`,
+    status: 'backlog',
+    priority: 'P1',
+    assignee: null,
+    team: null,
+    labels: [],
+    ownerReview: false,
+    createdAt: '2026-09-28T10:00:00.000Z',
+    updatedAt: '2026-09-28T10:00:00.000Z',
+    workItemId: 'wi-secret-123',
+    requestId: null,
+    source: 'owner',
+    migratedFrom: null,
+    fileName: `${id}.md`,
+    filePath: `/x/${id}.md`,
+    projectPath: '/x',
+    description: 'Write the partner email.\nKeep it short.',
+    acceptance: [],
+    log: [],
+    extra: {},
+    ...extra,
+  };
+}
+
+describe('buildTriageBrief', () => {
+  const brief = buildTriageBrief({
+    project: { id: 'p-ce', name: 'CE' },
+    candidates: [
+      { ticket: ticket('CE-1', { labels: ['email'] }), reason: 'backlog', workerCreated: false },
+      { ticket: ticket('CE-2', { source: 'agent:ce-dev' }), reason: 'backlog', workerCreated: true },
+      { ticket: ticket('CE-3', { status: 'ready' }), reason: 'ready_no_taker', workerCreated: false },
+    ],
+    more: 2,
+    members: [
+      { session: 'ce-owen', name: 'Owen', role: 'lead', idle: true, inFlight: 0 },
+      { session: 'ce-dev', idle: false, inFlight: 1 },
+    ],
+    maxInFlightPerMember: 1,
+    now: NOW,
+  });
+
+  it('spells out every boundary that still needs the owner', () => {
+    for (const b of TICKET_AUTOPILOT_BOUNDARIES) expect(brief).toContain(b);
+    expect(TICKET_AUTOPILOT_BOUNDARIES).toEqual(
+      expect.arrayContaining(['sending email or messages to outside people', 'publishing content publicly', 'deploying to production', 'spending money']),
+    );
+    expect(brief).toMatch(/draft or a PR/);
+  });
+
+  it('offers the four decisions with runnable commands for this project', () => {
+    expect(brief).toContain('assign --project p-ce --id <ID> --to <member>');
+    expect(brief).toContain('ask-owner --project p-ce');
+    expect(brief).toContain('--status cancelled');
+    expect(brief).toContain('Split');
+  });
+
+  it('lists each ticket with id, priority, labels, age and creator, and flags worker-created ones', () => {
+    expect(brief).toContain('### CE-1 · P1 · backlog · 2d old');
+    expect(brief).toContain('labels: email');
+    expect(brief).toContain('created by ce-dev · **worker-created — review first**');
+    expect(brief).toContain('ready, but nobody on the team can take it');
+    expect(brief).toContain('> Write the partner email. Keep it short.');
+    expect(brief).toContain('2 more tickets will come in the next triage');
+  });
+
+  it('shows the team with idle state and in-flight counts', () => {
+    expect(brief).toContain('- ce-owen (Owen, lead) — idle, 0 in progress');
+    expect(brief).toContain('- ce-dev — busy, 1 in progress');
+    expect(brief).toContain('At most 1 ticket in progress per member');
+  });
+});
+
+describe('owner-facing texts', () => {
+  it('numbers the questions for one-tap answers', () => {
+    const msg = buildOwnerQuestionsMessage([
+      { projectName: 'CE', ticketId: 'CE-4', title: 'Partner email', question: 'Send the draft to the 3 partners?' },
+      { projectName: 'CE', ticketId: 'CE-9', title: 'Pricing page', question: 'Publish on Monday?' },
+    ]);
+    expect(msg).toContain('2 tickets are waiting on you');
+    expect(msg).toContain('1. CE-4 Partner email — Send the draft to the 3 partners?');
+    expect(msg).toContain('2. CE-9 Pricing page — Publish on Monday?');
+    expect(msg).toContain('Reply with the number');
+  });
+
+  it('names the project only when questions span several', () => {
+    const msg = buildOwnerQuestionsMessage([
+      { projectName: 'CE', ticketId: 'CE-4', title: 'A', question: 'Q?' },
+      { projectName: 'App', ticketId: 'APP-1', title: 'B', question: 'Q2?' },
+    ]);
+    expect(msg).toContain('CE-4 (CE)');
+  });
+
+  it('builds the digest without harness mechanics and skips empty projects', () => {
+    const msg = buildDigestMessage([
+      {
+        name: 'CE',
+        doneToday: [ticket('CE-1', { status: 'done' })],
+        inProgress: [ticket('CE-2', { status: 'in_progress', assignee: 'ce-dev' })],
+        waitingOnOwner: [ticket('CE-4', { labels: ['needs-owner'] })],
+      },
+      { name: 'Quiet', doneToday: [], inProgress: [], waitingOnOwner: [] },
+    ]);
+    expect(msg).toContain('Done today (1): CE-1 Title CE-1');
+    expect(msg).toContain('In progress (1): CE-2 Title CE-2 (ce-dev)');
+    expect(msg).toContain('Waiting on you (1): CE-4');
+    expect(msg).not.toContain('Quiet');
+    expect(msg).not.toContain('wi-secret-123');
+    expect(msg).not.toMatch(/WorkItem|claim/i);
+    expect(buildDigestMessage([{ name: 'Quiet', doneToday: [], inProgress: [], waitingOnOwner: [] }])).toBeNull();
+  });
+
+  it('explains a budget pause in one line', () => {
+    expect(buildBudgetPausedMessage('CE', 20.456, 20)).toContain('$20.46 of its $20.00 daily budget');
+  });
+
+  it('formats ages', () => {
+    expect(formatAge(new Date(NOW - 5 * 60_000).toISOString(), NOW)).toBe('5m');
+    expect(formatAge(new Date(NOW - 5 * 3_600_000).toISOString(), NOW)).toBe('5h');
+    expect(formatAge('nope', NOW)).toBe('?');
+  });
+});
+
+describe('team-leader prompt', () => {
+  it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s spells out the same boundaries', (rel) => {
+    const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
+    expect(text).toContain('Ticket autopilot / triage');
+    for (const b of TICKET_AUTOPILOT_BOUNDARIES) expect(text).toContain(b);
+  });
+});

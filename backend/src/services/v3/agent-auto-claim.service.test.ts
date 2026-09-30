@@ -85,6 +85,11 @@ jest.mock('../project-tickets/project-ticket-workflow.service.js', () => ({
     getInstance: () => (mockWorkflowInstalled ? { claimNextForAgent: mockClaimNextForAgent } : null),
   },
 }));
+// Ticket autopilot idle trigger (specs/2026-09-30-ticket-autopilot.md §2).
+const mockOnMemberIdle = jest.fn().mockResolvedValue([]);
+jest.mock('../project-tickets/ticket-autopilot.service.js', () => ({
+  TicketAutopilotService: { getInstance: () => ({ onMemberIdle: mockOnMemberIdle }) },
+}));
 const mockDispatchTo = jest.fn().mockResolvedValue(true);
 const mockRedispatch = jest.fn().mockResolvedValue(true);
 jest.mock('./workitem-dispatch.subscriber.js', () => ({
@@ -159,6 +164,23 @@ describe('AgentAutoClaimService', () => {
         mockRedispatch.mockResolvedValueOnce(false);
         expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
         expect(mockReleaseBack).toHaveBeenCalledWith('wi-t', expect.stringContaining('could not be delivered'));
+      });
+
+      it('tells the ticket autopilot when an idle agent found nothing ready, not when it got a ticket', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockOnMemberIdle.mockClear();
+        mockGetAvailableItems.mockResolvedValueOnce([]);
+        mockClaimNextForAgent.mockResolvedValueOnce(null);
+        await service.tryAutoClaimForAgent('agent-1');
+        await new Promise((r) => setImmediate(r));
+        expect(mockOnMemberIdle).toHaveBeenCalledWith('agent-1');
+
+        mockOnMemberIdle.mockClear();
+        mockGetAvailableItems.mockResolvedValueOnce([]);
+        mockClaimNextForAgent.mockResolvedValueOnce({ ticket: { id: 'APP-3' }, workItem: { id: 'wi-t', target: 'agent-1' }, claimed: true });
+        await service.tryAutoClaimForAgent('agent-1');
+        await new Promise((r) => setImmediate(r));
+        expect(mockOnMemberIdle).not.toHaveBeenCalled();
       });
 
       it('never runs when a direct WorkItem was claimed', async () => {

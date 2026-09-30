@@ -120,3 +120,12 @@ describe('ProjectModel', () => {
     });
   });
 });
+
+describe('ProjectModel ticketAutopilot', () => {
+  it('round-trips the ticket autopilot switch and omits it when absent', () => {
+    const settings = { enabled: true, driver: 'tl-a', dailyBudgetUsd: 10 };
+    const json = ProjectModel.fromJSON(new ProjectModel({ id: 'p1', ticketAutopilot: settings }).toJSON()).toJSON();
+    expect(json.ticketAutopilot).toEqual(settings);
+    expect('ticketAutopilot' in new ProjectModel({ id: 'p2' }).toJSON()).toBe(false);
+  });
+});

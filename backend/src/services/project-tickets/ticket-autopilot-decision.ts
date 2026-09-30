@@ -1,0 +1,342 @@
+/**
+ * Ticket autopilot — the pure decisions (specs/2026-09-30-ticket-autopilot.md).
+ *
+ * Everything here is a function of its inputs (tickets, teams, clock, the
+ * autopilot's own bookkeeping), so the rules can be unit-tested without a
+ * pool, a filesystem or timers:
+ * - which tickets need the driver's triage ({@link selectTriageCandidates});
+ * - whether to wake the driver now ({@link decideTriage});
+ * - whether to send the owner the batched questions ({@link decideOwnerQuestions})
+ *   or the evening digest ({@link decideDigest}).
+ *
+ * @module services/project-tickets/ticket-autopilot-decision
+ */
+
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { projectTicketPriorityRank, type ProjectTicket } from '../../types/project-ticket.types.js';
+import type { Team, TeamMember } from '../../types/index.js';
+import { isTeamLead } from './project-ticket-workflow.service.js';
+
+/** Why a ticket is put in front of the driver. */
+export type TriageReason = 'backlog' | 'ready_no_taker' | 'ready_stale';
+
+/** One ticket for the triage brief. */
+export interface TriageCandidate {
+  ticket: ProjectTicket;
+  reason: TriageReason;
+  /** Filed by a team member (not the owner, a lead or the orchestrator): review before it becomes ready */
+  workerCreated: boolean;
+}
+
+/** When a ticket was last put in a triage brief, and how it looked then. */
+export interface ListedTicket {
+  /** Ticket `updatedAt` at the time it was listed */
+  updatedAt: string;
+  /** When it was listed (epoch ms) */
+  at: number;
+}
+
+/** Inputs of {@link selectTriageCandidates}. */
+export interface SelectTriageInput {
+  tickets: ProjectTicket[];
+  /** Non-archived teams working on the project */
+  teams: Team[];
+  /** Clock (epoch ms) */
+  now: number;
+  /** Tickets listed in earlier triage briefs (by ticket id) */
+  listed?: Record<string, ListedTicket>;
+}
+
+/** Output of {@link selectTriageCandidates}. */
+export interface TriageSelection {
+  /** At most {@link TICKET_AUTOPILOT_CONSTANTS.TRIAGE_MAX_TICKETS}, highest priority then oldest first */
+  candidates: TriageCandidate[];
+  /** Tickets that need triage but did not fit in this brief */
+  more: number;
+}
+
+/** What set off the evaluation. */
+export type TriageTrigger = 'tick' | 'member_idle';
+
+/** Inputs of {@link decideTriage}. */
+export interface TriageDecisionInput {
+  enabled: boolean;
+  /** Resolved driver session, or null when the project has no lead */
+  driver: string | null;
+  trigger: TriageTrigger;
+  /** Clock (epoch ms) */
+  now: number;
+  /** Tickets that need triage (after de-duplication) */
+  candidateCount: number;
+  /** A triage WorkItem of this project is still live */
+  liveTriage: boolean;
+  /** When the last triage item was created (epoch ms) */
+  lastTriageAt?: number;
+  /** A member of the project's teams (or the driver) is idle */
+  anyoneIdle: boolean;
+  /** Spent today (USD) by the project's team agents */
+  spentTodayUsd: number;
+  /** Daily budget (USD) */
+  dailyBudgetUsd: number;
+}
+
+/** Why the driver is not woken. */
+export type TriageSkipReason =
+  | 'off'
+  | 'no_driver'
+  | 'budget_reached'
+  | 'triage_in_flight'
+  | 'nothing_to_triage'
+  | 'nobody_idle'
+  | 'too_soon';
+
+/** Outcome of {@link decideTriage}. */
+export type TriageDecision = { action: 'triage' } | { action: 'skip'; reason: TriageSkipReason };
+
+/**
+ * Whether a ticket carries the needs-owner label.
+ *
+ * @param ticket - Ticket
+ * @returns True when it waits on the owner
+ */
+export function hasNeedsOwnerLabel(ticket: Pick<ProjectTicket, 'labels'>): boolean {
+  return ticket.labels.includes(TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL);
+}
+
+/**
+ * The one-line question for the owner recorded on a ticket (the latest Log
+ * line written by `ask-owner`), or null.
+ *
+ * @param ticket - Ticket
+ * @returns The question text, or null
+ */
+export function readOwnerQuestion(ticket: Pick<ProjectTicket, 'log'>): string | null {
+  const prefix = TICKET_AUTOPILOT_CONSTANTS.OWNER_QUESTION_LOG_PREFIX;
+  for (let i = ticket.log.length - 1; i >= 0; i--) {
+    const at = ticket.log[i].indexOf(prefix);
+    if (at >= 0) {
+      const text = ticket.log[i].slice(at + prefix.length).trim();
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+/**
+ * Whether a ticket was filed by a worker — an agent that is neither the
+ * orchestrator nor a lead of one of the project's teams. Owner, request,
+ * migration and lead/orc tickets are not worker-created.
+ *
+ * @param ticket - Ticket
+ * @param teams - The project's teams
+ * @returns True for a worker-created ticket
+ */
+export function isWorkerCreated(ticket: Pick<ProjectTicket, 'source'>, teams: Team[]): boolean {
+  const source = ticket.source ?? '';
+  if (!source.startsWith('agent:')) return false;
+  const session = source.slice('agent:'.length).trim();
+  if (!session || session === ORCHESTRATOR_SESSION_NAME) return false;
+  for (const team of teams) {
+    for (const m of team.members ?? []) {
+      if ((m.sessionName === session || m.agentId === session) && isTeamLead(team, m)) return false;
+    }
+  }
+  return true;
+}
+
+/**
+ * Whether a member is running and idle.
+ *
+ * @param member - Team member
+ * @returns True when active (or started) and not working
+ */
+export function isMemberIdle(member: Pick<TeamMember, 'agentStatus' | 'workingStatus'>): boolean {
+  return (member.agentStatus === 'active' || member.agentStatus === 'started') && member.workingStatus === 'idle';
+}
+
+/**
+ * Whether anyone could ever auto-claim a `ready` ticket: a member of an
+ * eligible team (the ticket's `team`, else any project team) who is not a
+ * lead — or a lead who is the only member of its team. Mirrors the
+ * AutoClaim rule (specs/2026-09-28-project-tickets.md §5).
+ *
+ * @param ticket - Ticket
+ * @param teams - The project's teams
+ * @returns True when some member could take it
+ */
+export function hasPossibleTaker(ticket: Pick<ProjectTicket, 'team'>, teams: Team[]): boolean {
+  return teams
+    .filter((t) => !ticket.team || t.id === ticket.team)
+    .some((t) => {
+      const members = t.members ?? [];
+      return members.some((m) => !isTeamLead(t, m) || members.length === 1);
+    });
+}
+
+/**
+ * Tickets the driver should triage now, in brief order.
+ *
+ * - `backlog` tickets not waiting on the owner (no `needs-owner` label);
+ * - `ready` tickets nobody can take (no eligible claimer), or untouched for
+ *   {@link TICKET_AUTOPILOT_CONSTANTS.READY_STALE_MS};
+ * - minus tickets already listed in a brief and unchanged since, until
+ *   {@link TICKET_AUTOPILOT_CONSTANTS.TRIAGE_RELIST_AFTER_MS} has passed (a
+ *   ticket the driver chose to leave is not re-sent every half hour).
+ *
+ * @param input - Tickets, teams, clock, earlier listings
+ * @returns Candidates (capped) and how many more are waiting
+ */
+export function selectTriageCandidates(input: SelectTriageInput): TriageSelection {
+  const listed = input.listed ?? {};
+  const all: TriageCandidate[] = [];
+  for (const ticket of input.tickets) {
+    let reason: TriageReason | null = null;
+    if (ticket.status === 'backlog' && !hasNeedsOwnerLabel(ticket)) {
+      reason = 'backlog';
+    } else if (ticket.status === 'ready' && !hasNeedsOwnerLabel(ticket)) {
+      if (!hasPossibleTaker(ticket, input.teams)) reason = 'ready_no_taker';
+      else if (input.now - (Date.parse(ticket.updatedAt) || input.now) >= TICKET_AUTOPILOT_CONSTANTS.READY_STALE_MS) reason = 'ready_stale';
+    }
+    if (!reason) continue;
+    const seen = listed[ticket.id];
+    if (seen && seen.updatedAt === ticket.updatedAt && input.now - seen.at < TICKET_AUTOPILOT_CONSTANTS.TRIAGE_RELIST_AFTER_MS) continue;
+    all.push({ ticket, reason, workerCreated: isWorkerCreated(ticket, input.teams) });
+  }
+  all.sort(
+    (a, b) =>
+      projectTicketPriorityRank(a.ticket.priority) - projectTicketPriorityRank(b.ticket.priority) ||
+      (Date.parse(a.ticket.createdAt) || 0) - (Date.parse(b.ticket.createdAt) || 0) ||
+      a.ticket.id.localeCompare(b.ticket.id),
+  );
+  const max = TICKET_AUTOPILOT_CONSTANTS.TRIAGE_MAX_TICKETS;
+  return { candidates: all.slice(0, max), more: Math.max(0, all.length - max) };
+}
+
+/**
+ * Whether to wake the driver with a triage item now. Checked in order:
+ * switch off → no driver → budget reached → a triage already live → nothing
+ * to triage → nobody idle → too soon since the last one (30 min on the
+ * periodic tick, {@link TICKET_AUTOPILOT_CONSTANTS.IDLE_TRIGGER_MIN_INTERVAL_MS}
+ * when a member just went idle with nothing ready).
+ *
+ * @param input - State of the project
+ * @returns `triage`, or `skip` with the reason
+ */
+export function decideTriage(input: TriageDecisionInput): TriageDecision {
+  if (!input.enabled) return { action: 'skip', reason: 'off' };
+  if (!input.driver) return { action: 'skip', reason: 'no_driver' };
+  if (input.spentTodayUsd >= input.dailyBudgetUsd) return { action: 'skip', reason: 'budget_reached' };
+  if (input.liveTriage) return { action: 'skip', reason: 'triage_in_flight' };
+  if (input.candidateCount === 0) return { action: 'skip', reason: 'nothing_to_triage' };
+  if (!input.anyoneIdle) return { action: 'skip', reason: 'nobody_idle' };
+  const gap =
+    input.trigger === 'member_idle' ? TICKET_AUTOPILOT_CONSTANTS.IDLE_TRIGGER_MIN_INTERVAL_MS : TICKET_AUTOPILOT_CONSTANTS.TRIAGE_MIN_INTERVAL_MS;
+  if (input.lastTriageAt !== undefined && input.now - input.lastTriageAt < gap) return { action: 'skip', reason: 'too_soon' };
+  return { action: 'triage' };
+}
+
+/** A question waiting on the owner. */
+export interface PendingOwnerQuestion {
+  /** Stable key: project + ticket + question text */
+  key: string;
+  priority: string;
+}
+
+/** Inputs of {@link decideOwnerQuestions}. */
+export interface OwnerQuestionsInput {
+  pending: PendingOwnerQuestion[];
+  /** Keys already sent to the owner */
+  sentKeys: ReadonlySet<string>;
+  /** When the last batch went out (epoch ms) */
+  lastSentAt?: number;
+  now: number;
+}
+
+/**
+ * Whether to send the batched owner questions now: only when at least one
+ * question is new, and then at most every
+ * {@link TICKET_AUTOPILOT_CONSTANTS.QUESTIONS_MIN_INTERVAL_MS} — unless a new
+ * one is urgent (P0), which goes out at once.
+ *
+ * @param input - Pending questions, what was sent, clock
+ * @returns `send` and why
+ */
+export function decideOwnerQuestions(input: OwnerQuestionsInput): { send: boolean; reason: 'nothing_new' | 'urgent' | 'due' | 'too_soon' } {
+  const fresh = input.pending.filter((q) => !input.sentKeys.has(q.key));
+  if (fresh.length === 0) return { send: false, reason: 'nothing_new' };
+  if (fresh.some((q) => q.priority === TICKET_AUTOPILOT_CONSTANTS.URGENT_PRIORITY)) return { send: true, reason: 'urgent' };
+  if (input.lastSentAt === undefined || input.now - input.lastSentAt >= TICKET_AUTOPILOT_CONSTANTS.QUESTIONS_MIN_INTERVAL_MS) {
+    return { send: true, reason: 'due' };
+  }
+  return { send: false, reason: 'too_soon' };
+}
+
+/** Inputs of {@link decideDigest}. */
+export interface DigestDecisionInput {
+  now: Date;
+  /** Local date (YYYY-MM-DD) of the last digest sent */
+  lastSentDate?: string;
+  /** When the last digest went out (epoch ms) */
+  lastSentAt?: number;
+  /** Latest `updatedAt` (epoch ms) over the tickets of the enabled projects */
+  latestTicketChangeAt: number;
+}
+
+/**
+ * Whether to send the daily digest now: once per local day, at or after
+ * {@link TICKET_AUTOPILOT_CONSTANTS.DIGEST_HOUR_LOCAL}, and only when some
+ * ticket changed since the previous digest (or in the last day, for the
+ * first one).
+ *
+ * @param input - Clock, last digest, latest ticket change
+ * @returns `send` and why
+ */
+export function decideDigest(input: DigestDecisionInput): { send: boolean; reason: 'not_yet' | 'already_sent' | 'nothing_changed' | 'due' } {
+  if (input.now.getHours() < TICKET_AUTOPILOT_CONSTANTS.DIGEST_HOUR_LOCAL) return { send: false, reason: 'not_yet' };
+  if (input.lastSentDate === localDateKey(input.now)) return { send: false, reason: 'already_sent' };
+  const since = input.lastSentAt ?? input.now.getTime() - 24 * 60 * 60 * 1000;
+  if (!(input.latestTicketChangeAt > since)) return { send: false, reason: 'nothing_changed' };
+  return { send: true, reason: 'due' };
+}
+
+/**
+ * Local midnight of a moment's day.
+ *
+ * @param now - Moment
+ * @returns 00:00 local time of that day
+ */
+export function localMidnight(now: Date): Date {
+  const d = new Date(now.getTime());
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+/**
+ * Local calendar date key.
+ *
+ * @param now - Moment
+ * @returns `YYYY-MM-DD` in local time
+ */
+export function localDateKey(now: Date): string {
+  const pad = (n: number): string => String(n).padStart(2, '0');
+  return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+}
+
+/**
+ * Tickets in progress per assignee.
+ *
+ * @param tickets - Tickets of a project
+ * @returns Session → count of `in_progress` tickets
+ */
+export function inFlightByAssignee(tickets: ProjectTicket[]): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const t of tickets) {
+    if (t.status === 'in_progress' && t.assignee) out.set(t.assignee, (out.get(t.assignee) ?? 0) + 1);
+  }
+  return out;
+}
+
+/** Statuses that count as "open" for owner questions (a closed ticket asks nothing). */
+export const OPEN_TICKET_STATUSES: ReadonlySet<string> = new Set(
+  PROJECT_TICKET_CONSTANTS.STATUSES.filter((s) => s !== 'done' && s !== 'cancelled'),
+);

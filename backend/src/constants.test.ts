@@ -488,3 +488,21 @@ describe('WAITING_SYNC_CONSTANTS ("waiting on you" on Crewly Cloud)', () => {
 		expect(WAITING_SYNC_CONSTANTS.FULL_SYNC_INTERVAL_MS).toBe(5 * 60 * 1000);
 	});
 });
+
+describe('TICKET_AUTOPILOT_CONSTANTS', () => {
+	it('keeps the owner-approved cadences', async () => {
+		const { TICKET_AUTOPILOT_CONSTANTS: C } = await import('./constants.js');
+		expect(C.TRIAGE_MIN_INTERVAL_MS).toBe(30 * 60 * 1000);
+		expect(C.QUESTIONS_MIN_INTERVAL_MS).toBe(2 * 60 * 60 * 1000);
+		expect(C.DIGEST_HOUR_LOCAL).toBe(21);
+		expect(C.DEFAULT_MAX_IN_FLIGHT_PER_MEMBER).toBe(1);
+		expect(C.NEEDS_OWNER_LABEL).toBe('needs-owner');
+	});
+
+	it('never lets the idle trigger fire more often than the tick cadence allows', async () => {
+		const { TICKET_AUTOPILOT_CONSTANTS: C } = await import('./constants.js');
+		expect(C.IDLE_TRIGGER_MIN_INTERVAL_MS).toBeGreaterThan(0);
+		expect(C.IDLE_TRIGGER_MIN_INTERVAL_MS).toBeLessThanOrEqual(C.TRIAGE_MIN_INTERVAL_MS);
+		expect(C.TRIAGE_RELIST_AFTER_MS).toBeGreaterThan(C.TRIAGE_MIN_INTERVAL_MS);
+	});
+});

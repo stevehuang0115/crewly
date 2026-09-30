@@ -114,6 +114,7 @@ describe('getWorkItemTypeLabel', () => {
     expect(getWorkItemTypeLabel('project_task')).toBe('Project Task');
     expect(getWorkItemTypeLabel('cron_run')).toBe('Cron Run');
     expect(getWorkItemTypeLabel('reconcile')).toBe('Reconcile');
+    expect(getWorkItemTypeLabel('ticket_triage')).toBe('Ticket triage');
   });
 });
 

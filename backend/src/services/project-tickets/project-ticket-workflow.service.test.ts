@@ -376,6 +376,59 @@ describe('ProjectTicketWorkflowService', () => {
     });
   });
 
+  describe('ticket autopilot hooks (specs/2026-09-30-ticket-autopilot.md)', () => {
+    const policy = (paused: boolean, cap: number | null) => ({
+      isAutoClaimPaused: jest.fn(async () => paused),
+      maxInFlightPerMember: jest.fn(async () => cap),
+    });
+
+    it('keeps the one-ticket AutoClaim lock even when the per-member cap is higher', async () => {
+      wf.setAutopilotPolicy(policy(false, 3));
+      await readyTicket();
+      await readyTicket({ title: 'second' });
+      expect(await wf.claimNextForAgent('app-dev')).not.toBeNull();
+      expect(await wf.claimNextForAgent('app-dev')).toBeNull();
+    });
+
+    it('feeds nobody from a project paused on its budget', async () => {
+      wf.setAutopilotPolicy(policy(true, 1));
+      await readyTicket();
+      expect(await wf.claimNextForAgent('app-dev')).toBeNull();
+      wf.setAutopilotPolicy(null);
+      expect(await wf.claimNextForAgent('app-dev')).not.toBeNull();
+    });
+
+    it('caps what a lead may assign to one member, but not the owner', async () => {
+      wf.setAutopilotPolicy(policy(false, 1));
+      const a = await readyTicket();
+      const b = await readyTicket({ title: 'second' });
+      const c = await readyTicket({ title: 'third' });
+      await wf.assign('p1', a.id, 'app-dev', lead);
+      await expect(wf.assign('p1', b.id, 'app-dev', lead)).rejects.toMatchObject({ status: 409 });
+      await expect(wf.assign('p1', b.id, 'app-dev', owner)).resolves.toMatchObject({ ticket: { status: 'in_progress' } });
+      // Only recording an assignee starts no work, so the cap does not apply.
+      await expect(wf.assign('p1', c.id, 'app-dev', lead, { start: false })).resolves.toMatchObject({ ticket: { status: 'ready', assignee: 'app-dev' } });
+    });
+
+    it('ask-owner: lead / orc / owner mark and clear needs-owner; members and outsiders may not', async () => {
+      const t = await wf.create('p1', { title: 'Email partners' }, owner);
+      await expect(wf.askOwner('p1', t.id, dev, { question: 'Send?' })).rejects.toMatchObject({ status: 403 });
+      await expect(wf.askOwner('p1', t.id, outsider, { question: 'Send?' })).rejects.toMatchObject({ status: 403 });
+      await expect(wf.askOwner('p1', t.id, lead, { question: '   ' })).rejects.toMatchObject({ status: 400 });
+      await expect(wf.askOwner('p1', t.id, lead, { question: 'x'.repeat(400) })).rejects.toMatchObject({ status: 400 });
+      const asked = await wf.askOwner('p1', t.id, lead, { question: 'Send the draft\nto the partners?' });
+      expect(asked.labels).toEqual(['needs-owner']);
+      expect(asked.log[asked.log.length - 1]).toContain('owner question: Send the draft to the partners?');
+      const again = await wf.askOwner('p1', t.id, { session: 'crewly-orc' }, { question: 'Today or Monday?' });
+      expect(again.labels).toEqual(['needs-owner']);
+      const cleared = await wf.askOwner('p1', t.id, owner, { clear: true, note: 'Monday' });
+      expect(cleared.labels).toEqual([]);
+      expect(cleared.log[cleared.log.length - 1]).toContain('owner question answered — Monday');
+      await wf.transition('p1', t.id, 'cancelled', owner);
+      await expect(wf.askOwner('p1', t.id, lead, { question: 'Still?' })).rejects.toMatchObject({ status: 409 });
+    });
+  });
+
   describe('reads', () => {
     it('lists with filters and per session', async () => {
       await readyTicket({ labels: ['ui'] });

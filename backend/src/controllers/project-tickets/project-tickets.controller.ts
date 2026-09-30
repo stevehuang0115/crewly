@@ -20,6 +20,11 @@ import { migrateV1Tasks } from '../../services/project-tickets/v1-task-migration
 import { TaskPoolService } from '../../services/task-pool/task-pool.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
 import { isProjectTicketStatus } from '../../types/project-ticket.types.js';
+import { TicketAutopilotService, type OwnerNotice } from '../../services/project-tickets/ticket-autopilot.service.js';
+import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
+import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
+import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import * as path from 'path';
 
 /**
  * The wired workflow service; builds the default one from the process
@@ -38,6 +43,42 @@ export function projectTicketWorkflow(): ProjectTicketWorkflowService {
     ProjectTicketWorkflowService.setInstance(wf);
   }
   return wf;
+}
+
+/**
+ * Build the ticket autopilot from the process singletons.
+ *
+ * @param notifyOwner - Owner notification path (boot passes the Slack owner
+ *   DM); the default reports "not sent", so notices wait for the wired one
+ * @returns A new service (not installed)
+ */
+export function createDefaultTicketAutopilot(
+  notifyOwner: (notice: OwnerNotice) => Promise<boolean> = async () => false,
+): TicketAutopilotService {
+  return new TicketAutopilotService({
+    tickets: ProjectTicketService.getInstance(),
+    pool: TaskPoolService.getInstance(),
+    directory: StorageService.getInstance(),
+    workflow: projectTicketWorkflow(),
+    ledger: TokenUsageService.getInstance(),
+    notifyOwner,
+    stateFile: path.join(getCrewlyHomePath(), TICKET_AUTOPILOT_CONSTANTS.STATE_FILENAME),
+  });
+}
+
+/**
+ * The wired ticket autopilot; builds (and installs) a default one when boot
+ * has not, so the settings API works even with the tick switched off.
+ *
+ * @returns Autopilot service
+ */
+export function ticketAutopilot(): TicketAutopilotService {
+  let svc = TicketAutopilotService.getInstance();
+  if (!svc) {
+    svc = createDefaultTicketAutopilot();
+    TicketAutopilotService.setInstance(svc);
+  }
+  return svc;
 }
 
 /**
@@ -293,5 +334,60 @@ export async function migrateProjectTickets(req: Request, res: Response): Promis
       apply: b.apply === true,
       milestones: Array.isArray(b.milestones) ? b.milestones.map(String) : undefined,
     });
+  });
+}
+
+/**
+ * POST /api/project-tickets/:project/:id/ask-owner — `{ question }` marks the
+ * ticket `needs-owner` with a one-line question (batched to the owner's
+ * phone by the ticket autopilot); `{ clear: true, note? }` removes the mark
+ * once answered. Owner / orchestrator / lead.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: ticket }`
+ */
+export async function askOwnerProjectTicket(req: Request, res: Response): Promise<void> {
+  await respond(res, () => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    return projectTicketWorkflow().askOwner(req.params.project, req.params.id, callerOf(req), {
+      question: typeof b.question === 'string' ? b.question : undefined,
+      clear: b.clear === true,
+      note: typeof b.note === 'string' ? b.note : undefined,
+    });
+  });
+}
+
+/**
+ * GET /api/project-ticket-autopilot/:project — the project's ticket autopilot
+ * settings and status. Owner / orchestrator only.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: status }`
+ */
+export async function getTicketAutopilot(req: Request, res: Response): Promise<void> {
+  await respond(res, () => ticketAutopilot().getStatus(req.params.project, callerOf(req)));
+}
+
+/**
+ * POST /api/project-ticket-autopilot/:project — change the switch:
+ * `{ enabled?, driver?, dailyBudgetUsd?, maxInFlightPerMember? }` (null resets
+ * a field to its default). Owner / orchestrator only.
+ *
+ * @param req - Request
+ * @param res - `{ success, data: status }`
+ */
+export async function setTicketAutopilot(req: Request, res: Response): Promise<void> {
+  await respond(res, () => {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    return ticketAutopilot().updateSettings(
+      req.params.project,
+      {
+        enabled: b.enabled,
+        driver: b.driver,
+        dailyBudgetUsd: b.dailyBudgetUsd,
+        maxInFlightPerMember: b.maxInFlightPerMember,
+      },
+      callerOf(req),
+    );
   });
 }
