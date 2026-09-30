@@ -71,6 +71,21 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 	TRIAGE_MAX_TICKETS: 20,
 	/** Max characters of a ticket description quoted in the triage brief */
 	TRIAGE_DESCRIPTION_EXCERPT_CHARS: 300,
+	/** Max characters of a member's role responsibility line in the triage brief */
+	ROLE_RESPONSIBILITY_MAX_CHARS: 160,
+	/**
+	 * One-line responsibility of roles that ship without a `role.json`
+	 * description (the brief falls back to these; a member's own
+	 * `jobDescription` and a role's description win).
+	 */
+	ROLE_RESPONSIBILITY_FALLBACKS: {
+		'tech-lead': 'Leads the team: technical decisions, review, delegation and owner communication',
+		'team-leader': 'Leads the team: breaks goals down, delegates, reviews results and reports up',
+		'content-strategist': 'Plans and writes content: articles, posts, copy and the images or visuals that go with them',
+		researcher: 'Researches questions and sources, and writes up findings',
+		'ux-designer': 'Designs user flows, wireframes and visual UI',
+		'customer-support': 'Answers customer questions and troubleshoots their problems',
+	} as Readonly<Record<string, string>>,
 	/** Owner questions are sent at most this often, unless a new urgent (P0) one appears (ms) */
 	QUESTIONS_MIN_INTERVAL_MS: 2 * 60 * 60 * 1000,
 	/** Ticket priority that makes a new owner question urgent (sent without waiting) */
@@ -2064,6 +2079,30 @@ export const DIRECT_DELIVERY_CONSTANTS = {
 } as const;
 
 /**
+ * Codes the member-start endpoint answers with when a start gate refuses a
+ * wake (`POST /api/teams/:teamId/members/:memberId/start`).
+ */
+export const AGENT_WAKE_ERROR_CODES = {
+	/** Wake gate: no queued/blocked WorkItem for the member */
+	NO_POOL_WORK: 'wake_gate_no_pool_work',
+	/** Commitment-approval gate: cold launch of a dormant team without the owner's OK */
+	OWNER_APPROVAL_REQUIRED: 'commitment_requires_owner_approval',
+} as const;
+
+/**
+ * Who leads a team — one rule for the whole harness
+ * (specs/2026-09-30-team-lead-rule.md, `utils/team.utils.ts`): the team's
+ * explicit `leaderIds` (or the deprecated `leaderId`) when set, otherwise
+ * the members whose role is one of {@link TEAM_LEAD_CONSTANTS.LEAD_ROLES}.
+ */
+export const TEAM_LEAD_CONSTANTS = {
+	/** Roles that make a member a team lead when the team names no lead explicitly */
+	LEAD_ROLES: ['team-leader', 'tech-lead'],
+	/** `POST /api/teams/:id/lead` modes: replace the leads, or add one more */
+	SET_LEAD_MODES: ['set', 'add'],
+} as const;
+
+/**
  * Default model for Claude Code team members that have no `modelId`: members
  * with a reviewer above them run on Sonnet, leads (and anyone without a
  * reviewer) keep Claude Code's own default (Opus). Never the orchestrator.
@@ -2073,8 +2112,8 @@ export const MEMBER_MODEL_DEFAULT_CONSTANTS = {
 	DEFAULT_REVIEWED_MEMBER_MODEL: 'sonnet',
 	/** Env override for that model; `''` or `off` disables the default entirely */
 	ENV_OVERRIDE: 'CREWLY_MEMBER_DEFAULT_MODEL',
-	/** Roles that lead a team and therefore keep the runtime default */
-	LEAD_ROLES: ['team-leader', 'tech-lead'],
+	/** Roles that lead a team and therefore keep the runtime default (same list as {@link TEAM_LEAD_CONSTANTS.LEAD_ROLES}) */
+	LEAD_ROLES: TEAM_LEAD_CONSTANTS.LEAD_ROLES,
 	/** Rejections of the same task after which the reviewer is told about the upgrade option */
 	UPGRADE_HINT_AFTER_REJECTIONS: 2,
 } as const;

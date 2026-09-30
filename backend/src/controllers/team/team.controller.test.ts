@@ -1236,7 +1236,7 @@ describe('Teams Handlers', () => {
       expect(responseMock.status).toHaveBeenCalledWith(400);
       expect(responseMock.json).toHaveBeenCalledWith({
         success: false,
-        error: 'Hierarchical teams require at least one team-leader or member with canDelegate=true',
+        error: 'Hierarchical teams require at least one team-leader / tech-lead or member with canDelegate=true',
       });
     });
 
@@ -1450,6 +1450,104 @@ describe('Teams Handlers', () => {
 
       expect(responseMock.status).toHaveBeenCalledWith(201);
       expect(savedTeam.parentTeamId).toBeUndefined();
+    });
+  });
+
+  describe('setTeamLeadHandler (POST /api/teams/:id/lead)', () => {
+    const ceTeam = () => ({
+      id: 'team-ce',
+      name: 'CE',
+      members: [
+        { id: 'm-owen', name: 'Owen', role: 'tech-lead', sessionName: '', agentId: 'ce-owen-11111111' },
+        { id: 'm-vera', name: 'Vera', role: 'developer', sessionName: 'ce-vera-22222222' },
+        { id: 'm-nova', name: 'Nova', role: 'content-strategist', sessionName: '', parentMemberId: 'm-owen' },
+      ],
+      projectIds: [],
+      createdAt: '',
+      updatedAt: '',
+    });
+    let saved: any;
+    beforeEach(() => {
+      saved = undefined;
+      mockStorageService.getTeams.mockResolvedValue([ceTeam()]);
+      mockStorageService.saveTeam.mockImplementation((team: any) => {
+        saved = JSON.parse(JSON.stringify(team));
+        return Promise.resolve();
+      });
+    });
+    const call = (params: Record<string, string>, body: Record<string, unknown>, headers: Record<string, string> = {}) =>
+      teamsHandlers.setTeamLeadHandler.call(
+        mockApiContext,
+        { params, body, headers } as unknown as Request,
+        mockResponse as Response,
+      );
+
+    it('lets the owner make a member THE lead — no hierarchical mode needed', async () => {
+      await call({ id: 'team-ce' }, { memberId: 'm-vera' });
+      expect(saved.leaderIds).toEqual(['m-vera']);
+      expect(saved.leaderId).toBe('m-vera');
+      expect(saved.hierarchical).toBeUndefined();
+      expect(saved.members.find((m: any) => m.id === 'm-vera').canDelegate).toBe(true);
+      expect(saved.members.find((m: any) => m.id === 'm-nova').parentMemberId).toBe('m-vera');
+      expect(responseMock.json).toHaveBeenCalledWith(
+        expect.objectContaining({ success: true, data: expect.objectContaining({ leaderIds: ['m-vera'], leads: ['Vera'], previous: ['Owen'] }) }),
+      );
+    });
+
+    it('lets the orchestrator do it by team NAME and member name ("让 Owen 当 CE 的负责人")', async () => {
+      await call({ id: 'ce' }, { member: 'owen' }, { 'x-agent-session': 'crewly-orc' });
+      expect(saved.leaderIds).toEqual(['m-owen']);
+      expect(responseMock.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    });
+
+    it('resolves a member by its session / agent id and supports mode=add', async () => {
+      await call({ id: 'team-ce' }, { member: 'ce-vera-22222222', mode: 'add' });
+      expect(saved.leaderIds).toEqual(['m-owen', 'm-vera']);
+    });
+
+    it('refuses any other agent (403) and saves nothing', async () => {
+      await call({ id: 'team-ce' }, { memberId: 'm-vera' }, { 'x-agent-session': 'ce-vera-22222222' });
+      expect(responseMock.status).toHaveBeenCalledWith(403);
+      expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 for an unknown team or member and 400 for a bad mode', async () => {
+      await call({ id: 'nope' }, { memberId: 'm-vera' });
+      expect(responseMock.status).toHaveBeenCalledWith(404);
+      await call({ id: 'team-ce' }, { memberId: 'ghost' });
+      expect(responseMock.status).toHaveBeenLastCalledWith(404);
+      await call({ id: 'team-ce' }, { memberId: 'm-vera', mode: 'remove' });
+      expect(responseMock.status).toHaveBeenLastCalledWith(400);
+      expect(mockStorageService.saveTeam).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('updateTeam - hierarchical flag and the lead', () => {
+    it('saving a non-hierarchical team (the edit modal always sends hierarchical:false) keeps its lead', async () => {
+      const team = {
+        id: 'team-ce',
+        name: 'CE',
+        leaderIds: ['m-vera'],
+        leaderId: 'm-vera',
+        members: [
+          { id: 'm-owen', name: 'Owen', role: 'tech-lead', sessionName: '' },
+          { id: 'm-vera', name: 'Vera', role: 'developer', sessionName: '', canDelegate: true },
+        ],
+        projectIds: [],
+        createdAt: '',
+        updatedAt: '',
+      };
+      mockStorageService.getTeams.mockResolvedValue([team]);
+      let saved: any;
+      mockStorageService.saveTeam.mockImplementation((t: any) => {
+        saved = JSON.parse(JSON.stringify(t));
+        return Promise.resolve();
+      });
+      mockRequest.params = { id: 'team-ce' };
+      mockRequest.body = { hierarchical: false, description: 'x' };
+      await teamsHandlers.updateTeam.call(mockApiContext, mockRequest as Request, mockResponse as Response);
+      expect(saved.leaderIds).toEqual(['m-vera']);
+      expect(saved.members.find((m: any) => m.id === 'm-vera').canDelegate).toBe(true);
     });
   });
 

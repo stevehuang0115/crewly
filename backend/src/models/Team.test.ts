@@ -98,6 +98,26 @@ describe('TeamModel', () => {
       expect(team.leaderId).toBe('solo-leader');
     });
 
+    it('stores a lead-role member (tech-lead) as the lead of a team with no leaderIds, idempotently', () => {
+      const data = makeTeam({
+        members: [makeMember({ id: 'vera' }), makeMember({ id: 'owen', name: 'Owen', role: 'tech-lead' })],
+      });
+      const team = TeamModel.fromJSON(data).toJSON();
+      expect(team.leaderIds).toEqual(['owen']);
+      expect(team.leaderId).toBe('owen');
+      expect(TeamModel.fromJSON(team).toJSON()).toEqual(team);
+    });
+
+    it('keeps an explicit lead over a lead-role member', () => {
+      const data = makeTeam({
+        leaderIds: ['vera'],
+        members: [makeMember({ id: 'vera' }), makeMember({ id: 'owen', role: 'team-leader' })],
+      });
+      const team = TeamModel.fromJSON(data);
+      expect(team.leaderIds).toEqual(['vera']);
+      expect(team.leaderId).toBe('vera');
+    });
+
     it('should handle empty leaderIds array (no migration)', () => {
       const data = makeTeam({
         hierarchical: true,

@@ -31,6 +31,7 @@ import type { Request } from '../../types/v2/request.types.js';
 import { CREWLY_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
+import { isTeamLead } from '../../utils/team.utils.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import type { Team, TeamMember } from '../../types/index.js';
@@ -343,6 +344,18 @@ export function teamChannelMembers(team: Team): TeamMember[] {
   return (team.members ?? [])
     .filter((m) => m.role !== 'orchestrator' && !!m.id)
     .map((m) => (m.sessionName ? m : { ...m, sessionName: resolveMemberSessionName(team.name, m) }));
+}
+
+/**
+ * The team channel's lead: the team lead by the one rule
+ * (`utils/team.utils`), else the first channel member.
+ *
+ * @param team - Team
+ * @param members - Its channel members (default: {@link teamChannelMembers})
+ * @returns The lead member, or undefined for an empty team
+ */
+export function teamChannelLeader(team: Team, members: TeamMember[] = teamChannelMembers(team)): TeamMember | undefined {
+  return members.find((m) => isTeamLead(team, m)) ?? members[0];
 }
 
 /**
@@ -1267,7 +1280,7 @@ export class SlackTeamChannelService {
     // when an agent has to be cold-started. The owner should not look at an
     // unacknowledged message for that long.
     const dispatcherForPlan = this.deps.getDispatcher();
-    const presence = await this.roomStateFor(message, mapping, team ? teamChannelMembers(team) : null);
+    const presence = await this.roomStateFor(message, mapping, team ?? null);
     const dispatchOptions = {
       threadId: threadId ?? persisted.id,
       replyVia: 'reply-channel' as const,
@@ -1325,8 +1338,8 @@ export class SlackTeamChannelService {
     } else {
       owing = resolved.mentions;
       if (owing.length === 0 && !message.threadTs && team) {
-        // Same rule as the dispatcher's huddleLeaderFor: the team leader, else the first member.
-        const leader = members.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead') ?? members[0];
+        // Same rule as the dispatcher's huddleLeaderFor: the team lead, else the first member.
+        const leader = teamChannelLeader(team, members);
         if (leader) owing = [leader.sessionName];
       }
     }
@@ -1486,14 +1499,15 @@ export class SlackTeamChannelService {
    *
    * @param message - Inbound message (carries Cloud's presence, when any)
    * @param mapping - Its channel mapping
-   * @param teamMembers - Team channel members, or null for an ad-hoc room
+   * @param team - The channel's team, or null for an ad-hoc room
    * @returns State for the dispatcher and a line for the prompt; null without an awake check
    */
   private async roomStateFor(
     message: SlackIncomingMessage,
     mapping: SlackTeamChannelMapping,
-    teamMembers: ReturnType<typeof teamChannelMembers> | null,
+    team: Team | null,
   ): Promise<{ state: HuddleRoomState; line?: string } | null> {
+    const teamMembers = team ? teamChannelMembers(team) : null;
     const isAwake = this.deps.isAgentAwake;
     if (!isAwake) return null;
     const localMembers = teamMembers ? teamMembers.map((m) => m.sessionName) : (mapping.members ?? []);
@@ -1511,9 +1525,7 @@ export class SlackTeamChannelService {
       const here = me ? room.fallback.instanceId === me : (this.deps.isLocalAgent?.(localAgentSession(room.fallback.agentSession)) ?? false);
       if (here) wakeWhenAllAsleep = { agentSession: localAgentSession(room.fallback.agentSession), kind: room.fallback.kind };
     } else if (!awakeElsewhere && awakeHere.length === 0 && room.members.some((m) => isHere(m) && m.awake)) {
-      const leader = teamMembers
-        ? (teamMembers.find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead') ?? teamMembers[0])
-        : undefined;
+      const leader = team && teamMembers ? teamChannelLeader(team, teamMembers) : undefined;
       wakeWhenAllAsleep = leader
         ? { agentSession: leader.sessionName, kind: 'team-leader' }
         : { agentSession: CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, kind: 'orchestrator' };

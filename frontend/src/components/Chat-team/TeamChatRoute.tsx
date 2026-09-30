@@ -36,6 +36,7 @@ import {
   type ChatTeam,
 } from './LiveTeamChatPage';
 import { useTeams } from '../../hooks/useTeams';
+import { getTeamLeadIds } from '../../utils/team.utils';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { resolveBackendURL, resolveChatMode } from '../../utils/chat-backend';
 import {
@@ -117,12 +118,11 @@ export function TeamChatRoute(): JSX.Element {
   }, [teams]);
 
   // Teams for the workspace rail: identity + lead/member sessions. The lead is
-  // a member listed in `leaderIds` (or the deprecated `leaderId`), or a member
-  // at hierarchy level 1.
+  // the team lead by the one rule (utils/team.utils getTeamLeadIds), or a
+  // member at hierarchy level 1.
   const chatTeams = useMemo<ChatTeam[]>(() => {
     return teams.map((t) => {
-      const leaderIds = t.leaderIds?.length ? t.leaderIds : t.leaderId ? [t.leaderId] : [];
-      const leadIdSet = new Set(leaderIds);
+      const leadIdSet = new Set(getTeamLeadIds(t));
       const members = t.members ?? [];
       const leaderSessions = members
         .filter((m) => m.sessionName && (leadIdSet.has(m.id) || m.hierarchyLevel === 1))

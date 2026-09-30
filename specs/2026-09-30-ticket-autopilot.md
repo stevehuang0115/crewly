@@ -26,8 +26,10 @@ ticketAutopilot: {
 }
 ```
 
-`driver` must be a lead (per `isTeamLead`) of a non-archived team working on the project; without a
-setting the first such lead is used. No lead → the autopilot does nothing for that project.
+`driver` is an optional override. By default the driver is the lead of the project's (first) team by
+the harness-wide team-lead rule (`specs/2026-09-30-team-lead-rule.md`: explicit `leaderIds`, else a
+`team-leader` / `tech-lead` member); an override must itself be such a lead of a non-archived team
+working on the project. No lead → the autopilot does nothing for that project.
 
 **API** (owner / orchestrator only — the caller is `X-Agent-Session`, no header = owner; everyone
 else gets 403):
@@ -71,8 +73,26 @@ approval gate unchanged). A triage item still `queued` after 6 h is cancelled an
 
 **The brief** lists, per ticket: id, priority, why it is listed, age, title, creator, labels, team,
 a description excerpt, and **worker-created — review first** for tickets filed by a member (source
-`agent:<session>` that is neither the orchestrator nor a lead). It lists the team with idle state
-and in-progress counts, at most 20 tickets (P0 first, then oldest), and asks for each ticket one of:
+`agent:<session>` that is neither the orchestrator nor a lead). At most 20 tickets (P0 first, then
+oldest).
+
+It lists the team, one line per member — session, name, role, `lead` mark, availability and
+in-progress count — plus a `role:` line saying what the member is responsible for (the member's
+`jobDescription`, else its role's description from `role.json` / a user override, else
+`TICKET_AUTOPILOT_CONSTANTS.ROLE_RESPONSIBILITY_FALLBACKS`). Availability (`memberAvailability`) has
+three states:
+- **idle** — running (`active`/`started`, or still `starting`) and not in a turn;
+- **working** — running and `workingStatus: in_progress`;
+- **stopped: available, will be started when assigned** — `inactive` / `suspended` (idle-stopped
+  included). Never "busy": the 2026-09-30 CE brief listed an idle-stopped content strategist as
+  "busy" and the lead took every content ticket himself.
+
+A stopped member's in-progress count is its real count (normally 0), and the per-member in-flight cap
+(§5) applies to it like to anyone. A **Who does what** section (`TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE`,
+same words in the team-leader prompts) says: delegate by role; take a ticket yourself only for
+lead-level work (review, decisions, owner communication, cross-team coordination) or when no member
+fits; a split written in an old ticket is only a hint — decide by current fit and availability and
+split a mixed ticket so each part goes to the right role. It then asks for each ticket one of:
 1. ready + assign (`assign`, or `update --status ready` for the next idle member);
 2. split into smaller tickets, cancel the original with a note;
 3. needs the owner — `project-tickets ask-owner --question "<one line>"`;
@@ -92,6 +112,8 @@ A ticket whose completion needs one of these may be worked up to a draft or a PR
 `needs-owner` for the final step. The autopilot itself never makes a ticket ready, assigns, or
 starts work: it only wakes the lead and talks to the owner. Worker-created tickets still land in
 `backlog` (§4 of the tickets spec) and are flagged for review in the brief.
+
+Assigning a ticket to a stopped member starts it (tickets spec §5a).
 
 ## 5. Brakes
 

@@ -15,7 +15,6 @@
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
 import {
-  MEMBER_MODEL_DEFAULT_CONSTANTS,
   ORCHESTRATOR_SESSION_NAME,
   PROJECT_TICKET_CONSTANTS,
   TICKET_AUTOPILOT_CONSTANTS,
@@ -46,6 +45,9 @@ import {
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
 import { decideDelegationTicketRoute, delegationTicketTitle } from './delegation-ticket-route.js';
 import type { AgentEvent, EventType } from '../../types/event-bus.types.js';
+import { isTeamLead } from '../../utils/team.utils.js';
+import { memberAvailability } from './ticket-autopilot-decision.js';
+import type { AssigneeWakeResult, AssigneeWaker } from './ticket-assignee-waker.js';
 
 /** WorkItem statuses that still carry the ticket's work. */
 const LIVE_STATUSES: ReadonlySet<WorkItemStatus> = new Set([
@@ -114,6 +116,8 @@ export interface ProjectTicketWorkflowDeps {
   tickets: ProjectTicketService;
   pool: ProjectTicketPool;
   directory: ProjectTicketDirectory;
+  /** Starts a stopped assignee (spec §5a); absent = assigned work waits for the member's next start */
+  wakeAssignee?: AssigneeWaker;
   logger?: ComponentLogger;
   now?: () => string;
 }
@@ -179,21 +183,11 @@ export interface ProjectTicketsOfProject {
 }
 
 /**
- * Whether a member leads a team.
- *
- * @param team - Team
- * @param member - Member of that team
- * @returns True for a team lead
+ * Whether a member leads a team — the harness-wide rule in
+ * `utils/team.utils` (explicit `leaderIds`, else `team-leader` / `tech-lead`
+ * members). Re-exported here for the ticket modules that import it.
  */
-export function isTeamLead(team: Team, member: TeamMember): boolean {
-  return (
-    (team.leaderIds ?? []).includes(member.id) ||
-    team.leaderId === member.id ||
-    member.canDelegate === true ||
-    // Lead roles as the rest of the harness knows them ('team-leader', 'tech-lead').
-    (MEMBER_MODEL_DEFAULT_CONSTANTS.LEAD_ROLES as readonly string[]).includes(String(member.role))
-  );
-}
+export { isTeamLead };
 
 /**
  * Whether a member runs as the given session.
@@ -226,6 +220,7 @@ export class ProjectTicketWorkflowService {
   private readonly tickets: ProjectTicketService;
   private readonly pool: ProjectTicketPool;
   private readonly directory: ProjectTicketDirectory;
+  private readonly wakeAssignee: AssigneeWaker | null;
   private readonly logger: ComponentLogger;
   private readonly now: () => string;
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
@@ -240,6 +235,7 @@ export class ProjectTicketWorkflowService {
     this.tickets = deps.tickets;
     this.pool = deps.pool;
     this.directory = deps.directory;
+    this.wakeAssignee = deps.wakeAssignee ?? null;
     this.logger = deps.logger ?? LoggerService.getInstance().createComponentLogger('ProjectTicketWorkflow');
     this.now = deps.now ?? (() => new Date().toISOString());
   }
@@ -582,7 +578,8 @@ export class ProjectTicketWorkflowService {
    * @param assignee - Session name or a human's name
    * @param caller - Caller
    * @param options - `start` (default true)
-   * @returns The ticket, plus the WorkItem when work started
+   * @returns The ticket, plus the WorkItem when work started, plus `wake` when
+   *   the assignee was stopped and a start was attempted (spec §5a)
    */
   async assign(
     ref: string,
@@ -590,7 +587,7 @@ export class ProjectTicketWorkflowService {
     assignee: string,
     caller: ProjectTicketCaller,
     options: { start?: boolean } = {},
-  ): Promise<{ ticket: ProjectTicket; workItem?: WorkItem }> {
+  ): Promise<{ ticket: ProjectTicket; workItem?: WorkItem; wake?: AssigneeWakeResult }> {
     const project = await this.resolveProject(ref);
     const { access } = await this.accessOf(caller, project);
     this.requireAccess(access, ['owner', 'orchestrator', 'lead'], 'assign tickets');
@@ -604,7 +601,8 @@ export class ProjectTicketWorkflowService {
     if (teamId && options.start !== false) {
       await this.assertInFlightCap(project, who, caller);
       const started = await this.startWork(project, id, who, this.actorName(caller), teamId, { self: false, allowed: ['backlog', 'ready'] });
-      return { ticket: started.ticket, workItem: started.workItem };
+      const wake = await this.startStoppedAssignee(project, id, teamId, who, started.workItem, caller);
+      return { ticket: started.ticket, workItem: started.workItem, ...(wake ? { wake } : {}) };
     }
     if (ticket.status === 'in_progress') throw new ProjectTicketError(409, `${ticket.id} is in progress; release it before reassigning`);
     const updated = await this.tickets.mutate(project.path, id, this.actorName(caller), (t) =>
@@ -1276,6 +1274,51 @@ export class ProjectTicketWorkflowService {
     const teams = this.projectTeams(project, await this.directory.getTeams());
     const team = teams.find((t) => (!ticket.team || ticket.team === t.id) && (t.members ?? []).some((m) => isSession(m, session)));
     return team?.id ?? null;
+  }
+
+  /**
+   * Start the assignee when it is stopped (spec §5a): a stopped member is
+   * "available", and assigning it work must bring it up — nothing else
+   * would (the dispatcher's push needs a live terminal). Goes through the
+   * normal member-start path, so the start gates still apply; a refusal is
+   * logged on the ticket and returned, the assignment stands.
+   *
+   * @param project - Project
+   * @param id - Ticket id
+   * @param teamId - Team the assignee works on it for
+   * @param session - Assignee session
+   * @param workItem - The ticket's WorkItem
+   * @param caller - Who assigned it
+   * @returns The wake outcome, or null when the member was running (or no waker is wired)
+   */
+  private async startStoppedAssignee(
+    project: Project,
+    id: string,
+    teamId: string,
+    session: string,
+    workItem: WorkItem,
+    caller: ProjectTicketCaller,
+  ): Promise<AssigneeWakeResult | null> {
+    if (!this.wakeAssignee || session === ORCHESTRATOR_SESSION_NAME) return null;
+    const team = (await this.directory.getTeams()).find((t) => t.id === teamId);
+    const member = team?.members?.find((m) => isSession(m, session));
+    if (!team || !member || memberAvailability(member) !== 'stopped') return null;
+    const result = await this.wakeAssignee({
+      teamId,
+      memberId: member.id,
+      session,
+      workItemId: workItem.id,
+      ...(caller.session ? { callerSession: caller.session } : {}),
+    }).catch((err): AssigneeWakeResult => ({ outcome: 'failed', detail: err instanceof Error ? err.message : String(err) }));
+    this.logger.info('Stopped ticket assignee — start requested', { projectPath: project.path, id, session, outcome: result.outcome, code: result.code });
+    const line =
+      result.outcome === 'started'
+        ? `${session} was stopped — starting it for this ticket`
+        : result.outcome === 'blocked'
+          ? `${session} is stopped and could not be started (${result.code}); it picks the ticket up on its next start`
+          : `${session} is stopped and starting it failed; it picks the ticket up on its next start`;
+    await this.tickets.mutate(project.path, id, this.actorName(caller), () => ({ log: [line] })).catch(() => undefined);
+    return result;
   }
 
   /**

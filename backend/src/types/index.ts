@@ -2,11 +2,13 @@ import type { TicketAutopilotSettings } from './ticket-autopilot.types.js';
 
 /**
  * Role types available for team members.
- * 'team-leader' manages a sub-team of workers in hierarchical mode.
+ * 'team-leader' and 'tech-lead' lead their team when it names no lead
+ * explicitly (TEAM_LEAD_CONSTANTS.LEAD_ROLES, utils/team.utils).
  */
 export type TeamMemberRole =
   | 'orchestrator'
   | 'team-leader'
+  | 'tech-lead'
   | 'tpm'
   | 'architect'
   | 'pgm'

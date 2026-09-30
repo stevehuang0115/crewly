@@ -112,7 +112,7 @@ jest.mock('../workflow/cron-task.service.js', () => ({
 }));
 
 // Import after mocks
-import { IdleDetectionService } from './idle-detection.service.js';
+import { IdleDetectionService, PENDING_WORK_STATUSES } from './idle-detection.service.js';
 
 describe('IdleDetectionService', () => {
 	beforeEach(() => {
@@ -443,6 +443,45 @@ describe('IdleDetectionService', () => {
 
 			await service.performCheck();
 			expect(mockTerminate).toHaveBeenCalledWith('agent-dev', 'developer');
+		});
+	});
+
+	describe('queued work keep-alive', () => {
+		const idleDev = () => {
+			mockGetTeams.mockResolvedValue([{
+				id: 'team1',
+				members: [{ id: 'nova', sessionName: 'ce-nova', role: 'content-strategist', agentStatus: 'active' }],
+			}]);
+			mockIsIdleFor.mockReturnValue(true);
+		};
+
+		it('does not stop an agent that has work queued for it (a ticket it was just started for)', async () => {
+			idleDev();
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+			const check = jest.fn(async (s: string) => s === 'ce-nova');
+			service.setPendingWorkCheck(check);
+
+			await service.performCheck();
+			expect(check).toHaveBeenCalledWith('ce-nova');
+			expect(mockTerminate).not.toHaveBeenCalled();
+		});
+
+		it('stops it as before when nothing is queued, or the check fails', async () => {
+			idleDev();
+			const mockTerminate = jest.fn().mockResolvedValue({ success: true });
+			const service = IdleDetectionService.getInstance();
+			service.setAgentRegistrationService({ terminateAgentSession: mockTerminate } as any);
+			service.setPendingWorkCheck(async () => {
+				throw new Error('pool unreadable');
+			});
+			await service.performCheck();
+			expect(mockTerminate).toHaveBeenCalledWith('ce-nova', 'content-strategist');
+		});
+
+		it('counts only waiting work, not a running item', () => {
+			expect([...PENDING_WORK_STATUSES].sort()).toEqual(['accepted', 'proposed', 'queued']);
 		});
 	});
 

@@ -34,6 +34,7 @@ import {
   type TicketAutopilotSettingsInput,
 } from '../../types/ticket-autopilot.types.js';
 import { ProjectTicketError } from './project-ticket.service.js';
+import { getTeamLeads } from '../../utils/team.utils.js';
 import {
   isTeamLead,
   type ProjectTicketAccess,
@@ -49,6 +50,8 @@ import {
   inFlightByAssignee,
   isMemberIdle,
   localDateKey,
+  memberAvailability,
+  memberResponsibility,
   localMidnight,
   readOwnerQuestion,
   selectTriageCandidates,
@@ -62,6 +65,7 @@ import {
   buildOwnerQuestionsMessage,
   buildTriageBrief,
   type DigestProject,
+  type TriageBriefMember,
   type OwnerQuestionItem,
 } from './ticket-autopilot-messages.js';
 
@@ -126,6 +130,8 @@ export interface TicketAutopilotDeps {
   notifyOwner: (notice: OwnerNotice) => Promise<boolean>;
   /** JSON file holding the autopilot's bookkeeping */
   stateFile: string;
+  /** Description of a role (role.json / user override), for the brief's role lines; absent = built-in fallbacks only */
+  roleDescription?: (role: string) => Promise<string | null>;
   now?: () => Date;
   logger?: ComponentLogger;
 }
@@ -433,7 +439,7 @@ export class TicketAutopilotService {
 
     const inFlight = inFlightByAssignee(tickets);
     const seen = new Set<string>();
-    const briefMembers = teams.flatMap((t) =>
+    const roster = teams.flatMap((t) =>
       (t.members ?? [])
         .filter((m) => {
           const s = sessionOf(m);
@@ -441,14 +447,24 @@ export class TicketAutopilotService {
           seen.add(s);
           return true;
         })
-        .map((m) => ({
-          session: sessionOf(m),
-          name: m.name,
-          role: isTeamLead(t, m) ? 'lead' : m.role,
-          idle: isMemberIdle(m) || sessionOf(m) === idleSession,
-          inFlight: inFlight.get(sessionOf(m)) ?? 0,
-        })),
+        .map((m) => ({ team: t, m })),
     );
+    const roleLines = await this.roleDescriptions(roster.map(({ m }) => m.role));
+    const briefMembers: TriageBriefMember[] = roster.map(({ team: t, m }) => {
+      const session = sessionOf(m);
+      // Stopped (idle-stopped, suspended) is "available — started when
+      // assigned", never "busy"; its in-progress count is its real one.
+      const availability = session === idleSession && memberAvailability(m) !== 'stopped' ? 'idle' : memberAvailability(m);
+      return {
+        session,
+        name: m.name,
+        role: m.role,
+        lead: isTeamLead(t, m),
+        availability,
+        responsibility: memberResponsibility(m, roleLines.get(String(m.role ?? ''))),
+        inFlight: inFlight.get(session) ?? 0,
+      };
+    });
     const brief = buildTriageBrief({
       project: { id: project.id, name: project.name },
       candidates: selection.candidates,
@@ -695,8 +711,9 @@ export class TicketAutopilotService {
   }
 
   /**
-   * Who triages: the configured driver (must be a lead of a project team),
-   * else the first lead found on the project's teams.
+   * Who triages. By default the lead of the project's (first) team by the
+   * team-lead rule (`utils/team.utils`); the `driver` setting is an optional
+   * override and must itself be a lead by that rule.
    *
    * @param settings - Resolved settings
    * @param teams - Project teams
@@ -708,10 +725,28 @@ export class TicketAutopilotService {
       return teamId ? { session: settings.driver, teamId, source: 'setting' } : null;
     }
     for (const team of teams) {
-      const lead = (team.members ?? []).find((m) => isTeamLead(team, m) && sessionOf(m));
+      const lead = getTeamLeads(team).find((m) => sessionOf(m));
       if (lead) return { session: sessionOf(lead), teamId: team.id, source: 'team_lead' };
     }
     return null;
+  }
+
+  /**
+   * Role descriptions for the brief's role lines (best-effort; a failed
+   * lookup just falls back to the built-in lines).
+   *
+   * @param roles - Roles of the members listed
+   * @returns Role → description
+   */
+  private async roleDescriptions(roles: Array<string | undefined>): Promise<Map<string, string>> {
+    const out = new Map<string, string>();
+    const lookup = this.deps.roleDescription;
+    if (!lookup) return out;
+    for (const role of new Set(roles.filter((r): r is string => !!r))) {
+      const text = await lookup(role).catch(() => null);
+      if (text) out.set(role, text);
+    }
+    return out;
   }
 
   /**

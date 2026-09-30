@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { AVATAR_CHOICES, assignDefaultAvatars } from './team.utils';
+import { AVATAR_CHOICES, assignDefaultAvatars, getTeamLeadIds } from './team.utils';
 
 describe('AVATAR_CHOICES', () => {
   it('should contain 6 avatar URLs', () => {
@@ -63,5 +63,34 @@ describe('assignDefaultAvatars', () => {
 
     expect(result).not.toBe(members);
     expect(members[0]).not.toHaveProperty('avatar');
+  });
+});
+
+describe('getTeamLeadIds', () => {
+  const members = [
+    { id: 'owen', role: 'tech-lead' },
+    { id: 'vera', role: 'developer' },
+    { id: 'nova', role: 'content-strategist' },
+  ];
+
+  it('uses explicit leaderIds first', () => {
+    expect(getTeamLeadIds({ members, leaderIds: ['vera'] })).toEqual(['vera']);
+  });
+
+  it('falls back to the deprecated leaderId', () => {
+    expect(getTeamLeadIds({ members, leaderId: 'nova' })).toEqual(['nova']);
+  });
+
+  it('falls back to lead roles, tech-lead included', () => {
+    expect(getTeamLeadIds({ members })).toEqual(['owen']);
+    expect(getTeamLeadIds({ members: [{ id: 'a', role: 'team-leader' }] })).toEqual(['a']);
+  });
+
+  it('ignores ids of members no longer on the team', () => {
+    expect(getTeamLeadIds({ members, leaderIds: ['gone'] })).toEqual(['owen']);
+  });
+
+  it('returns nothing for a team without a lead', () => {
+    expect(getTeamLeadIds({ members: [{ id: 'x', role: 'developer' }] })).toEqual([]);
   });
 });

@@ -14,6 +14,7 @@ import { atomicWriteFile, withOperationLock } from '../../utils/file-io.utils.js
 import { atomicWriteJsonWithGuard } from '../../utils/integrity-guarded-write.utils.js';
 import { addGeminiTrustedFolders, getProjectTrustPaths } from '../../utils/gemini-trusted-folders.js';
 import { deriveMemberSessionName, memberAgentId } from '../../utils/member-session-name.utils.js';
+import { normalizeTeamLeaderIds } from '../../utils/team.utils.js';
 import {
   StateInvariantViolation,
   isForceEmptyBootActive,
@@ -588,6 +589,9 @@ export class StorageService {
         for (const member of team.members || []) {
           if (!member.agentId) member.agentId = memberAgentId(team.name, member);
         }
+
+        // Store the team-lead rule's answer (idempotent; see utils/team.utils).
+        normalizeTeamLeaderIds(team);
 
         // Check if this is an update or create
         const isUpdate = existsSync(teamFile);

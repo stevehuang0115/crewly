@@ -127,6 +127,10 @@ Only the owner, the orchestrator or a lead of a team on the project may
 assign, and only to members of those teams (a person's name is recorded
 without a WorkItem). Team leads also have the `assign-ticket` skill.
 
+A **stopped** member is available: assigning starts it for the ticket (the
+answer's `wake` says `started`, or which gate refused it — then it picks the
+ticket up on its next start). Delegate by role; keep only lead-level work.
+
 ## Link work already in flight (orchestrator / team lead)
 
 ```bash

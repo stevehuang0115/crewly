@@ -26,6 +26,7 @@ import type { ReconcilerDataProvider } from '../reconciler/reconciler.service.js
 import type { AgentHealth } from '../reconciler/reconcile-rules.js';
 import type { Trigger } from '../../types/v2/index.js';
 import type { Team, TeamMember } from '../../types/index.js';
+import { getTeamLeadIds } from '../../utils/team.utils.js';
 
 /**
  * Optional read accessors. Production wiring supplies live impls; tests
@@ -104,7 +105,8 @@ async function safeCall<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
 
 /**
  * Project a `Team` into the smaller `TeamSummary` shape the detector
- * uses. We pull TL session name from the first leaderId/leaderIds entry.
+ * uses. The TL session is the first running lead by the team-lead rule
+ * (`utils/team.utils` getTeamLeadIds).
  */
 function toTeamSummary(team: Team): TeamSummary {
   const memberSessions = team.members
@@ -112,8 +114,7 @@ function toTeamSummary(team: Team): TeamSummary {
     .filter((s): s is string => typeof s === 'string' && s.length > 0);
 
   let tlSession: string | undefined;
-  const leaderIds = team.leaderIds ?? (team.leaderId ? [team.leaderId] : []);
-  for (const leaderId of leaderIds) {
+  for (const leaderId of getTeamLeadIds(team)) {
     const member = team.members.find((m) => m.id === leaderId);
     if (member?.sessionName) {
       tlSession = member.sessionName;

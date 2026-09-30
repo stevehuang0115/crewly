@@ -193,6 +193,7 @@ import { FissionGuardService, type FissionDataProvider, type BudgetChecker, crea
 import { BudgetService } from './services/autonomous/budget.service.js';
 import { setFissionGuardService } from './controllers/fission/fission.controller.js';
 import { TaskPoolService } from './services/task-pool/task-pool.service.js';
+import { PENDING_WORK_STATUSES } from './services/agent/idle-detection.service.js';
 import { WorkItemWorktreeService } from './services/worktree/workitem-worktree.service.js';
 import { WorkItemWorktreeSubscriber, createTerminalNotifier } from './services/worktree/workitem-worktree.subscriber.js';
 import { sessionsToRestore, type RestoreWorkItem } from './services/agent/restore-filter.js';
@@ -1950,6 +1951,12 @@ void (async () => {
 			this.logger.info('Starting idle detection service...');
 			const idleDetection = IdleDetectionService.getInstance();
 			idleDetection.setAgentRegistrationService(this.apiController.agentRegistrationService);
+			// An agent with work queued for it (e.g. a ticket just assigned to a
+			// member that was started for it) is never idle-stopped.
+			idleDetection.setPendingWorkCheck(async (sessionName) => {
+				const items = await TaskPoolService.getInstance().getAllItems();
+				return items.some((wi) => wi.target === sessionName && PENDING_WORK_STATUSES.has(wi.status));
+			});
 			idleDetection.start();
 
 			// Wire OrchestratorRestartService with dependencies for auto-restart
@@ -2254,20 +2261,8 @@ void (async () => {
 					huddleLeaderFor: async (channelId) => {
 						const members = new Set(chatService.queryHuddleMembersForDispatch(channelId));
 						if (members.size === 0) return null;
-						const teams = await this.storageService.getTeams();
-						const { resolveMemberSessionName } = await import('./utils/member-session-name.utils.js');
-						for (const team of teams) {
-							// An idle member has no stored sessionName (cleared on stop);
-							// match on the derived name or a stopped leader is invisible
-							// and the message is silently dropped (#claude-login, 2026-09-19).
-							const roster = (team.members ?? [])
-								.map((m) => ({ m, session: resolveMemberSessionName(team.name, m) }))
-								.filter(({ session }) => session && members.has(session));
-							if (roster.length === 0) continue;
-							const leader = roster.find(({ m }) => m.role === 'team-leader') ?? roster[0];
-							return leader?.session ?? null;
-						}
-						return null;
+						const { resolveHuddleLeader } = await import('./services/chat-v2/huddle-leader.js');
+						return resolveHuddleLeader(await this.storageService.getTeams(), members);
 					},
 					// Activate-on-send: messaging an offline agent wakes it, then
 					// the dispatcher retries delivery. User-initiated, so it uses

@@ -347,4 +347,25 @@ describe('TeamMemberRow', () => {
       expect(screen.getByTestId('sign-in-code')).toHaveTextContent('FBVZ-MJHKK');
     });
   });
+  describe('team lead toggle', () => {
+    it('shows the Lead badge for the lead and no toggle', () => {
+      render(<TeamMemberRow member={createTestMember()} teamId="team-1" isLead onMakeLead={vi.fn()} />);
+      expect(screen.getByTestId('lead-badge')).toHaveTextContent('Lead');
+      expect(screen.queryByTestId('make-lead-button')).not.toBeInTheDocument();
+    });
+
+    it('offers "Make lead" on other members — no hierarchical mode needed — and calls back with the member id', async () => {
+      const onMakeLead = vi.fn().mockResolvedValue(undefined);
+      render(<TeamMemberRow member={createTestMember({ id: 'nova' })} teamId="team-1" onMakeLead={onMakeLead} />);
+      fireEvent.click(screen.getByTestId('make-lead-button'));
+      await waitFor(() => expect(onMakeLead).toHaveBeenCalledWith('nova'));
+      expect(screen.queryByTestId('lead-badge')).not.toBeInTheDocument();
+    });
+
+    it('shows neither without a handler (e.g. the orchestrator team)', () => {
+      render(<TeamMemberRow member={createTestMember()} teamId="team-1" />);
+      expect(screen.queryByTestId('make-lead-button')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('lead-badge')).not.toBeInTheDocument();
+    });
+  });
 });

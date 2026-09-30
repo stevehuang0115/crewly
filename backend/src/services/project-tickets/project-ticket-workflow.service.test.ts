@@ -109,7 +109,17 @@ describe('ProjectTicketWorkflowService', () => {
       expect(isTeamLead(teams[0], teams[0].members[1])).toBe(false);
       expect(isTeamLead({ ...teams[0], leaderIds: ['m-dev'] }, teams[0].members[1])).toBe(true);
       // A team configured with role 'tech-lead' (e.g. CE's Owen) and no leaderId is still led by that member.
-      expect(isTeamLead({ ...teams[0], leaderId: undefined, leaderIds: [] }, { ...teams[0].members[1], role: 'tech-lead' })).toBe(true);
+      const owen = { ...teams[0].members[1], role: 'tech-lead' as const };
+      expect(isTeamLead({ ...teams[0], leaderId: undefined, leaderIds: [], members: [teams[0].members[0], owen] }, owen)).toBe(true);
+      // The shared rule: an explicit lead wins over lead roles, and canDelegate alone does not lead.
+      expect(isTeamLead({ ...teams[0], leaderIds: ['m-dev'] }, teams[0].members[0])).toBe(false);
+      const delegator = { ...teams[0].members[1], canDelegate: true };
+      expect(isTeamLead({ ...teams[0], members: [teams[0].members[0], delegator] }, delegator)).toBe(false);
+    });
+
+    it('uses the harness-wide rule (utils/team.utils), not a copy', async () => {
+      const shared = await import('../../utils/team.utils.js');
+      expect(isTeamLead).toBe(shared.isTeamLead);
     });
 
     it('resolves the project by id, name or path', async () => {
@@ -199,6 +209,48 @@ describe('ProjectTicketWorkflowService', () => {
       expect(ticket).toMatchObject({ status: 'in_progress', assignee: 'app-qa' });
       expect(workItem?.status).toBe('queued');
       expect(ticket.log.at(-1)).toMatch(/app-lead · assigned to app-qa — WorkItem/);
+    });
+
+    it('starts a stopped assignee through the member-start path, as the lead who assigned it', async () => {
+      const wakes: Array<Record<string, unknown>> = [];
+      teams[1].members[0] = { ...teams[1].members[0], sessionName: '', agentId: 'app-qa', agentStatus: 'inactive' };
+      wf = new ProjectTicketWorkflowService({
+        tickets,
+        pool,
+        directory: { getTeams: async () => teams, getProjects: async () => [project, other] },
+        logger: quiet(),
+        wakeAssignee: async (req) => {
+          wakes.push({ ...req });
+          return { outcome: 'started' };
+        },
+      });
+      const t = await wf.create('p1', { title: 'Write the article' }, owner);
+      const res = await wf.assign('p1', t.id, 'app-qa', lead);
+      expect(res.wake).toEqual({ outcome: 'started' });
+      expect(wakes).toEqual([{ teamId: 't-qa', memberId: 'm-qa', session: 'app-qa', workItemId: res.workItem!.id, callerSession: 'app-lead' }]);
+      expect((await wf.get('p1', t.id)).log.at(-1)).toMatch(/app-qa was stopped — starting it/);
+    });
+
+    it('does not start a running assignee, and reports a start gate that refused a stopped one', async () => {
+      const wake = jest.fn(async () => ({ outcome: 'blocked' as const, code: 'commitment_requires_owner_approval' }));
+      wf = new ProjectTicketWorkflowService({
+        tickets,
+        pool,
+        directory: { getTeams: async () => teams, getProjects: async () => [project, other] },
+        logger: quiet(),
+        wakeAssignee: wake,
+      });
+      const running = await wf.create('p1', { title: 'a' }, owner);
+      expect((await wf.assign('p1', running.id, 'app-qa', lead)).wake).toBeUndefined();
+      expect(wake).not.toHaveBeenCalled();
+
+      teams[0].members[1] = { ...teams[0].members[1], agentStatus: 'suspended' };
+      const stopped = await wf.create('p1', { title: 'b' }, owner);
+      const res = await wf.assign('p1', stopped.id, 'app-dev', owner);
+      expect(res.ticket).toMatchObject({ status: 'in_progress', assignee: 'app-dev' });
+      expect(res.wake).toMatchObject({ outcome: 'blocked', code: 'commitment_requires_owner_approval' });
+      expect(wake).toHaveBeenCalledWith(expect.not.objectContaining({ callerSession: expect.anything() }));
+      expect((await wf.get('p1', stopped.id)).log.at(-1)).toMatch(/could not be started \(commitment_requires_owner_approval\)/);
     });
 
     it('refuses members and non-team agents; records a human assignee without work', async () => {

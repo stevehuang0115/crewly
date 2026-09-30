@@ -41,6 +41,8 @@ interface TeamOverviewProps {
   onViewAgent?: (member: TeamMember) => void;
   /** When true, shows loading state for all members (team is starting) */
   isStartingTeam?: boolean;
+  /** Make a member the team lead; omitted for the Orchestrator team */
+  onMakeLead?: (memberId: string) => Promise<void>;
 }
 
 /**
@@ -61,6 +63,7 @@ export const TeamOverview: React.FC<TeamOverviewProps> = ({
   onViewTerminal,
   onViewAgent,
   isStartingTeam,
+  onMakeLead,
 }) => {
   const [showProjectSelector, setShowProjectSelector] = useState(false);
   const [selectedProjectId, setSelectedProjectId] = useState<string>(team?.projectIds?.[0] || '');
@@ -102,6 +105,7 @@ export const TeamOverview: React.FC<TeamOverviewProps> = ({
           onViewTerminal={onViewTerminal}
           onViewAgent={onViewAgent}
           isStartingTeam={isStartingTeam}
+          onMakeLead={isOrchestratorTeam ? undefined : onMakeLead}
         />
       </div>
       {/* Hide project assignment and activity sections for Orchestrator */}

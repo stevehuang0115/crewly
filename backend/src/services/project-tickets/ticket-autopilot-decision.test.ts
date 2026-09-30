@@ -15,6 +15,8 @@ import {
   isWorkerCreated,
   localDateKey,
   localMidnight,
+  memberAvailability,
+  memberResponsibility,
   readOwnerQuestion,
   selectTriageCandidates,
   type TriageDecisionInput,
@@ -201,6 +203,25 @@ describe('helpers', () => {
     const counts = inFlightByAssignee([ticket('A', { status: 'in_progress', assignee: 'x' }), ticket('B', { status: 'ready', assignee: 'x' })]);
     expect(counts.get('x')).toBe(1);
     expect(isWorkerCreated({ source: null }, teams)).toBe(false);
+  });
+
+  it('tells idle, working and stopped apart — stopped is never busy', () => {
+    expect(memberAvailability({ agentStatus: 'active', workingStatus: 'idle' })).toBe('idle');
+    expect(memberAvailability({ agentStatus: 'started', workingStatus: 'idle' })).toBe('idle');
+    expect(memberAvailability({ agentStatus: 'starting', workingStatus: 'idle' })).toBe('idle');
+    expect(memberAvailability({ agentStatus: 'active', workingStatus: 'in_progress' })).toBe('working');
+    // Nova in the CE incident: idle-stopped, workingStatus left at idle.
+    expect(memberAvailability({ agentStatus: 'inactive', workingStatus: 'idle' })).toBe('stopped');
+    expect(memberAvailability({ agentStatus: 'inactive', workingStatus: 'in_progress' })).toBe('stopped');
+    expect(memberAvailability({ agentStatus: 'suspended', workingStatus: 'idle' })).toBe('stopped');
+  });
+
+  it('gives each member a one-line responsibility: own job description, role description, built-in line', () => {
+    expect(memberResponsibility({ role: 'developer', jobDescription: 'Owns the visa pages' }, 'Software developer')).toBe('Owns the visa pages');
+    expect(memberResponsibility({ role: 'developer' }, 'Software developer')).toBe('Software developer');
+    expect(memberResponsibility({ role: 'content-strategist' as TeamMember['role'] })).toMatch(/articles.*images/);
+    expect(memberResponsibility({ role: 'tech-lead' })).toMatch(/Leads the team/);
+    expect(memberResponsibility({ role: 'mystery' as TeamMember['role'] })).toBeUndefined();
   });
 
   it('computes local midnight and date keys', () => {
