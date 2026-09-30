@@ -1106,6 +1106,10 @@ export const AUTO_UPDATE_CONSTANTS = {
 	FAILURE_NOTIFY_THRESHOLD: 2,
 	/** Upper bound for one `npm install -g` (ms) — 10 minutes */
 	INSTALL_TIMEOUT_MS: 10 * 60 * 1000,
+	/** Sanitised npm output lines written to the backend log when an install fails */
+	FAILURE_LOG_TAIL_LINES: 40,
+	/** Longest error / trailer line quoted in the one-line failure reason (chars) */
+	FAILURE_REASON_MAX_CHARS: 240,
 	/** How long the post-restart notice waits for Slack to connect (ms) */
 	NOTIFY_WAIT_MS: 10 * 60 * 1000,
 	/** Poll interval while waiting for Slack (ms) */
