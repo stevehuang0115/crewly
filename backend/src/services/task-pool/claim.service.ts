@@ -3,8 +3,11 @@
  *
  * Agents claim WorkItems from the Task Pool via this service. Each claim has:
  * - Lease (default 10min): agent must complete or extend before expiry
- * - Heartbeat (2min interval): agent signals liveness
+ * - Heartbeat (2min interval): agent signals liveness and renews the lease
  * - Grace period (3min): buffer after lease expiry before forced revocation
+ * - Renewal: the Reconciler renews the lease of a holder it sees working
+ *   (recent PTY/API activity), so a claim is revoked only when its holder has
+ *   gone quiet — not simply 13 minutes after it was taken
  * - Max extensions (3): how many times a lease can be renewed
  *
  * The Reconciler uses this service to detect expired/grace-exceeded claims.
@@ -20,6 +23,7 @@ import {
   type ClaimStatus,
   createTaskClaim,
   extendClaim,
+  renewClaimLease,
   isLeaseExpired,
   isGracePeriodExceeded,
   canExtendLease,
@@ -185,8 +189,13 @@ export class ClaimService {
   /**
    * Processes a heartbeat from an agent for a specific claim.
    *
-   * Updates the lastHeartbeatAt timestamp. The heartbeat is only accepted
-   * if the claim is active and belongs to the requesting agent.
+   * Renews the lease from now (see {@link renewClaimLease}) and updates
+   * lastHeartbeatAt. The heartbeat is only accepted if the claim is active or
+   * expiring and belongs to the requesting agent.
+   *
+   * Before 2026-09-29 a heartbeat only stamped lastHeartbeatAt: the Reconciler
+   * measures expiry and grace from `leaseExpiresAt`, so a heartbeating agent
+   * was still revoked 13 minutes after it claimed (WI f34f09b0, CE-19).
    *
    * @param claimId - The claim ID
    * @param agentId - The agent sending the heartbeat (must match claim owner)
@@ -214,14 +223,12 @@ export class ClaimService {
       };
     }
 
-    const now = new Date().toISOString();
+    const renewed = renewClaimLease(claim);
     const updated = await this.storage.updateClaim(claimId, (c) => {
-      c.lastHeartbeatAt = now;
-      // If claim was expiring but agent is alive, restore to active
-      // (only if lease hasn't been fully exceeded + grace)
-      if (c.status === 'expiring') {
-        c.status = 'active';
-      }
+      c.lastHeartbeatAt = renewed.lastHeartbeatAt;
+      c.leaseExpiresAt = renewed.leaseExpiresAt;
+      // An expiring claim whose holder is alive goes back to active.
+      c.status = 'active';
     });
 
     if (!updated) {
@@ -236,6 +243,44 @@ export class ClaimService {
     this.consecutiveGraceRevokes.delete(agentId);
 
     return { success: true, claim: updatedClaim };
+  }
+
+  // -----------------------------------------------------------------------
+  // Liveness renewal (Reconciler)
+  // -----------------------------------------------------------------------
+
+  /**
+   * Renews an active or expiring claim's lease because its holder was seen
+   * working (system-side heartbeat). Used by the Reconciler instead of
+   * revoking a claim whose agent is visibly busy — agents do not run the
+   * heartbeat skill, so without this every claim was revoked 13 minutes after
+   * it was taken, however hard its holder was working on it.
+   *
+   * @param claimId - The claim ID
+   * @param now - Current time in ms (default: Date.now())
+   * @returns The renewed claim, or undefined when it is missing or already ended
+   */
+  async renewLease(claimId: string, now: number = Date.now()): Promise<TaskClaim | undefined> {
+    const claims = await this.storage.getClaims();
+    const claim = claims.find((c) => c.id === claimId);
+    if (!claim || (claim.status !== 'active' && claim.status !== 'expiring')) return undefined;
+
+    const renewed = renewClaimLease(claim, now);
+    await this.storage.updateClaim(claimId, (c) => {
+      c.status = 'active';
+      c.leaseExpiresAt = renewed.leaseExpiresAt;
+      c.lastHeartbeatAt = renewed.lastHeartbeatAt;
+    });
+    // Seen working = alive: not a hung session.
+    this.consecutiveGraceRevokes.delete(claim.agentId);
+
+    this.logger.debug?.('Claim lease renewed — holder is working', {
+      claimId,
+      agentId: claim.agentId,
+      workItemId: claim.workItemId,
+      leaseExpiresAt: renewed.leaseExpiresAt,
+    });
+    return { ...claim, ...renewed };
   }
 
   // -----------------------------------------------------------------------

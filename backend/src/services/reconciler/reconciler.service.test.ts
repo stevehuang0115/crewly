@@ -487,6 +487,33 @@ describe('ReconcilerService', () => {
       expect(result.claimsRevoked).toBe(1);
     });
 
+    // 2026-09-29, WI f34f09b0 / CE-19: the holder was working, yet the claim
+    // was revoked 13 minutes after it was taken.
+    it.each(['runFast', 'runFull'] as const)('%s renews instead of revoking when the holder is working', async (loop) => {
+      const claim = createTaskClaim({ workItemId: 'wi-1', agentId: 'agent-1' });
+      const expiringClaim: TaskClaim = {
+        ...claim,
+        status: 'expiring',
+        leaseExpiresAt: new Date(Date.now() - 200_000).toISOString(),
+      };
+      const renewClaim = jest.fn().mockResolvedValue(undefined);
+      provider = createMockProvider({
+        getActiveClaims: jest.fn().mockResolvedValue([expiringClaim]),
+        getAgentHealthMap: jest.fn().mockResolvedValue(new Map([['agent-1', {
+          sessionName: 'agent-1',
+          status: 'active',
+          lastActivityAt: new Date(Date.now() - 20_000).toISOString(),
+        }]])),
+        renewClaim,
+      });
+      service = new ReconcilerService(provider);
+
+      const result = await service[loop]();
+      expect(renewClaim).toHaveBeenCalledWith(expiringClaim.id);
+      expect(provider.revokeClaimAndRelease).not.toHaveBeenCalled();
+      expect(result.claimsRevoked).toBe(0);
+    });
+
     it('should mark claims as expiring when lease expired', async () => {
       const claim = createTaskClaim({ workItemId: 'wi-1', agentId: 'agent-1' });
       const expiredClaim: TaskClaim = {

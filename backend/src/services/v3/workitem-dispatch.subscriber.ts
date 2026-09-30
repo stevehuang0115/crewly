@@ -649,9 +649,10 @@ export class WorkItemDispatchSubscriber {
     });
     return [
       '',
-      `[CREWLY-DISPATCH] ${workItems.length} WorkItems are still queued for you — this one message covers all of them; work through them in this turn.`,
+      `[CREWLY-DISPATCH] ${workItems.length} WorkItems are still queued for you — this one message covers all of them.`,
       ...lines,
-      '  Run poll-tasks to claim the next one:',
+      '  Take them ONE AT A TIME, in this order: claim one, finish it and complete it, then claim the next.',
+      '  Do not start an item you have not claimed. Run poll-tasks to claim the next one:',
       `    bash $AGENT_SKILLS_PATH/core/poll-tasks/execute.sh '{"sessionName":"${target}"}'`,
       '',
     ].join('\n');

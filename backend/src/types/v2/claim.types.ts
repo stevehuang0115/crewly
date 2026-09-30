@@ -269,3 +269,42 @@ export function extendClaim(claim: TaskClaim): TaskClaim | null {
     extensionCount: claim.extensionCount + 1,
   };
 }
+
+/**
+ * How recently a claim holder must have shown activity (meaningful PTY output
+ * or an API call) for the Reconciler to treat it as still working the claim
+ * and renew the lease instead of letting it expire: grace period + heartbeat
+ * interval (5 min). An agent that is thinking or running tools produces output
+ * far more often than that; a hung session (the Irissair 假死) produces none,
+ * so it still expires and is revoked as before.
+ */
+export const CLAIM_ACTIVITY_LIVENESS_WINDOW_MS = DEFAULT_GRACE_PERIOD_MS + DEFAULT_HEARTBEAT_INTERVAL_MS;
+
+/**
+ * Renews a claim's lease from `now`: the lease runs a full
+ * {@link TaskClaim.leaseDurationMs} from the moment the holder was last seen
+ * alive, and never moves backwards. Unlike {@link extendClaim} this is not
+ * capped by `maxExtensions` — it is proof of liveness (a heartbeat, or the
+ * Reconciler seeing the holder working), not a request for more time.
+ *
+ * @param claim - The claim to renew
+ * @param now - Current time in ms (default: Date.now())
+ * @returns New TaskClaim with `status: 'active'`, a renewed lease and heartbeat
+ *
+ * @example
+ * ```typescript
+ * const renewed = renewClaimLease(claim);
+ * // renewed.leaseExpiresAt >= now + claim.leaseDurationMs
+ * ```
+ */
+export function renewClaimLease(claim: TaskClaim, now: number = Date.now()): TaskClaim {
+  const leaseMs = claim.leaseDurationMs > 0 ? claim.leaseDurationMs : DEFAULT_LEASE_DURATION_MS;
+  const current = new Date(claim.leaseExpiresAt).getTime();
+  const renewed = Math.max(Number.isFinite(current) ? current : 0, now + leaseMs);
+  return {
+    ...claim,
+    status: 'active',
+    leaseExpiresAt: new Date(renewed).toISOString(),
+    lastHeartbeatAt: new Date(now).toISOString(),
+  };
+}

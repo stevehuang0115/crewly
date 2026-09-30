@@ -32,6 +32,8 @@ import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.j
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { getWaiting } from '../monitoring/agent-attention-registry.js';
+import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import { limitToOneProjectTicket } from '../task-pool/ticket-claim-policy.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -404,6 +406,24 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
+   * When the agent last produced meaningful PTY output or made an API call,
+   * as tracked in this process. Undefined when nothing was seen since the
+   * backend started — "never seen" must not count as "working".
+   *
+   * @param sessionName - Agent session
+   * @returns ISO time of the last activity, or undefined
+   */
+  private getLastActivityAt(sessionName: string): string | undefined {
+    try {
+      const tracker = PtyActivityTrackerService.getInstance();
+      if (!tracker.hasActivity(sessionName)) return undefined;
+      return new Date(Date.now() - tracker.getIdleTimeMs(sessionName)).toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Builds the agent health map from StorageService team data.
    *
    * Iterates all teams and members to produce a Map<sessionName, AgentHealth>
@@ -436,6 +456,8 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           };
           const waitingSince = this.getWaitingOnHumanSince(member.sessionName);
           if (waitingSince) health.waitingOnHumanSince = waitingSince;
+          const lastActivityAt = this.getLastActivityAt(member.sessionName);
+          if (lastActivityAt) health.lastActivityAt = lastActivityAt;
 
           healthMap.set(member.sessionName, health);
         }
@@ -459,6 +481,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       try {
         const orcStatus = await this.storage.getOrchestratorStatus();
         if (orcStatus?.sessionName) {
+          const orcLastActivityAt = this.getLastActivityAt(orcStatus.sessionName);
           healthMap.set(orcStatus.sessionName, {
             sessionName: orcStatus.sessionName,
             status: this.mapAgentStatus(orcStatus.agentStatus),
@@ -467,6 +490,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             tags: [],
             activeWorkItemCount: 0,
             // teamId/memberId intentionally undefined — orc is virtual.
+            ...(orcLastActivityAt ? { lastActivityAt: orcLastActivityAt } : {}),
           });
         }
       } catch (orcErr) {
@@ -696,6 +720,23 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       this.logger.info('Marked claim as expiring', { claimId });
     } catch (error) {
       this.logger.error('Failed to mark claim expiring', {
+        claimId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Renews a claim's lease because its holder is visibly working.
+   *
+   * @param claimId - The claim ID to renew
+   */
+  async renewClaim(claimId: string): Promise<void> {
+    try {
+      const pool = TaskPoolService.getInstance();
+      await pool.renewClaim(claimId);
+    } catch (error) {
+      this.logger.error('Failed to renew claim', {
         claimId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1180,8 +1221,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * lists everything outstanding costs the agent nothing extra, while a
    * second message minutes later costs a whole model turn.
    *
+   * The batch is in claim order (ticket policy) and carries only the first
+   * project ticket's items plus non-ticket work, so an agent that can hold one
+   * claim is not handed several tickets at once. The trigger itself may be
+   * left out by that rule.
+   *
    * @param trigger - The queued WI whose wake action fired
-   * @returns The batch, trigger first; falls back to `[trigger]` on any error
+   * @returns The batch in claim order; falls back to `[trigger]` on any error
    */
   private async collectRedeliverBatch(trigger: WorkItem): Promise<WorkItem[]> {
     try {
@@ -1193,7 +1239,14 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           item.status === 'queued' &&
           item.target === trigger.target,
       );
-      return [trigger, ...siblings];
+      const all = [trigger, ...siblings];
+      if (all.length === 1 || !trigger.target) return all;
+      // Claim order (ticket policy), and one project ticket at a time: the
+      // agent holds one claim, so listing several tickets as "work through
+      // them" had it working unclaimed items (2026-09-29, CE-19).
+      const ordered = await pool.orderClaimCandidates(trigger.target, all).catch(() => all);
+      const limited = limitToOneProjectTicket(ordered.length > 0 ? ordered : all);
+      return limited.length > 0 ? limited : [trigger];
     } catch (err) {
       this.logger.debug('collectRedeliverBatch failed — redelivering the trigger alone', {
         workItemId: trigger.id,
@@ -1252,10 +1305,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         const delivered =
           batch.length > 1 && typeof subscriber.redispatchMany === 'function'
             ? await subscriber.redispatchMany(batch)
-            : await subscriber.redispatch(wi);
+            : await subscriber.redispatch(batch[0] ?? wi);
         if (delivered) {
           const now = Date.now();
-          const marked = batch.length > 1 ? batch : [wi];
+          // The trigger backs off too, even when the one-ticket rule left it
+          // out of the reminder — otherwise it re-fires every fast pass.
+          const marked = batch.some((item) => item.id === wi.id) ? batch : [...batch, wi];
           for (const item of marked) {
             this.lastRedeliverAt.set(item.id, now);
             this.redeliverCount.set(item.id, (this.redeliverCount.get(item.id) ?? 0) + 1);

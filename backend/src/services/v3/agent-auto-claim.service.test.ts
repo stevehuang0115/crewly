@@ -39,6 +39,7 @@ const mockGetAvailableItems = jest.fn().mockResolvedValue([]);
 const mockClaimSpecificItem = jest.fn().mockResolvedValue(null);
 const mockGetAllItems = jest.fn().mockResolvedValue([]);
 const mockRetargetQueuedItem = jest.fn(async (id: string, target: string) => ({ id, target }));
+const mockReleaseBack = jest.fn().mockResolvedValue(undefined);
 const mockGetTeams = jest.fn().mockResolvedValue([]);
 const mockTriggerGet = jest.fn();
 const mockRetargetWorkItemAction = jest.fn().mockResolvedValue(true);
@@ -58,6 +59,7 @@ jest.mock('../task-pool/task-pool.service.js', () => ({
       orderClaimCandidates: async (_agent: string, items: unknown[]) => items,
       getAllItems: mockGetAllItems,
       retargetQueuedItem: mockRetargetQueuedItem,
+      releaseBack: mockReleaseBack,
     }),
   },
 }));
@@ -84,9 +86,10 @@ jest.mock('../project-tickets/project-ticket-workflow.service.js', () => ({
   },
 }));
 const mockDispatchTo = jest.fn().mockResolvedValue(true);
+const mockRedispatch = jest.fn().mockResolvedValue(true);
 jest.mock('./workitem-dispatch.subscriber.js', () => ({
   SLA_TRACKER_ID_PATTERN: /^request:.+:respond_to_user$/,
-  WorkItemDispatchSubscriber: { getInstance: () => ({ dispatchTo: mockDispatchTo }) },
+  WorkItemDispatchSubscriber: { getInstance: () => ({ dispatchTo: mockDispatchTo, redispatch: mockRedispatch }) },
 }));
 
 jest.mock('../reconciler/reconcile-rules.js', () => ({
@@ -145,7 +148,17 @@ describe('AgentAutoClaimService', () => {
         const result = await service.tryAutoClaimForAgent('agent-1');
         expect(result).toEqual({ workItemId: 'wi-t', score: 0, projectTicketId: 'APP-3' });
         expect(mockClaimNextForAgent).toHaveBeenCalledWith('agent-1');
-        expect(mockDispatchTo).toHaveBeenCalledWith(workItem);
+        expect(mockRedispatch).toHaveBeenCalledWith(workItem);
+      });
+
+      it('gives a claimed ticket item back when its brief cannot be delivered', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockGetAvailableItems.mockResolvedValueOnce([]);
+        const workItem = { id: 'wi-t', target: 'agent-1' };
+        mockClaimNextForAgent.mockResolvedValueOnce({ ticket: { id: 'APP-3' }, workItem, claimed: true });
+        mockRedispatch.mockResolvedValueOnce(false);
+        expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
+        expect(mockReleaseBack).toHaveBeenCalledWith('wi-t', expect.stringContaining('could not be delivered'));
       });
 
       it('never runs when a direct WorkItem was claimed', async () => {
@@ -201,6 +214,42 @@ describe('AgentAutoClaimService', () => {
       expect(result).not.toBeNull();
       expect(result?.workItemId).toBe('wi-1');
       expect(mockClaimSpecificItem).toHaveBeenCalledWith('agent-1', 'wi-1');
+    });
+
+    // 2026-09-29 (WI f34f09b0 / CE-19): a batch reminder had already marked
+    // the (item, agent) pair delivered, so the post-claim `dispatchTo` wrote
+    // nothing and the item sat `running` for an idle agent with no brief.
+    describe('post-claim delivery', () => {
+      const item = { id: 'wi-1', title: 'Task 1', type: 'delegate', status: 'queued', target: 'agent-1', createdAt: new Date().toISOString() };
+
+      it('delivers the brief even when the pair was already marked delivered (bypasses dedup)', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockGetAvailableItems.mockResolvedValueOnce([item]);
+        mockClaimSpecificItem.mockResolvedValueOnce({ workItem: { ...item, status: 'running' }, claim: { id: 'c' } });
+        const result = await service.tryAutoClaimForAgent('agent-1');
+        expect(result?.workItemId).toBe('wi-1');
+        expect(mockRedispatch).toHaveBeenCalledWith(expect.objectContaining({ id: 'wi-1', target: 'agent-1' }));
+        expect(mockReleaseBack).not.toHaveBeenCalled();
+      });
+
+      it('releases the claim instead of leaving the item running when the brief is not delivered', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockGetAvailableItems.mockResolvedValueOnce([item]);
+        mockClaimSpecificItem.mockResolvedValueOnce({ workItem: { ...item, status: 'running' }, claim: { id: 'c' } });
+        mockRedispatch.mockResolvedValueOnce(false);
+        const result = await service.tryAutoClaimForAgent('agent-1');
+        expect(result).toBeNull();
+        expect(mockReleaseBack).toHaveBeenCalledWith('wi-1', expect.stringContaining('could not be delivered'));
+      });
+
+      it('also releases when the delivery throws', async () => {
+        const service = AgentAutoClaimService.getInstance();
+        mockGetAvailableItems.mockResolvedValueOnce([item]);
+        mockClaimSpecificItem.mockResolvedValueOnce({ workItem: { ...item, status: 'running' }, claim: { id: 'c' } });
+        mockRedispatch.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+        expect(await service.tryAutoClaimForAgent('agent-1')).toBeNull();
+        expect(mockReleaseBack).toHaveBeenCalledWith('wi-1', expect.any(String));
+      });
     });
 
     it('should handle race condition gracefully', async () => {
