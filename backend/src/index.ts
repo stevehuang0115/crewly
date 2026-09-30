@@ -2061,6 +2061,8 @@ void (async () => {
 				const oauthMonitor = OAuthReloginMonitorService.getInstance();
 				oauthMonitor.setEventBusService(this.eventBusService);
 				oauthMonitor.setNoticeQueue(this.messageQueueService);
+				oauthMonitor.setAgentNameResolver(async (sessionName) =>
+					(await this.storageService.findMemberBySessionName(sessionName))?.member.name ?? null);
 				oauthMonitor.setSlackProvider(async () => {
 					const slack = getSlackService();
 					return slack.isConnected() ? slack : null;
