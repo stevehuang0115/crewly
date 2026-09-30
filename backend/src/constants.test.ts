@@ -167,7 +167,7 @@ describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
 
   it('treats the OpenCode /connect provider dialog as a login-required screen', () => {
     const lower = 'connect a provider\n  anthropic\n  openai\n  other  custom provider';
-    const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) =>
+    const matched = LOGIN_REQUIRED_PATTERN_SETS['opencode-cli'].some((set) =>
       set.every((pattern) => lower.includes(pattern.toLowerCase())),
     );
     expect(matched).toBe(true);
@@ -175,7 +175,7 @@ describe('RUNTIME_TYPES (opencode-cli, issue #306)', () => {
 
   it('treats the OpenCode "Get started /connect" footer as a login-required screen', () => {
     const lower = '~/projects/demo                     get started /connect';
-    const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) =>
+    const matched = LOGIN_REQUIRED_PATTERN_SETS['opencode-cli'].some((set) =>
       set.every((pattern) => lower.includes(pattern.toLowerCase())),
     );
     expect(matched).toBe(true);
@@ -215,7 +215,9 @@ describe('RUNTIME_TYPES (antigravity-cli)', () => {
   it('never adds an Antigravity sign-in screen to the login-required patterns (the owner must not be asked to sign in)', () => {
     for (const marker of ANTIGRAVITY_CONSTANTS.SCREEN.ACCOUNT_LOGIN_MARKERS) {
       const lower = marker.toLowerCase();
-      const matched = LOGIN_REQUIRED_PATTERN_SETS.some((set) => set.every((pattern) => lower.includes(pattern.toLowerCase())));
+      const matched = Object.values(LOGIN_REQUIRED_PATTERN_SETS)
+        .flat()
+        .some((set) => set.every((pattern) => lower.includes(pattern.toLowerCase())));
       expect(matched).toBe(false);
     }
   });

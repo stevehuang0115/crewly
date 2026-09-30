@@ -351,6 +351,33 @@ the coordinator wired, a match of `detectLoginExpiry(output, runtimeType)` is
 reported instead, and the monitor then does neither for that session.
 First-run sign-in screens with no expiry text keep the old per-agent notice.
 
+**First-run sign-in screens** (`LOGIN_REQUIRED_PATTERN_SETS`, keyed by
+runtime) are matched only where a sign-in screen can be. Incident
+2026-09-29: a Claude Code agent summarising OpenAI news wrote "Sign in with
+ChatGPT" in its reply and the Codex pattern DM'd the owner twice.
+
+- A session is checked against its own runtime's patterns only; an unknown
+  runtime is checked against all of them.
+- The live screen decides (`LOGIN_SCREEN_REGION`): only the last 15
+  non-empty lines count, the agent's own transcript blocks among them are
+  skipped (lines opened by `⏺` `⎿` `•` `└` `✦` and their indented
+  continuation lines), and a busy runtime or one at its chat prompt
+  (`esc to interrupt`, `Working (`, `? for shortcuts`, `Ask Codex to do
+  anything`) is never on a sign-in screen. The login URL and code are read
+  from that region too.
+- The rolling PTY buffer is only a trigger (runtime-scoped, whole text) for
+  capturing the live screen.
+- Codex's sign-in menu needs both `Sign in with ChatGPT` and `Provide your
+  own API key`.
+- An expiry the coordinator took still sets the session's sign-in flag.
+
+The per-agent notice is written for an owner on a phone: the agent's display
+name, the URL and code when the screen showed them, and for Claude Code /
+Codex the reply that starts the phone re-login — e.g. "Atlas needs you to
+sign in to Claude Code. Reply 「重新登录 claude」 (or "relogin claude") to
+Crewly and it will send you a sign-in link." It never says to open a
+terminal.
+
 Output is normalized with `normalizeTerminalOutput`. Each pattern is matched
 against the text and against its spaceless copy.
 

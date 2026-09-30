@@ -2254,26 +2254,61 @@ export const OAUTH_ERROR_PATTERN_SETS: string[][] = [
  * the expiry sets, so without these the OAuth monitor stays idle while the
  * runtime waits for a human to log in.
  *
+ * Keyed by runtime: a session is only checked against its own runtime's
+ * sign-in screens (unknown runtime → every set). Incident 2026-09-29: a
+ * Claude Code agent summarising OpenAI news wrote "…Sign in with ChatGPT…"
+ * in its reply and the Codex pattern paged the owner.
+ *
  * Each entry is a set of substrings that must ALL be present (AND logic,
  * case-insensitive) in the recent screen text. Plain string matching — no
  * regex — to stay ReDoS-free.
  */
-export const LOGIN_REQUIRED_PATTERN_SETS: string[][] = [
-	// Codex device-code flow (headless-friendly)
-	['auth.openai.com/codex/device'],
-	// Codex default sign-in screen
-	['sign in with chatgpt'],
-	// Claude Code sign-in screens
-	['claude.ai/oauth/authorize'],
-	['use the url below to sign in'],
-	['paste code here if prompted'],
-	['please run /login'],
-	// Gemini CLI sign-in screen
-	['login with google'],
-	// OpenCode CLI: `/connect` provider dialog and the "no provider yet" footer
-	['connect a provider'],
-	['get started', '/connect'],
-];
+export const LOGIN_REQUIRED_PATTERN_SETS: Readonly<Record<string, readonly (readonly string[])[]>> = {
+	'codex-cli': [
+		// Device-code flow (headless-friendly)
+		['auth.openai.com/codex/device'],
+		// Default sign-in menu: both options, so a sentence naming one is not a screen
+		['sign in with chatgpt', 'provide your own api key'],
+	],
+	'claude-code': [
+		['claude.ai/oauth/authorize'],
+		['use the url below to sign in'],
+		['paste code here if prompted'],
+		['please run /login'],
+	],
+	'gemini-cli': [
+		['login with google'],
+	],
+	'opencode-cli': [
+		// `/connect` provider dialog and the "no provider yet" footer
+		['connect a provider'],
+		['get started', '/connect'],
+	],
+};
+
+/**
+ * Where on a captured screen a sign-in prompt can actually be. A sign-in
+ * screen is the runtime's own UI at the bottom of the terminal, never a line
+ * of the agent's transcript and never shown while a turn is running.
+ */
+export const LOGIN_SCREEN_REGION = {
+	/** Trailing non-empty lines inspected for a sign-in prompt */
+	TAIL_LINES: 15,
+	/**
+	 * Line starts that open a block of the agent's own transcript (Claude's
+	 * `⏺` reply / `⎿` tool result, Codex's `•` / `└`, Gemini's `✦`). The
+	 * block continues over blank lines and lines indented by at least
+	 * {@link LOGIN_SCREEN_REGION.TRANSCRIPT_INDENT} spaces.
+	 */
+	TRANSCRIPT_MARKERS: ['⏺', '⎿', '•', '└', '✦'] as readonly string[],
+	/** Indent of a transcript block's continuation lines */
+	TRANSCRIPT_INDENT: 2,
+	/**
+	 * Lower-case footer text of a runtime that is busy or sitting at its chat
+	 * prompt; a sign-in screen shows neither, so any of these vetoes a match.
+	 */
+	NOT_SIGN_IN_MARKERS: ['esc to interrupt', 'working (', 'ask codex to do anything', '? for shortcuts'] as readonly string[],
+} as const;
 
 /**
  * Screen text that means the runtime has just *finished* signing in. The
