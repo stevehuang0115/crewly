@@ -146,6 +146,7 @@ import { createMessagingRouter } from './controllers/messaging/messaging.routes.
 import { SystemResourceAlertService } from './services/monitoring/system-resource-alert.service.js';
 import { TokenUsageService } from './services/monitoring/token-usage.service.js';
 import { agentHeartbeatMiddleware } from './middleware/agent-heartbeat.middleware.js';
+import { agentOriginMiddleware } from './middleware/agent-origin.middleware.js';
 import {
 	apiTokenMiddleware,
 	healthGateMiddleware,
@@ -1628,6 +1629,11 @@ void (async () => {
 		// and the SPA shell are outside `/api` and stay open; `/health` has its
 		// own gate below (#825).
 		this.app.use('/api', apiTokenMiddleware);
+
+		// A skill's X-Agent-Session is checked against the agent PTY its process
+		// really runs under (X-Agent-Pid) and corrected when it names another
+		// agent — before the heartbeat and every controller read it.
+		this.app.use('/api', agentOriginMiddleware);
 
 		// Agent heartbeat middleware - any API call with X-Agent-Session header updates heartbeat
 		this.app.use('/api', agentHeartbeatMiddleware);

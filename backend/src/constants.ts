@@ -176,6 +176,31 @@ export const CREWLY_CONSTANTS = {
 	},
 } as const;
 
+/**
+ * Checking a skill request's claimed agent identity against the process it
+ * came from. Skills send `X-Agent-Session` (from CREWLY_SESSION_NAME) and
+ * `X-Agent-Pid` (the skill shell's pid); on loopback the backend walks that
+ * pid's parents to the agent PTY it belongs to.
+ */
+export const AGENT_ORIGIN_CONSTANTS = {
+	SESSION_HEADER: 'x-agent-session',
+	PID_HEADER: 'x-agent-pid',
+	/** Set on a corrected request: the session the shell claimed */
+	CLAIMED_SESSION_HEADER: 'x-agent-session-claimed',
+	/** Longest parent chain walked from the skill shell */
+	MAX_ANCESTRY_DEPTH: 64,
+	/** Give up on the process lookup after this long and keep the claimed identity */
+	LOOKUP_TIMEOUT_MS: 1500,
+	/** One skill run makes several calls from the same shell pid */
+	RESULT_CACHE_TTL_MS: 30_000,
+	RESULT_CACHE_MAX_ENTRIES: 500,
+	/** The same mismatch is logged at most this often */
+	WARN_THROTTLE_MS: 10 * 60 * 1000,
+	/** Command line of Codex's shared background app server (`codex app-server --listen unix:// --managed-daemon`) */
+	SHARED_DAEMON_ARGS_RE: /\bapp-server\b.*--(?:managed-daemon|listen)\b/,
+	PS_MAX_BUFFER_BYTES: 16 * 1024 * 1024,
+} as const;
+
 // Environment variable names (duplicated from config/constants.ts for backend use)
 export const ENV_CONSTANTS = {
 	/** PTY session name used for agent identity and heartbeat tracking */
@@ -4216,6 +4241,19 @@ export const HARNESS_CONSTANTS = {
 		HOME_ENV: 'CODEX_HOME',
 		HOME_DIR: '.codex',
 		AUTH_FILE: 'auth.json',
+		/**
+		 * Launch flag that keeps a Codex TUI off the shared background
+		 * `codex app-server` daemon (0.157+). Without it every Codex agent on a
+		 * machine ran its shell commands inside the one daemon the first agent
+		 * started, so they all carried that agent's CREWLY_SESSION_NAME.
+		 */
+		NO_DAEMON_FLAG: '--no-daemon',
+		/** Flags that already pick the app server themselves (leave the command alone) */
+		APP_SERVER_SELECT_FLAGS: ['--no-daemon', '--remote'] as readonly string[],
+		/** Timeout for `codex --help` when checking that the flag exists */
+		HELP_PROBE_TIMEOUT_MS: 10_000,
+		/** A Codex without the flag is re-checked after this long (it may be upgraded) */
+		NO_DAEMON_PROBE_RETRY_MS: 10 * 60 * 1000,
 	},
 	/** Antigravity CLI facts (API key only; see ANTIGRAVITY_CONSTANTS) */
 	ANTIGRAVITY: {
