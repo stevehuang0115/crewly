@@ -84,6 +84,12 @@ export interface ReconcilerDataProvider {
   markClaimExpiring(claimId: string): Promise<void>;
   /** Revoke a claim and release its work item back to the pool */
   revokeClaimAndRelease(claimId: string, reason: string): Promise<void>;
+  /**
+   * Renew a claim's lease because its holder is visibly working (see
+   * `detectExpiredClaims`). Optional: a provider without it simply never
+   * renews, and claims expire as before.
+   */
+  renewClaim?(claimId: string): Promise<void>;
   /** Get all available (queued, unclaimed) WorkItems from the task pool */
   getAvailablePoolItems?(): Promise<WorkItem[]>;
   /** Execute a wake action — rehydrate a suspended agent or start an inactive one */
@@ -210,8 +216,8 @@ export class ReconcilerService {
       result.corrections.push(...stuck.corrections);
       result.workItemsTimedOut += stuck.stuckIds.length;
 
-      // 2. Detect expired claims
-      const expired = detectExpiredClaims(claims);
+      // 2. Detect expired claims (a holder that is visibly working is renewed)
+      const expired = detectExpiredClaims(claims, undefined, agentHealthMap);
       result.corrections.push(...expired.corrections);
 
       // 3. Detect recoverable blocked WorkItems (agent back online)
@@ -373,8 +379,8 @@ export class ReconcilerService {
         this.dataProvider.getActiveWorkItems(),
       ]);
 
-      // 1. Check lease expiry
-      const expired = detectExpiredClaims(claims);
+      // 1. Check lease expiry (a holder that is visibly working is renewed)
+      const expired = detectExpiredClaims(claims, undefined, agentHealthMap);
       result.corrections.push(...expired.corrections);
 
       // 2. Quick stuck check on running items
@@ -561,7 +567,10 @@ export class ReconcilerService {
       try {
         // Handle claim-specific corrections via ClaimService
         if (correction.entityType === 'claim') {
-          if (correction.newState === 'expiring') {
+          if (correction.newState === 'active') {
+            // Liveness renewal — the holder is working (detectExpiredClaims).
+            await this.dataProvider.renewClaim?.(correction.entityId);
+          } else if (correction.newState === 'expiring') {
             await this.dataProvider.markClaimExpiring(correction.entityId);
           } else if (correction.newState === 'revoked') {
             await this.dataProvider.revokeClaimAndRelease(

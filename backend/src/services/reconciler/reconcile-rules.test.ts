@@ -9,6 +9,7 @@ import {
   detectStuckWorkItems,
   detectRetryableFailedWorkItems,
   detectExpiredClaims,
+  isAgentVisiblyWorking,
   reconcileRequestStatus,
   detectOrphanWorkItems,
   detectTTLExpiredWorkItems,
@@ -322,6 +323,87 @@ describe('detectExpiredClaims', () => {
     const released: TaskClaim = { ...claim, status: 'released' };
     const { expiringIds } = detectExpiredClaims([released]);
     expect(expiringIds).toHaveLength(0);
+  });
+
+  // 2026-09-29, WI f34f09b0 / CE-19: nobody runs the heartbeat skill, so the
+  // lease was a fixed 10 min + 3 min from the claim and Vera's claim was
+  // revoked four times while she worked the item.
+  describe('liveness renewal', () => {
+    const now = Date.parse('2026-09-29T23:39:55.000Z');
+    const health = (over: Partial<AgentHealth> = {}): Map<string, AgentHealth> =>
+      new Map([['ce-vera', {
+        sessionName: 'ce-vera',
+        status: 'active',
+        lastActivityAt: new Date(now - 30_000).toISOString(),
+        ...over,
+      } as AgentHealth]]);
+    const claimAt = (status: TaskClaim['status'], leaseAgoMs: number): TaskClaim => ({
+      ...createTaskClaim({ workItemId: 'f34f09b0', agentId: 'ce-vera' }),
+      status,
+      leaseExpiresAt: new Date(now - leaseAgoMs).toISOString(),
+    });
+
+    it('renews an expiring claim past its grace when the holder is working', () => {
+      const claim = claimAt('expiring', 200_000);
+      const { renewedIds, revokedIds, expiringIds, corrections } = detectExpiredClaims([claim], 180_000, health(), now);
+      expect(renewedIds).toEqual([claim.id]);
+      expect(revokedIds).toHaveLength(0);
+      expect(expiringIds).toHaveLength(0);
+      expect(corrections[0]).toMatchObject({ entityType: 'claim', previousState: 'expiring', newState: 'active' });
+      expect(corrections[0].reason).toContain('ce-vera is working');
+    });
+
+    it('renews an active claim whose lease just ran out instead of marking it expiring', () => {
+      const claim = claimAt('active', 1_000);
+      const { renewedIds, expiringIds } = detectExpiredClaims([claim], 180_000, health(), now);
+      expect(renewedIds).toEqual([claim.id]);
+      expect(expiringIds).toHaveLength(0);
+    });
+
+    it('does nothing to a claim whose lease has not run out', () => {
+      const claim = claimAt('active', -60_000);
+      expect(detectExpiredClaims([claim], 180_000, health(), now).corrections).toHaveLength(0);
+    });
+
+    it('still revokes when the holder went quiet (hung session keeps being detected)', () => {
+      const claim = claimAt('expiring', 200_000);
+      const quiet = health({ lastActivityAt: new Date(now - 20 * 60_000).toISOString() });
+      const { renewedIds, revokedIds } = detectExpiredClaims([claim], 180_000, quiet, now);
+      expect(renewedIds).toHaveLength(0);
+      expect(revokedIds).toEqual([claim.id]);
+    });
+
+    it('still revokes when the holder is inactive, on a human prompt, never seen, or unknown', () => {
+      const claim = claimAt('expiring', 200_000);
+      for (const map of [
+        health({ status: 'inactive' }),
+        health({ waitingOnHumanSince: new Date(now - 60_000).toISOString() }),
+        health({ lastActivityAt: undefined }),
+        new Map<string, AgentHealth>(),
+        undefined,
+      ]) {
+        expect(detectExpiredClaims([claim], 180_000, map, now).revokedIds).toEqual([claim.id]);
+      }
+    });
+  });
+});
+
+describe('isAgentVisiblyWorking', () => {
+  const now = Date.now();
+  const base: AgentHealth = { sessionName: 'a', status: 'active', lastActivityAt: new Date(now - 1_000).toISOString() };
+
+  it('is true for an active or starting agent with recent activity', () => {
+    expect(isAgentVisiblyWorking(base, now)).toBe(true);
+    expect(isAgentVisiblyWorking({ ...base, status: 'started' }, now)).toBe(true);
+  });
+
+  it('is false outside the window, without activity, on a prompt, or when not up', () => {
+    expect(isAgentVisiblyWorking({ ...base, lastActivityAt: new Date(now - 10 * 60_000).toISOString() }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, lastActivityAt: undefined }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, lastActivityAt: 'not a date' }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, waitingOnHumanSince: new Date(now).toISOString() }, now)).toBe(false);
+    expect(isAgentVisiblyWorking({ ...base, status: 'suspended' }, now)).toBe(false);
+    expect(isAgentVisiblyWorking(undefined, now)).toBe(false);
   });
 });
 

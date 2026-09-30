@@ -7,7 +7,9 @@ import {
   CLAIM_TIER,
   claimTier,
   isReworkItem,
+  limitToOneProjectTicket,
   openTicketsOf,
+  projectTicketKey,
   orderForAgent,
   ticketLockReason,
   type ClaimTicketLookup,
@@ -104,5 +106,28 @@ describe('orderForAgent', () => {
     const plain = wi({ title: 'plain', metadata: { priority: 'medium' } }, 30);
     const order = orderForAgent([oldP3, newP0, rework, locked, plain], 'ann', [], T).map((w) => w.title);
     expect(order).toEqual(['my rework', 'new P0', 'plain', 'old P3']);
+  });
+});
+
+describe('projectTicketKey / limitToOneProjectTicket', () => {
+  const t = (id: string, ticket?: string): Pick<WorkItem, 'metadata'> & { id: string } => ({
+    id,
+    metadata: ticket ? { projectTicket: { projectPath: '/p/ce-core', id: ticket } } : {},
+  });
+
+  it('keys ticket work by project and ticket id, and ignores other items', () => {
+    expect(projectTicketKey(t('a', 'CE-19'))).toBe('/p/ce-core#CE-19');
+    expect(projectTicketKey(t('b'))).toBeNull();
+    expect(projectTicketKey({ metadata: { projectTicket: { id: 'CE-1' } } })).toBeNull();
+  });
+
+  it('keeps the first ticket (all its items) and every non-ticket item, in order', () => {
+    const list = [t('plain-1'), t('ce8-a', 'CE-8'), t('ce3', 'CE-3'), t('ce8-b', 'CE-8'), t('ce19', 'CE-19'), t('plain-2')];
+    expect(limitToOneProjectTicket(list).map((x) => x.id)).toEqual(['plain-1', 'ce8-a', 'ce8-b', 'plain-2']);
+  });
+
+  it('is a no-op without ticket work', () => {
+    expect(limitToOneProjectTicket([t('a'), t('b')]).map((x) => x.id)).toEqual(['a', 'b']);
+    expect(limitToOneProjectTicket([])).toEqual([]);
   });
 });

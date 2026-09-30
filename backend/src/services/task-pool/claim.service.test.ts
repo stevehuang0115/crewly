@@ -178,6 +178,26 @@ describe('ClaimService', () => {
       expect(result.reason).toContain('released');
     });
 
+    // Before 2026-09-29 a heartbeat only stamped lastHeartbeatAt; expiry and
+    // grace are measured from leaseExpiresAt, so a heartbeating agent was
+    // still revoked 13 minutes after it claimed.
+    it('renews the lease so a heartbeating holder is not revoked', async () => {
+      const claim = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-leo' });
+      await storage.updateClaim(claim.id, (c) => {
+        c.status = 'expiring';
+        c.leaseExpiresAt = new Date(Date.now() - DEFAULT_GRACE_PERIOD_MS - 60_000).toISOString();
+      });
+
+      const before = Date.now();
+      const result = await service.heartbeat(claim.id, 'agent-leo');
+      expect(result.success).toBe(true);
+      expect(new Date(result.claim!.leaseExpiresAt).getTime()).toBeGreaterThanOrEqual(before + DEFAULT_LEASE_DURATION_MS);
+
+      const scan = await service.scanExpiredClaims();
+      expect(scan.graceExceeded).toHaveLength(0);
+      expect(scan.expiring).toHaveLength(0);
+    });
+
     it('should restore expiring claim to active on heartbeat', async () => {
       const claim = await service.createClaim({
         workItemId: 'wi-1',
@@ -317,6 +337,41 @@ describe('ClaimService', () => {
   // -----------------------------------------------------------------------
   // revoke
   // -----------------------------------------------------------------------
+
+  describe('renewLease', () => {
+    it('renews an expiring claim from now, uncapped by maxExtensions', async () => {
+      const claim = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-vera' });
+      await storage.updateClaim(claim.id, (c) => {
+        c.status = 'expiring';
+        c.extensionCount = c.maxExtensions;
+        c.leaseExpiresAt = new Date(Date.now() - 5 * 60_000).toISOString();
+      });
+      const now = Date.now();
+      const renewed = await service.renewLease(claim.id, now);
+      expect(renewed?.status).toBe('active');
+      expect(new Date(renewed!.leaseExpiresAt).getTime()).toBe(now + DEFAULT_LEASE_DURATION_MS);
+      const stored = await service.getClaimById(claim.id);
+      expect(stored?.status).toBe('active');
+      expect(stored?.leaseExpiresAt).toBe(renewed!.leaseExpiresAt);
+    });
+
+    it('clears the hung-session count (the holder was seen working)', async () => {
+      const first = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-vera' });
+      await service.revoke(first.id, 'Grace period exceeded for claim x');
+      expect(service.getConsecutiveGraceRevokes('agent-vera')).toBe(1);
+      const second = await service.createClaim({ workItemId: 'wi-2', agentId: 'agent-vera' });
+      await service.renewLease(second.id);
+      expect(service.getConsecutiveGraceRevokes('agent-vera')).toBe(0);
+    });
+
+    it('returns undefined for missing or ended claims', async () => {
+      expect(await service.renewLease('nope')).toBeUndefined();
+      const claim = await service.createClaim({ workItemId: 'wi-1', agentId: 'agent-vera' });
+      await service.revoke(claim.id, 'Grace period exceeded');
+      expect(await service.renewLease(claim.id)).toBeUndefined();
+      expect((await service.getClaimById(claim.id))?.status).toBe('revoked');
+    });
+  });
 
   describe('revoke', () => {
     it('should revoke an active claim', async () => {

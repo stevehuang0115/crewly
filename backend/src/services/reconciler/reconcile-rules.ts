@@ -39,6 +39,7 @@ import {
   isWaitingOnHumanBlocked,
   WORK_ITEM_BLOCK_SOURCES,
 } from '../../types/v2/work-item.types.js';
+import { CLAIM_ACTIVITY_LIVENESS_WINDOW_MS } from '../../types/v2/claim.types.js';
 import { evaluateRequestCompletion } from '../v3/request-completion.js';
 import { AGENT_ATTENTION_CONSTANTS } from '../../constants.js';
 
@@ -69,6 +70,13 @@ export interface AgentHealth {
    * (approval, trust, plan menu). Absent when it is not waiting (#815).
    */
   waitingOnHumanSince?: string;
+  /**
+   * ISO time of the agent's last meaningful PTY output or API call, as seen by
+   * this backend process. Absent when none was seen since the backend started.
+   * Lets {@link detectExpiredClaims} tell a claim holder that is working from
+   * one that has gone quiet.
+   */
+  lastActivityAt?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -185,29 +193,84 @@ export function detectStuckWorkItems(
 // ---------------------------------------------------------------------------
 
 /**
- * Detects TaskClaims whose lease has expired and should be released or revoked.
+ * Whether an agent is visibly working right now: its session is up, it is not
+ * sitting on a human prompt, and it produced meaningful output or made an API
+ * call within `windowMs`. A hung session (TUI frozen, the Irissair 假死)
+ * produces nothing and so is never "working".
+ *
+ * @param health - The agent's health entry, if known
+ * @param now - Current time in ms
+ * @param windowMs - How recent the last activity must be
+ * @returns True when the agent counts as working
+ */
+export function isAgentVisiblyWorking(
+  health: AgentHealth | undefined,
+  now: number,
+  windowMs: number = CLAIM_ACTIVITY_LIVENESS_WINDOW_MS,
+): boolean {
+  if (!health || (health.status !== 'active' && health.status !== 'started')) return false;
+  if (health.waitingOnHumanSince) return false;
+  if (!health.lastActivityAt) return false;
+  const last = new Date(health.lastActivityAt).getTime();
+  return Number.isFinite(last) && now - last <= windowMs;
+}
+
+/**
+ * Detects TaskClaims whose lease has expired and should be renewed, marked
+ * expiring, or revoked.
+ *
+ * A lease that ran out while its holder is visibly working
+ * ({@link isAgentVisiblyWorking}) is RENEWED (correction `→ active`) instead
+ * of expiring. Agents do not run the heartbeat skill, so before this the lease
+ * was a fixed 10 min + 3 min grace from the claim: every task that took longer
+ * was revoked mid-work and re-queued, the agent's `complete` then hit a 409,
+ * and AutoClaim re-claimed the finished item (WI f34f09b0 / CE-19, claimed and
+ * revoked four times on 2026-09-29 while Vera worked it). A holder that has
+ * gone quiet still expires and is revoked exactly as before, which keeps
+ * hung-session detection (`ClaimService.getHungAgents`) working.
  *
  * @param claims - All active claims
  * @param gracePeriodMs - Grace period duration in ms
- * @returns Claims to mark as expiring and claims to revoke
+ * @param agentHealthMap - Agent health, for the liveness check. Omitted = no
+ *   renewal (legacy behaviour).
+ * @param now - Current time in ms (default: Date.now())
+ * @returns Claims to renew, mark expiring, and revoke
  */
 export function detectExpiredClaims(
   claims: TaskClaim[],
   gracePeriodMs: number = DEFAULT_GRACE_PERIOD_MS,
+  agentHealthMap?: ReadonlyMap<string, AgentHealth>,
+  now: number = Date.now(),
 ): {
   corrections: ReconcileCorrection[];
   expiringIds: string[];
   revokedIds: string[];
+  renewedIds: string[];
 } {
   const corrections: ReconcileCorrection[] = [];
   const expiringIds: string[] = [];
   const revokedIds: string[] = [];
-  const now = Date.now();
+  const renewedIds: string[] = [];
 
   for (const claim of claims) {
     if (claim.status !== 'active' && claim.status !== 'expiring') continue;
+    if (!isLeaseExpired(claim, now)) continue;
 
-    if (claim.status === 'active' && isLeaseExpired(claim, now)) {
+    const holder = agentHealthMap?.get(claim.agentId);
+    if (isAgentVisiblyWorking(holder, now)) {
+      corrections.push(createCorrection({
+        entityType: 'claim',
+        entityId: claim.id,
+        previousState: claim.status,
+        newState: 'active',
+        reason: `Lease renewed for claim ${claim.id} on WorkItem ${claim.workItemId} — ${claim.agentId} is working`,
+        evidence: `leaseExpiresAt=${claim.leaseExpiresAt}, lastActivityAt=${holder?.lastActivityAt}, agentId=${claim.agentId}, now=${new Date(now).toISOString()}`,
+      }));
+      renewedIds.push(claim.id);
+      continue;
+    }
+
+    if (claim.status === 'active') {
       corrections.push(createCorrection({
         entityType: 'claim',
         entityId: claim.id,
@@ -232,7 +295,7 @@ export function detectExpiredClaims(
     }
   }
 
-  return { corrections, expiringIds, revokedIds };
+  return { corrections, expiringIds, revokedIds, renewedIds };
 }
 
 // ---------------------------------------------------------------------------
