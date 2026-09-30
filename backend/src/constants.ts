@@ -1283,6 +1283,18 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	SEEN_INBOUND_MAX: 500,
 	/** Synthetic team-id prefix for channels linked on the fly (no Crewly team behind them) */
 	ADHOC_TEAM_PREFIX: 'adhoc:',
+	/**
+	 * How long an owner's room message that reached nobody on this machine
+	 * waits for any agent (here or on another machine) to take it before this
+	 * machine wakes the room's lead itself — or, with no lead here, says so in
+	 * the thread. Cloud's presence can say "someone elsewhere is awake" while
+	 * that agent, told only optionally, stays quiet (2026-09-30, Think Tank room).
+	 */
+	ROOM_UNANSWERED_FALLBACK_MS: 90 * 1000,
+	/** The in-thread line when nobody could take an owner's room message. */
+	ROOM_UNANSWERED_NOTE: '这条消息没有 agent 接到（房间里没有人醒着能接）。请 @ 一位 agent 再发一次。',
+	/** How many recent huddle turns to scan for the room's last local speaker. */
+	ROOM_LAST_SPEAKER_SCAN: 50,
 	/** Fallback icon when a member has no avatar */
 	DEFAULT_ICON_EMOJI: ':robot_face:',
 	/** Per-role icon fallbacks (Slack emoji names) */

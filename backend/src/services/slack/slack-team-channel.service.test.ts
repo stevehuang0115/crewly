@@ -310,6 +310,15 @@ class FakeChat extends EventEmitter {
   getMessageForBridge(id: string) {
     return this.messages.find((m) => m.id === id) ?? null;
   }
+  queryRecentTurnsForDispatch(channelId: string, threadId: string | undefined, limit: number) {
+    const rows = this.messages.filter((m) => m.channelId === channelId && (!threadId || m.threadId === threadId)).slice(-(limit + 1));
+    return rows.slice(0, Math.max(0, rows.length - 1)).map((r) => ({
+      senderId: r.senderId,
+      content: r.content,
+      createdAt: new Date(r.createdAt).toISOString(),
+      inThread: Boolean(r.threadId),
+    }));
+  }
 }
 
 class FakeStorage implements TeamChannelStorageApi {
@@ -1690,6 +1699,184 @@ describe('who in the room is awake', () => {
     expect(await service.listRooms()).toEqual([{ channelId: 'C-priv', agents: ['crewly-alpha-leo'] }]);
     // Cloud hears about it now, not at the next 5-minute heartbeat.
     expect(changed).toHaveBeenCalled();
+  });
+});
+
+describe('an owner message in a room never ends in silence', () => {
+  // 2026-09-30, the Think Tank room: every member on the Mac was asleep, Cloud
+  // said an agent on the Air was awake, so the Mac woke nobody — and the
+  // Air's agent, only told optionally, stayed quiet. The owner got nothing.
+  const ELLA = 'crewly-marketing-ella';
+  const ATLAS = 'think-tank-atlas';
+  const teams = (): Team[] => [
+    team({ id: 'team-mkt', name: 'Marketing', members: [member('Ella', 'team-leader', { sessionName: ELLA })] }),
+    team({
+      id: 'team-think',
+      name: 'Think Tank',
+      members: [
+        member('Atlas', 'team-leader', { sessionName: ATLAS }),
+        member('Sage', 'researcher' as TeamMember['role'], { sessionName: 'think-tank-sage' }),
+      ],
+    }),
+  ];
+  const airAwake = {
+    members: [
+      { agentSession: ELLA, displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: false },
+      { agentSession: ATLAS, displayName: 'Atlas', instanceId: 'mac', deviceName: 'mac', awake: false },
+      { agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'air', deviceName: 'iriss-air', awake: true },
+    ],
+  };
+  const FALLBACK_MS = 90 * 1000;
+  const warnOf = () => (service as unknown as { logger: { warn: jest.Mock } }).logger.warn;
+
+  /** Delivers to whoever was @'d (or handed it); an un-@'d message goes to nobody here. */
+  function mentionOnlyDispatcher(ok = true) {
+    return {
+      dispatchMessage: jest.fn(async (_ch: ChatChannelDTO, msg: ChatMessageDTO) => {
+        const to = msg.mentions ?? [];
+        if (to.length === 0) return { strategy: 'huddle-broadcast', dispatched: false, huddleOutcomes: [] };
+        return {
+          strategy: 'huddle-broadcast',
+          dispatched: ok,
+          huddleOutcomes: to.map((sessionName) => ({ sessionName, responseMode: 'required', dispatched: ok })),
+        };
+      }),
+    };
+  }
+
+  async function seedRoom() {
+    storage.teams = teams();
+    isLocal = (s) => s === ELLA || s === ATLAS || s === 'think-tank-sage';
+    awake = () => false;
+    identities = new FakeIdentities();
+    service = new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => dispatcher,
+      identities,
+      isAgentAwake: (s) => awake(s),
+      isLocalAgent: (s) => isLocal(s),
+      getOwnerUserId: () => 'UOWNER',
+      resolveInstanceId: async () => 'mac',
+      storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    });
+    // The room: Ella's and Atlas's bots are in it; Atlas spoke there last.
+    await service.routeInbound(inbound({ channelId: 'C-room', ts: '1.1', userId: 'U1', receivedVia: ELLA }));
+    await service.routeInbound(inbound({ channelId: 'C-room', ts: '1.2', userId: 'U1', receivedVia: ATLAS }));
+    const mapping = service.findBySlackChannelId('C-room')!;
+    chat.recordTurn({ channelId: mapping.chatChannelId, senderType: 'agent', senderId: ATLAS, content: '清单好了', metadata: {} });
+    dispatcher!.dispatchMessage.mockClear();
+    warnOf().mockClear();
+    return mapping;
+  }
+
+  const ownerAsks = (extra: Partial<SlackIncomingMessage> = {}) =>
+    inbound({ channelId: 'C-room', ts: '2.1', userId: 'UOWNER', text: '我们之前那个对话算结束了吗？', room: airAwake, receivedVia: ATLAS, ...extra });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    dispatcher = mentionOnlyDispatcher();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    awake = () => true;
+    isLocal = () => false;
+  });
+
+  it('reproduces the drop: all asleep here, someone awake elsewhere → nobody here gets it, and it says so', async () => {
+    await seedRoom();
+    const routed = await service.routeInbound(ownerAsks());
+
+    expect(routed!.dispatch).toMatchObject({ dispatched: false });
+    expect(warnOf()).toHaveBeenCalledWith(
+      'Slack room message reached nobody on this machine',
+      expect.objectContaining({ awakeElsewhere: true, recipients: [] }),
+    );
+  });
+
+  it('wakes the room lead here and delivers the message when nobody took it in time', async () => {
+    await seedRoom();
+    const routed = await service.routeInbound(ownerAsks());
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(2);
+    const [, delivered] = dispatcher!.dispatchMessage.mock.calls[1];
+    // The same message, not a new row, addressed to Atlas — the member who
+    // spoke there last — not to Ella, the first team lead in the list.
+    expect(delivered.id).toBe(routed!.message.id);
+    expect(delivered.mentions).toEqual([ATLAS]);
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('falls back to the team lead rule when no local member ever spoke there', async () => {
+    const mapping = await seedRoom();
+    chat.messages = chat.messages.filter((m) => !(m.channelId === mapping.chatChannelId && m.senderType === 'agent'));
+    await service.routeInbound(ownerAsks());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage.mock.calls[1][1].mentions).toEqual([ELLA]);
+  });
+
+  it('does nothing more when an agent on another machine answers in the thread', async () => {
+    await seedRoom();
+    await service.routeInbound(ownerAsks());
+    await service.routeInbound(
+      inbound({ channelId: 'C-room', ts: '2.2', threadTs: '2.1', userId: 'UBOT', text: '我来', authorAgentSession: 'pa-ella', authorDisplayName: 'Ella' }),
+    );
+    dispatcher!.dispatchMessage.mockClear();
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('tells the owner in the thread when the lead cannot be woken either', async () => {
+    dispatcher = mentionOnlyDispatcher(false);
+    await seedRoom();
+    identities!.records.set(ATLAS, {
+      agentSession: ATLAS, displayName: 'Atlas', appId: 'A1', status: 'installed', botUserId: 'UATLAS', botToken: 'xoxb-atlas',
+      announcedIn: [], invitedTo: [], updatedAt: 'now',
+    });
+    await service.routeInbound(ownerAsks());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(slack.sent).toEqual([
+      expect.objectContaining({ channelId: 'C-room', threadTs: '2.1', botToken: 'xoxb-atlas', text: expect.stringContaining('没有 agent 接到') }),
+    ]);
+  });
+
+  it('only warns for someone other than the owner — no wake', async () => {
+    await seedRoom();
+    await service.routeInbound(ownerAsks({ userId: 'USOMEONE' }));
+    expect(warnOf()).toHaveBeenCalledWith('Slack room message reached nobody on this machine', expect.anything());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('does not wait when the message was delivered here', async () => {
+    await seedRoom();
+    awake = (s) => s === ATLAS;
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({
+        strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [{ sessionName: ATLAS, responseMode: 'optional', dispatched: true }],
+      }),
+    };
+    await service.routeInbound(ownerAsks());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(warnOf()).not.toHaveBeenCalledWith('Slack room message reached nobody on this machine', expect.anything());
   });
 });
 
