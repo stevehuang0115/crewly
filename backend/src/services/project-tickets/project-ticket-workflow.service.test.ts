@@ -108,6 +108,8 @@ describe('ProjectTicketWorkflowService', () => {
       expect(isTeamLead(teams[0], teams[0].members[0])).toBe(true);
       expect(isTeamLead(teams[0], teams[0].members[1])).toBe(false);
       expect(isTeamLead({ ...teams[0], leaderIds: ['m-dev'] }, teams[0].members[1])).toBe(true);
+      // A team configured with role 'tech-lead' (e.g. CE's Owen) and no leaderId is still led by that member.
+      expect(isTeamLead({ ...teams[0], leaderId: undefined, leaderIds: [] }, { ...teams[0].members[1], role: 'tech-lead' })).toBe(true);
     });
 
     it('resolves the project by id, name or path', async () => {

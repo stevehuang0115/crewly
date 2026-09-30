@@ -14,7 +14,12 @@
 
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import {
+  MEMBER_MODEL_DEFAULT_CONSTANTS,
+  ORCHESTRATOR_SESSION_NAME,
+  PROJECT_TICKET_CONSTANTS,
+  TICKET_AUTOPILOT_CONSTANTS,
+} from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import {
@@ -185,7 +190,8 @@ export function isTeamLead(team: Team, member: TeamMember): boolean {
     (team.leaderIds ?? []).includes(member.id) ||
     team.leaderId === member.id ||
     member.canDelegate === true ||
-    member.role === 'team-leader'
+    // Lead roles as the rest of the harness knows them ('team-leader', 'tech-lead').
+    (MEMBER_MODEL_DEFAULT_CONSTANTS.LEAD_ROLES as readonly string[]).includes(String(member.role))
   );
 }
 
