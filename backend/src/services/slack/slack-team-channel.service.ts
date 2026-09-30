@@ -33,6 +33,7 @@ import { isInterim } from './slack-typing-placeholder.service.js';
 import { isOwnerAuthored, deliveredSessions, type SlackAutoWorkingService } from './slack-auto-working.service.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import { isTeamLead } from '../../utils/team.utils.js';
+import { resolveHuddleLeader } from '../chat-v2/huddle-leader.js';
 import * as path from 'path';
 import { promises as fs } from 'fs';
 import type { Team, TeamMember } from '../../types/index.js';
@@ -115,7 +116,8 @@ export type TeamChannelChatApi = Pick<
   | 'recordTurn'
   | 'on'
   | 'off'
->;
+> &
+  Partial<Pick<ChatV2Service, 'queryRecentTurnsForDispatch'>>;
 
 /** The slice of StorageService this service uses. */
 export interface TeamChannelStorageApi {
@@ -170,6 +172,20 @@ export interface SlackTeamChannelServiceDeps {
   }) => Promise<void>;
   /** Clock override for tests. */
   now?: () => Date;
+}
+
+/** An owner's room message that reached nobody on this machine, awaiting a taker. */
+interface UnansweredRoomMessage {
+  message: SlackIncomingMessage;
+  chatChannelId: string;
+  slackChannelId: string;
+  /** Slack thread the replies land in (the message's own ts for a top-level post). */
+  threadTs: string;
+  /** Huddle thread id the dispatch used. */
+  threadId: string;
+  /** The huddle row. */
+  messageId: string;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** Result of {@link SlackTeamChannelService.handoffForAgent}. */
@@ -415,7 +431,15 @@ export class SlackTeamChannelService {
   /** channelId → members, with fetch time; decides between same-named agents. */
   private readonly channelMembers = new Map<string, { at: number; ids: Set<string> }>();
 
+  /**
+   * Owner messages that reached nobody on this machine, keyed
+   * `slackChannel:threadTs`, each waiting for any agent to take it before
+   * {@link runUnansweredFallback} steps in.
+   */
+  private readonly unanswered = new Map<string, UnansweredRoomMessage>();
+
   private readonly onChatMessage = (dto: ChatMessageDTO): void => {
+    if (dto.senderType === 'agent') this.noteAgentActivity(dto.channelId, dto.threadId ?? null, 'here');
     void this.mirrorOutbound(dto);
   };
   private started = false;
@@ -594,6 +618,8 @@ export class SlackTeamChannelService {
     this.unsubscribeIdentity = null;
     this.deps.chat.off('chat_message', this.onChatMessage);
     this.started = false;
+    for (const pending of this.unanswered.values()) clearTimeout(pending.timer);
+    this.unanswered.clear();
   }
 
   // -------------------------------------------------------------------------
@@ -1218,6 +1244,9 @@ export class SlackTeamChannelService {
     // name, as a user turn: the dispatcher delivers user turns and skips
     // agent turns (self-loop guard), and to this team it IS an outside voice.
     const remoteAgent = message.authorAgentSession ?? null;
+    // A colleague (on any machine) spoke here: whatever we were waiting on in
+    // this thread has been taken.
+    if (remoteAgent) this.noteAgentActivity(message.channelId, message.threadTs ?? null, 'slack');
     const senderId = remoteAgent
       ? `${message.authorDisplayName || remoteAgent} (agent)`
       : message.user?.name || message.userId || 'slack-user';
@@ -1450,7 +1479,189 @@ export class SlackTeamChannelService {
       threaded: !!threadId,
     });
 
+    const recipients = deliveredSessions(dispatch);
+    if (dispatch?.dispatched) {
+      // Someone here holds it — including a follow-up in a thread we were
+      // still waiting on.
+      this.settleUnanswered(`${message.channelId}:${slackThreadTs}`);
+    } else if (!remoteAgent) {
+      // Never a silent no-op: say why nobody got it.
+      this.logger.warn('Slack room message reached nobody on this machine', {
+        teamId: mapping.teamId,
+        slackChannel: `#${mapping.slackChannelName}`,
+        ts: message.ts,
+        planned: planned ? [...planned.keys()] : null,
+        failed: (dispatch?.huddleOutcomes ?? []).filter((o) => !o.dispatched).map((o) => o.sessionName),
+        awakeHere: presence?.state.awakeHere ?? null,
+        awakeElsewhere: presence?.state.awakeElsewhere ?? null,
+        wakeWhenAllAsleep: presence?.state.wakeWhenAllAsleep ?? null,
+        handoffTo,
+        recipients,
+      });
+      if (!handoffTo && isOwnerAuthored(message, this.deps.getOwnerUserId?.())) {
+        this.watchUnanswered(message, mapping, persisted, dispatchOptions.threadId);
+      }
+    }
+
     return { mapping, message: persisted, mentions: resolved.mentions, dispatch };
+  }
+
+  /**
+   * Hold an owner's room message that reached nobody here until an agent
+   * takes it — on this machine or another — or the fallback runs.
+   *
+   * @param message - The inbound Slack message
+   * @param mapping - Its channel mapping
+   * @param persisted - The huddle row it was recorded as
+   * @param threadId - Huddle thread the replies land in
+   */
+  private watchUnanswered(
+    message: SlackIncomingMessage,
+    mapping: SlackTeamChannelMapping,
+    persisted: ChatMessageDTO,
+    threadId: string,
+  ): void {
+    const threadTs = message.threadTs || message.ts;
+    const key = `${message.channelId}:${threadTs}`;
+    this.settleUnanswered(key);
+    const timer = setTimeout(() => {
+      void this.runUnansweredFallback(key);
+    }, SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_FALLBACK_MS);
+    timer.unref?.();
+    this.unanswered.set(key, {
+      message,
+      chatChannelId: mapping.chatChannelId,
+      slackChannelId: message.channelId,
+      threadTs,
+      threadId,
+      messageId: persisted.id,
+      timer,
+    });
+  }
+
+  /** Stop waiting on a message: someone has it. */
+  private settleUnanswered(key: string): void {
+    const pending = this.unanswered.get(key);
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    this.unanswered.delete(key);
+  }
+
+  /**
+   * An agent spoke in a room — any message we were waiting on in that
+   * thread (or the room, for a top-level post) has been taken.
+   *
+   * @param channelId - Huddle id (`here`) or Slack channel id (`slack`)
+   * @param thread - Huddle thread id (`here`) or Slack thread ts (`slack`); null for top level
+   * @param via - Where the activity was seen
+   */
+  private noteAgentActivity(channelId: string, thread: string | null, via: 'here' | 'slack'): void {
+    for (const [key, pending] of this.unanswered) {
+      const sameRoom = via === 'here' ? pending.chatChannelId === channelId : pending.slackChannelId === channelId;
+      if (!sameRoom) continue;
+      const sameThread = thread === null || (via === 'here' ? thread === pending.threadId || thread === pending.messageId : thread === pending.threadTs);
+      if (sameThread) this.settleUnanswered(key);
+    }
+  }
+
+  /**
+   * Nobody took an owner's room message in time: wake the room's lead on
+   * this machine and hand it the message; with no lead here, or when that
+   * fails too, tell the owner in the thread.
+   *
+   * @param key - `slackChannel:threadTs` of the waiting message
+   */
+  private async runUnansweredFallback(key: string): Promise<void> {
+    const pending = this.unanswered.get(key);
+    if (!pending) return;
+    this.unanswered.delete(key);
+    try {
+      const mapping = this.findBySlackChannelId(pending.slackChannelId);
+      const lead = mapping ? await this.localRoomLead(mapping) : null;
+      if (mapping && lead) {
+        this.logger.warn('Nobody took an owner room message — waking the room lead here', {
+          slackChannel: `#${mapping.slackChannelName}`,
+          ts: pending.message.ts,
+          lead,
+        });
+        // Addressed to the lead, as a hand-off: Cloud's stale presence is left out.
+        const handoff: SlackIncomingMessage = { ...pending.message, handoffTo: lead };
+        delete handoff.room;
+        const result = await this.routeInbound(handoff);
+        if (result?.dispatch?.dispatched) return;
+      }
+      await this.postUnansweredNote(pending, mapping);
+    } catch (err) {
+      this.logger.warn('Unanswered room message fallback failed', {
+        key,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * The member of a room that should pick up a message nobody took, among
+   * the agents that run on this machine: whoever of them spoke there last
+   * (the owner is most likely continuing that conversation), else the team
+   * lead, else the first local member.
+   *
+   * @param mapping - The room
+   * @returns A local session, or null when none of the room runs here
+   */
+  private async localRoomLead(mapping: SlackTeamChannelMapping): Promise<string | null> {
+    const teams = await this.deps.storage.getTeams();
+    const team = teams.find((t) => t.id === mapping.teamId) ?? null;
+    const isLocal = (s: string) => this.deps.isLocalAgent?.(s) ?? true;
+    const roster = team ? teamChannelMembers(team) : null;
+    const local = (roster ? roster.map((m) => m.sessionName) : (mapping.members ?? [])).filter(isLocal);
+    if (local.length === 0) return null;
+    const turns = this.deps.chat.queryRecentTurnsForDispatch?.(
+      mapping.chatChannelId,
+      undefined,
+      SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_LAST_SPEAKER_SCAN,
+    ) ?? [];
+    for (let i = turns.length - 1; i >= 0; i--) {
+      if (local.includes(turns[i].senderId)) return turns[i].senderId;
+    }
+    if (team && roster) {
+      const leader = teamChannelLeader(team, roster);
+      if (leader && local.includes(leader.sessionName)) return leader.sessionName;
+      return local[0];
+    }
+    return resolveHuddleLeader(teams, new Set(local)) ?? local[0];
+  }
+
+  /**
+   * Tell the owner, in the thread, that nobody could take the message. Posts
+   * as a room member's own bot when one is installed — the workspace bot is
+   * usually not in a private room.
+   *
+   * @param pending - The waiting message
+   * @param mapping - Its room, when still mapped
+   */
+  private async postUnansweredNote(pending: UnansweredRoomMessage, mapping: SlackTeamChannelMapping | null): Promise<void> {
+    const botToken = (mapping?.members ?? [])
+      .map((s) => this.deps.identities?.getInstalled(s)?.botToken)
+      .find((t): t is string => !!t);
+    this.logger.warn('Nobody could take an owner room message — telling the owner', {
+      slackChannel: pending.slackChannelId,
+      ts: pending.message.ts,
+      asAgentBot: !!botToken,
+    });
+    try {
+      await this.deps.slack.sendMessage({
+        channelId: pending.slackChannelId,
+        threadTs: pending.threadTs,
+        text: SLACK_TEAM_CHANNEL_CONSTANTS.ROOM_UNANSWERED_NOTE,
+        skipChatV2Mirror: true,
+        ...(botToken ? { botToken } : {}),
+      });
+    } catch (err) {
+      this.logger.warn('Could not post the unanswered-message note', {
+        slackChannel: pending.slackChannelId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
