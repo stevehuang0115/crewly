@@ -149,7 +149,7 @@ jest.mock('../v3/escalation-router.service.js', () => ({
   },
 }));
 
-import { LiveReconcilerDataProvider } from './reconciler-data-provider.js';
+import { LiveReconcilerDataProvider, wakeBlockedCooldownMs } from './reconciler-data-provider.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
@@ -1341,6 +1341,63 @@ describe('LiveReconcilerDataProvider', () => {
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
         await provider.executeWakeAction(blockedAction('wi-4'));
         expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+
+        nowSpy.mockRestore();
+        globalThis.fetch = originalFetch;
+      });
+    });
+
+    // steamfun-ops 2026-09-30: a flat 5-minute window still meant 230+
+    // refused cold launches a day for one parked WorkItem.
+    describe('commitment-approval refusal backoff is exponential', () => {
+      const refuse = () => jest.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: async () => JSON.stringify({ success: false, code: 'commitment_requires_owner_approval' }),
+        json: async () => ({ success: false }),
+      });
+      const action: WakeAction = {
+        workItemId: 'wi-chore',
+        agentSessionName: 'agent-dormant-exp',
+        strategy: 'start',
+        score: 60,
+        scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      it('doubles the gap after each refusal, up to the cap', async () => {
+        const originalFetch = globalThis.fetch;
+        const nowSpy = jest.spyOn(Date, 'now');
+        const MIN = 60_000;
+        let t = 1_900_000_000_000;
+        nowSpy.mockImplementation(() => t);
+        globalThis.fetch = refuse();
+
+        await provider.executeWakeAction(action); // refusal 1 → wait 5 min
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        t += 5 * MIN + 1;
+        await provider.executeWakeAction(action); // refusal 2 → wait 10 min
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+        t += 6 * MIN;
+        await provider.executeWakeAction(action); // inside 10 min — suppressed
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+        t += 5 * MIN;
+        await provider.executeWakeAction(action); // refusal 3 → wait 20 min
+        expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+
+        expect(wakeBlockedCooldownMs(1)).toBe(5 * MIN);
+        expect(wakeBlockedCooldownMs(3)).toBe(20 * MIN);
+        expect(wakeBlockedCooldownMs(50)).toBe(120 * MIN);
+
+        // A day of refusals: well under the 230+/day of the flat window.
+        let calls = 0;
+        const dayEnd = t + 24 * 60 * MIN;
+        globalThis.fetch = jest.fn(async () => { calls += 1; return (await refuse()()) as Response; }) as unknown as typeof fetch;
+        while (t < dayEnd) {
+          t += MIN;
+          await provider.executeWakeAction(action);
+        }
+        expect(calls).toBeLessThanOrEqual(15);
 
         nowSpy.mockRestore();
         globalThis.fetch = originalFetch;

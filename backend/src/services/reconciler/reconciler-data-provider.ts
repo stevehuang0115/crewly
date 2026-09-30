@@ -74,18 +74,44 @@ const REDELIVER_MAX_COOLDOWN_MS = (() => {
 })();
 
 /**
- * Minimum gap between re-attempting a wake the commitment-approval gate has
+ * First gap before re-attempting a wake the commitment-approval gate has
  * already refused. That gate's answer is deterministic — a dormant team stays
  * blocked until the OWNER says something — so retrying it on the ~10s fast
  * loop cannot succeed sooner, it only produces one ERROR line per attempt.
- * On 2026-08-22 a single WorkItem logged 8,220 of them in a day. The window is
- * short enough that an approval is picked up promptly. Override with
+ * On 2026-08-22 a single WorkItem logged 8,220 of them in a day. Override with
  * `CREWLY_RECONCILER_WAKE_BLOCKED_COOLDOWN_MS`.
+ *
+ * Each further refusal for the same agent doubles the gap, up to
+ * {@link WAKE_BLOCKED_MAX_COOLDOWN_MS}. A flat 5-minute window still meant
+ * 230+ refused cold launches a day for one parked WorkItem (steamfun-ops,
+ * 2026-09-30).
  */
 const WAKE_BLOCKED_COOLDOWN_MS = (() => {
   const raw = Number(process.env['CREWLY_RECONCILER_WAKE_BLOCKED_COOLDOWN_MS']);
   return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000; // 5 min
 })();
+
+/**
+ * Ceiling for the doubling approval-gate backoff. An owner approval normally
+ * reaches the team through the orchestrator (which launches it itself), so
+ * the reconciler's retry is only a safety net and can afford to be slow.
+ * Override with `CREWLY_RECONCILER_WAKE_BLOCKED_MAX_COOLDOWN_MS`.
+ */
+const WAKE_BLOCKED_MAX_COOLDOWN_MS = (() => {
+  const raw = Number(process.env['CREWLY_RECONCILER_WAKE_BLOCKED_MAX_COOLDOWN_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 60 * 60 * 1000; // 2 h
+})();
+
+/**
+ * Backoff after the n-th consecutive approval-gate refusal for one agent.
+ *
+ * @param refusals - Consecutive refusals so far (>= 1)
+ * @returns Milliseconds to wait before asking the gate again
+ */
+export function wakeBlockedCooldownMs(refusals: number): number {
+  const steps = Math.max(0, Math.min(refusals - 1, 30));
+  return Math.min(WAKE_BLOCKED_COOLDOWN_MS * 2 ** steps, Math.max(WAKE_BLOCKED_COOLDOWN_MS, WAKE_BLOCKED_MAX_COOLDOWN_MS));
+}
 
 /** Error code the team-member wake endpoint returns when the commitment-approval gate refuses. */
 const WAKE_BLOCKED_ERROR_CODE = 'commitment_requires_owner_approval';
@@ -253,8 +279,9 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * Keyed by agent session because the gate decides per team, not per
    * WorkItem — a second WI for the same dormant team would be refused for the
    * same reason, so keying by WI would let one team spin once per queued item.
+   * `refusals` counts consecutive refusals and drives the doubling backoff.
    */
-  private readonly lastWakeBlockedAt = new Map<string, number>();
+  private readonly lastWakeBlockedAt = new Map<string, { at: number; refusals: number }>();
 
   constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ReconcilerDataProvider');
@@ -1496,11 +1523,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // Don't re-attempt a wake the approval gate just refused. Its verdict
         // depends on owner messages, not on anything the reconciler can change
         // by asking again 10 seconds later.
-        const blockedAt = this.lastWakeBlockedAt.get(agentSessionName);
-        if (blockedAt !== undefined && Date.now() - blockedAt < WAKE_BLOCKED_COOLDOWN_MS) {
+        const blocked = this.lastWakeBlockedAt.get(agentSessionName);
+        if (blocked !== undefined && Date.now() - blocked.at < wakeBlockedCooldownMs(blocked.refusals)) {
           this.logger.debug('Skipping wake — approval gate refused recently', {
             agent: agentSessionName,
-            msSinceRefusal: Date.now() - blockedAt,
+            msSinceRefusal: Date.now() - blocked.at,
+            refusals: blocked.refusals,
           });
           return false;
         }
@@ -1517,11 +1545,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             // Expected outcome, not a fault: the team is dormant and the owner
             // has not approved a cold launch. Log once per cooldown at `warn`,
             // not once per fast-loop tick at `error`.
-            this.lastWakeBlockedAt.set(agentSessionName, Date.now());
+            const refusals = (blocked?.refusals ?? 0) + 1;
+            this.lastWakeBlockedAt.set(agentSessionName, { at: Date.now(), refusals });
             this.logger.warn('Wake refused by commitment-approval gate — backing off until the owner approves', {
               agent: agentSessionName,
               workItemId: action.workItemId,
-              cooldownMs: WAKE_BLOCKED_COOLDOWN_MS,
+              refusals,
+              cooldownMs: wakeBlockedCooldownMs(refusals),
             });
             return false;
           }

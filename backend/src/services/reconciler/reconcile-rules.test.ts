@@ -6,6 +6,7 @@
  */
 
 import {
+  isHousekeepingWorkItem,
   detectStuckWorkItems,
   detectRetryableFailedWorkItems,
   detectExpiredClaims,
@@ -2591,5 +2592,58 @@ describe('detectUnclaimedTasks — never redeliver into a prompt (#815)', () => 
     expect(detectUnclaimedTasks([wi], waiting).wakeActions.filter((a) => a.strategy === 'redeliver')).toHaveLength(0);
     const notWaiting = makeAgentMap([['sora', { activeWorkItemCount: 0 }]]);
     expect(detectUnclaimedTasks([wi], notWaiting).wakeActions.filter((a) => a.strategy === 'redeliver')).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Housekeeping WorkItems never wake a stopped agent (steamfun-ops 2026-09-30)
+// ---------------------------------------------------------------------------
+describe('housekeeping WorkItems', () => {
+  const OLD = new Date(Date.now() - 3 * 60 * 60_000).toISOString();
+  const chore = (overrides: Partial<WorkItem> = {}): WorkItem =>
+    makeWorkItem({
+      status: 'queued',
+      createdAt: OLD,
+      target: 'tl-dormant',
+      metadata: { kind: 'standing-refresh', autoCreated: true },
+      ...overrides,
+    });
+
+  it('recognises autoCreated / housekeeping metadata', () => {
+    expect(isHousekeepingWorkItem(chore())).toBe(true);
+    expect(isHousekeepingWorkItem(makeWorkItem({ metadata: { housekeeping: true } }))).toBe(true);
+    expect(isHousekeepingWorkItem(makeWorkItem())).toBe(false);
+    expect(isHousekeepingWorkItem(makeWorkItem({ metadata: { autoCreated: 'yes' } }))).toBe(false);
+  });
+
+  it('does not start an inactive target for a housekeeping item', () => {
+    const agentMap = makeAgentMap([['tl-dormant', { status: 'inactive', teamId: 't1', memberId: 'm1' }]]);
+    expect(detectUnclaimedTasks([chore()], agentMap).wakeActions).toHaveLength(0);
+  });
+
+  it('does not rehydrate a suspended target for a housekeeping item', () => {
+    const agentMap = makeAgentMap([['tl-dormant', { status: 'suspended' }]]);
+    expect(detectUnclaimedTasks([chore()], agentMap).wakeActions).toHaveLength(0);
+  });
+
+  it('still wakes the same target for real work queued next to the chore', () => {
+    const agentMap = makeAgentMap([['tl-dormant', { status: 'inactive', teamId: 't1', memberId: 'm1' }]]);
+    const real = makeWorkItem({ status: 'queued', createdAt: OLD, target: 'tl-dormant' });
+    const { wakeActions } = detectUnclaimedTasks([chore(), real], agentMap);
+    expect(wakeActions).toHaveLength(1);
+    expect(wakeActions[0]).toMatchObject({ workItemId: real.id, strategy: 'start' });
+  });
+
+  it('still re-delivers a housekeeping item to an awake, idle target', () => {
+    const agentMap = makeAgentMap([['tl-awake', { status: 'active', activeWorkItemCount: 0 }]]);
+    const { wakeActions } = detectUnclaimedTasks([chore({ target: 'tl-awake' })], agentMap);
+    expect(wakeActions).toHaveLength(1);
+    expect(wakeActions[0].strategy).toBe('redeliver');
+  });
+
+  it('is not reported as stale-queued while it waits', () => {
+    const real = makeWorkItem({ status: 'queued', createdAt: OLD });
+    const { staleIds } = detectStaleQueuedWorkItems([chore(), real], 60 * 60_000);
+    expect(staleIds).toEqual([real.id]);
   });
 });

@@ -15,7 +15,12 @@
  *  4. no refresh WorkItem for the page is still open;
  *  5. the page's cooldown has passed;
  *  6. fewer than `maxCreatesPerTick` were created this tick (PTY paste-flood
- *     guard, same reasoning as WikiWorkItemBridgeService).
+ *     guard, same reasoning as WikiWorkItemBridgeService);
+ *  7. the agent that would work it is awake (`isTargetAwake`). A refresh is
+ *     housekeeping: it must never be the reason a stopped agent — or a
+ *     dormant team, which needs the owner's approval to cold-launch — is
+ *     started. The page is simply raised on a later tick, once the target
+ *     is running again (its watermark still differs from the last raised).
  *
  * No LLM runs here and nothing is written to memory: the WorkItem brief
  * lists the entries, and the agent working it writes sections through the
@@ -70,6 +75,13 @@ export interface StandingRefreshOptions {
 	resolveProjectTarget?: (projectPath: string) => Promise<string | null>;
 	/** Target when no owner resolves (default: the orchestrator). */
 	fallbackTarget?: string;
+	/**
+	 * Whether the agent session that would work a refresh is running. When it
+	 * resolves false the page is skipped (`target_dormant`) instead of queuing
+	 * work that could only be done by waking the agent. Omitted → every
+	 * target counts as awake.
+	 */
+	isTargetAwake?: (sessionName: string) => Promise<boolean>;
 	service?: StandingAnswersService;
 	cooldownMs?: number;
 	maxCreatesPerTick?: number;
@@ -80,7 +92,7 @@ export interface StandingRefreshOptions {
 }
 
 /** Why a page produced no WorkItem this tick. */
-export type RefreshSkipReason = 'no_entries' | 'fresh' | 'watermark_unchanged' | 'inflight' | 'cooldown' | 'tick_cap';
+export type RefreshSkipReason = 'no_entries' | 'fresh' | 'watermark_unchanged' | 'inflight' | 'cooldown' | 'tick_cap' | 'target_dormant';
 
 /** Outcome of one tick — counts what was examined, not only what was done. */
 export interface RefreshTickResult {
@@ -160,7 +172,7 @@ export class StandingRefreshService {
 		const result: RefreshTickResult = {
 			pagesExamined: 0,
 			created: [],
-			skipped: { no_entries: 0, fresh: 0, watermark_unchanged: 0, inflight: 0, cooldown: 0, tick_cap: 0 },
+			skipped: { no_entries: 0, fresh: 0, watermark_unchanged: 0, inflight: 0, cooldown: 0, tick_cap: 0, target_dormant: 0 },
 		};
 		if (this.running) return result;
 		this.running = true;
@@ -221,6 +233,10 @@ export class StandingRefreshService {
 				}
 
 				const target = await this.targetFor(c.def, c.loc);
+				if (!(await this.targetAwake(target))) {
+					result.skipped.target_dormant += 1;
+					continue;
+				}
 				const brief = await this.service.buildRefreshBrief(status, c.loc, this.options.agentSkillsPath);
 				const scopeLabel = c.def.scope === 'project' ? path.basename(c.loc.projectPath ?? '') : c.loc.sessionName;
 				const wi = createWorkItem({
@@ -265,6 +281,22 @@ export class StandingRefreshService {
 			return result;
 		} finally {
 			this.running = false;
+		}
+	}
+
+	/**
+	 * Whether the refresh's target is running. Errors count as dormant: a
+	 * chore is never worth risking a wake.
+	 *
+	 * @param target - Agent session name
+	 * @returns True when the target may be given the work now
+	 */
+	private async targetAwake(target: string): Promise<boolean> {
+		if (!this.options.isTargetAwake) return true;
+		try {
+			return await this.options.isTargetAwake(target);
+		} catch {
+			return false;
 		}
 	}
 

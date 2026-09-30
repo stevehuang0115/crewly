@@ -929,6 +929,16 @@ void (async () => {
 								.filter((m) => m.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE && m.sessionName)
 								.map((m) => m.sessionName),
 						resolveProjectTarget: (projectPath) => resolveWikiOwner(this.storageService, projectPath),
+						// Never queue a refresh for a stopped agent / dormant team:
+						// the only way to work it would be a wake the owner never
+						// asked for. The orchestrator has its own recovery.
+						isTargetAwake: async (sessionName) => {
+							if (sessionName === ORCHESTRATOR_SESSION_NAME) return true;
+							const member = (await this.storageService.getTeams())
+								.flatMap((t) => t.members ?? [])
+								.find((m) => m.sessionName === sessionName);
+							return member?.agentStatus === CREWLY_CONSTANTS.AGENT_STATUSES.ACTIVE;
+						},
 					});
 					// Same cadence as the reflect trigger above.
 					const reflectEvery = Number(process.env['CREWLY_WIKI_REFLECT_INTERVAL_MS']);

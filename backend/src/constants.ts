@@ -4119,6 +4119,10 @@ export const HARNESS_CONSTANTS = {
 		SESSION_RETENTION_MS: 60 * 60 * 1000,
 		/** Timeout for the post-login verification command */
 		VERIFY_TIMEOUT_MS: 30_000,
+		/** After a failure line, a self-exiting harness (Codex) gets this long to exit before the session fails */
+		FAILURE_EXIT_GRACE_MS: 10_000,
+		/** Longest (redacted) failure message written to the log */
+		LOG_MESSAGE_MAX_CHARS: 300,
 		/** Value for BROWSER in the broker env: a no-op command, so harnesses do not open a browser */
 		BROWSER_SUPPRESS_VALUE: 'true',
 		/** Replaces anything that looks like a token or key in exposed screen text */

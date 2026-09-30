@@ -307,15 +307,73 @@ describe('debounce and reminders', () => {
 		expect(broker.startCalls).toHaveLength(1);
 		expect(dms).toHaveLength(2);
 
-		// After the remind interval: a fresh login and a fresh link
+		// After the remind interval: the last link expired unused, so the
+		// reminder is text only — no new login (a device code lives 15 min and
+		// `codex login` revokes existing credentials when it starts).
+		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.REMIND_INTERVAL_MS);
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'screen' });
+		await flush();
+		expect(broker.startCalls).toHaveLength(1);
+		expect(dms).toHaveLength(3);
+		expect(dms[2]).toMatch(/链接已经过期.*qa-1.*重新登录/s);
+
+		// Still at most one reminder per interval.
+		jest.advanceTimersByTime(60_000);
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'screen' });
+		await flush();
+		expect(dms).toHaveLength(3);
+
+		// The owner replies when they are there: a fresh login and a fresh link.
+		expect(service.handleOwnerReply('重新登录')).toBe(true);
+		await flush();
+		expect(broker.startCalls).toHaveLength(2);
+		broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'ABCD-EFGH1' });
+		await flush();
+		expect(dms).toHaveLength(4);
+		expect(dms[3]).toMatch(/ABCD-EFGH1/);
+	});
+
+	it('a reminder finds the harness logged in again (signed in by hand) and resumes the waiting agents', async () => {
+		const { service, broker, dms, resumer, setLoginState } = setup();
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		await flush();
+		broker.patch('s1', { state: 'awaiting_user', url: CODEX_URL, userCode: 'WH2P-EO69V' });
+		broker.finish('s1', 'timed_out', 'The login was not completed in time.');
+		await flush();
+
+		setLoginState('logged_in');
+		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.REMIND_INTERVAL_MS);
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'screen' });
+		await flush();
+		await flush();
+		expect(broker.startCalls).toHaveLength(1);
+		expect(resumer.resume).toHaveBeenCalledWith(['qa-1']);
+		expect(service.getPending('codex-cli')).toBeNull();
+		expect(dms[dms.length - 1]).not.toMatch(/链接已经过期/);
+	});
+
+	it('a flow that failed (not an expired link) is restarted with a fresh link on the reminder', async () => {
+		const { service, broker, dms } = setup();
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		await flush();
+		broker.finish('s1', 'failed', 'Error logging in with device code: boom');
+		await flush();
 		jest.advanceTimersByTime(HARNESS_CONSTANTS.RELOGIN.REMIND_INTERVAL_MS);
 		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'screen' });
 		await flush();
 		expect(broker.startCalls).toHaveLength(2);
 		broker.patch('s2', { state: 'awaiting_user', url: CODEX_URL, userCode: 'ABCD-EFGH1' });
 		await flush();
-		expect(dms).toHaveLength(3);
-		expect(dms[2]).toMatch(/ABCD-EFGH1/);
+		expect(dms[dms.length - 1]).toMatch(/ABCD-EFGH1/);
+	});
+
+	it('does not start a login when the login state is unknown (codex login would revoke a working login)', async () => {
+		const { service, broker, setLoginState } = setup();
+		setLoginState('unknown');
+		service.reportExpiry({ harnessId: 'codex-cli', sessionName: 'qa-1', source: 'output' });
+		await flush();
+		expect(broker.startCalls).toHaveLength(0);
+		expect(service.getPending('codex-cli')).toBeNull();
 	});
 
 	it('ignores reports right after a successful login (resumed transcripts repeat the old error)', async () => {

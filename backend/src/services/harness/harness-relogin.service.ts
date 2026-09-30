@@ -26,9 +26,17 @@
  *
  * Rules:
  * - One flow per harness. Repeated detections only add stuck sessions. A
- *   flow that failed is restarted by a new detection at most once per
+ *   flow that failed is followed up by a new detection at most once per
  *   {@link HARNESS_CONSTANTS.RELOGIN.REMIND_INTERVAL_MS} (the re-reminder),
- *   or at once when the owner replies `relogin` / `重新登录`.
+ *   or restarted at once when the owner replies `relogin` / `重新登录`.
+ *   When the last link simply expired unused (`timed_out`), the reminder is
+ *   a text DM asking the owner to reply when they are ready — it does NOT
+ *   start a new login: a device code lives 15 minutes, so a link sent while
+ *   the owner is away is wasted, and `codex login` revokes whatever
+ *   credentials exist when it starts (steamfun-ops 2026-09-30: five links at
+ *   night, all expired unused).
+ * - A login is started only when the harness's own status says
+ *   `logged_out`; `unknown` is not enough, for the same revocation reason.
  * - If Crewly holds an API key for the harness it is used silently (no DM).
  * - Claude → `subscription` (`claude setup-token`), Codex → `device`.
  * - Secrets: Claude's code is passed to the broker and never stored, logged
@@ -198,6 +206,8 @@ interface ReloginFlow {
 	switchAccount: boolean;
 	/** Where DMs go (null = master-bot DM) */
 	replyTarget: ReloginReplyTarget | null;
+	/** How the last broker session ended (null while running / never ran) */
+	lastOutcome: LoginSession['state'] | null;
 }
 
 /** Options a flow is started (and restarted) with. */
@@ -458,6 +468,19 @@ export function formatFailureDm(harnessId: HarnessId, reason: string | null): st
 	return `${displayName(harnessId)} 登录没完成${detail ? `：${detail}` : '。'}${RETRY_HINT}`;
 }
 
+/**
+ * Re-reminder text for a login whose last link expired unused. It carries no
+ * link: a new one is made when the owner replies, so it is fresh when used.
+ *
+ * @param harnessId - Harness
+ * @param waiting - Agents waiting on the login
+ * @returns DM text
+ */
+export function formatReminderDm(harnessId: HarnessId, waiting: readonly string[]): string {
+	const who = waiting.length > 0 ? `${waiting.join('、')} 还在等它。` : '';
+	return `${displayName(harnessId)} 还没有重新登录，上次的登录链接已经过期。${who}方便的时候回复「重新登录」（或 \`relogin\`），我马上发一个新链接（15 分钟内有效）。`;
+}
+
 /** Coordinates Slack re-login flows, one per harness. */
 export class HarnessReloginService {
 	private readonly broker: ReloginBroker;
@@ -542,8 +565,9 @@ export class HarnessReloginService {
 		if (existing) {
 			if (sessionName) existing.stuck.add(sessionName);
 			if (existing.phase === 'failed' && this.now() - (existing.lastDmAt ?? 0) >= HARNESS_CONSTANTS.RELOGIN.REMIND_INTERVAL_MS) {
-				this.logger.info('Re-login: reminding the owner', { harnessId, source });
-				this.restart(existing);
+				this.logger.info('Re-login: reminding the owner', { harnessId, source, lastOutcome: existing.lastOutcome });
+				if (existing.lastOutcome === 'timed_out') void this.remind(existing);
+				else this.restart(existing);
 			}
 			return true;
 		}
@@ -764,6 +788,7 @@ export class HarnessReloginService {
 			trigger: options.trigger,
 			switchAccount: options.switchAccount,
 			replyTarget: options.replyTarget,
+			lastOutcome: null,
 		};
 		// Registered synchronously: this is the per-harness debounce.
 		this.flows.set(harnessId, flow);
@@ -788,13 +813,17 @@ export class HarnessReloginService {
 		// that is how a fresh ChatGPT sign-in was wiped twice in a row
 		// (2026-09-26, Nova). Only a harness that is not logged in gets one.
 		const state = await this.checkLoginState(flow.harnessId).catch((): LoginState => 'unknown');
-		if (state === 'logged_in') {
+		if (state !== 'logged_out') {
+			// `unknown` (status probe failed or timed out) is not proof either:
+			// starting `codex login` would revoke a login that may still work.
 			this.flows.delete(flow.harnessId);
 			this.quietUntil.set(flow.harnessId, this.now() + HARNESS_CONSTANTS.RELOGIN.NOT_EXPIRED_QUIET_MS);
-			this.logger.warn('Re-login skipped: the harness is still logged in (the error was not an expired login)', {
-				harnessId: flow.harnessId,
-				stuck: [...flow.stuck],
-			});
+			this.logger.warn(
+				state === 'logged_in'
+					? 'Re-login skipped: the harness is still logged in (the error was not an expired login)'
+					: 'Re-login skipped: the harness login state could not be confirmed as logged out',
+				{ harnessId: flow.harnessId, state, stuck: [...flow.stuck] },
+			);
 			return;
 		}
 		if (await this.tryStoredApiKey(flow)) return;
@@ -909,6 +938,7 @@ export class HarnessReloginService {
 		}
 		if (flow.phase !== 'running') return;
 		this.clearScreenTimer(flow);
+		flow.lastOutcome = session.state;
 
 		if (session.state === 'succeeded') {
 			void this.succeed(flow, true);
@@ -952,6 +982,27 @@ export class HarnessReloginService {
 			const text = flow.trigger === 'owner' ? formatOwnerSuccessDm(flow.harnessId, result) : formatSuccessDm(flow.harnessId, result);
 			await this.dm(flow, text);
 		}
+	}
+
+	/**
+	 * Re-reminder after a link expired unused: if the harness is logged in by
+	 * now (the owner signed in another way), finish the flow and resume the
+	 * stuck agents; otherwise send a text reminder. No login is started here —
+	 * the owner's `relogin` reply starts one while they are there to use it.
+	 *
+	 * @param flow - A failed flow whose last session timed out
+	 */
+	private async remind(flow: ReloginFlow): Promise<void> {
+		// Set first: this is the reminder debounce while the check runs.
+		flow.lastDmAt = this.now();
+		const state = await this.checkLoginState(flow.harnessId).catch((): LoginState => 'unknown');
+		if (this.flows.get(flow.harnessId) !== flow || flow.phase !== 'failed') return;
+		if (state === 'logged_in') {
+			this.logger.info('Re-login: the harness is logged in again; resuming the waiting agents', { harnessId: flow.harnessId });
+			await this.succeed(flow, true);
+			return;
+		}
+		await this.dm(flow, formatReminderDm(flow.harnessId, this.waitingAgents(flow)));
 	}
 
 	/**
