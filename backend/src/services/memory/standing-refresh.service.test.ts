@@ -69,6 +69,31 @@ describe('StandingRefreshService', () => {
 		expect(wi.briefMarkdown).toContain('/skills/agent/core/standing-update/execute.sh --page decisions-in-force');
 	});
 
+	// steamfun-ops 2026-09-30: a refresh queued for a dormant team's leader
+	// tried a refused cold launch 230+ times a day. A chore must wait for its
+	// target to be awake — and must still be raised once it is.
+	it('does not queue a refresh for a target that is not running, and raises it once the target is awake', async () => {
+		let awake = false;
+		const isTargetAwake = jest.fn(async () => awake);
+		const resolveProjectTarget = async (): Promise<string> => 'team-lead-1';
+		const first = await make({ isTargetAwake, resolveProjectTarget }).tick();
+		expect(first.created).toHaveLength(0);
+		expect(first.skipped.target_dormant).toBe(1);
+		expect(isTargetAwake).toHaveBeenCalledWith('team-lead-1');
+		expect(pool.items).toHaveLength(0);
+
+		awake = true;
+		const second = await make({ isTargetAwake, resolveProjectTarget }).tick();
+		expect(second.created).toHaveLength(1);
+		expect(pool.items[0].target).toBe('team-lead-1');
+	});
+
+	it('treats a failing awake-check as dormant', async () => {
+		const res = await make({ isTargetAwake: async () => { throw new Error('storage down'); } }).tick();
+		expect(res.created).toHaveLength(0);
+		expect(res.skipped.target_dormant).toBe(1);
+	});
+
 	it('does not raise again while the watermark has not moved, even after the WorkItem closes and the cooldown passes', async () => {
 		await make().tick();
 		pool.items[0].status = 'done'; // closed without refreshing the page

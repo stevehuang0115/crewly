@@ -408,7 +408,11 @@ export class OAuthReloginMonitorService {
 		try {
 			const handled = this.harnessExpiryHandler({ harnessId: match.harnessId, sessionName, source });
 			if (handled) {
-				this.logger.info('Expired harness login handed to the Slack re-login', { sessionName, harnessId: match.harnessId, rule: match.ruleId, source });
+				// The 30s screen sweep re-reads the same scrollback: an old 401
+				// stays on screen for hours (2,000+ identical INFO lines a day on
+				// steamfun-ops). Live output stays at info.
+				const log = source === 'screen' ? this.logger.debug.bind(this.logger) : this.logger.info.bind(this.logger);
+				log('Expired harness login handed to the Slack re-login', { sessionName, harnessId: match.harnessId, rule: match.ruleId, source });
 			}
 			return handled;
 		} catch (err) {

@@ -396,6 +396,8 @@ export const CODEX_DEVICE_AUTH_RULES: LoginRuleSet = {
 		/device\s*code\s*(?:has\s*)?expired/i,
 		/authorization\s*(?:was\s*)?(?:denied|declined)/i,
 		/^\s*error:/im,
+		// codex-cli 0.159: "Error logging in with device code: <reason>" before exit 1
+		/error\s*logging\s*in/i,
 	],
 	successRequiresSecret: false,
 	successOnExitZero: true,

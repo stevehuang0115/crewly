@@ -1088,6 +1088,30 @@ export function cascadeCancelChildren(
 }
 
 // ---------------------------------------------------------------------------
+// Housekeeping WorkItems
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a WorkItem is system housekeeping: raised by Crewly itself on a
+ * timer (standing-answer refresh, wiki drain / cleanup / migrate, …), not by
+ * the owner or an agent. They are marked `metadata.autoCreated` (or
+ * `metadata.housekeeping`).
+ *
+ * Housekeeping never justifies waking a stopped agent: nobody asked for it,
+ * and a cold launch of a dormant team needs the owner's approval, which a
+ * chore can never get. Such an item waits in the pool until its target is
+ * awake for another reason (steamfun-ops 2026-09-30: one standing-answer
+ * refresh for a dormant team tried a refused cold launch 230+ times a day).
+ *
+ * @param wi - WorkItem
+ * @returns True for system-generated maintenance work
+ */
+export function isHousekeepingWorkItem(wi: Pick<WorkItem, 'metadata'>): boolean {
+  const meta = wi.metadata as Record<string, unknown> | undefined;
+  return meta?.['autoCreated'] === true || meta?.['housekeeping'] === true;
+}
+
+// ---------------------------------------------------------------------------
 // Rule: Detect Stale Queued WorkItems (F4 enhancement)
 // ---------------------------------------------------------------------------
 
@@ -1138,6 +1162,10 @@ export function detectStaleQueuedWorkItems(
 
   for (const wi of workItems) {
     if (wi.status !== 'queued') continue;
+    // Housekeeping parked for a stopped agent is waiting on purpose (see
+    // isHousekeepingWorkItem); reporting it every pass is noise, and the
+    // stale-queued broadcast would wake the orchestrator for a chore.
+    if (isHousekeepingWorkItem(wi)) continue;
 
     const createdAt = new Date(wi.createdAt).getTime();
     const waitTime = now - createdAt;
@@ -1467,6 +1495,11 @@ export function detectUnclaimedTasks(
       agentsToWake.add(idleTarget.sessionName);
       continue;
     }
+
+    // Housekeeping never starts or rehydrates a stopped agent — it is
+    // parked until the target is awake for real work (redeliver above still
+    // re-pushes it to an awake, idle target).
+    if (isHousekeepingWorkItem(wi)) continue;
 
     // Score each wakable agent for this WorkItem
     const bestAgent = selectBestAgent(wi, wakableAgents, waitTime, agentsToWake);

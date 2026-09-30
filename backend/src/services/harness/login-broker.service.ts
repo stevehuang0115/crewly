@@ -24,6 +24,15 @@
  * `succeeded` | `failed`; any live state → `timed_out` (15 min) | `cancelled`.
  * A prompt that reappears after input returns the session to `awaiting_user`.
  *
+ * Harnesses that save their own credentials and exit (Codex) are never killed
+ * on a failure line: the broker waits for the exit (bounded by
+ * FAILURE_EXIT_GRACE_MS), and a non-zero exit is checked with the harness's
+ * status command before it is reported as failed. On 2026-09-29/30 the owner
+ * finished the device login four times on steamfun-ops (Codex logged
+ * "oauth token exchange succeeded"), every attempt was reported `failed`, and
+ * each retry's `codex login` revoked the previous one. The failure message is
+ * now logged (redacted) so the next such report says why.
+ *
  * @module services/harness/login-broker.service
  */
 
@@ -117,6 +126,9 @@ interface SessionRecord {
 	inputOffset: number;
 	secrets: string[];
 	timer: NodeJS.Timeout | null;
+	/** A failure line was seen; waiting for the process to exit (Codex) */
+	pendingFailure: string | null;
+	failureTimer: NodeJS.Timeout | null;
 	exited: boolean;
 	finishedAt: number | null;
 	done: Promise<LoginSession>;
@@ -240,6 +252,8 @@ export class LoginBrokerService extends EventEmitter {
 			inputOffset: 0,
 			secrets: [],
 			timer: null,
+			pendingFailure: null,
+			failureTimer: null,
 			exited: false,
 			finishedAt: null,
 			done,
@@ -403,6 +417,12 @@ export class LoginBrokerService extends EventEmitter {
 			if (match.needsInput) {
 				// The harness rejected the reply and asks again.
 				this.update(record, { ...patch, state: 'awaiting_user', message: match.failureMessage });
+			} else if (record.rules.successOnExitZero) {
+				// The harness exits by itself and may still be saving a login:
+				// never kill it mid-write. Its exit decides (see handleExit).
+				this.update(record, { ...patch, message: match.failureMessage });
+				if (final || record.exited) record.pendingFailure = match.failureMessage;
+				else this.awaitExitAfterFailure(record, match.failureMessage);
 			} else {
 				this.update(record, patch);
 				this.finish(record, 'failed', match.failureMessage);
@@ -413,6 +433,23 @@ export class LoginBrokerService extends EventEmitter {
 		if (state === 'starting' && (patch.url || patch.userCode || match.needsInput)) state = 'awaiting_user';
 		if (state === 'verifying' && match.needsInput) state = 'awaiting_user';
 		this.update(record, { ...patch, state });
+	}
+
+	/**
+	 * A failure line was printed by a harness that exits by itself: give it
+	 * FAILURE_EXIT_GRACE_MS to exit before failing the session.
+	 *
+	 * @param record - Session record
+	 * @param message - The failure line
+	 */
+	private awaitExitAfterFailure(record: SessionRecord, message: string): void {
+		record.pendingFailure = message;
+		if (record.failureTimer) return;
+		record.failureTimer = setTimeout(() => {
+			record.failureTimer = null;
+			if (!record.exited) this.finish(record, 'failed', record.pendingFailure ?? message);
+		}, HARNESS_CONSTANTS.LOGIN.FAILURE_EXIT_GRACE_MS);
+		record.failureTimer.unref?.();
 	}
 
 	/**
@@ -495,7 +532,29 @@ export class LoginBrokerService extends EventEmitter {
 			await this.confirm(record);
 			return;
 		}
-		this.finish(record, 'failed', record.session.message ?? `The login command exited (code ${exitCode}) before the login finished.`);
+		const failure = record.pendingFailure ?? record.session.message ?? `The login command exited (code ${exitCode}) before the login finished.`;
+		if (record.rules.verifyAfterSuccess) {
+			// The login command clears the old credentials when it starts, so a
+			// logged-in status now means this login landed despite the exit code.
+			let loggedIn = false;
+			try {
+				loggedIn = await this.verify(record.session.harnessId);
+			} catch {
+				loggedIn = false;
+			}
+			if (isTerminalLoginState(record.session.state)) return;
+			if (loggedIn) {
+				this.logger.warn('Login command reported a failure, but the harness is logged in — treating it as success', {
+					sessionId: record.session.id,
+					harnessId: record.session.harnessId,
+					exitCode,
+					reported: this.safeMessage(record, failure),
+				});
+				this.finish(record, 'succeeded', 'Logged in.');
+				return;
+			}
+		}
+		this.finish(record, 'failed', failure);
 	}
 
 	/**
@@ -509,6 +568,8 @@ export class LoginBrokerService extends EventEmitter {
 		if (isTerminalLoginState(record.session.state)) return;
 		if (record.timer) clearTimeout(record.timer);
 		record.timer = null;
+		if (record.failureTimer) clearTimeout(record.failureTimer);
+		record.failureTimer = null;
 		record.finishedAt = this.now();
 		this.update(record, { state, message, needsInput: false });
 		if (record.pty && !record.exited) {
@@ -518,7 +579,13 @@ export class LoginBrokerService extends EventEmitter {
 				// Already gone.
 			}
 		}
-		this.logger.info('Login broker session finished', { sessionId: record.session.id, harnessId: record.session.harnessId, state });
+		this.logger.info('Login broker session finished', {
+			sessionId: record.session.id,
+			harnessId: record.session.harnessId,
+			state,
+			// Why it failed, redacted — without it a failed login is undiagnosable.
+			...(state === 'failed' ? { message: this.safeMessage(record, message) } : {}),
+		});
 		const snapshot = { ...record.session };
 		record.resolveDone(snapshot);
 		this.emit(LOGIN_BROKER_EVENTS.FINISHED, snapshot);
@@ -533,6 +600,19 @@ export class LoginBrokerService extends EventEmitter {
 	private update(record: SessionRecord, patch: Partial<LoginSession>): void {
 		record.session = { ...record.session, ...patch, updatedAt: new Date(this.now()).toISOString() };
 		this.emit(LOGIN_BROKER_EVENTS.UPDATE, { ...record.session });
+	}
+
+	/**
+	 * A user-facing message made safe for logs: secrets redacted, one line, bounded.
+	 *
+	 * @param record - Session record
+	 * @param message - Message
+	 * @returns Redacted message
+	 */
+	private safeMessage(record: SessionRecord, message: string): string {
+		const oneLine = redactSecrets(message, record.secrets).replace(/\s+/g, ' ').trim();
+		const max = HARNESS_CONSTANTS.LOGIN.LOG_MESSAGE_MAX_CHARS;
+		return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
 	}
 
 	/**
