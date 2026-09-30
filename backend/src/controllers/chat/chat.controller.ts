@@ -490,6 +490,142 @@ async function recordChatV2AgentReply(
 }
 
 /**
+ * Whether an `agent-response` body is a report-status line for the
+ * orchestrator ([DONE], [WORKING], [IDLE], [STATUS REPORT], …) rather than
+ * content a person is waiting for.
+ *
+ * @param content - The posted text
+ * @returns True for a status marker
+ */
+export function isAgentStatusMarker(content: string): boolean {
+  return ORC_STATUS_FORWARDING.STATUS_MARKERS.test(content);
+}
+
+/**
+ * Record an agent's answer in a Slack-mapped room (the huddle behind a Slack
+ * team/ad-hoc channel) when it arrives through `agent-response` instead of
+ * `reply-channel`. The row is the same one `reply-channel` writes — an agent
+ * turn in the huddle, in the owner's thread — so the Slack mirror posts it as
+ * the agent's bot and replaces its "working on it" placeholder.
+ *
+ * 2026-09-30 (#steamfun运维组): the owner @'d Avery; her `reply-channel`
+ * calls were refused (her shell carried the orchestrator's session name), so
+ * she fell back to `reply-chat` with the room's conversation id. The endpoint
+ * only knew agent DMs, took her whole answer for a status report and queued
+ * it for the orchestrator; the owner saw nothing.
+ *
+ * Only a substantive reply qualifies (status markers keep the orchestrator
+ * path), only from a member of the room, and only for a thread the agent was
+ * asked in: the thread it named, or the latest message that @'d it here.
+ *
+ * @param input - Channel id, sender, content, header session, interim flag, raw thread reference
+ * @returns The persisted message id, or null to keep the status path
+ */
+async function recordSlackRoomAgentReply(input: {
+  channelId: string;
+  senderName: string;
+  content: string;
+  headerSession?: string;
+  interim: boolean;
+  rawThread?: string;
+}): Promise<string | null> {
+  if (isAgentStatusMarker(input.content)) return null;
+  try {
+    const { getChatV2Service } = await import('../../services/chat-v2/chat-v2.singleton.js');
+    const chatV2 = getChatV2Service();
+    const channel = chatV2.getChannelForBridge(input.channelId);
+    if (!channel || channel.archivedAt || channel.type !== 'huddle') return null;
+    const { getSlackTeamChannelService } = await import('../../services/slack/slack-team-channel.service.js');
+    const mapping = getSlackTeamChannelService()?.findByChatChannelId(input.channelId) ?? null;
+    if (!mapping) return null;
+
+    // Who is replying: a room member named by the header, by session, or by
+    // display name. The header is normally authoritative, but it can be
+    // wrong — the skill shell inherits CREWLY_SESSION_NAME from wherever the
+    // runtime spawned it (Codex's shared app-server carried the
+    // orchestrator's) — and a header that is not in the room names nobody.
+    const members = chatV2.queryHuddleMembersForDispatch(input.channelId);
+    let agentSession: string | null = null;
+    if (input.headerSession && members.includes(input.headerSession)) agentSession = input.headerSession;
+    else if (members.includes(input.senderName)) agentSession = input.senderName;
+    else {
+      for (const m of members) {
+        if (await isMemberNameOf(m, input.senderName)) {
+          agentSession = m;
+          break;
+        }
+      }
+    }
+    if (!agentSession) return null;
+    if (input.headerSession && input.headerSession !== agentSession) {
+      logger.warn('agent-response header names a different session than the replying room member — the skill shell has the wrong CREWLY_SESSION_NAME', {
+        headerSession: input.headerSession,
+        senderName: input.senderName,
+        resolvedAgent: agentSession,
+        channelId: input.channelId,
+      });
+    }
+
+    // Which thread: the one named (a huddle message id — what the delivered
+    // prompt hands out — or a Slack thread key of this channel), else the
+    // latest message that @'d this agent here recently. No evidence the
+    // agent was asked in this room → not ours to post.
+    let threadId: string | undefined;
+    const raw = input.rawThread?.trim();
+    if (raw) {
+      const named = chatV2.getMessageForBridge(raw);
+      if (named && named.channelId === input.channelId) threadId = named.threadId ?? named.id;
+      const key = parseSlackThreadKey(raw);
+      if (!threadId && key && key.slackChannelId === mapping.slackChannelId) {
+        threadId = chatV2.findSlackThreadRoot(input.channelId, key.threadTs)?.id;
+      }
+    }
+    if (!threadId) {
+      const asked = chatV2.findLatestUserMessageMentioning(
+        input.channelId,
+        agentSession,
+        Date.now() - ORC_STATUS_FORWARDING.RECENT_ROOM_REQUEST_WINDOW_MS,
+      );
+      if (asked) threadId = asked.threadId ?? asked.id;
+    }
+    if (!threadId) return null;
+
+    const { message } = chatV2.recordTurn({
+      channelId: input.channelId,
+      senderType: 'agent',
+      senderId: agentSession,
+      content: input.content,
+      threadId,
+      metadata: {
+        source: 'reply-tool',
+        ...(input.interim ? { [SLACK_TYPING_CONSTANTS.INTERIM_METADATA_KEY]: true } : {}),
+      },
+    });
+    try {
+      const { notifyChatV2AgentReply } = await import('../chat-v2/chat-v2.controller.js');
+      notifyChatV2AgentReply(message);
+    } catch {
+      /* SLA auto-resolve is best-effort */
+    }
+    logger.info('Agent reply to a Slack room delivered as the agent (arrived via agent-response)', {
+      agentSession,
+      channelId: input.channelId,
+      slackChannel: mapping.slackChannelId,
+      threadId,
+      messageId: message.id,
+    });
+    return message.id;
+  } catch (err) {
+    logger.warn('Could not deliver the agent reply to its Slack room (falling back to the status path)', {
+      channelId: input.channelId,
+      senderName: input.senderName,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
  * Order an agent's Slack threads so the one its [DONE] is about comes first.
  *
  * The completion notice went to `threads[0]` — the first thread the agent
@@ -591,7 +727,21 @@ export async function agentResponse(
     const { isOrchestratorSender: isOrcName } = await import(
       '../../services/orc/orc-delivery-enforcer.service.js'
     );
-    const isOrchestratorPost = agentHeader
+    // A sub-agent whose skill shell inherited the orchestrator's
+    // CREWLY_SESSION_NAME (Codex's shared app-server, 2026-09-30) sends the
+    // orc's header with its own name. That is not the orchestrator speaking:
+    // re-routing it to the orc's turn origin would misfile the agent's answer.
+    const headerContradictsSender =
+      agentHeader === ORCHESTRATOR_SESSION_NAME &&
+      senderType !== 'orchestrator' &&
+      !isOrcName(String(senderName));
+    if (headerContradictsSender) {
+      logger.warn('agent-response carries the orchestrator session header but a non-orchestrator sender — treating it as that agent', {
+        senderName,
+        conversationId,
+      });
+    }
+    const isOrchestratorPost = agentHeader && !headerContradictsSender
       ? agentHeader === ORCHESTRATOR_SESSION_NAME
       : senderType === 'orchestrator' || isOrcName(String(senderName));
     if (isOrchestratorPost) {
@@ -669,6 +819,21 @@ export async function agentResponse(
         res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });
         return;
       }
+      // An answer into a Slack room (the huddle behind a Slack channel —
+      // also listed as that channel's conversation) goes to the owner's
+      // thread as the agent, exactly as `reply-channel` would post it.
+      const roomReply = await recordSlackRoomAgentReply({
+        channelId: String(resolvedConversationId),
+        senderName: String(senderName),
+        content: String(content),
+        headerSession: typeof hdr === 'string' && hdr.length > 0 ? hdr : undefined,
+        interim: req.body?.interim === true,
+        rawThread: typeof req.body?.slackThread === 'string' ? req.body.slackThread : undefined,
+      });
+      if (roomReply) {
+        res.status(201).json({ success: true, data: { messageId: roomReply, conversationId: resolvedConversationId } });
+        return;
+      }
     }
 
     if (!isAgentSender) {
@@ -707,6 +872,17 @@ export async function agentResponse(
         conversationId: resolvedConversationId,
         preview: content.substring(0, 80),
       });
+      // Not a status line: somebody was probably waiting for this, and from
+      // here it only reaches the orchestrator (clipped). Say so loudly.
+      if (!isAgentStatusMarker(String(content))) {
+        logger.warn('Substantive agent content routed to the orchestrator as status — whoever asked will not see it unless the orchestrator relays it', {
+          senderName,
+          conversationId: resolvedConversationId,
+          conversationWasNamed: conversationIdWasExplicit,
+          chars: String(content).length,
+          preview: String(content).substring(0, 120),
+        });
+      }
 
       // 2026-05-23 incident fix: agent-originating [DONE] / [COMPLETED]
       // / [DELIVERED] markers in a slack conversation are a delivery

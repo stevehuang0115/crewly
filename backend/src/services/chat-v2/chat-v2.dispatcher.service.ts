@@ -437,16 +437,24 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
   let replyHint: string;
   if (replyVia === 'reply-channel') {
     // Slack team channel: reply as yourself into the channel, in-thread.
-    const cmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
+    // The skill names its caller from CREWLY_SESSION_NAME. The agent's shell
+    // may carry someone else's — Codex runs every agent's commands through
+    // one shared app-server that inherited the orchestrator's environment —
+    // and then the room refuses the reply as a stranger's (2026-09-30:
+    // Avery's answer 404'd, and her fallbacks never reached the owner). The
+    // command carries the identity itself so it holds whatever the shell has.
+    const identity = /^[A-Za-z0-9._-]+$/.test(args.agentSession ?? '') ? `CREWLY_SESSION_NAME=${args.agentSession} ` : '';
+    const skill = `${identity}bash config/skills/agent/core/reply-channel/execute.sh`;
+    const cmd = `${skill} --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --content "<your reply>"`;
     // Announce first, then answer: the owner asked to see which agents have
     // taken a message on — two agents deciding to answer should show two
     // "is working on it" lines. Only agents that were *told* need this; ones
     // that must answer already have a placeholder.
-    const workingCmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --working`;
+    const workingCmd = `${skill} --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''} --working`;
     // Not every optional recipient leads the channel: agents already engaged
     // in a thread are told about a follow-up that was meant for whoever spoke
     // last. Claiming leadership unconditionally told them otherwise.
-    const handoffCmd = `bash config/skills/agent/core/reply-channel/execute.sh --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''}${args.messageId ? ` --message ${args.messageId}` : ''} --handoff "<名字>"`;
+    const handoffCmd = `${skill} --channel ${channelId}${threadId ? ` --thread ${threadId}` : ''}${args.messageId ? ` --message ${args.messageId}` : ''} --handoff "<名字>"`;
     // Anyone who reads it may decide a colleague who is asleep should answer.
     const wakeColleague = ' 若你判断应由一位**正在睡**的同事来回答（见下面的状态），在回复里 @他 即可叫醒他——别人已经 @ 过就不用重复。';
     replyHint = args.wakeRole === 'orchestrator'
@@ -455,7 +463,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         ? `分派本频道的消息: 消息没有 @ 任何人，而频道里此刻没有一个 agent 醒着，所以叫醒了你（本频道负责人）来决定该谁回答。若该你回答：**先**运行 \`${workingCmd}\`，再用 \`reply-channel\` skill 回复（${cmd}）。若该别的成员回答：用 reply-channel 发一句简短的话 @他（例如「@名字 这个你来」），他会被叫醒并接手；你自己不要替他回答。若与谁都无关，什么都不做。`
         : mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
-      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
+      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）——命令原样运行${identity ? '，开头的 CREWLY_SESSION_NAME=… 不要删，它告诉系统是你在回复' : ''}；reply-channel 报错时把命令原样再跑一次，不要换别的回复方式（别的方式发不到这个 thread，对方看不到）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else if (args.slackDmChannelId && mode === 'required') {
     const threadKey = parseSlackThreadKey(args.slackThreadKey) ? args.slackThreadKey : undefined;
     const threadArg = threadKey ? ` --thread ${threadKey}` : '';
