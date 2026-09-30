@@ -47,6 +47,15 @@ export interface TeamWorkingStatusFile {
 }
 
 /**
+ * Told about a workingStatus change the moment a poll observes it.
+ *
+ * Unlike the `agent:busy` event — held back until the agent has been busy
+ * for MIN_BUSY_DURATION_MS and so never published for a turn shorter than
+ * one poll interval — this fires on every observed change.
+ */
+export type WorkingStatusListener = (sessionName: string, status: WorkingStatus, previous: WorkingStatus | null) => void;
+
+/**
  * Activity Monitor Service - NEW ARCHITECTURE
  *
  * Responsibilities:
@@ -80,6 +89,10 @@ export class ActivityMonitorService {
   private busyTransitionTimestamps: Map<string, number> = new Map();
   /** Tracks which sessions have had their agent:busy event emitted */
   private busyEventEmitted: Set<string> = new Set();
+  /** Latest workingStatus seen per session, from the most recent poll (in memory) */
+  private observedStatus: Map<string, WorkingStatus> = new Map();
+  /** Callbacks told about every observed workingStatus change, undelayed */
+  private statusListeners: Set<WorkingStatusListener> = new Set();
   /** Tracks last recorded token counts per session to avoid duplicate recording */
   private lastRecordedTokens: Map<string, { input: number; output: number }> = new Map();
   /** Cached tokenTracking setting, refreshed periodically to avoid async reads in hot path */
@@ -153,6 +166,51 @@ export class ActivityMonitorService {
       newValue,
       changedField: 'workingStatus',
     } as AgentEvent;
+  }
+
+  /**
+   * Subscribe to observed workingStatus changes (idle ↔ in_progress).
+   *
+   * @param listener - Called with the session, its new status and the previous one
+   * @returns Unsubscribe function
+   */
+  onWorkingStatusChange(listener: WorkingStatusListener): () => void {
+    this.statusListeners.add(listener);
+    return () => {
+      this.statusListeners.delete(listener);
+    };
+  }
+
+  /**
+   * The workingStatus the latest poll saw for a session, from memory.
+   *
+   * @param sessionName - Agent session
+   * @returns The status, or null when no poll has looked at it yet
+   */
+  getObservedWorkingStatus(sessionName: string): WorkingStatus | null {
+    return this.observedStatus.get(sessionName) ?? null;
+  }
+
+  /**
+   * Remember what a poll saw and tell listeners when it is a change.
+   *
+   * @param sessionName - Agent session
+   * @param status - Status observed now
+   * @param previous - Status recorded before this poll (null when none)
+   */
+  private observeStatus(sessionName: string, status: WorkingStatus, previous: WorkingStatus | null): void {
+    this.observedStatus.set(sessionName, status);
+    if (previous === status) return;
+    for (const listener of this.statusListeners) {
+      try {
+        listener(sessionName, status, previous);
+      } catch (error) {
+        this.logger.debug('Working status listener threw', {
+          sessionName,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
   }
 
   /**
@@ -509,6 +567,7 @@ export class ActivityMonitorService {
         }
 
         const statusChanged = previousStatus !== newWorkingStatus;
+        this.observeStatus(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, newWorkingStatus, previousStatus);
 
         if (statusChanged) {
           workingStatusData.orchestrator.workingStatus = newWorkingStatus;
@@ -541,6 +600,7 @@ export class ActivityMonitorService {
         );
       } else {
         // Orchestrator not running, set to idle
+        this.observeStatus(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME, 'idle', workingStatusData.orchestrator.workingStatus);
         if (workingStatusData.orchestrator.workingStatus !== 'idle') {
           workingStatusData.orchestrator.workingStatus = 'idle';
           workingStatusData.orchestrator.lastActivityCheck = now;
@@ -567,6 +627,7 @@ export class ActivityMonitorService {
               if (!sessionExists) {
                 // Session doesn't exist, set to idle
                 const memberKey = member.sessionName;
+                this.observeStatus(memberKey, 'idle', workingStatusData.teamMembers[memberKey]?.workingStatus ?? null);
                 if (!workingStatusData.teamMembers[memberKey]) {
                   workingStatusData.teamMembers[memberKey] = {
                     sessionName: member.sessionName,
@@ -637,6 +698,8 @@ export class ActivityMonitorService {
                   newWorkingStatus = 'idle';
                 }
               }
+
+              this.observeStatus(memberKey, newWorkingStatus, workingStatusData.teamMembers[memberKey]?.workingStatus ?? null);
 
               // Update working status if changed
               if (!workingStatusData.teamMembers[memberKey]) {

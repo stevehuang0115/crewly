@@ -531,4 +531,19 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
       expect(posted).toEqual([]);
     });
   });
+
+  it('onThreadActivity: told when a thread gets a placeholder, an answer or is dropped; unsubscribe stops it', async () => {
+    const deleted: string[] = [];
+    const { slack } = makeSlack({ deleteMessage: async (_c, ts) => { deleted.push(ts); } });
+    const svc = new SlackTypingPlaceholderService({ slack, setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined, replaceByEdit: false });
+    const seen: Array<[string, string | undefined]> = [];
+    const off = svc.onThreadActivity((ch, th) => seen.push([ch, th]));
+    await svc.begin({ ...key, threadTs: '1.1' }, ella);
+    await svc.resolve({ ...key, threadTs: '1.1' }, 'answer', ella);
+    await svc.dropThread({ ...key, threadTs: '2.2' });
+    expect(seen).toEqual([['D1', '1.1'], ['D1', '1.1'], ['D1', '2.2']]);
+    off();
+    await svc.begin({ ...key, threadTs: '3.3' }, ella);
+    expect(seen).toHaveLength(3);
+  });
 });

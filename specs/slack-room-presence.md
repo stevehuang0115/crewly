@@ -6,7 +6,7 @@ Owner's rule, 2026-09-22. Replaces the 1.18.4 rule for un-addressed channel mess
 
 A message in a Slack room (team channel or private/ad-hoc channel) that @'s nobody, and is not a follow-up in a thread an agent is already in:
 
-1. **Every agent that is awake gets it, on whichever machine it runs.** Each reads it and decides for itself. Each one it reaches puts 👀 on the message with its own bot, so the eyes count shows who saw it. An agent that decides to answer runs `reply-channel --working` first, which shows "X is working on it".
+1. **Every agent that is awake gets it, on whichever machine it runs.** Each reads it and decides for itself. Each one it reaches puts 👀 on the message with its own bot, so the eyes count shows who saw it. An agent that decides to answer runs `reply-channel --working` first, which shows "X is working on it". The harness does not rely on that: for an owner's message, the first recipient seen going from idle to busy within `SLACK_TYPING_CONSTANTS.AUTO_WORKING_WINDOW_MS` of delivery gets the same placeholder posted for it (`SlackAutoWorkingService`). It is skipped when the thread already has a placeholder or an answer, and for an agent that was already busy when the message arrived. The usual rules take it down: the answer replaces it, and an agent that ends its turn without replying has it settled.
 2. **Agents that are asleep are not woken.** An awake agent that thinks a sleeping colleague should answer @'s them in its reply. The existing @ path wakes them, across machines too. Being @'d twice is harmless.
 3. **If nobody in the room is awake anywhere**, exactly one machine wakes the room's router:
    - in a team channel, the team leader (the member with `team-leader`/`tech-lead` role, else the first member);

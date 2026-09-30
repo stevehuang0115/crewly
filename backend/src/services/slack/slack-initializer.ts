@@ -881,6 +881,8 @@ export async function startSlackTeamChannels(): Promise<void> {
       { SlackAgentPostService, getSlackAgentPostService, setSlackAgentPostService },
       { SlackAgentDmService, getSlackAgentDmService, setSlackAgentDmService },
       { SlackTypingPlaceholderService, getSlackTypingPlaceholderService, setSlackTypingPlaceholderService },
+      { SlackAutoWorkingService, getSlackAutoWorkingService, setSlackAutoWorkingService },
+      { ActivityMonitorService },
       { getChatV2Service },
       { getChatV2RealtimeDeps },
       { StorageService },
@@ -891,6 +893,8 @@ export async function startSlackTeamChannels(): Promise<void> {
       import('./slack-agent-post.service.js'),
       import('./slack-agent-dm.service.js'),
       import('./slack-typing-placeholder.service.js'),
+      import('./slack-auto-working.service.js'),
+      import('../monitoring/activity-monitor.service.js'),
       import('../chat-v2/chat-v2.singleton.js'),
       import('../chat-v2/chat-v2.realtime-holder.js'),
       import('../core/storage.service.js'),
@@ -919,6 +923,25 @@ export async function startSlackTeamChannels(): Promise<void> {
       });
       setSlackTypingPlaceholderService(typing);
     }
+    // The harness posts "working on it" for the first recipient of an
+    // owner's message that starts on it — not left to the agent's own
+    // `--working` call (2026-09-30, #pro-ce). Busy comes straight from the
+    // ActivityMonitor poll: its agent:busy event is held back 10 s and is
+    // never published for a turn shorter than one poll.
+    let autoWorking = getSlackAutoWorkingService();
+    if (!autoWorking) {
+      const activity = ActivityMonitorService.getInstance();
+      const created = new SlackAutoWorkingService({
+        typing,
+        isAgentBusy: (agentSession) => activity.getObservedWorkingStatus(agentSession) === 'in_progress',
+      });
+      activity.onWorkingStatusChange((agentSession, status) => {
+        if (status === 'in_progress') created.noteBusy(agentSession);
+      });
+      typing.onThreadActivity((slackChannelId, threadTs) => created.noteThreadActivity(slackChannelId, threadTs));
+      setSlackAutoWorkingService(created);
+      autoWorking = created;
+    }
     // Agent-initiated posts (the `slack-post` skill). A post into a
     // conversation the agent owes an answer in lands in that thread and
     // replaces its placeholder.
@@ -944,6 +967,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         getDispatcher: () => getChatV2RealtimeDeps().dispatcher ?? null,
         identities,
         typing,
+        autoWorking,
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? false,
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
@@ -971,6 +995,7 @@ export async function startSlackTeamChannels(): Promise<void> {
         identities,
         isLocalAgent: (agentSession) => getSlackService().isLocalAgent?.(agentSession) ?? true,
         typing,
+        autoWorking,
         isAgentAwake: (agentSession) => sessionBackendExists(agentSession),
         getOwnerUserId: () => getSlackCloudConfigService()?.getConfig()?.workspace.installedBy || null,
       });

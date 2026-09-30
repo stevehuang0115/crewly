@@ -357,6 +357,7 @@ let service: SlackTeamChannelService;
 let ownerUserId: string | null = 'UOWNER';
 let typing: { begin: jest.Mock; resolve: jest.Mock; setPhase: jest.Mock; fail: jest.Mock } | null = null;
 let awake: (s: string) => boolean = () => true;
+let autoWorking: { watch: jest.Mock } | null = null;
 let isLocal: (s: string) => boolean = () => false;
 
 function makeService() {
@@ -367,6 +368,7 @@ function makeService() {
     getDispatcher: () => dispatcher,
     identities,
     typing,
+    autoWorking,
     isAgentAwake: (s) => awake(s),
     isLocalAgent: (s) => isLocal(s),
     getOwnerUserId: () => ownerUserId,
@@ -2305,5 +2307,81 @@ describe('ensureAgentChannel', () => {
   it('throws when Slack is not connected', async () => {
     slack.connected = false;
     await expect(service.ensureAgentChannel({ name: 'x', purpose: '', memberSessions: [] })).rejects.toThrow('Slack is not connected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness-posted "working on it" (2026-09-30, #pro-ce)
+// ---------------------------------------------------------------------------
+
+describe('harness "working on it" watch', () => {
+  let handle: { delivered: jest.Mock; cancel: jest.Mock };
+
+  beforeEach(() => {
+    handle = { delivered: jest.fn(), cancel: jest.fn() };
+    autoWorking = { watch: jest.fn().mockReturnValue(handle) };
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn(), fail: jest.fn() };
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({
+        strategy: 'huddle-broadcast',
+        dispatched: true,
+        huddleOutcomes: [
+          { sessionName: 'crewly-alpha-sam', responseMode: 'optional', dispatched: true },
+          { sessionName: 'crewly-alpha-leo', responseMode: 'optional', dispatched: false },
+        ],
+      }),
+    };
+  });
+
+  afterEach(() => {
+    autoWorking = null;
+    typing = null;
+  });
+
+  it('an owner\'s un-@ channel message is watched in its thread and reports who it reached', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+
+    await service.routeInbound(inbound({ text: '把律所邮件改成 $299/月', userId: 'UOWNER', ts: '700.1' }));
+
+    expect(autoWorking!.watch).toHaveBeenCalledTimes(1);
+    const [delivery] = autoWorking!.watch.mock.calls[0];
+    expect(delivery).toMatchObject({ slackChannelId: 'C1', threadTs: '700.1', sourceTs: '700.1' });
+    expect(delivery.candidates).toEqual(expect.arrayContaining(['crewly-alpha-sam', 'crewly-alpha-leo']));
+    // Same principal /api/slack/working would use: cosmetic identity without an installed bot.
+    expect(delivery.identityFor('crewly-alpha-sam')).toMatchObject({ displayName: 'Sam' });
+    // Only the recipients the message actually reached.
+    expect(handle.delivered).toHaveBeenCalledWith(['crewly-alpha-sam']);
+  });
+
+  it('a threaded owner reply is watched in that thread', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ text: 'follow-up', userId: 'UOWNER', ts: '701.2', threadTs: '700.1' }));
+    expect(autoWorking!.watch.mock.calls[0][0]).toMatchObject({ threadTs: '700.1', sourceTs: '701.2' });
+  });
+
+  it('a message from someone other than the owner is not watched', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ text: 'hi', userId: 'U-SOMEONE-ELSE', ts: '702.1' }));
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+  });
+
+  it('an agent\'s message (agent-to-agent, any machine) is not watched', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(
+      inbound({ text: '@sam can you check', userId: 'UOWNER', ts: '703.1', authorAgentSession: 'mk-atlas', authorDisplayName: 'Atlas' }),
+    );
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+  });
+
+  it('without placeholders wired, nothing is watched', async () => {
+    typing = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ text: 'hi', userId: 'UOWNER', ts: '704.1' }));
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
   });
 });
