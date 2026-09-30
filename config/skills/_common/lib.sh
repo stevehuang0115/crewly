@@ -226,6 +226,10 @@ api_call() {
   # Use ${VAR:-} pattern to avoid 'unbound variable' error under set -u (nounset)
   if [ -n "${CREWLY_SESSION_NAME:-}" ]; then
     args+=(-H "X-Agent-Session: $CREWLY_SESSION_NAME")
+    # This shell's pid: the backend walks its parents to the agent PTY it
+    # really runs under, and corrects X-Agent-Session when a runtime leaked
+    # another agent's CREWLY_SESSION_NAME (Codex's shared app-server did).
+    args+=(-H "X-Agent-Pid: $$")
   else
     # Without the identity header the backend treats the call as anonymous:
     # membership checks fail with a misleading 404 and heartbeats are lost.
@@ -431,6 +435,7 @@ auto_remember() {
 _skill_heartbeat() {
   curl -s -X POST "${CREWLY_API_URL}/api/heartbeat" \
     -H "X-Agent-Session: ${CREWLY_SESSION_NAME:-}" \
+    -H "X-Agent-Pid: $$" \
     -H "Content-Type: application/json" \
     -d '{"source":"skill-start"}' >/dev/null 2>&1 &
 }

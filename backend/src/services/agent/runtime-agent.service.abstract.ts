@@ -19,6 +19,7 @@ import type { AIRuntime } from '../../types/settings.types.js';
 import { toCodexResumeCommand } from './runtime-session-recovery.js';
 import { detectRuntimeCliMissing, isRuntimeStartupBlockedError } from './runtime-startup-blocked.error.js';
 import { injectRuntimeFlags } from '../../utils/runtime-model-flags.utils.js';
+import { codexSupportsNoDaemon, withCodexNoDaemon } from './codex-daemon.utils.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { quietShellLine, shellHistoryDisableLine } from '../../utils/shell-history.js';
 import {
@@ -155,6 +156,32 @@ export abstract class RuntimeAgentService {
 	}
 
 	/**
+	 * Launch Codex with `--no-daemon` so its shell commands run in this
+	 * agent's own process and carry this agent's identity env.
+	 *
+	 * Without it every Codex TUI on the machine attaches to one shared
+	 * `codex app-server` daemon, started by whichever Codex session came
+	 * first (usually the orchestrator), and every agent's skills then ran as
+	 * that session (see codex-daemon.utils). A Codex too old to know the flag
+	 * launches as before, with a WARN, rather than failing to start.
+	 *
+	 * @param sessionName - PTY session name
+	 * @param commands - Codex launch commands built so far
+	 * @returns The commands, with `--no-daemon` added when supported
+	 */
+	protected async keepCodexOffSharedDaemon(sessionName: string, commands: string[]): Promise<string[]> {
+		if (!(await codexSupportsNoDaemon())) {
+			this.logger.warn('Codex has no --no-daemon flag: this agent may run its commands in a shared app-server with another agent\'s identity', { sessionName });
+			return commands;
+		}
+		const updated = commands.map(withCodexNoDaemon);
+		if (updated.some((cmd, i) => cmd !== commands[i])) {
+			this.logger.info('Codex launched with --no-daemon (commands keep this agent\'s identity)', { sessionName });
+		}
+		return updated;
+	}
+
+	/**
 	 * Template method for executing runtime initialization script.
 	 * Most logic is shared, only runtime-specific parts are delegated to abstract methods.
 	 *
@@ -288,6 +315,7 @@ export abstract class RuntimeAgentService {
 					}
 					return cmd;
 				});
+				finalCommands = await this.keepCodexOffSharedDaemon(sessionName, finalCommands);
 			}
 
 			// #306: OpenCode needs `--auto` to approve permission requests without
