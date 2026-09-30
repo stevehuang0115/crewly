@@ -462,3 +462,112 @@ export function composeUpgradedNotice(version: string, deviceName: string): stri
 export function composeFailureNotice(version: string, deviceName: string, failures: number, reason: string): string {
 	return `Crewly 自动升级到 ${version} 失败（本机：${deviceName}，已连续 ${failures} 次）：${reason}。会稍后重试；也可以在这台机器上运行 crewly upgrade。`;
 }
+
+/**
+ * Directory to run `npm install -g` from: the first candidate that exists.
+ *
+ * npm calls process.cwd() before it does anything else and dies with
+ * `ENOENT: uv_cwd` (exit 7) when the directory it was started in is gone.
+ * The backend's own cwd is the package root, which every global install
+ * deletes and recreates — so npm must never inherit it.
+ *
+ * @param candidates - Directories in order of preference (e.g. crewlyHome, home, tmp)
+ * @param isDir - Existence check (tests)
+ * @returns The first existing directory, or the filesystem root
+ *
+ * @example
+ * ```ts
+ * resolveInstallCwd(['/root/.crewly', '/root', '/tmp']); // '/root/.crewly'
+ * ```
+ */
+export function resolveInstallCwd(
+	candidates: Array<string | undefined | null>,
+	isDir: (dir: string) => boolean = isExistingDirectory,
+): string {
+	for (const dir of candidates) {
+		if (dir && path.isAbsolute(dir) && isDir(dir)) return dir;
+	}
+	return path.parse(process.execPath).root || '/';
+}
+
+/**
+ * Whether a path is an existing directory.
+ *
+ * @param dir - Path
+ * @returns True when it exists and is a directory
+ */
+function isExistingDirectory(dir: string): boolean {
+	try {
+		return fs.statSync(dir).isDirectory();
+	} catch {
+		return false;
+	}
+}
+
+/** Patterns whose matches are replaced before npm output is logged or sent to the owner. */
+const SECRET_PATTERNS: Array<[RegExp, string]> = [
+	// .npmrc-style auth: //registry.npmjs.org/:_authToken=xxx, _auth=, _password=
+	[/(_authToken|_auth|_password|password|token)(\s*[=:]\s*)("?)[^\s"']+\3/gi, '$1$2$3[redacted]$3'],
+	// Authorization headers
+	[/(authorization:\s*(?:bearer|basic)\s+)\S+/gi, '$1[redacted]'],
+	// Credentials in URLs: https://user:pass@host
+	[/(\b[a-z][a-z0-9+.-]*:\/\/)[^/\s:@]+:[^/\s@]+@/gi, '$1[redacted]@'],
+	// npm automation/granular tokens and GitHub tokens
+	[/\bnpm_[A-Za-z0-9]{20,}\b/g, '[redacted]'],
+	[/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '[redacted]'],
+];
+
+/**
+ * Remove credentials from npm output.
+ *
+ * @param text - Raw output
+ * @returns The output with secrets replaced by `[redacted]`
+ */
+export function sanitizeNpmOutput(text: string): string {
+	let out = text;
+	for (const [pattern, replacement] of SECRET_PATTERNS) out = out.replace(pattern, replacement);
+	return out;
+}
+
+/** Lines that name the actual npm / Node failure (as opposed to a stack frame or trailer). */
+const ERROR_LINE_PATTERN = /^(npm (ERR!|error)\s+\S|\w*Error\b|Error:|ERR_)/;
+
+/**
+ * Last `maxLines` non-empty, sanitised lines of npm's output — what goes to
+ * the backend log so the next failure is diagnosable without the box.
+ *
+ * @param outputTail - Combined stdout/stderr tail
+ * @param maxLines - Lines to keep
+ * @returns The sanitised tail
+ */
+export function installOutputTail(outputTail: string, maxLines: number = AUTO_UPDATE_CONSTANTS.FAILURE_LOG_TAIL_LINES): string {
+	const lines = sanitizeNpmOutput(outputTail).split('\n').map((l) => l.trimEnd()).filter((l) => l.trim());
+	return lines.slice(-maxLines).join('\n');
+}
+
+/**
+ * One-line reason for a failed install. Node crashes end with a
+ * `Node.js vX` trailer and npm with a log-file pointer, so the last line
+ * alone says nothing; this picks the first line that names the error and
+ * appends the last line when it differs.
+ *
+ * @param code - npm exit code (null when killed)
+ * @param outputTail - Combined stdout/stderr tail
+ * @returns e.g. `npm exited with 7: Error: ENOENT: no such file or directory, uv_cwd (… Node.js v22.23.2)`
+ *
+ * @example
+ * ```ts
+ * describeInstallFailure(7, 'Error: ENOENT: no such file or directory, uv_cwd\n  at x\nNode.js v22.23.2');
+ * // 'npm exited with 7: Error: ENOENT: no such file or directory, uv_cwd (… Node.js v22.23.2)'
+ * ```
+ */
+export function describeInstallFailure(code: number | null, outputTail: string): string {
+	const lines = sanitizeNpmOutput(outputTail).split('\n').map((l) => l.trim()).filter(Boolean);
+	const last = lines[lines.length - 1] ?? '';
+	const errorLine = lines.find((l) => ERROR_LINE_PATTERN.test(l)) ?? '';
+	const head = `npm exited with ${code ?? 'a signal'}`;
+	const max = AUTO_UPDATE_CONSTANTS.FAILURE_REASON_MAX_CHARS;
+	const clip = (s: string): string => (s.length > max ? `${s.slice(0, max - 1)}…` : s);
+	if (!errorLine || errorLine === last) return last ? `${head}: ${clip(last)}` : head;
+	return `${head}: ${clip(errorLine)} (… ${clip(last)})`;
+}

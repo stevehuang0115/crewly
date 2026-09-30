@@ -36,9 +36,13 @@ starts with the server, before the orchestrator auto-start.
    default global prefix (nvm, Homebrew, /usr/local) and the user prefix
    `<crewlyHome>/npm-global`. It also installs over the running copy even when
    a different `npm` or `node` comes first on the service's PATH. The service
-   uses the `npm` next to `process.execPath` when there is one. npm output goes
-   to `<crewlyHome>/logs/auto-update.log`, and the install times out after
-   10 min.
+   uses the `npm` next to `process.execPath` when there is one. npm runs with
+   `cwd` set to `<crewlyHome>` (falling back to the home directory, then the
+   temp directory), never with the backend's inherited cwd: that is the package
+   root, which every global install deletes and recreates, and npm exits 7 with
+   `ENOENT: uv_cwd` before doing anything when started in a deleted directory.
+   npm output goes to `<crewlyHome>/logs/auto-update.log` with credentials
+   redacted, and the install times out after 10 min.
 4. **Verify.** The installed `<packageRoot>/package.json` version must equal
    the target.
 5. **Restart.** The service writes `<crewlyHome>/auto-update-pending.json`
@@ -63,6 +67,12 @@ starts with the server, before the orchestrator auto-start.
   restart handler counts as a failure. The service does not restart onto the
   suspect install. It backs off for 6 h (`FAILURE_BACKOFF_MS`) and records the
   failure in the status file.
+- The failure reason names the error, not just npm's last line (a Node crash
+  ends with a bare `Node.js vX` trailer): it quotes the first `Error:` /
+  `npm error` line and appends the last line, e.g. `npm exited with 7: Error:
+  ENOENT: no such file or directory, uv_cwd (… Node.js v22.23.2)`. The backend
+  log's `Auto-update failed` warning also carries the command, the cwd, the exit
+  code and the last 40 sanitised output lines (`FAILURE_LOG_TAIL_LINES`).
 - On the second failure in a row (`FAILURE_NOTIFY_THRESHOLD`), the owner gets
   one DM with the reason. The DM is sent once per target version.
 - If the restart comes back on a version other than the one in the marker, it
