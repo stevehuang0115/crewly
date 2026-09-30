@@ -166,6 +166,44 @@ describe('TicketAutopilotService', () => {
     });
   });
 
+  describe('driver = the team lead by the one rule', () => {
+    it('defaults to a tech-lead with no leaderIds (CE / Owen)', async () => {
+      teams[0].members = [member('m-dev', 'ce-dev'), member('m-lead', 'ce-owen', { role: 'tech-lead' as TeamMember['role'] })];
+      expect((await enable()).driver).toEqual({ session: 'ce-owen', teamId: 't-ce', source: 'team_lead' });
+    });
+
+    it('defaults to the explicit lead over a lead role, and validates an override by the same rule', async () => {
+      teams[0].leaderIds = ['m-dev'];
+      expect((await enable()).driver).toEqual({ session: 'ce-dev', teamId: 't-ce', source: 'team_lead' });
+      // The team-leader role no longer leads once the team names its lead.
+      await expect(enable({ driver: 'ce-owen' })).rejects.toMatchObject({ status: 400 });
+      expect((await enable({ driver: 'ce-dev' })).driver).toMatchObject({ session: 'ce-dev', source: 'setting' });
+    });
+  });
+
+  describe('the triage brief', () => {
+    it('lists a stopped member as available (not busy), with its role line', async () => {
+      teams[0].members.push(
+        member('m-nova', '', { agentId: 'ce-nova-a2b1f759', name: 'Nova', role: 'content-strategist' as TeamMember['role'], agentStatus: 'inactive' }),
+        member('m-vera', 'ce-vera', { name: 'Vera', workingStatus: 'in_progress' }),
+      );
+      svc = build();
+      (svc as unknown as { deps: { roleDescription?: (r: string) => Promise<string | null> } }).deps.roleDescription = async (r) =>
+        r === 'developer' ? 'Software developer focused on clean code' : null;
+      await enable();
+      await wf.create('p-ce', { title: 'Write the H-1B article and its images' }, owner);
+      await svc.tick();
+      const brief = pool.triage()[0].briefMarkdown ?? '';
+      expect(brief).toContain('- ce-nova-a2b1f759 (Nova, content-strategist) — stopped: available, will be started when assigned; 0 in progress');
+      expect(brief).toContain('- ce-vera (Vera, developer) — working; 0 in progress');
+      expect(brief).toContain('(m-lead, team-leader, lead) — idle');
+      expect(brief).not.toContain('busy');
+      expect(brief).toContain('  role: Plans and writes content');
+      expect(brief).toContain('  role: Software developer focused on clean code');
+      expect(brief).toContain('Delegate by role');
+    });
+  });
+
   describe('waking the driver', () => {
     it('does nothing while the switch is off', async () => {
       await wf.create('p-ce', { title: 'A' }, owner);

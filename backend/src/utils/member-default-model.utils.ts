@@ -15,7 +15,7 @@
 
 import { MEMBER_MODEL_DEFAULT_CONSTANTS, ORCHESTRATOR_SESSION_NAME, RUNTIME_TYPES } from '../constants.js';
 import type { Team, TeamMember } from '../types/index.js';
-import { pickTeamLead } from './team.utils.js';
+import { isTeamLead, pickTeamLead } from './team.utils.js';
 
 /** The fields of a member this decision reads. */
 type MemberLike = Pick<TeamMember, 'id' | 'sessionName' | 'role' | 'modelId' | 'parentMemberId'> & { runtimeType?: string } &
@@ -38,15 +38,15 @@ export function reviewedMemberDefaultModel(env: NodeJS.ProcessEnv = process.env)
 /**
  * Whether someone other than the member reviews its work: a parent member
  * that exists in the team, or a team lead who is not the member itself.
- * Members that lead (team-leader / tech-lead role, or a delegating member
- * with no parent) never count as reviewed.
+ * Members that lead (a lead by the team-lead rule in `utils/team.utils`, or a
+ * delegating member with no parent) never count as reviewed.
  *
  * @param team - The member's team
  * @param member - The member
  * @returns True when the member has a reviewer above it
  */
-export function memberHasReviewer(team: Pick<Team, 'id' | 'name' | 'members'>, member: MemberLike): boolean {
-  if ((MEMBER_MODEL_DEFAULT_CONSTANTS.LEAD_ROLES as readonly string[]).includes(member.role)) return false;
+export function memberHasReviewer(team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>, member: MemberLike): boolean {
+  if (isTeamLead(team, member)) return false;
   const members = team.members ?? [];
   const parent = member.parentMemberId ? members.find((m) => m.id === member.parentMemberId) : undefined;
   if (parent && parent.id !== member.id) return true;
@@ -72,7 +72,7 @@ export function memberHasReviewer(team: Pick<Team, 'id' | 'name' | 'members'>, m
  * ```
  */
 export function defaultModelForMember(
-  team: Pick<Team, 'id' | 'name' | 'members'>,
+  team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>,
   member: MemberLike,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
@@ -93,7 +93,7 @@ export function defaultModelForMember(
  * @returns Model id to pass to the runtime, or undefined for the runtime's own default
  */
 export function effectiveMemberModelId(
-  team: Pick<Team, 'id' | 'name' | 'members'>,
+  team: Pick<Team, 'id' | 'name' | 'members' | 'leaderIds' | 'leaderId'>,
   member: MemberLike,
   env: NodeJS.ProcessEnv = process.env,
 ): string | undefined {

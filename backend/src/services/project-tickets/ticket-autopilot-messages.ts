@@ -9,7 +9,7 @@
 
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
-import type { TriageCandidate } from './ticket-autopilot-decision.js';
+import type { MemberAvailability, TriageCandidate } from './ticket-autopilot-decision.js';
 
 /**
  * Actions that need the owner's explicit OK even with the autopilot on.
@@ -22,13 +22,35 @@ export const TICKET_AUTOPILOT_BOUNDARIES: readonly string[] = [
   'spending money',
 ];
 
+/**
+ * How to delegate, in the triage brief (and, in the same words, in the
+ * team-leader prompts). Leads assign by role; old splits are hints.
+ */
+export const TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE: readonly string[] = [
+  'Delegate by role: give each ticket to the member whose role fits the work. A stopped member is available — assigning starts them.',
+  'Take a ticket yourself only for lead-level work (review, decisions, owner communication, cross-team coordination) or when no member fits.',
+  'A split written in an old ticket (e.g. "Owen writes, Nova does the images") is only a hint: decide by current fit and availability. Split a mixed ticket so each part goes to the right role.',
+];
+
+/** Label of each availability in the triage brief. */
+export const MEMBER_AVAILABILITY_LABELS: Readonly<Record<MemberAvailability, string>> = {
+  idle: 'idle',
+  working: 'working',
+  stopped: 'stopped: available, will be started when assigned',
+};
+
 /** A team member as the triage brief shows it. */
 export interface TriageBriefMember {
   session: string;
   /** Display name, when different from the session */
   name?: string;
   role?: string;
-  idle: boolean;
+  /** This member leads its team (team-lead rule) */
+  lead?: boolean;
+  /** idle / working / stopped (stopped = available, started on assignment) */
+  availability: MemberAvailability;
+  /** One line: what this member's role is responsible for */
+  responsibility?: string;
   /** Tickets in progress for this member */
   inFlight: number;
 }
@@ -87,6 +109,20 @@ function excerpt(text: string, max: number): string {
 }
 
 /**
+ * A member's lines in the brief's Team section: session, name, role, lead
+ * mark, availability and in-progress count, then the role's one-line
+ * responsibility.
+ *
+ * @param m - Member
+ * @returns One or two lines
+ */
+function formatBriefMember(m: TriageBriefMember): string[] {
+  const tags = [m.name && m.name !== m.session ? m.name : null, m.role ?? null, m.lead ? 'lead' : null].filter((t): t is string => !!t);
+  const head = `- ${m.session}${tags.length > 0 ? ` (${tags.join(', ')})` : ''} — ${MEMBER_AVAILABILITY_LABELS[m.availability]}; ${m.inFlight} in progress`;
+  return m.responsibility ? [head, `  role: ${excerpt(m.responsibility, TICKET_AUTOPILOT_CONSTANTS.ROLE_RESPONSIBILITY_MAX_CHARS)}`] : [head];
+}
+
+/**
  * The triage brief the driver receives (WorkItem `briefMarkdown`).
  *
  * @param input - Project, tickets, team, limits, clock
@@ -119,14 +155,13 @@ export function buildTriageBrief(input: TriageBriefInput): string {
     'Tickets marked **worker-created — review first** were filed by a team member, not by the owner, a lead or the orchestrator.',
     'Check that they are wanted and in scope before making them ready; if unsure, ask the owner.',
     '',
+    '## Who does what',
+    '',
+    ...TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE.map((g) => `- ${g}`),
+    '',
     '## Team',
     '',
-    ...(input.members.length > 0
-      ? input.members.map(
-          (m) =>
-            `- ${m.session}${m.name && m.name !== m.session ? ` (${m.name}${m.role ? `, ${m.role}` : ''})` : m.role ? ` (${m.role})` : ''} — ${m.idle ? 'idle' : 'busy'}, ${m.inFlight} in progress`,
-        )
-      : ['- (no members found)']),
+    ...(input.members.length > 0 ? input.members.flatMap(formatBriefMember) : ['- (no members found)']),
     '',
     '## Tickets',
     '',

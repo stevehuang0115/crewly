@@ -8,8 +8,15 @@ const teams = [
     { id: 'dd6a9b2b-1', name: 'Ivy', sessionName: 'steam-fun-content-team-ivy-dd6a9b2b', role: 'executor' },
   ] },
   { id: 't2', name: 'No Leader', projectIds: ['p2'], members: [{ id: 'x', name: 'Solo', sessionName: 's', role: 'developer' }] },
+  { id: 't3', name: 'CE', projectIds: ['p3'], leaderIds: ['vera-1234'], members: [
+    { id: 'owen-1234', name: 'Owen', sessionName: 'ce-owen', role: 'tech-lead' },
+    { id: 'vera-1234', name: 'Vera', sessionName: 'ce-vera', role: 'developer' },
+  ] },
 ] as never;
-const storage = { getTeams: async () => teams, getProjects: async () => [{ id: 'p1', path: '/opt/steamfun-src' }, { id: 'p2', path: '/opt/other' }] };
+const storage = {
+  getTeams: async () => teams,
+  getProjects: async () => [{ id: 'p1', path: '/opt/steamfun-src' }, { id: 'p2', path: '/opt/other' }, { id: 'p3', path: '/opt/ce' }],
+};
 
 describe('resolveWikiOwner', () => {
   it('team vault → that team\'s leader (session derived when idle)', async () => {
@@ -20,5 +27,8 @@ describe('resolveWikiOwner', () => {
     expect(await resolveWikiOwner(storage, '/opt/steamfun-src')).toBe('steam-fun-content-team-max-a034e012');
     expect(await resolveWikiOwner(storage, '/opt/other/.crewly/wiki')).toBeNull();
     expect(await resolveWikiOwner(storage, path.join(getCrewlyHomePath(), 'global-wiki'))).toBeNull();
+  });
+  it('uses the shared team-lead rule: an explicit lead wins over a lead role', async () => {
+    expect(await resolveWikiOwner(storage, '/opt/ce/.crewly/wiki')).toBe('ce-vera');
   });
 });

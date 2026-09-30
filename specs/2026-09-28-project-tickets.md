@@ -124,6 +124,9 @@ assignee and the WorkItem link. A hand edit of the file itself does not touch th
 set narrows claims to that team). Caller identity is the `X-Agent-Session` header; no header = the
 owner (dashboard / CLI).
 
+"TL" = a lead of the team by the harness-wide rule (`specs/2026-09-30-team-lead-rule.md`: explicit
+`leaderIds`, else a `team-leader` / `tech-lead` member; `canDelegate` alone no longer makes a lead).
+
 | action | owner | orchestrator | TL of a project team | member | other agent |
 |---|---|---|---|---|---|
 | list / show | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -152,6 +155,25 @@ This keeps agents from self-authorising work (see the 2026-09 approval-boundary 
    WorkItem is cancelled (rollback).
 Self-claim additionally claims the WorkItem for the caller (`claimSpecificItem`) so it is `running`
 immediately; assignment leaves it `queued`, and the normal dispatch path wakes the assignee.
+
+**§5a Assigning to a stopped member starts it (2026-09-30).** Before this, `assign` queued the
+WorkItem for the assignee and nothing brought a stopped one up: the dispatcher's `workitem:queued`
+push writes to the target's terminal (404 for a stopped agent, logged at debug), and the reconciler's
+hybrid wake builds its agent map only from members with a stored `sessionName` — which stop clears —
+so the ticket sat `in_progress` until someone started the agent by hand. Now, when the assignee's
+`agentStatus` is not running (`memberAvailability` = `stopped`), `assign` calls the wired
+`wakeAssignee` (`ticket-assignee-waker.ts`): `POST /api/teams/:teamId/members/:memberId/start`
+with `{ workItemId }`, sent as the caller who assigned (`X-Agent-Session`; none for the owner — the
+dashboard marker is never forged). All existing start gates apply:
+- the wake gate passes (a queued WorkItem targets the member / is named in the body);
+- the commitment-approval gate applies when the member's team is dormant (nobody running). A lead
+  assigning inside its own team is running, so the team is not dormant and the start goes through;
+  an owner/orc assignment into a fully stopped team still needs the owner's recent OK in chat.
+A refusal (`blocked` + the gate's code) or failure is written to the ticket Log and returned as
+`wake` in the assign response; the assignment stands and the member picks the ticket up on its next
+start. The idle check never stops an agent with a `queued`/`proposed`/`accepted` WorkItem targeting
+it (`IdleDetectionService.setPendingWorkCheck`), so a member started for a ticket is not stopped
+before it claims it.
 
 **AutoClaim order:** an idle agent first takes WorkItems targeted at it (existing claim policy, order
 unchanged). Only when that yields nothing, and the agent is not already the assignee of an
@@ -332,4 +354,6 @@ to groom the backlog while someone on the team is idle, with brakes (one live tr
 cadence, daily USD budget, in-progress cap per member) and phone-first owner notices (batched
 `needs-owner` questions, an evening digest). The approval boundary is unchanged. Adds the
 `ask-owner` endpoint (`POST /project-tickets/:project/:id/ask-owner`, owner / orc / lead) and the
-`needs-owner` label. Full design: `specs/2026-09-30-ticket-autopilot.md`.
+`needs-owner` label. Full design: `specs/2026-09-30-ticket-autopilot.md`. The triage brief shows
+each member as idle / working / stopped (stopped = available, started when assigned — §5a) with a
+one-line role responsibility, and tells the lead to delegate by role (autopilot spec §3).

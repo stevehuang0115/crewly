@@ -1,4 +1,5 @@
-import { memberAgentId } from '../../utils/member-session-name.utils.js';
+import { memberAgentId, resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
+import { canMemberDelegate, getTeamLeadIds, isLeadRole, setTeamLead, type SetTeamLeadMode } from '../../utils/team.utils.js';
 import { Request, Response } from 'express';
 import type { ApiContext } from '../types.js';
 import type {
@@ -27,7 +28,7 @@ import {
   RUNTIME_STARTUP_CONSTANTS,
 } from '../../constants.js';
 import type { RuntimeType } from '../../constants.js';
-import { CREWLY_CONSTANTS, AGENT_TIMEOUTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, AGENT_TIMEOUTS, AGENT_WAKE_ERROR_CODES, TEAM_LEAD_CONSTANTS } from '../../constants.js';
 import { updateAgentHeartbeat } from '../../services/agent/agent-heartbeat.service.js';
 import { getSessionBackendSync, getSessionStatePersistence } from '../../services/session/index.js';
 import { removeCrewlyAgentFile } from '../../services/session/session-binding.js';
@@ -1124,11 +1125,11 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
 
     // Validate hierarchical team requirements
     if (hierarchical) {
-      const leaders = members.filter(m => m.role === 'team-leader' || m.canDelegate);
+      const leaders = members.filter(m => isLeadRole(m.role) || m.canDelegate);
       if (leaders.length === 0) {
         res.status(400).json({
           success: false,
-          error: 'Hierarchical teams require at least one team-leader or member with canDelegate=true'
+          error: 'Hierarchical teams require at least one team-leader / tech-lead or member with canDelegate=true'
         } as ApiResponse);
         return;
       }
@@ -1170,7 +1171,7 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
       const member = members[i];
       const memberId = uuidv4();
 
-      const isLeaderRole = member.role === 'team-leader' || member.canDelegate === true;
+      const isLeaderRole = isLeadRole(member.role) || member.canDelegate === true;
 
       const teamMember: TeamMember = {
         id: memberId,
@@ -1203,8 +1204,8 @@ export async function createTeam(this: ApiContext, req: Request, res: Response):
     let leaderId: string | undefined;
     let leaderIds: string[] | undefined;
     if (hierarchical) {
-      // Collect all leaders (team-leader role or canDelegate)
-      const leaders = teamMembers.filter(m => m.role === 'team-leader' || m.canDelegate);
+      // Collect all leaders (lead role or canDelegate)
+      const leaders = teamMembers.filter(m => isLeadRole(m.role) || m.canDelegate);
       if (leaders.length > 0) {
         leaderIds = leaders.map(l => l.id);
         leaderId = leaderIds[0];
@@ -2076,7 +2077,7 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
         res.status(400).json({
           success: false,
           error: gateResult.reason,
-          code: 'wake_gate_no_pool_work',
+          code: AGENT_WAKE_ERROR_CODES.NO_POOL_WORK,
         } as ApiResponse);
         return;
       }
@@ -2155,7 +2156,7 @@ export async function startTeamMember(this: ApiContext, req: Request, res: Respo
           res.status(403).json({
             success: false,
             error: decision.reason,
-            code: 'commitment_requires_owner_approval',
+            code: AGENT_WAKE_ERROR_CODES.OWNER_APPROVAL_REQUIRED,
           } as ApiResponse);
           return;
         }
@@ -2563,7 +2564,7 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     if (eventBusService && targetTeamId) {
       const TTL_MINUTES = 60 * 24;
       const member = freshTeam?.members.find(m => m.id === targetMemberId);
-      const isTeamLead = member?.canDelegate === true;
+      const isTeamLead = !!member && !!freshTeam && canMemberDelegate(freshTeam, member);
       try {
         if (isTeamLead) {
           for (const evtType of ['task:done', 'task:blocked', 'task:failed', 'task:needs_clarification'] as const) {
@@ -3075,15 +3076,19 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
       team.description = updates.description;
     }
     if (updates.hierarchical !== undefined) {
+      const wasHierarchical = team.hierarchical === true;
       team.hierarchical = updates.hierarchical;
-      if (!updates.hierarchical) {
-        // Disable hierarchy: clear leaderId, leaderIds, and member hierarchy fields
-        team.leaderId = undefined;
-        team.leaderIds = undefined;
+      if (!updates.hierarchical && wasHierarchical) {
+        // Disable hierarchy: clear the member hierarchy fields. Who LEADS
+        // the team is not a hierarchy setting (utils/team.utils): the
+        // leaders stay leaders and keep their delegation flag. Saving an
+        // already non-hierarchical team (the edit modal always sends
+        // `hierarchical`) changes nothing.
+        const leadIds = new Set(getTeamLeadIds(team));
         for (const m of team.members) {
           (m as any).parentMemberId = undefined;
           (m as any).hierarchyLevel = undefined;
-          (m as any).canDelegate = undefined;
+          (m as any).canDelegate = leadIds.has(m.id) ? true : undefined;
           (m as any).subordinateIds = undefined;
         }
       }
@@ -3274,6 +3279,99 @@ export async function updateTeam(this: ApiContext, req: Request, res: Response):
       success: false,
       error: 'Failed to update team'
     } as ApiResponse);
+  }
+}
+
+/**
+ * Make a member a lead of its team — `POST /api/teams/:id/lead`
+ * `{ memberId | member, mode? }` (specs/2026-09-30-team-lead-rule.md §3).
+ *
+ * `:id` is the team id or its name; `member` may be the member id, name,
+ * session name or agent id. `mode` is `set` (default: the member becomes THE
+ * lead) or `add` (one more lead). Works on any team — no hierarchical mode
+ * needed. Only the owner (no `X-Agent-Session`) or the orchestrator may call
+ * it; agents get 403. The change reaches lead-only prompt modules on the
+ * member's next wake.
+ *
+ * @param req - Express request
+ * @param res - Express response: `{ teamId, teamName, leaderIds, lead, previous }`
+ */
+export async function setTeamLeadHandler(this: ApiContext, req: Request, res: Response): Promise<void> {
+  try {
+    const caller = readAgentSessionHeader(req);
+    if (caller && caller !== ORCHESTRATOR_SESSION_NAME) {
+      res.status(403).json({ success: false, error: 'Only the owner or the orchestrator can change who leads a team' } as ApiResponse);
+      return;
+    }
+    const ref = String(req.params.id ?? '').trim();
+    const body = (req.body ?? {}) as { memberId?: unknown; member?: unknown; mode?: unknown };
+    const memberRef = String(body.memberId ?? body.member ?? '').trim();
+    const mode = (body.mode === undefined ? 'set' : String(body.mode)) as SetTeamLeadMode;
+    if (!ref || !memberRef) {
+      res.status(400).json({ success: false, error: 'team id and memberId are required' } as ApiResponse);
+      return;
+    }
+    if (!(TEAM_LEAD_CONSTANTS.SET_LEAD_MODES as readonly string[]).includes(mode)) {
+      res.status(400).json({ success: false, error: `mode must be one of: ${TEAM_LEAD_CONSTANTS.SET_LEAD_MODES.join(', ')}` } as ApiResponse);
+      return;
+    }
+    if (ref === CREWLY_CONSTANTS.AGENT_IDS.ORCHESTRATOR_ID) {
+      res.status(400).json({ success: false, error: 'The Orchestrator Team has no team lead' } as ApiResponse);
+      return;
+    }
+
+    const teams = await this.storageService.getTeams();
+    const lower = ref.toLowerCase();
+    const team = teams.find((t) => t.id === ref) ?? teams.find((t) => t.name.toLowerCase() === lower);
+    if (!team) {
+      res.status(404).json({ success: false, error: `Team not found: ${ref}` } as ApiResponse);
+      return;
+    }
+    const want = memberRef.toLowerCase();
+    const member =
+      team.members.find((m) => m.id === memberRef) ??
+      team.members.find((m) => m.sessionName === memberRef || m.agentId === memberRef || resolveMemberSessionName(team.name, m) === memberRef) ??
+      team.members.find((m) => m.name.toLowerCase() === want);
+    if (!member) {
+      res.status(404).json({ success: false, error: `No member "${memberRef}" on team ${team.name}` } as ApiResponse);
+      return;
+    }
+    if (member.role === ORCHESTRATOR_ROLE) {
+      res.status(400).json({ success: false, error: 'The orchestrator cannot lead a team' } as ApiResponse);
+      return;
+    }
+
+    const result = setTeamLead(team, member.id, mode);
+    (team as { updatedAt: string }).updatedAt = new Date().toISOString();
+    await this.storageService.saveTeam(team);
+    logger.info('Team lead changed', {
+      teamId: team.id,
+      teamName: team.name,
+      lead: member.name,
+      mode,
+      before: result.before,
+      after: result.after,
+      by: caller ?? 'owner',
+    });
+    const nameOf = (id: string) => team.members.find((m) => m.id === id)?.name ?? id;
+    res.json({
+      success: true,
+      data: {
+        teamId: team.id,
+        teamName: team.name,
+        leaderIds: result.after,
+        lead: { id: member.id, name: member.name, session: resolveMemberSessionName(team.name, member) },
+        leads: result.after.map(nameOf),
+        previous: result.before.map(nameOf),
+        changed: result.changed,
+      },
+      message: result.changed
+        ? `${member.name} now leads ${team.name}. Takes effect in their prompt on their next wake.`
+        : `${member.name} already leads ${team.name}.`,
+    } as ApiResponse);
+  } catch (error) {
+    logger.error('Error setting team lead', { error: error instanceof Error ? error.message : String(error) });
+    res.status(500).json({ success: false, error: 'Failed to set team lead' } as ApiResponse);
   }
 }
 

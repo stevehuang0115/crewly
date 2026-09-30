@@ -15,7 +15,10 @@
 import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import { projectTicketPriorityRank, type ProjectTicket } from '../../types/project-ticket.types.js';
 import type { Team, TeamMember } from '../../types/index.js';
-import { isTeamLead } from './project-ticket-workflow.service.js';
+import { isTeamLead } from '../../utils/team.utils.js';
+
+/** A member's availability for new work (see {@link memberAvailability}). */
+export type MemberAvailability = 'idle' | 'working' | 'stopped';
 
 /** Why a ticket is put in front of the driver. */
 export type TriageReason = 'backlog' | 'ready_no_taker' | 'ready_stale';
@@ -152,6 +155,44 @@ export function isWorkerCreated(ticket: Pick<ProjectTicket, 'source'>, teams: Te
  */
 export function isMemberIdle(member: Pick<TeamMember, 'agentStatus' | 'workingStatus'>): boolean {
   return (member.agentStatus === 'active' || member.agentStatus === 'started') && member.workingStatus === 'idle';
+}
+
+/**
+ * How available a member is for a new ticket, as the triage brief shows it:
+ * - `idle` — running with nothing to do (also while it is starting up);
+ * - `working` — running and busy with a turn;
+ * - `stopped` — not running (stopped, idle-stopped, suspended). Available:
+ *   assigning it a ticket starts it. Never "busy".
+ *
+ * @param member - Team member
+ * @returns The member's availability
+ */
+export function memberAvailability(member: Pick<TeamMember, 'agentStatus' | 'workingStatus'>): MemberAvailability {
+  const status = member.agentStatus;
+  if (status === 'active' || status === 'started') return member.workingStatus === 'in_progress' ? 'working' : 'idle';
+  if (status === 'starting' || status === 'activating') return 'idle';
+  return 'stopped';
+}
+
+/**
+ * The one line saying what a member is responsible for, for the triage
+ * brief: the member's own `jobDescription`, else its role's description
+ * (`config/roles/<role>/role.json` or a user override), else a built-in line
+ * for roles that ship without one ({@link TICKET_AUTOPILOT_CONSTANTS.ROLE_RESPONSIBILITY_FALLBACKS}).
+ *
+ * @param member - Team member
+ * @param roleDescription - Description of the member's role, when known
+ * @returns One line, or undefined when nothing is known
+ */
+export function memberResponsibility(
+  member: Pick<TeamMember, 'role' | 'jobDescription'>,
+  roleDescription?: string | null,
+): string | undefined {
+  const own = member.jobDescription?.trim();
+  if (own) return own;
+  const described = roleDescription?.trim();
+  if (described) return described;
+  return TICKET_AUTOPILOT_CONSTANTS.ROLE_RESPONSIBILITY_FALLBACKS[String(member.role ?? '')];
 }
 
 /**

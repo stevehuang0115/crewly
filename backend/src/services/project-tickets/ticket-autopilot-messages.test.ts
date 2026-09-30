@@ -6,6 +6,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import {
+  MEMBER_AVAILABILITY_LABELS,
+  TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE,
   TICKET_AUTOPILOT_BOUNDARIES,
   buildBudgetPausedMessage,
   buildDigestMessage,
@@ -53,8 +55,16 @@ describe('buildTriageBrief', () => {
     ],
     more: 2,
     members: [
-      { session: 'ce-owen', name: 'Owen', role: 'lead', idle: true, inFlight: 0 },
-      { session: 'ce-dev', idle: false, inFlight: 1 },
+      { session: 'ce-owen', name: 'Owen', role: 'tech-lead', lead: true, availability: 'idle', inFlight: 0, responsibility: 'Leads the team' },
+      { session: 'ce-dev', availability: 'working', inFlight: 1 },
+      {
+        session: 'ce-nova-a2b1f759',
+        name: 'Nova',
+        role: 'content-strategist',
+        availability: 'stopped',
+        inFlight: 0,
+        responsibility: 'Plans and writes content: articles, posts, copy and the images or visuals that go with them',
+      },
     ],
     maxInFlightPerMember: 1,
     now: NOW,
@@ -84,10 +94,26 @@ describe('buildTriageBrief', () => {
     expect(brief).toContain('2 more tickets will come in the next triage');
   });
 
-  it('shows the team with idle state and in-flight counts', () => {
-    expect(brief).toContain('- ce-owen (Owen, lead) — idle, 0 in progress');
-    expect(brief).toContain('- ce-dev — busy, 1 in progress');
+  it('shows the team with three states — idle, working, stopped (available) — and in-flight counts', () => {
+    expect(brief).toContain('- ce-owen (Owen, tech-lead, lead) — idle; 0 in progress');
+    expect(brief).toContain('- ce-dev — working; 1 in progress');
+    // The CE incident: an idle-stopped member was listed as "busy".
+    expect(brief).toContain('- ce-nova-a2b1f759 (Nova, content-strategist) — stopped: available, will be started when assigned; 0 in progress');
+    expect(brief).not.toContain('busy');
     expect(brief).toContain('At most 1 ticket in progress per member');
+    expect(MEMBER_AVAILABILITY_LABELS.stopped).toMatch(/available/);
+  });
+
+  it('gives each member a role line so the lead assigns by fit', () => {
+    expect(brief).toContain('  role: Leads the team');
+    expect(brief).toContain('  role: Plans and writes content');
+  });
+
+  it('tells the lead to delegate by role and to treat old splits as hints', () => {
+    expect(brief).toContain('## Who does what');
+    for (const g of TICKET_AUTOPILOT_ASSIGNMENT_GUIDANCE) expect(brief).toContain(g);
+    expect(brief).toMatch(/Take a ticket yourself only for lead-level work/);
+    expect(brief).toMatch(/only a hint/);
   });
 });
 
@@ -146,5 +172,13 @@ describe('team-leader prompt', () => {
     const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
     expect(text).toContain('Ticket autopilot / triage');
     for (const b of TICKET_AUTOPILOT_BOUNDARIES) expect(text).toContain(b);
+  });
+
+  it.each(['config/roles/team-leader/prompt.md', 'config/roles/team-leader/tl-addon.md'])('%s tells the lead to delegate by role', (rel) => {
+    const text = fs.readFileSync(path.resolve(__dirname, '../../../..', rel), 'utf8');
+    expect(text).toContain('Delegate by role');
+    expect(text).toContain('lead-level work (review, decisions, owner communication, cross-team coordination)');
+    expect(text).toMatch(/stopped\* is available/);
+    expect(text).toContain('only a hint');
   });
 });

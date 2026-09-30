@@ -24,6 +24,8 @@ import { TicketAutopilotService, type OwnerNotice } from '../../services/project
 import { TokenUsageService } from '../../services/monitoring/token-usage.service.js';
 import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
+import { createHttpAssigneeWaker } from '../../services/project-tickets/ticket-assignee-waker.js';
+import { getRoleService } from '../../services/settings/role.service.js';
 import * as path from 'path';
 
 /**
@@ -39,6 +41,8 @@ export function projectTicketWorkflow(): ProjectTicketWorkflowService {
       tickets: ProjectTicketService.getInstance(),
       pool: TaskPoolService.getInstance(),
       directory: StorageService.getInstance(),
+      // A stopped assignee is started through the normal member-start path.
+      wakeAssignee: createHttpAssigneeWaker(),
     });
     ProjectTicketWorkflowService.setInstance(wf);
   }
@@ -63,6 +67,7 @@ export function createDefaultTicketAutopilot(
     ledger: TokenUsageService.getInstance(),
     notifyOwner,
     stateFile: path.join(getCrewlyHomePath(), TICKET_AUTOPILOT_CONSTANTS.STATE_FILENAME),
+    roleDescription: async (role) => (await getRoleService().getRoleByName(role))?.description ?? null,
   });
 }
 
@@ -276,7 +281,7 @@ export async function claimProjectTicket(req: Request, res: Response): Promise<v
  * POST /api/project-tickets/:project/:id/assign — `{ assignee, start? }`.
  *
  * @param req - Request
- * @param res - `{ success, data: { ticket, workItem? } }`
+ * @param res - `{ success, data: { ticket, workItem?, wake? } }` (`wake`: a stopped assignee was started, or why not)
  */
 export async function assignProjectTicket(req: Request, res: Response): Promise<void> {
   await respond(res, () => {

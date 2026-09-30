@@ -1,6 +1,7 @@
 import React from 'react';
 import { TeamMemberRow } from './TeamMemberRow';
 import { MembersListProps } from './types';
+import { getTeamLeadIds } from '../../utils/team.utils';
 
 export const MembersList: React.FC<MembersListProps> = ({
   team,
@@ -12,7 +13,9 @@ export const MembersList: React.FC<MembersListProps> = ({
   onViewTerminal,
   onViewAgent,
   isStartingTeam,
+  onMakeLead,
 }) => {
+  const leadIds = new Set(getTeamLeadIds(team ?? {}));
   return (
     <div className="space-y-4">
       {team?.members?.map((member) => (
@@ -25,6 +28,8 @@ export const MembersList: React.FC<MembersListProps> = ({
           onViewTerminal={onViewTerminal}
           onViewAgent={onViewAgent}
           isStartingTeam={isStartingTeam}
+          isLead={leadIds.has(member.id)}
+          onMakeLead={member.role === 'orchestrator' ? undefined : onMakeLead}
         />
       ))}
       {!team?.members?.length && (

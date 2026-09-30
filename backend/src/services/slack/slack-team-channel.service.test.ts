@@ -17,6 +17,7 @@ import {
   SlackTeamChannelService,
   slackChannelNameFor,
   slackIdentityFor,
+  teamChannelLeader,
   teamChannelMembers,
   orchestratorSyncEntry,
   orchestratorSyncSession,
@@ -419,6 +420,16 @@ describe('teamChannelMembers', () => {
     const got = teamChannelMembers(t);
     expect(got.map((m) => m.name)).toEqual(['Sam', 'Sage']);
     expect(got[1].sessionName).toBe('think-tank-sage-c1d2e3f4');
+  });
+});
+
+describe('teamChannelLeader', () => {
+  it('uses the shared team-lead rule: tech-lead, then an explicit lead, else the first member', () => {
+    const ce = team({ members: [member('Nova', 'developer'), member('Owen', 'tech-lead' as TeamMember['role'])] });
+    expect(teamChannelLeader(ce)?.name).toBe('Owen');
+    const explicit = { ...ce, leaderIds: [ce.members[0].id] } as Team;
+    expect(teamChannelLeader(explicit)?.name).toBe('Nova');
+    expect(teamChannelLeader(team({ members: [member('Sam', 'developer'), member('Mia', 'qa')] }))?.name).toBe('Sam');
   });
 });
 

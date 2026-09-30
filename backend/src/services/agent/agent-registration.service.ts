@@ -46,6 +46,7 @@ import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thr
 import { delay } from '../../utils/async.utils.js';
 import { buildRuntimeModelFlags } from '../../utils/runtime-model-flags.utils.js';
 import { effectiveMemberModelId } from '../../utils/member-default-model.utils.js';
+import { canMemberDelegate, getLeadSubordinates } from '../../utils/team.utils.js';
 import { stripToolCallMarkup } from '../../utils/tool-call-markup.utils.js';
 import { appendIncompleteNotice } from '../../utils/incomplete-turn.utils.js';
 import { filterAgentTurnReply } from '../../utils/agent-reply-filter.utils.js';
@@ -2350,7 +2351,7 @@ export class AgentRegistrationService {
 					}
 
 					// Architecture Upgrade Phase 6: set up standing task event subscriptions
-					this.setupStandingSubscriptions(sessionName, member.canDelegate ? 'team-lead' : 'executor', team.id);
+					this.setupStandingSubscriptions(sessionName, canMemberDelegate(team, member) ? 'team-lead' : 'executor', team.id);
 
 					return true;
 				}
@@ -2571,22 +2572,16 @@ export class AgentRegistrationService {
 				+ 'Browser skills (e.g. remote-browser) are the preferred way to perform browser tasks. '
 				+ 'Bash skills in the Crewly skills directory are available for team communication and status reporting.';
 
-			// Inject Team Lead addon for members with canDelegate=true and subordinates
-			if (foundMember?.canDelegate && foundMember.subordinateIds && foundMember.subordinateIds.length > 0 && foundTeam) {
+			// Inject Team Lead addon for members that may delegate (a lead by the
+			// team-lead rule, or canDelegate=true) and have members to direct.
+			if (foundMember && foundTeam && canMemberDelegate(foundTeam, foundMember)) {
 				try {
-					// Resolve subordinateIds to SubordinateInfo[]
-					const subordinates: SubordinateInfo[] = foundMember.subordinateIds
-						.map((subId) => {
-							const subMember = foundTeam!.members?.find((m) => m.id === subId);
-							if (!subMember) return null;
-							return {
-								name: subMember.name,
-								sessionName: subMember.sessionName || '',
-								role: subMember.role || 'developer',
-								memberId: subMember.id || subId,
-							} as SubordinateInfo;
-						})
-						.filter((s): s is SubordinateInfo => s !== null);
+					const subordinates: SubordinateInfo[] = getLeadSubordinates(foundTeam, foundMember).map((subMember) => ({
+						name: subMember.name,
+						sessionName: subMember.sessionName || subMember.agentId || '',
+						role: subMember.role || 'developer',
+						memberId: subMember.id,
+					}));
 
 					if (subordinates.length > 0) {
 						const tlConfig: TeamMemberSessionConfig = {
@@ -2741,18 +2736,17 @@ export class AgentRegistrationService {
 				// Pre-compute the subordinate roster — used by both the helper
 				// path (passed via runtime.subordinates) and the orchestrator
 				// fallback path below.
-				const subordinates = foundMember?.subordinateIds
-					?.map((subId) => {
-						const subMember = foundTeam?.members?.find((m) => m.id === subId);
-						if (!subMember) return null;
-						return {
-							name: subMember.name,
-							sessionName: subMember.sessionName || '',
-							role: subMember.role || 'developer',
-							memberId: subMember.id || subId,
-						};
-					})
-					.filter((s): s is NonNullable<typeof s> => s !== null);
+				// A lead by the team-lead rule with no explicit reports directs the
+				// rest of the team (utils/team.utils getLeadSubordinates).
+				const subordinateMembers = foundMember && foundTeam ? getLeadSubordinates(foundTeam, foundMember) : [];
+				const subordinates = subordinateMembers.length > 0
+					? subordinateMembers.map((subMember) => ({
+						name: subMember.name,
+						sessionName: subMember.sessionName || subMember.agentId || '',
+						role: subMember.role || 'developer',
+						memberId: subMember.id,
+					}))
+					: undefined;
 
 				const teamNormsPath = foundTeam?.id
 					? path.join(os.homedir(), CREWLY_CONSTANTS.PATHS.CREWLY_HOME, 'teams', foundTeam.id, 'norms')
