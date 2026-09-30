@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ApiController } from '../../controllers/api.controller.js';
 import * as systemHandlers from '../../controllers/system/system.controller.js';
+import { getOwnerMessageWatchdog } from '../../services/messaging/owner-message-watchdog.service.js';
 
 export function registerSystemRoutes(router: Router, apiController: ApiController): void {
   // System Administration Routes
@@ -13,6 +14,12 @@ export function registerSystemRoutes(router: Router, apiController: ApiControlle
   router.get('/system/logs', (req, res) => systemHandlers.getSystemLogs.call(apiController, req, res));
   router.get('/system/alerts', (req, res) => systemHandlers.getAlerts.call(apiController, req, res));
   router.patch('/system/alerts/:conditionId', (req, res) => systemHandlers.updateAlertCondition.call(apiController, req, res));
+
+  // Owner messages still waiting for an answer (debug; specs/2026-09-30-owner-message-guarantee.md)
+  router.get('/system/unanswered-owner-messages', (_req, res) => {
+    const watchdog = getOwnerMessageWatchdog();
+    res.json({ success: true, data: { running: !!watchdog, messages: watchdog?.list() ?? [] } });
+  });
 
   // Server restart
   router.post('/system/restart', (req, res) => systemHandlers.restartServer.call(apiController, req, res));

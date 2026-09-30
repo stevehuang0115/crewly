@@ -547,3 +547,48 @@ describe('SlackTypingPlaceholderService — a placeholder that cannot be posted'
     expect(seen).toHaveLength(3);
   });
 });
+
+describe('SlackTypingPlaceholderService — signals for the unanswered-owner-message watchdog', () => {
+  const noTimer = { setTimer: () => 0 as unknown as ReturnType<typeof setTimeout>, clearTimer: () => undefined };
+  const k = { agentSession: 'mk-ella', slackChannelId: 'D1', threadTs: '9.9' };
+
+  it('flags its own placeholder posts as not an answer', async () => {
+    const { slack, sent } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    await svc.begin(k, ella);
+    expect(sent[0]).toMatchObject({ notAnAnswer: true });
+  });
+
+  it('owesThread sees any agent placeholder in the thread', async () => {
+    const { slack } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    expect(svc.owesThread('D1', '9.9')).toBe(false);
+    await svc.begin(k, ella);
+    expect(svc.owesThread('D1', '9.9')).toBe(true);
+    expect(svc.owesThread('D1', '1.1')).toBe(false);
+  });
+
+  it('tells listeners when the answer replaced the placeholder — not for an interim note', async () => {
+    const { slack } = makeSlack();
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    const answered: Array<[string, string | undefined]> = [];
+    svc.onThreadAnswered((c, t) => answered.push([c, t]));
+    await svc.begin(k, ella);
+    await svc.resolve(k, 'plan: …', ella, { reopen: 'typing' });
+    expect(answered).toEqual([]);
+    await svc.resolve(k, 'done', ella);
+    expect(answered).toEqual([['D1', '9.9']]);
+    await svc.dropThread(k);
+    expect(answered).toHaveLength(2);
+  });
+
+  it('tells listeners when a placeholder settled without a reply', async () => {
+    const { slack } = makeSlack({ deleteMessage: async () => undefined, addReaction: async () => undefined });
+    const svc = new SlackTypingPlaceholderService({ slack, ...noTimer });
+    const settled: Array<[string, string | undefined]> = [];
+    svc.onThreadSettled((c, t) => settled.push([c, t]));
+    await svc.begin(k, ella, 'typing', '9.9');
+    await svc.settleTurnWithoutReply('mk-ella', Date.now() + 60 * 60 * 1000);
+    expect(settled).toEqual([['D1', '9.9']]);
+  });
+});

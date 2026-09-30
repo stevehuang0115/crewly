@@ -27,9 +27,9 @@ import type {
   MentionTarget,
 } from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
+import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
-import { isSlackDm } from '../orc/orc-reply-route.service.js';
+import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
 
 // ---------------------------------------------------------------------------
@@ -125,6 +125,13 @@ export interface DispatchMessageResult {
 /** Constructor options for {@link ChatV2DispatcherService}. */
 export interface ChatV2DispatcherOptions {
   agentSink: AgentMessageSink;
+  /**
+   * Told after every dispatch of a user message, with its outcome — the
+   * unanswered-owner-message watchdog tracks what reached an agent
+   * (specs/2026-09-30-owner-message-guarantee.md). Must not throw; errors are
+   * logged and ignored.
+   */
+  onDispatched?: (channel: ChatChannelDTO, message: ChatMessageDTO, result: DispatchMessageResult) => void | Promise<void>;
   /**
    * Override the prompt formatter for tests / future customization. The
    * default matches the `reply-chat` skill's parser exactly.
@@ -463,7 +470,7 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
         ? `分派本频道的消息: 消息没有 @ 任何人，而频道里此刻没有一个 agent 醒着，所以叫醒了你（本频道负责人）来决定该谁回答。若该你回答：**先**运行 \`${workingCmd}\`，再用 \`reply-channel\` skill 回复（${cmd}）。若该别的成员回答：用 reply-channel 发一句简短的话 @他（例如「@名字 这个你来」），他会被叫醒并接手；你自己不要替他回答。若与谁都无关，什么都不做。`
         : mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 你，转给你是让你自己判断要不要回（频道里醒着的 agent 都会收到，各自判断）。若你是本频道的负责人（team leader），关于团队本身的问题（谁负责、有哪些成员、在做什么）由你来答，依据下面的成员名单和你的团队上下文，不要说"没有记录"。若与你的工作相关、你有对应的上下文或知识而决定回复：**先**运行 \`${workingCmd}\`，让对方看到你接手了，再用 \`reply-channel\` skill 回复（${cmd}）。若是频道里的人之间在交流、或与你无关，什么都不要做——不要回复，不要发 --working，也不要为此展开调查。${args.roomPresence ? wakeColleague : ''}`
-      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）——命令原样运行${identity ? '，开头的 CREWLY_SESSION_NAME=… 不要删，它告诉系统是你在回复' : ''}；reply-channel 报错时把命令原样再跑一次，不要换别的回复方式（别的方式发不到这个 thread，对方看不到）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
+      : `回复本频道: 用 \`reply-channel\` skill（${cmd}）——命令原样运行${identity ? '，开头的 CREWLY_SESSION_NAME=… 不要删，它告诉系统是你在回复' : ''}；reply-channel 报错时把命令原样再跑一次，或改用上面的 \`reply\`；不要换别的回复方式（别的方式发不到这个 thread，对方看不到）。回复会以你的名字发到 Slack 同一个 thread；之后这个 thread 里的追问会直接转给你，不需要再被 @。需要同事（本机或其他机器上的 agent）接手时，在回复里写 @名字 即可，会转成真正的 Slack 提及并送达对方。多个 agent 讨论时必须收敛：每人在同一个 thread 里最多发言两轮；team leader（没有则第一个发言的人）负责在两轮后汇总结论并明确写「结论」；结论发出后其他人不再回复，除非有明确反对并说明理由。不要为了礼貌互相致谢或复述对方观点。`;
   } else if (args.slackDmChannelId && mode === 'required') {
     const threadKey = parseSlackThreadKey(args.slackThreadKey) ? args.slackThreadKey : undefined;
     const threadArg = threadKey ? ` --thread ${threadKey}` : '';
@@ -478,6 +485,14 @@ export function defaultFormatPrompt(args: FormatPromptArgs): string {
     replyHint = mode === 'optional'
       ? `回复本频道: 这条消息没有 @ 任何人，只转给你判断——你就是本频道的负责人（team leader；没有 TL 时为首位成员），关于团队本身的问题由你来答。若与团队的工作相关且你有对应的上下文，用 \`reply-chat\` skill (conversationId="${channelId}") 回复；若与你无关，不要回复，也不要为此展开调查。`
       : `回复本频道: 用 \`reply-chat\` skill, 参数 conversationId="${channelId}"、content="<your reply>"。`;
+  }
+  // One reply entry point first (specs/2026-09-30-owner-message-guarantee.md
+  // §B): the harness sends `reply` back where this message came from, so the
+  // agent needs no ids. The detailed per-surface instructions follow for
+  // agents already using them. Not for the orchestrator's routing turn.
+  if (args.wakeRole !== 'orchestrator') {
+    const replyIdentity = /^[A-Za-z0-9._-]+$/.test(args.agentSession ?? '') ? `CREWLY_SESSION_NAME=${args.agentSession} ` : '';
+    replyHint = AGENT_REPLY_CONSTANTS.HINT_LINE.split('{identity}').join(replyIdentity) + ' ' + replyHint;
   }
   // Size the job before starting (owner, 2026-09-24): a long job answered
   // only at the end leaves "is working on it…" as the whole story for
@@ -525,6 +540,7 @@ export class ChatV2DispatcherService {
   private readonly huddleLeaderFor?: (channelId: string) => Promise<string | null>;
   private readonly activateAgent?: (agentSession: string) => Promise<boolean>;
   private readonly recentTurnsFor?: (channelId: string, threadId?: string) => readonly ChatContextTurn[];
+  private readonly onDispatched?: ChatV2DispatcherOptions['onDispatched'];
   private readonly logger: ComponentLogger;
 
   constructor(options: ChatV2DispatcherOptions) {
@@ -537,6 +553,7 @@ export class ChatV2DispatcherService {
     this.huddleLeaderFor = options.huddleLeaderFor;
     this.activateAgent = options.activateAgent;
     this.recentTurnsFor = options.recentTurnsFor;
+    this.onDispatched = options.onDispatched;
     this.logger = LoggerService.getInstance().createComponentLogger('ChatV2Dispatcher');
   }
 
@@ -600,6 +617,42 @@ export class ChatV2DispatcherService {
     channel: ChatChannelDTO,
     message: ChatMessageDTO,
     options: DispatchMessageOptions = {},
+  ): Promise<DispatchMessageResult> {
+    const result = await this.route(channel, message, options);
+    if (this.onDispatched && message.senderType === 'user') {
+      try {
+        await this.onDispatched(channel, message, result);
+      } catch (err) {
+        this.logger.warn('onDispatched hook threw (ignored)', {
+          channelId: channel.id,
+          messageId: message.id,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Tell the reply router which chat thread an agent was just asked in, so
+   * its `reply` lands there (specs/2026-09-30-owner-message-guarantee.md §B).
+   *
+   * @param sessionName - Recipient
+   * @param channelId - Channel of the message
+   * @param threadId - Thread the answer belongs in (undefined for a DM)
+   */
+  private noteOriginThread(sessionName: string, channelId: string, threadId: string | undefined): void {
+    try {
+      OrcReplyRouteService.getInstance().noteOriginThread(sessionName, channelId, threadId);
+    } catch {
+      /* routing hint only */
+    }
+  }
+
+  private async route(
+    channel: ChatChannelDTO,
+    message: ChatMessageDTO,
+    options: DispatchMessageOptions,
   ): Promise<DispatchMessageResult> {
     if (message.senderType !== 'user') {
       return {
@@ -880,6 +933,7 @@ export class ChatV2DispatcherService {
       if (result.ok) {
         outcomes.push({ sessionName, responseMode, dispatched: true });
         anyDispatched = true;
+        this.noteOriginThread(sessionName, channel.id, options.threadId ?? message.threadId ?? message.id);
       } else {
         this.logger.warn('chat-v2 huddle dispatch reported failure', {
           channelId: channel.id,
@@ -961,6 +1015,7 @@ export class ChatV2DispatcherService {
         if (result.success) {
           outcomes.push({ target, dispatched: true });
           anyDispatched = true;
+          this.noteOriginThread(target.sessionName, channel.id, message.threadId ?? message.id);
         } else {
           this.logger.warn('chat-v2 mention dispatch reported failure', {
             channelId: channel.id,
@@ -1107,6 +1162,7 @@ export class ChatV2DispatcherService {
       agentSession: channel.agentSession,
       queued: result.queued ?? false,
     });
+    this.noteOriginThread(channel.agentSession, channel.id, undefined);
     return { dispatched: true };
   }
 }

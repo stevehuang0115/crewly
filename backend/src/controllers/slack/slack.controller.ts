@@ -110,7 +110,7 @@ function handleSlackPlatformError(error: unknown, res: Response): boolean {
  * @param params.content - The turn content to persist (text or file marker)
  * @param params.source - Marker for the chat-v2 metadata.source field
  */
-async function recordSlackReplyBookkeeping(params: {
+export async function recordSlackReplyBookkeeping(params: {
   channelId: string;
   threadTs?: string;
   conversationId?: string;

@@ -961,6 +961,99 @@ describe('Chat Controller', () => {
     });
 
     /**
+     * specs/2026-09-30-owner-message-guarantee.md §B: a substantive answer
+     * with no / legacy ids that the agent owes the owner goes where the
+     * owner's message came from instead of into the orchestrator's queue.
+     */
+    describe('an owed answer with missing or wrong ids goes to its turn origin', () => {
+      const ELLA = 'crewly-marketing-ella-owed01';
+      let enqueue: jest.Mock;
+
+      beforeEach(() => {
+        enqueue = jest.fn();
+        setMessageQueueService({ enqueue } as any);
+      });
+
+      afterEach(async () => {
+        setMessageQueueService(null as any);
+        const { setOwnerMessageWatchdog } = await import('../../services/messaging/owner-message-watchdog.service.js');
+        setOwnerMessageWatchdog(null);
+      });
+
+      async function setup(owed: boolean): Promise<string> {
+        const { OrcReplyRouteService } = await import('../../services/orc/orc-reply-route.service.js');
+        const { OwnerMessageWatchdogService, setOwnerMessageWatchdog } = await import(
+          '../../services/messaging/owner-message-watchdog.service.js'
+        );
+        OrcReplyRouteService.resetInstance();
+        const { channel } = getChatV2Service().ensureDmChannel({
+          agentSession: ELLA,
+          name: 'Ella',
+          principal: { userId: 'dev-user-001', source: 'oss' },
+        });
+        OrcReplyRouteService.getInstance().noteDelivery(ELLA, `[CHAT:${channel.id}] <steve@Ella>\n\nWhere is the report?`);
+        const watchdog = new OwnerMessageWatchdogService({
+          isBusy: () => false,
+          nudge: async () => ({ outcome: 'sent' }),
+          postNote: async () => true,
+        });
+        if (owed) {
+          watchdog.track({
+            surface: 'chat',
+            chatChannelId: channel.id,
+            messageId: 'owner-msg-1',
+            responsible: ELLA,
+            recipients: [ELLA],
+            required: true,
+            text: 'Where is the report?',
+          });
+        }
+        setOwnerMessageWatchdog(watchdog);
+        return channel.id;
+      }
+
+      it('no conversation named → delivered to the DM the owner wrote in', async () => {
+        const dmId = await setup(true);
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ELLA)
+          .send({ content: 'The report is in the shared drive.', senderName: 'Ella', senderType: 'agent' });
+        expect(response.status).toBe(201);
+        expect(response.body.data).toEqual(expect.objectContaining({ conversationId: dmId, reroutedToOrigin: true }));
+        expect(getChatV2Service().getMessageForBridge(response.body.data.messageId)?.senderId).toBe(ELLA);
+        expect(enqueue).not.toHaveBeenCalled();
+      });
+
+      it('a legacy conversation id → still the DM', async () => {
+        const dmId = await setup(true);
+        const legacy = await chatService.createNewConversation('Agent Chat');
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ELLA)
+          .send({ content: 'The report is in the shared drive.', senderName: 'Ella', senderType: 'agent', conversationId: legacy.id });
+        expect(response.body.data.conversationId).toBe(dmId);
+        expect(enqueue).not.toHaveBeenCalled();
+      });
+
+      it('status markers, and answers nobody is owed, keep the orchestrator path', async () => {
+        await setup(true);
+        const status = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ELLA)
+          .send({ content: '[DONE] report shipped', senderName: 'Ella', senderType: 'agent' });
+        expect(status.body.data.messageId).toBeUndefined();
+
+        await setup(false);
+        const unowed = await request(app)
+          .post('/api/chat/agent-response')
+          .set('X-Agent-Session', ELLA)
+          .send({ content: 'Delegation report: all three pages done.', senderName: 'Ella', senderType: 'agent' });
+        expect(unowed.body.data.messageId).toBeUndefined();
+        expect(enqueue).toHaveBeenCalledTimes(2);
+      });
+    });
+
+    /**
      * 2026-09-26: the owner asked the orc a question in a Slack DM; a
      * WorkItem-dispatch system turn right after it posted the answer (with
      * the owner's pending question in it) to #think-tank.

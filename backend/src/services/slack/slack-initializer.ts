@@ -34,6 +34,7 @@ import { SLACK_CLOUD_CONSTANTS, CREWLY_CONSTANTS, SLACK_AGENT_DM_CONSTANTS, SLAC
 import * as path from 'path';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.js';
+import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
@@ -922,6 +923,14 @@ export async function startSlackTeamChannels(): Promise<void> {
         isAgentMidTurn: (agentSession) => InFlightTurnTracker.getInstance().settle(agentSession),
       });
       setSlackTypingPlaceholderService(typing);
+      // The unanswered-owner-message watchdog: a placeholder edited into the
+      // answer, or settled without one (✅), is what the owner sees.
+      typing.onThreadAnswered((slackChannelId, threadTs) =>
+        getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'placeholder replaced by the answer'),
+      );
+      typing.onThreadSettled((slackChannelId, threadTs) =>
+        getOwnerMessageWatchdog()?.noteSlackAnswer(slackChannelId, threadTs, 'agent settled: no reply needed'),
+      );
     }
     // The harness posts "working on it" for the first recipient of an
     // owner's message that starts on it — not left to the agent's own

@@ -1379,3 +1379,56 @@ describe('ChatV2DispatcherService', () => {
     });
   });
 });
+
+describe('owner-message guarantee hooks (specs/2026-09-30-owner-message-guarantee.md)', () => {
+  it('every delivered prompt starts its reply hint with the single `reply` command', () => {
+    const prompt = defaultFormatPrompt({
+      channelId: 'chan-1',
+      channelName: 'Chat with Sam',
+      agentSession: 'crewly-product-sam-dd2b46f7',
+      senderId: 'steve',
+      content: 'hi',
+    });
+    expect(prompt).toContain('CREWLY_SESSION_NAME=crewly-product-sam-dd2b46f7 bash config/skills/agent/core/reply/execute.sh "<你的回复>"');
+    // The detailed legacy instruction is still there.
+    expect(prompt).toContain('reply-chat');
+  });
+
+  it('the orchestrator routing turn gets no reply hint', () => {
+    const prompt = defaultFormatPrompt({
+      channelId: 'room-1',
+      channelName: 'room',
+      agentSession: 'crewly-orc',
+      senderId: 'steve',
+      content: 'hi',
+      replyVia: 'reply-channel',
+      wakeRole: 'orchestrator',
+    });
+    expect(prompt).not.toContain('core/reply/execute.sh');
+  });
+
+  it('tells onDispatched about every user dispatch, with its outcome', async () => {
+    const { sink } = makeSink({ success: true });
+    const seen: unknown[] = [];
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      onDispatched: (channel, message, result) => {
+        seen.push([channel.id, message.id, result.dispatched, result.strategy]);
+      },
+    });
+    await dispatcher.dispatchMessage(makeChannel(), makeMessage());
+    await dispatcher.dispatchMessage(makeChannel(), makeMessage({ senderType: 'agent' }));
+    expect(seen).toEqual([['chan-1', 'msg-1', true, 'dm']]);
+  });
+
+  it('a throwing onDispatched never breaks delivery', async () => {
+    const { sink } = makeSink({ success: true });
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      onDispatched: () => {
+        throw new Error('boom');
+      },
+    });
+    await expect(dispatcher.dispatchMessage(makeChannel(), makeMessage())).resolves.toEqual(expect.objectContaining({ dispatched: true }));
+  });
+});
