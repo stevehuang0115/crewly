@@ -104,7 +104,7 @@ import { getSlackTypingPlaceholderService } from './services/slack/slack-typing-
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -3046,6 +3046,33 @@ void (async () => {
 				const { projectTicketWorkflow } = await import('./controllers/project-tickets/project-tickets.controller.js');
 				projectTicketWorkflow().start(this.eventBusService);
 				this.logger.info('Project ticket workflow started — tickets follow their WorkItems');
+
+				// Ticket autopilot (specs/2026-09-30-ticket-autopilot.md): per-project
+				// switch, default off. Wakes a project's lead to triage its backlog and
+				// sends the owner batched questions + an evening digest through the
+				// usual Slack owner-notification path. Kill switch: CREWLY_TICKET_AUTOPILOT=0.
+				if (process.env[TICKET_AUTOPILOT_CONSTANTS.ENV_SWITCH] !== '0') {
+					const { createDefaultTicketAutopilot } = await import('./controllers/project-tickets/project-tickets.controller.js');
+					const { TicketAutopilotService } = await import('./services/project-tickets/ticket-autopilot.service.js');
+					const autopilot = createDefaultTicketAutopilot(async ({ title, message, urgent }) => {
+						const slack = getSlackService();
+						if (!slack.isConnected()) return false;
+						await slack.sendNotification({
+							type: 'project_update',
+							title,
+							message,
+							urgency: urgent ? 'high' : 'normal',
+							timestamp: new Date().toISOString(),
+						});
+						return true;
+					});
+					TicketAutopilotService.getInstance()?.stop();
+					TicketAutopilotService.setInstance(autopilot);
+					autopilot.start();
+					this.logger.info('Ticket autopilot started (acts only on projects that switched it on)');
+				} else {
+					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
+				}
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
 					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),

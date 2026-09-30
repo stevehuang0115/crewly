@@ -1,7 +1,7 @@
 /**
  * Tests for the project tickets router configuration.
  */
-import { createProjectTicketsMigrationRouter, createProjectTicketsRouter } from './project-tickets.routes.js';
+import { createProjectTicketsMigrationRouter, createProjectTicketsRouter, createTicketAutopilotRouter } from './project-tickets.routes.js';
 
 type Stack = { stack: Array<{ route?: { path: string; methods: Record<string, boolean> } }> };
 
@@ -20,5 +20,13 @@ describe('project tickets routers', () => {
 
   it('keeps the migration on its own prefix', () => {
     expect(routesOf(createProjectTicketsMigrationRouter())).toEqual(['post /:project']);
+  });
+
+  it('exposes ask-owner on the tickets router', () => {
+    expect(routesOf(createProjectTicketsRouter())).toContain('post /:project/:id/ask-owner');
+  });
+
+  it('keeps the autopilot switch on its own prefix (not relay-writable)', () => {
+    expect(routesOf(createTicketAutopilotRouter())).toEqual(['get /:project', 'post /:project']);
   });
 });

@@ -6,8 +6,9 @@ import request from 'supertest';
 import * as fs from 'fs/promises';
 import * as os from 'os';
 import * as path from 'path';
-import { createProjectTicketsMigrationRouter, createProjectTicketsRouter } from './project-tickets.routes.js';
-import { projectTicketWorkflow } from './project-tickets.controller.js';
+import { createProjectTicketsMigrationRouter, createProjectTicketsRouter, createTicketAutopilotRouter } from './project-tickets.routes.js';
+import { projectTicketWorkflow, ticketAutopilot } from './project-tickets.controller.js';
+import { TicketAutopilotService } from '../../services/project-tickets/ticket-autopilot.service.js';
 import { ProjectTicketService } from '../../services/project-tickets/project-ticket.service.js';
 import { ProjectTicketWorkflowService, type ProjectTicketPool } from '../../services/project-tickets/project-ticket-workflow.service.js';
 import { StorageService } from '../../services/core/storage.service.js';
@@ -61,6 +62,7 @@ describe('project tickets API', () => {
   app.use(express.json());
   app.use('/api/project-tickets', createProjectTicketsRouter());
   app.use('/api/project-tickets-migrate', createProjectTicketsMigrationRouter());
+  app.use('/api/project-ticket-autopilot', createTicketAutopilotRouter());
 
   beforeEach(async () => {
     root = await fs.mkdtemp(path.join(os.tmpdir(), 'crewly-pt-api-'));
@@ -78,11 +80,31 @@ describe('project tickets API', () => {
       }),
     );
     jest.spyOn(StorageService, 'getInstance').mockReturnValue({ getProjects: async () => [project] } as unknown as StorageService);
+    const wf = ProjectTicketWorkflowService.getInstance()!;
+    TicketAutopilotService.setInstance(
+      new TicketAutopilotService({
+        tickets: new ProjectTicketService({ logger: quiet(), ensureTracked: async () => 'tracked' }),
+        pool: { addToPool: async () => undefined, getAllItems: async () => [], cancelQueued: async () => undefined },
+        directory: {
+          getTeams: async () => teams,
+          getProjects: async () => [project],
+          saveProject: async (p) => {
+            project = p;
+          },
+        },
+        workflow: wf,
+        ledger: { getSessionUsageSince: () => ({ cost: 0 }) },
+        notifyOwner: async () => true,
+        stateFile: path.join(root, 'autopilot-state.json'),
+        logger: quiet(),
+      }),
+    );
   });
 
   afterEach(async () => {
     jest.restoreAllMocks();
     ProjectTicketWorkflowService.setInstance(null);
+    TicketAutopilotService.setInstance(null);
     await fs.rm(root, { recursive: true, force: true });
   });
 
@@ -99,6 +121,7 @@ describe('project tickets API', () => {
       'post /:project/:id/assign',
       'post /:project/:id/log',
       'post /:project/:id/link',
+      'post /:project/:id/ask-owner',
     ]);
   });
 
@@ -184,5 +207,46 @@ describe('project tickets API', () => {
     const wf = projectTicketWorkflow();
     expect(wf).toBeInstanceOf(ProjectTicketWorkflowService);
     expect(projectTicketWorkflow()).toBe(wf);
+  });
+
+  describe('ticket autopilot switch (owner / orchestrator only)', () => {
+    it('lets the owner and the orchestrator read and switch it on; refuses the lead and members', async () => {
+      for (const who of ['tl-sam', 'dev-ann', 'stranger']) {
+        expect((await request(app).get('/api/project-ticket-autopilot/p1').set('X-Agent-Session', who)).status).toBe(403);
+        expect((await request(app).post('/api/project-ticket-autopilot/p1').set('X-Agent-Session', who).send({ enabled: true })).status).toBe(403);
+      }
+      expect(project.ticketAutopilot).toBeUndefined();
+
+      const off = await request(app).get('/api/project-ticket-autopilot/p1');
+      expect(off.status).toBe(200);
+      expect(off.body.data).toMatchObject({ settings: { enabled: false, maxInFlightPerMember: 1 }, driver: { session: 'tl-sam', source: 'team_lead' } });
+
+      const on = await request(app).post('/api/project-ticket-autopilot/p1').set('X-Agent-Session', 'crewly-orc').send({ enabled: true, dailyBudgetUsd: 8 });
+      expect(on.status).toBe(200);
+      expect(on.body.data.settings).toMatchObject({ enabled: true, dailyBudgetUsd: 8 });
+      expect(project.ticketAutopilot).toEqual({ enabled: true, dailyBudgetUsd: 8 });
+
+      expect((await request(app).post('/api/project-ticket-autopilot/p1').send({ enabled: 'yes' })).status).toBe(400);
+      expect((await request(app).post('/api/project-ticket-autopilot/p1').send({ driver: 'dev-ann' })).status).toBe(400);
+      expect((await request(app).get('/api/project-ticket-autopilot/nope')).status).toBe(404);
+    });
+
+    it('ask-owner marks and clears the needs-owner label (lead), refuses members', async () => {
+      await request(app).post('/api/project-tickets/p1').send({ title: 'Email the partners' });
+      expect((await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'dev-ann').send({ question: 'Send it?' })).status).toBe(403);
+      expect((await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({})).status).toBe(400);
+      const asked = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({ question: 'Send the draft to the 3 partners?' });
+      expect(asked.status).toBe(200);
+      expect(asked.body.data.labels).toContain('needs-owner');
+      const cleared = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({ clear: true, note: 'owner said yes' });
+      expect(cleared.body.data.labels).not.toContain('needs-owner');
+    });
+
+    it('builds a default autopilot when boot has not installed one', () => {
+      TicketAutopilotService.setInstance(null);
+      const svc = ticketAutopilot();
+      expect(svc).toBeInstanceOf(TicketAutopilotService);
+      expect(ticketAutopilot()).toBe(svc);
+    });
   });
 });

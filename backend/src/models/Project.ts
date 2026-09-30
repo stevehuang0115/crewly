@@ -1,4 +1,5 @@
 import { Project } from '../types/index.js';
+import type { TicketAutopilotSettings } from '../types/ticket-autopilot.types.js';
 
 export class ProjectModel implements Project {
   id: string;
@@ -8,6 +9,8 @@ export class ProjectModel implements Project {
   status: 'active' | 'paused' | 'completed' | 'stopped';
   /** Onboarding v3 (B1) — see `Project.firstLaunchedAt` for semantics. */
   firstLaunchedAt?: string;
+  /** Ticket autopilot switch — see `Project.ticketAutopilot`. */
+  ticketAutopilot?: TicketAutopilotSettings;
   createdAt: string;
   updatedAt: string;
 
@@ -18,6 +21,7 @@ export class ProjectModel implements Project {
     this.teams = data.teams || {};
     this.status = data.status || 'stopped';
     this.firstLaunchedAt = data.firstLaunchedAt;
+    this.ticketAutopilot = data.ticketAutopilot ? { ...data.ticketAutopilot } : undefined;
     this.createdAt = data.createdAt || new Date().toISOString();
     this.updatedAt = data.updatedAt || new Date().toISOString();
   }
@@ -76,6 +80,10 @@ export class ProjectModel implements Project {
     // project records round-trip without acquiring an `undefined` field.
     if (this.firstLaunchedAt !== undefined) {
       json.firstLaunchedAt = this.firstLaunchedAt;
+    }
+    // Same for the ticket autopilot switch: absent means off.
+    if (this.ticketAutopilot !== undefined) {
+      json.ticketAutopilot = { ...this.ticketAutopilot };
     }
     return json;
   }

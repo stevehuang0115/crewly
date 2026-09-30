@@ -361,7 +361,10 @@ export class AgentAutoClaimService {
       const health = await this.getAgentHealth(agentSessionName);
       if (!health || (health.status !== 'active' && health.status !== 'started')) return null;
       const started = await workflow.claimNextForAgent(agentSessionName);
-      if (!started) return null;
+      if (!started) {
+        this.notifyTicketAutopilotIdle(agentSessionName);
+        return null;
+      }
       this.logger.info('Idle agent picked up a project ticket', {
         agentSessionName,
         ticketId: started.ticket.id,
@@ -386,6 +389,24 @@ export class AgentAutoClaimService {
       });
       return null;
     }
+  }
+
+  /**
+   * An idle agent found nothing ready: let the ticket autopilot wake its
+   * project's lead to triage (specs/2026-09-30-ticket-autopilot.md §2). The
+   * autopilot decides whether it is on, due and needed. Fire-and-forget.
+   *
+   * @param agentSessionName - The idle agent
+   */
+  private notifyTicketAutopilotIdle(agentSessionName: string): void {
+    void import('../project-tickets/ticket-autopilot.service.js')
+      .then(({ TicketAutopilotService }) => TicketAutopilotService.getInstance()?.onMemberIdle(agentSessionName))
+      .catch((err: unknown) => {
+        this.logger.debug('Ticket autopilot idle trigger failed (non-fatal)', {
+          agentSessionName,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      });
   }
 
   /**

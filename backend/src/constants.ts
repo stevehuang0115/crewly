@@ -35,6 +35,62 @@ export const PROCESS_EXIT_CODES = CONFIG_PROCESS_EXIT_CODES;
 export const PROJECT_TICKET_CONSTANTS = CONFIG_PROJECT_TICKET_CONSTANTS;
 
 /**
+ * Ticket autopilot (specs/2026-09-30-ticket-autopilot.md): a per-project switch
+ * that wakes the project's driver (its team lead) to triage the backlog, with
+ * brakes (one live triage, re-trigger cadence, daily budget) and phone-first
+ * owner notifications (batched questions, one evening digest).
+ */
+export const TICKET_AUTOPILOT_CONSTANTS = {
+	/** WorkItem type of the triage item the driver receives */
+	TRIAGE_WORK_ITEM_TYPE: 'ticket_triage',
+	/** `metadata.kind` of the triage item (also how a live one is found) */
+	TRIAGE_METADATA_KIND: 'ticket_triage',
+	/** Label a ticket carries while it waits on an answer from the owner */
+	NEEDS_OWNER_LABEL: 'needs-owner',
+	/** Log-line prefix holding the one-line question for the owner */
+	OWNER_QUESTION_LOG_PREFIX: 'owner question: ',
+	/** Max characters of an owner question */
+	OWNER_QUESTION_MAX_CHARS: 280,
+	/** How often the autopilot re-evaluates every enabled project (ms) */
+	TICK_INTERVAL_MS: 5 * 60 * 1000,
+	/** Re-trigger a triage for a project at most this often on the periodic tick (ms) */
+	TRIAGE_MIN_INTERVAL_MS: 30 * 60 * 1000,
+	/**
+	 * A member going idle with nothing ready triggers a triage "immediately",
+	 * but never sooner than this after the previous one (ms) — idle events
+	 * repeat every few seconds and must not become a wake loop.
+	 */
+	IDLE_TRIGGER_MIN_INTERVAL_MS: 5 * 60 * 1000,
+	/** A ticket already listed in a triage (and unchanged since) is listed again only after this long (ms) */
+	TRIAGE_RELIST_AFTER_MS: 4 * 60 * 60 * 1000,
+	/** A `ready` ticket untouched this long while someone is idle counts as "nobody takes it" (ms) */
+	READY_STALE_MS: 24 * 60 * 60 * 1000,
+	/** A triage item still queued (never picked up) after this long is cancelled and may be replaced (ms) */
+	TRIAGE_STALE_QUEUED_MS: 6 * 60 * 60 * 1000,
+	/** Max tickets listed in one triage brief (highest priority, then oldest first) */
+	TRIAGE_MAX_TICKETS: 20,
+	/** Max characters of a ticket description quoted in the triage brief */
+	TRIAGE_DESCRIPTION_EXCERPT_CHARS: 300,
+	/** Owner questions are sent at most this often, unless a new urgent (P0) one appears (ms) */
+	QUESTIONS_MIN_INTERVAL_MS: 2 * 60 * 60 * 1000,
+	/** Ticket priority that makes a new owner question urgent (sent without waiting) */
+	URGENT_PRIORITY: 'P0',
+	/** Local hour (0-23) at or after which the daily digest is sent */
+	DIGEST_HOUR_LOCAL: 21,
+	/** Max tickets named per digest section (the rest are counted) */
+	DIGEST_MAX_ITEMS_PER_SECTION: 8,
+	/** Default daily budget (USD) of the project's team agents when the owner sets none */
+	DEFAULT_DAILY_BUDGET_USD: 20,
+	/** Default and bounds of in-progress tickets per member */
+	DEFAULT_MAX_IN_FLIGHT_PER_MEMBER: 1,
+	MAX_IN_FLIGHT_PER_MEMBER_LIMIT: 5,
+	/** State file under CREWLY_HOME (debounce / notification bookkeeping, survives restarts) */
+	STATE_FILENAME: 'ticket-autopilot-state.json',
+	/** Env kill switch: `0` keeps the autopilot service from starting */
+	ENV_SWITCH: 'CREWLY_TICKET_AUTOPILOT',
+} as const;
+
+/**
  * Safe restart: drain in-flight agent turns before a shutdown kills the PTYs,
  * and resume the ones that were cut off after the next boot.
  *

@@ -14,7 +14,7 @@
 
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
-import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, PROJECT_TICKET_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import {
@@ -90,6 +90,18 @@ export interface ProjectTicketPool {
 export interface ProjectTicketDirectory {
   getTeams(): Promise<Team[]>;
   getProjects(): Promise<Project[]>;
+}
+
+/**
+ * Brakes the ticket autopilot puts on this workflow
+ * (specs/2026-09-30-ticket-autopilot.md §4). Installed by the autopilot
+ * service; absent = no autopilot brakes (the v1 behaviour).
+ */
+export interface ProjectTicketAutopilotPolicy {
+  /** True while the project's autopilot is paused (daily budget reached): idle members do not auto-claim its tickets */
+  isAutoClaimPaused(project: Project): Promise<boolean>;
+  /** In-progress tickets one member may hold when the project's autopilot is on, or null when it is off */
+  maxInFlightPerMember(project: Project): Promise<number | null>;
 }
 
 /** Dependencies. */
@@ -213,6 +225,7 @@ export class ProjectTicketWorkflowService {
   private sweepTimer: ReturnType<typeof setInterval> | null = null;
   private unsubscribe: (() => void) | null = null;
   private sweeping = false;
+  private autopilotPolicy: ProjectTicketAutopilotPolicy | null = null;
 
   /**
    * @param deps - Ticket store, task pool, team/project directory
@@ -241,6 +254,15 @@ export class ProjectTicketWorkflowService {
    */
   static setInstance(service: ProjectTicketWorkflowService | null): void {
     ProjectTicketWorkflowService.instance = service;
+  }
+
+  /**
+   * Install (or clear) the ticket autopilot's brakes.
+   *
+   * @param policy - Policy, or null to remove it
+   */
+  setAutopilotPolicy(policy: ProjectTicketAutopilotPolicy | null): void {
+    this.autopilotPolicy = policy;
   }
 
   // ---------------------------------------------------------------------------
@@ -574,6 +596,7 @@ export class ProjectTicketWorkflowService {
     const isAgent = await this.isKnownAgent(who);
     if (isAgent && !teamId) throw new ProjectTicketError(403, `${who} is not on a team that works on ${ticket.id}`);
     if (teamId && options.start !== false) {
+      await this.assertInFlightCap(project, who, caller);
       const started = await this.startWork(project, id, who, this.actorName(caller), teamId, { self: false, allowed: ['backlog', 'ready'] });
       return { ticket: started.ticket, workItem: started.workItem };
     }
@@ -613,7 +636,10 @@ export class ProjectTicketWorkflowService {
     const candidates: Array<{ project: Project; ticket: ProjectTicket; teamId: string }> = [];
     for (const project of projects) {
       const { tickets } = await this.tickets.list(project.path);
+      // One ticket per agent (spec §5) — across all its projects.
       if (tickets.some((t) => t.status === 'in_progress' && t.assignee === session)) return null;
+      // Ticket autopilot brake: a project paused on its daily budget feeds nobody.
+      if (this.autopilotPolicy && (await this.autopilotPolicy.isAutoClaimPaused(project).catch(() => false))) continue;
       for (const ticket of tickets) {
         if (ticket.status !== 'ready') continue;
         const team = teams.find((t) => (t.projectIds ?? []).includes(project.id) && (!ticket.team || ticket.team === t.id));
@@ -639,6 +665,45 @@ export class ProjectTicketWorkflowService {
       }
     }
     return null;
+  }
+
+  /**
+   * Mark a ticket as waiting on the owner (label `needs-owner` + a Log line
+   * with the one-line question), or clear that mark once answered
+   * (specs/2026-09-30-ticket-autopilot.md §5). The autopilot batches open
+   * questions to the owner's phone.
+   *
+   * @param ref - Project reference
+   * @param id - Ticket id
+   * @param caller - Owner, orchestrator or a lead of a project team
+   * @param input - `question` to ask, or `clear: true` (optional `note`) when answered
+   * @returns Updated ticket
+   * @throws ProjectTicketError(400/403/404)
+   */
+  async askOwner(ref: string, id: string, caller: ProjectTicketCaller, input: { question?: string; clear?: boolean; note?: string }): Promise<ProjectTicket> {
+    const project = await this.resolveProject(ref);
+    const { access } = await this.accessOf(caller, project);
+    this.requireAccess(access, ['owner', 'orchestrator', 'lead'], 'ask the owner about tickets');
+    const label = TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL;
+    if (input.clear) {
+      const note = String(input.note ?? '').replace(/\s+/g, ' ').trim();
+      return this.tickets.mutate(project.path, id, this.actorName(caller), (t) =>
+        t.labels.includes(label)
+          ? { fields: { labels: t.labels.filter((l) => l !== label) }, log: [`owner question answered${note ? ` — ${note}` : ''}`] }
+          : null,
+      );
+    }
+    const question = String(input.question ?? '').replace(/\s+/g, ' ').trim();
+    if (!question) throw new ProjectTicketError(400, 'question is required (one line the owner can answer quickly)');
+    const max = TICKET_AUTOPILOT_CONSTANTS.OWNER_QUESTION_MAX_CHARS;
+    if (question.length > max) throw new ProjectTicketError(400, `question is too long (max ${max} characters) — keep it to one line`);
+    return this.tickets.mutate(project.path, id, this.actorName(caller), (t) => {
+      if (t.status === 'done' || t.status === 'cancelled') throw new ProjectTicketError(409, `${t.id} is ${t.status}; nothing to ask`);
+      return {
+        fields: t.labels.includes(label) ? {} : { labels: [...t.labels, label] },
+        log: [`${TICKET_AUTOPILOT_CONSTANTS.OWNER_QUESTION_LOG_PREFIX}${question}`],
+      };
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1216,6 +1281,31 @@ export class ProjectTicketWorkflowService {
   private async isKnownAgent(name: string): Promise<boolean> {
     if (name === ORCHESTRATOR_SESSION_NAME) return true;
     return (await this.directory.getTeams()).some((t) => (t.members ?? []).some((m) => isSession(m, name)));
+  }
+
+  /**
+   * Ticket autopilot brake: refuse to start one more ticket for an agent that
+   * already holds `maxInFlightPerMember` in-progress tickets of the project.
+   * Only while the project's autopilot is on, and never for the owner (a
+   * person assigning by hand decides for themselves).
+   *
+   * @param project - Project
+   * @param assignee - Agent session
+   * @param caller - Who assigns
+   * @throws ProjectTicketError(409) when the cap is reached
+   */
+  private async assertInFlightCap(project: Project, assignee: string, caller: ProjectTicketCaller): Promise<void> {
+    if (!this.autopilotPolicy || !caller.session) return;
+    const cap = await this.autopilotPolicy.maxInFlightPerMember(project).catch(() => null);
+    if (cap === null) return;
+    const { tickets } = await this.tickets.list(project.path);
+    const held = tickets.filter((t) => t.status === 'in_progress' && t.assignee === assignee).length;
+    if (held >= cap) {
+      throw new ProjectTicketError(
+        409,
+        `${assignee} already has ${held} ticket${held === 1 ? '' : 's'} in progress (ticket autopilot limit: ${cap} per member); pick someone else or leave the ticket ready`,
+      );
+    }
   }
 
   /**

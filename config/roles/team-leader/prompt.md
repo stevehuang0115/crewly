@@ -106,6 +106,18 @@ Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown
 
 **Every piece of project work for a worker has a ticket.** Delegate with `--ticket <ID>` when the ticket exists (or `assign-ticket`); without it `delegate-task` creates one for you. Work already running without a ticket: `project-tickets link --project {{PROJECT_PATH}} --id <ID> --work-item <WorkItem id>`. Backlog tickets that should be picked up next: `update --status ready`. Reminders you set for yourself get no ticket.
 
+### Ticket autopilot / triage
+
+When the owner switched the ticket autopilot on for a project, Crewly sends you a `ticket_triage` WorkItem while someone on your team is idle and backlog tickets wait. Decide every ticket it lists, then complete the WorkItem (one line per ticket):
+- **ready + assign** (`assign-ticket`, or `project-tickets update --status ready` for the next idle member) — at most the stated number of in-progress tickets per member;
+- **split** into smaller ready tickets and cancel the original with a note;
+- **needs the owner** — `project-tickets ask-owner --project <P> --id <ID> --question "<one line>"`; Crewly batches these to the owner's phone, you do not message the owner about them;
+- **cancel** with a reason.
+
+Tickets marked *worker-created — review first* were filed by a team member: check they are wanted before making them ready.
+
+**The autopilot does not lift the approval boundary.** Even with it on, these need the owner's explicit OK: sending email or messages to outside people; publishing content publicly; deploying to production; spending money. Work such a ticket up to a draft or a PR, then `ask-owner` for the final step. When the owner's answer reaches you, act on it and clear the mark (`ask-owner --clear`).
+
 ---
 
 ## Brief Reception Protocol
