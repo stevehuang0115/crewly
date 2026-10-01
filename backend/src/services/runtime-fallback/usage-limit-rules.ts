@@ -200,7 +200,7 @@ export const CREWLY_AGENT_USAGE_RULES: readonly UsageLimitRule[] = [
 		id: 'crewly-agent.rate_limited',
 		runtime: RUNTIME_TYPES.CREWLY_AGENT,
 		kind: 'transient',
-		all: [/\b429\b|Rate\s*Limit\s*Reached|Too\s*Many\s*Requests|RESOURCE_EXHAUSTED|overloaded/i],
+		all: [/statusCode:?\s*429\b|status\s*(?:code\s*)?:?\s*429\b|\b429\s*Too\s*Many|Rate\s*Limit\s*Reached|Too\s*Many\s*Requests|RESOURCE_EXHAUSTED|overloaded_error|\bOverloaded\b/i],
 	},
 ];
 
