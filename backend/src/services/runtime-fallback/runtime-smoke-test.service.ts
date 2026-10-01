@@ -27,7 +27,8 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { ANTIGRAVITY_CONSTANTS, RUNTIME_FALLBACK_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
-import { normalizeTerminalOutput } from '../harness/login-rules.js';
+import { normalizeTerminalOutput, redactSecrets } from '../harness/login-rules.js';
+import { deriveMemberSessionName } from '../../utils/member-session-name.utils.js';
 import { KNOWN_RUNTIMES } from './runtime-fallback.types.js';
 
 const S = RUNTIME_FALLBACK_CONSTANTS.SMOKE;
@@ -69,6 +70,8 @@ export interface SmokeApi {
 	startMember(teamId: string, memberId: string): Promise<{ ok: boolean; error?: string }>;
 	getMember(teamId: string, memberId: string): Promise<{ agentStatus: string; sessionName: string } | null>;
 	capture(sessionName: string, lines: number): Promise<string>;
+	/** The session's persistent log (also after the session is gone) */
+	sessionLog(sessionName: string, lines: number): Promise<string>;
 	deliver(sessionName: string, message: string): Promise<{ ok: boolean; error?: string }>;
 	stopTeam(teamId: string): Promise<void>;
 	deleteTeam(teamId: string): Promise<void>;
@@ -202,14 +205,17 @@ export class RuntimeSmokeTestService {
 			steps.push({ step, ok: true, ms: this.now() - stepStart, ...(detail ? { detail } : {}) });
 			stepStart = this.now();
 		};
+		// The live screen; once the session is gone (a refused start), its log.
 		const readScreen = async (): Promise<string> => {
 			if (!sessionName) return screen;
+			let text = '';
 			try {
-				const text = await api.capture(sessionName, S.CAPTURE_LINES);
-				if (text) screen = normalizeTerminalOutput(text).text;
+				text = await api.capture(sessionName, S.CAPTURE_LINES);
 			} catch {
-				// keep the last screen
+				// session gone — fall back to its log
 			}
+			if (!text) text = await api.sessionLog(sessionName, S.CAPTURE_LINES).catch(() => '');
+			if (text) screen = redactSecrets(normalizeTerminalOutput(text).text);
 			return screen;
 		};
 
@@ -248,7 +254,7 @@ export class RuntimeSmokeTestService {
 			// 2. Start
 			const startResult = await api.startMember(created.id, created.memberId);
 			const member = await api.getMember(created.id, created.memberId).catch(() => null);
-			sessionName = member?.sessionName ?? '';
+			sessionName = member?.sessionName || deriveMemberSessionName(name, S.MEMBER_NAME, created.memberId);
 			if (!startResult.ok) {
 				const text = await readScreen();
 				if (termsCheck(text) || /first-run screens|Terms of Service/i.test(startResult.error ?? '')) fail('start_member', TERMS);
@@ -445,6 +451,11 @@ export class LocalSmokeApi implements SmokeApi {
 	async capture(sessionName: string, lines: number): Promise<string> {
 		const r = await this.call<{ data: { output?: string } | string }>('GET', `/terminal/${encodeURIComponent(sessionName)}/output?lines=${lines}`);
 		return typeof r.data === 'string' ? r.data : r.data?.output ?? '';
+	}
+
+	async sessionLog(sessionName: string, lines: number): Promise<string> {
+		const r = await this.call<{ data: { lines?: string[] } }>('GET', `/sessions/${encodeURIComponent(sessionName)}/logs?lines=${lines}`);
+		return (r.data?.lines ?? []).join('\n');
 	}
 
 	async deliver(sessionName: string, message: string): Promise<{ ok: boolean; error?: string }> {

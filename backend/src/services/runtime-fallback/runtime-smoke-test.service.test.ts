@@ -14,6 +14,7 @@ function fakeApi(behaviour: {
 	screen?: () => string;
 	onDeliver?: (message: string) => void;
 	leftoverTeam?: boolean;
+	log?: string;
 }): SmokeApi & { calls: string[] } {
 	const calls: string[] = [];
 	let polls = 0;
@@ -40,6 +41,7 @@ function fakeApi(behaviour: {
 			return { agentStatus: polls > (behaviour.readyAfterPolls ?? 1) ? 'active' : 'starting', sessionName: 'zz-smoke-1' };
 		},
 		capture: async () => behaviour.screen?.() ?? '',
+		sessionLog: async () => behaviour.log ?? '',
 		deliver: async (_s, message) => {
 			calls.push('deliver');
 			behaviour.onDeliver?.(message);
@@ -135,6 +137,17 @@ describe('RuntimeSmokeTestService', () => {
 		expect(result.screen).toContain('Terms of Service & Data Use');
 		expect(api.calls).not.toContain('deliver');
 		expect(api.calls).toContain('deleteTeam t1');
+	});
+
+	it('reads the session log for the screen when a refused start already removed the session', async () => {
+		const api = fakeApi({
+			startError: 'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens',
+			log: '\x1b[1mWelcome to Antigravity CLI!\x1b[0m\nChoose your color scheme:\nGEMINI_API_KEY=AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456',
+		});
+		const result = await make(api).run('antigravity-cli');
+		expect(result).toMatchObject({ failedStep: 'start_member', error: 'Antigravity needs its terms accepted once' });
+		expect(result.screen).toContain('Welcome to Antigravity CLI!');
+		expect(result.screen).not.toContain('AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456');
 	});
 
 	it('maps a start refused for the first-run screens to the Terms failure', async () => {
