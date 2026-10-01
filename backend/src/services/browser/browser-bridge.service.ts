@@ -190,6 +190,12 @@ export class BrowserBridgeService {
 	 */
 	private ownedTabIds: Set<number> = new Set();
 
+	/**
+	 * Hear every tab inventory (direct WS and relay) before reconcile runs, so
+	 * a held browser action that survived a restart can re-bind its tab.
+	 */
+	private inventoryListeners: Set<(tabs: ExtensionTabDescriptor[], instanceId?: string) => void> = new Set();
+
 	/** This backend's device id, sent as `clientId` with every command. Cached once resolved. */
 	private clientId: string | null = null;
 
@@ -527,6 +533,48 @@ export class BrowserBridgeService {
 	}
 
 	/**
+	 * Subscribe to tab inventories. Listeners run before reconcile, so a tab
+	 * they {@link adoptTab adopt} is kept rather than treated as an orphan.
+	 *
+	 * @param listener - Called with each inventory and the browser it came from
+	 * @returns Unsubscribe
+	 */
+	onTabInventory(listener: (tabs: ExtensionTabDescriptor[], instanceId?: string) => void): () => void {
+		this.inventoryListeners.add(listener);
+		return () => {
+			this.inventoryListeners.delete(listener);
+		};
+	}
+
+	/**
+	 * Re-bind an agent to a tab that already exists (after a backend restart,
+	 * the binding map is empty but the agent's tab is still open in Chrome).
+	 * Refused when the agent is already bound or another agent holds the tab.
+	 *
+	 * @param agentSession - Agent to bind
+	 * @param tabId - Existing tab
+	 * @param instanceId - Relay browser instance the tab lives in, if any
+	 * @returns True when the binding was made
+	 */
+	adoptTab(agentSession: string, tabId: number, instanceId?: string): boolean {
+		if (!agentSession || this.agentTabBindings.has(agentSession)) return false;
+		for (const b of this.agentTabBindings.values()) {
+			if (b.tabId === tabId && b.instanceId === instanceId) return false;
+		}
+		const now = new Date();
+		this.agentTabBindings.set(agentSession, {
+			agentSession,
+			tabId,
+			...(instanceId ? { instanceId } : {}),
+			boundAt: now,
+			lastActivityAt: now,
+		});
+		this.ownedTabIds.add(tabId);
+		this.logger.info('Re-bound an agent to its existing tab', { agentSession, tabId, instanceId: instanceId ?? null });
+		return true;
+	}
+
+	/**
 	 * Snapshot the current bindings as a plain array — used by `GET
 	 * /api/browser/bindings` and by tests.
 	 */
@@ -764,6 +812,13 @@ export class BrowserBridgeService {
 		extensionTabs: ExtensionTabDescriptor[],
 		instanceId?: string,
 	): { orphans: number[] } {
+		for (const listener of this.inventoryListeners) {
+			try {
+				listener(extensionTabs, instanceId);
+			} catch (err) {
+				this.logger.warn('Tab inventory listener failed', { error: err instanceof Error ? err.message : String(err) });
+			}
+		}
 		const extensionTabIds = new Set(
 			extensionTabs.filter((t) => typeof t.tabId === 'number').map((t) => t.tabId)
 		);

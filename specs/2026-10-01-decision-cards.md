@@ -182,6 +182,36 @@ and the Slack card updates. API:
 - `POST /api/decisions/:id/choose {option}`
 - `POST /api/decisions/:id/remind`
 
+## 9. Held browser actions (kind `browser_action`)
+
+When the browser guard holds an irreversible click (send / submit / pay / delete / confirm /
+publish / sign / Enter), Crewly asks for the agent: `BrowserApprovalService` creates a decision
+with `kind: 'browser_action'`, `sensitive: 'browser_action'`, options **Let it** / **No**, default
+**No**, `yesKey` Let it, and a deadline of 2 h (`BROWSER_APPROVAL_CONSTANTS.DEADLINE_MS`). The
+question names the agent, the control and the page: `Vera wants to click "Submit" on
+visa.careerengine.us/subscribe — it looks like submitting and can't be undone.` The card has no
+"Remind me tomorrow", and words that are neither yes nor no leave it open.
+
+- **Where:** like any ask without a ticket — the thread of the agent's work item (work-item
+  destination), else its team channel; posted by the agent's own bot.
+- **Answers:** button, reaction (✅ = Let it, ❌ = No), thread reply (批准 / 可以 / 好 / yes = Let it;
+  不行 / 不要 / no = No), the decisions dashboard, and the Browser page of the dashboard and the
+  portal (`POST /api/browser/sessions/:id/pending/:pendingId` now answers through the card). All
+  settle the same hold once; the card reads `✔ Steve chose Let it · 22:10`.
+- **Applying:** the decision service calls the kind's handler on settle; the handler applies the
+  outcome to the hold and writes the agent's `[BROWSER]` note (it replaces the generic
+  `[DECISION]` note). Let it = the dashboard's approve: one pass for the agent's retry of the same
+  call. Crewly does not replay the click.
+- **Deadline:** the default (No) is applied — it never lets anything through, so unlike other
+  sensitive asks it is not parked.
+- **Durable:** holds are persisted in `CREWLY_HOME/browser-pending-actions.json` (no call
+  params). After a restart a hold whose tab comes back in the extension's tab inventory within 2
+  min is re-bound (`BrowserBridgeService.adoptTab`) and restored; the rest are marked `expired`,
+  the card reads `Expired — Vera will ask again`, and the agent is told to redo the step.
+- **Agent text:** the 409 `awaiting_owner` error tells the agent to say exactly "I've asked the
+  owner with a card in this thread; wait for their answer." and stop (when Slack is down, it
+  points at the dashboard's Browser page instead).
+
 ## Deploy order
 
 1. Cloud: crewly-services PR #24 (auth 1.9.0). Slack verifies the interactivity URL, so it must
