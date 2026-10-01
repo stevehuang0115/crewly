@@ -17,6 +17,7 @@ import { getSettingsService } from '../settings/settings.service.js';
 import { computeAgentAttention } from './agent-attention.js';
 import { markWaiting, clearWaiting } from './agent-attention-registry.js';
 import { EscalationRouterService } from '../v3/escalation-router.service.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
  * Team Working Status File Structure
@@ -666,7 +667,7 @@ export class ActivityMonitorService {
               // Gemini CLI TUI re-renders in place, so bottom-N line comparison
               // often shows no change even while the agent is actively working.
               // Fall back to raw PTY activity timestamp as an additional signal.
-              if (!outputChanged && member.runtimeType === RUNTIME_TYPES.GEMINI_CLI) {
+              if (!outputChanged && effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') === RUNTIME_TYPES.GEMINI_CLI) {
                 const tracker = PtyActivityTrackerService.getInstance();
                 const idleMs = tracker.getIdleTimeMs(member.sessionName);
                 if (idleMs > 0 && idleMs < ACTIVITY_MONITOR_CONSTANTS.POLLING_INTERVAL_MS) {
@@ -746,7 +747,7 @@ export class ActivityMonitorService {
               this.tryRecordPtyTokenUsage(
                 member.sessionName,
                 currentOutput,
-                member.runtimeType as 'claude-code' | 'gemini-cli' | 'codex-cli' | undefined
+                effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') as 'claude-code' | 'gemini-cli' | 'codex-cli' | undefined
               );
 
             } catch (error) {

@@ -37,6 +37,7 @@ import { InFlightTurnTracker } from '../restart/in-flight-turn-tracker.service.j
 import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { StorageService } from '../core/storage.service.js';
 import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -607,7 +608,7 @@ export class QueueProcessorService extends EventEmitter {
         try {
           const memberResult = await StorageService.getInstance().findMemberBySessionName(targetSession);
           if (memberResult?.member?.runtimeType) {
-            deliveryRuntimeType = memberResult.member.runtimeType as RuntimeType;
+            deliveryRuntimeType = effectiveRuntimeType(targetSession, memberResult.member.runtimeType as RuntimeType);
           }
         } catch {
           // Fall back to orchestrator's runtime type

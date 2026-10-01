@@ -939,7 +939,7 @@ describe('AgentRegistrationService', () => {
 				else process.env.CREWLY_HOME = originalCrewlyHome;
 			});
 
-			/** Save an Antigravity key the way Settings → Harness does. */
+			/** Save an Antigravity key the way Settings → Runtimes does. */
 			function saveHarnessKey(key: string): void {
 				realFs.writeFileSync(`${crewlyHome}/harness-credentials.json`, JSON.stringify({ antigravity: { geminiApiKey: key } }));
 			}

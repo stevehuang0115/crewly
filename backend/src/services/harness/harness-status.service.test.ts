@@ -7,7 +7,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { HarnessCredentialsStore } from './harness-credentials.store.js';
 import { getHarnessDefinition } from './harness-registry.js';
-import { HarnessStatusService, compareVersions, parseCodexLoginSource, parseVersion } from './harness-status.service.js';
+import { HarnessStatusService, compareVersions, isUsableEnvValue, parseCodexLoginSource, parseVersion } from './harness-status.service.js';
 import type { CommandResult, RunCommand } from './harness.types.js';
 
 /** Scripted command runner: key = `cmd args…`. */
@@ -237,6 +237,19 @@ describe('HarnessStatusService', () => {
 			expect(JSON.stringify(status)).not.toContain('AIza-secret');
 		});
 
+		it.each([
+			['empty', ''],
+			['whitespace only', '   '],
+			['quote only', '""'],
+			['single-quote only', "''"],
+			['the word undefined', 'undefined'],
+			['a placeholder', 'your-gemini-api-key'],
+			['a "<key>" placeholder', '<GEMINI_API_KEY>'],
+		])('is logged out when GEMINI_API_KEY is %s', async (_label, value) => {
+			const status = await make({ env: { PATH: '/usr/bin', GEMINI_API_KEY: value } }).getStatus('antigravity-cli');
+			expect(status).toMatchObject({ loginState: 'logged_out', loginSource: null });
+		});
+
 		it('ignores keys agy does not read and never counts an account login', async () => {
 			// agy reads only GEMINI_API_KEY; an account session in its keyring is not usable by Crewly (policy).
 			const status = await make({ env: { PATH: '/usr/bin', GOOGLE_API_KEY: 'x', GOOGLE_GENERATIVE_AI_API_KEY: 'y' } }).getStatus('antigravity-cli');
@@ -267,5 +280,15 @@ describe('HarnessStatusService', () => {
 		expect(make({ platform: 'darwin', resolveCommand: () => null }).getSystemTools()).toEqual([
 			{ id: 'jq', installed: false, installHint: 'brew install jq' },
 		]);
+	});
+});
+
+describe('isUsableEnvValue', () => {
+	it('accepts a real-looking key and rejects empty / placeholder values', () => {
+		expect(isUsableEnvValue(`AIzaSy${'k'.repeat(33)}`)).toBe(true);
+		expect(isUsableEnvValue('"AIzaSyabc"')).toBe(true);
+		for (const bad of [undefined, null, '', ' ', '""', "''", '``', 'null', 'changeme', 'xxxx', '***', 'your_key_here', 'paste-key-here']) {
+			expect(isUsableEnvValue(bad)).toBe(false);
+		}
 	});
 });

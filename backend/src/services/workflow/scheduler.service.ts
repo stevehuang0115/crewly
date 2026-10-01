@@ -34,6 +34,7 @@ import {
   DEFAULT_ADAPTIVE_CONFIG,
   SchedulerStats,
 } from '../../types/scheduler.types.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
  * Interface for ContinuationService integration
@@ -327,13 +328,13 @@ export class SchedulerService extends EventEmitter {
       if (sessionName === ORCHESTRATOR_SESSION_NAME) {
         const orchestratorStatus = await this.storageService.getOrchestratorStatus();
         if (orchestratorStatus?.runtimeType) {
-          return orchestratorStatus.runtimeType as RuntimeType;
+          return effectiveRuntimeType(sessionName, orchestratorStatus.runtimeType as RuntimeType);
         }
       }
 
       const memberInfo = await this.storageService.findMemberBySessionName(sessionName);
       if (memberInfo?.member?.runtimeType) {
-        return memberInfo.member.runtimeType as RuntimeType;
+        return effectiveRuntimeType(sessionName, memberInfo.member.runtimeType as RuntimeType);
       }
     } catch (err) {
       this.logger.debug('Could not resolve runtime type, using default', {

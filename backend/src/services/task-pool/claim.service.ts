@@ -17,6 +17,7 @@
 
 import { PoolStorage } from './pool-storage.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
+import { isPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
 import {
   type TaskClaim,
   type CreateClaimInput,
@@ -453,7 +454,8 @@ export class ClaimService {
   getHungAgents(threshold: number = HUNG_SESSION_GRACE_REVOKE_THRESHOLD): string[] {
     const hung: string[] = [];
     for (const [agentId, count] of this.consecutiveGraceRevokes) {
-      if (count >= threshold) hung.push(agentId);
+      // A session being relaunched on purpose (runtime fallback) is not hung.
+      if (count >= threshold && !isPlannedRelaunch(agentId)) hung.push(agentId);
     }
     return hung;
   }
