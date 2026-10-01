@@ -74,6 +74,10 @@ export interface SmokeApi {
 	sessionLog(sessionName: string, lines: number): Promise<string>;
 	deliver(sessionName: string, message: string): Promise<{ ok: boolean; error?: string }>;
 	stopTeam(teamId: string): Promise<void>;
+	/** Kill a session by name (a refused start can leave its PTY behind) */
+	killSession(sessionName: string): Promise<void>;
+	/** Whether a session is still live */
+	sessionExists(sessionName: string): Promise<boolean>;
 	deleteTeam(teamId: string): Promise<void>;
 }
 
@@ -327,6 +331,11 @@ export class RuntimeSmokeTestService {
 				await api.stopTeam(teamId).catch((e: unknown) => cleanupErrors.push(String(e)));
 				await api.deleteTeam(teamId).catch((e: unknown) => cleanupErrors.push(String(e)));
 			}
+			// A start the runtime refused (e.g. Antigravity's first-run screen)
+			// leaves a PTY the team no longer knows about.
+			if (sessionName && (await api.sessionExists(sessionName).catch(() => false))) {
+				await api.killSession(sessionName).catch((e: unknown) => cleanupErrors.push(String(e)));
+			}
 			if (projectId) await api.deleteProject(projectId).catch((e: unknown) => cleanupErrors.push(String(e)));
 			try {
 				fs.rmSync(workDir, { recursive: true, force: true });
@@ -465,6 +474,15 @@ export class LocalSmokeApi implements SmokeApi {
 		} catch (err) {
 			return { ok: false, error: err instanceof Error ? err.message : String(err) };
 		}
+	}
+
+	async killSession(sessionName: string): Promise<void> {
+		await this.call('DELETE', `/terminal/${encodeURIComponent(sessionName)}`);
+	}
+
+	async sessionExists(sessionName: string): Promise<boolean> {
+		const r = await this.call<{ data: { exists?: boolean } }>('GET', `/terminal/${encodeURIComponent(sessionName)}/exists`);
+		return r.data?.exists === true;
 	}
 
 	async stopTeam(teamId: string): Promise<void> {

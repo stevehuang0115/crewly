@@ -15,6 +15,7 @@ function fakeApi(behaviour: {
 	onDeliver?: (message: string) => void;
 	leftoverTeam?: boolean;
 	log?: string;
+	sessionLeft?: boolean;
 }): SmokeApi & { calls: string[] } {
 	const calls: string[] = [];
 	let polls = 0;
@@ -42,6 +43,8 @@ function fakeApi(behaviour: {
 		},
 		capture: async () => behaviour.screen?.() ?? '',
 		sessionLog: async () => behaviour.log ?? '',
+		sessionExists: async () => behaviour.sessionLeft ?? false,
+		killSession: async (name) => void calls.push(`killSession ${name}`),
 		deliver: async (_s, message) => {
 			calls.push('deliver');
 			behaviour.onDeliver?.(message);
@@ -148,6 +151,12 @@ describe('RuntimeSmokeTestService', () => {
 		expect(result).toMatchObject({ failedStep: 'start_member', error: 'Antigravity needs its terms accepted once' });
 		expect(result.screen).toContain('Welcome to Antigravity CLI!');
 		expect(result.screen).not.toContain('AIzaSyABCDEFGHIJKLMNOPQRSTUVWXYZ0123456');
+	});
+
+	it('kills a session a refused start left behind', async () => {
+		const api = fakeApi({ startError: 'first-run screens', sessionLeft: true });
+		await make(api).run('antigravity-cli');
+		expect(api.calls).toContain('killSession zz-smoke-1');
 	});
 
 	it('maps a start refused for the first-run screens to the Terms failure', async () => {
