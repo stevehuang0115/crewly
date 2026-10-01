@@ -61,6 +61,8 @@ jest.mock('../task-pool/task-pool.service.js', () => {
     markClaimExpiring: jest.fn().mockResolvedValue(undefined),
     releaseBack: jest.fn().mockResolvedValue(undefined),
     revokeAndRelease: jest.fn().mockResolvedValue(undefined),
+    renewClaim: jest.fn().mockResolvedValue(true),
+    orderClaimCandidates: jest.fn(async (_agent: string, items: unknown[]) => items),
     findWorkItem: jest.fn().mockResolvedValue(null),
     requeueAfterFailure: jest.fn().mockResolvedValue(undefined),
   };
@@ -147,7 +149,7 @@ jest.mock('../v3/escalation-router.service.js', () => ({
   },
 }));
 
-import { LiveReconcilerDataProvider } from './reconciler-data-provider.js';
+import { LiveReconcilerDataProvider, wakeBlockedCooldownMs } from './reconciler-data-provider.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { AgentSuspendService } from '../agent/agent-suspend.service.js';
@@ -156,6 +158,7 @@ import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { TaskClaim } from '../../types/v2/claim.types.js';
 import type { WakeAction } from '../../types/v2/reconcile.types.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../utils/local-api-url.utils.js';
 
 // Access mock instances via type assertions
@@ -595,6 +598,29 @@ describe('LiveReconcilerDataProvider', () => {
       expect(max.activeWorkItemCount).toBe(0);
     });
 
+    it('carries the last PTY/API activity time, and nothing for a session never seen', async () => {
+      PtyActivityTrackerService.resetInstance();
+      PtyActivityTrackerService.getInstance().recordActivity('agent-leo');
+      mockStorage.getTeams.mockResolvedValue([
+        {
+          id: 'team-1',
+          members: [
+            { id: 'mem-1', sessionName: 'agent-leo', agentStatus: 'active', role: 'developer', updatedAt: '2026-04-01T00:00:00Z' },
+            { id: 'mem-2', sessionName: 'agent-max', agentStatus: 'active', role: 'developer', updatedAt: '2026-04-01T00:00:00Z' },
+          ],
+        },
+      ]);
+      mockPool.getActiveClaims.mockResolvedValue([]);
+
+      const result = await provider.getAgentHealthMap();
+
+      const leoAt = result.get('agent-leo')!.lastActivityAt;
+      expect(leoAt).toBeDefined();
+      expect(Date.now() - new Date(leoAt!).getTime()).toBeLessThan(5_000);
+      expect(result.get('agent-max')!.lastActivityAt).toBeUndefined();
+      PtyActivityTrackerService.resetInstance();
+    });
+
     it('includes the orchestrator (virtual member) in the health map', async () => {
       // Regression: orc is a virtual team member that does NOT live in
       // teams.json. Without explicit injection, getAgentHealthMap omits it
@@ -977,6 +1003,18 @@ describe('LiveReconcilerDataProvider', () => {
     });
   });
 
+  describe('renewClaim', () => {
+    it('delegates to pool service', async () => {
+      await provider.renewClaim('claim-1');
+      expect(mockPool.renewClaim).toHaveBeenCalledWith('claim-1');
+    });
+
+    it('swallows pool errors', async () => {
+      mockPool.renewClaim.mockRejectedValueOnce(new Error('disk'));
+      await expect(provider.renewClaim('claim-1')).resolves.toBeUndefined();
+    });
+  });
+
   describe('revokeClaimAndRelease', () => {
     it('delegates to pool service', async () => {
       await provider.revokeClaimAndRelease('claim-1', 'grace exceeded');
@@ -1309,6 +1347,63 @@ describe('LiveReconcilerDataProvider', () => {
       });
     });
 
+    // steamfun-ops 2026-09-30: a flat 5-minute window still meant 230+
+    // refused cold launches a day for one parked WorkItem.
+    describe('commitment-approval refusal backoff is exponential', () => {
+      const refuse = () => jest.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        text: async () => JSON.stringify({ success: false, code: 'commitment_requires_owner_approval' }),
+        json: async () => ({ success: false }),
+      });
+      const action: WakeAction = {
+        workItemId: 'wi-chore',
+        agentSessionName: 'agent-dormant-exp',
+        strategy: 'start',
+        score: 60,
+        scoreBreakdown: { skillMatch: 30, urgency: 20, contextFamiliarity: 10, loadPenalty: 0 },
+        triggeredAt: new Date().toISOString(),
+      };
+
+      it('doubles the gap after each refusal, up to the cap', async () => {
+        const originalFetch = globalThis.fetch;
+        const nowSpy = jest.spyOn(Date, 'now');
+        const MIN = 60_000;
+        let t = 1_900_000_000_000;
+        nowSpy.mockImplementation(() => t);
+        globalThis.fetch = refuse();
+
+        await provider.executeWakeAction(action); // refusal 1 → wait 5 min
+        expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+        t += 5 * MIN + 1;
+        await provider.executeWakeAction(action); // refusal 2 → wait 10 min
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+        t += 6 * MIN;
+        await provider.executeWakeAction(action); // inside 10 min — suppressed
+        expect(globalThis.fetch).toHaveBeenCalledTimes(2);
+        t += 5 * MIN;
+        await provider.executeWakeAction(action); // refusal 3 → wait 20 min
+        expect(globalThis.fetch).toHaveBeenCalledTimes(3);
+
+        expect(wakeBlockedCooldownMs(1)).toBe(5 * MIN);
+        expect(wakeBlockedCooldownMs(3)).toBe(20 * MIN);
+        expect(wakeBlockedCooldownMs(50)).toBe(120 * MIN);
+
+        // A day of refusals: well under the 230+/day of the flat window.
+        let calls = 0;
+        const dayEnd = t + 24 * 60 * MIN;
+        globalThis.fetch = jest.fn(async () => { calls += 1; return (await refuse()()) as Response; }) as unknown as typeof fetch;
+        while (t < dayEnd) {
+          t += MIN;
+          await provider.executeWakeAction(action);
+        }
+        expect(calls).toBeLessThanOrEqual(15);
+
+        nowSpy.mockRestore();
+        globalThis.fetch = originalFetch;
+      });
+    });
+
     // #679 / #686: the orchestrator is a virtual member with undefined
     // teamId/memberId. The old fallback URL `/api/teams/members/start`
     // misrouted to `startTeam` → 404 "Team not found" (retried every ~10s),
@@ -1461,6 +1556,40 @@ describe('LiveReconcilerDataProvider', () => {
         // it was covered by the batch, so it must not produce a second message.
         mockPool.findWorkItem.mockResolvedValue(sibling('wi-sora-2'));
         expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-sora-2' })).toBe(false);
+        expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
+      });
+
+      // 2026-09-29: Vera was reminded of CE-8, CE-3 and CE-19 in one message
+      // ("work through them in this turn") while she could hold one claim.
+      it('lists only the first project ticket (in claim order) plus non-ticket work', async () => {
+        const ticket = (id: string, ticketId: string, createdMinAgo: number): WorkItem =>
+          ({
+            ...queuedWi,
+            id,
+            title: `ticket ${ticketId}`,
+            createdAt: new Date(Date.now() - createdMinAgo * 60_000).toISOString(),
+            metadata: { projectTicket: { projectPath: '/p/ce-core', id: ticketId } },
+          }) as WorkItem;
+        const trigger = ticket('wi-ce-19', 'CE-19', 10);
+        mockPool.findWorkItem.mockResolvedValue(trigger);
+        mockPool.getAvailableItems.mockResolvedValue([
+          ticket('wi-ce-8', 'CE-8', 50),
+          ticket('wi-ce-3', 'CE-3', 40),
+          { ...queuedWi, id: 'wi-plain', title: 'refresh answer' } as WorkItem,
+        ]);
+        // Claim order: oldest first.
+        mockPool.orderClaimCandidates.mockImplementationOnce(async (_a: string, items: WorkItem[]) =>
+          [...items].sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
+        );
+
+        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-ce-19' })).toBe(true);
+
+        const batch = mockSubscriber.redispatchMany.mock.calls[0][0] as WorkItem[];
+        // wi-plain (60 min) and CE-8 (50 min) — CE-3 and CE-19 wait their turn.
+        expect(batch.map((wi) => wi.id)).toEqual(['wi-plain', 'wi-ce-8']);
+
+        // The trigger was left out of the reminder but still backs off.
+        expect(await provider.executeWakeAction({ ...buildAction(), workItemId: 'wi-ce-19' })).toBe(false);
         expect(mockSubscriber.redispatchMany).toHaveBeenCalledTimes(1);
       });
 

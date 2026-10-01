@@ -67,6 +67,7 @@ function makeHarness(home: string, overrides: Partial<AutoUpdateDeps> = {}): Har
 		getBusy: jest.fn(async () => busy.shift() ?? { midTurn: [], inProgress: [] }),
 		runInstall: jest.fn(async () => ({ ok: true, code: 0, outputTail: 'added 1 package' })),
 		npmCommand: 'npm',
+		getInstallCwd: () => '/home/me/.crewly',
 		readInstalledVersion: jest.fn(() => installedVersion.value),
 		requestRestart: jest.fn(() => true),
 		isNotifyReady: () => true,
@@ -113,6 +114,58 @@ describe('AutoUpdateService', () => {
 	});
 
 	const markerPath = (): string => path.join(home, AUTO_UPDATE_CONSTANTS.MARKER_FILE);
+
+	describe('installVersion (shared with the owner Upgrade button)', () => {
+		it('installs into the running prefix from CREWLY_HOME and verifies, without restarting or touching state', async () => {
+			const h = makeHarness(home);
+			const result = await h.service.installVersion('1.20.144');
+			expect(result).toEqual({ ok: true });
+			expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/usr/local', 'crewly@1.20.144'], '/home/me/.crewly');
+			expect(h.deps.afterInstall).toHaveBeenCalledWith('/usr/local/lib/node_modules/crewly');
+			expect(h.deps.requestRestart).not.toHaveBeenCalled();
+			expect(h.service.getState().consecutiveFailures).toBe(0);
+		});
+
+		it('reports a verify mismatch', async () => {
+			const h = makeHarness(home);
+			h.installedVersion.value = '1.20.143';
+			const result = await h.service.installVersion('1.20.144');
+			expect(result).toMatchObject({ ok: false, outcome: 'verify-failed' });
+		});
+
+		it('refuses a source checkout', async () => {
+			const h = makeHarness(home, { install: { kind: 'dev-checkout', packageRoot: '/src/crewly', prefix: null, detail: 'dev checkout' } });
+			const result = await h.service.installVersion('1.20.144');
+			expect(result).toMatchObject({ ok: false, outcome: 'skipped' });
+			expect(h.deps.runInstall).not.toHaveBeenCalled();
+		});
+
+		it('runs one install at a time and reports busy meanwhile', async () => {
+			let release: () => void = () => undefined;
+			const h = makeHarness(home, {
+				runInstall: jest.fn(
+					() => new Promise((resolve) => {
+						release = () => resolve({ ok: true, code: 0, outputTail: '' });
+					}),
+				),
+			});
+			const first = h.service.installVersion('1.20.144');
+			await flush();
+			expect(h.service.isBusy()).toBe(true);
+			await expect(h.service.installVersion('1.20.144')).resolves.toMatchObject({ ok: false, outcome: 'skipped' });
+			release();
+			await expect(first).resolves.toEqual({ ok: true });
+			expect(h.service.isBusy()).toBe(false);
+		});
+
+		it('writes and clears the upgrade marker', () => {
+			const h = makeHarness(home);
+			h.service.writeUpgradeMarker('1.20.143', '1.20.144');
+			expect(JSON.parse(fs.readFileSync(markerPath(), 'utf-8'))).toMatchObject({ fromVersion: '1.20.143', toVersion: '1.20.144' });
+			h.service.clearUpgradeMarker();
+			expect(fs.existsSync(markerPath())).toBe(false);
+		});
+	});
 
 	describe('scheduling', () => {
 		it('schedules the first check ~10 minutes after boot, then every 3 hours', async () => {
@@ -161,7 +214,7 @@ describe('AutoUpdateService', () => {
 			const h = makeHarness(home);
 			const result = await h.service.runCycle();
 			expect(result).toEqual({ outcome: 'installed-restarting', version: '1.20.144' });
-			expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/usr/local', 'crewly@1.20.144']);
+			expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/usr/local', 'crewly@1.20.144'], '/home/me/.crewly');
 			expect(h.deps.readInstalledVersion).toHaveBeenCalledWith('/usr/local/lib/node_modules/crewly');
 			expect(h.deps.afterInstall).toHaveBeenCalledWith('/usr/local/lib/node_modules/crewly');
 			expect(h.deps.requestRestart).toHaveBeenCalledWith('auto-update 1.20.143 -> 1.20.144');
@@ -180,7 +233,7 @@ describe('AutoUpdateService', () => {
 				},
 			});
 			await h.service.runCycle();
-			expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/home/me/.crewly/npm-global', 'crewly@1.20.144']);
+			expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/home/me/.crewly/npm-global', 'crewly@1.20.144'], '/home/me/.crewly');
 		});
 
 		it('does nothing when already on the latest version', async () => {
@@ -326,6 +379,33 @@ describe('AutoUpdateService', () => {
 				expect((await h.service.runCycle()).outcome).toBe('install-failed');
 			});
 
+			it('runs npm from the install cwd, not the package root it replaces', async () => {
+				const h = makeHarness(home);
+				await h.service.runCycle();
+				expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/usr/local', 'crewly@1.20.144'], '/home/me/.crewly');
+				expect(h.logLines.join('\n')).toContain('(cwd /home/me/.crewly)');
+			});
+
+			it('a Node crash names the error, not the bare "Node.js vX" trailer, and logs the sanitised tail', async () => {
+				const crash = [
+					'/usr/lib/node_modules/npm/lib/cli/validate-engines.js:31',
+					'    throw err',
+					'Error: ENOENT: no such file or directory, uv_cwd',
+					'    at process.wrappedCwd (node:internal/bootstrap/switches/does_own_process_state:142:28)',
+					"  syscall: 'uv_cwd'",
+					'//registry.npmjs.org/:_authToken=npm_abcdefghijklmnopqrstuvwxyz0123',
+					'Node.js v22.23.2',
+				].join('\n');
+				const h = makeHarness(home, { runInstall: jest.fn(async () => ({ ok: false, code: 7, outputTail: crash })) });
+				const result = await h.service.runCycle();
+				expect(result.detail).toBe('npm exited with 7: Error: ENOENT: no such file or directory, uv_cwd (… Node.js v22.23.2)');
+				const warn = (h.deps.logger.warn as jest.Mock).mock.calls.find((c) => c[0] === 'Auto-update failed; backing off');
+				expect(warn?.[1]).toMatchObject({ exitCode: 7, cwd: '/home/me/.crewly', command: 'npm install -g --prefix /usr/local crewly@1.20.144' });
+				expect(warn?.[1].outputTail).toContain('uv_cwd');
+				expect(warn?.[1].outputTail).toContain('[redacted]');
+				expect(warn?.[1].outputTail).not.toContain('npm_abcdefghijklmnopqrstuvwxyz0123');
+			});
+
 			it('a thrown install is a failure, not a crash', async () => {
 				const h = makeHarness(home, { runInstall: jest.fn(async () => { throw new Error('spawn npm ENOENT'); }) });
 				expect((await h.service.runCycle()).detail).toContain('ENOENT');
@@ -465,6 +545,23 @@ describe('AutoUpdateService', () => {
 			const bad = await runNpmInstall(process.execPath, ['-e', 'console.error("npm ERR! x"); process.exit(3)'], () => undefined);
 			expect(bad).toMatchObject({ ok: false, code: 3 });
 			expect(bad.outputTail).toContain('npm ERR!');
+		});
+
+		it('runs in the given cwd even when the inherited one was deleted', async () => {
+			const base = fs.mkdtempSync(path.join(os.tmpdir(), 'au-cwd-'));
+			const good = path.join(base, 'home');
+			fs.mkdirSync(good);
+			const r = await runNpmInstall(process.execPath, ['-e', 'console.log(process.cwd())'], () => undefined, 5000, good);
+			expect(r.ok).toBe(true);
+			expect(fs.realpathSync(r.outputTail.trim())).toBe(fs.realpathSync(good));
+			fs.rmSync(base, { recursive: true, force: true });
+		});
+
+		it('redacts credentials in the logged output', async () => {
+			const lines: string[] = [];
+			await runNpmInstall(process.execPath, ['-e', 'console.log("GET https://bob:hunter2@registry.example.com/x")'], (l) => lines.push(l));
+			expect(lines.join('\n')).toContain('https://[redacted]@registry.example.com/x');
+			expect(lines.join('\n')).not.toContain('hunter2');
 		});
 
 		it('reports a missing executable as a failure', async () => {

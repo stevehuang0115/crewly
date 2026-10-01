@@ -42,7 +42,7 @@ import { createIntentTaskRouter } from '../controllers/intent-task/intent-task.r
 import { createTaskPoolRouter, createTaskScoreRouter } from '../controllers/task-pool/task-pool.routes.js';
 import { createRequestRouter } from '../controllers/request/request.routes.js';
 import { createTicketsRouter } from '../controllers/tickets/tickets.routes.js';
-import { createProjectTicketsMigrationRouter, createProjectTicketsRouter } from '../controllers/project-tickets/project-tickets.routes.js';
+import { createProjectTicketsMigrationRouter, createProjectTicketsRouter, createTicketAutopilotRouter } from '../controllers/project-tickets/project-tickets.routes.js';
 import { createOwnerReceiptRouter } from '../controllers/owner-receipt/owner-receipt.routes.js';
 import { createHarnessRouter } from '../controllers/harness/harness.routes.js';
 import { createSkillSetupRouter } from '../controllers/skill-setup/skill-setup.routes.js';
@@ -197,6 +197,8 @@ export function createApiRoutes(apiController: ApiController): Router {
   // backlog, one markdown file per ticket in <project>/.crewly/tickets/.
   router.use('/project-tickets', createProjectTicketsRouter());
   router.use('/project-tickets-migrate', createProjectTicketsMigrationRouter());
+  // Ticket autopilot switch (specs/2026-09-30-ticket-autopilot.md), owner / orchestrator only.
+  router.use('/project-ticket-autopilot', createTicketAutopilotRouter());
   // #828: the daily owner receipt (dashboard data + settings + send now)
   router.use('/owner-receipt', createOwnerReceiptRouter());
 

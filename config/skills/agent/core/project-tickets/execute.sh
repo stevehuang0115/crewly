@@ -16,6 +16,11 @@
 #   bash execute.sh release --project P --id APP-12 [--note "why"]
 #   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]   (owner / orc / lead)
 #   bash execute.sh log     --project P --id APP-12 --note "progress"
+#   bash execute.sh link    --project P --id APP-12 --work-item <WorkItem id>   (owner / orc / lead)
+#   bash execute.sh ask-owner --project P --id APP-12 --question "…"            (owner / orc / lead)
+#   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
+#   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|--driver default]
+#                             [--daily-budget <usd>] [--max-in-flight <n>]      (owner / orchestrator)
 #   bash execute.sh '{"action":"create","project":"P","title":"…"}'
 #
 # P = project id, name, or absolute path.
@@ -39,6 +44,19 @@ Usage:
   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]
                                                               Orchestrator / team lead: put someone on it
   bash execute.sh log     --project P --id APP-12 --note "…"  Add a progress note to the ticket's Log
+  bash execute.sh link    --project P --id APP-12 --work-item <id>
+                                                              Orchestrator / team lead: tie work already in
+                                                              flight (a live WorkItem) to this ticket
+  bash execute.sh ask-owner --project P --id APP-12 --question "…"
+                                                              Orchestrator / team lead: the ticket waits on the
+                                                              owner (label needs-owner); Crewly batches the
+                                                              question to the owner's phone
+  bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
+                                                              The owner answered: remove the needs-owner mark
+  bash execute.sh autopilot --project P [--on|--off] [--driver <session>|default]
+                          [--daily-budget <usd>] [--max-in-flight <n>]
+                                                              Owner / orchestrator: show or change the ticket
+                                                              autopilot (no flags = show)
 
 P = project id, name or absolute path. Workers' new tickets start in backlog;
 the owner, the orchestrator or a team lead makes them ready.
@@ -46,9 +64,10 @@ EOF_USAGE
 }
 
 ACTION=""; PROJECT=""; ID=""; TITLE=""; DESCRIPTION=""; PRIORITY=""; LABELS=""; TEAM=""
-STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"
+STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"; WORK_ITEM=""
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
+QUESTION=""; CLEAR=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -70,6 +89,13 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   ACCEPTANCE_JSON=$(printf '%s' "$J" | jq -c 'if (.acceptance|type) == "array" then .acceptance else null end')
   ASSIGNEE=$(printf '%s' "$J" | jq -r '.to // .assignee // empty')
   START=$(printf '%s' "$J" | jq -r 'if .start == false then "false" else "true" end')
+  WORK_ITEM=$(printf '%s' "$J" | jq -r '.workItemId // .workItem // empty')
+  QUESTION=$(printf '%s' "$J" | jq -r '.question // empty')
+  CLEAR=$(printf '%s' "$J" | jq -r 'if .clear == true then "true" else empty end')
+  AP_ENABLED=$(printf '%s' "$J" | jq -r 'if (.enabled|type) == "boolean" then (.enabled|tostring) else empty end')
+  AP_DRIVER=$(printf '%s' "$J" | jq -r '.driver // empty')
+  AP_BUDGET=$(printf '%s' "$J" | jq -r '.dailyBudgetUsd // empty')
+  AP_MAX=$(printf '%s' "$J" | jq -r '.maxInFlightPerMember // empty')
 fi
 if [[ -z "$ACTION" && $# -gt 0 && ${1:0:1} != '-' ]]; then ACTION="$1"; shift; fi
 
@@ -91,13 +117,23 @@ while [[ $# -gt 0 ]]; do
     --owner-review)  OWNER_REVIEW="true"; shift ;;
     --to|--assignee) [ $# -ge 2 ] || error_exit "--to requires a value";         ASSIGNEE="$2"; shift 2 ;;
     --no-start)      START="false"; shift ;;
+    --work-item|--work-item-id|--workItemId)
+                     [ $# -ge 2 ] || error_exit "--work-item requires a value";   WORK_ITEM="$2"; shift 2 ;;
+    --question|-q)   [ $# -ge 2 ] || error_exit "--question requires a value";   QUESTION="$2"; shift 2 ;;
+    --clear)         CLEAR="true"; shift ;;
+    --on)            AP_ENABLED="true"; shift ;;
+    --off)           AP_ENABLED="false"; shift ;;
+    --driver)        [ $# -ge 2 ] || error_exit "--driver requires a value";     AP_DRIVER="$2"; shift 2 ;;
+    --daily-budget|--budget)
+                     [ $# -ge 2 ] || error_exit "--daily-budget requires a value"; AP_BUDGET="$2"; shift 2 ;;
+    --max-in-flight) [ $# -ge 2 ] || error_exit "--max-in-flight requires a value"; AP_MAX="$2"; shift 2 ;;
     --full)          shift ;;
     --help|-h)       print_usage; exit 0 ;;
     *) error_exit "Unknown option: $1" ;;
   esac
 done
 
-[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log"; }
+[ -n "$ACTION" ] || { print_usage >&2; error_exit "Missing action: list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot"; }
 
 # URL-encode a path segment (project paths contain slashes).
 enc() { jq -rn --arg v "$1" '$v|@uri'; }
@@ -176,7 +212,38 @@ case "$ACTION" in
     BODY=$(jq -n --arg note "$NOTE" '{note: $note}')
     api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/log" "$BODY" | jq '{success, lastLog: (.data.log | last)}'
     ;;
+  link)
+    require_param "project" "$PROJECT"; require_param "id" "$ID"; require_param "work-item" "$WORK_ITEM"
+    BODY=$(jq -n --arg wi "$WORK_ITEM" '{workItemId: $wi}')
+    api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/link" "$BODY" \
+      | jq "{success, workItemId: .data.workItem.id, ticket: (.data.ticket | ${TICKET_ROW})}"
+    ;;
+  ask-owner)
+    require_param "project" "$PROJECT"; require_param "id" "$ID"
+    if [ "$CLEAR" = "true" ]; then
+      BODY=$(jq -n --arg note "$NOTE" '{clear: true} + (if $note != "" then {note: $note} else {} end)')
+    else
+      require_param "question" "$QUESTION"
+      BODY=$(jq -n --arg q "$QUESTION" '{question: $q}')
+    fi
+    api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/ask-owner" "$BODY" \
+      | jq "{success, ticket: (.data | ${TICKET_ROW})}"
+    ;;
+  autopilot)
+    require_param "project" "$PROJECT"
+    if [ -z "$AP_ENABLED$AP_DRIVER$AP_BUDGET$AP_MAX" ]; then
+      api_call GET "/project-ticket-autopilot/$(enc "$PROJECT")" | jq '{success, autopilot: .data}'
+    else
+      BODY=$(jq -n --arg enabled "$AP_ENABLED" --arg driver "$AP_DRIVER" --arg budget "$AP_BUDGET" --arg max "$AP_MAX" \
+        '{}
+         + (if $enabled != "" then {enabled: ($enabled == "true")} else {} end)
+         + (if $driver == "default" then {driver: null} elif $driver != "" then {driver: $driver} else {} end)
+         + (if $budget == "default" then {dailyBudgetUsd: null} elif $budget != "" then {dailyBudgetUsd: ($budget | tonumber? // $budget)} else {} end)
+         + (if $max == "default" then {maxInFlightPerMember: null} elif $max != "" then {maxInFlightPerMember: ($max | tonumber? // $max)} else {} end)')
+      api_call POST "/project-ticket-autopilot/$(enc "$PROJECT")" "$BODY" | jq '{success, autopilot: .data}'
+    fi
+    ;;
   *)
-    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log)"
+    error_exit "Unknown action: $ACTION (use list | show | create | update | claim | release | assign | log | link | ask-owner | autopilot)"
     ;;
 esac

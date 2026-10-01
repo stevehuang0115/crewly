@@ -14,6 +14,7 @@ import * as path from 'path';
 import type { Team } from '../../types/index.js';
 import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
+import { getTeamLeads } from '../../utils/team.utils.js';
 
 /** Storage slice. */
 export interface OwnerResolverStorage {
@@ -57,7 +58,7 @@ export async function resolveWikiOwner(storage: OwnerResolverStorage, key: strin
 }
 
 function leaderOf(team: Team): string | null {
-  const tl = (team.members ?? []).find((m) => String(m.role) === 'team-leader' || String(m.role) === 'tech-lead');
+  const tl = getTeamLeads(team)[0];
   if (!tl) return null;
   return resolveMemberSessionName(team.name, tl);
 }

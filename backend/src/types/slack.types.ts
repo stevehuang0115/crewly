@@ -481,6 +481,12 @@ export interface SlackOutgoingMessage {
    * toward the outbound reachability health.
    */
   reachabilityProbe?: boolean;
+  /**
+   * The post is harness chrome, not an answer (a "working on it"
+   * placeholder, the watchdog's own note, a routing hint). The
+   * unanswered-owner-message watchdog does not take it as the reply.
+   */
+  notAnAnswer?: boolean;
 }
 
 /**

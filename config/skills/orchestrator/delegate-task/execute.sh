@@ -17,6 +17,7 @@ TASK_TYPE="general"
 TEAM_ID=""
 FORCE_CROSS_TEAM="false"
 REQUEST_ID=""
+PROJECT_TICKET=""
 # Self-heal fix #3 (2026-05-20): default fallback timer. Per the
 # orchestrator prompt §3.0 the orc is supposed to set 2× ETA manually
 # for every dispatch, but the convention was unenforced — observable in
@@ -54,11 +55,13 @@ while [[ $# -gt 0 ]]; do
     --task-type)     TASK_TYPE="$2";        shift 2 ;;
     --team|-g)       TEAM_ID="$2";          shift 2 ;;
     --request-id|-R) REQUEST_ID="$2";       shift 2 ;;
+    --ticket)        PROJECT_TICKET="$2";   shift 2 ;;
     --force-cross-team) FORCE_CROSS_TEAM="true"; shift ;;
     --fallback-minutes) FALLBACK_MINUTES="$2"; shift 2 ;;
     --json|-j)       INPUT_JSON="$2";       shift 2 ;;
     --help|-h)
-      echo "Usage: execute.sh --to agent-session --task 'implement feature' --priority high --project /path [--team teamId] [--context 'extra info']"
+      echo "Usage: execute.sh --to agent-session --task 'implement feature' --priority high --project /path [--team teamId] [--context 'extra info'] [--ticket <project ticket id, e.g. APP-12>]"
+      echo "Work for an agent on a project always runs through a project ticket: --ticket uses that backlog/ready ticket, otherwise one is created for you."
       exit 0
       ;;
     --)              shift; break ;;
@@ -94,6 +97,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$TEAM_ID" ] && TEAM_ID=$(printf '%s' "$INPUT" | jq -r '.teamId // empty')
   [ "$FORCE_CROSS_TEAM" = "false" ] && FORCE_CROSS_TEAM=$(printf '%s' "$INPUT" | jq -r '.forceCrossTeam // "false"')
   [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
+  [ -z "$PROJECT_TICKET" ] && PROJECT_TICKET=$(printf '%s' "$INPUT" | jq -r '.ticket // .projectTicketId // empty')
 fi
 
 require_param "to (--to)" "$TO"
@@ -292,17 +296,29 @@ POOL_BODY=$(jq -n \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
   --arg requestId "${REQUEST_ID:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
+  --arg projectTicketId "${PROJECT_TICKET:-}" \
+  --arg delegatedBy "${CREWLY_SESSION_NAME:-}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
+# projectTicketId / metadata.delegatedBy: work for an agent on a project runs
+# through a project ticket (specs/2026-09-28-project-tickets.md §11). The
+# backend uses --ticket, or creates a ticket and links this WorkItem to it.
 
 # Pipeline-#4 fix (spec 2026-05-05-request-decompose-pipeline-gap.md, Patch B):
 # Route is /api/task-pool/add (not /api/pool/add — that endpoint does not exist
 # and previously returned 404, silently swallowed by the || fallback below).
-POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
+POOL_ERR_FILE="$(mktemp)"
+POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>"$POOL_ERR_FILE" || echo '{"success":false}')
+POOL_ERR="$(cat "$POOL_ERR_FILE" 2>/dev/null || true)"
+rm -f "$POOL_ERR_FILE"
 POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
 WI_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
+PROJECT_TICKET_INFO=$(echo "$POOL_RESULT" | jq -c '.data.projectTicket // null' 2>/dev/null || echo 'null')
+[ -n "$PROJECT_TICKET_INFO" ] || PROJECT_TICKET_INFO='null'
 
 if [ "$POOL_OK" != "true" ]; then
-  echo "{\"error\":\"Failed to create WorkItem in TaskPool\",\"details\":$(echo "$POOL_RESULT" | jq -c . 2>/dev/null || echo '{}')}"
+  # Surface the backend's reason (e.g. a --ticket refused by the project-ticket rules).
+  ERR_DETAILS=$(printf '%s' "$POOL_ERR" | grep '"error":true' | tail -1 | jq -c '.details // .' 2>/dev/null || true)
+  echo "{\"error\":\"Failed to create WorkItem in TaskPool\",\"details\":${ERR_DETAILS:-$(echo "$POOL_RESULT" | jq -c . 2>/dev/null || echo '{}')}}"
   exit 1
 fi
 
@@ -371,6 +387,7 @@ if [ -n "$WI_ID" ] && [ "${FALLBACK_MINUTES:-0}" -gt 0 ] 2>/dev/null; then
         config: {type: "time", fireAt: $fireAt},
         action: {createWorkItem: {type: "delegate", owner: "system", target: $target, title: $title, description: $description}},
         createdBy: $createdBy,
+        internal: true,
         name: $name,
         maxFires: 1
       }')
@@ -400,5 +417,7 @@ jq -n \
   --arg message "$RESULT_MESSAGE" \
   --arg fallbackTriggerId "${FALLBACK_TRIGGER_ID:-}" \
   --arg fallbackMinutes "${FALLBACK_MINUTES:-0}" \
+  --argjson projectTicket "$PROJECT_TICKET_INFO" \
   '{success: true, workItemId: $workItemId, target: $target, priority: $priority, title: $title, state: $state, message: $message}
-   + (if $fallbackTriggerId != "" then {fallbackTriggerId: $fallbackTriggerId, fallbackMinutes: ($fallbackMinutes|tonumber)} else {} end)'
+   + (if $fallbackTriggerId != "" then {fallbackTriggerId: $fallbackTriggerId, fallbackMinutes: ($fallbackMinutes|tonumber)} else {} end)
+   + (if $projectTicket != null then {projectTicket: $projectTicket} else {} end)'

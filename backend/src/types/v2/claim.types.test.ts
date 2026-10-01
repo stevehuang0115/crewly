@@ -18,6 +18,8 @@ import {
   validateCreateClaimInput,
   createTaskClaim,
   extendClaim,
+  renewClaimLease,
+  CLAIM_ACTIVITY_LIVENESS_WINDOW_MS,
 } from './claim.types.js';
 import type { TaskClaim, CreateClaimInput } from './claim.types.js';
 
@@ -264,6 +266,43 @@ describe('Claim Types', () => {
 
       claim = extendClaim(claim!);
       expect(claim).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // renewClaimLease
+  // -----------------------------------------------------------------------
+  describe('renewClaimLease', () => {
+    it('runs the lease a full duration from now and reactivates an expiring claim', () => {
+      const claim = createTaskClaim({ workItemId: 'wi-001', agentId: 'agent-1' });
+      const now = new Date(claim.leaseExpiresAt).getTime() + 60_000;
+      const expiring: TaskClaim = { ...claim, status: 'expiring' };
+      const renewed = renewClaimLease(expiring, now);
+      expect(renewed.status).toBe('active');
+      expect(new Date(renewed.leaseExpiresAt).getTime()).toBe(now + claim.leaseDurationMs);
+      expect(new Date(renewed.lastHeartbeatAt).getTime()).toBe(now);
+      expect(isLeaseExpired(renewed, now)).toBe(false);
+    });
+    it('is not capped by maxExtensions and leaves extensionCount alone', () => {
+      const claim = createTaskClaim({ workItemId: 'wi-001', agentId: 'agent-1' });
+      const exhausted: TaskClaim = { ...claim, extensionCount: DEFAULT_MAX_EXTENSIONS };
+      const renewed = renewClaimLease(exhausted, Date.now() + 20 * 60_000);
+      expect(renewed.extensionCount).toBe(DEFAULT_MAX_EXTENSIONS);
+      expect(new Date(renewed.leaseExpiresAt).getTime()).toBeGreaterThan(new Date(claim.leaseExpiresAt).getTime());
+    });
+    it('never moves the lease backwards', () => {
+      const claim = createTaskClaim({ workItemId: 'wi-001', agentId: 'agent-1', leaseDurationMs: 60_000 });
+      const far: TaskClaim = { ...claim, leaseExpiresAt: new Date(Date.now() + 3_600_000).toISOString() };
+      expect(renewClaimLease(far).leaseExpiresAt).toBe(far.leaseExpiresAt);
+    });
+    it('does not mutate the original claim', () => {
+      const claim = createTaskClaim({ workItemId: 'wi-001', agentId: 'agent-1' });
+      const before = { ...claim };
+      renewClaimLease(claim, Date.now() + 999_999);
+      expect(claim).toEqual(before);
+    });
+    it('liveness window is grace + heartbeat interval', () => {
+      expect(CLAIM_ACTIVITY_LIVENESS_WINDOW_MS).toBe(DEFAULT_GRACE_PERIOD_MS + DEFAULT_HEARTBEAT_INTERVAL_MS);
     });
   });
 });

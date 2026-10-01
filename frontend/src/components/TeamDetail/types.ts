@@ -58,6 +58,8 @@ export interface MembersListProps {
   onViewAgent?: (member: TeamMember) => void;
   /** When true, shows loading state for all members (team is starting) */
   isStartingTeam?: boolean;
+  /** Make a member the team lead (POST /api/teams/:id/lead) */
+  onMakeLead?: (memberId: string) => Promise<void>;
 }
 
 export interface NewMember {

@@ -1752,6 +1752,60 @@ describe('SlackOrchestratorBridge', () => {
       );
     }, 30000);
 
+    it('hands the owner\'s message to the unanswered-owner-message watchdog (not an agent\'s)', async () => {
+      const { setOwnerMessageWatchdog } = await import('../messaging/owner-message-watchdog.service.js');
+      const track = jest.fn();
+      setOwnerMessageWatchdog({ track } as any);
+      mockChatV2EnsureChannel.mockReturnValue({ id: 'conv-123', agentSession: 'crewly-orc' });
+      mockChatV2RecordTurn.mockReturnValue({ message: { id: 'm-1' }, deduped: false });
+      try {
+        mockQueueService.enqueue.mockImplementation((input: any) => {
+          setTimeout(() => input.sourceMetadata.slackResolve('ok'), 10);
+          return { id: 'q-1' };
+        });
+        const bridge = new SlackOrchestratorBridge({ responseTimeoutMs: 5000 });
+        bridge.setMessageQueueService(mockQueueService);
+        await bridge.initialize();
+        const slackService = (bridge as any).slackService;
+        jest.spyOn(slackService, 'sendMessage').mockResolvedValue(undefined);
+        jest.spyOn(slackService, 'addReaction').mockResolvedValue(undefined);
+        jest.spyOn(slackService, 'getConversationContext').mockReturnValue({
+          conversationId: 'conv-123',
+          channelId: 'D0MASTER',
+          userId: 'U123',
+          threadTs: '1234567890.123456',
+        });
+        const handled = () => new Promise<void>((resolve) => bridge.once('message_handled', () => resolve()));
+
+        const done = handled();
+        slackService.emit('message', { text: 'what is the plan for today?', channelId: 'D0MASTER', userId: 'U123', ts: '1234567890.123456' });
+        await done;
+        expect(track).toHaveBeenCalledWith(
+          expect.objectContaining({
+            surface: 'slack',
+            slackChannelId: 'D0MASTER',
+            sourceTs: '1234567890.123456',
+            chatChannelId: 'conv-123',
+            responsible: 'crewly-orc',
+            required: true,
+          }),
+        );
+
+        // A colleague agent's post (any machine) is not the owner's message.
+        track.mockClear();
+        (bridge as any).watchOwnerMessage(
+          { channelId: 'D0MASTER', threadTs: '1.1', messageTs: '1.1', messageUserId: 'U123' },
+          'crewly-orc-laptop',
+          'status from the laptop',
+          'conv-123',
+          'crewly-orc',
+        );
+        expect(track).not.toHaveBeenCalled();
+      } finally {
+        setOwnerMessageWatchdog(null);
+      }
+    }, 30000);
+
     // #730: a colleague agent's Slack post that falls through to the
     // orchestrator is stored as a `user` turn — it must carry its author so
     // the commitment gate never reads it as the owner's approval.

@@ -6,6 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { HARNESS_CONSTANTS } from '../../constants.js';
 import { HarnessCredentialsStore } from './harness-credentials.store.js';
 import { LOGIN_BROKER_EVENTS, LoginBrokerError, LoginBrokerService, type BrokerPty } from './login-broker.service.js';
 import type { LoginSession } from './harness.types.js';
@@ -115,6 +116,7 @@ describe('LoginBrokerService', () => {
 			prepareClaudeConfig,
 			verify,
 			idFactory: () => `s${++n}`,
+			submitDelayMs: 0,
 			...overrides,
 		});
 	}
@@ -166,6 +168,42 @@ describe('LoginBrokerService', () => {
 		expect(session.screen).not.toContain(CLAUDE_TOKEN);
 		expect(session.screen).toContain('[redacted]');
 		for (const update of updates) expect(JSON.stringify(update)).not.toContain(CLAUDE_TOKEN);
+	});
+
+	it('Claude: types the code, then presses Enter separately (Ink reads one write as a paste)', () => {
+		jest.useFakeTimers();
+		try {
+			const broker = make({ submitDelayMs: 300, submitRetryMs: 4000 });
+			const { id } = broker.start('claude-code', 'subscription');
+			const pty = ptys[ptys.length - 1];
+			pty.emit(CLAUDE_SCREEN);
+			broker.input(id, 'the-code#the-state');
+			expect(pty.written).toEqual(['the-code#the-state']);
+			jest.advanceTimersByTime(300);
+			expect(pty.written).toEqual(['the-code#the-state', '\r']);
+			// Nothing printed after Enter: pressed once more.
+			jest.advanceTimersByTime(4000);
+			expect(pty.written).toEqual(['the-code#the-state', '\r', '\r']);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	it('Claude: no second Enter when the login reacted to the first', () => {
+		jest.useFakeTimers();
+		try {
+			const broker = make({ submitDelayMs: 300, submitRetryMs: 4000 });
+			const { id } = broker.start('claude-code', 'subscription');
+			const pty = ptys[ptys.length - 1];
+			pty.emit(CLAUDE_SCREEN);
+			broker.input(id, 'code-value-123');
+			jest.advanceTimersByTime(300);
+			pty.emit('Verifying…\r\n');
+			jest.advanceTimersByTime(4000);
+			expect(pty.written).toEqual(['code-value-123', '\r']);
+		} finally {
+			jest.useRealTimers();
+		}
 	});
 
 	it('Claude: a rejected code returns to awaiting_user with the message', () => {
@@ -252,14 +290,67 @@ describe('LoginBrokerService', () => {
 		expect((await broker.waitForCompletion(id)).message).toContain('status crashed');
 	});
 
-	it('Codex: a non-zero exit fails', async () => {
+	it('Codex: a non-zero exit fails when the harness is not logged in', async () => {
+		verify.mockResolvedValueOnce(false);
 		const broker = make();
 		const { id } = broker.start('codex-cli', 'device');
 		ptys[0].emit(CODEX_SCREEN);
 		ptys[0].exit(2);
+		const session = await broker.waitForCompletion(id);
+		expect(session.state).toBe('failed');
+		expect(session.message).toContain('code 2');
+		expect(verify).toHaveBeenCalledTimes(1);
+	});
+
+	// steamfun-ops 2026-09-29/30: the owner finished the device login four
+	// times (codex logged "oauth token exchange succeeded"); every attempt was
+	// reported failed and each retry's `codex login` revoked the previous one.
+	it('Codex: an error line does not kill the login; its exit decides, and the codex message is kept', async () => {
+		verify.mockResolvedValueOnce(false);
+		const broker = make();
+		const { id } = broker.start('codex-cli', 'device');
+		ptys[0].emit(CODEX_SCREEN);
+		ptys[0].emit('Error logging in with device code: workspace not allowed\r\n');
 		await flush();
-		expect(broker.get(id).state).toBe('failed');
-		expect(verify).not.toHaveBeenCalled();
+		expect(ptys[0].killed).toBe(false);
+		expect(broker.get(id).state).not.toBe('failed');
+		ptys[0].exit(1);
+		const session = await broker.waitForCompletion(id);
+		expect(session).toMatchObject({ state: 'failed', message: expect.stringContaining('workspace not allowed') });
+	});
+
+	it('Codex: a failure report is overridden when the harness is logged in afterwards', async () => {
+		const broker = make();
+		const { id } = broker.start('codex-cli', 'device');
+		ptys[0].emit(CODEX_SCREEN);
+		ptys[0].emit('error: something went sideways\r\n');
+		ptys[0].exit(1);
+		const session = await broker.waitForCompletion(id);
+		expect(session.state).toBe('succeeded');
+		expect(verify).toHaveBeenCalledWith('codex-cli');
+	});
+
+	it('Codex: an error line with no exit fails after the grace period', () => {
+		jest.useFakeTimers();
+		const broker = make();
+		const { id } = broker.start('codex-cli', 'device');
+		ptys[0].emit('Error logging in with device code: boom\r\n');
+		jest.advanceTimersByTime(HARNESS_CONSTANTS.LOGIN.FAILURE_EXIT_GRACE_MS + 1);
+		expect(broker.get(id)).toMatchObject({ state: 'failed', message: expect.stringContaining('boom') });
+		expect(ptys[0].killed).toBe(true);
+	});
+
+	it('logs why a session failed, with secrets redacted', async () => {
+		verify.mockResolvedValueOnce(false);
+		const logger = { info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() };
+		const broker = make({ logger });
+		const { id } = broker.start('codex-cli', 'device');
+		ptys[0].emit(`Error logging in with device code: bad ${CLAUDE_TOKEN}\r\n`);
+		ptys[0].exit(1);
+		await broker.waitForCompletion(id);
+		const finished = logger.info.mock.calls.find(([msg]) => msg === 'Login broker session finished');
+		expect(finished?.[1]).toMatchObject({ state: 'failed', message: expect.stringContaining('Error logging in') });
+		expect(JSON.stringify(logger.info.mock.calls)).not.toContain(CLAUDE_TOKEN);
 	});
 
 	it('times out after the configured window', () => {

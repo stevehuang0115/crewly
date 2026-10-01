@@ -64,7 +64,7 @@ describe('replay — 2026-09-28, the overwhelming receipt, under the new rules',
     expect(plan.actions.filter((a) => a.action === 'stale').map((a) => a.tkt ?? a.id)).toEqual(['TKT-053', 'legacy-200', 'legacy-201']);
   });
 
-  it('renders at most ten short Chinese lines, no ticket numbers, none of his words, right teams, misrouted left off', async () => {
+  it('renders at most ten short lines, no ticket numbers, none of his words, right teams, misrouted left off', async () => {
     const store = new MemoryStore(FIXTURE.requests);
     // New rule at answer time: a plain answer (no deliverable, no question to him) closes.
     for (const r of await store.listAll()) {
@@ -91,20 +91,20 @@ describe('replay — 2026-09-28, the overwhelming receipt, under the new rules',
 
     const lines = text.split('\n');
     expect(lines.length).toBeLessThanOrEqual(10);
-    expect(lines[0]).toBe('*Crewly 小票 · 9/28 周一*');
+    expect(lines[0]).toBe('*Crewly receipt · Mon 9/28*');
     expect(text).not.toMatch(/TKT-\d/);
     for (const banned of ['不详', '没记', '等你拍板', '你提了', '你发了']) expect(text).not.toContain(banned);
     for (const words of OWNER_WORDS) expect(text).not.toContain(words.slice(0, 12));
 
-    // 今天做完的: three outcomes, in the agents' words, each credited to who did it.
+    // Done today: three outcomes, in the agents' words, each credited to who did it.
     expect(data.highlights).toHaveLength(3);
-    // TKT-094 had no assignee; Owen answered it → CE, not 未分配.
+    // TKT-094 had no assignee; Owen answered it → CE, not Unassigned.
     expect(data.highlights.find((h) => h.ticketId === 'tkt-094')?.team).toBe('CE');
-    expect(text).not.toContain('未分配');
+    expect(text).not.toContain('Unassigned');
 
-    // 需要你决定的: three questions, then how many more are on the board.
+    // Needs your decision: three questions, then how many more are on the board.
     expect(data.decisions).toHaveLength(3);
-    expect(lines.at(-1)).toBe(`另有 ${data.decisionsTotal - 3} 件，在看板上`);
+    expect(lines.at(-1)).toBe(`${data.decisionsTotal - 3} more on the board`);
     // Addressed to another machine's agent, answered by Atlas: asked by Atlas.
     const all = buildReceiptData({
       requests: await store.listAll(),

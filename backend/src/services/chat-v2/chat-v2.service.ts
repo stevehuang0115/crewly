@@ -1008,6 +1008,21 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * The newest user message in a channel that @-mentioned an agent since a
+   * given time, server-side (no principal). See
+   * {@link MessageStore.findLatestUserMessageMentioning}.
+   *
+   * @param channelId - The channel id
+   * @param agentSession - The agent's session name
+   * @param sinceMs - Oldest creation time (epoch ms) to consider
+   * @returns The message DTO, or null
+   */
+  findLatestUserMessageMentioning(channelId: string, agentSession: string, sinceMs: number): ChatMessageDTO | null {
+    const row = this.messages.findLatestUserMessageMentioning(channelId, agentSession, sinceMs);
+    return row ? this.toMessageDTO(row, []) : null;
+  }
+
+  /**
    * Read a single message by id, server-side (no principal). Used by the
    * outbound Slack mirror to recover a reply's thread root metadata.
    *

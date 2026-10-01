@@ -16,11 +16,27 @@ interface TeamMemberRowProps {
   onViewAgent?: (member: TeamMember) => void;
   /** When true, shows loading state (team is starting) */
   isStartingTeam?: boolean;
+  /** This member leads the team (team-lead rule) — shows the Lead badge */
+  isLead?: boolean;
+  /** Make this member the team's lead; when absent, no toggle is shown */
+  onMakeLead?: (memberId: string) => Promise<void>;
 }
 
-export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, onStart, onStop, onViewTerminal, onViewAgent, isStartingTeam }) => {
+export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, onStart, onStop, onViewTerminal, onViewAgent, isStartingTeam, isLead, onMakeLead }) => {
   const [isStarting, setIsStarting] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
+  const [isMakingLead, setIsMakingLead] = useState(false);
+
+  const handleMakeLead = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onMakeLead || isMakingLead) return;
+    setIsMakingLead(true);
+    try {
+      await onMakeLead(member.id);
+    } finally {
+      setIsMakingLead(false);
+    }
+  };
 
   const isActive = member.agentStatus === 'active';
   const isStarted = member.agentStatus === 'started';
@@ -95,6 +111,32 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
         <div>
           <div className="flex items-center gap-2">
             <span className="font-semibold">{member.name}</span>
+            {isLead ? (
+              <Badge variant="primary" size="sm" data-testid="lead-badge">
+                Lead
+              </Badge>
+            ) : onMakeLead ? (
+              <button
+                type="button"
+                className="text-xs px-2 py-0.5 rounded-full border border-border-dark text-text-secondary-dark hover:text-primary hover:border-primary transition-colors disabled:opacity-50"
+                onClick={handleMakeLead}
+                disabled={isMakingLead}
+                data-testid="make-lead-button"
+                title="Make this member the team lead"
+              >
+                {isMakingLead ? 'Making lead…' : 'Make lead'}
+              </button>
+            ) : null}
+            {member.runtimeOverride && (
+              <Badge
+                variant="warning"
+                size="sm"
+                data-testid="runtime-override-badge"
+                title={`Running on a fallback runtime while its own is out of usage${member.runtimeOverride.until ? ` (until ~${new Date(member.runtimeOverride.until).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })})` : ''}`}
+              >
+                {member.runtimeOverride.badge}
+              </Badge>
+            )}
             {member.expertId && (
               <Badge variant="info" size="sm" data-testid="expert-badge">
                 <Sparkles className="w-3 h-3 mr-1" />
@@ -107,7 +149,7 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
       </div>
       <div className="flex items-center gap-3">
         {member.loginRequired && (
-          <SignInNeededChip loginRequired={member.loginRequired} agentLabel={member.name} align="right" />
+          <SignInNeededChip loginRequired={member.loginRequired} agentLabel={member.name} align="right" runtimeType={member.runtimeType} />
         )}
         <span className={`px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2 ${statusColor}`}>
           {isLoading && <LoadingSpinner size="xs" centered={false} />}

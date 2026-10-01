@@ -30,9 +30,10 @@ jest.mock('../../websocket/terminal.gateway.js', () => ({
 	}),
 }));
 
+const mockSendNotification = jest.fn().mockResolvedValue(undefined);
 jest.mock('../slack/slack.service.js', () => ({
 	getSlackService: () => ({
-		sendNotification: jest.fn().mockResolvedValue(undefined),
+		sendNotification: mockSendNotification,
 	}),
 }));
 
@@ -55,7 +56,8 @@ jest.mock('../core/storage.service.js', () => ({
 }));
 
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
-import { ORCHESTRATOR_RESTART_CONSTANTS, RUNTIME_TYPES, CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
+import { ORCHESTRATOR_RESTART_CONSTANTS, ORCHESTRATOR_SESSION_NAME, RUNTIME_TYPES, CLAUDE_STARTUP_CONSTANTS } from '../../constants.js';
+import { markPlannedRelaunch, resetPlannedRelaunches } from '../agent/planned-relaunch.registry.js';
 
 describe('OrchestratorRestartService', () => {
 	let service: OrchestratorRestartService;
@@ -100,6 +102,71 @@ describe('OrchestratorRestartService', () => {
 
 	afterEach(() => {
 		OrchestratorRestartService.resetInstance();
+		resetPlannedRelaunches();
+		mockSendNotification.mockClear();
+	});
+
+	describe('planned relaunch (runtime fallback)', () => {
+		beforeEach(() => {
+			jest.useFakeTimers();
+		});
+
+		afterEach(() => {
+			jest.useRealTimers();
+		});
+
+		/** Run attemptRestart through its internal delay. */
+		async function run(options?: Parameters<OrchestratorRestartService['attemptRestart']>[0]): Promise<boolean> {
+			const p = service.attemptRestart(options);
+			await jest.advanceTimersByTimeAsync(6000);
+			await jest.advanceTimersByTimeAsync(0);
+			return p;
+		}
+
+		it('relaunches without the "Orchestrator Restarted … unresponsive" alarm and without counting an attempt', async () => {
+			await expect(run({ planned: true, reason: 'runtime_fallback' })).resolves.toBe(true);
+			expect(mockAgentRegistrationService.createAgentSession).toHaveBeenCalledTimes(1);
+			expect(mockSendNotification).not.toHaveBeenCalled();
+			const stats = service.getRestartStats();
+			expect(stats.totalRestarts).toBe(0);
+			expect(stats.restartsInWindow).toBe(0);
+			expect(mockSocketIO.emit).toHaveBeenCalledWith('orchestrator:restarted', expect.objectContaining({ planned: true, reason: 'runtime_fallback' }));
+		});
+
+		it('is not blocked by the restart cooldown, and does not use it up', async () => {
+			for (let i = 0; i < ORCHESTRATOR_RESTART_CONSTANTS.MAX_RESTARTS_PER_WINDOW; i++) await run();
+			expect(service.isRestartAllowed()).toBe(false);
+			await expect(run({ planned: true })).resolves.toBe(true);
+			expect(service.getRestartStats().totalRestarts).toBe(ORCHESTRATOR_RESTART_CONSTANTS.MAX_RESTARTS_PER_WINDOW);
+		});
+
+		it('a failed planned relaunch does not count toward giving up', async () => {
+			mockAgentRegistrationService.createAgentSession.mockResolvedValue({ success: false, error: 'boom' });
+			for (let i = 0; i < ORCHESTRATOR_RESTART_CONSTANTS.MAX_CONSECUTIVE_FAILURES + 1; i++) {
+				await expect(run({ planned: true })).resolves.toBe(false);
+			}
+			expect(service.getGiveUp()).toBeNull();
+			expect(service.getRestartStats().consecutiveFailures).toBe(0);
+		});
+
+		it('refuses a monitor-triggered restart while the orchestrator is being relaunched on purpose', async () => {
+			markPlannedRelaunch(ORCHESTRATOR_SESSION_NAME, 'runtime_fallback');
+			await expect(run()).resolves.toBe(false);
+			expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
+			expect(mockSendNotification).not.toHaveBeenCalled();
+			expect(service.getRestartStats().restartsInWindow).toBe(0);
+		});
+
+		it('a real restart still sends the alarm and counts the attempt', async () => {
+			await expect(run()).resolves.toBe(true);
+			expect(mockSendNotification).toHaveBeenCalledWith(
+				expect.objectContaining({
+					title: 'Orchestrator Restarted',
+					message: expect.stringContaining('attempt #1'),
+				}),
+			);
+			expect(service.getRestartStats().totalRestarts).toBe(1);
+		});
 	});
 
 	describe('singleton', () => {

@@ -8,7 +8,9 @@
  *    latest `crewly`;
  * 2. when it is newer and auto-update is on, wait for a quiet window — no
  *    agent in_progress and no turn in flight, seen twice ~60 s apart;
- * 3. `npm install -g --prefix <the running copy's prefix> crewly@<version>`;
+ * 3. `npm install -g --prefix <the running copy's prefix> crewly@<version>`,
+ *    run from CREWLY_HOME — never from the package root, which every global
+ *    install deletes (npm dies with `uv_cwd` ENOENT, exit 7, in a deleted cwd);
  * 4. verify the installed package.json says `<version>`;
  * 5. write a marker and ask for the graceful restart (drain, exit 120, the
  *    `crewly start` parent respawns the backend from the new files);
@@ -39,16 +41,21 @@ import {
 	composeFailureNotice,
 	composeUpgradedNotice,
 	consumePendingMarker,
+	describeInstallFailure,
 	detectInstall,
 	hasRestartSupervisor,
+	installOutputTail,
 	isNewerVersion,
 	isSwitchOn,
 	npmInstallArgs,
 	readAutoUpdateState,
 	readInstalledVersion,
 	resolveAutoUpdateSwitch,
+	resolveInstallCwd,
+	sanitizeNpmOutput,
 	resolveNpmCommand,
 	resolveRunningPackageRoot,
+	safeProcessCwd,
 	writeAutoUpdateState,
 	writePendingMarker,
 } from './auto-update.utils.js';
@@ -62,6 +69,11 @@ export interface InstallRunResult {
 	/** Tail of the combined output, for the failure reason */
 	outputTail: string;
 }
+
+/** Result of {@link AutoUpdateService.installVersion}. */
+export type InstallAttempt =
+	| { ok: true }
+	| { ok: false; outcome: AutoUpdateOutcome; reason: string; details: Record<string, unknown> };
 
 /** What is keeping the machine busy right now. */
 export interface BusySnapshot {
@@ -98,10 +110,15 @@ export interface AutoUpdateDeps {
 	isRestartInProgress: () => boolean;
 	/** Busy agents and turns */
 	getBusy: () => Promise<BusySnapshot>;
-	/** Run npm; resolves when it exits */
-	runInstall: (command: string, args: string[]) => Promise<InstallRunResult>;
+	/** Run npm in `cwd`; resolves when it exits */
+	runInstall: (command: string, args: string[], cwd: string) => Promise<InstallRunResult>;
 	/** npm executable */
 	npmCommand: string;
+	/**
+	 * Directory npm runs in. Must outlive the install: not the package root
+	 * (and not this process's cwd, which is the package root).
+	 */
+	getInstallCwd: () => string;
 	/** Read the installed version from disk */
 	readInstalledVersion: (packageRoot: string) => string | null;
 	/** Ask for the graceful restart; false when nothing can restart us */
@@ -145,6 +162,7 @@ export class AutoUpdateService {
 	private static instance: AutoUpdateService | null = null;
 	private timer: unknown = null;
 	private running = false;
+	private installing = false;
 	private stopped = false;
 	private lastLoggedMode: string | null = null;
 	private busySince: number | null = null;
@@ -304,48 +322,146 @@ export class AutoUpdateService {
 		}
 		this.busySince = null;
 
-		// Install into the prefix the running copy lives in.
-		const args = npmInstallArgs(prefix, latest);
-		this.log(`Installing ${AUTO_UPDATE_CONSTANTS.PACKAGE_NAME}@${latest} (running ${current}): ${this.deps.npmCommand} ${args.join(' ')}`);
-		let result: InstallRunResult;
-		try {
-			result = await this.deps.runInstall(this.deps.npmCommand, args);
-		} catch (error) {
-			result = { ok: false, code: null, outputTail: error instanceof Error ? error.message : String(error) };
-		}
-		if (!result.ok) {
-			return this.recordFailure('install-failed', latest, `npm exited with ${result.code ?? 'a signal'}: ${lastLine(result.outputTail)}`);
+		// Install into the prefix the running copy lives in, then verify.
+		const attempt = await this.installVersion(latest);
+		if (!attempt.ok) {
+			if (attempt.outcome === 'skipped') return { outcome: 'skipped', detail: attempt.reason };
+			return this.recordFailure(attempt.outcome, latest, attempt.reason, attempt.details);
 		}
 
-		const installed = this.deps.readInstalledVersion(packageRoot);
-		if (installed !== latest) {
-			return this.recordFailure('verify-failed', latest, `installed package.json says ${installed ?? 'nothing'}, expected ${latest}`);
-		}
-		this.log(`Installed and verified ${latest} at ${packageRoot}`);
-		try {
-			this.deps.afterInstall(packageRoot);
-		} catch {
-			// Best-effort
-		}
-
-		const marker: PendingUpgradeMarker = { fromVersion: current, toVersion: latest, at: new Date(this.deps.now()).toISOString() };
-		try {
-			writePendingMarker(this.markerPath, marker);
-		} catch (error) {
-			this.log(`Could not write the upgrade marker (the owner notice will be missing): ${error instanceof Error ? error.message : String(error)}`);
-		}
+		this.writeUpgradeMarker(current, latest);
 		const restarting = this.deps.requestRestart(`auto-update ${current} -> ${latest}`);
 		if (!restarting) {
-			try {
-				fs.unlinkSync(this.markerPath);
-			} catch {
-				// Not written
-			}
+			this.clearUpgradeMarker();
 			return this.recordFailure('restart-unavailable', latest, 'no graceful restart handler is registered');
 		}
 		this.log(`Restarting into ${latest}`);
 		this.updateState({ lastResult: { outcome: 'installed-restarting', at: new Date(this.deps.now()).toISOString(), version: latest } });
 		return { outcome: 'installed-restarting', version: latest };
+	}
+
+	/**
+	 * Install `crewly@<version>` into the prefix the running copy lives in
+	 * and verify the installed package.json. This is the one install path:
+	 * the timer cycle uses it, and so does the owner's "Upgrade" button
+	 * (SystemControlService). It does not restart and does not touch the
+	 * failure/backoff state — callers decide what a failure means.
+	 *
+	 * @param version - Exact target version
+	 * @returns ok, or the failure kind, reason and log-only details
+	 */
+	async installVersion(version: string): Promise<InstallAttempt> {
+		const current = this.deps.currentVersion;
+		const packageRoot = this.deps.install.packageRoot;
+		const prefix = this.deps.install.prefix;
+		if (this.deps.install.kind !== 'npm-global' || !packageRoot || !prefix) {
+			return { ok: false, outcome: 'skipped', reason: `not an npm global install (${this.deps.install.detail})`, details: {} };
+		}
+		if (this.installing) {
+			return { ok: false, outcome: 'skipped', reason: 'another install is already running', details: {} };
+		}
+		this.installing = true;
+		try {
+			const args = npmInstallArgs(prefix, version);
+			const cwd = this.deps.getInstallCwd();
+			this.log(`Installing ${AUTO_UPDATE_CONSTANTS.PACKAGE_NAME}@${version} (running ${current ?? 'unknown'}): ${this.deps.npmCommand} ${args.join(' ')} (cwd ${cwd})`);
+			let result: InstallRunResult;
+			try {
+				result = await this.deps.runInstall(this.deps.npmCommand, args, cwd);
+			} catch (error) {
+				result = { ok: false, code: null, outputTail: error instanceof Error ? error.message : String(error) };
+			}
+			if (!result.ok) {
+				return {
+					ok: false,
+					outcome: 'install-failed',
+					reason: describeInstallFailure(result.code, result.outputTail),
+					details: {
+						command: `${this.deps.npmCommand} ${args.join(' ')}`,
+						cwd,
+						exitCode: result.code,
+						outputTail: installOutputTail(result.outputTail),
+					},
+				};
+			}
+			const installed = this.deps.readInstalledVersion(packageRoot);
+			if (installed !== version) {
+				return { ok: false, outcome: 'verify-failed', reason: `installed package.json says ${installed ?? 'nothing'}, expected ${version}`, details: {} };
+			}
+			this.log(`Installed and verified ${version} at ${packageRoot}`);
+			try {
+				this.deps.afterInstall(packageRoot);
+			} catch {
+				// Best-effort
+			}
+			return { ok: true };
+		} finally {
+			this.installing = false;
+		}
+	}
+
+	/**
+	 * Write the pending-upgrade marker the next boot reads (owner notice,
+	 * version check, and the CLI's respawn fallback). Best-effort.
+	 *
+	 * @param fromVersion - Version running now
+	 * @param toVersion - Version just installed
+	 */
+	writeUpgradeMarker(fromVersion: string, toVersion: string): void {
+		const marker: PendingUpgradeMarker = { fromVersion, toVersion, at: new Date(this.deps.now()).toISOString() };
+		try {
+			writePendingMarker(this.markerPath, marker);
+		} catch (error) {
+			this.log(`Could not write the upgrade marker (the owner notice will be missing): ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+
+	/**
+	 * Remove the pending-upgrade marker (the restart did not happen).
+	 */
+	clearUpgradeMarker(): void {
+		try {
+			fs.unlinkSync(this.markerPath);
+		} catch {
+			// Not written
+		}
+	}
+
+	/**
+	 * Whether a timer cycle or an install is running right now.
+	 *
+	 * @returns True while busy
+	 */
+	isBusy(): boolean {
+		return this.running || this.installing;
+	}
+
+	/**
+	 * Where and how the running copy is installed.
+	 *
+	 * @returns Install info
+	 */
+	getInstallInfo(): InstallInfo {
+		return this.deps.install;
+	}
+
+	/**
+	 * The version this process runs (read at boot).
+	 *
+	 * @returns The version, or null when unknown
+	 */
+	getCurrentVersion(): string | null {
+		return this.deps.currentVersion;
+	}
+
+	/**
+	 * Append a line to auto-update.log (manual upgrades log here too, so the
+	 * install history stays in one file).
+	 *
+	 * @param line - Text
+	 */
+	appendLogLine(line: string): void {
+		this.log(line);
 	}
 
 	/**
@@ -393,15 +509,16 @@ export class AutoUpdateService {
 	 * @param outcome - Failure kind
 	 * @param version - Target version
 	 * @param reason - Why
+	 * @param details - Extra context for the backend log only (e.g. the sanitised npm output tail)
 	 * @returns Cycle result
 	 */
-	private recordFailure(outcome: AutoUpdateOutcome, version: string, reason: string): CycleResult {
+	private recordFailure(outcome: AutoUpdateOutcome, version: string, reason: string, details: Record<string, unknown> = {}): CycleResult {
 		const state = this.getState();
 		const failures = state.consecutiveFailures + 1;
 		const now = this.deps.now();
 		const backoffUntil = new Date(now + AUTO_UPDATE_CONSTANTS.FAILURE_BACKOFF_MS).toISOString();
 		this.log(`Auto-update to ${version} failed (${outcome}, ${failures} in a row): ${reason}. Next attempt after ${backoffUntil}; not restarting.`);
-		this.deps.logger.warn('Auto-update failed; backing off', { outcome, version, failures, reason });
+		this.deps.logger.warn('Auto-update failed; backing off', { outcome, version, failures, reason, ...details });
 		const notify = failures >= AUTO_UPDATE_CONSTANTS.FAILURE_NOTIFY_THRESHOLD && state.failureNotifiedVersion !== version;
 		this.updateState({
 			consecutiveFailures: failures,
@@ -583,23 +700,14 @@ export function describeModeLine(mode: string, install: InstallInfo): string {
 }
 
 /**
- * Last non-empty line of a text.
- *
- * @param text - Output
- * @returns The last line, trimmed
- */
-function lastLine(text: string): string {
-	const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
-	return lines[lines.length - 1] ?? '';
-}
-
-/**
- * Run npm, appending its output to the log, killing it after the timeout.
+ * Run npm, appending its (sanitised) output to the log, killing it after
+ * the timeout.
  *
  * @param command - npm executable
  * @param args - Arguments
  * @param appendLog - Log sink
  * @param timeoutMs - Kill after this long
+ * @param cwd - Directory to run in (never the package being replaced)
  * @returns Exit status and output tail
  */
 export function runNpmInstall(
@@ -607,6 +715,7 @@ export function runNpmInstall(
 	args: string[],
 	appendLog: (line: string) => void,
 	timeoutMs: number = AUTO_UPDATE_CONSTANTS.INSTALL_TIMEOUT_MS,
+	cwd?: string,
 ): Promise<InstallRunResult> {
 	return new Promise((resolve) => {
 		let output = '';
@@ -615,11 +724,12 @@ export function runNpmInstall(
 			// npm is npm.cmd on Windows; elsewhere no shell so paths with spaces stay one argument.
 			shell: process.platform === 'win32',
 			env: process.env,
+			...(cwd ? { cwd } : {}),
 		});
 		const onData = (chunk: Buffer): void => {
 			const text = chunk.toString();
 			output = (output + text).slice(-8_000);
-			for (const line of text.split('\n')) if (line.trim()) appendLog(`  npm: ${line.trimEnd()}`);
+			for (const line of sanitizeNpmOutput(text).split('\n')) if (line.trim()) appendLog(`  npm: ${line.trimEnd()}`);
 		};
 		child.stdout?.on('data', onData);
 		child.stderr?.on('data', onData);
@@ -667,7 +777,7 @@ export interface AutoUpdateWiring {
  * @returns The service (not started)
  */
 export function createAutoUpdateService(wiring: AutoUpdateWiring): AutoUpdateService {
-	const packageRoot = resolveRunningPackageRoot(process.argv[1], safeCwd());
+	const packageRoot = resolveRunningPackageRoot(process.argv[1], safeProcessCwd());
 	const install = detectInstall(packageRoot);
 	const logDir = path.join(wiring.crewlyHome, CREWLY_CONSTANTS.PATHS.LOGS_DIR);
 	const logFile = path.join(logDir, AUTO_UPDATE_CONSTANTS.LOG_FILE);
@@ -686,8 +796,11 @@ export function createAutoUpdateService(wiring: AutoUpdateWiring): AutoUpdateSer
 		fetchLatestVersion: wiring.fetchLatestVersion,
 		isRestartInProgress: wiring.isRestartInProgress,
 		getBusy: wiring.getBusy,
-		runInstall: (command, args) => runNpmInstall(command, args, appendLog),
+		runInstall: (command, args, cwd) => runNpmInstall(command, args, appendLog, AUTO_UPDATE_CONSTANTS.INSTALL_TIMEOUT_MS, cwd),
 		npmCommand: resolveNpmCommand(),
+		// Not the inherited cwd: that is the package root npm is about to replace
+		// (after one upgrade it is already a deleted directory).
+		getInstallCwd: () => resolveInstallCwd([wiring.crewlyHome, os.homedir(), os.tmpdir()]),
 		readInstalledVersion,
 		requestRestart: (reason) => wiring.requestRestart(reason, PROCESS_EXIT_CODES.RESTART_REQUESTED),
 		isNotifyReady: wiring.isNotifyReady,
@@ -707,17 +820,4 @@ export function createAutoUpdateService(wiring: AutoUpdateWiring): AutoUpdateSer
 		},
 		cancel: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
 	});
-}
-
-/**
- * process.cwd(), or undefined when the cwd was deleted.
- *
- * @returns The cwd or undefined
- */
-function safeCwd(): string | undefined {
-	try {
-		return process.cwd();
-	} catch {
-		return undefined;
-	}
 }

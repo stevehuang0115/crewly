@@ -26,6 +26,7 @@
 
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { RequestPriority } from '../../types/v2/request.types.js';
+import { readProjectTicketLink } from '../../types/project-ticket.types.js';
 
 /** What the policy needs to know about a ticket. */
 export interface ClaimTicketView {
@@ -188,4 +189,36 @@ export function orderForAgent(
     .map((wi) => ({ wi, tier: claimTier(wi, agentId, tickets), at: Date.parse(wi.createdAt) || 0 }))
     .sort((a, b) => a.tier - b.tier || a.at - b.at)
     .map((x) => x.wi);
+}
+
+/**
+ * Stable key of the project ticket (`.crewly/tickets/`) a WorkItem works on.
+ *
+ * @param wi - WorkItem
+ * @returns `<projectPath>#<ticketId>`, or null when it is not ticket work
+ */
+export function projectTicketKey(wi: Pick<WorkItem, 'metadata'>): string | null {
+  const link = readProjectTicketLink(wi.metadata);
+  return link ? `${link.projectPath}#${link.id}` : null;
+}
+
+/**
+ * Keep only the first project ticket's items in an ordered list, plus every
+ * item that is not ticket work. Used for reminders listing an agent's queued
+ * items: one ticket at a time (specs/ticket-loop.md), so the reminder must
+ * not hand the agent several tickets to "work through in this turn" — it can
+ * hold only one claim, and the unclaimed ones were then grace-revoked or
+ * refused on completion (2026-09-29, CE-3 / CE-8 / CE-19 batched to Vera).
+ *
+ * @param ordered - Items in the order the agent should take them
+ * @returns The items, with later tickets' items dropped (order preserved)
+ */
+export function limitToOneProjectTicket<T extends Pick<WorkItem, 'metadata'>>(ordered: readonly T[]): T[] {
+  let ticket: string | null = null;
+  return ordered.filter((wi) => {
+    const key = projectTicketKey(wi);
+    if (key === null) return true;
+    if (ticket === null) ticket = key;
+    return key === ticket;
+  });
 }

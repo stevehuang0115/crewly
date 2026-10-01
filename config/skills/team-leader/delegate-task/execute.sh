@@ -17,6 +17,7 @@ TEAM_ID=""
 TL_MEMBER_ID=""
 FROM_SESSION=""
 REQUEST_ID=""
+PROJECT_TICKET=""
 
 # Detect legacy JSON argument
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
@@ -36,9 +37,11 @@ while [[ $# -gt 0 ]]; do
     --tl-member)   TL_MEMBER_ID="$2";   shift 2 ;;
     --from)        FROM_SESSION="$2";   shift 2 ;;
     --request-id|-R) REQUEST_ID="$2";   shift 2 ;;
+    --ticket)      PROJECT_TICKET="$2"; shift 2 ;;
     --json|-j)     INPUT_JSON="$2";     shift 2 ;;
     --help|-h)
-      echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId] [--request-id <ticket id from the [TICKET:TKT-123 <id>] line>]"
+      echo "Usage: execute.sh --to worker-session --task 'implement feature' --priority high --project /path [--team teamId] [--tl-member memberId] [--request-id <ticket id from the [TICKET:TKT-123 <id>] line>] [--ticket <project ticket id, e.g. APP-12>]"
+      echo "Work for a teammate on a project always runs through a project ticket: --ticket uses that backlog/ready ticket, otherwise one is created for you."
       exit 0
       ;;
     --)            shift; break ;;
@@ -75,6 +78,7 @@ if [ -n "$INPUT_JSON" ]; then
   [ -z "$TL_MEMBER_ID" ] && TL_MEMBER_ID=$(printf '%s' "$INPUT" | jq -r '.tlMemberId // empty')
   [ -z "$FROM_SESSION" ] && FROM_SESSION=$(printf '%s' "$INPUT" | jq -r '.fromSession // empty')
   [ -z "$REQUEST_ID" ] && REQUEST_ID=$(printf '%s' "$INPUT" | jq -r '.requestId // empty')
+  [ -z "$PROJECT_TICKET" ] && PROJECT_TICKET=$(printf '%s' "$INPUT" | jq -r '.ticket // .projectTicketId // empty')
 fi
 
 require_param "to (--to)" "$TO"
@@ -212,14 +216,37 @@ POOL_BODY=$(jq -n \
   --arg priority "$WI_PRIORITY" \
   --arg projectPath "${PROJECT_PATH:-}" \
   --arg requestId "${REQUEST_ID:-}" \
-  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end)')
+  --arg projectTicketId "${PROJECT_TICKET:-}" \
+  --arg delegatedBy "${CREWLY_SESSION_NAME:-${FROM_SESSION:-}}" \
+  '{type: $type, owner: $owner, target: $target, title: $title, description: $description, briefMarkdown: $briefMarkdown, metadata: ({priority: $priority, directDelivery: true} + (if $projectPath != "" then {projectPath: $projectPath} else {} end) + (if $delegatedBy != "" then {delegatedBy: $delegatedBy} else {} end))} + (if $requestId != "" then {requestId: $requestId} else {} end) + (if $projectTicketId != "" then {projectTicketId: $projectTicketId} else {} end)')
 # metadata.directDelivery: this script delivers the brief itself (below), so
 # the backend's workitem:queued push holds off and only fires if that
 # delivery never lands — the task reaches the worker once.
+# projectTicketId / metadata.delegatedBy: work for a teammate on a project runs
+# through a project ticket (specs/2026-09-28-project-tickets.md §11). The
+# backend uses --ticket, or creates a ticket and links this WorkItem to it.
 
-POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>/dev/null || echo '{"success":false}')
+POOL_ERR_FILE="$(mktemp)"
+POOL_RESULT=$(api_call POST "/task-pool/add" "$POOL_BODY" 2>"$POOL_ERR_FILE" || echo '{"success":false}')
+POOL_ERR="$(cat "$POOL_ERR_FILE" 2>/dev/null || true)"
+rm -f "$POOL_ERR_FILE"
 POOL_OK=$(echo "$POOL_RESULT" | jq -r '.success // "false"' 2>/dev/null)
 TASK_ID=$(echo "$POOL_RESULT" | jq -r '.data.id // .workItemId // empty' 2>/dev/null || true)
+
+# A refusal by the project-ticket rules (e.g. --ticket already being worked,
+# done, or unknown) means the delegation must NOT go out: stop here instead
+# of the deliver-anyway path below.
+if [ "$POOL_OK" != "true" ] && printf '%s' "$POOL_ERR" | grep -q 'project_ticket_refused'; then
+  REFUSAL=$(printf '%s' "$POOL_ERR" | grep 'project_ticket_refused' | tail -1 | jq -r '.details.error // empty' 2>/dev/null || true)
+  jq -n --arg error "${REFUSAL:-Delegation refused by the project-ticket rules}" --arg to "$TO" --arg ticket "${PROJECT_TICKET:-}" \
+    '{success: false, error: $error, to: $to, hint: "Nothing was delivered. Fix the ticket (project-tickets show / update --status ready) or delegate without --ticket."} + (if $ticket != "" then {ticket: $ticket} else {} end)'
+  exit 1
+fi
+
+TICKET_INFO=$(echo "$POOL_RESULT" | jq -c '.data.projectTicket // empty' 2>/dev/null || true)
+if [ -n "$TICKET_INFO" ]; then
+  echo "$TICKET_INFO" | jq -c '{projectTicket: ., info: ("Tracked as project ticket " + .id + " (" + .status + (if .created then ", created for this delegation" else "" end) + ")")}'
+fi
 
 # The delivered text names the WorkItem id: the worker needs it for
 # report-status, and after a fresh-conversation clear the backend finds the

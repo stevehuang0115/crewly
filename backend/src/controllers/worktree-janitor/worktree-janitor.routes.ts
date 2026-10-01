@@ -6,7 +6,8 @@
  * every other `/api` route.
  *
  * - `GET  /api/worktree-janitor/worktrees` — dry run: every worktree of every
- *   known repo with its keep/remove verdict and reason. Removes nothing.
+ *   known repo with its keep/remove verdict and reason, the stale-scratch
+ *   sweep plan (`scratch`), and current free space (`disk`). Removes nothing.
  * - `POST /api/worktree-janitor/run` — one real pass now. Refused (409) while
  *   the `CREWLY_WORKTREE_JANITOR=0` kill switch is on.
  *
@@ -37,9 +38,10 @@ export function createWorktreeJanitorRouter(
 		try {
 			const service = getService();
 			const plan = await service.plan();
+			const disk = await service.diskStatus();
 			res.json({
 				success: true,
-				data: { ...plan, disabled: service.isDisabled(), lastRun: service.getLastSummary() },
+				data: { ...plan, disk, disabled: service.isDisabled(), lastRun: service.getLastSummary() },
 			});
 		} catch (error) {
 			res.status(500).json({ success: false, error: error instanceof Error ? error.message : String(error) });

@@ -258,7 +258,7 @@ export function findCrewlyGeminiKey(deps: RuntimeAuthDeps): string | null {
 
 /**
  * Where Crewly would get the Gemini key an Antigravity session runs with:
- * the key saved for Antigravity (Settings → Harness / `crewly login
+ * the key saved for Antigravity (Settings → Runtimes / `crewly login
  * antigravity`), a Crewly settings Gemini key (antigravity-cli override or
  * global), or GEMINI_API_KEY.
  *

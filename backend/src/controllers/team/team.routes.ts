@@ -25,7 +25,8 @@ import {
   refreshMemberContext,
   getTeamActivityStatus,
   updateTeamMemberRuntime,
-  archiveTeam
+  archiveTeam,
+  setTeamLeadHandler
 } from './team.controller.js';
 import { exportTeam, importTeam } from './team-export.controller.js';
 
@@ -52,6 +53,8 @@ export function createTeamRouter(context: ApiContext): Router {
   router.post('/:id/start', invalidateCache(teamsCacheKeys), startTeam.bind(context));
   router.post('/:id/stop', invalidateCache(teamsCacheKeys), stopTeam.bind(context));
   router.post('/:id/archive', invalidateCache(teamsCacheKeys), archiveTeam.bind(context));
+  // Who leads the team (owner / orchestrator) — specs/2026-09-30-team-lead-rule.md
+  router.post('/:id/lead', invalidateCache(teamsCacheKeys), setTeamLeadHandler.bind(context));
   router.get('/:id/workload', getTeamWorkload.bind(context));
 
   // Team member management

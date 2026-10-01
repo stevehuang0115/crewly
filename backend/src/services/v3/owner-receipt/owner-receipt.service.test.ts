@@ -66,7 +66,7 @@ describe('OwnerReceiptService', () => {
     const { data, text } = await svc.generate();
     expect(data.window.basis).toBe('local_day');
     expect(data.askCount).toBe(1);
-    expect(text).toBe('*Crewly 小票 · 9/26 周六*\n*今天做完的*\n• Think Tank：第 1 份周报写好了，放在团队 wiki 里');
+    expect(text).toBe('*Crewly receipt · Sat 9/26*\n*Done today*\n• Think Tank: 第 1 份周报写好了，放在团队 wiki 里');
   });
 
   it('sends nothing when nothing was done and nothing waits on the owner; the window still moves (2026-09-28)', async () => {
@@ -98,7 +98,7 @@ describe('OwnerReceiptService', () => {
       now: () => NINE_PM,
     });
     const { text } = await svc.generate();
-    expect(text).toBe('*Crewly 小票 · 9/26 周六*\n*需要你决定的*\n• Atlas：语气要再正式一点吗？');
+    expect(text).toBe('*Crewly receipt · Sat 9/26*\n*Needs your decision*\n• Atlas: 语气要再正式一点吗？');
   });
 
   it('keeps the team lead in the data when loadTeamLeadIndex is wired (the Slack text names teams only)', async () => {
@@ -112,7 +112,7 @@ describe('OwnerReceiptService', () => {
     });
     const { data, text } = await svc.generate();
     expect(data.teams[0]).toMatchObject({ team: 'Think Tank', lead: 'Atlas' });
-    expect(text).toContain('• Think Tank：');
+    expect(text).toContain('• Think Tank: ');
   });
 
   it('no lead shown when loadTeamLeadIndex is not wired at all (backward compatible)', async () => {
@@ -120,7 +120,7 @@ describe('OwnerReceiptService', () => {
     const { svc } = build({ requests: [ticket(1, '2026-09-26T15:00:00Z')], clock });
     const { data, text } = await svc.generate();
     expect(data.teams[0]).toMatchObject({ team: 'Think Tank', lead: null });
-    expect(text).toContain('• Think Tank：');
+    expect(text).toContain('• Think Tank: ');
     expect(text).not.toContain('（Atlas）');
   });
 

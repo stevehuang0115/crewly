@@ -233,6 +233,9 @@ describe('WorkItemDispatchSubscriber', () => {
       expect(text).toContain('2. wi-b');
       expect(text).toContain('second item');
       expect(text).toContain('"sessionName":"sora"');
+      // One at a time — the agent can hold only one claim (2026-09-29, CE-19).
+      expect(text).toContain('ONE AT A TIME');
+      expect(text).not.toContain('in this turn');
     });
 
     it('drops items for other targets and SLA trackers, and delegates a single item to redispatch', async () => {

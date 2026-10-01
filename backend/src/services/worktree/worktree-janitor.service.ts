@@ -1,43 +1,47 @@
 /**
- * Worktree janitor — removes git worktrees whose work has landed.
+ * Disk janitor — removes git worktrees whose work has landed, stale Claude
+ * Code session scratch dirs, and watches free disk space.
  *
- * Agents create a worktree per code task (`<repo>/.claude/worktrees/<name>`,
- * `/tmp/crewly-worktrees/<session>-<slug>`) and never delete it; a busy Mac
- * collected 30+ of them, tens of GB. Owner decision: once the PR is merged the
- * worktree goes away by itself.
+ * Agents create a worktree per code task and never delete it — under
+ * `<repo>/.claude/worktrees/`, `/tmp/crewly-worktrees/`, but also at
+ * arbitrary paths (`/private/tmp/claude-501/visa-cm-wt`, `../crewly-wt-805`),
+ * each with its own node_modules. They also clone whole repos into Claude
+ * Code's per-session temp dirs. A Mac filled its disk (ENOSPC) with both.
+ * Owner decision: finished work goes away by itself.
  *
  * ## Which repos
  * Every registered project path (projects store) that is inside a git repo,
- * plus the Crewly package root when it is a dev checkout. Repos are
- * de-duplicated by their main worktree.
+ * the Crewly package root when it is a dev checkout, and every repo that owns
+ * a linked worktree found under the temp roots (`/tmp`, os.tmpdir(), and the
+ * Claude scratch roots `<tmp>/claude-<uid>`, searched a few levels deep) — so
+ * a repo that is not a registered project still gets its temp worktrees
+ * cleaned. Repos are de-duplicated by their main worktree.
  *
- * ## Removal rules — a worktree is removed only when ALL hold
+ * ## Worktree removal rules — a worktree is removed only when ALL hold
  * 1. It is not the main worktree, not bare, and not `prunable` (a missing
- *    directory is left to `git worktree prune`).
+ *    directory is left to `git worktree prune`). Any other linked worktree of
+ *    a known repo is a candidate, wherever it lives and whatever its branch.
  * 2. It is not locked (`git worktree lock`; Claude Code locks the worktree of
  *    a running subagent).
  * 3. It is not under `<repo>/.crewly/worktrees/` — that directory belongs to
  *    the per-WorkItem worktree feature (#814), which does its own
  *    WorkItem-aware cleanup.
- * 4. It is an agent worktree: its path is under `<main>/.claude/worktrees/`
- *    or `<tmp>/crewly-worktrees/` (`/tmp` and `os.tmpdir()`), OR its branch
- *    starts with an agent-only prefix (`worktree-agent-`, Claude Code's
- *    automatic subagent branch). Human-made worktrees such as
- *    `../crewly-wt-805` on `fix/...` are never touched. Deliberately narrow:
- *    a false "keep" costs disk, a false "remove" costs work.
- * 5. Nothing is working in it: no Crewly agent session was started in it and
+ * 4. Nothing is working in it: no Crewly agent session was started in it and
  *    no process of this user (PTY shells, runtimes, editors, test runners)
  *    has its cwd inside it. If the process probe fails, everything is kept.
- * 6. It was last touched more than 2 hours ago (newest mtime of the
- *    directory and its git dir's index / HEAD / logs/HEAD).
- * 7. `git status --porcelain --untracked-files=all` is empty: no tracked
+ * 5. It is idle: last touched (newest mtime of the directory and its git
+ *    dir's index / HEAD / logs/HEAD) more than 2 hours ago in a known agent
+ *    location (`<main>/.claude/worktrees/`, `<tmp>/crewly-worktrees/`, or a
+ *    `worktree-agent-*` branch), more than 24 hours ago anywhere else.
+ * 6. `git status --porcelain --untracked-files=all` is empty: no tracked
  *    change and no untracked file. Ignored files (node_modules, dist) do not
  *    count. A failing status keeps it.
- * 8. Its work has landed: HEAD is an ancestor of `origin/<default branch>`
+ * 7. Its work has landed: HEAD is an ancestor of `origin/<default branch>`
  *    after a quiet `git fetch` (fetch errors ignored), OR — when `gh` is
  *    installed and authenticated — a MERGED PR has this branch as head AND
  *    its head commit equals the worktree HEAD (squash merges; commits made
- *    after the merge keep the worktree).
+ *    after the merge keep the worktree). A repo without an origin (not on
+ *    GitHub) only has the ancestor check, so its worktrees are kept.
  *
  * ## Removal
  * `git worktree remove <path>` without `--force`. If git refuses although
@@ -45,8 +49,24 @@
  * no submodules, it is retried once with `--force`. Then the local branch is
  * deleted (never a protected name), and `git worktree prune` runs per repo.
  *
+ * ## Scratch sweep
+ * After the worktrees, stale Claude Code session dirs
+ * (`<tmp>/claude-<uid>/<slug>/<uuid>/`) are deleted when idle for 3 days,
+ * unused, and every git repo inside is clean and fully pushed. See
+ * {@link module:services/worktree/scratch-janitor} for the rules.
+ *
+ * ## Low-disk guard
+ * Every 10 minutes the free space of the volume holding CREWLY_HOME is read.
+ * Below 15 GB a pass runs at once (at most one per 30 minutes) with every
+ * idle threshold halved (never below 2 h); every pass started while space is
+ * low uses the halved thresholds. If space is still below 15 GB the owner is
+ * told, at most once per 24 h, with the free space and the 5 biggest items
+ * the janitor left and why; below 5 GB the notice is urgent and repeats at
+ * most every 6 h.
+ *
  * Runs every 30 minutes (first run 10 minutes after boot). Kill switch:
- * `CREWLY_WORKTREE_JANITOR=0`. Never throws; logs one summary line per run.
+ * `CREWLY_WORKTREE_JANITOR=0` (also stops the low-disk guard). Never throws;
+ * logs one summary line per sweep.
  *
  * @module services/worktree/worktree-janitor.service
  */
@@ -56,8 +76,25 @@ import * as os from 'os';
 import * as path from 'path';
 import { WORKTREE_JANITOR_CONSTANTS } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
+import { getCrewlyHomePath } from '../core/crewly-home.utils.js';
+import { safeReadJson, modifyJsonFile } from '../../utils/file-io.utils.js';
+import {
+	buildLowDiskNotice,
+	diskLevel,
+	idleThreshold,
+	noticeToSend,
+	readFreeBytes,
+	recordNotice,
+	type KeptItem,
+	type LowDiskNoticeState,
+	type StatFsFn,
+} from './low-disk-guard.js';
+import { defaultScratchRoots, sweepScratch, type ScratchSweepSummary } from './scratch-janitor.js';
 import {
 	canonicalPath,
+	diskUsageBytes,
+	discoverLinkedWorktreeRepos,
+	formatBytes,
 	isJanitorDisabled,
 	isPathInside,
 	latestWorktreeMtimeMs,
@@ -69,14 +106,19 @@ import {
 	type RunCommandOptions,
 } from './worktree-janitor.git.js';
 
-/** Why a worktree is kept, or why it may go. */
+/** Milliseconds per minute (for the `recent` detail text). */
+const MS_PER_MINUTE = 60 * 1000;
+
+/**
+ * Why a worktree is kept, or why it may go. (`not-agent-worktree` is retired:
+ * location no longer decides eligibility, only the idle threshold.)
+ */
 export type WorktreeReason =
 	| 'main-worktree'
 	| 'bare'
 	| 'prunable'
 	| 'locked'
 	| 'managed-by-workitem-worktrees'
-	| 'not-agent-worktree'
 	| 'agent-session-inside'
 	| 'process-inside'
 	| 'cwd-probe-failed'
@@ -141,7 +183,28 @@ export interface JanitorRunSummary {
 	keptReasons: Record<string, number>;
 	/** Per-worktree results */
 	worktrees: WorktreeOutcome[];
+	/** True when free space was below LOW_DISK_BYTES at the start (thresholds halved) */
+	lowDisk: boolean;
+	/** Free bytes on the CREWLY_HOME volume at the start, or null when unknown */
+	freeBytes: number | null;
+	/** Stale scratch sweep result */
+	scratch: ScratchSweepSummary | null;
 }
+
+/** What one low-disk check did. */
+export interface LowDiskCheckResult {
+	/** Free bytes before (null when statfs failed) */
+	freeBytesBefore: number | null;
+	/** Free bytes after the cleanup pass (same as before when no pass ran) */
+	freeBytesAfter: number | null;
+	/** True when a cleanup pass ran */
+	ranPass: boolean;
+	/** Owner notice sent, if any */
+	notified: 'urgent' | 'normal' | null;
+}
+
+/** Owner notice about low disk. Returns true when it was delivered. */
+export type LowDiskNotifier = (notice: { title: string; message: string; urgent: boolean }) => Promise<boolean>;
 
 /** A place a live process or agent is working in. */
 export interface BusyCwd {
@@ -169,10 +232,26 @@ export interface WorktreeJanitorOptions {
 	ghBin?: string | null;
 	/** Clock (default Date.now) */
 	now?: () => number;
-	/** Minimum idle time before removal (default 2 h) */
+	/** Minimum idle time before removal in an agent location (default 2 h) */
 	minIdleMs?: number;
-	/** Temp roots whose `crewly-worktrees/` holds agent worktrees (default `/tmp` + os.tmpdir()) */
+	/** Minimum idle time before removal anywhere else (default 24 h) */
+	minIdleOtherMs?: number;
+	/** Minimum idle time of a scratch session dir (default 3 days) */
+	scratchMinIdleMs?: number;
+	/** Temp roots whose `crewly-worktrees/` holds agent worktrees, also scanned for repo discovery (default `/tmp` + os.tmpdir()) */
 	tmpRoots?: string[];
+	/** Claude Code scratch roots (default `<tmp>/claude-<uid>` variants that exist) */
+	scratchRoots?: string[];
+	/** Free-space probe (default fs.promises.statfs) */
+	statfs?: StatFsFn;
+	/** Path whose volume is watched (default CREWLY_HOME) */
+	diskPath?: string;
+	/** Owner notifier for low disk (default: none — set by the server via setLowDiskNotifier) */
+	notifyOwner?: LowDiskNotifier | null;
+	/** Size probe for removed / kept items (default `du -sk`) */
+	sizeOf?: (p: string) => Promise<number | null>;
+	/** Low-disk notice state file (default `<CREWLY_HOME>/disk-janitor-state.json`); null = in memory */
+	statePath?: string | null;
 	/** Environment for the kill switch (default process.env) */
 	env?: NodeJS.ProcessEnv;
 	/** Logger (default: component logger `WorktreeJanitor`) */
@@ -209,12 +288,28 @@ export class WorktreeJanitorService {
 	private ghUsable: boolean | undefined;
 	private lastSummary: JanitorRunSummary | null = null;
 	private loggerInstance: JanitorLogger | null = null;
+	private diskTimer: NodeJS.Timeout | null = null;
+	private diskCheckInFlight: Promise<LowDiskCheckResult> | null = null;
+	private lastPassAt: number | null = null;
+	private memoryNoticeState: LowDiskNoticeState = {};
+	private notifier: LowDiskNotifier | null;
 
 	/**
 	 * @param options - Injectable dependencies; defaults use the live backend
 	 */
 	constructor(options: WorktreeJanitorOptions = {}) {
 		this.opts = options;
+		this.notifier = options.notifyOwner ?? null;
+	}
+
+	/**
+	 * Set how the owner is told about low disk (the server wires the existing
+	 * Slack owner-notification path here).
+	 *
+	 * @param notifier - Sender, or null to disable notices
+	 */
+	setLowDiskNotifier(notifier: LowDiskNotifier | null): void {
+		this.notifier = notifier;
 	}
 
 	/**
@@ -244,7 +339,8 @@ export class WorktreeJanitorService {
 
 	/**
 	 * Schedule the periodic pass: first after FIRST_RUN_DELAY_MS, then every
-	 * INTERVAL_MS. No-op when disabled or already started. Timers are unref'd.
+	 * INTERVAL_MS; plus the low-disk check every LOW_DISK_CHECK_INTERVAL_MS.
+	 * No-op when disabled or already started. Timers are unref'd.
 	 *
 	 * @returns True when scheduled
 	 */
@@ -257,6 +353,8 @@ export class WorktreeJanitorService {
 			this.intervalTimer.unref?.();
 		}, WORKTREE_JANITOR_CONSTANTS.FIRST_RUN_DELAY_MS);
 		this.firstRunTimer.unref?.();
+		this.diskTimer = setInterval(() => void this.checkDisk(), WORKTREE_JANITOR_CONSTANTS.LOW_DISK_CHECK_INTERVAL_MS);
+		this.diskTimer.unref?.();
 		return true;
 	}
 
@@ -264,8 +362,37 @@ export class WorktreeJanitorService {
 	stop(): void {
 		if (this.firstRunTimer) clearTimeout(this.firstRunTimer);
 		if (this.intervalTimer) clearInterval(this.intervalTimer);
+		if (this.diskTimer) clearInterval(this.diskTimer);
 		this.firstRunTimer = null;
 		this.intervalTimer = null;
+		this.diskTimer = null;
+	}
+
+	/**
+	 * Current free space of the watched volume.
+	 *
+	 * @returns Watched path, free bytes (null when unknown) and level
+	 */
+	async diskStatus(): Promise<{ path: string; freeBytes: number | null; level: 'ok' | 'low' | 'critical' | 'unknown' }> {
+		const p = this.diskPath();
+		const freeBytes = await readFreeBytes(p, this.opts.statfs);
+		return { path: p, freeBytes, level: freeBytes === null ? 'unknown' : diskLevel(freeBytes) };
+	}
+
+	/**
+	 * Low-disk check: read free space; below LOW_DISK_BYTES run a pass now
+	 * (unless one ran within LOW_DISK_PASS_GAP_MS), then, if space is still
+	 * short, tell the owner within the notice cadence. Never throws. Honours
+	 * the kill switch. Concurrent calls share the check in flight.
+	 *
+	 * @returns What the check did
+	 */
+	async checkDisk(): Promise<LowDiskCheckResult> {
+		if (this.diskCheckInFlight) return this.diskCheckInFlight;
+		this.diskCheckInFlight = this.doCheckDisk().finally(() => {
+			this.diskCheckInFlight = null;
+		});
+		return this.diskCheckInFlight;
 	}
 
 	/**
@@ -299,7 +426,10 @@ export class WorktreeJanitorService {
 			this.inFlight = null;
 		});
 		const summary = await this.inFlight;
-		if (!summary.dryRun && !summary.disabled) this.lastSummary = summary;
+		if (!summary.dryRun && !summary.disabled) {
+			this.lastSummary = summary;
+			this.lastPassAt = this.now();
+		}
 		return summary;
 	}
 
@@ -309,6 +439,108 @@ export class WorktreeJanitorService {
 		if (this.opts.logger) return this.opts.logger;
 		if (!this.loggerInstance) this.loggerInstance = LoggerService.getInstance().createComponentLogger('WorktreeJanitor');
 		return this.loggerInstance;
+	}
+
+	private now(): number {
+		return (this.opts.now ?? Date.now)();
+	}
+
+	private diskPath(): string {
+		return this.opts.diskPath ?? getCrewlyHomePath();
+	}
+
+	private scratchRoots(): string[] {
+		return this.opts.scratchRoots ?? defaultScratchRoots();
+	}
+
+	private tmpRoots(): string[] {
+		return this.opts.tmpRoots ?? ['/tmp', os.tmpdir()];
+	}
+
+	private statePath(): string | null {
+		if (this.opts.statePath !== undefined) return this.opts.statePath;
+		return path.join(getCrewlyHomePath(), WORKTREE_JANITOR_CONSTANTS.STATE_FILENAME);
+	}
+
+	private async readNoticeState(): Promise<LowDiskNoticeState> {
+		const p = this.statePath();
+		const mem = this.memoryNoticeState;
+		if (!p) return mem;
+		const file = (await safeReadJson<LowDiskNoticeState | null>(p, null)) ?? {};
+		// Memory wins when a save failed (full disk), so the owner is not re-told every check.
+		const latest = (a?: number, b?: number): number | undefined =>
+			a === undefined ? b : b === undefined ? a : Math.max(a, b);
+		return { lastNoticeAt: latest(file.lastNoticeAt, mem.lastNoticeAt), lastUrgentAt: latest(file.lastUrgentAt, mem.lastUrgentAt) };
+	}
+
+	private async writeNoticeState(state: LowDiskNoticeState): Promise<void> {
+		const p = this.statePath();
+		this.memoryNoticeState = state;
+		if (!p) return;
+		try {
+			await modifyJsonFile<LowDiskNoticeState | null, LowDiskNoticeState>(p, null, () => state);
+		} catch (err) {
+			// A full disk can refuse the write; the in-memory copy still holds for this process.
+			this.logger.warn('Could not save disk janitor state', { error: err instanceof Error ? err.message : String(err) });
+		}
+	}
+
+	private async doCheckDisk(): Promise<LowDiskCheckResult> {
+		const result: LowDiskCheckResult = { freeBytesBefore: null, freeBytesAfter: null, ranPass: false, notified: null };
+		try {
+			if (this.isDisabled()) return result;
+			const before = await readFreeBytes(this.diskPath(), this.opts.statfs);
+			result.freeBytesBefore = before;
+			result.freeBytesAfter = before;
+			if (before === null || diskLevel(before) === 'ok') return result;
+
+			let summary = this.lastSummary;
+			const gapOk = this.lastPassAt === null || this.now() - this.lastPassAt >= WORKTREE_JANITOR_CONSTANTS.LOW_DISK_PASS_GAP_MS;
+			if (gapOk) {
+				summary = await this.run();
+				result.ranPass = true;
+				result.freeBytesAfter = await readFreeBytes(this.diskPath(), this.opts.statfs);
+			}
+			const after = result.freeBytesAfter;
+			if (after === null || !this.notifier) return result;
+			const state = await this.readNoticeState();
+			const kind = noticeToSend(diskLevel(after), state, this.now());
+			if (!kind) return result;
+			const items = summary ? await this.keptItems(summary) : [];
+			// What the volume actually gained covers worktrees and scratch alike.
+			const freed = result.ranPass ? Math.max(0, after - before) : 0;
+			const notice = buildLowDiskNotice({ freeBytes: after, urgent: kind === 'urgent', freedBytes: freed, items });
+			const delivered = await this.notifier({ ...notice, urgent: kind === 'urgent' }).catch(() => false);
+			if (delivered) {
+				await this.writeNoticeState(recordNotice(state, kind, this.now()));
+				result.notified = kind;
+			}
+			this.logger.warn(`Low disk: ${formatBytes(after)} free${delivered ? `, owner notified (${kind})` : ', owner notice not delivered'}`);
+		} catch (err) {
+			this.logger.warn('Low-disk check failed', { error: err instanceof Error ? err.message : String(err) });
+		}
+		return result;
+	}
+
+	/** Sizes of everything a pass left on disk that the owner could act on. */
+	private async keptItems(summary: JanitorRunSummary): Promise<KeptItem[]> {
+		const skip = new Set<string>(['main-worktree', 'bare', 'prunable']);
+		const candidates: Array<{ path: string; reason: string }> = [];
+		for (const w of summary.worktrees) {
+			if (!w.removed && !skip.has(w.reason) && (w.decision === 'keep' || w.error)) {
+				candidates.push({ path: w.path, reason: w.error ? 'remove-failed' : w.reason });
+			}
+		}
+		for (const s of summary.scratch?.sessions ?? []) {
+			if (!s.removed) candidates.push({ path: s.path, reason: s.error ? 'remove-failed' : s.reason });
+		}
+		const sizeOf = this.opts.sizeOf ?? diskUsageBytes;
+		const items: KeptItem[] = [];
+		for (const c of candidates) {
+			const bytes = await sizeOf(c.path);
+			if (bytes !== null) items.push({ ...c, bytes });
+		}
+		return items;
 	}
 
 	private git(args: string[], options: RunCommandOptions = {}): Promise<CommandResult> {
@@ -328,6 +560,9 @@ export class WorktreeJanitorService {
 			kept: 0,
 			keptReasons: {},
 			worktrees: [],
+			lowDisk: false,
+			freeBytes: null,
+			scratch: null,
 		};
 		if (!dryRun && this.isDisabled()) {
 			summary.disabled = true;
@@ -335,13 +570,15 @@ export class WorktreeJanitorService {
 		}
 		try {
 			this.ghUsable = undefined;
+			summary.freeBytes = await readFreeBytes(this.diskPath(), this.opts.statfs);
+			summary.lowDisk = summary.freeBytes !== null && diskLevel(summary.freeBytes) !== 'ok';
 			const repos = await this.resolveRepos();
 			summary.repos = repos.map((r) => r.main);
 			const busy = await this.safeBusyCwds();
 			for (const repo of repos) {
 				let removedHere = 0;
 				for (const entry of repo.entries) {
-					const verdict = await this.evaluate(repo, entry, busy);
+					const verdict = await this.evaluate(repo, entry, busy, summary.lowDisk);
 					const outcome: WorktreeOutcome = { ...verdict, removed: false, forced: false, branchDeleted: false };
 					if (verdict.decision === 'remove' && !dryRun) {
 						await this.remove(repo, outcome);
@@ -363,6 +600,15 @@ export class WorktreeJanitorService {
 					}
 				}
 			}
+			summary.scratch = await sweepScratch({
+				roots: this.scratchRoots(),
+				busy,
+				now: this.now(),
+				minIdleMs: idleThreshold(this.opts.scratchMinIdleMs ?? WORKTREE_JANITOR_CONSTANTS.SCRATCH_MIN_IDLE_MS, summary.lowDisk),
+				dryRun,
+				git: (args) => this.git(args),
+				sizeOf: this.opts.sizeOf,
+			});
 		} catch (err) {
 			this.logger.warn('Worktree janitor pass failed', { error: err instanceof Error ? err.message : String(err) });
 		}
@@ -374,14 +620,32 @@ export class WorktreeJanitorService {
 				.join(', ');
 			this.logger.info(
 				`Worktree janitor: removed ${summary.removed}, kept ${summary.kept}${reasons ? ` (${reasons})` : ''} across ${summary.repos.length} repo(s) in ${summary.durationMs}ms`,
-				{ removed: summary.worktrees.filter((w) => w.removed).map((w) => w.path) },
+				{ removed: summary.worktrees.filter((w) => w.removed).map((w) => w.path), lowDisk: summary.lowDisk },
 			);
+			const sc = summary.scratch;
+			if (sc) {
+				const scReasons = Object.entries(sc.keptReasons)
+					.sort((a, b) => b[1] - a[1])
+					.map(([k, v]) => `${k}: ${v}`)
+					.join(', ');
+				this.logger.info(
+					`Scratch janitor: removed ${sc.removed} session dir(s), freed ${formatBytes(sc.freedBytes)}, kept ${sc.kept}${scReasons ? ` (${scReasons})` : ''}`,
+					{ removed: sc.sessions.filter((s) => s.removed).map((s) => s.path), freedBytes: sc.freedBytes },
+				);
+			}
 		}
 		return summary;
 	}
 
 	private async resolveRepos(): Promise<RepoContext[]> {
-		const candidates = await (this.opts.listRepoPaths ?? defaultListRepoPaths)().catch(() => [] as string[]);
+		const registered = await (this.opts.listRepoPaths ?? defaultListRepoPaths)().catch(() => [] as string[]);
+		let discovered: string[] = [];
+		try {
+			discovered = await discoverLinkedWorktreeRepos([...this.tmpRoots(), ...this.scratchRoots()]);
+		} catch {
+			// discovery is best effort
+		}
+		const candidates = [...registered, ...discovered];
 		const seen = new Map<string, RepoContext>();
 		for (const candidate of candidates) {
 			if (!candidate || !fs.existsSync(candidate)) continue;
@@ -405,10 +669,10 @@ export class WorktreeJanitorService {
 		}
 	}
 
-	private isAgentWorktree(repo: RepoContext, entry: PorcelainWorktree): boolean {
+	/** Known agent location (short idle threshold) vs anywhere else (long one). */
+	private isAgentLocation(repo: RepoContext, entry: PorcelainWorktree): boolean {
 		if (isPathInside(entry.path, path.join(repo.main, WORKTREE_JANITOR_CONSTANTS.AGENT_WORKTREE_DIR))) return true;
-		const tmpRoots = this.opts.tmpRoots ?? ['/tmp', os.tmpdir()];
-		for (const root of tmpRoots) {
+		for (const root of this.tmpRoots()) {
 			if (isPathInside(entry.path, path.join(root, WORKTREE_JANITOR_CONSTANTS.TMP_WORKTREE_DIR))) return true;
 		}
 		const branch = entry.branch;
@@ -418,7 +682,12 @@ export class WorktreeJanitorService {
 	/**
 	 * Apply the removal rules to one worktree (read-only apart from fetch).
 	 */
-	private async evaluate(repo: RepoContext, entry: PorcelainWorktree, busy: BusyCwd[] | null): Promise<WorktreeVerdict> {
+	private async evaluate(
+		repo: RepoContext,
+		entry: PorcelainWorktree,
+		busy: BusyCwd[] | null,
+		lowDisk: boolean,
+	): Promise<WorktreeVerdict> {
 		const base = { repo: repo.main, path: entry.path, branch: entry.branch, head: entry.head };
 		const keep = (reason: WorktreeReason, detail?: string, idleMs?: number): WorktreeVerdict => ({
 			...base,
@@ -435,7 +704,6 @@ export class WorktreeJanitorService {
 		if (isPathInside(entry.path, path.join(repo.main, WORKTREE_JANITOR_CONSTANTS.MANAGED_WORKTREE_DIR))) {
 			return keep('managed-by-workitem-worktrees');
 		}
-		if (!this.isAgentWorktree(repo, entry)) return keep('not-agent-worktree');
 
 		if (busy === null) return keep('cwd-probe-failed');
 		const hit = busy.find((b) => isPathInside(b.cwd, entry.path));
@@ -444,10 +712,15 @@ export class WorktreeJanitorService {
 		const gitDirR = await this.git(['-C', entry.path, 'rev-parse', '--absolute-git-dir']);
 		const gitDir = gitDirR.code === 0 ? gitDirR.stdout.trim() : null;
 		const mtime = latestWorktreeMtimeMs(entry.path, gitDir);
-		const now = (this.opts.now ?? Date.now)();
-		const idleMs = mtime === null ? undefined : Math.max(0, now - mtime);
-		const minIdle = this.opts.minIdleMs ?? WORKTREE_JANITOR_CONSTANTS.MIN_IDLE_MS;
-		if (idleMs === undefined || idleMs < minIdle) return keep('recent', undefined, idleMs);
+		const idleMs = mtime === null ? undefined : Math.max(0, this.now() - mtime);
+		const agentLocation = this.isAgentLocation(repo, entry);
+		const normalIdle = agentLocation
+			? (this.opts.minIdleMs ?? WORKTREE_JANITOR_CONSTANTS.MIN_IDLE_MS)
+			: (this.opts.minIdleOtherMs ?? WORKTREE_JANITOR_CONSTANTS.MIN_IDLE_OTHER_MS);
+		const minIdle = idleThreshold(normalIdle, lowDisk);
+		if (idleMs === undefined || idleMs < minIdle) {
+			return keep('recent', `needs ${Math.round(minIdle / MS_PER_MINUTE)} min idle (${agentLocation ? 'agent location' : 'other location'})`, idleMs);
+		}
 
 		const status = await this.git(['-C', entry.path, 'status', '--porcelain', '--untracked-files=all']);
 		if (status.code !== 0) return keep('status-failed', status.stderr.trim().slice(0, 200), idleMs);

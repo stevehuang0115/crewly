@@ -32,6 +32,8 @@ import { WorkItemDispatchSubscriber } from '../v3/workitem-dispatch.subscriber.j
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { TokenUsageService } from '../monitoring/token-usage.service.js';
 import { getWaiting } from '../monitoring/agent-attention-registry.js';
+import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
+import { limitToOneProjectTicket } from '../task-pool/ticket-claim-policy.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { AGENT_SUSPEND_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
@@ -72,18 +74,44 @@ const REDELIVER_MAX_COOLDOWN_MS = (() => {
 })();
 
 /**
- * Minimum gap between re-attempting a wake the commitment-approval gate has
+ * First gap before re-attempting a wake the commitment-approval gate has
  * already refused. That gate's answer is deterministic — a dormant team stays
  * blocked until the OWNER says something — so retrying it on the ~10s fast
  * loop cannot succeed sooner, it only produces one ERROR line per attempt.
- * On 2026-08-22 a single WorkItem logged 8,220 of them in a day. The window is
- * short enough that an approval is picked up promptly. Override with
+ * On 2026-08-22 a single WorkItem logged 8,220 of them in a day. Override with
  * `CREWLY_RECONCILER_WAKE_BLOCKED_COOLDOWN_MS`.
+ *
+ * Each further refusal for the same agent doubles the gap, up to
+ * {@link WAKE_BLOCKED_MAX_COOLDOWN_MS}. A flat 5-minute window still meant
+ * 230+ refused cold launches a day for one parked WorkItem (steamfun-ops,
+ * 2026-09-30).
  */
 const WAKE_BLOCKED_COOLDOWN_MS = (() => {
   const raw = Number(process.env['CREWLY_RECONCILER_WAKE_BLOCKED_COOLDOWN_MS']);
   return Number.isFinite(raw) && raw > 0 ? raw : 5 * 60 * 1000; // 5 min
 })();
+
+/**
+ * Ceiling for the doubling approval-gate backoff. An owner approval normally
+ * reaches the team through the orchestrator (which launches it itself), so
+ * the reconciler's retry is only a safety net and can afford to be slow.
+ * Override with `CREWLY_RECONCILER_WAKE_BLOCKED_MAX_COOLDOWN_MS`.
+ */
+const WAKE_BLOCKED_MAX_COOLDOWN_MS = (() => {
+  const raw = Number(process.env['CREWLY_RECONCILER_WAKE_BLOCKED_MAX_COOLDOWN_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : 2 * 60 * 60 * 1000; // 2 h
+})();
+
+/**
+ * Backoff after the n-th consecutive approval-gate refusal for one agent.
+ *
+ * @param refusals - Consecutive refusals so far (>= 1)
+ * @returns Milliseconds to wait before asking the gate again
+ */
+export function wakeBlockedCooldownMs(refusals: number): number {
+  const steps = Math.max(0, Math.min(refusals - 1, 30));
+  return Math.min(WAKE_BLOCKED_COOLDOWN_MS * 2 ** steps, Math.max(WAKE_BLOCKED_COOLDOWN_MS, WAKE_BLOCKED_MAX_COOLDOWN_MS));
+}
 
 /** Error code the team-member wake endpoint returns when the commitment-approval gate refuses. */
 const WAKE_BLOCKED_ERROR_CODE = 'commitment_requires_owner_approval';
@@ -251,8 +279,9 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * Keyed by agent session because the gate decides per team, not per
    * WorkItem — a second WI for the same dormant team would be refused for the
    * same reason, so keying by WI would let one team spin once per queued item.
+   * `refusals` counts consecutive refusals and drives the doubling backoff.
    */
-  private readonly lastWakeBlockedAt = new Map<string, number>();
+  private readonly lastWakeBlockedAt = new Map<string, { at: number; refusals: number }>();
 
   constructor() {
     this.logger = LoggerService.getInstance().createComponentLogger('ReconcilerDataProvider');
@@ -404,6 +433,24 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
   }
 
   /**
+   * When the agent last produced meaningful PTY output or made an API call,
+   * as tracked in this process. Undefined when nothing was seen since the
+   * backend started — "never seen" must not count as "working".
+   *
+   * @param sessionName - Agent session
+   * @returns ISO time of the last activity, or undefined
+   */
+  private getLastActivityAt(sessionName: string): string | undefined {
+    try {
+      const tracker = PtyActivityTrackerService.getInstance();
+      if (!tracker.hasActivity(sessionName)) return undefined;
+      return new Date(Date.now() - tracker.getIdleTimeMs(sessionName)).toISOString();
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
    * Builds the agent health map from StorageService team data.
    *
    * Iterates all teams and members to produce a Map<sessionName, AgentHealth>
@@ -436,6 +483,8 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           };
           const waitingSince = this.getWaitingOnHumanSince(member.sessionName);
           if (waitingSince) health.waitingOnHumanSince = waitingSince;
+          const lastActivityAt = this.getLastActivityAt(member.sessionName);
+          if (lastActivityAt) health.lastActivityAt = lastActivityAt;
 
           healthMap.set(member.sessionName, health);
         }
@@ -459,6 +508,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       try {
         const orcStatus = await this.storage.getOrchestratorStatus();
         if (orcStatus?.sessionName) {
+          const orcLastActivityAt = this.getLastActivityAt(orcStatus.sessionName);
           healthMap.set(orcStatus.sessionName, {
             sessionName: orcStatus.sessionName,
             status: this.mapAgentStatus(orcStatus.agentStatus),
@@ -467,6 +517,7 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             tags: [],
             activeWorkItemCount: 0,
             // teamId/memberId intentionally undefined — orc is virtual.
+            ...(orcLastActivityAt ? { lastActivityAt: orcLastActivityAt } : {}),
           });
         }
       } catch (orcErr) {
@@ -696,6 +747,23 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
       this.logger.info('Marked claim as expiring', { claimId });
     } catch (error) {
       this.logger.error('Failed to mark claim expiring', {
+        claimId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * Renews a claim's lease because its holder is visibly working.
+   *
+   * @param claimId - The claim ID to renew
+   */
+  async renewClaim(claimId: string): Promise<void> {
+    try {
+      const pool = TaskPoolService.getInstance();
+      await pool.renewClaim(claimId);
+    } catch (error) {
+      this.logger.error('Failed to renew claim', {
         claimId,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -1180,8 +1248,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
    * lists everything outstanding costs the agent nothing extra, while a
    * second message minutes later costs a whole model turn.
    *
+   * The batch is in claim order (ticket policy) and carries only the first
+   * project ticket's items plus non-ticket work, so an agent that can hold one
+   * claim is not handed several tickets at once. The trigger itself may be
+   * left out by that rule.
+   *
    * @param trigger - The queued WI whose wake action fired
-   * @returns The batch, trigger first; falls back to `[trigger]` on any error
+   * @returns The batch in claim order; falls back to `[trigger]` on any error
    */
   private async collectRedeliverBatch(trigger: WorkItem): Promise<WorkItem[]> {
     try {
@@ -1193,7 +1266,14 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
           item.status === 'queued' &&
           item.target === trigger.target,
       );
-      return [trigger, ...siblings];
+      const all = [trigger, ...siblings];
+      if (all.length === 1 || !trigger.target) return all;
+      // Claim order (ticket policy), and one project ticket at a time: the
+      // agent holds one claim, so listing several tickets as "work through
+      // them" had it working unclaimed items (2026-09-29, CE-19).
+      const ordered = await pool.orderClaimCandidates(trigger.target, all).catch(() => all);
+      const limited = limitToOneProjectTicket(ordered.length > 0 ? ordered : all);
+      return limited.length > 0 ? limited : [trigger];
     } catch (err) {
       this.logger.debug('collectRedeliverBatch failed — redelivering the trigger alone', {
         workItemId: trigger.id,
@@ -1252,10 +1332,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         const delivered =
           batch.length > 1 && typeof subscriber.redispatchMany === 'function'
             ? await subscriber.redispatchMany(batch)
-            : await subscriber.redispatch(wi);
+            : await subscriber.redispatch(batch[0] ?? wi);
         if (delivered) {
           const now = Date.now();
-          const marked = batch.length > 1 ? batch : [wi];
+          // The trigger backs off too, even when the one-ticket rule left it
+          // out of the reminder — otherwise it re-fires every fast pass.
+          const marked = batch.some((item) => item.id === wi.id) ? batch : [...batch, wi];
           for (const item of marked) {
             this.lastRedeliverAt.set(item.id, now);
             this.redeliverCount.set(item.id, (this.redeliverCount.get(item.id) ?? 0) + 1);
@@ -1441,11 +1523,12 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
         // Don't re-attempt a wake the approval gate just refused. Its verdict
         // depends on owner messages, not on anything the reconciler can change
         // by asking again 10 seconds later.
-        const blockedAt = this.lastWakeBlockedAt.get(agentSessionName);
-        if (blockedAt !== undefined && Date.now() - blockedAt < WAKE_BLOCKED_COOLDOWN_MS) {
+        const blocked = this.lastWakeBlockedAt.get(agentSessionName);
+        if (blocked !== undefined && Date.now() - blocked.at < wakeBlockedCooldownMs(blocked.refusals)) {
           this.logger.debug('Skipping wake — approval gate refused recently', {
             agent: agentSessionName,
-            msSinceRefusal: Date.now() - blockedAt,
+            msSinceRefusal: Date.now() - blocked.at,
+            refusals: blocked.refusals,
           });
           return false;
         }
@@ -1462,11 +1545,13 @@ export class LiveReconcilerDataProvider implements ReconcilerDataProvider {
             // Expected outcome, not a fault: the team is dormant and the owner
             // has not approved a cold launch. Log once per cooldown at `warn`,
             // not once per fast-loop tick at `error`.
-            this.lastWakeBlockedAt.set(agentSessionName, Date.now());
+            const refusals = (blocked?.refusals ?? 0) + 1;
+            this.lastWakeBlockedAt.set(agentSessionName, { at: Date.now(), refusals });
             this.logger.warn('Wake refused by commitment-approval gate — backing off until the owner approves', {
               agent: agentSessionName,
               workItemId: action.workItemId,
-              cooldownMs: WAKE_BLOCKED_COOLDOWN_MS,
+              refusals,
+              cooldownMs: wakeBlockedCooldownMs(refusals),
             });
             return false;
           }

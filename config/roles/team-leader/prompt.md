@@ -52,6 +52,7 @@ Use when: Orchestrator sends a new objective. Creates one WorkItem per sub-task 
 bash {{TL_SKILLS_PATH}}/delegate-task/execute.sh '{"to":"worker-session","task":"implement feature","priority":"high","teamId":"{{TEAM_ID}}","tlMemberId":"{{MEMBER_ID}}","projectPath":"{{PROJECT_PATH}}"}'
 ```
 Use when: After decompose-goal, or when handle-failure says reassign. Validates hierarchy before delegation.
+Project work for a worker always runs through a project ticket: add `"ticket":"APP-12"` (or `--ticket APP-12`) when a ticket exists; otherwise one is created for you and printed. Refused (nothing delivered) when that ticket is already being worked or closed.
 
 ### 3. verify-output — Check completed work quality
 ```bash
@@ -102,6 +103,22 @@ Use when: A specific worker should take a specific ticket of the project backlog
 ### Project backlog (project tickets)
 
 Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown file per ticket, tracked in git). Use the `project-tickets` skill (`{{AGENT_SKILLS_PATH}}/core/project-tickets/execute.sh`) to list, read, create and update tickets. Workers pick up `ready` tickets by themselves when idle; you decide what is `ready` (`update --status ready`), you may assign (`assign-ticket`), and you review the work through the normal verification item. Worker-created tickets land in `backlog` until you or the owner make them ready.
+
+**Every piece of project work for a worker has a ticket.** Delegate with `--ticket <ID>` when the ticket exists (or `assign-ticket`); without it `delegate-task` creates one for you. Work already running without a ticket: `project-tickets link --project {{PROJECT_PATH}} --id <ID> --work-item <WorkItem id>`. Backlog tickets that should be picked up next: `update --status ready`. Reminders you set for yourself get no ticket.
+
+### Ticket autopilot / triage
+
+When the owner switched the ticket autopilot on for a project, Crewly sends you a `ticket_triage` WorkItem while someone on your team is idle and backlog tickets wait. Decide every ticket it lists, then complete the WorkItem (one line per ticket):
+- **ready + assign** (`assign-ticket`, or `project-tickets update --status ready` for the next idle member) — at most the stated number of in-progress tickets per member;
+- **split** into smaller ready tickets and cancel the original with a note;
+- **needs the owner** — `project-tickets ask-owner --project <P> --id <ID> --question "<one line>"`; Crewly batches these to the owner's phone, you do not message the owner about them;
+- **cancel** with a reason.
+
+Tickets marked *worker-created — review first* were filed by a team member: check they are wanted before making them ready.
+
+**Who does what.** Delegate by role: give each ticket to the member whose role fits the work. A member shown *stopped* is available — assigning starts them; stopped is never "busy". Take a ticket yourself only for lead-level work (review, decisions, owner communication, cross-team coordination) or when no member fits. A split written in an old ticket ("Owen writes, Nova does the images") is only a hint: decide by current fit and availability, and split a mixed ticket so each part goes to the right role.
+
+**The autopilot does not lift the approval boundary.** Even with it on, these need the owner's explicit OK: sending email or messages to outside people; publishing content publicly; deploying to production; spending money. Work such a ticket up to a draft or a PR, then `ask-owner` for the final step. When the owner's answer reaches you, act on it and clear the mark (`ask-owner --clear`).
 
 ---
 

@@ -6,8 +6,11 @@
  * cooldown/rate-limiting, and session lifecycle management.
  */
 
-import { OAuthReloginMonitorService } from './oauth-relogin-monitor.service.js';
-import { OAUTH_RELOGIN_CONSTANTS } from '../../constants.js';
+import { OAuthReloginMonitorService, formatLoginNotice, loginScreenRegion } from './oauth-relogin-monitor.service.js';
+import type { LoginRequiredInfo } from './oauth-relogin-monitor.service.js';
+import { OAUTH_RELOGIN_CONSTANTS, LOGIN_SCREEN_REGION } from '../../constants.js';
+
+const LOGIN_TAIL_LINES = LOGIN_SCREEN_REGION.TAIL_LINES;
 
 // =============================================================================
 // Mocks
@@ -699,6 +702,150 @@ describe('OAuthReloginMonitorService', () => {
 		});
 	});
 
+	describe('false positives: sign-in text the agent merely wrote (incident 2026-09-29)', () => {
+		/** Real screens from `services/monitoring/__fixtures__/agent-screens` (fs is not mocked for them). */
+		const fixture = (file: string): string => {
+			const realFs = jest.requireActual<typeof import('fs')>('fs');
+			const realPath = jest.requireActual<typeof import('path')>('path');
+			return realFs.readFileSync(realPath.join(__dirname, '..', 'monitoring', '__fixtures__', 'agent-screens', file), 'utf8');
+		};
+
+		/**
+		 * Atlas (claude-code) mid-reply summarising DevDay, with the busy footer.
+		 * Built on the real claude-busy screen.
+		 */
+		const atlasScreen = (): string => fixture('claude-busy.txt').replace(
+			'  that account leaves out something important.',
+			'  that account leaves out something important. OpenAI also showed the new Sign in with ChatGPT button,\n'
+			+ '  and third-party apps can now offer the ChatGPT sign-in. Please run /login style prompts are gone.',
+		);
+
+		it('does not detect Atlas\'s claude-code reply that quotes "Sign in with ChatGPT" (busy footer)', () => {
+			const screen = atlasScreen();
+			expect(screen.toLowerCase()).toContain('sign in with chatgpt');
+			expect(service.detectLoginRequired(screen, 'claude-code')).toBeNull();
+			expect(service.detectLoginRequired(screen, null)).toBeNull();
+		});
+
+		it('does not detect sign-in text inside a finished (idle) claude-code reply', () => {
+			const screen = [
+				'⏺ DevDay summary:',
+				'',
+				'  - Apps can add a Sign in with ChatGPT button; Provide your own API key still works.',
+				'  - Claude users: if you see "Please run /login", paste code here if prompted.',
+				'',
+				'────────────────────────────────────────',
+				'❯ ',
+				'────────────────────────────────────────',
+				'  ⏵⏵ auto mode on (shift+tab to cycle)',
+			].join('\n');
+			expect(service.detectLoginRequired(screen, 'claude-code')).toBeNull();
+			expect(service.detectLoginRequired(screen, null)).toBeNull();
+		});
+
+		it('does not detect sign-in text in a codex reply sitting at its idle prompt', () => {
+			const screen = fixture('codex-idle.txt').replace(
+				'  Understanding tides matters beyond curiosity.',
+				'  Sign in with ChatGPT, or Provide your own API key. Understanding tides matters beyond curiosity.',
+			);
+			expect(service.detectLoginRequired(screen, 'codex-cli')).toBeNull();
+		});
+
+		it('never applies a Codex pattern to a claude-code session', () => {
+			expect(service.detectLoginRequired(CODEX_BROWSER_SIGNIN_SCREEN, 'claude-code')).toBeNull();
+			expect(service.detectLoginRequired(CODEX_DEVICE_CODE_SCREEN, 'claude-code')).toBeNull();
+			// …while an unknown runtime still tries every runtime's patterns
+			expect(service.detectLoginRequired(CODEX_BROWSER_SIGNIN_SCREEN, null)).toEqual({ url: null, code: null });
+		});
+
+		it('still detects a real Claude Code sign-in screen', () => {
+			expect(service.detectLoginRequired(CLAUDE_LOGIN_SCREEN, 'claude-code')).toEqual({
+				url: 'https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code',
+				code: null,
+			});
+		});
+
+		it('still detects a real Codex device-code screen', () => {
+			expect(service.detectLoginRequired(CODEX_DEVICE_CODE_SCREEN, 'codex-cli')).toEqual({
+				url: 'https://auth.openai.com/codex/device',
+				code: 'FBVZ-MJHKK',
+			});
+		});
+
+		it('only looks at the bottom of the screen', () => {
+			const filler = Array.from({ length: LOGIN_TAIL_LINES }, (_, i) => `  line ${i}`);
+			expect(service.detectLoginRequired(`${CLAUDE_LOGIN_SCREEN}\n${filler.join('\n')}`, 'claude-code')).toBeNull();
+		});
+
+		it('takes the login URL from the sign-in prompt, not from a URL the agent printed above it', () => {
+			const screen = `⏺ See https://example.com/some/long/article/path for details\n❯ /login\n${CLAUDE_LOGIN_SCREEN}`;
+			expect(service.detectLoginRequired(screen, 'claude-code')?.url)
+				.toBe('https://claude.ai/oauth/authorize?code=true&client_id=9d1c250a&response_type=code');
+		});
+
+		it('the live-PTY path: a busy claude-code reply in the rolling buffer is no sign-in, because the live screen decides', () => {
+			const screen = atlasScreen();
+			mockBackend.captureOutput.mockReturnValue(screen);
+			service.startMonitoring('think-tank-atlas-b4e166f6', 'claude-code');
+			capturedOnDataCallback?.('⏺ OpenAI also showed the new Sign in with ChatGPT button. Please run /login style prompts are gone.');
+			expect(service.getLoginRequired('think-tank-atlas-b4e166f6')).toBeUndefined();
+			mockBackend.captureOutput.mockReturnValue('');
+		});
+
+		it('loginScreenRegion keeps indented continuation lines of a transcript block out of the sign-in region', () => {
+			const { signInLines } = loginScreenRegion('⏺ reply\n  more reply\n\n  still reply\n❯ prompt');
+			expect(signInLines).toEqual(['❯ prompt']);
+		});
+	});
+
+	describe('formatLoginNotice (owner is on a phone)', () => {
+		const info = (overrides: Partial<LoginRequiredInfo>): LoginRequiredInfo => ({
+			sessionName: 'think-tank-atlas-b4e166f6',
+			runtimeType: 'claude-code',
+			url: null,
+			code: null,
+			detectedAt: '2026-09-29T00:58:00.000Z',
+			notifiedAt: null,
+			...overrides,
+		});
+
+		it('names the agent and gives the phone re-login reply for Claude Code', () => {
+			expect(formatLoginNotice(info({}), 'Atlas')).toBe(
+				'Atlas needs you to sign in to Claude Code. Reply "relogin claude" to Crewly and it will send you a sign-in link.',
+			);
+		});
+
+		it('never tells the owner to open a terminal', () => {
+			for (const runtimeType of ['claude-code', 'codex-cli', 'gemini-cli', null] as const) {
+				expect(formatLoginNotice(info({ runtimeType }), 'Atlas')).not.toMatch(/terminal/i);
+			}
+		});
+
+		it('includes the device URL and code when the screen showed them', () => {
+			expect(formatLoginNotice(info({ runtimeType: 'codex-cli', url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK' }), 'Nova')).toBe(
+				'Nova needs you to sign in to Codex: https://auth.openai.com/codex/device code FBVZ-MJHKK.'
+				+ ' Or reply "relogin codex" to Crewly and it will send you a sign-in link.',
+			);
+		});
+
+		it('falls back to the session name when no display name is known', () => {
+			expect(formatLoginNotice(info({}), null)).toMatch(/^think-tank-atlas-b4e166f6 needs you to sign in/);
+		});
+
+		it('the Slack alert uses the resolved display name', async () => {
+			const slack = { isConnected: jest.fn().mockReturnValue(true), sendNotification: jest.fn().mockResolvedValue(undefined) };
+			service.setSlackProvider(async () => slack);
+			service.setAgentNameResolver(async (sessionName) => (sessionName === 'think-tank-atlas-b4e166f6' ? 'Atlas' : null));
+			service.inspectScreen('think-tank-atlas-b4e166f6', CLAUDE_LOGIN_SCREEN, 'claude-code');
+			for (let i = 0; i < 5; i++) await Promise.resolve();
+			expect(slack.sendNotification).toHaveBeenCalledWith(expect.objectContaining({
+				title: 'Agent needs you to sign in',
+				message: expect.stringMatching(/^Atlas needs you to sign in to Claude Code: https:\/\/claude\.ai\/oauth\/authorize.*"relogin claude"/),
+			}));
+			service.setAgentNameResolver(null);
+		});
+	});
+
 	describe('inspectScreen / notification path', () => {
 		const mockEventBus = { publish: jest.fn() };
 		const mockQueue = { enqueue: jest.fn() };
@@ -744,7 +891,8 @@ describe('OAuthReloginMonitorService', () => {
 				changedField: 'loginRequired',
 			}));
 
-			const expectedText = 'Agent agent-dev-001 needs you to sign in: https://auth.openai.com/codex/device code FBVZ-MJHKK';
+			const expectedText = 'agent-dev-001 needs you to sign in to Codex: https://auth.openai.com/codex/device code FBVZ-MJHKK.'
+				+ ' Or reply "relogin codex" to Crewly and it will send you a sign-in link.';
 			expect(mockQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
 				content: `[NOTIFY] ${expectedText}`,
 				source: 'system_event',
@@ -815,7 +963,7 @@ describe('OAuthReloginMonitorService', () => {
 			service.inspectScreen('agent-dev-001', CODEX_BROWSER_SIGNIN_SCREEN, 'codex-cli');
 			await Promise.resolve(); await Promise.resolve();
 			expect(mockChat.broadcastSystemNotification).toHaveBeenCalledWith(
-				'Agent agent-dev-001 needs you to sign in (open its terminal to complete login)',
+				'agent-dev-001 needs you to sign in to Codex. Reply "relogin codex" to Crewly and it will send you a sign-in link.',
 				'warning',
 			);
 		});
@@ -943,10 +1091,18 @@ describe('OAuthReloginMonitorService', () => {
 			expect(mockSlack.sendNotification).not.toHaveBeenCalled();
 		});
 
-		it('first-run sign-in screens keep the old per-agent notice', async () => {
+		it('a sign-in screen of a runtime the coordinator can log in goes to it (one machine-routed DM), not a per-agent notice', async () => {
 			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
 			await Promise.resolve(); await Promise.resolve();
-			expect(handler).not.toHaveBeenCalled();
+			expect(handler).toHaveBeenCalledWith({ harnessId: 'codex-cli', sessionName: 'agent-dev-001', source: 'screen' });
+			expect(service.getLoginRequired('agent-dev-001')).toBeDefined();
+			expect(mockSlack.sendNotification).not.toHaveBeenCalled();
+		});
+
+		it('first-run sign-in screens keep the old per-agent notice when the coordinator declines', async () => {
+			handler.mockReturnValue(false);
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
 			expect(mockSlack.sendNotification).toHaveBeenCalled();
 		});
 

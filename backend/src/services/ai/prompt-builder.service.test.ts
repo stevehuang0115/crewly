@@ -687,6 +687,29 @@ describe('PromptBuilderService', () => {
 			expect(deriveOrgRole(buildMember(), buildTeam())).toBe('team-lead');
 		});
 
+		it('a lead by the team-lead rule (tech-lead, no canDelegate, no subordinateIds) gets the lead prompt config on its next wake', () => {
+			const owen = buildMember({ id: 'mem-owen', role: 'tech-lead' as TeamMember['role'], canDelegate: undefined, subordinateIds: undefined, hierarchyLevel: undefined });
+			const nova = buildMember({ id: 'mem-nova', name: 'Nova', sessionName: '', agentId: 'ce-nova-a2b1f759', role: 'developer', canDelegate: undefined, subordinateIds: undefined, hierarchyLevel: undefined });
+			const team = buildTeam({ members: [owen, nova] });
+			const config = buildModuleConfigFromTeamMember(owen, team, runtime);
+			expect(config.orgRole).toBe('team-lead');
+			expect(config.canDelegate).toBe(true);
+			expect(config.subordinates).toEqual([{ name: 'Nova', sessionName: 'ce-nova-a2b1f759', role: 'developer', memberId: 'mem-nova' }]);
+			// Nova is not a lead: executor, no delegation.
+			const novaConfig = buildModuleConfigFromTeamMember(nova, team, runtime);
+			expect(novaConfig.orgRole).toBe('executor');
+			expect(novaConfig.canDelegate).toBeUndefined();
+		});
+
+		it('an explicit leaderIds entry makes a developer the lead', () => {
+			const vera = buildMember({ id: 'mem-vera', canDelegate: undefined, subordinateIds: undefined, hierarchyLevel: undefined });
+			const other = buildMember({ id: 'mem-x', canDelegate: undefined, subordinateIds: undefined, hierarchyLevel: undefined });
+			const team = buildTeam({ members: [vera, other], leaderIds: ['mem-vera'] });
+			expect(deriveOrgRole(vera, team)).toBe('team-lead');
+			expect(buildModuleConfigFromTeamMember(vera, team, runtime).canDelegate).toBe(true);
+			expect(deriveOrgRole(other, team)).toBe('executor');
+		});
+
 		it('resolves orgRole=executor for non-canDelegate members with no subordinates', () => {
 			const member = buildMember({ canDelegate: false, subordinateIds: [] });
 			const config = buildModuleConfigFromTeamMember(member, buildTeam(), runtime);

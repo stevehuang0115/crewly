@@ -42,6 +42,8 @@ import { ContentApprovalService } from '../onboarding/content-approval.service.j
 import { getSlackImageService } from './slack-image.service.js';
 import type { MessageQueueService } from '../messaging/message-queue.service.js';
 import type { SlackThreadStoreService } from './slack-thread-store.service.js';
+import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
+import { isOwnerAuthored } from './slack-auto-working.service.js';
 import { ORCHESTRATOR_SESSION_NAME, MESSAGE_QUEUE_CONSTANTS, SLACK_IMAGE_CONSTANTS, SLACK_FILE_DOWNLOAD_CONSTANTS, SLACK_BRIDGE_CONSTANTS, AUDITOR_SCHEDULER_CONSTANTS, THREAD_STATUS_CONSTANTS, OWNER_EVIDENCE_METADATA } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
@@ -1009,6 +1011,7 @@ Just type naturally to chat with the orchestrator!`;
                 threadTs: context?.threadTs,
               },
             });
+            this.watchOwnerMessage(context, authorAgentSession, message, result.conversation.id, ORCHESTRATOR_SESSION_NAME);
 
             // Track inbound thread for offline message recovery
             if (this.threadStatusQueue && context?.channelId) {
@@ -1080,6 +1083,7 @@ Just type naturally to chat with the orchestrator!`;
           }).conversationId,
         },
       };
+      this.watchOwnerMessage(context, authorAgentSession, message, result.conversation.id, ORCHESTRATOR_SESSION_NAME);
 
       // Enqueue the message with a resolve callback for response routing.
       // The QueueProcessorService will call slackResolve() when the
@@ -2227,6 +2231,7 @@ Just type naturally to chat with the orchestrator!`;
             }).conversationId,
           },
         };
+        this.watchOwnerMessage(context, authorAgentSession, message, chatResult.conversation.id, sessionName);
 
         return new Promise<OrcResponse>((resolve) => {
           let resolved = false;
@@ -2289,6 +2294,45 @@ Just type naturally to chat with the orchestrator!`;
         response: `Failed to reach agent. Error: ${err instanceof Error ? err.message : String(err)}`,
         fromOrcReply: false,
       };
+    }
+  }
+
+  /**
+   * The owner's Slack message now waits for an answer from `responsible`:
+   * hand it to the unanswered-owner-message watchdog
+   * (specs/2026-09-30-owner-message-guarantee.md). Agent-authored messages
+   * and other people's messages are not watched. Never throws.
+   *
+   * @param context - Slack ids of the message
+   * @param authorAgentSession - Set when an agent wrote it
+   * @param text - What the owner wrote
+   * @param conversationId - chat-v2 conversation it was recorded in
+   * @param responsible - Who must answer
+   */
+  private watchOwnerMessage(
+    context: SlackConversationContext | undefined,
+    authorAgentSession: string | undefined,
+    text: string,
+    conversationId: string,
+    responsible: string,
+  ): void {
+    try {
+      if (!context?.channelId || !context.messageTs) return;
+      if (!isOwnerAuthored({ userId: context.messageUserId, authorAgentSession }, this.slackService.getOwnerUserId?.() ?? null)) return;
+      getOwnerMessageWatchdog()?.track({
+        surface: 'slack',
+        slackChannelId: context.channelId,
+        threadTs: context.threadTs || context.messageTs,
+        sourceTs: context.messageTs,
+        chatChannelId: conversationId,
+        responsible,
+        recipients: [responsible],
+        required: true,
+        text,
+        ...(Number.isFinite(parseFloat(context.messageTs)) ? { receivedAt: Math.floor(parseFloat(context.messageTs) * 1000) } : {}),
+      });
+    } catch (err) {
+      this.logger.debug('Owner message watchdog track failed', { error: err instanceof Error ? err.message : String(err) });
     }
   }
 

@@ -10,7 +10,8 @@ import { TeamMemberRow } from './TeamMemberRow';
 import { TeamMember } from '@/types';
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
+vi.mock('lucide-react', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('lucide-react')>()),
   Play: () => <span data-testid="play-icon">Play</span>,
   Square: () => <span data-testid="square-icon">Square</span>,
   Loader2: () => <span data-testid="loader-icon">Loader</span>,
@@ -61,6 +62,26 @@ describe('TeamMemberRow', () => {
     it('should render member name', () => {
       render(<TeamMemberRow {...defaultProps} />);
       expect(screen.getByText('Test Developer')).toBeInTheDocument();
+    });
+
+    it('shows the fallback badge while the agent runs on another runtime', () => {
+      const member = createTestMember({
+        runtimeOverride: {
+          runtime: 'crewly-agent',
+          primary: 'claude-code',
+          reason: 'usage_limit',
+          since: '2026-10-01T12:00:00.000Z',
+          until: '2026-10-01T22:00:00.000Z',
+          badge: 'on DeepSeek (Claude limit)',
+        },
+      });
+      render(<TeamMemberRow {...defaultProps} member={member} />);
+      expect(screen.getByTestId('runtime-override-badge')).toHaveTextContent('on DeepSeek (Claude limit)');
+    });
+
+    it('shows no fallback badge normally', () => {
+      render(<TeamMemberRow {...defaultProps} />);
+      expect(screen.queryByTestId('runtime-override-badge')).not.toBeInTheDocument();
     });
 
     it('should render session name', () => {
@@ -337,6 +358,7 @@ describe('TeamMemberRow', () => {
       const member = createTestMember({
         agentStatus: 'starting',
         loginRequired: { url: 'https://auth.openai.com/device', code: 'FBVZ-MJHKK', detectedAt: '2026-09-18T10:00:00.000Z' },
+        runtimeType: 'codex-cli',
       });
       render(<TeamMemberRow member={member} teamId="team-1" />);
 
@@ -345,6 +367,27 @@ describe('TeamMemberRow', () => {
       expect(screen.getByRole('dialog')).toHaveTextContent('Test Developer needs you to sign in');
       expect(screen.getByTestId('sign-in-url')).toHaveAttribute('href', 'https://auth.openai.com/device');
       expect(screen.getByTestId('sign-in-code')).toHaveTextContent('FBVZ-MJHKK');
+    });
+  });
+  describe('team lead toggle', () => {
+    it('shows the Lead badge for the lead and no toggle', () => {
+      render(<TeamMemberRow member={createTestMember()} teamId="team-1" isLead onMakeLead={vi.fn()} />);
+      expect(screen.getByTestId('lead-badge')).toHaveTextContent('Lead');
+      expect(screen.queryByTestId('make-lead-button')).not.toBeInTheDocument();
+    });
+
+    it('offers "Make lead" on other members — no hierarchical mode needed — and calls back with the member id', async () => {
+      const onMakeLead = vi.fn().mockResolvedValue(undefined);
+      render(<TeamMemberRow member={createTestMember({ id: 'nova' })} teamId="team-1" onMakeLead={onMakeLead} />);
+      fireEvent.click(screen.getByTestId('make-lead-button'));
+      await waitFor(() => expect(onMakeLead).toHaveBeenCalledWith('nova'));
+      expect(screen.queryByTestId('lead-badge')).not.toBeInTheDocument();
+    });
+
+    it('shows neither without a handler (e.g. the orchestrator team)', () => {
+      render(<TeamMemberRow member={createTestMember()} teamId="team-1" />);
+      expect(screen.queryByTestId('make-lead-button')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('lead-badge')).not.toBeInTheDocument();
     });
   });
 });

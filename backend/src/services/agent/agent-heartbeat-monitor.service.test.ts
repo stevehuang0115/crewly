@@ -92,6 +92,8 @@ import { AgentHeartbeatService } from './agent-heartbeat.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS } from '../../constants.js';
+import { registerInProcessRuntime, unregisterInProcessRuntime } from './crewly-agent/in-process-runtime-registry.js';
+import { markPlannedRelaunch, resetPlannedRelaunches } from './planned-relaunch.registry.js';
 import type { Team } from '../../types/index.js';
 
 /**
@@ -359,6 +361,20 @@ describe('AgentHeartbeatMonitorService', () => {
 			);
 		});
 
+		it('does not mark an in-process (Crewly Agent) member as a ghost while its runtime runs', async () => {
+			const fakeRuntime = { isReady: () => true, shutdown: () => undefined };
+			registerInProcessRuntime('dev-agent-1', fakeRuntime as never);
+			try {
+				mockSessionBackend.sessionExists.mockReturnValue(false);
+				setStartedAtInPast(service);
+				jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+			} finally {
+				unregisterInProcessRuntime('dev-agent-1');
+			}
+		});
+
 		it('should handle updateAgentStatus failure gracefully when session gone (#220)', async () => {
 			mockSessionBackend.sessionExists.mockReturnValue(false);
 			mockStorageService.updateAgentStatus.mockRejectedValueOnce(new Error('Storage write failed'));
@@ -444,6 +460,31 @@ describe('AgentHeartbeatMonitorService', () => {
 
 			const states = service.getAgentStates();
 			expect(states.get('dev-agent-1')?.consecutiveDeadChecks).toBe(1);
+		});
+
+		it('leaves an agent being relaunched on purpose alone: no ghost downgrade, no dead-process restart', async () => {
+			setStartedAtInPast(service);
+			jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+			markPlannedRelaunch('dev-agent-1', 'runtime_fallback');
+			try {
+				// Session briefly gone during the switch.
+				mockSessionBackend.sessionExists.mockReturnValue(false);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+
+				// New process not up yet.
+				mockSessionBackend.sessionExists.mockReturnValue(true);
+				mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+				for (let i = 0; i < 4; i++) await service.performCheck();
+				expect(mockSessionBackend.killSession).not.toHaveBeenCalled();
+				expect(mockAgentRegistrationService.createAgentSession).not.toHaveBeenCalled();
+			} finally {
+				resetPlannedRelaunches();
+			}
+
+			// A real crash after the window still restarts it.
+			for (let i = 0; i < 3; i++) await service.performCheck();
+			expect(mockSessionBackend.killSession).toHaveBeenCalledWith('dev-agent-1');
 		});
 
 		it('should not restart until 3 consecutive dead checks', async () => {

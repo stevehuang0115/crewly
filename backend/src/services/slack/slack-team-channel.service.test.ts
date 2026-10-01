@@ -17,7 +17,9 @@ import {
   SlackTeamChannelService,
   slackChannelNameFor,
   slackIdentityFor,
+  teamChannelLeader,
   teamChannelMembers,
+  isRuntimeSmokeTeam,
   orchestratorSyncEntry,
   orchestratorSyncSession,
   orchestratorSyncTeamId,
@@ -33,6 +35,7 @@ import type { Team, TeamMember } from '../../types/index.js';
 import type { SlackAgentIdentityRecord, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { StorageEvent } from '../core/storage.service.js';
+import { setSlackDirectoryService, type SlackDirectoryService } from './slack-directory.service.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -149,6 +152,7 @@ class FakeSlack implements TeamChannelSlackApi {
     this.reactions.push({ channelId, ts, emoji, ...(botToken ? { botToken } : {}) });
   }
   invites: Array<{ channelId: string; userIds: string[] }> = [];
+  getBotUserId?: () => Promise<string | null>;
   async inviteToChannel(channelId: string, userIds: string[]) {
     this.invites.push({ channelId, userIds });
   }
@@ -309,6 +313,15 @@ class FakeChat extends EventEmitter {
   getMessageForBridge(id: string) {
     return this.messages.find((m) => m.id === id) ?? null;
   }
+  queryRecentTurnsForDispatch(channelId: string, threadId: string | undefined, limit: number) {
+    const rows = this.messages.filter((m) => m.channelId === channelId && (!threadId || m.threadId === threadId)).slice(-(limit + 1));
+    return rows.slice(0, Math.max(0, rows.length - 1)).map((r) => ({
+      senderId: r.senderId,
+      content: r.content,
+      createdAt: new Date(r.createdAt).toISOString(),
+      inThread: Boolean(r.threadId),
+    }));
+  }
 }
 
 class FakeStorage implements TeamChannelStorageApi {
@@ -356,6 +369,7 @@ let service: SlackTeamChannelService;
 let ownerUserId: string | null = 'UOWNER';
 let typing: { begin: jest.Mock; resolve: jest.Mock; setPhase: jest.Mock; fail: jest.Mock } | null = null;
 let awake: (s: string) => boolean = () => true;
+let autoWorking: { watch: jest.Mock } | null = null;
 let isLocal: (s: string) => boolean = () => false;
 
 function makeService() {
@@ -366,6 +380,7 @@ function makeService() {
     getDispatcher: () => dispatcher,
     identities,
     typing,
+    autoWorking,
     isAgentAwake: (s) => awake(s),
     isLocalAgent: (s) => isLocal(s),
     getOwnerUserId: () => ownerUserId,
@@ -419,6 +434,23 @@ describe('teamChannelMembers', () => {
     const got = teamChannelMembers(t);
     expect(got.map((m) => m.name)).toEqual(['Sam', 'Sage']);
     expect(got[1].sessionName).toBe('think-tank-sage-c1d2e3f4');
+  });
+
+  it('gives a runtime smoke test team no channel members (no channel, invite or agent app)', () => {
+    const t = team({ name: 'zz-runtime-smoke-crewly-agent', members: [member('smoke', 'developer')] });
+    expect(teamChannelMembers(t)).toEqual([]);
+    expect(isRuntimeSmokeTeam(t)).toBe(true);
+    expect(isRuntimeSmokeTeam(team({ name: 'Think Tank' }))).toBe(false);
+  });
+});
+
+describe('teamChannelLeader', () => {
+  it('uses the shared team-lead rule: tech-lead, then an explicit lead, else the first member', () => {
+    const ce = team({ members: [member('Nova', 'developer'), member('Owen', 'tech-lead' as TeamMember['role'])] });
+    expect(teamChannelLeader(ce)?.name).toBe('Owen');
+    const explicit = { ...ce, leaderIds: [ce.members[0].id] } as Team;
+    expect(teamChannelLeader(explicit)?.name).toBe('Nova');
+    expect(teamChannelLeader(team({ members: [member('Sam', 'developer'), member('Mia', 'qa')] }))?.name).toBe('Sam');
   });
 });
 
@@ -1680,6 +1712,184 @@ describe('who in the room is awake', () => {
   });
 });
 
+describe('an owner message in a room never ends in silence', () => {
+  // 2026-09-30, the Think Tank room: every member on the Mac was asleep, Cloud
+  // said an agent on the Air was awake, so the Mac woke nobody — and the
+  // Air's agent, only told optionally, stayed quiet. The owner got nothing.
+  const ELLA = 'crewly-marketing-ella';
+  const ATLAS = 'think-tank-atlas';
+  const teams = (): Team[] => [
+    team({ id: 'team-mkt', name: 'Marketing', members: [member('Ella', 'team-leader', { sessionName: ELLA })] }),
+    team({
+      id: 'team-think',
+      name: 'Think Tank',
+      members: [
+        member('Atlas', 'team-leader', { sessionName: ATLAS }),
+        member('Sage', 'researcher' as TeamMember['role'], { sessionName: 'think-tank-sage' }),
+      ],
+    }),
+  ];
+  const airAwake = {
+    members: [
+      { agentSession: ELLA, displayName: 'Ella', instanceId: 'mac', deviceName: 'mac', awake: false },
+      { agentSession: ATLAS, displayName: 'Atlas', instanceId: 'mac', deviceName: 'mac', awake: false },
+      { agentSession: 'pa-ella', displayName: 'Ella', instanceId: 'air', deviceName: 'iriss-air', awake: true },
+    ],
+  };
+  const FALLBACK_MS = 90 * 1000;
+  const warnOf = () => (service as unknown as { logger: { warn: jest.Mock } }).logger.warn;
+
+  /** Delivers to whoever was @'d (or handed it); an un-@'d message goes to nobody here. */
+  function mentionOnlyDispatcher(ok = true) {
+    return {
+      dispatchMessage: jest.fn(async (_ch: ChatChannelDTO, msg: ChatMessageDTO) => {
+        const to = msg.mentions ?? [];
+        if (to.length === 0) return { strategy: 'huddle-broadcast', dispatched: false, huddleOutcomes: [] };
+        return {
+          strategy: 'huddle-broadcast',
+          dispatched: ok,
+          huddleOutcomes: to.map((sessionName) => ({ sessionName, responseMode: 'required', dispatched: ok })),
+        };
+      }),
+    };
+  }
+
+  async function seedRoom() {
+    storage.teams = teams();
+    isLocal = (s) => s === ELLA || s === ATLAS || s === 'think-tank-sage';
+    awake = () => false;
+    identities = new FakeIdentities();
+    service = new SlackTeamChannelService({
+      slack,
+      chat: chat as unknown as TeamChannelChatApi,
+      storage,
+      getDispatcher: () => dispatcher,
+      identities,
+      isAgentAwake: (s) => awake(s),
+      isLocalAgent: (s) => isLocal(s),
+      getOwnerUserId: () => 'UOWNER',
+      resolveInstanceId: async () => 'mac',
+      storePath: path.join(tmpDir, 'slack-team-channels.json'),
+    });
+    // The room: Ella's and Atlas's bots are in it; Atlas spoke there last.
+    await service.routeInbound(inbound({ channelId: 'C-room', ts: '1.1', userId: 'U1', receivedVia: ELLA }));
+    await service.routeInbound(inbound({ channelId: 'C-room', ts: '1.2', userId: 'U1', receivedVia: ATLAS }));
+    const mapping = service.findBySlackChannelId('C-room')!;
+    chat.recordTurn({ channelId: mapping.chatChannelId, senderType: 'agent', senderId: ATLAS, content: '清单好了', metadata: {} });
+    dispatcher!.dispatchMessage.mockClear();
+    warnOf().mockClear();
+    return mapping;
+  }
+
+  const ownerAsks = (extra: Partial<SlackIncomingMessage> = {}) =>
+    inbound({ channelId: 'C-room', ts: '2.1', userId: 'UOWNER', text: '我们之前那个对话算结束了吗？', room: airAwake, receivedVia: ATLAS, ...extra });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    dispatcher = mentionOnlyDispatcher();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    awake = () => true;
+    isLocal = () => false;
+  });
+
+  it('reproduces the drop: all asleep here, someone awake elsewhere → nobody here gets it, and it says so', async () => {
+    await seedRoom();
+    const routed = await service.routeInbound(ownerAsks());
+
+    expect(routed!.dispatch).toMatchObject({ dispatched: false });
+    expect(warnOf()).toHaveBeenCalledWith(
+      'Slack room message reached nobody on this machine',
+      expect.objectContaining({ awakeElsewhere: true, recipients: [] }),
+    );
+  });
+
+  it('wakes the room lead here and delivers the message when nobody took it in time', async () => {
+    await seedRoom();
+    const routed = await service.routeInbound(ownerAsks());
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(2);
+    const [, delivered] = dispatcher!.dispatchMessage.mock.calls[1];
+    // The same message, not a new row, addressed to Atlas — the member who
+    // spoke there last — not to Ella, the first team lead in the list.
+    expect(delivered.id).toBe(routed!.message.id);
+    expect(delivered.mentions).toEqual([ATLAS]);
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('falls back to the team lead rule when no local member ever spoke there', async () => {
+    const mapping = await seedRoom();
+    chat.messages = chat.messages.filter((m) => !(m.channelId === mapping.chatChannelId && m.senderType === 'agent'));
+    await service.routeInbound(ownerAsks());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage.mock.calls[1][1].mentions).toEqual([ELLA]);
+  });
+
+  it('does nothing more when an agent on another machine answers in the thread', async () => {
+    await seedRoom();
+    await service.routeInbound(ownerAsks());
+    await service.routeInbound(
+      inbound({ channelId: 'C-room', ts: '2.2', threadTs: '2.1', userId: 'UBOT', text: '我来', authorAgentSession: 'pa-ella', authorDisplayName: 'Ella' }),
+    );
+    dispatcher!.dispatchMessage.mockClear();
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('tells the owner in the thread when the lead cannot be woken either', async () => {
+    dispatcher = mentionOnlyDispatcher(false);
+    await seedRoom();
+    identities!.records.set(ATLAS, {
+      agentSession: ATLAS, displayName: 'Atlas', appId: 'A1', status: 'installed', botUserId: 'UATLAS', botToken: 'xoxb-atlas',
+      announcedIn: [], invitedTo: [], updatedAt: 'now',
+    });
+    await service.routeInbound(ownerAsks());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(slack.sent).toEqual([
+      expect.objectContaining({ channelId: 'C-room', threadTs: '2.1', botToken: 'xoxb-atlas', text: expect.stringContaining('No agent picked up this message') }),
+    ]);
+  });
+
+  it('only warns for someone other than the owner — no wake', async () => {
+    await seedRoom();
+    await service.routeInbound(ownerAsks({ userId: 'USOMEONE' }));
+    expect(warnOf()).toHaveBeenCalledWith('Slack room message reached nobody on this machine', expect.anything());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('does not wait when the message was delivered here', async () => {
+    await seedRoom();
+    awake = (s) => s === ATLAS;
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({
+        strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [{ sessionName: ATLAS, responseMode: 'optional', dispatched: true }],
+      }),
+    };
+    await service.routeInbound(ownerAsks());
+
+    await jest.advanceTimersByTimeAsync(FALLBACK_MS);
+
+    expect(dispatcher.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(warnOf()).not.toHaveBeenCalledWith('Slack room message reached nobody on this machine', expect.anything());
+  });
+});
+
 describe('handoffForAgent', () => {
   // The orchestrator of a private room routes a message nobody was awake
   // for. Its bot is usually not in that room, so it cannot @ anyone there.
@@ -2163,6 +2373,7 @@ describe('agent identities', () => {
     // who leads content?") still gets 👀 — from a huddle member's bot, since
     // the master bot is not in the private channel (2026-09-19, #steamfun-portal).
     slack.reactions.length = 0;
+    slack.getBotUserId = async () => 'UMASTER';
     const third = await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@UMASTER> 负责内容的Team lead是谁？', ts: '300.3' }));
     expect(third).not.toBeNull();
     expect(third!.mentions).toEqual([]);
@@ -2294,5 +2505,242 @@ describe('ensureAgentChannel', () => {
   it('throws when Slack is not connected', async () => {
     slack.connected = false;
     await expect(service.ensureAgentChannel({ name: 'x', purpose: '', memberSessions: [] })).rejects.toThrow('Slack is not connected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Harness-posted "working on it" (2026-09-30, #pro-ce)
+// ---------------------------------------------------------------------------
+
+describe('harness "working on it" watch', () => {
+  let handle: { delivered: jest.Mock; cancel: jest.Mock };
+
+  beforeEach(() => {
+    handle = { delivered: jest.fn(), cancel: jest.fn() };
+    autoWorking = { watch: jest.fn().mockReturnValue(handle) };
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn(), fail: jest.fn() };
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({
+        strategy: 'huddle-broadcast',
+        dispatched: true,
+        huddleOutcomes: [
+          { sessionName: 'crewly-alpha-sam', responseMode: 'optional', dispatched: true },
+          { sessionName: 'crewly-alpha-leo', responseMode: 'optional', dispatched: false },
+        ],
+      }),
+    };
+  });
+
+  afterEach(() => {
+    autoWorking = null;
+    typing = null;
+  });
+
+  it('an owner\'s un-@ channel message is watched in its thread and reports who it reached', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+
+    await service.routeInbound(inbound({ text: '把律所邮件改成 $299/月', userId: 'UOWNER', ts: '700.1' }));
+
+    expect(autoWorking!.watch).toHaveBeenCalledTimes(1);
+    const [delivery] = autoWorking!.watch.mock.calls[0];
+    expect(delivery).toMatchObject({ slackChannelId: 'C1', threadTs: '700.1', sourceTs: '700.1' });
+    expect(delivery.candidates).toEqual(expect.arrayContaining(['crewly-alpha-sam', 'crewly-alpha-leo']));
+    // Same principal /api/slack/working would use: cosmetic identity without an installed bot.
+    expect(delivery.identityFor('crewly-alpha-sam')).toMatchObject({ displayName: 'Sam' });
+    // Only the recipients the message actually reached.
+    expect(handle.delivered).toHaveBeenCalledWith(['crewly-alpha-sam']);
+  });
+
+  it('a threaded owner reply is watched in that thread', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ text: 'follow-up', userId: 'UOWNER', ts: '701.2', threadTs: '700.1' }));
+    expect(autoWorking!.watch.mock.calls[0][0]).toMatchObject({ threadTs: '700.1', sourceTs: '701.2' });
+  });
+
+  it('a message from someone other than the owner is not watched', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ text: 'hi', userId: 'U-SOMEONE-ELSE', ts: '702.1' }));
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+  });
+
+  it('an agent\'s message (agent-to-agent, any machine) is not watched', async () => {
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(
+      inbound({ text: '@sam can you check', userId: 'UOWNER', ts: '703.1', authorAgentSession: 'mk-atlas', authorDisplayName: 'Atlas' }),
+    );
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+  });
+
+  it('without placeholders wired, nothing is watched', async () => {
+    typing = null;
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    await service.routeInbound(inbound({ text: 'hi', userId: 'UOWNER', ts: '704.1' }));
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+  });
+});
+
+describe('a message that @\'s people, not agents', () => {
+  // 2026-10-01, #course-standardization-team: in a thread Jordan had been
+  // answering, the owner asked a colleague "@Info 这些课堂视频是现在每节课上传的那些吗?".
+  // `<@U…>` of a person resolved to nothing, the message counted as un-@'d,
+  // and the "last speaker must answer" rule handed it to Jordan, who replied.
+  let intake: { intakeWithOutcome: jest.Mock };
+  let watched: { delivered: jest.Mock };
+  const infoOf = () => (service as unknown as { logger: { info: jest.Mock } }).logger.info;
+
+  beforeEach(async () => {
+    intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'none' })) };
+    setTicketIntakeService(intake as unknown as TicketIntakeService);
+    identities = new FakeIdentities();
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    watched = { delivered: jest.fn() };
+    autoWorking = { watch: jest.fn(() => watched) };
+    // Sam spoke last in the thread: the plan the dispatcher would make for a bare follow-up.
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [] }),
+      planHuddleTargets: jest.fn().mockResolvedValue(new Map([['crewly-alpha-sam', 'required']])),
+    };
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    // The thread Sam has been answering.
+    await service.routeInbound(inbound({ text: '<@USAM> 课堂视频整理好了吗', userId: 'UOWNER', ts: '900.1' }));
+    for (const m of [dispatcher.dispatchMessage, dispatcher.planHuddleTargets!, intake.intakeWithOutcome, autoWorking.watch, typing.begin]) m.mockClear();
+    infoOf().mockClear();
+    slack.reactions = [];
+    slack.sent = [];
+  });
+
+  afterEach(() => {
+    setTicketIntakeService(null);
+    typing = null;
+    autoWorking = null;
+    setSlackDirectoryService(null);
+  });
+
+  it('the incident: a thread follow-up that @\'s a person reaches no agent — recorded as context only', async () => {
+    const result = await service.routeInbound(
+      inbound({ text: '<@UINFO> 这些课堂视频是现在每节课上传的那些吗？', userId: 'UOWNER', ts: '900.2', threadTs: '900.1' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.dispatch).toBeNull();
+    expect(result!.mentions).toEqual([]);
+    // Recorded in the thread, so the agents have it as context next time.
+    expect(result!.message.threadId).toBeDefined();
+    expect(result!.message.metadata).toMatchObject({ slackMentionedPeople: ['UINFO'] });
+    expect(chat.messages).toContainEqual(expect.objectContaining({ id: result!.message.id }));
+    // Nobody told, nobody owes a reply.
+    expect(dispatcher!.planHuddleTargets).not.toHaveBeenCalled();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.reactions.filter((r) => r.ts === '900.2')).toEqual([]);
+    expect(typing!.begin).not.toHaveBeenCalled();
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+    expect(intake.intakeWithOutcome).not.toHaveBeenCalled();
+    expect((service as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+    expect(slack.sent).toEqual([]); // no "did you mean"
+    expect(infoOf()).toHaveBeenCalledWith(
+      'Slack team message addressed to people, not agents — recorded, not dispatched',
+      expect.objectContaining({ mentionedUsers: ['UINFO'], threaded: true }),
+    );
+  });
+
+  it('a person and an agent @\'d together: only that agent gets it, and it knows a person was named', async () => {
+    dispatcher!.planHuddleTargets!.mockResolvedValue(new Map([['crewly-alpha-leo', 'required']]));
+
+    const result = await service.routeInbound(
+      inbound({ text: '<@UINFO> <@ULEO> 你们核对一下', userId: 'UOWNER', ts: '900.3', threadTs: '900.1' }),
+    );
+
+    expect(result!.mentions).toEqual(['crewly-alpha-leo']);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    const sent = dispatcher!.dispatchMessage.mock.calls[0][1] as ChatMessageDTO;
+    expect(sent.mentions).toEqual(['crewly-alpha-leo']);
+    expect(sent.metadata).toMatchObject({ slackMentionedPeople: ['UINFO'] });
+  });
+
+  it('no mentions at all: unchanged — the thread\'s last speaker is planned and dispatched', async () => {
+    const result = await service.routeInbound(inbound({ text: '那就这样吧', userId: 'UOWNER', ts: '900.4', threadTs: '900.1' }));
+
+    expect(dispatcher!.planHuddleTargets).toHaveBeenCalledTimes(1);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(result!.message.metadata).not.toHaveProperty('slackMentionedPeople');
+    expect(typing!.begin).toHaveBeenCalledWith(expect.objectContaining({ agentSession: 'crewly-alpha-sam' }), expect.anything(), 'typing', '900.4');
+  });
+
+  it('@here / @channel: unchanged — a room message nobody in particular was asked', async () => {
+    const result = await service.routeInbound(inbound({ text: '<!here> 有人看到这个吗', userId: 'UOWNER', ts: '900.5' }));
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(result!.message.metadata).not.toHaveProperty('slackMentionedPeople');
+  });
+
+  it('a typed @Name of a person who has spoken here is a person: no suggestion hint, no dispatch', async () => {
+    await service.routeInbound(inbound({ text: '收到', userId: 'UINFO', user: { id: 'UINFO', name: 'info', realName: 'Info' } as SlackIncomingMessage['user'], ts: '900.6', threadTs: '900.1' }));
+    dispatcher!.dispatchMessage.mockClear();
+    slack.sent = [];
+
+    const result = await service.routeInbound(inbound({ text: '@Info 这些是每节课上传的吗', userId: 'UOWNER', ts: '900.7', threadTs: '900.1' }));
+
+    expect(result!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('a typed @name that is nobody known still gets the suggestion hint and is dispatched', async () => {
+    await service.routeInbound(inbound({ text: '@lee 帮忙', userId: 'UOWNER', ts: '900.8' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(slack.sent.find((m) => m.threadTs === '900.8')?.text).toContain('@Leo');
+  });
+
+  it('the Crewly master bot is not a person', async () => {
+    slack.getBotUserId = async () => 'UCREWLY';
+    await service.routeInbound(inbound({ text: '<@UCREWLY> 谁在？', userId: 'UOWNER', ts: '900.9' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent on another machine the account directory lists is not a person', async () => {
+    setSlackDirectoryService({
+      list: async () => [
+        { name: 'Atlas', mention: '<@UATLAS>', botUserId: 'UATLAS', agentSession: 'think-tank-atlas', team: 'Think Tank', machine: 'mac', source: 'this-account', inChannel: true, kind: 'agent' },
+      ],
+      rosterLine: async () => '',
+    } as unknown as SlackDirectoryService);
+
+    await service.routeInbound(inbound({ text: '<@UATLAS> 你看下', userId: 'UOWNER', ts: '901.1', threadTs: '900.1' }));
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    const sent = dispatcher!.dispatchMessage.mock.calls[0][1] as ChatMessageDTO;
+    expect(sent.metadata).not.toHaveProperty('slackMentionedPeople');
+  });
+
+  it('a bot the directory knows (another account\'s agent, another vendor) is not a person', async () => {
+    setSlackDirectoryService({
+      list: async () => [
+        { name: 'Other Bot', mention: '<@UBOT>', botUserId: 'UBOT', agentSession: null, team: null, machine: null, source: 'channel', inChannel: true, kind: 'bot' },
+        { name: 'Info', mention: '<@UINFO>', botUserId: null, agentSession: null, team: null, machine: null, source: 'channel', inChannel: true, kind: 'human' },
+      ],
+      rosterLine: async () => '',
+    } as unknown as SlackDirectoryService);
+
+    await service.routeInbound(inbound({ text: '<@UBOT> status?', userId: 'UOWNER', ts: '901.3', threadTs: '900.1' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+
+    const result = await service.routeInbound(inbound({ text: '<@UINFO> 你看下', userId: 'UOWNER', ts: '901.4', threadTs: '900.1' }));
+    expect(result!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent\'s own post that @\'s a person is handled as before', async () => {
+    await service.routeInbound(
+      inbound({ text: '<@UINFO> 请确认', userId: 'UMIA', ts: '901.2', threadTs: '900.1', authorAgentSession: 'remote-team-mia', authorDisplayName: 'Mia' }),
+    );
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
   });
 });

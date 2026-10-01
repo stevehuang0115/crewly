@@ -10,6 +10,7 @@ import type { SlackNotification, SlackOutgoingMessage } from '../../../types/sla
 import type { Team } from '../../../types/index.js';
 import { LoggerService } from '../../core/logger.service.js';
 import type { OwnerReceiptService, ReceiptSender } from './owner-receipt.service.js';
+import { getTeamLeads } from '../../../utils/team.utils.js';
 
 /** The slice of SlackService the sender uses. */
 export interface ReceiptSlackApi {
@@ -47,7 +48,7 @@ export function createSlackOwnerSender(getSlack: () => ReceiptSlackApi | null): 
         });
       }
     }
-    await slack.sendNotification({ type: 'daily_summary', title: 'Crewly 小票', message: text, urgency: 'low', timestamp: new Date().toISOString() });
+    await slack.sendNotification({ type: 'daily_summary', title: 'Crewly receipt', message: text, urgency: 'low', timestamp: new Date().toISOString() });
     return true;
   };
 }
@@ -83,9 +84,10 @@ export function agentNameIndexOf(teams: readonly Team[]): Map<string, string> {
 
 /**
  * team name → team lead's display name, from the team list (Ava's reference:
- * `CE（Owen）`). `leaderIds[0]` when set, else the deprecated `leaderId`; a
- * team with neither (not hierarchical, or no leader assigned) is absent from
- * the index, so the receipt falls back to `*<team>*` with no parenthetical.
+ * `CE（Owen）`). The first lead by the team-lead rule (`utils/team.utils`:
+ * explicit `leaderIds`, else a `team-leader` / `tech-lead` member); a team
+ * with no lead is absent from the index, so the receipt falls back to
+ * `*<team>*` with no parenthetical.
  *
  * @param teams - Every team
  * @returns Index
@@ -93,9 +95,7 @@ export function agentNameIndexOf(teams: readonly Team[]): Map<string, string> {
 export function teamLeadIndexOf(teams: readonly Team[]): Map<string, string> {
   const index = new Map<string, string>();
   for (const team of teams) {
-    const leaderId = team.leaderIds?.[0] ?? team.leaderId;
-    if (!leaderId) continue;
-    const lead = (team.members ?? []).find((m) => m.id === leaderId);
+    const lead = getTeamLeads(team)[0];
     if (lead) index.set(team.name, lead.name);
   }
   return index;

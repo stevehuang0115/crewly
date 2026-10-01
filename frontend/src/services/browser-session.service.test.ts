@@ -5,7 +5,7 @@
  */
 
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { fetchBrowserSessions, frameUrl, stopBrowserSession } from './browser-session.service';
+import { fetchBrowserSessions, frameUrl, stopBrowserSession, sendBrowserInput } from './browser-session.service';
 
 const mockFetch = vi.fn();
 global.fetch = mockFetch as unknown as typeof fetch;
@@ -77,5 +77,36 @@ describe('stopBrowserSession', () => {
 
     mockFetch.mockRejectedValue(new Error('offline'));
     await expect(stopBrowserSession('pia')).resolves.toBe(false);
+  });
+});
+
+describe('sendBrowserInput', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('posts the input to the session and reports the fresh frame', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ success: true, data: { frame: { capturedAt: 77 } } }) });
+
+    await expect(sendBrowserInput('pia', { kind: 'key', key: 'Enter' })).resolves.toEqual({ ok: true, frameAt: 77 });
+    expect(mockFetch).toHaveBeenCalledWith('/api/browser/sessions/pia/input', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind: 'key', key: 'Enter' }),
+    });
+  });
+
+  it('passes the backend reason through on a refusal', async () => {
+    mockFetch.mockResolvedValue({ ok: false, status: 409, json: async () => ({ error: 'Take control of this browser first.' }) });
+    await expect(sendBrowserInput('pia', { kind: 'back' })).resolves.toEqual({
+      ok: false,
+      error: 'Take control of this browser first.',
+    });
+  });
+
+  it('never throws when offline', async () => {
+    mockFetch.mockImplementation(async () => {
+      throw new Error('offline');
+    });
+    const result = await sendBrowserInput('pia', { kind: 'back' });
+    expect(result).toEqual({ ok: false, error: 'offline' });
   });
 });

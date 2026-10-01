@@ -305,6 +305,45 @@ describe('ChatV2DispatcherService', () => {
       expect(plan.has('atlas')).toBe(false);
     });
 
+    describe('a message that @\'s people (2026-10-01, #course-standardization-team)', () => {
+      // The owner asked a colleague "@Info 这些课堂视频是…?" in a thread Jordan
+      // had been answering; Jordan, as last speaker, replied instead.
+      const toPeople = (mentions: string[] = []) =>
+        ({
+          id: 'm1', channelId: 'h1', senderType: 'user', senderId: 'owner', content: '<@UINFO> x', mentions,
+          metadata: { slackMentionedPeople: ['UINFO'] },
+        }) as never;
+
+      it('plans and delivers to nobody when only people were @\'d, even with a last speaker in the thread', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({
+          members: ['jordan', 'sam'],
+          participants: ['jordan', 'sam'],
+          lastSpeaker: 'jordan',
+          leader: 'sam',
+        });
+        const room = { awakeHere: ['jordan', 'sam'], awakeElsewhere: false, wakeWhenAllAsleep: null };
+
+        const plan = await dispatcher.planHuddleTargets(channel, toPeople(), { threadId: 't1', room });
+        const result = await dispatcher.dispatchMessage(channel, toPeople(), { threadId: 't1', room });
+
+        expect(plan.size).toBe(0);
+        expect(delivered).toEqual([]);
+        expect(result.dispatched).toBe(false);
+      });
+
+      it('reaches only the agents @\'d alongside the people, not the rest of the thread', async () => {
+        const { dispatcher, channel } = huddleSetup({
+          members: ['jordan', 'sam', 'ella'],
+          participants: ['jordan', 'ella'],
+          lastSpeaker: 'jordan',
+        });
+
+        const plan = await dispatcher.planHuddleTargets(channel, toPeople(['sam']), { threadId: 't1' });
+
+        expect([...plan]).toEqual([['sam', 'required']]);
+      });
+    });
+
     it('delivers nothing when planning', async () => {
       const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
       await dispatcher.planHuddleTargets(channel, msg());
@@ -466,10 +505,28 @@ describe('ChatV2DispatcherService', () => {
       expect(prompt).toContain('--channel huddle-1');
       expect(prompt).toContain('--thread msg-root');
       expect(prompt).not.toContain('reply-chat');
+      // The command carries the recipient's identity: a Codex agent's shell
+      // inherited the orchestrator's CREWLY_SESSION_NAME, so its reply-channel
+      // was refused and the answer never reached Slack (2026-09-30).
+      expect(prompt).toContain('CREWLY_SESSION_NAME=sess-a bash config/skills/agent/core/reply-channel/execute.sh --channel huddle-1 --thread msg-root');
+      expect(prompt).toContain('不要删');
       // Multi-agent threads must converge (owner, 2026-09-19): two rounds
       // each, the team leader writes the conclusion, then silence.
       expect(prompt).toContain('最多发言两轮');
       expect(prompt).toContain('「结论」');
+    });
+
+    it('leaves the identity prefix out when the session name is not shell-safe', () => {
+      const prompt = defaultFormatPrompt({
+        channelId: 'huddle-1',
+        channelName: '#team-alpha',
+        agentSession: 'bad; rm -rf /',
+        senderId: 'U1',
+        content: 'hi',
+        replyVia: 'reply-channel',
+      });
+      expect(prompt).not.toContain('CREWLY_SESSION_NAME=');
+      expect(prompt).toContain('bash config/skills/agent/core/reply-channel/execute.sh --channel huddle-1');
     });
 
     it('omits --thread when no threadId and keeps the optional wording for non-mentioned members', () => {
@@ -1359,5 +1416,58 @@ describe('ChatV2DispatcherService', () => {
         expect(calls).toHaveLength(0);
       });
     });
+  });
+});
+
+describe('owner-message guarantee hooks (specs/2026-09-30-owner-message-guarantee.md)', () => {
+  it('every delivered prompt starts its reply hint with the single `reply` command', () => {
+    const prompt = defaultFormatPrompt({
+      channelId: 'chan-1',
+      channelName: 'Chat with Sam',
+      agentSession: 'crewly-product-sam-dd2b46f7',
+      senderId: 'steve',
+      content: 'hi',
+    });
+    expect(prompt).toContain('CREWLY_SESSION_NAME=crewly-product-sam-dd2b46f7 bash config/skills/agent/core/reply/execute.sh "<你的回复>"');
+    // The detailed legacy instruction is still there.
+    expect(prompt).toContain('reply-chat');
+  });
+
+  it('the orchestrator routing turn gets no reply hint', () => {
+    const prompt = defaultFormatPrompt({
+      channelId: 'room-1',
+      channelName: 'room',
+      agentSession: 'crewly-orc',
+      senderId: 'steve',
+      content: 'hi',
+      replyVia: 'reply-channel',
+      wakeRole: 'orchestrator',
+    });
+    expect(prompt).not.toContain('core/reply/execute.sh');
+  });
+
+  it('tells onDispatched about every user dispatch, with its outcome', async () => {
+    const { sink } = makeSink({ success: true });
+    const seen: unknown[] = [];
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      onDispatched: (channel, message, result) => {
+        seen.push([channel.id, message.id, result.dispatched, result.strategy]);
+      },
+    });
+    await dispatcher.dispatchMessage(makeChannel(), makeMessage());
+    await dispatcher.dispatchMessage(makeChannel(), makeMessage({ senderType: 'agent' }));
+    expect(seen).toEqual([['chan-1', 'msg-1', true, 'dm']]);
+  });
+
+  it('a throwing onDispatched never breaks delivery', async () => {
+    const { sink } = makeSink({ success: true });
+    const dispatcher = new ChatV2DispatcherService({
+      agentSink: sink,
+      onDispatched: () => {
+        throw new Error('boom');
+      },
+    });
+    await expect(dispatcher.dispatchMessage(makeChannel(), makeMessage())).resolves.toEqual(expect.objectContaining({ dispatched: true }));
   });
 });

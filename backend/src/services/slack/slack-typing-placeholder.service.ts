@@ -42,6 +42,7 @@ export interface TypingSlackApi {
     iconEmoji?: string;
     iconUrl?: string;
     skipChatV2Mirror?: boolean;
+    notAnAnswer?: boolean;
   }): Promise<string>;
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: undefined, botToken?: string): Promise<void>;
   deleteMessage?(channelId: string, messageTs: string, botToken?: string): Promise<void>;
@@ -132,6 +133,12 @@ export class SlackTypingPlaceholderService {
   private readonly locks = new Map<string, Promise<unknown>>();
   /** Agents with a turn-end second look already scheduled. */
   private readonly recheckScheduled = new Set<string>();
+  /** Told when a thread gets a placeholder or an answer (see {@link onThreadActivity}). */
+  private readonly threadListeners = new Set<(slackChannelId: string, threadTs?: string) => void>();
+  /** Told when a thread got its answer (see {@link onThreadAnswered}). */
+  private readonly answeredListeners = new Set<(slackChannelId: string, threadTs?: string) => void>();
+  /** Told when a placeholder was settled without a reply (see {@link onThreadSettled}). */
+  private readonly settledListeners = new Set<(slackChannelId: string, threadTs?: string) => void>();
 
   /**
    * @param deps - Slack slice plus optional timer overrides for tests
@@ -157,6 +164,7 @@ export class SlackTypingPlaceholderService {
     sourceTs?: string,
   ): Promise<TypingPlaceholder | null> {
     if (!this.deps.slack.isConnected()) return null;
+    this.notifyThread(key);
     const k = keyOf(key);
     const existing = this.pending.get(k);
     if (existing) {
@@ -180,6 +188,75 @@ export class SlackTypingPlaceholderService {
     }).finally(() => this.inFlight.delete(k));
     this.inFlight.set(k, task);
     return task;
+  }
+
+  /**
+   * Be told whenever a thread gets a placeholder (posted by anyone — the
+   * agent's `--working`, the router, the harness) or an answer. The
+   * harness's own "working on it" watch uses this to stand down.
+   *
+   * @param listener - Called with the Slack channel and thread
+   * @returns Unsubscribe function
+   */
+  onThreadActivity(listener: (slackChannelId: string, threadTs?: string) => void): () => void {
+    this.threadListeners.add(listener);
+    return () => {
+      this.threadListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Be told when a thread got its answer: a placeholder was edited into the
+   * reply (or replaced by it), or taken down because the agent answered with
+   * a file. An interim note (the placeholder comes back) does not count.
+   *
+   * @param listener - Called with the Slack channel and thread
+   * @returns Unsubscribe function
+   */
+  onThreadAnswered(listener: (slackChannelId: string, threadTs?: string) => void): () => void {
+    this.answeredListeners.add(listener);
+    return () => {
+      this.answeredListeners.delete(listener);
+    };
+  }
+
+  /**
+   * Be told when an agent ended its turn without answering and its
+   * placeholder was taken down (the owner's message gets ✅: read, no reply
+   * needed).
+   *
+   * @param listener - Called with the Slack channel and thread
+   * @returns Unsubscribe function
+   */
+  onThreadSettled(listener: (slackChannelId: string, threadTs?: string) => void): () => void {
+    this.settledListeners.add(listener);
+    return () => {
+      this.settledListeners.delete(listener);
+    };
+  }
+
+  private notifyListeners(
+    listeners: Set<(slackChannelId: string, threadTs?: string) => void>,
+    slackChannelId: string,
+    threadTs?: string,
+  ): void {
+    for (const listener of listeners) {
+      try {
+        listener(slackChannelId, threadTs);
+      } catch (err) {
+        this.logger.debug('Thread listener threw', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+  }
+
+  private notifyThread(key: TypingKeyParts): void {
+    for (const listener of this.threadListeners) {
+      try {
+        listener(key.slackChannelId, key.threadTs);
+      } catch (err) {
+        this.logger.debug('Thread activity listener threw', { error: err instanceof Error ? err.message : String(err) });
+      }
+    }
   }
 
   /**
@@ -262,6 +339,7 @@ export class SlackTypingPlaceholderService {
         ...(key.threadTs ? { threadTs: key.threadTs } : {}),
         ...principalOf(identity),
         skipChatV2Mirror: true,
+        notAnAnswer: true,
       });
       const placeholder: TypingPlaceholder = {
         slackChannelId: key.slackChannelId,
@@ -409,6 +487,7 @@ export class SlackTypingPlaceholderService {
     opts: { reopen?: TypingPhase } = {},
   ): Promise<'replaced' | 'edited' | 'posted'> {
     const k = keyOf(key);
+    this.notifyThread(key);
     await this.inFlight.get(k);
     return this.withLock(k, async () => {
       const [oldest, ...others] = this.takeAll(key);
@@ -455,6 +534,7 @@ export class SlackTypingPlaceholderService {
         this.logger.info('Answer covered several placeholders in one thread — extra ones taken down', { key: k, count: others.length });
       }
       if (opts.reopen) await this.post(k, key, identity, opts.reopen);
+      else this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
       return outcome;
     });
   }
@@ -468,10 +548,12 @@ export class SlackTypingPlaceholderService {
    */
   async dropThread(key: TypingKeyParts): Promise<number> {
     const k = keyOf(key);
+    this.notifyThread(key);
     await this.inFlight.get(k);
     return this.withLock(k, async () => {
       const all = this.takeAll(key);
       for (const p of all) await this.remove(p);
+      this.notifyListeners(this.answeredListeners, key.slackChannelId, key.threadTs);
       return all.length;
     });
   }
@@ -485,6 +567,22 @@ export class SlackTypingPlaceholderService {
   owes(key: TypingKeyParts): boolean {
     const k = keyOf(key);
     return this.pending.has(k) || this.expired.has(k) || this.inFlight.has(k);
+  }
+
+  /**
+   * Whether any agent's placeholder (pending, being posted, or timed out into
+   * "still working") shows in this Slack thread.
+   *
+   * @param slackChannelId - Slack channel or DM
+   * @param threadTs - Thread root
+   * @returns True when a "working on it" is visible there
+   */
+  owesThread(slackChannelId: string, threadTs: string): boolean {
+    const suffix = `:${slackChannelId}:${threadTs}`;
+    for (const k of this.pending.keys()) if (k.endsWith(suffix)) return true;
+    for (const k of this.inFlight.keys()) if (k.endsWith(suffix)) return true;
+    for (const k of this.expired.keys()) if (k.endsWith(suffix)) return true;
+    return false;
   }
 
   /**
@@ -567,6 +665,7 @@ export class SlackTypingPlaceholderService {
       } catch (err) {
         this.logger.debug('Could not take down a settled placeholder', { error: err instanceof Error ? err.message : String(err) });
       }
+      this.notifyListeners(this.settledListeners, placeholder.slackChannelId, placeholder.threadTs);
       // Leave a trace on the person's message: read and handled, no reply
       // needed. With the placeholder gone and no reaction, an answer to the
       // agent's own question looked ignored (2026-09-25, Ella / "Muse").

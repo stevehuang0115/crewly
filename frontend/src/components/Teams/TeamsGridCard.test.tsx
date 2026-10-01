@@ -13,7 +13,8 @@ import { TeamsGridCard } from './TeamsGridCard';
 import type { Team } from '@/types';
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
+vi.mock('lucide-react', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('lucide-react')>()),
   Users: () => <svg data-testid="users-icon" />,
   FolderOpen: () => <svg data-testid="folder-icon" />,
   Play: () => <svg data-testid="play-icon" />,
@@ -263,6 +264,8 @@ describe('TeamsGridCard', () => {
     it('renders a chip per member parked on a login screen and does not trigger the card click', () => {
       const team = createTeam();
       team.members[1].loginRequired = { url: 'https://auth.openai.com/device', code: 'FBVZ-MJHKK', detectedAt: '2026-09-18T10:00:00.000Z' };
+      // A Codex device code on the agent's own screen stays visible in the panel.
+      team.members[1].runtimeType = 'codex-cli';
       render(<TeamsGridCard {...defaultProps} team={team} />);
 
       const row = screen.getByTestId('team-sign-in-needed');

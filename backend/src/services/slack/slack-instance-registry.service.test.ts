@@ -174,6 +174,16 @@ describe('payload', () => {
     });
   });
 
+  it('names each team\'s leader by the shared team-lead rule (tech-lead, or an explicit lead)', async () => {
+    teams = [
+      team({ members: [member('Kai', 'developer'), member('Owen', 'tech-lead')] }),
+      team({ id: 'team-beta', name: 'Beta', leaderIds: ['m-zed'], members: [member('Lee', 'team-leader'), member('Zed', 'developer')] }),
+    ];
+    const payload = await makeService().buildPayload();
+    const leaders = Object.fromEntries(payload.teams.filter((t) => t.teamId.startsWith('team-')).map((t) => [t.teamId, t.leader]));
+    expect(leaders).toEqual({ 'team-alpha': 'alpha-owen-1234', 'team-beta': 'alpha-zed-1234' });
+  });
+
   it('reports what the machine handles (talk_message once the Cloud Talk handler runs)', async () => {
     let caps: string[] = [];
     const service = new SlackInstanceRegistryService({

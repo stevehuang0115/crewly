@@ -67,7 +67,7 @@ export const Settings: React.FC = () => {
 
   const tabs: TabConfig[] = [
     { id: 'general', label: 'General', icon: SettingsIcon },
-    { id: 'harness', label: 'Harness', icon: Bot },
+    { id: 'harness', label: 'Runtimes', icon: Bot },
     { id: 'roles', label: 'Roles', icon: User },
     { id: 'skills', label: 'Skills', icon: Wrench },
     { id: 'integrations', label: 'Integrations', icon: Link2 },

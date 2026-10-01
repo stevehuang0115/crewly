@@ -3935,4 +3935,158 @@ describe('TaskPoolService', () => {
       await expect(service.blockItem(wi.id, { agentId: AGENT })).rejects.toThrow(/Invalid status transition/);
     });
   });
+
+  // -----------------------------------------------------------------------
+  // 2026-09-29 (WI f34f09b0, ticket CE-19): claim → batch → grace revoke →
+  // complete 409 → re-claim loop
+  // -----------------------------------------------------------------------
+
+  describe('claim/complete loop (WI f34f09b0, CE-19)', () => {
+    const VERA = 'ce-vera-d8f94e9c';
+    const OWEN = 'ce-owen-ad0320ab';
+    const veraActor = { role: 'agent' as const, session: VERA, via: 'POST /task-pool/complete' };
+
+    function makeProvider(health: Map<string, AgentHealth>): ReconcilerDataProvider {
+      return {
+        getActiveWorkItems: async () =>
+          (await service.getAllItems()).filter((wi) => !TERMINAL_WORK_ITEM_STATUSES.has(wi.status)),
+        getWorkItemsForRequest: async () => [],
+        getActiveRequests: async () => [],
+        getActiveClaims: () => service.getActiveClaims(),
+        getAgentHealthMap: async () => health,
+        applyCorrection: async (c) => {
+          if (c.entityType === 'work_item') await service.updateItemStatus(c.entityId, c.newState as WorkItemStatus, 'system');
+        },
+        releaseToPool: (id, reason) => service.releaseBack(id, reason),
+        requeueWorkItem: (id) => service.releaseBack(id, 'reconciler_requeue'),
+        markClaimExpiring: (id) => service.markClaimExpiring(id),
+        revokeClaimAndRelease: (id, reason) => service.revokeAndRelease(id, reason),
+        renewClaim: async (id) => {
+          await service.renewClaim(id);
+        },
+      };
+    }
+
+    /** Vera's session is up; `activeAgoMs` = when she last produced output (undefined = never seen). */
+    const veraHealth = (activeAgoMs?: number): Map<string, AgentHealth> =>
+      new Map([[VERA, {
+        sessionName: VERA,
+        status: 'active',
+        ...(activeAgoMs === undefined ? {} : { lastActivityAt: new Date(Date.now() - activeAgoMs).toISOString() }),
+      }]]);
+
+    const ticketItem = (ticket: string) =>
+      makeWorkItem({
+        title: `ticket ${ticket}`,
+        target: VERA,
+        metadata: { reviewer: OWEN, projectTicket: { projectPath: '/p/ce-core', id: ticket } },
+      });
+
+    /** Pool as it was on 2026-09-29: CE-8, CE-3, CE-19 and a plain item, all for Vera. */
+    async function seed(): Promise<{ ce19: string; others: string[] }> {
+      const items = [ticketItem('CE-8'), ticketItem('CE-3'), ticketItem('CE-19'), makeWorkItem({ title: 'refresh answer', target: VERA })];
+      for (const wi of items) await service.addToPool(wi);
+      return { ce19: items[2].id, others: [items[0].id, items[1].id, items[3].id] };
+    }
+
+    /** Move a claim's lease past expiry + grace (13+ min after the claim). */
+    async function ageLease(workItemId: string): Promise<string> {
+      const claim = (await service.getActiveClaims()).find((c) => c.workItemId === workItemId)!;
+      await storage.updateClaim(claim.id, (c) => {
+        c.leaseExpiresAt = new Date(Date.now() - 200_000).toISOString();
+      });
+      return claim.id;
+    }
+
+    it('reproduces the loop: quiet holder → grace revoke → queued; her own completion now lands and nothing re-claims it', async () => {
+      const { ce19 } = await seed();
+      expect((await service.claimSpecificItem(VERA, ce19))?.workItem.id).toBe(ce19);
+      await ageLease(ce19);
+
+      // No activity seen → the lease runs out → expiring → revoked, as before.
+      const reconciler = new ReconcilerService(makeProvider(veraHealth()));
+      await reconciler.runFast();
+      const second = await reconciler.runFast();
+      expect(second.claimsRevoked).toBe(1);
+      expect((await service.findWorkItem(ce19))?.status).toBe('queued');
+
+      // 23:55 — Vera finishes it and completes. This was a 409.
+      await service.completeItem(ce19, { summary: '485 entry points live (3237ddf)' }, veraActor);
+      const done = await service.findWorkItem(ce19);
+      expect(done?.status).toBe('done_by_worker');
+      expect(typeof done?.metadata?.completedWhileQueuedAt).toBe('string');
+
+      // 23:55:55 — AutoClaim used to re-claim the finished item for idle Vera.
+      expect(await service.claimSpecificItem(VERA, ce19)).toBeNull();
+      expect((await service.getActiveClaims()).filter((c) => c.agentId === VERA)).toHaveLength(0);
+    });
+
+    it('a holder that is visibly working keeps the claim across the old 13-minute limit', async () => {
+      const { ce19 } = await seed();
+      await service.claimSpecificItem(VERA, ce19);
+      const claimId = await ageLease(ce19);
+
+      const reconciler = new ReconcilerService(makeProvider(veraHealth(20_000)));
+      for (let tick = 0; tick < 3; tick++) {
+        const result = await reconciler.runFast();
+        expect(result.claimsRevoked).toBe(0);
+      }
+
+      const claim = await service.getClaimService().getClaimById(claimId);
+      expect(claim?.status).toBe('active');
+      expect(new Date(claim!.leaseExpiresAt).getTime()).toBeGreaterThan(Date.now());
+      expect((await service.findWorkItem(ce19))?.status).toBe('running');
+
+      await service.completeItem(ce19, { summary: 'done' }, veraActor);
+      expect((await service.findWorkItem(ce19))?.status).toBe('done_by_worker');
+      expect((await service.getClaimService().getClaimById(claimId))?.status).toBe('released');
+    });
+
+    it('accepts completion of a batched item its target worked without claiming it', async () => {
+      const { ce19, others } = await seed();
+      await service.claimSpecificItem(VERA, ce19);
+      // The batch reminder listed all four; she did CE-8 too while holding CE-19.
+      await service.completeItem(others[0], { summary: 'feed tab step 1' }, veraActor);
+      expect((await service.findWorkItem(others[0]))?.status).toBe('done_by_worker');
+      // Her real claim is untouched.
+      expect((await service.getClaimService().getActiveClaimByAgent(VERA))?.workItemId).toBe(ce19);
+    });
+
+    it('still refuses a completion of Vera\'s queued item from a different agent (409)', async () => {
+      const { ce19 } = await seed();
+      await expect(
+        service.completeItem(ce19, { summary: 'not mine' }, { role: 'agent', session: 'someone-else', via: 'test' }),
+      ).rejects.toThrow(/Invalid status transition/);
+      await expect(
+        service.completeItem(ce19, { summary: 'no identity' }, 'agent'),
+      ).rejects.toThrow(/Invalid status transition/);
+      expect((await service.findWorkItem(ce19))?.status).toBe('queued');
+    });
+
+    it('a broadcast item released after a revoke is completable by its last claimer only', async () => {
+      const wi = makeWorkItem({ title: 'broadcast', metadata: { reviewer: OWEN } });
+      await service.addToPool(wi);
+      await service.claimSpecificItem(VERA, wi.id);
+      await ageLease(wi.id);
+      const reconciler = new ReconcilerService(makeProvider(veraHealth()));
+      await reconciler.runFast();
+      await reconciler.runFast();
+      const released = await service.findWorkItem(wi.id);
+      expect(released?.status).toBe('queued');
+      expect(released?.target).toBeUndefined();
+
+      await expect(
+        service.completeItem(wi.id, { summary: 'x' }, { role: 'agent', session: 'someone-else', via: 'test' }),
+      ).rejects.toThrow(/Invalid status transition/);
+      await service.completeItem(wi.id, { summary: 'done' }, veraActor);
+      expect((await service.findWorkItem(wi.id))?.status).toBe('done_by_worker');
+    });
+
+    it('a completion racing a re-claim by the same agent completes the claimed item', async () => {
+      const { ce19 } = await seed();
+      await service.claimSpecificItem(VERA, ce19);
+      await service.completeItem(ce19, { summary: 'done' }, veraActor);
+      expect((await service.findWorkItem(ce19))?.status).toBe('done_by_worker');
+    });
+  });
 });

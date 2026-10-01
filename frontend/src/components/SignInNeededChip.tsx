@@ -3,9 +3,15 @@
  *
  * A small warning chip rendered next to an agent (orchestrator status
  * banner, team member rows, team cards) whose runtime is parked on an
- * OAuth sign-in screen. Clicking it opens a compact panel with the login
- * URL as a link and the device code with a copy button, so the owner can
- * finish the sign-in without opening the terminal.
+ * sign-in screen. Clicking it opens a compact panel.
+ *
+ * For a runtime Crewly can sign in itself (Claude Code, Codex) the panel
+ * starts the same brokered login the Slack re-login uses: a "Sign in from
+ * here" button, then the sign-in link, the one-time code (Codex) or a field
+ * to paste the code the page shows (Claude). It works from a phone on the
+ * LAN dashboard and never needs a terminal. When the backend already runs a
+ * login for that runtime (the owner replied `login` on Slack) the panel
+ * shows that same session. Other runtimes keep the captured URL / code.
  *
  * @module components/SignInNeededChip
  */
@@ -18,6 +24,24 @@ import { SIGN_IN_CONSTANTS } from '../constants/sign-in.constants';
 import { CLIPBOARD_CONSTANTS } from '../constants/clipboard.constants';
 import { useCopyToClipboard } from '../hooks/useCopyToClipboard';
 import { selectElementText } from '../utils/clipboard';
+import { BrokerLoginPanel } from './Harness/BrokerLoginPanel';
+import type { BrokerLoginMethodId, HarnessId } from '../types/harness.types';
+
+/** Runtimes the backend can sign in itself, with their broker method and button label. */
+const BROKER_LOGINS: Readonly<Record<string, { harnessId: HarnessId; method: BrokerLoginMethodId; label: string }>> = {
+  'claude-code': { harnessId: 'claude-code', method: 'subscription', label: 'Sign in to Claude Code from here' },
+  'codex-cli': { harnessId: 'codex-cli', method: 'device', label: 'Sign in to Codex from here' },
+};
+
+/**
+ * The broker login for a runtime, if Crewly can run one.
+ *
+ * @param runtimeType - Runtime type of the agent
+ * @returns Harness, method and label, or null
+ */
+export function brokerLoginFor(runtimeType: string | null | undefined): { harnessId: HarnessId; method: BrokerLoginMethodId; label: string } | null {
+  return runtimeType ? BROKER_LOGINS[runtimeType] ?? null : null;
+}
 
 export interface SignInNeededChipProps {
   /** The pending sign-in to surface */
@@ -28,6 +52,8 @@ export interface SignInNeededChipProps {
   className?: string;
   /** Where the panel opens relative to the chip */
   align?: 'left' | 'right';
+  /** Runtime of the agent (enables the in-place sign-in for Claude Code / Codex) */
+  runtimeType?: string | null;
 }
 
 /**
@@ -41,7 +67,13 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
   agentLabel,
   className = '',
   align = 'left',
+  runtimeType,
 }) => {
+  const broker = brokerLoginFor(runtimeType ?? (loginRequired as { runtimeType?: string | null }).runtimeType);
+  // A device code on the agent's own screen (Codex) completes by itself, so
+  // it stays visible; Claude's own screen wants a code typed into the
+  // agent's terminal, which a phone cannot do — only the brokered sign-in.
+  const showCaptured = !broker || (broker.harnessId === 'codex-cli' && Boolean(loginRequired.code));
   const [open, setOpen] = useState(false);
   const { status: copyStatus, copy } = useCopyToClipboard(SIGN_IN_CONSTANTS.COPIED_FEEDBACK_MS);
   const copied = copyStatus === 'copied';
@@ -101,6 +133,8 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
           <div className="font-semibold text-amber-300 mb-1">
             {agentLabel ? `${agentLabel} needs you to sign in` : 'Sign-in needed'}
           </div>
+          {showCaptured && (
+          <>
           <p className="text-text-secondary-dark text-xs mb-2">
             The agent&apos;s runtime is waiting on an account login. Open the link and enter the code.
           </p>
@@ -148,6 +182,19 @@ export const SignInNeededChip: React.FC<SignInNeededChipProps> = ({
             </div>
           ) : (
             <div className="text-xs text-text-secondary-dark">No device code — the login completes in the browser.</div>
+          )}
+          </>
+          )}
+
+          {broker && (
+            <div data-testid="sign-in-broker" className={showCaptured ? 'mt-3 pt-3 border-t border-border-dark' : ''}>
+              <p className="text-text-secondary-dark text-xs mb-2">
+                {showCaptured
+                  ? 'Or let Crewly run the sign-in for you:'
+                  : "The agent's runtime is signed out. Sign in here (your phone is fine) and the waiting agents pick up where they left off."}
+              </p>
+              <BrokerLoginPanel harnessId={broker.harnessId} method={broker.method} label={broker.label} cancelOnUnmount={false} />
+            </div>
           )}
 
           {detectedLabel && (

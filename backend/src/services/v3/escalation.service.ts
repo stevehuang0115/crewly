@@ -25,7 +25,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { PolicyEnforcementService, type EscalationResult } from '../policy/policy-enforcement.service.js';
 import { TaskPoolService } from '../task-pool/task-pool.service.js';
 import { TriggerEngine } from './trigger-engine.service.js';
-import type { Trigger } from '../../types/v2/trigger.types.js';
+import type { Trigger, TriggerFireOutcome } from '../../types/v2/trigger.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { ensureDir, safeReadJson } from '../../utils/file-io.utils.js';
 import {
@@ -121,7 +121,7 @@ export class EscalationService {
    * otherwise wrap the previous wrapper as its "originalHandler",
    * stacking closures forever.
    */
-  private installedHandler: ((trigger: Trigger, action: unknown) => Promise<void>) | null = null;
+  private installedHandler: ((trigger: Trigger, action: unknown) => Promise<void | TriggerFireOutcome>) | null = null;
 
   /**
    * Creates a new EscalationService.
@@ -192,7 +192,7 @@ export class EscalationService {
       // again would build a delegation chain that grows by one closure per
       // restart. Detect that and reuse the prior install instead of stacking.
       const currentHandler = triggerEngine['actionHandler'] as
-        | ((trigger: Trigger, action: unknown) => Promise<void>)
+        | ((trigger: Trigger, action: unknown) => Promise<void | TriggerFireOutcome>)
         | undefined;
       if (currentHandler !== this.installedHandler) {
         const originalHandler = currentHandler;
@@ -201,10 +201,12 @@ export class EscalationService {
             await this.evaluate();
             return;
           }
-          // Delegate to original handler for other triggers
+          // Delegate to original handler for other triggers, passing its
+          // fire outcome through so the engine can record it.
           if (originalHandler) {
-            await originalHandler(trigger, action);
+            return originalHandler(trigger, action);
           }
+          return undefined;
         };
         triggerEngine.setActionHandler(this.installedHandler);
       }

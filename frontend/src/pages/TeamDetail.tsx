@@ -524,6 +524,31 @@ export const TeamDetail: React.FC = () => {
     }
   };
 
+  /**
+   * Make a member the team lead (POST /api/teams/:id/lead). Works on any
+   * team — no hierarchical mode needed.
+   *
+   * @param memberId - Member to make lead
+   */
+  const handleMakeLead = async (memberId: string) => {
+    try {
+      const response = await fetch(`/api/teams/${id}/lead`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...DASHBOARD_CALLER_HEADERS },
+        body: JSON.stringify({ memberId }),
+      });
+      const result = await response.json().catch(() => ({}));
+      if (response.ok) {
+        fetchTeamData();
+      } else {
+        showError(result.error || 'Failed to change the team lead');
+      }
+    } catch (error) {
+      console.error('Error changing team lead:', error);
+      showError('Failed to change the team lead');
+    }
+  };
+
   const handleStopMember = async (memberId: string) => {
     try {
       // Special handling for orchestrator team
@@ -658,6 +683,7 @@ export const TeamDetail: React.FC = () => {
         onViewTerminal={handleViewMemberTerminal}
         onViewAgent={handleViewAgent}
         isStartingTeam={startTeamLoading}
+        onMakeLead={handleMakeLead}
       />
 
       {/* Mission / OKR + Team Knowledge (norms & SOPs in the wiki) */}

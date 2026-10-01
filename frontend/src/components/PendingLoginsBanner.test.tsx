@@ -72,6 +72,17 @@ describe('PendingLoginsBanner', () => {
     fireEvent.click(chips[1]);
     expect(screen.getByTestId('sign-in-code')).toHaveTextContent('ABCD-EFGH');
     expect(screen.getByTestId('sign-in-url')).toHaveAttribute('href', orc.url);
+    // Codex can also be signed in from here, without the agent's terminal.
+    expect(screen.getByTestId('sign-in-broker')).toBeInTheDocument();
+  });
+
+  it('a Claude agent flagged with no URL (the Air, 2026-09-30) gets a tappable in-place sign-in, not "check the terminal"', () => {
+    const air = { ...orc, runtimeType: 'claude-code', url: null, code: null };
+    vi.mocked(usePendingLogins).mockReturnValue({ pending: [air], isLoading: false, refresh: vi.fn() });
+    render(<PendingLoginsBanner />);
+    fireEvent.click(screen.getByRole('button', { name: /sign-in needed/i }));
+    expect(screen.getByTestId('login-start')).toHaveTextContent('Sign in to Claude Code from here');
+    expect(screen.queryByText(/check the agent/i)).not.toBeInTheDocument();
   });
 
   it('uses singular wording for one pending session', () => {

@@ -19,6 +19,19 @@ import { getSessionBackendSync } from '../session/index.js';
 import { CronTaskService } from '../workflow/cron-task.service.js';
 import { getMemoryStats } from '../core/system-health.util.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
+import type { WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+
+/**
+ * WorkItem statuses that mean "work is waiting for this agent" (not yet
+ * running): an agent targeted by one is kept alive by the idle check. A
+ * `running` item is left to the working-status check — an agent idle for
+ * the whole timeout on a running item is not held up forever.
+ */
+export const PENDING_WORK_STATUSES: ReadonlySet<WorkItemStatus> = new Set<WorkItemStatus>(['queued', 'proposed', 'accepted']);
+
+/** Whether an agent has WorkItems waiting for it. */
+export type PendingWorkCheck = (sessionName: string) => Promise<boolean>;
 
 /**
  * Periodically scans active agents and suspends those that have been
@@ -33,6 +46,7 @@ export class IdleDetectionService {
 	private logger: ComponentLogger;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private agentRegistrationService: AgentRegistrationService | null = null;
+	private pendingWorkCheck: PendingWorkCheck | null = null;
 
 	// Observability: surfaces silent hangs that previously caused the
 	// loop to "stop" for hours with no log evidence (2026-05-14 incident).
@@ -54,6 +68,16 @@ export class IdleDetectionService {
 	 */
 	setAgentRegistrationService(service: AgentRegistrationService): void {
 		this.agentRegistrationService = service;
+	}
+
+	/**
+	 * Inject the pending-work check: an agent with work queued for it is not
+	 * idle-stopped (it was usually just started for that work).
+	 *
+	 * @param check - Check, or null to disable
+	 */
+	setPendingWorkCheck(check: PendingWorkCheck | null): void {
+		this.pendingWorkCheck = check;
 	}
 
 	/**
@@ -318,7 +342,7 @@ export class IdleDetectionService {
 				// Check if idle — dual detection:
 				// PTY-based runtimes: use PtyActivityTracker
 				// In-process runtimes (crewly-agent): use member.updatedAt timestamp
-				const isCrewlyAgent = member.runtimeType === 'crewly-agent';
+				const isCrewlyAgent = effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') === 'crewly-agent';
 				let isIdle = false;
 				if (isCrewlyAgent) {
 					// crewly-agent has no PTY — check last updatedAt or readyAt timestamp
@@ -403,6 +427,15 @@ export class IdleDetectionService {
 							});
 							continue;
 						}
+						// Never stop an agent with work queued for it (a ticket was
+						// just assigned and it was started to take it).
+						if (await this.hasPendingWork(member.sessionName)) {
+							this.logger.info('Agent idle but has queued work, keeping alive', {
+								sessionName: member.sessionName,
+								role: member.role,
+							});
+							continue;
+						}
 						// Auto-stop: terminate idle agents to free resources
 						if (this.agentRegistrationService) {
 							this.logger.info('Agent idle timeout reached, stopping', {
@@ -453,6 +486,22 @@ export class IdleDetectionService {
 					}
 				}
 			}
+		}
+	}
+
+	/**
+	 * Whether the agent has WorkItems waiting for it
+	 * ({@link PENDING_WORK_STATUSES}). False when no check is wired or it fails.
+	 *
+	 * @param sessionName - Agent session
+	 * @returns True when the agent must be kept alive for its work
+	 */
+	private async hasPendingWork(sessionName: string): Promise<boolean> {
+		if (!this.pendingWorkCheck) return false;
+		try {
+			return await this.pendingWorkCheck(sessionName);
+		} catch {
+			return false;
 		}
 	}
 

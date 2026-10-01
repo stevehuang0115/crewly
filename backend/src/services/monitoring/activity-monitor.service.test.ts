@@ -451,6 +451,31 @@ describe('ActivityMonitorService', () => {
       expect(savedData.teamMembers['test-session-1'].workingStatus).toBe('in_progress');
     });
 
+    it('tells working-status listeners about a change at once and remembers it (harness "working on it", 2026-09-30)', async () => {
+      // agent:busy is held back MIN_BUSY_DURATION_MS and never published for
+      // a turn shorter than one poll; listeners hear every observed change.
+      mockSessionBackend.sessionExists.mockReturnValueOnce(false); // orchestrator session
+      mockSessionBackend.sessionExists.mockReturnValueOnce(true); // member session exists
+      mockSessionBackend.captureOutput.mockReturnValue('new terminal output');
+      (service as any).lastTerminalOutputs.set('test-session-1', 'old terminal output');
+      const seen: Array<[string, string]> = [];
+      const unsubscribe = service.onWorkingStatusChange((session, status) => seen.push([session, status]));
+
+      await (service as any).performActivityCheck();
+
+      expect(seen).toContainEqual(['test-session-1', 'in_progress']);
+      expect(service.getObservedWorkingStatus('test-session-1')).toBe('in_progress');
+      expect(service.getObservedWorkingStatus('never-polled')).toBeNull();
+
+      // Same status on the next poll: no second call. Unsubscribed: none at all.
+      const before = seen.filter(([s]) => s === 'test-session-1').length;
+      (service as any).observeStatus('test-session-1', 'in_progress', 'in_progress');
+      expect(seen.filter(([s]) => s === 'test-session-1').length).toBe(before);
+      unsubscribe();
+      (service as any).observeStatus('test-session-1', 'idle', 'in_progress');
+      expect(seen.filter(([s]) => s === 'test-session-1').length).toBe(before);
+    });
+
     it('should not update status if no activity detected (same output)', async () => {
       mockSessionBackend.sessionExists.mockReturnValueOnce(false); // orchestrator session
       mockSessionBackend.sessionExists.mockReturnValueOnce(true); // member session exists

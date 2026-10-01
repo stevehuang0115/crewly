@@ -807,6 +807,33 @@ export class MessageStore {
   }
 
   /**
+   * The newest user-origin message in a channel that @-mentioned `agentSession`
+   * at or after `sinceMs` — the message that agent was most recently asked in
+   * this channel. Evidence that an agent's reply belongs here, and which thread.
+   *
+   * @param channelId - The chat-v2 channel id
+   * @param agentSession - The agent's session name (as stored in `mentions`)
+   * @param sinceMs - Oldest `created_at` (epoch ms) to consider
+   * @returns The row, or null
+   */
+  findLatestUserMessageMentioning(channelId: string, agentSession: string, sinceMs: number): ChatMessageRow | null {
+    const row = this.db
+      .prepare(
+        `SELECT ${MESSAGE_SELECT_COLUMNS}
+         FROM chat_messages
+         WHERE channel_id = ?
+           AND sender_type = 'user'
+           AND created_at >= ?
+           AND mentions IS NOT NULL
+           AND EXISTS (SELECT 1 FROM json_each(chat_messages.mentions) WHERE json_each.value = ?)
+         ORDER BY seq DESC
+         LIMIT 1`,
+      )
+      .get(channelId, sinceMs, agentSession) as ChatMessageRow | undefined;
+    return row ?? null;
+  }
+
+  /**
    * The most recent thread-root in a channel that originated from Slack.
    * Used as the outbound fallback when an agent reply carries no thread id:
    * "reply into the latest Slack thread" beats dropping the reply at the

@@ -341,6 +341,15 @@ export function describeSlackError(error: unknown): { code: string; message: str
 /**
  * SlackService class for managing Slack bot operations
  */
+/** Payload of the SlackService `outbound` event. */
+export interface SlackOutboundPost {
+  channelId: string;
+  threadTs?: string;
+  /** Harness chrome (placeholder, note, hint) — not an answer */
+  notAnAnswer: boolean;
+  kind: 'text' | 'file';
+}
+
 export class SlackService extends EventEmitter {
   private logger = LoggerService.getInstance().createComponentLogger('SlackService');
   private app: SlackApp | null = null;
@@ -1534,6 +1543,8 @@ export class SlackService extends EventEmitter {
         void this.recordOutboundToChatV2(message);
       }
 
+      this.emitOutbound({ channelId: message.channelId, threadTs: message.threadTs, notAnAnswer: message.notAnAnswer === true, kind: 'text' });
+
       return result.ts || '';
     } catch (error) {
       this.logger.error('Send message error', { error: error instanceof Error ? (error as Error).message : String(error) });
@@ -2274,7 +2285,9 @@ export class SlackService extends EventEmitter {
    * @throws Error if the client is not initialized or upload fails
    */
   async uploadImage(options: FileUploadOptions): Promise<{ fileId?: string }> {
-    return this.uploadWithRetry(options, SLACK_IMAGE_CONSTANTS);
+    const result = await this.uploadWithRetry(options, SLACK_IMAGE_CONSTANTS);
+    this.emitOutbound({ channelId: options.channelId, threadTs: options.threadTs, notAnAnswer: false, kind: 'file' });
+    return result;
   }
 
   /**
@@ -2288,7 +2301,24 @@ export class SlackService extends EventEmitter {
    * @throws Error if the client is not initialized or upload fails
    */
   async uploadFile(options: FileUploadOptions): Promise<{ fileId?: string }> {
-    return this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS);
+    const result = await this.uploadWithRetry(options, SLACK_FILE_UPLOAD_CONSTANTS);
+    this.emitOutbound({ channelId: options.channelId, threadTs: options.threadTs, notAnAnswer: false, kind: 'file' });
+    return result;
+  }
+
+  /**
+   * Tell listeners a message or file was posted (`outbound` event). The
+   * unanswered-owner-message watchdog takes a post in an owner's thread as
+   * the answer unless it is flagged `notAnAnswer`. Never throws.
+   *
+   * @param post - Where it went and whether it counts as an answer
+   */
+  private emitOutbound(post: SlackOutboundPost): void {
+    try {
+      this.emit('outbound', post);
+    } catch (err) {
+      this.logger.debug('Outbound listener threw', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 
   /**

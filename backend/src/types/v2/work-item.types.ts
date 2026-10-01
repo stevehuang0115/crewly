@@ -25,7 +25,8 @@ export type WorkItemType =
   | 'cron_run'      // Execute a scheduled recurring action
   | 'review'        // Code review, architecture review
   | 'confirm'       // Wait for user confirmation
-  | 'reconcile';    // System self-check
+  | 'reconcile'     // System self-check
+  | 'ticket_triage'; // Ticket autopilot: the project's lead grooms the backlog (specs/2026-09-30-ticket-autopilot.md)
 
 /** All valid WorkItemType values. */
 export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
@@ -37,6 +38,7 @@ export const WORK_ITEM_TYPES: readonly WorkItemType[] = [
   'review',
   'confirm',
   'reconcile',
+  'ticket_triage',
 ] as const;
 
 /**

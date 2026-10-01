@@ -35,6 +35,77 @@ export const PROCESS_EXIT_CODES = CONFIG_PROCESS_EXIT_CODES;
 export const PROJECT_TICKET_CONSTANTS = CONFIG_PROJECT_TICKET_CONSTANTS;
 
 /**
+ * Ticket autopilot (specs/2026-09-30-ticket-autopilot.md): a per-project switch
+ * that wakes the project's driver (its team lead) to triage the backlog, with
+ * brakes (one live triage, re-trigger cadence, daily budget) and phone-first
+ * owner notifications (batched questions, one evening digest).
+ */
+export const TICKET_AUTOPILOT_CONSTANTS = {
+	/** WorkItem type of the triage item the driver receives */
+	TRIAGE_WORK_ITEM_TYPE: 'ticket_triage',
+	/** `metadata.kind` of the triage item (also how a live one is found) */
+	TRIAGE_METADATA_KIND: 'ticket_triage',
+	/** Label a ticket carries while it waits on an answer from the owner */
+	NEEDS_OWNER_LABEL: 'needs-owner',
+	/** Log-line prefix holding the one-line question for the owner */
+	OWNER_QUESTION_LOG_PREFIX: 'owner question: ',
+	/** Max characters of an owner question */
+	OWNER_QUESTION_MAX_CHARS: 280,
+	/** How often the autopilot re-evaluates every enabled project (ms) */
+	TICK_INTERVAL_MS: 5 * 60 * 1000,
+	/** Re-trigger a triage for a project at most this often on the periodic tick (ms) */
+	TRIAGE_MIN_INTERVAL_MS: 30 * 60 * 1000,
+	/**
+	 * A member going idle with nothing ready triggers a triage "immediately",
+	 * but never sooner than this after the previous one (ms) — idle events
+	 * repeat every few seconds and must not become a wake loop.
+	 */
+	IDLE_TRIGGER_MIN_INTERVAL_MS: 5 * 60 * 1000,
+	/** A ticket already listed in a triage (and unchanged since) is listed again only after this long (ms) */
+	TRIAGE_RELIST_AFTER_MS: 4 * 60 * 60 * 1000,
+	/** A `ready` ticket untouched this long while someone is idle counts as "nobody takes it" (ms) */
+	READY_STALE_MS: 24 * 60 * 60 * 1000,
+	/** A triage item still queued (never picked up) after this long is cancelled and may be replaced (ms) */
+	TRIAGE_STALE_QUEUED_MS: 6 * 60 * 60 * 1000,
+	/** Max tickets listed in one triage brief (highest priority, then oldest first) */
+	TRIAGE_MAX_TICKETS: 20,
+	/** Max characters of a ticket description quoted in the triage brief */
+	TRIAGE_DESCRIPTION_EXCERPT_CHARS: 300,
+	/** Max characters of a member's role responsibility line in the triage brief */
+	ROLE_RESPONSIBILITY_MAX_CHARS: 160,
+	/**
+	 * One-line responsibility of roles that ship without a `role.json`
+	 * description (the brief falls back to these; a member's own
+	 * `jobDescription` and a role's description win).
+	 */
+	ROLE_RESPONSIBILITY_FALLBACKS: {
+		'tech-lead': 'Leads the team: technical decisions, review, delegation and owner communication',
+		'team-leader': 'Leads the team: breaks goals down, delegates, reviews results and reports up',
+		'content-strategist': 'Plans and writes content: articles, posts, copy and the images or visuals that go with them',
+		researcher: 'Researches questions and sources, and writes up findings',
+		'ux-designer': 'Designs user flows, wireframes and visual UI',
+		'customer-support': 'Answers customer questions and troubleshoots their problems',
+	} as Readonly<Record<string, string>>,
+	/** Owner questions are sent at most this often, unless a new urgent (P0) one appears (ms) */
+	QUESTIONS_MIN_INTERVAL_MS: 2 * 60 * 60 * 1000,
+	/** Ticket priority that makes a new owner question urgent (sent without waiting) */
+	URGENT_PRIORITY: 'P0',
+	/** Local hour (0-23) at or after which the daily digest is sent */
+	DIGEST_HOUR_LOCAL: 21,
+	/** Max tickets named per digest section (the rest are counted) */
+	DIGEST_MAX_ITEMS_PER_SECTION: 8,
+	/** Default daily budget (USD) of the project's team agents when the owner sets none */
+	DEFAULT_DAILY_BUDGET_USD: 20,
+	/** Default and bounds of in-progress tickets per member */
+	DEFAULT_MAX_IN_FLIGHT_PER_MEMBER: 1,
+	MAX_IN_FLIGHT_PER_MEMBER_LIMIT: 5,
+	/** State file under CREWLY_HOME (debounce / notification bookkeeping, survives restarts) */
+	STATE_FILENAME: 'ticket-autopilot-state.json',
+	/** Env kill switch: `0` keeps the autopilot service from starting */
+	ENV_SWITCH: 'CREWLY_TICKET_AUTOPILOT',
+} as const;
+
+/**
  * Safe restart: drain in-flight agent turns before a shutdown kills the PTYs,
  * and resume the ones that were cut off after the next boot.
  *
@@ -103,6 +174,31 @@ export const CREWLY_CONSTANTS = {
 	INIT_SCRIPTS: {
 		CLAUDE: 'initialize_claude.sh',
 	},
+} as const;
+
+/**
+ * Checking a skill request's claimed agent identity against the process it
+ * came from. Skills send `X-Agent-Session` (from CREWLY_SESSION_NAME) and
+ * `X-Agent-Pid` (the skill shell's pid); on loopback the backend walks that
+ * pid's parents to the agent PTY it belongs to.
+ */
+export const AGENT_ORIGIN_CONSTANTS = {
+	SESSION_HEADER: 'x-agent-session',
+	PID_HEADER: 'x-agent-pid',
+	/** Set on a corrected request: the session the shell claimed */
+	CLAIMED_SESSION_HEADER: 'x-agent-session-claimed',
+	/** Longest parent chain walked from the skill shell */
+	MAX_ANCESTRY_DEPTH: 64,
+	/** Give up on the process lookup after this long and keep the claimed identity */
+	LOOKUP_TIMEOUT_MS: 1500,
+	/** One skill run makes several calls from the same shell pid */
+	RESULT_CACHE_TTL_MS: 30_000,
+	RESULT_CACHE_MAX_ENTRIES: 500,
+	/** The same mismatch is logged at most this often */
+	WARN_THROTTLE_MS: 10 * 60 * 1000,
+	/** Command line of Codex's shared background app server (`codex app-server --listen unix:// --managed-daemon`) */
+	SHARED_DAEMON_ARGS_RE: /\bapp-server\b.*--(?:managed-daemon|listen)\b/,
+	PS_MAX_BUFFER_BYTES: 16 * 1024 * 1024,
 } as const;
 
 // Environment variable names (duplicated from config/constants.ts for backend use)
@@ -1120,6 +1216,21 @@ export const SLACK_TYPING_CONSTANTS = {
 	 * does not count it as the answer (owner, 2026-09-24).
 	 */
 	INTERIM_METADATA_KEY: 'interim',
+	/**
+	 * How long after an owner's Slack message was delivered the harness
+	 * watches its recipients for a turn to start. The first recipient seen
+	 * going busy in that window gets the "working on it" placeholder posted
+	 * for it — no longer left to the agent calling `reply-channel --working`
+	 * (2026-09-30: Owen worked 3.5 min on a #pro-ce message with nothing
+	 * showing). 60 s, not 30: busy is observed by the 30 s ActivityMonitor
+	 * poll, so a turn that starts right after delivery can be seen up to one
+	 * poll later, and the PTY write itself takes a few seconds.
+	 */
+	AUTO_WORKING_WINDOW_MS: 60 * 1000,
+	/** A watched delivery that never reports its outcome is dropped after this (cold starts take 1–2 min) */
+	AUTO_WORKING_DELIVERY_MAX_MS: 10 * 60 * 1000,
+	/** Deliveries still watched at once; the oldest is dropped past this */
+	AUTO_WORKING_MAX_WATCHES: 200,
 } as const;
 
 /**
@@ -1191,12 +1302,31 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	MENTION_SUGGEST_MAX_DISTANCE: 2,
 	/** Max suggestions offered for one unknown @name */
 	MENTION_SUGGEST_MAX: 3,
+	/**
+	 * Huddle-message metadata key: Slack users the message @'d who are
+	 * people, not Crewly agents (nor any bot we can identify). When set, the message
+	 * names its addressees, so no agent is drawn in by thread engagement or
+	 * the "nobody addressed" fallback (specs/slack-room-presence.md).
+	 */
+	PEOPLE_MENTIONS_METADATA_KEY: 'slackMentionedPeople',
 	/** Reaction added to a routed inbound message while the team works on it */
 	INBOUND_REACTION: 'eyes',
 	/** How many routed Slack messages to remember for duplicate-copy suppression */
 	SEEN_INBOUND_MAX: 500,
 	/** Synthetic team-id prefix for channels linked on the fly (no Crewly team behind them) */
 	ADHOC_TEAM_PREFIX: 'adhoc:',
+	/**
+	 * How long an owner's room message that reached nobody on this machine
+	 * waits for any agent (here or on another machine) to take it before this
+	 * machine wakes the room's lead itself — or, with no lead here, says so in
+	 * the thread. Cloud's presence can say "someone elsewhere is awake" while
+	 * that agent, told only optionally, stays quiet (2026-09-30, Think Tank room).
+	 */
+	ROOM_UNANSWERED_FALLBACK_MS: 90 * 1000,
+	/** The in-thread line when nobody could take an owner's room message. */
+	ROOM_UNANSWERED_NOTE: 'No agent picked up this message (nobody in the room was awake to take it). Please @ an agent and send it again.',
+	/** How many recent huddle turns to scan for the room's last local speaker. */
+	ROOM_LAST_SPEAKER_SCAN: 50,
 	/** Fallback icon when a member has no avatar */
 	DEFAULT_ICON_EMOJI: ':robot_face:',
 	/** Per-role icon fallbacks (Slack emoji names) */
@@ -1324,6 +1454,100 @@ export const ORC_STATUS_FORWARDING = {
 	 * structured reports, unknown formats) is forwarded.
 	 */
 	PROGRESS_ONLY_MARKERS: /^\s*\[(IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
+	/**
+	 * A report-status line: the agent is talking to the orchestrator, not
+	 * answering a person. Anything else posted to `agent-response` is content
+	 * someone is waiting for — routing it to the orchestrator as "status"
+	 * swallows it (2026-09-30, #steamfun运维组: Avery's whole answer to the
+	 * owner went to the orc and never reached Slack).
+	 */
+	STATUS_MARKERS:
+		/^\s*\[(DONE|COMPLETED|COMPLETE|DELIVERED|IDLE|BLOCKED|FAILED|ERROR|STATUS REPORT|STATUS|PROGRESS|IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE)\]/i,
+	/**
+	 * How long after the owner @'d an agent in a Slack room that agent's
+	 * reply (with no thread named) is taken as the answer to that message.
+	 */
+	RECENT_ROOM_REQUEST_WINDOW_MS: 6 * 60 * 60 * 1000,
+} as const;
+
+/**
+ * Unanswered-owner-message watchdog (specs/2026-09-30-owner-message-guarantee.md).
+ *
+ * Every owner message delivered to an agent here ends in an answer or in one
+ * plain-words note saying who it is waiting on and why.
+ */
+export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
+	/** T1: no answer and no working placeholder → re-deliver to the responsible agent */
+	NUDGE_AFTER_MS: 10 * 60 * 1000,
+	/** T2: still nothing → one note in the thread */
+	NOTE_AFTER_MS: 20 * 60 * 1000,
+	/** A nudge always gets at least this long before the note follows it */
+	MIN_NOTE_GAP_AFTER_NUDGE_MS: 5 * 60 * 1000,
+	/** A visibly-working agent (placeholder showing + mid-turn) is left alone at most this long */
+	BUSY_EXTEND_CAP_MS: 60 * 60 * 1000,
+	/** Evaluation cadence */
+	TICK_MS: 30 * 1000,
+	/** How often agent display names (used only in notes) are re-read */
+	NAME_REFRESH_MS: 5 * 60 * 1000,
+	/** Entries older than this when restored after downtime are dropped, not noted */
+	STALE_DROP_MS: 6 * 60 * 60 * 1000,
+	/** A message parked on a sign-in (`login_wait`) is kept this long for re-delivery after the login */
+	LOGIN_WAIT_DROP_MS: 24 * 60 * 60 * 1000,
+	/** Cap on open entries (oldest dropped with a warning) */
+	MAX_ENTRIES: 500,
+	/**
+	 * Answers seen in a thread are remembered this long: an agent can answer
+	 * before the dispatch that delivered the message returns (a fast agent
+	 * while a colleague in the same room is still cold-starting).
+	 */
+	RECENT_ANSWER_KEEP_MS: 15 * 60 * 1000,
+	/** Recently resolved keys remembered for dedupe (a hand-off re-dispatch must not re-track) */
+	MAX_RESOLVED_KEYS: 2000,
+	/** Characters of the owner's message quoted in logs, the debug list and the nudge */
+	PREVIEW_CHARS: 200,
+	/** Persisted state under CREWLY_HOME */
+	STORE_FILENAME: 'owner-message-watchdog.json',
+	/**
+	 * Whole-message acknowledgements that need no answer (compared after
+	 * lower-casing and stripping whitespace/punctuation). Approval words such
+	 * as 可以 / 行 are deliberately absent: they usually ask for action.
+	 */
+	ACK_WORDS: [
+		'好', '好的', '好滴', '好嘞', '好哒', '嗯', '嗯嗯', '收到', '知道了', '了解',
+		'谢谢', '谢了', '多谢', '谢谢你', '感谢', '好的谢谢', '好谢谢', '辛苦了',
+		'ok', 'okay', 'k', 'kk', 'okok', 'ok谢谢', 'thanks', 'thank you', 'thankyou', 'thx', 'ty', 'got it', 'cool', 'nice',
+		'👍', '🙏', '👌', '✅', '❤️', '🙂', '😊', '👍👍',
+	] as readonly string[],
+	/** Nudge delivered to the responsible agent ({waited} = minutes) */
+	NUDGE_TEXT:
+		'[REMINDER] 这条来自 owner 的消息已经 {waited} 分钟没有回复了。现在回复它：`{replyCmd}`——会自动发回这条消息来的地方。' +
+		'如果已经在别处回答过，或者确实不需要回复，运行 `{noneCmd}`。',
+	/**
+	 * Note texts (from Crewly's own bot), English like the rest of the
+	 * owner-facing UI. {name} = agent display name. The login note names the
+	 * English command; 「重新登录 claude」 is still accepted as input.
+	 */
+	NOTE_LOGIN_TEXT: "⏳ Still waiting on {name} — {runtime} on this machine is signed out. Reply `login` here to sign in from your phone (or `relogin {runtimeCmd}`); your message is kept and re-delivered once it's signed in.",
+	NOTE_ASLEEP_TEXT: "⏳ Still waiting on {name} — {name} isn't running and couldn't be woken ({detail}).",
+	NOTE_ERROR_TEXT: "⏳ Still waiting on {name} — your message couldn't be delivered ({detail}).",
+	NOTE_BUSY_CAP_TEXT: '⏳ {name} is still working on your message ({waited} min so far).',
+	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
+	/** Shown in a note when a failed delivery left no error detail */
+	NOTE_UNKNOWN_DETAIL: 'reason unknown',
+} as const;
+
+/**
+ * The single `reply` entry point (specs/2026-09-30-owner-message-guarantee.md §B).
+ */
+export const AGENT_REPLY_CONSTANTS = {
+	/** The skill every delivered message names */
+	SKILL_PATH: 'config/skills/agent/core/reply/execute.sh',
+	/**
+	 * First line of every delivered reply hint. {identity} = the
+	 * `CREWLY_SESSION_NAME=<session> ` prefix (or empty).
+	 */
+	HINT_LINE:
+		'回复: `{identity}bash config/skills/agent/core/reply/execute.sh "<你的回复>"` —— 会自动发回这条消息来的地方（私信、频道 thread、网页聊天都一样）。不需要回复就运行 `{identity}bash config/skills/agent/core/reply/execute.sh --none`。',
 } as const;
 
 /**
@@ -1417,8 +1641,59 @@ export const WORKTREE_JANITOR_CONSTANTS = {
 	INTERVAL_MS: 30 * 60 * 1000,
 	/** Delay before the first automatic run after startup (10 minutes). */
 	FIRST_RUN_DELAY_MS: 10 * 60 * 1000,
-	/** A worktree touched more recently than this is kept (2 hours). */
+	/**
+	 * A worktree in a known agent location (`<repo>/.claude/worktrees/`,
+	 * `<tmp>/crewly-worktrees/`, or a `worktree-agent-*` branch) touched more
+	 * recently than this is kept (2 hours).
+	 */
 	MIN_IDLE_MS: 2 * 60 * 60 * 1000,
+	/** Any other linked worktree touched more recently than this is kept (24 hours). */
+	MIN_IDLE_OTHER_MS: 24 * 60 * 60 * 1000,
+	/**
+	 * A Claude Code session scratch dir (`<tmp>/claude-<uid>/<slug>/<uuid>/`)
+	 * touched more recently than this is kept (3 days).
+	 */
+	SCRATCH_MIN_IDLE_MS: 3 * 24 * 60 * 60 * 1000,
+	/** In low-disk mode every idle threshold is divided by this factor… */
+	LOW_DISK_IDLE_DIVISOR: 2,
+	/** …but never drops below this (2 hours). */
+	LOW_DISK_MIN_IDLE_FLOOR_MS: 2 * 60 * 60 * 1000,
+	/** Prefix of Claude Code's per-user temp root under the temp dir (`claude-<uid>`). */
+	SCRATCH_ROOT_PREFIX: 'claude-',
+	/** Extra temp dirs where the per-user Claude root may live besides os.tmpdir(). */
+	SCRATCH_TMP_DIRS: ['/private/tmp', '/tmp'] as readonly string[],
+	/** Session dir name pattern under `<root>/<project-slug>/` (a UUID). */
+	SCRATCH_SESSION_DIR_PATTERN: /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+	/** How deep under a session dir git repos are searched for. */
+	SCRATCH_REPO_SEARCH_DEPTH: 3,
+	/** How many levels of a session dir count for its "last touched" time. */
+	SCRATCH_MTIME_DEPTH: 2,
+	/** Directory names never descended into while searching for repos. */
+	SEARCH_SKIP_DIRS: ['node_modules', '.git'] as readonly string[],
+	/** How deep under each temp root linked worktrees are searched for (repo discovery). */
+	DISCOVERY_DEPTH: 4,
+	/** Cap on directories visited per temp root during repo discovery. */
+	DISCOVERY_MAX_DIRS: 20_000,
+	/** Filesystem walks yield to the event loop (one setImmediate) after this many entries. */
+	YIELD_EVERY_ENTRIES: 50,
+	/** Interval of the low-disk check (10 minutes). */
+	LOW_DISK_CHECK_INTERVAL_MS: 10 * 60 * 1000,
+	/** Free space below this on the CREWLY_HOME volume triggers a low-disk pass (15 GB). */
+	LOW_DISK_BYTES: 15 * 1024 ** 3,
+	/** Free space below this is urgent (5 GB). */
+	CRITICAL_DISK_BYTES: 5 * 1024 ** 3,
+	/** A low-disk check does not start another pass within this time of the last one (30 minutes). */
+	LOW_DISK_PASS_GAP_MS: 30 * 60 * 1000,
+	/** Owner notice about low disk at most this often (24 hours). */
+	LOW_DISK_NOTIFY_INTERVAL_MS: 24 * 60 * 60 * 1000,
+	/** Urgent owner notice (below CRITICAL_DISK_BYTES) at most this often (6 hours). */
+	CRITICAL_DISK_NOTIFY_INTERVAL_MS: 6 * 60 * 60 * 1000,
+	/** How many of the biggest kept items the owner notice lists. */
+	LOW_DISK_REPORT_ITEMS: 5,
+	/** Timeout of one `du -sk` size probe (ms). */
+	DU_TIMEOUT_MS: 60_000,
+	/** State file under CREWLY_HOME remembering when the owner was last told about low disk. */
+	STATE_FILENAME: 'disk-janitor-state.json',
 	/**
 	 * Directory, relative to the repo's main worktree, where agent tools
 	 * (Claude Code subagents, Crewly agents) create per-task worktrees.
@@ -1436,8 +1711,8 @@ export const WORKTREE_JANITOR_CONSTANTS = {
 	MANAGED_WORKTREE_DIR: '.crewly/worktrees',
 	/**
 	 * Branch-name prefixes that only agents create. A worktree elsewhere on
-	 * disk is eligible only when its branch starts with one of these.
-	 * `worktree-agent-` is Claude Code's automatic subagent branch.
+	 * disk with such a branch counts as an agent location (2 h idle threshold
+	 * instead of 24 h). `worktree-agent-` is Claude Code's automatic subagent branch.
 	 */
 	AGENT_BRANCH_PREFIXES: ['worktree-agent-'] as readonly string[],
 	/** Branches that are never deleted, whatever the verdict. */
@@ -1492,6 +1767,14 @@ export const TRIGGER_ENGINE_CONSTANTS = {
 	 * hops of at most this size.
 	 */
 	MAX_TIMER_DELAY_MS: 2_147_483_647,
+	/**
+	 * A recurring trigger with `maxFires` that has this many fires or fewer
+	 * left gets one heads-up work item to its team lead (renew or ask the
+	 * owner). It is never renewed automatically.
+	 */
+	EXPIRY_NOTICE_REMAINING_FIRES: 3,
+	/** Most cron steps walked when projecting a trigger's final fire time. */
+	PROJECTION_MAX_STEPS: 400,
 } as const;
 
 /**
@@ -1957,6 +2240,30 @@ export const DIRECT_DELIVERY_CONSTANTS = {
 } as const;
 
 /**
+ * Codes the member-start endpoint answers with when a start gate refuses a
+ * wake (`POST /api/teams/:teamId/members/:memberId/start`).
+ */
+export const AGENT_WAKE_ERROR_CODES = {
+	/** Wake gate: no queued/blocked WorkItem for the member */
+	NO_POOL_WORK: 'wake_gate_no_pool_work',
+	/** Commitment-approval gate: cold launch of a dormant team without the owner's OK */
+	OWNER_APPROVAL_REQUIRED: 'commitment_requires_owner_approval',
+} as const;
+
+/**
+ * Who leads a team — one rule for the whole harness
+ * (specs/2026-09-30-team-lead-rule.md, `utils/team.utils.ts`): the team's
+ * explicit `leaderIds` (or the deprecated `leaderId`) when set, otherwise
+ * the members whose role is one of {@link TEAM_LEAD_CONSTANTS.LEAD_ROLES}.
+ */
+export const TEAM_LEAD_CONSTANTS = {
+	/** Roles that make a member a team lead when the team names no lead explicitly */
+	LEAD_ROLES: ['team-leader', 'tech-lead'],
+	/** `POST /api/teams/:id/lead` modes: replace the leads, or add one more */
+	SET_LEAD_MODES: ['set', 'add'],
+} as const;
+
+/**
  * Default model for Claude Code team members that have no `modelId`: members
  * with a reviewer above them run on Sonnet, leads (and anyone without a
  * reviewer) keep Claude Code's own default (Opus). Never the orchestrator.
@@ -1966,8 +2273,8 @@ export const MEMBER_MODEL_DEFAULT_CONSTANTS = {
 	DEFAULT_REVIEWED_MEMBER_MODEL: 'sonnet',
 	/** Env override for that model; `''` or `off` disables the default entirely */
 	ENV_OVERRIDE: 'CREWLY_MEMBER_DEFAULT_MODEL',
-	/** Roles that lead a team and therefore keep the runtime default */
-	LEAD_ROLES: ['team-leader', 'tech-lead'],
+	/** Roles that lead a team and therefore keep the runtime default (same list as {@link TEAM_LEAD_CONSTANTS.LEAD_ROLES}) */
+	LEAD_ROLES: TEAM_LEAD_CONSTANTS.LEAD_ROLES,
 	/** Rejections of the same task after which the reviewer is told about the upgrade option */
 	UPGRADE_HINT_AFTER_REJECTIONS: 2,
 } as const;
@@ -2029,6 +2336,48 @@ export const BROWSER_SESSION_CONSTANTS = {
 	FRAME_SCALE: 0.5,
 	/** How long a finished session stays listed before being pruned (ms) */
 	RETAIN_FINISHED_MS: 10 * 60 * 1000,
+} as const;
+
+/**
+ * Owner input into a browser session the owner has taken over
+ * (`POST /api/browser/sessions/:id/input`). The owner is usually on a phone,
+ * tapping a picture of the page, so every limit here is about keeping one tap
+ * or one "Send" a single bounded action.
+ */
+export const BROWSER_OWNER_INPUT_CONSTANTS = {
+	/** Longest text one `type` may carry (characters) */
+	MAX_TEXT_LENGTH: 2_000,
+	/** Longest URL one `navigate` may carry (characters) */
+	MAX_URL_LENGTH: 4_096,
+	/** Largest single scroll step either way (CSS px) */
+	MAX_SCROLL_PX: 5_000,
+	/**
+	 * How long a measured viewport is trusted before a tap measures again
+	 * (ms). Each measurement is a round trip to the extension, which over the
+	 * relay is the slowest part of a tap.
+	 */
+	VIEWPORT_CACHE_MS: 15_000,
+	/** Keys the owner can press from the control bar */
+	KEYS: ['Enter', 'Tab', 'Backspace', 'Escape', 'ArrowUp', 'ArrowDown'] as const,
+	/** How far an arrow key scrolls when focus is not in a text field (CSS px) */
+	ARROW_SCROLL_PX: 40,
+	/** Command timeout for one owner action (ms) */
+	COMMAND_TIMEOUT_MS: 15_000,
+	/**
+	 * Pause after a tap, key or Back before the fresh frame is captured (ms),
+	 * so the picture sent back shows what the action did rather than the
+	 * instant before it. Navigation needs none: it waits for the page load.
+	 */
+	SETTLE_BEFORE_FRAME_MS: 350,
+	/**
+	 * Page-quiet wait before a tap is clicked (ms). The extension's click
+	 * waits for the page to go idle (default up to 2 s) because an agent
+	 * clicks blind; the owner is looking at the page, so a tap should land
+	 * when they tapped.
+	 */
+	TAP_IDLE_QUIET_MS: 50,
+	/** Longest the extension may wait for that quiet before clicking (ms) */
+	TAP_IDLE_MAX_WAIT_MS: 300,
 } as const;
 
 export const CLAUDE_TRANSCRIPT_SYNC_CONSTANTS = {
@@ -2161,26 +2510,61 @@ export const OAUTH_ERROR_PATTERN_SETS: string[][] = [
  * the expiry sets, so without these the OAuth monitor stays idle while the
  * runtime waits for a human to log in.
  *
+ * Keyed by runtime: a session is only checked against its own runtime's
+ * sign-in screens (unknown runtime → every set). Incident 2026-09-29: a
+ * Claude Code agent summarising OpenAI news wrote "…Sign in with ChatGPT…"
+ * in its reply and the Codex pattern paged the owner.
+ *
  * Each entry is a set of substrings that must ALL be present (AND logic,
  * case-insensitive) in the recent screen text. Plain string matching — no
  * regex — to stay ReDoS-free.
  */
-export const LOGIN_REQUIRED_PATTERN_SETS: string[][] = [
-	// Codex device-code flow (headless-friendly)
-	['auth.openai.com/codex/device'],
-	// Codex default sign-in screen
-	['sign in with chatgpt'],
-	// Claude Code sign-in screens
-	['claude.ai/oauth/authorize'],
-	['use the url below to sign in'],
-	['paste code here if prompted'],
-	['please run /login'],
-	// Gemini CLI sign-in screen
-	['login with google'],
-	// OpenCode CLI: `/connect` provider dialog and the "no provider yet" footer
-	['connect a provider'],
-	['get started', '/connect'],
-];
+export const LOGIN_REQUIRED_PATTERN_SETS: Readonly<Record<string, readonly (readonly string[])[]>> = {
+	'codex-cli': [
+		// Device-code flow (headless-friendly)
+		['auth.openai.com/codex/device'],
+		// Default sign-in menu: both options, so a sentence naming one is not a screen
+		['sign in with chatgpt', 'provide your own api key'],
+	],
+	'claude-code': [
+		['claude.ai/oauth/authorize'],
+		['use the url below to sign in'],
+		['paste code here if prompted'],
+		['please run /login'],
+	],
+	'gemini-cli': [
+		['login with google'],
+	],
+	'opencode-cli': [
+		// `/connect` provider dialog and the "no provider yet" footer
+		['connect a provider'],
+		['get started', '/connect'],
+	],
+};
+
+/**
+ * Where on a captured screen a sign-in prompt can actually be. A sign-in
+ * screen is the runtime's own UI at the bottom of the terminal, never a line
+ * of the agent's transcript and never shown while a turn is running.
+ */
+export const LOGIN_SCREEN_REGION = {
+	/** Trailing non-empty lines inspected for a sign-in prompt */
+	TAIL_LINES: 15,
+	/**
+	 * Line starts that open a block of the agent's own transcript (Claude's
+	 * `⏺` reply / `⎿` tool result, Codex's `•` / `└`, Gemini's `✦`). The
+	 * block continues over blank lines and lines indented by at least
+	 * {@link LOGIN_SCREEN_REGION.TRANSCRIPT_INDENT} spaces.
+	 */
+	TRANSCRIPT_MARKERS: ['⏺', '⎿', '•', '└', '✦'] as readonly string[],
+	/** Indent of a transcript block's continuation lines */
+	TRANSCRIPT_INDENT: 2,
+	/**
+	 * Lower-case footer text of a runtime that is busy or sitting at its chat
+	 * prompt; a sign-in screen shows neither, so any of these vetoes a match.
+	 */
+	NOT_SIGN_IN_MARKERS: ['esc to interrupt', 'working (', 'ask codex to do anything', '? for shortcuts'] as readonly string[],
+} as const;
 
 /**
  * Screen text that means the runtime has just *finished* signing in. The
@@ -2387,11 +2771,11 @@ export const ANTIGRAVITY_CONSTANTS = {
 	},
 	MESSAGES: {
 		NO_API_KEY:
-			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
+			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Runtimes → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
 		KEY_NOT_IN_SESSION:
-			'Antigravity CLI started without GEMINI_API_KEY in its environment, so it refused to run (Crewly never lets it fall back to a Google account). Save the Gemini API key in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`) — a key saved there is given to every Antigravity session at start — then start the agent again.',
+			'Antigravity CLI started without GEMINI_API_KEY in its environment, so it refused to run (Crewly never lets it fall back to a Google account). Save the Gemini API key in Settings → Runtimes → Antigravity CLI (or run `crewly login antigravity`) — a key saved there is given to every Antigravity session at start — then start the agent again.',
 		ACCOUNT_LOGIN:
-			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Harness, then start the agent again.',
+			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Runtimes, then start the agent again.',
 		FIRST_RUN:
 			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. In a terminal run `GEMINI_API_KEY=<your key> agy`, finish those screens, type /exit, then start the agent again.',
 		SETTINGS_UNREADABLE:
@@ -3490,7 +3874,7 @@ export const OWNER_RECEIPT_CONSTANTS = {
 	/** 「可能漏记」 lines: appended messages that still read like a request (#828 coverage) */
 	MAX_POSSIBLY_MISSED: 5,
 	/** Team label for a ticket nobody is assigned to */
-	UNASSIGNED_TEAM: '未分配',
+	UNASSIGNED_TEAM: 'Unassigned',
 	/**
 	 * The redesigned receipt (owner, 2026-09-28: 14 asks + 17 「等你拍板」 with
 	 * ticket numbers was overwhelming): at most this many 「今天做完的」 lines…
@@ -3756,7 +4140,7 @@ export const TICKET_CONSTANTS = {
 		/** Statuses that go stale */
 		STATUSES: ['open', 'ready', 'running'] as readonly string[],
 		/** Discussion note left on a ticket closed as stale */
-		NOTE: '3 天没有动静，自动关闭。负责的 agent 在原对话里回复即可重新打开。',
+		NOTE: 'Closed automatically after 3 days with no activity. The responsible agent can reopen it by replying in the original conversation.',
 		/** Author of that note */
 		NOTE_AUTHOR: 'crewly',
 	},
@@ -3869,6 +4253,10 @@ export const HARNESS_CONSTANTS = {
 		SESSION_RETENTION_MS: 60 * 60 * 1000,
 		/** Timeout for the post-login verification command */
 		VERIFY_TIMEOUT_MS: 30_000,
+		/** After a failure line, a self-exiting harness (Codex) gets this long to exit before the session fails */
+		FAILURE_EXIT_GRACE_MS: 10_000,
+		/** Longest (redacted) failure message written to the log */
+		LOG_MESSAGE_MAX_CHARS: 300,
 		/** Value for BROWSER in the broker env: a no-op command, so harnesses do not open a browser */
 		BROWSER_SUPPRESS_VALUE: 'true',
 		/** Replaces anything that looks like a token or key in exposed screen text */
@@ -3879,6 +4267,15 @@ export const HARNESS_CONSTANTS = {
 		WRAPPED_LINE_MIN_LENGTH: 40,
 		/** Keys typed after user input */
 		ENTER: '\r',
+		/**
+		 * Pause between typing the user's input and pressing Enter (ms). Ink TUIs
+		 * (Claude's `setup-token`) read one write of "code + \r" as a paste and
+		 * swallow the Enter, leaving the code sitting at the prompt
+		 * (iriss-air.lan, 2026-10-01).
+		 */
+		SUBMIT_DELAY_MS: 300,
+		/** If the login printed nothing this long after Enter, press Enter once more (ms) */
+		SUBMIT_RETRY_MS: 4000,
 	},
 	/**
 	 * Re-login over Slack (Phase 2): an expired harness login is noticed in
@@ -3905,6 +4302,27 @@ export const HARNESS_CONSTANTS = {
 		SCREEN_REPLY_MAX_LENGTH: 512,
 		/** Owner replies that start the login over (compared trimmed, case-insensitive) */
 		RETRY_KEYWORDS: ['relogin', 're-login', '重新登录'] as readonly string[],
+		/**
+		 * Bare owner replies that start the sign-in of every signed-out harness
+		 * (compared trimmed, case-insensitive, trailing punctuation dropped).
+		 * Only taken while a harness is known to be signed out.
+		 */
+		LOGIN_KEYWORDS: [
+			'login', 'log in', 'log-in', 'sign in', 'signin', 'sign-in', 'relogin', 're-login', 'reauth',
+			'登录', '登陆', '重新登录', '重新登陆', '重登',
+		] as readonly string[],
+		/** First re-reminder for a harness that stays signed out; doubles each time */
+		REMIND_BACKOFF_BASE_MS: 3 * 60 * 60 * 1000,
+		/** Longest gap between re-reminders */
+		REMIND_BACKOFF_MAX_MS: 24 * 60 * 60 * 1000,
+		/** A live sign-in probe result is reused this long */
+		PROBE_CACHE_MS: 10 * 60 * 1000,
+		/** A harness in use that looks signed in is probed for real this often */
+		PROBE_INTERVAL_MS: 60 * 60 * 1000,
+		/** Longest a sign-in probe may run */
+		PROBE_TIMEOUT_MS: 90_000,
+		/** Persisted notice / backoff state under CREWLY_HOME */
+		STATE_FILENAME: 'harness-relogin-state.json',
 		/** Tail of the (redacted) login screen included in a DM */
 		DM_SCREEN_MAX_CHARS: 1500,
 		/** Longest broker message quoted in a DM */
@@ -3942,12 +4360,33 @@ export const HARNESS_CONSTANTS = {
 		API_KEY_CHECK_URL: 'https://api.anthropic.com/v1/models',
 		API_VERSION: '2023-06-01',
 		API_KEY_CHECK_TIMEOUT_MS: 10_000,
+		/**
+		 * Live sign-in probe: one tiny print-mode turn. `claude auth status`
+		 * only reports whether a credential is *stored* (an expired or revoked
+		 * login still says loggedIn), so it cannot see an expiry; a real turn
+		 * answers "Not logged in · Please run /login" / "OAuth token revoked"
+		 * when the login is gone. No session file is written.
+		 */
+		PROBE_ARGS: ['-p', 'Reply with the single word OK.', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config'] as readonly string[],
 	},
 	/** Codex CLI facts */
 	CODEX: {
 		HOME_ENV: 'CODEX_HOME',
 		HOME_DIR: '.codex',
 		AUTH_FILE: 'auth.json',
+		/**
+		 * Launch flag that keeps a Codex TUI off the shared background
+		 * `codex app-server` daemon (0.157+). Without it every Codex agent on a
+		 * machine ran its shell commands inside the one daemon the first agent
+		 * started, so they all carried that agent's CREWLY_SESSION_NAME.
+		 */
+		NO_DAEMON_FLAG: '--no-daemon',
+		/** Flags that already pick the app server themselves (leave the command alone) */
+		APP_SERVER_SELECT_FLAGS: ['--no-daemon', '--remote'] as readonly string[],
+		/** Timeout for `codex --help` when checking that the flag exists */
+		HELP_PROBE_TIMEOUT_MS: 10_000,
+		/** A Codex without the flag is re-checked after this long (it may be upgraded) */
+		NO_DAEMON_PROBE_RETRY_MS: 10 * 60 * 1000,
 	},
 	/** Antigravity CLI facts (API key only; see ANTIGRAVITY_CONSTANTS) */
 	ANTIGRAVITY: {
@@ -4295,8 +4734,8 @@ export const CONVERSATION_SYNC_CONSTANTS = {
 	},
 	/** One-time owner DM (O1) when history starts syncing. `{device}` is replaced. */
 	NOTICE_TEXT:
-		'提醒一下：{device} 上你和 agent 的对话现在也会同步到 Crewly Cloud，这样在手机上就能看到所有机器、所有渠道的对话。' +
-		'免费版保留 7 天，Pro 保留 90 天；消息文字在 Cloud 上加密存储，文件只留在这台机器上。',
+		'Heads up: your conversations with agents on {device} now also sync to Crewly Cloud, so you can see every machine and every channel from your phone. ' +
+		'Free keeps 7 days, Pro keeps 90 days; message text is stored encrypted in Cloud, and files stay on this machine.',
 } as const;
 
 /**
@@ -4448,4 +4887,156 @@ export const SECRET_SCRUB_CONSTANTS = {
 	SHELL_HISTORY_FILES: ['.bash_history', '.zsh_history', '.sh_history', '.history'] as readonly string[],
 	/** settings.json under CREWLY_HOME, whose apiKeys are masked by exact value */
 	SETTINGS_FILE: 'settings.json',
+} as const;
+
+/**
+ * Owner-facing Upgrade / Restart controls in the dashboard
+ * (specs/2026-10-01-upgrade-restart-controls.md).
+ */
+export const SYSTEM_CONTROL_CONSTANTS = {
+	/** Progress / outcome of the last upgrade or restart, under CREWLY_HOME */
+	STATE_FILE: 'system-action.json',
+	/** Log file under `<crewlyHome>/logs/` written by the detached replacement launcher */
+	REPLACEMENT_LOG_FILE: 'restart-replacement.log',
+	/** "When idle": longest wait for agents to finish their turns before going ahead anyway (ms) — 30 min */
+	IDLE_WAIT_CAP_MS: 30 * 60 * 1000,
+	/** "When idle": how often the busy check runs while waiting (ms) */
+	IDLE_POLL_MS: 15 * 1000,
+	/** Pause before shutting down so the HTTP answer reaches the dashboard (ms) */
+	RESPONSE_FLUSH_MS: 500,
+	/** A registry answer older than this is re-fetched when the owner asks to upgrade (ms) */
+	REGISTRY_MAX_AGE_MS: 60 * 1000,
+	/** Registry answer age accepted for the status read (ms) — matches auto-update */
+	STATUS_REGISTRY_MAX_AGE_MS: 30 * 60 * 1000,
+	/** Replacement launcher: how often it checks whether the old process is gone (ms) */
+	REPLACEMENT_PID_POLL_MS: 500,
+	/** Replacement launcher: give up waiting for the old process after this long (ms) — drain is ≤ 2 min */
+	REPLACEMENT_MAX_WAIT_MS: 10 * 60 * 1000,
+	/** Replacement launcher: grace before checking the port when nothing is expected to relaunch us (ms) */
+	REPLACEMENT_PORT_GRACE_MS: 3 * 1000,
+	/** Replacement launcher: grace when an unknown supervisor might relaunch us first (ms) */
+	REPLACEMENT_PORT_GRACE_UNKNOWN_MS: 20 * 1000,
+	/** Login item script that keeps `crewly start` running on the owner's Mac */
+	LOGIN_WRAPPER_SCRIPT: 'crewly-start.command',
+	/** systemd unit `crewly service install` writes */
+	SYSTEMD_UNIT: 'crewly.service',
+	/** Accepted values of the `when` body field */
+	WHEN_VALUES: ['idle', 'now'] as const,
+	/** Refusal codes returned with 4xx/5xx answers */
+	CODES: {
+		OWNER_ONLY: 'owner-only',
+		DEV_CHECKOUT: 'dev-checkout',
+		NOT_NPM_GLOBAL: 'not-npm-global',
+		UP_TO_DATE: 'up-to-date',
+		IN_PROGRESS: 'in-progress',
+		RESTART_IN_PROGRESS: 'restart-in-progress',
+		REGISTRY_UNREACHABLE: 'registry-unreachable',
+		UNAVAILABLE: 'unavailable',
+		BAD_REQUEST: 'bad-request',
+	},
+	/** Owner-facing messages (the dashboard shows these as-is; English only) */
+	MESSAGES: {
+		OWNER_ONLY: 'Only the owner can upgrade or restart Crewly. Agents cannot trigger this.',
+		DEV_CHECKOUT: 'This machine runs Crewly from a source checkout — update it with git (git pull, npm run build), then restart.',
+		NOT_NPM_GLOBAL: 'This copy of Crewly is not a global npm install, so it cannot upgrade itself. Update it the way it was installed.',
+		UNAVAILABLE: 'Upgrade and restart controls are not ready yet — Crewly is still starting. Try again in a minute.',
+		REGISTRY_UNREACHABLE: 'Could not reach the npm registry to find the latest version. Try again later.',
+		RESTART_IN_PROGRESS: 'Crewly is already shutting down or restarting.',
+	},
+} as const;
+
+/**
+ * Runtime fallback: switch an agent to another runtime when its runtime runs
+ * out of usage, and back when the limit resets.
+ * specs/2026-10-01-runtime-fallback.md
+ */
+/**
+ * A planned relaunch (the runtime fallback moving an agent to another
+ * runtime and back) is not a crash or a hang: the restart / heartbeat / hung
+ * monitors ignore the session for this long and send no alarm.
+ */
+export const PLANNED_RELAUNCH_CONSTANTS = {
+	/** How long a session counts as "being relaunched on purpose" */
+	WINDOW_MS: 5 * 60_000,
+} as const;
+
+export const RUNTIME_FALLBACK_CONSTANTS = {
+	/** State + settings file under CREWLY_HOME */
+	STATE_FILE: 'runtime-fallback.json',
+	/** Default global fallback chain */
+	DEFAULT_CHAIN: ['claude-code', 'crewly-agent', 'antigravity-cli'] as readonly string[],
+	/** Model a Crewly Agent fallback runs (provider/model) */
+	DEFAULT_CREWLY_AGENT_MODEL: 'deepseek/deepseek-chat',
+	/** Default switch-back probe cadence */
+	DEFAULT_PROBE_INTERVAL_MINUTES: 15,
+	/** Bounds of the probe cadence setting */
+	MIN_PROBE_INTERVAL_MINUTES: 5,
+	MAX_PROBE_INTERVAL_MINUTES: 240,
+	/** Main tick (switch-back checks, idle-boundary reverts) */
+	TICK_MS: 30_000,
+	/** Poll while waiting for an agent's safe point */
+	SAFE_POINT_POLL_MS: 5_000,
+	/** Longest wait for a safe point before switching anyway (a limit ends the turn) */
+	SAFE_POINT_MAX_WAIT_MS: 3 * 60_000,
+	/** Wait after the first switch of an event before the owner DM (so the count means something) */
+	NOTICE_DELAY_MS: 45_000,
+	/** Probe again this long after a parsed reset time */
+	RESET_GRACE_MS: 2 * 60_000,
+	/**
+	 * Out of money/credit (DeepSeek 402 "Insufficient Balance", "credit
+	 * balance is too low"): no reset time and no timed retry — only a probe,
+	 * at most this often, can bring the runtime back.
+	 */
+	BILLING_PROBE_INTERVAL_MS: 6 * 60 * 60_000,
+	/** A limit seen again this soon after a switch-back counts as a failed switch-back */
+	FAILED_REVERT_WINDOW_MS: 30 * 60_000,
+	/** Each failed switch-back doubles the probe interval, up to this */
+	MAX_PROBE_BACKOFF_MS: 24 * 60 * 60_000,
+	/** Where the owner tops up, by billing provider */
+	TOP_UP_URLS: {
+		deepseek: 'platform.deepseek.com',
+		anthropic: 'console.anthropic.com/settings/billing',
+		openai: 'platform.openai.com/settings/organization/billing',
+	} as Readonly<Record<string, string>>,
+	/** A probe that says "fine" mutes detection for this long (false positive) */
+	FALSE_POSITIVE_MUTE_MS: 10 * 60_000,
+	/** Transient rate limits on one session that escalate to a usage limit */
+	TRANSIENT_ESCALATE_COUNT: 4,
+	TRANSIENT_WINDOW_MS: 10 * 60_000,
+	/** Horizon of an escalated transient limit */
+	TRANSIENT_ESCALATED_HORIZON_MS: 30 * 60_000,
+	/** A revert is not attempted while the PTY wrote within this window */
+	IDLE_QUIET_MS: 20_000,
+	/** Smoke tests */
+	SMOKE: {
+		TEAM_PREFIX: 'zz-runtime-smoke-',
+		MEMBER_NAME: 'smoke',
+		MEMBER_ROLE: 'developer',
+		TIMEOUT_MS: 5 * 60_000,
+		POLL_MS: 3_000,
+		/** Keep finished jobs this long for GET */
+		JOB_TTL_MS: 60 * 60_000,
+		/** Lines read from the agent's screen / log while waiting */
+		CAPTURE_LINES: 200,
+		/** Screen lines kept in a failure report */
+		SCREEN_LINES: 60,
+	},
+	/** Display names used in owner messages and badges */
+	LABELS: {
+		'claude-code': 'Claude Code',
+		'codex-cli': 'Codex',
+		'antigravity-cli': 'Antigravity',
+		'gemini-cli': 'Gemini CLI',
+		'opencode-cli': 'OpenCode',
+		'crewly-agent': 'Crewly Agent',
+	} as Readonly<Record<string, string>>,
+	/** Short names for "(Claude limit)" */
+	SHORT_LABELS: {
+		'claude-code': 'Claude',
+		'codex-cli': 'Codex',
+		'antigravity-cli': 'Antigravity',
+		'gemini-cli': 'Gemini',
+		'opencode-cli': 'OpenCode',
+		'crewly-agent': 'Crewly Agent',
+	} as Readonly<Record<string, string>>,
 } as const;

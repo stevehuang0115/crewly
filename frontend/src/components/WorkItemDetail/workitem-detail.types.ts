@@ -23,7 +23,8 @@ export type WorkItemType =
   | 'cron_run'
   | 'review'
   | 'confirm'
-  | 'reconcile';
+  | 'reconcile'
+  | 'ticket_triage';
 
 /** Who is responsible for execution. */
 export type WorkItemOwner =
@@ -196,6 +197,7 @@ export function getWorkItemTypeBadgeVariant(type: WorkItemType): BadgeVariant {
     review: 'info',
     confirm: 'warning',
     reconcile: 'default',
+    ticket_triage: 'info',
   };
   return mapping[type] ?? 'default';
 }
@@ -216,6 +218,7 @@ export function getWorkItemTypeLabel(type: WorkItemType): string {
     review: 'Review',
     confirm: 'Confirm',
     reconcile: 'Reconcile',
+    ticket_triage: 'Ticket triage',
   };
   return labels[type] ?? type;
 }

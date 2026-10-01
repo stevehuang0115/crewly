@@ -1,29 +1,35 @@
 /**
- * Triggers Page
+ * Schedules page (route `/triggers`).
  *
- * Unified V3 Trigger management UI. Shows:
- * - Legacy CronTask jobs (user-created scheduled agent tasks)
- * - User/orchestrator-created V3 TriggerEngine triggers
- * System triggers (reconciler etc.) are hidden.
+ * Owner-first view of the team's scheduled work:
+ * - Schedules (default): active + paused recurring schedules — cron triggers
+ *   and per-team cron tasks — grouped by team, each with a human name, the
+ *   schedule in plain words, next/last run, who runs it, and runs left.
+ * - Reminders: active one-shot reminders, plus anything waiting on an event.
+ * - History: cancelled / exhausted, collapsed and paginated.
+ * Harness-internal triggers stay behind the "Show system tasks" toggle.
  *
  * @module pages/Triggers
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   Clock,
-  Zap,
-  GitBranch,
   Play,
   Pause,
   XCircle,
   Trash2,
   Plus,
   RefreshCw,
-  Activity,
-  Bot,
   Users,
-  List,
+  Bell,
+  History as HistoryIcon,
+  Zap,
+  ChevronDown,
+  ChevronRight,
+  CheckCircle2,
+  AlertTriangle,
+  MinusCircle,
 } from 'lucide-react';
 import {
   Button,
@@ -32,11 +38,11 @@ import {
   ModalBody,
   ModalFooter,
   useConfirm,
-  StatusBadge,
   Alert,
   PageToolbar,
   Badge,
   Card,
+  Drawer,
   EmptyState,
   LoadingSpinner,
   SegmentedControl,
@@ -45,277 +51,280 @@ import {
   FormHelp,
   FormInput,
   FormTextarea,
-  Table,
-  TableHead,
-  TableBody,
-  TableRow,
-  TableHeader,
-  TableCell,
+  Toggle,
 } from '@crewly/ui';
-import type { StatusType } from '@crewly/ui/StatusBadge';
 import { useTriggers } from '../hooks/useTriggers';
 import { useCronTasks } from '../hooks/useCronTasks';
 import { apiService } from '../services/api.service';
-import { formatDate, triggerConfigSummary, triggerActionSummary } from '../components/Triggers/helpers';
-import type { Trigger, TriggerType, CreateTriggerInput, EventSubscription } from '../types/trigger.types';
-import type { CronTask } from '../types/cron-task.types';
+import {
+  bucketSchedules,
+  groupByTeam,
+  formatAbsolute,
+  formatRelative,
+  formatShortDate,
+  type ScheduleRow,
+} from '../components/Triggers/schedule.utils';
+import { SCHEDULE_FORM_TEXT, SCHEDULE_HISTORY_PAGE_SIZE, SCHEDULE_TEXT } from '../constants/schedules.constants';
+import type { TriggerType, CreateTriggerInput, EventSubscription } from '../types/trigger.types';
+import type { Team } from '../types';
+
+type ScheduleTab = 'scheduled' | 'reminders' | 'history';
+
+// =============================================================================
+// Row actions
+// =============================================================================
+
+/** Callbacks a row can invoke. */
+interface RowActions {
+  onPause: (row: ScheduleRow) => Promise<void>;
+  onResume: (row: ScheduleRow) => Promise<void>;
+  onCancel: (row: ScheduleRow) => void;
+  onDelete: (row: ScheduleRow) => void;
+}
+
+/** Whether a row can be paused/resumed/cancelled from the page. */
+function isLiveRow(row: ScheduleRow): boolean {
+  return row.source !== 'event-sub' && (row.status === 'active' || row.status === 'paused');
+}
 
 /**
- * Maps trigger status to shared StatusBadge StatusType.
+ * Pause/resume + cancel buttons for a live row. Clicks do not open the row.
  */
-function mapTriggerStatus(status: string): StatusType {
-  switch (status) {
-    case 'active': return 'active';
-    case 'paused': return 'paused';
-    case 'exhausted': return 'completed';
-    case 'cancelled': return 'inactive';
-    default: return 'pending';
-  }
-}
-
-// =============================================================================
-// Helpers
-// =============================================================================
-
-function triggerTypeIcon(type: TriggerType): React.ReactNode {
-  switch (type) {
-    case 'time': return <Clock className="w-3.5 h-3.5" />;
-    case 'signal': return <Zap className="w-3.5 h-3.5" />;
-    case 'compound': return <GitBranch className="w-3.5 h-3.5" />;
-  }
-}
-
-// =============================================================================
-// CronTask Row
-// =============================================================================
-
-interface CronTaskRowProps {
-  task: CronTask;
-  teamMap: Record<string, string>;
-  onToggle: (id: string, enabled: boolean) => Promise<void>;
-  onDelete: (id: string) => void;
-}
-
-const CronTaskRow: React.FC<CronTaskRowProps> = ({ task, teamMap, onToggle, onDelete }) => {
+const RowActionButtons: React.FC<{ row: ScheduleRow; actions: RowActions }> = ({ row, actions }) => {
   const [busy, setBusy] = useState(false);
-
-  const handleToggle = async () => {
-    setBusy(true);
-    try { await onToggle(task.id, !task.enabled); } finally { setBusy(false); }
-  };
-
-  const desc = task.taskDescription || (task as any).command || (task as any).name || task.id;
-  const displayName = desc.length > 55 ? desc.slice(0, 55) + '…' : desc;
-  const cronExpr = task.cronExpression || (task as any).schedule || '—';
-  const teamId = task.targetTeamId || (task as any).owner?.split('-').slice(0, -1).join('-') || '';
-  const teamName = teamMap[teamId] || (teamId ? teamId : '—');
-
-  return (
-    <TableRow className="hover:bg-surface-dark/60 transition-colors">
-      {/* Type */}
-      <TableCell className="whitespace-nowrap">
-        <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
-          <Clock className="w-3.5 h-3.5" />
-          Time
-        </span>
-      </TableCell>
-
-      {/* Team */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px] hidden sm:table-cell">
-        <span className="truncate block" title={teamName}>{teamName}</span>
-      </TableCell>
-
-      {/* Schedule */}
-      <TableCell className="text-xs font-mono whitespace-nowrap">
-        {cronExpr}
-        {task.timezone && (
-          <span className="ml-1.5 text-[10px] text-text-secondary-dark">{task.timezone}</span>
-        )}
-      </TableCell>
-
-      {/* Task */}
-      <TableCell className="text-sm text-text-secondary-dark max-w-[220px] hidden md:table-cell">
-        <div className="flex items-center gap-1.5">
-          <Bot className="w-3.5 h-3.5 flex-shrink-0" />
-          <span className="truncate" title={desc}>{displayName}</span>
-        </div>
-      </TableCell>
-
-      {/* Status */}
-      <TableCell className="whitespace-nowrap">
-        <StatusBadge status={task.enabled ? 'active' : 'paused'} />
-      </TableCell>
-
-      {/* Next Fire */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
-        {formatDate(task.nextRunAt)}
-      </TableCell>
-
-      {/* Last Fire */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
-        {formatDate(task.lastRunAt)}
-      </TableCell>
-
-      {/* Actions */}
-      <TableCell className="whitespace-nowrap">
-        <div className="flex items-center gap-1">
-          <IconButton
-            size="xs"
-            icon={task.enabled ? Pause : Play}
-            onClick={handleToggle}
-            disabled={busy}
-            title={task.enabled ? 'Pause' : 'Resume'}
-            aria-label={task.enabled ? 'Pause' : 'Resume'}
-          />
-          <IconButton
-            size="xs"
-            icon={Trash2}
-            variant="danger-ghost"
-            onClick={() => onDelete(task.id)}
-            disabled={busy}
-            title="Delete"
-            aria-label="Delete"
-          />
-        </div>
-      </TableCell>
-    </TableRow>
-  );
-};
-
-// =============================================================================
-// Trigger Row (V3 TriggerEngine)
-// =============================================================================
-
-interface TriggerRowProps {
-  trigger: Trigger;
-  onPause: (id: string) => Promise<Trigger>;
-  onResume: (id: string) => Promise<Trigger>;
-  onCancel: (id: string) => void;
-  onDelete: (id: string) => void;
-}
-
-const TriggerRow: React.FC<TriggerRowProps> = ({ trigger, onPause, onResume, onCancel, onDelete }) => {
-  const [busy, setBusy] = useState(false);
-
-  const act = async (fn: () => Promise<unknown>) => {
+  if (!isLiveRow(row)) return null;
+  const run = async (e: React.MouseEvent, fn: () => Promise<void>) => {
+    e.stopPropagation();
     setBusy(true);
     try { await fn(); } finally { setBusy(false); }
   };
-
   return (
-    <TableRow className="hover:bg-surface-dark/60 transition-colors">
-      <TableCell className="whitespace-nowrap">
-        <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
-          {triggerTypeIcon(trigger.type)}
-          <span className="capitalize">{trigger.type}</span>
-        </span>
-      </TableCell>
-
-      {/* Team — V3 triggers show createdBy */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden sm:table-cell">
-        <span className="capitalize">{trigger.createdBy}</span>
-      </TableCell>
-
-      <TableCell className="text-xs font-mono max-w-[200px]">
-        <span className="truncate block" title={triggerConfigSummary(trigger)}>
-          {triggerConfigSummary(trigger)}
-        </span>
-      </TableCell>
-
-      <TableCell className="text-sm text-text-secondary-dark max-w-[180px] hidden md:table-cell">
-        <span className="truncate block">{triggerActionSummary(trigger)}</span>
-      </TableCell>
-
-      <TableCell className="whitespace-nowrap">
-        <StatusBadge status={mapTriggerStatus(trigger.status)}>{trigger.status}</StatusBadge>
-      </TableCell>
-
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
-        {formatDate(trigger.nextFireAt)}
-      </TableCell>
-
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark hidden lg:table-cell">
-        {formatDate(trigger.lastFiredAt)}
-      </TableCell>
-
-      <TableCell className="whitespace-nowrap">
-        <div className="flex items-center gap-1">
-          {trigger.status === 'active' && (
-            <IconButton size="xs" icon={Pause} onClick={() => act(() => onPause(trigger.id))} disabled={busy} title="Pause" aria-label="Pause" />
-          )}
-          {trigger.status === 'paused' && (
-            <IconButton size="xs" icon={Play} onClick={() => act(() => onResume(trigger.id))} disabled={busy} title="Resume" aria-label="Resume" />
-          )}
-          {(trigger.status === 'active' || trigger.status === 'paused') && (
-            <IconButton size="xs" icon={XCircle} variant="danger-ghost" onClick={() => onCancel(trigger.id)} disabled={busy} title="Cancel" aria-label="Cancel" />
-          )}
-          <IconButton size="xs" icon={Trash2} variant="danger-ghost" onClick={() => onDelete(trigger.id)} disabled={busy} title="Delete" aria-label="Delete" />
-        </div>
-      </TableCell>
-    </TableRow>
+    <div className="flex items-center gap-1 flex-shrink-0">
+      {row.status === 'active' ? (
+        <IconButton size="sm" variant="ghost" icon={Pause} disabled={busy}
+          onClick={(e) => run(e, () => actions.onPause(row))}
+          title={SCHEDULE_TEXT.PAUSE} aria-label={`${SCHEDULE_TEXT.PAUSE} ${row.name}`} />
+      ) : (
+        <IconButton size="sm" variant="ghost" icon={Play} disabled={busy}
+          onClick={(e) => run(e, () => actions.onResume(row))}
+          title={SCHEDULE_TEXT.RESUME} aria-label={`${SCHEDULE_TEXT.RESUME} ${row.name}`} />
+      )}
+      <IconButton size="sm" variant="danger-ghost" icon={XCircle} disabled={busy}
+        onClick={(e) => { e.stopPropagation(); actions.onCancel(row); }}
+        title={SCHEDULE_TEXT.CANCEL} aria-label={`${SCHEDULE_TEXT.CANCEL} ${row.name}`} />
+    </div>
   );
 };
 
+/** Small icon + label for the last run's result. */
+const LastResult: React.FC<{ row: ScheduleRow }> = ({ row }) => {
+  const r = row.lastResult;
+  if (!r) return null;
+  if (r.status === 'ok') {
+    return <CheckCircle2 className="inline w-3.5 h-3.5 text-green-400" aria-label={SCHEDULE_TEXT.RESULT_OK} />;
+  }
+  if (r.status === 'skipped') {
+    return <MinusCircle className="inline w-3.5 h-3.5 text-text-secondary-dark" aria-label={SCHEDULE_TEXT.RESULT_SKIPPED} />;
+  }
+  return <AlertTriangle className="inline w-3.5 h-3.5 text-red-400" aria-label={SCHEDULE_TEXT.RESULT_FAILED} />;
+};
+
 // =============================================================================
-// EventSubscription Row (read-only display)
+// Rows
 // =============================================================================
 
-interface EventSubRowProps {
-  sub: EventSubscription;
+interface RowProps {
+  row: ScheduleRow;
+  actions: RowActions;
+  onOpen: (row: ScheduleRow) => void;
+  /** One-line layout for reminders / history */
+  compact?: boolean;
 }
 
-const EventSubRow: React.FC<EventSubRowProps> = ({ sub }) => {
-  const session = sub.subscriberSession;
-  const isSystem = session === '__reconciler__';
+/**
+ * One schedule. Tapping it opens the detail drawer.
+ */
+const ScheduleItem: React.FC<RowProps> = ({ row, actions, onOpen, compact = false }) => {
+  const open = () => onOpen(row);
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open(); }
+  };
+  const ended = row.status === 'cancelled' || row.status === 'exhausted';
 
   return (
-    <TableRow className="hover:bg-surface-dark/60 transition-colors">
-      {/* Type */}
-      <TableCell className="whitespace-nowrap">
-        <span className="inline-flex items-center gap-1.5 text-xs text-text-secondary-dark">
-          <Zap className="w-3.5 h-3.5" />
-          Signal
-        </span>
-      </TableCell>
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={onKey}
+      data-testid="schedule-row"
+      className="flex items-start gap-3 px-4 py-3 border-b border-border-dark last:border-b-0 cursor-pointer hover:bg-surface-dark/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-medium text-text-primary-dark truncate max-w-full">{row.name}</span>
+          {row.status === 'paused' && <Badge size="sm" variant="default">{SCHEDULE_TEXT.PAUSED}</Badge>}
+          {row.status === 'cancelled' && <Badge size="sm" variant="default">{SCHEDULE_TEXT.STATUS_CANCELLED}</Badge>}
+          {row.status === 'exhausted' && <Badge size="sm" variant="info">{SCHEDULE_TEXT.STATUS_EXHAUSTED}</Badge>}
+          {row.expiringSoon && <Badge size="sm" variant="warning">{SCHEDULE_TEXT.EXPIRING_SOON}</Badge>}
+          {row.internal && <Badge size="sm" variant="default">{SCHEDULE_TEXT.SYSTEM_CHIP}</Badge>}
+        </div>
 
-      {/* Team/subscriber */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark max-w-[120px]">
-        <span className="truncate block" title={session}>{isSystem ? 'System' : session}</span>
-      </TableCell>
+        <div className="mt-0.5 text-xs text-text-secondary-dark flex items-center gap-x-2 gap-y-0.5 flex-wrap">
+          <span title={row.cronExpression ? `${row.cronExpression}${row.timezone ? ` (${row.timezone})` : ''}` : undefined}>
+            {row.scheduleText}
+          </span>
+          {row.runnerName && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span>{row.runnerName}</span>
+            </>
+          )}
+        </div>
 
-      {/* Event type */}
-      <TableCell className="text-xs font-mono">
-        {sub.eventType}
-      </TableCell>
+        {!compact && (
+          <div className="mt-1 text-xs text-text-secondary-dark flex items-center gap-x-3 gap-y-0.5 flex-wrap">
+            {row.nextRunAt && (
+              <span>
+                {SCHEDULE_TEXT.NEXT_RUN} <span className="text-text-primary-dark">{formatRelative(row.nextRunAt)}</span>
+                {' '}({formatAbsolute(row.nextRunAt)})
+              </span>
+            )}
+            <span>
+              {row.lastRunAt
+                ? <>{SCHEDULE_TEXT.LAST_RUN} {formatAbsolute(row.lastRunAt)} <LastResult row={row} /></>
+                : SCHEDULE_TEXT.NEVER_RUN}
+            </span>
+            {row.maxFires !== undefined && row.fireCount !== undefined ? (
+              <span>{SCHEDULE_TEXT.RUNS_OF(row.fireCount, row.maxFires)} · {SCHEDULE_TEXT.REMAINING(row.remaining ?? 0)}</span>
+            ) : row.fireCount ? (
+              <span>{SCHEDULE_TEXT.RUNS(row.fireCount)}</span>
+            ) : null}
+            {row.projectedEndAt && <span>{SCHEDULE_TEXT.ENDS_AROUND(formatShortDate(row.projectedEndAt))}</span>}
+          </div>
+        )}
 
-      {/* Action */}
-      <TableCell className="text-sm text-text-secondary-dark">
-        → {session}
-      </TableCell>
+        {compact && (row.nextRunAt || (ended && row.lastRunAt)) && (
+          <div className="mt-0.5 text-xs text-text-secondary-dark">
+            {row.nextRunAt
+              ? <>{formatRelative(row.nextRunAt)} ({formatAbsolute(row.nextRunAt)})</>
+              : <>{SCHEDULE_TEXT.LAST_RUN} {formatAbsolute(row.lastRunAt)}</>}
+          </div>
+        )}
+      </div>
+      <RowActionButtons row={row} actions={actions} />
+    </div>
+  );
+};
 
-      {/* Status */}
-      <TableCell className="whitespace-nowrap">
-        <StatusBadge status="active">active</StatusBadge>
-      </TableCell>
+/** A list of rows inside one card. */
+const RowList: React.FC<Omit<RowProps, 'row'> & { rows: ScheduleRow[] }> = ({ rows, ...rest }) => (
+  <Card padding="none" className="overflow-hidden">
+    {rows.map((row) => <ScheduleItem key={row.key} row={row} {...rest} />)}
+  </Card>
+);
 
-      {/* Next Fire */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark">
-        {sub.expiresAt ? `Exp ${formatDate(sub.expiresAt)}` : '—'}
-      </TableCell>
+// =============================================================================
+// Detail drawer
+// =============================================================================
 
-      {/* Last Fire */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark">—</TableCell>
+/** One label/value line in the detail drawer. */
+const DetailLine: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <div className="flex gap-3 py-1.5 text-sm">
+    <dt className="w-20 flex-shrink-0 text-text-secondary-dark">{label}</dt>
+    <dd className="min-w-0 flex-1 text-text-primary-dark break-words">{children}</dd>
+  </div>
+);
 
-      {/* Actions (read-only for event subscriptions) */}
-      <TableCell className="whitespace-nowrap text-xs text-text-secondary-dark">
-        {sub.oneShot && <Badge variant="warning" size="sm">one-shot</Badge>}
-      </TableCell>
-    </TableRow>
+/**
+ * Everything about one schedule, including its full description.
+ */
+const ScheduleDetail: React.FC<{
+  row: ScheduleRow | null;
+  onClose: () => void;
+  actions: RowActions;
+}> = ({ row, onClose, actions }) => {
+  const [busy, setBusy] = useState(false);
+  if (!row) return null;
+  const live = isLiveRow(row);
+  const run = async (fn: () => Promise<void>) => {
+    setBusy(true);
+    try { await fn(); } finally { setBusy(false); }
+  };
+  const resultText = row.lastResult
+    ? row.lastResult.status === 'ok' ? SCHEDULE_TEXT.RESULT_OK
+      : row.lastResult.status === 'skipped' ? SCHEDULE_TEXT.RESULT_SKIPPED
+      : `${SCHEDULE_TEXT.RESULT_FAILED}${row.lastResult.detail ? `: ${row.lastResult.detail}` : ''}`
+    : '';
+
+  const footer = (
+    <div className="flex items-center justify-end gap-2 flex-wrap">
+      {live && row.status === 'active' && (
+        <Button variant="outline" size="sm" icon={Pause} disabled={busy} onClick={() => run(() => actions.onPause(row))}>{SCHEDULE_TEXT.PAUSE}</Button>
+      )}
+      {live && row.status === 'paused' && (
+        <Button variant="outline" size="sm" icon={Play} disabled={busy} onClick={() => run(() => actions.onResume(row))}>{SCHEDULE_TEXT.RESUME}</Button>
+      )}
+      {live && (
+        <Button variant="danger" size="sm" icon={XCircle} disabled={busy} onClick={() => actions.onCancel(row)}>{SCHEDULE_TEXT.CANCEL}</Button>
+      )}
+      {!live && row.source === 'trigger' && (
+        <Button variant="ghost" size="sm" icon={Trash2} disabled={busy} onClick={() => actions.onDelete(row)}>{SCHEDULE_TEXT.DELETE}</Button>
+      )}
+    </div>
+  );
+
+  return (
+    <Drawer isOpen onClose={onClose} title={row.name} subtitle={row.scheduleText} footer={footer} data-testid="schedule-detail">
+      <div className="flex flex-col gap-4">
+        {row.expiringSoon && (
+          <Alert variant="warning">
+            {SCHEDULE_TEXT.EXPIRING_SOON} · {SCHEDULE_TEXT.REMAINING(row.remaining ?? 0)}
+            {row.projectedEndAt ? ` · ${SCHEDULE_TEXT.ENDS_AROUND(formatShortDate(row.projectedEndAt))}` : ''}
+            {row.headsUpSentAt ? ` · ${SCHEDULE_TEXT.HEADS_UP_SENT}` : ''}
+          </Alert>
+        )}
+        <dl>
+          <DetailLine label={SCHEDULE_TEXT.SCHEDULE}>{row.scheduleText}</DetailLine>
+          {row.cronExpression && (
+            <DetailLine label={SCHEDULE_TEXT.RAW_CRON}>
+              <span className="font-mono">{row.cronExpression}</span>{row.timezone ? ` · ${row.timezone}` : ''}
+            </DetailLine>
+          )}
+          {row.nextRunAt && (
+            <DetailLine label={SCHEDULE_TEXT.NEXT_RUN}>{formatRelative(row.nextRunAt)} · {formatAbsolute(row.nextRunAt)}</DetailLine>
+          )}
+          <DetailLine label={SCHEDULE_TEXT.LAST_RUN}>
+            {row.lastRunAt ? `${formatAbsolute(row.lastRunAt)}${resultText ? ` · ${resultText}` : ''}` : SCHEDULE_TEXT.NEVER_RUN}
+          </DetailLine>
+          {row.fireCount !== undefined && (
+            <DetailLine label={SCHEDULE_FORM_TEXT.RUNS}>
+              {row.maxFires !== undefined
+                ? `${SCHEDULE_TEXT.RUNS_OF(row.fireCount, row.maxFires)} · ${SCHEDULE_TEXT.REMAINING(row.remaining ?? 0)}`
+                : SCHEDULE_TEXT.RUNS(row.fireCount)}
+              {row.projectedEndAt ? ` · ${SCHEDULE_TEXT.ENDS_AROUND(formatShortDate(row.projectedEndAt))}` : ''}
+            </DetailLine>
+          )}
+          {row.runnerName && <DetailLine label={SCHEDULE_TEXT.RUNS_AS}>{row.runnerName}</DetailLine>}
+          <DetailLine label={SCHEDULE_TEXT.TEAM}>{row.teamName}</DetailLine>
+          <DetailLine label={SCHEDULE_TEXT.CREATED_BY}>
+            {row.createdByLabel}{row.createdAt ? ` · ${formatAbsolute(row.createdAt)}` : ''}
+          </DetailLine>
+          <DetailLine label={SCHEDULE_TEXT.ID}><span className="font-mono text-xs">{row.id}</span></DetailLine>
+        </dl>
+        <div>
+          <div className="text-xs font-medium text-text-secondary-dark mb-1">{SCHEDULE_TEXT.DESCRIPTION}</div>
+          <div className="text-sm text-text-primary-dark whitespace-pre-wrap break-words rounded-xl border border-border-dark bg-background-dark/40 p-3">
+            {row.description || SCHEDULE_TEXT.NO_DESCRIPTION}
+          </div>
+        </div>
+      </div>
+    </Drawer>
   );
 };
 
 // =============================================================================
-// Create Trigger Modal
+// Create modal
 // =============================================================================
 
 interface CreateTriggerModalProps {
@@ -324,8 +333,10 @@ interface CreateTriggerModalProps {
   onCreate: (input: CreateTriggerInput) => Promise<void>;
 }
 
+/** Owner-created schedule: a cron or event that sends an agent a message. */
 const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose, onCreate }) => {
   const [type, setType] = useState<TriggerType>('time');
+  const [name, setName] = useState('');
   const [cronExpression, setCronExpression] = useState('0 9 * * 1-5');
   const [eventType, setEventType] = useState('agent:idle');
   const [messageTarget, setMessageTarget] = useState('');
@@ -336,13 +347,13 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
 
   const handleSubmit = async () => {
     setError('');
-    if (type === 'time' && !cronExpression.trim()) { setError('Cron expression is required'); return; }
-    if (type === 'signal' && !eventType.trim()) { setError('Event type is required'); return; }
-    if (!messageTarget.trim() || !messageText.trim()) { setError('Message target and text are required'); return; }
+    if (type === 'time' && !cronExpression.trim()) { setError(SCHEDULE_FORM_TEXT.ERROR_CRON); return; }
+    if (type === 'signal' && !eventType.trim()) { setError(SCHEDULE_FORM_TEXT.ERROR_EVENT); return; }
+    if (!messageTarget.trim() || !messageText.trim()) { setError(SCHEDULE_FORM_TEXT.ERROR_TARGET); return; }
 
     const config =
       type === 'time'
-        ? { type: 'time' as const, cronExpression: cronExpression.trim() }
+        ? { type: 'time' as const, cronExpression: cronExpression.trim(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }
         : { type: 'signal' as const, eventType: eventType.trim() };
 
     const input: CreateTriggerInput = {
@@ -350,6 +361,7 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
       config,
       action: { sendMessage: { target: messageTarget.trim(), message: messageText.trim() } },
       createdBy: 'user',
+      ...(name.trim() ? { name: name.trim() } : {}),
       maxFires: maxFires ? parseInt(maxFires, 10) : undefined,
     };
 
@@ -357,13 +369,14 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
       setSubmitting(true);
       await onCreate(input);
       onClose();
+      setName('');
       setCronExpression('0 9 * * 1-5');
       setEventType('agent:idle');
       setMessageTarget('');
       setMessageText('');
       setMaxFires('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to create trigger');
+      setError(err instanceof Error ? err.message : SCHEDULE_FORM_TEXT.ERROR_CREATE);
     } finally {
       setSubmitting(false);
     }
@@ -372,70 +385,72 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
   if (!isOpen) return null;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="New Trigger" size="md">
+    <Modal isOpen={isOpen} onClose={onClose} title={SCHEDULE_FORM_TEXT.TITLE} size="md">
       <ModalBody>
         <div className="space-y-4">
           <FormGroup>
-            <FormLabel>Trigger Type</FormLabel>
+            <FormLabel>{SCHEDULE_FORM_TEXT.TYPE}</FormLabel>
             <SegmentedControl<TriggerType>
               aria-label="Trigger type"
               value={type}
               onChange={setType}
               options={[
-                { value: 'time', label: 'Time', icon: Clock },
-                { value: 'signal', label: 'Signal', icon: Zap },
+                { value: 'time', label: SCHEDULE_FORM_TEXT.TYPE_TIME, icon: Clock },
+                { value: 'signal', label: SCHEDULE_FORM_TEXT.TYPE_SIGNAL, icon: Zap },
               ]}
             />
           </FormGroup>
 
+          <FormGroup>
+            <FormLabel htmlFor="trigger-name">{SCHEDULE_FORM_TEXT.NAME}</FormLabel>
+            <FormInput id="trigger-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={SCHEDULE_FORM_TEXT.NAME_PLACEHOLDER} />
+          </FormGroup>
+
           {type === 'time' && (
             <FormGroup>
-              <FormLabel htmlFor="trigger-cron">Cron Expression</FormLabel>
+              <FormLabel htmlFor="trigger-cron">{SCHEDULE_FORM_TEXT.CRON}</FormLabel>
               <FormInput id="trigger-cron" className="font-mono"
                 value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 9 * * 1-5" />
-              <FormHelp>Standard 5-field cron (min hour dom month dow)</FormHelp>
+              <FormHelp>{SCHEDULE_FORM_TEXT.CRON_HELP}</FormHelp>
             </FormGroup>
           )}
 
           {type === 'signal' && (
             <FormGroup>
-              <FormLabel htmlFor="trigger-event-type">Event Type</FormLabel>
+              <FormLabel htmlFor="trigger-event-type">{SCHEDULE_FORM_TEXT.EVENT_TYPE}</FormLabel>
               <FormInput id="trigger-event-type" className="font-mono"
                 value={eventType} onChange={(e) => setEventType(e.target.value)} placeholder="agent:idle" />
-              <FormHelp>EventBus event type (e.g. agent:idle, task:completed)</FormHelp>
             </FormGroup>
           )}
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-target">Send Message To</FormLabel>
+            <FormLabel htmlFor="trigger-target">{SCHEDULE_FORM_TEXT.TARGET}</FormLabel>
             <FormInput id="trigger-target" className="font-mono"
-              value={messageTarget} onChange={(e) => setMessageTarget(e.target.value)} placeholder="agent-session or #channel" />
+              value={messageTarget} onChange={(e) => setMessageTarget(e.target.value)} placeholder={SCHEDULE_FORM_TEXT.TARGET_PLACEHOLDER} />
           </FormGroup>
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-message">Message</FormLabel>
+            <FormLabel htmlFor="trigger-message">{SCHEDULE_FORM_TEXT.MESSAGE}</FormLabel>
             <FormTextarea id="trigger-message"
-              rows={3} value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder="What should the agent do?" />
+              rows={3} value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder={SCHEDULE_FORM_TEXT.MESSAGE_PLACEHOLDER} />
           </FormGroup>
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-max-fires">Max Fires (optional)</FormLabel>
+            <FormLabel htmlFor="trigger-max-fires">{SCHEDULE_FORM_TEXT.MAX_FIRES}</FormLabel>
             <div className="w-32">
               <FormInput id="trigger-max-fires" type="number" min="1"
                 value={maxFires} onChange={(e) => setMaxFires(e.target.value)} placeholder="∞" />
             </div>
-            <FormHelp>Leave blank for unlimited.</FormHelp>
+            <FormHelp>{SCHEDULE_FORM_TEXT.MAX_FIRES_HELP}</FormHelp>
           </FormGroup>
 
-          {error && (
-            <Alert variant="error">{error}</Alert>
-          )}
+          {error && <Alert variant="error">{error}</Alert>}
         </div>
       </ModalBody>
       <ModalFooter>
-        <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>Cancel</Button>
+        <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>{SCHEDULE_FORM_TEXT.CANCEL}</Button>
         <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting} loading={submitting}>
-          {submitting ? 'Creating…' : 'Create Trigger'}
+          {submitting ? SCHEDULE_FORM_TEXT.CREATING : SCHEDULE_FORM_TEXT.CREATE}
         </Button>
       </ModalFooter>
     </Modal>
@@ -443,151 +458,11 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
 };
 
 // =============================================================================
-// Engine Status Bar
-// =============================================================================
-
-interface EngineStatusBarProps {
-  running: boolean;
-  totalUserTriggers: number;
-  totalCronTasks: number;
-  activeCount: number;
-  pausedCount: number;
-}
-
-const EngineStatusBar: React.FC<EngineStatusBarProps> = ({
-  running, totalUserTriggers, totalCronTasks, activeCount, pausedCount,
-}) => (
-  <Card padding="none" className="flex items-center gap-4 px-4 py-2.5 text-xs text-text-secondary-dark flex-wrap">
-    <span className="flex items-center gap-1.5">
-      <Activity className={`w-3 h-3 ${running ? 'text-green-400' : 'text-yellow-400'}`} />
-      Engine {running ? 'running' : 'stopped'}
-    </span>
-    <span className="text-border-dark">|</span>
-    <span>{totalCronTasks} scheduled tasks</span>
-    {totalUserTriggers > 0 && <span>{totalUserTriggers} V3 triggers</span>}
-    <span className="text-border-dark">|</span>
-    {activeCount > 0 && <span className="text-green-400">{activeCount} active</span>}
-    {pausedCount > 0 && <span className="text-yellow-400">{pausedCount} paused</span>}
-  </Card>
-);
-
-// =============================================================================
-// Filter + View Tabs
-// =============================================================================
-
-type FilterTab = 'all' | 'active' | 'paused';
-type ViewMode = 'list' | 'team';
-
-// =============================================================================
-// Table Component (shared between list + team views)
-// =============================================================================
-
-interface TriggersTableProps {
-  cronTasks: CronTask[];
-  triggers: Trigger[];
-  eventSubs: EventSubscription[];
-  teamMap: Record<string, string>;
-  onToggleCron: (id: string, enabled: boolean) => Promise<void>;
-  onDeleteCron: (id: string) => void;
-  onPause: (id: string) => Promise<Trigger>;
-  onResume: (id: string) => Promise<Trigger>;
-  onCancel: (id: string) => void;
-  onDelete: (id: string) => void;
-}
-
-const TriggersTable: React.FC<TriggersTableProps> = ({
-  cronTasks, triggers, eventSubs, teamMap, onToggleCron, onDeleteCron, onPause, onResume, onCancel, onDelete,
-}) => {
-  if (cronTasks.length === 0 && triggers.length === 0 && eventSubs.length === 0) return null;
-  return (
-    <Table className="min-w-full">
-      <TableHead>
-        <tr>
-          <TableHeader>Type</TableHeader>
-          <TableHeader className="hidden sm:table-cell">Team</TableHeader>
-          <TableHeader>Schedule / Event</TableHeader>
-          <TableHeader className="hidden md:table-cell">Task / Action</TableHeader>
-          <TableHeader>Status</TableHeader>
-          <TableHeader className="hidden lg:table-cell">Next Fire</TableHeader>
-          <TableHeader className="hidden lg:table-cell">Last Fire</TableHeader>
-          <TableHeader>Actions</TableHeader>
-        </tr>
-      </TableHead>
-      <TableBody>
-        {cronTasks.map((task) => (
-          <CronTaskRow key={`cron-${task.id}`} task={task} teamMap={teamMap} onToggle={onToggleCron} onDelete={onDeleteCron} />
-        ))}
-        {triggers.map((trigger) => (
-          <TriggerRow
-            key={`trigger-${trigger.id}`}
-            trigger={trigger}
-            onPause={onPause}
-            onResume={onResume}
-            onCancel={onCancel}
-            onDelete={onDelete}
-          />
-        ))}
-        {eventSubs.map((sub) => (
-          <EventSubRow key={`sub-${sub.id}`} sub={sub} />
-        ))}
-      </TableBody>
-    </Table>
-  );
-};
-
-// =============================================================================
-// Team Group Section
-// =============================================================================
-
-interface TeamGroupProps {
-  teamName: string;
-  cronTasks: CronTask[];
-  triggers: Trigger[];
-  eventSubs: EventSubscription[];
-  teamMap: Record<string, string>;
-  onToggleCron: (id: string, enabled: boolean) => Promise<void>;
-  onDeleteCron: (id: string) => void;
-  onPause: (id: string) => Promise<Trigger>;
-  onResume: (id: string) => Promise<Trigger>;
-  onCancel: (id: string) => void;
-  onDelete: (id: string) => void;
-}
-
-const TeamGroup: React.FC<TeamGroupProps> = ({ teamName, cronTasks, triggers, eventSubs = [], ...rest }) => {
-  const [collapsed, setCollapsed] = useState(false);
-  const total = cronTasks.length + triggers.length + eventSubs.length;
-  const active = cronTasks.filter((t) => t.enabled).length + triggers.filter((t) => t.status === 'active').length + eventSubs.length;
-
-  return (
-    <section className="flex flex-col gap-2">
-      {/* Collapsible group header — a full-width row target, not a styled button */}
-      <button
-        type="button"
-        onClick={() => setCollapsed(!collapsed)}
-        aria-expanded={!collapsed}
-        className="w-full flex items-center justify-between px-4 py-3 bg-surface-dark border border-border-dark rounded-2xl hover:border-primary/50 transition-colors"
-      >
-        <div className="flex items-center gap-2">
-          <Users className="w-4 h-4 text-text-secondary-dark" />
-          <span className="text-sm font-medium text-text-primary-dark">{teamName}</span>
-          <span className="text-xs text-text-secondary-dark">({total} triggers, {active} active)</span>
-        </div>
-        <span className="text-xs text-text-secondary-dark">{collapsed ? '▶' : '▼'}</span>
-      </button>
-      {!collapsed && (
-        <TriggersTable cronTasks={cronTasks} triggers={triggers} eventSubs={eventSubs} {...rest} />
-      )}
-    </section>
-  );
-};
-
-// =============================================================================
-// Triggers Page
+// Page
 // =============================================================================
 
 /**
- * Triggers — unified V3 trigger management page.
- * Shows both legacy CronTask jobs and user-created V3 TriggerEngine triggers.
+ * Schedules — what the team does on a timer, at a glance.
  */
 export const Triggers: React.FC = () => {
   const {
@@ -613,28 +488,39 @@ export const Triggers: React.FC = () => {
   } = useCronTasks();
 
   const { showConfirm, ConfirmComponent } = useConfirm();
+  const [tab, setTab] = useState<ScheduleTab>('scheduled');
+  const [showSystem, setShowSystem] = useState(false);
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [filterTab, setFilterTab] = useState<FilterTab>('all');
-  const [viewMode, setViewMode] = useState<ViewMode>('list');
   const [refreshing, setRefreshing] = useState(false);
-  const [teamMap, setTeamMap] = useState<Record<string, string>>({});
+  const [teams, setTeams] = useState<Team[]>([]);
   const [eventSubs, setEventSubs] = useState<EventSubscription[]>([]);
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyPage, setHistoryPage] = useState(0);
 
   const isLoading = triggersLoading || cronLoading;
   const error = triggersError || cronError;
 
-  // Load team names + event subscriptions
   useEffect(() => {
-    apiService.getTeams().then((teams: any[]) => {
-      const map: Record<string, string> = {};
-      for (const t of teams) map[t.id] = t.name;
-      setTeamMap(map);
-    }).catch(() => {});
-
-    apiService.getEventSubscriptions().then((subs) => {
-      setEventSubs(subs);
-    }).catch(() => {});
+    apiService.getTeams().then(setTeams).catch(() => {});
+    apiService.getEventSubscriptions().then(setEventSubs).catch(() => {});
   }, []);
+
+  const buckets = useMemo(
+    () => bucketSchedules({ triggers, cronTasks, eventSubs, teams, showSystem }),
+    [triggers, cronTasks, eventSubs, teams, showSystem],
+  );
+  const scheduledGroups = useMemo(() => groupByTeam(buckets.scheduled), [buckets.scheduled]);
+
+  const allRows = useMemo(
+    () => [...buckets.scheduled, ...buckets.reminders, ...buckets.events, ...buckets.history],
+    [buckets],
+  );
+  const selected = selectedKey ? allRows.find((r) => r.key === selectedKey) ?? null : null;
+
+  const historyPages = Math.max(1, Math.ceil(buckets.history.length / SCHEDULE_HISTORY_PAGE_SIZE));
+  const page = Math.min(historyPage, historyPages - 1);
+  const historyRows = buckets.history.slice(page * SCHEDULE_HISTORY_PAGE_SIZE, (page + 1) * SCHEDULE_HISTORY_PAGE_SIZE);
 
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -643,199 +529,172 @@ export const Triggers: React.FC = () => {
         refreshTriggers(),
         refreshCron(),
         apiService.getEventSubscriptions().then(setEventSubs).catch(() => {}),
+        apiService.getTeams(true).then(setTeams).catch(() => {}),
       ]);
     } finally { setRefreshing(false); }
   };
 
-  // Only show user/orchestrator/mission-created V3 triggers (hide system triggers)
-  const userTriggers = triggers.filter((t) => t.createdBy !== 'system');
-
-  // Only show non-system event subs (hide __reconciler__)
-  const userEventSubs = eventSubs.filter((s) => s.subscriberSession !== '__reconciler__');
-
-  // Apply status filter (event subs are always "active")
-  const filteredCronTasks = filterTab === 'active' ? cronTasks.filter((t) => t.enabled)
-    : filterTab === 'paused' ? cronTasks.filter((t) => !t.enabled)
-    : cronTasks;
-  const filteredTriggers = filterTab === 'active' ? userTriggers.filter((t) => t.status === 'active')
-    : filterTab === 'paused' ? userTriggers.filter((t) => t.status === 'paused')
-    : userTriggers;
-  const filteredEventSubs = filterTab === 'paused' ? [] : userEventSubs;
-
-  const totalRows = filteredCronTasks.length + filteredTriggers.length + filteredEventSubs.length;
-
-  const activeCount = cronTasks.filter((t) => t.enabled).length + userTriggers.filter((t) => t.status === 'active').length + userEventSubs.length;
-  const pausedCount = cronTasks.filter((t) => !t.enabled).length + userTriggers.filter((t) => t.status === 'paused').length;
-
-  const handleToggleCron = async (id: string, enabled: boolean) => { await updateCronTask(id, { enabled }); };
-
-  const handleDeleteCron = (id: string) => {
-    showConfirm('This will permanently delete the scheduled task.', async () => { await deleteCronTask(id); },
-      { title: 'Delete Scheduled Task', confirmText: 'Delete', type: 'warning' });
+  const actions: RowActions = {
+    onPause: async (row) => {
+      if (row.source === 'cron-task') await updateCronTask(row.id, { enabled: false });
+      else await pauseTrigger(row.id);
+    },
+    onResume: async (row) => {
+      if (row.source === 'cron-task') await updateCronTask(row.id, { enabled: true });
+      else await resumeTrigger(row.id);
+    },
+    onCancel: (row) => {
+      showConfirm(SCHEDULE_TEXT.CANCEL_CONFIRM_BODY, async () => {
+        if (row.source === 'cron-task') await deleteCronTask(row.id);
+        else await cancelTrigger(row.id);
+      }, { title: SCHEDULE_TEXT.CANCEL_CONFIRM_TITLE, confirmText: SCHEDULE_TEXT.CANCEL, type: 'warning' });
+    },
+    onDelete: (row) => {
+      showConfirm(SCHEDULE_TEXT.DELETE_CONFIRM_BODY, async () => {
+        await deleteTrigger(row.id);
+        setSelectedKey(null);
+      }, { title: SCHEDULE_TEXT.DELETE_CONFIRM_TITLE, confirmText: SCHEDULE_TEXT.DELETE, type: 'warning' });
+    },
   };
 
-  const handleCancelTrigger = (id: string) => {
-    showConfirm('Cancelling is permanent and cannot be undone.', async () => { await cancelTrigger(id); },
-      { title: 'Cancel Trigger', confirmText: 'Cancel Trigger', type: 'warning' });
-  };
+  const openRow = (row: ScheduleRow) => setSelectedKey(row.key);
+  const rowProps = { actions, onOpen: openRow };
 
-  const handleDeleteTrigger = (id: string) => {
-    showConfirm('This will permanently delete the trigger.', async () => { await deleteTrigger(id); },
-      { title: 'Delete Trigger', confirmText: 'Delete', type: 'warning' });
-  };
-
-  // Build team groups for "By Team" view
-  const buildTeamGroups = () => {
-    const groups: Record<string, { cronTasks: CronTask[]; triggers: Trigger[]; eventSubs: EventSubscription[] }> = {};
-
-    const ensureGroup = (key: string) => {
-      if (!groups[key]) groups[key] = { cronTasks: [], triggers: [], eventSubs: [] };
-    };
-
-    for (const task of filteredCronTasks) {
-      const key = task.targetTeamId || 'unassigned';
-      ensureGroup(key);
-      groups[key].cronTasks.push(task);
-    }
-    for (const trigger of filteredTriggers) {
-      const key = 'v3-triggers';
-      ensureGroup(key);
-      groups[key].triggers.push(trigger);
-    }
-    for (const sub of filteredEventSubs) {
-      // Try to resolve subscriber session to a team
-      const key = sub.subscriberSession === 'crewly-orc' ? 'orchestrator' : 'event-subs';
-      ensureGroup(key);
-      groups[key].eventSubs.push(sub);
-    }
-
-    return Object.entries(groups).map(([teamId, data]) => ({
-      teamId,
-      teamName: teamMap[teamId]
-        || (teamId === 'unassigned' ? 'Unassigned'
-        : teamId === 'v3-triggers' ? 'V3 Triggers'
-        : teamId === 'event-subs' ? 'Event Subscriptions'
-        : teamId === 'orchestrator' ? 'Orchestrator'
-        : teamId),
-      ...data,
-    }));
-  };
-
-  const tabs: { key: FilterTab; label: string; count: number }[] = [
-    { key: 'all', label: 'All', count: cronTasks.length + userTriggers.length + userEventSubs.length },
-    { key: 'active', label: 'Active', count: activeCount },
-    { key: 'paused', label: 'Paused', count: pausedCount },
+  const tabs = [
+    { value: 'scheduled', label: SCHEDULE_TEXT.TAB_SCHEDULED, count: buckets.scheduled.length },
+    { value: 'reminders', label: SCHEDULE_TEXT.TAB_REMINDERS, count: buckets.reminders.length + buckets.events.length },
+    { value: 'history', label: SCHEDULE_TEXT.TAB_HISTORY, count: buckets.history.length },
   ];
 
-  const sharedProps = {
-    teamMap,
-    onToggleCron: handleToggleCron,
-    onDeleteCron: handleDeleteCron,
-    onPause: pauseTrigger,
-    onResume: resumeTrigger,
-    onCancel: handleCancelTrigger,
-    onDelete: handleDeleteTrigger,
+  const renderScheduled = () => {
+    if (buckets.scheduled.length === 0) {
+      return <EmptyState icon={Clock} title={SCHEDULE_TEXT.EMPTY_SCHEDULED_TITLE} description={SCHEDULE_TEXT.EMPTY_SCHEDULED_BODY} />;
+    }
+    return (
+      <div className="flex flex-col gap-5">
+        {scheduledGroups.map((group) => (
+          <section key={group.teamId} className="flex flex-col gap-2" aria-label={group.teamName}>
+            <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark px-1">
+              <Users className="w-3.5 h-3.5" />
+              {group.teamName}
+              <span className="font-normal normal-case">({group.rows.length})</span>
+            </h2>
+            <RowList rows={group.rows} {...rowProps} />
+          </section>
+        ))}
+      </div>
+    );
+  };
+
+  const renderReminders = () => {
+    if (buckets.reminders.length === 0 && buckets.events.length === 0) {
+      return <EmptyState icon={Bell} title={SCHEDULE_TEXT.EMPTY_REMINDERS_TITLE} description={SCHEDULE_TEXT.EMPTY_REMINDERS_BODY} />;
+    }
+    return (
+      <div className="flex flex-col gap-5">
+        {buckets.reminders.length > 0 && <RowList rows={buckets.reminders} compact {...rowProps} />}
+        {buckets.events.length > 0 && (
+          <section className="flex flex-col gap-2" aria-label={SCHEDULE_TEXT.WAITING_EVENTS}>
+            <h2 className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-text-secondary-dark px-1">
+              <Zap className="w-3.5 h-3.5" />
+              {SCHEDULE_TEXT.WAITING_EVENTS}
+              <span className="font-normal normal-case">({buckets.events.length})</span>
+            </h2>
+            <RowList rows={buckets.events} compact {...rowProps} />
+          </section>
+        )}
+      </div>
+    );
+  };
+
+  const renderHistory = () => {
+    if (buckets.history.length === 0) {
+      return <EmptyState icon={HistoryIcon} title={SCHEDULE_TEXT.EMPTY_HISTORY_TITLE} description={SCHEDULE_TEXT.EMPTY_HISTORY_BODY} />;
+    }
+    return (
+      <div className="flex flex-col gap-3">
+        <button
+          type="button"
+          onClick={() => setHistoryOpen((v) => !v)}
+          aria-expanded={historyOpen}
+          className="w-full flex items-center justify-between px-4 py-3 bg-surface-dark border border-border-dark rounded-2xl hover:border-primary/50 transition-colors text-sm"
+        >
+          <span className="flex items-center gap-2 text-text-primary-dark">
+            {historyOpen ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+            {SCHEDULE_TEXT.HISTORY_SUMMARY(buckets.history.length)}
+          </span>
+          <span className="text-xs text-text-secondary-dark">{historyOpen ? SCHEDULE_TEXT.COLLAPSE : SCHEDULE_TEXT.EXPAND}</span>
+        </button>
+        {historyOpen && (
+          <>
+            <RowList rows={historyRows} compact {...rowProps} />
+            {historyPages > 1 && (
+              <div className="flex items-center justify-center gap-3 text-xs text-text-secondary-dark">
+                <Button variant="ghost" size="sm" disabled={page === 0} onClick={() => setHistoryPage(page - 1)}>{SCHEDULE_TEXT.PREV_PAGE}</Button>
+                <span>{SCHEDULE_TEXT.PAGE_OF(page + 1, historyPages)}</span>
+                <Button variant="ghost" size="sm" disabled={page >= historyPages - 1} onClick={() => setHistoryPage(page + 1)}>{SCHEDULE_TEXT.NEXT_PAGE}</Button>
+              </div>
+            )}
+          </>
+        )}
+      </div>
+    );
   };
 
   return (
-    <div className="flex flex-col h-full p-6 gap-4 overflow-hidden">
+    <div className="flex flex-col h-full min-w-0 max-w-full p-4 sm:p-6 gap-4 overflow-hidden" data-testid="schedules-page">
       {/* Header */}
-      <div className="flex items-center justify-between flex-shrink-0">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary-dark">Triggers</h1>
-          <p className="mt-0.5 text-sm text-text-secondary-dark">
-            Scheduled tasks and event-driven triggers for agent automation
-          </p>
+      <div className="flex items-start justify-between gap-3 flex-shrink-0">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-text-primary-dark">{SCHEDULE_TEXT.PAGE_TITLE}</h1>
+          <p className="mt-0.5 text-sm text-text-secondary-dark">{SCHEDULE_TEXT.PAGE_SUBTITLE}</p>
         </div>
-        <div className="flex items-center gap-2">
-          <IconButton
-            icon={RefreshCw}
-            variant="outline"
-            onClick={handleRefresh}
-            loading={refreshing}
-            title="Refresh"
-            aria-label="Refresh"
-          />
-          <Button variant="primary" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>
-            New Trigger
-          </Button>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <IconButton icon={RefreshCw} variant="outline" onClick={handleRefresh} loading={refreshing}
+            title={SCHEDULE_TEXT.REFRESH} aria-label={SCHEDULE_TEXT.REFRESH} />
+          <Button variant="primary" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>{SCHEDULE_TEXT.NEW}</Button>
         </div>
       </div>
 
-      {/* Engine status bar */}
-      {engineStatus && (
-        <div className="flex-shrink-0">
-          <EngineStatusBar
-            running={engineStatus.running}
-            totalUserTriggers={userTriggers.length}
-            totalCronTasks={cronTasks.length}
-            activeCount={activeCount}
-            pausedCount={pausedCount}
-          />
-        </div>
+      {engineStatus && !engineStatus.running && (
+        <Alert variant="warning" className="flex-shrink-0">{SCHEDULE_TEXT.ENGINE_STOPPED}</Alert>
       )}
+      {error && <Alert variant="error" className="flex-shrink-0">{error}</Alert>}
 
-      {/* Error */}
-      {error && (
-        <Alert variant="error" className="flex-shrink-0">
-          {error}
-        </Alert>
-      )}
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between flex-shrink-0">
+        <PageToolbar
+          tabs={tabs}
+          activeTab={tab}
+          onTabChange={(v) => setTab(v as ScheduleTab)}
+          className="min-w-0"
+        />
+        <Toggle
+          size="sm"
+          label={SCHEDULE_TEXT.SHOW_SYSTEM}
+          checked={showSystem}
+          onChange={(e) => setShowSystem(e.target.checked)}
+        />
+      </div>
 
-      {/* Filter tabs + view mode toggle */}
-      <PageToolbar
-        tabs={tabs.map(({ key, label, count }) => ({ value: key, label, count }))}
-        activeTab={filterTab}
-        onTabChange={(v) => setFilterTab(v as FilterTab)}
-        viewModes={[
-          { value: 'list', label: 'List view', icon: <List className="w-4 h-4" /> },
-          { value: 'team', label: 'Group by team', icon: <Users className="w-4 h-4" /> },
-        ]}
-        activeViewMode={viewMode}
-        onViewModeChange={(v) => setViewMode(v as 'list' | 'team')}
-        className="flex-shrink-0"
-      />
-
-      {/* Content — scrollable */}
-      <div className="flex-1 overflow-y-auto min-h-0">
+      <div className="flex-1 overflow-y-auto min-h-0 pb-4">
         {isLoading ? (
-          <LoadingSpinner size="md" text="Loading triggers…" className="py-16" />
-        ) : totalRows === 0 ? (
-          <EmptyState
-            icon={Clock}
-            title={filterTab === 'all' ? 'No triggers yet' : `No ${filterTab} triggers`}
-            action={filterTab === 'all' ? (
-              <Button variant="outline" size="sm" icon={Plus} onClick={() => setShowCreateModal(true)}>
-                Create your first trigger
-              </Button>
-            ) : undefined}
-          />
-        ) : viewMode === 'list' ? (
-          <TriggersTable
-            cronTasks={filteredCronTasks}
-            triggers={filteredTriggers}
-            eventSubs={filteredEventSubs}
-            {...sharedProps}
-          />
-        ) : buildTeamGroups().length === 0 ? (
-          <EmptyState title="No groups to display" compact />
+          <LoadingSpinner size="md" className="py-16" />
         ) : (
-          <div className="flex flex-col gap-4 pb-4">
-            {buildTeamGroups().map(({ teamId, teamName, cronTasks: tc, triggers: tt, eventSubs: es }) => (
-              <TeamGroup
-                key={teamId}
-                teamName={teamName}
-                cronTasks={tc}
-                triggers={tt}
-                eventSubs={es ?? []}
-                {...sharedProps}
-              />
-            ))}
-          </div>
+          <>
+            {tab === 'scheduled' && renderScheduled()}
+            {tab === 'reminders' && renderReminders()}
+            {tab === 'history' && renderHistory()}
+            {!showSystem && buckets.hiddenInternal > 0 && (
+              <p className="mt-4 text-center text-xs text-text-secondary-dark">
+                {SCHEDULE_TEXT.HIDDEN_SYSTEM_HINT(buckets.hiddenInternal)}
+              </p>
+            )}
+          </>
         )}
       </div>
 
-      {/* Create Modal */}
+      <ScheduleDetail row={selected} onClose={() => setSelectedKey(null)} actions={actions} />
+
       <CreateTriggerModal
         isOpen={showCreateModal}
         onClose={() => setShowCreateModal(false)}
