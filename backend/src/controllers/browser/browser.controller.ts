@@ -13,6 +13,7 @@ import { BrowserBridgeService, type BrowserCommandResponse } from '../../service
 import { BrowserProxyService } from '../../services/browser/browser-proxy.service.js';
 import { CloudClientService } from '../../services/cloud/cloud-client.service.js';
 import { getBrowserSessions } from '../../services/browser/browser-session.service.js';
+import { getBrowserApprovals } from '../../services/browser/browser-approval.service.js';
 import {
 	parseOwnerInput,
 	planOwnerInput,
@@ -1412,7 +1413,8 @@ export async function releaseBrowserControl(req: Request, res: Response): Promis
  * Approve or reject an action the agent was held on.
  *
  * Approval is one-shot: it lets the attempt the owner looked at through, and
- * nothing else. Approving does not replay the action — the agent retries,
+ * nothing else. The same hold is also on a Slack decision card; answering
+ * here settles the card too (see BrowserApprovalService). Approving does not replay the action — the agent retries,
  * because it is the one that knows what it was in the middle of.
  *
  * @param req - Express request with `:id`, `:pendingId` and body `{ decision }`
@@ -1422,6 +1424,19 @@ export async function resolveBrowserPending(req: Request, res: Response): Promis
 	const decision = (req.body as { decision?: string } | undefined)?.decision;
 	if (decision !== 'approve' && decision !== 'reject') {
 		res.status(400).json({ success: false, error: "decision must be 'approve' or 'reject'" });
+		return;
+	}
+
+	// With the approval service the answer goes through the hold's Slack
+	// card, so the card, the agent and the hold all settle as one.
+	const approvals = getBrowserApprovals();
+	if (approvals) {
+		const answered = await approvals.answerFromBrowserPage(req.params.id, req.params.pendingId, decision);
+		if (!answered) {
+			res.status(404).json({ success: false, error: 'No such pending action' });
+			return;
+		}
+		res.json({ success: true, data: { session: answered } });
 		return;
 	}
 

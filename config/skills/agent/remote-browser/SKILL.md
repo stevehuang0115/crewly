@@ -194,14 +194,34 @@ it will not be where you left it.
 
 Clicks that read as irreversible and outward-facing — send, submit, pay,
 delete, confirm, publish, sign, and Enter — come back **409
-`awaiting_owner`** instead of happening. The owner sees what you wanted to
-do and decides.
+`awaiting_owner`** instead of happening. Crewly has already asked the owner:
+your own Slack bot posted a decision card ("Let it" / "No") in the thread of
+the work item you are on. The owner answers there (button, reaction, or a
+reply like 批准 / 可以 / yes or 不行 / no), or on the Browser page of the
+dashboard or portal — all of them answer the same held action.
 
-When that happens: tell them plainly what is waiting and what it will do.
-Do not retry. Do not look for another control that does the same thing, and
-do not switch to a different tool to get the same effect — the whole point
-is that this one is theirs to decide. An approval covers that one action
-and nothing after it.
+When that happens, say exactly:
+
+> I've asked the owner with a card in this thread; wait for their answer.
+
+Then stop. Do not tell the owner it "pops up in Chrome" or to approve it
+anywhere else — the card is the place. Do not retry. Do not look for another
+control that does the same thing, and do not switch to a different tool to
+get the same effect — the whole point is that this one is theirs to decide.
+
+You will get a `[BROWSER]` message with the answer:
+
+- **Let it** — retry the exact same call, once. The approval covers that one
+  action and nothing after it.
+- **No** — do not do it and do not work around it; say what you will do
+  instead.
+- **No answer within 2 hours** — the answer is No.
+- **Expired** (Crewly restarted and the tab could not be re-attached) — look
+  at the page again and redo the step; it will be asked again with a new
+  card.
+
+If the 409 error text says the owner answers on the Browser page of the
+dashboard instead (Slack is not connected), tell them that, plainly.
 
 If you believe you were told to do it, say which message told you, quoting
 it. Do not paraphrase an instruction into something stronger than it was.

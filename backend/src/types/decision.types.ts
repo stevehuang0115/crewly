@@ -11,7 +11,30 @@
  */
 
 /** Sensitive asks are never auto-applied at the deadline. */
-export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend';
+export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action';
+
+/**
+ * Decisions Crewly asks on an agent's behalf (not through ask-owner). The
+ * kind's handler (see `DecisionService.registerKindHandler`) acts on the
+ * answer and writes the note the agent gets.
+ */
+export type DecisionKind = 'browser_action';
+
+/** The held browser action a `browser_action` decision is about. */
+export interface BrowserActionSubject {
+  /** Agent whose action is held */
+  agentSession: string;
+  /** Display name ("Vera") */
+  agentName: string;
+  /** `PendingConfirmation.id` in the browser session service */
+  pendingId: string;
+  /** "visa.careerengine.us/subscribe", when known */
+  where?: string;
+  /** What it wants to do, e.g. `click "Submit"` */
+  target: string;
+  /** Why it was held ("submitting") */
+  matched: string;
+}
 
 /** One answer the owner can pick. */
 export interface DecisionOption {
@@ -34,7 +57,9 @@ export type DecisionStatus =
   /** Sensitive ask with no answer after the re-ask: nothing happens until the owner reopens it */
   | 'parked'
   /** Withdrawn by the asking agent (or its ticket closed) */
-  | 'cancelled';
+  | 'cancelled'
+  /** The thing asked about no longer exists (e.g. a held browser action lost to a restart) */
+  | 'expired';
 
 /** How an answer arrived. */
 export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline';
@@ -63,6 +88,12 @@ export interface OwnerDecision {
   /** ISO deadline */
   deadline: string;
   sensitive?: DecisionSensitiveKind;
+  /** Set for decisions Crewly asks itself (see {@link DecisionKind}) */
+  kind?: DecisionKind;
+  /** The held browser action (kind `browser_action`) */
+  browser?: BrowserActionSubject;
+  /** Option a plain "yes" / ✅ means (default: the default option, else the first) */
+  yesKey?: string;
   /** Session that called ask-owner */
   requestedBy: string;
   /** Session that owns the question (assignee / lead / the caller) — its bot posts and it gets the answer */

@@ -57,8 +57,12 @@ export function optionLabel(d: Pick<OwnerDecision, 'options'>, key: string | und
  * @param d - Decision
  * @returns Header text (≤ 150 characters, Slack's header limit)
  */
-export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id'>): string {
-  const text = d.ticket ? `${d.ticket.id} · ${d.ticket.title}` : `Decision ${d.id}`;
+export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id' | 'browser'>): string {
+  const text = d.ticket
+    ? `${d.ticket.id} · ${d.ticket.title}`
+    : d.browser
+      ? `Browser · ${d.browser.agentName} is waiting for your OK`
+      : `Decision ${d.id}`;
   return text.length > 150 ? `${text.slice(0, 149)}…` : text;
 }
 
@@ -115,7 +119,9 @@ export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): st
   if (d.remindAt && Date.parse(d.remindAt) > now.getTime()) {
     parts.push(`⏰ Reminding you ${formatWhen(new Date(d.remindAt), now)}.`);
   }
-  if (d.sensitive) {
+  if (d.kind === 'browser_action') {
+    parts.push(`Nothing happens without your OK. If no answer by ${when}, the answer is ${defaultLabel(d)}.`);
+  } else if (d.sensitive) {
     parts.push(`This needs your OK (${d.sensitive}); I won't go ahead without an answer.`);
   } else if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) {
     parts.push(`If no answer by ${when}, I'll keep waiting.`);
@@ -163,16 +169,32 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
         value: buttonValue(d.id, o.key, instanceId),
         ...(o.key === d.defaultKey && !d.sensitive ? { style: 'primary' } : {}),
       })),
-      {
-        type: 'button',
-        action_id: DECISION_CONSTANTS.REMIND_ACTION_ID,
-        text: { type: 'plain_text', text: 'Remind me tomorrow', emoji: true },
-        value: buttonValue(d.id, 'remind', instanceId),
-      },
+      // A held browser action cannot wait until tomorrow: it has a short deadline.
+      ...(canRemind(d)
+        ? [
+            {
+              type: 'button',
+              action_id: DECISION_CONSTANTS.REMIND_ACTION_ID,
+              text: { type: 'plain_text', text: 'Remind me tomorrow', emoji: true },
+              value: buttonValue(d.id, 'remind', instanceId),
+            },
+          ]
+        : []),
     ],
   });
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: pendingContextLine(d, now) }] });
   return blocks as unknown as SlackBlock[];
+}
+
+/**
+ * Whether "Remind me tomorrow" is offered (not for held browser actions,
+ * which have a deadline of hours).
+ *
+ * @param d - Decision
+ * @returns True when snoozing is allowed
+ */
+export function canRemind(d: Pick<OwnerDecision, 'kind'>): boolean {
+  return d.kind !== 'browser_action';
 }
 
 /**
@@ -213,6 +235,8 @@ export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = ne
       return `⏸ Parked — no answer, so I'm not going ahead. Answer from "Waiting on you" to reopen it. · ${d.id}`;
     case 'cancelled':
       return `Withdrawn · ${at}`;
+    case 'expired':
+      return `Expired — ${d.browser?.agentName ?? (d.asker || 'the agent')} will ask again · ${at}`;
     default:
       return pendingContextLine(d, now);
   }
@@ -259,12 +283,13 @@ export function noOption(options: DecisionOption[]): DecisionOption | null {
 }
 
 /**
- * The option ✅ / "yes" means: the default, else the first option.
+ * The option ✅ / "yes" means: `yesKey` when set, else the default, else the first option.
  *
  * @param d - Decision
  * @returns Option key
  */
-export function acceptKey(d: Pick<OwnerDecision, 'defaultKey' | 'options'>): string {
+export function acceptKey(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'>): string {
+  if (d.yesKey && d.options.some((o) => o.key === d.yesKey)) return d.yesKey;
   return d.options.some((o) => o.key === d.defaultKey) ? d.defaultKey : d.options[0].key;
 }
 
@@ -275,7 +300,7 @@ export function acceptKey(d: Pick<OwnerDecision, 'defaultKey' | 'options'>): str
  * @param reaction - Emoji name (no colons; skin tone suffix allowed)
  * @returns Choice, or null when the reaction means nothing
  */
-export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'options'>, reaction: string): DecisionChoice | null {
+export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'>, reaction: string): DecisionChoice | null {
   const name = reaction.replace(/::skin-tone-\d$/, '');
   if ((DECISION_CONSTANTS.REACTION_ACCEPT as readonly string[]).includes(name)) return { kind: 'option', key: acceptKey(d) };
   if ((DECISION_CONSTANTS.REACTION_REMIND as readonly string[]).includes(name)) return { kind: 'remind' };
@@ -295,7 +320,7 @@ export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'option
  * @param text - The owner's reply
  * @returns Choice, or null for an empty reply
  */
-export function choiceFromText(d: Pick<OwnerDecision, 'defaultKey' | 'options'>, text: string): DecisionChoice | null {
+export function choiceFromText(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'>, text: string): DecisionChoice | null {
   const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
   if (!clean) return null;
   const opt = matchOption(clean, d.options);

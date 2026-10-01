@@ -141,3 +141,42 @@ describe('helpers', () => {
     expect(ticketThreadRootText({ id: 'APP-12', title: 'Partner outreach' })).toBe('*APP-12 · Partner outreach*');
   });
 });
+
+describe('browser_action cards', () => {
+  const browser = (extra: Partial<OwnerDecision> = {}) =>
+    decision({
+      kind: 'browser_action',
+      sensitive: 'browser_action',
+      ticket: undefined,
+      question: 'Vera wants to click "Submit" on visa.careerengine.us/subscribe — it looks like submitting and can\'t be undone.',
+      options: [
+        { key: 'a', label: 'Let it' },
+        { key: 'b', label: 'No' },
+      ],
+      defaultKey: 'b',
+      yesKey: 'a',
+      browser: { agentSession: 'ce-vera', agentName: 'Vera', pendingId: 'p1', target: 'click "Submit"', matched: 'submitting' },
+      ...extra,
+    });
+
+  it('has Let it / No, no snooze, and says No is the answer at the deadline', () => {
+    const blocks = blocksOf(renderOpenCard(browser(), 'inst', NOW));
+    expect(blocks[0].text.text).toBe('Browser · Vera is waiting for your OK');
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    expect(actions.elements.map((e: any) => e.text.text)).toEqual(['Let it', 'No']);
+    expect(blocks.find((b) => b.type === 'context')!.elements[0].text).toContain('the answer is No');
+  });
+
+  it('yes words and ✅ mean Let it (not the default); 不行 / no mean No', () => {
+    const d = browser();
+    for (const w of ['批准', '可以', '好', 'yes', 'ok']) expect(choiceFromText(d, w)).toEqual({ kind: 'option', key: 'a' });
+    for (const w of ['不行', '不要', 'no']) expect(choiceFromText(d, w)).toEqual({ kind: 'option', key: 'b' });
+    expect(choiceFromReaction(d, 'white_check_mark')).toEqual({ kind: 'option', key: 'a' });
+    expect(choiceFromReaction(d, 'x')).toEqual({ kind: 'option', key: 'b' });
+  });
+
+  it('an expired card names the agent who will ask again', () => {
+    const blocks = blocksOf(renderSettledCard(browser({ status: 'expired', resolvedAt: NOW.toISOString() }), undefined, NOW));
+    expect(blocks[2].elements[0].text).toBe('Expired — Vera will ask again · 10:00');
+  });
+});
