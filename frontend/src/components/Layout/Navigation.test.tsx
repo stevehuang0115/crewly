@@ -277,7 +277,17 @@ describe('Navigation — version line', () => {
       .mockResolvedValue(healthResponse({ version: '1.20.40', latestVersion: '1.20.55', updateAvailable: true }));
     renderWithProviders(<Navigation />);
     expect(await screen.findByText('v1.20.40')).toBeInTheDocument();
-    expect(screen.getByText(/update/)).toBeInTheDocument();
+    const chip = screen.getByTestId('update-available-chip');
+    expect(chip).toHaveTextContent('Update available');
+    // It links to the Upgrade controls.
+    expect(chip).toHaveAttribute('href', '/settings?tab=system');
+  });
+
+  it('shows no chip when up to date', async () => {
+    global.fetch = vi.fn().mockResolvedValue(healthResponse({ version: '1.20.55', latestVersion: '1.20.55', updateAvailable: false }));
+    renderWithProviders(<Navigation />);
+    expect(await screen.findByText('v1.20.55')).toBeInTheDocument();
+    expect(screen.queryByTestId('update-available-chip')).not.toBeInTheDocument();
   });
 
   // A label is not worth a blank sidebar: the fetch can fail on a backend

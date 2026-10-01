@@ -41,6 +41,14 @@ vi.mock('../TeamsRestorePopup', () => ({
   TeamsRestorePopup: () => null
 }));
 
+// Header "Update available" chip source (the real hook calls /health).
+const mockVersionInfo: { current: { currentVersion: string; latestVersion: string | null; updateAvailable: boolean } | null } = {
+  current: null,
+};
+vi.mock('../../hooks/useVersionCheck', () => ({
+  useVersionCheck: () => ({ versionInfo: mockVersionInfo.current, isLoading: false }),
+}));
+
 // AppLayout reads payment-wall state; stub the hook so the test doesn't need
 // the full PaymentWallProvider (and its API/auth dependencies).
 vi.mock('../../contexts/PaymentWallContext', () => ({
@@ -66,6 +74,24 @@ const renderWithProviders = (component: React.ReactElement) => {
 };
 
 describe('AppLayout', () => {
+  afterEach(() => {
+    mockVersionInfo.current = null;
+  });
+
+  it('shows the "Update available" chip in the mobile header, linking to the controls', () => {
+    mockVersionInfo.current = { currentVersion: '1.20.174', latestVersion: '1.20.175', updateAvailable: true };
+    renderWithProviders(<AppLayout />);
+    const chip = screen.getByTestId('update-available-chip');
+    expect(chip.closest('header')).not.toBeNull();
+    expect(chip).toHaveAttribute('href', '/settings?tab=system');
+  });
+
+  it('shows no header chip when up to date', () => {
+    mockVersionInfo.current = { currentVersion: '1.20.175', latestVersion: '1.20.175', updateAvailable: false };
+    renderWithProviders(<AppLayout />);
+    expect(screen.queryByTestId('update-available-chip')).not.toBeInTheDocument();
+  });
+
   it('renders navigation and orchestrator banner', () => {
     renderWithProviders(<AppLayout />);
 

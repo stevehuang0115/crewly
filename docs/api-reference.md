@@ -2379,11 +2379,18 @@ GET /api/system/alerts
 PATCH /api/system/alerts/:conditionId
 ```
 
-### Restart Server
+### Update Status, Upgrade, Restart (owner-only)
 
 ```
-POST /api/system/restart
+GET  /api/system/update-status[?refresh=1]
+POST /api/system/upgrade   { "when": "idle" | "now" }
+POST /api/system/restart   { "when": "idle" | "now" }
 ```
+
+Owner-only: a request with `X-Agent-Session` gets 403 `owner-only`. Upgrade works on
+global npm installs only (409 `dev-checkout` on a source checkout). Both answer 202
+with the action and continue in the background; 409 `in-progress` while another one
+runs. See `specs/2026-10-01-upgrade-restart-controls.md`.
 
 ### Get Local IP Address
 

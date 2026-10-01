@@ -35,6 +35,14 @@ function makeSync() {
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('isAllowedMobileApiCall', () => {
+  it('allows the owner Upgrade / Restart controls but not other system mutations', () => {
+    expect(isAllowedMobileApiCall('GET', '/system/update-status')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/system/upgrade')).toBe(true);
+    expect(isAllowedMobileApiCall('POST', '/system/restart')).toBe(true);
+    expect(isAllowedMobileApiCall('PATCH', '/system/config')).toBe(false);
+    expect(isAllowedMobileApiCall('POST', '/system/config/default')).toBe(false);
+  });
+
   it('allows the read surface', () => {
     expect(isAllowedMobileApiCall('GET', '/teams')).toBe(true);
     // Portal-driven Slack team channel management.

@@ -1,0 +1,149 @@
+/**
+ * Tests for the owner-only Upgrade / Restart endpoints.
+ *
+ * @module controllers/system/system-control.controller.test
+ */
+
+import express from 'express';
+import request from 'supertest';
+
+jest.mock('../../services/core/logger.service.js', () => ({
+	LoggerService: {
+		getInstance: () => ({
+			createComponentLogger: () => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }),
+		}),
+	},
+}));
+
+import { describeActor, parseWhen, registerSystemControlRoutes } from './system-control.controller.js';
+import { SystemControlService } from '../../services/system/system-control.service.js';
+import { SYSTEM_CONTROL_CONSTANTS } from '../../constants.js';
+
+/**
+ * App with the three routes under /api.
+ *
+ * @returns Express app
+ */
+function makeApp(): express.Express {
+	const app = express();
+	app.use(express.json());
+	const router = express.Router();
+	registerSystemControlRoutes(router);
+	app.use('/api', router);
+	return app;
+}
+
+const fakeService = {
+	getStatus: jest.fn(async () => ({ currentVersion: '1.20.174', installKind: 'npm-global' })),
+	requestUpgrade: jest.fn(async () => ({ ok: true, action: { id: 'a1', kind: 'upgrade', status: 'installing' } })),
+	requestRestart: jest.fn(async () => ({ ok: true, action: { id: 'a2', kind: 'restart', status: 'restarting' } })),
+};
+
+describe('system control endpoints', () => {
+	beforeEach(() => {
+		jest.clearAllMocks();
+		SystemControlService.setInstance(fakeService as unknown as SystemControlService);
+	});
+
+	afterAll(() => {
+		SystemControlService.setInstance(null);
+	});
+
+	describe('owner-only guard', () => {
+		it.each([
+			['get', '/api/system/update-status'],
+			['post', '/api/system/upgrade'],
+			['post', '/api/system/restart'],
+		] as const)('%s %s refuses an agent session with 403', async (method, url) => {
+			const res = await request(makeApp())[method](url).set('X-Agent-Session', 'crewly-orc').send({ when: 'now' });
+			expect(res.status).toBe(403);
+			expect(res.body).toMatchObject({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.OWNER_ONLY });
+			expect(fakeService.requestRestart).not.toHaveBeenCalled();
+			expect(fakeService.requestUpgrade).not.toHaveBeenCalled();
+			expect(fakeService.getStatus).not.toHaveBeenCalled();
+		});
+
+		it('also refuses the legacy agent session header', async () => {
+			const res = await request(makeApp()).post('/api/system/restart').set('X-Crewly-Agent-Session', 'dev-1').send({});
+			expect(res.status).toBe(403);
+			expect(fakeService.requestRestart).not.toHaveBeenCalled();
+		});
+	});
+
+	it('GET update-status returns the service status', async () => {
+		const res = await request(makeApp()).get('/api/system/update-status?refresh=1');
+		expect(res.status).toBe(200);
+		expect(res.body).toEqual({ success: true, data: { currentVersion: '1.20.174', installKind: 'npm-global' } });
+		expect(fakeService.getStatus).toHaveBeenCalledWith({ refresh: true });
+	});
+
+	it('POST restart accepts with 202 and passes when + who', async () => {
+		const res = await request(makeApp()).post('/api/system/restart').set('X-Crewly-Caller', 'dashboard').send({ when: 'now' });
+		expect(res.status).toBe(202);
+		expect(res.body).toMatchObject({ success: true, data: { action: { id: 'a2' }, escalated: false } });
+		expect(fakeService.requestRestart).toHaveBeenCalledWith({ when: 'now', actor: expect.stringMatching(/^dashboard from /) });
+	});
+
+	it('defaults `when` to idle', async () => {
+		await request(makeApp()).post('/api/system/upgrade').send({});
+		expect(fakeService.requestUpgrade).toHaveBeenCalledWith({ when: 'idle', actor: expect.any(String) });
+	});
+
+	it('rejects an invalid `when` with 400', async () => {
+		const res = await request(makeApp()).post('/api/system/upgrade').send({ when: 'tomorrow' });
+		expect(res.status).toBe(400);
+		expect(fakeService.requestUpgrade).not.toHaveBeenCalled();
+	});
+
+	it('passes a refusal through with its status and code (dev checkout → 409)', async () => {
+		fakeService.requestUpgrade.mockResolvedValueOnce({
+			ok: false,
+			httpStatus: 409,
+			code: SYSTEM_CONTROL_CONSTANTS.CODES.DEV_CHECKOUT,
+			error: SYSTEM_CONTROL_CONSTANTS.MESSAGES.DEV_CHECKOUT,
+		} as never);
+		const res = await request(makeApp()).post('/api/system/upgrade').send({ when: 'now' });
+		expect(res.status).toBe(409);
+		expect(res.body).toEqual({
+			success: false,
+			code: SYSTEM_CONTROL_CONSTANTS.CODES.DEV_CHECKOUT,
+			error: SYSTEM_CONTROL_CONSTANTS.MESSAGES.DEV_CHECKOUT,
+		});
+	});
+
+	it('answers 503 before the service exists (still booting)', async () => {
+		SystemControlService.setInstance(null);
+		const res = await request(makeApp()).post('/api/system/restart').send({ when: 'now' });
+		expect(res.status).toBe(503);
+		expect(res.body.code).toBe(SYSTEM_CONTROL_CONSTANTS.CODES.UNAVAILABLE);
+	});
+});
+
+describe('parseWhen', () => {
+	it.each([
+		[undefined, 'idle'],
+		[{}, 'idle'],
+		[{ when: 'idle' }, 'idle'],
+		[{ when: 'now' }, 'now'],
+		[{ when: 'later' }, null],
+		[{ when: 5 }, null],
+	])('%j → %s', (body, expected) => {
+		expect(parseWhen(body)).toBe(expected);
+	});
+});
+
+describe('describeActor', () => {
+	it('names the phone relay', () => {
+		expect(describeActor({ headers: { 'x-crewly-client': 'mobile' }, socket: { remoteAddress: '127.0.0.1' } } as never)).toBe('phone (relay)');
+	});
+
+	it('names the dashboard and its address', () => {
+		expect(describeActor({ headers: { 'x-crewly-caller': 'dashboard' }, socket: { remoteAddress: '192.168.1.20' } } as never)).toBe(
+			'dashboard from 192.168.1.20',
+		);
+	});
+
+	it('falls back to api', () => {
+		expect(describeActor({ headers: {}, socket: { remoteAddress: '127.0.0.1' } } as never)).toBe('api from 127.0.0.1');
+	});
+});

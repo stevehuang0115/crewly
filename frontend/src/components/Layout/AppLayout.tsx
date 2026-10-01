@@ -6,6 +6,8 @@ import { TerminalPanel } from '../TerminalPanel/TerminalPanel';
 import { OrchestratorStatusBanner } from '../OrchestratorStatusBanner';
 import { PendingLoginsBanner } from '../PendingLoginsBanner';
 import { UpdateBanner } from '../UpdateBanner';
+import { UpdateAvailableChip } from '../System/UpdateAvailableChip';
+import { useVersionCheck } from '../../hooks/useVersionCheck';
 
 import { SessionResumePopup } from '../SessionResumePopup';
 import { TeamsRestorePopup } from '../TeamsRestorePopup';
@@ -23,6 +25,7 @@ export const AppLayout: React.FC = () => {
   const { isCollapsed } = useSidebar();
   const { activeLimitEvent, escalationLevel, isVisible, dismiss, openModal } = usePaymentWall();
   const [isMobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const { versionInfo } = useVersionCheck();
   const location = useLocation();
 
   // Full-bleed routes manage their own internal padding + scrolling (e.g. the
@@ -79,7 +82,10 @@ export const AppLayout: React.FC = () => {
             aria-expanded={isMobileMenuOpen}
           />
           <h1 className="text-lg font-bold">Crewly</h1>
-          <div className="w-10 h-10" /> {/* Spacer to center title */}
+          {/* "Update available" chip, else a spacer that keeps the title centred */}
+          <div className="min-w-[2.5rem] h-10 flex items-center justify-end">
+            {versionInfo?.updateAvailable && <UpdateAvailableChip latestVersion={versionInfo.latestVersion} />}
+          </div>
         </header>
 
         <main className="flex-1 flex flex-col min-h-0 overflow-hidden">

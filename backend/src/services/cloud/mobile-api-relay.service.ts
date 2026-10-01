@@ -185,6 +185,13 @@ export const MOBILE_API_ALLOWLIST: ReadonlyArray<{ method: 'GET' | 'POST'; prefi
   // job. `GET /bundles` covers the list, the detail and `/bundles/apply/:jobId`.
   { method: 'GET', prefix: '/bundles' },
   { method: 'POST', prefix: '/bundles/apply' },
+  // Owner Upgrade / Restart (specs/2026-10-01-upgrade-restart-controls.md):
+  // the owner is rarely at the machine. Both actions are graceful (agents
+  // finish their turn), always come back, and refuse agent sessions; the
+  // relay carries only the Cloud-authenticated owner's calls.
+  { method: 'GET', prefix: '/system/update-status' },
+  { method: 'POST', prefix: '/system/upgrade' },
+  { method: 'POST', prefix: '/system/restart' },
 ];
 
 /**
