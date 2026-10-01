@@ -18,7 +18,7 @@ import { driveAntigravityTerms } from './antigravity-terms-driver.js';
 import { FakeAgyTui, type FakeAgyOptions } from './fake-agy-tui.fixture.js';
 import { RuntimeTermsConsentService, choiceOfLabel, screenForThread, type RuntimeTermsProfile } from './runtime-terms-consent.service.js';
 import { RuntimeTermsStore } from './runtime-terms.store.js';
-import { antigravityTermsCard } from './runtime-terms.wiring.js';
+import { ANTIGRAVITY_TERMS_PROFILE, antigravityTermsCard } from './runtime-terms.wiring.js';
 
 const quiet = (): ComponentLogger => ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
 const OWNER = 'U-OWNER';
@@ -104,7 +104,9 @@ function harness(tuiOpts: FakeAgyOptions = {}, home = dir): Harness {
 	const profile: RuntimeTermsProfile = {
 		runtime: AGY,
 		label: 'Antigravity CLI',
+		info: { summary: 'Terms', dataItem: 'Data', links: [] },
 		card: antigravityTermsCard,
+		classify: ANTIGRAVITY_TERMS_PROFILE.classify,
 		drive: (term, shareData) => driveAntigravityTerms(term, { shareData, now: () => t, sleep: async (ms) => void (t += ms) }),
 	};
 	h.terms = new RuntimeTermsConsentService({
@@ -120,6 +122,8 @@ function harness(tuiOpts: FakeAgyOptions = {}, home = dir): Harness {
 		runSmokeTest: smoke,
 		machineName: () => 'steve-mbp',
 		now: () => clock.now,
+		sleep: async () => undefined,
+		probeTimeoutMs: 1_000,
 		logger: quiet(),
 	});
 	decisions.onSettled((d) => h.terms.handleSettled(d));
@@ -321,5 +325,40 @@ describe('helpers', () => {
 		expect(out.startsWith('```\n')).toBe(true);
 		expect(out).not.toContain('AIzaSyA1234567890abcdefghijklmnopqrstu');
 		expect(out.match(/```/g)).toHaveLength(2);
+	});
+});
+
+describe('list', () => {
+	it('shows every runtime with a Terms flow, with its state and the inline choices', async () => {
+		const h = harness();
+		expect(h.terms.list()).toEqual([
+			expect.objectContaining({ runtime: AGY, status: 'none', label: 'Antigravity CLI', blockedReason: null, choices: expect.any(Array) }),
+		]);
+		await h.terms.reportTermsScreen(AGY, { source: 'probe' });
+		const [view] = h.terms.list();
+		expect(view).toMatchObject({ status: 'pending', decisionId: expect.stringMatching(/^D-/) });
+		expect(view.choices.map((c) => c.label)).toEqual(['Agree, no data sharing', 'Agree + share data', "Don't agree"]);
+	});
+});
+
+describe('probe', () => {
+	it('a Terms screen asks the owner; nothing is pressed', async () => {
+		const h = harness();
+		const out = await h.terms.probe(AGY);
+		expect(out.outcome).toBe('terms');
+		expect(h.tuis[0].keys).toEqual([]);
+		expect(h.closed).toEqual(['dedicated']);
+		expect(h.store.get(AGY)).toMatchObject({ status: 'pending', detectedBy: 'probe' });
+		expect(h.slack.sent.filter((m) => m.blocks)).toHaveLength(1);
+	});
+
+	it('a ready prompt means the Terms were accepted here already', async () => {
+		const h = harness({ alreadyAccepted: true });
+		h.store.set({ runtime: AGY, status: 'declined', reason: 'x', updatedAt: 'then' });
+		const out = await h.terms.probe(AGY);
+		expect(out.outcome).toBe('ready');
+		expect(h.store.get(AGY)).toMatchObject({ status: 'accepted', detectedBy: 'probe' });
+		expect(h.terms.blockedReason(AGY)).toBeNull();
+		expect(h.slack.sent).toHaveLength(0);
 	});
 });

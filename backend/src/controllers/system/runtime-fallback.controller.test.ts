@@ -55,6 +55,35 @@ describe('runtime-fallback routes', () => {
 		expect(bad.body.error).toBe('chain must be a list of runtimes');
 	});
 
+	it('asks about Terms again when the owner re-adds a runtime they did not agree to', async () => {
+		let settings = { chain: ['claude-code'], memberChains: {} as Record<string, string[]> };
+		const fb = {
+			snapshot: jest.fn(async () => snapshot as never),
+			getSettings: jest.fn(() => settings as never),
+			updateSettings: jest.fn((patch: { chain: string[] }) => {
+				settings = { ...settings, chain: patch.chain };
+				return settings as never;
+			}),
+		};
+		const terms = {
+			supports: (r: string) => r === 'antigravity-cli',
+			blockedReason: (r: string) => (r === 'antigravity-cli' ? "Terms not accepted: You chose Don't agree" : null),
+			reportTermsScreen: jest.fn(async () => null),
+		};
+		const a = app({ ...deps, fallback: () => fb, terms: () => terms });
+		await request(a).put('/api/system/runtime-fallback/settings').send({ chain: ['claude-code', 'antigravity-cli'] });
+		expect(terms.reportTermsScreen).toHaveBeenCalledWith('antigravity-cli', { source: 'chain', ownerInitiated: true });
+		// Already in the chain: saving again does not re-ask.
+		await request(a).put('/api/system/runtime-fallback/settings').send({ chain: ['claude-code', 'antigravity-cli'] });
+		expect(terms.reportTermsScreen).toHaveBeenCalledTimes(1);
+	});
+
+	it('Test is owner-initiated (a Terms screen then asks again)', async () => {
+		smoke.start.mockClear();
+		await request(app(deps)).post('/api/system/runtime-smoke-test').send({ runtime: 'crewly-agent' });
+		expect(smoke.start).toHaveBeenCalledWith('crewly-agent', { ownerInitiated: true });
+	});
+
 	it('POST /system/runtime-smoke-test starts a job, or waits for it', async () => {
 		const started = await request(app(deps)).post('/api/system/runtime-smoke-test').send({ runtime: 'crewly-agent' });
 		expect(started.status).toBe(202);

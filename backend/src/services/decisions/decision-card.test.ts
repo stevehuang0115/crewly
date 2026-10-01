@@ -141,3 +141,36 @@ describe('helpers', () => {
     expect(ticketThreadRootText({ id: 'APP-12', title: 'Partner outreach' })).toBe('*APP-12 · Partner outreach*');
   });
 });
+
+describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
+  const terms = decision({
+    ticket: undefined,
+    title: 'Antigravity CLI · Terms of Service (mbp)',
+    question: 'Antigravity CLI on mbp needs Google\'s Terms of Service accepted once. Do you agree?',
+    body: ['*Links:* <https://antigravity.google/terms|Terms of Service>', '*A separate item, pre-checked on the screen:* data sharing'],
+    options: [
+      { key: 'a', label: 'Agree, no data sharing' },
+      { key: 'b', label: 'Agree + share data' },
+      { key: 'c', label: "Don't agree" },
+    ],
+    defaultKey: 'c',
+    sensitive: 'runtime_terms',
+    system: { kind: 'runtime_terms', key: 'antigravity-cli', defaultIsDecline: true },
+  });
+
+  it('uses the title, shows the body sections, offers exactly its options (no snooze)', () => {
+    const blocks = blocksOf(renderOpenCard(terms, 'inst-1', NOW));
+    expect(blocks[0].text.text).toBe('Antigravity CLI · Terms of Service (mbp)');
+    expect(blocks[2].text.text).toContain('https://antigravity.google/terms');
+    expect(blocks[3].text.text).toContain('pre-checked');
+    const actions = blocks.find((b) => b.type === 'actions');
+    expect(actions?.elements.map((e: any) => e.text.text)).toEqual(['Agree, no data sharing', 'Agree + share data', "Don't agree"]);
+    expect(actions?.elements.some((e: any) => e.style === 'primary')).toBe(false);
+    expect(blocks.at(-1)?.elements[0].text).toBe("Nothing is accepted until you answer. No answer by tomorrow 12:00: Don't agree. · D-7");
+  });
+
+  it('settles like any card', () => {
+    const settled = blocksOf(renderSettledCard({ ...terms, status: 'defaulted', chosenKey: 'c', answeredVia: 'deadline' }, undefined, NOW));
+    expect(settled.at(-1)?.elements[0].text).toBe("No answer by tomorrow 12:00 — going with Don't agree.");
+  });
+});

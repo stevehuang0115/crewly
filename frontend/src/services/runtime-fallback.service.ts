@@ -19,6 +19,10 @@ export const RUNTIME_FALLBACK_API = {
   SETTINGS: '/api/system/runtime-fallback/settings',
   SMOKE: '/api/system/runtime-smoke-test',
   smokeJob: (jobId: string) => `/api/system/runtime-smoke-test/${encodeURIComponent(jobId)}`,
+  TERMS: '/api/system/runtime-terms',
+  termsRequest: (runtime: string) => `/api/system/runtime-terms/${encodeURIComponent(runtime)}/request`,
+  termsProbe: (runtime: string) => `/api/system/runtime-terms/${encodeURIComponent(runtime)}/probe`,
+  termsAnswer: (runtime: string) => `/api/system/runtime-terms/${encodeURIComponent(runtime)}/answer`,
 } as const;
 
 /** Owner-editable settings. */
@@ -37,8 +41,35 @@ export interface RuntimeAvailability {
   label: string;
   selectable: boolean;
   reason?: string;
+  /** Not selectable because its Terms are not accepted (adding it asks again) */
+  termsBlocked?: boolean;
   /** Out of usage on this machine right now */
   exhausted: boolean;
+}
+
+/** The owner's three answers to a runtime's Terms. */
+export type TermsChoice = 'agree_no_data' | 'agree_share_data' | 'decline';
+
+/** A runtime's Terms consent on this machine (specs/2026-10-01-runtime-terms-consent.md). */
+export interface RuntimeTermsView {
+  runtime: string;
+  label: string;
+  /** `none` = its Terms screen was never seen here */
+  status: 'none' | 'pending' | 'accepting' | 'accepted' | 'declined' | 'failed';
+  updatedAt?: string;
+  decisionId?: string;
+  dataSharing?: boolean;
+  reason?: string;
+  detectedBy?: string;
+  blockedReason: string | null;
+  info: { summary: string; dataItem: string; links: Array<{ label: string; url: string }> };
+  choices: Array<{ choice: TermsChoice; label: string }>;
+}
+
+/** Result of a probe. */
+export interface TermsProbeResult {
+  outcome: 'terms' | 'ready' | 'blocked' | 'unknown';
+  screen: string;
 }
 
 /** A runtime out of usage. */
@@ -158,5 +189,45 @@ export const runtimeFallbackService = {
    */
   getSmokeTest(jobId: string): Promise<SmokeTestJob> {
     return call(() => axios.get<ApiResponse<SmokeTestJob>>(RUNTIME_FALLBACK_API.smokeJob(jobId)), 'Failed to read the test');
+  },
+
+  /**
+   * Terms consent state of every runtime that has a Terms flow.
+   *
+   * @returns Views
+   */
+  getTerms(): Promise<RuntimeTermsView[]> {
+    return call(() => axios.get<ApiResponse<RuntimeTermsView[]>>(RUNTIME_FALLBACK_API.TERMS), 'Failed to load the Terms state');
+  },
+
+  /**
+   * "Accept terms…": post the Slack card (or get the open one).
+   *
+   * @param runtime - Runtime id
+   * @returns The runtime's record
+   */
+  requestTerms(runtime: string): Promise<RuntimeTermsView> {
+    return call(() => axios.post<ApiResponse<RuntimeTermsView>>(RUNTIME_FALLBACK_API.termsRequest(runtime), {}), 'Failed to ask about the Terms');
+  },
+
+  /**
+   * Launch the runtime once and read its first screen (nothing is pressed).
+   *
+   * @param runtime - Runtime id
+   * @returns What was on screen
+   */
+  probeTerms(runtime: string): Promise<TermsProbeResult> {
+    return call(() => axios.post<ApiResponse<TermsProbeResult>>(RUNTIME_FALLBACK_API.termsProbe(runtime), {}), 'Failed to check the runtime');
+  },
+
+  /**
+   * Answer the Terms question inline.
+   *
+   * @param runtime - Runtime id
+   * @param choice - The owner's choice
+   * @returns The runtime's record
+   */
+  answerTerms(runtime: string, choice: TermsChoice): Promise<RuntimeTermsView> {
+    return call(() => axios.post<ApiResponse<RuntimeTermsView>>(RUNTIME_FALLBACK_API.termsAnswer(runtime), { choice }), 'Failed to send your answer');
   },
 };

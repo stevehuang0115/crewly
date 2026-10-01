@@ -50,4 +50,17 @@ describe('runtimeFallbackService', () => {
     await expect(runtimeFallbackService.getSmokeTest('j1')).resolves.toMatchObject({ state: 'done' });
     expect(mocked.get).toHaveBeenCalledWith('/api/system/runtime-smoke-test/j1');
   });
+
+  it('reads, requests, probes and answers runtime Terms', async () => {
+    mocked.get.mockResolvedValue({ data: { success: true, data: [{ runtime: 'antigravity-cli', status: 'pending' }] } });
+    await expect(runtimeFallbackService.getTerms()).resolves.toHaveLength(1);
+    expect(mocked.get).toHaveBeenCalledWith('/api/system/runtime-terms');
+    mocked.post.mockResolvedValue({ data: { success: true, data: { runtime: 'antigravity-cli', status: 'pending' } } });
+    await runtimeFallbackService.requestTerms('antigravity-cli');
+    expect(mocked.post).toHaveBeenCalledWith('/api/system/runtime-terms/antigravity-cli/request', {});
+    await runtimeFallbackService.probeTerms('antigravity-cli');
+    expect(mocked.post).toHaveBeenCalledWith('/api/system/runtime-terms/antigravity-cli/probe', {});
+    await runtimeFallbackService.answerTerms('antigravity-cli', 'agree_no_data');
+    expect(mocked.post).toHaveBeenCalledWith('/api/system/runtime-terms/antigravity-cli/answer', { choice: 'agree_no_data' });
+  });
 });

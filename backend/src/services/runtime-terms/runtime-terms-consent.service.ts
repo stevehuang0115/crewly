@@ -42,14 +42,34 @@ export interface TermsCardText {
 	body: string[];
 }
 
+/** What Settings shows next to the inline choices. */
+export interface TermsInfo {
+	/** One plain-English sentence on what is asked */
+	summary: string;
+	/** The pre-checked data-sharing item, verbatim */
+	dataItem: string;
+	links: Array<{ label: string; url: string }>;
+}
+
 /** What the service knows about one runtime's Terms screens. */
 export interface RuntimeTermsProfile {
 	runtime: string;
 	label: string;
+	info: TermsInfo;
 	/** Card text for this machine */
 	card(machine: string): TermsCardText;
 	/** Drive the setup screens of a freshly launched runtime */
 	drive(term: TermsTerminal, shareData: boolean): Promise<TermsDriveResult>;
+	/** What a screen shows: the Terms / setup screens, the ready prompt, a refusal, or not yet known */
+	classify(screen: string): 'terms' | 'ready' | 'blocked' | 'unknown';
+}
+
+/** Result of {@link RuntimeTermsConsentService.probe}. */
+export interface TermsProbeResult {
+	outcome: 'terms' | 'ready' | 'blocked' | 'unknown';
+	record: RuntimeTermsRecord | null;
+	/** Screen text at the end (secrets redacted) */
+	screen: string;
 }
 
 /** A launched dedicated session. */
@@ -81,6 +101,9 @@ export interface RuntimeTermsDeps {
 	/** A runtime's consent changed (availability caches) */
 	onChange?: (runtime: string) => void;
 	now?: () => Date;
+	sleep?: (ms: number) => Promise<void>;
+	/** How long a probe waits for a recognisable screen */
+	probeTimeoutMs?: number;
 	logger?: ComponentLogger;
 }
 
@@ -98,6 +121,7 @@ export interface RuntimeTermsView extends Omit<RuntimeTermsRecord, 'status' | 'u
 	status: RuntimeTermsRecord['status'] | 'none';
 	updatedAt?: string;
 	label: string;
+	info: TermsInfo;
 	/** Why the runtime is skipped, when it is */
 	blockedReason: string | null;
 	/** Choices the inline Settings action offers */
@@ -197,6 +221,49 @@ export class RuntimeTermsConsentService {
 	}
 
 	/**
+	 * Probe: launch the runtime in the dedicated session, read (never press
+	 * anything) until the screen is recognisable, close it. A Terms screen
+	 * asks the owner (the owner asked for the check); a ready prompt means
+	 * the Terms were accepted here already (e.g. in a terminal).
+	 *
+	 * @param runtime - Runtime id
+	 * @returns What was on screen and the record after
+	 * @throws Error while an answer is being applied, or for a runtime without a profile
+	 */
+	async probe(runtime: string): Promise<TermsProbeResult> {
+		const profile = this.deps.profiles[runtime];
+		if (!profile) throw new Error(`Crewly has no Terms flow for ${runtime}`);
+		if (this.running.has(runtime) || this.deps.store.get(runtime)?.status === 'accepting') {
+			throw new Error('Crewly is already accepting these Terms; wait for it to finish');
+		}
+		const sleep = this.deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+		const timeout = this.deps.probeTimeoutMs ?? C.DRIVE.LAUNCH_TIMEOUT_MS;
+		let screen = '';
+		let outcome: TermsProbeResult['outcome'] = 'unknown';
+		const session = await this.deps.launch(runtime);
+		try {
+			for (let waited = 0; waited <= timeout; waited += C.DRIVE.POLL_MS) {
+				screen = String(await session.terminal.capture());
+				outcome = profile.classify(screen);
+				if (outcome !== 'unknown') break;
+				await sleep(C.DRIVE.POLL_MS);
+			}
+		} finally {
+			await session.close().catch(() => undefined);
+		}
+		if (outcome === 'terms') {
+			const record = await this.reportTermsScreen(runtime, { source: 'probe', ownerInitiated: true });
+			return { outcome, record, screen: redactSecrets(screen) };
+		}
+		if (outcome === 'ready') {
+			const prev = this.deps.store.get(runtime);
+			const record = this.save({ runtime, status: 'accepted', detectedBy: 'probe', ...(prev?.dataSharing !== undefined ? { dataSharing: prev.dataSharing } : {}) });
+			return { outcome, record, screen: redactSecrets(screen) };
+		}
+		return { outcome, record: this.deps.store.get(runtime), screen: redactSecrets(screen) };
+	}
+
+	/**
 	 * Answer inline from Settings: through the open card when there is one
 	 * (so the card updates), else directly.
 	 *
@@ -276,6 +343,7 @@ export class RuntimeTermsConsentService {
 		return Object.values(this.deps.profiles).map((p) => ({
 			...(all[p.runtime] ?? { runtime: p.runtime, status: 'none' as const }),
 			label: p.label,
+			info: p.info,
 			blockedReason: this.blockedReason(p.runtime),
 			choices: (Object.keys(TERMS_CHOICE_LABELS) as TermsChoice[]).map((choice) => ({ choice, label: TERMS_CHOICE_LABELS[choice] })),
 		}));

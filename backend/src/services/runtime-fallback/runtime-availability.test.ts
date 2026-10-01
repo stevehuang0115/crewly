@@ -38,4 +38,20 @@ describe('computeRuntimeAvailability', () => {
 		});
 		expect(list.find((a) => a.runtime === 'claude-code')).toMatchObject({ selectable: false, reason: "Sign-in couldn't be checked" });
 	});
+
+	it('skips a signed-in runtime whose Terms are not accepted, with the reason', () => {
+		const list = computeRuntimeAvailability({
+			harnesses: [{ id: 'antigravity-cli', installed: true, loginState: 'logged_in' }],
+			crewlyAgentModel: 'deepseek/deepseek-chat',
+			hasProviderKey: () => true,
+			termsBlocked: (r) => (r === 'antigravity-cli' ? "Terms not accepted: You chose Don't agree" : null),
+		});
+		expect(list.find((a) => a.runtime === 'antigravity-cli')).toEqual({
+			runtime: 'antigravity-cli',
+			label: expect.any(String),
+			selectable: false,
+			reason: "Terms not accepted: You chose Don't agree",
+			termsBlocked: true,
+		});
+	});
 });

@@ -64,9 +64,10 @@ describe('RuntimeSmokeTestService', () => {
 	});
 	afterEach(() => fs.rmSync(root, { recursive: true, force: true }));
 
-	function make(api: SmokeApi): RuntimeSmokeTestService {
+	function make(api: SmokeApi, onTermsScreen?: (runtime: string, report: { ownerInitiated: boolean; screen?: string }) => void): RuntimeSmokeTestService {
 		return new RuntimeSmokeTestService({
 			api,
+			...(onTermsScreen ? { onTermsScreen } : {}),
 			workRoot: root,
 			now: () => clock,
 			sleep: async (ms) => {
@@ -140,6 +141,19 @@ describe('RuntimeSmokeTestService', () => {
 		expect(result.screen).toContain('Terms of Service & Data Use');
 		expect(api.calls).not.toContain('deliver');
 		expect(api.calls).toContain('deleteTeam t1');
+	});
+
+	it('reports the Terms screen so the owner gets a consent card (owner-initiated when they pressed Test)', async () => {
+		const terms = 'Welcome to Antigravity CLI!\nTerms of Service & Data Use\n> Accept';
+		const reports: Array<{ runtime: string; ownerInitiated: boolean }> = [];
+		const service = make(fakeApi({ readyAfterPolls: 99, screen: () => terms }), (runtime, r) => reports.push({ runtime, ownerInitiated: r.ownerInitiated }));
+		await service.start('antigravity-cli', { ownerInitiated: true }).done;
+		expect(reports).toEqual([{ runtime: 'antigravity-cli', ownerInitiated: true }]);
+		await service.start('antigravity-cli').done;
+		expect(reports[1]).toEqual({ runtime: 'antigravity-cli', ownerInitiated: false });
+		// Other failures are not Terms screens.
+		await make(fakeApi({ startError: 'No DeepSeek key' }), (runtime, r) => reports.push({ runtime, ownerInitiated: r.ownerInitiated })).start('crewly-agent').done;
+		expect(reports).toHaveLength(2);
 	});
 
 	it('reads the session log for the screen when a refused start already removed the session', async () => {

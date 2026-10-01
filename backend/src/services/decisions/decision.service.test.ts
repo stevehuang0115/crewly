@@ -387,3 +387,57 @@ describe('cancel', () => {
     expect(JSON.stringify(h.slack.updates[0].blocks)).toContain('Withdrawn');
   });
 });
+
+describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
+  const termsAsk = {
+    system: { kind: 'runtime_terms' as const, key: 'antigravity-cli', defaultIsDecline: true },
+    title: 'Antigravity CLI · Terms of Service (mbp)',
+    question: 'Antigravity CLI on mbp needs its Terms of Service accepted once. Do you agree?',
+    body: ['*Links:* <https://antigravity.google/terms|Terms of Service>'],
+    options: ['Agree, no data sharing', 'Agree + share data', "Don't agree"],
+    default: "Don't agree",
+    sensitive: 'runtime_terms' as const,
+  };
+
+  it("posts in the owner's DM with the orc bot and tells listeners, never an agent", async () => {
+    const h = await harness({ ownerDmOf: async (identity) => (identity.botToken === 'xoxb-orc' ? 'D-OWNER-DM' : null) });
+    const settled: OwnerDecision[] = [];
+    h.service.onSettled((d) => void settled.push(d));
+    const d = await h.service.askSystem({ ...termsAsk, deadline: new Date(h.clock.now.getTime() + 24 * HOUR) });
+    expect(d).toMatchObject({ asker: 'crewly-orc', requestedBy: 'crewly', card: { slackChannelId: 'D-OWNER-DM', ownBot: true } });
+    expect(h.slack.sent[0]).toMatchObject({ channelId: 'D-OWNER-DM', botToken: 'xoxb-orc' });
+    expect(h.slack.sent[0].threadTs).toBeUndefined();
+
+    const out = await h.service.handleInteraction(click(d, 'b'));
+    expect(out).toMatchObject({ handled: true, reason: 'resolved' });
+    expect(settled.map((x) => [x.id, x.status, x.chosenKey])).toEqual([[d.id, 'resolved', 'b']]);
+    expect(h.delivered).toEqual([]);
+
+    expect(await h.service.replyInThread(d.id, 'Accepted.')).toBe(true);
+    expect(h.slack.sent.at(-1)).toMatchObject({ channelId: 'D-OWNER-DM', threadTs: d.card!.messageTs, text: 'Accepted.' });
+  });
+
+  it('waits (postError) when there is no owner DM', async () => {
+    const h = await harness();
+    const d = await h.service.askSystem({ ...termsAsk, deadline: new Date(h.clock.now.getTime() + 24 * HOUR) });
+    expect(d.card).toBeUndefined();
+    expect(d.postError).toMatch(/No Slack DM with the owner/);
+  });
+
+  it('applies a declining default at the deadline even though it is sensitive', async () => {
+    const h = await harness({ ownerDmOf: async () => 'D-OWNER-DM' });
+    const settled: OwnerDecision[] = [];
+    h.service.onSettled((d) => void settled.push(d));
+    const d = await h.service.askSystem({ ...termsAsk, deadline: new Date(h.clock.now.getTime() + 24 * HOUR) });
+    h.clock.now = new Date(h.clock.now.getTime() + 25 * HOUR);
+    expect(await h.service.tick()).toEqual([d.id]);
+    expect(await h.service.get(d.id)).toMatchObject({ status: 'defaulted', chosenKey: 'c' });
+    expect(settled).toHaveLength(1);
+  });
+
+  it('rejects a bad default', async () => {
+    const h = await harness();
+    await expect(h.service.askSystem({ ...termsAsk, default: 'Maybe', deadline: new Date(h.clock.now.getTime() + HOUR) })).rejects.toThrow(DecisionError);
+  });
+});
+

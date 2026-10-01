@@ -12,6 +12,7 @@ import { ANTIGRAVITY_CONSTANTS, RUNTIME_TERMS_CONSTANTS, RUNTIME_TYPES } from '.
 import { LoggerService } from '../core/logger.service.js';
 import type { DecisionService } from '../decisions/decision.service.js';
 import { driveAntigravityTerms, type TermsTerminal } from './antigravity-terms-driver.js';
+import { parseAntigravityTermsScreen } from './antigravity-terms-screens.js';
 import {
 	RuntimeTermsConsentService,
 	setRuntimeTermsConsentService,
@@ -47,8 +48,23 @@ export function antigravityTermsCard(machine: string): TermsCardText {
 export const ANTIGRAVITY_TERMS_PROFILE: RuntimeTermsProfile = {
 	runtime: RUNTIME_TYPES.ANTIGRAVITY_CLI,
 	label: 'Antigravity CLI',
+	info: {
+		summary: `Google's Antigravity CLI Terms of Service and the Google Privacy Policy. The screen also warns: ${A.SECURITY_NOTE}`,
+		dataItem: A.DATA_ITEM_FULL,
+		links: [
+			{ label: 'Terms of Service', url: A.TERMS_URL },
+			{ label: 'Privacy Policy', url: A.PRIVACY_URL },
+		],
+	},
 	card: antigravityTermsCard,
 	drive: (term: TermsTerminal, shareData: boolean) => driveAntigravityTerms(term, { shareData }),
+	classify: (screen) => {
+		const kind = parseAntigravityTermsScreen(screen).kind;
+		if (kind === 'terms' || kind === 'color_scheme') return 'terms';
+		if (kind === 'main_prompt' || kind === 'trust') return 'ready';
+		if (kind === 'login') return 'blocked';
+		return 'unknown';
+	},
 };
 
 /**

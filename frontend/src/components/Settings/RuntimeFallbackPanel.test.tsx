@@ -174,4 +174,21 @@ describe('RuntimeFallbackPanel', () => {
     fireEvent.click(screen.getByText('Retry'));
     expect(await screen.findByTestId('runtime-fallback-panel')).toBeInTheDocument();
   });
+
+  it('lets the owner re-add and test a runtime whose Terms were not accepted (that asks again)', async () => {
+    svc.getState.mockResolvedValue(
+      makeState({
+        settings: { ...makeState().settings, chain: ['claude-code'] },
+        runtimes: [
+          { runtime: 'claude-code', label: 'Claude Code', selectable: true, exhausted: false },
+          { runtime: 'antigravity-cli', label: 'Antigravity', selectable: false, termsBlocked: true, reason: "Terms not accepted: You chose Don't agree", exhausted: false },
+        ],
+      }),
+    );
+    render(<RuntimeFallbackPanel />);
+    const option = await screen.findByRole('option', { name: /Antigravity — terms not accepted/ });
+    expect(option).not.toBeDisabled();
+    expect(screen.getByTestId('runtime-test-antigravity-cli')).toBeInTheDocument();
+  });
 });
+

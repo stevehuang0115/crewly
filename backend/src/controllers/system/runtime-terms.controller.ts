@@ -4,6 +4,8 @@
  * - `GET  /api/system/runtime-terms` — every runtime with a Terms flow and its state
  * - `POST /api/system/runtime-terms/:runtime/request` — "Accept terms…": post the
  *   Slack card (or return the open one)
+ * - `POST /api/system/runtime-terms/:runtime/probe` — launch it in a dedicated
+ *   session, read the first screen (nothing is pressed); a Terms screen posts the card
  * - `POST /api/system/runtime-terms/:runtime/answer { choice }` — answer inline
  *   (`agree_no_data` | `agree_share_data` | `decline`); goes through the card
  *   when one is open, so it updates too
@@ -25,7 +27,7 @@ import {
 
 /** Dependencies (tests inject fakes). */
 export interface RuntimeTermsControllerDeps {
-	terms: () => Pick<RuntimeTermsConsentService, 'list' | 'requestConsent' | 'answer' | 'supports'> | null;
+	terms: () => Pick<RuntimeTermsConsentService, 'list' | 'requestConsent' | 'answer' | 'supports' | 'probe'> | null;
 }
 
 const NOT_READY = 'Runtime Terms consent is not ready yet — Crewly is still starting.';
@@ -61,6 +63,24 @@ export function registerRuntimeTermsRoutes(router: Router, deps: RuntimeTermsCon
 			res.json({ success: true, data: await terms.requestConsent(req.params.runtime) });
 		} catch (err) {
 			res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+		}
+	});
+
+	router.post('/system/runtime-terms/:runtime/probe', async (req: Request, res: Response) => {
+		if (!ensureOwnerCaller(req, res, 'runtime-terms probe')) return;
+		const terms = deps.terms();
+		if (!terms) {
+			res.status(503).json({ success: false, error: NOT_READY });
+			return;
+		}
+		if (!terms.supports(req.params.runtime)) {
+			res.status(404).json({ success: false, error: `Crewly has no Terms flow for ${req.params.runtime}` });
+			return;
+		}
+		try {
+			res.json({ success: true, data: await terms.probe(req.params.runtime) });
+		} catch (err) {
+			res.status(409).json({ success: false, error: err instanceof Error ? err.message : String(err) });
 		}
 	});
 
