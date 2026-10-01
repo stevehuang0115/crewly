@@ -6,8 +6,7 @@
  * pool, a filesystem or timers:
  * - which tickets need the driver's triage ({@link selectTriageCandidates});
  * - whether to wake the driver now ({@link decideTriage});
- * - whether to send the owner the batched questions ({@link decideOwnerQuestions})
- *   or the evening digest ({@link decideDigest}).
+ * - whether to send the owner the evening digest ({@link decideDigest}).
  *
  * @module services/project-tickets/ticket-autopilot-decision
  */
@@ -274,42 +273,6 @@ export function decideTriage(input: TriageDecisionInput): TriageDecision {
     input.trigger === 'member_idle' ? TICKET_AUTOPILOT_CONSTANTS.IDLE_TRIGGER_MIN_INTERVAL_MS : TICKET_AUTOPILOT_CONSTANTS.TRIAGE_MIN_INTERVAL_MS;
   if (input.lastTriageAt !== undefined && input.now - input.lastTriageAt < gap) return { action: 'skip', reason: 'too_soon' };
   return { action: 'triage' };
-}
-
-/** A question waiting on the owner. */
-export interface PendingOwnerQuestion {
-  /** Stable key: project + ticket + question text */
-  key: string;
-  priority: string;
-}
-
-/** Inputs of {@link decideOwnerQuestions}. */
-export interface OwnerQuestionsInput {
-  pending: PendingOwnerQuestion[];
-  /** Keys already sent to the owner */
-  sentKeys: ReadonlySet<string>;
-  /** When the last batch went out (epoch ms) */
-  lastSentAt?: number;
-  now: number;
-}
-
-/**
- * Whether to send the batched owner questions now: only when at least one
- * question is new, and then at most every
- * {@link TICKET_AUTOPILOT_CONSTANTS.QUESTIONS_MIN_INTERVAL_MS} — unless a new
- * one is urgent (P0), which goes out at once.
- *
- * @param input - Pending questions, what was sent, clock
- * @returns `send` and why
- */
-export function decideOwnerQuestions(input: OwnerQuestionsInput): { send: boolean; reason: 'nothing_new' | 'urgent' | 'due' | 'too_soon' } {
-  const fresh = input.pending.filter((q) => !input.sentKeys.has(q.key));
-  if (fresh.length === 0) return { send: false, reason: 'nothing_new' };
-  if (fresh.some((q) => q.priority === TICKET_AUTOPILOT_CONSTANTS.URGENT_PRIORITY)) return { send: true, reason: 'urgent' };
-  if (input.lastSentAt === undefined || input.now - input.lastSentAt >= TICKET_AUTOPILOT_CONSTANTS.QUESTIONS_MIN_INTERVAL_MS) {
-    return { send: true, reason: 'due' };
-  }
-  return { send: false, reason: 'too_soon' };
 }
 
 /** Inputs of {@link decideDigest}. */

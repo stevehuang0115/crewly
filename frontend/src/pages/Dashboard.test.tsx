@@ -42,6 +42,11 @@ vi.mock('../contexts/TerminalContext', () => ({
 }));
 
 // The "开始使用" card has its own tests; here it only has to be mounted.
+// The "Waiting on you" card has its own tests; here it only has to be mounted.
+vi.mock('@/components/Dashboard/WaitingOnYouCard', () => ({
+  WaitingOnYouCard: () => <div data-testid="waiting-on-you-card-mock" />,
+}));
+
 vi.mock('@/components/Onboarding/GettingStartedCard', () => ({
   GettingStartedCard: () => <div data-testid="getting-started-card-mock" />,
 }));

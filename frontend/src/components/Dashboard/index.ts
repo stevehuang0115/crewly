@@ -9,6 +9,7 @@ export { TerminalPanel } from './TerminalPanel';
 export { EmptyTerminalState } from './EmptyTerminalState';
 export { ProjectsSummary } from './ProjectsSummary';
 export { TeamsSummary } from './TeamsSummary';
+export { WaitingOnYouCard } from './WaitingOnYouCard';
 
 // Export types
 export type * from './types';

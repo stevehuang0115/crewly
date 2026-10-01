@@ -528,7 +528,7 @@ export class AutoUpdateService {
 		});
 		if (notify) {
 			void this.notify(async (device) => ({
-				title: `Crewly 自动升级失败（本机：${device}）`,
+				title: `Crewly auto-upgrade failed (machine: ${device})`,
 				message: composeFailureNotice(version, device, failures, reason),
 			}));
 		}
@@ -568,7 +568,7 @@ export class AutoUpdateService {
 			lastResult: { outcome: 'upgraded', at: new Date(this.deps.now()).toISOString(), version: running, message: `from ${marker.fromVersion}` },
 		});
 		const { toVersion, fromVersion } = marker;
-		void this.notify(async (device) => ({ title: composeUpgradedNotice(toVersion, device), message: `之前版本：${fromVersion}` }));
+		void this.notify(async (device) => ({ title: composeUpgradedNotice(toVersion, device), message: `Previous version: ${fromVersion}` }));
 	}
 
 	/**
