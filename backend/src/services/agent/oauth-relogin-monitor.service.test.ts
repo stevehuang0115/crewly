@@ -1091,10 +1091,18 @@ describe('OAuthReloginMonitorService', () => {
 			expect(mockSlack.sendNotification).not.toHaveBeenCalled();
 		});
 
-		it('first-run sign-in screens keep the old per-agent notice', async () => {
+		it('a sign-in screen of a runtime the coordinator can log in goes to it (one machine-routed DM), not a per-agent notice', async () => {
 			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
 			await Promise.resolve(); await Promise.resolve();
-			expect(handler).not.toHaveBeenCalled();
+			expect(handler).toHaveBeenCalledWith({ harnessId: 'codex-cli', sessionName: 'agent-dev-001', source: 'screen' });
+			expect(service.getLoginRequired('agent-dev-001')).toBeDefined();
+			expect(mockSlack.sendNotification).not.toHaveBeenCalled();
+		});
+
+		it('first-run sign-in screens keep the old per-agent notice when the coordinator declines', async () => {
+			handler.mockReturnValue(false);
+			service.inspectScreen('agent-dev-001', CODEX_DEVICE_CODE_SCREEN, 'codex-cli');
+			await Promise.resolve(); await Promise.resolve();
 			expect(mockSlack.sendNotification).toHaveBeenCalled();
 		});
 

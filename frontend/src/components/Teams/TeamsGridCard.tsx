@@ -180,7 +180,7 @@ export const TeamsGridCard: React.FC<TeamsGridCardProps> = ({
             {membersNeedingSignIn.map(m => (
               <div key={m.id} className="flex items-center gap-1 text-xs text-text-secondary-dark">
                 <span>{m.name}</span>
-                <SignInNeededChip loginRequired={m.loginRequired as NonNullable<typeof m.loginRequired>} agentLabel={m.name} />
+                <SignInNeededChip loginRequired={m.loginRequired as NonNullable<typeof m.loginRequired>} agentLabel={m.name} runtimeType={m.runtimeType} />
               </div>
             ))}
           </div>

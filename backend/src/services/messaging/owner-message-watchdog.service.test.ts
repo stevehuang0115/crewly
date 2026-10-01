@@ -285,7 +285,7 @@ describe('OwnerMessageWatchdogService', () => {
       expect(h.service.size).toBe(0);
     });
 
-    it('login required → no nudge, note with the one-tap fix', async () => {
+    it('login required → no nudge, one note with the one-tap fix, and the message is kept (not dropped)', async () => {
       const h = makeHarness();
       h.login.set('ella', { runtime: 'Claude', runtimeCmd: 'claude' });
       h.service.track(slackInput());
@@ -293,7 +293,57 @@ describe('OwnerMessageWatchdogService', () => {
       await h.service.tick();
       expect(h.nudges).toHaveLength(0);
       expect(h.notes).toHaveLength(1);
-      expect(h.notes[0].text).toBe('⏳ Still waiting on Ella — Claude needs you to sign in again: reply `relogin claude`.');
+      expect(h.notes[0].text).toBe(
+        "⏳ Still waiting on Ella — Claude on this machine is signed out. Reply `login` here to sign in from your phone (or `relogin claude`); your message is kept and re-delivered once it's signed in.",
+      );
+      expect(h.service.size).toBe(1);
+      expect(h.service.list()[0].stage).toBe('login_wait');
+
+      // Hours later, still signed out: no second note, still kept.
+      h.clock.t += 7 * 60 * 60 * 1000;
+      await h.service.tick();
+      expect(h.notes).toHaveLength(1);
+      expect(h.nudges).toHaveLength(0);
+      expect(h.service.size).toBe(1);
+    });
+
+    it('re-delivers a parked message when the login is back (resumeAfterLogin), then follows the normal timeline', async () => {
+      const h = makeHarness();
+      h.login.set('ella', { runtime: 'Claude', runtimeCmd: 'claude' });
+      h.service.track(slackInput());
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      h.login.delete('ella');
+      // A different runtime's login does not release it.
+      expect(await h.service.resumeAfterLogin({ runtimeCmd: 'codex' })).toBe(0);
+      expect(await h.service.resumeAfterLogin({ runtimeCmd: 'claude', sessions: ['ella'] })).toBe(1);
+      expect(h.nudges).toHaveLength(1);
+      expect(h.service.list()[0].stage).toBe('nudged');
+      // The agent answers: the entry clears.
+      h.service.noteSlackAnswer('D0OWNER', '1790000000.000100', 'post');
+      expect(h.service.size).toBe(0);
+    });
+
+    it('a parked message goes on by itself once its agent no longer needs a sign-in', async () => {
+      const h = makeHarness();
+      h.login.set('ella', { runtime: 'Claude', runtimeCmd: 'claude' });
+      h.service.track(slackInput());
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      h.login.delete('ella');
+      await h.service.tick();
+      expect(h.nudges).toHaveLength(1);
+    });
+
+    it('drops a parked message after LOGIN_WAIT_DROP_MS', async () => {
+      const h = makeHarness();
+      h.login.set('ella', { runtime: 'Claude', runtimeCmd: 'claude' });
+      h.service.track(slackInput());
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      h.clock.t += C.LOGIN_WAIT_DROP_MS;
+      await h.service.tick();
+      expect(h.service.size).toBe(0);
     });
 
     it('notes are English (owner-facing UI is English-first)', async () => {

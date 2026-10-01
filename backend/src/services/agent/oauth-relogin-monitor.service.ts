@@ -43,6 +43,7 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
+import { isHarnessId } from '../harness/harness.types.js';
 import type { ExpiryReport } from '../harness/harness-relogin.service.js';
 
 /**
@@ -560,11 +561,24 @@ export class OAuthReloginMonitorService {
 		const knownRuntime = runtimeType ?? this.sessions.get(sessionName)?.runtimeType ?? null;
 		// An expired login the Slack re-login coordinator owns: it DMs the
 		// owner once per harness, so this session gets no notice of its own.
-		const handledByRelogin = this.reportHarnessExpiry(sessionName, screen, knownRuntime, 'screen');
+		let handledByRelogin = this.reportHarnessExpiry(sessionName, screen, knownRuntime, 'screen');
+		const signInScreen = this.detectLoginRequired(screen, knownRuntime);
+		// A sign-in screen of a runtime the coordinator can log in (an agent
+		// launched while Claude Code / Codex is signed out) goes to the
+		// coordinator too: one confirmed, machine-routed DM per harness instead
+		// of a per-agent notice through the master bot, whose replies land on
+		// the account's primary machine.
+		if (!handledByRelogin && signInScreen && knownRuntime && this.harnessExpiryHandler && isHarnessId(knownRuntime)) {
+			try {
+				handledByRelogin = this.harnessExpiryHandler({ harnessId: knownRuntime, sessionName, source: 'screen' });
+			} catch {
+				handledByRelogin = false;
+			}
+		}
 		// An expiry the coordinator took ("⎿ Login expired · Please run /login")
 		// is in the transcript, which the sign-in-screen check skips, but the
 		// agent still needs a sign-in — keep the flag for the dashboard.
-		const detection = this.detectLoginRequired(screen, knownRuntime) ?? (handledByRelogin ? { url: null, code: null } : null);
+		const detection = signInScreen ?? (handledByRelogin ? { url: null, code: null } : null);
 		const existing = this.loginRequired.get(sessionName);
 
 		if (!detection) {

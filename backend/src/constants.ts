@@ -1484,6 +1484,8 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NAME_REFRESH_MS: 5 * 60 * 1000,
 	/** Entries older than this when restored after downtime are dropped, not noted */
 	STALE_DROP_MS: 6 * 60 * 60 * 1000,
+	/** A message parked on a sign-in (`login_wait`) is kept this long for re-delivery after the login */
+	LOGIN_WAIT_DROP_MS: 24 * 60 * 60 * 1000,
 	/** Cap on open entries (oldest dropped with a warning) */
 	MAX_ENTRIES: 500,
 	/**
@@ -1518,7 +1520,7 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	 * owner-facing UI. {name} = agent display name. The login note names the
 	 * English command; 「重新登录 claude」 is still accepted as input.
 	 */
-	NOTE_LOGIN_TEXT: '⏳ Still waiting on {name} — {runtime} needs you to sign in again: reply `relogin {runtimeCmd}`.',
+	NOTE_LOGIN_TEXT: "⏳ Still waiting on {name} — {runtime} on this machine is signed out. Reply `login` here to sign in from your phone (or `relogin {runtimeCmd}`); your message is kept and re-delivered once it's signed in.",
 	NOTE_ASLEEP_TEXT: "⏳ Still waiting on {name} — {name} isn't running and couldn't be woken ({detail}).",
 	NOTE_ERROR_TEXT: "⏳ Still waiting on {name} — your message couldn't be delivered ({detail}).",
 	NOTE_BUSY_CAP_TEXT: '⏳ {name} is still working on your message ({waited} min so far).',
@@ -4284,6 +4286,27 @@ export const HARNESS_CONSTANTS = {
 		SCREEN_REPLY_MAX_LENGTH: 512,
 		/** Owner replies that start the login over (compared trimmed, case-insensitive) */
 		RETRY_KEYWORDS: ['relogin', 're-login', '重新登录'] as readonly string[],
+		/**
+		 * Bare owner replies that start the sign-in of every signed-out harness
+		 * (compared trimmed, case-insensitive, trailing punctuation dropped).
+		 * Only taken while a harness is known to be signed out.
+		 */
+		LOGIN_KEYWORDS: [
+			'login', 'log in', 'log-in', 'sign in', 'signin', 'sign-in', 'relogin', 're-login', 'reauth',
+			'登录', '登陆', '重新登录', '重新登陆', '重登',
+		] as readonly string[],
+		/** First re-reminder for a harness that stays signed out; doubles each time */
+		REMIND_BACKOFF_BASE_MS: 3 * 60 * 60 * 1000,
+		/** Longest gap between re-reminders */
+		REMIND_BACKOFF_MAX_MS: 24 * 60 * 60 * 1000,
+		/** A live sign-in probe result is reused this long */
+		PROBE_CACHE_MS: 10 * 60 * 1000,
+		/** A harness in use that looks signed in is probed for real this often */
+		PROBE_INTERVAL_MS: 60 * 60 * 1000,
+		/** Longest a sign-in probe may run */
+		PROBE_TIMEOUT_MS: 90_000,
+		/** Persisted notice / backoff state under CREWLY_HOME */
+		STATE_FILENAME: 'harness-relogin-state.json',
 		/** Tail of the (redacted) login screen included in a DM */
 		DM_SCREEN_MAX_CHARS: 1500,
 		/** Longest broker message quoted in a DM */
@@ -4321,6 +4344,14 @@ export const HARNESS_CONSTANTS = {
 		API_KEY_CHECK_URL: 'https://api.anthropic.com/v1/models',
 		API_VERSION: '2023-06-01',
 		API_KEY_CHECK_TIMEOUT_MS: 10_000,
+		/**
+		 * Live sign-in probe: one tiny print-mode turn. `claude auth status`
+		 * only reports whether a credential is *stored* (an expired or revoked
+		 * login still says loggedIn), so it cannot see an expiry; a real turn
+		 * answers "Not logged in · Please run /login" / "OAuth token revoked"
+		 * when the login is gone. No session file is written.
+		 */
+		PROBE_ARGS: ['-p', 'Reply with the single word OK.', '--model', 'haiku', '--no-session-persistence', '--strict-mcp-config'] as readonly string[],
 	},
 	/** Codex CLI facts */
 	CODEX: {

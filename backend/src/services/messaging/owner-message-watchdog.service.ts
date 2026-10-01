@@ -73,7 +73,14 @@ export interface OwnerMessageEntry {
   /** Clipped owner text */
   preview: string;
   receivedAt: number;
-  stage: 'waiting' | 'nudged';
+  /**
+   * `waiting` → `nudged` (re-delivered once) → noted. `login_wait`: the
+   * agent's runtime is signed out; the owner was told, and the message is
+   * re-delivered when the login is back ({@link OwnerMessageWatchdogService.resumeAfterLogin}).
+   */
+  stage: 'waiting' | 'nudged' | 'login_wait';
+  /** Runtime word of the login it waits on ("claude"), while `login_wait` */
+  loginRuntime?: string;
   nudgedAt?: number;
   /** A nudge that could not reach the agent */
   nudgeBlocked?: { reason: NudgeBlockReason; detail?: string };
@@ -453,6 +460,16 @@ export class OwnerMessageWatchdogService {
   private async evaluate(entry: OwnerMessageEntry): Promise<void> {
     const now = this.now();
     const age = now - entry.receivedAt;
+    if (entry.stage === 'login_wait') {
+      // Parked until the login is back. If the agent stopped needing a
+      // sign-in without our hearing of it (signed in on the machine), go on.
+      if (age > C.LOGIN_WAIT_DROP_MS) {
+        this.finish(entry, 'login never came back');
+        return;
+      }
+      if (!this.deps.loginRequired?.(entry.responsible)) await this.runNudge(entry, age, true);
+      return;
+    }
     if (age > C.STALE_DROP_MS) {
       this.logger.warn('Owner message unanswered for hours (restored after downtime) — dropped without a note', {
         key: entry.key,
@@ -506,9 +523,9 @@ export class OwnerMessageWatchdogService {
     return visible && this.deps.isBusy(entry.responsible);
   }
 
-  private async runNudge(entry: OwnerMessageEntry, age: number): Promise<void> {
+  private async runNudge(entry: OwnerMessageEntry, age: number, ignoreLogin: boolean = false): Promise<void> {
     const waited = Math.floor(age / 60000);
-    const login = this.deps.loginRequired?.(entry.responsible) ?? null;
+    const login = ignoreLogin ? null : (this.deps.loginRequired?.(entry.responsible) ?? null);
     let outcome: NudgeOutcome;
     if (login) {
       outcome = { outcome: 'blocked', reason: 'login' };
@@ -520,6 +537,23 @@ export class OwnerMessageWatchdogService {
       }
     }
     if (!this.entries.has(entry.key)) return; // answered while nudging
+    if (outcome.outcome === 'blocked' && outcome.reason === 'login' && login) {
+      // Tell the owner once, then keep the message: it is re-delivered when
+      // the login is back instead of being dropped with the note.
+      const first = entry.stage !== 'login_wait' && entry.loginRuntime === undefined;
+      entry.stage = 'login_wait';
+      entry.loginRuntime = login.runtimeCmd;
+      entry.nudgedAt = this.now();
+      this.persist();
+      this.logger.warn('Owner message waits on a sign-in — kept for re-delivery after the login', {
+        key: entry.key,
+        responsible: entry.responsible,
+        runtime: login.runtimeCmd,
+        waitedMinutes: waited,
+      });
+      if (first) await this.postLoginNote(entry);
+      return;
+    }
     entry.stage = 'nudged';
     entry.nudgedAt = this.now();
     entry.busyAfterNudge = false;
@@ -594,6 +628,49 @@ export class OwnerMessageWatchdogService {
     }
     if (kind === 'cap') return fill(C.NOTE_BUSY_CAP_TEXT, { name, waited });
     return fill(C.NOTE_SILENT_TEXT, { name, waited });
+  }
+
+  /**
+   * Post the "signed out" note for a message without finishing it.
+   *
+   * @param entry - The message
+   */
+  private async postLoginNote(entry: OwnerMessageEntry): Promise<void> {
+    const text = this.noteText(entry, 'blocked');
+    let posted = false;
+    try {
+      posted = await this.deps.postNote(entry, text);
+    } catch (err) {
+      this.logger.warn('Owner message note could not be posted', { key: entry.key, error: err instanceof Error ? err.message : String(err) });
+    }
+    this.logger.warn('Owner message unanswered — told the owner it waits on a sign-in', { key: entry.key, responsible: entry.responsible, posted });
+  }
+
+  /**
+   * A runtime's login is back: re-deliver every message that waited on it
+   * (or on one of the restarted agents), waking the agent when needed. The
+   * normal timeline (note if still silent) continues from there.
+   *
+   * @param match - Runtime word ("claude") and/or the agents that were restarted
+   * @returns How many messages were re-delivered
+   */
+  async resumeAfterLogin(match: { runtimeCmd?: string; sessions?: readonly string[] }): Promise<number> {
+    const sessions = new Set(match.sessions ?? []);
+    let n = 0;
+    for (const entry of [...this.entries.values()]) {
+      if (!this.entries.has(entry.key)) continue;
+      const parked = entry.stage === 'login_wait' && match.runtimeCmd !== undefined && entry.loginRuntime === match.runtimeCmd;
+      const restarted = sessions.has(entry.responsible) && entry.stage !== 'nudged';
+      if (!parked && !restarted) continue;
+      try {
+        await this.runNudge(entry, this.now() - entry.receivedAt, true);
+        n += 1;
+      } catch (err) {
+        this.logger.warn('Re-delivery after sign-in failed', { key: entry.key, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+    if (n > 0) this.logger.info('Owner messages re-delivered after a sign-in', { count: n, runtime: match.runtimeCmd });
+    return n;
   }
 
   private noteRecentAnswer(threadKey: string): void {
