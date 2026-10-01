@@ -193,9 +193,11 @@ export class MessageQueueService extends EventEmitter {
     // Coalesce bursty system events into a single pending message so the
     // orchestrator processes one combined notification instead of many singles.
     if (input.source === 'system_event') {
+      // Only with an event for the same recipient: a status forwarded to a
+      // team lead must not be folded into the orchestrator's turn (or back).
       const lastPendingSystemEvent = [...this.queue]
         .reverse()
-        .find((m) => m.source === 'system_event');
+        .find((m) => m.source === 'system_event' && (m.targetSession ?? '') === (input.targetSession ?? ''));
 
       if (lastPendingSystemEvent) {
         const mergedContent = `${lastPendingSystemEvent.content}\n${input.content}`;
@@ -289,14 +291,15 @@ export class MessageQueueService extends EventEmitter {
    * all returned messages as completed/failed.
    *
    * @param maxCount - Maximum additional system events to dequeue
+   * @param targetSession - Only events for this recipient (undefined = the orchestrator)
    * @returns Array of dequeued system event messages
    */
-  dequeueSystemEventBatch(maxCount: number): QueuedMessage[] {
+  dequeueSystemEventBatch(maxCount: number, targetSession?: string): QueuedMessage[] {
     const batch: QueuedMessage[] = [];
     let found = 0;
 
     for (let i = 0; i < this.queue.length && found < maxCount; ) {
-      if (this.queue[i].source === 'system_event') {
+      if (this.queue[i].source === 'system_event' && (this.queue[i].targetSession ?? '') === (targetSession ?? '')) {
         const [msg] = this.queue.splice(i, 1);
         msg.status = 'processing';
         msg.processingStartedAt = new Date().toISOString();

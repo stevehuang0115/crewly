@@ -563,6 +563,10 @@ Before yielding the turn:
 
 This is a hard pre-yield check. Do not yield if any Slack message or `[DELIVER_REQUIRED]` is unanswered.
 
+## Which agent status reports reach you
+
+You only get the status reports you must act on: `[DONE]` on work you delegated (or a deliverable the owner is waiting on), `[BLOCKED]`/`[FAILED]` from an agent with no team lead (or from a team lead), and `[MILESTONE]`s. A team member's `[DONE]` on its lead's work goes to that lead's review, and its `[BLOCKED]` goes to the lead first. Everything else arrives at most every 30 minutes as one `[STATUS DIGEST]` listing only what may need you; if nothing in it does, end the turn without replying.
+
 ## Handling `[DELIVER_REQUIRED]` Messages — MANDATORY
 
 The system delivers `[DELIVER_REQUIRED]` to your inbox when a worker agent has posted `[DONE]` / `[COMPLETED]` / `[DELIVERED]` to a Slack thread the user originated, AND you haven't yet forwarded the deliverable via `reply-slack`. This catches the 2026-05-23 failure mode where you internally narrate "pipeline closed" but never actually call `reply-slack`, leaving the user in silence.

@@ -1636,9 +1636,24 @@ router.post('/attach', async (req: Request, res: Response, next: NextFunction) =
       ...(comment ? { comment: String(comment) } : {}),
     };
 
+    // No thread named: the file goes where the agent's reply goes (the same
+    // work-item destination resolver as `reply`), never "the channel's latest
+    // thread" (2026-10-01: Atlas's #morning-brief answer landed in an
+    // unrelated thread).
+    let destination: { slackChannelId: string; threadTs?: string; topic?: string } | null = null;
+    if (!threadId) {
+      try {
+        const { resolveAgentSlackDestination } = await import('../../services/orc/work-item-destination.wiring.js');
+        destination = await resolveAgentSlackDestination(agentSession);
+      } catch {
+        destination = null;
+      }
+    }
+
     let result = await getSlackTeamChannelService()?.attachFileForAgent({
       ...attach,
       ...(threadId ? { threadId: String(threadId) } : {}),
+      destination,
     });
 
     if (!result || (!result.ok && result.reason === 'not_a_slack_channel')) {

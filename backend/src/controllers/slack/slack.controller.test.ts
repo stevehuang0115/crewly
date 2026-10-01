@@ -59,6 +59,12 @@ jest.mock('../../services/chat/chat.service.js', () => ({
   getChatService: () => ({ addDirectMessage: mockAddDirectMessage }),
 }));
 
+// Work-item destination resolver (the `reply` resolver) used by /attach.
+const mockResolveAgentSlackDestination = jest.fn<Promise<{ slackChannelId: string; threadTs?: string; topic?: string } | null>, [string]>(async () => null);
+jest.mock('../../services/orc/work-item-destination.wiring.js', () => ({
+  resolveAgentSlackDestination: (session: string) => mockResolveAgentSlackDestination(session),
+}));
+
 // Slack team channels — routes read the singleton; tests swap in a fake.
 const mockTeamChannels: { current: null | Record<string, jest.Mock> } = { current: null };
 jest.mock('../../services/slack/slack-team-channel.service.js', () => ({
@@ -148,6 +154,9 @@ jest.mock('../../services/cloud/cloud-client.service.js', () => ({
 }));
 
 // Jest globals are available automatically
+import { promises as fs } from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import request from 'supertest';
 import express, { Application, Request, Response, NextFunction } from 'express';
 import slackController from './slack.controller.js';
@@ -1809,6 +1818,48 @@ describe('Slack Controller', () => {
       expect(turnCall.metadata.replyKind).toBe('text');
       expect(turnCall.metadata.slackChannelId).toBe(channelId);
       expect(turnCall.metadata.slackThreadTs).toBe(threadTs);
+    });
+  });
+
+  /**
+   * 2026-10-01: Atlas's answer file landed in an unrelated thread because
+   * /attach picked "the latest thread in the channel". It now uses the same
+   * destination resolver as `reply`.
+   */
+  describe('POST /api/slack/attach', () => {
+    const tmpFile = path.join(os.tmpdir(), `attach-test-${process.pid}.md`);
+    beforeAll(async () => fs.writeFile(tmpFile, '# note'));
+    afterAll(async () => fs.rm(tmpFile, { force: true }));
+    afterEach(() => {
+      mockTeamChannels.current = null;
+      mockResolveAgentSlackDestination.mockReset();
+      mockResolveAgentSlackDestination.mockResolvedValue(null);
+    });
+
+    it('no thread named → passes the agent\'s work destination to the upload', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149', asAgentBot: true }));
+      mockTeamChannels.current = { attachFileForAgent };
+      mockResolveAgentSlackDestination.mockResolvedValue({ slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' });
+
+      const res = await request(app).post('/api/slack/attach').set('X-Agent-Session', 'atlas').send({ channelId: 'room-brief', filePath: tmpFile });
+
+      expect(res.status).toBe(200);
+      expect(mockResolveAgentSlackDestination).toHaveBeenCalledWith('atlas');
+      expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({
+        chatChannelId: 'room-brief',
+        agentSession: 'atlas',
+        destination: { slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' },
+      }));
+    });
+
+    it('a thread the agent named wins; the resolver is not consulted', async () => {
+      const attachFileForAgent = jest.fn(async () => ({ ok: true, slackChannelId: 'C0BRIEF', asAgentBot: false }));
+      mockTeamChannels.current = { attachFileForAgent };
+
+      await request(app).post('/api/slack/attach').set('X-Agent-Session', 'atlas').send({ channelId: 'room-brief', filePath: tmpFile, threadId: 'C0BRIEF:1.2' });
+
+      expect(mockResolveAgentSlackDestination).not.toHaveBeenCalled();
+      expect(attachFileForAgent).toHaveBeenCalledWith(expect.objectContaining({ threadId: 'C0BRIEF:1.2', destination: null }));
     });
   });
 });

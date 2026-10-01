@@ -25,6 +25,7 @@ import { ORCHESTRATOR_SESSION_NAME, ORC_STATUS_FORWARDING, OWNER_EVIDENCE_METADA
 import { extractSlackThreadKeys, formatSlackThreadKey, parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
+import { OrcStatusRouterService } from '../../services/orc/orc-status-router.service.js';
 import { getTicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 import {
   appendTicketLine,
@@ -63,6 +64,9 @@ const logger: ComponentLogger = LoggerService.getInstance().createComponentLogge
  */
 export function setMessageQueueService(service: MessageQueueService): void {
   messageQueueService = service;
+  // Agent status reports are routed (orchestrator, team lead, digest) through
+  // the same queue (specs/2026-10-01-orc-status-wakes.md).
+  OrcStatusRouterService.getInstance().setEnqueue(service ? (input) => service.enqueue(input) : null);
 }
 
 /**
@@ -1045,7 +1049,7 @@ export async function agentResponse(
         preview: content.substring(0, 80),
       });
     } else if (isAgentSender) {
-      logger.info('Agent status routed to orchestrator (not saved to chat)', {
+      logger.info('Agent status report received (not saved to chat)', {
         senderName,
         conversationId: resolvedConversationId,
         preview: content.substring(0, 80),
@@ -1077,16 +1081,17 @@ export async function agentResponse(
       // delivery made the watchdog demand a deliverable in an unrelated thread
       // every single day, and because markPendingDelivery re-arms the reminder
       // counter, the nudges never aged out.
+      let deliveryOwed = false;
       try {
         if (conversationIdWasExplicit) {
           const { OrcDeliveryEnforcerService } = await import(
             '../../services/orc/orc-delivery-enforcer.service.js'
           );
-          OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
+          deliveryOwed = OrcDeliveryEnforcerService.getInstance()?.markPendingDelivery({
             conversationId: resolvedConversationId,
             agentSender: senderName,
             text: content,
-          });
+          }) === true;
         } else {
           logger.debug('Skipping delivery tracking — conversation was inferred, not named', {
             senderName,
@@ -1100,25 +1105,23 @@ export async function agentResponse(
       }
 
       try {
-        // 1. Enqueue notification to orchestrator via MessageQueueService.
-        // Progress-only markers ([IN_PROGRESS], [WORKING], [ACTIVE], …) stay
-        // out of the queue: each queued line is a full-context model turn for
-        // the orchestrator, and on steamfun-ops (2026-09-16) roughly a third
-        // of the sub-agent status lines it woke up for said nothing it could
-        // act on. Terminal and attention markers ([DONE], [BLOCKED], [FAILED],
-        // structured reports, anything unrecognised) are still forwarded.
-        if (!messageQueueService) {
-          // nothing to forward to
-        } else if (ORC_STATUS_FORWARDING.PROGRESS_ONLY_MARKERS.test(content)) {
-          logger.debug('Agent progress marker not forwarded to orchestrator (no action needed)', {
-            senderName,
-            preview: content.substring(0, 60),
-          });
-        } else {
-          messageQueueService.enqueue({
-            content: `Agent status: ${clipForOrchestrator(content, resolvedConversationId)}`,
-            conversationId: resolvedConversationId,
-            source: 'system_event',
+        // 1. Route the report to whoever is responsible
+        // (specs/2026-10-01-orc-status-wakes.md). Each orchestrator turn
+        // re-reads its whole context; on 2026-09-29 134 of its turns were
+        // members' [DONE]/[BLOCKED] lines about work their own lead owns.
+        // Progress markers are recorded only; [DONE] wakes the orchestrator
+        // only for work it delegated or a delivery the owner waits on;
+        // [BLOCKED]/[FAILED] go to the sender's lead first; the rest is
+        // batched into a 30-minute digest.
+        if (messageQueueService) {
+          await OrcStatusRouterService.getInstance().route({
+            content: String(content),
+            // The session header is authoritative (work items and leads are keyed by session).
+            sender: agentHeader && !headerContradictsSender ? agentHeader : String(senderName),
+            conversationId: String(resolvedConversationId),
+            ...(typeof req.body?.workItemId === 'string' && req.body.workItemId ? { workItemId: req.body.workItemId } : {}),
+            deliveryOwed,
+            orcText: clipForOrchestrator(content, resolvedConversationId),
           });
         }
 

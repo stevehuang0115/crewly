@@ -1467,6 +1467,42 @@ export const ORC_STATUS_FORWARDING = {
 } as const;
 
 /**
+ * Who an agent status report wakes (specs/2026-10-01-orc-status-wakes.md).
+ *
+ * On 2026-09-29 the orchestrator ran 194 turns for system events against 3
+ * for the owner; 134 of them were team members' [DONE]/[BLOCKED] lines
+ * about work their own team lead owns. Each turn re-reads ~70k tokens.
+ * Status reports now go to whoever is responsible, and the orchestrator is
+ * woken only when it has to act.
+ */
+export const ORC_WAKE_CONSTANTS = {
+	/** Recorded only (status store, UI, ticket log) — never wake anyone */
+	RECORD_ONLY_MARKERS: /^\s*\[(IN_PROGRESS|WORKING|ACTIVE|STARTED|STARTING|HEARTBEAT|READY|ONLINE|IDLE|PROGRESS)\]/i,
+	/** "This piece of work is finished" */
+	DONE_MARKERS: /^\s*\[(DONE|COMPLETED|COMPLETE|DELIVERED)\]/i,
+	/** Always the orchestrator's: a shipped milestone it forwards to the owner (issue #435) */
+	ALWAYS_ORC_MARKERS: /^\s*\[(MILESTONE)\]/i,
+	/** "I am stuck" — the team lead hears first */
+	ATTENTION_MARKERS: /^\s*\[(BLOCKED|FAILED|ERROR)\]/i,
+	/** Non-urgent reports are batched into one orchestrator digest at most this often */
+	DIGEST_INTERVAL_MS: 30 * 60 * 1000,
+	/** Lines listed in one digest (the rest are counted) */
+	DIGEST_MAX_LINES: 20,
+	/** Characters of each report shown in a digest line */
+	DIGEST_LINE_CHARS: 160,
+	/** Conversation id of the digest turn */
+	DIGEST_CONVERSATION_ID: 'system:status-digest',
+	/** Conversation id of status reports forwarded to a team lead */
+	TEAM_LEAD_CONVERSATION_ID: 'system:team-status',
+	/** A work item finished this recently still counts as the one a [DONE] is about */
+	RECENT_COMPLETION_MS: 30 * 60 * 1000,
+	/** How often the "orc wakes: N (…)" line is logged */
+	COUNTER_LOG_INTERVAL_MS: 60 * 60 * 1000,
+	/** `sourceMetadata` key naming why a queued message wakes the orchestrator */
+	WAKE_CATEGORY_KEY: 'orcWakeCategory',
+} as const;
+
+/**
  * Unanswered-owner-message watchdog (specs/2026-09-30-owner-message-guarantee.md).
  *
  * Every owner message delivered to an agent here ends in an answer or in one

@@ -60,6 +60,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
+import { withTopicLine } from '../orc/work-item-destination.js';
 import { resolveSlackMentions, extractNativeMentionIds, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
@@ -2500,6 +2501,12 @@ export class SlackTeamChannelService {
     title?: string;
     comment?: string;
     threadId?: string;
+    /**
+     * Where the agent's current work answers (the `reply` resolver,
+     * work-item-destination.wiring). Used when no thread is named; null/absent
+     * = no known place → top level, never "the latest thread in the channel".
+     */
+    destination?: { slackChannelId: string; threadTs?: string; topic?: string } | null;
   }): Promise<
     | { ok: true; slackChannelId: string; threadTs?: string; fileId?: string; asAgentBot: boolean }
     | { ok: false; reason: string }
@@ -2508,12 +2515,24 @@ export class SlackTeamChannelService {
     if (!mapping) return { ok: false, reason: 'not_a_slack_channel' };
     if (!this.deps.slack.isConnected()) return { ok: false, reason: 'slack_not_connected' };
 
-    // Same thread the agent's words go to, so the file lands beside them.
-    const threadTs = this.resolveOutboundThreadTs(mapping, {
-      channelId: input.chatChannelId,
-      senderId: input.agentSession,
-      ...(input.threadId ? { threadId: input.threadId } : {}),
-    } as ChatMessageDTO);
+    // A thread the agent named wins. Otherwise the file goes where its reply
+    // goes — the work's origin, the same resolver as `reply` — and only when
+    // that place is in this channel. It used to fall back to the channel's
+    // latest Slack thread: Atlas's answer to a #morning-brief question landed
+    // in the owner's unrelated Blender-video thread (2026-10-01).
+    let threadTs: string | undefined;
+    let topic: string | undefined;
+    if (input.threadId) {
+      threadTs = this.resolveOutboundThreadTs(mapping, {
+        channelId: input.chatChannelId,
+        senderId: input.agentSession,
+        threadId: input.threadId,
+      } as ChatMessageDTO, false);
+    } else if (input.destination && input.destination.slackChannelId === mapping.slackChannelId) {
+      threadTs = input.destination.threadTs;
+      if (!threadTs) topic = input.destination.topic;
+    }
+    const comment = topic ? withTopicLine(topic, input.comment ?? '').trim() : input.comment;
 
     const installed = this.deps.identities?.getInstalled(input.agentSession) ?? null;
 
@@ -2523,7 +2542,7 @@ export class SlackTeamChannelService {
         filePath: input.filePath,
         ...(input.filename ? { filename: input.filename } : {}),
         ...(input.title ? { title: input.title } : {}),
-        ...(input.comment ? { initialComment: input.comment } : {}),
+        ...(comment ? { initialComment: comment } : {}),
         ...(threadTs ? { threadTs } : {}),
         ...(installed ? { botToken: installed.botToken } : {}),
       });
@@ -2554,7 +2573,13 @@ export class SlackTeamChannelService {
     }
   }
 
-  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO): string | undefined {
+  /**
+   * @param mapping - Channel mapping
+   * @param dto - The outbound message (thread reference / metadata)
+   * @param allowLatestRoot - Fall back to the channel's latest Slack thread (text mirror only; never for files)
+   * @returns Slack thread ts, or undefined for top level
+   */
+  private resolveOutboundThreadTs(mapping: SlackTeamChannelMapping, dto: ChatMessageDTO, allowLatestRoot = true): string | undefined {
     // A Slack thread key the agent named (`--thread <channel>:<ts>`), on the
     // row or as the thread reference itself — only for this channel.
     const named =
@@ -2565,6 +2590,7 @@ export class SlackTeamChannelService {
       const ts = root?.metadata?.slackThreadTs;
       if (typeof ts === 'string' && ts) return ts;
     }
+    if (!allowLatestRoot) return undefined;
     const latest = this.deps.chat.findLatestSlackRoot(mapping.chatChannelId);
     const ts = latest?.metadata?.slackThreadTs;
     return typeof ts === 'string' && ts ? ts : undefined;

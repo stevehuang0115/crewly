@@ -8,6 +8,7 @@ import { EventEmitter } from 'events';
 import { QueueProcessorService, serializableSourceMetadata } from './queue-processor.service.js';
 import { MessageQueueService } from './message-queue.service.js';
 import { ResponseRouterService } from './response-router.service.js';
+import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
 
 // Mock PtyActivityTrackerService
 const mockRecordActivity = jest.fn();
@@ -259,6 +260,23 @@ describe('QueueProcessorService', () => {
         expect.stringMatching(/^\[CHAT:conv-1:[a-f0-9]{8}\] Hello$/),
         'claude-code'
       );
+    });
+
+    it('counts orchestrator turns for the hourly "orc wakes" line; a team lead\'s message is not one', async () => {
+      OrcWakeCounter.resetInstance();
+      processor.start();
+
+      queueService.enqueue({ content: 'Hello', conversationId: 'conv-1', source: 'web_chat' });
+      jest.advanceTimersByTime(0);
+      await flushPromises();
+      expect(OrcWakeCounter.getInstance().snapshot()).toMatchObject({ turns: 1, owner: 1 });
+
+      queueService.enqueue({ content: 'Status from vera', conversationId: 'system:team-status', source: 'system_event', targetSession: 'owen' });
+      jest.advanceTimersByTime(60_000);
+      await flushPromises();
+      expect(mockAgentRegistrationService.sendMessageToAgent).toHaveBeenCalledWith('owen', expect.stringContaining('Status from vera'), expect.anything());
+      expect(OrcWakeCounter.getInstance().snapshot()).toMatchObject({ turns: 1, owner: 1 });
+      OrcWakeCounter.resetInstance();
     });
 
     it('should set active conversation ID before delivering', async () => {

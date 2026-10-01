@@ -38,6 +38,7 @@ import { RestartDrainService } from '../restart/restart-drain.service.js';
 import { StorageService } from '../core/storage.service.js';
 import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
+import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -528,7 +529,7 @@ export class QueueProcessorService extends EventEmitter {
       let batchedMessages: import('../../types/messaging.types.js').QueuedMessage[] = [];
       if (isSystemEvent) {
         const maxAdditional = MESSAGE_QUEUE_CONSTANTS.MAX_SYSTEM_EVENT_BATCH - 1;
-        batchedMessages = this.queueService.dequeueSystemEventBatch(maxAdditional);
+        batchedMessages = this.queueService.dequeueSystemEventBatch(maxAdditional, message.targetSession);
         if (batchedMessages.length > 0) {
           this.logger.info('Batched system events for delivery', {
             primaryId: message.id,
@@ -740,6 +741,11 @@ export class QueueProcessorService extends EventEmitter {
         }
 
         return;
+      }
+
+      // Hourly "orc wakes: N (…)" count (specs/2026-10-01-orc-status-wakes.md).
+      if (targetSession === ORCHESTRATOR_SESSION_NAME) {
+        OrcWakeCounter.getInstance().noteTurn(message.source);
       }
 
       // Mark thread as delivered in the status queue for lifecycle tracking
