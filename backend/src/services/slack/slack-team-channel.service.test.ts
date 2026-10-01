@@ -2065,19 +2065,44 @@ describe('attachFileForAgent', () => {
     expect(slack.uploads[0].channelId).not.toBe('huddle-1');
   });
 
-  it('lands in the same thread the agent is replying in', async () => {
+  it('lands in the thread its reply goes to (the work destination), like `reply`', async () => {
     // Otherwise the file appears at the bottom of the channel while the
     // conversation about it is somewhere above.
-    const root = await service.routeInbound(inbound({ ts: '200.1', text: '@sam send the pdf' }));
-    expect(root).toBeTruthy();
+    await service.routeInbound(inbound({ ts: '200.1', text: '@sam send the pdf' }));
+    await service.routeInbound(inbound({ ts: '300.1', text: '@sam unrelated, newer' }));
 
     await service.attachFileForAgent({
       chatChannelId: 'huddle-1',
       agentSession: 'crewly-alpha-sam',
       filePath: '/tmp/proposal.pdf',
+      destination: { slackChannelId: 'C1', threadTs: '200.1' },
     });
 
     expect(slack.uploads[0].threadTs).toBe('200.1');
+  });
+
+  it('with no destination it is a new top-level post — never the latest thread (2026-10-01)', async () => {
+    // Atlas's answer to a #morning-brief question landed in the owner's
+    // newer, unrelated Blender-video thread.
+    await service.routeInbound(inbound({ ts: '300.1', text: '@sam unrelated, newer' }));
+
+    await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/a.md', destination: null });
+    expect(slack.uploads[0].threadTs).toBeUndefined();
+
+    // A top-level destination in this channel opens with its topic line.
+    await service.attachFileForAgent({
+      chatChannelId: 'huddle-1',
+      agentSession: 'crewly-alpha-sam',
+      filePath: '/tmp/b.md',
+      comment: 'notes',
+      destination: { slackChannelId: 'C1', topic: 'Starship launches' },
+    });
+    expect(slack.uploads[1].threadTs).toBeUndefined();
+    expect(slack.uploads[1].initialComment).toBe('*Starship launches*\nnotes');
+
+    // A destination in another channel does not pick a thread here.
+    await service.attachFileForAgent({ chatChannelId: 'huddle-1', agentSession: 'crewly-alpha-sam', filePath: '/tmp/c.md', destination: { slackChannelId: 'C9OTHER', threadTs: '1.2' } });
+    expect(slack.uploads[2].threadTs).toBeUndefined();
   });
 
   it('takes a Slack thread key for this channel as --thread; ignores one for another channel (2026-09-28)', async () => {

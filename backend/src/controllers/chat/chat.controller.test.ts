@@ -39,6 +39,9 @@ import { createChatRouter } from './chat.routes.js';
 import { getChatService, resetChatService, ChatService } from '../../services/chat/chat.service.js';
 import { setMessageQueueService, clipForOrchestrator, sendChatMessageToOrchestrator, pickCompletionThreads } from './chat.controller.js';
 import { getChatV2Service } from '../../services/chat-v2/chat-v2.singleton.js';
+import { OrcStatusRouterService } from '../../services/orc/orc-status-router.service.js';
+import { OrcWakeCounter } from '../../services/orc/orc-wake-counter.js';
+import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { setTicketIntakeService, type TicketIntakeService } from '../../services/v3/ticket-intake.service.js';
 
 // =============================================================================
@@ -915,7 +918,8 @@ describe('Chat Controller', () => {
         expect(enqueue).not.toHaveBeenCalled();
       });
 
-      it('a status marker from the same agent in the same room still goes to the orchestrator', async () => {
+      it('a status marker from the same agent in the same room still takes the status path', async () => {
+        const route = jest.spyOn(OrcStatusRouterService.prototype, 'route');
         const { roomId, rootId } = await setupRoom();
         const response = await request(app)
           .post('/api/chat/agent-response')
@@ -924,8 +928,9 @@ describe('Chat Controller', () => {
 
         expect(response.status).toBe(201);
         expect(response.body.data.messageId).toBeUndefined();
-        expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ source: 'system_event', conversationId: roomId }));
+        expect(route).toHaveBeenCalledWith(expect.objectContaining({ sender: AVERY, conversationId: roomId, content: '[DONE] Agent Avery: 汇总已发' }));
         expect(warn.mock.calls.some(([msg]) => /Substantive agent content/.test(String(msg)))).toBe(false);
+        route.mockRestore();
       });
 
       it('an agent that is not in the room, or was never asked there, keeps the status path', async () => {
@@ -1036,6 +1041,7 @@ describe('Chat Controller', () => {
       });
 
       it('status markers, and answers nobody is owed, keep the orchestrator path', async () => {
+        const route = jest.spyOn(OrcStatusRouterService.prototype, 'route');
         await setup(true);
         const status = await request(app)
           .post('/api/chat/agent-response')
@@ -1049,7 +1055,12 @@ describe('Chat Controller', () => {
           .set('X-Agent-Session', ELLA)
           .send({ content: 'Delegation report: all three pages done.', senderName: 'Ella', senderType: 'agent' });
         expect(unowed.body.data.messageId).toBeUndefined();
-        expect(enqueue).toHaveBeenCalledTimes(2);
+        // Both took the status path; only the answer woke the orchestrator —
+        // a [DONE] with no orchestrator work waits for the digest.
+        expect(route).toHaveBeenCalledTimes(2);
+        expect(enqueue).toHaveBeenCalledTimes(1);
+        expect(enqueue).toHaveBeenCalledWith(expect.objectContaining({ content: expect.stringContaining('Delegation report') }));
+        route.mockRestore();
       });
     });
 
@@ -1187,56 +1198,64 @@ describe('Chat Controller', () => {
       expect(response.body.error).toBe('senderName is required');
     });
 
-    it('should enqueue [DONE] status to MessageQueueService', async () => {
-      const mockEnqueue = jest.fn().mockReturnValue({ id: 'q1' });
-      setMessageQueueService({ enqueue: mockEnqueue } as any);
+    describe('status reports go to whoever is responsible (specs/2026-10-01-orc-status-wakes.md)', () => {
+      const NOW = Date.now();
+      /** A running work item of test-agent. */
+      const item = (over: Partial<WorkItem>): WorkItem => ({
+        id: 'wi-1', type: 'delegate', owner: 'team_lead', target: 'test-agent', title: 'Write the report',
+        status: 'running', createdAt: new Date(NOW - 60_000).toISOString(), startedAt: new Date(NOW - 30_000).toISOString(),
+        retryCount: 0, maxRetries: 3, inputTokens: 0, outputTokens: 0, cost: 0, ...over,
+      } as WorkItem);
+      /** Router with a stub pool / team list. */
+      const useRouter = (items: WorkItem[]) => {
+        OrcStatusRouterService.setInstance(new OrcStatusRouterService({
+          enqueue: null,
+          poolItems: async () => items,
+          teams: async () => [],
+          isOrchestrator: (n) => n === 'crewly-orc',
+          now: () => NOW,
+          counter: new OrcWakeCounter(),
+        }));
+      };
+      afterEach(() => {
+        setMessageQueueService(null as any);
+        OrcStatusRouterService.setInstance(null);
+      });
 
-      const response = await request(app)
-        .post('/api/chat/agent-response')
-        .send({
-          content: '[DONE] Agent test-agent: Finished implementing feature',
-          senderName: 'test-agent',
-          senderType: 'agent',
-        });
+      it('[DONE] on work the orchestrator delegated wakes the orchestrator', async () => {
+        useRouter([item({ owner: 'orchestrator', metadata: { delegatedBy: 'crewly-orc' } })]);
+        const mockEnqueue = jest.fn().mockReturnValue({ id: 'q1' });
+        setMessageQueueService({ enqueue: mockEnqueue } as any);
 
-      expect(response.status).toBe(201);
-      expect(mockEnqueue).toHaveBeenCalledWith(
-        expect.objectContaining({
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({ content: '[DONE] Agent test-agent: Finished implementing feature', senderName: 'test-agent', senderType: 'agent' });
+
+        expect(response.status).toBe(201);
+        expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({
           content: expect.stringContaining('Agent status:'),
           source: 'system_event',
-        })
-      );
+          sourceMetadata: expect.objectContaining({ orcWakeCategory: 'delegated-done' }),
+        }));
+      });
 
-      // Cleanup
-      setMessageQueueService(null as any);
-    });
+      it('[DONE] on a team lead\'s work item does not wake the orchestrator', async () => {
+        useRouter([item({ owner: 'team_lead', metadata: { delegatedBy: 'atlas' } })]);
+        const mockEnqueue = jest.fn().mockReturnValue({ id: 'q1' });
+        setMessageQueueService({ enqueue: mockEnqueue } as any);
 
-    it('should enqueue [IDLE] status to MessageQueueService', async () => {
-      const mockEnqueue = jest.fn().mockReturnValue({ id: 'q2' });
-      setMessageQueueService({ enqueue: mockEnqueue } as any);
+        const response = await request(app)
+          .post('/api/chat/agent-response')
+          .send({ content: '[DONE] Agent test-agent: Finished', senderName: 'test-agent', senderType: 'agent', workItemId: 'wi-1' });
 
-      const response = await request(app)
-        .post('/api/chat/agent-response')
-        .send({
-          content: '[IDLE] Agent test-agent: Ready for next task',
-          senderName: 'test-agent',
-          senderType: 'agent',
-        });
-
-      expect(response.status).toBe(201);
-      expect(mockEnqueue).toHaveBeenCalledWith(
-        expect.objectContaining({
-          content: expect.stringContaining('[IDLE]'),
-          source: 'system_event',
-        })
-      );
-
-      setMessageQueueService(null as any);
+        expect(response.status).toBe(201);
+        expect(mockEnqueue).not.toHaveBeenCalled();
+      });
     });
 
     // 2026-09-16: every queued line is a full-context orchestrator turn, and
     // progress chatter gives it nothing to act on.
-    it.each(['[IN_PROGRESS]', '[WORKING]', '[ACTIVE]', '[STARTED]', '[READY]', '[ONLINE]'])(
+    it.each(['[IN_PROGRESS]', '[WORKING]', '[ACTIVE]', '[STARTED]', '[READY]', '[ONLINE]', '[IDLE]'])(
       'does NOT enqueue %s progress markers to the orchestrator',
       async (marker) => {
         const mockEnqueue = jest.fn().mockReturnValue({ id: 'q-progress' });

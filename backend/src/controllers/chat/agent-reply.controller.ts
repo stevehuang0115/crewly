@@ -13,7 +13,7 @@
 import type { Request, Response, NextFunction } from 'express';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
+import { OrcReplyRouteService, type TurnOrigin } from '../../services/orc/orc-reply-route.service.js';
 import { isStatusReport, planAgentReply, type AgentReplyPlan } from '../../services/orc/agent-reply-target.js';
 import {
   defaultWorkDestinationDeps,
@@ -117,9 +117,19 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
       // ticket thread, trigger destination, or a new top-level post — never
       // the thread the agent was last asked in (spec §6). The owner's fresh
       // message keeps the existing path below.
+      // An owner origin the work item carries (inherited down the delegate →
+      // verify chain) is used as the turn origin below.
+      let workOwnerOrigin: TurnOrigin | undefined;
+      let workContext: { wd: WorkDestinationDeps; topic: string } | undefined;
       if (!isOrchestrator && !none && !requestedConv && !requestedThread && !isStatusReport(content)) {
         const wd = await deps.workDestination();
         const { destination, workItem } = await planForSession(session, wd);
+        // Only an origin the WORK ITEM carries (not the agent's own fresh
+        // turn, which the path below already uses) changes anything here.
+        if (destination.kind === 'owner-origin' && workItem && destination.origin !== wd.ownerOrigin(session)) {
+          workOwnerOrigin = destination.origin;
+          workContext = { wd, topic: workItem.title };
+        }
         if (destination.kind !== 'owner-origin') {
           try {
             const delivered = await deliverToWorkDestination(session, destination, content, wd);
@@ -149,7 +159,7 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
         }
       }
 
-      const origin = OrcReplyRouteService.getInstance().getLastOrigin(session);
+      const origin = workOwnerOrigin ?? OrcReplyRouteService.getInstance().getLastOrigin(session);
       const owns = requestedConv && !isOrchestrator ? await deps.ownsConversation(session, requestedConv) : false;
 
       const plan = planAgentReply({
@@ -208,6 +218,22 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
               interim,
             });
             conversationId = origin.conversationId;
+          }
+          // The owner's place could not take it (the agent is not in that
+          // conversation): a new top-level post in its team channel — never
+          // whichever thread it was last asked in.
+          if (!messageId && plan.via === 'origin' && workContext) {
+            const posted = await deliverToWorkDestination(
+              session,
+              { kind: 'new-top-level', topic: workContext.topic, reason: 'the work item origin did not take the reply' },
+              content,
+              workContext.wd,
+            ).catch(() => null);
+            if (posted) {
+              logger.info('Agent reply posted as a new top-level message — its origin conversation did not take it', { session, slackChannelId: posted.slackChannelId });
+              res.status(201).json({ success: true, data: { slackChannelId: posted.slackChannelId, messageTs: posted.messageTs, destination: posted.kind } });
+              return;
+            }
           }
           if (!messageId) {
             logger.warn('Agent reply could not be delivered — told the agent (not filed as status)', {

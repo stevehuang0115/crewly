@@ -7,6 +7,7 @@
  * critically the OAuth scope set used to issue new Google credentials.
  */
 import {
+	ORC_WAKE_CONSTANTS,
 	CONVERSATION_LOG_CONSTANTS,
 	CONVERSATION_SYNC_CONSTANTS,
   ANTIGRAVITY_CONSTANTS,
@@ -503,5 +504,19 @@ describe('TICKET_AUTOPILOT_CONSTANTS', () => {
 		expect(C.IDLE_TRIGGER_MIN_INTERVAL_MS).toBeGreaterThan(0);
 		expect(C.IDLE_TRIGGER_MIN_INTERVAL_MS).toBeLessThanOrEqual(C.TRIAGE_MIN_INTERVAL_MS);
 		expect(C.TRIAGE_RELIST_AFTER_MS).toBeGreaterThan(C.TRIAGE_MIN_INTERVAL_MS);
+	});
+});
+
+describe('ORC_WAKE_CONSTANTS', () => {
+	it('digest at most every 30 min; counter hourly', () => {
+		expect(ORC_WAKE_CONSTANTS.DIGEST_INTERVAL_MS).toBe(30 * 60 * 1000);
+		expect(ORC_WAKE_CONSTANTS.COUNTER_LOG_INTERVAL_MS).toBe(60 * 60 * 1000);
+	});
+
+	it('progress markers (incl. [IDLE]) are record-only; [DONE] and [BLOCKED] are not', () => {
+		for (const m of ['[IN_PROGRESS]', '[ACTIVE]', '[READY]', '[WORKING]', '[IDLE]']) expect(ORC_WAKE_CONSTANTS.RECORD_ONLY_MARKERS.test(`${m} x`)).toBe(true);
+		expect(ORC_WAKE_CONSTANTS.RECORD_ONLY_MARKERS.test('[DONE] x')).toBe(false);
+		expect(ORC_WAKE_CONSTANTS.DONE_MARKERS.test('[COMPLETED] x')).toBe(true);
+		expect(ORC_WAKE_CONSTANTS.ATTENTION_MARKERS.test('[BLOCKED] x')).toBe(true);
 	});
 });

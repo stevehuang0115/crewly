@@ -10,6 +10,7 @@ import os from 'os';
 import { MessageQueueService } from './message-queue.service.js';
 import type { EnqueueMessageInput, QueuedMessage, PersistedQueueState } from '../../types/messaging.types.js';
 import { PERSISTED_QUEUE_VERSION } from '../../types/messaging.types.js';
+import { MESSAGE_QUEUE_CONSTANTS } from '../../constants.js';
 
 // Mock constants
 jest.mock('../../constants.js', () => ({
@@ -938,6 +939,36 @@ describe('MessageQueueService', () => {
     it('should be a no-op for flushPersist without crewlyHome', async () => {
       const memoryQueue = new MessageQueueService();
       await memoryQueue.flushPersist(); // Should not throw
+    });
+  });
+
+  describe('system events for a team lead (targetSession) stay apart from the orchestrator\'s', () => {
+    it('a batch only takes events for the same recipient', () => {
+      queue.enqueue({ content: 'orc event', conversationId: 'c1', source: 'system_event' });
+      queue.enqueue({ content: 'lead event', conversationId: 'c2', source: 'system_event', targetSession: 'owen' });
+      queue.enqueue({ content: 'orc event 2', conversationId: 'c3', source: 'system_event' });
+
+      expect(queue.dequeueSystemEventBatch(5).map((m) => m.content)).toEqual(['orc event', 'orc event 2']);
+      expect(queue.dequeueSystemEventBatch(5, 'owen').map((m) => m.content)).toEqual(['lead event']);
+    });
+
+    it('coalescing never folds a lead\'s event into the orchestrator\'s (or back)', () => {
+      const constants = MESSAGE_QUEUE_CONSTANTS as unknown as { MAX_SYSTEM_EVENT_COALESCE_CHARS: number };
+      const before = constants.MAX_SYSTEM_EVENT_COALESCE_CHARS;
+      constants.MAX_SYSTEM_EVENT_COALESCE_CHARS = 10_000;
+      try {
+        queue.enqueue({ content: 'orc a', conversationId: 'c1', source: 'system_event' });
+        queue.enqueue({ content: 'lead a', conversationId: 'c2', source: 'system_event', targetSession: 'owen' });
+        queue.enqueue({ content: 'orc b', conversationId: 'c3', source: 'system_event' });
+        queue.enqueue({ content: 'lead b', conversationId: 'c4', source: 'system_event', targetSession: 'owen' });
+        const all = [...queue.dequeueSystemEventBatch(5), ...queue.dequeueSystemEventBatch(5, 'owen')];
+        expect(all.map((m) => [m.targetSession ?? 'orc', m.content])).toEqual([
+          ['orc', 'orc a\norc b'],
+          ['owen', 'lead a\nlead b'],
+        ]);
+      } finally {
+        constants.MAX_SYSTEM_EVENT_COALESCE_CHARS = before;
+      }
     });
   });
 

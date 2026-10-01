@@ -3,7 +3,9 @@ import type { TurnOrigin } from './orc-reply-route.service.js';
 import {
   buildTriggerOrigin,
   currentWorkItemOf,
+  inheritedOrigin,
   originOfWorkItem,
+  ownerOriginFromTurn,
   parseDestination,
   planWorkDestination,
   shortTopic,
@@ -140,15 +142,63 @@ describe('resolveAgentSlackDestination', () => {
   });
 
   it('scheduled work → team channel (top level); named destination → looked up', async () => {
-    expect(await resolveAgentSlackDestination('atlas', deps({ poolItems: async () => [wi({ triggerId: 't' })] }))).toEqual({ slackChannelId: 'C0TEAM1', teamId: 'team-1' });
+    expect(await resolveAgentSlackDestination('atlas', deps({ poolItems: async () => [wi({ triggerId: 't' })] }))).toEqual({ slackChannelId: 'C0TEAM1', teamId: 'team-1', topic: 'Quarterly review' });
     const named = deps({
       poolItems: async () => [wi({ metadata: { origin: buildTriggerOrigin({ triggerId: 't', destination: '#wiki', topic: 'w' }) } })],
       findChannelId: async (n) => (n === 'wiki' ? 'C0WIKI11' : null),
     });
-    expect(await resolveAgentSlackDestination('atlas', named)).toEqual({ slackChannelId: 'C0WIKI11' });
+    expect(await resolveAgentSlackDestination('atlas', named)).toEqual({ slackChannelId: 'C0WIKI11', topic: 'w' });
   });
 
   it('no Slack place → null', async () => {
     expect(await resolveAgentSlackDestination('atlas', deps({ teamChannelOf: async () => null }))).toBeNull();
+  });
+});
+
+/**
+ * 2026-10-01: the owner asked Atlas in a #morning-brief thread; Atlas
+ * delegated to Sage, Sage's [DONE] made a verify item for Atlas — with no
+ * origin, so the answer's file landed in an unrelated thread.
+ */
+describe('origin chain: request → delegate → verify / retry / subtask', () => {
+  const ownerTurn: TurnOrigin = { conversationId: 'room-brief', slackChannelId: 'C0BRIEF', slackThreadKey: 'C0BRIEF:1790856242.596149', chatThreadId: 'root-1', receivedAt: NOW - 5 * 60 * 1000 };
+
+  it('an owner turn becomes an owner origin (thread from the thread key)', () => {
+    expect(ownerOriginFromTurn(ownerTurn)).toEqual({ kind: 'owner', conversationId: 'room-brief', slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149', chatThreadId: 'root-1' });
+  });
+
+  it('a delegate made while answering the owner inherits the owner origin', () => {
+    const creatorDestination = planWorkDestination({ workItem: null, ownerOrigin: ownerTurn, now: NOW });
+    const delegate = wi({ id: 'del', target: 'sage', metadata: { delegatedBy: 'atlas' } });
+    expect(inheritedOrigin({ workItem: delegate, parent: null, creatorDestination, creatorWorkItem: null })).toEqual(
+      expect.objectContaining({ kind: 'owner', slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' }),
+    );
+  });
+
+  it('the verify item inherits from the delegate, and its destination is the owner thread', () => {
+    const origin = ownerOriginFromTurn(ownerTurn);
+    const source = wi({ id: 'del', target: 'sage', metadata: { origin, projectTicket: { projectPath: '/p', id: 'CREW-38' } } });
+    const verify = wi({ id: 'del:verify:del', type: 'review', target: 'atlas', parentWorkItemId: 'del', metadata: { verifyOf: 'del' } });
+    const inherited = inheritedOrigin({ workItem: verify, parent: source, creatorDestination: null, creatorWorkItem: null });
+    expect(inherited).toEqual(origin);
+
+    const stamped = wi({ ...verify, metadata: { ...verify.metadata, origin: inherited } });
+    const dest = planWorkDestination({ workItem: stamped, ownerOrigin: owner(NOW - 3 * HOUR), now: NOW });
+    expect(dest).toEqual(expect.objectContaining({ kind: 'owner-origin' }));
+    expect(dest.kind === 'owner-origin' && dest.origin).toEqual(expect.objectContaining({ conversationId: 'room-brief', slackThreadKey: 'C0BRIEF:1790856242.596149', chatThreadId: 'root-1' }));
+  });
+
+  it('a subtask inherits the creator\'s current work item origin (ticket / trigger)', () => {
+    const creatorWorkItem = wi({ id: 'tl-work', metadata: { projectTicket: { projectPath: '/p', id: 'CE-9' } } });
+    const creatorDestination = planWorkDestination({ workItem: creatorWorkItem, now: NOW });
+    expect(inheritedOrigin({ workItem: wi({ id: 'sub' }), parent: null, creatorDestination, creatorWorkItem })).toEqual(
+      expect.objectContaining({ kind: 'ticket', ticketId: 'CE-9' }),
+    );
+  });
+
+  it('an origin already stamped is kept; nothing to inherit → null', () => {
+    const stamped = wi({ metadata: { origin: buildTriggerOrigin({ triggerId: 't', topic: 'x' }) } });
+    expect(inheritedOrigin({ workItem: stamped, parent: wi({ id: 'p', triggerId: 'other' }), creatorDestination: null, creatorWorkItem: null })).toBeNull();
+    expect(inheritedOrigin({ workItem: wi({}), parent: null, creatorDestination: { kind: 'new-top-level', reason: 'no work' }, creatorWorkItem: null })).toBeNull();
   });
 });

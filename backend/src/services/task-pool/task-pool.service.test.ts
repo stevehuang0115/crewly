@@ -156,6 +156,47 @@ describe('TaskPoolService', () => {
       });
     });
 
+    describe('origin chain (specs/2026-10-01-orc-status-wakes.md §2)', () => {
+      const ownerTurn = { conversationId: 'room-brief', slackChannelId: 'C0BRIEF', slackThreadKey: 'C0BRIEF:1790856242.596149', receivedAt: Date.now() };
+
+      it('a delegate created by an agent answering the owner gets the owner origin; its verify item inherits it', async () => {
+        service.setTurnOriginLookup((s) => (s === 'atlas' ? ownerTurn : undefined));
+        const delegate = makeWorkItem({ target: 'sage', metadata: { delegatedBy: 'atlas' } });
+        await service.addToPool(delegate, { creatorSession: 'atlas' });
+        const stored = (await service.getAllItems()).find((w) => w.id === delegate.id)!;
+        expect(stored.metadata?.origin).toEqual({ kind: 'owner', conversationId: 'room-brief', slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' });
+
+        // The verify item is created by the system (no creator) — it inherits from its source.
+        service.setTurnOriginLookup(() => undefined);
+        const verify = makeWorkItem({ id: `${delegate.id}:verify:${delegate.id}`, type: 'review', target: 'atlas', parentWorkItemId: delegate.id, metadata: { verifyOf: delegate.id } });
+        await service.addToPool(verify);
+        const storedVerify = (await service.getAllItems()).find((w) => w.id === verify.id)!;
+        expect(storedVerify.metadata?.origin).toEqual(stored.metadata?.origin);
+      });
+
+      it('a retry / give-up review linked by sourceWorkItemId inherits too', async () => {
+        service.setTurnOriginLookup(() => ownerTurn);
+        const source = makeWorkItem({ target: 'sage' });
+        await service.addToPool(source, { creatorSession: 'atlas' });
+        service.setTurnOriginLookup(() => undefined);
+        const review = makeWorkItem({ type: 'review', target: 'atlas', metadata: { sourceWorkItemId: source.id } });
+        await service.addToPool(review);
+        expect((await service.getAllItems()).find((w) => w.id === review.id)!.metadata?.origin).toMatchObject({ kind: 'owner', conversationId: 'room-brief' });
+      });
+
+      it('no owner turn and no current work → no origin stamped; an explicit origin is never replaced', async () => {
+        service.setTurnOriginLookup(() => undefined);
+        const plain = makeWorkItem({ target: 'sage' });
+        await service.addToPool(plain, { creatorSession: 'atlas' });
+        expect((await service.getAllItems())[0].metadata?.origin).toBeUndefined();
+
+        service.setTurnOriginLookup(() => ownerTurn);
+        const explicit = makeWorkItem({ target: 'sage', metadata: { origin: { kind: 'trigger', topic: 'Daily brief' } } });
+        await service.addToPool(explicit, { creatorSession: 'atlas' });
+        expect((await service.getAllItems()).find((w) => w.id === explicit.id)!.metadata?.origin).toEqual({ kind: 'trigger', topic: 'Daily brief' });
+      });
+    });
+
     it('rejects non-queued items', async () => {
       const wi = makeWorkItem();
       wi.status = 'running';

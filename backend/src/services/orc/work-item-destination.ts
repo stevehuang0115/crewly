@@ -24,11 +24,12 @@
 import { WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 import type { WorkItem, WorkItemStatus } from '../../types/v2/work-item.types.js';
 import type { TurnOrigin } from './orc-reply-route.service.js';
+import { parseSlackThreadKey } from '../slack/slack-thread-key.js';
 
 /** The origin a work item carries in `metadata.origin`. */
 export type WorkItemOrigin =
   /** Asked by the owner in a conversation / Slack thread */
-  | { kind: 'owner'; conversationId?: string; slackChannelId?: string; threadTs?: string }
+  | { kind: 'owner'; conversationId?: string; slackChannelId?: string; threadTs?: string; chatThreadId?: string }
   /** Work on a project ticket */
   | { kind: 'ticket'; projectPath: string; ticketId: string; title?: string; teamId?: string }
   /** Fired by a trigger or a cron task */
@@ -147,6 +148,63 @@ export function originOfWorkItem(wi: WorkItem): WorkItemOrigin | null {
 }
 
 /**
+ * The origin an owner turn gives the work started from it.
+ *
+ * @param turn - The owner's turn origin (OrcReplyRouteService)
+ * @returns An owner origin
+ */
+export function ownerOriginFromTurn(turn: TurnOrigin): WorkItemOrigin {
+  const key = parseSlackThreadKey(turn.slackThreadKey);
+  const slackChannelId = key?.slackChannelId ?? turn.slackChannelId;
+  const threadTs = key?.threadTs ?? turn.slackThreadTs;
+  return {
+    kind: 'owner',
+    conversationId: turn.conversationId,
+    ...(slackChannelId ? { slackChannelId } : {}),
+    ...(threadTs ? { threadTs } : {}),
+    ...(turn.chatThreadId ? { chatThreadId: turn.chatThreadId } : {}),
+  };
+}
+
+/** Inputs of {@link inheritedOrigin}. */
+export interface InheritOriginInput {
+  /** The item being created */
+  workItem: WorkItem;
+  /** The item it continues (verify / retry / subtask parent), when it has one */
+  parent: WorkItem | null;
+  /** Where the creating agent's current work came from (its plan), when an agent creates it */
+  creatorDestination: WorkDestination | null;
+  /** The creating agent's current work item */
+  creatorWorkItem: WorkItem | null;
+}
+
+/**
+ * The origin a new work item inherits (owner request → delegate → verify /
+ * retry / subtask). Incident 2026-10-01: Atlas delegated the owner's
+ * #morning-brief question to Sage; Sage's [DONE] made a verify item for
+ * Atlas with no origin, and the answer's file landed in an unrelated thread.
+ *
+ * Order: an origin already stamped wins (null = keep it); then the parent's;
+ * then the creator's current owner request; then the creator's current
+ * work item's.
+ *
+ * @param input - New item, its parent, the creator's current work
+ * @returns The origin to stamp, or null (nothing to inherit / already stamped)
+ */
+export function inheritedOrigin(input: InheritOriginInput): WorkItemOrigin | null {
+  const meta = (input.workItem.metadata ?? {}) as Record<string, unknown>;
+  if (isWorkItemOrigin(meta[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY])) return null;
+  if (input.parent) {
+    const fromParent = originOfWorkItem(input.parent);
+    if (fromParent) return fromParent;
+  }
+  const dest = input.creatorDestination;
+  if (dest?.kind === 'owner-origin') return ownerOriginFromTurn(dest.origin);
+  if (input.creatorWorkItem) return originOfWorkItem(input.creatorWorkItem);
+  return null;
+}
+
+/**
  * Shape check for a stamped origin.
  *
  * @param value - Anything
@@ -220,6 +278,7 @@ export function planWorkDestination(input: WorkDestinationInput): WorkDestinatio
             ...(origin.slackChannelId ? { slackChannelId: origin.slackChannelId } : {}),
             ...(origin.threadTs ? { slackThreadTs: origin.threadTs } : {}),
             ...(threadKey ? { slackThreadKey: threadKey } : {}),
+            ...(origin.chatThreadId ? { chatThreadId: origin.chatThreadId } : {}),
             receivedAt: startOf(workItem),
           },
           reason: `work item ${workItem.id} was asked by the owner`,

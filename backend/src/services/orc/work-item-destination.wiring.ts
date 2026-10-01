@@ -180,12 +180,12 @@ export async function postNewThread(session: string, title: string, text: string
  *
  * @param session - Agent session
  * @param deps - Collaborators (default: the real services)
- * @returns Channel (+ thread, + team), or null when the work is not in a Slack place
+ * @returns Channel (+ thread, + team; + topic line for a new top-level post), or null when the work is not in a Slack place
  */
 export async function resolveAgentSlackDestination(
   session: string,
   deps?: WorkDestinationDeps,
-): Promise<{ slackChannelId: string; threadTs?: string; teamId?: string } | null> {
+): Promise<{ slackChannelId: string; threadTs?: string; teamId?: string; topic?: string } | null> {
   const d = deps ?? (await defaultWorkDestinationDeps());
   const { destination } = await planForSession(session, d);
   switch (destination.kind) {
@@ -200,7 +200,10 @@ export async function resolveAgentSlackDestination(
       const parsed = parseDestination(destination.target);
       if (!parsed) return null;
       const id = parsed.target.startsWith('#') ? await d.findChannelId?.(parsed.target.slice(1)).catch(() => null) : parsed.target;
-      return id ? { slackChannelId: id, ...(destination.threadTs ? { threadTs: destination.threadTs } : {}) } : null;
+      if (!id) return null;
+      return destination.threadTs
+        ? { slackChannelId: id, threadTs: destination.threadTs }
+        : { slackChannelId: id, ...(destination.topic ? { topic: destination.topic } : {}) };
     }
     case 'ticket-thread': {
       const existing = await d.ticketThreads()?.get(destination.projectPath, destination.ticketId);
@@ -208,8 +211,10 @@ export async function resolveAgentSlackDestination(
       const info = await d.ticketInfo(destination.projectPath, destination.ticketId).catch(() => null);
       return d.teamChannelOf(session, destination.teamId ?? info?.team ?? null);
     }
-    case 'new-top-level':
-      return d.teamChannelOf(session, destination.teamId ?? null);
+    case 'new-top-level': {
+      const channel = await d.teamChannelOf(session, destination.teamId ?? null);
+      return channel ? { ...channel, ...(destination.topic ? { topic: destination.topic } : {}) } : null;
+    }
   }
 }
 

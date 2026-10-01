@@ -236,8 +236,10 @@ else
 fi
 
 # Send the status message to the orchestrator session via the chat API
-BODY=$(jq -n --arg content "$MESSAGE" --arg senderName "$SESSION_NAME" \
-  '{content: $content, senderName: $senderName, senderType: "agent"}')
+# workItemId (when known) lets the server route the report to whoever owns
+# that work — its team lead's review, or the orchestrator for work it delegated.
+BODY=$(jq -n --arg content "$MESSAGE" --arg senderName "$SESSION_NAME" --arg workItemId "$WORK_ITEM_ID" \
+  '{content: $content, senderName: $senderName, senderType: "agent"} + (if $workItemId != "" then {workItemId: $workItemId} else {} end)')
 
 api_call POST "/chat/agent-response" "$BODY"
 

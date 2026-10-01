@@ -321,4 +321,54 @@ describe('POST /api/chat/reply — work-item destinations (spec 2026-10-01 §6)'
     await createAgentReplyHandler(deps)(req({ content: 'done' }, 'atlas'), mockRes(), next);
     expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'dm-atlas' }));
   });
+
+  /**
+   * 2026-10-01: the owner asked Atlas in the #morning-brief thread; Atlas
+   * delegated to Sage and then verified Sage's work. The verify item had no
+   * origin, so the answer fell back to another thread. With the origin
+   * inherited down the chain, the answer goes to the owner's thread.
+   */
+  describe('origin inherited by delegate + verify items', () => {
+    const briefOrigin = { kind: 'owner', conversationId: 'room-brief', slackChannelId: 'C0BRIEF', threadTs: '1790856242.596149' };
+
+    it('the verify item\'s owner origin wins over the agent\'s own (unrelated) last owner thread', async () => {
+      // Atlas's newest owner turn: an unrelated Blender-video thread, 3 h ago.
+      OrcReplyRouteService.getInstance().noteDelivery(
+        'atlas',
+        '[CHAT:room-brief] <steve@Atlas>\n[SLACK-THREAD:C0BRIEF:1790883820.388009]\n\nthis blender video?',
+        Date.now() - 3 * HOUR,
+      );
+      const verify = wi({ id: 'del:verify:del', type: 'review', owner: 'team_lead', title: 'Verify: Starship launches', metadata: { verifyOf: 'del', origin: briefOrigin } });
+      const work = makeWorkDeps({ items: [verify] });
+      const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ content: 'Verified: the 1,800 figure is a price model.' }, 'atlas'), res, next);
+      expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-brief', thread: 'C0BRIEF:1790856242.596149' }));
+      expect(work.post).not.toHaveBeenCalled();
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('when the origin conversation will not take it → a new top-level post with a topic line, not the last thread', async () => {
+      OrcReplyRouteService.getInstance().noteDelivery('sage', '[CHAT:room-old] <steve@Sage>\n[SLACK-THREAD:C0OLD:1790000000.000100]\n\nold question', Date.now() - 3 * HOUR);
+      const delegate = wi({ id: 'del', type: 'delegate', target: 'sage', owner: 'team_lead', title: 'Starship launches note', metadata: { origin: briefOrigin } });
+      const work = makeWorkDeps({ items: [delegate] });
+      const deliver = jest.fn(async (_i: { conversationId: string }) => null);
+      const { deps } = makeDeps({ workDestination: async () => work.wd, deliver: deliver as unknown as AgentReplyDeps['deliver'] });
+      const res = mockRes();
+      await createAgentReplyHandler(deps)(req({ content: 'Note is ready.' }, 'sage'), res, next);
+      expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-brief' }));
+      expect(deliver).not.toHaveBeenCalledWith(expect.objectContaining({ conversationId: 'room-old' }));
+      expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0TEAM1', newTopLevel: true, text: '*Starship launches note*\nNote is ready.' }));
+      expect(res.statusCode).toBe(201);
+    });
+
+    it('current work with no origin → a new top-level post, never the last owner thread', async () => {
+      OrcReplyRouteService.getInstance().noteDelivery('sage', '[CHAT:room-old] <steve@Sage>\n[SLACK-THREAD:C0OLD:1790000000.000100]\n\nold question', Date.now() - 3 * HOUR);
+      const work = makeWorkDeps({ items: [wi({ id: 'x', type: 'delegate', target: 'sage', owner: 'team_lead', title: 'Pricing table' })] });
+      const { deps, deliver } = makeDeps({ workDestination: async () => work.wd });
+      await createAgentReplyHandler(deps)(req({ content: 'Table done.' }, 'sage'), mockRes(), next);
+      expect(deliver).not.toHaveBeenCalled();
+      expect(work.post).toHaveBeenCalledWith(expect.objectContaining({ target: 'C0TEAM1', newTopLevel: true, text: '*Pricing table*\nTable done.' }));
+    });
+  });
 });

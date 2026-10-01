@@ -55,6 +55,9 @@ import {
 import type { EventBusService } from '../event-bus/event-bus.service.js';
 import { orderForAgent, type ClaimTicketLookup } from './ticket-claim-policy.js';
 import { SUPERSEDED_BY_METADATA_KEY } from '../v3/request-completion.js';
+import { OrcReplyRouteService, type TurnOrigin } from '../orc/orc-reply-route.service.js';
+import { currentWorkItemOf, inheritedOrigin, planWorkDestination } from '../orc/work-item-destination.js';
+import { WORK_ITEM_DESTINATION_CONSTANTS } from '../../constants.js';
 
 /**
  * Narrow Request-link contract consumed by {@link TaskPoolService.addToPool}.
@@ -341,6 +344,13 @@ export class TaskPoolService {
   private untargetedRouter: UntargetedRouterDeps | null = null;
 
   /**
+   * The creating agent's last owner turn (origin chain: a delegate made while
+   * answering the owner answers in the owner's thread). null disables it.
+   */
+  private turnOriginLookup: ((sessionName: string) => TurnOrigin | undefined) | null = (session) =>
+    OrcReplyRouteService.getInstance().getLastOrigin(session);
+
+  /**
    * Serializes claim operations to prevent the race where two concurrent
    * claimFromPool / claimSpecificItem calls both select the same queued
    * WorkItem between their read and write phases. In-process only — does
@@ -462,6 +472,16 @@ export class TaskPoolService {
    */
   setTicketClaimPolicy(policy: TicketClaimPolicyDeps | null): void {
     this.ticketClaimPolicy = policy;
+  }
+
+  /**
+   * Replace (or disable with `null`) the owner-turn lookup used to give a
+   * new item its creator's origin.
+   *
+   * @param lookup - Session → its last owner turn origin
+   */
+  setTurnOriginLookup(lookup: ((sessionName: string) => TurnOrigin | undefined) | null): void {
+    this.turnOriginLookup = lookup;
   }
 
   /**
@@ -646,6 +666,7 @@ export class TaskPoolService {
     }
 
     this.inferRequestIdFromTurn(workItem, options.creatorSession);
+    await this.inheritOrigin(workItem, options.creatorSession);
     await this.routeUntargeted(workItem, options.creatorSession);
 
     await this.storage.addWorkItem(workItem);
@@ -682,6 +703,50 @@ export class TaskPoolService {
     // committed item. Publish failures are logged-but-isolated — the pool
     // mutation is the source of truth, the event is informational.
     this.publishWorkItemQueued(workItem);
+  }
+
+  /**
+   * Stamp `metadata.origin` from the item this one continues (verify / retry
+   * / subtask parent) or from the creating agent's current work, so the
+   * answer goes where the request came from (specs/2026-10-01-orc-status-wakes.md §2).
+   * Mutates the item before it is stored; failures are logged and ignored.
+   *
+   * @param workItem - The item about to be stored
+   * @param creatorSession - The agent creating it, when known
+   */
+  private async inheritOrigin(workItem: WorkItem, creatorSession?: string): Promise<void> {
+    try {
+      const meta = (workItem.metadata ?? {}) as Record<string, unknown>;
+      const parentId = [workItem.parentWorkItemId, meta.verifyOf, meta.sourceWorkItemId].find(
+        (v): v is string => typeof v === 'string' && v.length > 0,
+      );
+      const parent = (parentId ? await this.storage.findWorkItem(parentId) : null) ?? null;
+      const delegatedBy = typeof meta.delegatedBy === 'string' ? meta.delegatedBy : undefined;
+      const creator = creatorSession ?? delegatedBy;
+      let creatorWorkItem: WorkItem | null = null;
+      let creatorDestination = null;
+      if (!parent && creator) {
+        creatorWorkItem = currentWorkItemOf(await this.storage.getWorkItems(), creator);
+        creatorDestination = planWorkDestination({
+          workItem: creatorWorkItem,
+          ownerOrigin: this.turnOriginLookup?.(creator),
+          now: Date.now(),
+        });
+      }
+      const origin = inheritedOrigin({ workItem, parent, creatorDestination, creatorWorkItem });
+      if (!origin) return;
+      workItem.metadata = { ...meta, [WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: origin };
+      this.logger.info('WorkItem inherited its origin', {
+        workItemId: workItem.id,
+        origin: origin.kind,
+        from: parent ? `parent ${parent.id}` : `creator ${creator}`,
+      });
+    } catch (err) {
+      this.logger.warn('Origin inheritance failed — WorkItem keeps no origin', {
+        workItemId: workItem.id,
+        error: formatError(err),
+      });
+    }
   }
 
   /**
