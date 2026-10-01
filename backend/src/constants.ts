@@ -4950,6 +4950,16 @@ export const SYSTEM_CONTROL_CONSTANTS = {
  * out of usage, and back when the limit resets.
  * specs/2026-10-01-runtime-fallback.md
  */
+/**
+ * A planned relaunch (the runtime fallback moving an agent to another
+ * runtime and back) is not a crash or a hang: the restart / heartbeat / hung
+ * monitors ignore the session for this long and send no alarm.
+ */
+export const PLANNED_RELAUNCH_CONSTANTS = {
+	/** How long a session counts as "being relaunched on purpose" */
+	WINDOW_MS: 5 * 60_000,
+} as const;
+
 export const RUNTIME_FALLBACK_CONSTANTS = {
 	/** State + settings file under CREWLY_HOME */
 	STATE_FILE: 'runtime-fallback.json',
@@ -4972,6 +4982,22 @@ export const RUNTIME_FALLBACK_CONSTANTS = {
 	NOTICE_DELAY_MS: 45_000,
 	/** Probe again this long after a parsed reset time */
 	RESET_GRACE_MS: 2 * 60_000,
+	/**
+	 * Out of money/credit (DeepSeek 402 "Insufficient Balance", "credit
+	 * balance is too low"): no reset time and no timed retry — only a probe,
+	 * at most this often, can bring the runtime back.
+	 */
+	BILLING_PROBE_INTERVAL_MS: 6 * 60 * 60_000,
+	/** A limit seen again this soon after a switch-back counts as a failed switch-back */
+	FAILED_REVERT_WINDOW_MS: 30 * 60_000,
+	/** Each failed switch-back doubles the probe interval, up to this */
+	MAX_PROBE_BACKOFF_MS: 24 * 60 * 60_000,
+	/** Where the owner tops up, by billing provider */
+	TOP_UP_URLS: {
+		deepseek: 'platform.deepseek.com',
+		anthropic: 'console.anthropic.com/settings/billing',
+		openai: 'platform.openai.com/settings/organization/billing',
+	} as Readonly<Record<string, string>>,
 	/** A probe that says "fine" mutes detection for this long (false positive) */
 	FALSE_POSITIVE_MUTE_MS: 10 * 60_000,
 	/** Transient rate limits on one session that escalate to a usage limit */

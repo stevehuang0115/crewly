@@ -67,11 +67,23 @@ machine and only notices when nothing gets done.
 6. **The orchestrator** follows the same rule (setting `orcFollows`,
    default on).
 
-7. **Switch back.** While a runtime is exhausted, a periodic check runs:
-   at the parsed reset time (+2 min), and otherwise every
-   `probeIntervalMinutes` (default 15). For Claude Code the probe decides;
-   for runtimes without a probe the reset time decides, or — without one —
-   the interval (an optimistic retry; a new limit is detected again). When
+7. **Switch back — only after a probe of the primary passes.** While a
+   runtime is exhausted, a periodic check runs: at the parsed reset time
+   (+2 min), and otherwise every `probeIntervalMinutes` (default 15).
+   Probes: Claude Code — one `claude -p … --model haiku` turn; Crewly Agent
+   — one `max_tokens: 1` request to each provider its agents use (DeepSeek:
+   HTTP 402 = still out). A probe that fails or cannot tell (`unknown`)
+   keeps the fallback. Runtimes without a probe (`unsupported`: Codex,
+   Antigravity) come back only on their parsed reset time.
+   - **Out of credit (`billing`)** — DeepSeek 402 `Insufficient Balance`,
+     "credit balance is too low", `insufficient_quota` — is its own kind:
+     no reset time, never retried on a timer, probed at most every 6 h.
+   - **Backoff:** a limit seen again within 30 min of a switch-back counts
+     as a failed switch-back; each one doubles the next probe interval (up
+     to 24 h) and does not re-notify the owner.
+   (Fixes the 2026-10-01 flap: the orc on DeepSeek with no balance was
+   switched back after 15 min on an "unknown" probe, failed again with 402
+   8 s later, and switched away again.) When
    the runtime is back, every overridden agent reverts **at its next idle
    boundary** (never mid-turn, never while a message is being delivered or
    queued): the override is cleared, the old conversation id is restored so
@@ -86,6 +98,9 @@ machine and only notices when nothing gets done.
      mentioned ("others switch when they next get work").
    - When no fallback is available: "… No fallback runtime is available, so
      its agents wait until it resets. Set one in Settings → Runtimes."
+   - Out of credit (`billing`): "DeepSeek is out of credit — top up at
+     platform.deepseek.com. Orc is running on Claude Code meanwhile." —
+     once; nothing more until it is topped up.
    - Once on switch-back: "Claude Code is available again on iriss-air.
      5 agents are switching back from DeepSeek as they finish their turn."
    Notice flags are persisted, so a restart never re-sends one.
@@ -171,6 +186,26 @@ shell has none.
   "ghost / inactive" seconds after start (no PTY session); it now skips a
   member whose in-process runtime is running. `GET /api/teams/:id` likewise
   counts an in-process runtime as a live session.
+
+## A planned relaunch is not a crash
+
+Every relaunch the fallback does (switch and switch back) marks the session
+as a **planned relaunch** (`services/agent/planned-relaunch.registry.ts`, 5
+min window, renewed once the new runtime started). While marked:
+
+- `OrchestratorRestartService.attemptRestart({ planned: true })` relaunches
+  without the "🟠 Orchestrator Restarted … detected as unresponsive" Slack
+  alarm, takes no cooldown slot, counts no attempt, and a failure does not
+  count toward giving up; unplanned callers (heartbeat / exit monitors) are
+  refused while the window lasts.
+- The orchestrator heartbeat monitor skips its checks; the agent heartbeat
+  monitor neither downgrades the member as a ghost nor counts dead checks;
+  `ClaimService.getHungAgents` (and so `/health` and the hung-orchestrator
+  auto-restart) leaves the session out; the old session's grace-revokes are
+  cleared.
+
+The fallback's own single DM is the only owner message. A real crash or hang
+outside the window is handled exactly as before.
 
 ## Non-goals
 

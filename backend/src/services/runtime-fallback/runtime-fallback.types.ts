@@ -39,8 +39,16 @@ export interface ExhaustedRuntime {
 	runtime: string;
 	/** ISO time it was detected */
 	since: string;
-	/** ISO time it resets, when known */
+	/** ISO time it resets, when known (never for `billing`) */
 	until?: string;
+	/**
+	 * `usage_limit` (a window that resets) or `billing` (out of money/credit:
+	 * no timed retry, probed at most every BILLING_PROBE_INTERVAL_MS).
+	 * Missing = `usage_limit` (state from before the field existed).
+	 */
+	kind?: 'usage_limit' | 'billing';
+	/** Switch-backs that failed (the limit came straight back); backs off the next probe */
+	failedReverts?: number;
 	/** Rule that matched (never contains output) */
 	ruleId: string;
 	/** Last switch-back probe (ISO) */

@@ -49,10 +49,18 @@ describe('detectUsageLimit — Claude Code usage limits', () => {
 			'API Error: 400 {"type":"error","error":{"type":"billing_error","message":"spend limit reached (daily; resets 2026-10-02 00:00 UTC)"}}',
 			'claude.api_usage_429',
 		],
-		['API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}', 'claude.api_credit_balance'],
 	])('detects %s', (output, ruleId) => {
 		const match = detectUsageLimit(output, 'claude-code', NOW);
 		expect(match).toMatchObject({ runtime: 'claude-code', ruleId, kind: 'usage_limit' });
+	});
+
+	it('reads "credit balance is too low" as a billing limit (no reset time)', () => {
+		const match = detectUsageLimit(
+			'API Error: 400 {"type":"error","error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+			'claude-code',
+			NOW,
+		);
+		expect(match).toMatchObject({ runtime: 'claude-code', ruleId: 'claude.api_credit_balance', kind: 'billing', resetAt: null });
 	});
 
 	it('parses the reset time of a Claude limit', () => {
@@ -153,13 +161,19 @@ describe('detectUsageLimit — Antigravity / Gemini', () => {
 });
 
 describe('detectUsageLimit — DeepSeek (crewly-agent)', () => {
-	it('detects Insufficient Balance (HTTP 402)', () => {
+	it('reads Insufficient Balance (HTTP 402) as a billing limit with no reset time', () => {
 		expect(detectUsageLimit('AI_APICallError: Insufficient Balance', 'crewly-agent', NOW)).toMatchObject({
 			runtime: 'crewly-agent',
 			ruleId: 'crewly-agent.insufficient_balance',
-			kind: 'usage_limit',
+			kind: 'billing',
 			resetAt: null,
 		});
+	});
+
+	it('reads a provider credit error as billing and a quota window as a usage limit', () => {
+		expect(detectUsageLimit('Your credit balance is too low to access the Anthropic API.', 'crewly-agent', NOW)).toMatchObject({ kind: 'billing' });
+		expect(detectUsageLimit('insufficient_quota', 'crewly-agent', NOW)).toMatchObject({ kind: 'billing' });
+		expect(detectUsageLimit('You have exhausted your daily quota', 'crewly-agent', NOW)).toMatchObject({ kind: 'usage_limit' });
 	});
 
 	it('treats "Rate Limit Reached" (HTTP 429) as transient', () => {

@@ -25,13 +25,46 @@ import {
 	type HandoverRequest,
 } from './runtime-fallback.service.js';
 import { runtimeLabel } from './runtime-fallback.types.js';
-import { createRuntimeUsageProbe } from './runtime-usage-probe.js';
+import { createRuntimeUsageProbe, type CrewlyAgentProbeTarget } from './runtime-usage-probe.js';
+import { clearPlannedRelaunch, markPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
+
+/** Reason recorded for the fallback's relaunches. */
+const PLANNED_RELAUNCH_REASON = 'runtime_fallback';
+
+/** Provider of an in-process Crewly Agent run without a model id (CREWLY_AGENT_DEFAULTS.DEFAULT_MODEL). */
+const DEFAULT_CREWLY_AGENT_PROVIDER = 'google';
+
+/**
+ * Providers (with model) the in-process Crewly Agent runtime uses: the
+ * orchestrator's model when it runs on it, and each member configured on it.
+ *
+ * @param storage - Teams / orchestrator status
+ * @returns Unique provider → model (first model seen) pairs
+ */
+export async function crewlyAgentModelsInUse(storage: StorageLike): Promise<Array<{ provider: string; model?: string }>> {
+	const modelIds: Array<string | undefined> = [];
+	const orc = await storage.getOrchestratorStatus().catch(() => null);
+	if (orc?.runtimeType === RUNTIME_TYPES.CREWLY_AGENT) modelIds.push(orc.modelId);
+	for (const team of await storage.getTeams().catch(() => [])) {
+		for (const member of team.members) {
+			if (member.runtimeType === RUNTIME_TYPES.CREWLY_AGENT) modelIds.push(member.modelId);
+		}
+	}
+	const byProvider = new Map<string, string | undefined>();
+	for (const id of modelIds) {
+		const slash = id ? id.indexOf('/') : -1;
+		const provider = id && slash > 0 ? id.slice(0, slash) : DEFAULT_CREWLY_AGENT_PROVIDER;
+		const model = id && slash > 0 ? id.slice(slash + 1) : undefined;
+		if (!byProvider.has(provider) || (!byProvider.get(provider) && model)) byProvider.set(provider, model);
+	}
+	return [...byProvider].map(([provider, model]) => ({ provider, ...(model ? { model } : {}) }));
+}
 
 /** Team / member facts the wiring reads. */
 interface StorageLike {
-	getTeams(): Promise<Array<{ id: string; name: string; projectIds: string[]; members: Array<{ id: string; name: string; role: string; sessionName: string; runtimeType?: string }> }>>;
+	getTeams(): Promise<Array<{ id: string; name: string; projectIds: string[]; members: Array<{ id: string; name: string; role: string; sessionName: string; runtimeType?: string; modelId?: string }> }>>;
 	getProjects(): Promise<Array<{ id: string; path: string }>>;
-	getOrchestratorStatus(): Promise<{ runtimeType?: string } | null>;
+	getOrchestratorStatus(): Promise<{ runtimeType?: string; modelId?: string } | null>;
 }
 
 /** The registration-service calls the wiring makes. */
@@ -108,7 +141,19 @@ export function writeRuntimeHandover(crewlyHome: string, req: HandoverRequest, c
  * @returns The running service
  */
 export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): RuntimeFallbackService {
-	const probe = createRuntimeUsageProbe();
+	const probe = createRuntimeUsageProbe({
+		crewlyAgentTargets: async (): Promise<CrewlyAgentProbeTarget[]> => {
+			const { getSettingsService } = await import('../settings/settings.service.js');
+			const targets: CrewlyAgentProbeTarget[] = [];
+			for (const { provider, model } of await crewlyAgentModelsInUse(ctx.storage)) {
+				const keyProvider = KEY_PROVIDER[provider];
+				if (!keyProvider) continue;
+				const apiKey = await getSettingsService().getApiKey(keyProvider, { runtime: RUNTIME_TYPES.CREWLY_AGENT }).catch(() => undefined);
+				if (apiKey && apiKey.trim()) targets.push({ provider, apiKey: apiKey.trim(), ...(model ? { model } : {}) });
+			}
+			return targets;
+		},
+	});
 
 	const findMember = async (sessionName: string) => {
 		for (const team of await ctx.storage.getTeams()) {
@@ -144,6 +189,39 @@ export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): 
 			teamId: found.team.id,
 			isOrchestrator: false,
 		};
+	};
+
+	const relaunchSession = async (agent: FallbackAgentInfo, reg: RegistrationLike): Promise<boolean> => {
+		await reg.stopSessionForRelaunch(agent.sessionName);
+		const { PtyActivityTrackerService } = await import('../agent/pty-activity-tracker.service.js');
+		PtyActivityTrackerService.getInstance().clearSession(agent.sessionName);
+		// Grace-revokes of the old session must not flag the new one as hung.
+		const { TaskPoolService } = await import('../task-pool/task-pool.service.js');
+		try {
+			TaskPoolService.getInstance().clearHungState(agent.sessionName);
+		} catch {
+			// task pool not ready
+		}
+		if (agent.isOrchestrator) {
+			const { OrchestratorRestartService } = await import('../orchestrator/orchestrator-restart.service.js');
+			return OrchestratorRestartService.getInstance().attemptRestart({ planned: true, reason: PLANNED_RELAUNCH_REASON });
+		}
+		const found = await findMember(agent.sessionName);
+		if (!found) return false;
+		let projectPath: string | undefined;
+		if (found.team.projectIds[0]) {
+			projectPath = (await ctx.storage.getProjects()).find((p) => p.id === found.team.projectIds[0])?.path;
+		}
+		projectPath ??= (await persistence().catch(() => null))?.getSessionMetadata(agent.sessionName)?.cwd;
+		const result = await reg.createAgentSession({
+			sessionName: agent.sessionName,
+			role: found.member.role,
+			projectPath,
+			memberId: found.member.id,
+			teamId: found.team.id,
+		});
+		if (!result.success) ctx.logger.warn('Relaunch failed', { sessionName: agent.sessionName, error: result.error });
+		return result.success;
 	};
 
 	const service = new RuntimeFallbackService({
@@ -209,29 +287,14 @@ export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): 
 		relaunch: async (agent) => {
 			const reg = ctx.registration();
 			if (!reg) return false;
-			await reg.stopSessionForRelaunch(agent.sessionName);
-			const { PtyActivityTrackerService } = await import('../agent/pty-activity-tracker.service.js');
-			PtyActivityTrackerService.getInstance().clearSession(agent.sessionName);
-			if (agent.isOrchestrator) {
-				const { OrchestratorRestartService } = await import('../orchestrator/orchestrator-restart.service.js');
-				return OrchestratorRestartService.getInstance().attemptRestart();
-			}
-			const found = await findMember(agent.sessionName);
-			if (!found) return false;
-			let projectPath: string | undefined;
-			if (found.team.projectIds[0]) {
-				projectPath = (await ctx.storage.getProjects()).find((p) => p.id === found.team.projectIds[0])?.path;
-			}
-			projectPath ??= (await persistence().catch(() => null))?.getSessionMetadata(agent.sessionName)?.cwd;
-			const result = await reg.createAgentSession({
-				sessionName: agent.sessionName,
-				role: found.member.role,
-				projectPath,
-				memberId: found.member.id,
-				teamId: found.team.id,
-			});
-			if (!result.success) ctx.logger.warn('Relaunch failed', { sessionName: agent.sessionName, error: result.error });
-			return result.success;
+			// A runtime switch is not a crash or a hang: the restart, heartbeat and
+			// hung monitors leave the session alone through the relaunch and its
+			// start-up, and the owner gets only the fallback's own message.
+			markPlannedRelaunch(agent.sessionName, PLANNED_RELAUNCH_REASON);
+			const ok = await relaunchSession(agent, reg).catch(() => false);
+			if (ok) markPlannedRelaunch(agent.sessionName, PLANNED_RELAUNCH_REASON);
+			else clearPlannedRelaunch(agent.sessionName);
+			return ok;
 		},
 		redeliver: async (sessionName) => {
 			const { getOwnerMessageWatchdog } = await import('../messaging/owner-message-watchdog.service.js');

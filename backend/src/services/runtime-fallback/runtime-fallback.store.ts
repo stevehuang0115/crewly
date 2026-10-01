@@ -35,6 +35,8 @@ export function normalizeState(raw: unknown): RuntimeFallbackState {
 				since: entry.since,
 				...(typeof entry.until === 'string' ? { until: entry.until } : {}),
 				ruleId: typeof entry.ruleId === 'string' ? entry.ruleId : 'unknown',
+				...(entry.kind === 'billing' || entry.kind === 'usage_limit' ? { kind: entry.kind } : {}),
+				...(typeof entry.failedReverts === 'number' && entry.failedReverts > 0 ? { failedReverts: Math.floor(entry.failedReverts) } : {}),
 				...(typeof entry.lastProbeAt === 'string' ? { lastProbeAt: entry.lastProbeAt } : {}),
 				switched: Array.isArray(entry.switched) ? entry.switched.filter((s): s is string => typeof s === 'string') : [],
 				switchedTo: Array.isArray(entry.switchedTo) ? entry.switchedTo.filter((s): s is string => typeof s === 'string') : [],
