@@ -78,6 +78,14 @@ LOG=$(cat "$STUB_LOG")
 check "conversationId" "$LOG" 'chan-9'
 check "thread" "$LOG" 'D0ABC:1790000000.000100'
 
+echo "test 4b: --new-thread"
+: > "$STUB_LOG"
+run_skill --new-thread "Wiki link audit" "Found 3 broken links" </dev/null >/dev/null 2>&1 || true
+LOG=$(cat "$STUB_LOG")
+check "newThread title" "$LOG" 'newThread'
+check "title text" "$LOG" 'Wiki link audit'
+check "body text" "$LOG" 'Found 3 broken links'
+
 echo "test 5: no text → error, nothing sent"
 : > "$STUB_LOG"
 if OUT=$(run_skill </dev/null 2>&1); then FAIL=$((FAIL + 1)); echo "  ✗ expected non-zero exit"; else PASS=$((PASS + 1)); echo "  ✓ non-zero exit"; fi

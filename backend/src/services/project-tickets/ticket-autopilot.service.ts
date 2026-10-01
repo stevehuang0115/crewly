@@ -10,9 +10,9 @@
  * - brakes hold: a daily USD budget over the team's agents (pauses the
  *   autopilot and ticket auto-claim for the day, owner told once) and an
  *   in-progress cap per member ({@link ProjectTicketAutopilotPolicy});
- * - the owner gets the open `needs-owner` questions batched into one phone
- *   message (at most every 2 h unless a new P0 one appears) and one evening
- *   digest (skipped when nothing changed).
+ * - owner questions are decision cards (specs/2026-10-01-decision-cards.md),
+ *   posted by the asking agent in the ticket's thread; the owner gets one
+ *   evening digest (skipped when nothing changed) that links to open cards.
  *
  * The approval boundary is unchanged: the autopilot only wakes the lead and
  * talks to the owner; it never makes a ticket ready or starts work itself.
@@ -44,7 +44,6 @@ import {
 import {
   OPEN_TICKET_STATUSES,
   decideDigest,
-  decideOwnerQuestions,
   decideTriage,
   hasNeedsOwnerLabel,
   inFlightByAssignee,
@@ -53,7 +52,6 @@ import {
   memberAvailability,
   memberResponsibility,
   localMidnight,
-  readOwnerQuestion,
   selectTriageCandidates,
   type ListedTicket,
   type TriageDecision,
@@ -62,11 +60,9 @@ import {
 import {
   buildBudgetPausedMessage,
   buildDigestMessage,
-  buildOwnerQuestionsMessage,
   buildTriageBrief,
   type DigestProject,
   type TriageBriefMember,
-  type OwnerQuestionItem,
 } from './ticket-autopilot-messages.js';
 
 /** WorkItem statuses that keep a triage "live" (one per project). */
@@ -130,6 +126,11 @@ export interface TicketAutopilotDeps {
   notifyOwner: (notice: OwnerNotice) => Promise<boolean>;
   /** JSON file holding the autopilot's bookkeeping */
   stateFile: string;
+  /**
+   * Link to the Slack card / thread where a ticket waits on the owner
+   * (decision cards). The digest links to it; it never repeats the question.
+   */
+  cardLinkOf?: (projectPath: string, ticketId: string) => Promise<string | null>;
   /** Description of a role (role.json / user override), for the brief's role lines; absent = built-in fallbacks only */
   roleDescription?: (role: string) => Promise<string | null>;
   now?: () => Date;
@@ -328,8 +329,9 @@ export class TicketAutopilotService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Periodic pass: evaluate every enabled project, then the owner questions
-   * and the daily digest.
+   * Periodic pass: evaluate every enabled project, then the daily digest.
+   * Owner questions are decision cards now (specs/2026-10-01-decision-cards.md):
+   * the asking agent posts them in the ticket's thread; there is no batched DM.
    *
    * @returns Per-project evaluations
    */
@@ -345,9 +347,6 @@ export class TicketAutopilotService {
         }
       }
       if (projects.length > 0) {
-        await this.processOwnerQuestions(projects).catch((err) =>
-          this.logger.warn('Owner questions pass failed', { error: err instanceof Error ? err.message : String(err) }),
-        );
         await this.processDigest(projects).catch((err) =>
           this.logger.warn('Ticket digest pass failed', { error: err instanceof Error ? err.message : String(err) }),
         );
@@ -545,44 +544,6 @@ export class TicketAutopilotService {
   // ---------------------------------------------------------------------------
 
   /**
-   * Send the batched owner questions of every enabled project when due.
-   *
-   * @param projects - Enabled projects
-   * @returns True when a batch went out
-   */
-  private async processOwnerQuestions(projects: Project[]): Promise<boolean> {
-    const state = await this.loadState();
-    const items: Array<OwnerQuestionItem & { key: string; priority: string }> = [];
-    for (const project of projects) {
-      const { tickets } = await this.deps.tickets.list(project.path);
-      for (const t of tickets) {
-        if (!OPEN_TICKET_STATUSES.has(t.status) || !hasNeedsOwnerLabel(t)) continue;
-        const question = readOwnerQuestion(t) ?? 'needs your decision';
-        items.push({ key: `${project.id}:${t.id}:${question}`, priority: t.priority, projectName: project.name, ticketId: t.id, title: t.title, question });
-      }
-    }
-    const pendingKeys = new Set(items.map((i) => i.key));
-    const sent = new Set(state.questions.sentKeys.filter((k) => pendingKeys.has(k)));
-    const decision = decideOwnerQuestions({ pending: items, sentKeys: sent, lastSentAt: state.questions.lastSentAt, now: this.now().getTime() });
-    state.questions.sentKeys = [...sent];
-    if (!decision.send) {
-      await this.saveState();
-      return false;
-    }
-    items.sort((a, b) => a.priority.localeCompare(b.priority) || a.projectName.localeCompare(b.projectName) || a.ticketId.localeCompare(b.ticketId));
-    const ok = await this.deps
-      .notifyOwner({ title: 'Tickets waiting on you', message: buildOwnerQuestionsMessage(items), urgent: decision.reason === 'urgent' })
-      .catch(() => false);
-    if (ok) {
-      state.questions.sentKeys = items.map((i) => i.key);
-      state.questions.lastSentAt = this.now().getTime();
-      this.logger.info('Owner questions sent', { count: items.length, reason: decision.reason });
-    }
-    await this.saveState();
-    return ok;
-  }
-
-  /**
    * Send the evening digest of the enabled projects when due.
    *
    * @param projects - Enabled projects
@@ -601,12 +562,24 @@ export class TicketAutopilotService {
     const decision = decideDigest({ now, lastSentDate: state.digest.lastSentDate, lastSentAt: state.digest.lastSentAt, latestTicketChangeAt: latest });
     if (!decision.send) return false;
     const midnight = localMidnight(now).getTime();
-    const sections: DigestProject[] = lists.map(({ project, tickets }) => ({
-      name: project.name,
-      doneToday: tickets.filter((t) => t.status === 'done' && (Date.parse(t.updatedAt) || 0) >= midnight),
-      inProgress: tickets.filter((t) => t.status === 'in_progress'),
-      waitingOnOwner: tickets.filter((t) => t.status === 'review' || (OPEN_TICKET_STATUSES.has(t.status) && hasNeedsOwnerLabel(t))),
-    }));
+    const sections: DigestProject[] = [];
+    for (const { project, tickets } of lists) {
+      const waitingOnOwner = tickets.filter((t) => t.status === 'review' || (OPEN_TICKET_STATUSES.has(t.status) && hasNeedsOwnerLabel(t)));
+      const links = new Map<string, string>();
+      if (this.deps.cardLinkOf) {
+        for (const t of waitingOnOwner) {
+          const link = await this.deps.cardLinkOf(project.path, t.id).catch(() => null);
+          if (link) links.set(t.id, link);
+        }
+      }
+      sections.push({
+        name: project.name,
+        doneToday: tickets.filter((t) => t.status === 'done' && (Date.parse(t.updatedAt) || 0) >= midnight),
+        inProgress: tickets.filter((t) => t.status === 'in_progress'),
+        waitingOnOwner,
+        ...(links.size > 0 ? { links } : {}),
+      });
+    }
     const message = buildDigestMessage(sections);
     const ok = message
       ? await this.deps.notifyOwner({ title: 'Tickets today', message, urgent: false }).catch(() => false)

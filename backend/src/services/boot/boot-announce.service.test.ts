@@ -17,30 +17,30 @@ import {
 describe('composeBootAnnouncement', () => {
   it('always reports startup + version', () => {
     const { title, message } = composeBootAnnouncement({ version: '1.11.3' });
-    expect(title).toContain('上线');
-    expect(message).toBe('• 版本: 1.11.3');
+    expect(title).toContain('back online');
+    expect(message).toBe('• Version: 1.11.3');
   });
 
   it('adds offline duration when present (minutes)', () => {
     const { message } = composeBootAnnouncement({ version: '1.11.3', offlineDurationMs: 12 * 60_000 });
-    expect(message).toContain('• 版本: 1.11.3');
-    expect(message).toContain('• 离线: 12 分钟');
+    expect(message).toContain('• Version: 1.11.3');
+    expect(message).toContain('• Offline: 12 min');
   });
 
   it('formats hours+minutes and sub-minute durations', () => {
-    expect(composeBootAnnouncement({ version: 'x', offlineDurationMs: 125 * 60_000 }).message).toContain('2 小时 5 分钟');
-    expect(composeBootAnnouncement({ version: 'x', offlineDurationMs: 30_000 }).message).toContain('<1 分钟');
+    expect(composeBootAnnouncement({ version: 'x', offlineDurationMs: 125 * 60_000 }).message).toContain('2 h 5 min');
+    expect(composeBootAnnouncement({ version: 'x', offlineDurationMs: 30_000 }).message).toContain('<1 min');
   });
 
   it('adds replayed count when > 0, omits it when 0', () => {
-    expect(composeBootAnnouncement({ version: 'x', replayedCount: 3 }).message).toContain('已补处理: 3 条');
-    expect(composeBootAnnouncement({ version: 'x', replayedCount: 0 }).message).not.toContain('已补处理');
+    expect(composeBootAnnouncement({ version: 'x', replayedCount: 3 }).message).toContain('Caught up: 3 offline messages');
+    expect(composeBootAnnouncement({ version: 'x', replayedCount: 0 }).message).not.toContain('Caught up');
   });
 
   it('omits optional lines when absent', () => {
     const { message } = composeBootAnnouncement({ version: '1.0.0' });
-    expect(message).not.toContain('离线');
-    expect(message).not.toContain('已补处理');
+    expect(message).not.toContain('Offline');
+    expect(message).not.toContain('Caught up');
   });
 
   it('shows a WELCOME (not restarted) on first boot, and omits offline/replayed', () => {
@@ -50,16 +50,16 @@ describe('composeBootAnnouncement', () => {
       offlineDurationMs: 999_999, // should be ignored on first boot
       replayedCount: 5, // should be ignored on first boot
     });
-    expect(title).toContain('欢迎');
-    expect(title).not.toContain('重启');
+    expect(title).toContain('Welcome');
+    expect(title).not.toContain('back online');
     expect(message).toContain('1.11.4');
-    expect(message).not.toContain('离线');
-    expect(message).not.toContain('已补处理');
+    expect(message).not.toContain('Offline');
+    expect(message).not.toContain('Caught up');
   });
 
   it('shows the restarted message when firstBoot is false', () => {
     const { title } = composeBootAnnouncement({ version: '1.11.4', firstBoot: false });
-    expect(title).toContain('重启');
+    expect(title).toContain('back online');
   });
 });
 
@@ -128,9 +128,9 @@ describe('composeBootAnnouncement — machine name', () => {
   // machine had come back (2026-09-21).
   it('names the machine in the title and as the first body line', () => {
     const out = composeBootAnnouncement({ version: '1.20.59', deviceName: 'iriss-air.lan' });
-    expect(out.title).toBe('✅ Crewly 已重启上线（iriss-air.lan）');
-    expect(out.message.split('\n')[0]).toBe('• 机器: iriss-air.lan');
-    expect(out.message).toContain('• 版本: 1.20.59');
+    expect(out.title).toBe('✅ Crewly is back online (iriss-air.lan)');
+    expect(out.message.split('\n')[0]).toBe('• Machine: iriss-air.lan');
+    expect(out.message).toContain('• Version: 1.20.59');
   });
 
   it('names it on a first boot too', () => {
@@ -139,7 +139,7 @@ describe('composeBootAnnouncement — machine name', () => {
   });
 
   it('keeps the old wording when the device has no usable name', () => {
-    expect(composeBootAnnouncement({ version: '1.20.59' }).title).toBe('✅ Crewly 已重启上线');
-    expect(composeBootAnnouncement({ version: '1.20.59', deviceName: '  ' }).title).toBe('✅ Crewly 已重启上线');
+    expect(composeBootAnnouncement({ version: '1.20.59' }).title).toBe('✅ Crewly is back online');
+    expect(composeBootAnnouncement({ version: '1.20.59', deviceName: '  ' }).title).toBe('✅ Crewly is back online');
   });
 });

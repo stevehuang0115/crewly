@@ -327,6 +327,18 @@ describe('answering an owed reply (2026-09-25)', () => {
     expect(res.channelId).toBe('D-U0OWNER1');
   });
 
+  it('newTopLevel posts top-level even when a reply is owed there (scheduled output, spec 2026-10-01 §6)', async () => {
+    const typing = {
+      findOwed: () => ({ agentSession: 'crewly-a-sam', slackChannelId: 'D-U0OWNER1', threadTs: '9.9' }),
+      resolve: jest.fn(),
+    };
+    const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });
+    await svc.post({ agentSession: 'crewly-a-sam', target: 'U0OWNER1', text: 'Weekly digest', newTopLevel: true });
+    expect(typing.resolve).not.toHaveBeenCalled();
+    expect(slack.sent).toHaveLength(1);
+    expect((slack.sent[0] as { threadTs?: string }).threadTs).toBeUndefined();
+  });
+
   it('an explicit thread, or nothing owed, posts normally', async () => {
     const typing = { findOwed: () => null, resolve: jest.fn() };
     const svc = new SlackAgentPostService({ slack, storage: { getTeams: async () => TEAMS }, identities, typing });

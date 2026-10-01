@@ -1,6 +1,6 @@
 ---
 name: Reply
-description: Answer the message you are working on. It goes back where that message came from — Slack DM, Slack channel thread, or the Crewly chat/portal — without channel ids.
+description: Answer the work you are doing. It goes where that work came from — the owner's Slack DM or thread, the ticket's thread, or a new top-level post for scheduled work — without channel ids. --new-thread starts a new topic.
 version: 1.0.0
 category: communication
 skillType: claude-skill
@@ -43,10 +43,26 @@ Answer the message you are working on:
 bash config/skills/agent/core/reply/execute.sh "EFT 表改好了，附件是新版。"
 ```
 
-The harness remembers which message you are answering (the latest one
-delivered to you) and sends your answer back there, over the right path:
-the owner's Slack DM with you, the Slack channel thread, or the Crewly
-chat / portal conversation. You do not pass channel ids or thread keys.
+**Answer where you were asked; a new topic goes in a new thread.**
+
+The harness knows what you are working on and sends your answer where that
+work came from:
+
+| Your current work | Where the answer goes |
+|---|---|
+| a message from the owner | that conversation / Slack thread (DM, channel thread, Crewly chat / portal) |
+| a project ticket | the ticket's thread in your team channel (started on the first post) |
+| a scheduled / triggered task | the trigger's destination, else a NEW top-level post in your team channel |
+| nothing in particular | a new top-level post in your team channel |
+
+You do not pass channel ids or thread keys. A scheduled task's output never
+lands in an old, unrelated thread.
+
+To start a new topic yourself:
+
+```bash
+bash config/skills/agent/core/reply/execute.sh --new-thread "Wiki link audit" "Found 3 broken links: …"
+```
 
 Keep the `CREWLY_SESSION_NAME=<you>` prefix when your prompt shows one — it
 tells the system that you are the one replying.
@@ -58,6 +74,7 @@ tells the system that you are the one replying.
 | `"<text>"` / `--text` / stdin / `--text-file` | the reply |
 | `--interim` | a short note before the real answer (what you understood, how long); "working on it" stays up |
 | `--none` | nothing to answer (you answered elsewhere, or the message was not for you) |
+| `--new-thread "<title>"` | a new topic: a new top-level post in your team channel, opened with the title |
 | `--conversation <id>` / `--thread <key>` | only when your prompt tells you to answer somewhere specific |
 
 ## Rules

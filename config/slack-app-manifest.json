@@ -44,8 +44,12 @@
       "bot_events": [
         "message.im",
         "message.channels",
-        "app_mention"
+        "app_mention",
+        "reaction_added"
       ]
+    },
+    "interactivity": {
+      "is_enabled": true
     }
   }
 }

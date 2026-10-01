@@ -70,6 +70,12 @@ export interface SlackAgentPostRequest {
   text: string;
   /** Reply inside an existing Slack thread. */
   threadTs?: string;
+  /**
+   * A new topic: post top-level even when the agent owes an answer in this
+   * channel (scheduled output must never land in an unrelated owed thread —
+   * specs/2026-10-01-decision-cards.md §6).
+   */
+  newTopLevel?: boolean;
 }
 
 /** What happened. */
@@ -188,7 +194,9 @@ export class SlackAgentPostService {
     const namedKey = req.threadTs ? { agentSession, slackChannelId: channelId, threadTs: req.threadTs } : null;
     const owed = namedKey
       ? (this.deps.typing?.owes?.(namedKey) ? namedKey : null)
-      : this.deps.typing?.findOwed(agentSession, channelId) ?? null;
+      : req.newTopLevel
+        ? null
+        : this.deps.typing?.findOwed(agentSession, channelId) ?? null;
     if (owed) {
       try {
         await this.deps.typing!.resolve(owed, text, {

@@ -106,7 +106,7 @@ import { getSlackAutoWorkingService } from './services/slack/slack-auto-working.
 import { getSlackAgentDmService } from './services/slack/slack-agent-dm.service.js';
 import { sendBootAnnouncement, isFirstBoot, markBooted } from './services/boot/boot-announce.service.js';
 import { SubAgentMessageQueue } from './services/messaging/sub-agent-message-queue.service.js';
-import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS } from './constants.js';
+import { SUB_AGENT_QUEUE_CONSTANTS, CHAT_CONTEXT_CONSTANTS, SAFE_RESTART, AUTO_UPDATE_CONSTANTS, PROCESS_EXIT_CODES, CLAUDE_STARTUP_CONSTANTS, WEB_CONSTANTS, TICKET_CONSTANTS, UNASSIGNED_ROUTE_CONSTANTS, CLOUD_TALK_CONSTANTS, STANDING_ANSWERS_CONSTANTS, TICKET_AUTOPILOT_CONSTANTS, WORK_ITEM_DESTINATION_CONSTANTS } from './constants.js';
 import { PtyActivityTrackerService } from './services/agent/pty-activity-tracker.service.js';
 import { InFlightTurnTracker } from './services/restart/in-flight-turn-tracker.service.js';
 import {
@@ -167,6 +167,7 @@ import { RuntimeExitMonitorService } from './services/agent/runtime-exit-monitor
 import { ContextWindowMonitorService } from './services/agent/context-window-monitor.service.js';
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
 import { OrcReplyRouteService } from './services/orc/orc-reply-route.service.js';
+import { buildTriggerOrigin } from './services/orc/work-item-destination.js';
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
 import { getHarnessReloginService, harnessCommandWord } from './services/harness/harness-relogin.service.js';
 import { getHarnessService } from './services/harness/harness.service.js';
@@ -1640,7 +1641,16 @@ void (async () => {
 				},
 			})
 		);
-		this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+		this.app.use(
+			express.urlencoded({
+				extended: true,
+				limit: '10mb',
+				// Slack's interactive `payload=` form is verified over the exact bytes.
+				verify: (req, _res, buf) => {
+					(req as express.Request & { rawBody?: string }).rawBody = buf.toString('utf8');
+				},
+			}),
+		);
 
 		// Note: Static files are configured in configureRoutes() after API routes
 	}
@@ -2849,6 +2859,11 @@ void (async () => {
 							cronTaskId: task.id,
 							targetTeamId: task.targetTeamId,
 							firedSlot: slot,
+							[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: buildTriggerOrigin({
+								cronTaskId: task.id,
+								teamId: task.targetTeamId,
+								topic: task.taskDescription,
+							}),
 						},
 					});
 					await TaskPoolService.getInstance().addToPool(workItem);
@@ -2938,6 +2953,18 @@ void (async () => {
 								target,
 								triggerId,
 								requestId: template.requestId,
+								// Where this fire's output goes (specs/2026-10-01-decision-cards.md §6):
+								// the trigger's destination, else a NEW top-level post in the
+								// target's team channel — never the thread the agent was last asked in.
+								metadata: {
+									...(template.metadata ?? {}),
+									[WORK_ITEM_DESTINATION_CONSTANTS.METADATA_KEY]: buildTriggerOrigin({
+										triggerId,
+										destination: trigger.destination,
+										teamId: trigger.teamId,
+										topic: template.title || trigger.name || 'Scheduled task',
+									}),
+								},
 							});
 							// Each fire is a full wake-up for the target. Skip it when the same
 							// work is still open: an identical item from an earlier fire, or —
@@ -3211,6 +3238,11 @@ void (async () => {
 				} else {
 					this.logger.info('Ticket autopilot off (CREWLY_TICKET_AUTOPILOT=0)');
 				}
+
+				// Decision cards (specs/2026-10-01-decision-cards.md): structured owner
+				// questions posted by the responsible agent's own bot, answered by
+				// button / reaction / thread reply / dashboard; deadlines applied here.
+				await this.startDecisionCards();
 			} catch (autoClaimErr) {
 				this.logger.warn('AgentAutoClaimService initialization failed (non-critical)', {
 					error: autoClaimErr instanceof Error ? autoClaimErr.message : String(autoClaimErr),
@@ -5024,6 +5056,61 @@ void (async () => {
 	 *
 	 * @param chatV2 - The chat-v2 service (turn events, system notes)
 	 */
+	/**
+	 * Start decision cards: the service, its Slack listeners and its deadline tick.
+	 */
+	private async startDecisionCards(): Promise<void> {
+		try {
+			const { createDecisionService, attachDecisionSlackListeners } = await import('./services/decisions/decision.wiring.js');
+			const { DecisionService } = await import('./services/decisions/decision.service.js');
+			const RUNNING: ReadonlySet<string> = new Set(['running', 'accepted', 'proposed']);
+			const decisions = createDecisionService({
+				crewlyHome: this.config.crewlyHome,
+				getTeams: () => this.storageService.getTeams(),
+				sendToAgent: async (session, text) => {
+					let exists = false;
+					try {
+						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						exists = false;
+					}
+					if (!exists) {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						await activateAgentBySession(this.apiController, session).catch(() => undefined);
+					}
+					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+					return result.success;
+				},
+				sendToOrchestrator: async (text) => {
+					this.messageQueueService.enqueue({ content: text, conversationId: 'system', source: 'system_event' });
+					return true;
+				},
+				currentWorkItemId: async (session) => {
+					const items = await TaskPoolService.getInstance().getAllItems().catch(() => []);
+					const mine = items
+						.filter((wi) => wi.target === session && RUNNING.has(wi.status))
+						.sort((a, b) => Date.parse(b.startedAt ?? b.createdAt) - Date.parse(a.startedAt ?? a.createdAt));
+					return mine[0]?.id;
+				},
+				workDestination: async (session) => {
+					try {
+						const { resolveAgentSlackDestination } = await import('./services/orc/work-item-destination.wiring.js');
+						return await resolveAgentSlackDestination(session);
+					} catch {
+						return null;
+					}
+				},
+			});
+			DecisionService.getInstance()?.stop();
+			DecisionService.setInstance(decisions);
+			attachDecisionSlackListeners(decisions);
+			decisions.start();
+			this.logger.info('Decision cards started');
+		} catch (error) {
+			this.logger.warn('Decision cards not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+	}
+
 	private async startOwnerMessageWatchdog(chatV2: import('./services/chat-v2/chat-v2.service.js').ChatV2Service): Promise<void> {
 		try {
 			const wiring = await import('./services/messaging/owner-message-watchdog.wiring.js');

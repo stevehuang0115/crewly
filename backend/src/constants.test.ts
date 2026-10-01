@@ -493,7 +493,6 @@ describe('TICKET_AUTOPILOT_CONSTANTS', () => {
 	it('keeps the owner-approved cadences', async () => {
 		const { TICKET_AUTOPILOT_CONSTANTS: C } = await import('./constants.js');
 		expect(C.TRIAGE_MIN_INTERVAL_MS).toBe(30 * 60 * 1000);
-		expect(C.QUESTIONS_MIN_INTERVAL_MS).toBe(2 * 60 * 60 * 1000);
 		expect(C.DIGEST_HOUR_LOCAL).toBe(21);
 		expect(C.DEFAULT_MAX_IN_FLIGHT_PER_MEMBER).toBe(1);
 		expect(C.NEEDS_OWNER_LABEL).toBe('needs-owner');

@@ -14,7 +14,14 @@ import type { Request, Response, NextFunction } from 'express';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
 import { OrcReplyRouteService } from '../../services/orc/orc-reply-route.service.js';
-import { planAgentReply, type AgentReplyPlan } from '../../services/orc/agent-reply-target.js';
+import { isStatusReport, planAgentReply, type AgentReplyPlan } from '../../services/orc/agent-reply-target.js';
+import {
+  defaultWorkDestinationDeps,
+  deliverToWorkDestination,
+  planForSession,
+  postNewThread,
+  type WorkDestinationDeps,
+} from '../../services/orc/work-item-destination.wiring.js';
 import { parseSlackThreadKey } from '../../services/slack/slack-thread-key.js';
 import { getOwnerMessageWatchdog } from '../../services/messaging/owner-message-watchdog.service.js';
 import { LoggerService, type ComponentLogger } from '../../services/core/logger.service.js';
@@ -30,6 +37,8 @@ export interface AgentReplyDeps {
   ownsConversation: (agentSession: string, conversationId: string) => Promise<boolean>;
   /** The orchestrator answering a Slack thread through the master bot. */
   postOrcSlack: (input: { channelId: string; threadTs?: string; text: string }) => Promise<string>;
+  /** Work-item destinations (specs/2026-10-01-decision-cards.md §6) */
+  workDestination: () => Promise<WorkDestinationDeps>;
 }
 
 /**
@@ -59,6 +68,7 @@ const defaultDeps: AgentReplyDeps = {
   deliver: deliverAgentReplyToConversation,
   ownsConversation: isAgentsOwnConversation,
   postOrcSlack: defaultPostOrcSlack,
+  workDestination: defaultWorkDestinationDeps,
 };
 
 /**
@@ -86,6 +96,59 @@ export function createAgentReplyHandler(deps: AgentReplyDeps = defaultDeps) {
       const requestedConv = typeof body.conversationId === 'string' ? body.conversationId : undefined;
       const requestedThread = typeof body.thread === 'string' ? body.thread : undefined;
       const isOrchestrator = session === ORCHESTRATOR_SESSION_NAME;
+      const newThread = typeof body.newThread === 'string' ? body.newThread.trim() : '';
+
+      // `reply --new-thread "<title>"`: an agent-initiated new topic.
+      if (newThread && !none) {
+        const delivered = isOrchestrator ? null : await postNewThread(session, newThread, content, await deps.workDestination());
+        if (!delivered) {
+          res.status(409).json({
+            success: false,
+            error: 'Could not start a new thread: you have no Slack team channel. Reply without --new-thread, or use slack-post with a channel.',
+          });
+          return;
+        }
+        logger.info('Agent started a new thread', { session, slackChannelId: delivered.slackChannelId, title: newThread });
+        res.status(201).json({ success: true, data: { slackChannelId: delivered.slackChannelId, messageTs: delivered.messageTs, destination: delivered.kind } });
+        return;
+      }
+
+      // No ids named: the answer follows the CURRENT work item's origin —
+      // ticket thread, trigger destination, or a new top-level post — never
+      // the thread the agent was last asked in (spec §6). The owner's fresh
+      // message keeps the existing path below.
+      if (!isOrchestrator && !none && !requestedConv && !requestedThread && !isStatusReport(content)) {
+        const wd = await deps.workDestination();
+        const { destination, workItem } = await planForSession(session, wd);
+        if (destination.kind !== 'owner-origin') {
+          try {
+            const delivered = await deliverToWorkDestination(session, destination, content, wd);
+            if (delivered) {
+              logger.info('Agent reply sent to its work item destination', {
+                session,
+                workItemId: workItem?.id,
+                destination: delivered.kind,
+                slackChannelId: delivered.slackChannelId,
+                threadTs: delivered.threadTs,
+                reason: delivered.reason,
+              });
+              res.status(201).json({
+                success: true,
+                data: { slackChannelId: delivered.slackChannelId, messageTs: delivered.messageTs, threadTs: delivered.threadTs, destination: delivered.kind },
+              });
+              return;
+            }
+            logger.info('No Slack place for the work item destination — using the turn origin', { session, destination: destination.kind });
+          } catch (err) {
+            logger.warn('Work item destination post failed — using the turn origin', {
+              session,
+              destination: destination.kind,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      }
+
       const origin = OrcReplyRouteService.getInstance().getLastOrigin(session);
       const owns = requestedConv && !isOrchestrator ? await deps.ownsConversation(session, requestedConv) : false;
 
