@@ -111,6 +111,9 @@ export type {
   CompoundTriggerConfig,
   TriggerAction,
   CreateTriggerInput,
+  TriggerCreator,
+  TriggerFireOutcome,
+  TriggerLastFireResult,
   TRIGGER_MANAGED_BY,
   isSpecManaged,
 } from './trigger.types.js';
@@ -126,6 +129,9 @@ export {
   isValidTriggerAction,
   validateCreateTriggerInput,
   createTrigger,
+  TRIGGER_CREATORS,
+  isInternalByDefault,
+  isRecurringTrigger,
   TriggerManagedBy,
 } from './trigger.types.js';
 

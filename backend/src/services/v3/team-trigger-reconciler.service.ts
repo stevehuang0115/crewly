@@ -215,7 +215,10 @@ export class TeamTriggerReconciler {
       type: spec.config.type,
       config: spec.config,
       action: spec.action,
-      createdBy: 'system',
+      // The team's trigger spec is the owner's configuration, not harness
+      // plumbing: it shows on the owner's Schedules page.
+      createdBy: 'user',
+      internal: false,
       maxFires: spec.maxFires,
       maxIdleFires: spec.maxIdleFires,
       teamId,
