@@ -17,6 +17,7 @@ import {
 	type AntigravityProviderResult,
 } from '../../utils/antigravity-settings.utils.js';
 import { getHarnessCredentialsStore } from '../harness/harness-credentials.store.js';
+import { isUsableEnvValue } from '../harness/harness-status.service.js';
 import { getSettingsService } from '../settings/settings.service.js';
 
 /** Trailing screen lines inspected when deciding whether agy is running. */
@@ -46,7 +47,7 @@ export interface AntigravityRuntimeDeps {
 
 /**
  * The Gemini API key an Antigravity session gets: the key saved for
- * Antigravity in Settings → Harness, else a Gemini key from Crewly settings
+ * Antigravity in Settings → Runtimes, else a Gemini key from Crewly settings
  * (global or an antigravity-cli override), else GEMINI_API_KEY in the
  * backend's environment.
  *
@@ -66,7 +67,7 @@ export async function resolveAntigravityApiKey(): Promise<string | null> {
 		// settings unavailable
 	}
 	const fromEnv = process.env[ANTIGRAVITY_CONSTANTS.API_KEY_ENV];
-	return fromEnv && fromEnv.trim() ? fromEnv : null;
+	return fromEnv && isUsableEnvValue(fromEnv) ? fromEnv : null;
 }
 
 /**

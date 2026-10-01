@@ -28,7 +28,7 @@
 import { getTicketIntakeService } from '../v3/ticket-intake.service.js';
 import { intakeWithin, slackIntakeMessage, ticketOfOutcome, markAndLinkTicket } from '../v3/ticket-channel-hooks.js';
 import type { Request } from '../../types/v2/request.types.js';
-import { CREWLY_CONSTANTS } from '../../constants.js';
+import { CREWLY_CONSTANTS, RUNTIME_FALLBACK_CONSTANTS } from '../../constants.js';
 import { isInterim } from './slack-typing-placeholder.service.js';
 import { isOwnerAuthored, deliveredSessions, type SlackAutoWorkingService } from './slack-auto-working.service.js';
 import { resolveMemberSessionName } from '../../utils/member-session-name.utils.js';
@@ -258,6 +258,17 @@ export function isAdhocMapping(mapping: Pick<SlackTeamChannelMapping, 'teamId'>)
 }
 
 /**
+ * Whether a team is a runtime smoke test's temporary team
+ * (specs/2026-10-01-runtime-fallback.md).
+ *
+ * @param team - The team
+ * @returns True for `zz-runtime-smoke-<runtime>`
+ */
+export function isRuntimeSmokeTeam(team: Pick<Team, 'name'>): boolean {
+  return typeof team.name === 'string' && team.name.startsWith(RUNTIME_FALLBACK_CONSTANTS.SMOKE.TEAM_PREFIX);
+}
+
+/**
  * The agents that take part in a team channel: every member except the
  * orchestrator role (the orc is not a huddle participant — the point of
  * team channels is talking to the team without it).
@@ -365,6 +376,9 @@ export function orchestratorSyncEntry(
 }
 
 export function teamChannelMembers(team: Team): TeamMember[] {
+  // A runtime smoke test's temporary team lives for minutes: no Slack
+  // channel, no owner invite, no agent app for it.
+  if (isRuntimeSmokeTeam(team)) return [];
   return (team.members ?? [])
     .filter((m) => m.role !== 'orchestrator' && !!m.id)
     .map((m) => (m.sessionName ? m : { ...m, sessionName: resolveMemberSessionName(team.name, m) }));
@@ -1124,7 +1138,7 @@ export class SlackTeamChannelService {
       // team-saved event; turning each of those into a Slack channel would
       // carpet the workspace with channels for teams that pre-date this
       // feature. Existing teams get a channel from Settings → Team Channels.
-      if (!event.created) return;
+      if (!event.created || isRuntimeSmokeTeam(team)) return;
       const settings = await this.getSettings();
       if (!settings.autoCreate || !this.deps.slack.isConnected()) return;
       await this.ensureTeamChannel(team);

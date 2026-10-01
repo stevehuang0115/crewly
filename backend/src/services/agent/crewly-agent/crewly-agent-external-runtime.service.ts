@@ -35,6 +35,7 @@ import {
   type RuntimeType,
 } from '../../../constants.js';
 import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
+import { reportRuntimeOutput } from '../../runtime-fallback/effective-runtime.js';
 
 /**
  * How an in-process agent ends a turn.
@@ -54,6 +55,9 @@ export const CREWLY_AGENT_OUTPUT_REQUIREMENTS =
   + '- Never end with a status report ("What the user asked / What I did / Next step / Note on ..."), '
   + 'and never say you sent something unless a tool actually sent it in this turn.\n'
   + '- A task another agent assigned you: report its completion with report-status.';
+
+/** How much of the child's stderr is kept for usage-limit detection. */
+const RECENT_STDERR_MAX_CHARS = 8_000;
 
 /** Handlers for one in-flight run, awaiting the child's reply. */
 interface PendingRun {
@@ -105,6 +109,13 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   private readonly pendingRuns = new Map<string, PendingRun>();
   /** Monotonic source for run correlation ids. */
   private runCounter = 0;
+  /**
+   * Tail of the child's stderr. A failed model call reaches the parent only
+   * as "No output generated. Check the stream for errors." — the provider's
+   * real error (DeepSeek's HTTP 402 "Insufficient Balance") is printed to
+   * stderr, so usage-limit detection reads both.
+   */
+  private recentStderr = '';
   private pendingInitResolve: (() => void) | null = null;
   private pendingInitReject: ((error: Error) => void) | null = null;
   private storedConfig: CrewlyAgentConfig | null = null;
@@ -221,6 +232,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
         reject(new Error(message));
       }, timeoutMs);
 
+      this.recentStderr = '';
       this.pendingRuns.set(runId, {
         resolve: (result) => {
           clearTimeout(timer);
@@ -255,6 +267,10 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
           clearTimeout(timer);
           this.pendingRuns.delete(runId);
           this.logBuffer.append(session, 'error', `Agent error: ${error.message}`);
+          // An out-of-balance / quota error moves the agent to its fallback
+          // runtime (specs/2026-10-01-runtime-fallback.md).
+          reportRuntimeOutput(session, RUNTIME_TYPES.CREWLY_AGENT, `${error.message}\n${this.recentStderr}`, 'error');
+          this.recentStderr = '';
           reject(error);
         },
       });
@@ -807,6 +823,7 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
   }
 
   private handleStderr(chunk: string): void {
+    this.recentStderr = (this.recentStderr + chunk).slice(-RECENT_STDERR_MAX_CHARS);
     if (!this.currentSessionName) return;
     for (const line of chunk.split('\n')) {
       const trimmed = line.trim();

@@ -92,6 +92,7 @@ import { AgentHeartbeatService } from './agent-heartbeat.service.js';
 import { AgentSuspendService } from './agent-suspend.service.js';
 import { RuntimeExitMonitorService } from './runtime-exit-monitor.service.js';
 import { AGENT_HEARTBEAT_MONITOR_CONSTANTS } from '../../constants.js';
+import { registerInProcessRuntime, unregisterInProcessRuntime } from './crewly-agent/in-process-runtime-registry.js';
 import type { Team } from '../../types/index.js';
 
 /**
@@ -357,6 +358,20 @@ describe('AgentHeartbeatMonitorService', () => {
 					agentStatus: 'inactive',
 				}),
 			);
+		});
+
+		it('does not mark an in-process (Crewly Agent) member as a ghost while its runtime runs', async () => {
+			const fakeRuntime = { isReady: () => true, shutdown: () => undefined };
+			registerInProcessRuntime('dev-agent-1', fakeRuntime as never);
+			try {
+				mockSessionBackend.sessionExists.mockReturnValue(false);
+				setStartedAtInPast(service);
+				jest.advanceTimersByTime(AGENT_HEARTBEAT_MONITOR_CONSTANTS.HEARTBEAT_REQUEST_THRESHOLD_MS + 1);
+				await service.performCheck();
+				expect(mockStorageService.updateAgentStatus).not.toHaveBeenCalledWith('dev-agent-1', 'inactive');
+			} finally {
+				unregisterInProcessRuntime('dev-agent-1');
+			}
 		});
 
 		it('should handle updateAgentStatus failure gracefully when session gone (#220)', async () => {
