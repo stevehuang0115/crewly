@@ -4944,3 +4944,83 @@ export const SYSTEM_CONTROL_CONSTANTS = {
 		RESTART_IN_PROGRESS: 'Crewly is already shutting down or restarting.',
 	},
 } as const;
+
+/**
+ * Decision cards (specs/2026-10-01-decision-cards.md): structured owner
+ * questions posted by the responsible agent's own Slack bot as a Block Kit
+ * card, answered with a button, a reaction or a thread reply.
+ */
+export const DECISION_CONSTANTS = {
+	/** Persisted decisions under CREWLY_HOME */
+	STORE_FILENAME: 'owner-decisions.json',
+	/** Persisted ticket → Slack thread map under CREWLY_HOME */
+	TICKET_THREADS_FILENAME: 'ticket-slack-threads.json',
+	/** Id prefix of a decision (`D-<n>`) */
+	ID_PREFIX: 'D-',
+	/** Max characters of the question (one line) */
+	QUESTION_MAX_CHARS: 280,
+	/** Min characters of the question */
+	QUESTION_MIN_CHARS: 8,
+	/** Allowed option count */
+	MIN_OPTIONS: 2,
+	MAX_OPTIONS: 3,
+	/** Max characters of an option label (Slack button text max is 75) */
+	OPTION_LABEL_MAX_CHARS: 40,
+	/** Max characters of an option's optional detail line */
+	OPTION_DETAIL_MAX_CHARS: 150,
+	/** The `default` value meaning "do nothing until the owner answers" */
+	WAIT_DEFAULT: 'wait',
+	/** Local hour of the default deadline: the next day at this hour */
+	DEFAULT_DEADLINE_HOUR_LOCAL: 12,
+	/** Local hour the "Remind me tomorrow" reminder is posted */
+	REMIND_HOUR_LOCAL: 9,
+	/** After "Remind me tomorrow" the deadline is at least this long after the reminder (ms) */
+	REMIND_GRACE_MS: 24 * 60 * 60 * 1000,
+	/** Sensitive asks: re-asked once this long after the ask (or at the deadline, whichever is later) (ms) */
+	SENSITIVE_REASK_AFTER_MS: 24 * 60 * 60 * 1000,
+	/** Sensitive asks: parked this long after the re-ask (ms) */
+	SENSITIVE_PARK_AFTER_REASK_MS: 24 * 60 * 60 * 1000,
+	/** Deadline / reminder evaluation cadence (ms) */
+	TICK_MS: 60 * 1000,
+	/** Resolved decisions are kept this long, then pruned (ms) */
+	RESOLVED_KEEP_MS: 30 * 24 * 60 * 60 * 1000,
+	/** Sensitive categories (never auto-applied) */
+	SENSITIVE_KINDS: ['email', 'publish', 'deploy', 'spend'] as readonly string[],
+	/** Block Kit action ids: `decision:<optionKey>` and the remind button */
+	ACTION_PREFIX: 'decision:',
+	REMIND_ACTION_ID: 'decision:remind',
+	/** Reactions: ✅ = default (or first) option, ❌ = a "no" option, ⏰ = remind tomorrow */
+	REACTION_ACCEPT: ['white_check_mark', 'heavy_check_mark', 'ballot_box_with_check', '+1'] as readonly string[],
+	REACTION_REJECT: ['x', 'no_entry_sign', 'negative_squared_cross_mark', '-1'] as readonly string[],
+	REACTION_REMIND: ['alarm_clock', 'clock9', 'hourglass'] as readonly string[],
+	/** Option labels that read as "no" (lower-cased, matched on the whole label or its first word) */
+	NO_WORDS: ['no', 'nope', "don't", 'dont', 'not now', 'skip', 'cancel', 'stop', 'reject', 'decline', 'hold', '不', '不要', '不用', '别', '取消', '算了'] as readonly string[],
+	/** Free-text replies that accept the default (or first) option */
+	YES_WORDS: ['yes', 'y', 'ok', 'okay', 'sure', 'go', 'go ahead', 'do it', 'approved', 'approve', 'lgtm', '好', '好的', '可以', '行', '同意', '批准', '没问题', '👍', '✅'] as readonly string[],
+	/** Free-text replies that snooze to tomorrow */
+	REMIND_WORDS: ['remind me tomorrow', 'tomorrow', 'later', 'not today', '明天', '明天再说', '稍后', '晚点'] as readonly string[],
+	/** Questions too vague to put in front of the owner (whole question, lower-cased, trailing ?! stripped) */
+	VAGUE_QUESTIONS: [
+		'thoughts', 'any thoughts', 'what do you think', 'please advise', 'advise', 'let me know', 'ok', 'okay',
+		'proceed', 'continue', 'should i continue', 'should i proceed', 'what next', "what's next", 'next steps', 'any ideas',
+		'yes or no', 'approve', 'approval', 'is this ok', 'is this okay', 'sound good', 'sounds good', 'can i', 'ready',
+		'怎么样', '你觉得呢', '可以吗', '行吗', '继续吗', '要继续吗', '下一步', '下一步呢',
+	] as readonly string[],
+	/** Max decisions listed by the API at once */
+	MAX_LISTED: 200,
+} as const;
+
+/**
+ * Where an agent's answer goes, by the work item it is doing
+ * (specs/2026-10-01-decision-cards.md §6).
+ */
+export const WORK_ITEM_DESTINATION_CONSTANTS = {
+	/** `WorkItem.metadata` key holding the work item's origin */
+	METADATA_KEY: 'origin',
+	/** An owner turn origin newer than this (ms) still counts as the current work when no work item is running */
+	OWNER_ORIGIN_FRESH_MS: 2 * 60 * 60 * 1000,
+	/** Max characters of the topic line of a new top-level post */
+	TOPIC_MAX_CHARS: 120,
+	/** The one line every prompt carries about where to answer */
+	PROMPT_LINE: 'Answer where you were asked; a new topic goes in a new thread.',
+} as const;
