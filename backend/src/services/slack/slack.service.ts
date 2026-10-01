@@ -965,7 +965,7 @@ export class SlackService extends EventEmitter {
         const { getTicketIntakeService } = await import('../v3/ticket-intake.service.js');
         const result = await getTicketIntakeService()?.dismiss(ticketId);
         if (result && !result.ok && result.reason === 'already_done') {
-          await respond({ text: '这个工单已经完成，不能取消记录。', replace_original: false, response_type: 'ephemeral' });
+          await respond({ text: 'This ticket is already done, so it can no longer be dismissed.', replace_original: false, response_type: 'ephemeral' });
         }
       } catch (err) {
         this.logger.warn('Ticket dismiss button failed', {

@@ -619,6 +619,7 @@ describe('ensureTeamChannel', () => {
     expect(welcome.channelId).toBe('C1');
     expect(welcome.text).toContain('Alpha Team');
     expect(welcome.text).toContain('@Sam');
+    expect(welcome.text).toContain('is ready');
     expect(welcome.skipChatV2Mirror).toBe(true);
 
     const onDisk = JSON.parse(await fs.readFile(path.join(tmpDir, 'slack-team-channels.json'), 'utf-8'));
@@ -1100,6 +1101,7 @@ describe('routeInbound', () => {
     expect(hint?.text).toContain('@lee');
     expect(hint?.text).toContain('@Leo');
     expect(hint?.text).toContain('@Sam');
+    expect(hint?.text).toContain('Did you mean');
     expect(hint?.skipChatV2Mirror).toBe(true);
   });
 
@@ -2174,16 +2176,16 @@ describe('agent identities', () => {
   it('provisions an identity per member and announces the install links once in the channel', async () => {
     await service.ensureTeamChannel(team());
     expect(identities!.provisionCalls).toEqual(['crewly-alpha-sam', 'crewly-alpha-leo']);
-    const announce = slack.sent.find((m) => m.text.includes('创建了 Slack 身份'));
+    const announce = slack.sent.find((m) => m.text.includes('Created Slack identities'));
     expect(announce?.channelId).toBe('C1');
-    expect(announce?.text).toContain('安装 Sam');
+    expect(announce?.text).toContain('Install Sam');
     expect(announce?.text).toContain('state=crewly-alpha-leo');
     expect(identities!.get('crewly-alpha-sam')?.announcedIn).toEqual(['C1']);
 
     // A second roster sync must not re-announce.
     slack.sent = [];
     await service.syncTeamMembers(team());
-    expect(slack.sent.find((m) => m.text.includes('创建了 Slack 身份'))).toBeUndefined();
+    expect(slack.sent.find((m) => m.text.includes('Created Slack identities'))).toBeUndefined();
   });
 
   it('invites an installed bot into the channel once and posts as that bot afterwards', async () => {
@@ -2423,7 +2425,7 @@ describe('agent identities', () => {
     // Each pass stops at the first failing member: one call from
     // ensureTeamChannel's pass, one from the explicit call above.
     expect(identities!.provisionCalls).toEqual(['crewly-alpha-sam', 'crewly-alpha-sam']);
-    expect(slack.sent.find((m) => m.text.includes('创建了 Slack 身份'))).toBeUndefined();
+    expect(slack.sent.find((m) => m.text.includes('Created Slack identities'))).toBeUndefined();
   });
 
   it('does nothing when identities are unavailable', async () => {

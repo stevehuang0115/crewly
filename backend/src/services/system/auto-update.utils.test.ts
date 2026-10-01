@@ -239,7 +239,7 @@ describe('auto-update.utils', () => {
 
 	describe('notices', () => {
 		it('composes the upgrade notice', () => {
-			expect(composeUpgradedNotice('1.20.144', 'iriss-air')).toBe('Crewly 已自动升级到 1.20.144（本机：iriss-air）');
+			expect(composeUpgradedNotice('1.20.144', 'iriss-air')).toBe('Crewly auto-upgraded to 1.20.144 (machine: iriss-air)');
 		});
 
 		it('composes the failure notice with the reason', () => {

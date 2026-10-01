@@ -2610,14 +2610,14 @@ export class SlackTeamChannelService {
       }
     }
     if (pendingLinks.length > 0) {
-      const lines = pendingLinks.map((p) => `• *${p.name}* → <${p.url}|安装 ${p.name}>`);
+      const lines = pendingLinks.map((p) => `• *${p.name}* → <${p.url}|Install ${p.name}>`);
       await this.deps.slack
         .sendMessage({
           channelId: mapping.slackChannelId,
           text: [
-            `:id: 给 *${team.name}* 的 ${pendingLinks.length} 位成员创建了 Slack 身份，点一下安装（每个各一次）：`,
+            `:id: Created Slack identities for ${pendingLinks.length} member${pendingLinks.length === 1 ? '' : 's'} of *${team.name}*. Tap to install each one (once per member):`,
             ...lines,
-            '_安装后它们会以自己的名字出现在成员列表里，可以直接 @。_',
+            '_Once installed, each shows up in the member list under its own name and can be @-mentioned._',
           ].join('\n'),
           skipChatV2Mirror: true,
         })
@@ -2687,14 +2687,14 @@ export class SlackTeamChannelService {
     const roster =
       members.length > 0
         ? members.map((m) => `• *${m.name}* (${m.role}) — \`@${m.name}\``).join('\n')
-        : '_（还没有成员，成员加入后会自动同步）_';
+        : '_(No members yet. They are added here automatically when they join.)_';
     const text = [
-      `:tada: 团队 *${team.name}* 的频道已就绪。`,
+      `:tada: The channel for team *${team.name}* is ready.`,
       '',
-      '成员：',
+      'Members:',
       roster,
       '',
-      '直接发言，全队都能看到；`@名字` 可以点名某个 agent 必须回复。回复会以各自的名字出现在 thread 里。',
+      'Post here and the whole team sees it; `@Name` asks that agent to answer. Each agent replies in the thread under its own name.',
     ].join('\n');
     await this.deps.slack
       .sendMessage({ channelId: mapping.slackChannelId, text, skipChatV2Mirror: true })
@@ -2712,18 +2712,18 @@ export class SlackTeamChannelService {
   ): Promise<void> {
     const lines = unknown.map((u) =>
       u.suggestions.length > 0
-        ? `没有叫 \`@${u.token}\` 的成员，你是想找 ${u.suggestions.map((s) => `\`@${s}\``).join(' / ')} 吗？`
-        : `没有叫 \`@${u.token}\` 的成员。`,
+        ? `No member is called \`@${u.token}\`. Did you mean ${u.suggestions.map((s) => `\`@${s}\``).join(' / ')}?`
+        : `No member is called \`@${u.token}\`.`,
     );
     const rosterHint =
       candidates.length > 0
-        ? `本频道的成员：${candidates.map((c) => `\`@${c.name}\``).join(' ')}`
-        : '本频道目前没有成员。';
+        ? `Members of this channel: ${candidates.map((c) => `\`@${c.name}\``).join(' ')}`
+        : 'This channel has no members yet.';
     await this.deps.slack
       .sendMessage({
         channelId: message.channelId,
         threadTs: message.threadTs || message.ts,
-        text: `${lines.join('\n')}\n${rosterHint}\n_（消息已经发给全队；只有被正确 @ 的成员会被要求必须回复。）_`,
+        text: `${lines.join('\n')}\n${rosterHint}\n_(Your message went to the whole team; only members @-mentioned correctly are asked to answer.)_`,
         skipChatV2Mirror: true,
         notAnAnswer: true,
       })
