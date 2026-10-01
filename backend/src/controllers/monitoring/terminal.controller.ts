@@ -34,6 +34,7 @@ import { ADAPTIVE_HEARTBEAT_DEFAULTS } from '../../services/agent/adaptive-heart
 import { getAgentBehaviorLogService } from '../../services/observability/agent-behavior-log.singleton.js';
 import { FreshTaskConversationService, freshConversationNote } from '../../services/agent/fresh-task-conversation.service.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
+import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
 
 /**
  * Bracketed paste mode markers.
@@ -992,7 +993,7 @@ export async function deliverMessage(this: ApiContext, req: Request, res: Respon
 			try {
 				const memberResult = await StorageService.getInstance().findMemberBySessionName(sessionName);
 				if (memberResult?.member?.runtimeType) {
-					resolvedRuntimeType = memberResult.member.runtimeType as RuntimeType;
+					resolvedRuntimeType = effectiveRuntimeType(sessionName, memberResult.member.runtimeType as RuntimeType);
 				}
 			} catch {
 				// Non-fatal: sendMessageToAgent will use its default

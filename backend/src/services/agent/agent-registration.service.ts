@@ -109,6 +109,12 @@ import { isTextInAntigravityInputBox } from './antigravity-runtime.service.js';
 import { getLocalApiBaseUrl } from '../../utils/local-api-url.utils.js';
 import { RegistrationFlowRegistry, type RegistrationFlowCancelReason } from './registration-flow-registry.js';
 import { buildResumedKickoff } from './resumed-kickoff.js';
+import {
+	effectiveRuntimeType,
+	resolveLaunchRuntime,
+	runtimeFallbackBeforeDelivery,
+	takeRuntimeSwitchKickoffNote,
+} from '../runtime-fallback/effective-runtime.js';
 
 /**
  * Whether a file exists (readable).
@@ -435,14 +441,16 @@ export class AgentRegistrationService {
 			if (sessionName === ORCHESTRATOR_SESSION_NAME) {
 				const orchestratorStatus = await this.storageService.getOrchestratorStatus();
 				if (orchestratorStatus?.runtimeType) {
-					return orchestratorStatus.runtimeType as RuntimeType;
+					return effectiveRuntimeType(sessionName, orchestratorStatus.runtimeType as RuntimeType);
 				}
 			}
 
 			// Check team member data
 			const memberInfo = await this.storageService.findMemberBySessionName(sessionName);
 			if (memberInfo?.member?.runtimeType) {
-				return memberInfo.member.runtimeType as RuntimeType;
+				// A member on a fallback runtime (its own ran out of usage) runs
+				// something else than its record says.
+				return effectiveRuntimeType(sessionName, memberInfo.member.runtimeType as RuntimeType);
 			}
 		} catch (error) {
 			this.logger.debug('Could not resolve runtime type from storage, using default', {
@@ -3349,7 +3357,7 @@ Loop until done, blocked, or explicitly reassigned:
 	 *
 	 * Two runtimes get an override on top of the plain settings lookup, both
 	 * carried over from the primary spawn path's inline key resolution:
-	 * - Antigravity: a key already saved in Settings → Harness is applied at
+	 * - Antigravity: a key already saved in Settings → Runtimes is applied at
 	 *   spawn via buildAgentIdentityEnv (harnessEnvForAgents); a settings
 	 *   Gemini key must not override it here.
 	 * - Codex: it prefers OPENAI_API_KEY over its own login, so a stale
@@ -3366,7 +3374,7 @@ Loop until done, blocked, or explicitly reassigned:
 		const env: Record<string, string> = {};
 
 		// Gemini key — needed by gemini-cli. An Antigravity session whose key
-		// was saved in Settings → Harness already got it at spawn
+		// was saved in Settings → Runtimes already got it at spawn
 		// (buildAgentIdentityEnv); a settings key must not override it.
 		const antigravityKeyAtSpawn =
 			runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI && getHarnessCredentialsStore().getAntigravityGeminiApiKey() !== null;
@@ -3630,6 +3638,36 @@ Loop until done, blocked, or explicitly reassigned:
 						error: error instanceof Error ? error.message : String(error),
 					}
 				);
+			}
+		}
+
+		// Runtime fallback: an agent whose runtime is out of usage launches on
+		// its fallback (specs/2026-10-01-runtime-fallback.md). The member's
+		// configured runtime is not changed; flags are rebuilt for the runtime
+		// that really runs, without the member's model (it belongs to the
+		// configured runtime).
+		let fallbackCrewlyAgentModel: string | undefined;
+		{
+			const launch = await resolveLaunchRuntime({
+				sessionName,
+				configured: runtimeType,
+				memberId: config.memberId,
+				teamId: config.teamId,
+				isOrchestrator: role === ORCHESTRATOR_ROLE,
+			});
+			if (launch.overridden && launch.runtime !== runtimeType) {
+				this.logger.info('Launching on the fallback runtime', { sessionName, configured: runtimeType, runtime: launch.runtime });
+				runtimeType = launch.runtime as RuntimeType;
+				fallbackCrewlyAgentModel = launch.crewlyAgentModel;
+				try {
+					const found = role === ORCHESTRATOR_ROLE ? null : await this.storageService.findMemberBySessionName(sessionName);
+					runtimeFlags = [
+						...(await this.resolveRuntimeFlags(role, runtimeType, found?.member.skillOverrides, found?.member.excludedRoleSkills)),
+						...this.resolveModelFlags(sessionName, runtimeType, undefined, undefined),
+					];
+				} catch {
+					runtimeFlags = [];
+				}
 			}
 		}
 
@@ -3897,6 +3935,10 @@ Loop until done, blocked, or explicitly reassigned:
 					}
 				}
 
+				// On a fallback the member's model belongs to its own runtime: run
+				// the model the fallback settings name (DeepSeek by default).
+				if (fallbackCrewlyAgentModel) memberModelId = fallbackCrewlyAgentModel;
+
 				// Parse modelId into model config (falls back to DEFAULT_MODEL)
 				const { parseModelId } = await import('./crewly-agent/types.js');
 				const modelConfig = memberModelId ? { model: parseModelId(memberModelId) } : {};
@@ -3938,11 +3980,13 @@ Loop until done, blocked, or explicitly reassigned:
 				// `conversationHistory.messageCount === 0` after a fresh setup, which B1's
 				// fresh-install detector relies on. Subordinate agents still receive the
 				// activation kickoff because they are not auto-registered via storage.
-				if (sessionName !== ORCHESTRATOR_SESSION_NAME) {
+				// A runtime switch leaves a one-time note (handover + WorkItem).
+				const switchNote = takeRuntimeSwitchKickoffNote(sessionName);
+				if (sessionName !== ORCHESTRATOR_SESSION_NAME || switchNote) {
 					crewlyRuntime.handleMessage(
 						`You are now active as "${role}" (session: ${sessionName}). ` +
 						'Your system prompt is already loaded. Begin by calling register_self, ' +
-						'then wait for tasks.'
+						(switchNote ? `then: ${switchNote}` : 'then wait for tasks.')
 					).catch(promptError => {
 						this.logger.warn('Initial activation message failed (non-fatal for crewly-agent)', {
 							sessionName,
@@ -4099,6 +4143,41 @@ Loop until done, blocked, or explicitly reassigned:
 				sessionName,
 				error: errorMessage,
 			};
+		}
+	}
+
+	/**
+	 * Stop a session so it can be launched again right away (runtime switch):
+	 * the runtime goes (PTY or in-process) but the session stays registered,
+	 * its conversation id and its member status are kept.
+	 *
+	 * @param sessionName - Session to stop
+	 * @returns True when nothing of it is left running
+	 */
+	async stopSessionForRelaunch(sessionName: string): Promise<boolean> {
+		try {
+			RuntimeExitMonitorService.getInstance().stopMonitoring(sessionName);
+			this.cancelPendingRegistration(sessionName, 'session-killed');
+			OAuthReloginMonitorService.getInstance().stopMonitoring(sessionName);
+			ContextWindowMonitorService.getInstance().stopSessionMonitoring(sessionName);
+			const inProcessRuntime = this.inProcessRuntimes.get(sessionName);
+			if (inProcessRuntime) {
+				inProcessRuntime.shutdown();
+				this.inProcessRuntimes.delete(sessionName);
+				unregisterInProcessRuntime(sessionName);
+			}
+			const sessionHelper = await this.getSessionHelper();
+			if (sessionHelper.sessionExists(sessionName)) {
+				this.createRuntimeService(await this.resolveSessionRuntimeType(sessionName)).clearDetectionCache(sessionName);
+				await sessionHelper.killSession(sessionName);
+			}
+			return true;
+		} catch (error) {
+			this.logger.warn('Could not stop session for relaunch', {
+				sessionName,
+				error: error instanceof Error ? error.message : String(error),
+			});
+			return false;
 		}
 	}
 
@@ -4309,6 +4388,25 @@ Loop until done, blocked, or explicitly reassigned:
 			// Ctrl+C cleanup (Claude Code behavior) triggers /quit on Gemini CLI.
 			if (!runtimeType) {
 				runtimeType = await this.resolveSessionRuntimeType(sessionName);
+			}
+			// A caller that passed the member's configured runtime still writes
+			// to whatever runs now (a fallback while its runtime is out of usage).
+			runtimeType = effectiveRuntimeType(sessionName, runtimeType);
+
+			// Runtime fallback: the session's runtime is out of usage (or it is
+			// being moved to its fallback right now). The message waits in the
+			// persistent queue; the new session's registration writes it out.
+			if (runtimeFallbackBeforeDelivery(sessionName, runtimeType) === 'queue') {
+				SubAgentMessageQueue.getInstance().enqueue(sessionName, message);
+				this.logger.info('Runtime switch in progress — message queued for the new session', {
+					sessionName,
+					messageLength: message.length,
+				});
+				return {
+					success: true,
+					queued: true,
+					message: '[RUNTIME_FALLBACK] Message queued while the agent moves to its fallback runtime',
+				};
 			}
 
 			// ===== In-process Crewly Agent delivery =====
@@ -6436,7 +6534,8 @@ Loop until done, blocked, or explicitly reassigned:
 		// carry on" message instead — for every runtime. A genuinely fresh
 		// conversation (new session, or the orc handover case, which is never
 		// marked resumed) keeps the full kickoff.
-		const messageToSend = resumedRole
+		const switchNote = takeRuntimeSwitchKickoffNote(sessionName);
+		const baseMessage = resumedRole
 			? this.resumedKickoff(sessionName, resumedRole, isClaudeCode ? undefined : promptFilePath)
 			: isClaudeCode
 				? 'Begin your work now. Follow the step-by-step instructions in your agent definition EXACTLY — start with Step 1, then Step 2, then Step 3 (register-self). Do NOT skip or reorder steps. Registration is required before the system will deliver messages to you.' +
@@ -6444,6 +6543,9 @@ Loop until done, blocked, or explicitly reassigned:
 						? ` This is a fresh conversation: your previous one had grown to ${handover.tokens} tokens and was closed. After registering, read ${handover.path} once — it holds the end of what was said before.`
 						: '')
 				: `Read the file at ${promptFilePath} and follow all instructions in it.`;
+		// After a runtime switch (usage limit) the kickoff carries the handover
+		// and the WorkItem to continue.
+		const messageToSend = switchNote ? `${baseMessage} ${switchNote}` : baseMessage;
 		// Note: kickoff message is intentionally imperative for reliable agent bootstrapping.
 		// The --agent flag (Claude Code) loads the prompt as trusted system context, so this
 		// short trigger is not subject to PI detection.

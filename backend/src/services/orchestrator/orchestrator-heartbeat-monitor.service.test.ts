@@ -74,6 +74,7 @@ import { OrchestratorHeartbeatMonitorService } from './orchestrator-heartbeat-mo
 import { OrchestratorRestartService } from './orchestrator-restart.service.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { ORCHESTRATOR_HEARTBEAT_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { markPlannedRelaunch, resetPlannedRelaunches } from '../agent/planned-relaunch.registry.js';
 
 /**
  * Helper to run performCheck and flush the internal paste delay timer.
@@ -147,6 +148,7 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 		OrchestratorHeartbeatMonitorService.resetInstance();
 		OrchestratorRestartService.resetInstance();
 		PtyActivityTrackerService.resetInstance();
+		resetPlannedRelaunches();
 		jest.useRealTimers();
 	});
 
@@ -406,6 +408,41 @@ describe('OrchestratorHeartbeatMonitorService', () => {
 			expect(mockSession.write).not.toHaveBeenCalled();
 			expect(service.getState().autoRestartCount).toBe(1);
 
+			restartSpy.mockRestore();
+		});
+
+		it('does not restart (or treat as a hang) an orchestrator being relaunched on purpose by the runtime fallback', async () => {
+			const restartSpy = jest.spyOn(OrchestratorRestartService.getInstance(), 'attemptRestart').mockResolvedValue(true);
+			service.start();
+			service.stop();
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+
+			// The old process is gone and the claim service still remembers its revokes.
+			mockSessionBackend.isChildProcessAlive.mockReturnValue(false);
+			mockGetHungAgents.mockReturnValue([ORCHESTRATOR_SESSION_NAME]);
+			markPlannedRelaunch(ORCHESTRATOR_SESSION_NAME, 'runtime_fallback');
+
+			await service.performCheck();
+			expect(restartSpy).not.toHaveBeenCalled();
+			expect(service.getState().autoRestartCount).toBe(0);
+
+			// A real crash after the planned window still triggers the restart.
+			resetPlannedRelaunches();
+			await service.performCheck();
+			expect(restartSpy).toHaveBeenCalledTimes(1);
+			restartSpy.mockRestore();
+		});
+
+		it('still restarts a really hung orchestrator (no planned relaunch)', async () => {
+			const restartSpy = jest.spyOn(OrchestratorRestartService.getInstance(), 'attemptRestart').mockResolvedValue(true);
+			service.start();
+			service.stop();
+			jest.advanceTimersByTime(ORCHESTRATOR_HEARTBEAT_CONSTANTS.STARTUP_GRACE_PERIOD_MS + 1);
+			mockGetHungAgents.mockReturnValue([ORCHESTRATOR_SESSION_NAME]);
+
+			await service.performCheck();
+			expect(restartSpy).toHaveBeenCalledTimes(1);
+			expect(restartSpy).toHaveBeenCalledWith();
 			restartSpy.mockRestore();
 		});
 

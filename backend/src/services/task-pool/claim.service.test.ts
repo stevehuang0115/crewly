@@ -9,6 +9,7 @@
 
 import { ClaimService, HUNG_SESSION_GRACE_REVOKE_THRESHOLD } from './claim.service.js';
 import { PoolStorage } from './pool-storage.js';
+import { markPlannedRelaunch, resetPlannedRelaunches } from '../agent/planned-relaunch.registry.js';
 import {
   DEFAULT_LEASE_DURATION_MS,
   DEFAULT_GRACE_PERIOD_MS,
@@ -423,6 +424,21 @@ describe('ClaimService', () => {
         HUNG_SESSION_GRACE_REVOKE_THRESHOLD,
       );
       expect(service.getHungAgents()).toContain('agent-hung');
+    });
+
+    it('does not flag a session that is being relaunched on purpose (runtime fallback)', async () => {
+      for (let i = 0; i < HUNG_SESSION_GRACE_REVOKE_THRESHOLD; i++) {
+        const claim = await service.createClaim({ workItemId: `wi-p${i}`, agentId: 'agent-switching' });
+        await service.revoke(claim.id, GRACE_REASON);
+      }
+      markPlannedRelaunch('agent-switching', 'runtime_fallback');
+      try {
+        expect(service.getHungAgents()).not.toContain('agent-switching');
+      } finally {
+        resetPlannedRelaunches();
+      }
+      // After the window it is judged normally again.
+      expect(service.getHungAgents()).toContain('agent-switching');
     });
 
     it('resets the count on a successful heartbeat (proof of life)', async () => {
