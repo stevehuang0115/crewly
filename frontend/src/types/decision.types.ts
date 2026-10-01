@@ -6,7 +6,7 @@
  */
 
 /** Sensitive asks are never auto-applied at the deadline. */
-export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend';
+export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action' | 'runtime_terms';
 
 /** One answer the owner can pick. */
 export interface DecisionOption {
@@ -19,7 +19,7 @@ export interface DecisionOption {
 }
 
 /** Lifecycle of a decision. */
-export type DecisionStatus = 'open' | 'resolved' | 'defaulted' | 'parked' | 'cancelled';
+export type DecisionStatus = 'open' | 'resolved' | 'defaulted' | 'parked' | 'cancelled' | 'expired';
 
 /** How an answer arrived. */
 export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline';

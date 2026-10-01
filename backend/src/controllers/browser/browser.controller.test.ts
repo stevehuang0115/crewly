@@ -1429,3 +1429,31 @@ describe('POST /api/browser/sessions/:id/input (owner drives)', () => {
 		expect(res.body.code).toBe('NO_BROWSER_CLIENT');
 	});
 });
+
+describe('POST /sessions/:id/pending/:pendingId — with browser approval cards', () => {
+	afterEach(async () => {
+		const { BrowserApprovalService } = await import('../../services/browser/browser-approval.service.js');
+		BrowserApprovalService.setInstance(null);
+	});
+
+	it('answers through the approval service, so the Slack card settles too', async () => {
+		const { BrowserApprovalService } = await import('../../services/browser/browser-approval.service.js');
+		const answerFromBrowserPage = jest.fn().mockResolvedValue({ id: 'vera', agentSession: 'vera', status: 'acting' });
+		BrowserApprovalService.setInstance({ answerFromBrowserPage } as unknown as InstanceType<typeof BrowserApprovalService>);
+		const app = express();
+		app.use(express.json());
+		app.use('/api/browser', createBrowserRouter());
+
+		const ok = await request(app).post('/api/browser/sessions/vera/pending/vera:1:1').send({ decision: 'approve' });
+		expect(ok.status).toBe(200);
+		expect(answerFromBrowserPage).toHaveBeenCalledWith('vera', 'vera:1:1', 'approve');
+		expect(ok.body.data.session).toMatchObject({ agentSession: 'vera' });
+
+		answerFromBrowserPage.mockResolvedValueOnce(undefined);
+		const missing = await request(app).post('/api/browser/sessions/vera/pending/nope').send({ decision: 'reject' });
+		expect(missing.status).toBe(404);
+
+		const bad = await request(app).post('/api/browser/sessions/vera/pending/nope').send({ decision: 'maybe' });
+		expect(bad.status).toBe(400);
+	});
+});

@@ -2305,6 +2305,30 @@ export const CHAT_CONTEXT_CONSTANTS = {
 	MAX_AGE_MS: 6 * 60 * 60 * 1000,
 } as const;
 
+/**
+ * Owner approval of held browser actions (irreversible clicks): Slack
+ * decision cards, persistence across restarts, and the answer deadline.
+ */
+export const BROWSER_APPROVAL_CONSTANTS = {
+	/** Pending held actions under CREWLY_HOME */
+	STORE_FILENAME: 'browser-pending-actions.json',
+	/** The owner has this long to answer; then the answer is No (ms) */
+	DEADLINE_MS: 2 * 60 * 60 * 1000,
+	/** After a restart, how long a held action may wait for its tab to come back (ms) */
+	REBIND_GRACE_MS: 2 * 60 * 1000,
+	/** Retry / expiry evaluation cadence (ms) */
+	TICK_MS: 30 * 1000,
+	/** A card that could not be created is retried at most this often (ms) */
+	CARD_RETRY_MS: 2 * 60 * 1000,
+	/** Settled records are kept this long, then pruned (ms) */
+	KEEP_SETTLED_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Option labels of the card */
+	APPROVE_LABEL: 'Let it',
+	REJECT_LABEL: 'No',
+	/** What a held agent is told to say — the one place the owner answers is the card */
+	AGENT_SAYS: "I've asked the owner with a card in this thread; wait for their answer.",
+} as const;
+
 export const BROWSER_SESSION_CONSTANTS = {
 	/** How often the capture loop wakes up (ms) */
 	TICK_INTERVAL_MS: 1_500,
@@ -5071,7 +5095,7 @@ export const DECISION_CONSTANTS = {
 	REACTION_REJECT: ['x', 'no_entry_sign', 'negative_squared_cross_mark', '-1'] as readonly string[],
 	REACTION_REMIND: ['alarm_clock', 'clock9', 'hourglass'] as readonly string[],
 	/** Option labels that read as "no" (lower-cased, matched on the whole label or its first word) */
-	NO_WORDS: ['no', 'nope', "don't", 'dont', 'not now', 'skip', 'cancel', 'stop', 'reject', 'decline', 'hold', '不', '不要', '不用', '别', '取消', '算了'] as readonly string[],
+	NO_WORDS: ['no', 'nope', "don't", 'dont', 'not now', 'skip', 'cancel', 'stop', 'reject', 'decline', 'hold', '不', '不行', '不要', '不用', '不可以', '别', '别点', '取消', '算了', '拒绝'] as readonly string[],
 	/** Free-text replies that accept the default (or first) option */
 	YES_WORDS: ['yes', 'y', 'ok', 'okay', 'sure', 'go', 'go ahead', 'do it', 'approved', 'approve', 'lgtm', '好', '好的', '可以', '行', '同意', '批准', '没问题', '👍', '✅'] as readonly string[],
 	/** Free-text replies that snooze to tomorrow */

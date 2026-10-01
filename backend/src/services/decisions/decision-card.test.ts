@@ -3,8 +3,10 @@
  */
 import {
   buttonValue,
+  canRemind,
   choiceFromReaction,
   choiceFromText,
+  defaultIsSafe,
   formatWhen,
   noOption,
   parseButtonValue,
@@ -155,7 +157,8 @@ describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
     ],
     defaultKey: 'c',
     sensitive: 'runtime_terms',
-    system: { kind: 'runtime_terms', key: 'antigravity-cli', defaultIsDecline: true },
+    kind: 'runtime_terms',
+    system: { key: 'antigravity-cli', defaultIsDecline: true },
   });
 
   it('uses the title, shows the body sections, offers exactly its options (no snooze)', () => {
@@ -169,8 +172,57 @@ describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
     expect(blocks.at(-1)?.elements[0].text).toBe("Nothing is accepted until you answer. No answer by tomorrow 12:00: Don't agree. · D-7");
   });
 
+  it('a declining system default and a held browser action default are safe; only those skip the snooze', () => {
+    expect(defaultIsSafe(terms)).toBe(true);
+    expect(defaultIsSafe({ kind: 'browser_action' })).toBe(true);
+    expect(defaultIsSafe({ system: { key: 'x' }, kind: 'runtime_terms' })).toBe(false);
+    expect(defaultIsSafe({})).toBe(false);
+    expect(canRemind(terms)).toBe(false);
+    expect(canRemind({ kind: 'browser_action' })).toBe(false);
+    expect(canRemind({})).toBe(true);
+  });
+
   it('settles like any card', () => {
     const settled = blocksOf(renderSettledCard({ ...terms, status: 'defaulted', chosenKey: 'c', answeredVia: 'deadline' }, undefined, NOW));
     expect(settled.at(-1)?.elements[0].text).toBe("No answer by tomorrow 12:00 — going with Don't agree.");
+  });
+});
+
+describe('browser_action cards', () => {
+  const browser = (extra: Partial<OwnerDecision> = {}) =>
+    decision({
+      kind: 'browser_action',
+      sensitive: 'browser_action',
+      ticket: undefined,
+      question: 'Vera wants to click "Submit" on visa.careerengine.us/subscribe — it looks like submitting and can\'t be undone.',
+      options: [
+        { key: 'a', label: 'Let it' },
+        { key: 'b', label: 'No' },
+      ],
+      defaultKey: 'b',
+      yesKey: 'a',
+      browser: { agentSession: 'ce-vera', agentName: 'Vera', pendingId: 'p1', target: 'click "Submit"', matched: 'submitting' },
+      ...extra,
+    });
+
+  it('has Let it / No, no snooze, and says No is the answer at the deadline', () => {
+    const blocks = blocksOf(renderOpenCard(browser(), 'inst', NOW));
+    expect(blocks[0].text.text).toBe('Browser · Vera is waiting for your OK');
+    const actions = blocks.find((b) => b.type === 'actions')!;
+    expect(actions.elements.map((e: any) => e.text.text)).toEqual(['Let it', 'No']);
+    expect(blocks.find((b) => b.type === 'context')!.elements[0].text).toContain('the answer is No');
+  });
+
+  it('yes words and ✅ mean Let it (not the default); 不行 / no mean No', () => {
+    const d = browser();
+    for (const w of ['批准', '可以', '好', 'yes', 'ok']) expect(choiceFromText(d, w)).toEqual({ kind: 'option', key: 'a' });
+    for (const w of ['不行', '不要', 'no']) expect(choiceFromText(d, w)).toEqual({ kind: 'option', key: 'b' });
+    expect(choiceFromReaction(d, 'white_check_mark')).toEqual({ kind: 'option', key: 'a' });
+    expect(choiceFromReaction(d, 'x')).toEqual({ kind: 'option', key: 'b' });
+  });
+
+  it('an expired card names the agent who will ask again', () => {
+    const blocks = blocksOf(renderSettledCard(browser({ status: 'expired', resolvedAt: NOW.toISOString() }), undefined, NOW));
+    expect(blocks[2].elements[0].text).toBe('Expired — Vera will ask again · 10:00');
   });
 });

@@ -31,7 +31,7 @@ serialised. A pending card that is still open is reused.
 The card is a decision card (`specs/2026-10-01-decision-cards.md`) asked by the harness itself
 (`DecisionService.askSystem`):
 
-- `system: { kind: 'runtime_terms', key: <runtime>, defaultIsDecline: true }`, `sensitive: 'runtime_terms'`
+- `kind: 'runtime_terms'`, `system: { key: <runtime>, defaultIsDecline: true }`, `sensitive: 'runtime_terms'`
 - posted in the **owner's DM with this machine's orc bot** (`ownerDmOf`), not in a team channel
 - header `Antigravity CLI · Terms of Service (<machine>)`
 - question: `Antigravity CLI on <machine> needs Google's Terms of Service accepted once before it can run. Do you agree?`
@@ -47,8 +47,10 @@ Answers:
 - ❌ or a "no" word, which means Don't agree.
 
 ✅, "yes" and other free text are **not** answers, because there are two ways to agree. A system
-decision never wakes or messages an agent. Only the backend listener (`DecisionService.onSettled`)
-acts on it.
+decision never wakes or messages an agent. Only the `runtime_terms` decision-kind handler acts on
+it: `RuntimeTermsConsentService`, registered with `DecisionService.registerKindHandler` (the same
+mechanism held browser actions use), called once per settlement: resolved, defaulted, cancelled or
+expired.
 
 ## 2. On the answer: drive the TUI deterministically
 

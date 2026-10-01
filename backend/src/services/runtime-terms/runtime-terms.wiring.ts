@@ -10,7 +10,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ANTIGRAVITY_CONSTANTS, RUNTIME_TERMS_CONSTANTS, RUNTIME_TYPES } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
-import type { DecisionService } from '../decisions/decision.service.js';
+import { DecisionService } from '../decisions/decision.service.js';
 import { driveAntigravityTerms, type TermsTerminal } from './antigravity-terms-driver.js';
 import { parseAntigravityTermsScreen } from './antigravity-terms-screens.js';
 import {
@@ -169,7 +169,7 @@ export function startRuntimeTerms(input: RuntimeTermsWiringInput): RuntimeTermsC
 		},
 		logger: LoggerService.getInstance().createComponentLogger('RuntimeTerms'),
 	});
-	input.decisions.onSettled((d) => service.handleSettled(d));
+	DecisionService.registerKindHandler('runtime_terms', service);
 	setRuntimeTermsConsentService(service);
 	return service;
 }

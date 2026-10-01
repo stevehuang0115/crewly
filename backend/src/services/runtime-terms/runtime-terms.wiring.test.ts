@@ -49,14 +49,18 @@ describe('ANTIGRAVITY_TERMS_PROFILE', () => {
 });
 
 describe('startRuntimeTerms', () => {
-	afterEach(() => setRuntimeTermsConsentService(null));
+	afterEach(() => {
+		setRuntimeTermsConsentService(null);
+		DecisionService.registerKindHandler('runtime_terms', null);
+		jest.restoreAllMocks();
+	});
 
-	it('installs the service and listens for settled decisions', () => {
-		const onSettled = jest.fn();
-		const decisions = { onSettled } as unknown as DecisionService;
+	it('installs the service as the runtime_terms decision-kind handler', () => {
+		const register = jest.spyOn(DecisionService, 'registerKindHandler');
+		const decisions = {} as unknown as DecisionService;
 		const service = startRuntimeTerms({ crewlyHome: '/tmp/crewly-terms-wiring-test', decisions, machineName: () => 'm' });
 		expect(getRuntimeTermsConsentService()).toBe(service);
-		expect(onSettled).toHaveBeenCalledTimes(1);
+		expect(register).toHaveBeenCalledWith('runtime_terms', service);
 		expect(service.supports('antigravity-cli')).toBe(true);
 		expect(service.supports('claude-code')).toBe(false);
 	});

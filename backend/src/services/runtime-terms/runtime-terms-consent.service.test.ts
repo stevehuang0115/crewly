@@ -64,6 +64,7 @@ beforeEach(async () => {
 	dir = await fs.mkdtemp(path.join(os.tmpdir(), 'runtime-terms-'));
 });
 afterEach(async () => {
+	DecisionService.registerKindHandler('runtime_terms', null);
 	await fs.rm(dir, { recursive: true, force: true });
 });
 
@@ -126,7 +127,7 @@ function harness(tuiOpts: FakeAgyOptions = {}, home = dir): Harness {
 		probeTimeoutMs: 1_000,
 		logger: quiet(),
 	});
-	decisions.onSettled((d) => h.terms.handleSettled(d));
+	DecisionService.registerKindHandler('runtime_terms', h.terms);
 	return h;
 }
 
@@ -179,7 +180,7 @@ describe('RuntimeTermsConsentService', () => {
 		const rec = h.store.get(AGY);
 		expect(rec).toMatchObject({ status: 'pending', detectedBy: 'launch' });
 		const d = await h.decisions.get(rec?.decisionId ?? '');
-		expect(d).toMatchObject({ sensitive: 'runtime_terms', system: { kind: 'runtime_terms', key: AGY, defaultIsDecline: true }, asker: 'crewly-orc' });
+		expect(d).toMatchObject({ sensitive: 'runtime_terms', kind: 'runtime_terms', system: { key: AGY, defaultIsDecline: true }, asker: 'crewly-orc' });
 		expect(Date.parse(d?.deadline ?? '') - h.clock.now.getTime()).toBe(24 * HOUR);
 		expect(h.terms.blockedReason(AGY)).toMatch(/Waiting for you to accept/);
 		expect(h.tuis).toHaveLength(0);

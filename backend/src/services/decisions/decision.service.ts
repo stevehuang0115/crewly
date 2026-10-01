@@ -18,13 +18,24 @@
 import { DECISION_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
-import type { AskOwnerInput, DecisionAnswerVia, DecisionChoice, DecisionSensitiveKind, DecisionSystemRef, OwnerDecision } from '../../types/decision.types.js';
+import type {
+  AskOwnerInput,
+  DecisionAnswerVia,
+  DecisionChoice,
+  DecisionKind,
+  DecisionOption,
+  DecisionSensitiveKind,
+  DecisionSystemRef,
+  OwnerDecision,
+} from '../../types/decision.types.js';
 import { DecisionContractError, matchOption, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
 import {
+  canRemind,
   cardFallbackText,
   choiceFromReaction,
   choiceFromText,
   deadlineDefaultLine,
+  defaultIsSafe,
   defaultLabel,
   formatWhen,
   optionLabel,
@@ -125,6 +136,8 @@ export interface DecisionServiceDeps {
 
 /** A decision the harness asks itself ({@link DecisionService.askSystem}). */
 export interface SystemAskInput {
+  /** Kind whose registered handler acts on the answer */
+  kind: DecisionKind;
   system: DecisionSystemRef;
   /** Card header */
   title: string;
@@ -139,9 +152,6 @@ export interface SystemAskInput {
   deadline: Date;
   sensitive?: DecisionSensitiveKind;
 }
-
-/** Called when a decision is settled (resolved, defaulted, parked, cancelled). */
-export type DecisionSettledListener = (decision: OwnerDecision) => void | Promise<void>;
 
 /** What a Slack interaction did. */
 export interface InteractionOutcome {
@@ -168,6 +178,39 @@ export interface ReactionEvent {
 }
 
 /**
+ * Acts on the outcome of a decision Crewly asked itself ({@link DecisionKind}).
+ */
+export interface DecisionKindHandler {
+  /**
+   * Called once when such a decision settles (resolved, defaulted at the
+   * deadline, parked, cancelled or expired). Does the kind's work (e.g. lets a held
+   * browser click through) and returns the note for the asking agent, which
+   * replaces the generic `[DECISION]` note; null sends nothing.
+   *
+   * @param decision - The settled decision
+   * @returns Note for the asker, or null
+   */
+  onSettled(decision: OwnerDecision): Promise<string | null>;
+}
+
+/** A question Crewly builds itself (no ask-owner contract parsing). */
+export interface PrebuiltAsk {
+  kind: DecisionKind;
+  /** Agent the question is about — its bot posts the card and it gets the answer */
+  asker: string;
+  question: string;
+  options: DecisionOption[];
+  defaultKey: string;
+  yesKey?: string;
+  deadline: Date;
+  sensitive?: DecisionSensitiveKind;
+  browser?: OwnerDecision['browser'];
+}
+
+/** Handlers per kind (process-wide: the browser side may start before the service). */
+const KIND_HANDLERS = new Map<DecisionKind, DecisionKindHandler>();
+
+/**
  * Next local `hour`:00 strictly tomorrow.
  *
  * @param now - Clock
@@ -192,7 +235,6 @@ export class DecisionService {
   private readonly now: () => Date;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
-  private readonly settledListeners = new Set<DecisionSettledListener>();
 
   /**
    * @param deps - Collaborators
@@ -211,6 +253,17 @@ export class DecisionService {
   /** @param service - Instance to install (null clears) */
   static setInstance(service: DecisionService | null): void {
     DecisionService.instance = service;
+  }
+
+  /**
+   * Register the handler of a decision kind.
+   *
+   * @param kind - Decision kind
+   * @param handler - Handler (null removes it)
+   */
+  static registerKindHandler(kind: DecisionKind, handler: DecisionKindHandler | null): void {
+    if (handler) KIND_HANDLERS.set(kind, handler);
+    else KIND_HANDLERS.delete(kind);
   }
 
   /** Start the deadline / reminder tick. */
@@ -284,8 +337,8 @@ export class DecisionService {
 
   /**
    * Ask the owner on the harness's own behalf (no agent): the card goes to
-   * the owner's DM with this machine's orc bot, the answer goes to
-   * {@link onSettled} listeners only — no agent is told or woken.
+   * the owner's DM with this machine's orc bot, and the answer goes to the
+   * kind's handler only — no agent is told or woken.
    *
    * @param input - The ask
    * @returns The stored decision (with `card`, or `postError`; retried on the tick)
@@ -303,6 +356,7 @@ export class DecisionService {
     }
     if (input.deadline.getTime() <= this.now().getTime()) throw new DecisionError(400, 'deadline is in the past');
     const decision = await this.deps.store.create({
+      kind: input.kind,
       question: input.question.replace(/\s+/g, ' ').trim().slice(0, DECISION_CONSTANTS.QUESTION_MAX_CHARS),
       options,
       defaultKey,
@@ -315,19 +369,38 @@ export class DecisionService {
       ...(input.body?.length ? { body: input.body } : {}),
       status: 'open',
     });
-    this.logger.info('System decision asked', { decisionId: decision.id, kind: input.system.kind, key: input.system.key });
+    this.logger.info('System decision asked', { decisionId: decision.id, kind: input.kind, key: input.system.key });
     return this.postCard(decision);
   }
 
   /**
-   * Listen for settled decisions.
+   * Ask a question Crewly built itself (e.g. a held browser action). The card
+   * goes where an ask-owner card without a ticket goes: the thread of the
+   * agent's current work item, else its team channel — from its own bot.
    *
-   * @param listener - Called once per settlement
-   * @returns Unsubscribe
+   * @param ask - The prebuilt question
+   * @returns The stored decision (with `card`, or `postError`; retried on the tick)
    */
-  onSettled(listener: DecisionSettledListener): () => void {
-    this.settledListeners.add(listener);
-    return () => this.settledListeners.delete(listener);
+  async askPrebuilt(ask: PrebuiltAsk): Promise<OwnerDecision> {
+    const teamId = await this.deps.teamOf(ask.asker).catch(() => undefined);
+    const workItemId = await this.deps.currentWorkItemId?.(ask.asker).catch(() => undefined);
+    const decision = await this.deps.store.create({
+      kind: ask.kind,
+      question: ask.question,
+      options: ask.options,
+      defaultKey: ask.defaultKey,
+      ...(ask.yesKey ? { yesKey: ask.yesKey } : {}),
+      deadline: ask.deadline.toISOString(),
+      ...(ask.sensitive ? { sensitive: ask.sensitive } : {}),
+      ...(ask.browser ? { browser: ask.browser } : {}),
+      requestedBy: ask.asker,
+      asker: ask.asker,
+      ...(teamId ? { teamId } : {}),
+      ...(workItemId ? { workItemId } : {}),
+      status: 'open',
+    });
+    this.logger.info('Owner decision asked by Crewly', { decisionId: decision.id, kind: ask.kind, asker: ask.asker });
+    return this.postCard(decision);
   }
 
   /**
@@ -344,14 +417,23 @@ export class DecisionService {
     return true;
   }
 
-  private async emitSettled(d: OwnerDecision): Promise<void> {
-    for (const listener of this.settledListeners) {
-      try {
-        await listener(d);
-      } catch (err) {
-        this.logger.warn('Decision listener failed', { decisionId: d.id, error: errText(err) });
-      }
-    }
+  /**
+   * Mark an open decision as expired: what it asked about is gone. The card
+   * says so, and the kind's handler tells the agent.
+   *
+   * @param id - Decision id
+   * @returns The expired decision, or null when it was not pending
+   */
+  async expire(id: string): Promise<OwnerDecision | null> {
+    const expired = await this.deps.store.update(id, (cur) =>
+      PENDING_DECISION_STATUSES.has(cur.status) ? { status: 'expired', resolvedAt: this.now().toISOString(), remindAt: undefined } : null,
+    );
+    if (!expired) return null;
+    await this.refreshCard(expired);
+    if (expired.ticket) await this.logTicket(expired, `owner decision ${expired.id}: expired`, true);
+    await this.notifyAsker(expired, null);
+    this.logger.info('Owner decision expired', { decisionId: id });
+    return expired;
   }
 
   /**
@@ -569,8 +651,8 @@ export class DecisionService {
       const done = await this.deps.store.update(d.id, (cur) => (PENDING_DECISION_STATUSES.has(cur.status) ? { status: 'cancelled', resolvedAt: this.now().toISOString() } : null));
       if (!done) continue;
       await this.refreshCard(done);
+      if (done.kind) await this.notifyAsker(done, null);
       this.logger.info('Owner decision withdrawn', { decisionId: d.id, note });
-      await this.emitSettled(done);
     }
     return open.length;
   }
@@ -609,6 +691,13 @@ export class DecisionService {
    */
   private async apply(decision: OwnerDecision, choice: DecisionChoice, via: DecisionAnswerVia, user: string | undefined): Promise<InteractionOutcome> {
     const now = this.now();
+    if (choice.kind === 'remind' && !canRemind(decision)) {
+      return { handled: false, reason: 'remind is not offered on this card', decision };
+    }
+    if (choice.kind === 'text' && decision.kind === 'browser_action') {
+      // A held click is approved or not: words that are neither leave it open.
+      return { handled: false, reason: 'reply is neither yes nor no', decision };
+    }
     if (choice.kind === 'remind') {
       const remindAt = tomorrowAt(now, DECISION_CONSTANTS.REMIND_HOUR_LOCAL);
       const minDeadline = remindAt.getTime() + DECISION_CONSTANTS.REMIND_GRACE_MS;
@@ -643,10 +732,9 @@ export class DecisionService {
     await this.refreshCard(resolved);
     const answer = resolved.chosenKey ? optionLabel(resolved, resolved.chosenKey) : `“${resolved.answerText}”`;
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: ${answer} (${via})`, true);
-    await this.tellAsker(resolved, this.answerNote(resolved));
+    await this.notifyAsker(resolved, this.answerNote(resolved));
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision resolved', { decisionId: resolved.id, via, chosen: resolved.chosenKey ?? 'text' });
-    await this.emitSettled(resolved);
     return { handled: true, reason: 'resolved', decision: resolved };
   }
 
@@ -697,7 +785,9 @@ export class DecisionService {
             continue;
           }
           if (Date.parse(d.deadline) > now.getTime()) continue;
-          if (d.sensitive && !d.system?.defaultIsDecline) {
+          // A default that never lets anything through (a held browser
+          // action's No, a declined Terms card) is applied even when sensitive.
+          if (d.sensitive && !defaultIsSafe(d)) {
             if (await this.sensitiveStep(d, now)) acted.push(d.id);
           } else if (await this.applyDefault(d, now)) {
             acted.push(d.id);
@@ -741,13 +831,12 @@ export class DecisionService {
     await this.refreshCard(resolved);
     await this.postInThread(resolved, line);
     if (resolved.ticket) await this.logTicket(resolved, `owner decision ${resolved.id}: no answer — default "${defaultLabel(resolved)}" applied`, true);
-    await this.tellAsker(
+    await this.notifyAsker(
       resolved,
       `[DECISION ${resolved.id}] No answer by the deadline for: "${resolved.question}"${resolved.ticket ? ` (ticket ${resolved.ticket.id})` : ''}. Going with the default: "${defaultLabel(resolved)}". Act on it now.${this.whereLine(resolved)}`,
     );
     this.closeWatchdog(resolved);
     this.logger.info('Owner decision defaulted at the deadline', { decisionId: resolved.id, chosen: resolved.chosenKey });
-    await this.emitSettled(resolved);
     return true;
   }
 
@@ -772,12 +861,11 @@ export class DecisionService {
     if (!parked) return false;
     await this.refreshCard(parked);
     if (parked.ticket) await this.logTicket(parked, `owner decision ${parked.id}: no answer after a re-ask — parked (sensitive: ${parked.sensitive})`, false);
-    await this.tellAsker(
+    await this.notifyAsker(
       parked,
       `[DECISION ${parked.id}] No answer to: "${parked.question}" even after a re-ask. It needs the owner's OK (${parked.sensitive}), so it is PARKED: do not do it. Move on to other work; you will get a [DECISION] message if the owner answers.`,
     );
     this.logger.info('Sensitive owner decision parked', { decisionId: d.id });
-    await this.emitSettled(parked);
     return true;
   }
 
@@ -827,8 +915,25 @@ export class DecisionService {
     await this.deps.logTicket(d.ticket, line, clear).catch((err) => this.logger.warn('Could not log the decision on the ticket', { decisionId: d.id, error: errText(err) }));
   }
 
+  /**
+   * Tell the asker how a decision settled: through its kind's handler when
+   * it has one (which also acts on the answer), else with `fallback`.
+   */
+  private async notifyAsker(d: OwnerDecision, fallback: string | null): Promise<void> {
+    const handler = d.kind ? KIND_HANDLERS.get(d.kind) : undefined;
+    let text = fallback;
+    if (handler) {
+      try {
+        text = await handler.onSettled(d);
+      } catch (err) {
+        this.logger.warn('Decision kind handler failed', { decisionId: d.id, kind: d.kind, error: errText(err) });
+      }
+    }
+    if (text) await this.tellAsker(d, text);
+  }
+
   private async tellAsker(d: OwnerDecision, text: string): Promise<void> {
-    // The harness handles its own decisions (onSettled); no agent is woken.
+    // A harness-owned decision is handled by its kind's handler; no agent is woken.
     if (d.system) return;
     const ok = await this.deps.deliverToAgent(d.asker, text).catch(() => false);
     if (!ok) this.logger.warn('Could not deliver the decision to the asking agent', { decisionId: d.id, asker: d.asker });

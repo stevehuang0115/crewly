@@ -11,23 +11,48 @@
  */
 
 /** Sensitive asks are never auto-applied at the deadline. */
-export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'runtime_terms';
+export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action' | 'runtime_terms';
+
+/**
+ * Decisions Crewly asks itself (not through ask-owner). The kind's handler
+ * (see `DecisionService.registerKindHandler`) acts on the answer and returns
+ * the note the asking agent gets (none for harness-owned decisions).
+ *
+ * - `browser_action`: a held browser action, asked on an agent's behalf
+ * - `runtime_terms`: a runtime's Terms of Service, asked by the harness
+ *   (specs/2026-10-01-runtime-terms-consent.md)
+ */
+export type DecisionKind = 'browser_action' | 'runtime_terms';
 
 /**
  * A decision the harness itself asks (not an agent): posted from this
- * machine's orc bot in the owner's DM, handled by a backend listener, never
+ * machine's orc bot in the owner's DM, handled by its kind's handler, never
  * delivered to an agent. specs/2026-10-01-runtime-terms-consent.md
  */
 export interface DecisionSystemRef {
-  /** What the harness does with the answer */
-  kind: 'runtime_terms';
-  /** Subject within the kind (the runtime id) */
+  /** Subject within the decision's kind (the runtime id) */
   key: string;
   /**
    * The default is the declining option, so it IS applied at the deadline
    * even when the decision is sensitive (declining is always safe).
    */
   defaultIsDecline?: boolean;
+}
+
+/** The held browser action a `browser_action` decision is about. */
+export interface BrowserActionSubject {
+  /** Agent whose action is held */
+  agentSession: string;
+  /** Display name ("Vera") */
+  agentName: string;
+  /** `PendingConfirmation.id` in the browser session service */
+  pendingId: string;
+  /** "visa.careerengine.us/subscribe", when known */
+  where?: string;
+  /** What it wants to do, e.g. `click "Submit"` */
+  target: string;
+  /** Why it was held ("submitting") */
+  matched: string;
 }
 
 /** One answer the owner can pick. */
@@ -51,7 +76,9 @@ export type DecisionStatus =
   /** Sensitive ask with no answer after the re-ask: nothing happens until the owner reopens it */
   | 'parked'
   /** Withdrawn by the asking agent (or its ticket closed) */
-  | 'cancelled';
+  | 'cancelled'
+  /** The thing asked about no longer exists (e.g. a held browser action lost to a restart) */
+  | 'expired';
 
 /** How an answer arrived. */
 export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline';
@@ -80,6 +107,12 @@ export interface OwnerDecision {
   /** ISO deadline */
   deadline: string;
   sensitive?: DecisionSensitiveKind;
+  /** Set for decisions Crewly asks itself (see {@link DecisionKind}) */
+  kind?: DecisionKind;
+  /** The held browser action (kind `browser_action`) */
+  browser?: BrowserActionSubject;
+  /** Option a plain "yes" / ✅ means (default: the default option, else the first) */
+  yesKey?: string;
   /** Session that called ask-owner */
   requestedBy: string;
   /** Session that owns the question (assignee / lead / the caller) — its bot posts and it gets the answer */
@@ -90,7 +123,7 @@ export interface OwnerDecision {
   teamId?: string;
   /** Work item the asker was on when it asked */
   workItemId?: string;
-  /** Harness-owned decision (owner DM, backend listener) */
+  /** Harness-owned decision (owner DM, no agent); set together with `kind` */
   system?: DecisionSystemRef;
   /** Card header instead of "Decision D-n" (system decisions) */
   title?: string;

@@ -2269,6 +2269,44 @@ void (async () => {
 						this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
 				});
 
+				// Held irreversible actions: ask the owner with a Slack decision
+				// card in the agent's work thread, persist the hold, and apply the
+				// answer from any surface (card, reaction, reply, dashboard, portal).
+				try {
+					const { BrowserApprovalService } = await import('./services/browser/browser-approval.service.js');
+					const { HeldActionStore } = await import('./services/browser/held-action-store.js');
+					const { DecisionService } = await import('./services/decisions/decision.service.js');
+					const approvals = new BrowserApprovalService({
+						store: HeldActionStore.inHome(this.config.crewlyHome),
+						sessions: browserSessions,
+						decisions: () => DecisionService.getInstance(),
+						canAskInSlack: () => !!DecisionService.getInstance() && getSlackService().isConnected(),
+						tellAgent: (sessionName, message) =>
+							this.apiController.agentRegistrationService.sendMessageToAgent(sessionName, message),
+						agentNameOf: async (sessionName) => {
+							const teams = await this.storageService.getTeams().catch(() => []);
+							return teams.flatMap((t) => t.members ?? []).find((m) => m.sessionName === sessionName)?.name;
+						},
+						boundTabOf: (sessionName) => {
+							const binding = browserBridge.getBinding(sessionName);
+							return binding ? { tabId: binding.tabId, ...(binding.instanceId ? { instanceId: binding.instanceId } : {}) } : undefined;
+						},
+						adoptTab: (sessionName, tabId, instanceId) => browserBridge.adoptTab(sessionName, tabId, instanceId),
+					});
+					BrowserApprovalService.setInstance(approvals);
+					DecisionService.registerKindHandler('browser_action', approvals);
+					browserSessions.setHoldListener(approvals);
+					browserBridge.onTabInventory((tabs, instanceId) => approvals.onTabInventory(tabs, instanceId));
+					// Restored holds expire through their cards, so restore once
+					// decision cards run (startDecisionCards) — or now, if they do.
+					if (DecisionService.getInstance()) await approvals.restore();
+					approvals.start();
+				} catch (error) {
+					this.logger.warn('Browser approval cards not started', {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+
 				this.logger.info('Live browser view started');
 			} catch (error) {
 				this.logger.warn('Failed to start Crewly in Chrome bridge (non-critical)', {
@@ -5099,6 +5137,14 @@ void (async () => {
 			startRuntimeTerms({ crewlyHome: this.config.crewlyHome, decisions, machineName: () => os.hostname().replace(/\.local$/, '') });
 		} catch (error) {
 			this.logger.warn('Decision cards not started', { error: error instanceof Error ? error.message : String(error) });
+		}
+		// Held browser actions from before the restart: re-attach or expire
+		// (after the decision service, so expired cards are updated).
+		try {
+			const { BrowserApprovalService } = await import('./services/browser/browser-approval.service.js');
+			await BrowserApprovalService.getInstance()?.restore();
+		} catch (error) {
+			this.logger.warn('Held browser actions not restored', { error: error instanceof Error ? error.message : String(error) });
 		}
 	}
 

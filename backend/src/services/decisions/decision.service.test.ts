@@ -390,7 +390,8 @@ describe('cancel', () => {
 
 describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
   const termsAsk = {
-    system: { kind: 'runtime_terms' as const, key: 'antigravity-cli', defaultIsDecline: true },
+    kind: 'runtime_terms' as const,
+    system: { key: 'antigravity-cli', defaultIsDecline: true },
     title: 'Antigravity CLI · Terms of Service (mbp)',
     question: 'Antigravity CLI on mbp needs its Terms of Service accepted once. Do you agree?',
     body: ['*Links:* <https://antigravity.google/terms|Terms of Service>'],
@@ -398,11 +399,17 @@ describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
     default: "Don't agree",
     sensitive: 'runtime_terms' as const,
   };
-
-  it("posts in the owner's DM with the orc bot and tells listeners, never an agent", async () => {
-    const h = await harness({ ownerDmOf: async (identity) => (identity.botToken === 'xoxb-orc' ? 'D-OWNER-DM' : null) });
+  /** Records what the runtime_terms kind handler sees. */
+  const listen = (): OwnerDecision[] => {
     const settled: OwnerDecision[] = [];
-    h.service.onSettled((d) => void settled.push(d));
+    DecisionService.registerKindHandler('runtime_terms', { onSettled: async (d) => (settled.push(d), null) });
+    return settled;
+  };
+  afterEach(() => DecisionService.registerKindHandler('runtime_terms', null));
+
+  it("posts in the owner's DM with the orc bot and tells its kind handler, never an agent", async () => {
+    const h = await harness({ ownerDmOf: async (identity) => (identity.botToken === 'xoxb-orc' ? 'D-OWNER-DM' : null) });
+    const settled = listen();
     const d = await h.service.askSystem({ ...termsAsk, deadline: new Date(h.clock.now.getTime() + 24 * HOUR) });
     expect(d).toMatchObject({ asker: 'crewly-orc', requestedBy: 'crewly', card: { slackChannelId: 'D-OWNER-DM', ownBot: true } });
     expect(h.slack.sent[0]).toMatchObject({ channelId: 'D-OWNER-DM', botToken: 'xoxb-orc' });
@@ -426,13 +433,24 @@ describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
 
   it('applies a declining default at the deadline even though it is sensitive', async () => {
     const h = await harness({ ownerDmOf: async () => 'D-OWNER-DM' });
-    const settled: OwnerDecision[] = [];
-    h.service.onSettled((d) => void settled.push(d));
+    const settled = listen();
     const d = await h.service.askSystem({ ...termsAsk, deadline: new Date(h.clock.now.getTime() + 24 * HOUR) });
     h.clock.now = new Date(h.clock.now.getTime() + 25 * HOUR);
     expect(await h.service.tick()).toEqual([d.id]);
     expect(await h.service.get(d.id)).toMatchObject({ status: 'defaulted', chosenKey: 'c' });
     expect(settled).toHaveLength(1);
+  });
+
+  it('a withdrawn system decision reaches its kind handler too, and is never snoozed', async () => {
+    const h = await harness({ ownerDmOf: async () => 'D-OWNER-DM' });
+    const settled = listen();
+    const d = await h.service.askSystem({ ...termsAsk, deadline: new Date(h.clock.now.getTime() + 24 * HOUR) });
+    const snoozed = await h.service.remindFromDashboard(d.id);
+    expect(snoozed.status).toBe('open');
+    expect(snoozed.remindAt).toBeUndefined();
+    expect(await h.service.cancelWhere((x) => x.id === d.id)).toBe(1);
+    expect(settled.map((x) => [x.id, x.kind, x.status])).toEqual([[d.id, 'runtime_terms', 'cancelled']]);
+    expect(h.delivered).toEqual([]);
   });
 
   it('rejects a bad default', async () => {

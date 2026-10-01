@@ -289,12 +289,25 @@ export class RuntimeTermsConsentService {
 	}
 
 	/**
+	 * The `runtime_terms` decision-kind handler
+	 * (`DecisionService.registerKindHandler`): acts on the answer. No agent
+	 * asked, so there is no note for one.
+	 *
+	 * @param d - Settled decision
+	 * @returns null (nothing to deliver)
+	 */
+	async onSettled(d: OwnerDecision): Promise<null> {
+		this.handleSettled(d);
+		return null;
+	}
+
+	/**
 	 * A decision was settled: act on runtime-terms ones.
 	 *
 	 * @param d - Settled decision
 	 */
 	handleSettled(d: OwnerDecision): void {
-		if (d.system?.kind !== 'runtime_terms') return;
+		if (d.kind !== 'runtime_terms' || !d.system) return;
 		const runtime = d.system.key;
 		const rec = this.deps.store.get(runtime);
 		if (!rec || rec.decisionId !== d.id) {
@@ -378,7 +391,8 @@ export class RuntimeTermsConsentService {
 			const text = profile.card(machine);
 			try {
 				const d = await decisions.askSystem({
-					system: { kind: 'runtime_terms', key: runtime, defaultIsDecline: true },
+					kind: 'runtime_terms',
+					system: { key: runtime, defaultIsDecline: true },
 					title: text.title,
 					question: text.question,
 					body: text.body,
