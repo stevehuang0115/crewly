@@ -5,7 +5,8 @@
  * choice and the login cards (logins expire; people come back here to
  * re-login). Reuses the same components as the `/setup` flow. Also holds the
  * runtime fallback settings and the per-runtime smoke test
- * (specs/2026-10-01-runtime-fallback.md).
+ * (specs/2026-10-01-runtime-fallback.md), and the owner's consent to a
+ * runtime's first-run Terms (specs/2026-10-01-runtime-terms-consent.md).
  *
  * @module components/Settings/HarnessTab
  */
@@ -19,6 +20,7 @@ import { OrcHarnessPicker } from '../Harness/OrcHarnessPicker';
 import { HarnessLoginCard } from '../Harness/HarnessLoginCard';
 import { visibleHarnesses } from '../../constants/harness.constants';
 import { RuntimeFallbackPanel } from './RuntimeFallbackPanel';
+import { RuntimeTermsPanel } from './RuntimeTermsPanel';
 
 /**
  * Section heading with Chinese title and short English subtitle.
@@ -95,6 +97,11 @@ export const HarnessTab: React.FC = () => {
           onChange={(id) => void setOrcHarness(id)}
           disabled={savingOrc}
         />
+      </section>
+
+      <section>
+        <SectionHeading title="Terms of Service" subtitle="Runtimes that ask you to accept their vendor's terms once (Crewly never accepts them for you)" />
+        <RuntimeTermsPanel />
       </section>
 
       <section>

@@ -258,7 +258,10 @@ export function startBackendRuntimeFallback(ctx: RuntimeFallbackWiringContext): 
 			const provider = settings.crewlyAgentModel.split('/')[0] ?? '';
 			const keyProvider = KEY_PROVIDER[provider];
 			const key = keyProvider ? await getSettingsService().getApiKey(keyProvider, { runtime: RUNTIME_TYPES.CREWLY_AGENT }).catch(() => undefined) : undefined;
+			const { getRuntimeTermsConsentService } = await import('../runtime-terms/runtime-terms-consent.service.js');
+			const terms = getRuntimeTermsConsentService();
 			return computeRuntimeAvailability({
+				...(terms ? { termsBlocked: (runtime: string) => terms.blockedReason(runtime) } : {}),
 				harnesses,
 				crewlyAgentModel: settings.crewlyAgentModel,
 				hasProviderKey: (p) => p === provider && Boolean(key && key.trim()),

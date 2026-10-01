@@ -11,14 +11,33 @@
  */
 
 /** Sensitive asks are never auto-applied at the deadline. */
-export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action';
+export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'browser_action' | 'runtime_terms';
 
 /**
- * Decisions Crewly asks on an agent's behalf (not through ask-owner). The
- * kind's handler (see `DecisionService.registerKindHandler`) acts on the
- * answer and writes the note the agent gets.
+ * Decisions Crewly asks itself (not through ask-owner). The kind's handler
+ * (see `DecisionService.registerKindHandler`) acts on the answer and returns
+ * the note the asking agent gets (none for harness-owned decisions).
+ *
+ * - `browser_action`: a held browser action, asked on an agent's behalf
+ * - `runtime_terms`: a runtime's Terms of Service, asked by the harness
+ *   (specs/2026-10-01-runtime-terms-consent.md)
  */
-export type DecisionKind = 'browser_action';
+export type DecisionKind = 'browser_action' | 'runtime_terms';
+
+/**
+ * A decision the harness itself asks (not an agent): posted from this
+ * machine's orc bot in the owner's DM, handled by its kind's handler, never
+ * delivered to an agent. specs/2026-10-01-runtime-terms-consent.md
+ */
+export interface DecisionSystemRef {
+  /** Subject within the decision's kind (the runtime id) */
+  key: string;
+  /**
+   * The default is the declining option, so it IS applied at the deadline
+   * even when the decision is sensitive (declining is always safe).
+   */
+  defaultIsDecline?: boolean;
+}
 
 /** The held browser action a `browser_action` decision is about. */
 export interface BrowserActionSubject {
@@ -104,6 +123,12 @@ export interface OwnerDecision {
   teamId?: string;
   /** Work item the asker was on when it asked */
   workItemId?: string;
+  /** Harness-owned decision (owner DM, no agent); set together with `kind` */
+  system?: DecisionSystemRef;
+  /** Card header instead of "Decision D-n" (system decisions) */
+  title?: string;
+  /** Extra mrkdwn sections shown under the question (system decisions) */
+  body?: string[];
   status: DecisionStatus;
   card?: DecisionCardRef;
   /** Why the card could not be posted (shown in the dashboard; retried on the next tick) */

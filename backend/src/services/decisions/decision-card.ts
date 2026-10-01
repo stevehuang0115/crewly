@@ -57,12 +57,14 @@ export function optionLabel(d: Pick<OwnerDecision, 'options'>, key: string | und
  * @param d - Decision
  * @returns Header text (≤ 150 characters, Slack's header limit)
  */
-export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id' | 'browser'>): string {
-  const text = d.ticket
-    ? `${d.ticket.id} · ${d.ticket.title}`
-    : d.browser
-      ? `Browser · ${d.browser.agentName} is waiting for your OK`
-      : `Decision ${d.id}`;
+export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id' | 'title' | 'browser'>): string {
+  const text = d.title
+    ? d.title
+    : d.ticket
+      ? `${d.ticket.id} · ${d.ticket.title}`
+      : d.browser
+        ? `Browser · ${d.browser.agentName} is waiting for your OK`
+        : `Decision ${d.id}`;
   return text.length > 150 ? `${text.slice(0, 149)}…` : text;
 }
 
@@ -119,7 +121,9 @@ export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): st
   if (d.remindAt && Date.parse(d.remindAt) > now.getTime()) {
     parts.push(`⏰ Reminding you ${formatWhen(new Date(d.remindAt), now)}.`);
   }
-  if (d.kind === 'browser_action') {
+  if (d.system?.defaultIsDecline) {
+    parts.push(`Nothing is accepted until you answer. No answer by ${when}: ${defaultLabel(d)}.`);
+  } else if (d.kind === 'browser_action') {
     parts.push(`Nothing happens without your OK. If no answer by ${when}, the answer is ${defaultLabel(d)}.`);
   } else if (d.sensitive) {
     parts.push(`This needs your OK (${d.sensitive}); I won't go ahead without an answer.`);
@@ -156,6 +160,7 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
     { type: 'header', text: { type: 'plain_text', text: cardHeader(d), emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: d.question } },
   ];
+  for (const text of d.body ?? []) if (text.trim()) blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
   const details = optionDetails(d.options);
   if (details) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: details } });
   blocks.push({
@@ -169,7 +174,8 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
         value: buttonValue(d.id, o.key, instanceId),
         ...(o.key === d.defaultKey && !d.sensitive ? { style: 'primary' } : {}),
       })),
-      // A held browser action cannot wait until tomorrow: it has a short deadline.
+      // Held browser actions (short deadline) and system decisions (exactly
+      // their options) cannot be snoozed.
       ...(canRemind(d)
         ? [
             {
@@ -187,14 +193,27 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
 }
 
 /**
- * Whether "Remind me tomorrow" is offered (not for held browser actions,
- * which have a deadline of hours).
+ * Whether "Remind me tomorrow" is offered: not for held browser actions
+ * (a deadline of hours), nor for system decisions (answered with exactly
+ * their options).
  *
  * @param d - Decision
  * @returns True when snoozing is allowed
  */
-export function canRemind(d: Pick<OwnerDecision, 'kind'>): boolean {
-  return d.kind !== 'browser_action';
+export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
+  return d.kind !== 'browser_action' && !d.system;
+}
+
+/**
+ * Whether the default never lets anything through (a held browser action's
+ * "No", a declining system decision), so it is applied at the deadline even
+ * when the decision is sensitive.
+ *
+ * @param d - Decision
+ * @returns True when the default is safe to apply unanswered
+ */
+export function defaultIsSafe(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
+  return d.kind === 'browser_action' || d.system?.defaultIsDecline === true;
 }
 
 /**

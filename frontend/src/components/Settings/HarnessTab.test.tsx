@@ -25,6 +25,10 @@ vi.mock('../../services/harness.service', () => ({
   },
 }));
 
+vi.mock('./RuntimeTermsPanel', () => ({
+  RuntimeTermsPanel: () => <div data-testid="runtime-terms-panel" />,
+}));
+
 vi.mock('./RuntimeFallbackPanel', () => ({
   RuntimeFallbackPanel: () => <div data-testid="runtime-fallback-panel-stub" />,
 }));

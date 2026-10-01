@@ -239,6 +239,11 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		return this.getSettings();
 	}
 
+	/** Forget the cached availability (a runtime's Terms consent changed). */
+	invalidateAvailability(): void {
+		this.availability = null;
+	}
+
 	// ------------------------------------------------------------------- hooks
 
 	/**

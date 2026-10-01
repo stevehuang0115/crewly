@@ -7,6 +7,7 @@
 import { MemoryRuntimeFallbackStore } from './runtime-fallback.store.js';
 import { RuntimeFallbackService, type FallbackAgentInfo, type ProbeResult, type RuntimeFallbackDeps } from './runtime-fallback.service.js';
 import type { RuntimeAvailability } from './runtime-fallback.types.js';
+import { computeRuntimeAvailability } from './runtime-availability.js';
 
 const CLAUDE_LIMIT = "  ⎿  You've hit your limit · resets 3pm (UTC)\r\n";
 const T0 = Date.UTC(2026, 9, 1, 12, 0);
@@ -194,6 +195,31 @@ describe('RuntimeFallbackService — switch on a usage limit', () => {
 		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
 		await settle();
 		expect(h.service.overrideFor('dev-1')).toBe('antigravity-cli');
+	});
+
+	it('skips a runtime whose Terms the owner did not accept (specs/2026-10-01-runtime-terms-consent.md)', async () => {
+		const harnesses = ['claude-code', 'antigravity-cli', 'codex-cli'].map((id) => ({ id, installed: true, loginState: 'logged_in' as const }));
+		const availability = (declined: boolean): RuntimeAvailability[] =>
+			computeRuntimeAvailability({
+				harnesses,
+				crewlyAgentModel: 'deepseek/deepseek-chat',
+				hasProviderKey: () => false,
+				termsBlocked: (r) => (declined && r === 'antigravity-cli' ? "Terms not accepted: You chose Don't agree" : null),
+			});
+		const declined = make({ availability: availability(true) });
+		declined.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		expect(declined.service.overrideFor('dev-1')).toBeNull();
+		expect((await declined.service.snapshot()).runtimes.find((r) => r.runtime === 'antigravity-cli')).toMatchObject({
+			selectable: false,
+			termsBlocked: true,
+			reason: "Terms not accepted: You chose Don't agree",
+		});
+
+		const accepted = make({ availability: availability(false) });
+		accepted.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		expect(accepted.service.overrideFor('dev-1')).toBe('antigravity-cli');
 	});
 
 	it('uses a per-member chain when one is set', async () => {

@@ -18,14 +18,24 @@
 import { DECISION_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
-import type { AskOwnerInput, DecisionAnswerVia, DecisionChoice, DecisionKind, DecisionOption, DecisionSensitiveKind, OwnerDecision } from '../../types/decision.types.js';
-import { DecisionContractError, validateAskOwner } from './decision-contract.js';
+import type {
+  AskOwnerInput,
+  DecisionAnswerVia,
+  DecisionChoice,
+  DecisionKind,
+  DecisionOption,
+  DecisionSensitiveKind,
+  DecisionSystemRef,
+  OwnerDecision,
+} from '../../types/decision.types.js';
+import { DecisionContractError, matchOption, parseOptions, resolveDefault, validateAskOwner } from './decision-contract.js';
 import {
   canRemind,
   cardFallbackText,
   choiceFromReaction,
   choiceFromText,
   deadlineDefaultLine,
+  defaultIsSafe,
   defaultLabel,
   formatWhen,
   optionLabel,
@@ -33,6 +43,7 @@ import {
   renderOpenCard,
   renderSettledCard,
   settledLine,
+  noOption,
   ticketThreadRootText,
 } from './decision-card.js';
 import { DecisionStore, PENDING_DECISION_STATUSES } from './decision-store.js';
@@ -117,8 +128,29 @@ export interface DecisionServiceDeps {
   deliverToAgent: (session: string, text: string) => Promise<boolean>;
   /** Close the owner-message watchdog entries this agent owes in the thread */
   closeWatchdog?: (session: string, slackChannelId: string, threadTs: string) => void;
+  /** The owner's DM with the bot of `identity` (system decisions); null when there is none */
+  ownerDmOf?: (identity: DecisionPostIdentity) => Promise<string | null>;
   now?: () => Date;
   logger?: ComponentLogger;
+}
+
+/** A decision the harness asks itself ({@link DecisionService.askSystem}). */
+export interface SystemAskInput {
+  /** Kind whose registered handler acts on the answer */
+  kind: DecisionKind;
+  system: DecisionSystemRef;
+  /** Card header */
+  title: string;
+  /** One line */
+  question: string;
+  /** Extra mrkdwn sections under the question */
+  body?: string[];
+  /** `["Label", "Label — detail"]` or `[{label, detail?}]` */
+  options: unknown[];
+  /** Option label */
+  default: string;
+  deadline: Date;
+  sensitive?: DecisionSensitiveKind;
 }
 
 /** What a Slack interaction did. */
@@ -151,7 +183,7 @@ export interface ReactionEvent {
 export interface DecisionKindHandler {
   /**
    * Called once when such a decision settles (resolved, defaulted at the
-   * deadline, cancelled or expired). Does the kind's work (e.g. lets a held
+   * deadline, parked, cancelled or expired). Does the kind's work (e.g. lets a held
    * browser click through) and returns the note for the asking agent, which
    * replaces the generic `[DECISION]` note; null sends nothing.
    *
@@ -304,6 +336,44 @@ export class DecisionService {
   }
 
   /**
+   * Ask the owner on the harness's own behalf (no agent): the card goes to
+   * the owner's DM with this machine's orc bot, and the answer goes to the
+   * kind's handler only — no agent is told or woken.
+   *
+   * @param input - The ask
+   * @returns The stored decision (with `card`, or `postError`; retried on the tick)
+   * @throws DecisionError(400) for bad options / default / deadline
+   */
+  async askSystem(input: SystemAskInput): Promise<OwnerDecision> {
+    let options;
+    let defaultKey;
+    try {
+      options = parseOptions(input.options);
+      defaultKey = resolveDefault(input.default, options);
+    } catch (err) {
+      if (err instanceof DecisionContractError) throw new DecisionError(400, err.message);
+      throw err;
+    }
+    if (input.deadline.getTime() <= this.now().getTime()) throw new DecisionError(400, 'deadline is in the past');
+    const decision = await this.deps.store.create({
+      kind: input.kind,
+      question: input.question.replace(/\s+/g, ' ').trim().slice(0, DECISION_CONSTANTS.QUESTION_MAX_CHARS),
+      options,
+      defaultKey,
+      deadline: input.deadline.toISOString(),
+      ...(input.sensitive ? { sensitive: input.sensitive } : {}),
+      requestedBy: 'crewly',
+      asker: ORCHESTRATOR_SESSION_NAME,
+      system: input.system,
+      title: input.title,
+      ...(input.body?.length ? { body: input.body } : {}),
+      status: 'open',
+    });
+    this.logger.info('System decision asked', { decisionId: decision.id, kind: input.kind, key: input.system.key });
+    return this.postCard(decision);
+  }
+
+  /**
    * Ask a question Crewly built itself (e.g. a held browser action). The card
    * goes where an ask-owner card without a ticket goes: the thread of the
    * agent's current work item, else its team channel — from its own bot.
@@ -331,6 +401,20 @@ export class DecisionService {
     });
     this.logger.info('Owner decision asked by Crewly', { decisionId: decision.id, kind: ask.kind, asker: ask.asker });
     return this.postCard(decision);
+  }
+
+  /**
+   * Post a line in a decision's card thread (as the asker's bot).
+   *
+   * @param id - Decision id
+   * @param text - mrkdwn text
+   * @returns True when there was a card to reply to
+   */
+  async replyInThread(id: string, text: string): Promise<boolean> {
+    const d = await this.deps.store.get(id);
+    if (!d?.card) return false;
+    await this.postInThread(d, text);
+    return true;
   }
 
   /**
@@ -398,6 +482,11 @@ export class DecisionService {
    * asker's current work destination, else a new thread in its team channel.
    */
   private async placeFor(decision: OwnerDecision, identity: DecisionPostIdentity, slack: DecisionSlackApi): Promise<DecisionSlackPlace> {
+    if (decision.system) {
+      const dm = await this.deps.ownerDmOf?.(identity);
+      if (!dm) throw new DecisionError(409, "No Slack DM with the owner from this machine's orc bot");
+      return { slackChannelId: dm };
+    }
     if (decision.ticket) {
       const t = decision.ticket;
       const existing = await this.deps.threads.get(t.projectPath, t.id);
@@ -487,6 +576,11 @@ export class DecisionService {
     if (!event.user || !this.deps.isOwner(event.user)) return { handled: false, reason: 'not the owner', decision };
     const choice = choiceFromReaction(decision, event.reaction);
     if (!choice) return { handled: false, reason: `reaction :${event.reaction}: means nothing here`, decision };
+    // A system decision takes only an unambiguous answer: ❌ = its "no" option.
+    const name = event.reaction.replace(/::skin-tone-\d$/, '');
+    if (decision.system && !((DECISION_CONSTANTS.REACTION_REJECT as readonly string[]).includes(name) && choice.kind === 'option' && choice.key === noOption(decision.options)?.key)) {
+      return { handled: false, reason: 'system decisions take a button, an option name or ❌', decision };
+    }
     return this.apply(decision, choice, 'reaction', event.user);
   }
 
@@ -510,8 +604,8 @@ export class DecisionService {
     );
     const decision = candidates[0];
     if (!decision) return { handled: false, reason: 'no open card in this thread' };
-    const choice = choiceFromText(decision, message.text ?? '');
-    if (!choice) return { handled: false, reason: 'empty reply', decision };
+    const choice = decision.system ? systemChoiceFromText(decision, message.text ?? '') : choiceFromText(decision, message.text ?? '');
+    if (!choice) return { handled: false, reason: decision.system ? 'not one of the options' : 'empty reply', decision };
     return this.apply(decision, choice, 'reply', message.userId);
   }
 
@@ -691,9 +785,9 @@ export class DecisionService {
             continue;
           }
           if (Date.parse(d.deadline) > now.getTime()) continue;
-          // A held browser action defaults to its safe answer (No) — the
-          // default never lets anything through, so it can be applied.
-          if (d.sensitive && d.kind !== 'browser_action') {
+          // A default that never lets anything through (a held browser
+          // action's No, a declined Terms card) is applied even when sensitive.
+          if (d.sensitive && !defaultIsSafe(d)) {
             if (await this.sensitiveStep(d, now)) acted.push(d.id);
           } else if (await this.applyDefault(d, now)) {
             acted.push(d.id);
@@ -767,7 +861,7 @@ export class DecisionService {
     if (!parked) return false;
     await this.refreshCard(parked);
     if (parked.ticket) await this.logTicket(parked, `owner decision ${parked.id}: no answer after a re-ask — parked (sensitive: ${parked.sensitive})`, false);
-    await this.tellAsker(
+    await this.notifyAsker(
       parked,
       `[DECISION ${parked.id}] No answer to: "${parked.question}" even after a re-ask. It needs the owner's OK (${parked.sensitive}), so it is PARKED: do not do it. Move on to other work; you will get a [DECISION] message if the owner answers.`,
     );
@@ -839,6 +933,8 @@ export class DecisionService {
   }
 
   private async tellAsker(d: OwnerDecision, text: string): Promise<void> {
+    // A harness-owned decision is handled by its kind's handler; no agent is woken.
+    if (d.system) return;
     const ok = await this.deps.deliverToAgent(d.asker, text).catch(() => false);
     if (!ok) this.logger.warn('Could not deliver the decision to the asking agent', { decisionId: d.id, asker: d.asker });
     // The orchestrator asked on the owner's behalf for a ticket it does not own: tell it too.
@@ -855,6 +951,28 @@ export class DecisionService {
       /* best-effort */
     }
   }
+}
+
+/**
+ * A system decision's thread reply: an option (label, key, number) or a
+ * "no" word for its "no" option. Yes-words are ambiguous (two ways to agree)
+ * and free text is not an answer.
+ *
+ * @param d - Decision
+ * @param text - Owner's reply
+ * @returns Choice, or null
+ */
+function systemChoiceFromText(d: OwnerDecision, text: string): DecisionChoice | null {
+  const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
+  if (!clean) return null;
+  const opt = matchOption(clean, d.options);
+  if (opt) return { kind: 'option', key: opt.key };
+  const norm = clean.toLowerCase().replace(/[\s.。!！,，]+$/u, '');
+  if ((DECISION_CONSTANTS.NO_WORDS as readonly string[]).includes(norm)) {
+    const no = noOption(d.options);
+    if (no) return { kind: 'option', key: no.key };
+  }
+  return null;
 }
 
 /**

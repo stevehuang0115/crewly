@@ -93,7 +93,16 @@ export interface SmokeTestDeps {
 	pollMs?: number;
 	/** provider/model a Crewly Agent test runs (the fallback's model, DeepSeek by default) */
 	crewlyAgentModel?: () => string;
+	/**
+	 * The test stopped on the runtime's first-run Terms screen: ask the owner
+	 * (specs/2026-10-01-runtime-terms-consent.md). `ownerInitiated` = the
+	 * owner pressed Test.
+	 */
+	onTermsScreen?: (runtime: string, report: { ownerInitiated: boolean; screen?: string }) => void;
 }
+
+/** The failure reason when the runtime stopped on its first-run Terms screen. */
+export const SMOKE_TERMS_ERROR = 'Antigravity needs its terms accepted once';
 
 /** Agent statuses that mean "registered and ready". */
 const READY_STATUSES = new Set(['active']);
@@ -146,10 +155,11 @@ export class RuntimeSmokeTestService {
 	 * Start a smoke test (one per runtime at a time).
 	 *
 	 * @param runtime - Runtime id
+	 * @param opts - `ownerInitiated`: the owner pressed Test (a Terms screen then asks again even after "Don't agree")
 	 * @returns The job and a promise of its result
 	 * @throws Error for an unknown runtime
 	 */
-	start(runtime: string): { job: SmokeTestJob; done: Promise<SmokeTestResult> } {
+	start(runtime: string, opts: { ownerInitiated?: boolean } = {}): { job: SmokeTestJob; done: Promise<SmokeTestResult> } {
 		if (!KNOWN_RUNTIMES.includes(runtime)) throw new Error(`Unknown runtime: ${runtime}`);
 		this.prune();
 		const existing = [...this.jobs.values()].find((j) => j.runtime === runtime && j.state === 'running');
@@ -160,6 +170,13 @@ export class RuntimeSmokeTestService {
 			job.state = 'done';
 			job.result = result;
 			this.running.delete(job.jobId);
+			if (result.error === SMOKE_TERMS_ERROR) {
+				try {
+					this.deps.onTermsScreen?.(runtime, { ownerInitiated: opts.ownerInitiated === true, ...(result.screen ? { screen: result.screen } : {}) });
+				} catch {
+					// reporting only
+				}
+			}
 			return result;
 		});
 		this.running.set(job.jobId, done);
@@ -229,7 +246,7 @@ export class RuntimeSmokeTestService {
 			steps.push({ step, ok: false, ms: this.now() - stepStart, detail: error });
 		};
 		const termsCheck = (text: string): boolean => runtime === RUNTIME_TYPES.ANTIGRAVITY_CLI && showsAntigravityTerms(text);
-		const TERMS = 'Antigravity needs its terms accepted once';
+		const TERMS = SMOKE_TERMS_ERROR;
 
 		try {
 			// 1. Team (and a scratch project so the agent never works in a real one)

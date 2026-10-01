@@ -5131,6 +5131,10 @@ void (async () => {
 			attachDecisionSlackListeners(decisions);
 			decisions.start();
 			this.logger.info('Decision cards started');
+			// Runtime Terms consent (specs/2026-10-01-runtime-terms-consent.md): the
+			// owner agrees to a runtime's first-run Terms from a Slack card.
+			const { startRuntimeTerms } = await import('./services/runtime-terms/runtime-terms.wiring.js');
+			startRuntimeTerms({ crewlyHome: this.config.crewlyHome, decisions, machineName: () => os.hostname().replace(/\.local$/, '') });
 		} catch (error) {
 			this.logger.warn('Decision cards not started', { error: error instanceof Error ? error.message : String(error) });
 		}

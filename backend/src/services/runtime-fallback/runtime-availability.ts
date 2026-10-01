@@ -6,6 +6,8 @@
  * - The Crewly Agent ships with Crewly; it needs an API key for its model's
  *   provider (DeepSeek by default).
  * - Gemini CLI is retired; OpenCode has no login check Crewly can run.
+ * - A runtime whose first-run Terms the owner has not accepted on this
+ *   machine (pending, "Don't agree", a failed setup) is skipped.
  *
  * @module services/runtime-fallback/runtime-availability
  */
@@ -27,6 +29,12 @@ export interface AvailabilityInput {
 	crewlyAgentModel: string;
 	/** Whether an API key is configured for a provider (`deepseek`, `google`, …) */
 	hasProviderKey: (provider: string) => boolean;
+	/**
+	 * Why a runtime's first-run Terms keep it from running here (pending
+	 * owner consent, "Don't agree", a failed setup), or null.
+	 * specs/2026-10-01-runtime-terms-consent.md
+	 */
+	termsBlocked?: (runtime: string) => string | null;
 }
 
 /** Provider display names. */
@@ -63,6 +71,8 @@ export function computeRuntimeAvailability(input: AvailabilityInput): RuntimeAva
 		if (!harness || !harness.installed) return { runtime, label, selectable: false, reason: 'Not installed' };
 		if (harness.loginState === 'logged_out') return { runtime, label, selectable: false, reason: 'Not signed in' };
 		if (harness.loginState !== 'logged_in') return { runtime, label, selectable: false, reason: "Sign-in couldn't be checked" };
+		const terms = input.termsBlocked?.(runtime) ?? null;
+		if (terms) return { runtime, label, selectable: false, reason: terms, termsBlocked: true };
 		return { runtime, label, selectable: true };
 	});
 }

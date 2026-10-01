@@ -8,7 +8,8 @@
  * and which agents run on a fallback, and can test any runtime end to end.
  *
  * Only runtimes that are installed and signed in can be added; the others
- * are listed with the reason. Phone-friendly: one column, full-width
+ * are listed with the reason. A runtime whose Terms the owner did not accept
+ * can still be added or tested: that asks about its Terms again. Phone-friendly: one column, full-width
  * controls on small screens.
  *
  * specs/2026-10-01-runtime-fallback.md
@@ -60,7 +61,7 @@ function runtimeStatus(r: RuntimeAvailability | undefined): { text: string; tone
   if (!r) return { text: 'Unknown runtime', tone: 'muted' };
   if (r.exhausted) return { text: 'Out of usage', tone: 'warn' };
   if (r.selectable) return { text: 'Ready', tone: 'ok' };
-  return { text: r.reason ?? 'Not available', tone: 'muted' };
+  return { text: r.reason ?? 'Not available', tone: r.termsBlocked ? 'warn' : 'muted' };
 }
 
 const TONE_CLASS: Record<'ok' | 'warn' | 'muted', string> = {
@@ -148,8 +149,12 @@ const ChainEditor: React.FC<ChainEditorProps> = ({ chain, runtimes, onChange, te
           >
             <option value="">Choose a runtime…</option>
             {addable.map((r) => (
-              <option key={r.runtime} value={r.runtime} disabled={!r.selectable}>
-                {r.selectable ? r.label : `${r.label} — ${r.reason ?? 'not available'}`}
+              <option key={r.runtime} value={r.runtime} disabled={!r.selectable && !r.termsBlocked}>
+                {r.selectable
+                  ? r.label
+                  : r.termsBlocked
+                    ? `${r.label} — terms not accepted (adding it asks you again)`
+                    : `${r.label} — ${r.reason ?? 'not available'}`}
               </option>
             ))}
           </select>
@@ -403,7 +408,8 @@ export const RuntimeFallbackPanel: React.FC<RuntimeFallbackPanelProps> = ({ smok
         </p>
         <ul className="space-y-2">
           {state.runtimes
-            .filter((r) => r.selectable || r.exhausted)
+            // A runtime whose Terms were not accepted can be tested: that asks again.
+            .filter((r) => r.selectable || r.exhausted || r.termsBlocked)
             .map((r) => {
               const t = tests[r.runtime];
               const running = Boolean(t && 'state' in t && t.state === 'running');
