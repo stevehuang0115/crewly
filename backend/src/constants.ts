@@ -1547,7 +1547,9 @@ export const AGENT_REPLY_CONSTANTS = {
 	 * `CREWLY_SESSION_NAME=<session> ` prefix (or empty).
 	 */
 	HINT_LINE:
-		'回复: `{identity}bash config/skills/agent/core/reply/execute.sh "<你的回复>"` —— 会自动发回这条消息来的地方（私信、频道 thread、网页聊天都一样）。不需要回复就运行 `{identity}bash config/skills/agent/core/reply/execute.sh --none`。',
+		'Reply: `{identity}bash config/skills/agent/core/reply/execute.sh "<your reply>"` (goes back where this message came from). ' +
+		'Answer where you were asked; a new topic goes in a new thread (`--new-thread "<title>"`). ' +
+		'No answer needed: `{identity}bash config/skills/agent/core/reply/execute.sh --none`.',
 } as const;
 
 /**

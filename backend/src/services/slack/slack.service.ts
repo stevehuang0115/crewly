@@ -26,6 +26,8 @@ import type {
   SlackRawInboundEvent,
   SlackInboundMeta,
   SlackCloudEventEnvelope,
+  SlackInteractionEvent,
+  SlackReactionEvent,
 } from '../../types/slack.types.js';
 import { isUserAllowed } from '../../types/slack.types.js';
 import { CROSS_MACHINE_PREFIX } from '../../types/cross-machine.types.js';
@@ -33,7 +35,7 @@ import { SLACK_IMAGE_CONSTANTS, SLACK_FILE_UPLOAD_CONSTANTS, SLACK_DEDUP_CONSTAN
   SLACK_NOTIFICATION_FALLBACK_MAX_CANDIDATES, SLACK_DELIVERY_HEALTH_CONSTANTS,
 } from '../../constants.js';
 import { LoggerService } from '../core/logger.service.js';
-import { TICKET_CONSTANTS } from '../../constants.js';
+import { TICKET_CONSTANTS, DECISION_CONSTANTS } from '../../constants.js';
 import { resolveFallbackNotificationChannels } from './slack-notification-fallback.js';
 import { ContentApprovalService } from '../onboarding/content-approval.service.js';
 import { getAgentBehaviorLogService } from '../observability/agent-behavior-log.singleton.js';
@@ -828,6 +830,16 @@ export class SlackService extends EventEmitter {
       this.logger.warn('Malformed slack_event envelope — dropped', { eventId: envelope?.eventId });
       return null;
     }
+    // Decision cards (specs/2026-10-01-decision-cards.md §5): a button click
+    // Cloud verified and routed here, and reactions — neither is a message.
+    if (event.type === 'block_actions') {
+      this.emitInteraction({ payload: envelope.interaction, source: 'cloud', eventId: envelope.eventId });
+      return null;
+    }
+    if (event.type === 'reaction_added') {
+      this.emitReaction(event, 'cloud');
+      return null;
+    }
     const allowedSubtypes: readonly string[] = SLACK_CLOUD_CONSTANTS.INBOUND_ALLOWED_SUBTYPES;
     if (event.subtype && !allowedSubtypes.includes(event.subtype)) {
       this.logger.debug('Dropping Slack event subtype', { subtype: event.subtype, eventId: envelope.eventId });
@@ -907,6 +919,40 @@ export class SlackService extends EventEmitter {
   }
 
   /**
+   * Hand a Slack interactive payload to listeners (decision cards). The
+   * HTTP endpoint `/api/slack/interactivity` calls this too.
+   *
+   * @param event - Payload and transport
+   */
+  emitInteraction(event: SlackInteractionEvent): void {
+    if (!event.payload || typeof event.payload !== 'object') {
+      this.logger.warn('Interactive payload missing — dropped', { eventId: event.eventId, source: event.source });
+      return;
+    }
+    this.status.lastEventAt = new Date().toISOString();
+    this.emit('interaction', event);
+  }
+
+  /**
+   * Hand a `reaction_added` event to listeners (decision cards). Copies of
+   * one reaction (master app + agent apps) are emitted once.
+   *
+   * @param event - Raw event
+   * @param source - Transport
+   */
+  private emitReaction(event: SlackRawInboundEvent, source: SlackTransport): void {
+    const channelId = event.item?.channel;
+    const messageTs = event.item?.ts;
+    if (!event.user || !event.reaction || !channelId || !messageTs) return;
+    if (this.cachedBotUserId && event.user === this.cachedBotUserId) return;
+    const key = `${channelId}:${messageTs}:reaction:${event.user}:${event.reaction}`;
+    if (this.seenInboundKeys.has(key)) return;
+    this.seenInboundKeys.set(key, Date.now());
+    const reaction: SlackReactionEvent = { user: event.user, reaction: event.reaction, channelId, messageTs, source };
+    this.emit('reaction', reaction);
+  }
+
+  /**
    * Subscribe to a relay source (CloudSyncService) and route every
    * `slack_event` message into {@link handleCloudEnvelope}. Idempotent —
    * re-attaching replaces the previous subscription.
@@ -953,6 +999,16 @@ export class SlackService extends EventEmitter {
     // Handle @mentions
     this.app.event('app_mention', async ({ event }) => {
       this.handleInboundEvent({ ...event, type: 'app_mention' }, { source: 'socket' });
+    });
+
+    // Decision cards: button clicks and reactions (Socket Mode delivers both
+    // when the app has Interactivity on and the reaction_added bot event).
+    this.app.action(new RegExp(`^${DECISION_CONSTANTS.ACTION_PREFIX}`), async ({ ack, body }) => {
+      await ack();
+      this.emitInteraction({ payload: body, source: 'socket' });
+    });
+    this.app.event('reaction_added', async ({ event }) => {
+      this.emitReaction(event as unknown as SlackRawInboundEvent, 'socket');
     });
 
     // Ticket loop: the receipt's "不用记" button (socket mode only; on the

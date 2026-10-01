@@ -61,6 +61,10 @@ export interface SlackRawInboundEvent {
   /** Set when a bot posted the message */
   bot_id?: string;
   files?: SlackFile[];
+  /** `reaction_added`: emoji name (no colons) */
+  reaction?: string;
+  /** `reaction_added`: what was reacted to */
+  item?: { type?: string; channel?: string; ts?: string };
 }
 
 /** Provenance attached to an inbound event by the transport that received it. */
@@ -127,7 +131,31 @@ export interface SlackCloudEventEnvelope {
   /** Set on a hand-off: the message is re-delivered, addressed to this agent */
   handoffTo?: string;
   event: SlackRawInboundEvent;
+  /**
+   * `block_actions` only (Cloud ≥ auth 1.9.0): the full interactive payload
+   * as Slack sent it — Cloud verified the signature and routed it here by
+   * the button value's `i` (instance id).
+   */
+  interaction?: unknown;
   receivedAt: string;
+}
+
+/** A Slack interactive payload handed to listeners (`interaction` event). */
+export interface SlackInteractionEvent {
+  /** The `block_actions` payload */
+  payload: unknown;
+  /** How it arrived */
+  source: SlackTransport | 'http';
+  eventId?: string;
+}
+
+/** A reaction on a message (`reaction` event). */
+export interface SlackReactionEvent {
+  user: string;
+  reaction: string;
+  channelId: string;
+  messageTs: string;
+  source: SlackTransport;
 }
 
 /** The master workspace half of `GET /api/cloud/slack/config`. */

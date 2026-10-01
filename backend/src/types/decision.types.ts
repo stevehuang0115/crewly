@@ -83,6 +83,8 @@ export interface OwnerDecision {
   remindAt?: string;
   /** When the sensitive re-ask was posted */
   reaskedAt?: string;
+  /** `wait` default: when the "no answer by the deadline — still waiting" notice was posted */
+  deadlineNoticeAt?: string;
   /** Settlement */
   chosenKey?: string;
   /** Free-text answer, when the owner replied with words that matched no option */
