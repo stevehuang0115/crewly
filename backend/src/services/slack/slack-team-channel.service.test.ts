@@ -34,6 +34,7 @@ import type { Team, TeamMember } from '../../types/index.js';
 import type { SlackAgentIdentityRecord, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { StorageEvent } from '../core/storage.service.js';
+import { setSlackDirectoryService, type SlackDirectoryService } from './slack-directory.service.js';
 
 jest.mock('../core/logger.service.js', () => ({
   LoggerService: {
@@ -150,6 +151,7 @@ class FakeSlack implements TeamChannelSlackApi {
     this.reactions.push({ channelId, ts, emoji, ...(botToken ? { botToken } : {}) });
   }
   invites: Array<{ channelId: string; userIds: string[] }> = [];
+  getBotUserId?: () => Promise<string | null>;
   async inviteToChannel(channelId: string, userIds: string[]) {
     this.invites.push({ channelId, userIds });
   }
@@ -2363,6 +2365,7 @@ describe('agent identities', () => {
     // who leads content?") still gets 👀 — from a huddle member's bot, since
     // the master bot is not in the private channel (2026-09-19, #steamfun-portal).
     slack.reactions.length = 0;
+    slack.getBotUserId = async () => 'UMASTER';
     const third = await service.routeInbound(inbound({ channelId: 'C-priv', text: '<@UMASTER> 负责内容的Team lead是谁？', ts: '300.3' }));
     expect(third).not.toBeNull();
     expect(third!.mentions).toEqual([]);
@@ -2570,5 +2573,166 @@ describe('harness "working on it" watch', () => {
     await service.ensureTeamChannel(team());
     await service.routeInbound(inbound({ text: 'hi', userId: 'UOWNER', ts: '704.1' }));
     expect(autoWorking!.watch).not.toHaveBeenCalled();
+  });
+});
+
+describe('a message that @\'s people, not agents', () => {
+  // 2026-10-01, #course-standardization-team: in a thread Jordan had been
+  // answering, the owner asked a colleague "@Info 这些课堂视频是现在每节课上传的那些吗?".
+  // `<@U…>` of a person resolved to nothing, the message counted as un-@'d,
+  // and the "last speaker must answer" rule handed it to Jordan, who replied.
+  let intake: { intakeWithOutcome: jest.Mock };
+  let watched: { delivered: jest.Mock };
+  const infoOf = () => (service as unknown as { logger: { info: jest.Mock } }).logger.info;
+
+  beforeEach(async () => {
+    intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'none' })) };
+    setTicketIntakeService(intake as unknown as TicketIntakeService);
+    identities = new FakeIdentities();
+    typing = { begin: jest.fn().mockResolvedValue(null), resolve: jest.fn(), setPhase: jest.fn().mockResolvedValue(undefined), fail: jest.fn().mockResolvedValue(undefined) };
+    watched = { delivered: jest.fn() };
+    autoWorking = { watch: jest.fn(() => watched) };
+    // Sam spoke last in the thread: the plan the dispatcher would make for a bare follow-up.
+    dispatcher = {
+      dispatchMessage: jest.fn().mockResolvedValue({ strategy: 'huddle-broadcast', dispatched: true, huddleOutcomes: [] }),
+      planHuddleTargets: jest.fn().mockResolvedValue(new Map([['crewly-alpha-sam', 'required']])),
+    };
+    service = makeService();
+    await service.ensureTeamChannel(team());
+    identities.install('crewly-alpha-sam', 'USAM', 'xoxb-sam');
+    identities.install('crewly-alpha-leo', 'ULEO', 'xoxb-leo');
+    // The thread Sam has been answering.
+    await service.routeInbound(inbound({ text: '<@USAM> 课堂视频整理好了吗', userId: 'UOWNER', ts: '900.1' }));
+    for (const m of [dispatcher.dispatchMessage, dispatcher.planHuddleTargets!, intake.intakeWithOutcome, autoWorking.watch, typing.begin]) m.mockClear();
+    infoOf().mockClear();
+    slack.reactions = [];
+    slack.sent = [];
+  });
+
+  afterEach(() => {
+    setTicketIntakeService(null);
+    typing = null;
+    autoWorking = null;
+    setSlackDirectoryService(null);
+  });
+
+  it('the incident: a thread follow-up that @\'s a person reaches no agent — recorded as context only', async () => {
+    const result = await service.routeInbound(
+      inbound({ text: '<@UINFO> 这些课堂视频是现在每节课上传的那些吗？', userId: 'UOWNER', ts: '900.2', threadTs: '900.1' }),
+    );
+
+    expect(result).not.toBeNull();
+    expect(result!.dispatch).toBeNull();
+    expect(result!.mentions).toEqual([]);
+    // Recorded in the thread, so the agents have it as context next time.
+    expect(result!.message.threadId).toBeDefined();
+    expect(result!.message.metadata).toMatchObject({ slackMentionedPeople: ['UINFO'] });
+    expect(chat.messages).toContainEqual(expect.objectContaining({ id: result!.message.id }));
+    // Nobody told, nobody owes a reply.
+    expect(dispatcher!.planHuddleTargets).not.toHaveBeenCalled();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.reactions.filter((r) => r.ts === '900.2')).toEqual([]);
+    expect(typing!.begin).not.toHaveBeenCalled();
+    expect(autoWorking!.watch).not.toHaveBeenCalled();
+    expect(intake.intakeWithOutcome).not.toHaveBeenCalled();
+    expect((service as unknown as { unanswered: Map<string, unknown> }).unanswered.size).toBe(0);
+    expect(slack.sent).toEqual([]); // no "did you mean"
+    expect(infoOf()).toHaveBeenCalledWith(
+      'Slack team message addressed to people, not agents — recorded, not dispatched',
+      expect.objectContaining({ mentionedUsers: ['UINFO'], threaded: true }),
+    );
+  });
+
+  it('a person and an agent @\'d together: only that agent gets it, and it knows a person was named', async () => {
+    dispatcher!.planHuddleTargets!.mockResolvedValue(new Map([['crewly-alpha-leo', 'required']]));
+
+    const result = await service.routeInbound(
+      inbound({ text: '<@UINFO> <@ULEO> 你们核对一下', userId: 'UOWNER', ts: '900.3', threadTs: '900.1' }),
+    );
+
+    expect(result!.mentions).toEqual(['crewly-alpha-leo']);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    const sent = dispatcher!.dispatchMessage.mock.calls[0][1] as ChatMessageDTO;
+    expect(sent.mentions).toEqual(['crewly-alpha-leo']);
+    expect(sent.metadata).toMatchObject({ slackMentionedPeople: ['UINFO'] });
+  });
+
+  it('no mentions at all: unchanged — the thread\'s last speaker is planned and dispatched', async () => {
+    const result = await service.routeInbound(inbound({ text: '那就这样吧', userId: 'UOWNER', ts: '900.4', threadTs: '900.1' }));
+
+    expect(dispatcher!.planHuddleTargets).toHaveBeenCalledTimes(1);
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(result!.message.metadata).not.toHaveProperty('slackMentionedPeople');
+    expect(typing!.begin).toHaveBeenCalledWith(expect.objectContaining({ agentSession: 'crewly-alpha-sam' }), expect.anything(), 'typing', '900.4');
+  });
+
+  it('@here / @channel: unchanged — a room message nobody in particular was asked', async () => {
+    const result = await service.routeInbound(inbound({ text: '<!here> 有人看到这个吗', userId: 'UOWNER', ts: '900.5' }));
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(result!.message.metadata).not.toHaveProperty('slackMentionedPeople');
+  });
+
+  it('a typed @Name of a person who has spoken here is a person: no suggestion hint, no dispatch', async () => {
+    await service.routeInbound(inbound({ text: '收到', userId: 'UINFO', user: { id: 'UINFO', name: 'info', realName: 'Info' } as SlackIncomingMessage['user'], ts: '900.6', threadTs: '900.1' }));
+    dispatcher!.dispatchMessage.mockClear();
+    slack.sent = [];
+
+    const result = await service.routeInbound(inbound({ text: '@Info 这些是每节课上传的吗', userId: 'UOWNER', ts: '900.7', threadTs: '900.1' }));
+
+    expect(result!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+    expect(slack.sent).toEqual([]);
+  });
+
+  it('a typed @name that is nobody known still gets the suggestion hint and is dispatched', async () => {
+    await service.routeInbound(inbound({ text: '@lee 帮忙', userId: 'UOWNER', ts: '900.8' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(slack.sent.find((m) => m.threadTs === '900.8')?.text).toContain('@Leo');
+  });
+
+  it('the Crewly master bot is not a person', async () => {
+    slack.getBotUserId = async () => 'UCREWLY';
+    await service.routeInbound(inbound({ text: '<@UCREWLY> 谁在？', userId: 'UOWNER', ts: '900.9' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent on another machine the account directory lists is not a person', async () => {
+    setSlackDirectoryService({
+      list: async () => [
+        { name: 'Atlas', mention: '<@UATLAS>', botUserId: 'UATLAS', agentSession: 'think-tank-atlas', team: 'Think Tank', machine: 'mac', source: 'this-account', inChannel: true, kind: 'agent' },
+      ],
+      rosterLine: async () => '',
+    } as unknown as SlackDirectoryService);
+
+    await service.routeInbound(inbound({ text: '<@UATLAS> 你看下', userId: 'UOWNER', ts: '901.1', threadTs: '900.1' }));
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    const sent = dispatcher!.dispatchMessage.mock.calls[0][1] as ChatMessageDTO;
+    expect(sent.metadata).not.toHaveProperty('slackMentionedPeople');
+  });
+
+  it('a bot the directory knows (another account\'s agent, another vendor) is not a person', async () => {
+    setSlackDirectoryService({
+      list: async () => [
+        { name: 'Other Bot', mention: '<@UBOT>', botUserId: 'UBOT', agentSession: null, team: null, machine: null, source: 'channel', inChannel: true, kind: 'bot' },
+        { name: 'Info', mention: '<@UINFO>', botUserId: null, agentSession: null, team: null, machine: null, source: 'channel', inChannel: true, kind: 'human' },
+      ],
+      rosterLine: async () => '',
+    } as unknown as SlackDirectoryService);
+
+    await service.routeInbound(inbound({ text: '<@UBOT> status?', userId: 'UOWNER', ts: '901.3', threadTs: '900.1' }));
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+
+    const result = await service.routeInbound(inbound({ text: '<@UINFO> 你看下', userId: 'UOWNER', ts: '901.4', threadTs: '900.1' }));
+    expect(result!.dispatch).toBeNull();
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('an agent\'s own post that @\'s a person is handled as before', async () => {
+    await service.routeInbound(
+      inbound({ text: '<@UINFO> 请确认', userId: 'UMIA', ts: '901.2', threadTs: '900.1', authorAgentSession: 'remote-team-mia', authorDisplayName: 'Mia' }),
+    );
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
   });
 });

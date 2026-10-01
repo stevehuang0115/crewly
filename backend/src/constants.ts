@@ -1302,6 +1302,13 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	MENTION_SUGGEST_MAX_DISTANCE: 2,
 	/** Max suggestions offered for one unknown @name */
 	MENTION_SUGGEST_MAX: 3,
+	/**
+	 * Huddle-message metadata key: Slack users the message @'d who are
+	 * people, not Crewly agents (nor any bot we can identify). When set, the message
+	 * names its addressees, so no agent is drawn in by thread engagement or
+	 * the "nobody addressed" fallback (specs/slack-room-presence.md).
+	 */
+	PEOPLE_MENTIONS_METADATA_KEY: 'slackMentionedPeople',
 	/** Reaction added to a routed inbound message while the team works on it */
 	INBOUND_REACTION: 'eyes',
 	/** How many routed Slack messages to remember for duplicate-copy suppression */

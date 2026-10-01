@@ -60,7 +60,7 @@ import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
-import { resolveSlackMentions, type MentionCandidate } from './slack-mention-resolver.js';
+import { resolveSlackMentions, extractNativeMentionIds, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -86,6 +86,8 @@ export interface TeamChannelSlackApi {
   getUserInfo?(userId: string): Promise<{ name: string; realName: string }>;
   /** Member user ids of a channel, bots included — picks between same-named agents. */
   listChannelMembers?(channelId: string): Promise<string[]>;
+  /** The connected (master) bot's own user id, cached after the first `auth.test`. Optional. */
+  getBotUserId?(): Promise<string | null>;
   uploadFile(options: {
     channelId: string;
     filePath: string;
@@ -1150,6 +1152,10 @@ export class SlackTeamChannelService {
    *    the thread id and the `reply-channel` hint.
    * 4. Answer unknown `@names` in-thread with suggestions.
    *
+   * A person's message that @'s only people (Slack users that are not Crewly
+   * agents) is recorded as context and dispatched to nobody: no 👀, no
+   * placeholder, no ticket, no unanswered-message watch, no suggestion hint.
+   *
    * @param message - The inbound Slack message
    * @returns The routing result, or null when the channel is not mapped
    */
@@ -1231,6 +1237,18 @@ export class SlackTeamChannelService {
     const isLocal = (sess: string) => this.deps.isLocalAgent?.(sess) ?? members.some((m) => m.sessionName === sess);
     const mentionedElsewhere = (message.mentionedAgentSessions ?? []).filter((sess) => !isLocal(sess));
     const addressedElsewhereOnly = !handoffTo && resolved.mentions.length === 0 && mentionedElsewhere.length > 0;
+    // @-mentions of people: the owner asking a
+    // colleague is not a question for the agents (2026-10-01,
+    // #course-standardization-team: "@Info 这些课堂视频是…?" in a thread
+    // Jordan had been in — Jordan, as last speaker, answered it).
+    const peopleMentions = message.authorAgentSession || handoffTo
+      ? { userIds: [] as string[], names: [] as string[] }
+      : await this.peopleMentions(message, resolved, teams);
+    const addressedPeopleOnly =
+      !addressedElsewhereOnly &&
+      resolved.mentions.length === 0 &&
+      (message.mentionedAgentSessions ?? []).length === 0 &&
+      peopleMentions.userIds.length + peopleMentions.names.length > 0;
 
     // Thread correlation.
     const slackThreadTs = message.threadTs || message.ts;
@@ -1269,6 +1287,14 @@ export class SlackTeamChannelService {
         slackTs: message.ts,
         slackUserId: message.userId,
         ...(message.teamId ? { slackTeamId: message.teamId } : {}),
+        ...(peopleMentions.userIds.length + peopleMentions.names.length > 0
+          ? {
+              [SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY]: [
+                ...peopleMentions.userIds,
+                ...peopleMentions.names,
+              ],
+            }
+          : {}),
         // Marks the row as agent-authored: the commitment-approval gate must
         // never read a colleague agent's post as owner approval (#730).
         ...(remoteAgent ? { [OWNER_EVIDENCE_METADATA.REMOTE_AGENT_SESSION]: remoteAgent } : {}),
@@ -1331,6 +1357,18 @@ export class SlackTeamChannelService {
         teamId: mapping.teamId,
         slackChannel: `#${mapping.slackChannelName}`,
         mentionedElsewhere,
+      });
+      return { mapping, message: persisted, mentions: [], dispatch: null };
+    }
+    if (addressedPeopleOnly) {
+      // Context for the agents' next turn in this thread, nothing more. No
+      // suggestion hint either: the names were people, not typos.
+      this.logger.info('Slack team message addressed to people, not agents — recorded, not dispatched', {
+        teamId: mapping.teamId,
+        slackChannel: `#${mapping.slackChannelName}`,
+        mentionedUsers: peopleMentions.userIds,
+        mentionedNames: peopleMentions.names,
+        threaded: !!threadId,
       });
       return { mapping, message: persisted, mentions: [], dispatch: null };
     }
@@ -2254,6 +2292,65 @@ export class SlackTeamChannelService {
       });
       return null;
     }
+  }
+
+  /**
+   * The people (not Crewly agents) a message @'s.
+   *
+   * A native `<@U…>` mention is not a person when the id is a local agent's
+   * own bot (any team), the orchestrator's bot, the connected master bot, or
+   * a bot the directory lists (agents on other machines, other accounts'
+   * agents, other bots in the channel). The directory is the same cached
+   * list the roster line reads, so no extra Slack call is made per message.
+   * Every other id is a person — someone the agents were not asked to answer
+   * for.
+   *
+   * A plain `@Name` that matched no agent but is a person who has spoken in
+   * a mapped channel is a person too, and is taken out of
+   * `resolved.unknown` so nobody is offered a "did you mean" for it.
+   *
+   * @param message - The inbound message
+   * @param resolved - Agent mentions already resolved (its `unknown` is pruned)
+   * @param teams - Every local team
+   * @returns People's user ids and plain names
+   */
+  private async peopleMentions(
+    message: SlackIncomingMessage,
+    resolved: ResolvedSlackMentions,
+    teams: Team[],
+  ): Promise<{ userIds: string[]; names: string[] }> {
+    const names: string[] = [];
+    resolved.unknown = resolved.unknown.filter((u) => {
+      if (!this.humanNames.has(u.token.toLowerCase())) return true;
+      names.push(u.token);
+      return false;
+    });
+
+    let pending = extractNativeMentionIds(message.text ?? '');
+    if (pending.length === 0) return { userIds: [], names };
+    const agentIds = new Set<string>();
+    if (this.deps.identities) {
+      for (const m of teams.flatMap((t) => teamChannelMembers(t))) {
+        const id = this.deps.identities.get(m.sessionName)?.botUserId;
+        if (id) agentIds.add(id);
+      }
+      const orc = this.deps.identities.getInstalled(CREWLY_CONSTANTS.SESSIONS.ORCHESTRATOR_NAME)?.botUserId;
+      if (orc) agentIds.add(orc);
+    }
+    const masterBot = await this.deps.slack.getBotUserId?.().catch(() => null);
+    if (masterBot) agentIds.add(masterBot);
+    pending = pending.filter((id) => !agentIds.has(id));
+    if (pending.length > 0) {
+      const directory = await getSlackDirectoryService()?.list(message.channelId).catch(() => null);
+      // Any bot it knows — our agents on other machines, another account's
+      // agents, other vendors' bots — is not a person; we only stay quiet
+      // for people.
+      const directoryBots = new Set(
+        (directory ?? []).filter((e) => e.kind !== 'human' && e.botUserId).map((e) => e.botUserId as string),
+      );
+      pending = pending.filter((id) => !directoryBots.has(id));
+    }
+    return { userIds: pending, names };
   }
 
   /**

@@ -27,7 +27,7 @@ import type {
   MentionTarget,
 } from './chat-v2.mention-resolver.js';
 import { LoggerService, ComponentLogger } from '../core/logger.service.js';
-import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT } from '../../constants.js';
+import { AGENT_REPLY_CONSTANTS, CHAT_CONTEXT_CONSTANTS, CHAT_REPLY_PACING_HINT, SLACK_TEAM_CHANNEL_CONSTANTS } from '../../constants.js';
 import { ticketLineOf } from '../v3/ticket-channel-hooks.js';
 import { isSlackDm, OrcReplyRouteService } from '../orc/orc-reply-route.service.js';
 import { formatSlackThreadKey, slackThreadOfMetadata, slackThreadTag, parseSlackThreadKey } from '../slack/slack-thread-key.js';
@@ -795,6 +795,19 @@ export class ChatV2DispatcherService {
     const memberSet = new Set(members);
     for (const s of options.excludeSessions ?? []) memberSet.delete(s);
     const mentioned = (Array.isArray(message.mentions) ? message.mentions : []).filter((m) => memberSet.has(m));
+    // The message @'d people by name: its addressees
+    // are named, so only the agents among them hear it. Neither thread
+    // engagement nor the "nobody addressed" fallback may draw an agent in —
+    // the owner asked a colleague "@Info 这些课堂视频是…?" in a thread Jordan
+    // had been answering, and Jordan, as last speaker, replied instead
+    // (2026-10-01, #course-standardization-team).
+    const peopleMentioned = message.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY];
+    const addressesPeople = Array.isArray(peopleMentioned) && peopleMentioned.length > 0;
+    if (addressesPeople) {
+      const targets = new Map<string, 'required' | 'optional'>();
+      for (const m of mentioned) targets.set(m, 'required');
+      return { targets, mentioned, wakeRoles: new Map() };
+    }
     const engaged =
       options.threadId && this.threadParticipantsFor
         ? this.threadParticipantsFor(channel.id, options.threadId).filter((m) => memberSet.has(m))
