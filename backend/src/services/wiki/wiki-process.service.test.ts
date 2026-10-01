@@ -110,15 +110,41 @@ describe('WikiProcessService', () => {
       }
     });
 
-    it('honors offset to skip the newest item', async () => {
-      const a = await enqueue({ sourceRef: 'older' });
+    it('honors offset to skip the oldest item', async () => {
+      await enqueue({ sourceRef: 'older' });
       await new Promise((r) => setTimeout(r, 10));
       const b = await enqueue({ sourceRef: 'newer' });
       const out = await svc.claimNext({ claimedBy: 'crewly-orc', offset: 1 });
       expect(out.ok).toBe(true);
       if (!out.ok) return;
-      // Newest-first list with offset=1 gets the older item.
-      expect(out.result.item.id).toBe(a.id);
+      // Oldest-first list with offset=1 gets the newer item.
+      expect(out.result.item.id).toBe(b.id);
+    });
+
+    // #914 root cause: claim order was newest-first. A drain WI handles
+    // 5-20 items per turn, so with agents still queueing, the oldest items
+    // were never reached. FIFO drains the backlog from the old end.
+    it('claims the OLDEST pending item first so old items cannot starve', async () => {
+      const oldest = await enqueue({ sourceRef: 'oldest' });
+      await new Promise((r) => setTimeout(r, 10));
+      await enqueue({ sourceRef: 'middle' });
+      await new Promise((r) => setTimeout(r, 10));
+      await enqueue({ sourceRef: 'newest' });
+      const out = await svc.claimNext({ claimedBy: 'crewly-orc' });
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.result.item.id).toBe(oldest.id);
+    });
+
+    // #914 root cause: the vault filter compared raw strings, so the drain
+    // WI's `--vault <discovered path>` never matched an item stored with a
+    // trailing slash.
+    it('matches a vault filter regardless of a trailing slash', async () => {
+      const queued = await enqueue({ vaultPath: `${vault}/` });
+      const out = await svc.claimNext({ claimedBy: 'crewly-orc', vaultPath: vault });
+      expect(out.ok).toBe(true);
+      if (!out.ok) return;
+      expect(out.result.item.id).toBe(queued.id);
     });
 
     it('returns no_pending_items when offset exceeds queue size', async () => {

@@ -506,3 +506,13 @@ describe('TICKET_AUTOPILOT_CONSTANTS', () => {
 		expect(C.TRIAGE_RELIST_AFTER_MS).toBeGreaterThan(C.TRIAGE_MIN_INTERVAL_MS);
 	});
 });
+
+describe('WIKI_QUEUE_CONSTANTS (#914 wiki queue hygiene)', () => {
+	it('alerts well before items expire, and releases claims before either', async () => {
+		const { WIKI_QUEUE_CONSTANTS: C } = await import('./constants.js');
+		expect(C.STALE_ALERT_AGE_MS).toBeLessThan(C.MAX_ITEM_AGE_MS);
+		expect(C.CLAIM_TIMEOUT_MS).toBeLessThan(C.STALE_ALERT_AGE_MS);
+		expect(C.STALE_ALERT_COOLDOWN_MS).toBeGreaterThan(0);
+		expect(C.DEAD_LETTER_DIR).toBe('dead-letter');
+	});
+});

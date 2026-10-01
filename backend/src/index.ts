@@ -1036,6 +1036,19 @@ void (async () => {
 					cooldownMs,
 					// Team leaders own their vault's curation; the global vault stays with the orchestrator.
 					resolveTarget: (key) => resolveWikiOwner(this.storageService, key),
+					// Briefs are read raw by the claimant (often a TL), so the
+					// skill path must be real, not a placeholder (#914).
+					orchestratorSkillsPath: path.join(findPackageRoot(__dirname), 'config', 'skills', 'orchestrator'),
+					// Stale queue (oldest pending item > N days) → owner, same
+					// channel auto-update uses.
+					notifyOwner: (title, message) =>
+						getSlackService().sendNotification({
+							type: 'project_update',
+							title,
+							message,
+							urgency: 'normal',
+							timestamp: new Date().toISOString(),
+						}),
 				});
 				WikiWorkItemBridgeService.setInstance(bridge);
 				bridge.start();
