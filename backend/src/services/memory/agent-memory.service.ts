@@ -14,6 +14,7 @@ import * as os from 'os';
 import { v4 as uuidv4 } from 'uuid';
 import { atomicWriteJson, safeReadJson } from '../../utils/file-io.utils.js';
 import { isHiddenFromDefaultRecall } from './role-knowledge-eligibility.js';
+import { isTaskCompletionLog } from './task-log-filter.js';
 
 /** Constants for memory scoring and decay (v2) */
 const DECAY_CONSTANTS = {
@@ -338,6 +339,15 @@ export class AgentMemoryService implements IAgentMemoryService {
     const existingMemory = await this.loadAgentMemory(agentId);
     if (existingMemory) {
       this.logger.debug('Agent already initialized', { agentId });
+      // One-time cleanup of task logs older skills stored here (#833).
+      try {
+        await this.hideTaskCompletionLogs(agentId);
+      } catch (error) {
+        this.logger.warn('Failed to hide task-completion entries (non-fatal)', {
+          agentId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
       return;
     }
 
@@ -352,6 +362,43 @@ export class AgentMemoryService implements IAgentMemoryService {
 
     await this.saveAgentMemory(agentId, memory);
     this.logger.info('Initialized agent memory', { agentId, role });
+  }
+
+  /**
+   * Marks role-knowledge entries that are task-completion summaries as
+   * superseded, so default recall no longer returns them (#833).
+   *
+   * Older skills stored "[COMPLETED] Task completed by …" summaries here
+   * (coerced from category=decision) and report-status mirrored
+   * "Task completed: …" learnings into role knowledge. The entries stay in
+   * memory.json for audit — superseded entries are only hidden — and the
+   * summaries remain on their WorkItems. Idempotent.
+   *
+   * @param agentId - Agent's unique identifier
+   * @returns Number of entries newly hidden
+   *
+   * @example
+   * ```typescript
+   * const hidden = await agentMemory.hideTaskCompletionLogs('dev-001');
+   * ```
+   */
+  public async hideTaskCompletionLogs(agentId: string): Promise<number> {
+    const memory = await this.getCachedMemory(agentId);
+    if (!memory) return 0;
+
+    let hidden = 0;
+    for (const entry of memory.roleKnowledge) {
+      if (entry.superseded === true || entry.supersededBy) continue;
+      if (!isTaskCompletionLog(entry.content)) continue;
+      entry.superseded = true;
+      hidden++;
+    }
+
+    if (hidden > 0) {
+      await this.saveAgentMemory(agentId, memory);
+      this.logger.info('Hid task-completion entries from agent recall', { agentId, hidden });
+    }
+    return hidden;
   }
 
   /**

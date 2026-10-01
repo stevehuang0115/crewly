@@ -52,7 +52,7 @@ Pass the `workItemId` of the work you are reporting on (from your `[CREWLY-DISPA
 | `--summary` / `-m` | `summary` | Yes | Brief description (or pipe via stdin) |
 | `--summary-file` | — | No | Read summary from a file path |
 | `--project` / `-p` | `projectPath` | No | Project path for auto-remember on completion |
-| `--role` / `-r` | `role` | No | Agent role recorded with the learning (default: `$CREWLY_ROLE`, else `agent`) |
+| `--role` / `-r` | `role` | No | Agent role recorded with the failed/blocked learning (default: `$CREWLY_ROLE`, else `agent`) |
 | `--task-path` | `taskPath` | No | Task file path; auto-moves to `done/` on completion |
 | `--task-id` | `taskId` | No | Task ID (for structured StatusReport format) |
 | `--progress` | `progress` | No | Progress percentage 0-100 |

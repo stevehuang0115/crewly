@@ -22,6 +22,14 @@ User-visible changes. Newest first.
 
 ### Changed — behavior change
 
+- **Finished-task summaries no longer go into long-term memory (#833).** `complete-task`
+  and `report-status status=done` used to save every summary as a project *decision* (and a
+  "Task completed" learning), which crowded real decisions out of `recall`. The summary stays
+  on the WorkItem and in `task-history.json`; the memory API also drops such text if an older
+  skill still sends it. On the next session start, existing `[COMPLETED] Task completed by …`
+  entries are moved out of `decisions.json` / `learnings.md` into
+  `.crewly/knowledge/archive/`, and hidden (kept, marked superseded) in agent memory.
+  Failed / blocked learnings are still recorded.
 - **MCP `crewly_assign_task` now creates a real WorkItem** through the running backend and
   returns its `workItemId` (it used to return a made-up id and do nothing). It fails with a
   clear message when Crewly is not running.

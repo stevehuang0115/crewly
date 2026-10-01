@@ -772,4 +772,94 @@ describe('ProjectMemoryService', () => {
       });
     });
   });
+  describe('archiveTaskCompletionLogs (#833)', () => {
+    const knowledgeDir = (): string =>
+      path.join(testProjectPath, CREWLY_CONSTANTS.PATHS.CREWLY_HOME, MEMORY_CONSTANTS.PATHS.KNOWLEDGE_DIR);
+    const archiveDir = (): string => path.join(knowledgeDir(), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVE_DIR);
+
+    /** Seeds memory the way older completion skills wrote it, plus real entries. */
+    async function seedLegacyMemory(): Promise<void> {
+      await service.initializeProject(testProjectPath);
+      await service.addDecision(testProjectPath, {
+        title: 'Use WorkItems',
+        decision: 'All tasks go through the WorkItem pool',
+        rationale: 'one source of truth',
+        decidedBy: 'tl-1',
+      });
+      await service.addDecision(testProjectPath, {
+        title: '[COMPLETED] Task completed by ella: morning briefing',
+        decision: '[COMPLETED] Task completed by ella: morning briefing sent',
+        rationale: '',
+        decidedBy: 'ella',
+      });
+      await service.addDecision(testProjectPath, {
+        title: '[COMPLETED] Task completed by ella: triage',
+        decision: '[COMPLETED] Task completed by ella: inbox triage done',
+        rationale: '',
+        decidedBy: 'ella',
+      });
+      await service.recordLearning(testProjectPath, 'ella', 'assistant', 'Task completed: weekly report --- with a rule\n---\ninside');
+      await service.recordLearning(testProjectPath, 'dev-1', 'developer', 'Jest needs --runInBand on this CI runner');
+    }
+
+    it('moves task-completion decisions and learnings into the archive and keeps the rest', async () => {
+      await seedLegacyMemory();
+
+      const result = await service.archiveTaskCompletionLogs(testProjectPath);
+
+      // 2 decisions; learnings: 2 "Decision made: [COMPLETED] …" mirrors + 1 "Task completed:"
+      expect(result).toEqual({ decisions: 2, learnings: 3 });
+
+      const decisions = await service.getDecisions(testProjectPath);
+      expect(decisions.map(d => d.title)).toEqual(['Use WorkItems']);
+
+      const learnings = await fs.readFile(path.join(knowledgeDir(), MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS), 'utf-8');
+      expect(learnings).not.toContain('Task completed');
+      expect(learnings).toContain('# Project Learnings');
+      expect(learnings).toContain('Decision made: Use WorkItems');
+      expect(learnings).toContain('Jest needs --runInBand');
+
+      const archivedDecisions = JSON.parse(await fs.readFile(
+        path.join(archiveDir(), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_DECISIONS), 'utf-8')) as Array<{ decision: string }>;
+      expect(archivedDecisions.map(d => d.decision)).toEqual([
+        '[COMPLETED] Task completed by ella: morning briefing sent',
+        '[COMPLETED] Task completed by ella: inbox triage done',
+      ]);
+      const archivedLearnings = await fs.readFile(
+        path.join(archiveDir(), MEMORY_CONSTANTS.PROJECT_FILES.ARCHIVED_TASK_LEARNINGS), 'utf-8');
+      // A "---" inside the learning text did not split the entry.
+      expect(archivedLearnings).toContain('Task completed: weekly report --- with a rule\n---\ninside');
+    });
+
+    it('is idempotent: a second pass moves nothing and leaves the files unchanged', async () => {
+      await seedLegacyMemory();
+      await service.archiveTaskCompletionLogs(testProjectPath);
+      const learningsPath = path.join(knowledgeDir(), MEMORY_CONSTANTS.PROJECT_FILES.LEARNINGS);
+      const before = await fs.readFile(learningsPath, 'utf-8');
+
+      const second = await service.archiveTaskCompletionLogs(testProjectPath);
+
+      expect(second).toEqual({ decisions: 0, learnings: 0 });
+      expect(await fs.readFile(learningsPath, 'utf-8')).toBe(before);
+    });
+
+    it('runs on initializeProject, so existing projects are cleaned at session start', async () => {
+      await seedLegacyMemory();
+      ProjectMemoryService.clearInstance();
+      service = ProjectMemoryService.getInstance();
+
+      await service.initializeProject(testProjectPath);
+
+      const decisions = await service.getDecisions(testProjectPath);
+      expect(decisions.some(d => d.decision.includes('[COMPLETED]'))).toBe(false);
+    });
+
+    it('does nothing for a project without task logs', async () => {
+      await service.initializeProject(testProjectPath);
+      expect(await service.archiveTaskCompletionLogs(testProjectPath)).toEqual({ decisions: 0, learnings: 0 });
+      const archiveExists = await fs.stat(archiveDir()).then(() => true).catch(() => false);
+      expect(archiveExists).toBe(false);
+    });
+  });
 });
+
