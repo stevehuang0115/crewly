@@ -45,6 +45,27 @@ Sources: dec:<id>, dec:<id>
 of the last write. A page is **stale** when it is missing, has no watermark, or any
 in-scope entry is newer than its watermark.
 
+**Retraction propagation (#914).** The watermark only moves when an entry is added or
+re-timestamped, so a cited entry that is superseded, expired, resolved or deleted would
+leave the page looking fresh. On every read (`getPageStatus`), each section's `Sources:`
+ids are diffed against the page's current entries, deterministically and with no LLM
+(`findInvalidatedSections`):
+- id not found among the in-scope entries → `deleted`;
+- entry found but not in force → `not_in_force`. "In force" uses
+  `isHiddenFromDefaultRecall` (superseded / `supersededBy` / expired `ttl`) for
+  decisions and agent memories, plus decision `status` superseded/deprecated and
+  gotcha `resolved`.
+
+A non-empty diff lands in `status.invalidatedSections` (heading + invalid ids). The
+prompt module marks that section `**BASIS INVALIDATED** — cited source no longer valid:
+dec:x (no longer in force), dec:y (deleted)`, the GET API returns it as
+`basisInvalidated`, and the refresh brief tags it in "Current sections". The refresh
+service treats such a page like a stale one (gate 2). Its dedupe key is the watermark
+**plus** the sorted invalidated ids (`invalidationKey`, persisted as `invalidated` in the
+state file), so a retraction raises one refresh even though the watermark did not move,
+and the same retraction is not re-raised on every tick. The other gates (in-flight,
+cooldown, tick cap, target awake) are unchanged.
+
 ## Components
 
 - **`StandingAnswersService`** (`services/memory/standing-answers.service.ts`)
@@ -69,6 +90,8 @@ in-scope entry is newer than its watermark.
   - Renders `## Standing Answers` after Active Work and the session briefing and before
     recovery. The agent page comes first.
   - A stale page shows `**STALE** — N newer memories since this page was refreshed`.
+  - A section citing a retracted or deleted entry shows `**BASIS INVALIDATED**` with the
+    ids (#914).
   - Caps: 3,000 chars per page body (with a pointer to the full file) and 8,000 chars for
     the section (about 2,000 tokens). Pages that do not fit are named in a
     "Not shown (prompt cap)" line.

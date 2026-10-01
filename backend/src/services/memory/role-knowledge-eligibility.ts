@@ -193,7 +193,7 @@ export function isAutoInjectEligible(
  * @returns true when default recall should drop this entry
  */
 export function isHiddenFromDefaultRecall(
-  entry: RoleKnowledgeEntry,
+  entry: Pick<RoleKnowledgeEntry, 'superseded' | 'supersededBy' | 'ttl'>,
   now: Date = new Date(),
 ): boolean {
   if (entry.superseded === true || entry.supersededBy) return true;
