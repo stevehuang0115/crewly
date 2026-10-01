@@ -35,6 +35,7 @@ import {
   type RuntimeType,
 } from '../../../constants.js';
 import { getLocalApiBaseUrl } from '../../../utils/local-api-url.utils.js';
+import { reportRuntimeOutput } from '../../runtime-fallback/effective-runtime.js';
 
 /**
  * How an in-process agent ends a turn.
@@ -255,6 +256,9 @@ export class CrewlyAgentExternalRuntimeService extends RuntimeAgentService {
           clearTimeout(timer);
           this.pendingRuns.delete(runId);
           this.logBuffer.append(session, 'error', `Agent error: ${error.message}`);
+          // An out-of-balance / quota error moves the agent to its fallback
+          // runtime (specs/2026-10-01-runtime-fallback.md).
+          reportRuntimeOutput(session, RUNTIME_TYPES.CREWLY_AGENT, error.message, 'error');
           reject(error);
         },
       });

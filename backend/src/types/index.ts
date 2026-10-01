@@ -73,6 +73,20 @@ export interface TeamMember {
     code: string | null;
     detectedAt: string;
   };
+  /**
+   * Set (in API responses only — never persisted on the member) while the
+   * agent runs on a fallback runtime because its own ran out of usage.
+   * `runtimeType` stays the configured runtime. specs/2026-10-01-runtime-fallback.md
+   */
+  runtimeOverride?: {
+    runtime: string;
+    primary: string;
+    reason: 'usage_limit';
+    since: string;
+    until?: string;
+    /** e.g. "on DeepSeek (Claude limit)" */
+    badge: string;
+  };
   capabilities?: string[]; // Agent-reported capabilities
   /**
    * Owner-declared skill tags (lowercase, e.g. `["devops","docker","sql"]`).

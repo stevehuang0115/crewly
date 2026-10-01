@@ -445,11 +445,23 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 			return outcome;
 		} finally {
 			this.switching.delete(sessionName);
-			// Messages the gate queued must not wait for an event that will not come.
-			if (opts.flushAfter && outcome !== 'switched' && outcome !== 'reverted') {
-				await this.deps.flushQueued(sessionName).catch(() => undefined);
-			}
+			await this.afterSwitch(sessionName, outcome, opts.flushAfter);
 		}
+	}
+
+	/**
+	 * After a switch, once messages are no longer held back: re-deliver what
+	 * waited for the agent and write out its queue. Messages the gate queued
+	 * must not wait for an event that will not come, also when nothing switched.
+	 *
+	 * @param sessionName - Session
+	 * @param outcome - How the switch went
+	 * @param flushAlways - Flush the queue even when nothing switched
+	 */
+	private async afterSwitch(sessionName: string, outcome: SwitchOutcome, flushAlways: boolean): Promise<void> {
+		const moved = outcome === 'switched' || outcome === 'reverted';
+		if (moved) await this.deps.redeliver(sessionName).catch(() => undefined);
+		if (moved || flushAlways) await this.deps.flushQueued(sessionName).catch(() => undefined);
 	}
 
 	private async doSwitch(sessionName: string, waitForSafePoint: boolean): Promise<SwitchOutcome> {
@@ -483,8 +495,6 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 			this.logger.warn('Relaunch on the fallback runtime failed (the override stays; the next start uses it)', { sessionName, runtime: target });
 			return 'failed';
 		}
-		await this.deps.redeliver(sessionName).catch(() => undefined);
-		await this.deps.flushQueued(sessionName).catch(() => undefined);
 		return 'switched';
 	}
 
@@ -732,10 +742,22 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	 * @returns Outcome
 	 */
 	async revertSession(sessionName: string): Promise<SwitchOutcome> {
-		const override = this.state.overrides[sessionName];
-		if (!override || this.switching.has(sessionName)) return 'skipped';
+		if (!this.state.overrides[sessionName] || this.switching.has(sessionName)) return 'skipped';
 		this.switching.add(sessionName);
+		let outcome: SwitchOutcome = 'skipped';
 		try {
+			outcome = await this.doRevert(sessionName);
+			return outcome;
+		} finally {
+			this.switching.delete(sessionName);
+			await this.afterSwitch(sessionName, outcome, false);
+		}
+	}
+
+	private async doRevert(sessionName: string): Promise<SwitchOutcome> {
+		const override = this.state.overrides[sessionName];
+		if (!override) return 'skipped';
+		{
 			// Last look right before: anything that started since means "not now".
 			if (await this.deps.isBusy(sessionName).catch(() => true)) return 'skipped';
 			const agent = (await this.deps.getAgent(sessionName)) ?? null;
@@ -762,11 +784,7 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 				this.logger.warn('Relaunch on the primary runtime failed (its next start uses it)', { sessionName });
 				return 'failed';
 			}
-			await this.deps.redeliver(sessionName).catch(() => undefined);
-			await this.deps.flushQueued(sessionName).catch(() => undefined);
 			return 'reverted';
-		} finally {
-			this.switching.delete(sessionName);
 		}
 	}
 
@@ -933,4 +951,25 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 			this.logger.warn('Could not save runtime-fallback state', { error: err instanceof Error ? err.message : String(err) });
 		}
 	}
+}
+
+/** The backend's instance (set by the wiring at boot). */
+let backendInstance: RuntimeFallbackService | null = null;
+
+/**
+ * The running backend's runtime-fallback service.
+ *
+ * @returns The instance, or null before boot wired it (and in tests)
+ */
+export function getRuntimeFallbackService(): RuntimeFallbackService | null {
+	return backendInstance;
+}
+
+/**
+ * Set (or clear) the backend instance.
+ *
+ * @param service - Instance, or null
+ */
+export function setRuntimeFallbackService(service: RuntimeFallbackService | null): void {
+	backendInstance = service;
 }
