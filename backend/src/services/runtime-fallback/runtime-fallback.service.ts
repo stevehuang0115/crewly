@@ -17,8 +17,12 @@
  * 5. Other agents on that runtime switch **when they next get work**
  *    ({@link RuntimeFallbackService.beforeDelivery}) or when started
  *    ({@link RuntimeFallbackService.resolveLaunch}); idle ones are not woken.
- * 6. **Switch back** ({@link RuntimeFallbackService.tick}): at the reset time
- *    or by a periodic probe; each agent reverts at its next idle boundary.
+ * 6. **Switch back** ({@link RuntimeFallbackService.tick}) only after the
+ *    runtime's probe answers normally (at the reset time, or on the probe
+ *    interval); each agent reverts at its next idle boundary. A runtime that
+ *    is out of money/credit (`billing`) has no reset time and is probed at
+ *    most every BILLING_PROBE_INTERVAL_MS. A switch-back that fails (the limit
+ *    comes straight back) doubles the next probe interval.
  * 7. **Tell the owner once** per event, and once when it is over.
  *
  * Nothing here throws into its callers: delivery and launch fall back to the
@@ -44,8 +48,13 @@ import {
 
 const C = RUNTIME_FALLBACK_CONSTANTS;
 
-/** Result of a switch-back probe. */
-export type ProbeResult = 'available' | 'limited' | 'unknown';
+/**
+ * Result of a switch-back probe: `available` (it answered normally),
+ * `limited` (still out), `unknown` (the probe ran but could not tell — never
+ * switches back), `unsupported` (this runtime has no probe; only a parsed
+ * reset time can bring it back).
+ */
+export type ProbeResult = 'available' | 'limited' | 'unknown' | 'unsupported';
 
 /** What the service needs to know about an agent. */
 export interface FallbackAgentInfo {
@@ -176,6 +185,8 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	private readonly noticeDue = new Map<string, number>();
 	/** Kickoff notes waiting for a session's next launch */
 	private readonly kickoffNotes = new Map<string, string>();
+	/** Last switch-back per runtime, to recognise one that failed */
+	private readonly recentRecoveries = new Map<string, { at: number; failedReverts: number; notified: boolean }>();
 	private availability: { at: number; list: RuntimeAvailability[] } | null = null;
 	private timer: NodeJS.Timeout | null = null;
 	private ticking = false;
@@ -375,8 +386,15 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	 */
 	private async onUsageLimit(sessionName: string, runtime: string, match: UsageLimitMatch): Promise<void> {
 		const known = this.state.exhausted[runtime];
+		const billing = match.kind === 'billing';
 		if (known) {
-			if (match.resetAt && known.until !== new Date(match.resetAt).toISOString()) {
+			if (billing && known.kind !== 'billing') {
+				// Out of credit trumps a window limit: no reset time to wait for.
+				known.kind = 'billing';
+				known.ruleId = match.ruleId;
+				delete known.until;
+				this.save();
+			} else if (!billing && known.kind !== 'billing' && match.resetAt && known.until !== new Date(match.resetAt).toISOString()) {
 				known.until = new Date(match.resetAt).toISOString();
 				this.save();
 			}
@@ -384,17 +402,30 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 			const confirmed = await this.confirm(runtime);
 			if (!confirmed) return;
 			if (!this.state.exhausted[runtime]) {
+				// The limit came straight back after a switch-back: back off the
+				// next probe, and do not tell the owner a second time.
+				const recent = this.recentRecoveries.get(runtime);
+				const failedRevert = recent !== undefined && this.now() - recent.at < C.FAILED_REVERT_WINDOW_MS;
+				this.recentRecoveries.delete(runtime);
+				const failedReverts = failedRevert ? recent.failedReverts + 1 : 0;
 				this.state.exhausted[runtime] = {
 					runtime,
 					since: new Date(this.now()).toISOString(),
-					...(match.resetAt ? { until: new Date(match.resetAt).toISOString() } : {}),
+					...(match.resetAt && !billing ? { until: new Date(match.resetAt).toISOString() } : {}),
+					kind: billing ? 'billing' : 'usage_limit',
+					...(failedReverts > 0 ? { failedReverts } : {}),
 					ruleId: match.ruleId,
 					switched: [],
 					switchedTo: [],
-					notified: false,
+					notified: failedRevert ? recent.notified : false,
 				};
 				this.save();
-				this.logger.info('Runtime is out of usage', { runtime, rule: match.ruleId, until: this.state.exhausted[runtime].until ?? null });
+				this.logger.info(billing ? 'Runtime is out of credit (no timed retry; probed until it is topped up)' : 'Runtime is out of usage', {
+					runtime,
+					rule: match.ruleId,
+					until: this.state.exhausted[runtime].until ?? null,
+					...(failedReverts > 0 ? { failedReverts } : {}),
+				});
 			}
 		}
 		await this.switchSession(sessionName, { waitForSafePoint: true, flushAfter: false });
@@ -654,23 +685,50 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		const entry = this.state.exhausted[runtime];
 		if (!entry) return;
 		const now = this.now();
-		const until = entry.until ? Date.parse(entry.until) : null;
-		const lastCheck = Date.parse(entry.lastProbeAt ?? entry.since);
-		const intervalMs = this.state.settings.probeIntervalMinutes * 60_000;
-		const due = until !== null ? now >= until + C.RESET_GRACE_MS && now - lastCheck >= C.RESET_GRACE_MS : now - lastCheck >= intervalMs;
-		if (!due) return;
+		if (!this.isRecoveryCheckDue(entry, now)) return;
 		const result = await this.deps.probe(runtime).catch((): ProbeResult => 'unknown');
 		entry.lastProbeAt = new Date(now).toISOString();
-		if (result === 'limited') {
+		const until = entry.until ? Date.parse(entry.until) : null;
+		const resetPassed = until !== null && now >= until;
+		// Only a probe that answered normally proves the runtime works. A
+		// runtime without a probe (`unsupported`) may come back on its parsed
+		// reset time; a billing limit has none and never comes back on a clock.
+		const back = result === 'available' || (result === 'unsupported' && entry.kind !== 'billing' && resetPassed);
+		if (!back) {
 			// The reset time passed but it is still limited: probe on the interval from now on.
-			if (until !== null && now >= until) delete entry.until;
+			if (result === 'limited' && resetPassed) delete entry.until;
 			this.save();
-			this.logger.info('Runtime is still out of usage', { runtime });
+			this.logger.info(entry.kind === 'billing' ? 'Runtime is still out of credit' : 'Runtime is still out of usage', { runtime, probe: result });
 			return;
 		}
-		// `available`, or `unknown` once its reset time passed / the interval
-		// ran out (an optimistic retry: a new limit is detected again).
 		await this.recover(runtime);
+	}
+
+	/**
+	 * Whether a switch-back probe is due for an exhausted runtime.
+	 *
+	 * - `billing`: every BILLING_PROBE_INTERVAL_MS, whatever any clock says.
+	 * - With a reset time: once it (plus a grace) passed.
+	 * - Otherwise: on the owner's probe interval.
+	 *
+	 * Each failed switch-back doubles the interval (up to MAX_PROBE_BACKOFF_MS).
+	 *
+	 * @param entry - Exhausted runtime
+	 * @param now - Current time
+	 * @returns True when a probe should run now
+	 */
+	private isRecoveryCheckDue(entry: ExhaustedRuntime, now: number): boolean {
+		const lastCheck = Date.parse(entry.lastProbeAt ?? entry.since);
+		const baseMs = entry.kind === 'billing' ? C.BILLING_PROBE_INTERVAL_MS : this.state.settings.probeIntervalMinutes * 60_000;
+		const backoffMs = Math.min(baseMs * 2 ** Math.min(entry.failedReverts ?? 0, 16), Math.max(baseMs, C.MAX_PROBE_BACKOFF_MS));
+		const sinceLast = now - lastCheck;
+		if (entry.kind === 'billing') return sinceLast >= backoffMs;
+		const until = entry.until ? Date.parse(entry.until) : null;
+		if (until !== null) {
+			const minGap = entry.failedReverts ? backoffMs : C.RESET_GRACE_MS;
+			return now >= until + C.RESET_GRACE_MS && sinceLast >= minGap;
+		}
+		return sinceLast >= backoffMs;
 	}
 
 	/**
@@ -683,6 +741,7 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		if (!entry) return;
 		delete this.state.exhausted[runtime];
 		this.noticeDue.delete(runtime);
+		this.recentRecoveries.set(runtime, { at: this.now(), failedReverts: entry.failedReverts ?? 0, notified: entry.notified });
 		const reverting: RuntimeOverride[] = [];
 		for (const override of Object.values(this.state.overrides)) {
 			if (override.primary === runtime) {
@@ -824,6 +883,7 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 	}
 
 	private async limitNoticeText(entry: ExhaustedRuntime): Promise<string> {
+		if (entry.kind === 'billing') return this.billingNoticeText(entry);
 		const label = this.label(entry.runtime);
 		const reset = entry.until ? ` (resets ~${this.formatTime(Date.parse(entry.until))})` : '';
 		const head = `${label} hit its usage limit on ${this.deps.machineName()}${reset}.`;
@@ -837,6 +897,50 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 		if (total > n) text += ' The others switch when they next get work.';
 		if (entry.noFallback) text += ' Some agents had no fallback available and wait for the reset.';
 		return text;
+	}
+
+	/**
+	 * "DeepSeek is out of credit — top up at platform.deepseek.com. Orc is
+	 * running on Claude Code meanwhile."
+	 *
+	 * @param entry - The billing event
+	 * @returns Owner message
+	 */
+	private async billingNoticeText(entry: ExhaustedRuntime): Promise<string> {
+		const label = this.label(entry.runtime);
+		const url = this.topUpUrl(entry);
+		const head = `${label} is out of credit — ${url ? `top up at ${url}` : 'top up its account'}.`;
+		if (entry.switched.length === 0) {
+			return `${head} Its agents wait until it is topped up: no fallback runtime is available (set one in Settings → Runtimes).`;
+		}
+		const names: string[] = [];
+		for (const sessionName of entry.switched) {
+			const agent = await this.deps.getAgent(sessionName).catch(() => null);
+			names.push(agent?.name ?? sessionName);
+		}
+		const who = names.length <= 2 ? names.join(' and ') : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+		const targets = entry.switchedTo.map((r) => this.label(r)).join(' / ');
+		let text = `${head} ${who} ${names.length === 1 ? 'is' : 'are'} running on ${targets} meanwhile.`;
+		if (entry.noFallback) text += ' Some agents had no fallback available and wait for the top-up.';
+		return text;
+	}
+
+	/**
+	 * Where to top up the account behind a billing limit.
+	 *
+	 * @param entry - The billing event
+	 * @returns Host/path, or null when unknown
+	 */
+	private topUpUrl(entry: ExhaustedRuntime): string | null {
+		let provider: string | null = null;
+		if (entry.runtime === RUNTIME_TYPES.CLAUDE_CODE) provider = 'anthropic';
+		else if (entry.runtime === RUNTIME_TYPES.CODEX_CLI) provider = 'openai';
+		else if (entry.runtime === RUNTIME_TYPES.CREWLY_AGENT) {
+			// "Insufficient Balance" is DeepSeek's wording.
+			if (entry.ruleId.endsWith('insufficient_balance')) provider = 'deepseek';
+			else provider = this.state.settings.crewlyAgentModel.split('/')[0] ?? null;
+		}
+		return provider ? (C.TOP_UP_URLS[provider] ?? null) : null;
 	}
 
 	private async notify(text: string): Promise<boolean> {
@@ -866,8 +970,11 @@ export class RuntimeFallbackService implements RuntimeFallbackHooks {
 
 	private switchNote(from: string, to: string, until: string | undefined, handover: string | null, workItem: { id: string; title: string } | null): string {
 		const reset = until ? ` (it resets ~${this.formatTime(Date.parse(until))})` : '';
+		const billing = this.state.exhausted[from]?.kind === 'billing';
 		const parts = [
-			`Crewly moved you from ${this.label(from)} to ${this.label(to)} because ${this.label(from)} hit its usage limit${reset}; you will be moved back when it resets.`,
+			billing
+				? `Crewly moved you from ${this.label(from)} to ${this.label(to)} because ${this.label(from)} is out of credit; you will be moved back once it is topped up.`
+				: `Crewly moved you from ${this.label(from)} to ${this.label(to)} because ${this.label(from)} hit its usage limit${reset}; you will be moved back when it resets.`,
 			handover
 				? `This is a fresh conversation: after registering, read ${handover} once — it holds the end of your previous conversation.`
 				: 'This is a fresh conversation: your tasks, teams and wiki are all still in Crewly.',

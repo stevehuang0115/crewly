@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { writeRuntimeHandover } from './runtime-fallback.wiring.js';
+import { crewlyAgentModelsInUse, writeRuntimeHandover } from './runtime-fallback.wiring.js';
 
 describe('writeRuntimeHandover', () => {
 	let home: string;
@@ -57,5 +57,30 @@ describe('writeRuntimeHandover', () => {
 	it('words a revert', () => {
 		const file = writeRuntimeHandover(home, { sessionName: 'dev-1', from: 'crewly-agent', to: 'claude-code', direction: 'revert', conversationId: null, workItem: null }, undefined);
 		expect(fs.readFileSync(file, 'utf-8')).toContain('Claude Code is back, so Crewly moved you back.');
+	});
+});
+
+describe('crewlyAgentModelsInUse', () => {
+	it('lists each provider the Crewly Agent runtime uses (orchestrator + members), once', async () => {
+		const storage = {
+			getOrchestratorStatus: async () => ({ runtimeType: 'crewly-agent', modelId: 'deepseek/deepseek-chat' }),
+			getProjects: async () => [],
+			getTeams: async () => [
+				{
+					id: 't1',
+					name: 'T',
+					projectIds: [],
+					members: [
+						{ id: 'm1', name: 'A', role: 'dev', sessionName: 'a', runtimeType: 'crewly-agent', modelId: 'deepseek/deepseek-reasoner' },
+						{ id: 'm2', name: 'B', role: 'dev', sessionName: 'b', runtimeType: 'claude-code', modelId: 'opus' },
+						{ id: 'm3', name: 'C', role: 'dev', sessionName: 'c', runtimeType: 'crewly-agent' },
+					],
+				},
+			],
+		};
+		await expect(crewlyAgentModelsInUse(storage)).resolves.toEqual([
+			{ provider: 'deepseek', model: 'deepseek-chat' },
+			{ provider: 'google' },
+		]);
 	});
 });

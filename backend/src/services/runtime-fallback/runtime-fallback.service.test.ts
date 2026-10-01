@@ -384,6 +384,149 @@ describe('RuntimeFallbackService — switch back', () => {
 	});
 });
 
+describe('RuntimeFallbackService — out of credit (billing) and switch-back probes', () => {
+	const DEEPSEEK_402 = 'AI_APICallError: Insufficient Balance';
+	const SIX_HOURS = 6 * 60 * 60_000;
+
+	/** An agent configured on the Crewly Agent (DeepSeek) runtime, switched to Claude Code by a 402. */
+	async function outOfCredit(): Promise<Harness> {
+		AGENTS['ds-1'] = { sessionName: 'ds-1', name: 'Dee', primary: 'crewly-agent', memberId: 'm9', teamId: 't1', isOrchestrator: false };
+		const h = make();
+		h.live.add('ds-1');
+		expect(h.service.reportOutput('ds-1', 'crewly-agent', DEEPSEEK_402, 'error')).toBe(true);
+		await settle();
+		expect(h.service.overrideFor('ds-1')).toBe('claude-code');
+		h.relaunched.length = 0;
+		h.probe.mockClear();
+		return h;
+	}
+
+	afterEach(() => {
+		delete AGENTS['ds-1'];
+	});
+
+	it('marks a DeepSeek 402 as billing with no reset time, and never switches back on a timer', async () => {
+		const h = await outOfCredit();
+		const entry = h.store.load().exhausted['crewly-agent'];
+		expect(entry).toMatchObject({ kind: 'billing', ruleId: 'crewly-agent.insufficient_balance' });
+		expect(entry.until).toBeUndefined();
+
+		// Past the owner's 15-minute probe interval (the 20:39 → 20:54 flap) and
+		// up to just before 6 h: no probe, no switch-back.
+		for (const minutes of [15, 16, 60, 5 * 60, 6 * 60 - 1]) {
+			h.clock.now = T0 + minutes * 60_000;
+			await h.service.tick();
+		}
+		expect(h.probe).not.toHaveBeenCalled();
+		expect(h.relaunched).toEqual([]);
+		expect(h.service.overrideFor('ds-1')).toBe('claude-code');
+	});
+
+	it('keeps the fallback when the probe fails or cannot tell', async () => {
+		const h = await outOfCredit();
+		h.clock.now = T0 + SIX_HOURS;
+		h.probe.mockResolvedValue('limited');
+		await h.service.tick();
+		expect(h.probe).toHaveBeenCalledWith('crewly-agent');
+		expect(h.service.overrideFor('ds-1')).toBe('claude-code');
+
+		h.clock.now += SIX_HOURS;
+		h.probe.mockResolvedValue('unknown');
+		await h.service.tick();
+		expect(h.probe).toHaveBeenCalledTimes(2);
+		expect(h.service.overrideFor('ds-1')).toBe('claude-code');
+		expect(h.store.load().exhausted['crewly-agent']).toBeDefined();
+		expect(h.relaunched).toEqual([]);
+	});
+
+	it('switches back at the idle boundary once the probe passes', async () => {
+		const h = await outOfCredit();
+		h.clock.now = T0 + SIX_HOURS;
+		h.probe.mockResolvedValue('available');
+		h.busy.add('ds-1');
+		await h.service.tick();
+		expect(h.store.load().exhausted).toEqual({});
+		// Mid-turn: not yet.
+		expect(h.relaunched).toEqual([]);
+		h.busy.delete('ds-1');
+		await h.service.tick();
+		expect(h.relaunched).toEqual(['ds-1']);
+		expect(h.service.overrideFor('ds-1')).toBeNull();
+	});
+
+	it('backs off after a switch-back that fails, without telling the owner again', async () => {
+		const h = await outOfCredit();
+		h.clock.now += 60_000;
+		await h.service.flushNotices();
+		expect(h.dms).toHaveLength(1);
+
+		h.clock.now = T0 + SIX_HOURS;
+		h.probe.mockResolvedValue('available');
+		await h.service.tick();
+		expect(h.relaunched).toEqual(['ds-1']);
+		const dmsAfterRecovery = h.dms.length;
+
+		// The primary fails again right after the switch-back.
+		h.clock.now += 60_000;
+		h.probe.mockResolvedValue('limited');
+		h.service.reportOutput('ds-1', 'crewly-agent', DEEPSEEK_402, 'error');
+		await settle();
+		expect(h.service.overrideFor('ds-1')).toBe('claude-code');
+		const entry = h.store.load().exhausted['crewly-agent'];
+		expect(entry).toMatchObject({ kind: 'billing', failedReverts: 1, notified: true });
+		await h.service.flushNotices();
+		expect(h.dms).toHaveLength(dmsAfterRecovery);
+
+		// The next probe waits twice as long (12 h), not 6 h.
+		h.probe.mockClear();
+		const since = h.clock.now;
+		h.clock.now = since + SIX_HOURS + 60_000;
+		await h.service.tick();
+		expect(h.probe).not.toHaveBeenCalled();
+		h.clock.now = since + 2 * SIX_HOURS;
+		await h.service.tick();
+		expect(h.probe).toHaveBeenCalledTimes(1);
+	});
+
+	it('tells the owner once: out of credit, where to top up, who runs on what', async () => {
+		const h = await outOfCredit();
+		h.clock.now += 60_000;
+		await h.service.flushNotices();
+		await h.service.tick();
+		expect(h.dms).toEqual(['DeepSeek is out of credit — top up at platform.deepseek.com. Dee is running on Claude Code meanwhile.']);
+		h.clock.now = T0 + 5 * 60 * 60_000;
+		await h.service.tick();
+		expect(h.dms).toHaveLength(1);
+	});
+
+	it('does not switch a usage-limit runtime back when its probe could not tell (only a passing probe proves it)', async () => {
+		const h = make();
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		h.relaunched.length = 0;
+		h.clock.now = Date.UTC(2026, 9, 1, 15, 3);
+		h.probe.mockResolvedValue('unknown');
+		await h.service.tick();
+		expect(h.service.overrideFor('dev-1')).toBe('crewly-agent');
+		expect(h.relaunched).toEqual([]);
+	});
+
+	it('lets a runtime without a probe come back on its parsed reset time (never earlier)', async () => {
+		const h = make();
+		h.probe.mockResolvedValue('unsupported');
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		h.relaunched.length = 0;
+		h.clock.now = Date.UTC(2026, 9, 1, 14, 0);
+		await h.service.tick();
+		expect(h.service.overrideFor('dev-1')).toBe('crewly-agent');
+		h.clock.now = Date.UTC(2026, 9, 1, 15, 3);
+		await h.service.tick();
+		expect(h.service.overrideFor('dev-1')).toBeNull();
+		expect(h.relaunched).toEqual(['dev-1']);
+	});
+});
+
 describe('RuntimeFallbackService — owner notices', () => {
 	it('tells the owner once per event (after the switches), and once when it is over', async () => {
 		const h = make();

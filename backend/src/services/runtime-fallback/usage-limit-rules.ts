@@ -25,7 +25,7 @@
  *   metric '… per day'`, `You exceeded your current quota`, `You have
  *   exhausted your daily quota`; a bare 429 / RESOURCE_EXHAUSTED is transient.
  * - DeepSeek (the in-process Crewly Agent): HTTP 402 `Insufficient Balance`
- *   is a usage limit; HTTP 429 `Rate Limit Reached` is transient.
+ *   is a `billing` limit (no reset; the owner must top up); HTTP 429 `Rate Limit Reached` is transient.
  *
  * Context requirements keep an agent that merely reads or quotes this kind of
  * text (for example while working on this file) from tripping a rule: the
@@ -42,8 +42,25 @@ import { normalizeTerminalOutput, type NormalizedScreen } from '../harness/login
 import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
 import { parseResetTime } from './reset-time.js';
 
-/** `usage_limit`: the account is out of usage; `transient`: a short rate limit the runtime retries. */
-export type UsageLimitKind = 'usage_limit' | 'transient';
+/**
+ * `usage_limit`: the account is out of usage until a window resets;
+ * `billing`: the account is out of money / credit (DeepSeek 402 "Insufficient
+ * Balance", "credit balance is too low") — it has no reset time and only
+ * comes back when the owner tops up, so it is never retried on a timer;
+ * `transient`: a short rate limit the runtime retries.
+ */
+export type UsageLimitKind = 'usage_limit' | 'billing' | 'transient';
+
+/**
+ * Whether a kind means the runtime cannot be used (as opposed to a transient
+ * rate limit).
+ *
+ * @param kind - Match kind
+ * @returns True for `usage_limit` and `billing`
+ */
+export function isExhaustingKind(kind: UsageLimitKind): boolean {
+	return kind === 'usage_limit' || kind === 'billing';
+}
 
 /** One rule: every pattern must match (AND); `none` must not match. */
 export interface UsageLimitRule {
@@ -86,7 +103,7 @@ export const CLAUDE_USAGE_RULES: readonly UsageLimitRule[] = [
 	{
 		id: 'claude.api_credit_balance',
 		runtime: RUNTIME_TYPES.CLAUDE_CODE,
-		kind: 'usage_limit',
+		kind: 'billing',
 		all: [/API\s*Error|"type"\s*:\s*"error"/i, /credit\s*balance\s*(?:is\s*)?too\s*low/i],
 	},
 	{
@@ -144,7 +161,7 @@ export const CODEX_USAGE_RULES: readonly UsageLimitRule[] = [
 	{
 		id: 'codex.quota_exceeded',
 		runtime: RUNTIME_TYPES.CODEX_CLI,
-		kind: 'usage_limit',
+		kind: 'billing',
 		all: [/insufficient_quota|exceeded\s*your\s*current\s*quota/i],
 	},
 	{
@@ -187,14 +204,20 @@ export const CREWLY_AGENT_USAGE_RULES: readonly UsageLimitRule[] = [
 	{
 		id: 'crewly-agent.insufficient_balance',
 		runtime: RUNTIME_TYPES.CREWLY_AGENT,
-		kind: 'usage_limit',
+		kind: 'billing',
 		all: [/Insufficient\s*Balance|\b402\b[^\n]*(?:Payment\s*Required|balance)/i],
+	},
+	{
+		id: 'crewly-agent.out_of_credit',
+		runtime: RUNTIME_TYPES.CREWLY_AGENT,
+		kind: 'billing',
+		all: [/insufficient_quota|credit\s*balance\s*(?:is\s*)?too\s*low/i],
 	},
 	{
 		id: 'crewly-agent.quota_exceeded',
 		runtime: RUNTIME_TYPES.CREWLY_AGENT,
 		kind: 'usage_limit',
-		all: [/insufficient_quota|exceeded\s*your\s*current\s*quota|exhausted\s*your\s*(?:daily\s*)?quota|credit\s*balance\s*(?:is\s*)?too\s*low|usage\s*limit\s*reached/i],
+		all: [/exceeded\s*your\s*current\s*quota|exhausted\s*your\s*(?:daily\s*)?quota|usage\s*limit\s*reached/i],
 	},
 	{
 		id: 'crewly-agent.rate_limited',
@@ -266,6 +289,7 @@ export function detectUsageLimit(output: string, runtime: string, now: number = 
 			runtime: rule.runtime,
 			ruleId: rule.id,
 			kind: rule.kind,
+			// A billing limit has no reset time: it lifts when the owner tops up.
 			resetAt: rule.kind === 'usage_limit' ? parseResetTime(screen.text, now, defaultTimeZone) : null,
 		};
 	}
