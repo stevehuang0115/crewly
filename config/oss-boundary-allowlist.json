@@ -1,0 +1,20 @@
+{
+  "description": "Explicit exceptions to the OSS/Pro boundary check (backend/src/scripts/check-oss-boundary.ts, issue #809). Each entry exempts one path (or a directory, with a trailing '/') from one rule, with a one-line reason. Rules: paid-tier, pro-template-field, premium-path, pro-import.",
+  "entries": [
+    {
+      "rule": "premium-path",
+      "path": "config/templates/pro-sops/norms/content-production-pipeline.md",
+      "reason": "pending owner decision on moving to crewly-pro (#809)"
+    },
+    {
+      "rule": "premium-path",
+      "path": "config/templates/pro-sops/norms/customer-onboarding-sop.md",
+      "reason": "pending owner decision on moving to crewly-pro (#809)"
+    },
+    {
+      "rule": "premium-path",
+      "path": "config/skills/examples/premium-skill-example.json",
+      "reason": "schema example documenting the requiredTier skill field (no paid content); outside config/templates, pending owner review (#809)"
+    }
+  ]
+}

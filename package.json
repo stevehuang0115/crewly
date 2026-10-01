@@ -68,6 +68,7 @@
     "eval:l4": "npx tsx backend/src/services/agent/crewly-agent/eval/run-eval-l4.ts",
     "lint": "eslint . --ext .ts,.tsx",
     "typecheck": "tsc --noEmit",
+    "check:oss-boundary": "npx tsx backend/src/scripts/check-oss-boundary.ts",
     "preinstall": "node dist/cli/cli/src/scripts/check-native-toolchain.js 2>/dev/null || true",
     "postinstall": "([ ! -f dist/cli/cli/src/scripts/ensure-node-pty.js ] || node dist/cli/cli/src/scripts/ensure-node-pty.js) && (npm rebuild better-sqlite3 2>/dev/null || true) && (node dist/cli/cli/src/scripts/check-native-toolchain.js || true)",
     "prepublishOnly": "npm run build"
