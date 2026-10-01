@@ -1,0 +1,159 @@
+# Open items in agent replies
+
+Status: implemented (OSS `feat/reply-open-items`)
+Date: 2026-10-01
+
+## Why
+
+In #book-publish the owner asked Atlas (Think Tank lead) to use his podcast 「第二工位」 as
+material for the book. The message was merged into ticket TKT-185 (request 729735dd), which
+was already closed. Atlas replied in the thread with two open items:
+
+- a promise: "Kai 在把四集逐条过一遍… 明天中午给我，我核过以后挑最有用的几条发你";
+- a question: "第 13 章「互评当体检用」这个读法，你同意吗？不同意的话我就删掉，只留事实。"
+
+Kai finished the material at 18:14 local (WorkItem 28b09370) and Atlas verified it. Nobody
+delivered it, and Atlas went idle. Nothing tracked the question: decision cards only cover
+asks made through `ask-owner`.
+
+## 1. Extraction
+
+Code: `services/open-items/open-item-extractor.ts`. It runs on every agent message in a
+ticket's chat-v2 conversation. Every reply path (`reply`, `reply-channel`, `reply-slack`,
+the chat agent-response) ends up as one of these messages. The message is read after the
+ticket review has recorded it, so the two never write the ticket at the same time.
+
+The extractor uses rules only, with no LLM. It is tuned to miss an item rather than invent
+one:
+
+| Item | Counts when | Skipped |
+|---|---|---|
+| Commitment | A deliverable for the owner (发你 / 给你 / 发在这里 / I'll send / share / follow up…) plus a future marker (明天, 今晚, 40 分钟后, 整理好, by Friday…) | Past tense (已经发你了, attached below), "here it is" (现在先给你), conditional offers (需要的话 / if you want), standing habits (以后每章都…), quoted or bracketed text, a third party as the subject (别人…回你), sentences addressed to a colleague |
+| Question | Ends in ？/?, is yes/no or either/or shaped (吗, 要不要, 是否, 还是, should I, do you want me to, … or …?), and is not inside quotes | Rhetorical questions (难道…, 为什么…？因为…), headings, questions to a colleague (an @-mention of someone else, or a teammate's name up front), and open information questions (你们每周花多少小时？). A card can't answer those, and the agent sees the owner's reply anyway. |
+
+**Due time** (local): an explicit time wins. "明天中午" is tomorrow 12:00, 傍晚 is 18:00,
+"tonight" is 21:00, "40 分钟后" is +40 min, "下周三" is next week's Wednesday. "Tomorrow"
+alone means tomorrow 12:00. With no time at all, it is +24 h.
+
+Items are stored on the Request:
+
+```
+openItems: [{ id, type: 'commitment'|'question', text, agent, sourceMessageId, createdAt, status,
+              due?, dueSource?, workItemId?, childWorkItemIds?, readyAt?, wokeAt?, nudgedAt?,
+              ownerNotifiedAt?, decisionId?, answer?, closedAt?, closedReason? }]
+```
+
+Item status is one of:
+
+- active: `open`, `ready`, `overdue`;
+- closed: `delivered`, `resolved`, `superseded`, `expired` (7 days with nothing), `cancelled`.
+
+## 2. The ticket is not done while an item is open
+
+- New Request status `awaiting_followup`. `RequestService.update` turns every `done` into
+  `awaiting_followup` while an item is active. This happens after the review gate, so a
+  ticket that needs review still goes to 待验收 first.
+- A ticket that was already `done` when its agent left an item in the thread moves to
+  `awaiting_followup` (`reopenForFollowup`). That is the TKT-185 case.
+- From `awaiting_followup` the only moves are to `done` (when the last item closes) and to
+  `cancelled`. Status recomputes from WorkItems leave it alone, and so do the reconciler,
+  the cascades, the ticket review's submit and the stale close.
+- UI:
+  - the Requests list shows the ticket as Active with "N open items";
+  - the request page has an **Open items** card (promise or question, status, due time,
+    decision id, answer);
+  - `GET /api/requests/open-items` lists the active items.
+
+## 3. Commitments
+
+- **Follow-up WorkItem.** It is targeted at the agent, `owner: system`, and explicitly
+  blocked (held), so nothing re-queues or dispatches it. Its title is "Follow-up for the
+  owner (TKT-185): …". Its `metadata.origin` is the owner's thread, and it carries
+  `metadata.openItemFollowUp`. It has no `requestId`, so it never takes the agent's
+  one-ticket lock.
+- **Child work.** The promise is linked to the WorkItems of the request (by `requestId`,
+  `workItemIds`, or a 1.20.183 `metadata.origin` pointing at the thread) that meet all of
+  these:
+  - they were given to someone else;
+  - they were created from 30 min before the promise to 15 min after it;
+  - they had not already finished before the promise.
+
+  Verify and follow-up items are not counted.
+- **Early completion.** When the last child is `done`/`verified`, the agent is woken at once
+  (`task:done`/`task:verified` events, plus the sweep):
+  `[FOLLOW-UP TKT-185] The work you promised the owner is ready ("…") — deliver it now. You said: "…". Post it in the same thread (--thread C…:ts); that closes the follow-up.`
+  The item becomes `ready`.
+- **Delivered.** The commitment is delivered by the first post in the thread that meets
+  both conditions:
+  - it is from the promising agent, or from the agent who did the child work;
+  - it comes after the child work finished.
+
+  With no child work, a later post by the promising agent counts, as long as it comes at
+  least 2 min after the promise and does not promise something new. The follow-up WorkItem
+  is then closed as done.
+- **Overdue.** When the due time passes, the agent is nudged once and the item becomes
+  `overdue`. Two hours later, if it is still undelivered, the owner gets one note in the
+  thread. The note is in the owner-message-watchdog style: harness text in English, the
+  agent's own words quoted. Example:
+  `Atlas promised "…" by 12:00. It hasn't arrived: Kai's part ("…") is still running. Atlas has been reminded.`
+  The "why" names the child work that is still running, or says "the work was ready at
+  18:17, but Atlas hasn't posted it", or "Atlas hasn't posted it yet".
+
+## 4. Questions
+
+- A question becomes a decision card through the decisions service. Its kind is the new
+  `reply_question`. It is asked **as the agent**, and its new `place` field puts the card in
+  the ticket's Slack thread (`origin.threadRef`). The deadline is the next day at 12:00. The
+  card is not sensitive unless the question touches email, publish, deploy or spend.
+- Options come from the text (`open-item-card.ts`):
+  - a "no" fallback ("不同意的话我就删掉，只留事实", "If not, I'll…") gives **Yes** /
+    **No** (detail: the agent's fallback). The default is No, because that is what the agent
+    said it would do. `yesKey` is Yes, so "同意" or ✅ means Yes.
+  - a "no objection" fallback ("没意见的话我就发") gives Yes (detail) / No, default Yes.
+  - "A 还是 B？" or "Should I A or B?" gives A / B, default `wait`.
+  - anything else gives Yes / No / Reply in thread, default `wait`.
+- Answers come through the existing decision flow: button, reaction, thread reply or the
+  dashboard. The kind handler closes the item (`resolved`, with the answer) and passes the
+  agent the usual `[DECISION]` note. Choosing "Reply in thread" tells the agent to wait for
+  the owner's words in the thread.
+- **No double card.**
+  - When the agent already asked the same thing through `ask-owner` (bigram similarity
+    ≥ 0.5 within 2 h), the item is linked to that decision instead.
+  - When the agent asks through `ask-owner` after the card went up, `DecisionService.ask`
+    withdraws the reply card (`superseded`), and the agent gets no note for it.
+- While a question is on a card, the ticket review no longer nudges the agent to ask the
+  owner again.
+
+## 5. Prompt
+
+Every agent prompt gets one line (`OPEN_ITEMS_CONSTANTS.PROMPT_LINE`): "If you promise the
+owner something or ask them a question, say it plainly; Crewly tracks it. Use `ask-owner` for
+real decisions."
+
+## 6. Backfill
+
+`services/open-items/open-items-backfill.ts` scans tickets updated in the last 7 days, except
+cancelled ones. Each thread message is attributed to one ticket, the same way the live path
+does it. The scan skips:
+
+- promises that were already delivered later in the thread, by the live delivery rule;
+- questions the owner replied to later in the thread.
+
+It runs as a **dry run by default**:
+
+- `POST /api/requests/open-items/backfill`, which applies only with `{"apply": true}`;
+- `node dist/backend/backend/src/scripts/open-items-backfill.js`, a read-only dry run against
+  a running instance plus `chat.db`, which never applies.
+
+## Constants
+
+`OPEN_ITEMS_CONSTANTS` in `backend/src/constants.ts` holds:
+
+- due defaults;
+- the child window;
+- the delivery gap;
+- the owner-note delay;
+- expiry;
+- the dedupe window and similarity;
+- the option labels;
+- the prompt line.

@@ -278,7 +278,7 @@ function dayAt(now: Date, days: number, hour: number): Date {
  * @returns Local hour
  */
 function partOfDayHour(t: string): number | null {
-  if (/中午|noon|lunch/.test(t)) return 12;
+  if (/中午|\bnoon\b|\blunch/.test(t)) return 12;
   if (/傍晚|下班|end of (?:the )?day|\beod\b/.test(t)) return 18;
   if (/下午|afternoon/.test(t)) return 15;
   if (/晚上|晚|evening|night|tonight/.test(t)) return 21;

@@ -85,8 +85,18 @@ export function choiceAlternatives(q: string): [string, string] | null {
   }
   if (!/还是/.test(t)) return null;
   // The clause holding 还是: "…，你想先发 A 还是 B？" → "先发 A" / "B".
-  const clause = t.replace(/[？?]\s*$/u, '').split(/[，,：:；;]/).filter((c) => c.includes('还是')).pop() ?? '';
-  const [rawA, rawB] = clause.split('还是');
+  // "要现在先发文字版，还是等图好了再发？": A may sit in the clause before.
+  const clauses = t.replace(/[？?]\s*$/u, '').split(/[，,：:；;]/).map((c) => c.trim());
+  const i = clauses.findIndex((c) => c.includes('还是'));
+  if (i < 0) return null;
+  let rawA: string | undefined;
+  let rawB: string | undefined;
+  if (clauses[i].startsWith('还是') && i > 0) {
+    rawA = clauses[i - 1];
+    rawB = clauses[i].slice(2);
+  } else {
+    [rawA, rawB] = clauses[i].split('还是');
+  }
   if (rawA === undefined || rawB === undefined) return null;
   const a = tidy(rawA.replace(/^(?:那)?(?:你|您)?(?:觉得|想|要|看)?(?:是)?(?:要|用|选|先)?/u, ''));
   const b = tidy(rawB.replace(/(?:呢|吗|吧|啊|好|比较好|更好)+$/u, ''));

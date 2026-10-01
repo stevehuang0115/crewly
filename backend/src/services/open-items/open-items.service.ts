@@ -363,7 +363,9 @@ export class OpenItemsService {
       .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt));
     // Several tickets can share one thread (follow-up asks): the message
     // belongs to the newest one opened before it — the open one first.
-    const inThread = tickets.filter((r) => inRequestThread(r, message) && Date.parse(r.createdAt) <= at);
+    const sharing = tickets.filter((r) => inRequestThread(r, message));
+    const openedBefore = sharing.filter((r) => Date.parse(r.createdAt) <= at);
+    const inThread = openedBefore.length > 0 ? openedBefore : sharing;
     if (inThread.length > 0) return inThread.find((r) => r.status !== 'done') ?? inThread[0];
     if (message.threadId) return null;
     return (

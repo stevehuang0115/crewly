@@ -459,3 +459,67 @@ describe('system decisions (specs/2026-10-01-runtime-terms-consent.md)', () => {
   });
 });
 
+
+describe('reply questions (specs/2026-10-01-reply-open-items.md)', () => {
+  const handled: Array<{ d: OwnerDecision; fallback: string | null | undefined }> = [];
+  beforeEach(() => {
+    handled.length = 0;
+    DecisionService.registerKindHandler('reply_question', {
+      onSettled: async (d, fallback) => {
+        handled.push({ d, fallback });
+        return d.status === 'cancelled' ? null : (fallback ?? null);
+      },
+    });
+  });
+  afterEach(() => DecisionService.registerKindHandler('reply_question', null));
+
+  const replyAsk = {
+    kind: 'reply_question' as const,
+    asker: 'dev-ann',
+    question: '第 13 章「互评当体检用」这个读法，你同意吗？',
+    options: [
+      { key: 'a', label: 'Yes' },
+      { key: 'b', label: 'No', detail: '删掉，只留事实' },
+    ],
+    defaultKey: 'b',
+    yesKey: 'a',
+    title: 'TKT-185 · Ann asks',
+    place: { slackChannelId: 'C-BOOK', threadTs: '1790884910.228259' },
+    requestRef: { requestId: 'req-1', itemId: 'q-1' },
+  };
+
+  it('is posted by the asker in the thread the question was asked in', async () => {
+    const h = await harness();
+    const d = await h.service.askPrebuilt({ ...replyAsk, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    expect(d.card).toMatchObject({ slackChannelId: 'C-BOOK', threadTs: '1790884910.228259', postedBy: 'dev-ann', ownBot: true });
+    expect(h.slack.sent[0].botToken).toBe('xoxb-ann');
+    expect(d.requestRef).toEqual({ requestId: 'req-1', itemId: 'q-1' });
+  });
+
+  it('the answer reaches the handler with the generic note, which the asker then gets', async () => {
+    const h = await harness();
+    const d = await h.service.askPrebuilt({ ...replyAsk, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    await h.service.handleThreadReply({ channelId: 'C-BOOK', threadTs: '1790884910.228259', ts: '300.1', text: '同意', userId: OWNER });
+    expect(handled).toHaveLength(1);
+    expect(handled[0].d).toMatchObject({ id: d.id, status: 'resolved', chosenKey: 'a' });
+    expect(handled[0].fallback).toContain(`[DECISION ${d.id}] The owner chose "Yes"`);
+    expect(h.delivered.at(-1)).toMatchObject({ session: 'dev-ann' });
+    expect(h.delivered.at(-1)!.text).toContain('The owner chose "Yes"');
+  });
+
+  it('an ask-owner of the same question withdraws the reply-question card (no double card)', async () => {
+    const h = await harness();
+    const first = await h.service.askPrebuilt({ ...replyAsk, deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    await h.service.ask('dev-ann', {
+      question: '第 13 章「互评当体检用」这个读法你同意吗',
+      options: ['Keep it', 'Delete it — keep the facts only'],
+      default: 'Delete it',
+    });
+    expect((await h.service.get(first.id))!.status).toBe('cancelled');
+    expect(handled.map((x) => x.d.status)).toEqual(['cancelled']);
+    // A different question stays.
+    const other = await h.service.askPrebuilt({ ...replyAsk, question: 'Use the short title?', deadline: new Date(h.clock.now.getTime() + 26 * HOUR) });
+    await h.service.ask('dev-ann', { question: 'Send the partner email on Monday?', options: ['Send', 'Hold'], default: 'Hold' });
+    expect((await h.service.get(other.id))!.status).toBe('open');
+  });
+});
