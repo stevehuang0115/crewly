@@ -35,6 +35,7 @@ import clsx from 'clsx';
 import { useSidebar } from '../../contexts/SidebarContext';
 import { IconButton } from '@crewly/ui';
 import { QRCodeDisplay } from './QRCodeDisplay';
+import { UpdateAvailableChip } from '../System/UpdateAvailableChip';
 import { AuthStatusIndicator } from '../Auth/AuthStatusIndicator';
 import { usePinnedFavorites, type PinnedItem } from '../../hooks/usePinnedFavorites';
 import { useScheduleCount } from '../../hooks/useScheduleCount';
@@ -314,8 +315,10 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 									title={updateAvailable && latestVersion ? `${latestVersion} is available` : undefined}
 								>
 									v{version}
-									{updateAvailable && <span className="ml-1 text-primary">&bull; update</span>}
 								</div>
+							)}
+							{version && updateAvailable && (
+								<UpdateAvailableChip latestVersion={latestVersion} onNavigate={handleLinkClick} className="mt-1" />
 							)}
 						</div>
 					)}

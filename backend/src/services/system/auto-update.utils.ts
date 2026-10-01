@@ -571,3 +571,17 @@ export function describeInstallFailure(code: number | null, outputTail: string):
 	if (!errorLine || errorLine === last) return last ? `${head}: ${clip(last)}` : head;
 	return `${head}: ${clip(errorLine)} (… ${clip(last)})`;
 }
+
+/**
+ * process.cwd(), or undefined when the cwd was deleted (npm replaced the
+ * package directory the backend was started in).
+ *
+ * @returns The cwd or undefined
+ */
+export function safeProcessCwd(): string | undefined {
+	try {
+		return process.cwd();
+	} catch {
+		return undefined;
+	}
+}

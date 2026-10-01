@@ -179,6 +179,10 @@ import { assertBuildProvenance } from './utils/build-provenance.js';
 import { isNativeBindingFatalError } from './utils/native-binding.utils.js';
 import { VersionCheckService } from './services/system/version-check.service.js';
 import { AutoUpdateService, createAutoUpdateService } from './services/system/auto-update.service.js';
+import { detectInstall, resolveRunningPackageRoot, safeProcessCwd } from './services/system/auto-update.utils.js';
+import { SystemControlService } from './services/system/system-control.service.js';
+import { detectRunningSupervisor } from './services/system/supervisor-detect.js';
+import { buildReplacementPlan, spawnReplacementLauncher } from './services/system/restart-replacement.js';
 import {
 	type CloudDisconnectNoticeService,
 	createCloudDisconnectNoticeService,
@@ -3253,6 +3257,8 @@ void (async () => {
 			// orchestrator auto-start so an upgrade boot is known when the
 			// "back online" announcement is composed.
 			this.startAutoUpdate();
+			// Owner Upgrade / Restart buttons (specs/2026-10-01-upgrade-restart-controls.md)
+			this.startSystemControl();
 
 			// Tell the owner (Slack DM, phone re-login link) when this machine
 			// loses Crewly Cloud — inbound Slack then queues in Cloud unseen.
@@ -4399,6 +4405,82 @@ void (async () => {
 	}
 
 	/**
+	 * Create the SystemControlService behind the owner's Upgrade / Restart
+	 * buttons: the AutoUpdateService install path, the graceful drained
+	 * restart, and the detached replacement launcher for a backend nothing
+	 * else relaunches. Settles the record a previous boot left. Never throws.
+	 */
+	private startSystemControl(): void {
+		try {
+			const versionService = VersionCheckService.getInstance();
+			const autoUpdate = AutoUpdateService.getInstance();
+			const packageRoot = resolveRunningPackageRoot(process.argv[1], safeProcessCwd());
+			const install = autoUpdate?.getInstallInfo() ?? detectInstall(packageRoot);
+			let currentVersion = autoUpdate?.getCurrentVersion() ?? null;
+			if (!currentVersion) {
+				try {
+					currentVersion = versionService.getLocalVersion();
+				} catch {
+					currentVersion = null;
+				}
+			}
+			const crewlyHome = this.config.crewlyHome;
+			const startedAt = new Date(Date.now() - Math.round(process.uptime() * 1000)).toISOString();
+			const service = new SystemControlService({
+				crewlyHome,
+				install,
+				currentVersion,
+				pid: process.pid,
+				bootId: `${process.pid}-${startedAt}`,
+				startedAt,
+				getSupervisor: detectRunningSupervisor,
+				fetchLatestVersion: async (maxAgeMs) => {
+					const latest = await versionService.getLatestVersion(currentVersion ?? undefined, { maxAgeMs });
+					if (currentVersion) versionService.recordCheckResult(currentVersion, latest);
+					return latest;
+				},
+				getBusyAgents: () => RestartDrainService.getInstance().getReadiness().busyAgents,
+				isShutdownInProgress: () => {
+					const drain = RestartDrainService.getInstance();
+					return this.isShuttingDown || drain.isDeliveryPaused() || drain.isDraining();
+				},
+				getInstaller: () => AutoUpdateService.getInstance(),
+				requestGracefulRestart: (reason) =>
+					RestartDrainService.getInstance().requestGracefulShutdown({
+						reason,
+						exitCode: PROCESS_EXIT_CODES.RESTART_REQUESTED,
+					}),
+				exit: (code) => process.exit(code),
+				spawnReplacement: (supervisorUnknown) => {
+					const cwd = install.packageRoot ?? safeProcessCwd() ?? crewlyHome;
+					spawnReplacementLauncher(
+						buildReplacementPlan({
+							execPath: process.execPath,
+							execArgv: process.execArgv,
+							argv: process.argv,
+							cwd,
+							pid: process.pid,
+							port: this.config.webPort,
+							crewlyHome,
+							supervisorUnknown,
+						}),
+						crewlyHome,
+					);
+				},
+				logger: LoggerService.getInstance().createComponentLogger('SystemControl'),
+				now: Date.now,
+				sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+			});
+			SystemControlService.setInstance(service);
+			service.handleBoot();
+		} catch (error) {
+			this.logger.warn('Upgrade/restart controls not started (non-fatal)', {
+				error: error instanceof Error ? error.message : String(error),
+			});
+		}
+	}
+
+	/**
 	 * Create and start the AutoUpdateService with the server's live hooks:
 	 * the npm registry check (also refreshing `/health`), the quiet-window
 	 * probe (turns in flight + active agents in_progress), the graceful
@@ -4420,7 +4502,12 @@ void (async () => {
 				},
 				isRestartInProgress: () => {
 					const drain = RestartDrainService.getInstance();
-					return this.isShuttingDown || drain.isDeliveryPaused() || drain.isDraining();
+					return (
+						this.isShuttingDown ||
+						drain.isDeliveryPaused() ||
+						drain.isDraining() ||
+						SystemControlService.getInstance()?.isActionInProgress() === true
+					);
 				},
 				getBusy: async () => {
 					const midTurn = InFlightTurnTracker.getInstance().getMidTurn().map((t) => t.sessionName);

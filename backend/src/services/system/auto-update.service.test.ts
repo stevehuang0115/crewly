@@ -115,6 +115,58 @@ describe('AutoUpdateService', () => {
 
 	const markerPath = (): string => path.join(home, AUTO_UPDATE_CONSTANTS.MARKER_FILE);
 
+	describe('installVersion (shared with the owner Upgrade button)', () => {
+		it('installs into the running prefix from CREWLY_HOME and verifies, without restarting or touching state', async () => {
+			const h = makeHarness(home);
+			const result = await h.service.installVersion('1.20.144');
+			expect(result).toEqual({ ok: true });
+			expect(h.deps.runInstall).toHaveBeenCalledWith('npm', ['install', '-g', '--prefix', '/usr/local', 'crewly@1.20.144'], '/home/me/.crewly');
+			expect(h.deps.afterInstall).toHaveBeenCalledWith('/usr/local/lib/node_modules/crewly');
+			expect(h.deps.requestRestart).not.toHaveBeenCalled();
+			expect(h.service.getState().consecutiveFailures).toBe(0);
+		});
+
+		it('reports a verify mismatch', async () => {
+			const h = makeHarness(home);
+			h.installedVersion.value = '1.20.143';
+			const result = await h.service.installVersion('1.20.144');
+			expect(result).toMatchObject({ ok: false, outcome: 'verify-failed' });
+		});
+
+		it('refuses a source checkout', async () => {
+			const h = makeHarness(home, { install: { kind: 'dev-checkout', packageRoot: '/src/crewly', prefix: null, detail: 'dev checkout' } });
+			const result = await h.service.installVersion('1.20.144');
+			expect(result).toMatchObject({ ok: false, outcome: 'skipped' });
+			expect(h.deps.runInstall).not.toHaveBeenCalled();
+		});
+
+		it('runs one install at a time and reports busy meanwhile', async () => {
+			let release: () => void = () => undefined;
+			const h = makeHarness(home, {
+				runInstall: jest.fn(
+					() => new Promise((resolve) => {
+						release = () => resolve({ ok: true, code: 0, outputTail: '' });
+					}),
+				),
+			});
+			const first = h.service.installVersion('1.20.144');
+			await flush();
+			expect(h.service.isBusy()).toBe(true);
+			await expect(h.service.installVersion('1.20.144')).resolves.toMatchObject({ ok: false, outcome: 'skipped' });
+			release();
+			await expect(first).resolves.toEqual({ ok: true });
+			expect(h.service.isBusy()).toBe(false);
+		});
+
+		it('writes and clears the upgrade marker', () => {
+			const h = makeHarness(home);
+			h.service.writeUpgradeMarker('1.20.143', '1.20.144');
+			expect(JSON.parse(fs.readFileSync(markerPath(), 'utf-8'))).toMatchObject({ fromVersion: '1.20.143', toVersion: '1.20.144' });
+			h.service.clearUpgradeMarker();
+			expect(fs.existsSync(markerPath())).toBe(false);
+		});
+	});
+
 	describe('scheduling', () => {
 		it('schedules the first check ~10 minutes after boot, then every 3 hours', async () => {
 			const h = makeHarness(home, { fetchLatestVersion: jest.fn(async () => '1.20.143') });

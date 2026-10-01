@@ -4881,3 +4881,59 @@ export const SECRET_SCRUB_CONSTANTS = {
 	/** settings.json under CREWLY_HOME, whose apiKeys are masked by exact value */
 	SETTINGS_FILE: 'settings.json',
 } as const;
+
+/**
+ * Owner-facing Upgrade / Restart controls in the dashboard
+ * (specs/2026-10-01-upgrade-restart-controls.md).
+ */
+export const SYSTEM_CONTROL_CONSTANTS = {
+	/** Progress / outcome of the last upgrade or restart, under CREWLY_HOME */
+	STATE_FILE: 'system-action.json',
+	/** Log file under `<crewlyHome>/logs/` written by the detached replacement launcher */
+	REPLACEMENT_LOG_FILE: 'restart-replacement.log',
+	/** "When idle": longest wait for agents to finish their turns before going ahead anyway (ms) — 30 min */
+	IDLE_WAIT_CAP_MS: 30 * 60 * 1000,
+	/** "When idle": how often the busy check runs while waiting (ms) */
+	IDLE_POLL_MS: 15 * 1000,
+	/** Pause before shutting down so the HTTP answer reaches the dashboard (ms) */
+	RESPONSE_FLUSH_MS: 500,
+	/** A registry answer older than this is re-fetched when the owner asks to upgrade (ms) */
+	REGISTRY_MAX_AGE_MS: 60 * 1000,
+	/** Registry answer age accepted for the status read (ms) — matches auto-update */
+	STATUS_REGISTRY_MAX_AGE_MS: 30 * 60 * 1000,
+	/** Replacement launcher: how often it checks whether the old process is gone (ms) */
+	REPLACEMENT_PID_POLL_MS: 500,
+	/** Replacement launcher: give up waiting for the old process after this long (ms) — drain is ≤ 2 min */
+	REPLACEMENT_MAX_WAIT_MS: 10 * 60 * 1000,
+	/** Replacement launcher: grace before checking the port when nothing is expected to relaunch us (ms) */
+	REPLACEMENT_PORT_GRACE_MS: 3 * 1000,
+	/** Replacement launcher: grace when an unknown supervisor might relaunch us first (ms) */
+	REPLACEMENT_PORT_GRACE_UNKNOWN_MS: 20 * 1000,
+	/** Login item script that keeps `crewly start` running on the owner's Mac */
+	LOGIN_WRAPPER_SCRIPT: 'crewly-start.command',
+	/** systemd unit `crewly service install` writes */
+	SYSTEMD_UNIT: 'crewly.service',
+	/** Accepted values of the `when` body field */
+	WHEN_VALUES: ['idle', 'now'] as const,
+	/** Refusal codes returned with 4xx/5xx answers */
+	CODES: {
+		OWNER_ONLY: 'owner-only',
+		DEV_CHECKOUT: 'dev-checkout',
+		NOT_NPM_GLOBAL: 'not-npm-global',
+		UP_TO_DATE: 'up-to-date',
+		IN_PROGRESS: 'in-progress',
+		RESTART_IN_PROGRESS: 'restart-in-progress',
+		REGISTRY_UNREACHABLE: 'registry-unreachable',
+		UNAVAILABLE: 'unavailable',
+		BAD_REQUEST: 'bad-request',
+	},
+	/** Owner-facing messages (the dashboard shows these as-is; English only) */
+	MESSAGES: {
+		OWNER_ONLY: 'Only the owner can upgrade or restart Crewly. Agents cannot trigger this.',
+		DEV_CHECKOUT: 'This machine runs Crewly from a source checkout — update it with git (git pull, npm run build), then restart.',
+		NOT_NPM_GLOBAL: 'This copy of Crewly is not a global npm install, so it cannot upgrade itself. Update it the way it was installed.',
+		UNAVAILABLE: 'Upgrade and restart controls are not ready yet — Crewly is still starting. Try again in a minute.',
+		REGISTRY_UNREACHABLE: 'Could not reach the npm registry to find the latest version. Try again later.',
+		RESTART_IN_PROGRESS: 'Crewly is already shutting down or restarting.',
+	},
+} as const;

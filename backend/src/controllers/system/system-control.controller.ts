@@ -1,0 +1,191 @@
+/**
+ * Owner-only Upgrade / Restart endpoints
+ * (specs/2026-10-01-upgrade-restart-controls.md).
+ *
+ * - `GET  /api/system/update-status`  — versions, install kind, relauncher, busy agents, progress
+ * - `POST /api/system/upgrade { when }` — npm global installs only; 409 on a source checkout
+ * - `POST /api/system/restart { when }` — graceful drained restart that always comes back
+ *
+ * Agents are refused: any request carrying `X-Agent-Session` gets 403, the
+ * same rule as the other owner-only actions. Non-loopback callers still need
+ * the API token (the global API-token middleware in front of `/api`).
+ *
+ * @module controllers/system/system-control
+ */
+
+import type { Request, Response, Router } from 'express';
+import { API_SECURITY_CONSTANTS, SYSTEM_CONTROL_CONSTANTS, TICKET_CONSTANTS } from '../../constants.js';
+import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { getClientAddress } from '../../middleware/api-token.middleware.js';
+import { LoggerService } from '../../services/core/logger.service.js';
+import {
+	SystemControlService,
+	type SystemActionWhen,
+	type SystemActionAccepted,
+	type SystemActionRefusal,
+} from '../../services/system/system-control.service.js';
+
+const logger = LoggerService.getInstance().createComponentLogger('SystemControl');
+
+/**
+ * Refuse agent callers. Answers 403 and returns false when refused.
+ *
+ * @param req - Request
+ * @param res - Response
+ * @param action - What was attempted (log)
+ * @returns True when the caller may proceed
+ */
+export function ensureOwnerCaller(req: Request, res: Response, action: string): boolean {
+	const agent = readAgentSessionHeader(req);
+	if (!agent) return true;
+	logger.warn(`Refused ${action} from an agent session`, { agentSession: agent, address: getClientAddress(req) });
+	res.status(403).json({
+		success: false,
+		code: SYSTEM_CONTROL_CONSTANTS.CODES.OWNER_ONLY,
+		error: SYSTEM_CONTROL_CONSTANTS.MESSAGES.OWNER_ONLY,
+	});
+	return false;
+}
+
+/**
+ * Who pressed the button, for the logs and the progress record.
+ *
+ * @param req - Request
+ * @returns e.g. `dashboard from 192.168.1.20`, `phone (relay)`, `api from 127.0.0.1`
+ */
+export function describeActor(req: Pick<Request, 'headers' | 'socket'>): string {
+	const header = (name: string): string | undefined => {
+		const v = req.headers[name];
+		return Array.isArray(v) ? v[0] : v;
+	};
+	if (header(TICKET_CONSTANTS.CLIENT_HEADER) === TICKET_CONSTANTS.MOBILE_CLIENT) return 'phone (relay)';
+	const who = header(API_SECURITY_CONSTANTS.CALLER_HEADER) === API_SECURITY_CONSTANTS.DASHBOARD_CALLER ? 'dashboard' : 'api';
+	const address = getClientAddress(req as Request);
+	return address ? `${who} from ${address}` : who;
+}
+
+/**
+ * Parse the `when` body field (default `idle`).
+ *
+ * @param body - Request body
+ * @returns The value, or null when invalid
+ */
+export function parseWhen(body: unknown): SystemActionWhen | null {
+	const raw = body && typeof body === 'object' ? (body as { when?: unknown }).when : undefined;
+	if (raw === undefined || raw === null || raw === '') return 'idle';
+	return (SYSTEM_CONTROL_CONSTANTS.WHEN_VALUES as readonly unknown[]).includes(raw) ? (raw as SystemActionWhen) : null;
+}
+
+/**
+ * The service, or a 503.
+ *
+ * @param res - Response
+ * @returns The service or null (answered)
+ */
+function serviceOr503(res: Response): SystemControlService | null {
+	const svc = SystemControlService.getInstance();
+	if (!svc) {
+		res.status(503).json({
+			success: false,
+			code: SYSTEM_CONTROL_CONSTANTS.CODES.UNAVAILABLE,
+			error: SYSTEM_CONTROL_CONSTANTS.MESSAGES.UNAVAILABLE,
+		});
+	}
+	return svc;
+}
+
+/**
+ * Send an accepted / refused action answer.
+ *
+ * @param res - Response
+ * @param result - Service answer
+ */
+function sendResult(res: Response, result: SystemActionAccepted | SystemActionRefusal): void {
+	if (result.ok) {
+		res.status(202).json({ success: true, data: { action: result.action, escalated: result.escalated === true } });
+		return;
+	}
+	res.status(result.httpStatus).json({ success: false, code: result.code, error: result.error });
+}
+
+/**
+ * GET /api/system/update-status[?refresh=1]
+ *
+ * @param req - Request
+ * @param res - `{ success, data: UpdateStatus }`
+ */
+export async function getUpdateStatus(req: Request, res: Response): Promise<void> {
+	if (!ensureOwnerCaller(req, res, 'update-status')) return;
+	const svc = serviceOr503(res);
+	if (!svc) return;
+	try {
+		const refresh = req.query?.refresh === '1' || req.query?.refresh === 'true';
+		res.json({ success: true, data: await svc.getStatus({ refresh }) });
+	} catch (error) {
+		logger.error('update-status failed', { error: error instanceof Error ? error.message : String(error) });
+		res.status(500).json({ success: false, error: 'Could not read the update status' });
+	}
+}
+
+/**
+ * Shared body of the two POSTs.
+ *
+ * @param kind - upgrade or restart
+ * @param req - Request
+ * @param res - Response
+ */
+async function handleAction(kind: 'upgrade' | 'restart', req: Request, res: Response): Promise<void> {
+	if (!ensureOwnerCaller(req, res, kind)) return;
+	const when = parseWhen(req.body);
+	if (!when) {
+		res.status(400).json({ success: false, code: SYSTEM_CONTROL_CONSTANTS.CODES.BAD_REQUEST, error: "`when` must be 'idle' or 'now'" });
+		return;
+	}
+	const svc = serviceOr503(res);
+	if (!svc) return;
+	const actor = describeActor(req);
+	try {
+		const result = kind === 'upgrade' ? await svc.requestUpgrade({ when, actor }) : await svc.requestRestart({ when, actor });
+		logger.info(`POST /api/system/${kind}`, {
+			when,
+			requestedBy: actor,
+			accepted: result.ok,
+			...(result.ok ? { actionId: result.action.id, escalated: result.escalated === true } : { code: result.code, error: result.error }),
+		});
+		sendResult(res, result);
+	} catch (error) {
+		logger.error(`${kind} request failed`, { error: error instanceof Error ? error.message : String(error), requestedBy: actor });
+		res.status(500).json({ success: false, error: `Could not start the ${kind}` });
+	}
+}
+
+/**
+ * POST /api/system/upgrade `{ when: 'idle' | 'now' }`
+ *
+ * @param req - Request
+ * @param res - 202 `{ success, data: { action } }`, or 400/403/409/502/503
+ */
+export function postUpgrade(req: Request, res: Response): Promise<void> {
+	return handleAction('upgrade', req, res);
+}
+
+/**
+ * POST /api/system/restart `{ when: 'idle' | 'now' }`
+ *
+ * @param req - Request
+ * @param res - 202 `{ success, data: { action } }`, or 400/403/409/503
+ */
+export function postRestart(req: Request, res: Response): Promise<void> {
+	return handleAction('restart', req, res);
+}
+
+/**
+ * Register the three routes on an `/api` router.
+ *
+ * @param router - Router mounted at `/api`
+ */
+export function registerSystemControlRoutes(router: Router): void {
+	router.get('/system/update-status', (req, res) => void getUpdateStatus(req, res));
+	router.post('/system/upgrade', (req, res) => void postUpgrade(req, res));
+	router.post('/system/restart', (req, res) => void postRestart(req, res));
+}

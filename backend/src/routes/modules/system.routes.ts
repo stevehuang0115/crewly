@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { ApiController } from '../../controllers/api.controller.js';
 import * as systemHandlers from '../../controllers/system/system.controller.js';
+import { registerSystemControlRoutes } from '../../controllers/system/system-control.controller.js';
 import { getOwnerMessageWatchdog } from '../../services/messaging/owner-message-watchdog.service.js';
 
 export function registerSystemRoutes(router: Router, apiController: ApiController): void {
@@ -21,8 +22,9 @@ export function registerSystemRoutes(router: Router, apiController: ApiControlle
     res.json({ success: true, data: { running: !!watchdog, messages: watchdog?.list() ?? [] } });
   });
 
-  // Server restart
-  router.post('/system/restart', (req, res) => systemHandlers.restartServer.call(apiController, req, res));
+  // Owner-only Upgrade / Restart (specs/2026-10-01-upgrade-restart-controls.md):
+  // GET /system/update-status, POST /system/upgrade, POST /system/restart
+  registerSystemControlRoutes(router);
 
   // API Health within /api scope
   router.get('/health', (req, res) => systemHandlers.healthCheck.call(apiController, req, res));
