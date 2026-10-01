@@ -11,7 +11,6 @@ import {
   TICKET_AUTOPILOT_BOUNDARIES,
   buildBudgetPausedMessage,
   buildDigestMessage,
-  buildOwnerQuestionsMessage,
   buildTriageBrief,
   formatAge,
 } from './ticket-autopilot-messages.js';
@@ -81,6 +80,7 @@ describe('buildTriageBrief', () => {
   it('offers the four decisions with runnable commands for this project', () => {
     expect(brief).toContain('assign --project p-ce --id <ID> --to <member>');
     expect(brief).toContain('ask-owner --project p-ce');
+    expect(brief).toContain('--option "<choice>" --option "<choice>" --default "<choice or wait>"');
     expect(brief).toContain('--status cancelled');
     expect(brief).toContain('Split');
   });
@@ -118,25 +118,6 @@ describe('buildTriageBrief', () => {
 });
 
 describe('owner-facing texts', () => {
-  it('numbers the questions for one-tap answers', () => {
-    const msg = buildOwnerQuestionsMessage([
-      { projectName: 'CE', ticketId: 'CE-4', title: 'Partner email', question: 'Send the draft to the 3 partners?' },
-      { projectName: 'CE', ticketId: 'CE-9', title: 'Pricing page', question: 'Publish on Monday?' },
-    ]);
-    expect(msg).toContain('2 tickets are waiting on you');
-    expect(msg).toContain('1. CE-4 Partner email — Send the draft to the 3 partners?');
-    expect(msg).toContain('2. CE-9 Pricing page — Publish on Monday?');
-    expect(msg).toContain('Reply with the number');
-  });
-
-  it('names the project only when questions span several', () => {
-    const msg = buildOwnerQuestionsMessage([
-      { projectName: 'CE', ticketId: 'CE-4', title: 'A', question: 'Q?' },
-      { projectName: 'App', ticketId: 'APP-1', title: 'B', question: 'Q2?' },
-    ]);
-    expect(msg).toContain('CE-4 (CE)');
-  });
-
   it('builds the digest without harness mechanics and skips empty projects', () => {
     const msg = buildDigestMessage([
       {
@@ -154,6 +135,20 @@ describe('owner-facing texts', () => {
     expect(msg).not.toContain('wi-secret-123');
     expect(msg).not.toMatch(/WorkItem|claim/i);
     expect(buildDigestMessage([{ name: 'Quiet', doneToday: [], inProgress: [], waitingOnOwner: [] }])).toBeNull();
+  });
+
+  it('links waiting tickets to their decision cards, never repeating the question', () => {
+    const msg = buildDigestMessage([
+      {
+        name: 'CE',
+        doneToday: [],
+        inProgress: [],
+        waitingOnOwner: [ticket('CE-4', { labels: ['needs-owner'], log: ['a · tl · owner question: Send it? (D-1)'] })],
+        links: new Map([['CE-4', 'https://slack.com/archives/C0TEAM/p1790000000000100']]),
+      },
+    ])!;
+    expect(msg).toContain('Waiting on you (1): <https://slack.com/archives/C0TEAM/p1790000000000100|CE-4> Title CE-4');
+    expect(msg).not.toContain('Send it?');
   });
 
   it('explains a budget pause in one line', () => {

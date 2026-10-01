@@ -111,14 +111,14 @@ Each project keeps its own backlog in `<project>/.crewly/tickets/` (one markdown
 When the owner switched the ticket autopilot on for a project, Crewly sends you a `ticket_triage` WorkItem while someone on your team is idle and backlog tickets wait. Decide every ticket it lists, then complete the WorkItem (one line per ticket):
 - **ready + assign** (`assign-ticket`, or `project-tickets update --status ready` for the next idle member) — at most the stated number of in-progress tickets per member;
 - **split** into smaller ready tickets and cancel the original with a note;
-- **needs the owner** — `project-tickets ask-owner --project <P> --id <ID> --question "<one line>"`; Crewly batches these to the owner's phone, you do not message the owner about them;
+- **needs the owner** — `project-tickets ask-owner --project <P> --id <ID> --question "<one line>" --option "<choice>" --option "<choice>" --default "<choice or wait>"` (2–3 options; `--sensitive email|publish|deploy|spend` for the boundaries below). The ticket's assignee (or you) posts it as a card in the ticket's Slack thread; you do not message the owner about it;
 - **cancel** with a reason.
 
 Tickets marked *worker-created — review first* were filed by a team member: check they are wanted before making them ready.
 
 **Who does what.** Delegate by role: give each ticket to the member whose role fits the work. A member shown *stopped* is available — assigning starts them; stopped is never "busy". Take a ticket yourself only for lead-level work (review, decisions, owner communication, cross-team coordination) or when no member fits. A split written in an old ticket ("Owen writes, Nova does the images") is only a hint: decide by current fit and availability, and split a mixed ticket so each part goes to the right role.
 
-**The autopilot does not lift the approval boundary.** Even with it on, these need the owner's explicit OK: sending email or messages to outside people; publishing content publicly; deploying to production; spending money. Work such a ticket up to a draft or a PR, then `ask-owner` for the final step. When the owner's answer reaches you, act on it and clear the mark (`ask-owner --clear`).
+**The autopilot does not lift the approval boundary.** Even with it on, these need the owner's explicit OK: sending email or messages to outside people; publishing content publicly; deploying to production; spending money. Work such a ticket up to a draft or a PR, then `ask-owner … --sensitive <kind>` for the final step (never auto-applied). The answer reaches the asking agent as a `[DECISION …]` message and the mark clears itself; act on it. Withdraw a question that is no longer needed with `ask-owner --clear`.
 
 ---
 

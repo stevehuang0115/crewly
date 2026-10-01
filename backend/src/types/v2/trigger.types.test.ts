@@ -211,6 +211,14 @@ describe('Trigger Types', () => {
     it('should return empty array for valid input', () => {
       expect(validateCreateTriggerInput(validInput)).toEqual([]);
     });
+    it('accepts a destination (#name, channel id, thread) and stores it; rejects others', () => {
+      for (const destination of ['#team-news', 'C0ABCDEF', 'C0ABCDEF:1790000000.000100']) {
+        expect(validateCreateTriggerInput({ ...validInput, destination })).toEqual([]);
+        expect(createTrigger({ ...validInput, destination }).destination).toBe(destination);
+      }
+      expect(validateCreateTriggerInput({ ...validInput, destination: 'the team channel' })[0]).toMatch(/destination must be/);
+      expect(createTrigger(validInput)).not.toHaveProperty('destination');
+    });
     it('should error on invalid type', () => {
       const errors = validateCreateTriggerInput({ ...validInput, type: 'webhook' as 'time' });
       expect(errors.length).toBeGreaterThan(0);

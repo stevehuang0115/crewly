@@ -453,7 +453,7 @@ describe('AutoUpdateService', () => {
 			const h = makeHarness(home, { currentVersion: '1.20.144' });
 			h.service.start();
 			await flush();
-			expect(h.notices).toEqual([{ title: 'Crewly 已自动升级到 1.20.144（本机：iriss-air）', message: '之前版本：1.20.143' }]);
+			expect(h.notices).toEqual([{ title: 'Crewly auto-upgraded to 1.20.144 (machine: iriss-air)', message: 'Previous version: 1.20.143' }]);
 			expect(h.service.isUpgradeBoot()).toBe(true);
 			expect(fs.existsSync(markerPath())).toBe(false);
 			const state = h.service.getState();

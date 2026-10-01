@@ -333,65 +333,14 @@ describe('TicketAutopilotService', () => {
   });
 
   describe('owner questions', () => {
-    async function ask(title: string, question: string, priority = 'P2') {
-      const t = await wf.create('p-ce', { title, priority }, owner);
-      await wf.askOwner('p-ce', t.id, lead, { question });
-      return t;
-    }
-
-    it('batches open questions into one message, at most every 2 hours', async () => {
+    it('sends no batched "Tickets waiting on you" DM — decision cards carry the questions', async () => {
       await enable();
-      const a = await ask('Partner email', 'Send the draft to the 3 partners?');
-      const b = await ask('Pricing page', 'Publish on Monday?');
+      const t = await wf.create('p-ce', { title: 'Partner email' }, owner);
+      await wf.askOwner('p-ce', t.id, lead, { question: 'Send the draft to the 3 partners?' });
       await svc.tick();
-      const q1 = notices.filter((n) => n.title === 'Tickets waiting on you');
-      expect(q1).toHaveLength(1);
-      expect(q1[0].message).toContain(`1. ${a.id} Partner email — Send the draft to the 3 partners?`);
-      expect(q1[0].message).toContain(`2. ${b.id} Pricing page — Publish on Monday?`);
-      expect(q1[0].message).not.toMatch(/WorkItem/);
-
-      advance(5 * MIN);
-      await svc.tick();
-      expect(notices.filter((n) => n.title === 'Tickets waiting on you')).toHaveLength(1);
-
-      await ask('Logo', 'Blue or green?');
-      advance(30 * MIN);
-      await svc.tick();
-      expect(notices.filter((n) => n.title === 'Tickets waiting on you')).toHaveLength(1);
-
-      advance(2 * HOUR);
-      await svc.tick();
-      const q2 = notices.filter((n) => n.title === 'Tickets waiting on you');
-      expect(q2).toHaveLength(2);
-      expect(q2[1].message).toContain('3 tickets are waiting on you');
-    });
-
-    it('sends a new urgent question at once, and retries when the owner channel is down', async () => {
-      await enable();
-      await ask('A', 'Q1?');
-      await svc.tick();
-      advance(MIN);
-      notifyOk = false;
-      await ask('Outage', 'Roll back now?', 'P0');
-      await svc.tick();
-      expect(notices.filter((n) => n.title === 'Tickets waiting on you')).toHaveLength(1);
-      notifyOk = true;
-      advance(MIN);
-      await svc.tick();
-      const sent = notices.filter((n) => n.title === 'Tickets waiting on you');
-      expect(sent).toHaveLength(2);
-      expect(sent[1].urgent).toBe(true);
-      expect(sent[1].message.split('\n')[2]).toContain('Roll back now?');
-    });
-
-    it('drops answered questions', async () => {
-      await enable();
-      const a = await ask('A', 'Q1?');
-      await svc.tick();
-      await wf.askOwner('p-ce', a.id, lead, { clear: true });
       advance(3 * HOUR);
       await svc.tick();
-      expect(notices.filter((n) => n.title === 'Tickets waiting on you')).toHaveLength(1);
+      expect(notices.filter((n) => n.title === 'Tickets waiting on you')).toHaveLength(0);
     });
   });
 

@@ -1606,7 +1606,7 @@ describe('SlackService', () => {
         client: { chat: { postMessage: jest.fn(), update: jest.fn() }, reactions: { add: jest.fn() }, users: { info: jest.fn() }, files: { uploadV2: jest.fn(), info: jest.fn() } },
         receiver: { client: new EventEmitter() },
         message: jest.fn().mockImplementation((h: (args: any) => Promise<void>) => { onMessage = h; }),
-        event: jest.fn().mockImplementation((_t: string, h: (args: any) => Promise<void>) => { onMention = h; }),
+        event: jest.fn().mockImplementation((t: string, h: (args: any) => Promise<void>) => { if (t === 'app_mention') onMention = h; }),
         action: jest.fn(),
         error: jest.fn(),
         start: jest.fn().mockResolvedValue(undefined),

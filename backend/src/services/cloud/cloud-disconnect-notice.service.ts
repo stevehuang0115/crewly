@@ -94,13 +94,13 @@ export interface CloudDisconnectNoticeDeps {
  * Owner-facing text for how a login run ended.
  *
  * @param snapshot - The finished run
- * @returns Short Chinese reason
+ * @returns Short English reason
  */
 function loginFailureDetail(snapshot: CloudLoginSnapshot): string {
-	if (snapshot.state === 'timed_out') return '等待超时';
-	if (snapshot.state === 'expired') return '链接已过期';
-	if (snapshot.message && /denied/i.test(snapshot.message)) return '登录被拒绝';
-	return '登录命令出错';
+	if (snapshot.state === 'timed_out') return 'it timed out';
+	if (snapshot.state === 'expired') return 'the link expired';
+	if (snapshot.message && /denied/i.test(snapshot.message)) return 'sign-in was denied';
+	return 'the sign-in command failed';
 }
 
 /** Watches the Cloud connection and DMs the owner when it is lost. */
@@ -308,7 +308,7 @@ export class CloudDisconnectNoticeService {
 		} catch (error) {
 			this.deps.logger.warn('Could not update the Cloud disconnect notice with a new link', { error: error instanceof Error ? error.message : String(error) });
 			this.login?.cancel();
-			await this.blockUntilNextWindow(state, '链接已过期');
+			await this.blockUntilNextWindow(state, 'the link expired');
 		}
 	}
 
