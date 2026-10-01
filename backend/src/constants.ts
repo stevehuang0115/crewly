@@ -1317,7 +1317,7 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	 */
 	ROOM_UNANSWERED_FALLBACK_MS: 90 * 1000,
 	/** The in-thread line when nobody could take an owner's room message. */
-	ROOM_UNANSWERED_NOTE: '这条消息没有 agent 接到（房间里没有人醒着能接）。请 @ 一位 agent 再发一次。',
+	ROOM_UNANSWERED_NOTE: 'No agent picked up this message (nobody in the room was awake to take it). Please @ an agent and send it again.',
 	/** How many recent huddle turns to scan for the room's last local speaker. */
 	ROOM_LAST_SPEAKER_SCAN: 50,
 	/** Fallback icon when a member has no avatar */
@@ -1513,12 +1513,18 @@ export const OWNER_MESSAGE_WATCHDOG_CONSTANTS = {
 	NUDGE_TEXT:
 		'[REMINDER] 这条来自 owner 的消息已经 {waited} 分钟没有回复了。现在回复它：`{replyCmd}`——会自动发回这条消息来的地方。' +
 		'如果已经在别处回答过，或者确实不需要回复，运行 `{noneCmd}`。',
-	/** Note texts (from Crewly's own bot). {name} = agent display name. */
-	NOTE_LOGIN_TEXT: '⏳ {name} 还没回复你：{runtime} 需要重新登录。回复「重新登录 {runtimeCmd}」即可。',
-	NOTE_ASLEEP_TEXT: '⏳ {name} 还没回复你：它没在运行，叫醒也失败了（{detail}）。',
-	NOTE_ERROR_TEXT: '⏳ {name} 还没回复你：消息没送到（{detail}）。',
-	NOTE_BUSY_CAP_TEXT: '⏳ {name} 还在处理你这条消息（已经 {waited} 分钟）。',
-	NOTE_SILENT_TEXT: '⏳ {name} 收到了你的消息，但 {waited} 分钟了还没回复；已经提醒过它。',
+	/**
+	 * Note texts (from Crewly's own bot), English like the rest of the
+	 * owner-facing UI. {name} = agent display name. The login note names the
+	 * English command; 「重新登录 claude」 is still accepted as input.
+	 */
+	NOTE_LOGIN_TEXT: '⏳ Still waiting on {name} — {runtime} needs you to sign in again: reply `relogin {runtimeCmd}`.',
+	NOTE_ASLEEP_TEXT: "⏳ Still waiting on {name} — {name} isn't running and couldn't be woken ({detail}).",
+	NOTE_ERROR_TEXT: "⏳ Still waiting on {name} — your message couldn't be delivered ({detail}).",
+	NOTE_BUSY_CAP_TEXT: '⏳ {name} is still working on your message ({waited} min so far).',
+	NOTE_SILENT_TEXT: "⏳ {name} got your message but hasn't replied in {waited} min; I've sent a reminder.",
+	/** Shown in a note when a failed delivery left no error detail */
+	NOTE_UNKNOWN_DETAIL: 'reason unknown',
 } as const;
 
 /**
@@ -3859,7 +3865,7 @@ export const OWNER_RECEIPT_CONSTANTS = {
 	/** 「可能漏记」 lines: appended messages that still read like a request (#828 coverage) */
 	MAX_POSSIBLY_MISSED: 5,
 	/** Team label for a ticket nobody is assigned to */
-	UNASSIGNED_TEAM: '未分配',
+	UNASSIGNED_TEAM: 'Unassigned',
 	/**
 	 * The redesigned receipt (owner, 2026-09-28: 14 asks + 17 「等你拍板」 with
 	 * ticket numbers was overwhelming): at most this many 「今天做完的」 lines…
@@ -4125,7 +4131,7 @@ export const TICKET_CONSTANTS = {
 		/** Statuses that go stale */
 		STATUSES: ['open', 'ready', 'running'] as readonly string[],
 		/** Discussion note left on a ticket closed as stale */
-		NOTE: '3 天没有动静，自动关闭。负责的 agent 在原对话里回复即可重新打开。',
+		NOTE: 'Closed automatically after 3 days with no activity. The responsible agent can reopen it by replying in the original conversation.',
 		/** Author of that note */
 		NOTE_AUTHOR: 'crewly',
 	},
@@ -4681,8 +4687,8 @@ export const CONVERSATION_SYNC_CONSTANTS = {
 	},
 	/** One-time owner DM (O1) when history starts syncing. `{device}` is replaced. */
 	NOTICE_TEXT:
-		'提醒一下：{device} 上你和 agent 的对话现在也会同步到 Crewly Cloud，这样在手机上就能看到所有机器、所有渠道的对话。' +
-		'免费版保留 7 天，Pro 保留 90 天；消息文字在 Cloud 上加密存储，文件只留在这台机器上。',
+		'Heads up: your conversations with agents on {device} now also sync to Crewly Cloud, so you can see every machine and every channel from your phone. ' +
+		'Free keeps 7 days, Pro keeps 90 days; message text is stored encrypted in Cloud, and files stay on this machine.',
 } as const;
 
 /**

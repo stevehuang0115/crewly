@@ -811,7 +811,7 @@ describe('OAuthReloginMonitorService', () => {
 
 		it('names the agent and gives the phone re-login reply for Claude Code', () => {
 			expect(formatLoginNotice(info({}), 'Atlas')).toBe(
-				'Atlas needs you to sign in to Claude Code. Reply 「重新登录 claude」 (or "relogin claude") to Crewly and it will send you a sign-in link.',
+				'Atlas needs you to sign in to Claude Code. Reply "relogin claude" to Crewly and it will send you a sign-in link.',
 			);
 		});
 
@@ -824,7 +824,7 @@ describe('OAuthReloginMonitorService', () => {
 		it('includes the device URL and code when the screen showed them', () => {
 			expect(formatLoginNotice(info({ runtimeType: 'codex-cli', url: 'https://auth.openai.com/codex/device', code: 'FBVZ-MJHKK' }), 'Nova')).toBe(
 				'Nova needs you to sign in to Codex: https://auth.openai.com/codex/device code FBVZ-MJHKK.'
-				+ ' Or reply 「重新登录 codex」 (or "relogin codex") to Crewly and it will send you a sign-in link.',
+				+ ' Or reply "relogin codex" to Crewly and it will send you a sign-in link.',
 			);
 		});
 
@@ -840,7 +840,7 @@ describe('OAuthReloginMonitorService', () => {
 			for (let i = 0; i < 5; i++) await Promise.resolve();
 			expect(slack.sendNotification).toHaveBeenCalledWith(expect.objectContaining({
 				title: 'Agent needs you to sign in',
-				message: expect.stringMatching(/^Atlas needs you to sign in to Claude Code: https:\/\/claude\.ai\/oauth\/authorize.*「重新登录 claude」/),
+				message: expect.stringMatching(/^Atlas needs you to sign in to Claude Code: https:\/\/claude\.ai\/oauth\/authorize.*"relogin claude"/),
 			}));
 			service.setAgentNameResolver(null);
 		});
@@ -892,7 +892,7 @@ describe('OAuthReloginMonitorService', () => {
 			}));
 
 			const expectedText = 'agent-dev-001 needs you to sign in to Codex: https://auth.openai.com/codex/device code FBVZ-MJHKK.'
-				+ ' Or reply 「重新登录 codex」 (or "relogin codex") to Crewly and it will send you a sign-in link.';
+				+ ' Or reply "relogin codex" to Crewly and it will send you a sign-in link.';
 			expect(mockQueue.enqueue).toHaveBeenCalledWith(expect.objectContaining({
 				content: `[NOTIFY] ${expectedText}`,
 				source: 'system_event',
@@ -963,7 +963,7 @@ describe('OAuthReloginMonitorService', () => {
 			service.inspectScreen('agent-dev-001', CODEX_BROWSER_SIGNIN_SCREEN, 'codex-cli');
 			await Promise.resolve(); await Promise.resolve();
 			expect(mockChat.broadcastSystemNotification).toHaveBeenCalledWith(
-				'agent-dev-001 needs you to sign in to Codex. Reply 「重新登录 codex」 (or "relogin codex") to Crewly and it will send you a sign-in link.',
+				'agent-dev-001 needs you to sign in to Codex. Reply "relogin codex" to Crewly and it will send you a sign-in link.',
 				'warning',
 			);
 		});

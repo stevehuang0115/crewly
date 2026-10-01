@@ -184,7 +184,7 @@ describe('OwnerMessageWatchdogService', () => {
       await h.service.tick();
       expect(h.notes).toHaveLength(1);
       expect(h.notes[0].text).toContain('Ella');
-      expect(h.notes[0].text).toContain('已经提醒过');
+      expect(h.notes[0].text).toContain("I've sent a reminder");
       expect(h.service.size).toBe(0);
 
       // Nothing more, ever.
@@ -240,7 +240,7 @@ describe('OwnerMessageWatchdogService', () => {
       await h.service.tick();
       expect(h.nudges).toHaveLength(0);
       expect(h.notes).toHaveLength(1);
-      expect(h.notes[0].text).toContain('还在处理');
+      expect(h.notes[0].text).toContain('is still working on your message');
     });
 
     it('a placeholder showing while the agent is idle is not "working": nudged at T1', async () => {
@@ -280,7 +280,7 @@ describe('OwnerMessageWatchdogService', () => {
       await h.service.tick();
       expect(h.nudges).toHaveLength(1);
       expect(h.notes).toHaveLength(1);
-      expect(h.notes[0].text).toContain('没在运行');
+      expect(h.notes[0].text).toContain("isn't running");
       expect(h.notes[0].text).toContain('No team member found');
       expect(h.service.size).toBe(0);
     });
@@ -293,7 +293,21 @@ describe('OwnerMessageWatchdogService', () => {
       await h.service.tick();
       expect(h.nudges).toHaveLength(0);
       expect(h.notes).toHaveLength(1);
-      expect(h.notes[0].text).toContain('重新登录 claude');
+      expect(h.notes[0].text).toBe('⏳ Still waiting on Ella — Claude needs you to sign in again: reply `relogin claude`.');
+    });
+
+    it('notes are English (owner-facing UI is English-first)', async () => {
+      const h = makeHarness();
+      h.nudgeOutcome.value = { outcome: 'blocked', reason: 'error' };
+      h.service.track(slackInput());
+      h.clock.t += C.NUDGE_AFTER_MS;
+      await h.service.tick();
+      expect(h.notes).toHaveLength(1);
+      expect(h.notes[0].text).toContain('reason unknown');
+      expect(h.notes[0].text).not.toMatch(/[\u4e00-\u9fff]/);
+      for (const key of ['NOTE_LOGIN_TEXT', 'NOTE_ASLEEP_TEXT', 'NOTE_ERROR_TEXT', 'NOTE_BUSY_CAP_TEXT', 'NOTE_SILENT_TEXT', 'NOTE_UNKNOWN_DETAIL'] as const) {
+        expect(C[key]).not.toMatch(/[\u4e00-\u9fff]/);
+      }
     });
 
     it('optional-only message: nudged agent finishing a turn without answering closes it quietly', async () => {

@@ -48,7 +48,7 @@ export function createSlackOwnerSender(getSlack: () => ReceiptSlackApi | null): 
         });
       }
     }
-    await slack.sendNotification({ type: 'daily_summary', title: 'Crewly 小票', message: text, urgency: 'low', timestamp: new Date().toISOString() });
+    await slack.sendNotification({ type: 'daily_summary', title: 'Crewly receipt', message: text, urgency: 'low', timestamp: new Date().toISOString() });
     return true;
   };
 }

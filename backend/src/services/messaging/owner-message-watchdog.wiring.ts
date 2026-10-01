@@ -148,7 +148,7 @@ export function trackInputFromDispatch(
 }
 
 /**
- * Login hint for a runtime waiting on a sign-in ("reply 重新登录 claude").
+ * Login hint for a runtime waiting on a sign-in ("reply `relogin claude`").
  *
  * @param runtimeType - The runtime type recorded with the login request, if any
  * @returns The hint

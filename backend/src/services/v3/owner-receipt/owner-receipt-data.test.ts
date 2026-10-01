@@ -236,7 +236,7 @@ describe('the window', () => {
 describe('shortenAsk and extractDeliverables', () => {
   it('keeps the owner\'s first line, drops mentions and file lines, cuts long text', () => {
     expect(shortenAsk('<@U0C2ZK849ND> 可以去研究一下opus做视频那个吗\n可以怎么加到flopost里')).toBe('可以去研究一下opus做视频那个吗');
-    expect(shortenAsk('[Slack File: /path/a.m4a (Audio)]')).toBe('（语音或文件）');
+    expect(shortenAsk('[Slack File: /path/a.m4a (Audio)]')).toBe('(voice or file)');
     const long = shortenAsk('很'.repeat(100), 20);
     expect(long.endsWith('…')).toBe(true);
     expect(long.length).toBeLessThanOrEqual(10);
@@ -322,7 +322,7 @@ describe('who did it (team grouping)', () => {
     // Addressed to an agent on another machine (a shared room), answered here by Atlas.
     const remote = ticket({ assignee: 'personal-assistant-team-ella-47a2e6e2', reply: { at: 'x', by: 'atlas', messageId: 'm', excerpt: 'e' } });
     expect(ticketTeamOf(remote, [], label)).toBe('Think Tank');
-    // Nobody assigned, Owen (CE) answered: not 未分配.
+    // Nobody assigned, Owen (CE) answered: not Unassigned.
     expect(ticketTeamOf(ticket({ reply: { at: 'x', by: 'nova', messageId: 'm', excerpt: 'e' } }), [], label)).toBe('CE');
     expect(ticketTeamOf(ticket({}), [item({ target: 'ella' })], label)).toBe('Crewly Marketing');
     expect(ticketTeamOf(ticket({ assignee: 'crewly-orc' }), [], label)).toBe(OWNER_RECEIPT_CONSTANTS.ORCHESTRATOR_LABEL);
@@ -371,7 +371,7 @@ describe('wording helpers', () => {
   });
 });
 
-describe('highlights (今天做完的)', () => {
+describe('highlights (Done today)', () => {
   const done = (over: Partial<Request>): Request =>
     ticket({ status: 'done', completedAt: '2026-09-26T16:00:00.000Z', assignee: 'atlas', ...over });
 
@@ -400,7 +400,7 @@ describe('highlights (今天做完的)', () => {
   });
 });
 
-describe('decisions (需要你决定的)', () => {
+describe('decisions (Needs your decision)', () => {
   const waiting = (over: Partial<Request>): Request =>
     ticket({
       status: 'waiting_confirmation',
@@ -433,7 +433,7 @@ describe('decisions (需要你决定的)', () => {
     expect(d.decisions.map((x) => [x.from, x.question])).toEqual([
       ['Atlas', '要不要再正式一点？'],
       ['Nova', 'M2 可以发了吗？'],
-      ['Atlas', '周报写好了，放在 wiki 里，这样可以吗？'],
+      ['Atlas', '周报写好了，放在 wiki 里 — OK?'],
     ]);
   });
 

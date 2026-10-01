@@ -138,7 +138,7 @@ describe('Schedules page', () => {
 
   it('shows a clear empty state when nothing is scheduled', async () => {
     render(<Triggers />);
-    expect(await screen.findByText('还没有定时任务')).toBeInTheDocument();
+    expect(await screen.findByText('No schedules yet')).toBeInTheDocument();
   });
 
   it('shows the daily-ops trigger in Scheduled with its name, plain schedule and remaining count', async () => {
@@ -147,22 +147,22 @@ describe('Schedules page', () => {
     await settled();
 
     expect(screen.getByText('daily-ops-nightly-2230')).toBeInTheDocument();
-    const schedule = screen.getByText('每天 22:30 ET');
+    const schedule = screen.getByText('Every day 22:30 ET');
     expect(schedule).toHaveAttribute('title', '30 22 * * * (America/New_York)');
-    expect(screen.getByText(/已运行 2\/58 次 · 还剩 56 次/)).toBeInTheDocument();
-    expect(screen.getByText(/约 11月2[45]日 停止/)).toBeInTheDocument();
+    expect(screen.getByText(/Ran 2\/58 · 56 left/)).toBeInTheDocument();
+    expect(screen.getByText(/Ends ~Nov 2[45]/)).toBeInTheDocument();
     // Grouped under its team, run by the member's display name.
     expect(await screen.findByRole('region', { name: 'CareerEngine' })).toBeInTheDocument();
     expect(await screen.findByText('Owen')).toBeInTheDocument();
     // Plenty of runs left — no renew warning.
-    expect(screen.queryByText('快到期，需要续')).not.toBeInTheDocument();
+    expect(screen.queryByText('Expiring soon — renew')).not.toBeInTheDocument();
   });
 
   it('warns when 7 or fewer runs remain', async () => {
     mockTriggers = [dailyOps({ fireCount: 52 })];
     render(<Triggers />);
     await settled();
-    expect(await screen.findByText('快到期，需要续')).toBeInTheDocument();
+    expect(await screen.findByText('Expiring soon — renew')).toBeInTheDocument();
   });
 
   it('includes per-team cron tasks alongside cron triggers', async () => {
@@ -170,7 +170,7 @@ describe('Schedules page', () => {
     render(<Triggers />);
     await settled();
     expect(await screen.findByText('Weekly recap')).toBeInTheDocument();
-    expect(screen.getByText('每周五 22:00 ET')).toBeInTheDocument();
+    expect(screen.getByText('Every Friday 22:00 ET')).toBeInTheDocument();
   });
 
   it('hides internal triggers until "show system" is on', async () => {
@@ -180,9 +180,9 @@ describe('Schedules page', () => {
 
     expect(await screen.findByText('daily-ops-nightly-2230')).toBeInTheDocument();
     expect(screen.queryByText('system:escalation')).not.toBeInTheDocument();
-    expect(screen.getByText('另有 1 个系统任务已隐藏')).toBeInTheDocument();
+    expect(screen.getByText('1 system task hidden')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByLabelText('显示系统任务'));
+    fireEvent.click(screen.getByLabelText('Show system tasks'));
     expect(await screen.findByText('system:escalation')).toBeInTheDocument();
   });
 
@@ -201,7 +201,7 @@ describe('Schedules page', () => {
     mockPause.mockResolvedValue(undefined);
     render(<Triggers />);
     await settled();
-    fireEvent.click(await screen.findByRole('button', { name: '暂停 daily-ops-nightly-2230' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause daily-ops-nightly-2230' }));
     await waitFor(() => expect(mockPause).toHaveBeenCalledWith(dailyOps().id));
     expect(screen.queryByTestId('schedule-detail')).not.toBeInTheDocument();
   });
@@ -211,7 +211,7 @@ describe('Schedules page', () => {
     mockUpdateTask.mockResolvedValue(undefined);
     render(<Triggers />);
     await settled();
-    fireEvent.click(await screen.findByRole('button', { name: '暂停 Weekly recap' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Pause Weekly recap' }));
     await waitFor(() => expect(mockUpdateTask).toHaveBeenCalledWith('cron-1', { enabled: false }));
   });
 
@@ -230,10 +230,10 @@ describe('Schedules page', () => {
     mockSubs = [{ id: 'sub-1', eventType: 'agent:idle', filter: {}, oneShot: true, subscriberSession: 'crewly-orc', createdAt: '2026-09-30T00:00:00Z' }];
     render(<Triggers />);
     await settled();
-    fireEvent.click(screen.getByRole('tab', { name: /提醒/ }));
+    fireEvent.click(screen.getByRole('tab', { name: /Reminders/ }));
     // Auto-generated follow-up names fall back to the work item title.
     expect(await screen.findByText('Check PR #12')).toBeInTheDocument();
-    expect(screen.getByRole('region', { name: '等待事件' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Waiting on events' })).toBeInTheDocument();
   });
 
   it('keeps History collapsed until expanded, then paginates', async () => {
@@ -244,9 +244,9 @@ describe('Schedules page', () => {
       lastFiredAt: new Date(Date.UTC(2026, 8, 1 + i)).toISOString(),
     }));
     render(<Triggers />);
-    fireEvent.click(await screen.findByRole('tab', { name: /历史/ }));
+    fireEvent.click(await screen.findByRole('tab', { name: /History/ }));
 
-    const toggle = await screen.findByRole('button', { name: /25 条已结束的记录/ });
+    const toggle = await screen.findByRole('button', { name: /25 finished records/ });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(screen.queryByText('old-schedule-24')).not.toBeInTheDocument();
 
@@ -255,7 +255,7 @@ describe('Schedules page', () => {
     expect(await screen.findByText('old-schedule-24')).toBeInTheDocument();
     expect(screen.queryByText('old-schedule-0')).not.toBeInTheDocument();
     expect(screen.getByText('1 / 2')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
     expect(await screen.findByText('old-schedule-0')).toBeInTheDocument();
   });
 });
