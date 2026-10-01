@@ -114,6 +114,10 @@ export interface LoginBrokerDeps {
 	idFactory?: () => string;
 	logger?: HarnessLogger;
 	timeoutMs?: number;
+	/** Pause before Enter after typed input (ms); 0 types both in one write (tests) */
+	submitDelayMs?: number;
+	/** Second Enter when the login printed nothing after the first (ms); 0 disables */
+	submitRetryMs?: number;
 }
 
 /** Internal session record. */
@@ -162,6 +166,8 @@ export class LoginBrokerService extends EventEmitter {
 	private readonly sessions = new Map<string, SessionRecord>();
 	/** Sessions whose verification is in flight. */
 	private readonly verifying = new Set<string>();
+	private readonly submitDelayMs: number;
+	private readonly submitRetryMs: number;
 
 	/**
 	 * @param deps - Injectable dependencies (all optional)
@@ -179,6 +185,8 @@ export class LoginBrokerService extends EventEmitter {
 		this.idFactory = deps.idFactory ?? randomUUID;
 		this.logger = deps.logger ?? SILENT_HARNESS_LOGGER;
 		this.timeoutMs = deps.timeoutMs ?? HARNESS_CONSTANTS.LOGIN.TIMEOUT_MS;
+		this.submitDelayMs = deps.submitDelayMs ?? HARNESS_CONSTANTS.LOGIN.SUBMIT_DELAY_MS;
+		this.submitRetryMs = deps.submitRetryMs ?? HARNESS_CONSTANTS.LOGIN.SUBMIT_RETRY_MS;
 	}
 
 	/**
@@ -320,7 +328,31 @@ export class LoginBrokerService extends EventEmitter {
 			throw new LoginBrokerError('not_active', 'This login has already finished');
 		}
 		record.inputOffset = record.raw.length;
-		record.pty.write(`${text.replace(/[\r\n]+/g, '')}${HARNESS_CONSTANTS.LOGIN.ENTER}`);
+		const typed = text.replace(/[\r\n]+/g, '');
+		const { ENTER } = HARNESS_CONSTANTS.LOGIN;
+		if (this.submitDelayMs <= 0) {
+			record.pty.write(`${typed}${ENTER}`);
+		} else {
+			// Type, pause, then Enter on its own: an Ink TUI treats one write of
+			// "code + Enter" as a paste and keeps the Enter inside it.
+			record.pty.write(typed);
+			const pty = record.pty;
+			setTimeout(() => {
+				if (record.exited || isTerminalLoginState(record.session.state)) return;
+				pty.write(ENTER);
+				const rawAtEnter = record.raw.length;
+				if (this.submitRetryMs > 0) {
+					setTimeout(() => {
+						// Nothing printed since Enter: it was not taken — press it once more.
+						if (record.exited || isTerminalLoginState(record.session.state)) return;
+						if (record.raw.length === rawAtEnter) {
+							this.logger.warn('Login input not submitted — pressing Enter again', { sessionId: record.session.id });
+							pty.write(ENTER);
+						}
+					}, this.submitRetryMs).unref?.();
+				}
+			}, this.submitDelayMs).unref?.();
+		}
 		this.update(record, { state: 'verifying', needsInput: false, message: null });
 		return { ...record.session };
 	}
