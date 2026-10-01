@@ -140,7 +140,13 @@ owner's dashboard makes):
    with a fixed token (`SMOKE-<nonce>`) through the reply/report skill.
 5. `bash` — the file exists and contains `ok`.
 6. `reply` — the token shows up in the agent's output / reply.
-7. `cleanup` — stop and delete the team (always, also on failure).
+7. `cleanup` — stop and delete the team and its scratch project, and kill
+   the session if a refused start left its PTY behind (always, also on
+   failure).
+
+A smoke-test team gets no Slack team channel, owner invite or agent app.
+When a refused start already removed the session, the screen comes from
+the session's log (`/api/sessions/:name/logs`); secrets are redacted.
 
 The whole test is bounded by 5 minutes. The result names the failing step
 and carries the last screen text. Smoke-test sessions never get a fallback
@@ -154,6 +160,17 @@ when the variable holds a real value: empty, whitespace-only, quote-only
 `your-…-key`) count as not set. Note: the backend loads `.env` from its
 working directory (dotenv), so a key there counts even when the owner's
 shell has none.
+
+## Related fixes found by the live test (2026-10-01)
+
+- The Crewly Agent reports a failed model call to the backend only as
+  "No output generated. Check the stream for errors."; DeepSeek's real
+  error (HTTP 402 `Insufficient Balance`) is on the child's stderr. The
+  detector reads the error plus the recent stderr.
+- The heartbeat monitor marked every in-process (Crewly Agent) member
+  "ghost / inactive" seconds after start (no PTY session); it now skips a
+  member whose in-process runtime is running. `GET /api/teams/:id` likewise
+  counts an in-process runtime as a live session.
 
 ## Non-goals
 
