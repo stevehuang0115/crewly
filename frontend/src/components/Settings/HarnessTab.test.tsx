@@ -25,6 +25,10 @@ vi.mock('../../services/harness.service', () => ({
   },
 }));
 
+vi.mock('./RuntimeFallbackPanel', () => ({
+  RuntimeFallbackPanel: () => <div data-testid="runtime-fallback-panel-stub" />,
+}));
+
 const svc = vi.mocked(harnessService);
 
 describe('HarnessTab', () => {

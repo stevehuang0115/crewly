@@ -25,6 +25,7 @@ jest.mock('../../settings/settings.service.js', () => ({
 import { CREWLY_AGENT_OUTPUT_REQUIREMENTS, CrewlyAgentExternalRuntimeService } from './crewly-agent-external-runtime.service.js';
 import { CREWLY_AGENT_MANAGED_COMMAND } from '../../../constants.js';
 import { CREWLY_AGENT_DEFAULTS } from './types.js';
+import { setRuntimeFallbackHooks } from '../../runtime-fallback/effective-runtime.js';
 import { setLocalApiPort, resetLocalApiPortForTesting } from '../../../utils/local-api-url.utils.js';
 
 // Pull the private allow-list regex via a typed escape hatch so we
@@ -496,6 +497,7 @@ describe('CrewlyAgentExternalRuntimeService — concurrent run correlation', () 
     pendingRuns: Map<string, unknown>;
     spawnAgentProcess: (config: unknown) => Promise<void>;
     handleWorkerMessage: (msg: unknown) => void;
+    handleStderr: (chunk: string) => void;
     handleExit: (child: unknown, code: number | null, signal: string | null) => void;
     startHeartbeat: (session: string) => void;
   };
@@ -611,6 +613,27 @@ describe('CrewlyAgentExternalRuntimeService — concurrent run correlation', () 
 
     await expect(runB).rejects.toThrow('boom');
     await expect(runA).resolves.toMatchObject({ text: 'fine' });
+  });
+
+  it('reports a failed run with the provider error from stderr to the runtime fallback', async () => {
+    const reportOutput = jest.fn(() => true);
+    setRuntimeFallbackHooks({
+      overrideFor: () => null,
+      resolveLaunch: async (i) => ({ runtime: i.configured, overridden: false }),
+      beforeDelivery: () => 'deliver',
+      reportOutput,
+      takeKickoffNote: () => null,
+    });
+    try {
+      const run = svc.handleMessage('hello');
+      const [id] = dispatchedRunIds();
+      inner.handleStderr("  responseBody: '{\"error\":{\"message\":\"Insufficient Balance (request_id: x)\"}}',\n  statusCode: 402,\n");
+      inner.handleWorkerMessage({ type: 'error', runId: id, error: 'No output generated. Check the stream for errors.' });
+      await expect(run).rejects.toThrow('No output generated');
+      expect(reportOutput).toHaveBeenCalledWith(expect.any(String), 'crewly-agent', expect.stringContaining('Insufficient Balance'), 'error');
+    } finally {
+      setRuntimeFallbackHooks(null);
+    }
   });
 
   it('falls back to the oldest run when the child echoes no runId', async () => {

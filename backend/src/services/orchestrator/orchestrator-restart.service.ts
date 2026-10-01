@@ -26,6 +26,21 @@ import type { AgentRegistrationService } from '../agent/agent-registration.servi
 import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
 import { delay } from '../../utils/async.utils.js';
+import { isPlannedRelaunch } from '../agent/planned-relaunch.registry.js';
+
+/** Options of {@link OrchestratorRestartService.attemptRestart}. */
+export interface RestartOptions {
+	/**
+	 * A relaunch Crewly does on purpose (the runtime fallback switching the
+	 * orchestrator to another runtime or back), not a recovery from a crash or
+	 * hang: no cooldown slot or attempt is counted, no "Orchestrator
+	 * Restarted … unresponsive" alarm is sent, and a failure does not count
+	 * toward giving up.
+	 */
+	planned?: boolean;
+	/** Who asked for a planned relaunch (logged) */
+	reason?: string;
+}
 
 /**
  * Restart statistics for monitoring
@@ -175,9 +190,22 @@ export class OrchestratorRestartService {
 	 * 6. Notifies Slack (if configured)
 	 * 7. Broadcasts WebSocket event
 	 *
+	 * A planned relaunch ({@link RestartOptions.planned}) skips the cooldown and
+	 * give-up checks, is not counted, and sends no alarm. While one is in its
+	 * window, unplanned callers (heartbeat / exit monitors) are refused: the
+	 * orchestrator is being restarted on purpose, not down.
+	 *
+	 * @param options - `planned` for a relaunch Crewly does on purpose
 	 * @returns true if restart succeeded, false otherwise
 	 */
-	async attemptRestart(): Promise<boolean> {
+	async attemptRestart(options: RestartOptions = {}): Promise<boolean> {
+		const planned = options.planned === true;
+		if (!planned && isPlannedRelaunch(ORCHESTRATOR_SESSION_NAME)) {
+			this.logger.info('Orchestrator is being relaunched on purpose — not treating it as unresponsive');
+			return false;
+		}
+		if (planned) return this.runRestart(true, options.reason);
+
 		if (this.gaveUp) {
 			if (Date.now() - Date.parse(this.gaveUp.at) < ORCHESTRATOR_RESTART_CONSTANTS.GAVE_UP_RETRY_MS) {
 				return false;
@@ -201,6 +229,22 @@ export class OrchestratorRestartService {
 			return false;
 		}
 
+		return this.runRestart(false);
+	}
+
+	/**
+	 * Kill and recreate the orchestrator session.
+	 *
+	 * @param planned - A relaunch on purpose: not counted, no alarm
+	 * @param reason - Who asked for a planned relaunch
+	 * @returns true on success
+	 */
+	private async runRestart(planned: boolean, reason?: string): Promise<boolean> {
+		if (this.isRestarting) {
+			this.logger.warn('Restart already in progress, skipping');
+			return false;
+		}
+
 		if (!this.agentRegistrationService || !this.sessionBackend) {
 			this.logger.error('Dependencies not set, cannot restart');
 			return false;
@@ -209,7 +253,7 @@ export class OrchestratorRestartService {
 		this.isRestarting = true;
 
 		try {
-			this.logger.info('Attempting orchestrator restart...');
+			this.logger.info(planned ? 'Relaunching the orchestrator (planned)...' : 'Attempting orchestrator restart...', planned ? { reason } : undefined);
 
 			// Step 1: Wait a brief delay for cleanup
 			await delay(ORCHESTRATOR_RESTART_CONSTANTS.RESTART_DELAY_MS);
@@ -269,7 +313,9 @@ export class OrchestratorRestartService {
 				this.logger.error('Failed to create new orchestrator session', {
 					error: result.error,
 					errorCode: result.errorCode,
+					planned,
 				});
+				if (planned) return false;
 				this.recordFailure(
 					result.error || 'the orchestrator session could not be created',
 					result.errorCode === CLAUDE_STARTUP_CONSTANTS.BLOCKED_ERROR_CODE,
@@ -303,6 +349,20 @@ export class OrchestratorRestartService {
 				});
 			}
 
+			if (planned) {
+				// A planned relaunch is not a crash: no alarm, no attempt counted.
+				// The service that asked for it tells the owner itself.
+				this.consecutiveFailures = 0;
+				this.socketIO?.emit('orchestrator:restarted', {
+					timestamp: new Date().toISOString(),
+					restartCount: this.totalRestarts,
+					planned: true,
+					...(reason ? { reason } : {}),
+				});
+				this.logger.info('Orchestrator relaunched (planned)', { reason });
+				return true;
+			}
+
 			// Step 7: Notify via Slack (fire-and-forget)
 			this.notifySlack().catch(() => {
 				// Slack notification is best-effort
@@ -331,7 +391,7 @@ export class OrchestratorRestartService {
 				error: formatError(error),
 				stack: error instanceof Error ? error.stack : undefined,
 			});
-			this.recordFailure(formatError(error), false);
+			if (!planned) this.recordFailure(formatError(error), false);
 			return false;
 		} finally {
 			this.isRestarting = false;

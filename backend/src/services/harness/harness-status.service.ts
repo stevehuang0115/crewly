@@ -45,6 +45,31 @@ import {
 /** Exit code of `security find-generic-password` when the item does not exist. */
 const KEYCHAIN_ITEM_NOT_FOUND_EXIT_CODE = 44;
 
+/** Values that are clearly not a key: placeholders left in `.env` files. */
+const PLACEHOLDER_ENV_VALUE = /^(?:undefined|null|none|false|0|changeme|change-me|todo|x{3,}|\*+|<[^>]*>|your[-_ ].*|.*[-_ ]here)$/i;
+
+/**
+ * Whether an env value holds something usable as a credential. Empty,
+ * whitespace-only, quote-only (`""`, `''` — copied unparsed from a `.env`
+ * file) and placeholder values (`undefined`, `changeme`, `your-api-key`) do
+ * not count: a harness must never be reported signed in on them.
+ *
+ * @param value - Raw env value
+ * @returns True when the value looks like a real credential
+ *
+ * @example
+ * ```ts
+ * isUsableEnvValue('  '); // false
+ * isUsableEnvValue('""'); // false
+ * isUsableEnvValue('AIzaSy…'); // true
+ * ```
+ */
+export function isUsableEnvValue(value: string | undefined | null): boolean {
+	if (typeof value !== 'string') return false;
+	const bare = value.trim().replace(/^(['"`])([\s\S]*)\1$/, '$2').trim();
+	return bare.length > 0 && !PLACEHOLDER_ENV_VALUE.test(bare);
+}
+
 /** Injectable dependencies. */
 export interface HarnessStatusDeps {
 	run?: RunCommand;
@@ -214,7 +239,7 @@ export class HarnessStatusService {
 	 * @returns The name, or null
 	 */
 	private firstSetEnv(names: readonly string[]): string | null {
-		return names.find((name) => (this.env[name] ?? '').trim().length > 0) ?? null;
+		return names.find((name) => isUsableEnvValue(this.env[name])) ?? null;
 	}
 
 	/**

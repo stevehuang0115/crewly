@@ -2794,11 +2794,11 @@ export const ANTIGRAVITY_CONSTANTS = {
 	},
 	MESSAGES: {
 		NO_API_KEY:
-			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
+			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Runtimes → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
 		KEY_NOT_IN_SESSION:
-			'Antigravity CLI started without GEMINI_API_KEY in its environment, so it refused to run (Crewly never lets it fall back to a Google account). Save the Gemini API key in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`) — a key saved there is given to every Antigravity session at start — then start the agent again.',
+			'Antigravity CLI started without GEMINI_API_KEY in its environment, so it refused to run (Crewly never lets it fall back to a Google account). Save the Gemini API key in Settings → Runtimes → Antigravity CLI (or run `crewly login antigravity`) — a key saved there is given to every Antigravity session at start — then start the agent again.',
 		ACCOUNT_LOGIN:
-			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Harness, then start the agent again.',
+			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Runtimes, then start the agent again.',
 		FIRST_RUN:
 			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. In a terminal run `GEMINI_API_KEY=<your key> agy`, finish those screens, type /exit, then start the agent again.',
 		SETTINGS_UNREADABLE:
@@ -4966,4 +4966,100 @@ export const SYSTEM_CONTROL_CONSTANTS = {
 		REGISTRY_UNREACHABLE: 'Could not reach the npm registry to find the latest version. Try again later.',
 		RESTART_IN_PROGRESS: 'Crewly is already shutting down or restarting.',
 	},
+} as const;
+
+/**
+ * Runtime fallback: switch an agent to another runtime when its runtime runs
+ * out of usage, and back when the limit resets.
+ * specs/2026-10-01-runtime-fallback.md
+ */
+/**
+ * A planned relaunch (the runtime fallback moving an agent to another
+ * runtime and back) is not a crash or a hang: the restart / heartbeat / hung
+ * monitors ignore the session for this long and send no alarm.
+ */
+export const PLANNED_RELAUNCH_CONSTANTS = {
+	/** How long a session counts as "being relaunched on purpose" */
+	WINDOW_MS: 5 * 60_000,
+} as const;
+
+export const RUNTIME_FALLBACK_CONSTANTS = {
+	/** State + settings file under CREWLY_HOME */
+	STATE_FILE: 'runtime-fallback.json',
+	/** Default global fallback chain */
+	DEFAULT_CHAIN: ['claude-code', 'crewly-agent', 'antigravity-cli'] as readonly string[],
+	/** Model a Crewly Agent fallback runs (provider/model) */
+	DEFAULT_CREWLY_AGENT_MODEL: 'deepseek/deepseek-chat',
+	/** Default switch-back probe cadence */
+	DEFAULT_PROBE_INTERVAL_MINUTES: 15,
+	/** Bounds of the probe cadence setting */
+	MIN_PROBE_INTERVAL_MINUTES: 5,
+	MAX_PROBE_INTERVAL_MINUTES: 240,
+	/** Main tick (switch-back checks, idle-boundary reverts) */
+	TICK_MS: 30_000,
+	/** Poll while waiting for an agent's safe point */
+	SAFE_POINT_POLL_MS: 5_000,
+	/** Longest wait for a safe point before switching anyway (a limit ends the turn) */
+	SAFE_POINT_MAX_WAIT_MS: 3 * 60_000,
+	/** Wait after the first switch of an event before the owner DM (so the count means something) */
+	NOTICE_DELAY_MS: 45_000,
+	/** Probe again this long after a parsed reset time */
+	RESET_GRACE_MS: 2 * 60_000,
+	/**
+	 * Out of money/credit (DeepSeek 402 "Insufficient Balance", "credit
+	 * balance is too low"): no reset time and no timed retry — only a probe,
+	 * at most this often, can bring the runtime back.
+	 */
+	BILLING_PROBE_INTERVAL_MS: 6 * 60 * 60_000,
+	/** A limit seen again this soon after a switch-back counts as a failed switch-back */
+	FAILED_REVERT_WINDOW_MS: 30 * 60_000,
+	/** Each failed switch-back doubles the probe interval, up to this */
+	MAX_PROBE_BACKOFF_MS: 24 * 60 * 60_000,
+	/** Where the owner tops up, by billing provider */
+	TOP_UP_URLS: {
+		deepseek: 'platform.deepseek.com',
+		anthropic: 'console.anthropic.com/settings/billing',
+		openai: 'platform.openai.com/settings/organization/billing',
+	} as Readonly<Record<string, string>>,
+	/** A probe that says "fine" mutes detection for this long (false positive) */
+	FALSE_POSITIVE_MUTE_MS: 10 * 60_000,
+	/** Transient rate limits on one session that escalate to a usage limit */
+	TRANSIENT_ESCALATE_COUNT: 4,
+	TRANSIENT_WINDOW_MS: 10 * 60_000,
+	/** Horizon of an escalated transient limit */
+	TRANSIENT_ESCALATED_HORIZON_MS: 30 * 60_000,
+	/** A revert is not attempted while the PTY wrote within this window */
+	IDLE_QUIET_MS: 20_000,
+	/** Smoke tests */
+	SMOKE: {
+		TEAM_PREFIX: 'zz-runtime-smoke-',
+		MEMBER_NAME: 'smoke',
+		MEMBER_ROLE: 'developer',
+		TIMEOUT_MS: 5 * 60_000,
+		POLL_MS: 3_000,
+		/** Keep finished jobs this long for GET */
+		JOB_TTL_MS: 60 * 60_000,
+		/** Lines read from the agent's screen / log while waiting */
+		CAPTURE_LINES: 200,
+		/** Screen lines kept in a failure report */
+		SCREEN_LINES: 60,
+	},
+	/** Display names used in owner messages and badges */
+	LABELS: {
+		'claude-code': 'Claude Code',
+		'codex-cli': 'Codex',
+		'antigravity-cli': 'Antigravity',
+		'gemini-cli': 'Gemini CLI',
+		'opencode-cli': 'OpenCode',
+		'crewly-agent': 'Crewly Agent',
+	} as Readonly<Record<string, string>>,
+	/** Short names for "(Claude limit)" */
+	SHORT_LABELS: {
+		'claude-code': 'Claude',
+		'codex-cli': 'Codex',
+		'antigravity-cli': 'Antigravity',
+		'gemini-cli': 'Gemini',
+		'opencode-cli': 'OpenCode',
+		'crewly-agent': 'Crewly Agent',
+	} as Readonly<Record<string, string>>,
 } as const;

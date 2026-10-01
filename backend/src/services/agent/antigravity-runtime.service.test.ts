@@ -201,7 +201,7 @@ describe('resolveAntigravityApiKey', () => {
 		return getApiKey;
 	}
 
-	it('prefers the key saved for Antigravity in Settings → Harness', async () => {
+	it('prefers the key saved for Antigravity in Settings → Runtimes', async () => {
 		stub('stored-key', 'settings-key');
 		await expect(resolveAntigravityApiKey()).resolves.toBe('stored-key');
 	});
