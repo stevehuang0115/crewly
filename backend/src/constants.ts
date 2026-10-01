@@ -2771,11 +2771,11 @@ export const ANTIGRAVITY_CONSTANTS = {
 	},
 	MESSAGES: {
 		NO_API_KEY:
-			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
+			'Antigravity CLI runs in Crewly only with a Gemini API key, and none is saved. Add one in Settings → Runtimes → Antigravity CLI (or run `crewly login antigravity`), then start the agent again. Crewly never uses a Google account login for Antigravity.',
 		KEY_NOT_IN_SESSION:
-			'Antigravity CLI started without GEMINI_API_KEY in its environment, so it refused to run (Crewly never lets it fall back to a Google account). Save the Gemini API key in Settings → Harness → Antigravity CLI (or run `crewly login antigravity`) — a key saved there is given to every Antigravity session at start — then start the agent again.',
+			'Antigravity CLI started without GEMINI_API_KEY in its environment, so it refused to run (Crewly never lets it fall back to a Google account). Save the Gemini API key in Settings → Runtimes → Antigravity CLI (or run `crewly login antigravity`) — a key saved there is given to every Antigravity session at start — then start the agent again.',
 		ACCOUNT_LOGIN:
-			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Harness, then start the agent again.',
+			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Runtimes, then start the agent again.',
 		FIRST_RUN:
 			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. In a terminal run `GEMINI_API_KEY=<your key> agy`, finish those screens, type /exit, then start the agent again.',
 		SETTINGS_UNREADABLE:

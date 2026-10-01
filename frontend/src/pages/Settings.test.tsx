@@ -233,9 +233,9 @@ describe('Settings Page — Harness tab', () => {
     mockSearchParams = new URLSearchParams('');
   });
 
-  it('shows a Harness tab that renders the harness settings', () => {
+  it('shows a Runtimes tab that renders the harness settings', () => {
     render(<Settings />);
-    fireEvent.click(screen.getByText('Harness'));
+    fireEvent.click(screen.getByText('Runtimes'));
     expect(screen.getByTestId('harness-tab')).toBeInTheDocument();
     expect(screen.queryByTestId('general-tab')).not.toBeInTheDocument();
   });

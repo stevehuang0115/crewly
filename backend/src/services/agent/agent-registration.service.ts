@@ -3357,7 +3357,7 @@ Loop until done, blocked, or explicitly reassigned:
 	 *
 	 * Two runtimes get an override on top of the plain settings lookup, both
 	 * carried over from the primary spawn path's inline key resolution:
-	 * - Antigravity: a key already saved in Settings → Harness is applied at
+	 * - Antigravity: a key already saved in Settings → Runtimes is applied at
 	 *   spawn via buildAgentIdentityEnv (harnessEnvForAgents); a settings
 	 *   Gemini key must not override it here.
 	 * - Codex: it prefers OPENAI_API_KEY over its own login, so a stale
@@ -3374,7 +3374,7 @@ Loop until done, blocked, or explicitly reassigned:
 		const env: Record<string, string> = {};
 
 		// Gemini key — needed by gemini-cli. An Antigravity session whose key
-		// was saved in Settings → Harness already got it at spawn
+		// was saved in Settings → Runtimes already got it at spawn
 		// (buildAgentIdentityEnv); a settings key must not override it.
 		const antigravityKeyAtSpawn =
 			runtimeType === RUNTIME_TYPES.ANTIGRAVITY_CLI && getHarnessCredentialsStore().getAntigravityGeminiApiKey() !== null;

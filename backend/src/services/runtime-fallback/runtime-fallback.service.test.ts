@@ -128,6 +128,17 @@ describe('RuntimeFallbackService — switch on a usage limit', () => {
 		expect(h.service.takeKickoffNote('dev-1')).toBeNull();
 	});
 
+	it('re-delivers only once messages are no longer held back for the switch', async () => {
+		const h = make();
+		const gateDuringRedeliver: string[] = [];
+		h.deps.redeliver = async (s) => {
+			gateDuringRedeliver.push(h.service.beforeDelivery(s, 'crewly-agent'));
+		};
+		h.service.reportOutput('dev-1', 'claude-code', CLAUDE_LIMIT, 'output');
+		await settle();
+		expect(gateDuringRedeliver).toEqual(['deliver']);
+	});
+
 	it('waits for the agent to finish its turn before switching', async () => {
 		const h = make();
 		h.busy.add('dev-1');

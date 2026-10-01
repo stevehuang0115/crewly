@@ -47,7 +47,7 @@ export interface AntigravityRuntimeDeps {
 
 /**
  * The Gemini API key an Antigravity session gets: the key saved for
- * Antigravity in Settings → Harness, else a Gemini key from Crewly settings
+ * Antigravity in Settings → Runtimes, else a Gemini key from Crewly settings
  * (global or an antigravity-cli override), else GEMINI_API_KEY in the
  * backend's environment.
  *

@@ -127,6 +127,16 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
                 {isMakingLead ? 'Making lead…' : 'Make lead'}
               </button>
             ) : null}
+            {member.runtimeOverride && (
+              <Badge
+                variant="warning"
+                size="sm"
+                data-testid="runtime-override-badge"
+                title={`Running on a fallback runtime while its own is out of usage${member.runtimeOverride.until ? ` (until ~${new Date(member.runtimeOverride.until).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })})` : ''}`}
+              >
+                {member.runtimeOverride.badge}
+              </Badge>
+            )}
             {member.expertId && (
               <Badge variant="info" size="sm" data-testid="expert-badge">
                 <Sparkles className="w-3 h-3 mr-1" />
