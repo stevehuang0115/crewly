@@ -4260,6 +4260,15 @@ export const HARNESS_CONSTANTS = {
 		WRAPPED_LINE_MIN_LENGTH: 40,
 		/** Keys typed after user input */
 		ENTER: '\r',
+		/**
+		 * Pause between typing the user's input and pressing Enter (ms). Ink TUIs
+		 * (Claude's `setup-token`) read one write of "code + \r" as a paste and
+		 * swallow the Enter, leaving the code sitting at the prompt
+		 * (iriss-air.lan, 2026-10-01).
+		 */
+		SUBMIT_DELAY_MS: 300,
+		/** If the login printed nothing this long after Enter, press Enter once more (ms) */
+		SUBMIT_RETRY_MS: 4000,
 	},
 	/**
 	 * Re-login over Slack (Phase 2): an expired harness login is noticed in

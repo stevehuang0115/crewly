@@ -116,6 +116,7 @@ describe('LoginBrokerService', () => {
 			prepareClaudeConfig,
 			verify,
 			idFactory: () => `s${++n}`,
+			submitDelayMs: 0,
 			...overrides,
 		});
 	}
@@ -167,6 +168,42 @@ describe('LoginBrokerService', () => {
 		expect(session.screen).not.toContain(CLAUDE_TOKEN);
 		expect(session.screen).toContain('[redacted]');
 		for (const update of updates) expect(JSON.stringify(update)).not.toContain(CLAUDE_TOKEN);
+	});
+
+	it('Claude: types the code, then presses Enter separately (Ink reads one write as a paste)', () => {
+		jest.useFakeTimers();
+		try {
+			const broker = make({ submitDelayMs: 300, submitRetryMs: 4000 });
+			const { id } = broker.start('claude-code', 'subscription');
+			const pty = ptys[ptys.length - 1];
+			pty.emit(CLAUDE_SCREEN);
+			broker.input(id, 'the-code#the-state');
+			expect(pty.written).toEqual(['the-code#the-state']);
+			jest.advanceTimersByTime(300);
+			expect(pty.written).toEqual(['the-code#the-state', '\r']);
+			// Nothing printed after Enter: pressed once more.
+			jest.advanceTimersByTime(4000);
+			expect(pty.written).toEqual(['the-code#the-state', '\r', '\r']);
+		} finally {
+			jest.useRealTimers();
+		}
+	});
+
+	it('Claude: no second Enter when the login reacted to the first', () => {
+		jest.useFakeTimers();
+		try {
+			const broker = make({ submitDelayMs: 300, submitRetryMs: 4000 });
+			const { id } = broker.start('claude-code', 'subscription');
+			const pty = ptys[ptys.length - 1];
+			pty.emit(CLAUDE_SCREEN);
+			broker.input(id, 'code-value-123');
+			jest.advanceTimersByTime(300);
+			pty.emit('Verifying…\r\n');
+			jest.advanceTimersByTime(4000);
+			expect(pty.written).toEqual(['code-value-123', '\r']);
+		} finally {
+			jest.useRealTimers();
+		}
 	});
 
 	it('Claude: a rejected code returns to awaiting_user with the message', () => {

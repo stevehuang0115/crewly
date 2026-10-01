@@ -116,6 +116,7 @@ describe('agent-free re-login from the phone (Claude Code, zero agents able to r
 		credentials = new HarnessCredentialsStore(path.join(dir, 'harness-credentials.json'));
 		let n = 0;
 		broker = new LoginBrokerService({
+			submitDelayMs: 0,
 			spawnPty: () => {
 				const pty = new FakePty();
 				ptys.push(pty);
