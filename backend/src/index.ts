@@ -168,7 +168,8 @@ import { ContextWindowMonitorService } from './services/agent/context-window-mon
 import { OAuthReloginMonitorService } from './services/agent/oauth-relogin-monitor.service.js';
 import { OrcReplyRouteService } from './services/orc/orc-reply-route.service.js';
 import { ReloginAgentResumerService } from './services/agent/relogin-agent-resumer.service.js';
-import { getHarnessReloginService } from './services/harness/harness-relogin.service.js';
+import { getHarnessReloginService, harnessCommandWord } from './services/harness/harness-relogin.service.js';
+import { getHarnessService } from './services/harness/harness.service.js';
 import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
@@ -2152,6 +2153,26 @@ void (async () => {
 					clearActivity: (sessionName) => PtyActivityTrackerService.getInstance().clearSession(sessionName),
 				}));
 				OAuthReloginMonitorService.getInstance().setHarnessExpiryHandler((report) => relogin.reportExpiry(report));
+				// Agent-free re-login: every configured agent (running or not)
+				// counts, so a machine whose agents are all stopped or stuck is
+				// still checked; agents flagged at a sign-in screen are resumed
+				// after a dashboard sign-in; what waited is re-delivered.
+				relogin.setAgentLister(async () => {
+					const agents: Array<{ sessionName: string; harnessId: string; displayName?: string }> = [];
+					const orcHarness = await getHarnessService().orc.get().catch(() => null);
+					if (orcHarness) agents.push({ sessionName: ORCHESTRATOR_SESSION_NAME, harnessId: orcHarness, displayName: 'Crewly Orc' });
+					for (const team of await this.storageService.getTeams()) {
+						for (const m of team.members ?? []) {
+							if (m.sessionName && m.runtimeType) agents.push({ sessionName: m.sessionName, harnessId: m.runtimeType, displayName: m.name });
+						}
+					}
+					return agents;
+				});
+				relogin.setSessionNeedsLogin((sessionName) => Boolean(OAuthReloginMonitorService.getInstance().getLoginRequired(sessionName)));
+				relogin.setLoginRestoredHandler(async (harnessId, resumed) => {
+					const { getOwnerMessageWatchdog } = await import('./services/messaging/owner-message-watchdog.service.js');
+					return (await getOwnerMessageWatchdog()?.resumeAfterLogin({ runtimeCmd: harnessCommandWord(harnessId), sessions: resumed })) ?? 0;
+				});
 				getSlackOrchestratorBridge().setInboundInterceptor(createReloginReplyInterceptor(reloginDm, relogin));
 				relogin.start();
 				this.logger.info('Harness re-login over Slack wired');
@@ -4909,7 +4930,15 @@ void (async () => {
 					this.messageQueueService.enqueue(input as Parameters<MessageQueueService['enqueue']>[0]);
 				},
 				isBusy: (session) => activity.getObservedWorkingStatus(session) === 'in_progress',
-				loginRequired: (session) => OAuthReloginMonitorService.getInstance().getLoginRequired(session) ?? null,
+				// A live session at a sign-in screen, or any agent (even a stopped
+				// one) whose harness is confirmed signed out: waking it would only
+				// park it on the same dead login.
+				loginRequired: (session) => {
+					const flagged = OAuthReloginMonitorService.getInstance().getLoginRequired(session);
+					if (flagged) return flagged;
+					const harnessId = getHarnessReloginService().signedOutHarnessOf(session);
+					return harnessId ? { runtimeType: harnessId } : null;
+				},
 				displayNameOf: (session) => (session === ORCHESTRATOR_SESSION_NAME ? 'Orc' : names.get(session) ?? session),
 				slack: () => getSlackService(),
 				owesThread: (slackChannelId, threadTs) => getSlackTypingPlaceholderService()?.owesThread(slackChannelId, threadTs) ?? false,

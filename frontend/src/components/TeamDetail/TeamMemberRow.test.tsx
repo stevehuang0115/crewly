@@ -10,7 +10,8 @@ import { TeamMemberRow } from './TeamMemberRow';
 import { TeamMember } from '@/types';
 
 // Mock lucide-react icons
-vi.mock('lucide-react', () => ({
+vi.mock('lucide-react', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('lucide-react')>()),
   Play: () => <span data-testid="play-icon">Play</span>,
   Square: () => <span data-testid="square-icon">Square</span>,
   Loader2: () => <span data-testid="loader-icon">Loader</span>,
@@ -337,6 +338,7 @@ describe('TeamMemberRow', () => {
       const member = createTestMember({
         agentStatus: 'starting',
         loginRequired: { url: 'https://auth.openai.com/device', code: 'FBVZ-MJHKK', detectedAt: '2026-09-18T10:00:00.000Z' },
+        runtimeType: 'codex-cli',
       });
       render(<TeamMemberRow member={member} teamId="team-1" />);
 

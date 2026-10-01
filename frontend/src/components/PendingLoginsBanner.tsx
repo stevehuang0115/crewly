@@ -175,7 +175,7 @@ export const PendingLoginsBanner: React.FC = () => {
           {pending.map((p) => (
             <div key={p.sessionName} className="flex min-w-0 items-center gap-1.5 text-xs text-amber-200/90">
               <span className="font-mono break-all">{pendingSessionLabel(p.sessionName)}</span>
-              <SignInNeededChip loginRequired={p} agentLabel={pendingSessionLabel(p.sessionName)} />
+              <SignInNeededChip loginRequired={p} agentLabel={pendingSessionLabel(p.sessionName)} runtimeType={p.runtimeType} />
             </div>
           ))}
         </div>

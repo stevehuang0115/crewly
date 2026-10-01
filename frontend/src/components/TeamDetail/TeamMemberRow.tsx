@@ -139,7 +139,7 @@ export const TeamMemberRow: React.FC<TeamMemberRowProps> = ({ member, teamId, on
       </div>
       <div className="flex items-center gap-3">
         {member.loginRequired && (
-          <SignInNeededChip loginRequired={member.loginRequired} agentLabel={member.name} align="right" />
+          <SignInNeededChip loginRequired={member.loginRequired} agentLabel={member.name} align="right" runtimeType={member.runtimeType} />
         )}
         <span className={`px-3 py-1 rounded-full text-sm font-medium flex items-center gap-2 ${statusColor}`}>
           {isLoading && <LoadingSpinner size="xs" centered={false} />}

@@ -260,7 +260,7 @@ export class RequestStatusUpdateSubscriber {
    * "still 3 blocked" message.
    *
    * Bug shape (2026-05-09 dogfood): a Slack thread received 7+ identical
-   * "⏳ 还在做。已完成 0/4, 进行中 0, 排队 0, 卡住 3" messages over the
+   * "⏳ Still working. Done 0/4, in progress 0, queued 0, stuck 3" messages over the
    * day because the WI state genuinely hadn't moved (Plan WI was wedged
    * blocked) but the heartbeat cadence faithfully kept firing. Plain-
    * language UX rule: a "no change" heartbeat IS noise, not signal.
@@ -554,17 +554,17 @@ export class RequestStatusUpdateSubscriber {
     const targetShort = humanizeAgentName(wi.target);
     switch (eventType) {
       case 'task:done_by_worker':
-        return `✅ ${targetShort} 完成了「${titleShort}」, 等下一步。`;
+        return `✅ ${targetShort} finished "${titleShort}" — waiting for the next step.`;
       case 'task:verified':
-        return `🟢 「${titleShort}」已通过检查。`;
+        return `🟢 "${titleShort}" passed its check.`;
       case 'task:rejected':
-        return `🔁 「${titleShort}」检查未通过, 让 ${targetShort} 重做。`;
+        return `🔁 "${titleShort}" didn't pass its check; ${targetShort} is redoing it.`;
       case 'task:blocked':
-        return `⛔ 「${titleShort}」卡住了 (target=${targetShort})。我会跟进。`;
+        return `⛔ "${titleShort}" is stuck (${targetShort}). I'll follow up.`;
       case 'task:failed':
-        return `❌ 「${titleShort}」失败 (target=${targetShort})。我会跟进或转交。`;
+        return `❌ "${titleShort}" failed (${targetShort}). I'll follow up or hand it to someone else.`;
       default:
-        return `更新: 「${titleShort}」状态变化 (${eventType})。`;
+        return `Update: "${titleShort}" changed status (${eventType}).`;
     }
   }
 
@@ -580,7 +580,7 @@ export class RequestStatusUpdateSubscriber {
     };
     for (const wi of childWIs) {
       const s = wi.status;
-      // #813: done_by_worker is reported, not reviewed — never count it as 已完成.
+      // #813: done_by_worker is reported, not reviewed — never count it as done.
       if (s === 'done_by_worker') counts.review++;
       else if (s === 'done' || s === 'verified') counts.done++;
       else if (s === 'running') counts.running++;
@@ -591,18 +591,18 @@ export class RequestStatusUpdateSubscriber {
     }
     // Only surface the failed/cancelled bucket when it's non-zero.
     // Hiding it unconditionally (the original shape) was the bug —
-    // 4 cancelled WIs rendered as "0/4, 进行中 0, 排队 0, 卡住 0",
+    // 4 cancelled WIs rendered as "0/4, in progress 0, queued 0, stuck 0",
     // which reads as "everything vanished" rather than "everything
     // got cancelled". The all-terminal guard in runHeartbeat now
     // intercepts the pure-cancelled case, but a mixed Request with
     // some cancelled and some still in-flight would still hit this
     // path, so include the count for honesty.
-    const tail = counts.failed > 0 ? `, 取消/失败 ${counts.failed}` : '';
-    const review = counts.review > 0 ? `待验收 ${counts.review}, ` : '';
+    const tail = counts.failed > 0 ? `, cancelled/failed ${counts.failed}` : '';
+    const review = counts.review > 0 ? `to review ${counts.review}, ` : '';
     return (
-      `⏳ 还在做。已完成 ${counts.done}/${childWIs.length}, ${review}` +
-      `进行中 ${counts.running}, 排队 ${counts.queued}, 卡住 ${counts.blocked}${tail}。` +
-      ` 我会在有变化时再更新。`
+      `⏳ Still working. Done ${counts.done}/${childWIs.length}, ${review}` +
+      `in progress ${counts.running}, queued ${counts.queued}, stuck ${counts.blocked}${tail}.` +
+      ` I'll update you when something changes.`
     );
   }
 
@@ -712,7 +712,7 @@ export class RequestStatusUpdateSubscriber {
  * @returns A short label suitable for Slack ('Leo', 'Orc', 'Sam', ...)
  */
 function humanizeAgentName(sessionName: string | undefined): string {
-  if (!sessionName) return '团队';
+  if (!sessionName) return 'the team';
   if (sessionName === 'crewly-orc') return 'Orc';
   // crewly-product-leo-21a5477e → 'Leo'
   // crewly-marketing-luna-... → 'Luna'

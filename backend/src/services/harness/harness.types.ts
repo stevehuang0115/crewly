@@ -197,6 +197,8 @@ export interface RunCommandOptions {
 	stdin?: string;
 	/** Streaming output callback (install log) */
 	onOutput?: (chunk: string) => void;
+	/** Working directory (default: the backend's) */
+	cwd?: string;
 }
 
 /** Runs a command without a shell and resolves when it exits. Never rejects. */

@@ -2,24 +2,31 @@
  * Slack side of the harness re-login (onboarding Phase 2).
  *
  * - {@link SlackReloginDmService.sendToOwner}: DM the owner (the person who
- *   installed the Slack app) through the master bot. The DM channel is
- *   remembered so replies can be matched to it. When the owner id is not
- *   known, falls back to the owner-notification path
- *   (`SlackService.sendNotification`, the most recent master-bot DM).
- * - {@link SlackReloginDmService.isOwnerDmReply}: whether an inbound message
- *   is the owner writing in that DM — or in their DM with the orchestrator's
- *   own bot ("Crewly Orc"), where they usually talk to the orc — so the Slack
- *   bridge may offer it to the re-login coordinator before anything else
- *   (logging, thread store, orc).
+ *   installed the Slack app) from **this machine's own orchestrator bot**
+ *   ("Crewly Orc (<machine>)") when it is installed, else through the master
+ *   bot, else the owner-notification path. The conversation it landed in is
+ *   returned so the coordinator takes the code only from there.
+ * - {@link SlackReloginDmService.ownerDmScope}: whether an inbound message is
+ *   the owner writing in their DM with the orc's bot / the master bot
+ *   (`orc`) or with another agent's bot (`agent`), so the Slack bridge may
+ *   offer it to the re-login coordinator before anything else (logging,
+ *   thread store, orc). This runs in the backend: it works with no agent
+ *   awake.
  * - An owner-requested login (「重新登录 claude」) answers in the conversation
  *   and thread it was asked in, under the bot that conversation belongs to
- *   ({@link ReloginReplyTarget}); the master-bot DM is the fallback.
+ *   ({@link ReloginReplyTarget}).
  *
  * @module services/slack/slack-relogin-dm.service
  */
 
 import type { SlackIncomingMessage, SlackNotification, SlackOutgoingMessage } from '../../types/slack.types.js';
-import type { HarnessReloginService, ReloginOwnerNotifier, ReloginReplyTarget } from '../harness/harness-relogin.service.js';
+import type {
+	HarnessReloginService,
+	OwnerReplyScope,
+	ReloginDelivery,
+	ReloginOwnerNotifier,
+	ReloginReplyTarget,
+} from '../harness/harness-relogin.service.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 
@@ -31,7 +38,7 @@ export interface ReloginDmSlackApi {
 	isConnected(): boolean;
 	getOwnerUserId: (() => string | null) | null;
 	isAgentOwnedConversation: ((channelId: string) => boolean) | null;
-	openDirectMessage(userId: string): Promise<string>;
+	openDirectMessage(userId: string, botToken?: string): Promise<string>;
 	sendMessage(message: SlackOutgoingMessage): Promise<string>;
 	sendNotification(notification: SlackNotification): Promise<void>;
 }
@@ -102,22 +109,42 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 	/**
 	 * DM the owner. Never logs the text.
 	 *
+	 * Without a target the DM goes to the owner's DM with **this machine's
+	 * own orchestrator bot** ("Crewly Orc (<machine>)") when it is installed:
+	 * Cloud routes a reply there back to this machine (rule 1, the agent's
+	 * app), whereas a reply in the shared master-bot DM goes to the account's
+	 * primary machine — on a second machine the owner's `login` / code would
+	 * never arrive. The master-bot DM is the fallback, then the
+	 * owner-notification path.
+	 *
 	 * @param text - Message (plain text with Slack mrkdwn emphasis; escaped here)
-	 * @param target - Conversation to answer in; absent/unusable = the master-bot DM
-	 * @returns True when Slack accepted it
+	 * @param target - Conversation to answer in; absent/unusable = this machine's DM with the owner
+	 * @returns Where it was delivered, true when delivered somewhere unknown, false when not
 	 */
-	async sendToOwner(text: string, target?: ReloginReplyTarget | null): Promise<boolean> {
+	async sendToOwner(text: string, target?: ReloginReplyTarget | null): Promise<ReloginDelivery> {
 		const slack = this.getSlack();
 		if (!slack.isConnected()) return false;
 		const escaped = escapeSlackText(text);
-		if (target && (await this.sendToTarget(slack, escaped, target))) return true;
+		if (target && (await this.sendToTarget(slack, escaped, target))) return target;
 		const ownerId = slack.getOwnerUserId?.() ?? null;
 		if (ownerId) {
+			const orcToken = this.getAgentBotToken(ORCHESTRATOR_SESSION_NAME);
+			if (orcToken) {
+				try {
+					const channelId = await slack.openDirectMessage(ownerId, orcToken);
+					await slack.sendMessage({ channelId, text: escaped, botToken: orcToken, unfurlLinks: false, unfurlMedia: false, skipChatV2Mirror: true });
+					return { channelId, agentSession: ORCHESTRATOR_SESSION_NAME };
+				} catch (error) {
+					this.logger.warn("Could not DM the owner from this machine's orchestrator bot; using the master bot", {
+						error: error instanceof Error ? error.message : String(error),
+					});
+				}
+			}
 			try {
 				const channelId = await slack.openDirectMessage(ownerId);
 				await slack.sendMessage({ channelId, text: escaped, unfurlLinks: false, unfurlMedia: false, skipChatV2Mirror: true });
 				this.dmChannelId = channelId;
-				return true;
+				return { channelId };
 			} catch (error) {
 				this.logger.warn('Could not DM the owner directly; using the owner-notification path', {
 					error: error instanceof Error ? error.message : String(error),
@@ -125,7 +152,7 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 			}
 		}
 		try {
-			await slack.sendNotification({ type: 'agent_error', title: 'Login needed', message: escaped, urgency: 'high', timestamp: this.now().toISOString() });
+			await slack.sendNotification({ type: 'agent_error', title: 'Sign-in needed', message: escaped, urgency: 'high', timestamp: this.now().toISOString() });
 			return true;
 		} catch (error) {
 			this.logger.warn('Could not send the re-login message to the owner', { error: error instanceof Error ? error.message : String(error) });
@@ -166,26 +193,42 @@ export class SlackReloginDmService implements ReloginOwnerNotifier {
 	}
 
 	/**
-	 * Whether a message is the owner writing in their DM with the master bot
-	 * (the DM the re-login messages went to, when known) or in their DM with
-	 * the orchestrator's own bot.
+	 * Which of the owner's DMs a message is in, for the re-login:
+	 * - `orc`: their DM with the master bot (the DM the re-login messages went
+	 *   to, when known) or with the orchestrator's own bot, where they talk to
+	 *   the orc;
+	 * - `agent`: their DM with another agent's own bot (e.g. answering the
+	 *   watchdog's "Ella hasn't replied: Claude Code is signed out. Reply
+	 *   `login`" note there) — only replies that belong to a login are taken
+	 *   from it;
+	 * - null: not an owner DM (a channel, another user, an agent's post).
+	 *
+	 * @param message - Inbound Slack message
+	 * @returns The scope, or null
+	 */
+	ownerDmScope(message: SlackIncomingMessage): OwnerReplyScope | null {
+		if (message.authorAgentSession || message.handoffTo) return null;
+		if (!message.channelId?.startsWith(DM_CHANNEL_PREFIX)) return null;
+		const slack = this.getSlack();
+		const ownerId = slack.getOwnerUserId?.() ?? null;
+		if (ownerId && message.userId !== ownerId) return null;
+		// The owner's DM with the orc's own bot: where they talk to the orc
+		// (2026-09-26: 「帮我重新登陆claude code」 was written there).
+		if (message.agentSession) return message.agentSession === ORCHESTRATOR_SESSION_NAME ? 'orc' : 'agent';
+		if (slack.isAgentOwnedConversation?.(message.channelId)) return null;
+		if (this.dmChannelId && message.channelId !== this.dmChannelId) return null;
+		return 'orc';
+	}
+
+	/**
+	 * Whether a message is the owner writing in one of their DMs the re-login
+	 * listens to (see {@link ownerDmScope}).
 	 *
 	 * @param message - Inbound Slack message
 	 * @returns True for the owner's DM reply
 	 */
 	isOwnerDmReply(message: SlackIncomingMessage): boolean {
-		if (message.authorAgentSession || message.handoffTo) return false;
-		if (!message.channelId?.startsWith(DM_CHANNEL_PREFIX)) return false;
-		const slack = this.getSlack();
-		const ownerId = slack.getOwnerUserId?.() ?? null;
-		if (ownerId && message.userId !== ownerId) return false;
-		// The owner's DM with the orc's own bot: where they talk to the orc
-		// (2026-09-26: 「帮我重新登陆claude code」 was written there). Other
-		// agents' DMs stay theirs.
-		if (message.agentSession) return message.agentSession === ORCHESTRATOR_SESSION_NAME;
-		if (slack.isAgentOwnedConversation?.(message.channelId)) return false;
-		if (this.dmChannelId && message.channelId !== this.dmChannelId) return false;
-		return true;
+		return this.ownerDmScope(message) !== null;
 	}
 }
 
@@ -255,12 +298,13 @@ export function resolveOrcTurnReplyTarget(
  * ```
  */
 export function createReloginReplyInterceptor(
-	dm: Pick<SlackReloginDmService, 'isOwnerDmReply' | 'replyTargetOf'>,
+	dm: Pick<SlackReloginDmService, 'ownerDmScope' | 'replyTargetOf'>,
 	coordinator: Pick<HarnessReloginService, 'handleOwnerReply'>,
 ): (message: SlackIncomingMessage) => boolean {
 	return (message) => {
 		if (message.hasFiles || !message.text) return false;
-		if (!dm.isOwnerDmReply(message)) return false;
-		return coordinator.handleOwnerReply(message.text, dm.replyTargetOf(message));
+		const scope = dm.ownerDmScope(message);
+		if (!scope) return false;
+		return coordinator.handleOwnerReply(message.text, dm.replyTargetOf(message), scope);
 	};
 }

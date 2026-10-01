@@ -36,6 +36,12 @@ export interface BrokerLoginPanelProps {
   label: string;
   /** Called once when the login succeeds */
   onSucceeded?: () => void;
+  /**
+   * Cancel a live session when the panel unmounts (default true). False for
+   * a panel that may have adopted a login started elsewhere (the Slack
+   * re-login), which closing a popover must not kill.
+   */
+  cancelOnUnmount?: boolean;
 }
 
 interface TextSubmitFormProps {
@@ -190,16 +196,18 @@ const AwaitingUser: React.FC<AwaitingUserProps> = ({ session, busy, sendInput })
  * @param props - {@link BrokerLoginPanelProps}
  * @returns Panel element
  */
-export const BrokerLoginPanel: React.FC<BrokerLoginPanelProps> = ({ harnessId, method, label, onSucceeded }) => {
+export const BrokerLoginPanel: React.FC<BrokerLoginPanelProps> = ({ harnessId, method, label, onSucceeded, cancelOnUnmount = true }) => {
   const { session, error, busy, start, sendInput, cancel } = useLoginSession(harnessId, onSucceeded);
 
   // Cancel a live session when the panel goes away (method switch, leaving
   // the page) so the hidden login terminal doesn't linger.
   const liveRef = useRef<LoginSession | null>(null);
   liveRef.current = session && !isTerminalLoginState(session.state) ? session : null;
+  const cancelOnUnmountRef = useRef(cancelOnUnmount);
+  cancelOnUnmountRef.current = cancelOnUnmount;
   useEffect(
     () => () => {
-      if (liveRef.current) void harnessService.cancelLogin(liveRef.current.id).catch(() => undefined);
+      if (liveRef.current && cancelOnUnmountRef.current) void harnessService.cancelLogin(liveRef.current.id).catch(() => undefined);
     },
     [],
   );
