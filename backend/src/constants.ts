@@ -4990,7 +4990,9 @@ export const RUNTIME_FALLBACK_CONSTANTS = {
 		POLL_MS: 3_000,
 		/** Keep finished jobs this long for GET */
 		JOB_TTL_MS: 60 * 60_000,
-		/** Screen lines read for the Terms check and the failure report */
+		/** Lines read from the agent's screen / log while waiting */
+		CAPTURE_LINES: 200,
+		/** Screen lines kept in a failure report */
 		SCREEN_LINES: 60,
 	},
 	/** Display names used in owner messages and badges */
