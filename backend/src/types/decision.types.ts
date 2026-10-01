@@ -11,7 +11,24 @@
  */
 
 /** Sensitive asks are never auto-applied at the deadline. */
-export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend';
+export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | 'runtime_terms';
+
+/**
+ * A decision the harness itself asks (not an agent): posted from this
+ * machine's orc bot in the owner's DM, handled by a backend listener, never
+ * delivered to an agent. specs/2026-10-01-runtime-terms-consent.md
+ */
+export interface DecisionSystemRef {
+  /** What the harness does with the answer */
+  kind: 'runtime_terms';
+  /** Subject within the kind (the runtime id) */
+  key: string;
+  /**
+   * The default is the declining option, so it IS applied at the deadline
+   * even when the decision is sensitive (declining is always safe).
+   */
+  defaultIsDecline?: boolean;
+}
 
 /** One answer the owner can pick. */
 export interface DecisionOption {
@@ -73,6 +90,12 @@ export interface OwnerDecision {
   teamId?: string;
   /** Work item the asker was on when it asked */
   workItemId?: string;
+  /** Harness-owned decision (owner DM, backend listener) */
+  system?: DecisionSystemRef;
+  /** Card header instead of "Decision D-n" (system decisions) */
+  title?: string;
+  /** Extra mrkdwn sections shown under the question (system decisions) */
+  body?: string[];
   status: DecisionStatus;
   card?: DecisionCardRef;
   /** Why the card could not be posted (shown in the dashboard; retried on the next tick) */

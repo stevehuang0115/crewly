@@ -94,6 +94,8 @@ export interface RuntimeAvailability {
 	selectable: boolean;
 	/** Why not, when not selectable ("Not installed", "Not signed in", …) */
 	reason?: string;
+	/** Not selectable because its Terms are not accepted (the owner can still add it: that asks again) */
+	termsBlocked?: boolean;
 }
 
 /**

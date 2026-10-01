@@ -149,6 +149,12 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
     ...createTicketDecisionHooks({ tickets, getTeams: input.getTeams }),
     ...(input.workDestination ? { workDestination: input.workDestination } : {}),
     ...(input.currentWorkItemId ? { currentWorkItemId: input.currentWorkItemId } : {}),
+    ownerDmOf: async (identity) => {
+      const slack = getSlackService();
+      const owner = slack.getOwnerUserId?.() ?? null;
+      if (!owner) return null;
+      return slack.openDirectMessage(owner, identity.botToken);
+    },
     deliverToAgent: (session, text) => (session === ORCHESTRATOR_SESSION_NAME ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),
     closeWatchdog: (session, slackChannelId, threadTs) => {
       const watchdog = getOwnerMessageWatchdog();

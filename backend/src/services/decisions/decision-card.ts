@@ -57,8 +57,8 @@ export function optionLabel(d: Pick<OwnerDecision, 'options'>, key: string | und
  * @param d - Decision
  * @returns Header text (≤ 150 characters, Slack's header limit)
  */
-export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id'>): string {
-  const text = d.ticket ? `${d.ticket.id} · ${d.ticket.title}` : `Decision ${d.id}`;
+export function cardHeader(d: Pick<OwnerDecision, 'ticket' | 'id' | 'title'>): string {
+  const text = d.title ? d.title : d.ticket ? `${d.ticket.id} · ${d.ticket.title}` : `Decision ${d.id}`;
   return text.length > 150 ? `${text.slice(0, 149)}…` : text;
 }
 
@@ -115,7 +115,9 @@ export function pendingContextLine(d: OwnerDecision, now: Date = new Date()): st
   if (d.remindAt && Date.parse(d.remindAt) > now.getTime()) {
     parts.push(`⏰ Reminding you ${formatWhen(new Date(d.remindAt), now)}.`);
   }
-  if (d.sensitive) {
+  if (d.system?.defaultIsDecline) {
+    parts.push(`Nothing is accepted until you answer. No answer by ${when}: ${defaultLabel(d)}.`);
+  } else if (d.sensitive) {
     parts.push(`This needs your OK (${d.sensitive}); I won't go ahead without an answer.`);
   } else if (d.defaultKey === DECISION_CONSTANTS.WAIT_DEFAULT) {
     parts.push(`If no answer by ${when}, I'll keep waiting.`);
@@ -150,8 +152,20 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
     { type: 'header', text: { type: 'plain_text', text: cardHeader(d), emoji: true } },
     { type: 'section', text: { type: 'mrkdwn', text: d.question } },
   ];
+  for (const text of d.body ?? []) if (text.trim()) blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
   const details = optionDetails(d.options);
   if (details) blocks.push({ type: 'section', text: { type: 'mrkdwn', text: details } });
+  // A system decision is answered with exactly its options (no snooze).
+  const remind = d.system
+    ? []
+    : [
+        {
+          type: 'button',
+          action_id: DECISION_CONSTANTS.REMIND_ACTION_ID,
+          text: { type: 'plain_text', text: 'Remind me tomorrow', emoji: true },
+          value: buttonValue(d.id, 'remind', instanceId),
+        },
+      ];
   blocks.push({
     type: 'actions',
     block_id: `decision:${d.id}`,
@@ -163,12 +177,7 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
         value: buttonValue(d.id, o.key, instanceId),
         ...(o.key === d.defaultKey && !d.sensitive ? { style: 'primary' } : {}),
       })),
-      {
-        type: 'button',
-        action_id: DECISION_CONSTANTS.REMIND_ACTION_ID,
-        text: { type: 'plain_text', text: 'Remind me tomorrow', emoji: true },
-        value: buttonValue(d.id, 'remind', instanceId),
-      },
+      ...remind,
     ],
   });
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: pendingContextLine(d, now) }] });

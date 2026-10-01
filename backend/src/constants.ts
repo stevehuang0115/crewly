@@ -2775,11 +2775,88 @@ export const ANTIGRAVITY_CONSTANTS = {
 		ACCOUNT_LOGIN:
 			'Antigravity CLI asked for a Google account sign-in. Crewly does not use Antigravity account (OAuth) login — Google does not allow third-party tools to — so the agent was stopped. Check that a Gemini API key is saved in Settings → Runtimes, then start the agent again.',
 		FIRST_RUN:
-			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. In a terminal run `GEMINI_API_KEY=<your key> agy`, finish those screens, type /exit, then start the agent again.',
+			'Antigravity CLI has not been set up on this machine yet: it shows its first-run screens (colour scheme, Google\'s Terms of Service and data use), which only you can accept. Crewly has sent you a card in Slack (a DM from this machine\'s Crewly Orc) to agree or not; you can also answer in Settings → Runtimes → Antigravity CLI → Accept terms…. Then start the agent again.',
 		SETTINGS_UNREADABLE:
 			'Crewly could not switch Antigravity CLI to your Gemini API key because ~/.gemini/antigravity-cli/settings.json is not valid JSON. Fix or remove that file, then start the agent again.',
 		SETTINGS_WRITE_FAILED:
 			'Crewly could not write ~/.gemini/antigravity-cli/settings.json to switch Antigravity CLI to your Gemini API key, so the agent was not started (it would otherwise fall back to a Google account login). Check that the file and its folder are writable, then start the agent again.',
+	},
+} as const;
+
+/**
+ * Owner consent for a runtime's first-run Terms of Service, asked with a
+ * Slack decision card; the harness never accepts third-party terms on its
+ * own. specs/2026-10-01-runtime-terms-consent.md
+ */
+export const RUNTIME_TERMS_CONSTANTS = {
+	/** Per-machine consent state under CREWLY_HOME */
+	STORE_FILENAME: 'runtime-terms-consent.json',
+	/** How long the owner has to answer; then the default (Don't agree) applies */
+	DEADLINE_MS: 24 * 60 * 60 * 1000,
+	/** Card buttons, in order (the third is the default) */
+	OPTIONS: {
+		AGREE_NO_DATA: 'Agree, no data sharing',
+		AGREE_SHARE_DATA: 'Agree + share data',
+		DECLINE: "Don't agree",
+	},
+	/** Name prefix of the dedicated PTY session the harness drives */
+	SESSION_PREFIX: 'crewly-terms-',
+	/** Size of that session (wide enough that the screens do not wrap) */
+	COLS: 120,
+	ROWS: 40,
+	/** Driving the first-run screens */
+	DRIVE: {
+		/** Screen read cadence */
+		POLL_MS: 300,
+		/** After a key: how long to wait for the screen to change */
+		KEY_SETTLE_MS: 3_000,
+		/** Waiting for the first screen after launch */
+		LAUNCH_TIMEOUT_MS: 60_000,
+		/** The same unrecognised screen for this long = abort */
+		UNKNOWN_SCREEN_TIMEOUT_MS: 20_000,
+		/** After Done: waiting for the main prompt */
+		PROMPT_TIMEOUT_MS: 90_000,
+		/** Upper bound on keys sent (a loop that does not converge aborts) */
+		MAX_KEYS: 60,
+		/** Screen lines quoted in the card thread on an abort */
+		SCREEN_LINES_IN_THREAD: 40,
+	},
+	/** Antigravity CLI (agy 1.2.14) first-run screens, matched as text */
+	ANTIGRAVITY: {
+		WELCOME: 'Welcome to Antigravity CLI!',
+		COLOR_SCHEME_TITLE: 'Choose your color scheme:',
+		/** Schemes in screen order; the first is the default Crewly keeps */
+		COLOR_SCHEMES: [
+			'terminal',
+			'light',
+			'solarized light',
+			'colorblind-friendly light',
+			'dark',
+			'solarized dark',
+			'colorblind-friendly dark',
+			'tokyo night',
+		] as readonly string[],
+		DEFAULT_COLOR_SCHEME: 'terminal',
+		MIGRATION_TITLE: 'Migration options:',
+		IMPORT_ITEM: 'Import extensions from Gemini CLI',
+		NEXT_BUTTON: 'Next',
+		TERMS_TITLE: 'Terms of Service & Data Use',
+		/** Start of the pre-checked data-sharing item */
+		DATA_ITEM: 'Yes, I agree to help improve Antigravity CLI',
+		DATA_ITEM_FULL:
+			'Yes, I agree to help improve Antigravity CLI by allowing Google to collect and use my Interactions data, subject to the Google Antigravity CLI Terms of Service and Google Privacy Policy. I understand I can choose to opt out later whenever I want via my settings.',
+		PREVIOUS_BUTTON: 'Previous',
+		DONE_BUTTON: 'Done',
+		TERMS_URL: 'https://antigravity.google/terms',
+		PRIVACY_URL: 'https://policies.google.com/privacy',
+		SECURITY_NOTE:
+			'AI coding agents can run code on their own, leak data, follow injected prompts and pull in compromised packages, so their actions should be watched.',
+	},
+	MESSAGES: {
+		DECLINED_BY_OWNER: "You chose Don't agree",
+		DECLINED_BY_DEADLINE: "No answer within 24 h, so the default (Don't agree) applied",
+		PENDING: 'Waiting for you to accept its Terms of Service (Slack card, or Settings → Runtimes → Accept terms…)',
+		DECLINED_SUFFIX: 'Terms not accepted',
 	},
 } as const;
 
