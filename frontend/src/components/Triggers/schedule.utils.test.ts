@@ -13,6 +13,8 @@ import {
   describeCronCore,
   timezoneLabel,
   formatRelative,
+  formatAbsolute,
+  formatShortDate,
   triggerDisplayName,
   isInternalTrigger,
   bucketSchedules,
@@ -50,15 +52,18 @@ const teams = [{
 
 describe('describeCron', () => {
   it.each([
-    ['30 22 * * *', 'America/New_York', '每天 22:30 ET'],
-    ['0 22 * * 5', 'America/New_York', '每周五 22:00 ET'],
-    ['*/15 * * * *', 'UTC', '每 15 分钟'],
-    ['0 9 * * 1-5', 'Asia/Shanghai', '工作日 09:00 北京时间'],
-    ['0 10 * * 0,6', undefined, '周末 10:00'],
-    ['0 9 * * 1,3', 'UTC', '每周一、三 09:00 UTC'],
-    ['0 9 1 * *', 'UTC', '每月 1 日 09:00 UTC'],
-    ['0 9,18 * * *', 'UTC', '每天 09:00、18:00 UTC'],
-    ['5 */2 * * *', 'UTC', '每 2 小时（第 5 分） UTC'],
+    ['30 22 * * *', 'America/New_York', 'Every day 22:30 ET'],
+    ['0 22 * * 5', 'America/New_York', 'Every Friday 22:00 ET'],
+    ['*/15 * * * *', 'UTC', 'Every 15 min'],
+    ['* * * * *', 'UTC', 'Every minute'],
+    ['0 9 * * 1-5', 'Asia/Shanghai', 'Weekdays 09:00 Beijing'],
+    ['0 10 * * 0,6', undefined, 'Weekends 10:00'],
+    ['0 9 * * 1,3', 'UTC', 'Every Mon, Wed 09:00 UTC'],
+    ['0 9 1 * *', 'UTC', 'Every month on the 1st 09:00 UTC'],
+    ['0 9 22 * *', 'UTC', 'Every month on the 22nd 09:00 UTC'],
+    ['0 9,18 * * *', 'UTC', 'Every day 09:00, 18:00 UTC'],
+    ['5 */2 * * *', 'UTC', 'Every 2 h at :05 UTC'],
+    ['5 * * * *', 'UTC', 'Every hour at :05 UTC'],
   ])('%s (%s) → %s', (cron, tz, expected) => {
     expect(describeCron(cron, tz)).toBe(expected);
   });
@@ -77,10 +82,19 @@ describe('describeCron', () => {
 describe('formatRelative', () => {
   const now = Date.parse('2026-09-30T12:00:00Z');
   it('says how far away a time is', () => {
-    expect(formatRelative('2026-09-30T15:00:00Z', now)).toBe('3 小时后');
-    expect(formatRelative('2026-09-30T11:30:00Z', now)).toBe('30 分钟前');
-    expect(formatRelative('2026-10-02T12:00:00Z', now)).toBe('2 天后');
+    expect(formatRelative('2026-09-30T15:00:00Z', now)).toBe('in 3 h');
+    expect(formatRelative('2026-09-30T11:30:00Z', now)).toBe('30 min ago');
+    expect(formatRelative('2026-10-02T12:00:00Z', now)).toBe('in 2 days');
     expect(formatRelative(undefined, now)).toBe('');
+    expect(formatRelative('2026-09-30T12:00:20Z', now)).toBe('now');
+    expect(formatRelative('2026-10-01T12:00:00Z', now)).toBe('in 1 day');
+  });
+
+  it('formats dates with English month names (local time)', () => {
+    const local = new Date(2026, 8, 30, 22, 30).toISOString();
+    expect(formatAbsolute(local)).toBe('Sep 30, 22:30');
+    expect(formatShortDate(new Date(2026, 10, 24, 9, 0).toISOString())).toBe('Nov 24');
+    expect(formatAbsolute(undefined)).toBe('—');
   });
 });
 
@@ -88,7 +102,7 @@ describe('names and classification', () => {
   it('uses the name, then the work item title, then the schedule', () => {
     expect(triggerDisplayName(trig())).toBe('daily-ops-nightly-2230');
     expect(triggerDisplayName(trig({ name: 'followup:abcd1234' }))).toBe('Nightly ops report');
-    expect(triggerDisplayName(trig({ name: undefined, action: { runReconciler: true } }))).toBe('每天 22:30 ET');
+    expect(triggerDisplayName(trig({ name: undefined, action: { runReconciler: true } }))).toBe('Every day 22:30 ET');
   });
 
   it('trusts the internal flag, else falls back to the creator', () => {
@@ -110,7 +124,7 @@ describe('names and classification', () => {
       targetTeamId: 'team-ce', taskDescription: '【Weekly recap】\nmore', createdBy: 'user',
       createdAt: '', enabled: false, lastRunAt: null, nextRunAt: null,
     } as CronTask;
-    expect(cronTaskToRow(task, buildDirectory(teams))).toMatchObject({ name: 'Weekly recap', status: 'paused', scheduleText: '每周五 22:00 ET' });
+    expect(cronTaskToRow(task, buildDirectory(teams))).toMatchObject({ name: 'Weekly recap', status: 'paused', scheduleText: 'Every Friday 22:00 ET' });
   });
 });
 
@@ -148,6 +162,6 @@ describe('bucketSchedules', () => {
   it('groups by team with unknown teams last', () => {
     const dir = buildDirectory(teams);
     const rows = [triggerToRow(trig({ teamId: undefined, action: { sendMessage: { target: 'x', message: 'y' } } }), dir), triggerToRow(trig(), dir)];
-    expect(groupByTeam(rows).map((g) => g.teamName)).toEqual(['CareerEngine', '其他']);
+    expect(groupByTeam(rows).map((g) => g.teamName)).toEqual(['CareerEngine', 'Other']);
   });
 });

@@ -315,7 +315,7 @@ describe('debounce and reminders', () => {
 		await flush();
 		expect(broker.startCalls).toHaveLength(1);
 		expect(dms).toHaveLength(3);
-		expect(dms[2]).toMatch(/链接已经过期.*qa-1.*重新登录/s);
+		expect(dms[2]).toMatch(/link has expired.*qa-1 is still waiting.*reply `relogin`/s);
 
 		// Still at most one reminder per interval.
 		jest.advanceTimersByTime(60_000);

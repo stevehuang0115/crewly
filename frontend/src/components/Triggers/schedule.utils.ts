@@ -16,8 +16,10 @@ import {
   RECONCILER_SUBSCRIBER,
   SCHEDULE_EXPIRY_WARN_REMAINING,
   SCHEDULE_TEXT,
+  MONTH_SHORT_LABEL,
   TIMEZONE_SHORT_LABEL,
   WEEKDAY_LABEL,
+  WEEKDAY_SHORT_LABEL,
 } from '../../constants/schedules.constants';
 
 // =============================================================================
@@ -25,7 +27,7 @@ import {
 // =============================================================================
 
 /**
- * Short label for an IANA timezone ("ET", "北京时间", …).
+ * Short label for an IANA timezone ("ET", "Beijing", …).
  *
  * @param timezone - IANA name
  * @returns Short label, or the city part of the name
@@ -63,22 +65,43 @@ function parseDow(field: string): number[] | null {
   return [...days].sort((a, b) => a - b);
 }
 
-/** Days phrase for a day-of-week list ("每天", "工作日", "每周五", "每周一、三"). */
+/** Days phrase for a day-of-week list ("Every day", "Weekdays", "Every Friday", "Every Mon, Wed"). */
 function daysPhrase(days: number[]): string {
   const key = days.join(',');
-  if (days.length === 7) return '每天';
-  if (key === '1,2,3,4,5') return '工作日';
-  if (key === '0,6') return '周末';
-  return `每周${days.map((d) => WEEKDAY_LABEL[d]).join('、')}`;
+  if (days.length === 7) return 'Every day';
+  if (key === '1,2,3,4,5') return 'Weekdays';
+  if (key === '0,6') return 'Weekends';
+  if (days.length === 1) return `Every ${WEEKDAY_LABEL[days[0]]}`;
+  return `Every ${days.map((d) => WEEKDAY_SHORT_LABEL[d]).join(', ')}`;
+}
+
+/** English ordinal for a day of the month ("1st", "22nd", "13th"). */
+function ordinal(n: number): string {
+  const tens = n % 100;
+  if (tens >= 11 && tens <= 13) return `${n}th`;
+  switch (n % 10) {
+    case 1: return `${n}st`;
+    case 2: return `${n}nd`;
+    case 3: return `${n}rd`;
+    default: return `${n}th`;
+  }
+}
+
+/** Plain text for a schedule that fires every minute. */
+const EVERY_MINUTE = 'Every minute';
+
+/** Phrase for an every-N-minutes schedule. */
+function everyMinutes(n: number): string {
+  return n === 1 ? EVERY_MINUTE : `Every ${n} min`;
 }
 
 /**
- * The time part of a cron expression in plain Chinese, without timezone.
+ * The time part of a cron expression in plain English, without timezone.
  * Covers the shapes agents actually write; anything else returns null so the
  * caller can fall back to the raw expression.
  *
  * @param cron - 5-field cron expression
- * @returns e.g. "每天 22:30", "每周五 22:00", "每 15 分钟", or null
+ * @returns e.g. "Every day 22:30", "Every Friday 22:00", "Every 15 min", or null
  */
 export function describeCronCore(cron: string): string | null {
   const parts = cron.trim().split(/\s+/);
@@ -88,9 +111,9 @@ export function describeCronCore(cron: string): string | null {
 
   const everyMin = min.match(/^\*\/(\d+)$/);
   if (everyMin && hour === '*' && dom === '*' && dow === '*') {
-    return Number(everyMin[1]) === 1 ? '每分钟' : `每 ${everyMin[1]} 分钟`;
+    return everyMinutes(Number(everyMin[1]));
   }
-  if (min === '*' && hour === '*' && dom === '*' && dow === '*') return '每分钟';
+  if (min === '*' && hour === '*' && dom === '*' && dow === '*') return EVERY_MINUTE;
 
   const m = asInt(min);
   if (m === null) return null;
@@ -98,26 +121,26 @@ export function describeCronCore(cron: string): string | null {
   const everyHour = hour.match(/^\*\/(\d+)$/);
   if (everyHour && dom === '*' && dow === '*') {
     const n = Number(everyHour[1]);
-    return n === 1 ? `每小时第 ${m} 分` : `每 ${n} 小时（第 ${m} 分）`;
+    return n === 1 ? `Every hour at :${pad2(m)}` : `Every ${n} h at :${pad2(m)}`;
   }
-  if (hour === '*' && dom === '*' && dow === '*') return `每小时第 ${m} 分`;
+  if (hour === '*' && dom === '*' && dow === '*') return `Every hour at :${pad2(m)}`;
 
   const hours = hour.split(',').map(asInt);
   if (hours.some((h) => h === null)) return null;
-  const times = (hours as number[]).map((h) => `${pad2(h)}:${pad2(m)}`).join('、');
+  const times = (hours as number[]).map((h) => `${pad2(h)}:${pad2(m)}`).join(', ');
 
-  if (dom === '*' && dow === '*') return `每天 ${times}`;
+  if (dom === '*' && dow === '*') return `Every day ${times}`;
   if (dom === '*') {
     const days = parseDow(dow);
     return days ? `${daysPhrase(days)} ${times}` : null;
   }
   const d = asInt(dom);
-  if (d !== null && dow === '*') return `每月 ${d} 日 ${times}`;
+  if (d !== null && dow === '*') return `Every month on the ${ordinal(d)} ${times}`;
   return null;
 }
 
 /**
- * Plain-words schedule with timezone ("每天 22:30 ET"), falling back to the
+ * Plain-words schedule with timezone ("Every day 22:30 ET"), falling back to the
  * raw cron expression when the shape is unusual.
  *
  * @param cron - 5-field cron expression
@@ -128,8 +151,8 @@ export function describeCron(cron: string, timezone?: string): string {
   const core = describeCronCore(cron);
   const tz = timezoneLabel(timezone);
   if (!core) return tz ? `${cron} (${tz})` : cron;
-  // "每 15 分钟" does not depend on the timezone — leave it off.
-  if (/^每( \d+ )?分钟$/.test(core) || core === '每分钟') return core;
+  // "Every 15 min" does not depend on the timezone — leave it off.
+  if (/^Every (\d+ min|minute)$/.test(core)) return core;
   return tz ? `${core} ${tz}` : core;
 }
 
@@ -138,7 +161,7 @@ export function describeCron(cron: string, timezone?: string): string {
 // =============================================================================
 
 /**
- * Short absolute date-time ("10月1日 22:30").
+ * Short absolute date-time ("Oct 1, 22:30").
  *
  * @param iso - ISO time
  * @returns Formatted text, or an em-dash
@@ -147,11 +170,11 @@ export function formatAbsolute(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getMonth() + 1}月${d.getDate()}日 ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return `${MONTH_SHORT_LABEL[d.getMonth()]} ${d.getDate()}, ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
 }
 
 /**
- * Short date ("11月24日").
+ * Short date ("Nov 24").
  *
  * @param iso - ISO time
  * @returns Formatted date, or an em-dash
@@ -160,11 +183,11 @@ export function formatShortDate(iso: string | null | undefined): string {
   if (!iso) return '—';
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return '—';
-  return `${d.getMonth() + 1}月${d.getDate()}日`;
+  return `${MONTH_SHORT_LABEL[d.getMonth()]} ${d.getDate()}`;
 }
 
 /**
- * Relative time in Chinese ("3 小时后", "2 天前", "马上").
+ * Relative time ("in 3 h", "2 days ago", "now").
  *
  * @param iso - ISO time
  * @param now - Reference time (ms)
@@ -177,12 +200,15 @@ export function formatRelative(iso: string | null | undefined, now: number = Dat
   const diff = t - now;
   const abs = Math.abs(diff);
   const minutes = Math.round(abs / 60_000);
-  if (minutes < 1) return '马上';
+  if (minutes < 1) return 'now';
   let text: string;
-  if (minutes < 60) text = `${minutes} 分钟`;
-  else if (minutes < 60 * 24) text = `${Math.round(minutes / 60)} 小时`;
-  else text = `${Math.round(minutes / (60 * 24))} 天`;
-  return diff >= 0 ? `${text}后` : `${text}前`;
+  if (minutes < 60) text = `${minutes} min`;
+  else if (minutes < 60 * 24) text = `${Math.round(minutes / 60)} h`;
+  else {
+    const days = Math.round(minutes / (60 * 24));
+    text = days === 1 ? '1 day' : `${days} days`;
+  }
+  return diff >= 0 ? `in ${text}` : `${text} ago`;
 }
 
 // =============================================================================
@@ -325,7 +351,7 @@ function actionRunner(trigger: Trigger): string | undefined {
  * Plain schedule text for any trigger config.
  *
  * @param trigger - Trigger
- * @returns e.g. "每天 22:30 ET", "一次性提醒 · 10月1日 09:00", "当 agent:idle 发生时"
+ * @returns e.g. "Every day 22:30 ET", "One-time reminder · Oct 1, 09:00", "When agent:idle happens"
  */
 export function triggerScheduleText(trigger: Trigger): string {
   const c = trigger.config;
@@ -340,7 +366,7 @@ export function triggerScheduleText(trigger: Trigger): string {
 
 /**
  * Human name: the trigger's `name` (unless auto-generated), else its work
- * item title, else the plain schedule ("每天 22:30").
+ * item title, else the plain schedule ("Every day 22:30").
  *
  * @param trigger - Trigger
  * @returns Name to show
@@ -355,7 +381,7 @@ export function triggerDisplayName(trigger: Trigger): string {
  *
  * @param trigger - Trigger
  * @param dir - Name lookups
- * @returns e.g. "Owen", "你", "系统"
+ * @returns e.g. "Owen", "You", "System"
  */
 export function creatorLabel(trigger: Trigger, dir: ScheduleDirectory): string {
   if (trigger.createdBySession) {
@@ -452,7 +478,7 @@ export function cronTaskToRow(task: CronTask, dir: ScheduleDirectory): ScheduleR
 }
 
 /**
- * Row for an EventBus subscription (shown under Reminders → 等待事件).
+ * Row for an EventBus subscription (shown under Reminders → Waiting on events).
  *
  * @param sub - Subscription
  * @param dir - Name lookups
@@ -581,7 +607,7 @@ export interface TeamGroup {
 }
 
 /**
- * Group rows by team, teams sorted by name with "其他" last.
+ * Group rows by team, teams sorted by name with "Other" last.
  *
  * @param rows - Rows to group (order inside a group is kept)
  * @returns Groups

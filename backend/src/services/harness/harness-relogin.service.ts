@@ -477,8 +477,8 @@ export function formatFailureDm(harnessId: HarnessId, reason: string | null): st
  * @returns DM text
  */
 export function formatReminderDm(harnessId: HarnessId, waiting: readonly string[]): string {
-	const who = waiting.length > 0 ? `${waiting.join('、')} 还在等它。` : '';
-	return `${displayName(harnessId)} 还没有重新登录，上次的登录链接已经过期。${who}方便的时候回复「重新登录」（或 \`relogin\`），我马上发一个新链接（15 分钟内有效）。`;
+	const who = waiting.length > 0 ? `${waiting.join(', ')} ${waiting.length === 1 ? 'is' : 'are'} still waiting on it. ` : '';
+	return `${displayName(harnessId)} still isn't signed in again, and the last sign-in link has expired. ${who}When it suits you, reply \`relogin\` and I'll send a new link right away (valid for 15 minutes).`;
 }
 
 /** Coordinates Slack re-login flows, one per harness. */

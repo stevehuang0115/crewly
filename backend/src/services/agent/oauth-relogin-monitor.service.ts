@@ -101,9 +101,10 @@ export function loginScreenRegion(screen: string): { tail: string[]; signInLines
  * re-login for a runtime — the phrases `parseOwnerLoginRequest` accepts.
  * Only harnesses with a broker login are listed.
  */
-const PHONE_RELOGIN_REPLIES: Readonly<Record<string, { label: string; zh: string; en: string }>> = {
-	[RUNTIME_TYPES.CLAUDE_CODE]: { label: 'Claude Code', zh: '重新登录 claude', en: 'relogin claude' },
-	[RUNTIME_TYPES.CODEX_CLI]: { label: 'Codex', zh: '重新登录 codex', en: 'relogin codex' },
+const PHONE_RELOGIN_REPLIES: Readonly<Record<string, { label: string; reply: string }>> = {
+	// The notice names the English command; 「重新登录 claude」 is still accepted as input.
+	[RUNTIME_TYPES.CLAUDE_CODE]: { label: 'Claude Code', reply: 'relogin claude' },
+	[RUNTIME_TYPES.CODEX_CLI]: { label: 'Codex', reply: 'relogin codex' },
 };
 
 /**
@@ -118,7 +119,7 @@ const PHONE_RELOGIN_REPLIES: Readonly<Record<string, { label: string; zh: string
  * @example
  * ```typescript
  * formatLoginNotice({ sessionName: 's', runtimeType: 'claude-code', url: null, code: null, ... }, 'Atlas');
- * // → 'Atlas needs you to sign in to Claude Code. Reply 「重新登录 claude」 (or "relogin claude") to Crewly and it will send you a sign-in link.'
+ * // → 'Atlas needs you to sign in to Claude Code. Reply "relogin claude" to Crewly and it will send you a sign-in link.'
  * ```
  */
 export function formatLoginNotice(info: LoginRequiredInfo, agentName: string | null = null): string {
@@ -130,7 +131,7 @@ export function formatLoginNotice(info: LoginRequiredInfo, agentName: string | n
 	text += '.';
 	if (phone) {
 		const lead = info.url || info.code ? ' Or reply' : ' Reply';
-		text += `${lead} 「${phone.zh}」 (or "${phone.en}") to Crewly and it will send you a sign-in link.`;
+		text += `${lead} "${phone.reply}" to Crewly and it will send you a sign-in link.`;
 	} else if (!info.url && !info.code) {
 		text += ' It is waiting on its sign-in screen on the machine it runs on.';
 	}

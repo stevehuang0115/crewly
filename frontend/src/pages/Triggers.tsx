@@ -2,12 +2,12 @@
  * Schedules page (route `/triggers`).
  *
  * Owner-first view of the team's scheduled work:
- * - 定时任务 (default): active + paused recurring schedules — cron triggers
+ * - Schedules (default): active + paused recurring schedules — cron triggers
  *   and per-team cron tasks — grouped by team, each with a human name, the
  *   schedule in plain words, next/last run, who runs it, and runs left.
- * - 提醒: active one-shot reminders, plus anything waiting on an event.
- * - 历史: cancelled / exhausted, collapsed and paginated.
- * Harness-internal triggers stay behind the "显示系统任务" toggle.
+ * - Reminders: active one-shot reminders, plus anything waiting on an event.
+ * - History: cancelled / exhausted, collapsed and paginated.
+ * Harness-internal triggers stay behind the "Show system tasks" toggle.
  *
  * @module pages/Triggers
  */
@@ -64,7 +64,7 @@ import {
   formatShortDate,
   type ScheduleRow,
 } from '../components/Triggers/schedule.utils';
-import { SCHEDULE_HISTORY_PAGE_SIZE, SCHEDULE_TEXT } from '../constants/schedules.constants';
+import { SCHEDULE_FORM_TEXT, SCHEDULE_HISTORY_PAGE_SIZE, SCHEDULE_TEXT } from '../constants/schedules.constants';
 import type { TriggerType, CreateTriggerInput, EventSubscription } from '../types/trigger.types';
 import type { Team } from '../types';
 
@@ -254,7 +254,7 @@ const ScheduleDetail: React.FC<{
   const resultText = row.lastResult
     ? row.lastResult.status === 'ok' ? SCHEDULE_TEXT.RESULT_OK
       : row.lastResult.status === 'skipped' ? SCHEDULE_TEXT.RESULT_SKIPPED
-      : `${SCHEDULE_TEXT.RESULT_FAILED}${row.lastResult.detail ? `：${row.lastResult.detail}` : ''}`
+      : `${SCHEDULE_TEXT.RESULT_FAILED}${row.lastResult.detail ? `: ${row.lastResult.detail}` : ''}`
     : '';
 
   const footer = (
@@ -298,7 +298,7 @@ const ScheduleDetail: React.FC<{
             {row.lastRunAt ? `${formatAbsolute(row.lastRunAt)}${resultText ? ` · ${resultText}` : ''}` : SCHEDULE_TEXT.NEVER_RUN}
           </DetailLine>
           {row.fireCount !== undefined && (
-            <DetailLine label="次数">
+            <DetailLine label={SCHEDULE_FORM_TEXT.RUNS}>
               {row.maxFires !== undefined
                 ? `${SCHEDULE_TEXT.RUNS_OF(row.fireCount, row.maxFires)} · ${SCHEDULE_TEXT.REMAINING(row.remaining ?? 0)}`
                 : SCHEDULE_TEXT.RUNS(row.fireCount)}
@@ -347,9 +347,9 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
 
   const handleSubmit = async () => {
     setError('');
-    if (type === 'time' && !cronExpression.trim()) { setError('请填写 cron 表达式'); return; }
-    if (type === 'signal' && !eventType.trim()) { setError('请填写事件类型'); return; }
-    if (!messageTarget.trim() || !messageText.trim()) { setError('请填写发给谁和内容'); return; }
+    if (type === 'time' && !cronExpression.trim()) { setError(SCHEDULE_FORM_TEXT.ERROR_CRON); return; }
+    if (type === 'signal' && !eventType.trim()) { setError(SCHEDULE_FORM_TEXT.ERROR_EVENT); return; }
+    if (!messageTarget.trim() || !messageText.trim()) { setError(SCHEDULE_FORM_TEXT.ERROR_TARGET); return; }
 
     const config =
       type === 'time'
@@ -376,7 +376,7 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
       setMessageText('');
       setMaxFires('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : '创建失败');
+      setError(err instanceof Error ? err.message : SCHEDULE_FORM_TEXT.ERROR_CREATE);
     } finally {
       setSubmitting(false);
     }
@@ -385,72 +385,72 @@ const CreateTriggerModal: React.FC<CreateTriggerModalProps> = ({ isOpen, onClose
   if (!isOpen) return null;
 
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="新建定时任务" size="md">
+    <Modal isOpen={isOpen} onClose={onClose} title={SCHEDULE_FORM_TEXT.TITLE} size="md">
       <ModalBody>
         <div className="space-y-4">
           <FormGroup>
-            <FormLabel>类型</FormLabel>
+            <FormLabel>{SCHEDULE_FORM_TEXT.TYPE}</FormLabel>
             <SegmentedControl<TriggerType>
               aria-label="Trigger type"
               value={type}
               onChange={setType}
               options={[
-                { value: 'time', label: '按时间', icon: Clock },
-                { value: 'signal', label: '按事件', icon: Zap },
+                { value: 'time', label: SCHEDULE_FORM_TEXT.TYPE_TIME, icon: Clock },
+                { value: 'signal', label: SCHEDULE_FORM_TEXT.TYPE_SIGNAL, icon: Zap },
               ]}
             />
           </FormGroup>
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-name">名称</FormLabel>
-            <FormInput id="trigger-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="例如：每日运营日报" />
+            <FormLabel htmlFor="trigger-name">{SCHEDULE_FORM_TEXT.NAME}</FormLabel>
+            <FormInput id="trigger-name" value={name} onChange={(e) => setName(e.target.value)} placeholder={SCHEDULE_FORM_TEXT.NAME_PLACEHOLDER} />
           </FormGroup>
 
           {type === 'time' && (
             <FormGroup>
-              <FormLabel htmlFor="trigger-cron">Cron 表达式</FormLabel>
+              <FormLabel htmlFor="trigger-cron">{SCHEDULE_FORM_TEXT.CRON}</FormLabel>
               <FormInput id="trigger-cron" className="font-mono"
                 value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 9 * * 1-5" />
-              <FormHelp>5 段 cron（分 时 日 月 周），按你所在时区</FormHelp>
+              <FormHelp>{SCHEDULE_FORM_TEXT.CRON_HELP}</FormHelp>
             </FormGroup>
           )}
 
           {type === 'signal' && (
             <FormGroup>
-              <FormLabel htmlFor="trigger-event-type">事件类型</FormLabel>
+              <FormLabel htmlFor="trigger-event-type">{SCHEDULE_FORM_TEXT.EVENT_TYPE}</FormLabel>
               <FormInput id="trigger-event-type" className="font-mono"
                 value={eventType} onChange={(e) => setEventType(e.target.value)} placeholder="agent:idle" />
             </FormGroup>
           )}
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-target">发给</FormLabel>
+            <FormLabel htmlFor="trigger-target">{SCHEDULE_FORM_TEXT.TARGET}</FormLabel>
             <FormInput id="trigger-target" className="font-mono"
-              value={messageTarget} onChange={(e) => setMessageTarget(e.target.value)} placeholder="成员 session 名" />
+              value={messageTarget} onChange={(e) => setMessageTarget(e.target.value)} placeholder={SCHEDULE_FORM_TEXT.TARGET_PLACEHOLDER} />
           </FormGroup>
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-message">内容</FormLabel>
+            <FormLabel htmlFor="trigger-message">{SCHEDULE_FORM_TEXT.MESSAGE}</FormLabel>
             <FormTextarea id="trigger-message"
-              rows={3} value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder="到点要做什么？" />
+              rows={3} value={messageText} onChange={(e) => setMessageText(e.target.value)} placeholder={SCHEDULE_FORM_TEXT.MESSAGE_PLACEHOLDER} />
           </FormGroup>
 
           <FormGroup>
-            <FormLabel htmlFor="trigger-max-fires">最多运行次数（可选）</FormLabel>
+            <FormLabel htmlFor="trigger-max-fires">{SCHEDULE_FORM_TEXT.MAX_FIRES}</FormLabel>
             <div className="w-32">
               <FormInput id="trigger-max-fires" type="number" min="1"
                 value={maxFires} onChange={(e) => setMaxFires(e.target.value)} placeholder="∞" />
             </div>
-            <FormHelp>留空表示不限次数。</FormHelp>
+            <FormHelp>{SCHEDULE_FORM_TEXT.MAX_FIRES_HELP}</FormHelp>
           </FormGroup>
 
           {error && <Alert variant="error">{error}</Alert>}
         </div>
       </ModalBody>
       <ModalFooter>
-        <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>取消</Button>
+        <Button variant="ghost" size="sm" onClick={onClose} disabled={submitting}>{SCHEDULE_FORM_TEXT.CANCEL}</Button>
         <Button variant="primary" size="sm" onClick={handleSubmit} disabled={submitting} loading={submitting}>
-          {submitting ? '创建中…' : '创建'}
+          {submitting ? SCHEDULE_FORM_TEXT.CREATING : SCHEDULE_FORM_TEXT.CREATE}
         </Button>
       </ModalFooter>
     </Modal>

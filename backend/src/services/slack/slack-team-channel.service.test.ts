@@ -1848,7 +1848,7 @@ describe('an owner message in a room never ends in silence', () => {
     await jest.advanceTimersByTimeAsync(FALLBACK_MS);
 
     expect(slack.sent).toEqual([
-      expect.objectContaining({ channelId: 'C-room', threadTs: '2.1', botToken: 'xoxb-atlas', text: expect.stringContaining('没有 agent 接到') }),
+      expect.objectContaining({ channelId: 'C-room', threadTs: '2.1', botToken: 'xoxb-atlas', text: expect.stringContaining('No agent picked up this message') }),
     ]);
   });
 

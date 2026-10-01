@@ -97,7 +97,7 @@ export type NudgeOutcome = { outcome: 'sent' } | { outcome: 'blocked'; reason: N
 export interface LoginHint {
   /** Human name of the runtime ("Claude", "Codex") */
   runtime: string;
-  /** Word the owner types after 重新登录 ("claude", "codex") */
+  /** Word the owner types after `relogin` / 重新登录 ("claude", "codex") */
   runtimeCmd: string;
 }
 
@@ -589,7 +589,7 @@ export class OwnerMessageWatchdogService {
       return fill(C.NOTE_LOGIN_TEXT, { name, runtime: login.runtime, runtimeCmd: login.runtimeCmd });
     }
     if (kind === 'blocked' && entry.nudgeBlocked) {
-      const detail = entry.nudgeBlocked.detail ? clip(entry.nudgeBlocked.detail, 120) : '原因不明';
+      const detail = entry.nudgeBlocked.detail ? clip(entry.nudgeBlocked.detail, 120) : C.NOTE_UNKNOWN_DETAIL;
       return fill(entry.nudgeBlocked.reason === 'asleep' ? C.NOTE_ASLEEP_TEXT : C.NOTE_ERROR_TEXT, { name, detail });
     }
     if (kind === 'cap') return fill(C.NOTE_BUSY_CAP_TEXT, { name, waited });
