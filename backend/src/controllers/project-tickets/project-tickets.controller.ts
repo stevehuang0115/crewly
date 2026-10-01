@@ -26,6 +26,8 @@ import { getCrewlyHomePath } from '../../services/core/crewly-home.utils.js';
 import { TICKET_AUTOPILOT_CONSTANTS } from '../../constants.js';
 import { createHttpAssigneeWaker } from '../../services/project-tickets/ticket-assignee-waker.js';
 import { getRoleService } from '../../services/settings/role.service.js';
+import { DecisionError, DecisionService } from '../../services/decisions/decision.service.js';
+import { getTicketThreadStore, slackArchiveLink } from '../../services/decisions/ticket-thread-store.js';
 import * as path from 'path';
 
 /**
@@ -68,6 +70,11 @@ export function createDefaultTicketAutopilot(
     notifyOwner,
     stateFile: path.join(getCrewlyHomePath(), TICKET_AUTOPILOT_CONSTANTS.STATE_FILENAME),
     roleDescription: async (role) => (await getRoleService().getRoleByName(role))?.description ?? null,
+    // The digest links waiting tickets to their decision-card thread.
+    cardLinkOf: async (projectPath, ticketId) => {
+      const thread = await getTicketThreadStore()?.get(projectPath, ticketId);
+      return thread ? slackArchiveLink(thread.slackChannelId, thread.threadTs) : null;
+    },
   });
 }
 
@@ -343,23 +350,57 @@ export async function migrateProjectTickets(req: Request, res: Response): Promis
 }
 
 /**
- * POST /api/project-tickets/:project/:id/ask-owner — `{ question }` marks the
- * ticket `needs-owner` with a one-line question (batched to the owner's
- * phone by the ticket autopilot); `{ clear: true, note? }` removes the mark
- * once answered. Owner / orchestrator / lead.
+ * POST /api/project-tickets/:project/:id/ask-owner — ask the owner a
+ * structured question about the ticket (specs/2026-10-01-decision-cards.md):
+ * `{ question, options: [2–3], default, deadline?, sensitive? }`. The
+ * ticket's assignee (else its team lead) posts it as a Block Kit card in the
+ * ticket's Slack thread; the ticket gets `needs-owner` until it is answered.
+ * `{ clear: true, note? }` withdraws open questions and removes the mark.
+ * Callers: the owner, the orchestrator, a lead, or the ticket's assignee.
  *
  * @param req - Request
- * @param res - `{ success, data: ticket }`
+ * @param res - `{ success, data: { decision, ticket } }` (clear: `{ ticket, withdrawn }`)
  */
 export async function askOwnerProjectTicket(req: Request, res: Response): Promise<void> {
-  await respond(res, () => {
-    const b = (req.body ?? {}) as Record<string, unknown>;
-    return projectTicketWorkflow().askOwner(req.params.project, req.params.id, callerOf(req), {
-      question: typeof b.question === 'string' ? b.question : undefined,
-      clear: b.clear === true,
-      note: typeof b.note === 'string' ? b.note : undefined,
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const caller = callerOf(req);
+  if (b.clear === true) {
+    await respond(res, async () => {
+      const wf = projectTicketWorkflow();
+      const ticket = await wf.askOwner(req.params.project, req.params.id, caller, {
+        clear: true,
+        note: typeof b.note === 'string' ? b.note : undefined,
+      });
+      const withdrawn =
+        (await DecisionService.getInstance()?.cancelWhere(
+          (d) => d.ticket?.projectPath === ticket.projectPath && d.ticket?.id === ticket.id,
+          typeof b.note === 'string' ? b.note : 'cleared',
+        )) ?? 0;
+      return { ticket, withdrawn };
     });
-  });
+    return;
+  }
+  try {
+    const service = DecisionService.getInstance();
+    if (!service) throw new DecisionError(503, 'Decision cards are not ready yet — Crewly is still starting');
+    const decision = await service.ask(caller.session, {
+      question: b.question,
+      options: b.options,
+      default: b.default,
+      deadline: b.deadline,
+      sensitive: b.sensitive,
+      ticket: req.params.id,
+      project: req.params.project,
+    });
+    const ticket = decision.ticket ? await projectTicketWorkflow().get(decision.ticket.projectId, decision.ticket.id).catch(() => null) : null;
+    res.json({ success: true, data: { decision, ticket } });
+  } catch (err) {
+    if (err instanceof DecisionError || err instanceof ProjectTicketError) {
+      res.status(err.status).json({ success: false, error: err.message });
+      return;
+    }
+    res.status(500).json({ success: false, error: err instanceof Error ? err.message : String(err) });
+  }
 }
 
 /**

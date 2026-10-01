@@ -1,8 +1,9 @@
 #!/bin/bash
-# reply — answer the message you are working on. The harness sends it back
-# where that message came from (Slack DM, Slack room thread, portal / Talk
-# chat) — no channel ids, no choosing between reply-channel / reply-chat /
-# reply-slack. Status lines ([DONE], [BLOCKED], …) still go to the
+# reply — answer the work you are doing. The harness sends it back where
+# that work came from (the owner's Slack DM / room thread / portal chat, the
+# ticket's thread, or a new top-level post for scheduled work) — no channel
+# ids, no choosing between reply-channel / reply-chat / reply-slack.
+# `--new-thread "<title>"` starts a new topic in your team channel. Status lines ([DONE], [BLOCKED], …) still go to the
 # orchestrator. See specs/2026-09-30-owner-message-guarantee.md §B.
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,12 +17,14 @@ Usage:
   bash execute.sh --text-file /path/reply.md
   bash execute.sh --interim "Got it — comparing the three quotes (~10 min)."
   bash execute.sh --none                       # no answer needed for this message
+  bash execute.sh --new-thread "Wiki link audit" "Found 3 broken links: …"   # a new topic
 
 Options:
   --text | -t        Reply text (or the first positional argument, or stdin)
   --text-file        Read the reply from a file
   --interim          A short note before the real answer; "working on it" stays up
   --none             Nothing to answer (already answered elsewhere / not for you)
+  --new-thread       Start a new thread in your team channel with this title (a new topic)
   --conversation|-C  Only if your prompt tells you to answer somewhere specific
   --thread | -T      Only if your prompt tells you to answer in a specific thread
   --help | -h        Show this help
@@ -33,6 +36,7 @@ INTERIM=""
 NONE=""
 CONVERSATION_ID=""
 THREAD=""
+NEW_THREAD=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -43,6 +47,7 @@ while [[ $# -gt 0 ]]; do
     --none) NONE="1"; shift ;;
     --conversation|-C|--channel|-c) CONVERSATION_ID="$2"; shift 2 ;;
     --thread|-T) THREAD="$2"; shift 2 ;;
+    --new-thread) NEW_THREAD="$2"; shift 2 ;;
     --help|-h) print_usage; exit 0 ;;
     --) shift; if [[ $# -gt 0 && -z "$TEXT" ]]; then TEXT="$*"; fi; break ;;
     -*) echo "{\"success\":false,\"error\":\"Unknown option: $1\"}" >&2; print_usage >&2; exit 2 ;;
@@ -62,7 +67,7 @@ fi
 # Literal \n (from JSON-escaped text) → real newlines
 if [ -n "$TEXT" ]; then _NL=$'\n'; TEXT="${TEXT//\\n/$_NL}"; fi
 
-BODY=$(TEXT="$TEXT" INTERIM="$INTERIM" NONE="$NONE" CONVERSATION_ID="$CONVERSATION_ID" THREAD="$THREAD" python3 -c '
+BODY=$(TEXT="$TEXT" INTERIM="$INTERIM" NONE="$NONE" CONVERSATION_ID="$CONVERSATION_ID" THREAD="$THREAD" NEW_THREAD="$NEW_THREAD" python3 -c '
 import os, json
 p = {}
 if os.environ.get("NONE"):
@@ -75,6 +80,8 @@ if os.environ.get("CONVERSATION_ID"):
     p["conversationId"] = os.environ["CONVERSATION_ID"]
 if os.environ.get("THREAD"):
     p["thread"] = os.environ["THREAD"]
+if os.environ.get("NEW_THREAD"):
+    p["newThread"] = os.environ["NEW_THREAD"]
 print(json.dumps(p))
 ')
 

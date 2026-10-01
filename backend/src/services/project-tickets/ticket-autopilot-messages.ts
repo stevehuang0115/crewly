@@ -141,7 +141,7 @@ export function buildTriageBrief(input: TriageBriefInput): string {
     '',
     `1. **Ready + assign** — \`bash ${tk} assign --project ${p} --id <ID> --to <member>\`, or \`… update --project ${p} --id <ID> --status ready\` to let the next idle member take it. At most ${input.maxInFlightPerMember} ticket${input.maxInFlightPerMember === 1 ? '' : 's'} in progress per member.`,
     `2. **Split** — create smaller tickets (\`… create --project ${p} --title "…" --acceptance "…" --status ready\`), then cancel the original with a note naming the new ids.`,
-    `3. **Needs the owner** — \`bash ${tk} ask-owner --project ${p} --id <ID> --question "<one line the owner can answer with a tap or a word>"\`. Crewly batches these to the owner's phone; do not message the owner about them yourself.`,
+    `3. **Needs the owner** — \`bash ${tk} ask-owner --project ${p} --id <ID> --question "<one line>" --option "<choice>" --option "<choice>" --default "<choice or wait>"\` (2–3 options; add \`--sensitive email|publish|deploy|spend\` for the boundaries below). The ticket's assignee (or you) posts it as a card in the ticket's Slack thread; do not message the owner about it yourself.`,
     `4. **Cancel** — \`… update --project ${p} --id <ID> --status cancelled --note "<reason>"\`.`,
     '',
     '## Boundaries — the autopilot does NOT lift these',
@@ -184,39 +184,14 @@ export function buildTriageBrief(input: TriageBriefInput): string {
   return lines.join('\n');
 }
 
-/** A question for the owner. */
-export interface OwnerQuestionItem {
-  projectName: string;
-  ticketId: string;
-  title: string;
-  question: string;
-}
-
-/**
- * The one batched message with every open owner question — numbered, short,
- * answerable with a tap or a word.
- *
- * @param items - Questions (already ordered)
- * @returns Message text
- */
-export function buildOwnerQuestionsMessage(items: OwnerQuestionItem[]): string {
-  const multiProject = new Set(items.map((i) => i.projectName)).size > 1;
-  const lines = [
-    items.length === 1 ? 'One ticket is waiting on you:' : `${items.length} tickets are waiting on you:`,
-    '',
-    ...items.map((q, i) => `${i + 1}. ${q.ticketId}${multiProject ? ` (${q.projectName})` : ''} ${excerpt(q.title, 60)} — ${q.question}`),
-    '',
-    'Reply with the number and your answer (e.g. "1 yes").',
-  ];
-  return lines.join('\n');
-}
-
 /** One project's section of the digest. */
 export interface DigestProject {
   name: string;
   doneToday: ProjectTicket[];
   inProgress: ProjectTicket[];
   waitingOnOwner: ProjectTicket[];
+  /** Ticket id → link to its decision card / Slack thread */
+  links?: ReadonlyMap<string, string>;
 }
 
 /**
@@ -225,14 +200,18 @@ export interface DigestProject {
  * @param label - Section label
  * @param tickets - Tickets
  * @param withAssignee - Append the assignee
+ * @param links - Ticket id → card link (the id becomes the link)
  * @returns Line, or null when empty
  */
-function digestSection(label: string, tickets: ProjectTicket[], withAssignee: boolean): string | null {
+function digestSection(label: string, tickets: ProjectTicket[], withAssignee: boolean, links?: ReadonlyMap<string, string>): string | null {
   if (tickets.length === 0) return null;
   const max = TICKET_AUTOPILOT_CONSTANTS.DIGEST_MAX_ITEMS_PER_SECTION;
   const named = tickets
     .slice(0, max)
-    .map((t) => `${t.id} ${excerpt(t.title, 50)}${withAssignee && t.assignee ? ` (${t.assignee})` : ''}`);
+    .map((t) => {
+      const link = links?.get(t.id);
+      return `${link ? `<${link}|${t.id}>` : t.id} ${excerpt(t.title, 50)}${withAssignee && t.assignee ? ` (${t.assignee})` : ''}`;
+    });
   const rest = tickets.length > max ? `; +${tickets.length - max} more` : '';
   return `${label} (${tickets.length}): ${named.join('; ')}${rest}`;
 }
@@ -250,7 +229,7 @@ export function buildDigestMessage(projects: DigestProject[]): string | null {
     const rows = [
       digestSection('Done today', p.doneToday, false),
       digestSection('In progress', p.inProgress, true),
-      digestSection('Waiting on you', p.waitingOnOwner, false),
+      digestSection('Waiting on you', p.waitingOnOwner, false, p.links),
     ].filter((r): r is string => r !== null);
     if (rows.length === 0) continue;
     blocks.push([`*${p.name}*`, ...rows.map((r) => `- ${r}`)].join('\n'));

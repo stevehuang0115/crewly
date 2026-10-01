@@ -15,6 +15,10 @@ import { StorageService } from '../../services/core/storage.service.js';
 import type { Project, Team, TeamMember } from '../../types/index.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import type { ComponentLogger } from '../../services/core/logger.service.js';
+import { DecisionService } from '../../services/decisions/decision.service.js';
+import { DecisionStore } from '../../services/decisions/decision-store.js';
+import { TicketThreadStore } from '../../services/decisions/ticket-thread-store.js';
+import { createTicketDecisionHooks } from '../../services/decisions/decision.wiring.js';
 
 const quiet = (): ComponentLogger =>
   ({ info: jest.fn(), warn: jest.fn(), error: jest.fn(), debug: jest.fn() }) as unknown as ComponentLogger;
@@ -231,15 +235,49 @@ describe('project tickets API', () => {
       expect((await request(app).get('/api/project-ticket-autopilot/nope')).status).toBe(404);
     });
 
-    it('ask-owner marks and clears the needs-owner label (lead), refuses members', async () => {
-      await request(app).post('/api/project-tickets/p1').send({ title: 'Email the partners' });
-      expect((await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'dev-ann').send({ question: 'Send it?' })).status).toBe(403);
-      expect((await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({})).status).toBe(400);
-      const asked = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({ question: 'Send the draft to the 3 partners?' });
-      expect(asked.status).toBe(200);
-      expect(asked.body.data.labels).toContain('needs-owner');
-      const cleared = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({ clear: true, note: 'owner said yes' });
-      expect(cleared.body.data.labels).not.toContain('needs-owner');
+    it('ask-owner posts a structured decision as the assignee, rejects vague asks, clears', async () => {
+      const tickets = new ProjectTicketService({ logger: quiet(), ensureTracked: async () => 'tracked' });
+      const teams: Team[] = [
+        { id: 't1', name: 'App', members: [member('m-lead', 'tl-sam', 'team-leader'), member('m-dev', 'dev-ann'), member('m-bo', 'dev-bo')], projectIds: ['p1'], createdAt: '', updatedAt: '' },
+      ];
+      const decisions = new DecisionService({
+        store: new DecisionStore(path.join(root, 'decisions.json')),
+        threads: new TicketThreadStore(path.join(root, 'threads.json')),
+        slack: () => null,
+        instanceId: () => 'inst-1',
+        isOwner: () => true,
+        identityOf: async () => ({}),
+        teamChannelOf: async () => 'C0TEAM',
+        teamOf: async () => 't1',
+        ...createTicketDecisionHooks({ tickets, getTeams: async () => teams, workflow: projectTicketWorkflow() }),
+        deliverToAgent: async () => true,
+        logger: quiet(),
+      });
+      DecisionService.setInstance(decisions);
+      try {
+        await request(app).post('/api/project-tickets/p1').send({ title: 'Email the partners' });
+        await tickets.mutate(project.path, 'APP-1', 'owner', () => ({ fields: { assignee: 'dev-ann' } }));
+        const ask = { question: 'Send the draft to the 3 partners?', options: ['Send Monday — after the review', 'Hold'], default: 'Hold' };
+        // A member who is neither lead nor assignee cannot ask.
+        expect((await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'dev-bo').send(ask)).status).toBe(403);
+        // The old one-line form is rejected with a helpful error.
+        const vague = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({ question: 'Send it?' });
+        expect(vague.status).toBe(400);
+        expect(vague.body.error).toMatch(/options are required/);
+        // The lead asks; the assignee (not the lead, not the orc) owns the question.
+        const asked = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send(ask);
+        expect(asked.status).toBe(200);
+        expect(asked.body.data.decision).toMatchObject({ id: 'D-1', asker: 'dev-ann', requestedBy: 'tl-sam', defaultKey: 'b', status: 'open' });
+        expect(asked.body.data.ticket.labels).toContain('needs-owner');
+        // The assignee itself may ask too.
+        expect((await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'dev-ann').send(ask)).status).toBe(200);
+        const cleared = await request(app).post('/api/project-tickets/p1/APP-1/ask-owner').set('X-Agent-Session', 'tl-sam').send({ clear: true, note: 'owner said yes' });
+        expect(cleared.body.data.ticket.labels).not.toContain('needs-owner');
+        expect(cleared.body.data.withdrawn).toBe(2);
+        expect(await decisions.list('open')).toEqual([]);
+      } finally {
+        DecisionService.setInstance(null);
+      }
     });
 
     it('builds a default autopilot when boot has not installed one', () => {

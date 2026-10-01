@@ -17,7 +17,9 @@
 #   bash execute.sh assign  --project P --id APP-12 --to <session> [--no-start]   (owner / orc / lead)
 #   bash execute.sh log     --project P --id APP-12 --note "progress"
 #   bash execute.sh link    --project P --id APP-12 --work-item <WorkItem id>   (owner / orc / lead)
-#   bash execute.sh ask-owner --project P --id APP-12 --question "…"            (owner / orc / lead)
+#   bash execute.sh ask-owner --project P --id APP-12 --question "…" --option "A" --option "B — detail"
+#                             --default "B"|wait [--deadline ISO] [--sensitive email|publish|deploy|spend]
+#                                                                               (owner / orc / lead / assignee)
 #   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
 #   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|--driver default]
 #                             [--daily-budget <usd>] [--max-in-flight <n>]      (owner / orchestrator)
@@ -47,10 +49,12 @@ Usage:
   bash execute.sh link    --project P --id APP-12 --work-item <id>
                                                               Orchestrator / team lead: tie work already in
                                                               flight (a live WorkItem) to this ticket
-  bash execute.sh ask-owner --project P --id APP-12 --question "…"
-                                                              Orchestrator / team lead: the ticket waits on the
-                                                              owner (label needs-owner); Crewly batches the
-                                                              question to the owner's phone
+  bash execute.sh ask-owner --project P --id APP-12 --question "…" --option "A" --option "B — detail"
+                          --default "B"|wait [--deadline ISO] [--sensitive email|publish|deploy|spend]
+                                                              Ask the owner ONE question with 2–3 options. The
+                                                              ticket's assignee (else its lead) posts it as a card
+                                                              in the ticket's Slack thread; the answer comes back
+                                                              to that agent as a [DECISION …] message
   bash execute.sh ask-owner --project P --id APP-12 --clear [--note "answer"]
                                                               The owner answered: remove the needs-owner mark
   bash execute.sh autopilot --project P [--on|--off] [--driver <session>|default]
@@ -67,7 +71,7 @@ ACTION=""; PROJECT=""; ID=""; TITLE=""; DESCRIPTION=""; PRIORITY=""; LABELS=""; 
 STATUS=""; SOURCE=""; REQUEST_ID=""; NOTE=""; OWNER_REVIEW=""; ASSIGNEE=""; START="true"; WORK_ITEM=""
 ACCEPTANCE_JSON="null"
 HAS_DESCRIPTION=0
-QUESTION=""; CLEAR=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
+QUESTION=""; CLEAR=""; OPTIONS_JSON="[]"; DEFAULT_OPT=""; DEADLINE=""; SENSITIVE=""; AP_ENABLED=""; AP_DRIVER=""; AP_BUDGET=""; AP_MAX=""
 
 if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   J="$1"; shift
@@ -92,6 +96,10 @@ if [[ $# -gt 0 && ${1:0:1} == '{' ]]; then
   WORK_ITEM=$(printf '%s' "$J" | jq -r '.workItemId // .workItem // empty')
   QUESTION=$(printf '%s' "$J" | jq -r '.question // empty')
   CLEAR=$(printf '%s' "$J" | jq -r 'if .clear == true then "true" else empty end')
+  OPTIONS_JSON=$(printf '%s' "$J" | jq -c 'if (.options|type) == "array" then .options else [] end')
+  DEFAULT_OPT=$(printf '%s' "$J" | jq -r '.default // empty')
+  DEADLINE=$(printf '%s' "$J" | jq -r '.deadline // empty')
+  SENSITIVE=$(printf '%s' "$J" | jq -r '.sensitive // empty')
   AP_ENABLED=$(printf '%s' "$J" | jq -r 'if (.enabled|type) == "boolean" then (.enabled|tostring) else empty end')
   AP_DRIVER=$(printf '%s' "$J" | jq -r '.driver // empty')
   AP_BUDGET=$(printf '%s' "$J" | jq -r '.dailyBudgetUsd // empty')
@@ -121,6 +129,11 @@ while [[ $# -gt 0 ]]; do
                      [ $# -ge 2 ] || error_exit "--work-item requires a value";   WORK_ITEM="$2"; shift 2 ;;
     --question|-q)   [ $# -ge 2 ] || error_exit "--question requires a value";   QUESTION="$2"; shift 2 ;;
     --clear)         CLEAR="true"; shift ;;
+    --option|-o)     [ $# -ge 2 ] || error_exit "--option requires a value"
+                     OPTIONS_JSON=$(jq -c --arg o "$2" '. + [$o]' <<<"$OPTIONS_JSON"); shift 2 ;;
+    --default)       [ $# -ge 2 ] || error_exit "--default requires a value";    DEFAULT_OPT="$2"; shift 2 ;;
+    --deadline)      [ $# -ge 2 ] || error_exit "--deadline requires a value";   DEADLINE="$2"; shift 2 ;;
+    --sensitive)     [ $# -ge 2 ] || error_exit "--sensitive requires a value";  SENSITIVE="$2"; shift 2 ;;
     --on)            AP_ENABLED="true"; shift ;;
     --off)           AP_ENABLED="false"; shift ;;
     --driver)        [ $# -ge 2 ] || error_exit "--driver requires a value";     AP_DRIVER="$2"; shift 2 ;;
@@ -222,12 +235,18 @@ case "$ACTION" in
     require_param "project" "$PROJECT"; require_param "id" "$ID"
     if [ "$CLEAR" = "true" ]; then
       BODY=$(jq -n --arg note "$NOTE" '{clear: true} + (if $note != "" then {note: $note} else {} end)')
+      api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/ask-owner" "$BODY" \
+        | jq "{success, withdrawn: .data.withdrawn, ticket: (.data.ticket | ${TICKET_ROW})}"
     else
       require_param "question" "$QUESTION"
-      BODY=$(jq -n --arg q "$QUESTION" '{question: $q}')
+      BODY=$(jq -n --arg q "$QUESTION" --argjson o "$OPTIONS_JSON" --arg d "$DEFAULT_OPT" --arg dl "$DEADLINE" --arg s "$SENSITIVE" \
+        '{question: $q, options: $o}
+         + (if $d != "" then {default: $d} else {} end)
+         + (if $dl != "" then {deadline: $dl} else {} end)
+         + (if $s != "" then {sensitive: $s} else {} end)')
+      api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/ask-owner" "$BODY" \
+        | jq "{success, decision: (.data.decision | {id, asker, status, deadline, posted: (.card != null), postError}), ticket: (.data.ticket | if . == null then null else ${TICKET_ROW} end)}"
     fi
-    api_call POST "/project-tickets/$(enc "$PROJECT")/$(enc "$ID")/ask-owner" "$BODY" \
-      | jq "{success, ticket: (.data | ${TICKET_ROW})}"
     ;;
   autopilot)
     require_param "project" "$PROJECT"

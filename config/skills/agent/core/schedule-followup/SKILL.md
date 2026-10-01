@@ -56,6 +56,10 @@ re-creating (#621).
   fires.
 - If you forget to cancel a done followup, it will still terminate itself.
   That's by design — we refuse to let followups live forever.
+- **Where the output goes:** a fired followup's answer is posted as a NEW
+  top-level message in the target's team channel (never an old thread).
+  Pass `--destination "#channel"`, `C…` or `C…:<ts>` to post it somewhere
+  specific.
 
 ## Examples
 
@@ -71,6 +75,10 @@ bash execute.sh --fire-at 2026-04-24T09:00:00Z \
 # Recurring with cap — will auto-stop after 3 tries even if you forget to cancel
 bash execute.sh --cron "0 * * * *" --max-fires 3 \
   --title "Poll Rex hourly (give up after 3)"
+
+# Quarterly review — post the result in a specific thread
+bash execute.sh --cron "0 9 1 */3 *" --title "Quarterly wiki review" \
+  --destination "C0123ABCD:1790000000.000100"
 ```
 
 ## Output

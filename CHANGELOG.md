@@ -6,6 +6,22 @@ User-visible changes. Newest first.
 
 ### Added
 
+- **Decision cards: owner questions you answer with a tap.** An agent that needs you asks ONE
+  question with 2–3 options, a default and a deadline (`ask-owner` skill, or
+  `project-tickets ask-owner`). The agent that owns the work posts it from its own Slack bot,
+  as a card with buttons, in the ticket's thread in the team channel (or a new thread).
+  - **Answering:** tap a button, react (✅ default, ❌ "no", ⏰ tomorrow), reply in the thread,
+    or use the Dashboard's new **Waiting on you** list.
+  - **What happens on an answer:** the card updates to "✔ you chose …", the ticket log records
+    it, and the agent gets the decision straight away.
+  - **No answer by the deadline** (default: tomorrow 12:00): the default is applied. Sensitive
+    asks (outside email, publishing, prod deploys, spending) are never applied: you are asked
+    once more, then the question is parked.
+  - **Removed:** the orchestrator's batched "Tickets waiting on you" DM. The evening digest links
+    to the cards instead.
+  - **Setup:** Cloud forwards button clicks (crewly-services #24). See
+    `specs/2026-10-01-decision-cards.md`.
+
 - **Project tickets — each project's own backlog, tracked in git.** One markdown file per
   ticket in `<project>/.crewly/tickets/` (frontmatter + Description / Acceptance criteria /
   Log). The project page's **Tasks** tab is now a board of these tickets (create, edit, move,
@@ -21,6 +37,17 @@ User-visible changes. Newest first.
     import. The originals are left untouched; re-running is safe.
 
 ### Changed — behavior change
+
+- **Agents answer where the work came from.** `reply` with no ids now follows the current
+  work:
+  - a message from you is answered in its thread;
+  - ticket work goes to the ticket's thread;
+  - scheduled or triggered work goes to the trigger's new `destination`, or else to a new
+    top-level post in the team channel. Scheduled output no longer lands in an unrelated old
+    thread.
+  - `reply --new-thread "<title>"` starts a new topic.
+- **Boot, restart, upgrade and disconnect notices are in English**, and so are the team
+  channel's welcome and @-hint posts. Chinese commands are still accepted.
 
 - **MCP `crewly_assign_task` now creates a real WorkItem** through the running backend and
   returns its `workItemId` (it used to return a made-up id and do nothing). It fails with a
