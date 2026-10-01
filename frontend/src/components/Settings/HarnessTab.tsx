@@ -1,9 +1,11 @@
 /**
- * Settings → Harness tab
+ * Settings → Runtimes tab (id `harness`)
  *
  * Permanent home of the harness status list, the orchestrator harness
  * choice and the login cards (logins expire; people come back here to
- * re-login). Reuses the same components as the `/setup` flow.
+ * re-login). Reuses the same components as the `/setup` flow. Also holds the
+ * runtime fallback settings and the per-runtime smoke test
+ * (specs/2026-10-01-runtime-fallback.md).
  *
  * @module components/Settings/HarnessTab
  */
@@ -16,6 +18,7 @@ import { HarnessList } from '../Harness/HarnessList';
 import { OrcHarnessPicker } from '../Harness/OrcHarnessPicker';
 import { HarnessLoginCard } from '../Harness/HarnessLoginCard';
 import { visibleHarnesses } from '../../constants/harness.constants';
+import { RuntimeFallbackPanel } from './RuntimeFallbackPanel';
 
 /**
  * Section heading with Chinese title and short English subtitle.
@@ -92,6 +95,11 @@ export const HarnessTab: React.FC = () => {
           onChange={(id) => void setOrcHarness(id)}
           disabled={savingOrc}
         />
+      </section>
+
+      <section>
+        <SectionHeading title="Fallback" subtitle="Where agents go when a runtime runs out of usage, and back when it resets" />
+        <RuntimeFallbackPanel />
       </section>
 
       {loginHarnesses.length > 0 && (

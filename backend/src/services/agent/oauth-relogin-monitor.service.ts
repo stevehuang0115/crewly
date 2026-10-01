@@ -43,6 +43,7 @@ import type { EventBusService } from '../event-bus/event-bus.service.js';
 import type { AgentEvent } from '../../types/event-bus.types.js';
 import type { EnqueueMessageInput } from '../../types/messaging.types.js';
 import { detectLoginExpiry } from '../harness/login-expiry-rules.js';
+import { reportRuntimeOutput } from '../runtime-fallback/effective-runtime.js';
 import { isHarnessId } from '../harness/harness.types.js';
 import type { ExpiryReport } from '../harness/harness-relogin.service.js';
 
@@ -1082,6 +1083,13 @@ export class OAuthReloginMonitorService {
 		// coordinator (one login per harness, owner finishes it on the phone)
 		// instead of `/login` typed into this agent.
 		if (this.reportHarnessExpiry(sessionName, data, state.runtimeType, 'output')) {
+			return;
+		}
+
+		// A usage limit (not a login problem) goes to the runtime fallback,
+		// which moves the agent to its next runtime until the limit resets
+		// (specs/2026-10-01-runtime-fallback.md).
+		if (reportRuntimeOutput(sessionName, state.runtimeType, data, 'output')) {
 			return;
 		}
 

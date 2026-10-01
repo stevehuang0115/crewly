@@ -40,6 +40,8 @@ import { getTerminalGateway } from '../../websocket/terminal.gateway.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { ISessionBackend } from '../session/session-backend.interface.js';
 import { isUnderMemoryPressure, getMemoryStats } from '../core/system-health.util.js';
+import { isInProcessRuntimeActive } from './crewly-agent/in-process-runtime-registry.js';
+import { isPlannedRelaunch } from './planned-relaunch.registry.js';
 
 /**
  * Number of consecutive dead-process checks before triggering a restart.
@@ -273,6 +275,23 @@ export class AgentHeartbeatMonitorService {
 				// #220: Auto-downgrade agent status when session is gone.
 				// Previously this only cleaned up monitor state without marking
 				// the agent inactive, causing "ghost" active statuses in the API.
+				// An in-process runtime (Crewly Agent — also the runtime fallback's
+				// DeepSeek target) has no PTY session: it is not a ghost while it runs.
+				if (isInProcessRuntimeActive(member.sessionName)) {
+					continue;
+				}
+
+				// Being relaunched on purpose (runtime fallback switching runtimes):
+				// its session is briefly gone or silent — not a ghost, not dead.
+				if (isPlannedRelaunch(member.sessionName)) {
+					const state = this.agentStates.get(member.sessionName);
+					if (state) {
+						state.consecutiveDeadChecks = 0;
+						state.consecutiveIdleChecks = 0;
+					}
+					continue;
+				}
+
 				if (!this.sessionBackend.sessionExists(member.sessionName)) {
 					this.agentStates.delete(member.sessionName);
 

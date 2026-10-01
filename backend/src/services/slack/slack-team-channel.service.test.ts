@@ -19,6 +19,7 @@ import {
   slackIdentityFor,
   teamChannelLeader,
   teamChannelMembers,
+  isRuntimeSmokeTeam,
   orchestratorSyncEntry,
   orchestratorSyncSession,
   orchestratorSyncTeamId,
@@ -433,6 +434,13 @@ describe('teamChannelMembers', () => {
     const got = teamChannelMembers(t);
     expect(got.map((m) => m.name)).toEqual(['Sam', 'Sage']);
     expect(got[1].sessionName).toBe('think-tank-sage-c1d2e3f4');
+  });
+
+  it('gives a runtime smoke test team no channel members (no channel, invite or agent app)', () => {
+    const t = team({ name: 'zz-runtime-smoke-crewly-agent', members: [member('smoke', 'developer')] });
+    expect(teamChannelMembers(t)).toEqual([]);
+    expect(isRuntimeSmokeTeam(t)).toBe(true);
+    expect(isRuntimeSmokeTeam(team({ name: 'Think Tank' }))).toBe(false);
   });
 });
 

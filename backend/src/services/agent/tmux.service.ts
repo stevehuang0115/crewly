@@ -11,6 +11,7 @@ import { AgentRegistrationService, OrchestratorConfig } from './agent-registrati
 import { PromptBuilderService } from '../ai/prompt-builder.service.js';
 import { StorageService } from '../core/storage.service.js';
 import { ENV_CONSTANTS, AGENT_TIMEOUTS, ORCHESTRATOR_ROLE } from '../../constants.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
  * Refactored TmuxService that acts as a facade, coordinating specialized services
@@ -275,7 +276,7 @@ export class TmuxService extends EventEmitter {
 		try {
 			const orchestratorStatus = await this.storageService.getOrchestratorStatus();
 			if (orchestratorStatus?.runtimeType) {
-				runtimeType = orchestratorStatus.runtimeType;
+				runtimeType = effectiveRuntimeType(sessionName, orchestratorStatus.runtimeType);
 				this.logger.info('Using orchestrator runtime type from storage', { 
 					sessionName,
 					runtimeType 
