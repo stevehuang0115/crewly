@@ -19,7 +19,7 @@ import {
 	ChevronRight,
 	X,
 	Store,
-	Clock,
+	CalendarClock,
 	Shield,
 	DollarSign,
 	Pin,
@@ -37,6 +37,8 @@ import { IconButton } from '@crewly/ui';
 import { QRCodeDisplay } from './QRCodeDisplay';
 import { AuthStatusIndicator } from '../Auth/AuthStatusIndicator';
 import { usePinnedFavorites, type PinnedItem } from '../../hooks/usePinnedFavorites';
+import { useScheduleCount } from '../../hooks/useScheduleCount';
+import { SCHEDULES_NAV_LABEL, SCHEDULES_ROUTE } from '../../constants/schedules.constants';
 
 // =============================================================================
 // Navigation Group Definitions
@@ -47,6 +49,8 @@ interface NavItem {
 	name: string;
 	href: string;
 	icon: React.ComponentType<{ className?: string }>;
+	/** Optional count shown as a badge next to the label */
+	badge?: 'schedules';
 }
 
 /** A group of related navigation items */
@@ -84,7 +88,8 @@ const NAV_GROUPS: NavGroup[] = [
 			{ name: 'Connections', href: '/connections', icon: Plug },
 			// Live view of whatever an agent is doing in Chrome.
 			{ name: 'Browser', href: '/browser', icon: Globe },
-			{ name: 'Triggers', href: '/triggers', icon: Clock },
+			// Route stays /triggers; the page is the owner's scheduled work.
+			{ name: SCHEDULES_NAV_LABEL, href: SCHEDULES_ROUTE, icon: CalendarClock, badge: 'schedules' },
 		],
 	},
 	{
@@ -122,7 +127,9 @@ const NavLinkItem: React.FC<{
 	isCollapsed: boolean;
 	isMobileOpen: boolean;
 	onClick: () => void;
-}> = ({ item, isCollapsed, isMobileOpen, onClick }) => {
+	/** Badge count (hidden when null or 0) */
+	badgeCount?: number | null;
+}> = ({ item, isCollapsed, isMobileOpen, onClick, badgeCount }) => {
 	const location = useLocation();
 	const isActive =
 		location.pathname === item.href ||
@@ -145,6 +152,15 @@ const NavLinkItem: React.FC<{
 		>
 			<item.icon className={clsx('h-5 w-5 flex-shrink-0', isActive ? 'text-primary' : '')} />
 			{showLabel && <span className="ml-3">{item.name}</span>}
+			{showLabel && !!badgeCount && (
+				<span
+					className="ml-auto min-w-[1.25rem] px-1.5 py-0.5 rounded-full bg-primary/15 text-primary text-[10px] font-semibold text-center tabular-nums"
+					data-testid={`nav-badge-${item.href.replace(/\//g, '')}`}
+					aria-label={`${badgeCount} active`}
+				>
+					{badgeCount}
+				</span>
+			)}
 		</NavLink>
 	);
 };
@@ -261,6 +277,7 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 	const { version, latestVersion, updateAvailable } = useCrewlyVersion();
 	const { isCollapsed, toggleSidebar } = useSidebar();
 	const { pinnedItems } = usePinnedFavorites();
+	const scheduleCount = useScheduleCount();
 
 	const handleLinkClick = () => {
 		if (onMobileClose) {
@@ -349,6 +366,7 @@ export const Navigation: React.FC<NavigationProps> = ({ isMobileOpen, onMobileCl
 										isCollapsed={isCollapsed}
 										isMobileOpen={!!isMobileOpen}
 										onClick={handleLinkClick}
+										badgeCount={item.badge === 'schedules' ? scheduleCount : null}
 									/>
 
 									{/* Contextual project sub-nav under Projects */}

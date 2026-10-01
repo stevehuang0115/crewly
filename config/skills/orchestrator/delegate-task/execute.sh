@@ -387,6 +387,7 @@ if [ -n "$WI_ID" ] && [ "${FALLBACK_MINUTES:-0}" -gt 0 ] 2>/dev/null; then
         config: {type: "time", fireAt: $fireAt},
         action: {createWorkItem: {type: "delegate", owner: "system", target: $target, title: $title, description: $description}},
         createdBy: $createdBy,
+        internal: true,
         name: $name,
         maxFires: 1
       }')

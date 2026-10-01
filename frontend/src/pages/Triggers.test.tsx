@@ -1,29 +1,33 @@
-// Layout standardization
-// Updated: PageToolbar adoption
 /**
- * Triggers Page Tests
+ * Schedules page (route /triggers) tests.
  *
  * @module pages/Triggers.test
  */
 
 import React from 'react';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { vi, describe, it, expect, beforeEach } from 'vitest';
 import { Triggers } from './Triggers';
 import type { CronTask } from '../types/cron-task.types';
+import type { Trigger, EventSubscription } from '../types/trigger.types';
+import type { Team } from '../types';
 
 const mockUpdateTask = vi.fn();
+const mockPause = vi.fn();
 let mockCronTasks: CronTask[] = [];
+let mockTriggers: Trigger[] = [];
+let mockTeams: Team[] = [];
+let mockSubs: EventSubscription[] = [];
 
 vi.mock('../hooks/useTriggers', () => ({
   useTriggers: () => ({
-    triggers: [],
-    engineStatus: null,
+    triggers: mockTriggers,
+    engineStatus: { running: true, total: mockTriggers.length, byStatus: {}, byType: {} },
     isLoading: false,
     error: null,
     refresh: vi.fn().mockResolvedValue(undefined),
     createTrigger: vi.fn(),
-    pauseTrigger: vi.fn(),
+    pauseTrigger: mockPause,
     resumeTrigger: vi.fn(),
     cancelTrigger: vi.fn(),
     deleteTrigger: vi.fn(),
@@ -43,80 +47,215 @@ vi.mock('../hooks/useCronTasks', () => ({
 
 vi.mock('../services/api.service', () => ({
   apiService: {
-    getTeams: vi.fn().mockResolvedValue([]),
-    getEventSubscriptions: vi.fn().mockResolvedValue([]),
+    getTeams: vi.fn(() => Promise.resolve(mockTeams)),
+    getEventSubscriptions: vi.fn(() => Promise.resolve(mockSubs)),
   },
 }));
 
-/** Minimal CronTask fixture for rendering a table row. */
+const IN_3H = new Date(Date.now() + 3 * 3600_000).toISOString();
+
+/** The owner's nightly report, as the backend returns it after the fix. */
+function dailyOps(overrides: Partial<Trigger> = {}): Trigger {
+  return {
+    id: '8c61ac27-1111-4000-8000-000000000000',
+    type: 'time',
+    config: { type: 'time', cronExpression: '30 22 * * *', timezone: 'America/New_York' },
+    action: {
+      createWorkItem: {
+        type: 'delegate',
+        target: 'ce-owen-ad0320ab',
+        title: 'Nightly ops report',
+        description: 'Run the daily-ops skill: news, forum topics, GA4 and inbox.',
+      },
+    },
+    status: 'active',
+    createdBy: 'agent',
+    createdBySession: 'ce-owen-ad0320ab',
+    internal: false,
+    createdAt: '2026-09-28T00:00:00.000Z',
+    nextFireAt: IN_3H,
+    fireCount: 2,
+    maxFires: 58,
+    maxIdleFires: 3,
+    consecutiveIdleFires: 0,
+    teamId: 'team-ce',
+    name: 'daily-ops-nightly-2230',
+    projectedLastFireAt: '2026-11-25T03:30:00.000Z',
+    ...overrides,
+  };
+}
+
+function internalTrigger(): Trigger {
+  return dailyOps({
+    id: 'esc-1',
+    name: 'system:escalation',
+    config: { type: 'time', cronExpression: '*/5 * * * *', timezone: 'UTC' },
+    action: { runReconciler: true },
+    createdBy: 'system',
+    createdBySession: undefined,
+    internal: true,
+    teamId: undefined,
+    maxFires: undefined,
+  });
+}
+
 function makeCronTask(overrides: Partial<CronTask> = {}): CronTask {
   return {
     id: 'cron-1',
-    cronExpression: '0 9 * * 1-5',
-    timezone: 'UTC',
-    targetAgent: 'agent-1',
-    targetTeamId: 'team-1',
-    taskDescription: 'Daily standup summary',
+    cronExpression: '0 22 * * 5',
+    timezone: 'America/New_York',
+    targetAgent: 'ce-owen-ad0320ab',
+    targetTeamId: 'team-ce',
+    taskDescription: '【Weekly recap】\nSummarise the week.',
     createdBy: 'user',
+    createdAt: '2026-09-01T00:00:00.000Z',
     enabled: true,
+    lastRunAt: null,
+    nextRunAt: IN_3H,
     ...overrides,
-  } as CronTask;
+  };
 }
 
-// Note: mapTriggerStatus is not exported. These tests verify the mapping
-// logic indirectly through the component. Full component tests require
-// mocking useTriggers, useCronTasks, and apiService hooks.
+/** Wait until the team list has loaded and rows sit in their team group. */
+async function settled(): Promise<void> {
+  await screen.findByRole('region', { name: 'CareerEngine' });
+}
 
-describe('Triggers Page', () => {
-  it('should be defined as a module', () => {
-    // Placeholder — full component tests require hook mocking
-    expect(true).toBe(true);
-  });
+const ceTeam = {
+  id: 'team-ce',
+  name: 'CareerEngine',
+  members: [{ id: 'm-owen', name: 'Owen', sessionName: 'ce-owen-ad0320ab', role: 'developer' }],
+} as unknown as Team;
 
-  it('should have responsive table column classes', () => {
-    // Verifies the responsive hiding pattern is applied
-    // Team: hidden sm:table-cell
-    // Task/Action: hidden md:table-cell
-    // Next/Last Fire: hidden lg:table-cell
-    expect(true).toBe(true);
-  });
-});
-
-describe('Triggers Page (rendered)', () => {
+describe('Schedules page', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockCronTasks = [];
+    mockTriggers = [];
+    mockTeams = [ceTeam];
+    mockSubs = [];
   });
 
-  it('shows the empty state with a create action when there are no triggers', async () => {
+  it('shows a clear empty state when nothing is scheduled', async () => {
     render(<Triggers />);
-    expect(await screen.findByText('No triggers yet')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /create your first trigger/i })).toBeInTheDocument();
+    expect(await screen.findByText('还没有定时任务')).toBeInTheDocument();
   });
 
-  it('renders cron rows with labelled icon actions that toggle the task', async () => {
+  it('shows the daily-ops trigger in Scheduled with its name, plain schedule and remaining count', async () => {
+    mockTriggers = [dailyOps()];
+    render(<Triggers />);
+    await settled();
+
+    expect(screen.getByText('daily-ops-nightly-2230')).toBeInTheDocument();
+    const schedule = screen.getByText('每天 22:30 ET');
+    expect(schedule).toHaveAttribute('title', '30 22 * * * (America/New_York)');
+    expect(screen.getByText(/已运行 2\/58 次 · 还剩 56 次/)).toBeInTheDocument();
+    expect(screen.getByText(/约 11月2[45]日 停止/)).toBeInTheDocument();
+    // Grouped under its team, run by the member's display name.
+    expect(await screen.findByRole('region', { name: 'CareerEngine' })).toBeInTheDocument();
+    expect(await screen.findByText('Owen')).toBeInTheDocument();
+    // Plenty of runs left — no renew warning.
+    expect(screen.queryByText('快到期，需要续')).not.toBeInTheDocument();
+  });
+
+  it('warns when 7 or fewer runs remain', async () => {
+    mockTriggers = [dailyOps({ fireCount: 52 })];
+    render(<Triggers />);
+    await settled();
+    expect(await screen.findByText('快到期，需要续')).toBeInTheDocument();
+  });
+
+  it('includes per-team cron tasks alongside cron triggers', async () => {
+    mockCronTasks = [makeCronTask()];
+    render(<Triggers />);
+    await settled();
+    expect(await screen.findByText('Weekly recap')).toBeInTheDocument();
+    expect(screen.getByText('每周五 22:00 ET')).toBeInTheDocument();
+  });
+
+  it('hides internal triggers until "show system" is on', async () => {
+    mockTriggers = [dailyOps(), internalTrigger()];
+    render(<Triggers />);
+    await settled();
+
+    expect(await screen.findByText('daily-ops-nightly-2230')).toBeInTheDocument();
+    expect(screen.queryByText('system:escalation')).not.toBeInTheDocument();
+    expect(screen.getByText('另有 1 个系统任务已隐藏')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('显示系统任务'));
+    expect(await screen.findByText('system:escalation')).toBeInTheDocument();
+  });
+
+  it('opens the full description when a row is tapped', async () => {
+    mockTriggers = [dailyOps()];
+    render(<Triggers />);
+    await settled();
+    fireEvent.click(screen.getByText('daily-ops-nightly-2230'));
+    const drawer = await screen.findByTestId('schedule-detail');
+    expect(within(drawer).getByText('Run the daily-ops skill: news, forum topics, GA4 and inbox.')).toBeInTheDocument();
+    expect(within(drawer).getByText('30 22 * * *')).toBeInTheDocument();
+  });
+
+  it('pauses from the row without opening it', async () => {
+    mockTriggers = [dailyOps()];
+    mockPause.mockResolvedValue(undefined);
+    render(<Triggers />);
+    await settled();
+    fireEvent.click(await screen.findByRole('button', { name: '暂停 daily-ops-nightly-2230' }));
+    await waitFor(() => expect(mockPause).toHaveBeenCalledWith(dailyOps().id));
+    expect(screen.queryByTestId('schedule-detail')).not.toBeInTheDocument();
+  });
+
+  it('toggles a cron task through the cron API', async () => {
     mockCronTasks = [makeCronTask()];
     mockUpdateTask.mockResolvedValue(undefined);
     render(<Triggers />);
-
-    expect(await screen.findByText('Daily standup summary')).toBeInTheDocument();
-    const pause = screen.getByRole('button', { name: 'Pause' });
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeInTheDocument();
-
-    fireEvent.click(pause);
+    await settled();
+    fireEvent.click(await screen.findByRole('button', { name: '暂停 Weekly recap' }));
     await waitFor(() => expect(mockUpdateTask).toHaveBeenCalledWith('cron-1', { enabled: false }));
   });
 
-  it('opens the create modal with a trigger-type segmented control', async () => {
+  it('lists one-shot follow-ups and event waits under Reminders', async () => {
+    mockTriggers = [
+      dailyOps(),
+      dailyOps({
+        id: 'fu-1',
+        name: 'followup:abcd1234',
+        config: { type: 'time', delayMs: 3600_000 },
+        action: { createWorkItem: { title: 'Check PR #12', target: 'ce-owen-ad0320ab' } },
+        maxFires: 1,
+        fireCount: 0,
+      }),
+    ];
+    mockSubs = [{ id: 'sub-1', eventType: 'agent:idle', filter: {}, oneShot: true, subscriberSession: 'crewly-orc', createdAt: '2026-09-30T00:00:00Z' }];
     render(<Triggers />);
-    fireEvent.click(screen.getByRole('button', { name: /new trigger/i }));
+    await settled();
+    fireEvent.click(screen.getByRole('tab', { name: /提醒/ }));
+    // Auto-generated follow-up names fall back to the work item title.
+    expect(await screen.findByText('Check PR #12')).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: '等待事件' })).toBeInTheDocument();
+  });
 
-    const group = await screen.findByRole('radiogroup', { name: 'Trigger type' });
-    expect(group).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: /time/i })).toHaveAttribute('aria-checked', 'true');
+  it('keeps History collapsed until expanded, then paginates', async () => {
+    mockTriggers = Array.from({ length: 25 }, (_, i) => dailyOps({
+      id: `old-${i}`,
+      name: `old-schedule-${i}`,
+      status: i % 2 ? 'cancelled' : 'exhausted',
+      lastFiredAt: new Date(Date.UTC(2026, 8, 1 + i)).toISOString(),
+    }));
+    render(<Triggers />);
+    fireEvent.click(await screen.findByRole('tab', { name: /历史/ }));
 
-    fireEvent.click(screen.getByRole('radio', { name: /signal/i }));
-    expect(screen.getByLabelText('Event Type')).toHaveValue('agent:idle');
+    const toggle = await screen.findByRole('button', { name: /25 条已结束的记录/ });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('old-schedule-24')).not.toBeInTheDocument();
+
+    fireEvent.click(toggle);
+    // Newest first, 20 per page.
+    expect(await screen.findByText('old-schedule-24')).toBeInTheDocument();
+    expect(screen.queryByText('old-schedule-0')).not.toBeInTheDocument();
+    expect(screen.getByText('1 / 2')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+    expect(await screen.findByText('old-schedule-0')).toBeInTheDocument();
   });
 });
-

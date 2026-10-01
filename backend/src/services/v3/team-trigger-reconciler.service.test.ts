@@ -123,7 +123,8 @@ describe('TeamTriggerReconciler', () => {
       // Runtime triggers should carry the team identity.
       for (const t of engine.list()) {
         expect(t.teamId).toBe('team-abc');
-        expect(t.createdBy).toBe('system');
+        expect(t.createdBy).toBe('user');
+        expect(t.internal).toBe(false);
       }
     });
 

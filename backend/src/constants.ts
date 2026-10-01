@@ -1752,6 +1752,14 @@ export const TRIGGER_ENGINE_CONSTANTS = {
 	 * hops of at most this size.
 	 */
 	MAX_TIMER_DELAY_MS: 2_147_483_647,
+	/**
+	 * A recurring trigger with `maxFires` that has this many fires or fewer
+	 * left gets one heads-up work item to its team lead (renew or ask the
+	 * owner). It is never renewed automatically.
+	 */
+	EXPIRY_NOTICE_REMAINING_FIRES: 3,
+	/** Most cron steps walked when projecting a trigger's final fire time. */
+	PROJECTION_MAX_STEPS: 400,
 } as const;
 
 /**

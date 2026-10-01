@@ -36,6 +36,12 @@ vi.mock('../../hooks/usePinnedFavorites', () => ({
   STORAGE_KEY: 'crewly_pinned_favorites',
 }));
 
+// Schedules badge count (the hook polls the API; tests set the value)
+let mockScheduleCount: number | null = null;
+vi.mock('../../hooks/useScheduleCount', () => ({
+  useScheduleCount: () => mockScheduleCount,
+}));
+
 const renderWithProviders = (component: React.ReactElement) => {
   return render(
     <BrowserRouter>
@@ -54,6 +60,7 @@ function healthResponse(body: Record<string, unknown>) {
 describe('Navigation', () => {
   beforeEach(() => {
     mockPinnedItems.length = 0;
+    mockScheduleCount = null;
     // The sidebar asks /health for its version line on mount. Left pending
     // here so these synchronous tests see no state update after render —
     // the version-line tests below supply an answer and await it.
@@ -107,7 +114,7 @@ describe('Navigation', () => {
     renderWithProviders(<Navigation />);
 
     expect(screen.getByRole('link', { name: /marketplace/i })).toHaveAttribute('href', '/marketplace');
-    expect(screen.getByRole('link', { name: /schedules/i })).toHaveAttribute('href', '/scheduled-checkins');
+    expect(screen.getByRole('link', { name: /schedules/i })).toHaveAttribute('href', '/triggers');
   });
 
   it('renders System group items: Security, Settings', () => {
@@ -280,5 +287,21 @@ describe('Navigation — version line', () => {
     renderWithProviders(<Navigation />);
     expect(screen.getByText('CREWLY')).toBeInTheDocument();
     expect(screen.queryByText(/^v\d/)).not.toBeInTheDocument();
+  });
+
+  it('labels the /triggers entry "Schedules" and badges active recurring schedules', () => {
+    mockScheduleCount = 4;
+    global.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
+    renderWithProviders(<Navigation />);
+    const link = screen.getByText('Schedules').closest('a');
+    expect(link).toHaveAttribute('href', '/triggers');
+    expect(screen.getByTestId('nav-badge-triggers')).toHaveTextContent('4');
+  });
+
+  it('shows no schedules badge when the count is zero or unknown', () => {
+    mockScheduleCount = 0;
+    global.fetch = vi.fn().mockReturnValue(new Promise(() => {}));
+    renderWithProviders(<Navigation />);
+    expect(screen.queryByTestId('nav-badge-triggers')).not.toBeInTheDocument();
   });
 });

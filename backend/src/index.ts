@@ -2819,6 +2819,8 @@ void (async () => {
 				triggerEngine.setActionHandler(async (trigger, action) => {
 					const triggerId = trigger.id;
 					const logger = this.logger;
+					// What this fire did, shown to the owner as the trigger's last result.
+					let outcome: import('./types/v2/trigger.types.js').TriggerFireOutcome | undefined;
 
 					// 1. sendMessage — enqueue a message to the orchestrator session
 					if (action.sendMessage) {
@@ -2832,7 +2834,9 @@ void (async () => {
 								source: 'system_event',
 							});
 							logger.info('TriggerEngine: sendMessage enqueued', { triggerId, target });
+							outcome = { status: 'ok' };
 						} catch (err) {
+							outcome = { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
 							logger.warn('TriggerEngine: sendMessage failed', {
 								triggerId,
 								error: err instanceof Error ? err.message : String(err),
@@ -2879,6 +2883,7 @@ void (async () => {
 							const duplicate = findOpenDuplicateWorkItem(poolItems, draft)
 								?? findCoveringVerifyItem(poolItems, trigger, draft);
 							if (duplicate) {
+								outcome = { status: 'skipped', detail: 'same work still open', workItemId: duplicate.id };
 								logger.debug('TriggerEngine: WorkItem skipped — same work already open', {
 									triggerId,
 									target: workItem.target,
@@ -2897,8 +2902,10 @@ void (async () => {
 									workItemId: workItem.id,
 								});
 								logger.info('TriggerEngine: WorkItem enqueued', { triggerId, workItemId: workItem.id });
+								outcome = { status: 'ok', workItemId: workItem.id };
 							}
 						} catch (err) {
+							outcome = { status: 'failed', detail: err instanceof Error ? err.message : String(err) };
 							logger.warn('TriggerEngine: createWorkItem failed', {
 								triggerId,
 								error: err instanceof Error ? err.message : String(err),
@@ -2955,6 +2962,29 @@ void (async () => {
 							});
 						}
 					}
+					return outcome;
+				});
+
+				// Expiry heads-up: a capped recurring trigger close to its last
+				// fire gets one work item to its team lead (renew or ask the
+				// owner). Never renews anything itself.
+				triggerEngine.setExpiryNotifier(async (trigger, _remaining, lastFireAt) => {
+					const { TaskPoolService } = await import('./services/task-pool/task-pool.service.js');
+					const { createWorkItem } = await import('./types/v2/work-item.types.js');
+					const { buildExpiryNotice, resolveExpiryNoticeTarget } = await import('./services/v3/trigger-expiry.js');
+					const teams = await this.storageService.getTeams().catch(() => []);
+					const target = resolveExpiryNoticeTarget(trigger, teams);
+					const notice = buildExpiryNotice(trigger, lastFireAt);
+					await TaskPoolService.getInstance().addToPool(createWorkItem({
+						title: notice.title,
+						description: notice.description,
+						type: 'delegate',
+						owner: 'team_lead',
+						target,
+						triggerId: trigger.id,
+					}));
+					this.logger.info('TriggerEngine: expiry heads-up queued', { triggerId: trigger.id, target });
+					return true;
 				});
 
 				await triggerEngine.start();
