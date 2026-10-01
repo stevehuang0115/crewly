@@ -252,6 +252,20 @@ export function childrenState(ids: readonly string[], pool: readonly WorkItem[])
 }
 
 /**
+ * Whether two items are the same thing said once: same message, or the same
+ * words by the same agent within {@link OPEN_ITEMS_CONSTANTS.DUPLICATE_WINDOW_MS}.
+ *
+ * @param a - Item
+ * @param b - Item
+ * @returns True for a duplicate
+ */
+export function isSameItem(a: Pick<RequestOpenItem, 'sourceMessageId' | 'text' | 'agent' | 'createdAt'>, b: Pick<RequestOpenItem, 'sourceMessageId' | 'text' | 'agent' | 'createdAt'>): boolean {
+  if (a.text !== b.text) return false;
+  if (a.sourceMessageId === b.sourceMessageId) return true;
+  return a.agent === b.agent && Math.abs(Date.parse(a.createdAt) - Date.parse(b.createdAt)) <= OPEN_ITEMS_CONSTANTS.DUPLICATE_WINDOW_MS;
+}
+
+/**
  * Clip for a one-line mention.
  *
  * @param s - Text
@@ -408,7 +422,9 @@ export class OpenItemsService {
         this.logger.info('Commitment delivered', { tkt: ticketLabel(request), item: d.id, by: message.senderId });
       }
 
-      const fresh = planned.filter((p) => !items.some((i) => i.sourceMessageId === message.id && i.text === p.item.text));
+      // The same words twice (a reply recorded both from the reply path and the
+      // Slack mirror) are one item.
+      const fresh = planned.filter((p) => !items.some((i) => isSameItem(i, p.item)));
       for (const p of fresh) {
         const item = await this.activate(request, p, pool);
         items.push(item);

@@ -5156,6 +5156,8 @@ export const OPEN_ITEMS_CONSTANTS = {
 	DEFAULT_DUE_HOUR_LOCAL: 12,
 	/** A commitment with no time is due this long after it was made (ms) */
 	DEFAULT_DUE_MS: 24 * 60 * 60 * 1000,
+	/** The same words by the same agent this close together are one item (a reply recorded twice) (ms) */
+	DUPLICATE_WINDOW_MS: 10 * 60 * 1000,
 	/** Max commitments and max questions taken from one reply */
 	MAX_ITEMS_PER_REPLY: 3,
 	/** Max characters stored for an item's text */

@@ -207,6 +207,15 @@ describe('OpenItemsService — the ticket stays open', () => {
     await expect(h.requests.update(t.id, { status: 'running' })).rejects.toThrow(/Invalid status transition/);
   });
 
+  it('the same reply recorded twice (reply path + Slack mirror) is tracked once', async () => {
+    const h = harness();
+    const t = await ticket(h);
+    await h.service.onAgentMessage(msg(h, '明天中午整理好发你。', ATLAS, 'm-a'));
+    await h.service.onAgentMessage(msg(h, '明天中午整理好发你。', ATLAS, 'm-b'));
+    expect((await h.requests.getById(t.id))!.openItems).toHaveLength(1);
+    expect(h.followUps).toHaveLength(1);
+  });
+
   it('a reply with nothing open changes nothing', async () => {
     const h = harness();
     await ticket(h);

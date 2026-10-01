@@ -16,7 +16,7 @@ import { OPEN_ITEMS_CONSTANTS } from '../../constants.js';
 import type { Request } from '../../types/v2/request.types.js';
 import type { WorkItem } from '../../types/v2/work-item.types.js';
 import { formatTicketNumber } from '../../types/v2/ticket.types.js';
-import { childrenState, childWorkFor, type OpenItemsChatMessage, type OpenItemsService, type PlannedOpenItem } from './open-items.service.js';
+import { childrenState, childWorkFor, isSameItem, type OpenItemsChatMessage, type OpenItemsService, type PlannedOpenItem } from './open-items.service.js';
 
 /** Readers the backfill needs. */
 export interface BackfillDeps {
@@ -89,6 +89,7 @@ export async function backfillOpenItems(deps: BackfillDeps, opts: { apply?: bool
       const planned = await deps.service.plan(request, message, at);
       const later = thread.filter((m) => (m.createdAt ?? 0) > (message.createdAt ?? 0));
       for (const p of planned) {
+        if (keep.some((k) => isSameItem(k.item, p.item))) continue;
         const row: BackfillRow = {
           requestId: request.id,
           ticket,
