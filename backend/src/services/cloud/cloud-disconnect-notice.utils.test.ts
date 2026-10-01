@@ -104,8 +104,8 @@ describe('isNoticeEnabled', () => {
 });
 
 describe('notice texts', () => {
-	it('formats local time as M月D日 HH:mm', () => {
-		expect(formatLocalTime(new Date(2026, 8, 7, 5, 3).getTime())).toBe('9月7日 05:03');
+	it('formats local time as Mon D HH:mm', () => {
+		expect(formatLocalTime(new Date(2026, 8, 7, 5, 3).getTime())).toBe('Sep 7 05:03');
 	});
 
 	it('includes device, reason, start time, link and code', () => {
@@ -117,24 +117,24 @@ describe('notice texts', () => {
 			userCode: 'ABCD-2345',
 		});
 		expect(text).toBe(
-			'Crewly（本机：iriss-air.lan）连不上 Crewly Cloud 了（登录已过期，从 9月27日 23:38 起）。' +
-				'发给这台机器上 agent 的 Slack 消息会在 Cloud 排队，收不到。' +
-				'点这里重新登录：https://portal.example.test/cloud/pair?code=ABCD-2345（在手机上点一下即可，核对码 ABCD-2345），登录后排队的消息会自动送到。',
+			'Crewly (machine: iriss-air.lan) lost its connection to Crewly Cloud (the sign-in expired, since Sep 27 23:38). ' +
+				'Slack messages to agents on this machine are queued in Cloud until it is back. ' +
+				'Sign in again here: https://portal.example.test/cloud/pair?code=ABCD-2345 (one tap on your phone; check code ABCD-2345). Queued messages are delivered once you are signed in.',
 		);
 	});
 
 	it('says it keeps retrying when no link could be had', () => {
-		expect(composeDisconnectNotice({ deviceName: 'm', reason: 'auth', since: T0 })).toContain('暂时拿不到重新登录的链接，Crewly 会继续重试');
+		expect(composeDisconnectNotice({ deviceName: 'm', reason: 'auth', since: T0 })).toContain('No sign-in link yet. Crewly keeps trying');
 		const unreachable = composeDisconnectNotice({ deviceName: 'm', reason: 'unreachable', since: T0 });
-		expect(unreachable).toContain('网络连不上 Cloud');
-		expect(unreachable).toContain('Crewly 会继续自动重连');
+		expect(unreachable).toContain('Cloud is unreachable');
+		expect(unreachable).toContain('Crewly keeps reconnecting');
 		expect(unreachable).not.toContain('http');
 	});
 
 	it('has the follow-up and the failure note', () => {
-		expect(RECONNECTED_NOTICE).toBe('已重新连上 Cloud，排队的消息正在送达。');
-		expect(composeLoginFailedNotice('登录被拒绝', new Date(2026, 8, 28, 5, 38).getTime())).toBe(
-			'重新登录没有完成（登录被拒绝）。Crewly 会在 9月28日 05:38 再发一次新链接。',
+		expect(RECONNECTED_NOTICE).toBe('Back on Crewly Cloud. Queued messages are being delivered.');
+		expect(composeLoginFailedNotice('sign-in was denied', new Date(2026, 8, 28, 5, 38).getTime())).toBe(
+			'The sign-in did not finish (sign-in was denied). Crewly will send a new link at Sep 28 05:38.',
 		);
 	});
 });

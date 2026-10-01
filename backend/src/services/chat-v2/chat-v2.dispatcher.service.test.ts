@@ -1428,7 +1428,8 @@ describe('owner-message guarantee hooks (specs/2026-09-30-owner-message-guarante
       senderId: 'steve',
       content: 'hi',
     });
-    expect(prompt).toContain('CREWLY_SESSION_NAME=crewly-product-sam-dd2b46f7 bash config/skills/agent/core/reply/execute.sh "<你的回复>"');
+    expect(prompt).toContain('CREWLY_SESSION_NAME=crewly-product-sam-dd2b46f7 bash config/skills/agent/core/reply/execute.sh "<your reply>"');
+    expect(prompt).toContain('Answer where you were asked; a new topic goes in a new thread');
     // The detailed legacy instruction is still there.
     expect(prompt).toContain('reply-chat');
   });

@@ -447,7 +447,7 @@ export function consumePendingMarker(file: string): PendingUpgradeMarker | null 
  * @returns The one-line notice
  */
 export function composeUpgradedNotice(version: string, deviceName: string): string {
-	return `Crewly 已自动升级到 ${version}（本机：${deviceName}）`;
+	return `Crewly auto-upgraded to ${version} (machine: ${deviceName})`;
 }
 
 /**
@@ -460,7 +460,7 @@ export function composeUpgradedNotice(version: string, deviceName: string): stri
  * @returns The notice text
  */
 export function composeFailureNotice(version: string, deviceName: string, failures: number, reason: string): string {
-	return `Crewly 自动升级到 ${version} 失败（本机：${deviceName}，已连续 ${failures} 次）：${reason}。会稍后重试；也可以在这台机器上运行 crewly upgrade。`;
+	return `Crewly could not auto-upgrade to ${version} (machine: ${deviceName}, ${failures} failures in a row): ${reason}. It will retry later; you can also run crewly upgrade on this machine.`;
 }
 
 /**
