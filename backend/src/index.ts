@@ -744,7 +744,16 @@ export class CrewlyServer {
 				},
 			});
 			getChatV2Service().on('chat_message', (dto: ChatMessageDTO) => {
-				void ticketReview.onChatMessage(dto).catch(() => undefined);
+				// Open items read the same message after the review recorded it, so
+				// the two never write the ticket at once (specs/2026-10-01-reply-open-items.md).
+				void ticketReview
+					.onChatMessage(dto)
+					.catch(() => undefined)
+					.then(async () => {
+						const { OpenItemsService } = await import('./services/open-items/open-items.service.js');
+						await OpenItemsService.getInstance()?.onAgentMessage(dto);
+					})
+					.catch(() => undefined);
 			});
 			const reviewSweep = setInterval(() => {
 				void ticketReview.sweep().catch((sweepErr: unknown) => {
@@ -1334,6 +1343,15 @@ void (async () => {
 			// busy sources). Repeats are harmless — a watch ends on first use.
 			if (event.type === 'agent:busy' && event.sessionName) {
 				getSlackAutoWorkingService()?.noteBusy(event.sessionName);
+			}
+			// Work an agent promised the owner may now be ready to deliver
+			// (specs/2026-10-01-reply-open-items.md).
+			const finished = event as { type: string; workItemId?: string };
+			if ((finished.type === 'task:verified' || finished.type === 'task:done') && finished.workItemId) {
+				const workItemId = finished.workItemId;
+				void import('./services/open-items/open-items.service.js')
+					.then(({ OpenItemsService }) => OpenItemsService.getInstance()?.onWorkItemSettled(workItemId))
+					.catch(() => undefined);
 			}
 			if (event.type === 'agent:idle' && event.sessionName) {
 				try {
@@ -5135,6 +5153,42 @@ void (async () => {
 			// owner agrees to a runtime's first-run Terms from a Slack card.
 			const { startRuntimeTerms } = await import('./services/runtime-terms/runtime-terms.wiring.js');
 			startRuntimeTerms({ crewlyHome: this.config.crewlyHome, decisions, machineName: () => os.hostname().replace(/\.local$/, '') });
+			// Open items (specs/2026-10-01-reply-open-items.md): commitments and
+			// questions in agents' replies to the owner are tracked until done.
+			const { startOpenItems } = await import('./services/open-items/open-items.wiring.js');
+			startOpenItems({
+				getTeams: () => this.storageService.getTeams(),
+				sendToAgent: async (session, text) => {
+					let exists = false;
+					try {
+						exists = getSessionBackendSync()?.sessionExists(session) ?? false;
+					} catch {
+						exists = false;
+					}
+					if (!exists) {
+						const { activateAgentBySession } = await import('./controllers/team/team.controller.js');
+						await activateAgentBySession(this.apiController, session).catch(() => undefined);
+					}
+					const result = await this.apiController.agentRegistrationService.sendMessageToAgent(session, text);
+					return result.success;
+				},
+				recordChatNote: (chatChannelId, threadId, text) => {
+					try {
+						getChatV2Service().recordTurn({
+							channelId: chatChannelId,
+							senderType: 'system',
+							senderId: 'crewly',
+							content: text,
+							...(threadId ? { threadId } : {}),
+							metadata: { source: 'system' },
+						});
+						return true;
+					} catch {
+						return false;
+					}
+				},
+			});
+			this.logger.info('Open items started');
 		} catch (error) {
 			this.logger.warn('Decision cards not started', { error: error instanceof Error ? error.message : String(error) });
 		}

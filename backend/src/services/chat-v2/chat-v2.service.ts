@@ -1023,6 +1023,18 @@ export class ChatV2Service extends EventEmitter {
   }
 
   /**
+   * Bridge lookup: every message of a thread (root + replies), oldest
+   * first, without an auth check (server-side readers only).
+   *
+   * @param channelId - The channel id
+   * @param rootId - The thread root message id
+   * @returns Messages
+   */
+  listThreadForBridge(channelId: string, rootId: string): ChatMessageDTO[] {
+    return this.messages.listThread(channelId, rootId).map((r) => this.toMessageDTO(r, []));
+  }
+
+  /**
    * Read a single message by id, server-side (no principal). Used by the
    * outbound Slack mirror to recover a reply's thread root metadata.
    *

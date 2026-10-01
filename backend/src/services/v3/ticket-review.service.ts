@@ -57,6 +57,7 @@ import {
   ticketNeedsReview,
 } from '../../types/v2/ticket.types.js';
 import { answerNeedsOwner, isStaleTicket, staleCloseUpdate } from './ticket-hygiene.js';
+import { ACTIVE_OPEN_ITEM_STATUSES } from '../../types/v2/open-item.types.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -268,9 +269,11 @@ export class TicketReviewService {
           else this.logger.debug('Auto-accept refused', { id: t.id, reason: r.reason });
           continue;
         }
-        // Before that, the agent asks the owner itself (up to MAX_NUDGES times).
+        // Before that, the agent asks the owner itself (up to MAX_NUDGES times) —
+        // unless its question is already on a decision card (reply-open-items).
         const agent = t.reply?.by ?? t.assignee;
         if (!this.deps.nudgeAgent || !agent) continue;
+        if ((t.openItems ?? []).some((i) => i.type === 'question' && !!i.decisionId && ACTIVE_OPEN_ITEM_STATUSES.has(i.status))) continue;
         if ((t.nudgeCount ?? 0) >= TICKET_CONSTANTS.REVIEW.MAX_NUDGES) continue;
         if (now - Date.parse(t.lastNudgeAt ?? t.submittedAt) < TICKET_CONSTANTS.REVIEW.NUDGE_AFTER_MS) continue;
         const ok = await this.deps

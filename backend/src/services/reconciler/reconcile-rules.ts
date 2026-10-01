@@ -325,6 +325,9 @@ export function reconcileRequestStatus(
   workItems: WorkItem[],
 ): ReconcileCorrection | null {
   if (TERMINAL_REQUEST_STATUSES.has(request.status)) return null;
+  // Waiting on what the agent promised / asked the owner: only the open-items
+  // service moves it on (specs/2026-10-01-reply-open-items.md).
+  if (request.status === 'awaiting_followup') return null;
   if (workItems.length === 0 && request.status === 'open') return null;
   // Tickets (specs/ticket-loop.md Phase 2): 待验收 is the owner's call, and a
   // ticket with no WorkItems is being answered directly — not dangling.

@@ -419,6 +419,12 @@ describe('reconcileRequestStatus', () => {
     expect(reconcileRequestStatus(inReview, [makeWorkItem({ id: 'wi-1', status: 'done' })])).toBeNull();
   });
 
+  it('leaves a ticket awaiting follow-up alone (reply-open-items)', () => {
+    const waiting = makeRequest({ status: 'awaiting_followup', ticketNumber: 185, workItemIds: ['wi-1', 'wi-2'] });
+    expect(reconcileRequestStatus(waiting, [makeWorkItem({ id: 'wi-1', status: 'running' }), makeWorkItem({ id: 'wi-2', status: 'done' })])).toBeNull();
+    expect(reconcileRequestStatus(waiting, [])).toBeNull();
+  });
+
   it('should transition running request to done when all WorkItems done', () => {
     const request = makeRequest({ status: 'running', workItemIds: ['wi-1', 'wi-2'] });
     const workItems = [

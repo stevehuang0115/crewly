@@ -15,7 +15,8 @@
  * @module services/decisions/decision.service
  */
 
-import { DECISION_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { DECISION_CONSTANTS, OPEN_ITEMS_CONSTANTS, ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
+import { questionSimilarity } from '../open-items/open-item-card.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 import type { SlackBlock, SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
 import type {
@@ -188,9 +189,10 @@ export interface DecisionKindHandler {
    * replaces the generic `[DECISION]` note; null sends nothing.
    *
    * @param decision - The settled decision
+   * @param fallback - The generic note the asker would get without a handler (null for none)
    * @returns Note for the asker, or null
    */
-  onSettled(decision: OwnerDecision): Promise<string | null>;
+  onSettled(decision: OwnerDecision, fallback?: string | null): Promise<string | null>;
 }
 
 /** A question Crewly builds itself (no ask-owner contract parsing). */
@@ -205,6 +207,12 @@ export interface PrebuiltAsk {
   deadline: Date;
   sensitive?: DecisionSensitiveKind;
   browser?: OwnerDecision['browser'];
+  /** Card header (default "Decision D-n") */
+  title?: string;
+  /** Post the card here (a thread) instead of the agent's work destination */
+  place?: OwnerDecision['place'];
+  /** The Request open item it tracks */
+  requestRef?: OwnerDecision['requestRef'];
 }
 
 /** Handlers per kind (process-wide: the browser side may start before the service). */
@@ -332,6 +340,12 @@ export class DecisionService {
         .catch((err) => this.logger.warn('Could not mark the ticket as waiting on the owner', { decisionId: decision.id, error: errText(err) }));
     }
     this.logger.info('Owner decision asked', { decisionId: decision.id, asker, requestedBy: decision.requestedBy, ticket: ticket?.id, sensitive: decision.sensitive });
+    // The same question Crewly already carded from the agent's reply
+    // (specs/2026-10-01-reply-open-items.md §4): this ask replaces that card.
+    await this.cancelWhere(
+      (d) => d.kind === 'reply_question' && d.asker === asker && questionSimilarity(d.question, ask.question) >= OPEN_ITEMS_CONSTANTS.SAME_QUESTION_SIMILARITY,
+      `superseded by ${decision.id}`,
+    ).catch((err) => this.logger.debug('Could not withdraw the reply-question card', { error: errText(err) }));
     return this.postCard(decision);
   }
 
@@ -393,6 +407,9 @@ export class DecisionService {
       deadline: ask.deadline.toISOString(),
       ...(ask.sensitive ? { sensitive: ask.sensitive } : {}),
       ...(ask.browser ? { browser: ask.browser } : {}),
+      ...(ask.title ? { title: ask.title } : {}),
+      ...(ask.place ? { place: ask.place } : {}),
+      ...(ask.requestRef ? { requestRef: ask.requestRef } : {}),
       requestedBy: ask.asker,
       asker: ask.asker,
       ...(teamId ? { teamId } : {}),
@@ -496,6 +513,9 @@ export class DecisionService {
       const { ts } = await this.send(slack, identity, { channelId: channel, text: ticketThreadRootText(t) });
       const thread = await this.deps.threads.set(t.projectPath, t.id, { slackChannelId: channel, threadTs: ts, ...(decision.teamId ? { teamId: decision.teamId } : {}) });
       return { slackChannelId: thread.slackChannelId, threadTs: thread.threadTs, teamId: thread.teamId };
+    }
+    if (decision.place?.slackChannelId) {
+      return { ...decision.place, ...(decision.teamId ? { teamId: decision.teamId } : {}) };
     }
     const work = await this.deps.workDestination?.(decision.asker).catch(() => null);
     if (work?.slackChannelId) return work;
@@ -924,7 +944,7 @@ export class DecisionService {
     let text = fallback;
     if (handler) {
       try {
-        text = await handler.onSettled(d);
+        text = await handler.onSettled(d, fallback);
       } catch (err) {
         this.logger.warn('Decision kind handler failed', { decisionId: d.id, kind: d.kind, error: errText(err) });
       }

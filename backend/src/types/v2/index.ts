@@ -301,3 +301,7 @@ export {
   WorkspaceConflictError,
   WorkspaceAccessError,
 } from './workspace.types.js';
+
+// Open items on a Request (specs/2026-10-01-reply-open-items.md)
+export type { RequestOpenItem, OpenItemType, OpenItemStatus } from './open-item.types.js';
+export { ACTIVE_OPEN_ITEM_STATUSES } from './open-item.types.js';

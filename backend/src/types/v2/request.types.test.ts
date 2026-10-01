@@ -23,8 +23,9 @@ describe('Request Types', () => {
   // Constants
   // -----------------------------------------------------------------------
   describe('REQUEST_STATUSES', () => {
-    it('should contain all 7 statuses', () => {
-      expect(REQUEST_STATUSES).toHaveLength(7);
+    it('should contain all 8 statuses', () => {
+      expect(REQUEST_STATUSES).toHaveLength(8);
+      expect(REQUEST_STATUSES).toContain('awaiting_followup');
       expect(REQUEST_STATUSES).toContain('open');
       expect(REQUEST_STATUSES).toContain('ready');
       expect(REQUEST_STATUSES).toContain('running');
@@ -130,6 +131,18 @@ describe('Request Types', () => {
       expect(isValidRequestTransition('open', 'running')).toBe(true);
       expect(isValidRequestTransition('open', 'waiting_confirmation')).toBe(true);
       expect(isValidRequestTransition('ready', 'waiting_confirmation')).toBe(true);
+    });
+
+    it('awaiting_followup: reached from any live status, leaves only to done / cancelled (reply-open-items)', () => {
+      for (const from of ['open', 'ready', 'running', 'blocked', 'waiting_confirmation'] as const) {
+        expect(isValidRequestTransition(from, 'awaiting_followup')).toBe(true);
+      }
+      expect(isValidRequestTransition('awaiting_followup', 'done')).toBe(true);
+      expect(isValidRequestTransition('awaiting_followup', 'cancelled')).toBe(true);
+      expect(isValidRequestTransition('awaiting_followup', 'running')).toBe(false);
+      expect(isValidRequestTransition('awaiting_followup', 'blocked')).toBe(false);
+      // Out of done only through RequestService's reopenForFollowup.
+      expect(isValidRequestTransition('done', 'awaiting_followup')).toBe(false);
     });
 
     it('should still disallow blocked → waiting_confirmation', () => {

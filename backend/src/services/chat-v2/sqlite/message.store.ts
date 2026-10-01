@@ -607,6 +607,29 @@ export class MessageStore {
   }
 
   /**
+   * Every message of a thread (the root and its replies), oldest first.
+   * Read by the open-items backfill (specs/2026-10-01-reply-open-items.md).
+   *
+   * @param channelId - The channel id
+   * @param rootId - The thread root message id
+   * @param limit - Max rows (newest kept when over)
+   * @returns Rows in seq order
+   */
+  listThread(channelId: string, rootId: string, limit = 500): ChatMessageRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT * FROM chat_messages
+           WHERE channel_id = ? AND (id = ? OR thread_id = ?)
+           ORDER BY seq DESC
+           LIMIT ?
+         ) ORDER BY seq ASC`,
+      )
+      .all(channelId, rootId, rootId, limit) as ChatMessageRow[];
+    return rows;
+  }
+
+  /**
    * The agent that spoke last in a thread.
    *
    * A bare follow-up in a thread addresses whoever just spoke, the way it

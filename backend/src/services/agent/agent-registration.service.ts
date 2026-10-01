@@ -41,6 +41,7 @@ import {
 	REGISTRATION_DELIVERY_CONSTANTS,
 	ORC_CONVERSATION_CONSTANTS,
 	SLACK_THREAD_KEY_CONSTANTS,
+	OPEN_ITEMS_CONSTANTS,
 } from '../../constants.js';
 import { extractSlackThreadKeys, formatSlackThreadKey } from '../slack/slack-thread-key.js';
 import { delay } from '../../utils/async.utils.js';
@@ -2578,7 +2579,9 @@ export class AgentRegistrationService {
 			prompt += '\n\n## Available Capabilities\n\n'
 				+ 'This session has browser automation enabled via the Playwright MCP server. '
 				+ 'Browser skills (e.g. remote-browser) are the preferred way to perform browser tasks. '
-				+ 'Bash skills in the Crewly skills directory are available for team communication and status reporting.';
+				+ 'Bash skills in the Crewly skills directory are available for team communication and status reporting.'
+				// specs/2026-10-01-reply-open-items.md — promises and questions in replies are tracked.
+				+ '\n\n' + OPEN_ITEMS_CONSTANTS.PROMPT_LINE;
 
 			// Inject Team Lead addon for members that may delegate (a lead by the
 			// team-lead rule, or canDelegate=true) and have members to direct.
