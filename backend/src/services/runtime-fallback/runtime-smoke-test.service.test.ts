@@ -27,7 +27,8 @@ function fakeApi(behaviour: {
 		},
 		deleteProject: async (id) => void calls.push(`deleteProject ${id}`),
 		createTeam: async (body) => {
-			calls.push(`createTeam ${String(body.name)} ${String((body.members as Array<{ runtimeType: string }>)[0].runtimeType)}`);
+			const m = (body.members as Array<{ runtimeType: string; modelId?: string }>)[0];
+			calls.push(`createTeam ${String(body.name)} ${m.runtimeType}${m.modelId ? ` ${m.modelId}` : ''}`);
 			return { id: 't1', memberId: 'm1' };
 		},
 		startMember: async () => {
@@ -95,7 +96,7 @@ describe('RuntimeSmokeTestService', () => {
 		]);
 		expect(api.calls).toEqual([
 			'createProject zz-runtime-smoke-crewly-agent',
-			'createTeam zz-runtime-smoke-crewly-agent crewly-agent',
+			'createTeam zz-runtime-smoke-crewly-agent crewly-agent deepseek/deepseek-chat',
 			'startMember',
 			'deliver',
 			'stopTeam t1',

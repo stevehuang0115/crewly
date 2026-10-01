@@ -14,6 +14,7 @@
  */
 
 import type { Request, Response, Router } from 'express';
+import { RUNTIME_FALLBACK_CONSTANTS } from '../../constants.js';
 import { getApiToken } from '../../services/core/api-token.service.js';
 import { getRuntimeFallbackService, type RuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 import { RuntimeFallbackSettingsError } from '../../services/runtime-fallback/runtime-fallback.types.js';
@@ -33,7 +34,10 @@ function defaultDeps(): RuntimeFallbackControllerDeps {
 	return {
 		fallback: () => getRuntimeFallbackService(),
 		smoke: () => {
-			smokeService ??= new RuntimeSmokeTestService({ api: new LocalSmokeApi(getLocalApiBaseUrl, getApiToken) });
+			smokeService ??= new RuntimeSmokeTestService({
+				api: new LocalSmokeApi(getLocalApiBaseUrl, getApiToken),
+				crewlyAgentModel: () => getRuntimeFallbackService()?.getSettings().crewlyAgentModel ?? RUNTIME_FALLBACK_CONSTANTS.DEFAULT_CREWLY_AGENT_MODEL,
+			});
 			return smokeService;
 		},
 	};

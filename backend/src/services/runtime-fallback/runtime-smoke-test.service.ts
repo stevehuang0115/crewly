@@ -84,6 +84,8 @@ export interface SmokeTestDeps {
 	nonce?: () => string;
 	timeoutMs?: number;
 	pollMs?: number;
+	/** provider/model a Crewly Agent test runs (the fallback's model, DeepSeek by default) */
+	crewlyAgentModel?: () => string;
 }
 
 /** Agent statuses that mean "registered and ready". */
@@ -233,6 +235,9 @@ export class RuntimeSmokeTestService {
 						name: S.MEMBER_NAME,
 						role: S.MEMBER_ROLE,
 						runtimeType: runtime,
+						...(runtime === RUNTIME_TYPES.CREWLY_AGENT
+							? { modelId: this.deps.crewlyAgentModel?.() ?? RUNTIME_FALLBACK_CONSTANTS.DEFAULT_CREWLY_AGENT_MODEL }
+							: {}),
 						systemPrompt: 'You are a smoke-test agent. Do exactly what each message asks and nothing else.',
 					},
 				],
