@@ -78,6 +78,11 @@ export interface RequestItem {
   totalCost: number;
   /** Agent that handled the request directly (no WorkItem delegation) */
   ownerAgent?: string;
+  /**
+   * Promises / questions the agent still owes the owner
+   * (specs/2026-10-01-reply-open-items.md). 0 or absent when none.
+   */
+  openItemCount?: number;
 }
 
 /**

@@ -5148,6 +5148,50 @@ export const DECISION_CONSTANTS = {
 } as const;
 
 /**
+ * Open items: commitments and questions agents put in their replies to the
+ * owner (specs/2026-10-01-reply-open-items.md).
+ */
+export const OPEN_ITEMS_CONSTANTS = {
+	/** Local hour a commitment that only says "tomorrow" is due */
+	DEFAULT_DUE_HOUR_LOCAL: 12,
+	/** A commitment with no time is due this long after it was made (ms) */
+	DEFAULT_DUE_MS: 24 * 60 * 60 * 1000,
+	/** Max commitments and max questions taken from one reply */
+	MAX_ITEMS_PER_REPLY: 3,
+	/** Max characters stored for an item's text */
+	TEXT_MAX_CHARS: 300,
+	/** Max characters of a question (the card's one line) */
+	QUESTION_MAX_CHARS: 280,
+	/** Child WorkItems created this long before the promise still count as what it waits on (ms) */
+	CHILD_LOOKBACK_MS: 30 * 60 * 1000,
+	/** ...and this long after it — the agent promises, then delegates (ms). Later work is a new topic. */
+	CHILD_LOOKAHEAD_MS: 15 * 60 * 1000,
+	/** With no child work, a later reply by the agent counts as the delivery only after this (ms) */
+	MIN_DELIVERY_GAP_MS: 2 * 60 * 1000,
+	/** After the overdue nudge, the owner is told when it is still undelivered this long later (ms) */
+	OWNER_NOTE_AFTER_NUDGE_MS: 2 * 60 * 60 * 1000,
+	/** An item still active this long after it was made is expired (ms) */
+	EXPIRE_AFTER_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Requests looked at by the sweep and the backfill: updated within (ms) */
+	LOOKBACK_MS: 7 * 24 * 60 * 60 * 1000,
+	/** Sweep cadence (ms) */
+	SWEEP_INTERVAL_MS: 60 * 1000,
+	/** An ask-owner decision this close in time to the reply, by the same agent, is the same question (ms) */
+	ASK_OWNER_DEDUPE_WINDOW_MS: 2 * 60 * 60 * 1000,
+	/** Two questions with at least this character-bigram overlap are the same question */
+	SAME_QUESTION_SIMILARITY: 0.5,
+	/** Option labels of a derived card */
+	YES_LABEL: 'Yes',
+	NO_LABEL: 'No',
+	REPLY_LABEL: 'Reply in thread',
+	/** `WorkItem.metadata` key of a follow-up WorkItem */
+	FOLLOW_UP_METADATA_KEY: 'openItemFollowUp',
+	/** The one line every agent prompt carries */
+	PROMPT_LINE:
+		'If you promise the owner something or ask them a question, say it plainly; Crewly tracks it. Use `ask-owner` for real decisions.',
+} as const;
+
+/**
  * Where an agent's answer goes, by the work item it is doing
  * (specs/2026-10-01-decision-cards.md §6).
  */

@@ -230,6 +230,15 @@ export const RequestRow: React.FC<RequestRowProps> = ({ request }) => {
                   {' '}work item{request.workItemCount === 1 ? '' : 's'}
                 </span>
               </span>
+              {(request.openItemCount ?? 0) > 0 && (
+                <span
+                  data-testid="request-meta-open-items"
+                  className="whitespace-nowrap text-amber-400"
+                  title="Promises or questions the agent still owes you"
+                >
+                  {request.openItemCount} open item{request.openItemCount === 1 ? '' : 's'}
+                </span>
+              )}
               <span
                 data-testid="request-meta-updated"
                 className="ml-auto whitespace-nowrap"

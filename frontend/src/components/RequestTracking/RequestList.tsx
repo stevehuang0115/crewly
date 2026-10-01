@@ -47,7 +47,10 @@ interface RequestListProps {
  *
  * Backend statuses (`types/v2/request.types.ts:RequestStatus`):
  *   `open` | `ready` | `running` | `blocked` | `waiting_confirmation` |
- *   `done` | `cancelled`
+ *   `awaiting_followup` | `done` | `cancelled`
+ *
+ * `awaiting_followup` (the agent still owes the owner a promised deliverable
+ * or an answer to its question) renders as Active: the work is not over.
  *
  * The previous version used a stale literal `'in_progress'` (the V1 status
  * name) and silently fell through `ready` / `running` to the `default →
@@ -64,6 +67,7 @@ function mapRequestStatus(backendStatus: string): RequestStatus {
     case 'open':
     case 'ready':
     case 'running':
+    case 'awaiting_followup':
       return 'active';
     case 'blocked':
       return 'blocked';
@@ -103,6 +107,20 @@ function mapRequestPriority(backendPriority: string): RequestPriority {
   }
 }
 
+/** Open-item statuses that still hold a request open (mirrors the backend). */
+const ACTIVE_OPEN_ITEM_STATUSES = new Set(['open', 'ready', 'overdue']);
+
+/**
+ * Number of open items the agent still owes on a request.
+ *
+ * @param raw - `openItems` from the API (unknown shape)
+ * @returns Count (0 when none)
+ */
+export function countActiveOpenItems(raw: unknown): number {
+  if (!Array.isArray(raw)) return 0;
+  return raw.filter((i) => i && typeof i === 'object' && ACTIVE_OPEN_ITEM_STATUSES.has(String((i as { status?: unknown }).status))).length;
+}
+
 /**
  * Converts raw API response objects into typed RequestItem objects.
  *
@@ -129,6 +147,7 @@ function apiToRequestItems(rawRequests: Record<string, unknown>[]): RequestItem[
         totalOutputTokens: (r.totalOutputTokens as number) || 0,
         totalCost: (r.totalCost as number) || 0,
         ownerAgent: (r.ownerAgent as string) || undefined,
+        openItemCount: countActiveOpenItems(r.openItems),
       };
     })
     .sort(

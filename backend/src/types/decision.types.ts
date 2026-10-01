@@ -21,8 +21,16 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  * - `browser_action`: a held browser action, asked on an agent's behalf
  * - `runtime_terms`: a runtime's Terms of Service, asked by the harness
  *   (specs/2026-10-01-runtime-terms-consent.md)
+ * - `reply_question`: a question an agent asked the owner in a reply, turned
+ *   into a card on its behalf (specs/2026-10-01-reply-open-items.md)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question';
+
+/** The Request open item a `reply_question` decision tracks. */
+export interface DecisionRequestRef {
+  requestId: string;
+  itemId: string;
+}
 
 /**
  * A decision the harness itself asks (not an agent): posted from this
@@ -123,6 +131,10 @@ export interface OwnerDecision {
   teamId?: string;
   /** Work item the asker was on when it asked */
   workItemId?: string;
+  /** Where the card goes when set (the thread the question was asked in) */
+  place?: { slackChannelId: string; threadTs?: string };
+  /** The Request open item it tracks (kind `reply_question`) */
+  requestRef?: DecisionRequestRef;
   /** Harness-owned decision (owner DM, no agent); set together with `kind` */
   system?: DecisionSystemRef;
   /** Card header instead of "Decision D-n" (system decisions) */

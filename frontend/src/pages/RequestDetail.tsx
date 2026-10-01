@@ -44,6 +44,7 @@ import {
 } from '../components/WorkItemDetail';
 import { WorkItemTimeline } from '../components/WorkItemDetail';
 import { apiService } from '../services/api.service';
+import { OpenItemsCard, type OpenItem } from '../components/RequestTracking/OpenItemsCard';
 
 // =============================================================================
 // Types (mirrors backend Request shape)
@@ -68,6 +69,8 @@ interface RequestData {
   totalInputTokens: number;
   totalOutputTokens: number;
   totalCost: number;
+  /** Promises / questions in the agent's replies (specs/2026-10-01-reply-open-items.md) */
+  openItems?: OpenItem[];
 }
 
 // =============================================================================
@@ -80,6 +83,7 @@ const STATUS_COLORS: Record<string, string> = {
   in_progress: 'text-amber-400',
   blocked: 'text-red-400',
   waiting_confirmation: 'text-primary',
+  awaiting_followup: 'text-amber-400',
   done: 'text-green-400',
   cancelled: 'text-text-secondary-dark',
 };
@@ -96,6 +100,7 @@ function getRequestStatusLabel(status: string): string {
     in_progress: 'In Progress',
     blocked: 'Blocked',
     waiting_confirmation: 'Waiting Confirmation',
+    awaiting_followup: 'Awaiting Follow-up',
     done: 'Completed',
     cancelled: 'Cancelled',
   };
@@ -114,6 +119,7 @@ function getRequestStatusBadgeType(status: string): 'active' | 'running' | 'bloc
     in_progress: 'running',
     blocked: 'blocked',
     waiting_confirmation: 'paused',
+    awaiting_followup: 'running',
     done: 'completed',
     cancelled: 'inactive',
   };
@@ -570,6 +576,13 @@ export const RequestDetail: React.FC = () => {
             </Button>
           </Card>
         )}
+
+      {/* What the agent still owes: promises and questions from its replies */}
+      {request.openItems && request.openItems.length > 0 && (
+        <div className="mt-4 mb-6">
+          <OpenItemsCard items={request.openItems} />
+        </div>
+      )}
 
       {/* Main content: Description + Stats sidebar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
