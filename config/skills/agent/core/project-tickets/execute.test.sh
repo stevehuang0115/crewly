@@ -43,6 +43,10 @@ class H(BaseHTTPRequestHandler):
             return self.reply(200, {'success': True, 'data': {'workItem': {'id': body.get('workItemId')}, 'ticket': dict(T, status='in_progress', assignee='dev-bo', workItemId=body.get('workItemId'))}})
         if self.path.endswith('/claim'):
             return self.reply(200, {'success': True, 'data': {'claimed': True, 'workItem': {'id': 'wi-9'}, 'ticket': dict(T, status='in_progress', assignee='dev-ann', workItemId='wi-9')}})
+        if self.path.endswith('/ask-owner'):
+            if body.get('clear'):
+                return self.reply(200, {'success': True, 'data': {'ticket': T, 'withdrawn': 1}})
+            return self.reply(200, {'success': True, 'data': {'decision': {'id': 'D-1', 'asker': 'dev-ann', 'status': 'open', 'deadline': 'x', 'card': {'slackChannelId': 'C1'}}, 'ticket': dict(T, labels=['ui', 'needs-owner'])}})
         if 'forbidden' in self.path:
             return self.reply(403, {'success': False, 'error': 'Not allowed'})
         return self.reply(200, {'success': True, 'data': T})
@@ -119,12 +123,16 @@ run '{"action":"link","project":"p1","id":"APP-1","workItemId":"wi-43"}' >/dev/n
 check "link json" "$(last '.body | tostring')" '{"workItemId":"wi-43"}'
 check "link: missing work item" "$(run_err link --project p1 --id APP-1 | grep -c 'work-item')" "1"
 
-# --- ask-owner (orchestrator / lead): needs-owner mark with a one-line question ---
-run ask-owner --project p1 --id APP-1 --question "Send the draft to the partners?" >/dev/null
+# --- ask-owner: a structured decision (question + 2–3 options + default) ---
+OUT=$(run ask-owner --project p1 --id APP-1 --question "Send the draft to the partners?" --option "Send Monday — after review" --option "Hold" --default Hold --sensitive email)
 check "ask-owner: path" "$(last .path)" "/api/project-tickets/p1/APP-1/ask-owner"
-check "ask-owner: body" "$(last '.body | tostring')" '{"question":"Send the draft to the partners?"}'
-run ask-owner --project p1 --id APP-1 --clear --note "owner said yes" >/dev/null
+check "ask-owner: body" "$(last '.body | tostring')" '{"question":"Send the draft to the partners?","options":["Send Monday — after review","Hold"],"default":"Hold","sensitive":"email"}'
+check "ask-owner: output" "$(printf '%s' "$OUT" | jq -c '.decision')" '{"id":"D-1","asker":"dev-ann","status":"open","deadline":"x","posted":true,"postError":null}'
+run '{"action":"ask-owner","project":"p1","id":"APP-1","question":"Q is long enough?","options":["A","B"],"default":"wait","deadline":"2026-10-02T12:00"}' >/dev/null
+check "ask-owner json: body" "$(last '.body | tostring')" '{"question":"Q is long enough?","options":["A","B"],"default":"wait","deadline":"2026-10-02T12:00"}'
+OUT=$(run ask-owner --project p1 --id APP-1 --clear --note "owner said yes")
 check "ask-owner: clear" "$(last '.body | tostring')" '{"clear":true,"note":"owner said yes"}'
+check "ask-owner: clear output" "$(printf '%s' "$OUT" | jq -c '.withdrawn')" '1'
 check "ask-owner: missing question" "$(run_err ask-owner --project p1 --id APP-1 | grep -c 'question')" "1"
 
 # --- autopilot (owner / orchestrator): show or change the switch ---

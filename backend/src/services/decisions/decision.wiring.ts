@@ -18,7 +18,8 @@ import { getSlackInstanceRegistryService } from '../slack/slack-instance-registr
 import { getSlackTeamChannelService, slackIdentityFor } from '../slack/slack-team-channel.service.js';
 import { getOwnerMessageWatchdog } from '../messaging/owner-message-watchdog.service.js';
 import { ProjectTicketService } from '../project-tickets/project-ticket.service.js';
-import { DecisionError, DecisionService, type BlockActionsPayload, type DecisionPostIdentity, type DecisionSlackPlace, type DecisionTicketContext } from './decision.service.js';
+import type { ProjectTicketWorkflowService } from '../project-tickets/project-ticket-workflow.service.js';
+import { DecisionError, DecisionService, type BlockActionsPayload, type DecisionServiceDeps, type DecisionPostIdentity, type DecisionSlackPlace, type DecisionTicketContext } from './decision.service.js';
 import { DecisionStore } from './decision-store.js';
 import { TicketThreadStore, setTicketThreadStore, getTicketThreadStore } from './ticket-thread-store.js';
 import { pickTicketAsker, teamOfSession } from './decision-routing.js';
@@ -55,6 +56,59 @@ export function isDecisionOwner(userId: string): boolean {
   return owner ? owner === userId : true;
 }
 
+/** The ticket side of decisions (resolve / mark / log). */
+export type TicketDecisionHooks = Pick<DecisionServiceDeps, 'resolveTicket' | 'markTicketAsked' | 'logTicket'>;
+
+/**
+ * Ticket hooks over the project-ticket workflow and store.
+ *
+ * - resolve: the caller must be the owner, the orchestrator, a lead of a
+ *   project team, or the ticket's assignee; the asker is the assignee, else
+ *   the lead ({@link pickTicketAsker});
+ * - mark: `needs-owner` label + `owner question: … (D-n)` log line (the
+ *   autopilot keeps such tickets out of triage);
+ * - log: one line, optionally removing the label.
+ *
+ * @param input - Ticket store, teams, and (tests) a workflow
+ * @returns Hooks
+ */
+export function createTicketDecisionHooks(input: {
+  tickets: Pick<ProjectTicketService, 'mutate'>;
+  getTeams: () => Promise<Team[]>;
+  workflow?: Pick<ProjectTicketWorkflowService, 'resolveProject' | 'get' | 'accessOf'>;
+}): TicketDecisionHooks {
+  const label = TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL;
+  return {
+    resolveTicket: async (projectRef, ticketId, callerSession): Promise<DecisionTicketContext> => {
+      const wf = input.workflow ?? (await import('../../controllers/project-tickets/project-tickets.controller.js')).projectTicketWorkflow();
+      const project = await wf.resolveProject(projectRef);
+      const ticket = await wf.get(project.id, ticketId);
+      const { access } = await wf.accessOf(callerSession ? { session: callerSession } : {}, project);
+      const isAssignee = !!callerSession && ticket.assignee === callerSession;
+      if (!['owner', 'orchestrator', 'lead'].includes(access) && !isAssignee) {
+        throw new DecisionError(403, `Only the ticket's assignee, a lead of the project's teams, the orchestrator or the owner can ask the owner about ${ticket.id}`);
+      }
+      if (ticket.status === 'done' || ticket.status === 'cancelled') throw new DecisionError(409, `${ticket.id} is ${ticket.status}; nothing to ask`);
+      const teams = (await input.getTeams()).filter((t) => !t.archived && (t.projectIds ?? []).includes(project.id));
+      const asker = pickTicketAsker(ticket, teams);
+      if (!asker) throw new DecisionError(409, `${ticket.id}: the project has no team lead to ask the owner`);
+      return { projectId: project.id, projectPath: project.path, projectName: project.name, id: ticket.id, title: ticket.title, asker: asker.session, teamId: asker.teamId };
+    },
+    markTicketAsked: async (ctx, question, decisionId) => {
+      await input.tickets.mutate(ctx.projectPath, ctx.id, ctx.asker, (t) => ({
+        fields: t.labels.includes(label) ? {} : { labels: [...t.labels, label] },
+        log: [`${TICKET_AUTOPILOT_CONSTANTS.OWNER_QUESTION_LOG_PREFIX}${question} (${decisionId})`],
+      }));
+    },
+    logTicket: async (ticket, line, clearNeedsOwner) => {
+      await input.tickets.mutate(ticket.projectPath, ticket.id, 'owner', (t) => ({
+        fields: clearNeedsOwner && t.labels.includes(label) ? { labels: t.labels.filter((l) => l !== label) } : {},
+        log: [line],
+      }));
+    },
+  };
+}
+
 /**
  * Build the service with the real collaborators.
  *
@@ -78,23 +132,6 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
     return slackIdentityFor(member, session);
   };
 
-  const resolveTicket = async (projectRef: string, ticketId: string, callerSession: string | undefined): Promise<DecisionTicketContext> => {
-    const { projectTicketWorkflow } = await import('../../controllers/project-tickets/project-tickets.controller.js');
-    const wf = projectTicketWorkflow();
-    const project = await wf.resolveProject(projectRef);
-    const ticket = await wf.get(project.id, ticketId);
-    const { access } = await wf.accessOf(callerSession ? { session: callerSession } : {}, project);
-    const isAssignee = !!callerSession && ticket.assignee === callerSession;
-    if (!['owner', 'orchestrator', 'lead'].includes(access) && !isAssignee) {
-      throw new DecisionError(403, `Only the ticket's assignee, a lead of the project's teams, the orchestrator or the owner can ask the owner about ${ticket.id}`);
-    }
-    if (ticket.status === 'done' || ticket.status === 'cancelled') throw new DecisionError(409, `${ticket.id} is ${ticket.status}; nothing to ask`);
-    const teams = (await input.getTeams()).filter((t) => !t.archived && (t.projectIds ?? []).includes(project.id));
-    const asker = pickTicketAsker(ticket, teams);
-    if (!asker) throw new DecisionError(409, `${ticket.id}: the project has no team lead to ask the owner`);
-    return { projectId: project.id, projectPath: project.path, projectName: project.name, id: ticket.id, title: ticket.title, asker: asker.session, teamId: asker.teamId };
-  };
-
   return new DecisionService({
     store: DecisionStore.inHome(input.crewlyHome),
     threads,
@@ -109,21 +146,7 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
       return mappings.find((m) => m.teamId === teamId)?.slackChannelId ?? null;
     },
     teamOf: async (session) => teamOfSession(session, await input.getTeams()),
-    resolveTicket,
-    markTicketAsked: async (ctx, question, decisionId) => {
-      const label = TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL;
-      await tickets.mutate(ctx.projectPath, ctx.id, ctx.asker, (t) => ({
-        fields: t.labels.includes(label) ? {} : { labels: [...t.labels, label] },
-        log: [`${TICKET_AUTOPILOT_CONSTANTS.OWNER_QUESTION_LOG_PREFIX}${question} (${decisionId})`],
-      }));
-    },
-    logTicket: async (ticket, line, clearNeedsOwner) => {
-      const label = TICKET_AUTOPILOT_CONSTANTS.NEEDS_OWNER_LABEL;
-      await tickets.mutate(ticket.projectPath, ticket.id, 'owner', (t) => ({
-        fields: clearNeedsOwner && t.labels.includes(label) ? { labels: t.labels.filter((l) => l !== label) } : {},
-        log: [line],
-      }));
-    },
+    ...createTicketDecisionHooks({ tickets, getTeams: input.getTeams }),
     ...(input.workDestination ? { workDestination: input.workDestination } : {}),
     ...(input.currentWorkItemId ? { currentWorkItemId: input.currentWorkItemId } : {}),
     deliverToAgent: (session, text) => (session === ORCHESTRATOR_SESSION_NAME ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),

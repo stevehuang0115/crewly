@@ -86,10 +86,6 @@ export const TICKET_AUTOPILOT_CONSTANTS = {
 		'ux-designer': 'Designs user flows, wireframes and visual UI',
 		'customer-support': 'Answers customer questions and troubleshoots their problems',
 	} as Readonly<Record<string, string>>,
-	/** Owner questions are sent at most this often, unless a new urgent (P0) one appears (ms) */
-	QUESTIONS_MIN_INTERVAL_MS: 2 * 60 * 60 * 1000,
-	/** Ticket priority that makes a new owner question urgent (sent without waiting) */
-	URGENT_PRIORITY: 'P0',
 	/** Local hour (0-23) at or after which the daily digest is sent */
 	DIGEST_HOUR_LOCAL: 21,
 	/** Max tickets named per digest section (the rest are counted) */

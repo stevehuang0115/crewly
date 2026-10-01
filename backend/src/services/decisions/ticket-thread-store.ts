@@ -143,3 +143,15 @@ export function setTicketThreadStore(store: TicketThreadStore | null): void {
 export function getTicketThreadStore(): TicketThreadStore | null {
   return instance;
 }
+
+/**
+ * A link to a Slack message that opens in the owner's workspace
+ * (`https://slack.com/archives/<channel>/p<ts without the dot>`).
+ *
+ * @param slackChannelId - Channel
+ * @param ts - Message ts
+ * @returns URL
+ */
+export function slackArchiveLink(slackChannelId: string, ts: string): string {
+  return `https://slack.com/archives/${slackChannelId}/p${ts.replace('.', '')}`;
+}

@@ -7,7 +7,6 @@ import type { ProjectTicket } from '../../types/project-ticket.types.js';
 import type { Team, TeamMember } from '../../types/index.js';
 import {
   decideDigest,
-  decideOwnerQuestions,
   decideTriage,
   hasPossibleTaker,
   inFlightByAssignee,
@@ -228,29 +227,6 @@ describe('helpers', () => {
     const d = new Date(2026, 8, 30, 23, 30);
     expect(localMidnight(d).getTime()).toBe(new Date(2026, 8, 30).getTime());
     expect(localDateKey(d)).toBe('2026-09-30');
-  });
-});
-
-describe('decideOwnerQuestions (batching cadence)', () => {
-  const q = (key: string, priority = 'P2') => ({ key, priority });
-
-  it('sends nothing when every pending question was already sent', () => {
-    expect(decideOwnerQuestions({ pending: [q('a')], sentKeys: new Set(['a']), now: NOW })).toEqual({ send: false, reason: 'nothing_new' });
-    expect(decideOwnerQuestions({ pending: [], sentKeys: new Set(), now: NOW }).send).toBe(false);
-  });
-
-  it('sends the first batch at once, then at most every 2 hours', () => {
-    expect(decideOwnerQuestions({ pending: [q('a')], sentKeys: new Set(), now: NOW })).toEqual({ send: true, reason: 'due' });
-    const after = { pending: [q('a'), q('b')], sentKeys: new Set(['a']), lastSentAt: NOW };
-    expect(decideOwnerQuestions({ ...after, now: NOW + HOUR })).toEqual({ send: false, reason: 'too_soon' });
-    expect(decideOwnerQuestions({ ...after, now: NOW + C.QUESTIONS_MIN_INTERVAL_MS })).toEqual({ send: true, reason: 'due' });
-  });
-
-  it('sends a new urgent (P0) question without waiting', () => {
-    expect(decideOwnerQuestions({ pending: [q('a'), q('b', 'P0')], sentKeys: new Set(['a']), lastSentAt: NOW, now: NOW + MIN })).toEqual({
-      send: true,
-      reason: 'urgent',
-    });
   });
 });
 
