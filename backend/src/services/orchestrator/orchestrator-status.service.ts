@@ -13,6 +13,7 @@ import { CREWLY_CONSTANTS, WEB_CONSTANTS } from '../../../../config/index.js';
 import { getSessionBackendSync } from '../session/index.js';
 import { isInProcessRuntimeActive } from '../agent/crewly-agent/in-process-runtime-registry.js';
 import { RUNTIME_TYPES, type RuntimeType } from '../../constants.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /** Dashboard URL for user-facing messages */
 const DASHBOARD_URL = `http://localhost:${WEB_CONSTANTS.PORTS.FRONTEND}`;
@@ -96,7 +97,7 @@ export async function getOrchestratorStatus(): Promise<OrchestratorStatusResult>
     // registry confirms a ready runtime is registered. The PTY path is
     // untouched for `claude-code` / other runtimes.
     if (!sessionExists
-      && orchestratorStatus?.runtimeType === RUNTIME_TYPES.CREWLY_AGENT
+      && effectiveRuntimeType(sessionName, orchestratorStatus?.runtimeType ?? '') === RUNTIME_TYPES.CREWLY_AGENT
       && sessionName
       && isInProcessRuntimeActive(sessionName)
     ) {
@@ -235,7 +236,7 @@ async function resolveRuntimeTypeForSession(
 
   const found = await storageService.findMemberBySessionName(sessionName);
   if (found?.member?.runtimeType) {
-    return found.member.runtimeType;
+    return effectiveRuntimeType(sessionName, found.member.runtimeType);
   }
 
   const orchestrator = await storageService.getOrchestratorStatus();

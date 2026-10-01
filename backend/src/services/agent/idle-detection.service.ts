@@ -20,6 +20,7 @@ import { CronTaskService } from '../workflow/cron-task.service.js';
 import { getMemoryStats } from '../core/system-health.util.js';
 import type { AgentRegistrationService } from './agent-registration.service.js';
 import type { WorkItemStatus } from '../../types/v2/work-item.types.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 /**
  * WorkItem statuses that mean "work is waiting for this agent" (not yet
@@ -341,7 +342,7 @@ export class IdleDetectionService {
 				// Check if idle — dual detection:
 				// PTY-based runtimes: use PtyActivityTracker
 				// In-process runtimes (crewly-agent): use member.updatedAt timestamp
-				const isCrewlyAgent = member.runtimeType === 'crewly-agent';
+				const isCrewlyAgent = effectiveRuntimeType(member.sessionName, member.runtimeType ?? '') === 'crewly-agent';
 				let isIdle = false;
 				if (isCrewlyAgent) {
 					// crewly-agent has no PTY — check last updatedAt or readyAt timestamp

@@ -171,6 +171,8 @@ import { ReloginAgentResumerService } from './services/agent/relogin-agent-resum
 import { getHarnessReloginService, harnessCommandWord } from './services/harness/harness-relogin.service.js';
 import { getHarnessService } from './services/harness/harness.service.js';
 import { SlackReloginDmService, createReloginReplyInterceptor } from './services/slack/slack-relogin-dm.service.js';
+import { startBackendRuntimeFallback } from './services/runtime-fallback/runtime-fallback.wiring.js';
+import { getRuntimeFallbackService } from './services/runtime-fallback/runtime-fallback.service.js';
 import { getSlackAgentIdentityService } from './services/slack/slack-agent-identity.service.js';
 import { getChatV2Service } from './services/chat-v2/chat-v2.singleton.js';
 import { findPackageRoot } from './utils/package-root.js';
@@ -2182,6 +2184,32 @@ void (async () => {
 				this.logger.info('Harness re-login over Slack wired');
 			} catch (error) {
 				this.logger.warn('Failed to wire harness re-login over Slack (non-critical)', {
+					error: error instanceof Error ? error.message : String(error),
+				});
+			}
+
+			// Runtime fallback: an agent whose runtime runs out of usage moves to
+			// the next runtime of its chain until the limit resets; the owner is
+			// told once over the machine's orc-bot DM.
+			// specs/2026-10-01-runtime-fallback.md
+			try {
+				const fallbackDm = new SlackReloginDmService(
+					() => getSlackService(),
+					undefined,
+					(agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+				);
+				startBackendRuntimeFallback({
+					crewlyHome: this.config.crewlyHome,
+					storage: this.storageService,
+					registration: () => this.apiController.agentRegistrationService,
+					sessionExists: (sessionName) => getSessionBackendSync()?.sessionExists(sessionName) ?? false,
+					notifier: () => fallbackDm,
+					machineName: () => os.hostname().replace(/\.local$/, ''),
+					logger: LoggerService.getInstance().createComponentLogger('RuntimeFallback'),
+				});
+				this.logger.info('Runtime fallback wired');
+			} catch (error) {
+				this.logger.warn('Failed to wire runtime fallback (non-critical)', {
 					error: error instanceof Error ? error.message : String(error),
 				});
 			}
@@ -5496,6 +5524,7 @@ void (async () => {
 			// Stop OAuth relogin monitor and the Slack re-login status check
 			OAuthReloginMonitorService.getInstance().destroy();
 			getHarnessReloginService().stop();
+			getRuntimeFallbackService()?.stop();
 
 			// Stop orchestrator heartbeat monitor
 			OrchestratorHeartbeatMonitorService.getInstance().stop();

@@ -64,6 +64,26 @@ describe('TeamMemberRow', () => {
       expect(screen.getByText('Test Developer')).toBeInTheDocument();
     });
 
+    it('shows the fallback badge while the agent runs on another runtime', () => {
+      const member = createTestMember({
+        runtimeOverride: {
+          runtime: 'crewly-agent',
+          primary: 'claude-code',
+          reason: 'usage_limit',
+          since: '2026-10-01T12:00:00.000Z',
+          until: '2026-10-01T22:00:00.000Z',
+          badge: 'on DeepSeek (Claude limit)',
+        },
+      });
+      render(<TeamMemberRow {...defaultProps} member={member} />);
+      expect(screen.getByTestId('runtime-override-badge')).toHaveTextContent('on DeepSeek (Claude limit)');
+    });
+
+    it('shows no fallback badge normally', () => {
+      render(<TeamMemberRow {...defaultProps} />);
+      expect(screen.queryByTestId('runtime-override-badge')).not.toBeInTheDocument();
+    });
+
     it('should render session name', () => {
       render(<TeamMemberRow {...defaultProps} />);
       expect(screen.getByText('Session: test-session')).toBeInTheDocument();

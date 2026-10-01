@@ -58,6 +58,8 @@ import {
   COMMITMENT_APPROVAL_LOOKBACK_MS,
 } from '../../services/orchestrator/commitment-approval-guard.js';
 import { isOwnerDashboardRequest, readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
+import { effectiveRuntimeType } from '../../services/runtime-fallback/effective-runtime.js';
+import { getRuntimeFallbackService } from '../../services/runtime-fallback/runtime-fallback.service.js';
 
 const logger = LoggerService.getInstance().createComponentLogger('TeamController');
 
@@ -1306,9 +1308,21 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
       const pending = OAuthReloginMonitorService.getInstance().getLoginRequired(sessionName);
       return pending ? { url: pending.url, code: pending.code, detectedAt: pending.detectedAt } : undefined;
     };
+    // Agents running on a fallback runtime (their own ran out of usage).
+    const runtimeOverrideFor = (sessionName: string): TeamMember['runtimeOverride'] | undefined => {
+      const view = getRuntimeFallbackService()?.overrideView(sessionName);
+      return view
+        ? { runtime: view.runtime, primary: view.primary, reason: view.reason, since: view.since, ...(view.until ? { until: view.until } : {}), badge: view.badge }
+        : undefined;
+    };
     orchestratorTeam.members = orchestratorTeam.members.map(member => {
       const loginRequired = loginRequiredFor(member.sessionName);
-      return loginRequired ? { ...member, loginRequired } : member;
+      const runtimeOverride = runtimeOverrideFor(member.sessionName);
+      return {
+        ...member,
+        ...(loginRequired ? { loginRequired } : {}),
+        ...(runtimeOverride ? { runtimeOverride } : {}),
+      };
     });
 
     // Load working status data from ActivityMonitorService
@@ -1330,11 +1344,13 @@ export async function getTeams(this: ApiContext, req: Request, res: Response): P
         const resolvedStatus = resolveAgentStatus(member.agentStatus, memberSessionExists, isInProcessActive);
         const resolvedWorkingStatus = workingStatusData?.teamMembers[member.sessionName]?.workingStatus || member.workingStatus || 'idle';
         const loginRequired = loginRequiredFor(member.sessionName);
+        const runtimeOverride = runtimeOverrideFor(member.sessionName);
         return {
           ...member,
           agentStatus: resolvedStatus,
           workingStatus: resolvedWorkingStatus,
           ...(loginRequired ? { loginRequired } : {}),
+          ...(runtimeOverride ? { runtimeOverride } : {}),
         };
       })
     }));
@@ -1409,9 +1425,22 @@ export async function getTeam(this: ApiContext, req: Request, res: Response): Pr
       for (const member of team.members) {
         if (member.sessionName) {
           const sessionExists = backend.sessionExists(member.sessionName);
-          const resolvedStatus = resolveAgentStatus(member.agentStatus, sessionExists);
+          // In-process runtimes (Crewly Agent) have no PTY session.
+          const inProcessActive = this.agentRegistrationService.isInProcessRuntimeActive(member.sessionName);
+          const resolvedStatus = resolveAgentStatus(member.agentStatus, sessionExists, inProcessActive);
           (member as MutableTeamMember).agentStatus = resolvedStatus;
-          if (!sessionExists) {
+          const runtimeOverride = getRuntimeFallbackService()?.overrideView(member.sessionName);
+          if (runtimeOverride) {
+            (member as MutableTeamMember).runtimeOverride = {
+              runtime: runtimeOverride.runtime,
+              primary: runtimeOverride.primary,
+              reason: runtimeOverride.reason,
+              since: runtimeOverride.since,
+              ...(runtimeOverride.until ? { until: runtimeOverride.until } : {}),
+              badge: runtimeOverride.badge,
+            };
+          }
+          if (!sessionExists && !inProcessActive) {
             (member as MutableTeamMember).sessionName = '';
           }
         }
@@ -2600,7 +2629,7 @@ export async function registerMemberStatus(this: ApiContext, req: Request, res: 
     // Flush any queued messages for this sub-agent (fire-and-forget after response)
     const subAgentQueue = SubAgentMessageQueue.getInstance();
     if (subAgentQueue.hasPending(sessionName)) {
-      const runtimeType = (freshTeam?.members.find(m => m.id === targetMemberId)?.runtimeType || RUNTIME_TYPES.CLAUDE_CODE) as RuntimeType;
+      const runtimeType = effectiveRuntimeType(sessionName, (freshTeam?.members.find(m => m.id === targetMemberId)?.runtimeType || RUNTIME_TYPES.CLAUDE_CODE) as RuntimeType);
       logger.info('Flushing queued messages', { count: subAgentQueue.getQueueSize(sessionName), sessionName });
 
       // Fire-and-forget after the response; the shared loop reports which

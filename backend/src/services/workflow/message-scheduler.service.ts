@@ -6,6 +6,7 @@ import { StorageService } from '../core/storage.service.js';
 import { LoggerService } from '../core/logger.service.js';
 import { MessageDeliveryLogModel } from '../../models/ScheduledMessage.js';
 import { CREWLY_CONSTANTS, RUNTIME_TYPES, ORCHESTRATOR_SESSION_NAME, RuntimeType } from '../../constants.js';
+import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 
 export class MessageSchedulerService extends EventEmitter {
   private activeTimers: Map<string, NodeJS.Timeout> = new Map();
@@ -137,13 +138,13 @@ export class MessageSchedulerService extends EventEmitter {
       if (sessionName === ORCHESTRATOR_SESSION_NAME) {
         const orchestratorStatus = await this.storageService.getOrchestratorStatus();
         if (orchestratorStatus?.runtimeType) {
-          return orchestratorStatus.runtimeType as RuntimeType;
+          return effectiveRuntimeType(sessionName, orchestratorStatus.runtimeType as RuntimeType);
         }
       }
 
       const memberInfo = await this.storageService.findMemberBySessionName(sessionName);
       if (memberInfo?.member?.runtimeType) {
-        return memberInfo.member.runtimeType as RuntimeType;
+        return effectiveRuntimeType(sessionName, memberInfo.member.runtimeType as RuntimeType);
       }
     } catch (err) {
       this.logger.debug('Could not resolve runtime type, using default', {
