@@ -305,6 +305,45 @@ describe('ChatV2DispatcherService', () => {
       expect(plan.has('atlas')).toBe(false);
     });
 
+    describe('a message that @\'s people (2026-10-01, #course-standardization-team)', () => {
+      // The owner asked a colleague "@Info 这些课堂视频是…?" in a thread Jordan
+      // had been answering; Jordan, as last speaker, replied instead.
+      const toPeople = (mentions: string[] = []) =>
+        ({
+          id: 'm1', channelId: 'h1', senderType: 'user', senderId: 'owner', content: '<@UINFO> x', mentions,
+          metadata: { slackMentionedPeople: ['UINFO'] },
+        }) as never;
+
+      it('plans and delivers to nobody when only people were @\'d, even with a last speaker in the thread', async () => {
+        const { dispatcher, delivered, channel } = huddleSetup({
+          members: ['jordan', 'sam'],
+          participants: ['jordan', 'sam'],
+          lastSpeaker: 'jordan',
+          leader: 'sam',
+        });
+        const room = { awakeHere: ['jordan', 'sam'], awakeElsewhere: false, wakeWhenAllAsleep: null };
+
+        const plan = await dispatcher.planHuddleTargets(channel, toPeople(), { threadId: 't1', room });
+        const result = await dispatcher.dispatchMessage(channel, toPeople(), { threadId: 't1', room });
+
+        expect(plan.size).toBe(0);
+        expect(delivered).toEqual([]);
+        expect(result.dispatched).toBe(false);
+      });
+
+      it('reaches only the agents @\'d alongside the people, not the rest of the thread', async () => {
+        const { dispatcher, channel } = huddleSetup({
+          members: ['jordan', 'sam', 'ella'],
+          participants: ['jordan', 'ella'],
+          lastSpeaker: 'jordan',
+        });
+
+        const plan = await dispatcher.planHuddleTargets(channel, toPeople(['sam']), { threadId: 't1' });
+
+        expect([...plan]).toEqual([['sam', 'required']]);
+      });
+    });
+
     it('delivers nothing when planning', async () => {
       const { dispatcher, delivered, channel } = huddleSetup({ members: ['atlas'], leader: 'atlas' });
       await dispatcher.planHuddleTargets(channel, msg());
