@@ -578,6 +578,8 @@ export class DecisionService {
       for (const d of await this.deps.store.list((x) => x.status === 'open')) {
         try {
           if (!d.card) {
+            // A card Slack refused is retried every few minutes, not every tick.
+            if (d.postError && now.getTime() - Date.parse(d.updatedAt) < DECISION_CONSTANTS.POST_RETRY_MS) continue;
             if ((await this.postCard(d)).card) acted.push(d.id);
             continue;
           }

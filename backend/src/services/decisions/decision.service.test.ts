@@ -175,6 +175,9 @@ describe('ask + routing', () => {
     expect(d.card).toBeUndefined();
     expect(d.postError).toBe('channel_not_found');
     h.slack.failAll = false;
+    // Not retried on every tick — only after POST_RETRY_MS.
+    expect(await h.service.tick()).toEqual([]);
+    h.clock.now = new Date(h.clock.now.getTime() + DECISION_CONSTANTS.POST_RETRY_MS);
     expect(await h.service.tick()).toEqual([d.id]);
     const after = await h.service.get(d.id);
     expect(after?.card).toBeDefined();

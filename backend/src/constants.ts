@@ -4980,6 +4980,8 @@ export const DECISION_CONSTANTS = {
 	SENSITIVE_PARK_AFTER_REASK_MS: 24 * 60 * 60 * 1000,
 	/** Deadline / reminder evaluation cadence (ms) */
 	TICK_MS: 60 * 1000,
+	/** A card Slack refused to post is retried at most this often (ms) */
+	POST_RETRY_MS: 5 * 60 * 1000,
 	/** Resolved decisions are kept this long, then pruned (ms) */
 	RESOLVED_KEEP_MS: 30 * 24 * 60 * 60 * 1000,
 	/** Sensitive categories (never auto-applied) */
