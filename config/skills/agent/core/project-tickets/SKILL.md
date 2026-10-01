@@ -1,6 +1,6 @@
 ---
 name: Project Tickets
-description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch.
+description: A project's own backlog — list, read, create, update, claim, release, assign, link, log and ask-owner (structured decision cards) on project tickets (markdown files in <project>/.crewly/tickets/, tracked in git), plus the per-project ticket autopilot switch.
 version: 1.0.0
 category: task-management
 skillType: claude-skill
@@ -147,18 +147,30 @@ ticket already has another live WorkItem.
 New delegations need no `link`: `delegate-task` puts work for a teammate on a
 project through a ticket by itself (pass `--ticket APP-12` to use an existing one).
 
-## Ask the owner (orchestrator / team lead)
+## Ask the owner (assignee / team lead / orchestrator)
 
 ```bash
-bash execute.sh ask-owner --project P --id APP-12 --question "Send the draft to the 3 partners?"
-# the owner answered:
-bash execute.sh ask-owner --project P --id APP-12 --clear --note "owner: yes, Monday"
+bash execute.sh ask-owner --project P --id APP-12 \
+  --question "Send the draft to the 3 partners?" \
+  --option "Send Monday — after the review call" --option "Hold — wait for legal" \
+  --default "Hold" [--deadline 2026-10-02T12:00] [--sensitive email]
+# no longer needed (withdraws the open card and removes the mark):
+bash execute.sh ask-owner --project P --id APP-12 --clear --note "resolved in the review call"
 ```
 
-The ticket gets the `needs-owner` label and the question goes into its Log.
-With the ticket autopilot on, Crewly batches the open questions into one short
-message on the owner's phone — do not message the owner about them yourself.
-Keep the question to one line the owner can answer with a tap or a word.
+ONE question with 2–3 options and a default (an option, or `wait`). The deadline defaults to
+tomorrow at 12:00. The ticket's assignee, else the lead, posts the question as a card in the
+ticket's Slack thread, using its own bot. The ticket gets `needs-owner` until the question is
+answered.
+
+- **The answer** comes back to that agent as a `[DECISION D-7] The owner chose "…"` message,
+  and the ticket log records it.
+- **No answer by the deadline:** the default is applied.
+- **Sensitive asks** (`email` = messages to outside people, `publish`, `deploy` = production,
+  `spend`) are never auto-applied. The owner is re-asked once, then the question is parked.
+- Vague asks ("thoughts?") and asks without options are rejected, with an error that says what
+  to fix.
+- Do not message the owner about it yourself.
 
 ## Ticket autopilot (owner / orchestrator)
 

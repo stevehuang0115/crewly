@@ -180,8 +180,8 @@ describe('CloudDisconnectNoticeService', () => {
 
 		expect(startLogin).toHaveBeenCalledTimes(1);
 		expect(dm!.sent).toHaveLength(1);
-		expect(dm!.sent[0]).toContain('Crewly（本机：iriss-air.lan）连不上 Crewly Cloud 了（登录已过期，从 9月27日 15:38 起）');
-		expect(dm!.sent[0]).toContain(`点这里重新登录：${LINK}`);
+		expect(dm!.sent[0]).toContain('Crewly (machine: iriss-air.lan) lost its connection to Crewly Cloud (the sign-in expired, since Sep 27 15:38)');
+		expect(dm!.sent[0]).toContain(`Sign in again here: ${LINK}`);
 		expect(readNoticeState(stateFile)).toMatchObject({ channelId: 'D-OWNER', messageTs: '1001.000', hasLink: true, reason: 'auth' });
 
 		now += 5 * HOUR;
@@ -197,7 +197,7 @@ describe('CloudDisconnectNoticeService', () => {
 		const first = makeService();
 		await first.tick();
 		expect(dm!.sent).toHaveLength(1);
-		expect(dm!.sent[0]).toContain('网络连不上 Cloud');
+		expect(dm!.sent[0]).toContain('Cloud is unreachable');
 		expect(startLogin).not.toHaveBeenCalled();
 		first.stop();
 
@@ -212,7 +212,7 @@ describe('CloudDisconnectNoticeService', () => {
 		await second.tick();
 		expect(dm!.sent).toHaveLength(2);
 		// The repeat keeps the original episode start.
-		expect(dm!.sent[1]).toContain('从 9月27日 15:38 起');
+		expect(dm!.sent[1]).toContain('since Sep 27 15:38');
 		second.stop();
 	});
 
@@ -225,7 +225,7 @@ describe('CloudDisconnectNoticeService', () => {
 		await flush();
 
 		expect(reconnect).toHaveBeenCalledTimes(1);
-		expect(dm!.sent[1]).toBe('已重新连上 Cloud，排队的消息正在送达。');
+		expect(dm!.sent[1]).toBe('Back on Crewly Cloud. Queued messages are being delivered.');
 		expect(readNoticeState(stateFile)).toBeNull();
 
 		health = { state: 'syncing', lastContactAt: now, startedAt: now, authRejected: false };
@@ -243,7 +243,7 @@ describe('CloudDisconnectNoticeService', () => {
 		now += 2 * MIN;
 		await service.tick();
 		await service.tick();
-		expect(dm!.sent).toEqual([expect.stringContaining('连不上'), '已重新连上 Cloud，排队的消息正在送达。']);
+		expect(dm!.sent).toEqual([expect.stringContaining('lost its connection'), 'Back on Crewly Cloud. Queued messages are being delivered.']);
 		service.stop();
 	});
 
@@ -266,7 +266,7 @@ describe('CloudDisconnectNoticeService', () => {
 		await service.tick();
 		logins[0]!.end({ state: 'failed', message: 'The request was denied on crewlyai.com.' });
 		await flush();
-		expect(dm!.sent[1]).toBe('重新登录没有完成（登录被拒绝）。Crewly 会在 9月27日 21:38 再发一次新链接。');
+		expect(dm!.sent[1]).toBe('The sign-in did not finish (sign-in was denied). Crewly will send a new link at Sep 27 21:38.');
 
 		now += 3 * HOUR;
 		await service.tick();
@@ -304,7 +304,7 @@ describe('CloudDisconnectNoticeService', () => {
 		const service = makeService();
 		health = { state: 'auth_expired', lastContactAt: T0, startedAt: T0, authRejected: true };
 		await service.tick();
-		expect(dm!.sent[0]).toContain('暂时拿不到重新登录的链接，Crewly 会继续重试');
+		expect(dm!.sent[0]).toContain('No sign-in link yet. Crewly keeps trying');
 		expect(readNoticeState(stateFile)).toMatchObject({ hasLink: false });
 
 		now += MIN;
@@ -328,7 +328,7 @@ describe('CloudDisconnectNoticeService', () => {
 		dm!.failUpdate = true;
 		now += 16 * MIN;
 		await service.tick();
-		expect(dm!.sent[1]).toContain('重新登录没有完成（链接已过期）');
+		expect(dm!.sent[1]).toContain('The sign-in did not finish (the link expired)');
 		now += 30 * MIN;
 		await service.tick();
 		expect(startLogin).toHaveBeenCalledTimes(2);

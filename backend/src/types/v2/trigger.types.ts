@@ -244,6 +244,13 @@ export interface Trigger {
    * `teamId` + `name` alone are NOT ownership: agent follow-ups carry both.
    */
   managedBy?: TriggerManagedBy;
+  /**
+   * Where the output of the work this trigger creates is posted
+   * (specs/2026-10-01-decision-cards.md §6): `#channel-name`, a Slack channel
+   * id (`C…`), or a thread (`C…:<ts>`). Absent = a new top-level post in the
+   * target's team channel — never an existing, unrelated thread.
+   */
+  destination?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -273,6 +280,8 @@ export interface CreateTriggerInput {
   managedBy?: TriggerManagedBy;
   /** Optional stable name for reconciliation-by-identity */
   name?: string;
+  /** Where the work's output is posted (see {@link Trigger.destination}) */
+  destination?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,6 +396,9 @@ export function validateCreateTriggerInput(input: CreateTriggerInput): string[] 
   } else if (!isValidTriggerConfig(input.config)) {
     errors.push('config is invalid for the given trigger type');
   }
+  if (input.destination !== undefined && !isValidTriggerDestination(input.destination)) {
+    errors.push('destination must be "#channel-name", a Slack channel id (C…) or a thread (C…:<ts>)');
+  }
   if (!input.action) {
     errors.push('action is required');
   } else if (!isValidTriggerAction(input.action)) {
@@ -448,6 +460,7 @@ export function createTrigger(input: CreateTriggerInput): Trigger {
     teamId: input.teamId,
     name: input.name,
     managedBy: input.managedBy ?? 'agent',
+    ...(input.destination?.trim() ? { destination: input.destination.trim() } : {}),
   };
 }
 
@@ -486,4 +499,17 @@ export function isRecurringTrigger(trigger: Pick<Trigger, 'config'>): boolean {
  */
 export function isSpecManaged(trigger: Pick<Trigger, 'managedBy'>): boolean {
   return trigger.managedBy === 'team-spec';
+}
+
+/**
+ * Whether a trigger `destination` is one of the accepted shapes:
+ * `#channel-name`, a Slack channel id (`C…`/`G…`), or `C…:<ts>`.
+ *
+ * @param value - Candidate destination
+ * @returns True when valid
+ */
+export function isValidTriggerDestination(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const v = value.trim();
+  return /^#[a-z0-9][a-z0-9._-]{0,79}$/.test(v) || /^[CG][A-Z0-9]{6,}(:\d{6,}\.\d+)?$/.test(v);
 }

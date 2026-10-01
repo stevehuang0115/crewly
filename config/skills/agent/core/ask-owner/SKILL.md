@@ -1,0 +1,79 @@
+---
+name: Ask Owner
+description: Ask the owner ONE decision with 2–3 options, a default and a deadline. Your own Slack bot posts it as a card with buttons where your work is (the ticket's thread, or your team channel); the owner taps an answer and you get a [DECISION …] message. Never ask the owner open-ended questions in chat.
+version: 1.0.0
+category: communication
+skillType: claude-skill
+assignableRoles:
+  - developer
+  - qa
+  - tpm
+  - designer
+  - frontend-developer
+  - backend-developer
+  - fullstack-dev
+  - qa-engineer
+  - product-manager
+  - architect
+  - generalist
+  - sales
+  - support
+  - team-leader
+  - orchestrator
+triggers:
+  - ask owner
+  - owner decision
+  - need approval
+  - needs your OK
+tags:
+  - communication
+  - decision
+  - slack
+execution:
+  type: script
+  script:
+    file: execute.sh
+    interpreter: bash
+    timeoutMs: 20000
+---
+
+# Ask Owner
+
+Use this when you need the owner to decide something. The owner reads it on a phone, so ask one
+concrete question and offer the real choices.
+
+```bash
+bash execute.sh --question "Send the partner email on Monday?" \
+  --option "Send Monday — after the review call" \
+  --option "Hold — wait for legal" \
+  --default "Hold"
+```
+
+| Flag | Rule |
+|---|---|
+| `--question` | One line (8–280 characters). Name the decision, not "thoughts?" |
+| `--option` | 2–3 times. `"Label"` or `"Label — detail"`. The label is the button (≤ 40 characters). |
+| `--default` | The option you will take if there is no answer by the deadline, or `wait` |
+| `--deadline` | Optional, ISO (`2026-10-02T12:00`). Default: tomorrow 12:00 |
+| `--ticket APP-12 --project P` | Optional. Ask about a ticket; the card goes in the ticket's thread, asked by its assignee |
+| `--sensitive email\|publish\|deploy\|spend` | Required for messages to outside people, public publishing, prod deploys, spending money. These are never auto-applied: the owner is re-asked once, then the question is parked |
+
+What happens:
+
+- The card is posted by your own Slack bot:
+  - a ticket ask goes in the ticket's thread;
+  - any other ask goes where your current work is, else as a new thread in your team channel.
+- The owner can answer by tapping a button, reacting (✅ default, ❌ "no", ⏰ tomorrow), replying in
+  the thread, or using the dashboard.
+- You receive `[DECISION D-7] The owner chose "…"`. Act on it. Do not ask again.
+- If nobody answers by the deadline, the default is applied and you are told. A `wait` default or a
+  sensitive ask never goes ahead without an answer.
+- Do not also message the owner about it. The card is the question.
+
+Withdraw a question you no longer need:
+
+```bash
+bash execute.sh --cancel D-7
+```
+
+A rejected ask (vague, missing options, etc.) comes back with an error that says what to fix.
