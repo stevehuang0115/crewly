@@ -65,6 +65,59 @@ import {
 /** Service identifier for logs and the X-Agent-Session caller header. */
 const SERVICE_NAME = 'WorkItemDispatch';
 
+/** Tag every dispatch notice starts with. */
+const DISPATCH_TAG = '[CREWLY-DISPATCH]';
+
+/**
+ * WorkItem statuses after which a "queued for you" notice is stale: the work
+ * is finished (or abandoned) and there is nothing left to claim.
+ */
+const FINISHED_WORK_ITEM_STATUSES: ReadonlySet<string> = new Set(['done', 'verified', 'cancelled', 'failed']);
+
+/**
+ * The WorkItem ids a dispatch notice announces, in order.
+ *
+ * Handles both shapes this module writes: the single notice
+ * (`[CREWLY-DISPATCH] WorkItem <id> queued for you`) and the batch reminder
+ * (`  1. <id> (type=…) — title`, one line per item).
+ *
+ * @param message - Text that was (or will be) written to an agent terminal
+ * @returns The announced ids, or null when the text is not a dispatch notice
+ */
+export function dispatchNoticeWorkItemIds(message: string): string[] | null {
+  if (!message.includes(DISPATCH_TAG)) return null;
+  const single = message.match(/\[CREWLY-DISPATCH\] WorkItem (\S+) queued for you/);
+  if (single) return [single[1]];
+  const ids = [...message.matchAll(/^\s+\d+\.\s+(\S+) \(type=/gm)].map((m) => m[1]);
+  return ids.length > 0 ? ids : null;
+}
+
+/**
+ * Whether a dispatch notice no longer announces any work: every WorkItem it
+ * names is finished (done, verified, cancelled, failed) or gone from the pool.
+ *
+ * Notices that wait in the persisted agent message queue survive a restart.
+ * Without this check they were delivered hours after their WorkItems were
+ * verified, one per notification, and the agent re-checked the pool for work
+ * that was not there (#836). Text that is not a dispatch notice is never stale.
+ *
+ * @param message - Queued message text
+ * @param findWorkItem - Looks up a WorkItem's current state by id
+ * @returns True when the notice should be dropped instead of delivered
+ */
+export async function isStaleDispatchNotice(
+  message: string,
+  findWorkItem: (id: string) => Promise<Pick<WorkItem, 'status'> | null>,
+): Promise<boolean> {
+  const ids = dispatchNoticeWorkItemIds(message);
+  if (!ids) return false;
+  for (const id of ids) {
+    const current = await findWorkItem(id);
+    if (current && !FINISHED_WORK_ITEM_STATUSES.has(current.status)) return false;
+  }
+  return true;
+}
+
 /** Starts a fresh conversation before a new task (see FreshTaskConversationService). */
 type TaskConversationPreparer = {
   prepareForTask: (sessionName: string, workItem: Pick<WorkItem, 'id' | 'metadata'>) => Promise<PrepareForTaskResult>;

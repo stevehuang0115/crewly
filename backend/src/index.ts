@@ -3217,6 +3217,19 @@ void (async () => {
 				dispatchSubscriber.initialize(this.eventBusService);
 				dispatchSubscriber.start();
 				this.logger.info('WorkItemDispatchSubscriber started — workitem:queued events push to target sessions');
+
+				// Queued agent messages survive restarts. A dispatch notice whose
+				// WorkItems have all finished since must not be replayed (#836).
+				const { isStaleDispatchNotice } = await import('./services/v3/workitem-dispatch.subscriber.js');
+				const agentMessageQueue = SubAgentMessageQueue.getInstance();
+				agentMessageQueue.setStaleMessageCheck((data) =>
+					isStaleDispatchNotice(data, (id) => TaskPoolService.getInstance().findWorkItem(id)),
+				);
+				void agentMessageQueue.pruneStale().catch((pruneErr: unknown) => {
+					this.logger.warn('Could not prune stale queued dispatch notices (non-critical)', {
+						error: pruneErr instanceof Error ? pruneErr.message : String(pruneErr),
+					});
+				});
 			} catch (dispatchErr) {
 				this.logger.warn('WorkItemDispatchSubscriber initialization failed (non-critical)', {
 					error: dispatchErr instanceof Error ? dispatchErr.message : String(dispatchErr),
