@@ -9,6 +9,10 @@ User-visible changes. Newest first.
 - **Usage by work item shows what each item spent.** Each token event now counts toward the
   work item its agent was running at that moment, instead of every open item getting the agent's
   whole total; each item appears once and idle usage shows as "(no work item)" (#953).
+- **Spend cap now fires for agents whose working directory is a symlink (#938).** Claude Code
+  files transcripts under the resolved path (on macOS `/tmp/proj` becomes `/private/tmp/proj`),
+  so such agents reported $0 spend. Transcript lookup now tries the realpath slug first, then
+  the raw one.
 - **Agent messages to you reach the conversation they belong to — or the agent is told they
   didn't.** One harness resolver now decides where every agent→owner message goes (`reply`,
   `reply-chat`, `reply-channel`, `slack-post`, `attach-file`, file uploads, the `[DONE]`

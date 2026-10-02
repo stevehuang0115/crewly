@@ -21,7 +21,8 @@ jest.mock('../session/session-state-persistence.js', () => ({
 }));
 
 import { ClaudeTranscriptSyncService } from './claude-transcript-sync.service.js';
-import { TokenUsageService, calculateCost } from './token-usage.service.js';
+import { TokenUsageService } from './token-usage.service.js';
+import { calculateCost } from './model-pricing.js';
 import { encodeProjectSlug } from './claude-session-tokens.service.js';
 
 /** Builds one assistant transcript line with the usage block Claude Code writes. */
@@ -229,8 +230,10 @@ describe('ClaudeTranscriptSyncService', () => {
 			assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', cacheRead: 200_000, cacheWrite: 50_000 }) + '\n',
 		);
 		await service.sync();
-		const record = TokenUsageService.getInstance().getUsageBySessions().find((s) => s.sessionName === SESSION)!;
-		expect(record.events[0]).toMatchObject({ cachedInput: 250_000, cacheWrite: 50_000 });
+		const events = (TokenUsageService.getInstance() as unknown as {
+			sessions: Map<string, { events: Array<{ cachedInput?: number; cacheWrite?: number }> }>;
+		}).sessions.get(SESSION)!.events;
+		expect(events[0]).toMatchObject({ cachedInput: 250_000, cacheWrite: 50_000 });
 	});
 
 	it('re-reads from the top when the transcript shrinks', async () => {
@@ -454,5 +457,73 @@ describe('ClaudeTranscriptSyncService', () => {
 		await fs.writeFile(transcriptPath, assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n');
 		const [a, b] = await Promise.all([service.sync(), service.sync()]);
 		expect(a.turnsCounted + b.turnsCounted).toBe(1);
+	});
+
+	describe('cwd reached through a symlink (#938)', () => {
+		// macOS: an agent in /tmp/proj has its transcript filed by Claude Code
+		// under the resolved /private/tmp/proj slug. Reproduce that with a
+		// real symlink so the lookup has to resolve it.
+		let linkedCwd: string;
+		let resolvedTranscriptDir: string;
+
+		beforeEach(async () => {
+			const realParent = path.join(tmpRoot, 'private-real');
+			await fs.mkdir(path.join(realParent, 'proj'), { recursive: true });
+			await fs.symlink(realParent, path.join(tmpRoot, 'linked'), 'dir');
+			linkedCwd = path.join(tmpRoot, 'linked', 'proj');
+
+			const resolvedSlug = encodeProjectSlug(await fs.realpath(linkedCwd));
+			expect(resolvedSlug).not.toBe(encodeProjectSlug(linkedCwd));
+			resolvedTranscriptDir = path.join(tmpRoot, '.claude', 'projects', resolvedSlug);
+			await fs.mkdir(resolvedTranscriptDir, { recursive: true });
+		});
+
+		it('finds the transcript under the resolved slug by conversation id and counts its spend', async () => {
+			await fs.writeFile(
+				path.join(resolvedTranscriptDir, `${CONVO_ID}.jsonl`),
+				assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z', input: 1000, output: 500 }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: linkedCwd, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+
+			const result = await service.sync();
+
+			expect(result.sessionsWithoutTranscript).toBe(0);
+			expect(result.turnsCounted).toBe(1);
+			expect(service.getCursor(SESSION)?.cost).toBeGreaterThan(0);
+			expect(
+				TokenUsageService.getInstance().getUsageBySessions().map((s) => s.sessionName),
+			).toContain(SESSION);
+		});
+
+		it('finds the newest transcript under the resolved slug when no id is recorded', async () => {
+			await fs.writeFile(
+				path.join(resolvedTranscriptDir, `${CONVO_ID}.jsonl`),
+				assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: linkedCwd, runtimeType: 'claude-code' }]]),
+			);
+
+			const result = await service.sync();
+
+			expect(result.sessionsWithoutTranscript).toBe(0);
+			expect(result.turnsCounted).toBe(1);
+		});
+
+		it('still finds a transcript left under the raw slug', async () => {
+			const rawDir = path.join(tmpRoot, '.claude', 'projects', encodeProjectSlug(linkedCwd));
+			await fs.mkdir(rawDir, { recursive: true });
+			await fs.writeFile(
+				path.join(rawDir, `${CONVO_ID}.jsonl`),
+				assistantLine({ id: 'm1', timestamp: '2026-09-21T10:00:00.000Z' }) + '\n',
+			);
+			mockGetRegisteredSessionsMap.mockReturnValue(
+				new Map([[SESSION, { cwd: linkedCwd, runtimeType: 'claude-code', claudeSessionId: CONVO_ID }]]),
+			);
+
+			expect((await service.sync()).turnsCounted).toBe(1);
+		});
 	});
 });
