@@ -36,13 +36,24 @@ The rule holds whoever sent the message (the instance owner, another person in t
 
 Owner's rule, 2026-10-02. In #personal-assistant-team (steamfun-ops, 1.20.191) a person @'d the owner in a top-level post; the owner answered in its thread with two messages 35 s apart: `<@U0AMU9APG9E> 没有 目前没有连接你的calendar和gmail` (recorded, not dispatched: correct) and `因为这里主要是用来做steamfun的 所以我只联通了Google drive` (no @ at all). The second counted as un-addressed; nobody in the room was awake, so the team leader Aria was woken (`optional`) and answered a message meant for the other person.
 
-A message with no explicit addressee of its own — no `<@U…>`, no `@Name` (known or unknown), no `@here`/`@channel`/`@everyone`, no agent Cloud lists in `mentionedAgentSessions`, not a hand-off, not written by an agent — inherits one:
+### Naming an agent without an @
+
+Owner's rule, 2026-10-02. A message that **opens with** the display name of an agent in the room addresses that agent, exactly as an @ would. This applies everywhere, not only in person-to-person threads. Examples: `Aria，帮我…`, `Aria, can you…`, `aria: …`, `Aria帮我…`, or a typed `@Aria` that Slack left as plain text.
+
+How the match works (`leadingNameMention` in `slack-mention-resolver.ts`):
+- It ignores case and leading spaces, and tries longer names first.
+- The name must end at a word boundary: punctuation, a space, the end of the message, or Chinese text after a Latin name. "Ariana …", "Aria's …" and "Calendar …" (with an agent called Cal) do not match.
+- A name in the middle of a sentence never counts.
+- "Agents in the room" means the room's local members plus the agents Cloud lists in `room.members` on other machines. A remote agent named this way is handled like a Cloud-reported @ of it: this machine records the message and leaves it to that machine.
+- Known risk: an agent whose name is also an ordinary word that opens sentences (for example "Tidy up the docs") will be addressed.
+
+A message with no explicit addressee of its own — no `<@U…>`, no `@Name` (known or unknown), no agent named at the start, no `@here`/`@channel`/`@everyone`, no agent Cloud lists in `mentionedAgentSessions`, not a hand-off, not written by an agent — inherits one:
 
 - **Same-sender follow-up.** Its sender's previous message in the same conversation was addressed to people only and came at most `SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_MS` earlier (5 min; override with the env var `CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS`). In a thread the conversation is the thread. At the top level it is the channel's latest top-level message.
 - **Person-to-person thread.** In a thread, walk back from the newest message. Agents' posts and human messages with no addressee are skipped. The first human message that has an addressee decides:
   - it @'d people only: the follow-up is context only;
   - it @'d an agent (here or on another machine), or `@here`/`@channel`: the normal rules apply.
-  This rule has no time limit. To bring an agent into a thread where people are talking to each other, @ it.
+  The exchange lasts `SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS` from the last explicit human-to-human @ in the thread. The default is 30 min; override it with the env var `CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS`. Inherited follow-ups do not extend it. After that, the normal rules apply again, and the prompt still names the earlier exchange. To bring an agent in sooner, @ it or open the message with its name.
 
 An inherited addressee is handled exactly like an explicit @ of a person. The row is recorded as context only, with `metadata.slackMentionedPeople` set to the inherited people and `metadata.slackAddresseeInherited` set to `same-sender-followup` or `person-exchange`. Nobody is woken: not the last speaker, not "every awake agent decides", and not the nobody-awake team-leader/orchestrator wake. One INFO line: `Slack team message continues a person-to-person exchange — recorded, not dispatched`. A row addressed to an agent on another machine carries `metadata.slackMentionedAgents`, so the walk knows that exchange included an agent.
 

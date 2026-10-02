@@ -5,6 +5,7 @@
  */
 
 import {
+  leadingNameMention,
   candidateAliases,
   extractMentionTokens,
   extractNativeMentionIds,
@@ -119,5 +120,41 @@ describe('resolveSlackMentions', () => {
       mentions: [],
       unknown: [{ token: 'sam', suggestions: [] }],
     });
+  });
+});
+
+describe('leadingNameMention (owner, 2026-10-02)', () => {
+  const agents = [
+    { name: 'Aria', sessionName: 'pa-aria' },
+    { name: 'Cal', sessionName: 'pa-cal' },
+    { name: 'Steve Bot', sessionName: 'pa-steve-bot' },
+    { name: 'Steve', sessionName: 'pa-steve' },
+  ];
+  const hit = (text: string) => leadingNameMention(text, agents)?.sessionName ?? null;
+
+  it.each([
+    ['Aria，帮我看看', 'pa-aria'],
+    ['Aria, can you set it up once?', 'pa-aria'],
+    ['aria: 怎么授权', 'pa-aria'],
+    ['ARIA！', 'pa-aria'],
+    ['@Aria 帮我', 'pa-aria'],
+    ['  Aria帮我', 'pa-aria'],
+    ['Aria', 'pa-aria'],
+    ['Aria can you help', 'pa-aria'],
+    ['Steve Bot, 你来', 'pa-steve-bot'],
+    ['Steve，你来', 'pa-steve'],
+  ])('%s → %s', (text, session) => {
+    expect(hit(text)).toBe(session);
+  });
+
+  it.each([
+    ['我昨天问过Aria'],
+    ['Ariana 说可以'],
+    ["Aria's reply was fine"],
+    ['Calendar 授权要分开'],
+    ['<@U0AMU9APG9E> Aria 说的对'],
+    [''],
+  ])('%s → nobody', (text) => {
+    expect(hit(text)).toBeNull();
   });
 });

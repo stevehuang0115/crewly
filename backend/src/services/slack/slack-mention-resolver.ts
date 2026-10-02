@@ -238,3 +238,41 @@ export function resolveSlackMentions(
 
   return { mentions, unknown };
 }
+
+/**
+ * The agent a message is plainly addressed to by opening with its name:
+ * `Aria，帮我…`, `Aria, can you…`, `aria: …`, or a typed `@Aria` that Slack
+ * left as plain text. Owner's rule, 2026-10-02: naming an agent at the start
+ * of a message counts as addressing it, even with no `@`.
+ *
+ * Only the start of the message counts, so a name in the middle of a
+ * sentence ("I asked Aria yesterday") addresses nobody. Matching ignores
+ * case. Longer names are tried first, so "Steve Huang" wins over "Steve".
+ * The name must end at a word boundary: "Ariana" and "Aria's" do not match
+ * Aria, but a Latin name followed straight by Chinese (`Aria帮我`) does.
+ *
+ * @param text - Slack message text
+ * @param candidates - Agents that can be addressed here (anything with a display name)
+ * @returns The matching candidate, or null
+ */
+export function leadingNameMention<T extends { name: string }>(text: string, candidates: readonly T[]): T | null {
+  const body = (text ?? '').replace(/^\s+/u, '').replace(/^@/u, '');
+  if (!body) return null;
+  const lower = body.toLowerCase();
+  const sorted = [...candidates]
+    .filter((c) => (c.name ?? '').trim().length > 0)
+    .sort((a, b) => b.name.trim().length - a.name.trim().length);
+  for (const c of sorted) {
+    const name = c.name.trim().toLowerCase();
+    if (!lower.startsWith(name)) continue;
+    const next = body.slice(name.length);
+    if (next.length === 0) return c;
+    const ch = [...next][0];
+    const endsLatin = /[A-Za-z0-9]$/.test(name);
+    const boundary =
+      !/[\p{L}\p{N}_'’]/u.test(ch) || (endsLatin && /\p{Script=Han}/u.test(ch));
+    if (!boundary) continue;
+    return c;
+  }
+  return null;
+}

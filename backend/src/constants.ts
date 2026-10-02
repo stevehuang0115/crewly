@@ -1366,6 +1366,15 @@ export const SLACK_TEAM_CHANNEL_CONSTANTS = {
 	PEOPLE_FOLLOWUP_WINDOW_MS: 5 * 60 * 1000,
 	/** Env var that overrides PEOPLE_FOLLOWUP_WINDOW_MS (milliseconds). */
 	PEOPLE_FOLLOWUP_WINDOW_ENV: 'CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS',
+	/**
+	 * How long a thread counts as a person-to-person exchange after its last
+	 * human-to-human @: an un-@'d message within this time of it is context
+	 * only; after it, the normal rules apply again (owner, 2026-10-02).
+	 * Overridden by the env var named in PERSON_EXCHANGE_WINDOW_ENV.
+	 */
+	PERSON_EXCHANGE_WINDOW_MS: 30 * 60 * 1000,
+	/** Env var that overrides PERSON_EXCHANGE_WINDOW_MS (milliseconds). */
+	PERSON_EXCHANGE_WINDOW_ENV: 'CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS',
 	/** Reaction added to a routed inbound message while the team works on it */
 	INBOUND_REACTION: 'eyes',
 	/** How many routed Slack messages to remember for duplicate-copy suppression */

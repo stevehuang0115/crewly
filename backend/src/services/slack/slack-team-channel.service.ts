@@ -61,7 +61,7 @@ import { getSlackDirectoryService } from './slack-directory.service.js';
 import { SLACK_TEAM_CHANNEL_CONSTANTS, OWNER_EVIDENCE_METADATA, SLACK_THREAD_KEY_CONSTANTS } from '../../constants.js';
 import { parseSlackThreadKey } from './slack-thread-key.js';
 import { withTopicLine } from '../orc/work-item-destination.js';
-import { resolveSlackMentions, extractNativeMentionIds, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
+import { resolveSlackMentions, extractNativeMentionIds, leadingNameMention, type MentionCandidate, type ResolvedSlackMentions } from './slack-mention-resolver.js';
 import { toSlackMrkdwn } from './slack-mrkdwn.js';
 import { renderSlackThreadContext } from './slack-thread-context.service.js';
 import type { SlackAgentIdentityService } from './slack-agent-identity.service.js';
@@ -1257,7 +1257,27 @@ export class SlackTeamChannelService {
     // lists every agent the message @'s; one addressed only elsewhere is
     // that machine's to handle.
     const isLocal = (sess: string) => this.deps.isLocalAgent?.(sess) ?? members.some((m) => m.sessionName === sess);
-    const mentionedElsewhere = (message.mentionedAgentSessions ?? []).filter((sess) => !isLocal(sess));
+    // An agent named at the start of the message, with no @ ("Aria，帮我…",
+    // "Aria, can you…"), is addressed — owner's rule, 2026-10-02. Only agents
+    // in this room count: its local members, and the ones Cloud lists on
+    // other machines.
+    const namedElsewhere: string[] = [];
+    if (!handoffTo) {
+      const roomLocal = isAdhocMapping(mapping)
+        ? candidates.filter((c) => (mapping!.members ?? []).includes(c.sessionName))
+        : candidates;
+      const roomRemote = (message.room?.members ?? [])
+        .filter((m) => !isLocal(localAgentSession(m.agentSession)) && !roomLocal.some((c) => c.sessionName === m.agentSession))
+        .map((m) => ({ name: m.displayName, sessionName: m.agentSession }));
+      const named = leadingNameMention(message.text ?? '', [...roomLocal, ...roomRemote]);
+      if (named && roomLocal.includes(named as MentionCandidate)) {
+        if (!resolved.mentions.includes(named.sessionName)) resolved.mentions.push(named.sessionName);
+      } else if (named) {
+        namedElsewhere.push(named.sessionName);
+      }
+    }
+    const agentsMentionedViaCloud = [...new Set([...(message.mentionedAgentSessions ?? []), ...namedElsewhere])];
+    const mentionedElsewhere = agentsMentionedViaCloud.filter((sess) => !isLocal(sess));
     const addressedElsewhereOnly = !handoffTo && resolved.mentions.length === 0 && mentionedElsewhere.length > 0;
     // @-mentions of people: the owner asking a
     // colleague is not a question for the agents (2026-10-01,
@@ -1287,7 +1307,7 @@ export class SlackTeamChannelService {
       !!handoffTo ||
       resolved.mentions.length > 0 ||
       resolved.unknown.length > 0 ||
-      (message.mentionedAgentSessions ?? []).length > 0 ||
+      agentsMentionedViaCloud.length > 0 ||
       namedPeople.length > 0 ||
       SLACK_BROADCAST_MENTION_RE.test(message.text ?? '');
     const exchange = hasOwnAddressee
@@ -1298,7 +1318,7 @@ export class SlackTeamChannelService {
     const addressedPeopleOnly =
       !addressedElsewhereOnly &&
       resolved.mentions.length === 0 &&
-      (message.mentionedAgentSessions ?? []).length === 0 &&
+      agentsMentionedViaCloud.length === 0 &&
       addresseePeople.length > 0;
 
     // A colleague agent on another machine is recorded under its display
@@ -1334,8 +1354,8 @@ export class SlackTeamChannelService {
           ? { [SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_MENTIONS_METADATA_KEY]: addresseePeople }
           : {}),
         ...(inherited ? { [SLACK_TEAM_CHANNEL_CONSTANTS.ADDRESSEE_INHERITED_METADATA_KEY]: inherited.reason } : {}),
-        ...((message.mentionedAgentSessions ?? []).length > 0
-          ? { [SLACK_TEAM_CHANNEL_CONSTANTS.AGENT_MENTIONS_METADATA_KEY]: [...(message.mentionedAgentSessions ?? [])] }
+        ...(agentsMentionedViaCloud.length > 0
+          ? { [SLACK_TEAM_CHANNEL_CONSTANTS.AGENT_MENTIONS_METADATA_KEY]: agentsMentionedViaCloud }
           : {}),
         // Marks the row as agent-authored: the commitment-approval gate must
         // never read a colleague agent's post as owner approval (#730).
@@ -2423,8 +2443,10 @@ export class SlackTeamChannelService {
    * holds across restarts.
    *
    * - In a thread: walking back from the newest row, agents' posts and human
-   *   rows with no addressee are skipped; the first human row with an
-   *   addressee decides. People only → inherit them. An agent (here or on
+   *   rows with no addressee (or an inherited one) are skipped; the first
+   *   human row with an addressee decides. People only → inherit them, while
+   *   that @ is within the person-exchange window (or is the same sender's
+   *   own message within the follow-up window); older → `recent` only. An agent (here or on
    *   another machine) or `@here` → no inheritance; the most recent
    *   people-only row older than that is returned as `recent`, for the
    *   prompt backstop.
@@ -2458,10 +2480,14 @@ export class SlackTeamChannelService {
       );
     };
     const seconds = (ts: unknown): number => (typeof ts === 'string' ? Number.parseFloat(ts) : Number.NaN);
-    const withinWindow = (m: ChatMessageDTO): boolean => {
+    const within = (m: ChatMessageDTO, windowMs: number): boolean => {
       const gapMs = (seconds(message.ts) - seconds(m.metadata?.slackTs)) * 1000;
-      return Number.isFinite(gapMs) && gapMs >= 0 && gapMs <= this.peopleFollowupWindowMs();
+      return Number.isFinite(gapMs) && gapMs >= 0 && gapMs <= windowMs;
     };
+    const withinWindow = (m: ChatMessageDTO): boolean =>
+      within(m, this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_MS));
+    const withinExchange = (m: ChatMessageDTO): boolean =>
+      within(m, this.windowMs(SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_ENV, SLACK_TEAM_CHANNEL_CONSTANTS.PERSON_EXCHANGE_WINDOW_MS));
     const sameSender = (m: ChatMessageDTO): boolean => !!message.userId && m.metadata?.slackUserId === message.userId;
 
     if (message.threadTs) {
@@ -2471,6 +2497,9 @@ export class SlackTeamChannelService {
       for (let i = rows.length - 1; i >= 0; i--) {
         const row = rows[i];
         if (!isHuman(row) || row.metadata?.slackTs === message.ts) continue;
+        // An inherited addressee is not an @: the exchange is timed from
+        // the last explicit human-to-human @.
+        if (row.metadata?.[SLACK_TEAM_CHANNEL_CONSTANTS.ADDRESSEE_INHERITED_METADATA_KEY]) continue;
         const people = peopleOf(row);
         if (addressesAgent(row)) {
           agentAddressed = true;
@@ -2478,10 +2507,10 @@ export class SlackTeamChannelService {
         }
         if (people.length === 0) continue;
         if (agentAddressed) return { inherit: null, recent: people };
-        return {
-          inherit: { people, reason: sameSender(row) && withinWindow(row) ? 'same-sender-followup' : 'person-exchange' },
-          recent: [],
-        };
+        if (sameSender(row) && withinWindow(row)) return { inherit: { people, reason: 'same-sender-followup' }, recent: [] };
+        // An exchange that went quiet is over: the normal rules apply again.
+        if (!withinExchange(row)) return { inherit: null, recent: people };
+        return { inherit: { people, reason: 'person-exchange' }, recent: [] };
       }
       return none;
     }
@@ -2496,15 +2525,17 @@ export class SlackTeamChannelService {
   }
 
   /**
-   * The same-sender follow-up window, from the env override when it is a
-   * non-negative number, else the constant.
+   * A time window, from its env override when that is a non-negative number,
+   * else the default.
    *
+   * @param envVar - Env var holding milliseconds
+   * @param fallbackMs - Default
    * @returns Milliseconds
    */
-  private peopleFollowupWindowMs(): number {
-    const raw = process.env[SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_ENV];
+  private windowMs(envVar: string, fallbackMs: number): number {
+    const raw = process.env[envVar];
     const parsed = raw !== undefined && raw.trim() !== '' ? Number(raw) : Number.NaN;
-    return Number.isFinite(parsed) && parsed >= 0 ? parsed : SLACK_TEAM_CHANNEL_CONSTANTS.PEOPLE_FOLLOWUP_WINDOW_MS;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallbackMs;
   }
 
   /**

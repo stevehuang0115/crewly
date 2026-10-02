@@ -2805,6 +2805,7 @@ describe('follow-ups of a person-to-person exchange', () => {
   const infoOf = () => (service as unknown as { logger: { info: jest.Mock } }).logger.info;
   const unanswered = () => (service as unknown as { unanswered: Map<string, unknown> }).unanswered;
   const savedWindow = process.env.CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS;
+  const savedExchange = process.env.CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS;
 
   /** Nothing about the message reached an agent: context only. */
   const expectContextOnly = (result: Awaited<ReturnType<SlackTeamChannelService['routeInbound']>>, ts: string) => {
@@ -2830,6 +2831,7 @@ describe('follow-ups of a person-to-person exchange', () => {
 
   beforeEach(async () => {
     delete process.env.CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS;
+    delete process.env.CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS;
     intake = { intakeWithOutcome: jest.fn(async () => ({ action: 'none' })) };
     setTicketIntakeService(intake as unknown as TicketIntakeService);
     identities = new FakeIdentities();
@@ -2850,6 +2852,8 @@ describe('follow-ups of a person-to-person exchange', () => {
   afterEach(() => {
     if (savedWindow === undefined) delete process.env.CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS;
     else process.env.CREWLY_SLACK_PEOPLE_FOLLOWUP_WINDOW_MS = savedWindow;
+    if (savedExchange === undefined) delete process.env.CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS;
+    else process.env.CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS = savedExchange;
     setTicketIntakeService(null);
     typing = null;
     autoWorking = null;
@@ -2896,15 +2900,97 @@ describe('follow-ups of a person-to-person exchange', () => {
     expect(result!.message.metadata).toMatchObject({ slackMentionedPeople: [INFO] });
   });
 
-  it('a person-to-person thread: the other person\'s un-@\'d answer, hours later, is context only', async () => {
+  it('a person-to-person thread: the other person\'s un-@\'d answer 20 min later is context only', async () => {
     await replayThreadStart();
 
     const result = await service.routeInbound(
-      inbound({ text: '好的 那我晚点自己授权一下', userId: INFO, ts: later(STEVE_1_TS, 3 * 3600), threadTs: ROOT_TS, room: asleepRoom }),
+      inbound({ text: '好的 那我晚点自己授权一下', userId: INFO, ts: later(STEVE_1_TS, 20 * 60), threadTs: ROOT_TS, room: asleepRoom }),
     );
 
-    expectContextOnly(result, later(STEVE_1_TS, 3 * 3600));
+    expectContextOnly(result, later(STEVE_1_TS, 20 * 60));
     expect(result!.message.metadata).toMatchObject({ slackMentionedPeople: [INFO], slackAddresseeInherited: 'person-exchange' });
+  });
+
+  it('30 min after the last human-to-human @ the exchange is over: an un-@\'d message is routed normally', async () => {
+    await replayThreadStart();
+    // An inherited follow-up in between does not extend it: the clock runs from the explicit @.
+    await service.routeInbound(inbound({ text: STEVE_2, userId: STEVE, ts: STEVE_2_TS, threadTs: ROOT_TS, room: asleepRoom }));
+    clearMocks();
+
+    const result = await service.routeInbound(
+      inbound({ text: '团队现在能帮我整理一下授权步骤吗', userId: INFO, ts: later(STEVE_1_TS, 31 * 60), threadTs: ROOT_TS, room: asleepRoom }),
+    );
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+    expect(result!.message.metadata).not.toHaveProperty('slackAddresseeInherited');
+    // The earlier exchange is still named in the prompt.
+    const options = dispatcher!.dispatchMessage.mock.calls[0][2] as { peopleAddressing?: { kind: string } };
+    expect(options.peopleAddressing?.kind).toBe('recent-exchange');
+  });
+
+  it('the person-exchange window comes from CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS when set', async () => {
+    process.env.CREWLY_SLACK_PERSON_EXCHANGE_WINDOW_MS = String(10 * 60 * 1000);
+    await replayThreadStart();
+
+    await service.routeInbound(inbound({ text: '好的', userId: INFO, ts: later(STEVE_1_TS, 15 * 60), threadTs: ROOT_TS }));
+
+    expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+  });
+
+  describe('an agent named at the start of the message, without an @', () => {
+    it.each([
+      ['Sam，帮我看看怎么一次性授权'],
+      ['Sam, can you set it up once?'],
+      ['sam: 一次性授权怎么弄'],
+      ['@Sam 帮我看看'],
+      ['  Sam帮我看看'],
+    ])('"%s" in a person-to-person thread reaches Sam (required)', async (text) => {
+      await replayThreadStart();
+      dispatcher!.planHuddleTargets!.mockResolvedValue(new Map([['crewly-alpha-sam', 'required']]));
+
+      const result = await service.routeInbound(inbound({ text, userId: STEVE, ts: STEVE_2_TS, threadTs: ROOT_TS, room: asleepRoom }));
+
+      expect(result!.mentions).toEqual(['crewly-alpha-sam']);
+      expect(dispatcher!.dispatchMessage).toHaveBeenCalledTimes(1);
+      expect(result!.message.metadata).not.toHaveProperty('slackAddresseeInherited');
+    });
+
+    it('a top-level message that opens with an agent\'s name addresses it', async () => {
+      const result = await service.routeInbound(inbound({ text: 'Leo, 回归测试跑完了吗', userId: 'UOWNER', ts: '700.1' }));
+      expect(result!.mentions).toEqual(['crewly-alpha-leo']);
+    });
+
+    it.each([
+      ['a name mid-sentence', '我昨天问过Sam这个问题'],
+      ['a longer word that starts with the name', 'Samuel 说他会授权'],
+      ['a possessive', "Sam's 那条消息我看了"],
+    ])('%s does not count — the incident thread stays person-to-person', async (_label, text) => {
+      await replayThreadStart();
+
+      const result = await service.routeInbound(inbound({ text, userId: STEVE, ts: STEVE_2_TS, threadTs: ROOT_TS, room: asleepRoom }));
+
+      expectContextOnly(result, STEVE_2_TS);
+    });
+
+    it('an agent of the room on another machine, named first, is that machine\'s to answer', async () => {
+      const room = {
+        members: [
+          ...asleepRoom.members,
+          { agentSession: 'think-tank-atlas', displayName: 'Atlas', instanceId: 'i-2', deviceName: 'mac', awake: true },
+        ],
+      };
+      await replayThreadStart();
+
+      const result = await service.routeInbound(inbound({ text: 'Atlas，你来看看', userId: STEVE, ts: STEVE_2_TS, threadTs: ROOT_TS, room }));
+
+      expect(result!.dispatch).toBeNull();
+      expect(dispatcher!.dispatchMessage).not.toHaveBeenCalled();
+      expect(result!.message.metadata).toMatchObject({ slackMentionedAgents: ['think-tank-atlas'] });
+      expect(infoOf()).toHaveBeenCalledWith(
+        'Slack team message addressed to an agent on another machine — recorded, not dispatched',
+        expect.objectContaining({ mentionedElsewhere: ['think-tank-atlas'] }),
+      );
+    });
   });
 
   it('an agent that already spoke in the thread does not make a person-to-person follow-up its own', async () => {
