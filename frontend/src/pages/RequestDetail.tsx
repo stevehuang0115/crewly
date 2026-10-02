@@ -13,30 +13,16 @@
 
 import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import {
-  ArrowLeft,
-  RefreshCw,
-  Inbox,
-  Clock,
-  DollarSign,
-  Cpu,
-  Tag,
-  FileText,
-  Layers,
-  CheckCircle2,
-} from 'lucide-react';
+import { Link, useParams, useNavigate } from 'react-router-dom';
+import { ArrowLeft, RefreshCw, Clock, DollarSign, Cpu, FileText, Layers, CheckCircle2 } from 'lucide-react';
+import { CollapsibleSection, CompactRow, PageHeader, StatusLabel, statusTone, type StatusTone } from '@crewly/ui';
 import { Card } from '@crewly/ui/Card';
-import { Button } from '@crewly/ui/Button';
-import { Badge } from '@crewly/ui/Badge';
-import { StatusBadge } from '@crewly/ui/StatusBadge';
+import { Button, IconButton } from '@crewly/ui/Button';
 import { LoadingSpinner } from '@crewly/ui/LoadingSpinner';
 import { EmptyState } from '@crewly/ui/EmptyState';
 import type { WorkItem } from '../components/WorkItemDetail';
 import {
-  getWorkItemStatusType,
   getWorkItemStatusLabel,
-  getWorkItemTypeBadgeVariant,
   getWorkItemTypeLabel,
   formatRelativeTime,
   formatCost,
@@ -47,6 +33,8 @@ import { WorkItemTimeline } from '../components/WorkItemDetail';
 import { apiService } from '../services/api.service';
 import { OpenItemsCard, type OpenItem } from '../components/RequestTracking/OpenItemsCard';
 import { skipOpenItem } from '../services/decisions.service';
+import { useTeams } from '../components/Tickets/useTeams';
+import { agentDisplayName, type AgentName } from '../components/Tickets/board.utils';
 
 // =============================================================================
 // Types (mirrors backend Request shape)
@@ -73,6 +61,8 @@ interface RequestData {
   totalCost: number;
   /** Promises / questions in the agent's replies (specs/2026-10-01-reply-open-items.md) */
   openItems?: OpenItem[];
+  /** Ticket number when the request is a ticket (`TKT-n`) */
+  ticketNumber?: number;
 }
 
 // =============================================================================
@@ -81,13 +71,13 @@ interface RequestData {
 
 /** Status color mapping for the progress rail */
 const STATUS_COLORS: Record<string, string> = {
-  open: 'text-blue-400',
-  in_progress: 'text-amber-400',
-  blocked: 'text-red-400',
-  waiting_confirmation: 'text-primary',
-  awaiting_followup: 'text-amber-400',
-  done: 'text-green-400',
-  cancelled: 'text-text-secondary-dark',
+  open: 'text-primary-text',
+  in_progress: 'text-primary-text',
+  blocked: 'text-danger',
+  waiting_confirmation: 'text-attention',
+  awaiting_followup: 'text-attention',
+  done: 'text-success',
+  cancelled: 'text-text-2',
 };
 
 /**
@@ -109,35 +99,6 @@ function getRequestStatusLabel(status: string): string {
   return labels[status] ?? status;
 }
 
-/**
- * Maps backend request status to StatusBadge type.
- *
- * @param status - Backend status string
- * @returns StatusType
- */
-function getRequestStatusBadgeType(status: string): 'active' | 'running' | 'blocked' | 'paused' | 'completed' | 'inactive' | 'pending' {
-  const mapping: Record<string, 'active' | 'running' | 'blocked' | 'paused' | 'completed' | 'inactive' | 'pending'> = {
-    open: 'active',
-    in_progress: 'running',
-    blocked: 'blocked',
-    waiting_confirmation: 'paused',
-    awaiting_followup: 'running',
-    done: 'completed',
-    cancelled: 'inactive',
-  };
-  return mapping[status] ?? 'pending';
-}
-
-/**
- * Truncates a UUID to first 8 characters for display.
- *
- * @param id - UUID string
- * @returns Truncated ID
- */
-function truncateId(id: string): string {
-  return id.length > 12 ? id.slice(0, 8) : id;
-}
-
 // =============================================================================
 // Progress Rail
 // =============================================================================
@@ -153,50 +114,37 @@ const LIFECYCLE_STEPS = ['open', 'in_progress', 'done'] as const;
  */
 const ProgressRail: React.FC<{ currentStatus: string }> = ({ currentStatus }) => {
   const currentIndex = LIFECYCLE_STEPS.indexOf(currentStatus as typeof LIFECYCLE_STEPS[number]);
-  const isCancelled = currentStatus === 'cancelled';
-  const isBlocked = currentStatus === 'blocked';
+  const offPath = currentStatus === 'cancelled' || currentStatus === 'blocked';
 
   return (
-    <div className="flex items-center gap-1" data-testid="request-progress-rail">
+    <ol className="flex flex-wrap items-center gap-1.5 text-[13px]" aria-label="Progress" data-testid="request-progress-rail">
       {LIFECYCLE_STEPS.map((step, index) => {
-        const isCompleted = currentIndex >= 0 && index <= currentIndex;
         const isCurrent = step === currentStatus;
-
+        const isCompleted = currentIndex >= 0 && index <= currentIndex;
         return (
           <React.Fragment key={step}>
-            {index > 0 && (
-              <div
-                className={`flex-1 h-0.5 ${isCompleted ? 'bg-green-500' : 'bg-border-dark'}`}
-              />
-            )}
-            <div
-              className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium ${
-                isCurrent
-                  ? `${STATUS_COLORS[step] || 'text-blue-400'} bg-surface-dark border border-primary/30`
-                  : isCompleted
-                    ? 'text-green-400 bg-green-500/10'
-                    : 'text-text-secondary-dark bg-surface-dark'
+            {index > 0 && <li aria-hidden="true" className={`h-px w-6 ${isCompleted ? 'bg-success' : 'bg-border'}`} />}
+            <li
+              aria-current={isCurrent ? 'step' : undefined}
+              className={`inline-flex items-center gap-1 ${
+                isCurrent ? `font-semibold ${STATUS_COLORS[step] ?? 'text-text'}` : isCompleted ? 'text-success' : 'text-text-3'
               }`}
             >
-              {isCompleted && !isCurrent && <CheckCircle2 className="h-3 w-3" />}
+              {isCompleted && !isCurrent && <CheckCircle2 className="h-3 w-3" aria-hidden="true" />}
               {getRequestStatusLabel(step)}
-            </div>
+            </li>
           </React.Fragment>
         );
       })}
-      {(isCancelled || isBlocked) && (
+      {offPath && (
         <>
-          <div className="flex-1 h-0.5 bg-border-dark" />
-          <div
-            className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium ${
-              STATUS_COLORS[currentStatus] || 'text-text-secondary-dark'
-            } bg-surface-dark border border-red-500/30`}
-          >
+          <li aria-hidden="true" className="h-px w-6 bg-border" />
+          <li aria-current="step" className={`font-semibold ${STATUS_COLORS[currentStatus] ?? 'text-text-2'}`}>
             {getRequestStatusLabel(currentStatus)}
-          </div>
+          </li>
         </>
       )}
-    </div>
+    </ol>
   );
 };
 
@@ -215,92 +163,57 @@ const ProgressRail: React.FC<{ currentStatus: string }> = ({ currentStatus }) =>
 const RequestWorkItems: React.FC<{
   workItems: WorkItem[];
   onItemClick: (id: string) => void;
-}> = ({ workItems, onItemClick }) => {
+  names: Map<string, AgentName>;
+}> = ({ workItems, onItemClick, names }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
   if (workItems.length === 0) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 py-12 text-text-secondary-dark" data-testid="request-workitems-empty">
-        <Inbox className="h-8 w-8 opacity-40" />
-        <span className="text-sm">No work items associated with this request yet.</span>
-      </div>
+      <p className="py-6 text-[13px] text-text-3" data-testid="request-workitems-empty">
+        No runs for this request yet.
+      </p>
     );
   }
 
   return (
-    <div className="flex flex-col gap-2" data-testid="request-workitems-list">
+    <ul className="overflow-hidden rounded-2xl bg-surface" data-testid="request-workitems-list">
       {workItems.map((wi) => {
         const isExpanded = expandedId === wi.id;
-        const timelineEvents = isExpanded ? buildTimeline(wi) : [];
-
+        const agent = agentDisplayName(wi.target, names, true);
         return (
-          <Card
-            key={wi.id}
-            variant="default"
-            padding="none"
-            className="overflow-hidden hover:border-primary/40 transition-colors"
-            data-testid={`request-workitem-${wi.id}`}
-          >
-            {/* WorkItem row header */}
-            <div
-              className="flex items-center gap-3 px-4 py-3 cursor-pointer hover:bg-background-dark/30 transition-colors"
-              role="button"
-              tabIndex={0}
+          <li key={wi.id} className="list-none border-b border-border-soft last:border-b-0" data-testid={`request-workitem-${wi.id}`}>
+            <CompactRow
+              className="border-b-0"
+              primary={wi.title}
+              meta={[getWorkItemTypeLabel(wi.type), agent, formatRelativeTime(wi.createdAt)].filter(Boolean).join(' · ')}
+              trailing={
+                <StatusLabel tone={wi.status === 'cancelled' || wi.status === 'queued' || wi.status === 'scheduled' ? 'neutral' : statusTone(wi.status)}>
+                  {getWorkItemStatusLabel(wi.status)}
+                </StatusLabel>
+              }
               onClick={() => setExpandedId(isExpanded ? null : wi.id)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') {
-                  e.preventDefault();
-                  setExpandedId(isExpanded ? null : wi.id);
-                }
-              }}
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <span className="text-sm font-medium text-text-primary-dark truncate">
-                    {wi.title}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <StatusBadge status={getWorkItemStatusType(wi.status)}>
-                    {getWorkItemStatusLabel(wi.status)}
-                  </StatusBadge>
-                  <Badge variant={getWorkItemTypeBadgeVariant(wi.type)} size="sm">
-                    {getWorkItemTypeLabel(wi.type)}
-                  </Badge>
-                  {wi.target && (
-                    <Badge variant="default" size="sm">
-                      {wi.target}
-                    </Badge>
-                  )}
-                  <span className="text-xs text-text-secondary-dark">
-                    {formatRelativeTime(wi.createdAt)}
-                  </span>
-                </div>
-              </div>
-              <Button
-                variant="link"
-                size="xs"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onItemClick(wi.id);
-                }}
-                className="flex-shrink-0"
-                data-testid={`request-workitem-detail-link-${wi.id}`}
-              >
-                Details
-              </Button>
-            </div>
-
-            {/* Expanded timeline */}
+              actions={[
+                <Button
+                  key="details"
+                  variant="link"
+                  size="xs"
+                  onClick={() => onItemClick(wi.id)}
+                  data-testid={`request-workitem-detail-link-${wi.id}`}
+                >
+                  Details
+                </Button>,
+              ]}
+              data-testid={`request-workitem-row-${wi.id}`}
+            />
             {isExpanded && (
-              <div className="border-t border-border-dark px-4 py-3" data-testid={`request-workitem-timeline-${wi.id}`}>
-                <WorkItemTimeline events={timelineEvents} />
+              <div className="border-t border-border-soft px-4 py-3" data-testid={`request-workitem-timeline-${wi.id}`}>
+                <WorkItemTimeline events={buildTimeline(wi)} />
               </div>
             )}
-          </Card>
+          </li>
         );
       })}
-    </div>
+    </ul>
   );
 };
 
@@ -323,6 +236,7 @@ const RequestWorkItems: React.FC<{
 export const RequestDetail: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const { names } = useTeams();
 
   const [request, setRequest] = useState<RequestData | null>(null);
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
@@ -453,8 +367,8 @@ export const RequestDetail: React.FC = () => {
         </Button>
         <Card variant="default" padding="lg">
           <div className="flex flex-col items-center text-center py-8">
-            <p className="text-red-400 text-lg font-medium mb-2">Failed to load Request</p>
-            <p className="text-text-secondary-dark text-sm mb-4">{error}</p>
+            <p className="text-danger text-lg font-medium mb-2">Failed to load Request</p>
+            <p className="text-text-2 text-sm mb-4">{error}</p>
             <Button variant="secondary" size="sm" icon={RefreshCw} onClick={() => loadData(true)}>
               Retry
             </Button>
@@ -485,243 +399,142 @@ export const RequestDetail: React.FC = () => {
   // Render: Detail View
   // ---------------------------------------------------------------------------
 
-  return (
-    <div className="p-6 max-w-[1200px] mx-auto" data-testid="request-detail">
-      {/* Back button */}
-      <Button
-        variant="ghost"
-        size="sm"
-        icon={ArrowLeft}
-        onClick={handleBack}
-        className="mb-4"
-        data-testid="request-detail-back"
-      >
-        Back to Requests
-      </Button>
+  const subtitle = [
+    `Created ${formatRelativeTime(request.createdAt)}`,
+    request.intentCategory ? request.intentCategory.replace(/_/g, ' ') : null,
+    request.intentLevel ? `Intent level ${request.intentLevel}` : null,
+    request.priority && request.priority !== 'normal' ? `${request.priority.charAt(0).toUpperCase()}${request.priority.slice(1)} priority` : null,
+  ].filter(Boolean);
 
-      {/* Header */}
-      <div className="mb-6" data-testid="request-detail-header">
-        <div className="flex items-start justify-between gap-4 mb-3">
-          <div className="flex-1 min-w-0">
-            <h1 className="text-xl font-bold text-text-primary-dark">
-              {request.title}
-            </h1>
-          </div>
-          <Button
-            variant="secondary"
-            size="sm"
+  return (
+    <div className="mx-auto flex max-w-[1200px] flex-col gap-6 p-6" data-testid="request-detail">
+      <PageHeader
+        className="mb-0"
+        eyebrow={
+          <nav aria-label="Breadcrumb" className="flex items-center gap-1.5">
+            <Link to={LINKS.ticketsBoard()} className="text-text-2 hover:text-text">Tickets</Link>
+            <span className="text-text-3">/</span>
+            <Link to={LINKS.requests()} className="text-text-2 hover:text-text" data-testid="request-detail-back">Requests</Link>
+          </nav>
+        }
+        title={request.title}
+        subtitle={
+          <>
+            {subtitle.map((part, i) => (
+              <React.Fragment key={i}>
+                {i > 0 && ' · '}
+                {part}
+              </React.Fragment>
+            ))}
+          </>
+        }
+        actions={
+          <IconButton
             icon={RefreshCw}
+            variant="ghost"
+            aria-label="Refresh"
             onClick={handleRefresh}
             loading={refreshing}
             data-testid="request-detail-refresh"
-          >
-            Refresh
-          </Button>
-        </div>
+          />
+        }
+        data-testid="request-detail-header"
+      />
 
-        {/* Status & metadata badges */}
-        <div className="flex items-center gap-2 flex-wrap mb-4">
-          <StatusBadge status={getRequestStatusBadgeType(request.status)}>
-            {getRequestStatusLabel(request.status)}
-          </StatusBadge>
-          {request.priority && request.priority !== 'normal' && (
-            <Badge variant={request.priority === 'high' ? 'warning' : 'default'} size="sm">
-              {request.priority.charAt(0).toUpperCase() + request.priority.slice(1)}
-            </Badge>
-          )}
-          {request.intentCategory && (
-            <Badge variant="info" size="sm">
-              <span className="flex items-center gap-1">
-                <Tag className="h-3 w-3" />
-                {request.intentCategory.replace(/_/g, ' ')}
-              </span>
-            </Badge>
-          )}
-          {request.intentLevel && (
-            <Badge variant="default" size="sm">
-              {request.intentLevel}
-            </Badge>
-          )}
-          {request.requiresConfirmation && (
-            <Badge variant="warning" size="sm">
-              Requires Confirmation
-            </Badge>
-          )}
-          <span className="text-xs text-text-secondary-dark ml-2">
-            Created {formatRelativeTime(request.createdAt)}
-          </span>
-        </div>
-
-        {/* Progress rail */}
+      <div className="-mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] text-text-2">
+        <StatusLabel tone={requestTone(request.status)}>{getRequestStatusLabel(request.status)}</StatusLabel>
+        {request.requiresConfirmation && <span className="font-semibold text-attention">Requires confirmation</span>}
+        {typeof request.ticketNumber === 'number' && <span>TKT-{String(request.ticketNumber).padStart(3, '0')}</span>}
         <ProgressRail currentStatus={request.status} />
       </div>
 
-        {/* Approval / Rejection action area — only for requests awaiting confirmation */}
-        {request.requiresConfirmation && request.status === 'waiting_confirmation' && (
-          <Card padding="md" className="flex gap-3 mt-4" data-testid="request-action-area">
-            <span className="text-sm text-text-secondary-dark mr-auto flex items-center">
-              This request requires your confirmation before completing
-            </span>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={() => handleConfirmAction('rejected')}
-            >
-              Reject
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={() => handleConfirmAction('confirmed')}
-            >
-              Approve
-            </Button>
-          </Card>
-        )}
-
-      {/* What the agent still owes: promises and questions from its replies */}
-      {request.openItems && request.openItems.length > 0 && (
-        <div className="mt-4 mb-6">
-          <OpenItemsCard
-            items={request.openItems}
-            onSkip={async (itemId) => {
-              await skipOpenItem(request.id, itemId);
-              await loadData(false);
-            }}
-          />
+      {/* Approval / Rejection — only for requests awaiting confirmation */}
+      {request.requiresConfirmation && request.status === 'waiting_confirmation' && (
+        <div className="flex flex-wrap items-center gap-3 rounded-2xl bg-attention-soft px-4 py-3" data-testid="request-action-area">
+          <span className="mr-auto text-sm text-text">This request needs your confirmation before it completes</span>
+          <Button variant="secondary" size="sm" onClick={() => handleConfirmAction('rejected')}>
+            Reject
+          </Button>
+          <Button variant="primary" size="sm" onClick={() => handleConfirmAction('confirmed')}>
+            Approve
+          </Button>
         </div>
       )}
 
-      {/* Main content: Description + Stats sidebar */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
-        {/* Left panel: Description & Context (2/3 width) */}
-        <div className="lg:col-span-2">
-          <Card variant="default" padding="md">
-            <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wider mb-3">
-              <span className="flex items-center gap-1.5">
-                <FileText className="h-4 w-4" />
-                Original Message
-              </span>
-            </h2>
-            {request.description ? (
-              <p className="text-sm text-text-primary-dark leading-relaxed whitespace-pre-wrap">
-                {request.description}
-              </p>
-            ) : (
-              <p className="text-sm text-text-secondary-dark italic">No description provided.</p>
-            )}
-
-            {request.sourceConversationItemId && (
-              <div className="mt-4 pt-4 border-t border-border-dark">
-                <span className="text-xs text-text-secondary-dark">
-                  Source: <span className="font-mono">{request.sourceConversationItemId}</span>
-                </span>
-              </div>
-            )}
-
-            {request.tags.length > 0 && (
-              <div className="mt-4 pt-4 border-t border-border-dark flex items-center gap-2 flex-wrap">
-                {request.tags.map((tag) => (
-                  <Badge key={tag} variant="default" size="sm">{tag}</Badge>
-                ))}
-              </div>
-            )}
-          </Card>
-        </div>
-
-        {/* Right panel: Stats (1/3 width) */}
-        <div className="lg:col-span-1">
-          <Card variant="default" padding="md">
-            <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wider mb-3">
-              Statistics
-            </h2>
-            <div className="flex flex-col gap-3">
-              {/* Tokens */}
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-text-secondary-dark">
-                  <Cpu className="h-3.5 w-3.5" />
-                  Total Tokens
-                </span>
-                <span className="text-sm font-medium text-text-primary-dark">
-                  {formatTokens(totalTokens)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-text-secondary-dark pl-5">
-                  Input
-                </span>
-                <span className="text-xs text-text-secondary-dark">
-                  {formatTokens(request.totalInputTokens)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-text-secondary-dark pl-5">
-                  Output
-                </span>
-                <span className="text-xs text-text-secondary-dark">
-                  {formatTokens(request.totalOutputTokens)}
-                </span>
-              </div>
-
-              <div className="border-t border-border-dark" />
-
-              {/* Cost */}
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-text-secondary-dark">
-                  <DollarSign className="h-3.5 w-3.5" />
-                  Total Cost
-                </span>
-                <span className="text-sm font-medium text-text-primary-dark">
-                  {formatCost(request.totalCost)}
-                </span>
-              </div>
-
-              <div className="border-t border-border-dark" />
-
-              {/* Time */}
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-text-secondary-dark">
-                  <Clock className="h-3.5 w-3.5" />
-                  Elapsed Time
-                </span>
-                <span className="text-sm font-medium text-text-primary-dark">
-                  {elapsedTime}
-                </span>
-              </div>
-
-              <div className="border-t border-border-dark" />
-
-              {/* WorkItem Count */}
-              <div className="flex items-center justify-between">
-                <span className="flex items-center gap-1.5 text-xs text-text-secondary-dark">
-                  <Layers className="h-3.5 w-3.5" />
-                  Work Items
-                </span>
-                <span className="text-sm font-medium text-text-primary-dark">
-                  {workItems.length}
-                </span>
-              </div>
-            </div>
-          </Card>
-        </div>
-      </div>
-
-      {/* WorkItem Execution Section */}
-      <div data-testid="request-detail-workitems">
-        <h2 className="text-sm font-semibold text-text-secondary-dark uppercase tracking-wider mb-3">
-          <span className="flex items-center gap-1.5">
-            <Layers className="h-4 w-4" />
-            Execution Timeline ({workItems.length} work items)
-          </span>
-        </h2>
-        <RequestWorkItems
-          workItems={workItems}
-          onItemClick={handleWorkItemClick}
+      {/* What the agent still owes: promises and questions from its replies */}
+      {request.openItems && request.openItems.length > 0 && (
+        <OpenItemsCard
+          items={request.openItems}
+          onSkip={async (itemId) => {
+            await skipOpenItem(request.id, itemId);
+            await loadData(false);
+          }}
         />
-      </div>
+      )}
+
+      <section aria-labelledby="request-message-heading">
+        <h2 id="request-message-heading" className="mb-2 text-[15px] font-bold text-text">
+          Original message
+        </h2>
+        {request.description ? (
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-text">{request.description}</p>
+        ) : (
+          <p className="text-sm italic text-text-3">No description provided.</p>
+        )}
+        {(request.sourceConversationItemId || request.tags.length > 0) && (
+          <p className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px] text-text-3">
+            {request.sourceConversationItemId && (
+              <span>
+                Source: <span className="font-mono">{request.sourceConversationItemId}</span>
+              </span>
+            )}
+            {request.tags.map((tag) => (
+              <span key={tag} className="rounded-full bg-surface-2 px-2 py-0.5 text-text-2">
+                {tag}
+              </span>
+            ))}
+          </p>
+        )}
+      </section>
+
+      <section data-testid="request-detail-workitems" aria-labelledby="request-runs-heading">
+        <h2 id="request-runs-heading" className="mb-2 text-[15px] font-bold text-text">
+          Runs <span className="text-[13px] font-normal text-text-2">{workItems.length}</span>
+        </h2>
+        <RequestWorkItems workItems={workItems} onItemClick={handleWorkItemClick} names={names} />
+      </section>
+
+      <CollapsibleSection title="Statistics" summary="Tokens, cost, elapsed time, runs">
+        <dl className="grid max-w-md grid-cols-[1fr_auto] gap-x-6 gap-y-2 text-sm" data-testid="request-detail-stats">
+          <dt className="flex items-center gap-1.5 text-text-2"><Cpu className="h-3.5 w-3.5" aria-hidden="true" />Total tokens</dt>
+          <dd className="text-right font-semibold text-text">{formatTokens(totalTokens)}</dd>
+          <dt className="pl-5 text-text-3">Input</dt>
+          <dd className="text-right text-text-2">{formatTokens(request.totalInputTokens)}</dd>
+          <dt className="pl-5 text-text-3">Output</dt>
+          <dd className="text-right text-text-2">{formatTokens(request.totalOutputTokens)}</dd>
+          <dt className="flex items-center gap-1.5 text-text-2"><DollarSign className="h-3.5 w-3.5" aria-hidden="true" />Total cost</dt>
+          <dd className="text-right font-semibold text-text">{formatCost(request.totalCost)}</dd>
+          <dt className="flex items-center gap-1.5 text-text-2"><Clock className="h-3.5 w-3.5" aria-hidden="true" />Elapsed time</dt>
+          <dd className="text-right font-semibold text-text">{elapsedTime}</dd>
+          <dt className="flex items-center gap-1.5 text-text-2"><Layers className="h-3.5 w-3.5" aria-hidden="true" />Runs</dt>
+          <dd className="text-right font-semibold text-text">{workItems.length}</dd>
+        </dl>
+      </CollapsibleSection>
     </div>
   );
 };
+
+/**
+ * Status colour of a request.
+ *
+ * @param status - Backend status
+ * @returns Tone
+ */
+function requestTone(status: string): StatusTone {
+  if (status === 'open' || status === 'in_progress' || status === 'awaiting_followup') return 'primary';
+  if (status === 'cancelled') return 'neutral';
+  return statusTone(status);
+}
 
 RequestDetail.displayName = 'RequestDetail';
 

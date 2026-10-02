@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { RequestDetail } from './RequestDetail';
 
@@ -106,7 +106,7 @@ describe('RequestDetail', () => {
     // Status badge — may appear in both status badge and progress rail
     expect(screen.getAllByText('In Progress').length).toBeGreaterThanOrEqual(1);
     // Category badge
-    expect(screen.getByText('code change')).toBeInTheDocument();
+    expect(screen.getByText(/code change/)).toBeInTheDocument();
     // Back button
     expect(screen.getByTestId('request-detail-back')).toBeInTheDocument();
   });
@@ -187,8 +187,9 @@ describe('RequestDetail', () => {
     });
   });
 
-  it('shows approval and rejection buttons for non-terminal requests', async () => {
-    vi.mocked(apiService.getRequest).mockResolvedValue(mockRequest);
+  it('shows approval and rejection buttons for requests awaiting confirmation; Approve completes it', async () => {
+    vi.mocked(apiService.getRequest).mockResolvedValue({ ...mockRequest, status: 'waiting_confirmation', requiresConfirmation: true });
+    vi.mocked(apiService.updateRequest).mockResolvedValue(undefined);
     vi.mocked(apiService.getWorkItemsByRequest).mockResolvedValue([]);
 
     renderWithRouter();
@@ -198,8 +199,9 @@ describe('RequestDetail', () => {
     });
 
     expect(screen.getByTestId('request-action-area')).toBeInTheDocument();
-    expect(screen.getByText('Approve')).toBeInTheDocument();
     expect(screen.getByText('Reject')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Approve'));
+    await waitFor(() => expect(apiService.updateRequest).toHaveBeenCalledWith('req-001', { status: 'done' }));
   });
 
   it('hides approval buttons for completed requests', async () => {
@@ -225,5 +227,22 @@ describe('RequestDetail', () => {
     await waitFor(() => {
       expect(screen.getByText('test')).toBeInTheDocument();
     });
+  });
+
+  it('expands a run timeline and opens the run detail', async () => {
+    vi.mocked(apiService.getRequest).mockResolvedValue(mockRequest);
+    vi.mocked(apiService.getWorkItemsByRequest).mockResolvedValue([mockWorkItem]);
+    render(
+      <MemoryRouter initialEntries={['/tickets/requests/req-001']}>
+        <Routes>
+          <Route path="/tickets/requests/:id" element={<RequestDetail />} />
+          <Route path="/tickets/runs/:id" element={<div>Run detail page</div>} />
+        </Routes>
+      </MemoryRouter>,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /Test Work Item/ }));
+    expect(screen.getByTestId('request-workitem-timeline-wi-001')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('request-workitem-detail-link-wi-001'));
+    expect(screen.getByText('Run detail page')).toBeInTheDocument();
   });
 });

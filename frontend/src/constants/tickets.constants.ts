@@ -175,3 +175,33 @@ export const TICKET_TEXT = {
   REJECTED_TIMES: 'Sent back',
   SUBMITTED_TIMES: 'Submitted',
 } as const;
+
+/** Copy of the redesigned board (specs/2026-10-02-ui-redesign.md §Tickets). */
+export const TICKET_BOARD_TEXT = {
+  NEW_TICKET: 'New ticket',
+  NEEDS_YOU: 'Needs you',
+  SHOW: 'Show',
+  HIDE: 'Hide',
+  SHOW_LESS: 'Show less',
+  FILTER_PROJECT: 'Project',
+  FILTER_TYPE: 'Type',
+  FILTER_INCLUDE: 'Include',
+  CANCELLED: 'Cancelled',
+  NO_PROJECT: 'No project (your asks)',
+  EMPTY_PROJECT_TITLE: 'No tickets in this project yet',
+  EMPTY_PROJECT_DESC: 'Create one, or ask a team member in chat. Team members pick up Ready tickets on their own.',
+  NO_MATCH: 'No tickets match the current filters.',
+  PROJECT_HINT: 'Tickets live in .crewly/tickets/ in the project and are tracked in git. Team members pick up Ready tickets on their own.',
+  TYPE_HIDES_PROJECT: 'Type applies to your asks only, so project tickets are hidden while it is set.',
+} as const;
+
+/** Empty-column text per column. */
+export const TICKET_EMPTY_COLUMN_TEXT: Record<TicketBoardColumn, string> = {
+  to_review: 'Nothing to review',
+  in_progress: 'Nothing in progress',
+  todo: 'Nothing to do',
+  blocked: 'Nothing blocked',
+  idea: 'No ideas',
+  done: 'Nothing done yet',
+  cancelled: 'Nothing cancelled',
+};
