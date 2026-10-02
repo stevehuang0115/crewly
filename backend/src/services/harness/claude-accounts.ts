@@ -18,8 +18,7 @@
  * In a fallback chain an account is the entry `claude-code@<name>`; plain
  * `claude-code` is the machine's default login.
  *
- * Both accounts must belong to the owner: Anthropic's consumer terms forbid
- * sharing an account with other people.
+ * Add only Claude Code accounts that the owner owns.
  *
  * @module services/harness/claude-accounts
  */

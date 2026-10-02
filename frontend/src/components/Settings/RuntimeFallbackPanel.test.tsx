@@ -241,6 +241,10 @@ describe('formatResetTime', () => {
       expect(within(row).getByText('Signed in')).toBeInTheDocument();
       const add = screen.getByTestId('fallback-global-add') as HTMLSelectElement;
       expect(Array.from(add.options).map((o) => o.textContent)).toContain('Claude Code (b)');
+      // Neutral ownership note; no claim about what a provider's terms say.
+      const section = screen.getByTestId('claude-accounts');
+      expect(section).toHaveTextContent('Add only Claude Code accounts that you own.');
+      expect(section).not.toHaveTextContent(/terms/i);
     });
 
     it('adds an account and shows where the sign-in link went', async () => {
