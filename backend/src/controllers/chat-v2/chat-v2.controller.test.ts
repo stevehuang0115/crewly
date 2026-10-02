@@ -207,6 +207,36 @@ describe('chat-v2 controller (REST)', () => {
     }
   });
 
+  it('POST /api/chat/channels/:id/messages — an agent reply the Slack mirror could not post answers 502 with the Slack error; user messages and delivered replies are unaffected (CREW-89)', async () => {
+    const { trackSlackDelivery } = await import('../../services/slack/slack-outbound-delivery.js');
+    const { app, service } = buildApp();
+    try {
+      const created = await request(app).post('/api/chat/channels').send({ agentSession: 'sess-a', name: 'Ch' });
+      const chId = created.body.data.id;
+      let outcome: 'fail' | 'ok' | 'none' = 'fail';
+      service.on('chat_message', (m: ChatMessageDTO) => {
+        if (m.senderType !== 'agent' || outcome === 'none') return;
+        trackSlackDelivery(m.id, Promise.resolve(outcome === 'fail'
+          ? { delivered: false, slackChannelId: 'C1', error: 'channel_not_found' }
+          : { delivered: true, slackChannelId: 'C1', ts: '1.1' }));
+      });
+      const failed = await request(app).post(`/api/chat/channels/${chId}/messages`).set('X-Agent-Session', 'sess-a').send({ content: 'r1' });
+      expect(failed.status).toBe(502);
+      expect(failed.body).toMatchObject({ success: false, data: { content: 'r1', slackDelivered: false } });
+      expect(failed.body.error).toContain('channel_not_found');
+      outcome = 'ok';
+      const ok = await request(app).post(`/api/chat/channels/${chId}/messages`).set('X-Agent-Session', 'sess-a').send({ content: 'r2' });
+      expect(ok.status).toBe(201);
+      outcome = 'none';
+      const plain = await request(app).post(`/api/chat/channels/${chId}/messages`).set('X-Agent-Session', 'sess-a').send({ content: 'r3' });
+      expect(plain.status).toBe(201);
+      const user = await request(app).post(`/api/chat/channels/${chId}/messages`).send({ content: 'hello' });
+      expect(user.status).toBe(201);
+    } finally {
+      service.close();
+    }
+  });
+
   it('POST /api/chat/channels/:id/messages — an agent thread key from ANOTHER Slack channel is resolved by the harness, not mirrored into this channel (2026-10-02)', async () => {
     const { app, service } = buildApp();
     try {

@@ -14,6 +14,7 @@
  */
 
 import * as path from 'path';
+import { trackSlackDelivery, SLACK_DELIVERY_METADATA_KEY, type SlackOutboundDelivery } from './slack-outbound-delivery.js';
 import type { ChatMessageDTO } from '../chat-v2/types.js';
 import type { SlackIncomingMessage, SlackOutgoingMessage } from '../../types/slack.types.js';
 import type { Team } from '../../types/index.js';
@@ -59,7 +60,7 @@ export type AgentDmChatApi = Pick<
   ChatV2Service,
   'ensureDmChannel' | 'getChannelForBridge' | 'recordTurn' | 'getLatestOwnerTurnSource' | 'on' | 'off'
 > &
-  Partial<Pick<ChatV2Service, 'getMessageForBridge' | 'getLatestOwnerTurnAt'>>;
+  Partial<Pick<ChatV2Service, 'getMessageForBridge' | 'getLatestOwnerTurnAt' | 'updateMessageMetadata'>>;
 
 /** The slice of SlackAgentIdentityService this service uses. */
 export type AgentDmIdentityApi = Pick<SlackAgentIdentityService, 'getInstalled'>;
@@ -207,7 +208,8 @@ export class SlackAgentDmService {
   private started = false;
 
   private readonly onChatMessage = (dto: ChatMessageDTO): void => {
-    void this.mirrorOutbound(dto);
+    if (dto.senderType === 'agent') trackSlackDelivery(dto.id, this.mirrorOutboundDetailed(dto).then((r) => r.delivery));
+    else void this.mirrorOutbound(dto);
   };
 
   /**
@@ -564,12 +566,26 @@ export class SlackAgentDmService {
    * @returns True when a Slack post was attempted
    */
   async mirrorOutbound(dto: ChatMessageDTO): Promise<boolean> {
+    return (await this.mirrorOutboundDetailed(dto)).attempted;
+  }
+
+  /**
+   * {@link mirrorOutbound} with the outcome: where the reply landed (also
+   * stored on the chat message) or Slack's error.
+   *
+   * @param dto - The chat-v2 message
+   * @returns Whether a post was attempted, and its delivery (null when not meant for Slack)
+   */
+  async mirrorOutboundDetailed(dto: ChatMessageDTO): Promise<{ attempted: boolean; delivery: SlackOutboundDelivery | null }> {
+    const no: { attempted: boolean; delivery: SlackOutboundDelivery | null } = { attempted: false, delivery: null };
+    let linkedChannel: string | null = null;
     try {
-      if (dto.senderType !== 'agent') return false;
-      if (dto.metadata?.source === 'slack') return false;
+      if (dto.senderType !== 'agent') return no;
+      if (dto.metadata?.source === 'slack') return no;
       await this.load();
       const link = this.store.links[dto.channelId];
-      if (!link) return false;
+      if (!link) return no;
+      linkedChannel = link.slackChannelId;
       // Reply affinity (specs/unified-conversations-cloud-store.md §A.3 G6):
       // the DM channel is shared with Crewly Chat and Cloud Talk, so an answer
       // goes to Slack only when the owner last spoke there. A question asked
@@ -592,15 +608,15 @@ export class SlackAgentDmService {
             agentSession: link.agentSession,
             ownerSurface,
           });
-          return false;
+          return no;
         }
       }
-      if (!this.deps.slack.isConnected()) return false;
+      if (!this.deps.slack.isConnected()) return no;
 
       const installed = this.deps.identities.getInstalled(link.agentSession);
       if (!installed) {
         this.logger.warn('Agent has no installed Slack bot — DM reply not mirrored', { agentSession: link.agentSession });
-        return false;
+        return no;
       }
       // The thread this answer is FOR — not simply where the owner wrote last.
       const target = this.resolveReplyTarget(link, { dto });
@@ -618,7 +634,7 @@ export class SlackAgentDmService {
           agentSession: link.agentSession,
           slackChannelId: link.slackChannelId,
         });
-        return false;
+        return no;
       }
       if (this.isCrossRuntimeRestatement(link.slackChannelId, source)) {
         this.logger.info('DM reply suppressed: the other runtime already sent this answer', {
@@ -626,7 +642,7 @@ export class SlackAgentDmService {
           slackChannelId: link.slackChannelId,
           source,
         });
-        return false;
+        return no;
       }
       this.rememberSent(link.slackChannelId, text, source);
       this.noteAnswered(link, target.threadTs, isInterim(dto));
@@ -642,27 +658,58 @@ export class SlackAgentDmService {
         const identity = { botToken: installed.botToken, displayName: link.agentSession };
         // Interim note → still working: the placeholder goes back under it,
         // in the same step (see SlackTypingPlaceholderService.resolve).
-        if (isInterim(dto)) await this.deps.typing.resolve(key, text, identity, { reopen: 'typing' });
-        else await this.deps.typing.resolve(key, text, identity);
-        return true;
+        let postedTs = '';
+        const onMessageTs = (ts: string): void => { postedTs = ts; };
+        if (isInterim(dto)) await this.deps.typing.resolve(key, text, identity, { reopen: 'typing', onMessageTs });
+        else await this.deps.typing.resolve(key, text, identity, { onMessageTs });
+        return { attempted: true, delivery: this.recordDelivery(dto, link.slackChannelId, postedTs, target.threadTs) };
       }
-      await this.deps.slack.sendMessage({
+      const sentTs = await this.deps.slack.sendMessage({
         channelId: link.slackChannelId,
         text,
         ...(target.threadTs ? { threadTs: target.threadTs } : {}),
         botToken: installed.botToken,
+        senderSession: link.agentSession,
         skipChatV2Mirror: true,
       });
-      return true;
+      return { attempted: true, delivery: this.recordDelivery(dto, link.slackChannelId, sentTs, target.threadTs) };
     } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
       this.logger.warn('DM reply mirror to Slack failed', {
         channelId: dto.channelId,
         sender: dto.senderId,
-        error: err instanceof Error ? err.message : String(err),
+        error,
       });
-      return false;
+      return {
+        attempted: true,
+        delivery: linkedChannel ? { delivered: false, slackChannelId: linkedChannel, error } : null,
+      };
     }
   }
+
+  /**
+   * Store where a mirrored DM reply landed on its chat message.
+   *
+   * @param dto - The mirrored message
+   * @param slackChannelId - Slack DM channel
+   * @param ts - Slack ts of the message that carries the reply ('' when unknown)
+   * @param threadTs - Thread the reply is in
+   * @returns The delivery
+   */
+  private recordDelivery(dto: ChatMessageDTO, slackChannelId: string, ts: string, threadTs?: string | null): SlackOutboundDelivery {
+    try {
+      this.deps.chat.updateMessageMetadata?.(dto.id, {
+        [SLACK_DELIVERY_METADATA_KEY]: { slackChannelId, ts: ts || null, threadTs: threadTs ?? null },
+      });
+    } catch (err) {
+      this.logger.warn('Could not store the Slack ts on the mirrored DM message', {
+        messageId: dto.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return { delivered: true, slackChannelId, ...(ts ? { ts } : {}), ...(threadTs ? { threadTs } : {}) };
+  }
+
 
   // -------------------------------------------------------------------------
   // Thread routing

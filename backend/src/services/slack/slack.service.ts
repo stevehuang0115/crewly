@@ -162,6 +162,8 @@ interface UploadFileArgs {
  */
 interface FileUploadOptions {
   channelId: string;
+  /** The agent session this upload is on behalf of — only for log attribution. */
+  senderSession?: string;
   filePath: string;
   filename?: string;
   title?: string;
@@ -1603,7 +1605,12 @@ export class SlackService extends EventEmitter {
 
       return result.ts || '';
     } catch (error) {
-      this.logger.error('Send message error', { error: error instanceof Error ? (error as Error).message : String(error) });
+      this.logger.error('Send message error', {
+        error: error instanceof Error ? (error as Error).message : String(error),
+        channelId: message.channelId,
+        threadTs: message.threadTs,
+        sender: message.senderSession ?? message.username,
+      });
       // Only the connection's own bot says anything about which app is
       // connected; an agent bot missing from a channel is its own problem.
       if (!message.botToken && !message.reachabilityProbe) this.recordDeliveryOutcome(message.channelId, error);
@@ -2441,7 +2448,12 @@ export class SlackService extends EventEmitter {
           continue;
         }
 
-        this.logger.error('Upload error', { error: error instanceof Error ? (error as Error).message : String(error) });
+        this.logger.error('Upload error', {
+          error: error instanceof Error ? (error as Error).message : String(error),
+          channelId: options.channelId,
+          threadTs: options.threadTs,
+          sender: options.senderSession,
+        });
         if (!options.botToken) this.recordDeliveryOutcome(options.channelId, error);
         throw error;
       }

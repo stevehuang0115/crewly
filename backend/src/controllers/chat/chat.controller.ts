@@ -46,6 +46,7 @@ import type {
   ChatChannelType,
 } from '../../types/chat.types.js';
 import { isValidChannelType } from '../../types/chat.types.js';
+import { awaitSlackDelivery } from '../../services/slack/slack-outbound-delivery.js';
 
 // Module-level message queue service instance
 let messageQueueService: MessageQueueService | null = null;
@@ -540,6 +541,21 @@ async function recordChatV2AgentReply(
     });
     return null;
   }
+}
+
+/**
+ * Wait for the Slack mirror of a reply that was just recorded, and return
+ * Slack's error when it refused the post. A reply the mirror never tried (not
+ * Slack-mapped, owner on another surface) or one still in flight returns null
+ * — only a post that was attempted and failed is an error, so non-Slack
+ * channels behave as before (CREW-89).
+ *
+ * @param messageId - The recorded chat message
+ * @returns Slack's error, or null
+ */
+async function slackDeliveryFailure(messageId: string): Promise<string | null> {
+  const delivery = await awaitSlackDelivery(messageId);
+  return delivery && !delivery.delivered ? delivery.error ?? 'Slack post failed' : null;
 }
 
 /**
@@ -1083,6 +1099,16 @@ export async function agentResponse(
         slackThreadKey,
       );
       if (recorded) {
+        const slackError = await slackDeliveryFailure(recorded);
+        if (slackError) {
+          logger.error('Agent reply recorded but Slack refused it', { messageId: recorded, conversationId: resolvedConversationId, error: slackError });
+          res.status(502).json({
+            success: false,
+            error: `Slack delivery failed: ${slackError}`,
+            data: { messageId: recorded, conversationId: resolvedConversationId, slackDelivered: false },
+          });
+          return;
+        }
         res.status(201).json({ success: true, data: { messageId: recorded, conversationId: resolvedConversationId } });
         return;
       }
@@ -1098,6 +1124,16 @@ export async function agentResponse(
         rawThread: typeof req.body?.slackThread === 'string' ? req.body.slackThread : undefined,
       });
       if (roomReply) {
+        const slackError = await slackDeliveryFailure(roomReply);
+        if (slackError) {
+          logger.error('Agent reply recorded but Slack refused it', { messageId: roomReply, conversationId: resolvedConversationId, error: slackError });
+          res.status(502).json({
+            success: false,
+            error: `Slack delivery failed: ${slackError}`,
+            data: { messageId: roomReply, conversationId: resolvedConversationId, slackDelivered: false },
+          });
+          return;
+        }
         res.status(201).json({ success: true, data: { messageId: roomReply, conversationId: resolvedConversationId } });
         return;
       }

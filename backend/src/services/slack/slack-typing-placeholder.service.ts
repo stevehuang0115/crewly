@@ -44,6 +44,8 @@ export interface TypingSlackApi {
     iconUrl?: string;
     skipChatV2Mirror?: boolean;
     notAnAnswer?: boolean;
+    /** Agent session the post is on behalf of (log attribution only). */
+    senderSession?: string;
   }): Promise<string>;
   updateMessage(channelId: string, messageTs: string, text: string, blocks?: undefined, botToken?: string): Promise<void>;
   deleteMessage?(channelId: string, messageTs: string, botToken?: string): Promise<void>;
@@ -526,6 +528,7 @@ export class SlackTypingPlaceholderService {
           text,
           ...(key.threadTs ? { threadTs: key.threadTs } : {}),
           ...principalOf(identity),
+          senderSession: key.agentSession,
           skipChatV2Mirror: true,
         });
         if (postedTs) opts.onMessageTs?.(postedTs);
