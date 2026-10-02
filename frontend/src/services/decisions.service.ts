@@ -9,7 +9,7 @@
  * @module services/decisions.service
  */
 
-import { DecisionApiError, type OwnerDecision } from '../types/decision.types';
+import { DecisionApiError, type OwnerDecision, type SkipAllInput, type SkipAllResult } from '../types/decision.types';
 
 /** Base path of the decisions API. */
 export const DECISIONS_API_BASE = '/api/decisions';
@@ -79,4 +79,37 @@ export function chooseDecision(id: string, option: string): Promise<OwnerDecisio
  */
 export function remindDecisionTomorrow(id: string): Promise<OwnerDecision> {
   return request<OwnerDecision>(`${DECISIONS_API_BASE}/${encodeURIComponent(id)}/remind`, post({}));
+}
+
+/**
+ * "Skip" ("I don't care about this anymore"). Sensitive / system cards get
+ * their safe "No" instead.
+ *
+ * @param id - Decision id
+ * @returns The settled decision
+ */
+export function skipDecision(id: string): Promise<OwnerDecision> {
+  return request<OwnerDecision>(`${DECISIONS_API_BASE}/${encodeURIComponent(id)}/skip`, post({}));
+}
+
+/**
+ * Skip every matching open decision at once.
+ *
+ * @param input - `olderThan` (ISO), `source`, `dryRun`
+ * @returns What matched and what was settled
+ */
+export function skipAllDecisions(input: SkipAllInput): Promise<SkipAllResult> {
+  return request<SkipAllResult>(`${DECISIONS_API_BASE}/skip-all`, post(input));
+}
+
+/**
+ * The owner skips an open item of a request (a promise's follow-up is
+ * cancelled; a question's card is skipped).
+ *
+ * @param requestId - Request id
+ * @param itemId - Open item id
+ * @returns The closed item
+ */
+export function skipOpenItem<T = unknown>(requestId: string, itemId: string): Promise<T> {
+  return request<T>(`/api/requests/${encodeURIComponent(requestId)}/open-items/${encodeURIComponent(itemId)}/skip`, post({}));
 }

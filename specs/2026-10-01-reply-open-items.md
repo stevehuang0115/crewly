@@ -137,7 +137,15 @@ cancelled ones. Each thread message is attributed to one ticket, the same way th
 does it. The scan skips:
 
 - promises that were already delivered later in the thread, by the live delivery rule;
-- questions the owner replied to later in the thread.
+- questions the owner replied to later in the thread;
+- questions whose topic an agent later reported as settled in the thread ("done", "logged
+  in", 「搞定」, 「登上了」 …);
+- harness-flow questions: login / re-login prompts from crewly-orc, or naming a runtime.
+  The harness tracks those itself;
+- questions the owner already skipped in that request.
+
+The cards it posts are marked `source: 'backfill'`, so `POST /api/decisions/skip-all
+{"source":"backfill"}` clears exactly them (`2026-10-01-decision-skip.md` §3–4).
 
 It runs as a **dry run by default**:
 

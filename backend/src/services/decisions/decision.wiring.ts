@@ -23,6 +23,7 @@ import { DecisionError, DecisionService, type BlockActionsPayload, type Decision
 import { DecisionStore } from './decision-store.js';
 import { TicketThreadStore, setTicketThreadStore, getTicketThreadStore } from './ticket-thread-store.js';
 import { pickTicketAsker, teamOfSession } from './decision-routing.js';
+import { createSkipAllCommandInterceptor } from './decision-skip-command.js';
 
 /** What the composition root provides. */
 export interface DecisionWiringInput {
@@ -155,6 +156,11 @@ export function createDecisionService(input: DecisionWiringInput): DecisionServi
       if (!owner) return null;
       return slack.openDirectMessage(owner, identity.botToken);
     },
+    openItemAskedAt: async (ref) => {
+      const { RequestService } = await import('../v3/request.service.js');
+      const request = await RequestService.getInstance().getById(ref.requestId).catch(() => null);
+      return request?.openItems?.find((i) => i.id === ref.itemId)?.createdAt;
+    },
     deliverToAgent: (session, text) => (session === ORCHESTRATOR_SESSION_NAME ? input.sendToOrchestrator(text) : input.sendToAgent(session, text)),
     closeWatchdog: (session, slackChannelId, threadTs) => {
       const watchdog = getOwnerMessageWatchdog();
@@ -200,4 +206,31 @@ export function attachDecisionSlackListeners(service: DecisionService): () => vo
     slack.off('reaction', onReaction);
     slack.off('message', onMessage);
   };
+}
+
+/**
+ * The owner's "skip all old cards" / 「清掉旧卡片」 in their orc DM: handled
+ * here (the orc never sees it), answered in the same conversation.
+ *
+ * @param service - Decision service
+ * @returns Remove function
+ */
+export async function attachSkipAllCommand(service: DecisionService): Promise<() => void> {
+  const { SlackReloginDmService } = await import('../slack/slack-relogin-dm.service.js');
+  const { getSlackOrchestratorBridge } = await import('../slack/slack-orchestrator-bridge.js');
+  const dm = new SlackReloginDmService(
+    () => getSlackService(),
+    undefined,
+    (agentSession) => getSlackAgentIdentityService()?.getInstalled(agentSession)?.botToken ?? null,
+  );
+  return getSlackOrchestratorBridge().addInboundInterceptor(
+    'the skip-all-cards command',
+    createSkipAllCommandInterceptor({
+      ownerDmScope: (m) => dm.ownerDmScope(m),
+      replyTargetOf: (m) => dm.replyTargetOf(m),
+      reply: (text, target) => dm.sendToOwner(text, target as ReturnType<typeof dm.replyTargetOf>),
+      service: () => DecisionService.getInstance() ?? service,
+      onError: (err) => logger.warn('Skip-all command failed', { error: err instanceof Error ? err.message : String(err) }),
+    }),
+  );
 }

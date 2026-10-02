@@ -7,6 +7,8 @@
  * - GET  /api/decisions/:id
  * - POST /api/decisions/:id/choose    — `{ option }` (owner only: no agent header)
  * - POST /api/decisions/:id/remind    — "Remind me tomorrow" (owner only)
+ * - POST /api/decisions/:id/skip      — "Skip" (owner only; sensitive / system cards get their safe "No")
+ * - POST /api/decisions/skip-all      — `{ olderThan?: ISO, source?: 'backfill' | 'all', dryRun? }` (owner only)
  * - POST /api/decisions/:id/cancel    — withdraw (the asker, the requester, the orchestrator or the owner)
  * - POST /api/slack/interactivity     — a Cloud-forwarded envelope or Slack's signed `payload=` form
  *
@@ -17,7 +19,7 @@ import { createHmac, timingSafeEqual } from 'crypto';
 import { Router, type Request, type Response } from 'express';
 import { ORCHESTRATOR_SESSION_NAME } from '../../constants.js';
 import { readAgentSessionHeader } from '../../utils/agent-caller.utils.js';
-import { DecisionError, DecisionService, type BlockActionsPayload } from '../../services/decisions/decision.service.js';
+import { DecisionError, DecisionService, type BlockActionsPayload, type SkipAllInput } from '../../services/decisions/decision.service.js';
 
 /** Slack rejects requests older than this (s). */
 const SLACK_SIGNATURE_MAX_AGE_S = 5 * 60;
@@ -94,6 +96,32 @@ function requireOwner(req: Request): void {
 }
 
 /**
+ * Validate a skip-all body.
+ *
+ * @param body - Request body
+ * @returns Filters
+ * @throws DecisionError(400)
+ */
+export function parseSkipAllBody(body: unknown): SkipAllInput {
+  const b = (body ?? {}) as Record<string, unknown>;
+  const out: SkipAllInput = {};
+  if (b.olderThan !== undefined && b.olderThan !== null && b.olderThan !== '') {
+    const at = typeof b.olderThan === 'string' || typeof b.olderThan === 'number' ? new Date(b.olderThan) : new Date(NaN);
+    if (Number.isNaN(at.getTime())) throw new DecisionError(400, 'olderThan must be an ISO date-time');
+    out.olderThan = at;
+  }
+  if (b.source !== undefined) {
+    if (b.source !== 'backfill' && b.source !== 'all') throw new DecisionError(400, "source must be 'backfill' or 'all'");
+    out.source = b.source;
+  }
+  if (b.dryRun !== undefined) {
+    if (typeof b.dryRun !== 'boolean') throw new DecisionError(400, 'dryRun must be true or false');
+    out.dryRun = b.dryRun;
+  }
+  return out;
+}
+
+/**
  * The `/api/decisions` router.
  *
  * @param deps - Collaborators
@@ -126,6 +154,18 @@ export function createDecisionsRouter(deps: DecisionsControllerDeps): Router {
     respond(res, 200, async () => {
       requireOwner(req);
       return svc(deps).remindFromDashboard(req.params.id);
+    }),
+  );
+  router.post('/skip-all', (req, res) =>
+    respond(res, 200, async () => {
+      requireOwner(req);
+      return svc(deps).skipAll(parseSkipAllBody(req.body));
+    }),
+  );
+  router.post('/:id/skip', (req, res) =>
+    respond(res, 200, async () => {
+      requireOwner(req);
+      return svc(deps).skipFromDashboard(req.params.id);
     }),
   );
   router.post('/:id/cancel', (req, res) =>

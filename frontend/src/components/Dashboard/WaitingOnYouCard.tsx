@@ -2,8 +2,10 @@
  * WaitingOnYouCard — the owner's open decisions on the Dashboard
  * (specs/2026-10-01-decision-cards.md §8).
  *
- * Same answers as the Slack card: one button per option plus "Remind me
- * tomorrow". Self-contained: fetches its own data and polls. Renders nothing
+ * Same answers as the Slack card: one button per option, "Remind me
+ * tomorrow" and "Skip" (not on sensitive / system cards, whose "No" is the
+ * way out), plus "Skip all from before today" to clear stale cards
+ * (specs/2026-10-01-decision-skip.md). Self-contained: fetches its own data and polls. Renders nothing
  * when no decision is waiting. Phone-first: rows stack, buttons wrap.
  *
  * @module components/Dashboard/WaitingOnYouCard
@@ -12,7 +14,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { Badge } from '@crewly/ui/Badge';
 import { Button } from '@crewly/ui/Button';
-import { chooseDecision, listOpenDecisions, remindDecisionTomorrow } from '../../services/decisions.service';
+import { chooseDecision, listOpenDecisions, remindDecisionTomorrow, skipAllDecisions, skipDecision } from '../../services/decisions.service';
 import type { OwnerDecision } from '../../types/decision.types';
 
 /** How often the list is refreshed (ms). */
@@ -43,12 +45,35 @@ export function fallbackLine(d: OwnerDecision): string {
   return `If no answer by ${formatDeadline(d.deadline)}, I'll ${def ? def.label : 'wait'}.`;
 }
 
+/**
+ * Whether a decision offers "Skip" (mirrors the Slack card).
+ *
+ * @param d - Decision
+ * @returns True unless sensitive, system or a held browser action
+ */
+export function canSkip(d: Pick<OwnerDecision, 'sensitive' | 'system' | 'kind'>): boolean {
+  return !d.sensitive && !d.system && d.kind !== 'browser_action';
+}
+
+/**
+ * Local midnight today ("before today").
+ *
+ * @param now - Clock
+ * @returns Start of today
+ */
+export function startOfToday(now: Date = new Date()): Date {
+  const d = new Date(now.getTime());
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 /** Props of {@link DecisionRow}. */
 interface DecisionRowProps {
   decision: OwnerDecision;
   busy: boolean;
   onChoose: (id: string, option: string) => void;
   onRemind: (id: string) => void;
+  onSkip: (id: string) => void;
 }
 
 /**
@@ -57,7 +82,7 @@ interface DecisionRowProps {
  * @param props - Decision and handlers
  * @returns Row
  */
-const DecisionRow: React.FC<DecisionRowProps> = ({ decision: d, busy, onChoose, onRemind }) => (
+const DecisionRow: React.FC<DecisionRowProps> = ({ decision: d, busy, onChoose, onRemind, onSkip }) => (
   <li className="py-4 first:pt-0 last:pb-0" data-testid={`decision-${d.id}`}>
     {d.ticket && (
       <div className="text-xs font-semibold text-text-secondary-dark mb-1">
@@ -90,6 +115,11 @@ const DecisionRow: React.FC<DecisionRowProps> = ({ decision: d, busy, onChoose, 
       <Button size="sm" variant="ghost" disabled={busy} onClick={() => onRemind(d.id)} className="min-h-10">
         Remind me tomorrow
       </Button>
+      {canSkip(d) && (
+        <Button size="sm" variant="ghost" disabled={busy} onClick={() => onSkip(d.id)} className="min-h-10" title="I don't care about this anymore">
+          Skip
+        </Button>
+      )}
     </div>
     <p className="mt-2 text-xs text-text-secondary-dark">{fallbackLine(d)}</p>
   </li>
@@ -103,6 +133,7 @@ const DecisionRow: React.FC<DecisionRowProps> = ({ decision: d, busy, onChoose, 
 export const WaitingOnYouCard: React.FC = () => {
   const [decisions, setDecisions] = useState<OwnerDecision[]>([]);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
@@ -132,13 +163,38 @@ export const WaitingOnYouCard: React.FC = () => {
     }
   };
 
+  const cutoff = startOfToday();
+  const old = decisions.filter((d) => Date.parse(d.createdAt) < cutoff.getTime());
+
+  const skipOld = async (): Promise<void> => {
+    const n = old.length;
+    if (typeof window !== 'undefined' && !window.confirm(`Skip ${n} card${n === 1 ? '' : 's'} from before today? Their agents will be told to drop them.`)) return;
+    setBulkBusy(true);
+    setError(null);
+    try {
+      await skipAllDecisions({ olderThan: cutoff.toISOString(), source: 'all' });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+      await refresh();
+    }
+  };
+
   if (decisions.length === 0) return null;
 
   return (
     <section className="bg-surface-dark border border-border-dark rounded-xl p-4 sm:p-5" aria-label="Waiting on you">
       <div className="flex items-center justify-between mb-3">
         <h3 className="text-lg font-semibold text-text-primary-dark">Waiting on you</h3>
-        <Badge variant="primary" size="sm">{decisions.length}</Badge>
+        <div className="flex items-center gap-2">
+          {old.length > 0 && (
+            <Button size="sm" variant="ghost" disabled={bulkBusy} onClick={() => void skipOld()} className="min-h-10">
+              Skip all from before today ({old.length})
+            </Button>
+          )}
+          <Badge variant="primary" size="sm">{decisions.length}</Badge>
+        </div>
       </div>
       {error && <p className="text-xs text-red-400 mb-2" role="alert">{error}</p>}
       <ul className="divide-y divide-border-dark">
@@ -149,6 +205,7 @@ export const WaitingOnYouCard: React.FC = () => {
             busy={busyId === d.id}
             onChoose={(id, option) => void act(id, () => chooseDecision(id, option))}
             onRemind={(id) => void act(id, () => remindDecisionTomorrow(id))}
+            onSkip={(id) => void act(id, () => skipDecision(id))}
           />
         ))}
       </ul>

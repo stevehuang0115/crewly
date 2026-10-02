@@ -5,7 +5,7 @@
 import { createHmac } from 'crypto';
 import express from 'express';
 import request from 'supertest';
-import { createDecisionsRouter, createSlackInteractivityHandler, verifySlackSignature, type DecisionsControllerDeps } from './decisions.controller.js';
+import { createDecisionsRouter, createSlackInteractivityHandler, parseSkipAllBody, verifySlackSignature, type DecisionsControllerDeps } from './decisions.controller.js';
 import { DecisionError, type DecisionService } from '../../services/decisions/decision.service.js';
 
 const SECRET = 'shh-signing-secret';
@@ -23,6 +23,8 @@ function fakeService() {
     chooseFromDashboard: jest.fn(async (id: string, option: string) => ({ id, chosenKey: option, status: 'resolved' })),
     remindFromDashboard: jest.fn(async (id: string) => ({ id, remindAt: 'x' })),
     cancelWhere: jest.fn(async () => 1),
+    skipFromDashboard: jest.fn(async (id: string) => ({ id, status: 'skipped' })),
+    skipAll: jest.fn(async (input: Record<string, unknown>) => ({ dryRun: input.dryRun === true, matched: 2, settled: input.dryRun ? [] : ['D-1', 'D-2'], rows: [] })),
   };
 }
 
@@ -152,5 +154,40 @@ describe('POST /api/slack/interactivity', () => {
     expect(verifySlackSignature(SECRET, String(NOW_S), sign('abc'), 'abc', NOW_S)).toBe(true);
     expect(verifySlackSignature(SECRET, 'nope', sign('abc'), 'abc', NOW_S)).toBe(false);
     expect(verifySlackSignature('', String(NOW_S), sign('abc'), 'abc', NOW_S)).toBe(false);
+  });
+});
+
+describe('skip (specs/2026-10-01-decision-skip.md)', () => {
+  it('POST /:id/skip is owner-only', async () => {
+    const svc = fakeService();
+    const { app: a } = app(svc);
+    const ok = await request(a).post('/api/decisions/D-1/skip').send({});
+    expect(ok.status).toBe(200);
+    expect(ok.body.data).toEqual({ id: 'D-1', status: 'skipped' });
+    expect((await request(a).post('/api/decisions/D-1/skip').set('X-Agent-Session', 'dev-ann').send({})).status).toBe(403);
+    expect(svc.skipFromDashboard).toHaveBeenCalledTimes(1);
+  });
+
+  it('POST /skip-all passes the filters; dry run; owner-only; bad input is a 400', async () => {
+    const svc = fakeService();
+    const { app: a } = app(svc);
+    const dry = await request(a).post('/api/decisions/skip-all').send({ olderThan: '2026-10-01T00:00:00.000Z', source: 'backfill', dryRun: true });
+    expect(dry.status).toBe(200);
+    expect(dry.body.data).toMatchObject({ dryRun: true, matched: 2, settled: [] });
+    expect(svc.skipAll).toHaveBeenLastCalledWith({ olderThan: new Date('2026-10-01T00:00:00.000Z'), source: 'backfill', dryRun: true });
+    const all = await request(a).post('/api/decisions/skip-all').send({});
+    expect(all.body.data.settled).toEqual(['D-1', 'D-2']);
+    expect(svc.skipAll).toHaveBeenLastCalledWith({});
+    expect((await request(a).post('/api/decisions/skip-all').set('X-Agent-Session', 'crewly-orc').send({})).status).toBe(403);
+    expect((await request(a).post('/api/decisions/skip-all').send({ olderThan: 'yesterday-ish' })).status).toBe(400);
+    expect((await request(a).post('/api/decisions/skip-all').send({ source: 'old' })).status).toBe(400);
+    expect((await request(a).post('/api/decisions/skip-all').send({ dryRun: 'yes' })).status).toBe(400);
+    expect(svc.skipAll).toHaveBeenCalledTimes(2);
+  });
+
+  it('parseSkipAllBody', () => {
+    expect(parseSkipAllBody(undefined)).toEqual({});
+    expect(parseSkipAllBody({ olderThan: '', source: 'all', dryRun: false })).toEqual({ source: 'all', dryRun: false });
+    expect(() => parseSkipAllBody({ olderThan: {} })).toThrow('olderThan must be an ISO date-time');
   });
 });

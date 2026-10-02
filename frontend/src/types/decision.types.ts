@@ -19,10 +19,10 @@ export interface DecisionOption {
 }
 
 /** Lifecycle of a decision. */
-export type DecisionStatus = 'open' | 'resolved' | 'defaulted' | 'parked' | 'cancelled' | 'expired';
+export type DecisionStatus = 'open' | 'resolved' | 'defaulted' | 'parked' | 'cancelled' | 'expired' | 'skipped';
 
 /** How an answer arrived. */
-export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline';
+export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline' | 'bulk';
 
 /** Where the card lives in Slack. */
 export interface DecisionCardRef {
@@ -44,6 +44,12 @@ export interface OwnerDecision {
   /** ISO deadline */
   deadline: string;
   sensitive?: DecisionSensitiveKind;
+  /** Set for decisions Crewly asks itself */
+  kind?: 'browser_action' | 'runtime_terms' | 'reply_question';
+  /** Harness-owned decision (owner DM, no agent) */
+  system?: { key: string; defaultIsDecline?: boolean };
+  /** `backfill` = carded from an old reply by the open-items backfill */
+  source?: 'live' | 'backfill';
   requestedBy: string;
   /** Agent session that asks (its bot posted the card) */
   asker: string;
@@ -62,6 +68,22 @@ export interface OwnerDecision {
   answeredBy?: string;
   answeredVia?: DecisionAnswerVia;
   resolvedAt?: string;
+}
+
+/** Filters of a bulk skip (`POST /api/decisions/skip-all`). */
+export interface SkipAllInput {
+  /** ISO: only decisions created before this */
+  olderThan?: string;
+  source?: 'backfill' | 'all';
+  dryRun?: boolean;
+}
+
+/** Result of a bulk skip. */
+export interface SkipAllResult {
+  dryRun: boolean;
+  matched: number;
+  settled: string[];
+  rows: Array<{ id: string; question: string; asker: string; createdAt: string; ticket?: string; source: 'live' | 'backfill'; outcome: 'skipped' | 'declined' }>;
 }
 
 /** Error from the decisions API. */

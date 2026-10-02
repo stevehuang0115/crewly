@@ -225,6 +225,11 @@ export class SlackOrchestratorBridge extends EventEmitter {
    * never logged, stored or forwarded to the orchestrator.
    */
   private inboundInterceptor: ((message: SlackIncomingMessage) => boolean) | null = null;
+  /**
+   * Further interceptors, offered the message after {@link inboundInterceptor}
+   * (e.g. the owner's "skip all old cards" command in the orc DM).
+   */
+  private extraInterceptors: Array<{ name: string; fn: (message: SlackIncomingMessage) => boolean }> = [];
 
   /**
    * Pending completion reactions keyed by "channelId:threadTs".
@@ -307,15 +312,35 @@ export class SlackOrchestratorBridge extends EventEmitter {
    * @returns True when the interceptor consumed it
    */
   private interceptInbound(message: SlackIncomingMessage): boolean {
-    if (!this.inboundInterceptor) return false;
-    try {
-      if (!this.inboundInterceptor(message)) return false;
-      this.logger.info('Inbound Slack message consumed by the harness re-login', { channelId: message.channelId });
-      return true;
-    } catch (err) {
-      this.logger.warn('Inbound interceptor failed (message routed normally)', { error: err instanceof Error ? err.message : String(err) });
-      return false;
+    const chain = [
+      ...(this.inboundInterceptor ? [{ name: 'the harness re-login', fn: this.inboundInterceptor }] : []),
+      ...this.extraInterceptors,
+    ];
+    for (const { name, fn } of chain) {
+      try {
+        if (!fn(message)) continue;
+        this.logger.info(`Inbound Slack message consumed by ${name}`, { channelId: message.channelId });
+        return true;
+      } catch (err) {
+        this.logger.warn('Inbound interceptor failed (message routed normally)', { name, error: err instanceof Error ? err.message : String(err) });
+      }
     }
+    return false;
+  }
+
+  /**
+   * Add an interceptor offered every inbound message after the primary one.
+   *
+   * @param name - What it is, for the log ("the skip-all command")
+   * @param interceptor - Returns true when it consumed the message
+   * @returns Remove function
+   */
+  addInboundInterceptor(name: string, interceptor: (message: SlackIncomingMessage) => boolean): () => void {
+    const entry = { name, fn: interceptor };
+    this.extraInterceptors.push(entry);
+    return () => {
+      this.extraInterceptors = this.extraInterceptors.filter((e) => e !== entry);
+    };
   }
 
   /**

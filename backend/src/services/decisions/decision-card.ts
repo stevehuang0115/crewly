@@ -82,7 +82,7 @@ export function ticketThreadRootText(ticket: { id: string; title: string }): str
  * Button value JSON.
  *
  * @param decisionId - Decision id
- * @param option - Option key or `remind`
+ * @param option - Option key, `remind` or `skip`
  * @param instanceId - This instance (Cloud routes the click by it)
  * @returns JSON string
  */
@@ -186,6 +186,18 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
             },
           ]
         : []),
+      // "I don't care about this anymore". Not on sensitive / system /
+      // browser cards: their "No" already is the safe way out.
+      ...(canSkip(d)
+        ? [
+            {
+              type: 'button',
+              action_id: DECISION_CONSTANTS.SKIP_ACTION_ID,
+              text: { type: 'plain_text', text: 'Skip', emoji: true },
+              value: buttonValue(d.id, DECISION_CONSTANTS.SKIP_OPTION, instanceId),
+            },
+          ]
+        : []),
     ],
   });
   blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: pendingContextLine(d, now) }] });
@@ -202,6 +214,34 @@ export function renderOpenCard(d: OwnerDecision, instanceId: string, now: Date =
  */
 export function canRemind(d: Pick<OwnerDecision, 'kind' | 'system'>): boolean {
   return d.kind !== 'browser_action' && !d.system;
+}
+
+/**
+ * Whether the card offers "Skip": every card except sensitive asks, system
+ * decisions and held browser actions — those already have a "No", which is
+ * what skipping them means ({@link skipChoice}).
+ *
+ * @param d - Decision
+ * @returns True when the Skip button is shown
+ */
+export function canSkip(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'>): boolean {
+  return d.kind !== 'browser_action' && !d.system && !d.sensitive;
+}
+
+/**
+ * What "skip" means for a card: a real skip where {@link canSkip}; else the
+ * safe way out — its "no" option, else its default when that never lets
+ * anything through, else a real skip (dropping a sensitive ask does nothing).
+ *
+ * @param d - Decision
+ * @returns Choice
+ */
+export function skipChoice(d: Pick<OwnerDecision, 'kind' | 'system' | 'sensitive' | 'options' | 'defaultKey'>): DecisionChoice {
+  if (canSkip(d)) return { kind: 'skip' };
+  const no = noOption(d.options);
+  if (no) return { kind: 'option', key: no.key };
+  if (defaultIsSafe(d) && d.options.some((o) => o.key === d.defaultKey)) return { kind: 'option', key: d.defaultKey };
+  return { kind: 'skip' };
 }
 
 /**
@@ -256,6 +296,8 @@ export function settledLine(d: OwnerDecision, ownerName?: string, now: Date = ne
       return `Withdrawn · ${at}`;
     case 'expired':
       return `Expired — ${d.browser?.agentName ?? (d.asker || 'the agent')} will ask again · ${at}`;
+    case 'skipped':
+      return `⤼ ${who} skipped this · ${at}`;
     default:
       return pendingContextLine(d, now);
   }
@@ -313,14 +355,16 @@ export function acceptKey(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yes
 }
 
 /**
- * Map a reaction on a card to a choice.
+ * Map a reaction on a card to a choice: ✅ accept, ❌ the "no" option,
+ * ⏰ remind, 🚫 / ⏭️ skip ({@link skipChoice}).
  *
  * @param d - Decision
  * @param reaction - Emoji name (no colons; skin tone suffix allowed)
  * @returns Choice, or null when the reaction means nothing
  */
-export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'>, reaction: string): DecisionChoice | null {
+export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'> & Partial<Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'>>, reaction: string): DecisionChoice | null {
   const name = reaction.replace(/::skin-tone-\d$/, '');
+  if ((DECISION_CONSTANTS.REACTION_SKIP as readonly string[]).includes(name)) return skipChoice(d);
   if ((DECISION_CONSTANTS.REACTION_ACCEPT as readonly string[]).includes(name)) return { kind: 'option', key: acceptKey(d) };
   if ((DECISION_CONSTANTS.REACTION_REMIND as readonly string[]).includes(name)) return { kind: 'remind' };
   if ((DECISION_CONSTANTS.REACTION_REJECT as readonly string[]).includes(name)) {
@@ -332,6 +376,7 @@ export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'option
 
 /**
  * Map a free-text thread reply to a choice: an option (label, key, number),
+ * a skip word ("skip", 「不用了」, 「算了」, 「不管了」 — {@link skipChoice}),
  * a yes word (the default / first option), a no word (the "no" option), a
  * remind word — else the text itself, for the asker to read.
  *
@@ -339,12 +384,13 @@ export function choiceFromReaction(d: Pick<OwnerDecision, 'defaultKey' | 'option
  * @param text - The owner's reply
  * @returns Choice, or null for an empty reply
  */
-export function choiceFromText(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'>, text: string): DecisionChoice | null {
+export function choiceFromText(d: Pick<OwnerDecision, 'defaultKey' | 'options' | 'yesKey'> & Partial<Pick<OwnerDecision, 'kind' | 'system' | 'sensitive'>>, text: string): DecisionChoice | null {
   const clean = text.replace(/<@[A-Z0-9]+>/g, '').replace(/\s+/g, ' ').trim();
   if (!clean) return null;
   const opt = matchOption(clean, d.options);
   if (opt) return { kind: 'option', key: opt.key };
   const norm = clean.toLowerCase().replace(/[\s.。!！,，]+$/u, '');
+  if (isSkipWord(norm)) return skipChoice(d);
   if ((DECISION_CONSTANTS.REMIND_WORDS as readonly string[]).includes(norm)) return { kind: 'remind' };
   if ((DECISION_CONSTANTS.YES_WORDS as readonly string[]).includes(norm)) return { kind: 'option', key: acceptKey(d) };
   if ((DECISION_CONSTANTS.NO_WORDS as readonly string[]).includes(norm)) {
@@ -358,4 +404,14 @@ export function choiceFromText(d: Pick<OwnerDecision, 'defaultKey' | 'options' |
     if (o) return { kind: 'option', key: o.key };
   }
   return { kind: 'text', text: clean };
+}
+
+/**
+ * Whether a reply (lower-cased, trailing punctuation stripped) means "skip".
+ *
+ * @param norm - Normalised reply
+ * @returns True for a skip word
+ */
+export function isSkipWord(norm: string): boolean {
+  return (DECISION_CONSTANTS.SKIP_WORDS as readonly string[]).includes(norm.replace(/[\s.。!！,，~～]+$/u, '').trim());
 }

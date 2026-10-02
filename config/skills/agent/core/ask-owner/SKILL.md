@@ -63,9 +63,12 @@ What happens:
 - The card is posted by your own Slack bot:
   - a ticket ask goes in the ticket's thread;
   - any other ask goes where your current work is, else as a new thread in your team channel.
-- The owner can answer by tapping a button, reacting (✅ default, ❌ "no", ⏰ tomorrow), replying in
-  the thread, or using the dashboard.
+- The owner can answer by tapping a button, reacting (✅ default, ❌ "no", ⏰ tomorrow, 🚫 skip),
+  replying in the thread, or using the dashboard.
 - You receive `[DECISION D-7] The owner chose "…"`. Act on it. Do not ask again.
+- The owner can **Skip** a card. You then get `[DECISION D-7] The owner skipped this — drop it,
+  don't ask again`. Drop that work. Asking the same question again in that ticket or request
+  within 30 days is refused with an error.
 - If nobody answers by the deadline, the default is applied and you are told. A `wait` default or a
   sensitive ask never goes ahead without an answer.
 - Do not also message the owner about it. The card is the question.

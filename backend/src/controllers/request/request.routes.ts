@@ -15,7 +15,7 @@ import {
   planRequest,
   updateRequest,
 } from './request.controller.js';
-import { listOpenItems, backfillOpenItemsHandler } from './open-items.controller.js';
+import { listOpenItems, backfillOpenItemsHandler, skipOpenItemHandler } from './open-items.controller.js';
 
 /**
  * Creates the request router with all endpoints.
@@ -26,6 +26,7 @@ import { listOpenItems, backfillOpenItemsHandler } from './open-items.controller
  * - POST /plan   — plan tasks from a user message
  * - GET  /open-items          — active open items (reply-open-items)
  * - POST /open-items/backfill — scan the last 7 days (dry-run unless apply)
+ * - POST /:id/open-items/:itemId/skip — the owner skips an open item
  * - GET  /:id    — get a single request
  * - PUT  /:id    — update a request
  *
@@ -52,6 +53,9 @@ export function createRequestRouter(): Router {
 
   // Update a request
   router.put('/:id', updateRequest);
+
+  // The owner skips an open item ("I don't care about this anymore")
+  router.post('/:id/open-items/:itemId/skip', skipOpenItemHandler);
 
   return router;
 }

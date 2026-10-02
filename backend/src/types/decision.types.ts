@@ -26,6 +26,9 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  */
 export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question';
 
+/** How a decision came to be: asked live, or carded by the open-items backfill. */
+export type DecisionSource = 'live' | 'backfill';
+
 /** The Request open item a `reply_question` decision tracks. */
 export interface DecisionRequestRef {
   requestId: string;
@@ -86,10 +89,12 @@ export type DecisionStatus =
   /** Withdrawn by the asking agent (or its ticket closed) */
   | 'cancelled'
   /** The thing asked about no longer exists (e.g. a held browser action lost to a restart) */
-  | 'expired';
+  | 'expired'
+  /** The owner skipped it ("I don't care about this anymore"): the asker drops it and must not ask again */
+  | 'skipped';
 
 /** How an answer arrived. */
-export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline';
+export type DecisionAnswerVia = 'button' | 'reaction' | 'reply' | 'dashboard' | 'deadline' | 'bulk';
 
 /** Where the card lives in Slack. */
 export interface DecisionCardRef {
@@ -135,6 +140,13 @@ export interface OwnerDecision {
   place?: { slackChannelId: string; threadTs?: string };
   /** The Request open item it tracks (kind `reply_question`) */
   requestRef?: DecisionRequestRef;
+  /**
+   * How the question was found: `backfill` = carded by the open-items
+   * backfill from an old reply (not asked live). Absent = asked live.
+   */
+  source?: DecisionSource;
+  /** When the agent asked it in its reply (ISO; `reply_question` cards), when known */
+  askedAt?: string;
   /** Harness-owned decision (owner DM, no agent); set together with `kind` */
   system?: DecisionSystemRef;
   /** Card header instead of "Decision D-n" (system decisions) */
@@ -192,7 +204,7 @@ export interface ValidatedAsk {
 export interface DecisionButtonValue {
   /** Decision id */
   d: string;
-  /** Option key, or `remind` */
+  /** Option key, `remind` or `skip` */
   o: string;
   /** Instance id the card belongs to (Cloud routes the click there) */
   i: string;
@@ -202,4 +214,6 @@ export interface DecisionButtonValue {
 export type DecisionChoice =
   | { kind: 'option'; key: string }
   | { kind: 'remind' }
+  /** "I don't care about this anymore" */
+  | { kind: 'skip' }
   | { kind: 'text'; text: string };

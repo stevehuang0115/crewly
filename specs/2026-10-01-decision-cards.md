@@ -59,7 +59,7 @@ Decisions are stored in `~/.crewly/owner-decisions.json` with ids `D-<n>`.
 [section] Send the draft to the 3 partners?
 [section] • *Send Monday* — after the review call
           • *Hold* — wait for legal
-[actions] [Send Monday] [Hold] [Remind me tomorrow]
+[actions] [Send Monday] [Hold] [Remind me tomorrow] [Skip]
 [context] If no answer by Thu 12:00, I'll wait. · D-7
 ```
 
@@ -93,6 +93,11 @@ When the owner answers:
 
 Only the owner can answer. That is the workspace installer or the `allowedUserIds`; anyone
 else is ignored. Clicks on an already-settled card are ignored.
+
+**Skip.** "I don't care about this anymore": the card shows `⤼ <owner> skipped this`, the
+linked open item closes as `skipped`, the asker is told once to drop it and the same question
+is not asked again for 30 days. Also 🚫 / ⏭️ and the replies `skip` / 「不用了」 / 「算了」 /
+「不管了」; bulk `POST /api/decisions/skip-all`. See `2026-10-01-decision-skip.md`.
 
 **Remind me tomorrow.** The card's context line becomes
 `⏰ Reminding you tomorrow at 09:00 …`. At 09:00 local the asker's bot posts the question

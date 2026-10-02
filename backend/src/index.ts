@@ -5117,7 +5117,7 @@ void (async () => {
 	 */
 	private async startDecisionCards(): Promise<void> {
 		try {
-			const { createDecisionService, attachDecisionSlackListeners } = await import('./services/decisions/decision.wiring.js');
+			const { createDecisionService, attachDecisionSlackListeners, attachSkipAllCommand } = await import('./services/decisions/decision.wiring.js');
 			const { DecisionService } = await import('./services/decisions/decision.service.js');
 			const RUNNING: ReadonlySet<string> = new Set(['running', 'accepted', 'proposed']);
 			const decisions = createDecisionService({
@@ -5160,6 +5160,10 @@ void (async () => {
 			DecisionService.getInstance()?.stop();
 			DecisionService.setInstance(decisions);
 			attachDecisionSlackListeners(decisions);
+			// "skip all old cards" / 「清掉旧卡片」 in the owner's orc DM.
+			await attachSkipAllCommand(decisions).catch((err) =>
+				this.logger.warn('Skip-all command not wired (non-critical)', { error: err instanceof Error ? err.message : String(err) }),
+			);
 			decisions.start();
 			this.logger.info('Decision cards started');
 			// Runtime Terms consent (specs/2026-10-01-runtime-terms-consent.md): the
