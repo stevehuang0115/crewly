@@ -8,10 +8,13 @@
  * session, and raises one WorkItem per page when ALL of these hold:
  *
  *  1. the page has in-scope entries at all (nothing to answer from → no page);
- *  2. the page is stale (missing, no watermark, or newer entries exist);
- *  3. the sources' watermark differs from the one this service last raised
- *     for — so a refresh that was skipped or failed is not re-raised until
- *     the memory moves again ("only when the watermark moves");
+ *  2. the page is stale (missing, no watermark, or newer entries exist) or
+ *     a section's basis is invalidated (a cited entry was deleted,
+ *     superseded, expired or resolved — these do not move the watermark, #914);
+ *  3. the sources' watermark or the set of invalidated citations differs
+ *     from the one this service last raised for — so a refresh that was
+ *     skipped or failed is not re-raised until the memory moves again
+ *     ("only when the watermark moves");
  *  4. no refresh WorkItem for the page is still open;
  *  5. the page's cooldown has passed;
  *  6. fewer than `maxCreatesPerTick` were created this tick (PTY paste-flood
@@ -41,6 +44,7 @@ import { createWorkItem, type WorkItem, type WorkItemStatus } from '../../types/
 import { atomicWriteJson, ensureDir, safeReadJson } from '../../utils/file-io.utils.js';
 import {
 	StandingAnswersService,
+	invalidationKey,
 	PROJECT_STANDING_PAGES,
 	AGENT_STANDING_PAGE,
 	type StandingLocation,
@@ -105,6 +109,11 @@ export interface RefreshTickResult {
 interface RefreshState {
 	[pageKey: string]: {
 		watermark: string | null;
+		/**
+		 * {@link invalidationKey} of the page when raised ('' / absent: none),
+		 * so a retraction raises once even though the watermark did not move.
+		 */
+		invalidated?: string;
 		raisedAt: number;
 		/** WorkItem id raised for this watermark, so the next tick can check whether it failed. */
 		workItemId?: string;
@@ -208,7 +217,8 @@ export class StandingRefreshService {
 				result.pagesExamined += 1;
 
 				const prior = state[c.key];
-				const sameWatermark = !!prior && prior.watermark === status.currentWatermark;
+				const invalidated = invalidationKey(status.invalidatedSections);
+				const sameWatermark = !!prior && prior.watermark === status.currentWatermark && (prior.invalidated ?? '') === invalidated;
 				const priorItem = sameWatermark && prior.workItemId ? itemsById.get(prior.workItemId) : undefined;
 				// A refresh that failed or was cancelled never wrote the page, so
 				// the page is still exactly as stale as it was — retry it even
@@ -222,7 +232,7 @@ export class StandingRefreshService {
 
 				let skip: RefreshSkipReason | null = null;
 				if (status.entriesInScope === 0) skip = 'no_entries';
-				else if (!status.stale) skip = 'fresh';
+				else if (!status.stale && status.invalidatedSections.length === 0) skip = 'fresh';
 				else if (sameWatermark && !isRetryOfFailure) skip = 'watermark_unchanged';
 				else if (inflight.has(c.key)) skip = 'inflight';
 				else if (prior && this.now() - prior.raisedAt < this.cooldownMs) skip = 'cooldown';
@@ -239,12 +249,16 @@ export class StandingRefreshService {
 				}
 				const brief = await this.service.buildRefreshBrief(status, c.loc, this.options.agentSkillsPath);
 				const scopeLabel = c.def.scope === 'project' ? path.basename(c.loc.projectPath ?? '') : c.loc.sessionName;
+				const invalidCount = status.invalidatedSections.length;
+				const invalidNote = invalidCount
+					? ` ${invalidCount} section${invalidCount === 1 ? '' : 's'} cite${invalidCount === 1 ? 's' : ''} sources that were deleted or are no longer in force: ${invalidated}.`
+					: '';
 				const wi = createWorkItem({
 					type: 'delegate',
 					owner: c.def.scope === 'project' ? 'orchestrator' : 'agent',
 					target,
-					title: `Refresh standing answer "${c.def.question}" — ${scopeLabel} (${status.newerEntries} newer)`,
-					description: `Refresh the standing-answer page ${c.def.id} at ${status.filePath}: ${status.newerEntries} in-scope memor${status.newerEntries === 1 ? 'y is' : 'ies are'} newer than the page.`,
+					title: `Refresh standing answer "${c.def.question}" — ${scopeLabel} (${status.newerEntries} newer${invalidCount ? `, ${invalidCount} basis invalidated` : ''})`,
+					description: `Refresh the standing-answer page ${c.def.id} at ${status.filePath}: ${status.newerEntries} in-scope memor${status.newerEntries === 1 ? 'y is' : 'ies are'} newer than the page.${invalidNote}`,
 					briefMarkdown: brief,
 					maxRetries: 1,
 					metadata: {
@@ -261,6 +275,7 @@ export class StandingRefreshService {
 				await this.options.pool.addToPool(wi);
 				state[c.key] = {
 					watermark: status.currentWatermark,
+					invalidated,
 					raisedAt: this.now(),
 					workItemId: wi.id,
 					retryCount: isRetryOfFailure ? (prior?.retryCount ?? 0) + 1 : 0,
