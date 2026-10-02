@@ -1535,6 +1535,56 @@ export const PROJECT_TICKET_CONSTANTS = {
 	DELEGATION_REFUSED_CODE: 'project_ticket_refused',
 } as const;
 
+// ========================= OSS / PRO BOUNDARY CONSTANTS =========================
+
+/**
+ * Inputs to the OSS/Pro boundary check (issue #809).
+ *
+ * The rule "no premium/paid content in the OSS repo" (CLAUDE.md, Critical
+ * Rule 10) is enforced by `backend/src/scripts/check-oss-boundary.ts`, which
+ * runs in CI (`.github/workflows/oss-boundary.yml`) and inside the jest suite.
+ * Every path here is relative to the repository root.
+ */
+export const OSS_BOUNDARY_CONSTANTS = {
+	/** Allowlist of explicit exceptions; every entry carries a one-line reason */
+	ALLOWLIST_FILE: 'config/oss-boundary-allowlist.json',
+	/** Directory whose JSON templates must stay free-tier (rules 1 and 2) */
+	TEMPLATES_DIR: 'config/templates',
+	/** Directory whose file paths must not look premium (rule 3) */
+	CONFIG_DIR: 'config',
+	/** Field that gates a template or skill behind a paid tier */
+	TIER_FIELD: 'requiredTier',
+	/** Tier values that mark content as paid — only allowed in crewly-pro */
+	PAID_TIERS: ['pro', 'enterprise'] as const,
+	/** Top-level template fields that are Pro-only features */
+	PRO_ONLY_TEMPLATE_FIELDS: ['workflows', 'verificationPipeline', 'qualityGates'] as const,
+	/** A path segment starting with this prefix looks like Pro content */
+	PRO_SEGMENT_PREFIX: 'pro-',
+	/** A path segment containing this word looks like premium content */
+	PREMIUM_SEGMENT_MARKER: 'premium',
+	/** Package names OSS source must never import (also matches their subpaths) */
+	FORBIDDEN_IMPORT_PACKAGES: ['crewly-pro', '@crewly/pro'] as const,
+	/** Source roots scanned for forbidden imports (rule 4); missing roots are skipped */
+	SOURCE_ROOTS: ['backend/src', 'frontend/src', 'cli/src', 'mcp-server/src'] as const,
+	/** Workspace packages directory; each `<pkg>/src` is also scanned */
+	PACKAGES_DIR: 'packages',
+	/** Source directory name inside each workspace package */
+	PACKAGE_SOURCE_SUBDIR: 'src',
+	/** Directory names never descended into */
+	SKIPPED_DIRS: ['node_modules', 'dist', '.git'] as const,
+	/** File extensions treated as importable source */
+	SOURCE_EXTENSIONS: ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.mts', '.cts'] as const,
+	/** File extension of template definitions */
+	JSON_EXTENSION: '.json',
+	/** Rule identifiers used in reports and allowlist entries */
+	RULES: {
+		PAID_TIER: 'paid-tier',
+		PRO_TEMPLATE_FIELD: 'pro-template-field',
+		PREMIUM_PATH: 'premium-path',
+		PRO_IMPORT: 'pro-import',
+	},
+} as const;
+
 /**
  * Type helpers for extracting literal types from constants
  */

@@ -401,7 +401,7 @@ refactor: migrate MCP server from JavaScript to TypeScript
 7. **Never commit untested code** to main branch
 8. **Never leave TypeScript errors** unresolved
 9. **Never create source files without corresponding test files**
-10. **Never put premium/paid content in the OSS repo** - Premium templates, norms/SOPs, and paid skills belong on Cloud Service (crewlyai.com), not in `config/templates/`. OSS repo only has basic/free templates.
+10. **Never put premium/paid content in the OSS repo** - Premium templates, norms/SOPs, and paid skills belong on Cloud Service (crewlyai.com), not in `config/templates/`. OSS repo only has basic/free templates. Enforced by `npm run check:oss-boundary` (`backend/src/scripts/check-oss-boundary.ts`, run in CI by `.github/workflows/oss-boundary.yml` and inside `npm test`): it fails on a paid `requiredTier` or `workflows`/`verificationPipeline`/`qualityGates` in `config/templates/`, a `pro-*`/`*premium*` path under `config/`, or an import of `crewly-pro`/`@crewly/pro`. Exceptions go in `config/oss-boundary-allowlist.json` with a one-line reason (#809).
 11. **Always follow the Code Commit SOP** (9 steps, 3 review rounds) - See `specs/git-workflow.md` and team norms
 
 ### Error Prevention

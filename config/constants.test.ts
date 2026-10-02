@@ -582,3 +582,20 @@ describe('PROJECT_TICKET_CONSTANTS', () => {
     expect(block.indexOf('!.crewly/')).toBeLessThan(block.indexOf('.crewly/*'));
   });
 });
+
+describe('OSS_BOUNDARY_CONSTANTS', () => {
+  it('names the paid tiers, Pro-only template fields and forbidden packages from issue #809', async () => {
+    const { OSS_BOUNDARY_CONSTANTS: C } = await import('./constants.js');
+    expect(C.PAID_TIERS).toEqual(['pro', 'enterprise']);
+    expect(C.PRO_ONLY_TEMPLATE_FIELDS).toEqual(['workflows', 'verificationPipeline', 'qualityGates']);
+    expect(C.FORBIDDEN_IMPORT_PACKAGES).toEqual(['crewly-pro', '@crewly/pro']);
+    expect(C.ALLOWLIST_FILE.startsWith(`${C.CONFIG_DIR}/`)).toBe(true);
+    expect(C.TEMPLATES_DIR.startsWith(`${C.CONFIG_DIR}/`)).toBe(true);
+    expect(new Set(Object.values(C.RULES)).size).toBe(4);
+  });
+
+  it('is exported from the config index', async () => {
+    const index = await import('./index.js');
+    expect(index.OSS_BOUNDARY_CONSTANTS.TIER_FIELD).toBe('requiredTier');
+  });
+});
