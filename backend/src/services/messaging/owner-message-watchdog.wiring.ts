@@ -23,6 +23,7 @@ import { LoggerService } from '../core/logger.service.js';
 import type { ChatChannelDTO, ChatMessageDTO } from '../chat-v2/types.js';
 import type { DispatchMessageResult } from '../chat-v2/chat-v2.dispatcher.service.js';
 import { slackThreadTag } from '../slack/slack-thread-key.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 import {
   OwnerMessageWatchdogService,
   setOwnerMessageWatchdog,
@@ -330,6 +331,7 @@ export function createOwnerMessageWatchdog(deps: OwnerWatchdogWiringDeps): Owner
       const info = deps.loginRequired(session);
       return info ? loginHintFor(info.runtimeType) : null;
     },
+    spendCapped: (session) => spendCapStopOf(session),
     ...(deps.displayNameOf ? { displayNameOf: deps.displayNameOf } : {}),
     storePath: path.join(deps.crewlyHome, C.STORE_FILENAME),
   });

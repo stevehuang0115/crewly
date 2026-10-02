@@ -5,7 +5,8 @@
  * @module services/monitoring/token-usage.service.test
  */
 
-import { TokenUsageService, calculateCost, dropCrossSessionDuplicates } from './token-usage.service.js';
+import { TokenUsageService, calculateCost, dropCrossSessionDuplicates, eventCostUsd } from './token-usage.service.js';
+import { calculateCost as cacheAwareCost } from './model-pricing.js';
 
 describe('TokenUsageService', () => {
   let service: TokenUsageService;
@@ -194,6 +195,41 @@ describe('TokenUsageService', () => {
         cost: 0,
       });
       expect(service.getSessionUsageSince('missing', future).cost).toBe(0);
+    });
+  });
+
+  describe('eventCostUsd (the one per-event cost computation)', () => {
+    it('prices a Claude transcript turn with its cache reads and writes (fresh input beside them)', () => {
+      const cost = eventCostUsd({ input: 10, output: 400, model: 'claude-opus-5-5', cachedInput: 102_000, cacheWrite: 2_000 });
+      expect(cost).toBeCloseTo(cacheAwareCost({ input: 10, output: 400, cacheRead: 100_000, cacheWrite: 2_000 }, 'claude-opus-5-5').cost, 12);
+    });
+
+    it('prices an in-process DeepSeek run with its cache hits as part of input', () => {
+      const e = { input: 70_000, output: 500, model: 'deepseek/deepseek-chat', cachedInput: 60_000 };
+      expect(eventCostUsd(e)).toBeCloseTo(calculateCost(70_000, 500, 'deepseek/deepseek-chat', 60_000), 12);
+    });
+
+    it('falls back to the legacy table for other models', () => {
+      expect(eventCostUsd({ input: 100, output: 10, model: 'gpt-4o' })).toBeCloseTo(calculateCost(100, 10, 'gpt-4o'), 12);
+    });
+
+    it('getSessionUsageSince uses it, so a Claude agent\'s cached context is counted', () => {
+      const since = new Date(Date.now() - 60_000);
+      service.recordUsage('ella', 'ella', 10, 100, 'claude-opus-5-5', undefined, { cachedInput: 600_000 });
+      expect(service.getSessionUsageSince('ella', since).cost).toBeGreaterThan(0.85);
+    });
+  });
+
+  describe('forEachEvent', () => {
+    it('visits events at or after `since`, with their session', () => {
+      service.recordUsage('a', 'a', 1, 1, 'm', undefined, { timestamp: '2026-10-01T10:00:00.000Z' });
+      service.recordUsage('b', 'b', 2, 2, 'm', undefined, { timestamp: '2026-10-02T10:00:00.000Z' });
+      const all: string[] = [];
+      service.forEachEvent((s) => all.push(s));
+      expect(all.sort()).toEqual(['a', 'b']);
+      const recent: string[] = [];
+      service.forEachEvent((s, e) => recent.push(`${s}:${e.input}`), new Date('2026-10-02T00:00:00.000Z'));
+      expect(recent).toEqual(['b:2']);
     });
   });
 

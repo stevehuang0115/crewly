@@ -30,6 +30,7 @@ import {
   ORCHESTRATOR_HEARTBEAT_CONSTANTS,
   MESSAGE_SOURCES,
   GCHAT_THREAD_CONSTANTS,
+  SPEND_CAP_CONSTANTS,
   type RuntimeType,
 } from '../../constants.js';
 import { PtyActivityTrackerService } from '../agent/pty-activity-tracker.service.js';
@@ -39,6 +40,7 @@ import { StorageService } from '../core/storage.service.js';
 import type { ThreadStatusQueueService } from './thread-status-queue.service.js';
 import { effectiveRuntimeType } from '../runtime-fallback/effective-runtime.js';
 import { OrcWakeCounter } from '../orc/orc-wake-counter.js';
+import { spendCapStopOf } from '../spend/spend-cap.gate.js';
 
 /**
  * QueueProcessorService dequeues messages one-at-a-time and delivers them
@@ -292,6 +294,14 @@ export class QueueProcessorService extends EventEmitter {
         agentStatus: agentStatus || 'unknown',
       });
       this.scheduleProcessNext(EVENT_DELIVERY_CONSTANTS.AGENT_READY_POLL_INTERVAL);
+      return;
+    }
+
+    // Daily spend cap (specs/2026-10-02-spend-cap.md): the orchestrator
+    // starts no new turn; its messages stay on the queue and go out when the
+    // cap resets at midnight or the owner raises it.
+    if (spendCapStopOf(ORCHESTRATOR_SESSION_NAME)) {
+      this.scheduleProcessNext(SPEND_CAP_CONSTANTS.QUEUE_RECHECK_MS);
       return;
     }
 

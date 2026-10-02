@@ -23,8 +23,10 @@ export type DecisionSensitiveKind = 'email' | 'publish' | 'deploy' | 'spend' | '
  *   (specs/2026-10-01-runtime-terms-consent.md)
  * - `reply_question`: a question an agent asked the owner in a reply, turned
  *   into a card on its behalf (specs/2026-10-01-reply-open-items.md)
+ * - `spend_cap`: an agent hit its daily spend cap — raise it for today or
+ *   keep it stopped (specs/2026-10-02-spend-cap.md)
  */
-export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question';
+export type DecisionKind = 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap';
 
 /** How a decision came to be: asked live, or carded by the open-items backfill. */
 export type DecisionSource = 'live' | 'backfill';

@@ -24,7 +24,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'fs';
 import * as path from 'path';
-import { OWNER_MESSAGE_WATCHDOG_CONSTANTS as C } from '../../constants.js';
+import { ORCHESTRATOR_SESSION_NAME, OWNER_MESSAGE_WATCHDOG_CONSTANTS as C } from '../../constants.js';
 import { LoggerService, type ComponentLogger } from '../core/logger.service.js';
 
 /** Where the owner wrote: a Slack conversation, or a Crewly chat (portal / Talk / dashboard). */
@@ -95,7 +95,7 @@ export interface OwnerMessageEntry {
 }
 
 /** Why a nudge could not reach the agent. */
-export type NudgeBlockReason = 'asleep' | 'login' | 'error';
+export type NudgeBlockReason = 'asleep' | 'login' | 'error' | 'spend_cap';
 
 /** Outcome of one nudge. */
 export type NudgeOutcome = { outcome: 'sent' } | { outcome: 'blocked'; reason: NudgeBlockReason; detail?: string };
@@ -120,6 +120,8 @@ export interface OwnerMessageWatchdogDeps {
   postNote: (entry: OwnerMessageEntry, text: string) => Promise<boolean>;
   /** A sign-in the agent's runtime is waiting for, if any. */
   loginRequired?: (agentSession: string) => LoginHint | null;
+  /** The agent's daily spend cap stop, if any (specs/2026-10-02-spend-cap.md) */
+  spendCapped?: (agentSession: string) => { capUsd: number } | null;
   /** Display name for notes ("Ella"); defaults to the session name. */
   displayNameOf?: (agentSession: string) => string;
   /** Persisted state; omitted in tests that do not exercise restarts. */
@@ -527,7 +529,11 @@ export class OwnerMessageWatchdogService {
     const waited = Math.floor(age / 60000);
     const login = ignoreLogin ? null : (this.deps.loginRequired?.(entry.responsible) ?? null);
     let outcome: NudgeOutcome;
-    if (login) {
+    const capped = this.deps.spendCapped?.(entry.responsible) ?? null;
+    if (capped) {
+      // A capped agent starts no new turn: a nudge would only queue again.
+      outcome = { outcome: 'blocked', reason: 'spend_cap', detail: `$${capped.capUsd.toFixed(2)}` };
+    } else if (login) {
       outcome = { outcome: 'blocked', reason: 'login' };
     } else {
       try {
@@ -618,6 +624,10 @@ export class OwnerMessageWatchdogService {
   noteText(entry: OwnerMessageEntry, kind: 'cap' | 'silent' | 'blocked'): string {
     const name = this.deps.displayNameOf?.(entry.responsible) || entry.responsible;
     const waited = String(Math.max(1, Math.floor((this.now() - entry.receivedAt) / 60000)));
+    if (kind === 'blocked' && entry.nudgeBlocked?.reason === 'spend_cap') {
+      const who = entry.responsible === ORCHESTRATOR_SESSION_NAME ? 'orc' : name;
+      return fill(C.NOTE_SPEND_CAP_TEXT, { name, cap: entry.nudgeBlocked.detail ?? 'reached', who });
+    }
     const login = this.deps.loginRequired?.(entry.responsible) ?? null;
     if (login) {
       return fill(C.NOTE_LOGIN_TEXT, { name, runtime: login.runtime, runtimeCmd: login.runtimeCmd });

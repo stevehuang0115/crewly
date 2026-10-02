@@ -45,7 +45,7 @@ export interface OwnerDecision {
   deadline: string;
   sensitive?: DecisionSensitiveKind;
   /** Set for decisions Crewly asks itself */
-  kind?: 'browser_action' | 'runtime_terms' | 'reply_question';
+  kind?: 'browser_action' | 'runtime_terms' | 'reply_question' | 'spend_cap';
   /** Harness-owned decision (owner DM, no agent) */
   system?: { key: string; defaultIsDecline?: boolean };
   /** `backfill` = carded from an old reply by the open-items backfill */
