@@ -5517,11 +5517,17 @@ void (async () => {
 							// Use current time as upper bound to avoid counting tokens from
 							// subsequent requests in the same session.
 							const sessionId = persistence.getSessionId(ORCHESTRATOR_SESSION_NAME) || null;
+							// On another of the owner's Claude Code accounts the
+							// transcript lives in that account's config dir (#942).
+							const { effectiveClaudeAccount } = await import('./services/runtime-fallback/effective-runtime.js');
+							const { claudeAccountConfigDir } = await import('./services/harness/claude-accounts.js');
+							const orcAccount = effectiveClaudeAccount(ORCHESTRATOR_SESSION_NAME);
 							const summary = await getTokensSince(
 								this.config.crewlyHome,
 								sessionId,
 								since,
 								new Date(), // upper bound — only count tokens within this request's window
+								orcAccount ? [claudeAccountConfigDir(orcAccount)] : [],
 							);
 							if (summary && summary.turnCount > 0) {
 								inputTokens = summary.inputTokens;

@@ -4,6 +4,9 @@
  * Reads per-turn token usage from Claude Code's session JSONL files.
  * Claude Code stores conversations at:
  *   ~/.claude/projects/{path-slug}/{sessionId}.jsonl
+ * or, for a session that runs on another of the owner's Claude Code accounts
+ * (issue #942, `CLAUDE_CONFIG_DIR` set to the account's config dir):
+ *   <account config dir>/projects/{path-slug}/{sessionId}.jsonl
  *
  * Each assistant message includes an API `usage` object with exact
  * token counts (input_tokens, output_tokens, cache tokens).
@@ -14,7 +17,7 @@
  * @module services/monitoring/claude-session-tokens
  */
 
-import { promises as fs } from 'fs';
+import { promises as fs, realpathSync } from 'fs';
 import * as path from 'path';
 import * as os from 'os';
 import { LoggerService } from '../core/logger.service.js';
@@ -117,20 +120,78 @@ export async function resolveProjectSlugCandidates(projectPath: string): Promise
 }
 
 /**
+ * Synchronous {@link resolveProjectSlugCandidates}, for callers that cannot
+ * await (launch-time resume checks).
+ *
+ * The raw slug is taken from the absolute (`path.resolve`d) cwd.
+ *
+ * @param projectPath - The agent's working directory
+ * @returns Slugs to try, realpath slug first; never empty
+ *
+ * @example
+ * ```typescript
+ * resolveProjectSlugCandidatesSync('/tmp/proj');
+ * // macOS: ['-private-tmp-proj', '-tmp-proj']
+ * ```
+ */
+export function resolveProjectSlugCandidatesSync(projectPath: string): string[] {
+  const absolute = path.resolve(projectPath);
+  const rawSlug = encodeProjectSlug(absolute);
+  let resolvedSlug: string | null = null;
+  try {
+    resolvedSlug = encodeProjectSlug(realpathSync(absolute));
+  } catch {
+    // Nonexistent or unreadable cwd — the raw slug is the only guess left.
+  }
+  return resolvedSlug && resolvedSlug !== rawSlug ? [resolvedSlug, rawSlug] : [rawSlug];
+}
+
+/**
+ * The `projects/` directories Claude Code may have written a session's
+ * transcripts to, most likely first.
+ *
+ * A session on another of the owner's Claude Code accounts (issue #942) runs
+ * with `CLAUDE_CONFIG_DIR` set to that account's config dir, so its
+ * transcripts land in `<config dir>/projects/`. The default login's
+ * `~/.claude/projects/` is always included last: a session that switched
+ * accounts during the day has transcripts in both.
+ *
+ * @param homeDir - Home directory that contains `.claude/`
+ * @param configDirs - Claude config dirs of the session's accounts (current account first)
+ * @returns Absolute `projects/` directory paths, de-duplicated
+ *
+ * @example
+ * ```typescript
+ * claudeProjectsRoots('/Users/a', ['/Users/a/.crewly/claude-accounts/work']);
+ * // ['/Users/a/.crewly/claude-accounts/work/projects', '/Users/a/.claude/projects']
+ * ```
+ */
+export function claudeProjectsRoots(homeDir: string, configDirs: readonly string[] = []): string[] {
+  const roots = [
+    ...configDirs.map((dir) => path.join(dir, CLAUDE_PROJECTS_DIR_NAME)),
+    path.join(homeDir, CLAUDE_DIR_NAME, CLAUDE_PROJECTS_DIR_NAME),
+  ];
+  return [...new Set(roots)];
+}
+
+/**
  * Lists the Claude Code project directories that may hold transcripts for a
- * working directory, in the order of {@link resolveProjectSlugCandidates}.
- * The directories are not required to exist.
+ * working directory: every root of {@link claudeProjectsRoots}, each with the
+ * slugs of {@link resolveProjectSlugCandidates}. The directories are not
+ * required to exist.
  *
  * @param projectPath - The agent's working directory
  * @param homeDir - Home directory that contains `.claude/` (defaults to the OS home)
+ * @param configDirs - Config dirs of the owner's other Claude Code accounts the session runs on (searched first)
  * @returns Absolute candidate directory paths, most likely first
  */
 export async function resolveProjectDirCandidates(
   projectPath: string,
   homeDir: string = os.homedir(),
+  configDirs: readonly string[] = [],
 ): Promise<string[]> {
   const slugs = await resolveProjectSlugCandidates(projectPath);
-  return slugs.map((slug) => path.join(homeDir, CLAUDE_DIR_NAME, CLAUDE_PROJECTS_DIR_NAME, slug));
+  return claudeProjectsRoots(homeDir, configDirs).flatMap((root) => slugs.map((slug) => path.join(root, slug)));
 }
 
 /**
@@ -140,14 +201,16 @@ export async function resolveProjectDirCandidates(
  * @param projectPath - The agent's working directory
  * @param sessionId - Claude Code conversation UUID
  * @param homeDir - Home directory that contains `.claude/` (defaults to the OS home)
+ * @param configDirs - Config dirs of the owner's other Claude Code accounts (searched first)
  * @returns Absolute path to the existing .jsonl file, or null if none exists
  */
 export async function findSessionJsonlPath(
   projectPath: string,
   sessionId: string,
   homeDir: string = os.homedir(),
+  configDirs: readonly string[] = [],
 ): Promise<string | null> {
-  for (const dir of await resolveProjectDirCandidates(projectPath, homeDir)) {
+  for (const dir of await resolveProjectDirCandidates(projectPath, homeDir, configDirs)) {
     const candidate = path.join(dir, `${sessionId}${JSONL_EXTENSION}`);
     try {
       await fs.access(candidate);
@@ -170,15 +233,17 @@ export async function findSessionJsonlPath(
  *
  * @param projectPath - The agent's working directory
  * @param homeDir - Home directory that contains `.claude/` (defaults to the OS home)
+ * @param configDirs - Config dirs of the owner's other Claude Code accounts (searched first)
  * @returns Absolute paths of all .jsonl files found, grouped by candidate directory order
  */
 export async function listProjectTranscripts(
   projectPath: string,
   homeDir: string = os.homedir(),
+  configDirs: readonly string[] = [],
 ): Promise<string[]> {
   const seen = new Set<string>();
   const result: string[] = [];
-  for (const dir of await resolveProjectDirCandidates(projectPath, homeDir)) {
+  for (const dir of await resolveProjectDirCandidates(projectPath, homeDir, configDirs)) {
     let files: string[];
     try {
       files = await fs.readdir(dir);
@@ -200,15 +265,17 @@ export async function listProjectTranscripts(
  *
  * @param projectPath - The agent's working directory
  * @param homeDir - Home directory that contains `.claude/` (defaults to the OS home)
+ * @param configDirs - Config dirs of the owner's other Claude Code accounts (searched too)
  * @returns Absolute path of the newest .jsonl file, or null if there is none
  */
 export async function findLatestSessionFile(
   projectPath: string,
   homeDir: string = os.homedir(),
+  configDirs: readonly string[] = [],
 ): Promise<string | null> {
   let latestFile: string | null = null;
   let latestMtime = -1;
-  for (const file of await listProjectTranscripts(projectPath, homeDir)) {
+  for (const file of await listProjectTranscripts(projectPath, homeDir, configDirs)) {
     try {
       const { mtimeMs } = await fs.stat(file);
       if (mtimeMs > latestMtime) {
@@ -261,6 +328,7 @@ export async function findLatestSessionId(projectPath: string): Promise<string |
  * @param sessionId - Claude Code conversation UUID (if null, auto-detects latest)
  * @param since - Only count turns at or after this time
  * @param until - Only count turns before this time (defaults to now)
+ * @param configDirs - Config dirs of the owner's other Claude Code accounts the session runs on
  * @returns Aggregated token summary, or null if the file doesn't exist
  */
 export async function getTokensSince(
@@ -268,11 +336,12 @@ export async function getTokensSince(
   sessionId: string | null,
   since: Date,
   until?: Date,
+  configDirs: readonly string[] = [],
 ): Promise<SessionTokenSummary | null> {
   // Auto-detect session if not provided
   const filePath = sessionId
-    ? await findSessionJsonlPath(projectPath, sessionId)
-    : await findLatestSessionFile(projectPath);
+    ? await findSessionJsonlPath(projectPath, sessionId, os.homedir(), configDirs)
+    : await findLatestSessionFile(projectPath, os.homedir(), configDirs);
   if (!filePath) {
     logger.debug('No Claude session JSONL found', { projectPath, sessionId });
     return null;

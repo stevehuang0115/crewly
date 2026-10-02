@@ -13,12 +13,14 @@ import * as path from 'path';
 import * as os from 'os';
 
 import {
+	claudeProjectsRoots,
 	encodeProjectSlug,
 	findLatestSessionFile,
 	findSessionJsonlPath,
 	listProjectTranscripts,
 	resolveProjectDirCandidates,
 	resolveProjectSlugCandidates,
+	resolveProjectSlugCandidatesSync,
 } from './claude-session-tokens.service.js';
 
 describe('claude-session-tokens project slug helpers', () => {
@@ -66,12 +68,37 @@ describe('claude-session-tokens project slug helpers', () => {
 		});
 	});
 
+	describe('resolveProjectSlugCandidatesSync', () => {
+		it('matches the async version for a symlinked, a plain and a missing cwd', async () => {
+			const missing = path.join(tmpRoot, 'gone', 'proj');
+			for (const cwd of [linkedCwd, realCwd, missing]) {
+				expect(resolveProjectSlugCandidatesSync(cwd)).toEqual(await resolveProjectSlugCandidates(cwd));
+			}
+		});
+	});
+
 	describe('resolveProjectDirCandidates', () => {
 		it('places each slug under <home>/.claude/projects', async () => {
 			expect(await resolveProjectDirCandidates(linkedCwd, tmpRoot)).toEqual([
 				path.join(projectsDir, encodeProjectSlug(realCwd)),
 				path.join(projectsDir, encodeProjectSlug(linkedCwd)),
 			]);
+		});
+
+		it('searches an account config dir first, then ~/.claude (#942)', async () => {
+			const accountDir = path.join(tmpRoot, 'accounts', 'work');
+			expect(await resolveProjectDirCandidates(realCwd, tmpRoot, [accountDir])).toEqual([
+				path.join(accountDir, 'projects', encodeProjectSlug(realCwd)),
+				path.join(projectsDir, encodeProjectSlug(realCwd)),
+			]);
+		});
+	});
+
+	describe('claudeProjectsRoots', () => {
+		it('lists account roots before the default one, without duplicates', () => {
+			const a = path.join(tmpRoot, 'accounts', 'a');
+			expect(claudeProjectsRoots(tmpRoot, [a, a])).toEqual([path.join(a, 'projects'), projectsDir]);
+			expect(claudeProjectsRoots(tmpRoot)).toEqual([projectsDir]);
 		});
 	});
 
@@ -137,6 +164,22 @@ describe('claude-session-tokens project slug helpers', () => {
 
 			expect(await listProjectTranscripts(linkedCwd, tmpRoot)).toEqual([resolved]);
 			expect(await findSessionJsonlPath(linkedCwd, ID, tmpRoot)).toBe(resolved);
+		});
+
+		it('finds transcripts in an account config dir and the newest across both (#942)', async () => {
+			const older = await writeTranscript(encodeProjectSlug(realCwd), 'default-convo');
+			const accountDir = path.join(tmpRoot, 'accounts', 'work');
+			const accountSlugDir = path.join(accountDir, 'projects', encodeProjectSlug(realCwd));
+			await fs.mkdir(accountSlugDir, { recursive: true });
+			const newer = path.join(accountSlugDir, `${ID}.jsonl`);
+			await fs.writeFile(newer, '{}\n');
+			const past = new Date(Date.now() - 60_000);
+			await fs.utimes(older, past, past);
+
+			expect(await findSessionJsonlPath(realCwd, ID, tmpRoot)).toBeNull();
+			expect(await findSessionJsonlPath(realCwd, ID, tmpRoot, [accountDir])).toBe(newer);
+			expect(await listProjectTranscripts(realCwd, tmpRoot, [accountDir])).toEqual([newer, older]);
+			expect(await findLatestSessionFile(realCwd, tmpRoot, [accountDir])).toBe(newer);
 		});
 	});
 });

@@ -1007,7 +1007,7 @@ export class AgentRegistrationService {
 	): boolean {
 		if (runtimeType !== RUNTIME_TYPES.CLAUDE_CODE) return false;
 		const isOrc = sessionName === ORCHESTRATOR_SESSION_NAME;
-		const transcript = claudeTranscriptPath({ sessionId: storedSessionId, cwd });
+		const transcript = claudeTranscriptPath({ sessionId: storedSessionId, cwd, ...this.claudeHomeOverride(sessionName, runtimeType) });
 		const tokens = lastTurnContextTokens(transcript);
 		const threshold = isOrc ? orcFreshContextTokens() : memberFreshContextTokens();
 		if (tokens === null || tokens < threshold) return false;
