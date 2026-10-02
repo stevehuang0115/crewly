@@ -5,7 +5,13 @@
  *
  * @type {import('tailwindcss').Config}
  */
-const tokens = ['primary', 'background-dark', 'surface-dark', 'border-dark', 'text-primary-dark', 'text-secondary-dark'];
+const tokens = [
+  'primary', 'background-dark', 'surface-dark', 'border-dark', 'text-primary-dark', 'text-secondary-dark',
+  // Redesign tokens (tokens.css)
+  'bg', 'surface', 'surface-2', 'surface-hover', 'border', 'border-soft', 'text', 'text-2', 'text-3',
+  'primary-text', 'primary-soft', 'on-primary', 'attention', 'attention-soft', 'success', 'success-soft',
+  'danger', 'danger-soft', 'muted-dot',
+];
 
 module.exports = {
   // The design-sync previews are scanned too: they are the reference

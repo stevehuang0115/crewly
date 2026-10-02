@@ -12,6 +12,7 @@
  * @module pages/MissionDetail
  */
 
+import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
@@ -306,7 +307,7 @@ export const MissionDetail: React.FC = () => {
   if (error) {
     return (
       <div className="p-6 max-w-[1000px] mx-auto" data-testid="mission-detail-error">
-        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => navigate('/missions')} className="mb-6">
+        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => navigate(LINKS.goals())} className="mb-6">
           Back to Missions
         </Button>
         <Card variant="default" padding="lg">
@@ -324,7 +325,7 @@ export const MissionDetail: React.FC = () => {
   if (!mission) {
     return (
       <div className="p-6 max-w-[1000px] mx-auto">
-        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => navigate('/missions')} className="mb-6">
+        <Button variant="ghost" size="sm" icon={ArrowLeft} onClick={() => navigate(LINKS.goals())} className="mb-6">
           Back to Missions
         </Button>
         <Card variant="default" padding="lg">
@@ -346,7 +347,7 @@ export const MissionDetail: React.FC = () => {
         variant="ghost"
         size="sm"
         icon={ArrowLeft}
-        onClick={() => navigate('/missions')}
+        onClick={() => navigate(LINKS.goals())}
         className="mb-6"
         data-testid="mission-detail-back"
       >
@@ -637,7 +638,7 @@ export const MissionDetail: React.FC = () => {
                     type="button"
                     variant="link"
                     size="xs"
-                    onClick={() => navigate(`/missions/${mission.parentMissionId}`)}
+                    onClick={() => navigate(LINKS.goal(mission.parentMissionId))}
                     className="truncate max-w-full"
                     data-testid="mission-parent-link"
                   >

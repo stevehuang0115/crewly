@@ -3,20 +3,21 @@
  * run Tailwind over this package themselves (the Claude Design bundle).
  * The OSS frontend and the Cloud portal use the preset / theme.css instead.
  */
+@import '../tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
   :root {
-    /* Same values as theme.css / tailwind-preset.cjs */
-    --crewly-primary: #2a73ea;
-    --crewly-background: #111721;
-    --crewly-surface: #1a222c;
-    --crewly-border: #313a48;
-    --crewly-text: #f6f7f8;
-    --crewly-text-secondary: #9ab0d9;
-    color-scheme: dark;
+    /* Older aliases of the tokens in tokens.css (--bg, --surface, …). */
+    --crewly-primary: var(--primary);
+    --crewly-background: var(--bg);
+    --crewly-surface: var(--surface);
+    --crewly-border: var(--border);
+    --crewly-text: var(--text);
+    --crewly-text-secondary: var(--text-2);
   }
   body {
     @apply bg-background-dark text-text-primary-dark font-sans antialiased;

@@ -103,7 +103,7 @@ describe('CascadeSection', () => {
     const parent = screen.getByTestId('cascade-parent-link');
     expect(parent).toHaveTextContent('Company: profitability');
     fireEvent.click(parent);
-    expect(navigateMock).toHaveBeenCalledWith('/missions/co-1');
+    expect(navigateMock).toHaveBeenCalledWith('/teams/goals/co-1');
     await waitFor(() => expect(screen.getByTestId('cascade-children-empty')).toBeInTheDocument());
   });
 

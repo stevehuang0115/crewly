@@ -120,14 +120,14 @@ describe('RequestRow', () => {
   it('navigates to /tasks/:id (canonical V3 route) when the row is clicked', () => {
     renderRequestRow(baseRequest);
     fireEvent.click(screen.getByText('Test request title'));
-    expect(mockNavigate).toHaveBeenCalledWith('/tasks/req-test');
+    expect(mockNavigate).toHaveBeenCalledWith('/tickets/requests/req-test');
   });
 
   it('navigates on Enter key press', () => {
     renderRequestRow(baseRequest);
     const row = screen.getByRole('button', { name: /Open request/ });
     fireEvent.keyDown(row, { key: 'Enter' });
-    expect(mockNavigate).toHaveBeenCalledWith('/tasks/req-test');
+    expect(mockNavigate).toHaveBeenCalledWith('/tickets/requests/req-test');
   });
 
   it('expands child items on chevron click without navigating', () => {

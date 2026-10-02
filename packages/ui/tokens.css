@@ -1,0 +1,93 @@
+/*
+ * Crewly theme tokens: the one place colours, radii and fonts are defined.
+ * Spec: specs/2026-10-02-ui-redesign.md §Tokens.
+ *
+ * Every colour is stored twice:
+ *   --c-<name>   RGB channels ("42 115 234"). Tailwind reads these so opacity
+ *                modifiers keep working (`bg-primary/10`, `border-border-dark/50`).
+ *   --<name>     the usable colour (`rgb(var(--c-<name>))`), for inline styles
+ *                and `bg-[var(--surface)]`-style utilities.
+ * A theme only redefines the --c-* channels (and the few non-colour tokens);
+ * the --<name> forms follow automatically because they are declared on the
+ * same element as the theme attribute (<html>).
+ *
+ * Hosts: the OSS frontend imports this file from src/index.css; the Cloud
+ * portal gets it through theme.css; dist/styles.css inlines it.
+ */
+
+:root,
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --c-bg: 17 23 33;            /* #111721 page background */
+  --c-surface: 26 34 44;       /* #1a222c cards, sidebar, inputs */
+  --c-surface-2: 33 42 54;     /* #212a36 raised inside a surface */
+  --c-surface-hover: 36 46 59; /* #242e3b hover on a surface row */
+  --c-border: 49 58 72;        /* #313a48 outer borders */
+  --c-border-soft: 38 47 60;   /* #262f3c dividers inside a card */
+
+  /* Text */
+  --c-text: 246 247 248;       /* #f6f7f8 primary text */
+  --c-text-2: 154 176 217;     /* #9ab0d9 secondary text, meta lines */
+  --c-text-3: 116 136 171;     /* #7488ab tertiary text, hints */
+
+  /* Accents */
+  --c-primary: 42 115 234;     /* #2a73ea Crewly blue: primary buttons, active */
+  --c-primary-text: 110 162 245; /* #6ea2f5 blue text on dark (links, active tab) */
+  --c-on-primary: 255 255 255; /* text on a primary fill */
+  --c-attention: 240 163 58;   /* #f0a33a "needs you" / waiting */
+  --c-success: 52 195 143;     /* #34c38f healthy / done */
+  --c-danger: 240 106 106;     /* #f06a6a failed / destructive */
+  --c-muted-dot: 91 103 121;   /* #5b6779 idle / offline dot */
+
+  /* Soft fills: the accent at 14% */
+  --soft-alpha: 0.14;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius: 16px;
+  --radius-lg: 24px;
+
+  /* Fonts */
+  --font: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-display: 'Nunito', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: 'JetBrains Mono', SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  --shadow: none;
+}
+
+/*
+ * Light theme: intentionally empty for now (Crewly is dark-only today).
+ * To add it, set <html data-theme="light"> and redefine here every --c-*
+ * channel above (and color-scheme: light). Nothing else needs to change:
+ * components only use the tokens below, never raw colours.
+ */
+[data-theme='light'] {
+}
+
+/* Usable colours, derived from the channels. Do not redefine per theme. */
+:root,
+[data-theme='dark'],
+[data-theme='light'] {
+  --bg: rgb(var(--c-bg));
+  --surface: rgb(var(--c-surface));
+  --surface-2: rgb(var(--c-surface-2));
+  --surface-hover: rgb(var(--c-surface-hover));
+  --border: rgb(var(--c-border));
+  --border-soft: rgb(var(--c-border-soft));
+  --text: rgb(var(--c-text));
+  --text-2: rgb(var(--c-text-2));
+  --text-3: rgb(var(--c-text-3));
+  --primary: rgb(var(--c-primary));
+  --primary-text: rgb(var(--c-primary-text));
+  --primary-soft: rgb(var(--c-primary) / var(--soft-alpha));
+  --on-primary: rgb(var(--c-on-primary));
+  --attention: rgb(var(--c-attention));
+  --attention-soft: rgb(var(--c-attention) / var(--soft-alpha));
+  --success: rgb(var(--c-success));
+  --success-soft: rgb(var(--c-success) / var(--soft-alpha));
+  --danger: rgb(var(--c-danger));
+  --danger-soft: rgb(var(--c-danger) / var(--soft-alpha));
+  --muted-dot: rgb(var(--c-muted-dot));
+}

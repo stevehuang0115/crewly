@@ -10,6 +10,7 @@
  * @module components/TeamDetail/TeamObjectives
  */
 
+import { LINKS } from '../../constants/routes.constants';
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Target, BookOpen, ScrollText } from 'lucide-react';
@@ -94,7 +95,7 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
         ) : missions.length === 0 ? (
           <p className="text-sm text-text-secondary-dark">
             No missions own­ed by this team yet.{' '}
-            <Button type="button" variant="link" onClick={() => navigate('/missions')}>
+            <Button type="button" variant="link" onClick={() => navigate(LINKS.goals())}>
               Open Missions
             </Button>
           </p>
@@ -104,7 +105,7 @@ export function TeamObjectives({ teamId }: TeamObjectivesProps): JSX.Element {
               <li key={m.id}>
                 <button
                   type="button"
-                  onClick={() => navigate(`/missions/${m.id}`)}
+                  onClick={() => navigate(LINKS.goal(m.id))}
                   data-testid={`team-mission-${m.id}`}
                   className="flex w-full items-start justify-between gap-2 rounded-lg border border-transparent px-2 py-2 text-left hover:border-border-dark hover:bg-background-dark"
                 >

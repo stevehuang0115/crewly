@@ -220,7 +220,7 @@ export const SlackCloudWorkspace: React.FC<SlackCloudWorkspaceProps> = ({ status
       ) : !cloudConnected ? (
         <Alert variant="warning">
           Log in to Crewly Cloud first (
-          <a href="/cloud" className="underline">Settings → Cloud</a>
+          <a href="/settings?tab=cloud" className="underline">Settings → Cloud &amp; devices</a>
           ) — Slack is installed through your Crewly account.
         </Alert>
       ) : !workspace && choices ? (

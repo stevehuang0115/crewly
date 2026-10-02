@@ -9,6 +9,7 @@
  * @module components/Missions/ProposalsSection
  */
 
+import { LINKS } from '../../constants/routes.constants';
 import React, { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Inbox } from 'lucide-react';
@@ -77,7 +78,7 @@ export const ProposalsSection: React.FC<ProposalsSectionProps> = ({ parentMissio
                   {p.level && <LevelBadge level={p.level} />}
                   <button
                     type="button"
-                    onClick={() => navigate(`/missions/${p.id}`)}
+                    onClick={() => navigate(LINKS.goal(p.id))}
                     className="text-sm font-medium text-text-primary-dark hover:text-primary text-left"
                     data-testid={`proposal-link-${p.id}`}
                   >

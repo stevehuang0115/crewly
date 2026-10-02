@@ -1,8 +1,9 @@
 /**
  * Navigation Component Tests
  *
- * Tests for the grouped sidebar navigation with 4 functional groups
- * (Work / Communicate / Tools / System), pinned favorites, and collapse behavior.
+ * Tests for the redesigned sidebar (specs/2026-10-02-ui-redesign.md
+ * §Navigation): 12 items in Work / Tools / System, badges, pinned
+ * favorites, and collapse behavior.
  *
  * @module components/Layout/Navigation.test
  */
@@ -12,6 +13,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { Navigation } from './Navigation';
 import { SidebarProvider } from '../../contexts/SidebarContext';
+import { NavBadgesProvider } from './NavBadges';
 
 // Mock the QRCodeDisplay component
 vi.mock('./QRCodeDisplay', () => ({
@@ -41,12 +43,20 @@ let mockScheduleCount: number | null = null;
 vi.mock('../../hooks/useScheduleCount', () => ({
   useScheduleCount: () => mockScheduleCount,
 }));
+let mockWaiting: number | null = null;
+vi.mock('../../hooks/useWaitingOnYouCount', () => ({
+  useWaitingOnYouCount: () => mockWaiting,
+}));
+let mockUnread: number | null = null;
+vi.mock('../../hooks/useChatUnreadCount', () => ({
+  useChatUnreadCount: () => mockUnread,
+}));
 
 const renderWithProviders = (component: React.ReactElement) => {
   return render(
     <BrowserRouter>
       <SidebarProvider>
-        {component}
+        <NavBadgesProvider>{component}</NavBadgesProvider>
       </SidebarProvider>
     </BrowserRouter>
   );
@@ -61,6 +71,8 @@ describe('Navigation', () => {
   beforeEach(() => {
     mockPinnedItems.length = 0;
     mockScheduleCount = null;
+    mockWaiting = null;
+    mockUnread = null;
     // The sidebar asks /health for its version line on mount. Left pending
     // here so these synchronous tests see no state update after render —
     // the version-line tests below supply an answer and await it.
@@ -75,69 +87,73 @@ describe('Navigation', () => {
   // 4-Group Navigation Structure
   // ---------------------------------------------------------------------------
 
-  it('renders all 4 navigation group headers', () => {
+  it('renders the 3 navigation group headers', () => {
     renderWithProviders(<Navigation />);
 
     expect(screen.getByTestId('nav-group-work')).toHaveTextContent('WORK');
-    expect(screen.getByTestId('nav-group-communicate')).toHaveTextContent('COMMUNICATE');
     expect(screen.getByTestId('nav-group-tools')).toHaveTextContent('TOOLS');
     expect(screen.getByTestId('nav-group-system')).toHaveTextContent('SYSTEM');
+    expect(screen.queryByTestId('nav-group-communicate')).not.toBeInTheDocument();
   });
 
-  it('renders Work group items: Dashboard, Projects, Teams', () => {
+  it('renders the 12 items in order: Work, Tools, System', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/');
-    expect(screen.getByRole('link', { name: /projects/i })).toHaveAttribute('href', '/projects');
-    expect(screen.getByRole('link', { name: /teams/i })).toHaveAttribute('href', '/teams');
+    const links = screen.getAllByRole('link').map((a) => [a.textContent, a.getAttribute('href')]);
+    expect(links).toEqual([
+      ['Dashboard', '/'],
+      ['Chat', '/team-chat'],
+      ['Tickets', '/tickets'],
+      ['Projects', '/projects'],
+      ['Teams', '/teams'],
+      ['Wiki', '/wiki'],
+      ['Schedules', '/triggers'],
+      ['Browser', '/browser'],
+      ['Marketplace', '/marketplace'],
+      ['Connections', '/connections'],
+      ['Usage', '/usage'],
+      ['Settings', '/settings'],
+    ]);
   });
 
-  it('renders the Tickets board link in the Work group', () => {
+  it('no longer lists the pages that moved (Missions, Work Items, Requests, Cloud Portal, Security, Agents)', () => {
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByRole('link', { name: /tickets/i })).toHaveAttribute('href', '/tickets');
+    for (const name of [/missions/i, /work items/i, /^requests$/i, /cloud portal/i, /security/i, /^agents$/i]) {
+      expect(screen.queryByRole('link', { name })).not.toBeInTheDocument();
+    }
   });
 
-  it('renders Communicate group items: Chat (consolidated /team-chat)', () => {
+  it('badges Dashboard with the waiting-on-you count in the attention colour and Chat with unread', () => {
+    mockWaiting = 16;
+    mockUnread = 3;
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByRole('link', { name: /chat/i })).toHaveAttribute('href', '/team-chat');
+    const waiting = screen.getByTestId('nav-badge-dashboard');
+    expect(waiting).toHaveTextContent('16');
+    expect(waiting).toHaveAttribute('aria-label', '16 waiting on you');
+    expect(waiting.className).toContain('text-attention');
+    const unread = screen.getByTestId('nav-badge-team-chat');
+    expect(unread).toHaveTextContent('3');
+    expect(unread.className).toContain('text-primary-text');
   });
 
-  it('no longer renders a separate Agents item (folded into Chat)', () => {
+  it('marks the active page (sub-pages count, dashboard only at /)', () => {
+    window.history.pushState({}, '', '/tickets/runs/abc');
     renderWithProviders(<Navigation />);
 
-    expect(screen.queryByRole('link', { name: /^agents$/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Tickets' })).toHaveAttribute('aria-current', 'page');
+    expect(screen.getByRole('link', { name: 'Dashboard' })).not.toHaveAttribute('aria-current');
+    window.history.pushState({}, '', '/');
   });
 
-  it('renders Tools group items: Marketplace, Schedules', () => {
+  it('keeps the project sub-nav under Projects while a project is open', () => {
+    window.history.pushState({}, '', '/projects/p1');
     renderWithProviders(<Navigation />);
 
-    expect(screen.getByRole('link', { name: /marketplace/i })).toHaveAttribute('href', '/marketplace');
-    expect(screen.getByRole('link', { name: /schedules/i })).toHaveAttribute('href', '/triggers');
-  });
-
-  it('renders System group items: Security, Settings', () => {
-    renderWithProviders(<Navigation />);
-
-    expect(screen.getByRole('link', { name: /security/i })).toHaveAttribute('href', '/security');
-    expect(screen.getByRole('link', { name: /settings/i })).toHaveAttribute('href', '/settings');
-  });
-
-  // ---------------------------------------------------------------------------
-  // All Navigation Items
-  // ---------------------------------------------------------------------------
-
-  it('renders all 8 navigation items', () => {
-    renderWithProviders(<Navigation />);
-
-    const expectedItems = [
-      'Dashboard', 'Projects', 'Teams', 'Chat',
-      'Marketplace', 'Schedules', 'Security', 'Settings',
-    ];
-    expectedItems.forEach((item) => {
-      expect(screen.getByText(item)).toBeInTheDocument();
-    });
+    expect(screen.getByTestId('project-subnav')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Tasks' })).toHaveAttribute('href', '/projects/p1#tasks');
+    window.history.pushState({}, '', '/');
   });
 
   // ---------------------------------------------------------------------------
@@ -170,21 +186,6 @@ describe('Navigation', () => {
     fireEvent.click(toggleButton);
 
     expect(screen.getByRole('button', { name: /expand sidebar/i })).toBeInTheDocument();
-  });
-
-  // ---------------------------------------------------------------------------
-  // Mobile
-  // ---------------------------------------------------------------------------
-
-  it('renders close button when mobile menu is open', () => {
-    const onMobileClose = vi.fn();
-    renderWithProviders(<Navigation isMobileOpen={true} onMobileClose={onMobileClose} />);
-
-    const closeButton = screen.getByRole('button', { name: /close menu/i });
-    expect(closeButton).toBeInTheDocument();
-
-    fireEvent.click(closeButton);
-    expect(onMobileClose).toHaveBeenCalled();
   });
 
   // ---------------------------------------------------------------------------

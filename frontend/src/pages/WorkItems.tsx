@@ -7,6 +7,7 @@
  * @module pages/WorkItems
  */
 
+import { LINKS } from '../constants/routes.constants';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -177,7 +178,7 @@ export const WorkItems: React.FC = () => {
     (e: React.KeyboardEvent<HTMLDivElement>, id: string) => {
       if (e.key === 'Enter' || e.key === ' ') {
         e.preventDefault();
-        navigate(`/workitems/${id}`);
+        navigate(LINKS.run(id));
       }
     },
     [navigate],
@@ -263,7 +264,7 @@ export const WorkItems: React.FC = () => {
               className="hover:border-primary/40"
               role="button"
               tabIndex={0}
-              onClick={() => navigate(`/workitems/${wi.id}`)}
+              onClick={() => navigate(LINKS.run(wi.id))}
               onKeyDown={(e) => handleRowKeyDown(e, wi.id)}
               data-testid={`workitem-row-${wi.id}`}
             >

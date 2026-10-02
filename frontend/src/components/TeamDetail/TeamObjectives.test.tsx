@@ -85,7 +85,7 @@ describe('TeamObjectives', () => {
     render(<TeamObjectives teamId="team-a" />);
     await waitFor(() => expect(screen.getByTestId('team-mission-m1')).toBeInTheDocument());
     fireEvent.click(screen.getByTestId('team-mission-m1'));
-    expect(navigateMock).toHaveBeenCalledWith('/missions/m1');
+    expect(navigateMock).toHaveBeenCalledWith('/teams/goals/m1');
   });
 
   it('links norms and SOPs to the team wiki', async () => {
