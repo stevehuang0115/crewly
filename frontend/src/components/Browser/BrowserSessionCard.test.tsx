@@ -183,6 +183,22 @@ describe('BrowserSessionCard', () => {
 		expect(screen.getByText('Take control of the browser')).toBeInTheDocument();
 	});
 
+	it('opens a collapsed card when you take control, so the controls show', async () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+		const onToggle = vi.fn();
+		render(<BrowserSessionCard session={base} expanded={false} onToggle={onToggle} />);
+		fireEvent.click(screen.getByText('Take control of the browser'));
+		expect(onToggle).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not close an open card when you take control', () => {
+		vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{}', { status: 200 }));
+		const onToggle = vi.fn();
+		render(<BrowserSessionCard session={base} expanded onToggle={onToggle} />);
+		fireEvent.click(screen.getByText('Take control of the browser'));
+		expect(onToggle).not.toHaveBeenCalled();
+	});
+
 	it('says plainly that the agent is locked out once you take it', () => {
 		render(
 			<BrowserSessionCard session={{ ...base, control: 'owner' }} expanded onToggle={() => {}} />,

@@ -230,3 +230,94 @@ describe('Wiki global search (page-level header)', () => {
     expect(screen.getByTestId('search-scope-this')).toHaveAttribute('aria-checked', 'false');
   });
 });
+
+describe('Wiki page (simplified layout)', () => {
+  const okJson = (body: Record<string, unknown>) =>
+    ({ ok: true, status: 200, json: async () => ({ success: true, ...body }) }) as Response;
+  const stats = (pages: number, pending: number) => ({
+    totalMdCount: pages,
+    queue: { pending },
+  });
+  const vaults = [
+    { vaultPath: '/g', scope: 'global', vaultId: 'global', label: 'Global', stats: stats(42, 52) },
+    { vaultPath: '/p/ce', scope: 'project', vaultId: 'ce', label: 'CE', stats: stats(26, 0) },
+    { vaultPath: '/t/ella', scope: 'team', vaultId: 'team-1', label: 'Crewly Marketing', stats: stats(8, 23) },
+  ];
+  const proposed = Array.from({ length: 3 }, (_, i) => ({
+    sourceType: 'decision',
+    sourceFile: `d${i}.md`,
+    sourceId: `d${i}`,
+    targetRelativePath: `decisions/d${i}.md`,
+    title: `Decision ${i}`,
+    routingUncertain: false,
+  }));
+  const concepts = Array.from({ length: 7 }, (_, i) => ({ target: `concept-${i}`, referenceCount: 9 - i, sources: ['a.md'] }));
+  const migrateApply = vi.fn();
+
+  beforeEach(() => {
+    migrateApply.mockReset();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const u = String(url);
+        if (u.includes('/api/wiki/vaults')) return okJson({ vaults });
+        if (u.includes('/api/wiki/tree')) return okJson({ tree: [] });
+        if (u.includes('/api/wiki/lint')) return okJson({ report: { missingConcepts: concepts } });
+        if (u.includes('/api/wiki/recent')) return okJson({ entries: [] });
+        if (u.includes('/api/wiki/migrate/scan')) {
+          return okJson({
+            legacyDetected: true,
+            proposedPages: proposed,
+            bootstrapNeeded: { project: false, global: false, teams: ['a', 'b'] },
+            summary: { alreadyMigrated: 695 },
+          });
+        }
+        if (u.includes('/api/wiki/migrate/apply')) {
+          migrateApply();
+          return okJson({ applied: 3, skipped: 0, bootstrapped: [] });
+        }
+        return okJson({});
+      }),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const renderWiki = () => render(<MemoryRouter><Wiki /></MemoryRouter>);
+
+  it('groups vaults by scope with page counts and quiet pending counts', async () => {
+    renderWiki();
+    const projects = await screen.findByRole('group', { name: 'Projects' });
+    expect(projects).toHaveTextContent('CE');
+    expect(projects).toHaveTextContent('26');
+    expect(screen.getByRole('group', { name: 'Teams' })).toHaveTextContent('Crewly Marketing');
+    expect(screen.getByRole('group', { name: 'Global' })).toHaveTextContent('52 pending');
+    // The project vault is picked by default.
+    expect(screen.getByRole('button', { name: /^CE/ })).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('shows the import as one line, with the breakdown behind Preview, and migrates', async () => {
+    renderWiki();
+    expect(await screen.findByText('Import available')).toBeInTheDocument();
+    expect(screen.queryByTestId('wiki-migrate-detail')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    const detail = screen.getByTestId('wiki-migrate-detail');
+    expect(detail).toHaveTextContent('3 decisions');
+    expect(detail).toHaveTextContent('695 already migrated');
+    expect(detail).toHaveTextContent('Will also bootstrap 2 team vaults.');
+    expect(screen.getByText('Decision 0')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Migrate now' }));
+    await waitFor(() => expect(migrateApply).toHaveBeenCalled());
+    expect(await screen.findByText(/Migration complete/)).toBeInTheDocument();
+  });
+
+  it('lists five missing concepts, then Show all', async () => {
+    renderWiki();
+    expect(await screen.findByText('[[concept-0]]')).toBeInTheDocument();
+    expect(screen.queryByText('[[concept-5]]')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 7' }));
+    expect(screen.getByText('[[concept-6]]')).toBeInTheDocument();
+  });
+});

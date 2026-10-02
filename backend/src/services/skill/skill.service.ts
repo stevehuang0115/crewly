@@ -570,7 +570,8 @@ export class SkillService {
         requiredTier: fm.requiredTier as string | undefined,
         fallbackSkill: fm.fallbackSkill as string | undefined,
         isBuiltin,
-        isEnabled: true,
+        // Persisted only when false; anything else (missing, older files) is enabled.
+        isEnabled: fm.isEnabled !== false,
         createdAt: (fm.createdAt as string) || new Date().toISOString(),
         updatedAt: (fm.updatedAt as string) || new Date().toISOString(),
       };
@@ -602,7 +603,7 @@ export class SkillService {
       const skill: Skill = {
         ...data,
         isBuiltin,
-        isEnabled: true,
+        isEnabled: (data as { isEnabled?: boolean }).isEnabled !== false,
         promptFile: path.join(skillDir, data.promptFile || 'instructions.md'),
       };
 
@@ -671,9 +672,19 @@ export class SkillService {
     if (skill.notices?.length) frontmatter.notices = skill.notices;
     if (skill.requiredTier) frontmatter.requiredTier = skill.requiredTier;
     if (skill.fallbackSkill) frontmatter.fallbackSkill = skill.fallbackSkill;
+    // Disabled is the exception, so only it is written; the loader treats a
+    // missing flag as enabled.
+    if (skill.isEnabled === false) frontmatter.isEnabled = false;
+
+    // An update that does not send new instructions (e.g. enable/disable)
+    // must keep the existing body, not overwrite it with nothing.
+    const body = promptContent !== undefined
+      ? promptContent
+      : skill.promptFile
+        ? await this.loadPromptContent(skill)
+        : '';
 
     const yamlStr = stringifyYAML(frontmatter).trim();
-    const body = promptContent || '';
     const skillMdContent = `---\n${yamlStr}\n---\n\n${body}\n`;
 
     const skillMdPath = path.join(skillDir, 'SKILL.md');

@@ -36,8 +36,8 @@ export type TicketsTab = (typeof TICKETS_TABS)[number];
 export const TEAMS_TABS = ['teams', 'goals'] as const;
 export type TeamsTab = (typeof TEAMS_TABS)[number];
 
-/** Marketplace: browse the registry, or what is installed (former Settings › Skills). */
-export const MARKETPLACE_TABS = ['browse', 'installed'] as const;
+/** Marketplace: browse the registry, what is installed (former Settings › Skills), and skills submitted for review. */
+export const MARKETPLACE_TABS = ['browse', 'installed', 'submissions'] as const;
 export type MarketplaceTab = (typeof MARKETPLACE_TABS)[number];
 
 /** Settings sections, in tab order. */

@@ -8,6 +8,13 @@
 /** Dashboard route (kept as `/triggers` so existing links keep working). */
 export const SCHEDULES_ROUTE = '/triggers';
 
+/** Tabs of the page, in order (`?tab=`; the first is the default and is left out of the URL). */
+export const SCHEDULES_TABS = ['scheduled', 'reminders', 'history'] as const;
+export type SchedulesTab = (typeof SCHEDULES_TABS)[number];
+
+/** Rows visible per list before "Show all N". */
+export const SCHEDULE_LIST_LIMIT = 5;
+
 /** Nav label for the page. */
 export const SCHEDULES_NAV_LABEL = 'Schedules';
 
@@ -68,7 +75,17 @@ export const SCHEDULE_TEXT = {
   TAB_HISTORY: 'History',
   SHOW_SYSTEM: 'Show system tasks',
   REFRESH: 'Refresh',
-  NEW: 'New',
+  NEW: 'New schedule',
+  FILTER_TEAM: 'Team',
+  FILTER_SHOW: 'Show',
+  FILTER_SYSTEM: 'System tasks',
+  SHOW_HIDDEN: 'Show them',
+  OPEN_DETAILS: 'Open details',
+  MORE_ACTIONS: (name: string) => `More actions for ${name}`,
+  LAST_RUN_FAILED: 'Last run failed',
+  NEXT_IN: (relative: string) => `next ${relative}`,
+  RAN_AGO: (relative: string) => `ran ${relative}`,
+  NO_MATCH: 'Nothing matches the filter.',
   ENGINE_STOPPED: 'The scheduler is not running, so schedules will not fire for now.',
   EMPTY_SCHEDULED_TITLE: 'No schedules yet',
   EMPTY_SCHEDULED_BODY: 'Ask a team lead to set one up, e.g. "send the ops report every day at 22:30". It will show up here.',
