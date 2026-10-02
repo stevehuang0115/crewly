@@ -13,6 +13,11 @@ User-visible changes. Newest first.
   files transcripts under the resolved path (on macOS `/tmp/proj` becomes `/private/tmp/proj`),
   so such agents reported $0 spend. Transcript lookup now tries the realpath slug first, then
   the raw one.
+- **A "Daily token cap reached" card closes itself when the stop lifts without it.** Removing
+  or raising the cap, turning the total cap off, or a boost from your DM / the API now
+  withdraws that target's open card ("Closed — no longer needed …"), and a changed cap that
+  still stops the agent replaces the old card instead of leaving two open. Answering the card
+  works as before (#939).
 - **Agent messages to you reach the conversation they belong to — or the agent is told they
   didn't.** One harness resolver now decides where every agent→owner message goes (`reply`,
   `reply-chat`, `reply-channel`, `slack-post`, `attach-file`, file uploads, the `[DONE]`
